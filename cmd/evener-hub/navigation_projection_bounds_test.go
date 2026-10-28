@@ -96,8 +96,9 @@ func TestNavigationProjectionBuildSurfacesCancellationAtEveryCheck(t *testing.T)
 func TestNavigationSectionDropsTrailingRowsWhenOverTheResponseBudget(t *testing.T) {
 	t.Parallel()
 	rows := make([]hubcore.TreeNode, maxNavigationSectionRows)
+	state := strings.Repeat("s", 45_000)
 	for index := range rows {
-		rows[index] = hubcore.TreeNode{ID: fmt.Sprintf("session-%03d", index), Kind: "session", State: strings.Repeat("s", 45_000)}
+		rows[index] = hubcore.TreeNode{ID: fmt.Sprintf("session-%03d", index), Kind: "session", State: state}
 	}
 	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Live: rows}})
 	if err != nil {
@@ -135,8 +136,9 @@ func TestNavigationProjectDetailTruncatesAcrossTiersWhenOverBudget(t *testing.T)
 	t.Parallel()
 	rows := func(prefix string) []hubcore.TreeNode {
 		rows := make([]hubcore.TreeNode, maxNavigationSectionRows)
+		state := strings.Repeat("s", 21_000)
 		for index := range rows {
-			rows[index] = hubcore.TreeNode{ID: fmt.Sprintf("%s-%03d", prefix, index), Kind: "session", State: strings.Repeat("s", 21_000)}
+			rows[index] = hubcore.TreeNode{ID: fmt.Sprintf("%s-%03d", prefix, index), Kind: "session", State: state}
 		}
 		return rows
 	}

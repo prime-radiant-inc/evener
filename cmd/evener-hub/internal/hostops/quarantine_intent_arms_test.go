@@ -65,6 +65,37 @@ func validIntentBody(t *testing.T, path, stamp string, mutate func(map[string]an
 // own store path, so parallel rows never share state.
 type artifactSeed func(t *testing.T, path string)
 
+// refusalRow names one store-side artifact to seed and the sentinel Open
+// must refuse the boot with when the artifact is malformed.
+type refusalRow struct {
+	name    string
+	seed    artifactSeed
+	wantErr error
+}
+
+// runRefusalRows seeds each row's store directory and asserts Open refuses
+// it; served names the artifact family in the refusal message.
+func runRefusalRows(t *testing.T, cases []refusalRow, served string) {
+	t.Helper()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			path := StorePath(t.TempDir())
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatalf("mkdir store dir: %v", err)
+			}
+			tc.seed(t, path)
+			_, err := Open(path)
+			if err == nil {
+				t.Fatalf("Open served a store %s", served)
+			}
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("Open error = %v, want errors.Is(%v)", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 // TestQuarantineIntentArmsRefuseTheBoot covers readQuarantineIntent's refusal
 // arms: an intent that is not the record the writing boot emits is incomplete
 // custody, and the boot refuses over it rather than guessing what it was doing.
@@ -72,11 +103,7 @@ func TestQuarantineIntentArmsRefuseTheBoot(t *testing.T) {
 	t.Parallel()
 	const stamp = "20260926T000000.000000000Z"
 
-	cases := []struct {
-		name    string
-		seed    artifactSeed
-		wantErr error
-	}{
+	cases := []refusalRow{
 		{
 			name: "a directory where the intent belongs",
 			seed: func(t *testing.T, path string) {
@@ -96,24 +123,18 @@ func TestQuarantineIntentArmsRefuseTheBoot(t *testing.T) {
 			wantErr: ErrStoreReadableBeyondOwner,
 		},
 		{
-			name: "intent bytes that are not valid UTF-8",
-			seed: seedArtifactDeferred(func(path string) string {
-				return quarantineIntentPath(path)
-			}, []byte("{\"corruptFile\": \"\xff\xfe\"}")),
+			name:    "intent bytes that are not valid UTF-8",
+			seed:    seedArtifactDeferred(quarantineIntentPath, []byte("{\"corruptFile\": \"\xff\xfe\"}")),
 			wantErr: ErrStoreCorrupt,
 		},
 		{
-			name: "an intent naming a key twice",
-			seed: seedArtifactDeferred(func(path string) string {
-				return quarantineIntentPath(path)
-			}, []byte(`{"corruptFile":"x","corruptFile":"x"}`)),
+			name:    "an intent naming a key twice",
+			seed:    seedArtifactDeferred(quarantineIntentPath, []byte(`{"corruptFile":"x","corruptFile":"x"}`)),
 			wantErr: ErrStoreCorrupt,
 		},
 		{
-			name: "an intent that does not decode",
-			seed: seedArtifactDeferred(func(path string) string {
-				return quarantineIntentPath(path)
-			}, []byte("{")),
+			name:    "an intent that does not decode",
+			seed:    seedArtifactDeferred(quarantineIntentPath, []byte("{")),
 			wantErr: ErrStoreCorrupt,
 		},
 		{
@@ -223,23 +244,7 @@ func TestQuarantineIntentArmsRefuseTheBoot(t *testing.T) {
 			wantErr: ErrStoreCorrupt,
 		},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			path := StorePath(t.TempDir())
-			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-				t.Fatalf("mkdir store dir: %v", err)
-			}
-			tc.seed(t, path)
-			_, err := Open(path)
-			if err == nil {
-				t.Fatal("Open served a store beside a malformed quarantine intent")
-			}
-			if !errors.Is(err, tc.wantErr) {
-				t.Fatalf("Open error = %v, want errors.Is(%v)", err, tc.wantErr)
-			}
-		})
-	}
+	runRefusalRows(t, cases, "beside a malformed quarantine intent")
 }
 
 // seedArtifactDeferred defers a fixed body to a path derived from the row's
@@ -259,11 +264,7 @@ func seedArtifactDeferred(derive func(path string) string, body []byte) artifact
 func TestQuarantineEpochSidecarArmsRefuseTheBoot(t *testing.T) {
 	t.Parallel()
 
-	cases := []struct {
-		name    string
-		seed    artifactSeed
-		wantErr error
-	}{
+	cases := []refusalRow{
 		{
 			name: "a directory where the sidecar belongs",
 			seed: func(t *testing.T, path string) {
@@ -308,23 +309,7 @@ func TestQuarantineEpochSidecarArmsRefuseTheBoot(t *testing.T) {
 			wantErr: ErrStoreCorrupt,
 		},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			path := StorePath(t.TempDir())
-			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-				t.Fatalf("mkdir store dir: %v", err)
-			}
-			tc.seed(t, path)
-			_, err := Open(path)
-			if err == nil {
-				t.Fatal("Open served a store beside a malformed quarantine epoch sidecar")
-			}
-			if !errors.Is(err, tc.wantErr) {
-				t.Fatalf("Open error = %v, want errors.Is(%v)", err, tc.wantErr)
-			}
-		})
-	}
+	runRefusalRows(t, cases, "beside a malformed quarantine epoch sidecar")
 }
 
 // TestQuarantineCustodyArmsRefuseTheBoot covers readCustodyFile and
@@ -334,11 +319,7 @@ func TestQuarantineCustodyArmsRefuseTheBoot(t *testing.T) {
 	t.Parallel()
 	const stamp = "20260926T000000.000000000Z"
 
-	cases := []struct {
-		name    string
-		seed    artifactSeed
-		wantErr error
-	}{
+	cases := []refusalRow{
 		{
 			name: "a custody file with no timestamp in its name",
 			seed: func(t *testing.T, path string) {
@@ -627,23 +608,7 @@ func TestQuarantineCustodyArmsRefuseTheBoot(t *testing.T) {
 			wantErr: ErrQuarantineIncomplete,
 		},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			path := StorePath(t.TempDir())
-			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-				t.Fatalf("mkdir store dir: %v", err)
-			}
-			tc.seed(t, path)
-			_, err := Open(path)
-			if err == nil {
-				t.Fatal("Open served a store beside a malformed custody file")
-			}
-			if !errors.Is(err, tc.wantErr) {
-				t.Fatalf("Open error = %v, want errors.Is(%v)", err, tc.wantErr)
-			}
-		})
-	}
+	runRefusalRows(t, cases, "beside a malformed custody file")
 }
 
 // TestQuarantineAsideArmsRefuseTheBoot covers the aside-file arms of the scan:
@@ -653,11 +618,7 @@ func TestQuarantineAsideArmsRefuseTheBoot(t *testing.T) {
 	t.Parallel()
 	const stamp = "20260926T000000.000000000Z"
 
-	cases := []struct {
-		name    string
-		seed    artifactSeed
-		wantErr error
-	}{
+	cases := []refusalRow{
 		{
 			name: "an aside file with no timestamp in its name",
 			seed: func(t *testing.T, path string) {
@@ -695,23 +656,7 @@ func TestQuarantineAsideArmsRefuseTheBoot(t *testing.T) {
 			wantErr: ErrQuarantineIncomplete,
 		},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			path := StorePath(t.TempDir())
-			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-				t.Fatalf("mkdir store dir: %v", err)
-			}
-			tc.seed(t, path)
-			_, err := Open(path)
-			if err == nil {
-				t.Fatal("Open served a store beside a malformed quarantine aside")
-			}
-			if !errors.Is(err, tc.wantErr) {
-				t.Fatalf("Open error = %v, want errors.Is(%v)", err, tc.wantErr)
-			}
-		})
-	}
+	runRefusalRows(t, cases, "beside a malformed quarantine aside")
 }
 
 // TestQuarantineSignalOfNilStore pins the nil-receiver arm: a nil handle has no

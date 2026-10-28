@@ -149,14 +149,15 @@ func TestRelaySessionRoutePublicationRejectedWhenCaptureIsInvalidated(t *testing
 // parked inside the publisher's entry hook: the flush acknowledgement cannot
 // complete while the hook holds the publisher, so the read's flush wait is
 // deterministically open when the test cancels its context.
-func flushWaitFixture(t *testing.T) (
-	source *LocalDaemonSource,
-	session *relaySession,
-	deliveries <-chan RelayDelivery,
-	barrier *relayPublisherEntryBarrier,
-	cancelRead context.CancelFunc,
-	outcome <-chan relayReadOutcome,
-) {
+type flushWait struct {
+	session    *relaySession
+	deliveries <-chan RelayDelivery
+	barrier    *relayPublisherEntryBarrier
+	cancelRead context.CancelFunc
+	outcome    <-chan relayReadOutcome
+}
+
+func flushWaitFixture(t *testing.T) flushWait {
 	t.Helper()
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-flush")})
 	lease, err := source.AcquireRelaySession(appwire.Ref{SourceID: "local", ThreadID: "thread-flush"})
@@ -164,34 +165,31 @@ func flushWaitFixture(t *testing.T) (
 		t.Fatalf("AcquireRelaySession: %v", err)
 	}
 	t.Cleanup(lease.Close)
-	session = relaySessionFor(t, source)
+	session := relaySessionFor(t, source)
 	listenerDeliveries, err := lease.Listen(t.Context())
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
-	deliveries = listenerDeliveries
-	barrier = newRelayPublisherEntryBarrier(t, session)
+	barrier := newRelayPublisherEntryBarrier(t, session)
 
 	readCtx, cancel := context.WithCancel(context.Background())
 	results := readRelayAsync(readCtx, lease, appwire.ThreadReadParams{
 		Ref: "local:thread-flush", ThreadID: "thread-flush", Subscribe: true,
 	})
-	outcome = results
-	cancelRead = cancel
 
 	call := <-daemon.reads
 	observeRelayFrame(t, session, relayDelta("thread-flush", "delta-1"))
 	call.transport.recv <- appwire.ResponseMessage(call.request.ID, relaySnapshot("thread-flush", "snapshot"))
 	<-barrier.entered
-	return source, session, deliveries, barrier, cancelRead, outcome
+	return flushWait{session: session, deliveries: listenerDeliveries, barrier: barrier, cancelRead: cancel, outcome: results}
 }
 
 func TestRelaySessionFlushWaitReturnsCallerCancellation(t *testing.T) {
 	t.Parallel()
-	_, _, deliveries, barrier, cancelRead, outcome := flushWaitFixture(t)
+	fx := flushWaitFixture(t)
 
-	cancelRead()
-	got := <-outcome
+	fx.cancelRead()
+	got := <-fx.outcome
 	if !errors.Is(got.err, context.Canceled) {
 		t.Fatalf("flush wait error = %v, want context.Canceled", got.err)
 	}
@@ -199,14 +197,14 @@ func TestRelaySessionFlushWaitReturnsCallerCancellation(t *testing.T) {
 	// Release the parked pre-cut delivery and acknowledge it: the cut had
 	// already moved it out of the capture into the parked job, so the
 	// cancelled read's cleanup had nothing left to requeue.
-	barrier.releasePublisher()
-	delivery := <-deliveries
+	fx.barrier.releasePublisher()
+	delivery := <-fx.deliveries
 	delivery.Acknowledge()
 }
 
 func TestRelaySessionFlushWaitReturnsSessionClosure(t *testing.T) {
 	t.Parallel()
-	_, session, _, barrier, _, outcome := flushWaitFixture(t)
+	fx := flushWaitFixture(t)
 
 	// The parked read has already committed to the closed-session case the
 	// moment the session context closes (the flush acknowledgement cannot
@@ -214,10 +212,10 @@ func TestRelaySessionFlushWaitReturnsSessionClosure(t *testing.T) {
 	// right away: the session's epoch revocation needs the publication
 	// boundary the entry hook holds, so parking it past the cancellation
 	// would wedge the disconnect chain.
-	session.cancel()
-	barrier.releasePublisher()
+	fx.session.cancel()
+	fx.barrier.releasePublisher()
 
-	got := <-outcome
+	got := <-fx.outcome
 	assertSessionUnavailable(t, got.err, "flush wait ended by session closure")
 }
 

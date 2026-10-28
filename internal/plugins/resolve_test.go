@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -342,7 +343,7 @@ func assertCandidateNames(t *testing.T, r LaunchPluginResolution, want []string)
 
 func assertStrings(t *testing.T, got, want []string) {
 	t.Helper()
-	if !reflect.DeepEqual(got, want) {
+	if !slices.Equal(got, want) {
 		t.Fatalf("got %#v, want %#v", got, want)
 	}
 }
@@ -358,21 +359,10 @@ func writeCountedPlugin(t *testing.T, dir string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeTestPluginFile(t, dir, ".claude-plugin/plugin.json", string(body))
-	writeTestPluginFile(t, dir, "skills/one/SKILL.md", "---\nname: one\ndescription: one\n---\none\n")
-	writeTestPluginFile(t, dir, "agents/one.md", "---\nname: one\ndescription: one\n---\none\n")
-	writeTestPluginFile(t, dir, "commands/one.md", "one\n")
-}
-
-func writeTestPluginFile(t *testing.T, root, rel, body string) {
-	t.Helper()
-	path := filepath.Join(root, rel)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeTestFile(t, filepath.Join(dir, ".claude-plugin/plugin.json"), string(body))
+	writeTestFile(t, filepath.Join(dir, "skills/one/SKILL.md"), "---\nname: one\ndescription: one\n---\none\n")
+	writeTestFile(t, filepath.Join(dir, "agents/one.md"), "---\nname: one\ndescription: one\n---\none\n")
+	writeTestFile(t, filepath.Join(dir, "commands/one.md"), "one\n")
 }
 
 // A bundled plugin (shipped inside the binary) is a launch candidate only when
@@ -637,9 +627,9 @@ func TestBundledStore_CreatesMissingParentsPrivately(t *testing.T) {
 			if err := res.ValidateSelection(); err != nil {
 				t.Fatal(err)
 			}
-			assertPerm(t, filepath.Join(base, "evener"), 0o700)
-			assertPerm(t, m.Root, 0o700)
-			assertPerm(t, filepath.Join(m.Root, "bundled"), 0o755)
+			assertMode(t, filepath.Join(base, "evener"), 0o700)
+			assertMode(t, m.Root, 0o700)
+			assertMode(t, filepath.Join(m.Root, "bundled"), 0o755)
 		})
 	}
 }
@@ -669,17 +659,6 @@ func TestPreviewForLaunch_ReclaimsNothing(t *testing.T) {
 	}
 	if _, err := os.Stat(staging); !os.IsNotExist(err) {
 		t.Fatalf("the launch after a preview left abandoned staging behind (stat err = %v)", err)
-	}
-}
-
-func assertPerm(t *testing.T, path string, want fs.FileMode) {
-	t.Helper()
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := info.Mode().Perm(); got != want {
-		t.Errorf("%s mode = %04o, want %04o", path, got, want)
 	}
 }
 

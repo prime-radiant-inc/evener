@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"sync"
 	"testing"
 
@@ -38,6 +39,16 @@ func (d *scriptedItemDaemon) nextPageCall() int {
 	call := d.pages
 	d.pages++
 	return call
+}
+
+// unexpectedPageCall and unexpectedReadCall script the call a source must
+// never make, so a test that reaches one fails on the scripted refusal.
+func unexpectedPageCall(int, appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+	return appwire.ThreadTurnsListResponse{}, errors.New("unexpected page call")
+}
+
+func unexpectedReadCall(int, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	return appwire.ThreadReadResponse{}, errors.New("unexpected read call")
 }
 
 func (d *scriptedItemDaemon) dial(context.Context, string, *http.Client, http.Header) (appwire.Transport, error) {
@@ -113,19 +124,7 @@ func positionedItems(first, last uint64) []appwire.ThreadItem {
 }
 
 func keyForPosition(position uint64) string {
-	return "key-" + uitoa(position)
-}
-
-func uitoa(v uint64) string {
-	if v == 0 {
-		return "0"
-	}
-	var digits []byte
-	for v > 0 {
-		digits = append([]byte{byte('0' + v%10)}, digits...)
-		v /= 10
-	}
-	return string(digits)
+	return "key-" + strconv.FormatUint(position, 10)
 }
 
 func itemPosition(entry uint64) appwire.ThreadItemPosition {
@@ -207,9 +206,7 @@ func TestItemPagingReadThreadFailuresSurface(t *testing.T) {
 			read: func(int, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 				return appwire.ThreadReadResponse{}, readFailure
 			},
-			page: func(int, appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
-				return appwire.ThreadTurnsListResponse{}, errors.New("unexpected page call")
-			},
+			page: unexpectedPageCall,
 		}
 		source := newScriptedItemSource(t, daemon, "thread")
 		_, err := source.ReadItemCandidates(t.Context(), appwire.ThreadReadParams{Ref: "local:thread"})
@@ -224,9 +221,7 @@ func TestItemPagingReadThreadFailuresSurface(t *testing.T) {
 				items := positionedItems(1, 2)
 				return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "thread-1", Turns: []appwire.Turn{{ID: "", Items: items, ItemsView: appwire.TurnItemsViewFragment}}}}, nil
 			},
-			page: func(int, appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
-				return appwire.ThreadTurnsListResponse{}, errors.New("unexpected page call")
-			},
+			page: unexpectedPageCall,
 		}
 		source := newScriptedItemSource(t, daemon, "thread")
 		if _, err := source.ReadItemCandidates(t.Context(), appwire.ThreadReadParams{Ref: "local:thread"}); err == nil {
@@ -239,9 +234,7 @@ func TestItemPagingReadThreadFailuresSurface(t *testing.T) {
 			read: func(int, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 				return itemReadResponse(decreasingItems(), ""), nil
 			},
-			page: func(int, appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
-				return appwire.ThreadTurnsListResponse{}, errors.New("unexpected page call")
-			},
+			page: unexpectedPageCall,
 		}
 		source := newScriptedItemSource(t, daemon, "thread")
 		if _, err := source.ReadItemCandidates(t.Context(), appwire.ThreadReadParams{Ref: "local:thread"}); err == nil {
@@ -259,9 +252,7 @@ func TestItemPagingRefreshCancellationSurfaces(t *testing.T) {
 			cancel()
 			return itemReadResponse(positionedItems(1, 2), ""), nil
 		},
-		page: func(int, appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
-			return appwire.ThreadTurnsListResponse{}, errors.New("unexpected page call")
-		},
+		page: unexpectedPageCall,
 	}
 	source := newScriptedItemSource(t, daemon, "thread")
 	_, err := source.ReadItemCandidates(ctx, appwire.ThreadReadParams{Ref: "local:thread"})
@@ -277,9 +268,7 @@ func TestItemPagingReadFillsItemTurnIDFromTurn(t *testing.T) {
 			items[1].TurnID = ""
 			return itemReadResponse(items, ""), nil
 		},
-		page: func(int, appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
-			return appwire.ThreadTurnsListResponse{}, errors.New("unexpected page call")
-		},
+		page: unexpectedPageCall,
 	}
 	source := newScriptedItemSource(t, daemon, "thread")
 	result, err := source.ReadItemCandidates(t.Context(), appwire.ThreadReadParams{Ref: "local:thread"})
@@ -297,16 +286,12 @@ func TestItemCandidatesFromReadCursorArms(t *testing.T) {
 	t.Parallel()
 	validCursor := inverseCursor(t, itemNativeIdentity, itemPosition(1))
 	otherCursor := inverseCursor(t, itemNativeIdentity, itemPosition(2))
-	noPage := func(int, appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
-		return appwire.ThreadTurnsListResponse{}, errors.New("unexpected page call")
-	}
+	noPage := unexpectedPageCall
 	params := appwire.ThreadReadParams{Ref: "local:thread"}
 
 	t.Run("retained garbage native cursor", func(t *testing.T) {
 		t.Parallel()
-		source := newScriptedItemSource(t, &scriptedItemDaemon{page: noPage, read: func(int, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-			return appwire.ThreadReadResponse{}, errors.New("unexpected read call")
-		}}, "thread")
+		source := newScriptedItemSource(t, &scriptedItemDaemon{page: noPage, read: unexpectedReadCall}, "thread")
 		if _, err := source.ItemCandidatesFromRead(t.Context(), params, positionedItemReadResponse(1, 2, "garbage-cursor")); err != nil {
 			t.Fatal(err)
 		}
@@ -315,9 +300,7 @@ func TestItemCandidatesFromReadCursorArms(t *testing.T) {
 	})
 	t.Run("response garbage native cursor", func(t *testing.T) {
 		t.Parallel()
-		source := newScriptedItemSource(t, &scriptedItemDaemon{page: noPage, read: func(int, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-			return appwire.ThreadReadResponse{}, errors.New("unexpected read call")
-		}}, "thread")
+		source := newScriptedItemSource(t, &scriptedItemDaemon{page: noPage, read: unexpectedReadCall}, "thread")
 		if _, err := source.ItemCandidatesFromRead(t.Context(), params, positionedItemReadResponse(1, 2, validCursor)); err != nil {
 			t.Fatal(err)
 		}
@@ -326,9 +309,7 @@ func TestItemCandidatesFromReadCursorArms(t *testing.T) {
 	})
 	t.Run("equal native cursors keep the retained token", func(t *testing.T) {
 		t.Parallel()
-		source := newScriptedItemSource(t, &scriptedItemDaemon{page: noPage, read: func(int, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-			return appwire.ThreadReadResponse{}, errors.New("unexpected read call")
-		}}, "thread")
+		source := newScriptedItemSource(t, &scriptedItemDaemon{page: noPage, read: unexpectedReadCall}, "thread")
 		if _, err := source.ItemCandidatesFromRead(t.Context(), params, positionedItemReadResponse(1, 2, validCursor)); err != nil {
 			t.Fatal(err)
 		}
@@ -346,9 +327,7 @@ func TestItemCandidatesFromReadCursorArms(t *testing.T) {
 	})
 	t.Run("empty sliding windows are stale", func(t *testing.T) {
 		t.Parallel()
-		source := newScriptedItemSource(t, &scriptedItemDaemon{page: noPage, read: func(int, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-			return appwire.ThreadReadResponse{}, errors.New("unexpected read call")
-		}}, "thread")
+		source := newScriptedItemSource(t, &scriptedItemDaemon{page: noPage, read: unexpectedReadCall}, "thread")
 		if _, err := source.ItemCandidatesFromRead(t.Context(), params, positionedItemReadResponseFor(nil, nil, validCursor)); err != nil {
 			t.Fatal(err)
 		}
@@ -359,9 +338,7 @@ func TestItemCandidatesFromReadCursorArms(t *testing.T) {
 		t.Parallel()
 		pageFailure := errors.New("hidden history page failed")
 		daemon := &scriptedItemDaemon{
-			read: func(int, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-				return appwire.ThreadReadResponse{}, errors.New("unexpected read call")
-			},
+			read: unexpectedReadCall,
 			page: func(int, appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
 				return appwire.ThreadTurnsListResponse{}, pageFailure
 			},
@@ -380,7 +357,7 @@ func TestItemCandidatesFromReadCursorArms(t *testing.T) {
 // establishBoundedItemState drives one bounded ReadItemCandidates so the
 // retained state carries a native cursor, and returns the hub identity and a
 // cursor under it the next list call can continue from.
-func establishBoundedItemState(t *testing.T, source *LocalDaemonSource, olderCursor string) (appitempaging.CursorIdentity, string) {
+func establishBoundedItemState(t *testing.T, source *LocalDaemonSource) (appitempaging.CursorIdentity, string) {
 	t.Helper()
 	first, err := source.ReadItemCandidates(t.Context(), appwire.ThreadReadParams{Ref: "local:thread"})
 	if err != nil {
@@ -391,6 +368,12 @@ func establishBoundedItemState(t *testing.T, source *LocalDaemonSource, olderCur
 	}
 	cursor := inverseCursor(t, first.Identity, first.Candidates.Candidates[0].Position)
 	return first.Identity, cursor
+}
+
+// readAgain reissues the candidates read against the same thread, so a
+// transition test can observe what the second read returns.
+func readAgain(_ *testing.T, source *LocalDaemonSource, ctx context.Context) (ItemCandidateResult, error) {
+	return source.ReadItemCandidates(ctx, appwire.ThreadReadParams{Ref: "local:thread"})
 }
 
 func TestListItemCandidatesBeforeBoundaryArms(t *testing.T) {
@@ -409,9 +392,7 @@ func TestListItemCandidatesBeforeBoundaryArms(t *testing.T) {
 			read: func(int, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 				return appwire.ThreadReadResponse{}, readFailure
 			},
-			page: func(int, appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
-				return appwire.ThreadTurnsListResponse{}, errors.New("unexpected page call")
-			},
+			page: unexpectedPageCall,
 		}
 		source := newScriptedItemSource(t, daemon, "thread")
 		_, err := source.ListItemCandidates(t.Context(), appwire.ThreadTurnsListParams{Ref: "local:thread", Before: &before})
@@ -425,9 +406,7 @@ func TestListItemCandidatesBeforeBoundaryArms(t *testing.T) {
 			read: func(int, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 				return itemReadResponse(positionedItems(1, 3), ""), nil
 			},
-			page: func(int, appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
-				return appwire.ThreadTurnsListResponse{}, errors.New("unexpected page call")
-			},
+			page: unexpectedPageCall,
 		}
 		source := newScriptedItemSource(t, daemon, "thread")
 		if _, err := source.ReadItemCandidates(t.Context(), appwire.ThreadReadParams{Ref: "local:thread"}); err != nil {
@@ -455,9 +434,7 @@ func TestListItemCandidatesFreshSnapshotArms(t *testing.T) {
 			read: func(int, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 				return appwire.ThreadReadResponse{}, readFailure
 			},
-			page: func(int, appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
-				return appwire.ThreadTurnsListResponse{}, errors.New("unexpected page call")
-			},
+			page: unexpectedPageCall,
 		}
 		source := newScriptedItemSource(t, daemon, "thread")
 		_, err := source.ListItemCandidates(t.Context(), appwire.ThreadTurnsListParams{Ref: "local:thread"})
@@ -479,9 +456,7 @@ func TestListItemCandidatesFreshSnapshotArms(t *testing.T) {
 			read: func(int, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 				return itemReadResponse(positionedItems(1, 2), ""), nil
 			},
-			page: func(int, appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
-				return appwire.ThreadTurnsListResponse{}, errors.New("unexpected page call")
-			},
+			page: unexpectedPageCall,
 		}
 		source := newScriptedItemSource(t, daemon, "thread")
 		first, err := source.ReadItemCandidates(t.Context(), appwire.ThreadReadParams{Ref: "local:thread"})
@@ -525,12 +500,10 @@ func TestListItemCandidatesFreshSnapshotArms(t *testing.T) {
 			read: func(int, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 				return itemReadResponse(positionedItems(1, 2), inverseCursor(t, itemNativeIdentity, itemPosition(1))), nil
 			},
-			page: func(int, appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
-				return appwire.ThreadTurnsListResponse{}, errors.New("unexpected page call")
-			},
+			page: unexpectedPageCall,
 		}
 		source := newScriptedItemSource(t, daemon, "thread")
-		identity, _ := establishBoundedItemState(t, source, inverseCursor(t, itemNativeIdentity, itemPosition(1)))
+		identity, _ := establishBoundedItemState(t, source)
 		state, ok := source.itemSnapshots.get("local:thread")
 		if !ok {
 			t.Fatal("bounded read retained no paging state")
@@ -565,7 +538,7 @@ func TestListItemCandidatesNativeWindowArms(t *testing.T) {
 			page: page,
 		}
 		source := newScriptedItemSource(t, daemon, "thread")
-		_, cursor := establishBoundedItemState(t, source, olderCursor)
+		_, cursor := establishBoundedItemState(t, source)
 		return source, cursor
 	}
 
@@ -706,10 +679,6 @@ func TestLocalDaemonHiddenHistoryArms(t *testing.T) {
 		}
 		return source
 	}
-	readAgain := func(t *testing.T, source *LocalDaemonSource, ctx context.Context) (ItemCandidateResult, error) {
-		return source.ReadItemCandidates(ctx, appwire.ThreadReadParams{Ref: "local:thread"})
-	}
-
 	t.Run("continuation to the transcript start", func(t *testing.T) {
 		t.Parallel()
 		source := newHiddenHistoryCase(t, func(int, appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
@@ -854,10 +823,6 @@ func TestAdvanceItemSnapshotArms(t *testing.T) {
 		}
 		return source
 	}
-	readAgain := func(t *testing.T, source *LocalDaemonSource, ctx context.Context) (ItemCandidateResult, error) {
-		return source.ReadItemCandidates(ctx, appwire.ThreadReadParams{Ref: "local:thread"})
-	}
-
 	t.Run("authenticated bounded to complete transition", func(t *testing.T) {
 		t.Parallel()
 		source := newAdvanceCase(t, func(int, appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {

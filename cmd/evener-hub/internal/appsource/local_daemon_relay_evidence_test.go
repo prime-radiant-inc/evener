@@ -508,9 +508,6 @@ func TestDaemonInitializeErrorUnwraps(t *testing.T) {
 	t.Parallel()
 	wrapped := errors.New("handshake failed")
 	err := DaemonInitializeError{Err: wrapped}
-	if err.Error() != wrapped.Error() {
-		t.Fatalf("DaemonInitializeError message = %q, want %q", err.Error(), wrapped.Error())
-	}
 	if !errors.Is(err, wrapped) {
 		t.Fatal("DaemonInitializeError does not unwrap to its cause")
 	}

@@ -346,12 +346,8 @@ func TestCopyTreeExactRestoresReadOnlyDirectoryModes(t *testing.T) {
 		t.Fatal(err)
 	}
 	dst := filepath.Join(t.TempDir(), "copy")
-	t.Cleanup(func() {
-		_ = os.Chmod(filepath.Join(dst, "nested"), 0o755)
-		_ = os.Chmod(dst, 0o755)
-		_ = os.Chmod(nested, 0o755)
-		_ = os.Chmod(src, 0o755)
-	})
+	chmodRestore(t, src)
+	chmodRestore(t, dst)
 
 	if err := copyTreeExact(src, dst); err != nil {
 		t.Fatal(err)
@@ -437,12 +433,8 @@ func TestPublishStagedCrossDeviceRestoresReadOnlyDirectoryModes(t *testing.T) {
 		t.Fatal(err)
 	}
 	final := filepath.Join(t.TempDir(), "published")
-	t.Cleanup(func() {
-		_ = os.Chmod(filepath.Join(final, "nested"), 0o755)
-		_ = os.Chmod(final, 0o755)
-		_ = os.Chmod(nested, 0o755)
-		_ = os.Chmod(staging, 0o755)
-	})
+	chmodRestore(t, staging)
+	chmodRestore(t, final)
 	oldRename := installRename
 	t.Cleanup(func() { installRename = oldRename })
 	calls := 0

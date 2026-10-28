@@ -334,32 +334,12 @@ func TestShutdownHostOperationsWithoutWorkers(t *testing.T) {
 // names, so a row can pin the under-gate target re-resolution refusal.
 func mintDeployTokenWithTarget(t *testing.T, store *hostops.Store, m *hubHostManager, entry hostreg.Host, target string) hostops.Token {
 	t.Helper()
-	if live, ok := m.liveHost(entry.Name); ok {
-		entry = live
-	}
-	fingerprint, ok := m.hostTOMLFingerprint(entry.Name)
-	if !ok {
-		t.Fatal("the test hub.toml does not fingerprint")
-	}
-	token, err := store.MintTokenIfQuiescent(hostops.MintRequest{
-		Host:               entry.Name,
-		Generation:         entry.Generation,
-		IncarnationID:      entry.IncarnationID,
-		EntryHash:          hostEntryFingerprint(entry),
-		HubTOMLFingerprint: fingerprint,
-		FactsRevision:      testEntryFactDigest("facts"),
-		FactsCapturedAt:    time.Now().UTC(),
-		TargetPath:         target,
-		ControllerRevision: "v1.2.3",
-		RunningVersion:     "v0.9.0",
-		RunningHealthy:     true,
-		FreshnessBound:     hostops.DefaultFreshnessBound,
-		TTL:                hostops.DefaultTokenTTL,
-	}, store.Sequence())
-	if err != nil {
-		t.Fatalf("MintTokenIfQuiescent: %v", err)
-	}
-	return token
+	request := mintDeployTokenRequest(t, m, entry)
+	request.RunningVersion = "v0.9.0"
+	request.RunningHealthy = true
+	request.ControllerRevision = "v1.2.3"
+	request.TargetPath = target
+	return mintTokenOrFatal(t, store, request)
 }
 
 func TestOperationWireStateCoversTheClosedSet(t *testing.T) {

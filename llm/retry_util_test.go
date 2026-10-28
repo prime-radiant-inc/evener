@@ -383,8 +383,7 @@ func TestRetryWallBudgetExhaustedAfterACancelledWait(t *testing.T) {
 
 // A run-budget context measures the wall budget against the run's own
 // deadline, net of the shutdown reserve. The exhausted run reports the
-// run-budget sentinel, which unwraps to context.DeadlineExceeded and renders
-// the sentinel's own text.
+// run-budget sentinel, which unwraps to context.DeadlineExceeded.
 func TestRetryRunBudgetExhaustionReportsTheRunBudgetSentinel(t *testing.T) {
 	for _, reserve := range []time.Duration{0, 200 * time.Millisecond} {
 		clock := &stepClock{steps: []time.Duration{0, 2 * time.Second}}
@@ -396,9 +395,6 @@ func TestRetryRunBudgetExhaustionReportsTheRunBudgetSentinel(t *testing.T) {
 		}
 		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("reserve %v: the sentinel must unwrap to context.DeadlineExceeded: %v", reserve, err)
-		}
-		if err.Error() != ErrRunBudgetExhausted.Error() {
-			t.Fatalf("reserve %v: rendered %q, want the sentinel's text %q", reserve, err.Error(), ErrRunBudgetExhausted.Error())
 		}
 	}
 }

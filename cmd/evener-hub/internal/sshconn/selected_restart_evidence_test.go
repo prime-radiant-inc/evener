@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"strings"
 	"testing"
 	"time"
 
@@ -160,8 +159,5 @@ func TestRevalidateStoppedServiceListingFailure(t *testing.T) {
 	m := newTestManager(t, testRegistry(t, host), fr, Options{})
 	if err := m.revalidateStoppedService(t.Context(), host, selectedRestartFacts(), owner); !errors.Is(err, linkFailure) {
 		t.Fatalf("listing failure = %v", err)
-	}
-	if !strings.Contains("systemctl list-units", "systemctl") {
-		t.Fatal("fixture sanity")
 	}
 }
