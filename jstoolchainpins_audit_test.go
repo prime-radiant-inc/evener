@@ -50,7 +50,7 @@ func runToolchainPinsCheck(t *testing.T, files map[string]string) (bool, string)
 
 func pinnedToolchainTree() map[string]string {
 	return map[string]string{
-		"cmd/evener-hub/frontend/package.json":   `{"devDependencies":{"@biomejs/biome":"2.5.5","vitest":"4.1.11","typescript":"6.0.3","vite":"^8.1.5"},"dependencies":{"react":"19.2.3"}}`,
+		"cmd/evener-hub/frontend/package.json":   `{"devDependencies":{"@biomejs/biome":"2.5.5","vitest":"4.1.11","typescript":"6.0.3","vite":"^8.1.5"},"dependencies":{"react":"19.2.7"}}`,
 		"cmd/evener-hub/frontend/biome.jsonc":    `{"$schema":"https://biomejs.dev/schemas/2.5.5/schema.json"}`,
 		"mobile-native/package.json":             `{"devDependencies":{"@biomejs/biome":"2.5.5","vitest":"4.1.11","typescript":"6.0.3"},"dependencies":{"react":"19.2.3","zustand":"^5.0.15"}}`,
 		"mobile-native/biome.jsonc":              `{"$schema":"https://biomejs.dev/schemas/2.5.5/schema.json"}`,
@@ -75,7 +75,7 @@ func TestJSToolchainPinsRejectsSkewAndRanges(t *testing.T) {
 		{"caret range", "mobile-native/package.json", `{"devDependencies":{"@biomejs/biome":"^2.5.5"}}`, "mobile-native/package.json"},
 		{"tilde range", "appwire-client/typescript/package.json", `{"devDependencies":{"typescript":"~6.0.3"}}`, "appwire-client/typescript/package.json"},
 		{"different minor", "mobile-native/package.json", `{"devDependencies":{"vitest":"5.0.0"}}`, "vitest"},
-		{"different react", "cmd/evener-hub/frontend/package.json", `{"dependencies":{"react":"19.2.7"}}`, "react"},
+		{"react range", "cmd/evener-hub/frontend/package.json", `{"dependencies":{"react":"^19.2.7"}}`, "react"},
 		{"stale biome schema", "mobile-native/biome.jsonc", `{"$schema":"https://biomejs.dev/schemas/2.5.12/schema.json"}`, "mobile-native/biome.jsonc"},
 	}
 	for _, c := range cases {

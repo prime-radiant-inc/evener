@@ -176,13 +176,14 @@ symlinked `node_modules` in any of the three.
 
 ## Pinning the JavaScript toolchain
 
-Biome, Vitest (and `@vitest/coverage-v8`), TypeScript, React, `react-dom`,
-`@types/react` and `@types/react-dom` are pinned to exact versions, and every
-npm tree that declares one uses the same version, because the trees compile,
-format and test the same shared client sources. Bump a package in all trees in
-one change, and keep each `biome.jsonc` `$schema` URL on its tree's Biome
-version. `make lint-js-toolchain-pins` enforces this. React in the frontend
-follows the version `react-native` ships its renderer for in mobile-native.
+Biome, Vitest (and `@vitest/coverage-v8`), TypeScript, `@types/react` and
+`@types/react-dom` are pinned to exact versions, and every npm tree that
+declares one uses the same version, because the trees compile, format and test
+the same shared client sources. Bump such a package in all trees in one change,
+and keep each `biome.jsonc` `$schema` URL on its tree's Biome version. React
+and `react-dom` are exact in every tree but may differ between trees:
+mobile-native stays on the one version `react-native` ships its renderer for.
+`make lint-js-toolchain-pins` enforces this.
 
 ## Importing the AppWire TypeScript package
 

@@ -6,7 +6,10 @@
 // format and test the same shared client sources, so a caret range or a
 // different minor in one tree means the same file is checked by two toolchains.
 // For each package in SHARED_TOOLCHAIN, every tree that declares it must use an
-// exact version (no ^, ~ or other range) and all trees must agree. A biome.jsonc
+// exact version (no ^, ~ or other range) and all trees must agree. React and
+// react-dom are exact in every tree but may differ between trees: the web app
+// and the native app each run their own renderer (react-native ships one built
+// for a single React version), and the shared client is framework-free. A biome.jsonc
 // $schema URL must name the same Biome version as its tree's pin. Packages that
 // only one tree uses (vite, expo, mermaid, ...) are outside this policy.
 //
@@ -22,11 +25,10 @@ const SHARED_TOOLCHAIN = [
 	"@types/react",
 	"@types/react-dom",
 	"@vitest/coverage-v8",
-	"react",
-	"react-dom",
 	"typescript",
 	"vitest",
 ];
+const EXACT_PER_TREE = ["react", "react-dom"];
 const EXACT_VERSION = /^\d+\.\d+\.\d+$/;
 
 const args = process.argv.slice(2);
@@ -46,7 +48,7 @@ for (const tree of TREES) {
 	}
 	const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 	const deps = { ...manifest.dependencies, ...manifest.devDependencies };
-	for (const name of SHARED_TOOLCHAIN) {
+	for (const name of [...SHARED_TOOLCHAIN, ...EXACT_PER_TREE]) {
 		if (!(name in deps)) {
 			continue;
 		}
@@ -64,6 +66,9 @@ for (const tree of TREES) {
 	}
 }
 for (const [name, uses] of declared) {
+	if (EXACT_PER_TREE.includes(name)) {
+		continue;
+	}
 	if (new Set(uses.map((use) => use.version)).size > 1) {
 		failures.push(`${name} differs across trees: ${uses.map((use) => `${use.tree} ${use.version}`).join(", ")}`);
 	}

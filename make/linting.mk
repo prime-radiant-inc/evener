@@ -244,15 +244,15 @@ lint-package-imports:
 
 # lint-js-toolchain-pins keeps the shared JavaScript toolchain on one pin. The
 # frontend, mobile-native and the AppWire package compile, format and test the
-# same client sources, so a range or a different minor of Biome, Vitest,
-# TypeScript or React in one tree means two toolchains disagree about one file,
+# same client sources, so a range or a different minor of Biome, Vitest
+# or TypeScript in one tree means two toolchains disagree about one file,
 # and nothing else notices until a formatter or test run differs between them.
-## Fail if Biome, Vitest, TypeScript or React is not an exact version, differs
-## between the npm trees that declare it, or a biome.jsonc $schema names another Biome.
+## Fail if Biome, Vitest, TypeScript or React is not an exact version, if the
+## toolchain differs between npm trees (React may), or a biome.jsonc $schema names another Biome.
 ## proves: Every npm tree that declares @biomejs/biome, vitest,
 ##   @vitest/coverage-v8, typescript, react, react-dom, @types/react or
-##   @types/react-dom pins it to an exact version, all trees agree on it, and
-##   each biome.jsonc $schema URL names its tree's Biome version.
+##   @types/react-dom pins it to an exact version, all trees agree on all but
+##   react and react-dom, and each biome.jsonc $schema URL names its tree's Biome version.
 ## trigger: Required CI (via make lint); local pre-merge. Well under a second.
 ## requires: node.
 ## fails-when: A shared toolchain package uses a range, two trees pin

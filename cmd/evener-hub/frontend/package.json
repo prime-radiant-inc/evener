@@ -44,8 +44,8 @@
     "prosemirror-state": "^1.4.4",
     "prosemirror-view": "^1.42.3",
     "qrcode.react": "4.2.0",
-    "react": "19.2.3",
-    "react-dom": "19.2.3",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
     "tinykeys": "^4.0.0",
     "tweetnacl": "1.0.3",
     "zustand": "^5.0.14"
