@@ -25,7 +25,7 @@ import (
 // context manager with a nil client, so every
 // live session's ForceCompact runs BOTH layers back-to-back in one call —
 // Layer 1 (deterministic checkpoint, context_manager.go:442) unconditionally,
-// then Layer 2 (LLM summarization via summarizeWithLLMSteered,
+// then Layer 2 (LLM summarization via summarizeFold,
 // context_manager.go:456) on the already-checkpointed history. Layer 2's
 // prompt construction, its cm.client.Complete call, and its result-splice had zero property-test executions before
 // this test (issue #168 / kata dk86).

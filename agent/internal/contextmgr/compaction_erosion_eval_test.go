@@ -84,7 +84,7 @@ func TestCompactionErosion(t *testing.T) {
 	var rounds []erosionRoundResult
 	for r := 1; r <= erosionRounds; r++ {
 		hist := turnsFromText(t, carried)
-		out, err := cm.summarizeWithLLMSteered(ctx, hist, 2, "")
+		out, err := cm.summarizeFold(ctx, hist, 2, "", nil)
 		if err != nil {
 			t.Fatalf("round %d summarize: %v", r, err)
 		}
