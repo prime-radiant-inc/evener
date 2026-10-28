@@ -322,6 +322,15 @@ func TestOperationWorkerRestartExits(t *testing.T) {
 		}, exitWant{state: hostops.StateComplete, ok: true, progress: 8,
 			trace: []string{"attach1(explicit=true)", "restart", "attach2(explicit=false)", "handoff2"}}},
 		{"attach-first fails after publishing a channel", func(t *testing.T, tr *exitTrace) exitHub {
+			// Call 1 of HoldAs is the record promotion, call 2 the pre-attach
+			// restore, call 3 the post-attach restore: failing only call 3 leaves
+			// the attach published and the gate still held by the operation.
+			hub := restartExitHub(t, exitSeams{trace: tr, attachedAt: detachedUntilAttach(tr)}.build(t))
+			hub.m.cfg.gate = &nthHoldAsFailingGate{inner: hub.m.cfg.gate, failAt: 3}
+			return hub
+		}, exitWant{state: hostops.StateFailed, progress: 3,
+			trace: []string{"attach1(explicit=true)", "handoff1"}}},
+		{"attach-first fails before publishing a channel", func(t *testing.T, tr *exitTrace) exitHub {
 			return restartExitHub(t, exitSeams{trace: tr, attachedAt: detachedUntilAttach(tr), attachFailures: map[int]error{1: failed}}.build(t))
 		}, exitWant{state: hostops.StateFailed, progress: 3,
 			trace: []string{"attach1(explicit=true)"}}},
