@@ -791,7 +791,7 @@ interface EntryTranscriptRoute {
   // disk recertification against the lookup deadline.
   lastLocalOpenUsable?: boolean;
   // True when the most recent open's bounded lookup expired before the local
-  // read answered (openEntryTranscript's deadline branch): the recorded window
+  // read answered (openEntryTranscript's backstop branch): the recorded window
   // was never served nor refused, so a held pane's display can still be
   // body-suppressed with no demand cursor. Distinguishes that strand from the
   // fast recovery-needed answers a repository without a usable record returns.
@@ -838,10 +838,28 @@ let entryTranscriptOpeningSequence = 0;
 // deadline around, which is exactly the race this restore must not lose.
 let sessionCacheStalledOpenMs = 5000;
 
+// The ordinary open's storage-read backstop. The open's primary bound is
+// deterministic — the next tracked hydration for the ref settling, or an
+// ownership change — and this long clock exists only for the wedge where
+// nothing else can fire: a remount whose storage read never answers and no
+// hydration is in flight. It must stay far above any real IndexedDB latency
+// so a slow-but-answering cache is never mistaken for a wedged one.
+let sessionCacheOpenBackstopMs = 10000;
+
 /** @internal Lets tests shorten the stall bound without waiting real seconds. */
 export function setSessionCacheStalledOpenForTests(ms: number): void {
   sessionCacheStalledOpenMs = ms;
 }
+
+/** @internal Lets tests shorten the open backstop without waiting real seconds. */
+export function setSessionCacheOpenBackstopForTests(ms: number): void {
+  sessionCacheOpenBackstopMs = ms;
+}
+
+// The open-race sentinel for "a tracked hydration settled first": the source
+// owns the display's convergence from that settlement, so the open ends
+// superseded, not missed.
+const OPEN_SUPERSEDED_BY_SOURCE = { supersededBySource: true } as const;
 
 /** True while the entry fixture's reader is still restoring `ref` from disk. */
 export function isEntryTranscriptLocalOpening(ref: string): boolean {
@@ -991,21 +1009,42 @@ async function openEntryTranscript(ref: string, recovery = false): Promise<boole
         ])
       : await Promise.race([
           reader.openLocal(200),
+          // The open's primary deterministic bound, ordinary opens only: a
+          // recovery attempt is the source machinery itself and must not
+          // supersede its own re-open. When the next tracked hydration for
+          // this ref settles — published or failed, owned by the hydration
+          // lifecycle either way — the local wait is over: the source owns
+          // the display from there.
+          ...(recovery ? [] : [nextTrackedHydrationSettlement(ref).then(() => OPEN_SUPERSEDED_BY_SOURCE)]),
           new Promise<undefined>((resolve) => {
             timer = setTimeout(
               () => {
                 reader.dispose();
                 if (fixture.reader === reader) fixture.reader = undefined;
                 resolve(undefined);
-                // A recovery attempt outlasts the lookup deadline on purpose:
-                // a read that answers slower than the deadline but successfully
+                // The backstop is the clock of last resort: the primary bound
+                // is the source-settlement competitor above, and this timer
+                // exists for the wedge where nothing else can fire — storage
+                // that never answers and no hydration in flight. A recovery
+                // attempt keeps the longer stalled-open window on purpose: a
+                // read that answers slower than the window but successfully
                 // must be allowed to finish, or a consistently slow cache
                 // strands the pane behind a race it can only keep losing.
               },
-              recovery ? sessionCacheStalledOpenMs : SESSION_CACHE_LOOKUP_DEADLINE_MS,
+              recovery ? sessionCacheStalledOpenMs : sessionCacheOpenBackstopMs,
             );
           }),
         ]);
+    if (result && "supersededBySource" in result) {
+      // A tracked hydration settled while this open's local read was still
+      // pending. Nothing is stranded: the source lifecycle owns the display's
+      // convergence, so no stranding strand is armed and the reader stays
+      // attached — a held pane keeps its reader so the repository cannot
+      // reclaim the bodies behind the healed display. The still-running local
+      // read publishes late under the route's existing publication fences.
+      fixture.lastLocalOpenStatus = "superseded-by-source";
+      return true;
+    }
     if (!result) {
       // A stalled restore keeps the established view standing only while that
       // view still holds its required bodies: a foreground release already
@@ -1343,7 +1382,7 @@ function scheduleEntryOpeningRecovery(ref: string): void {
   // ref's convergence — but the recovery chain's span is not a hydration and
   // must survive every one.
   openingRecoveryCompletions.set(ref, recovery);
-  trackedHydrationCompletions.set(ref, recovery);
+  registerHydrationCompletion(ref, recovery);
   void recovery.then(() => {
     if (pendingOpeningRecoveries.get(ref) === route) pendingOpeningRecoveries.delete(ref);
     if (openingRecoveryCompletions.get(ref) === recovery) openingRecoveryCompletions.delete(ref);
@@ -1711,6 +1750,61 @@ function newestItemPosition(turns: TurnModel[]): ThreadItemPosition | undefined 
 }
 
 const trackedHydrationCompletions = new Map<string, Promise<void>>();
+
+// Waiters for "the next tracked hydration for this ref settled" — the open
+// path's primary deterministic bound. A waiter that starts while a completion
+// is already registered attaches to it; otherwise it parks until the next
+// registration wakes it. Settlement means settled-either-way: a published
+// heal and a failed read both end the local wait, because from either
+// outcome the source lifecycle owns the display's convergence.
+const hydrationSettlementWaiters = new Map<string, Set<() => void>>();
+
+// Registrations that already settled. A waiter must not attach to one: the
+// claim flow's open starts immediately after its own hydration settles, and
+// attaching there would end the open superseded before it ever reads storage.
+// The marker is written by the settlement itself, so the only registrations a
+// waiter can attach to are ones that were still pending when it looked.
+const settledHydrationRegistrations = new WeakSet<Promise<void>>();
+
+function markHydrationSettled(completion: Promise<void>): void {
+  void completion.then(
+    () => settledHydrationRegistrations.add(completion),
+    () => settledHydrationRegistrations.add(completion),
+  );
+}
+
+function nextTrackedHydrationSettlement(ref: string): Promise<void> {
+  const current = trackedHydrationCompletions.get(ref);
+  if (current && !settledHydrationRegistrations.has(current)) {
+    return current.then(
+      () => undefined,
+      () => undefined,
+    );
+  }
+  return new Promise<void>((resolve) => {
+    let waiters = hydrationSettlementWaiters.get(ref);
+    if (!waiters) {
+      waiters = new Set();
+      hydrationSettlementWaiters.set(ref, waiters);
+    }
+    waiters.add(() => resolve());
+  });
+}
+
+function registerHydrationCompletion(ref: string, completion: Promise<void>): void {
+  trackedHydrationCompletions.set(ref, completion);
+  markHydrationSettled(completion);
+  const waiters = hydrationSettlementWaiters.get(ref);
+  if (!waiters) return;
+  hydrationSettlementWaiters.delete(ref);
+  for (const wake of waiters) {
+    void completion.then(
+      () => wake(),
+      () => wake(),
+    );
+  }
+}
+
 // The identity a pending hydration accepts frames for. Both facts come from an
 // authority, never from the stream: the routing is seeded from the published
 // model when the read starts and re-seeded from the authoritative snapshot at
@@ -6726,7 +6820,7 @@ async function refreshTrackedThreadNow(
           () => undefined,
           () => undefined,
         );
-    trackedHydrationCompletions.set(ref, completion);
+    registerHydrationCompletion(ref, completion);
     void completion.then(() => {
       if (trackedHydrationCompletions.get(ref) === completion) trackedHydrationCompletions.delete(ref);
     });

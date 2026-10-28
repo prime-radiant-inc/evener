@@ -14,8 +14,11 @@ export const ENTRY_COVERAGE_BOUNDARY_SNAPSHOT_INDEX = "historyKey_boundary_snaps
 // it lives in ENTRY_META_STORE keyed by this historyKey. It is not a history row
 // and every enumeration skips it by key comparison.
 export const CLEAR_EPOCH_KEY = "__clearEpoch";
-// The lookup's own short deadline (the spec's load seam), far below the
-// outbox's 10-second storage timeout: no pane ever waits on storage longer.
+// The repository's own short deadline for bounded internal reads: paging
+// continuation decisions, the cached shell install, and durable authority
+// reads, where a slow answer falls back to the server or fails closed. The
+// pane's foreground open no longer uses it - that open races the source's
+// settlement with a long storage backstop instead.
 export const SESSION_CACHE_LOOKUP_DEADLINE_MS = 250;
 // The legacy stores dropped at the 6d schema bump. Named here only so the
 // upgrade can discard them.

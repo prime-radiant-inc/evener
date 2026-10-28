@@ -41,6 +41,7 @@ import {
   resetThreadsStoreForTests,
   setCacheChannelFactoryForTests,
   setProductionEntryCacheForTests,
+  setSessionCacheOpenBackstopForTests,
   setSessionCacheStalledOpenForTests,
   settleBackgroundTranscriptsForTests,
   settleEntryTranscriptForTests,
@@ -1400,6 +1401,8 @@ it("existing background opening deadline releases paging hold and fences a late 
     requestGeneration: params.requestGeneration,
   }));
   let settled = false;
+
+  setSessionCacheOpenBackstopForTests(40);
   const opening = threadsStore
     .getState()
     .ensureThread("local:a")
@@ -1428,6 +1431,7 @@ it("existing background opening deadline releases paging hold and fences a late 
         .map((item) => item.text),
     ).toEqual(["recovered"]);
   } finally {
+    setSessionCacheOpenBackstopForTests(10000);
     released.resolve();
     await opening;
     background.release();
@@ -2349,8 +2353,7 @@ async function convergesAfterMissedLookups(misses: number): Promise<void> {
   const storage = cache();
   // Withhold the first `misses` window reads once armed, so every one of the
   // foreground acquisition's bounded local openings (and, past two, the
-  // recovery's own bounded re-open) misses its 250ms lookup deadline
-  // deterministically. Later reads run normally, so a scheduled recovery can
+  // recovery's own bounded re-open) misses its open bound deterministically. Later reads run normally, so a scheduled recovery can
   // restore the display without any timing luck.
   let withheldWindowReads = 0;
   const realGetLatestWindow = storage.getLatestWindow.bind(storage);
@@ -2392,9 +2395,10 @@ async function convergesAfterMissedLookups(misses: number): Promise<void> {
 
   withheldWindowReads = misses;
   // The recovery's attempts race the stalled-open window, so pin it to the
-  // lookup deadline's cadence: each withheld read misses as fast here as the
+  // open backstop's cadence: each withheld read misses as fast here as the
   // acquisition's own opens do.
   setSessionCacheStalledOpenForTests(250);
+  setSessionCacheOpenBackstopForTests(40);
   try {
     await threadsStore.getState().ensureThread(ref);
     // The foreground acquisition returns with the display still body-suppressed;
@@ -2406,6 +2410,7 @@ async function convergesAfterMissedLookups(misses: number): Promise<void> {
     expect(threadsStore.getState().threads.get(ref)?.olderCursor).toBeDefined();
   } finally {
     setSessionCacheStalledOpenForTests(5000);
+    setSessionCacheOpenBackstopForTests(10000);
     threadsStore.getState().releaseThread(ref);
     await lease.release();
   }
@@ -2530,6 +2535,7 @@ it("a foreground opening whose storage read fails transiently still converges th
   withheldWindowReads = 2;
   failingWindowReads = 1;
   setSessionCacheStalledOpenForTests(250);
+  setSessionCacheOpenBackstopForTests(40);
   try {
     await threadsStore.getState().ensureThread(ref);
     // The refusal must not end recovery for good: the pane is still
@@ -2546,6 +2552,7 @@ it("a foreground opening whose storage read fails transiently still converges th
     expect(bodies()).toEqual(Array.from({ length: 200 }, (_, index) => `row-${index + 26}`));
     expect(threadsStore.getState().threads.get(ref)?.olderCursor).toBeDefined();
   } finally {
+    setSessionCacheOpenBackstopForTests(10000);
     setSessionCacheStalledOpenForTests(5000);
     threadsStore.getState().releaseThread(ref);
     await lease.release();
@@ -2591,6 +2598,7 @@ it("a foreground opening whose storage reads never resolve hands to the source a
   };
   withholdAll = true;
   setSessionCacheStalledOpenForTests(250);
+  setSessionCacheOpenBackstopForTests(40);
   try {
     await threadsStore.getState().ensureThread(ref);
     const readsBefore = client.calls.filter((call) => call.method === "thread/read").length;
@@ -2603,6 +2611,7 @@ it("a foreground opening whose storage reads never resolve hands to the source a
     expect(settledWithinBound).toBe(true);
     expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(readsBefore + 1);
   } finally {
+    setSessionCacheOpenBackstopForTests(10000);
     setSessionCacheStalledOpenForTests(5000);
     threadsStore.getState().releaseThread(ref);
     await lease.release();
@@ -2668,6 +2677,7 @@ it("a settle begun while a refused recovery's re-open is still running awaits it
   withheldWindowReads = 2;
   failingWindowReads = 1;
   holdReopenRead = true;
+  setSessionCacheOpenBackstopForTests(40);
   try {
     await threadsStore.getState().ensureThread(ref);
     await reopenEntered.promise;
@@ -2688,6 +2698,7 @@ it("a settle begun while a refused recovery's re-open is still running awaits it
     expect(bodies()).toEqual(Array.from({ length: 200 }, (_, index) => `row-${index + 26}`));
     expect(threadsStore.getState().threads.get(ref)?.olderCursor).toBeDefined();
   } finally {
+    setSessionCacheOpenBackstopForTests(10000);
     threadsStore.getState().releaseThread(ref);
     await lease.release();
   }
@@ -2761,6 +2772,7 @@ it("a settle begun while a refused recovery's source read is held spans the re-o
   withheldWindowReads = 2;
   failingWindowReads = 1;
   holdReopenRead = true;
+  setSessionCacheOpenBackstopForTests(40);
   try {
     await threadsStore.getState().ensureThread(ref);
     await wireReadEntered.promise;
@@ -2785,6 +2797,7 @@ it("a settle begun while a refused recovery's source read is held spans the re-o
     expect(bodies()).toEqual(Array.from({ length: 200 }, (_, index) => `row-${index + 26}`));
     expect(threadsStore.getState().threads.get(ref)?.olderCursor).toBeDefined();
   } finally {
+    setSessionCacheOpenBackstopForTests(10000);
     threadsStore.getState().releaseThread(ref);
     await lease.release();
   }
@@ -2858,6 +2871,7 @@ it("waiters begun while a recovery's parked read is held still wait through a co
   });
   withheldWindowReads = 2;
   holdChainRead = true;
+  setSessionCacheOpenBackstopForTests(40);
   try {
     await threadsStore.getState().ensureThread(ref);
     await chainReadEntered.promise;
@@ -2897,7 +2911,225 @@ it("waiters begun while a recovery's parked read is held still wait through a co
     expect(bodies()).toContain("row-26");
     expect(bodies()).toContain("row-225");
   } finally {
+    setSessionCacheOpenBackstopForTests(10000);
     chainReadReleased.resolve();
+    threadsStore.getState().releaseThread(ref);
+    await lease.release();
+  }
+});
+
+it("a source hydration settling mid-lookup supersedes the open without arming the strand", async () => {
+  const storage = cache();
+  const realGetLatestWindow = storage.getLatestWindow.bind(storage);
+  setProductionEntryCacheForTests(storage);
+  const ref = "local:a";
+  const read = response(
+    ref,
+    Array.from({ length: 225 }, (_, index) => turn(`row-${index + 1}`, index + 1)),
+  );
+  read.snapshot = { incarnation: "inc-a", length: 225 };
+  const client = connect(read);
+  const lease = acquireBackgroundThread(ref);
+  await lease.ready;
+  await settleEntryTranscriptForTests(ref);
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect(await storage.getLatest(key, 300)).toHaveLength(225);
+  const bodies = () =>
+    threadsStore
+      .getState()
+      .threads.get(ref)
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.text)
+      .filter(Boolean);
+  expect(bodies()).toEqual([]);
+
+  // The pane's open parks on a held storage read. A tracked hydration then
+  // settles for this ref mid-lookup (a resync with a generation-current
+  // echo): from that settlement the source owns the display, so the open
+  // must end superseded by it — not ride out a clock expiry, mark the
+  // stranding strand, and churn a fresh claim plus wire read behind the heal
+  // that already happened.
+  let holding = false;
+  let storageReads = 0;
+  const localReadEntered = deferred<void>();
+  const localReadReleased = deferred<void>();
+  (storage as unknown as { getLatestWindow: unknown }).getLatestWindow = (...args: unknown[]) => {
+    storageReads += 1;
+    if (holding) {
+      holding = false;
+      localReadEntered.resolve();
+      return localReadReleased.promise.then(() =>
+        realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>)),
+      ) as ReturnType<typeof realGetLatestWindow>;
+    }
+    return realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>)) as ReturnType<
+      typeof realGetLatestWindow
+    >;
+  };
+  let wireReads = 0;
+  let echoFrom = Number.POSITIVE_INFINITY;
+  client.on("thread/read", (params) => {
+    wireReads += 1;
+    if (wireReads >= echoFrom) return { ...read, requestGeneration: params.requestGeneration };
+    return read;
+  });
+  holding = true;
+  const opened = threadsStore.getState().ensureThread(ref);
+  await localReadEntered.promise;
+  echoFrom = wireReads + 1;
+  client.emitNotification({
+    method: "evener/thread/resync",
+    params: { ref, threadId: "thread-a" },
+  });
+  await vi.waitFor(() => {
+    expect((bodies() ?? []).length).toBeGreaterThan(0);
+  });
+  const wireReadsAfterHeal = wireReads;
+  const storageReadsAfterHeal = storageReads;
+  // The 400ms hold spans the retired lookup deadline, so a ride-it-out open
+  // (the pre-refactor behavior) expires here, marks the strand, and issues
+  // the redundant claim read the assertions below count.
+  await new Promise((resolve) => {
+    setTimeout(resolve, 400);
+  });
+  localReadReleased.resolve();
+  await opened;
+  await drainSettleSteps();
+  expect(wireReads).toBe(wireReadsAfterHeal);
+  expect(storageReads).toBe(storageReadsAfterHeal);
+  expect(bodies()).toContain("row-26");
+  expect(bodies()).toContain("row-225");
+  await threadsStore.getState().releaseThread(ref);
+  await lease.release();
+});
+
+it("an ordinary open outlives the retired lookup deadline while the backstop says so", async () => {
+  const storage = cache();
+  const realGetLatestWindow = storage.getLatestWindow.bind(storage);
+  setProductionEntryCacheForTests(storage);
+  const ref = "local:a";
+  const read = response(
+    ref,
+    Array.from({ length: 225 }, (_, index) => turn(`row-${index + 1}`, index + 1)),
+  );
+  read.snapshot = { incarnation: "inc-a", length: 225 };
+  const client = connect(read);
+  const lease = acquireBackgroundThread(ref);
+  await lease.ready;
+  await settleEntryTranscriptForTests(ref);
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect(await storage.getLatest(key, 300)).toHaveLength(225);
+  const bodies = () =>
+    threadsStore
+      .getState()
+      .threads.get(ref)
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.text)
+      .filter(Boolean);
+  expect(bodies()).toEqual([]);
+
+  // The open's give-up bound is the backstop seam, not the retired 250ms
+  // lookup deadline: with the backstop pinned past a second, a held read is
+  // still being awaited well beyond where the deadline used to cut it off.
+  let wireReads = 0;
+  let holding = false;
+  const localReadEntered = deferred<void>();
+  const localReadReleased = deferred<void>();
+  (storage as unknown as { getLatestWindow: unknown }).getLatestWindow = (...args: unknown[]) => {
+    if (holding) {
+      holding = false;
+      localReadEntered.resolve();
+      return localReadReleased.promise.then(() =>
+        realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>)),
+      ) as ReturnType<typeof realGetLatestWindow>;
+    }
+    return realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>)) as ReturnType<
+      typeof realGetLatestWindow
+    >;
+  };
+  client.on("thread/read", () => {
+    wireReads += 1;
+    return read;
+  });
+  setSessionCacheOpenBackstopForTests(1500);
+  holding = true;
+  const opened = threadsStore.getState().ensureThread(ref);
+  try {
+    await localReadEntered.promise;
+    await new Promise((resolve) => {
+      setTimeout(resolve, 400);
+    });
+    // Still opening at 400ms: the deadline used to abandon the read at
+    // 250ms, the backstop keeps waiting because storage has not answered.
+    expect(threadsStore.getState().localOpenings.has(ref)).toBe(true);
+    expect(wireReads).toBe(0);
+    localReadReleased.resolve();
+    await opened;
+    await drainSettleSteps();
+    // The local read answered within the backstop, so the open converges
+    // from it and the source is never asked.
+    expect(wireReads).toBe(0);
+    expect(bodies()).toContain("row-26");
+    expect(bodies()).toContain("row-225");
+  } finally {
+    setSessionCacheOpenBackstopForTests(10000);
+    threadsStore.getState().releaseThread(ref);
+    await lease.release();
+  }
+});
+
+it("a wedged storage read abandons the open at the backstop and hands the pane to the source", async () => {
+  const storage = cache();
+  const realGetLatestWindow = storage.getLatestWindow.bind(storage);
+  setProductionEntryCacheForTests(storage);
+  const ref = "local:a";
+  const read = response(
+    ref,
+    Array.from({ length: 225 }, (_, index) => turn(`row-${index + 1}`, index + 1)),
+  );
+  read.snapshot = { incarnation: "inc-a", length: 225 };
+  const client = connect(read);
+  const lease = acquireBackgroundThread(ref);
+  await lease.ready;
+  await settleEntryTranscriptForTests(ref);
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect(await storage.getLatest(key, 300)).toHaveLength(225);
+  const bodies = () =>
+    threadsStore
+      .getState()
+      .threads.get(ref)
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.text)
+      .filter(Boolean);
+  expect(bodies()).toEqual([]);
+
+  // Contract pin for the abandon path: storage never answers, no other event
+  // can fire, and the open gives up exactly when the backstop says so — the
+  // acquisition then falls through to the source and the pane converges from
+  // the wire without the local read ever answering.
+  let wireReads = 0;
+  (storage as unknown as { getLatestWindow: unknown }).getLatestWindow = (..._args: unknown[]) =>
+    new Promise(() => {}) as ReturnType<typeof realGetLatestWindow>;
+  client.on("thread/read", (params) => {
+    wireReads += 1;
+    return { ...read, requestGeneration: params.requestGeneration };
+  });
+  setSessionCacheOpenBackstopForTests(40);
+  setSessionCacheStalledOpenForTests(250);
+  try {
+    const opened = threadsStore.getState().ensureThread(ref);
+    await vi.waitFor(() => {
+      expect(threadsStore.getState().localOpenings.has(ref)).toBe(false);
+    });
+    expect(wireReads).toBeGreaterThan(0);
+    await vi.waitFor(() => {
+      expect((bodies() ?? []).length).toBeGreaterThan(0);
+    });
+    await opened;
+    expect(bodies()).toContain("row-26");
+  } finally {
+    setSessionCacheOpenBackstopForTests(10000);
+    setSessionCacheStalledOpenForTests(5000);
     threadsStore.getState().releaseThread(ref);
     await lease.release();
   }
@@ -2971,6 +3203,7 @@ it("a failed concurrent refresh while a recovery's read is held does not settle 
   });
   withheldWindowReads = 2;
   holdChainRead = true;
+  setSessionCacheOpenBackstopForTests(40);
   try {
     await threadsStore.getState().ensureThread(ref);
     await chainReadEntered.promise;
@@ -3003,6 +3236,7 @@ it("a failed concurrent refresh while a recovery's read is held does not settle 
     expect(bodies()).toContain("row-26");
     expect(bodies()).toContain("row-225");
   } finally {
+    setSessionCacheOpenBackstopForTests(10000);
     chainReadReleased.resolve();
     threadsStore.getState().releaseThread(ref);
     await lease.release();
@@ -3057,6 +3291,7 @@ it("a refused recovery whose source read fails leaves the re-open to the ordinar
   withheldWindowReads = 2;
   failingWindowReads = 1;
   setSessionCacheStalledOpenForTests(250);
+  setSessionCacheOpenBackstopForTests(40);
   try {
     await threadsStore.getState().ensureThread(ref);
     const settledWithinBound = await Promise.race([
@@ -3068,6 +3303,7 @@ it("a refused recovery whose source read fails leaves the re-open to the ordinar
     expect(settledWithinBound).toBe(true);
     expect(laterWindowReads).toBe(0);
   } finally {
+    setSessionCacheOpenBackstopForTests(10000);
     setSessionCacheStalledOpenForTests(5000);
     threadsStore.getState().releaseThread(ref);
     await lease.release();
@@ -3124,6 +3360,7 @@ it("a reconnect heal racing a pending recovery read still converges the display"
   withheldWindowReads = 2;
   holdChainRead = true;
   setSessionCacheStalledOpenForTests(250);
+  setSessionCacheOpenBackstopForTests(40);
   try {
     await threadsStore.getState().ensureThread(ref);
     await chainReadEntered.promise;
@@ -3163,6 +3400,7 @@ it("a reconnect heal racing a pending recovery read still converges the display"
     await vi.waitFor(() => expect(texts()).toContain("row-26"));
     expect(texts()).toContain("row-225");
   } finally {
+    setSessionCacheOpenBackstopForTests(10000);
     setSessionCacheStalledOpenForTests(5000);
     chainReadReleased.resolve();
     threadsStore.getState().releaseThread(ref);
