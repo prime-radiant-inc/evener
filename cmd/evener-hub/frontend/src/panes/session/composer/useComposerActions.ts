@@ -72,6 +72,7 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     activeRecoveryId,
     recoveryActivating,
     recoveryOperationBusy,
+    builtinOperationBusy,
     freshRecoveryRef,
   } = useSyncExternalStore(source.subscribe, source.getSnapshot, source.getSnapshot);
   const {
@@ -125,7 +126,8 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
       submittingRef.current ||
       threadsStore.getState().mutationWriteStalled ||
       snapshot.recoveryActivating ||
-      snapshot.recoveryOperationBusy
+      snapshot.recoveryOperationBusy ||
+      snapshot.builtinOperationBusy
     );
   }
   const busy =
@@ -134,7 +136,8 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     submitting ||
     mutationWriteStalled ||
     recoveryActivating ||
-    recoveryOperationBusy;
+    recoveryOperationBusy ||
+    builtinOperationBusy;
   const availability = model
     ? composerAvailability(model, ownPendingSend(pendingSendEntries), recoveryRequired, {
         uncertainMessages: blockedMutations.length > 0,

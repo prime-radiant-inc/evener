@@ -1,5 +1,4 @@
 import { type BuiltinMatch, matchBuiltinInvocation } from "@evener/appwire-client";
-import { useRef, useState } from "react";
 import { type PaletteRunContext, type ScopedCommand, sessionBuiltinCommands } from "../../../shell/palette/commands";
 import { liveThreadModel, pressLocalRecoveryFenced } from "../../../stores/liveControls";
 import { useToasts } from "../../../widgets";
@@ -12,9 +11,7 @@ import { useComposerActions } from "./useComposerActions";
 export function useBuiltinSubmission(source: ComposerSourceState, paneId?: string) {
   const ref = source.ref;
   const toasts = useToasts();
-  const [builtinBusy, setBuiltinBusy] = useState(false);
-  const builtinBusyRef = useRef(false);
-  const actions = useComposerActions(source, builtinBusy);
+  const actions = useComposerActions(source);
   const sessionBuiltins = sessionBuiltinCommands({ sessionRef: ref, onPage: "session", sessionPaneId: paneId ?? null });
 
   async function run(match: BuiltinMatch<ScopedCommand>): Promise<void> {
@@ -42,8 +39,8 @@ export function useBuiltinSubmission(source: ComposerSourceState, paneId?: strin
     const submitted = source.getSnapshot();
     const submittedRevision = source.continuity.draftEditRevisionRef.current;
     const submittedDraftRevision = readDraftRevision(ref);
-    builtinBusyRef.current = true;
-    setBuiltinBusy(true);
+    const release = source.tryAcquireBuiltinOperation();
+    if (!release) return;
     const ctx: PaletteRunContext = {
       sessionRef: ref,
       sessionPaneId: paneId ?? null,
@@ -52,17 +49,19 @@ export function useBuiltinSubmission(source: ComposerSourceState, paneId?: strin
       // App-global palette commands never belong to sessionBuiltins.
       ui: { clearToSearch: () => {}, showHelp: () => {} },
     };
-    const outcome = await runBuiltinCommand(match, ctx);
-    builtinBusyRef.current = false;
-    setBuiltinBusy(false);
-    if (outcome.ok) {
-      source.clearIfUnchanged(
-        submitted.text,
-        submittedRevision,
-        submittedDraftRevision,
-        submitted.skillNames,
-        submitted.commandNames,
-      );
+    try {
+      const outcome = await runBuiltinCommand(match, ctx);
+      if (outcome.ok) {
+        source.clearIfUnchanged(
+          submitted.text,
+          submittedRevision,
+          submittedDraftRevision,
+          submitted.skillNames,
+          submitted.commandNames,
+        );
+      }
+    } finally {
+      release();
     }
   }
 
@@ -74,7 +73,7 @@ export function useBuiltinSubmission(source: ComposerSourceState, paneId?: strin
     }
     const match = matchBuiltinInvocation(draft.text, sessionBuiltins);
     if (!match) return false;
-    if (!source.alive || builtinBusyRef.current || actions.busy) return true;
+    if (!source.alive || draft.builtinOperationBusy || actions.busy) return true;
     void run(match);
     return true;
   }
