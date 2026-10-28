@@ -137,3 +137,14 @@ func TestEncodedBodyRejectsExactCredentialExcludedContent(t *testing.T) {
 		t.Fatalf("DecodeBody() = %v, want nil omitted content", got)
 	}
 }
+
+// A body marked credential-excluded must carry nothing: content that survived
+// the exclusion is a contradiction the decode refuses.
+func TestDecodeBodyRejectsContentBehindCredentialExclusion(t *testing.T) {
+	if _, err := DecodeBody(EncodedBody{Data: "leftover"}); err == nil {
+		t.Fatal("a credential-excluded body with content decoded cleanly")
+	}
+	if _, err := DecodeBody(EncodedBody{CredentialValuesExcluded: true}); err != nil {
+		t.Fatalf("a content-free excluded body must decode to nil: %v", err)
+	}
+}

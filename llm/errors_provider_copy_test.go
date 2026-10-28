@@ -188,11 +188,24 @@ func TestEveryProviderAttributedErrorCopies(t *testing.T) {
 		ErrorFromHTTPStatus("p", 400, "content policy violation", raw, nil),
 		ErrorFromHTTPStatus("p", 400, "context length exceeded", raw, nil),
 		ErrorFromHTTPStatus("p", 429, "quota exceeded", raw, nil),
+		// The message rows that actually construct the message-classified
+		// types: a 400 naming a content filter and a 422 naming billing.
+		ErrorFromHTTPStatus("p", 400, "content filter triggered", raw, nil),
+		ErrorFromHTTPStatus("p", 422, "billing limit reached", raw, nil),
 		NewStreamError("p", "m", nil),
 		NewUnsupportedEndpointError("p", "m", nil),
 		NewUnsupportedToolChoiceError("p", "auto"),
 		NewRequestTimeoutError("p", "m", nil),
 		NewAuthenticationError("p", "m", nil),
+		newResponseHeaderTimeoutError("p", "m", nil),
+		// The non-HTTP types whose public constructors set no provider
+		// (NewAbortError, NewNoObjectGeneratedError; InvalidToolCallError has
+		// none at all) are constructed directly with one, because the copy
+		// contract RewriteErrorProvider offers is defined for any attributed
+		// value and these methods must not be the ones that silently skip.
+		&AbortError{nonHTTPBaseError{provider: "p", message: "canceled"}},
+		&InvalidToolCallError{nonHTTPBaseError{provider: "p", message: "bad tool call"}},
+		&NoObjectGeneratedError{nonHTTPBaseError: nonHTTPBaseError{provider: "p", message: "no object"}, RawText: "raw"},
 	)
 	for _, err := range cases {
 		if providerOf(err) == "" {

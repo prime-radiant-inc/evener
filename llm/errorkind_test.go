@@ -66,3 +66,28 @@ func TestKind_NilAndForeign(t *testing.T) {
 		t.Errorf("Kind(plain) = %v, want %v", got, llm.KindUnknown)
 	}
 }
+
+// TestProviderFailureSummary pins each rendering contract of the sanitized
+// failure summary surfaces log instead of provider text. The fixed strings ARE
+// the contract of this rendering function, not incidental copy: each arm must
+// keep producing exactly its documented shape.
+func TestProviderFailureSummary(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"nil error reports unknown", nil, "unknown"},
+		{"foreign error reports unknown", errors.New("totally unrelated"), "unknown"},
+		{"sign-in sentinel renders its fixed label", &llm.ConfigurationError{Message: "please sign in again", Cause: llm.ErrSignInRequired}, "sign-in required"},
+		{"HTTP failure renders status and kind", llm.ErrorFromHTTPStatus("openai", 401, "credential fragment in the body text", nil, nil), "HTTP 401 (authentication)"},
+		{"non-HTTP failure renders the bare kind", llm.NewRequestTimeoutError("openai", "deadline exceeded", nil), "timeout"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := llm.ProviderFailureSummary(tc.err); got != tc.want {
+				t.Fatalf("ProviderFailureSummary = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

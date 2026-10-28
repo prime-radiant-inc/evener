@@ -34,6 +34,16 @@ func TestProviderIdleNonStreamingBody(t *testing.T) {
 		if err == nil {
 			t.Error("stalled nonstreaming body returned no idle error")
 		}
+		// The idle failure reports itself as a timeout through the Timeout
+		// method transports consult — the type deliberately does not implement
+		// net.Error's Temporary, so the narrow interface is the contract.
+		var timeouts interface{ Timeout() bool }
+		if !errors.As(err, &timeouts) || !timeouts.Timeout() {
+			t.Errorf("idle error must report Timeout() true: %v", err)
+		}
+		if !errors.Is(err, ErrResponseIdleTimeout) {
+			t.Errorf("idle error = %v, want ErrResponseIdleTimeout identity", err)
+		}
 		if elapsed := time.Since(start); elapsed != time.Minute {
 			t.Errorf("idle fired after %v, want 1m", elapsed)
 		}
@@ -136,5 +146,26 @@ func TestProviderIdleStaleCallbackCannotExpireProgress(t *testing.T) {
 		if _, err := b.Read(buf[:]); err != nil {
 			t.Fatalf("active read failed: %v", err)
 		}
+	})
+}
+
+// A timer callback that lands after the body stopped (EOF read or Close) must
+// be ignored: the stop revoked the idle monitor, so a late expire neither
+// closes the underlying body nor marks it expired.
+func TestProviderIdleStoppedBodyIgnoresALateExpire(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		inner := &idleCloseCounter{Reader: strings.NewReader("x")}
+		b := newIdleResponseBody(context.Background(), inner, time.Minute, nil)
+		if _, err := io.ReadAll(b); err != nil {
+			t.Fatal(err)
+		}
+		b.expire()
+		if inner.closes != 0 {
+			t.Fatal("a late expire closed a stopped body")
+		}
+		if b.expired {
+			t.Fatal("a late expire marked a stopped body expired")
+		}
+		b.Close()
 	})
 }
