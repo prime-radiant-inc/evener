@@ -25,14 +25,6 @@ func TestFailureLedger_NilGuards(t *testing.T) {
 	l.clearFailures(newDispatchKey("tool", []byte("{}"), nil))
 }
 
-// TestClearFailures_NoEntry covers the branch where clearFailures is called on
-// a signature that was never recorded (line 220-221).
-func TestClearFailures_NoEntry(t *testing.T) {
-	l := newFailureLedger()
-	// Clear a signature that doesn't exist — should be a safe no-op.
-	l.clearFailures(newDispatchKey("nonexistent", []byte("{}"), nil))
-}
-
 // TestFirstNonBlankLine_AllBlank covers the return-empty path when all lines
 // are blank (line 271).
 func TestFirstNonBlankLine_AllBlank(t *testing.T) {

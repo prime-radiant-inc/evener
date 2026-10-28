@@ -83,10 +83,3 @@ func TestOutputStoreWindowStatError(t *testing.T) {
 		t.Fatalf("expected stat error, got %v", err)
 	}
 }
-
-// TestOutputStoreWindowOpenError covers the open error path in Window: when the output file exists for stat but cannot be opened.
-// This is hard to trigger with a real filesystem; the fault FS test above
-// covers it instead. This test documents the path.
-func TestOutputStoreWindowOpenError(t *testing.T) {
-	t.Skip("covered by TestOutputStoreWindowFaultArms via fault FS injection")
-}

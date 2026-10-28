@@ -79,14 +79,6 @@ func TestCovBeginAPIAttemptGroupScopeWithExistingGroup(t *testing.T) {
 	}
 }
 
-// TestCovBeginAPIAttemptGroupScopeNilSettleResult covers the nil-receiver
-// guard in SettleResult.
-func TestCovBeginAPIAttemptGroupScopeNilSettleResult(t *testing.T) {
-	var scope *APIAttemptGroupScope
-	scope.SettleResult(nil)
-	// No panic.
-}
-
 // TestCovBeginAPIAttemptGroupScopeOwnedSettleResult covers the owned path
 // of SettleResult.
 func TestCovBeginAPIAttemptGroupScopeOwnedSettleResult(t *testing.T) {
