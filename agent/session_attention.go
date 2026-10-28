@@ -945,13 +945,13 @@ func (s *Session) coversPresentedAttention(ctx context.Context) bool {
 // attempt, a content-filter retry whose compaction then folds the steering
 // turn away) presented nothing the design may consume. Only a turn that
 // coversPresentedAttention stages.
-func (s *Session) stagePresentedAttentionCoverage(ctx context.Context, presentedTurns []schema.Turn) {
+func (s *Session) stagePresentedAttentionCoverage(ctx context.Context, presentedTurns []schema.Turn, verifier ...func(*llm.ToolResultData) bool) {
 	if !s.coversPresentedAttention(ctx) {
 		return
 	}
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
-	staged := inlineNotificationPresentations(presentedTurns)
+	staged := inlineNotificationPresentations(presentedTurns, verifier...)
 	if len(staged) != 0 {
 		// Old inline-only records have delivery commits but no canonical
 		// acceptance. They remain readable history, never new observations.
@@ -983,7 +983,11 @@ func (s *Session) stagePresentedAttentionCoverage(ctx context.Context, presented
 // inlineNotificationPresentations selects only carriers in this exact history
 // snapshot whose result is actually projected. A waiter or a commit in some
 // other snapshot cannot hide the canonical steering message or earn coverage.
-func inlineNotificationPresentations(turns []schema.Turn) map[string]struct{} {
+func inlineNotificationPresentations(turns []schema.Turn, verifier ...func(*llm.ToolResultData) bool) map[string]struct{} {
+	verify := delegateInlineBodyPresented
+	if len(verifier) != 0 && verifier[0] != nil {
+		verify = verifier[0]
+	}
 	var ids map[string]struct{}
 	for _, turn := range turns {
 		if turn.Kind != schema.TurnToolResults {
@@ -994,7 +998,7 @@ func inlineNotificationPresentations(turns []schema.Turn) map[string]struct{} {
 				continue
 			}
 			for _, part := range turn.Message.Content {
-				if part.Kind == llm.ContentToolResult && part.ToolResult != nil && part.ToolResult.ToolCallID == commit.ToolCallID && delegateInlineBodyPresented(part.ToolResult) {
+				if part.Kind == llm.ContentToolResult && part.ToolResult != nil && part.ToolResult.ToolCallID == commit.ToolCallID && verify(part.ToolResult) {
 					if ids == nil {
 						ids = make(map[string]struct{})
 					}
@@ -1008,21 +1012,40 @@ func inlineNotificationPresentations(turns []schema.Turn) map[string]struct{} {
 }
 
 // Tool state is not presentation. It only supplies the original rendering to
-// compare with the actual bounded body. Any shaping loses inline coverage and
-// uses ordinary canonical delivery instead. UseNumber preserves JSON numbers
-// when the result includes structured output.
+// compare with the actual bounded body. This pure predicate accepts only whole
+// bodies. Recovery-backed tails require the session-tree check below.
+// UseNumber preserves JSON numbers when the result includes structured output.
 func delegateInlineBodyPresented(result *llm.ToolResultData) bool {
-	if result == nil || len(result.ToolState) == 0 {
-		return false
-	}
-	var state delegateSendResult
-	decoder := json.NewDecoder(bytes.NewReader(result.ToolState))
-	decoder.UseNumber()
-	if decoder.Decode(&state) != nil || state.DelegateID == "" {
+	state, ok := delegateInlineState(result)
+	if !ok {
 		return false
 	}
 	body, ok := result.Content.(string)
 	return ok && body == formatDelegateSend(state)
+}
+
+func delegateInlineState(result *llm.ToolResultData) (delegateSendResult, bool) {
+	var state delegateSendResult
+	if result == nil || len(result.ToolState) == 0 {
+		return state, false
+	}
+	decoder := json.NewDecoder(bytes.NewReader(result.ToolState))
+	decoder.UseNumber()
+	err := decoder.Decode(&state)
+	return state, err == nil && state.DelegateID != ""
+}
+
+func (s *Session) delegateInlineBodyPresented(result *llm.ToolResultData) bool {
+	state, ok := delegateInlineState(result)
+	if !ok {
+		return false
+	}
+	body, ok := result.Content.(string)
+	if !ok {
+		return false
+	}
+	complete := formatDelegateSend(state)
+	return body == complete || s.retainedDelegateInlineBodyPresented(result, complete)
 }
 
 // A fallback may only shrink an already bounded body. Keep the call/result

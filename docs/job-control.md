@@ -143,6 +143,13 @@ This reference contract is not itself the runtime system prompt, but the followi
   receiver custody; only a successful response records observation of the
   exact notifications its request presented, synced when persistence is enabled.
   Neither custody nor observation means the sender's generation settled.
+- An oversized positive-wait `delegate_send` reply presents the last 50,000
+  characters of the complete formatted reply, including earlier results, plus
+  a verified root-tree recovery link. That exact carrier replaces duplicate
+  canonical bodies only while the link recovers the complete reply. Missing or
+  invalid recovery, or a subsequently reduced carrier, keeps whole canonical
+  presentation. Asynchronous reports remain whole. Root close expires the link;
+  closing a child under the same live root does not.
 - Send observer readiness with `communicate(end_turn=false, readiness="ready")`.
   It is not completion. Continue with the watched action and use the observer's
   later final report as the callback.

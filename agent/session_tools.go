@@ -1352,8 +1352,8 @@ func (s *Session) appendToolResultsWithDeliveryCommitsDurably(live, persisted ll
 	persistedTurn.Message = persisted
 	persistedTurn.SkillState = skillState.Clone()
 	// Only the final bounded output can establish a presentation binding.
-	// A clipped result becomes status-only, with ordinary canonical delivery
-	// still responsible for every packet in that result.
+	// An exact registry tail with verified full recovery is also presentation.
+	// Other shaping becomes status-only, leaving ordinary canonical delivery.
 	presentedCalls := make(map[string]bool)
 	liveContentCloned := false
 	for i, part := range liveTurn.Message.Content {
@@ -1364,7 +1364,7 @@ func (s *Session) appendToolResultsWithDeliveryCommitsDurably(live, persisted ll
 			if part.ToolResult.ToolCallID != binding.toolCallID {
 				continue
 			}
-			if delegateInlineBodyPresented(part.ToolResult) {
+			if s.delegateInlineBodyPresented(part.ToolResult) {
 				presentedCalls[binding.toolCallID] = true
 			} else {
 				if !liveContentCloned {
@@ -1385,7 +1385,7 @@ func (s *Session) appendToolResultsWithDeliveryCommitsDurably(live, persisted ll
 			if part.ToolResult.ToolCallID != binding.toolCallID {
 				continue
 			}
-			if !presentedCalls[binding.toolCallID] || !delegateInlineBodyPresented(part.ToolResult) {
+			if !presentedCalls[binding.toolCallID] || !s.delegateInlineBodyPresented(part.ToolResult) {
 				delete(presentedCalls, binding.toolCallID)
 				if !persistedContentCloned {
 					persistedTurn.Message.Content = slices.Clone(persistedTurn.Message.Content)

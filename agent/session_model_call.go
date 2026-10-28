@@ -383,13 +383,32 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// rather than taking another one. Do not drop the copy above as redundant
 	// work — it is what keeps the boundary paired with the history this round
 	// actually expands (see the G4 note there).
+	// History expansion and response staging share this selected-snapshot
+	// decision, including the capability check. Private state alone never
+	// establishes presentation, and changed bodies get a fresh decision.
+	type inlineBodyKey struct {
+		callID, name, body, state string
+		isError                   bool
+	}
+	inlineBodies := make(map[inlineBodyKey]bool)
+	verifyInline := func(result *llm.ToolResultData) bool {
+		body, _ := result.Content.(string)
+		key := inlineBodyKey{result.ToolCallID, result.Name, body, string(result.ToolState), result.IsError}
+		if presented, ok := inlineBodies[key]; ok {
+			return presented
+		}
+		presented := s.delegateInlineBodyPresented(result)
+		inlineBodies[key] = presented
+		return presented
+	}
 	scope := replayScope{
-		Instance:       profile.ID(),
-		Model:          profile.Model(),
-		Protocol:       profile.Protocol(),
-		InFlightFrom:   inFlightFrom,
-		protocolOf:     s.instanceProtocol,
-		canonicalModel: func(model string) string { return s.canonicalModelID(profile.ID(), model) },
+		Instance:            profile.ID(),
+		Model:               profile.Model(),
+		Protocol:            profile.Protocol(),
+		InFlightFrom:        inFlightFrom,
+		protocolOf:          s.instanceProtocol,
+		canonicalModel:      func(model string) string { return s.canonicalModelID(profile.ID(), model) },
+		inlineBodyPresented: verifyInline,
 	}
 	// presentedTurns is the history this request projects: a leased delegate
 	// turn projects the controller's own later snapshot, which can hold turns
@@ -538,7 +557,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			}
 		}
 	}
-	s.stagePresentedAttentionCoverage(ctx, presentedTurns)
+	s.stagePresentedAttentionCoverage(ctx, presentedTurns, verifyInline)
 	return profile, sys, history, req, fullHistory, reasoningEffort, nil
 }
 
@@ -1644,6 +1663,10 @@ type replayScope struct {
 	// notesSelfEchoFiltered marks a delta slice whose self-echo TurnNotesContext
 	// turns were already filtered against the full history slice.
 	notesSelfEchoFiltered bool
+	// inlineBodyPresented checks exact whole or recovery-backed positive-wait
+	// carriers in this request's selected snapshot. Nil keeps pure whole-only
+	// replay behavior, including unverified continuation deltas.
+	inlineBodyPresented func(*llm.ToolResultData) bool
 }
 
 // active reports whether the scope enforces the N4 replay-provenance rules. An
@@ -1763,7 +1786,7 @@ func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Messa
 // outgoing request while staying untouched in the stored transcript.
 func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message {
 	history := make([]llm.Message, 0, len(historyTurns))
-	inline := inlineNotificationPresentations(historyTurns)
+	inline := inlineNotificationPresentations(historyTurns, scope.inlineBodyPresented)
 	canonical := make(map[string]bool)
 	for _, turn := range historyTurns {
 		if turn.AttentionID != "" {

@@ -5,12 +5,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
 	"os"
 	"reflect"
 	"sync"
 	"testing"
 
 	"github.com/spf13/afero"
+	"primeradiant.com/evener/agent/diagnostic"
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -21,7 +25,7 @@ import (
 // restore. The adapter scripts only the external provider boundary. Opaque
 // payload sentinels prove request membership independently of receipt metadata.
 func TestNotificationObservation(t *testing.T) {
-	t.Parallel()
+	// Not parallel: the two failed-provider children capture the default logger.
 	t.Run("launch claim is not observation", func(t *testing.T) {
 		c, s, _ := newDelegateAttentionAcceptanceHarness(t, "child-dlg_target", afero.NewOsFs(), "obs-a")
 		reservation, err := c.ReserveAttention(s, "obs-a")
@@ -52,18 +56,24 @@ func TestNotificationObservation(t *testing.T) {
 		observationReceipts(t, s, [][]string{{"obs-a"}})
 	})
 	t.Run("request failure survives reopen", func(t *testing.T) {
+		pause := captureNotificationPause(t)
 		a := &skillContinuationAdapter{}
 		s := observationSession(t, a, false)
+		pause.watch(t, s)
 		observationEnqueue(t, s, "obs-a", "body-a-71c9")
+		providerFailure := llm.ErrorFromHTTPStatus("openai", 401, "", nil, nil)
 		a.steps = []func(llm.Request) (llm.Response, error){func(req llm.Request) (llm.Response, error) {
 			observationRequest(t, req, []string{"body-a-71c9"}, nil)
-			return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 401, "", nil, nil)
+			return llm.Response{}, providerFailure
 		}}
-		if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err == nil {
+		_, runErr := s.ProcessInputKind(context.Background(), "", nil, EntryNotification)
+		if runErr == nil {
 			t.Fatal("provider failure succeeded")
 		}
+		assertNotificationAuthenticationFailure(t, runErr, providerFailure)
 		observationReceipts(t, s, nil)
 		reopened := observationReopen(t, s, a)
+		pause.watch(t, reopened)
 		assertNotificationPending(t, reopened, []string{"obs-a"})
 		if len(a.Requests()) != 1 {
 			t.Fatalf("requests before retry = %d", len(a.Requests()))
@@ -257,20 +267,25 @@ func TestNotificationObservation(t *testing.T) {
 		observationReceipts(t, s, [][]string{{"obs-a", "obs-b"}})
 	})
 	t.Run("earlier receipt does not hide later pending failure", func(t *testing.T) {
+		pause := captureNotificationPause(t)
 		a := &skillContinuationAdapter{}
 		s := observationSession(t, a, false)
+		pause.watch(t, s)
 		observationEnqueue(t, s, "obs-a", "body-a-71c9")
+		providerFailure := llm.ErrorFromHTTPStatus("openai", 401, "", nil, nil)
 		a.steps = []func(llm.Request) (llm.Response, error){func(req llm.Request) (llm.Response, error) {
 			observationRequest(t, req, []string{"body-a-71c9"}, []string{"body-b-56e2"})
 			observationEnqueue(t, s, "obs-b", "body-b-56e2")
 			return jobListResponse("observed-round"), nil
 		}, func(req llm.Request) (llm.Response, error) {
 			observationRequest(t, req, []string{"body-b-56e2"}, nil)
-			return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 401, "", nil, nil)
+			return llm.Response{}, providerFailure
 		}}
-		if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err == nil {
+		_, runErr := s.ProcessInputKind(context.Background(), "", nil, EntryNotification)
+		if runErr == nil {
 			t.Fatal("failed later round succeeded")
 		}
+		assertNotificationAuthenticationFailure(t, runErr, providerFailure)
 		observationReceipts(t, s, [][]string{{"obs-a"}})
 		assertNotificationPending(t, s, []string{"obs-b"})
 		if !s.notificationSchedule.paused {
@@ -456,6 +471,93 @@ func TestNotificationObservation(t *testing.T) {
 			}
 		})
 	}
+}
+
+// These helpers are used only by serial warning-producing fixtures. Register
+// restoration first, so session shutdown and lossless event drains finish before
+// inspecting records or restoring the process logger. Never compare warning copy.
+type notificationPauseCapture struct {
+	logs     *reclaimLogCapture
+	mu       sync.Mutex
+	warnings []events.SessionEvent
+	receiver string
+}
+
+func captureNotificationPause(t *testing.T) *notificationPauseCapture {
+	t.Helper()
+	c := &notificationPauseCapture{logs: &reclaimLogCapture{Handler: slog.NewJSONHandler(io.Discard, nil)}}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(c.logs))
+	t.Cleanup(func() {
+		defer slog.SetDefault(previous)
+		c.mu.Lock()
+		warnings := append([]events.SessionEvent(nil), c.warnings...)
+		c.mu.Unlock()
+		if len(warnings) != 1 {
+			t.Errorf("receiver %s warning events=%d, want exactly one", c.receiver, len(warnings))
+		}
+		for _, event := range warnings {
+			data, ok := event.Data.(events.WarningData)
+			if event.SessionID != c.receiver || !ok || data.Code != events.WarningCodeAttentionPaused || data.Source != string(diagnostic.SourceEvener) {
+				t.Errorf("unexpected warning attribution: receiver=%s kind=%s data_type=%T code=%s source=%s", event.SessionID, event.Kind, event.Data, data.Code, data.Source)
+			}
+		}
+		c.logs.mu.Lock()
+		records := append([]slog.Record(nil), c.logs.records...)
+		c.logs.mu.Unlock()
+		warningCount := 0
+		for _, record := range records {
+			if record.Level < slog.LevelWarn {
+				continue
+			}
+			warningCount++
+			attrs := make(map[string]slog.Value)
+			record.Attrs(func(attr slog.Attr) bool { attrs[attr.Key] = attr.Value.Resolve(); return true })
+			if record.Level != slog.LevelWarn || len(attrs) != 2 || attrs["session"].Kind() != slog.KindString || attrs["session"].String() != c.receiver || attrs["failure"].Kind() != slog.KindString {
+				t.Errorf("unexpected structured warning: level=%s receiver=%s attribute_count=%d failure_kind=%s", record.Level, attrs["session"], len(attrs), attrs["failure"].Kind())
+			}
+		}
+		if warningCount != 1 {
+			t.Errorf("receiver %s structured warnings=%d, want exactly one", c.receiver, warningCount)
+		}
+		t.Logf("joined warning capture: receiver=%s pause_events=%d structured_warnings=%d", c.receiver, len(warnings), warningCount)
+	})
+	return c
+}
+
+func (c *notificationPauseCapture) watch(t *testing.T, s *Session) {
+	t.Helper()
+	if c.receiver != "" && c.receiver != s.ID() {
+		t.Fatal("warning fixture changed receiver identity across restore")
+	}
+	c.receiver = s.ID()
+	drained := make(chan struct{})
+	s.ConsumeEventsLossless(func(event events.SessionEvent) {
+		if event.Kind == events.EventWarning {
+			c.mu.Lock()
+			c.warnings = append(c.warnings, event)
+			c.mu.Unlock()
+		}
+	}, func() { close(drained) })
+	t.Cleanup(func() {
+		s.Close()
+		<-drained
+	})
+}
+
+func assertNotificationAuthenticationFailure(t *testing.T, actual, injected error) {
+	t.Helper()
+	if !errors.Is(actual, injected) {
+		t.Fatalf("provider failure identity changed: %v", actual)
+	}
+	var providerError llm.Error
+	if !errors.As(actual, &providerError) {
+		t.Fatalf("provider failure type=%T, want llm.Error", actual)
+	}
+	if providerError.Provider() != "openai" || providerError.StatusCode() != 401 || providerError.Retryable() || llm.Kind(actual) != llm.KindAuthentication || llm.Classify(actual) != llm.ErrorClassPermanent {
+		t.Fatalf("provider failure fields: provider=%s status=%d retryable=%t kind=%s class=%v", providerError.Provider(), providerError.StatusCode(), providerError.Retryable(), llm.Kind(actual), llm.Classify(actual))
+	}
+	t.Logf("injected failure validated: provider=%s status=%d retryable=%t kind=%s class=%v", providerError.Provider(), providerError.StatusCode(), providerError.Retryable(), llm.Kind(actual), llm.Classify(actual))
 }
 
 func observationSession(t *testing.T, a *skillContinuationAdapter, continuation bool) *Session {

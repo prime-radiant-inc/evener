@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/afero"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/artifactstore"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -163,6 +164,7 @@ func notificationValidToolPairs(t *testing.T, req llm.Request) {
 // finishes. Custody must instead complete while its external read is blocked.
 func TestNotificationDeliveryDuringToolRound(t *testing.T) {
 	t.Parallel()
+	report := "payload-cc81" + strings.Repeat("界", delegateReportWholeTestMaxChars+1) + "async-tail-cc81"
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "notification-gate.txt"), []byte("file-data-8d22"), 0600); err != nil {
 		t.Fatal(err)
@@ -183,7 +185,7 @@ func TestNotificationDeliveryDuringToolRound(t *testing.T) {
 		case <-ctx.Done():
 			return llm.Response{}, ctx.Err()
 		}
-		return toolCallResponse(communicateCall("report", "payload-cc81")), nil
+		return toolCallResponse(communicateCall("report", report)), nil
 	}
 	a.rootSteps = []func(context.Context, llm.Request) (llm.Response, error){
 		func(context.Context, llm.Request) (llm.Response, error) {
@@ -197,6 +199,18 @@ func TestNotificationDeliveryDuringToolRound(t *testing.T) {
 			notificationValidToolPairs(t, req)
 			if n := notificationRequestCount(req, "payload-cc81"); n != 1 {
 				t.Errorf("report presentations=%d, want 1", n)
+			}
+			whole := false
+			for _, message := range req.Messages {
+				if message.Role == llm.RoleUser && strings.Contains(message.Text(), report) {
+					whole = true
+					if retainedArtifactRefPattern.MatchString(message.Text()) {
+						t.Error("ordinary asynchronous report gained a recovery projection")
+					}
+				}
+			}
+			if !whole {
+				t.Error("ordinary asynchronous report above 50,000 characters was not presented whole")
 			}
 			return finalResponse("answer-990d"), nil
 		},
@@ -859,8 +873,9 @@ func notificationHistoricalCarrier(t *testing.T, withState bool) {
 // path, not by handing the presentation helper a preselected history slice.
 type notificationReducingStrategy struct {
 	spyStrategy
-	mode string
-	ran  bool
+	mode      string
+	ran       bool
+	transform func(*llm.ToolResultData) error
 }
 
 func (s *notificationReducingStrategy) ManageContext(_ context.Context, history *[]schema.Turn, _ int, _ func(events.EventKind, events.EventData)) error {
@@ -888,9 +903,15 @@ func (s *notificationReducingStrategy) ManageContext(_ context.Context, history 
 		for j, part := range turn.Message.Content {
 			if part.ToolResult != nil {
 				result := *part.ToolResult
-				result.Content = "strategy omitted tool body"
-				if s.mode == "unicode body reduction" {
-					result.Content = strings.Repeat("界", 12)
+				if s.transform != nil {
+					if err := s.transform(&result); err != nil {
+						return err
+					}
+				} else {
+					result.Content = "strategy omitted tool body"
+					if s.mode == "unicode body reduction" {
+						result.Content = strings.Repeat("界", 12)
+					}
 				}
 				turn.Message.Content[j].ToolResult = &result
 			}
@@ -901,8 +922,18 @@ func (s *notificationReducingStrategy) ManageContext(_ context.Context, history 
 }
 
 func TestNotificationInlineDeliveryTruncatedCarrier(t *testing.T) {
-	for _, mode := range []string{"registry clipping", "body reduction", "unicode body reduction", "carrier removal"} {
+	for _, mode := range []string{"registry clipping", "large integer ingress", "retention failure", "restore expired recovery", "expired recovery", "wrong root recovery", "wrong content recovery", "forged recovery", "missing recovery", "reduced retained carrier", "body reduction", "unicode body reduction", "carrier removal"} {
 		t.Run(mode, func(t *testing.T) {
+			retained := mode != "body reduction" && mode != "unicode body reduction" && mode != "carrier removal"
+			integerIngress := mode == "large integer ingress"
+			restoreExpired := mode == "restore expired recovery"
+			failedRetention := mode == "retention failure"
+			validRecovery := mode == "registry clipping" || integerIngress || restoreExpired
+			providerFailure := llm.ErrorFromHTTPStatus("openai", 401, "", nil, nil)
+			var pause *notificationPauseCapture
+			if restoreExpired {
+				pause = captureNotificationPause(t)
+			}
 			dir := t.TempDir()
 			if err := os.WriteFile(filepath.Join(dir, "notification-gate.txt"), []byte("gate"), 0600); err != nil {
 				t.Fatal(err)
@@ -925,19 +956,101 @@ func TestNotificationInlineDeliveryTruncatedCarrier(t *testing.T) {
 					}
 				}
 				message := fmt.Sprintf("shaped-payload-774b-%d", childCalls)
-				if mode == "registry clipping" && childCalls != 2 {
+				if retained && childCalls != 2 {
 					message += strings.Repeat(strconv.Itoa(childCalls), 40000)
 				}
-				return toolCallResponse(communicateCall(fmt.Sprint("report", childCalls), message)), nil
+				data := map[string]any{"generation": childCalls}
+				if integerIngress {
+					data["large"] = json.Number("9007199254740993")
+				}
+				response := notificationToolCall(fmt.Sprint("report", childCalls), "communicate", map[string]any{
+					"message": message, "end_turn": true,
+					"output": map[string]any{"message": "structured report", "data": data, "artifacts": []string{"metadata-sentinel"}},
+				})
+				if integerIngress {
+					t.Logf("provider_arguments generation=%d raw=%s", childCalls, response.Message.Content[0].ToolCall.Arguments)
+				}
+				return response, nil
 			}
 			var delegateID string
+			var s *Session
+			var sourceBefore []byte
+			var retainedRef string
+			var presentedRequest llm.Request
+			verifyPresentation := func(req llm.Request) {
+				notificationValidToolPairs(t, req)
+				if !validRecovery {
+					for generation := 1; generation <= 3; generation++ {
+						if n := notificationRequestCount(req, fmt.Sprintf("shaped-payload-774b-%d", generation)); n != 1 {
+							t.Errorf("generation %d presentations=%d, want 1", generation, n)
+						}
+					}
+				}
+				for _, m := range req.Messages {
+					for _, part := range m.Content {
+						if mode == "unicode body reduction" && part.ToolResult != nil && part.ToolResult.ToolCallID == "send-inline" && len([]rune(fmt.Sprint(part.ToolResult.Content))) > 12 {
+							t.Errorf("status fallback exceeded reduced character budget: %d", len([]rune(fmt.Sprint(part.ToolResult.Content))))
+						}
+						// Registry warnings and the recovery footer sit outside the body cap.
+						limit := jobToolResultDefaultMaxChar
+						if retained {
+							limit = delegateReportWholeTestMaxChars
+						}
+						if part.ToolResult != nil && part.ToolResult.Name == "delegate_send" && len(fmt.Sprint(part.ToolResult.Content)) > limit+512 {
+							t.Errorf("delegate_send output bypassed limit: %d", len(fmt.Sprint(part.ToolResult.Content)))
+						}
+						if validRecovery && part.ToolResult != nil && part.ToolResult.ToolCallID == "send-inline" {
+							var state delegateSendResult
+							decoder := json.NewDecoder(bytes.NewReader(part.ToolResult.ToolState))
+							decoder.UseNumber()
+							if err := decoder.Decode(&state); err != nil {
+								t.Fatal(err)
+							}
+							if len(state.EarlierResults) != 2 || len(formatDelegateSend(state)) <= jobToolResultDefaultMaxChar {
+								t.Fatalf("registry clipping setup: earlier=%d full size=%d", len(state.EarlierResults), len(formatDelegateSend(state)))
+							}
+							body := fmt.Sprint(part.ToolResult.Content)
+							ref := retainedArtifactRefPattern.FindString(body)
+							retainedRef = ref
+							if ref == "" {
+								t.Error("registry-clipped positive-wait carrier lost its real recovery capability")
+							} else {
+								complete := retainedArtifactText(t, s, ref)
+								if complete != formatDelegateSend(state) || retainedSuffixLength(complete, body) != delegateReportWholeTestMaxChars {
+									t.Fatal("registry-clipped carrier is not the exact retained aggregate tail")
+								}
+								if !strings.Contains(complete, "metadata-sentinel") || (integerIngress && !strings.Contains(complete, "9007199254740993")) {
+									t.Errorf("retained aggregate lost structured large integer or artifact metadata: rounded_integer=%t metadata=%t", strings.Contains(complete, "9007199254740992"), strings.Contains(complete, "metadata-sentinel"))
+								}
+								if integerIngress {
+									t.Logf("artifact_integer exact=%t rounded=%t bytes=%d", strings.Contains(complete, "9007199254740993"), strings.Contains(complete, "9007199254740992"), len(complete))
+								}
+								for generation := 1; generation <= 3; generation++ {
+									requireArtifactSearch(t, s, ref, fmt.Sprintf("shaped-payload-774b-%d", generation))
+								}
+							}
+						}
+					}
+					if validRecovery && m.Role == llm.RoleUser {
+						for generation := 1; generation <= 3; generation++ {
+							if strings.Contains(m.Text(), fmt.Sprintf("shaped-payload-774b-%d", generation)) {
+								t.Errorf("generation %d duplicated the retained inline presentation as canonical text", generation)
+							}
+						}
+					}
+				}
+			}
 			a.rootSteps = []func(context.Context, llm.Request) (llm.Response, error){
 				func(context.Context, llm.Request) (llm.Response, error) {
 					return notificationToolCall("create", "delegate", map[string]any{"prompt": "shaping task"}), nil
 				},
-				func(_ context.Context, req llm.Request) (llm.Response, error) {
+				func(ctx context.Context, req llm.Request) (llm.Response, error) {
 					close(firstRelease)
-					notificationAwait(t, settled[0])
+					select {
+					case <-settled[0]:
+					case <-ctx.Done():
+						return llm.Response{}, ctx.Err()
+					}
 					delegateID = deferredHeadDelegateID.FindString(lastToolResultText(req.Messages))
 					response := notificationToolCall("send-zero", "delegate_send", map[string]any{"to": delegateID, "message": "second task"})
 					read := notificationToolCall("read-gate", "read_file", map[string]any{"file_path": "notification-gate.txt", "intent": "reading fixture"})
@@ -946,75 +1059,238 @@ func TestNotificationInlineDeliveryTruncatedCarrier(t *testing.T) {
 					response.Message.Content = append(response.Message.Content, send.Message.Content...)
 					return response, nil
 				},
-				func(_ context.Context, req llm.Request) (llm.Response, error) {
-					notificationValidToolPairs(t, req)
-					for generation := 1; generation <= 3; generation++ {
-						if n := notificationRequestCount(req, fmt.Sprintf("shaped-payload-774b-%d", generation)); n != 1 {
-							t.Errorf("generation %d presentations=%d, want 1", generation, n)
-						}
+				func(ctx context.Context, req llm.Request) (llm.Response, error) {
+					select {
+					case <-settled[2]:
+					case <-ctx.Done():
+						return llm.Response{}, ctx.Err()
 					}
-					for _, m := range req.Messages {
-						for _, part := range m.Content {
-							if mode == "unicode body reduction" && part.ToolResult != nil && part.ToolResult.ToolCallID == "send-inline" && len([]rune(fmt.Sprint(part.ToolResult.Content))) > 12 {
-								t.Errorf("status fallback exceeded reduced character budget: %d", len([]rune(fmt.Sprint(part.ToolResult.Content))))
-							}
-							// Registry warnings and the recovery footer sit outside the body cap.
-							if part.ToolResult != nil && part.ToolResult.Name == "delegate_send" && len(fmt.Sprint(part.ToolResult.Content)) > jobToolResultDefaultMaxChar+512 {
-								t.Errorf("delegate_send output bypassed limit: %d", len(fmt.Sprint(part.ToolResult.Content)))
-							}
-							if mode == "registry clipping" && part.ToolResult != nil && part.ToolResult.ToolCallID == "send-inline" {
-								var state delegateSendResult
-								if err := json.Unmarshal(part.ToolResult.ToolState, &state); err != nil {
-									t.Fatal(err)
-								}
-								if len(state.EarlierResults) != 2 || len(formatDelegateSend(state)) <= jobToolResultDefaultMaxChar {
-									t.Fatalf("registry clipping setup: earlier=%d full size=%d", len(state.EarlierResults), len(formatDelegateSend(state)))
-								}
-							}
-						}
+					presentedRequest = req
+					if restoreExpired {
+						return llm.Response{}, providerFailure
 					}
 					return finalResponse("shaped response"), nil
 				},
 			}
 			strategy := &notificationReducingStrategy{mode: mode}
-			s := notificationSession(t, a, gate, make(chan struct{}), func(cfg *SessionConfig) {
-				if mode != "registry clipping" {
+			var foreignStore artifactStore
+			if retained && !validRecovery && !failedRetention {
+				transformed := false
+				strategy.transform = func(result *llm.ToolResultData) error {
+					if result.ToolCallID != "send-inline" || transformed {
+						return nil
+					}
+					transformed = true
+					body := fmt.Sprint(result.Content)
+					ref := retainedArtifactRefPattern.FindString(body)
+					if ref == "" {
+						return errors.New("invalid-recovery setup never retained its oversized carrier")
+					}
+					switch mode {
+					case "expired recovery":
+						if err := s.artifactStore.Close(); err != nil {
+							return err
+						}
+					case "wrong root recovery", "wrong content recovery":
+						var replacement string
+						var err error
+						if mode == "wrong root recovery" {
+							other, createErr := artifactstore.New(dir)
+							if createErr != nil {
+								return createErr
+							}
+							foreignStore = other
+							complete, readErr := readRetainedArtifactText(s, ref)
+							if readErr != nil {
+								return readErr
+							}
+							replacement, err = other.Put([]byte(complete))
+						} else {
+							replacement, err = s.putArtifact("not the complete synchronous aggregate")
+						}
+						if err != nil {
+							return err
+						}
+						result.Content = strings.ReplaceAll(body, ref, replacement)
+					case "forged recovery":
+						result.Content = strings.ReplaceAll(body, ref, "artifact:"+strings.Repeat("0", 32))
+					case "missing recovery":
+						result.Content = body[:strings.LastIndex(body, "\nFull output: ")]
+					case "reduced retained carrier":
+						result.Content = strings.Replace(body, strings.Repeat("3", 40), "3", 1)
+					}
+					return nil
+				}
+			}
+			s = notificationSession(t, a, gate, make(chan struct{}), func(cfg *SessionConfig) {
+				if !validRecovery && !failedRetention {
 					cfg.testOnly.contextStrategyOverride = strategy
 				}
-				cfg.testOnly.subagentBeforeGenerationReleased = func(_ *subagent, lease delegateLease) { close(settled[lease.generation-1]) }
+				if failedRetention {
+					cfg.testOnly.delegateSendBeforePositiveWaitAdmission = func() {
+						if err := s.artifactStore.Close(); err != nil {
+							t.Errorf("close real store before retention: %v", err)
+						}
+					}
+				}
+				cfg.testOnly.subagentBeforeGenerationReleased = func(sub *subagent, lease delegateLease) {
+					defer close(settled[lease.generation-1])
+					if lease.generation == 3 {
+						s.delegateController.mu.Lock()
+						aggregate := s.delegateController.durable[delegateID]
+						if aggregate == nil || aggregate.LatestPacket == nil {
+							s.delegateController.mu.Unlock()
+							t.Error("missing immutable source packet before settlement")
+							return
+						}
+						var err error
+						sourceBefore, err = json.Marshal(aggregate.LatestPacket)
+						structuredResult := append([]byte(nil), aggregate.LatestPacket.StructuredResult...)
+						s.delegateController.mu.Unlock()
+						if err != nil {
+							t.Errorf("missing immutable source packet: %v", err)
+						}
+						if integerIngress {
+							sub.sess.mu.Lock()
+							structured := sub.sess.comm.structured
+							sub.sess.mu.Unlock()
+							leaf := structured.(map[string]any)["data"].(map[string]any)["large"]
+							t.Logf("accepted_communicate integer_value=%.0f integer_type=%T", leaf, leaf)
+							t.Logf("immutable_packet structured_result=%s", structuredResult)
+						}
+					}
+				}
 			})
+			if pause != nil {
+				pause.watch(t, s)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
 			done := make(chan error, 1)
-			go func() { _, err := s.ProcessInput(context.Background(), "start shaping", nil); done <- err }()
+			joined := false
+			t.Cleanup(func() {
+				cancel()
+				release()
+				if !joined {
+					<-done
+				}
+				if foreignStore != nil {
+					_ = foreignStore.Close()
+				}
+			})
+			go func() {
+				workerErr := errors.New("ProcessInput worker exited without returning")
+				defer func() { done <- workerErr }()
+				_, workerErr = s.ProcessInput(ctx, "start shaping", nil)
+			}()
 			notificationAwait(t, gate.entered)
 			notificationAwait(t, settled[1])
 			release()
-			if err := <-done; err != nil {
-				t.Fatal(err)
+			runErr := <-done
+			joined = true
+			t.Log("ProcessInput worker completion joined before strict presentation verification")
+			if runErr != nil && (!restoreExpired || !errors.Is(runErr, providerFailure)) {
+				t.Fatal(runErr)
 			}
-			if mode != "registry clipping" && !strategy.ran {
+			verifyPresentation(presentedRequest)
+			if restoreExpired {
+				if !errors.Is(runErr, providerFailure) {
+					t.Fatalf("provider failed-response setup returned %v", runErr)
+				}
+				assertNotificationAuthenticationFailure(t, runErr, providerFailure)
+				for _, entry := range notificationRawEntries(t, s.TranscriptPath()) {
+					if len(entry.Turn.ObservedNotificationIDs) != 0 {
+						t.Fatal("retained artifact or failed provider response earned observation")
+					}
+				}
+				stateDir, sessionID := s.stateDir, s.ID()
+				s.Close()
+				_, readErr := execReadTranscript(newToolDeps(s), map[string]any{"transcript_ref": retainedRef})
+				if readErr == nil {
+					t.Fatal("root close left its old artifact capability readable")
+				}
+				meta, err := schema.LoadSessionMeta(stateDir, sessionID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				client := llm.NewClient()
+				client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
+					notificationValidToolPairs(t, req)
+					for generation := 1; generation <= 3; generation++ {
+						if n := notificationRequestCount(req, fmt.Sprintf("shaped-payload-774b-%d", generation)); n != 1 {
+							t.Errorf("restored expired recovery generation %d presentations=%d", generation, n)
+						}
+					}
+					for _, message := range req.Messages {
+						for _, part := range message.Content {
+							if part.ToolResult != nil && part.ToolResult.ToolCallID == "send-inline" && retainedArtifactRefPattern.MatchString(fmt.Sprint(part.ToolResult.Content)) {
+								t.Error("restored selected carrier still advertised an expired capability")
+							}
+						}
+					}
+					return finalResponse("restored canonical recovery")
+				}}})
+				s, err = RestoreSessionFromMeta(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.4")), execenv.NewLocalExecutionEnvironment(dir), meta, stateDir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(s.Close)
+				pause.watch(t, s)
+				if _, err := s.ProcessInput(context.Background(), "retry after root close", nil); err != nil {
+					t.Fatal(err)
+				}
+			} else if runErr != nil {
+				t.Fatal(runErr)
+			}
+			if !validRecovery && !failedRetention && !strategy.ran {
 				t.Fatal("configured strategy did not shape a carrier")
 			}
-			var observed []string
+			sourceAfter, err := json.Marshal(delegateAggregateSnapshot(t, s.delegateController, delegateID).LatestPacket)
+			if err != nil || !bytes.Equal(sourceBefore, sourceAfter) {
+				t.Errorf("projection changed immutable source packet: %v", err)
+			}
+			t.Logf("immutable source packet byte equality=%t bytes=%d", bytes.Equal(sourceBefore, sourceAfter), len(sourceBefore))
+			var turns []schema.Turn
 			for _, entry := range notificationRawEntries(t, s.TranscriptPath()) {
-				if mode == "registry clipping" && len(entry.Turn.DelegateDeliveryCommits) != 0 {
-					t.Errorf("clipped carrier retained presentation bindings: %v", entry.Turn.DelegateDeliveryCommits)
+				turns = append(turns, entry.Turn)
+			}
+			var observed, bound []string
+			for _, turn := range turns {
+				if validRecovery {
+					for _, commit := range turn.DelegateDeliveryCommits {
+						if commit.ToolCallID != "send-inline" {
+							t.Errorf("unexpected retained carrier call ID %q", commit.ToolCallID)
+						}
+						bound = append(bound, delegateAttentionID(commit.DeliveryID))
+					}
 				}
-				observed = append(observed, entry.Turn.ObservedNotificationIDs...)
+				observed = append(observed, turn.ObservedNotificationIDs...)
 			}
 			want := []string{}
 			for i := 1; i <= 3; i++ {
 				id := delegateAttentionID(delegateDeliveryID(delegateID, uint64(i)))
 				want = append(want, id)
-				if n := notificationCanonicalCount(t, s, id); n != 1 {
+				n := 0
+				for _, turn := range turns {
+					if turn.AttentionID == id {
+						n++
+						if !strings.Contains(turn.Message.Text(), fmt.Sprintf("shaped-payload-774b-%d", i)) || (integerIngress && !strings.Contains(turn.Message.Text(), "9007199254740993")) || !strings.Contains(turn.Message.Text(), "metadata-sentinel") {
+							t.Errorf("canonical source packet %s lost report text or exact structured metadata", id)
+						}
+					}
+				}
+				if n != 1 {
 					t.Errorf("canonical records for %s=%d", id, n)
 				}
+			}
+			if validRecovery && !slices.Equal(bound, want) {
+				t.Errorf("retained carrier exact ordered bindings=%v, want %v", bound, want)
 			}
 			slices.Sort(observed)
 			if !slices.Equal(observed, want) {
 				t.Errorf("successful response IDs=%v, want %v", observed, want)
 			}
 			assertNotificationPending(t, s, []string{})
-			t.Logf("canonical records=3, final-request payload counts=[1 1 1], successful response IDs=%v", observed)
+			t.Logf("canonical records=3, verified recovery=%t, successful response IDs=%v", validRecovery, observed)
 		})
 	}
 }
