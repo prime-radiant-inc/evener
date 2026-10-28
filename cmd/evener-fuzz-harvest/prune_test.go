@@ -101,6 +101,11 @@ func TestEmitterCapsFilesPerTargetIncludingExisting(t *testing.T) {
 // a harvested positive (redundant with the f.Add seed). It returns the corpus dir.
 func pruneFixture(t *testing.T, targetName string) string {
 	t.Helper()
+	// The fixture is its own module, outside any workspace the caller's
+	// environment names.
+	t.Setenv("GOWORK", "off")
+	t.Setenv("GOENV", "off")
+	t.Setenv("GOFLAGS", "")
 	root := t.TempDir()
 	write := func(rel, content string) {
 		path := filepath.Join(root, rel)
