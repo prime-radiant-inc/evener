@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -317,26 +320,59 @@ func TestHostRecordsSurviveAQuarantine(t *testing.T) {
 // TestHostRecordsQuarantineRefusesAnUnreadableFamily pins that custody is only
 // complete when the family can be carried whole: a family region the store
 // cannot read refuses the quarantine, so the corrupt file stays where it is and
-// the caller keeps serving without the store instead of losing identities.
+// the caller keeps serving without the store instead of losing identities. The
+// refusal happens before anything is written, so the directory is unchanged.
 func TestHostRecordsQuarantineRefusesAnUnreadableFamily(t *testing.T) {
-	store, path := openTestStore(t)
-	if err := store.ImportHostRecords(familyOf("first"), HostMirror{}); err != nil {
-		t.Fatalf("ImportHostRecords: %v", err)
+	cases := map[string]func(raw string) string{
+		"a record that is not an object": func(raw string) string {
+			return strings.Replace(raw, `{"kind":"receipts","tag":"first"}`, `["not","an","object"]`, 1)
+		},
+		"a zero import instant": func(raw string) string {
+			return regexp.MustCompile(`"importedAt":"[^"]*"`).ReplaceAllString(raw, `"importedAt":"0001-01-01T00:00:00Z"`)
+		},
+		"a field spelled in two cases": func(raw string) string {
+			return strings.Replace(raw, `"hosts":{`, `"Hosts":{"hosts-key":{"kind":"stale"}},"hosts":{`, 1)
+		},
 	}
-	raw := string(mustReadFile(t, path))
-	broken := strings.Replace(raw, `{"kind":"receipts","tag":"first"}`, `["not","an","object"]`, 1)
-	if broken == raw {
-		t.Fatalf("the fixture did not carry the expected receipt:\n%s", raw)
+	for name, corrupt := range cases {
+		t.Run(name, func(t *testing.T) {
+			store, path := openTestStore(t)
+			if err := store.ImportHostRecords(familyOf("first"), HostMirror{}); err != nil {
+				t.Fatalf("ImportHostRecords: %v", err)
+			}
+			raw := string(mustReadFile(t, path))
+			broken := corrupt(raw)
+			if broken == raw {
+				t.Fatalf("the fixture did not carry the expected text:\n%s", raw)
+			}
+			writeRawStore(t, path, 0o600, broken)
+			before := dirListing(t, filepath.Dir(path))
+			if err := forgetStore(path); err != nil {
+				t.Fatalf("forgetStore: %v", err)
+			}
+			_, err := Open(path)
+			if !errors.Is(err, ErrQuarantineIncomplete) || !errors.Is(err, ErrStoreCorrupt) {
+				t.Fatalf("Open = %v, want ErrQuarantineIncomplete beside ErrStoreCorrupt", err)
+			}
+			if got := mustReadFile(t, path); !bytes.Equal(got, []byte(broken)) {
+				t.Fatal("a refused quarantine touched the corrupt file")
+			}
+			if after := dirListing(t, filepath.Dir(path)); !slices.Equal(before, after) {
+				t.Fatalf("a refused quarantine left artifacts: before %v after %v", before, after)
+			}
+		})
 	}
-	writeRawStore(t, path, 0o600, broken)
-	if err := forgetStore(path); err != nil {
-		t.Fatalf("forgetStore: %v", err)
+}
+
+func dirListing(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir(%s): %v", dir, err)
 	}
-	_, err := Open(path)
-	if !errors.Is(err, ErrQuarantineIncomplete) || !errors.Is(err, ErrStoreCorrupt) {
-		t.Fatalf("Open = %v, want ErrQuarantineIncomplete beside ErrStoreCorrupt", err)
+	names := make([]string, len(entries))
+	for i, entry := range entries {
+		names[i] = entry.Name()
 	}
-	if got := mustReadFile(t, path); !bytes.Equal(got, []byte(broken)) {
-		t.Fatal("a refused quarantine touched the corrupt file")
-	}
+	return names
 }
