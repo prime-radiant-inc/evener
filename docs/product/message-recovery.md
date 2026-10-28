@@ -99,7 +99,12 @@ Every pane transition that un-assigns a conversation - closing a pane,
 retyping it away, returning a cascade to its source - derives the departed
 conversations from its before and after paths and reconciles each against
 the surviving panes, so a surviving retainer's own selected row wins the
-ref mapping.
+ref mapping. Which conversations a cascade pane's columns cover comes from
+the one authoritative cascade-ancestry derivation that renders its track -
+including an ancestor the hub's authoritative chain supplies with no
+recorded edge naming it - and reconciliation, surviving-owner
+identification, and seat migration all enumerate through that one
+derivation instead of keeping parallel column lists.
 
 Restoring a composer prefers the recovery row its seat last selected, falling
 back to the oldest restorable rejected row. This keeps a pane's preserved local

@@ -1,4 +1,5 @@
 import { bindFilePath, parseFileReference } from "@evener/appwire-client/docContent";
+import { waitFor } from "@testing-library/react";
 import type { DockviewApi } from "dockview-core";
 import { lazy } from "react";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
@@ -10,9 +11,12 @@ import {
   writeRefComposerSeat,
 } from "../panes/session/composer/draft";
 import { retainedConversationComposer } from "../panes/session/composer/retainedComposer";
+import { cascadeClient, cascadeContext } from "../panes/zoom/cascadeTestUtils";
 import { parseZoomParams } from "../panes/zoom/intent";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
+import { connectionStore } from "../stores/connection";
 import type { MutationRecoveryRecord } from "../stores/mutationOutbox";
+import { acquireSessionActivity } from "../stores/sessionActivity";
 import { currentAttentionEntryToken, openAttentionSession } from "./attentionHistory";
 import {
   captureAttentionPlacement,
@@ -1973,6 +1977,86 @@ test("returning a deep cascade to its source points removed columns at the survi
   expect(workspaceStore.getState().retypePane(departed, "session", { ref: sourceRef })).toBe(true);
   expect(readRefComposerSeat(midRef)).toBe(survivor.composerSeatId);
   expect(readRefComposerSeat(departedLeafRef)).toBe(departed.composerSeatId);
+});
+// The recorded edge segment can be empty while the hub's authoritative
+// ancestry chain still names an ancestor: only the canonical cascade
+// derivation sees that ancestor as a retained column. Closing one of two
+// cascades that share it must point its mapping at the survivor, or a cold
+// route reconstruction restores the closed cascade's recovery choice.
+test("closing a cascade reconciles an ancestor only authoritative ancestry supplies", async () => {
+  installLocalStorage(new MemoryStorage());
+  const ancestry = ["local:auth-root", "local:auth-shared"];
+  const bLeaf = "local:auth-b-leaf";
+  const aLeaf = "local:auth-a-leaf";
+  const client = cascadeClient((ref) => cascadeContext(ref, ancestry));
+  connectionStore.getState().connect(client);
+  const leaseB = acquireSessionActivity(client, bLeaf, "session");
+  const leaseA = acquireSessionActivity(client, aLeaf, "session");
+  try {
+    await waitFor(() => expect(leaseB.store.getSnapshot().context?.ancestryKnown).toBe(true));
+    await waitFor(() => expect(leaseA.store.getSnapshot().context?.ancestryKnown).toBe(true));
+
+    const closingId = workspaceStore.getState().openPane("sessionZoom", {
+      ref: bLeaf,
+      source: { type: "session", params: { ref: "local:auth-root" } },
+      edges: [],
+    });
+    const closing = workspaceStore.getState().panes.find((pane) => pane.id === closingId);
+    if (!closing?.composerSeatId) throw new Error("closing cascade lacks its seat");
+    const closingColumn = retainedConversationComposer(conversationPaneLifetime(closing), "local:auth-shared");
+    if (!closingColumn) throw new Error("closing column lacks a composer");
+    closingColumn.setActiveRecoveryId({
+      version: 1,
+      clientMutationId: "auth-ancestry-closing-row",
+      targetRef: "local:auth-shared",
+      intentSequence: 1,
+      createdAt: 0,
+      method: "turn/start",
+      payload: { ref: "local:auth-shared", input: [] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: [] },
+      composerText: "",
+      state: "submitting",
+      recoveryKind: "rejected",
+    });
+    expect(readRefComposerSeat("local:auth-shared")).toBe(closing.composerSeatId);
+
+    const survivingId = workspaceStore.getState().openPane(
+      "sessionZoom",
+      {
+        ref: aLeaf,
+        source: { type: "session", params: { ref: "local:auth-root" } },
+        edges: [],
+      },
+      { slot: "secondary" },
+    );
+    const surviving = workspaceStore.getState().panes.find((pane) => pane.id === survivingId);
+    if (!surviving?.composerSeatId) throw new Error("surviving cascade lacks its seat");
+    const survivingColumn = retainedConversationComposer(conversationPaneLifetime(surviving), "local:auth-shared");
+    if (!survivingColumn) throw new Error("surviving column lacks a composer");
+    survivingColumn.setActiveRecoveryId({
+      version: 1,
+      clientMutationId: "auth-ancestry-surviving-row",
+      targetRef: "local:auth-shared",
+      intentSequence: 1,
+      createdAt: 0,
+      method: "turn/start",
+      payload: { ref: "local:auth-shared", input: [] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: [] },
+      composerText: "",
+      state: "submitting",
+      recoveryKind: "rejected",
+    });
+    expect(readRefComposerSeat("local:auth-shared")).toBe(closing.composerSeatId);
+
+    workspaceStore.getState().closePane(closingId);
+    expect(readRefComposerSeat("local:auth-shared")).toBe(surviving.composerSeatId);
+  } finally {
+    leaseB.release();
+    leaseA.release();
+    connectionStore.setState({ state: "idle", client: null, serverInfo: undefined });
+  }
 });
 
 // A pane retyped to a read-only transcript keeps its lifetime's seat in

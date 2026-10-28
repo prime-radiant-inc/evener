@@ -38,8 +38,10 @@ import {
   writeRecoverySelection,
   writeRefComposerSeat,
 } from "../panes/session/composer/draft";
+import { retainedConversationComposer } from "../panes/session/composer/retainedComposer";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { setMutationClientIdentityForTests } from "../stores/mutationClientIdentity";
+import { conversationPaneLifetime } from "./paneLifetime";
 import { paneFor } from "./paneRegistry";
 import {
   conversationOpenParentRef,
@@ -476,6 +478,60 @@ test("a restore resolving a seat collision transfers the saved selection", () =>
     if (!child?.composerSeatId) throw new Error("child lacks its seat");
     expect(child.composerSeatId).not.toBe("seat-s");
     expect(readRecoverySelection("ref_child", composerSelectionScope(child.composerSeatId))).toBe("child-row");
+  } finally {
+    setMutationClientIdentityForTests(undefined);
+  }
+});
+// A restored cascade colliding onto a replacement seat must carry EVERY
+// column's stored selection with it, not only its leaf's: the ancestor
+// columns read the replacement seat, and their preserved work lives under
+// the seat that was claimed first. A reload of a non-leaf column then
+// restores its own selected work instead of an older rejected peer row.
+test("a seat-collision restore transfers every cascade column's selection", () => {
+  installLocalStorage(new MemoryStorage());
+  try {
+    setMutationClientIdentityForTests("tab-a");
+    // One cascade seat held the shared ancestor's and the leaf's selections;
+    // another pane saved on this tab claims that seat first.
+    writeRefComposerSeat("ref_shared", "seat-s");
+    writeRefComposerSeat("ref_leaf", "seat-s");
+    writeRecoverySelection("ref_shared", composerSelectionScope("seat-s"), "shared-row");
+    writeRecoverySelection("ref_leaf", composerSelectionScope("seat-s"), "leaf-row");
+    writeComposerSeat("p1", "ref_parent", "seat-s");
+    writeComposerSeat("p2", "ref_leaf", "seat-s");
+
+    restorePanels({
+      p1: {
+        id: "p1",
+        contentComponent: "default",
+        params: { paneType: "session", paneParams: { ref: "ref_parent" } },
+      },
+      p2: {
+        id: "p2",
+        contentComponent: "default",
+        params: {
+          paneType: "sessionZoom",
+          paneParams: {
+            ref: "ref_leaf",
+            source: { type: "session", params: { ref: "ref_shared" } },
+            edges: [{ ownerRef: "ref_shared", childRef: "ref_leaf", delegateId: "delegate-shared-leaf" }],
+          },
+        },
+      },
+    });
+
+    const parent = workspaceStore.getState().panes.find((record) => record.id === "p1");
+    expect(parent?.composerSeatId).toBe("seat-s");
+    const cascade = workspaceStore.getState().panes.find((record) => record.id === "p2");
+    if (!cascade?.composerSeatId) throw new Error("cascade lacks its seat");
+    expect(cascade.composerSeatId).not.toBe("seat-s");
+
+    // The non-leaf column restores its own selected work under the
+    // replacement seat, exactly like the leaf does.
+    const sharedColumn = retainedConversationComposer(conversationPaneLifetime(cascade), "ref_shared");
+    if (!sharedColumn) throw new Error("shared column lacks a composer");
+    expect(readRecoverySelection("ref_shared", sharedColumn.recoverySelectionOwnerId)).toBe("shared-row");
+    expect(readRecoverySelection("ref_leaf", composerSelectionScope(cascade.composerSeatId))).toBe("leaf-row");
   } finally {
     setMutationClientIdentityForTests(undefined);
   }

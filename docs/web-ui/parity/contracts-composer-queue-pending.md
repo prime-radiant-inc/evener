@@ -97,9 +97,14 @@ except where a line says so itself.
 - A pane transition that un-assigns conversations - closing a pane, retyping
   it away, returning a cascade to its source - reconciles every departed
   conversation against the surviving panes, so a surviving retainer's own
-  selected row wins the ref mapping. Whenever a collision forces seat
-  allocation to hand out a replacement seat, the stored selection migrates to
-  it, preserving any choice already established there.
+  selected row wins the ref mapping. Which conversations a cascade's columns
+  cover comes from the one authoritative cascade-ancestry derivation that
+  renders its track - including an ancestor supplied only by the
+  authoritative chain with no recorded edge naming it - and reconciliation,
+  surviving-owner identification, and seat migration all enumerate through
+  that derivation. Whenever a collision forces seat allocation to hand out a
+  replacement seat, every affected column's stored selection migrates to it,
+  preserving any choice already established there.
 
 ### Atomic skill and command selections
 
