@@ -1546,6 +1546,82 @@ describe("handoff chain obligations", () => {
 		expect(fullReads).toBe(before);
 	});
 
+	test("a completed outcome survives a failed completion save", async () => {
+		const { storageLedger, repository } = setup();
+		// Both stores fail while the operation itself succeeds: the ledger
+		// rejects the resolution twice, the draft save of the completion fails.
+		const failingLedger = flaky(storageLedger, "resolveSubmission", 2);
+		let writes = 0;
+		const failingRepository = new Proxy(repository, {
+			get(target, property) {
+				const value = Reflect.get(target, property, target);
+				if (property === "write" && typeof value === "function")
+					return (...args: unknown[]) => {
+						if ((args[0] as { sessionRef?: string } | undefined)?.sessionRef === "a" && ++writes === 2)
+							throw new Error("save failed");
+						return (value as (...inner: unknown[]) => unknown).apply(target, args);
+					};
+				return typeof value === "function" ? (value as (...inner: unknown[]) => unknown).bind(target) : value;
+			},
+		}) as DraftRepository;
+		const library = new DraftLibrary(
+			() => failingRepository,
+			undefined,
+			() => failingLedger,
+		);
+		repository.write(endpoint("a"), {
+			draft: "current",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		const document = library.open(endpoint("a"));
+		let finish!: () => void;
+		const submitted = document.submitBuiltinCommand(
+			() =>
+				new Promise<boolean>((resolve) => {
+					finish = () => resolve(true);
+				}),
+		);
+		vi.useFakeTimers();
+		try {
+			finish();
+			// The operation completed, but its completion save failed: the
+			// rejection must not demote the completed outcome.
+			await expect(submitted).rejects.toThrow("save failed");
+			expect(storageLedger.readGraph().obligations[0]?.state).toBe("open");
+			// Storage recovers: the queued completed outcome resolves with its
+			// recovery ids, so the executed command is not restorable.
+			await vi.advanceTimersByTimeAsync(1500);
+		} finally {
+			vi.useRealTimers();
+		}
+		expect(storageLedger.readGraph().obligations[0]).toMatchObject({
+			state: "completed",
+			completedCommandIds: ["recovered-a"],
+		});
+		const settled = repository.read(endpoint("a"));
+		expect(settled.unconfirmedCaptureToken).toBeUndefined();
+		expect(settled).toMatchObject({ completedCommandRecoveryIds: ["recovered-a"] });
+	});
+
+	test("a handled failure stops contributing routine work", () => {
+		const { storageLedger, repository } = setup();
+		// A failed operation keeps its capture recoverable in the draft record.
+		storageLedger.beginSubmission("token-fail", endpoint("a"), ["recovered-fail"]);
+		repository.write(endpoint("a"), {
+			draft: "current",
+			unconfirmed: "current",
+			unconfirmedComposer: { recoveryIds: ["recovered-fail"] },
+			unconfirmedCaptureToken: "token-fail",
+		});
+		storageLedger.resolveSubmission("token-fail", "failed");
+		// The failed obligation never loads for routine reconciliation again,
+		// so a keystroke's pass does not traverse its historical handoffs.
+		expect(storageLedger.readOutstandingGraph().obligations.map((row) => row.obligationId)).not.toContain("token-fail");
+		// Its recoverable capture is preserved untouched in the draft record.
+		expect(repository.read(endpoint("a")).unconfirmedCaptureToken).toBe("token-fail");
+	});
+
 	test("a recovery pass applies a resolved completion with no pending edge", () => {
 		const { storageLedger, repository } = setup();
 		// The durable state a crash leaves behind: the resolution committed to

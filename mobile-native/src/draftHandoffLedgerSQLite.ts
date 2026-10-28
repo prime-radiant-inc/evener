@@ -339,13 +339,16 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 	 * walks the whole path a composition took - including settled and cleaned
 	 * edges - while history with nothing outstanding never loads, so routine
 	 * composer reconciliation costs what is unresolved, not the device's whole
-	 * submission history. Settled history's deliveries are not included:
-	 * nothing in the routine pass reads them. */
+	 * submission history. A failed resolution retires its obligation from the
+	 * load: its capture stays recoverable in the draft record, which routine
+	 * work never touches, so it owes no reconciliation. Settled history's
+	 * deliveries are not included: nothing in the routine pass reads them. */
 	readOutstandingGraph(): DraftHandoffGraph {
 		const obligations = this.db
 			.getAllSync<ObligationRow>(
 				`SELECT * FROM draft_submission_obligations
-				 WHERE state = 'open' OR applied_at IS NULL ORDER BY created_at, rowid`,
+				 WHERE state = 'open' OR (applied_at IS NULL AND state != 'failed')
+				 ORDER BY created_at, rowid`,
 			)
 			.map((row) => this.mapObligation(row));
 		const edges = new Map<string, EdgeRow>();

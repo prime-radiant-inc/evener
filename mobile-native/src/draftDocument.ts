@@ -863,6 +863,13 @@ export class DraftDocument {
 		completedCommandIds: readonly string[] = [],
 		releasedRecoveryIds: readonly string[] = [],
 	): boolean {
+		// The queued outcome is the operation's own result. A persistence
+		// failure after it must not demote it: resolving the same capture as
+		// failed would drop the completed recovery ids and leave the executed
+		// command restorable once storage recovers.
+		const queued = this.unresolvedResolutions.get(captureToken);
+		if (queued !== undefined && state === "failed" && queued.state !== "failed")
+			return this.resolveObligation(captureToken, queued.state, queued.completedCommandIds, queued.releasedRecoveryIds);
 		// A resolution for an obligation that was never recorded commits
 		// nothing: queue it until the retried begin creates the row.
 		if (this.unrecordedCaptures.has(captureToken)) {
