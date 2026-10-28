@@ -5203,6 +5203,7 @@ export const RETRY_SAFE_MUTATION_METHODS = [
   "turn/cancelQueued",
   "thread/clear",
   "notes/human/set",
+  "urls/remove",
 ] as const;
 
 export type RetrySafeMutationMethod = (typeof RETRY_SAFE_MUTATION_METHODS)[number];

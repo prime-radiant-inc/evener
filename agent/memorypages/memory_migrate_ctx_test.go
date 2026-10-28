@@ -1,4 +1,4 @@
-package agent
+package memorypages
 
 import (
 	"context"
@@ -18,7 +18,7 @@ func TestMemoryBackupHoldsPropagatesCancellation(t *testing.T) {
 	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
 	defer env.Cleanup()
 	raw := []byte("x")
-	if err := os.WriteFile(filepath.Join(env.RootDir, memoryLegacyIndexBackup), raw, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(env.RootDir, LegacyIndexBackup), raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -35,7 +35,7 @@ func TestBackUpMemoryIndexRefusesUnderCancellation(t *testing.T) {
 	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
 	defer env.Cleanup()
 	raw := []byte("index")
-	backup := filepath.Join(env.RootDir, memoryLegacyIndexBackup)
+	backup := filepath.Join(env.RootDir, LegacyIndexBackup)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if err := backUpMemoryIndexCtx(ctx, env, env.RootDir, raw, backup); !errors.Is(err, context.Canceled) {

@@ -934,7 +934,7 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     await threadsStore.getState().forkFromTurn("ref_a", { aside: true });
 
     const call = fake.calls.find((c) => c.method === "thread/fork");
-    // sourceItemKey carries `omitempty` on the wire (appwire/types.go), so
+    // sourceItemKey carries `omitempty` on the wire (appwire/types_turn.go), so
     // an aside-mode caller that never set it (aside is mutually exclusive
     // with it) sends no field at all.
     expect(call?.params).toEqual({ ref: "ref_a", aside: true });
@@ -1319,7 +1319,7 @@ function mutationReceipt(clientMutationId: string, disposition = "applied") {
 }
 
 describe("useThreadsStore.send", () => {
-  test("calls turn/start with text and a base64 image attachment (wire InputItem.data/mediaType/name - appwire/types.go:561-570)", async () => {
+  test("calls turn/start with text and a base64 image attachment (wire InputItem.data/mediaType/name - appwire/types_turn.go)", async () => {
     const fake = connectMutationClient();
     const dispatched = nextHandledRequest(fake, "turn/start", (params) => ({
       turn: { id: "turn_1", status: "inProgress", itemsView: "" },
@@ -1657,7 +1657,7 @@ const settleCallerContinuations = nextMacrotask;
 
 // drainAsSteer (kata 0bq1 Path B): the plan's terse locked-interfaces block
 // shows `drainAsSteer(ref)`, but the wire method it calls
-// (TurnDrainAsSteerParams, appwire/types.go:769-776) carries an optional
+// (TurnDrainAsSteerParams, appwire/types_turn.go) carries an optional
 // Input the daemon appends before draining ("Input lets clients atomically
 // append the current composer payload before the drain"), and the parity
 // floor's Path B row requires exactly that ("anything + non-empty queue ...

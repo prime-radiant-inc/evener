@@ -522,12 +522,8 @@ export { effortLabel, effortOptionLevels, sessionEffortLevels } from "./reasonin
 export type { AskBatch } from "./reconcileBatches";
 export { reconcileBatches } from "./reconcileBatches";
 export type {
-  CachedSessionHistory,
-  CachedSessionItem,
   CachedSessionRecord,
   CurrentTranscriptAdmission,
-  CurrentTranscriptFields,
-  CurrentTranscriptState,
   NotificationRoutingKey,
   OlderItemPageMerge,
   TurnHistoryFoldDetail,
@@ -885,6 +881,12 @@ export {
   type TranscriptStep,
   turns,
 } from "./transcriptSteps";
+export type {
+  CachedSessionHistory,
+  CachedSessionItem,
+  CurrentTranscriptFields,
+  CurrentTranscriptState,
+} from "./transcriptValidators";
 export type { WebSocketLike } from "./transport";
 export { rpcURLFromLocation } from "./transport";
 export {

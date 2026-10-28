@@ -26,7 +26,7 @@ export function isAttentionWorthy(model: ThreadModel | undefined): boolean {
 // not a tool-call-level "did this one call fail"
 // (contracts-transcript-scroll-liveness.md §5 line 114 talks about a
 // finalized tool call; turn.status === "failed" is the equivalent signal,
-// confirmed against appwire/types.go's TurnStatusFailed). error is
+// confirmed against appwire/types_protocol.go's TurnStatusFailed). error is
 // `unknown` on TurnModel, so this only ever checks presence, never shape.
 export function isFailedTurn(turn: TurnModel): boolean {
   return turn.status === "failed" || turn.error !== undefined;

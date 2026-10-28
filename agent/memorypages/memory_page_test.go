@@ -1,4 +1,4 @@
-package agent
+package memorypages
 
 import (
 	"context"
@@ -15,8 +15,8 @@ import (
 )
 
 // listMemoryPages lists env's scope with no cancellation.
-func listMemoryPages(env *execenv.LocalExecutionEnvironment) ([]memoryPage, error) {
-	return listMemoryPagesCtx(context.Background(), env)
+func listMemoryPages(env *execenv.LocalExecutionEnvironment) ([]Page, error) {
+	return ListPagesCtx(context.Background(), env)
 }
 
 func TestParseMemoryPage(t *testing.T) {
@@ -24,127 +24,127 @@ func TestParseMemoryPage(t *testing.T) {
 	mod := time.Date(2026, 3, 2, 0, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
 		name, rel, raw string
-		want           memoryPage
+		want           Page
 	}{
 		{"full frontmatter", "cents.md",
 			"---\ndescription: Money is integer cents, never floats\ntags: [Money, formatting, money]\nevidence: file:shop/price.go:Format\nupdated: 2026-10-08\nby: s1\nextra: kept\n---\n# Integer cents\nPrices are cents.\n",
-			memoryPage{Path: "cents.md", Description: "Money is integer cents, never floats", HasDescription: true, Tags: []string{"money", "formatting"}, Updated: "2026-10-08", By: "s1", Frontmatter: true, ModTime: mod}},
+			Page{Path: "cents.md", Description: "Money is integer cents, never floats", HasDescription: true, Tags: []string{"money", "formatting"}, Updated: "2026-10-08", By: "s1", Frontmatter: true, ModTime: mod}},
 		{"multi-line description collapses", "a.md",
 			"---\ndescription: |-\n  line one\n  line two\n---\nbody\n",
-			memoryPage{Path: "a.md", Description: "line one line two", HasDescription: true, Frontmatter: true, ModTime: mod}},
+			Page{Path: "a.md", Description: "line one line two", HasDescription: true, Frontmatter: true, ModTime: mod}},
 		{"single string tag, whitespace runs", "a.md",
 			"---\ndescription: d\ntags: \"  Read Only   Vitest \"\n---\n",
-			memoryPage{Path: "a.md", Description: "d", HasDescription: true, Tags: []string{"read-only-vitest"}, Frontmatter: true, ModTime: mod}},
+			Page{Path: "a.md", Description: "d", HasDescription: true, Tags: []string{"read-only-vitest"}, Frontmatter: true, ModTime: mod}},
 		{"non-string tags formatted, nested dropped, empty dropped", "a.md",
 			"---\ndescription: d\ntags: [2026, \"\", {x: 1}, true]\n---\n",
-			memoryPage{Path: "a.md", Description: "d", HasDescription: true, Tags: []string{"2026", "true"}, Frontmatter: true, ModTime: mod}},
+			Page{Path: "a.md", Description: "d", HasDescription: true, Tags: []string{"2026", "true"}, Frontmatter: true, ModTime: mod}},
 		{"string updated", "a.md",
 			"---\ndescription: d\nupdated: \"2026-10-07\"\n---\n",
-			memoryPage{Path: "a.md", Description: "d", HasDescription: true, Updated: "2026-10-07", Frontmatter: true, ModTime: mod}},
+			Page{Path: "a.md", Description: "d", HasDescription: true, Updated: "2026-10-07", Frontmatter: true, ModTime: mod}},
 		{"non-date updated ignored", "a.md",
 			"---\ndescription: d\nupdated: yesterday\n---\n",
-			memoryPage{Path: "a.md", Description: "d", HasDescription: true, Frontmatter: true, ModTime: mod}},
+			Page{Path: "a.md", Description: "d", HasDescription: true, Frontmatter: true, ModTime: mod}},
 		{"when field", "a.md",
 			"---\ndescription: d\nwhen: Writing a commit message in this repo\n---\n",
-			memoryPage{Path: "a.md", Description: "d", HasDescription: true, When: "Writing a commit message in this repo", Frontmatter: true, ModTime: mod}},
+			Page{Path: "a.md", Description: "d", HasDescription: true, When: "Writing a commit message in this repo", Frontmatter: true, ModTime: mod}},
 		{"multi-line when collapses", "a.md",
 			"---\ndescription: d\nwhen: |-\n  before changing\n  Total\n---\n",
-			memoryPage{Path: "a.md", Description: "d", HasDescription: true, When: "before changing Total", Frontmatter: true, ModTime: mod}},
+			Page{Path: "a.md", Description: "d", HasDescription: true, When: "before changing Total", Frontmatter: true, ModTime: mod}},
 		{"non-string when counts as missing", "a.md",
 			"---\ndescription: d\nwhen: [a, b]\n---\n",
-			memoryPage{Path: "a.md", Description: "d", HasDescription: true, Frontmatter: true, ModTime: mod}},
+			Page{Path: "a.md", Description: "d", HasDescription: true, Frontmatter: true, ModTime: mod}},
 		{"empty when counts as missing", "a.md",
 			"---\ndescription: d\nwhen: \"  \"\n---\n",
-			memoryPage{Path: "a.md", Description: "d", HasDescription: true, Frontmatter: true, ModTime: mod}},
+			Page{Path: "a.md", Description: "d", HasDescription: true, Frontmatter: true, ModTime: mod}},
 		{"a page with a when and no description carries no marker", "a.md",
 			"---\nwhen: Pricing a cart\n---\n# Cart pricing\nbody\n",
-			memoryPage{Path: "a.md", Description: "Cart pricing", When: "Pricing a cart", Frontmatter: true, ModTime: mod}},
+			Page{Path: "a.md", Description: "Cart pricing", When: "Pricing a cart", Frontmatter: true, ModTime: mod}},
 		{"a page with a when and no heading or body carries no marker", "a.md",
 			"---\nwhen: Pricing a cart\n---\n",
-			memoryPage{Path: "a.md", When: "Pricing a cart", Frontmatter: true, ModTime: mod}},
+			Page{Path: "a.md", When: "Pricing a cart", Frontmatter: true, ModTime: mod}},
 		{"unreadable frontmatter drops when", "bad.md",
 			"---\ndescription: Fix: use cents\nwhen: w\n---\n# Cents rule\n",
-			memoryPage{Path: "bad.md", Description: "Cents rule " + memoryNoDescription, Unreadable: true, Frontmatter: true, ModTime: mod}},
+			Page{Path: "bad.md", Description: "Cents rule " + NoDescription, Unreadable: true, Frontmatter: true, ModTime: mod}},
 		{"missing description falls back to heading", "sub/loader.md",
 			"# Vitest read-only loader\n\nUse --configLoader runner.\n",
-			memoryPage{Path: "sub/loader.md", Description: "Vitest read-only loader " + memoryNoDescription, ModTime: mod}},
+			Page{Path: "sub/loader.md", Description: "Vitest read-only loader " + NoDescription, ModTime: mod}},
 		{"non-string description counts as missing", "a.md",
 			"---\ndescription: 42\n---\nfirst line\n",
-			memoryPage{Path: "a.md", Description: "first line " + memoryNoDescription, Frontmatter: true, ModTime: mod}},
+			Page{Path: "a.md", Description: "first line " + NoDescription, Frontmatter: true, ModTime: mod}},
 		{"fallback to first non-blank line", "a.md",
 			"\n\n  first real line  \nsecond\n",
-			memoryPage{Path: "a.md", Description: "first real line " + memoryNoDescription, ModTime: mod}},
+			Page{Path: "a.md", Description: "first real line " + NoDescription, ModTime: mod}},
 		{"empty page", "empty.md", "",
-			memoryPage{Path: "empty.md", Description: memoryNoDescription, ModTime: mod}},
+			Page{Path: "empty.md", Description: NoDescription, ModTime: mod}},
 		{"a null frontmatter block is still frontmatter", "a.md",
 			"---\n~\n---\n# T\n",
-			memoryPage{Path: "a.md", Description: "T " + memoryNoDescription, Frontmatter: true, ModTime: mod}},
+			Page{Path: "a.md", Description: "T " + NoDescription, Frontmatter: true, ModTime: mod}},
 		{"an empty frontmatter block is still frontmatter", "a.md",
 			"---\n---\n# T\n",
-			memoryPage{Path: "a.md", Description: "T " + memoryNoDescription, Frontmatter: true, ModTime: mod}},
+			Page{Path: "a.md", Description: "T " + NoDescription, Frontmatter: true, ModTime: mod}},
 		{"unparseable frontmatter", "bad.md",
 			"---\ndescription: Fix: use cents\n---\n# Cents rule\n",
-			memoryPage{Path: "bad.md", Description: "Cents rule " + memoryNoDescription, Unreadable: true, Frontmatter: true, ModTime: mod}},
+			Page{Path: "bad.md", Description: "Cents rule " + NoDescription, Unreadable: true, Frontmatter: true, ModTime: mod}},
 		{"heading inside a fence is skipped", "a.md",
 			"```\n# not a heading\n```\n## Real title\n",
-			memoryPage{Path: "a.md", Description: "Real title " + memoryNoDescription, ModTime: mod}},
+			Page{Path: "a.md", Description: "Real title " + NoDescription, ModTime: mod}},
 		{"tilde fence needs a matching close", "a.md",
 			"~~~\n```\n# still fenced\n~~~\n# After\n",
-			memoryPage{Path: "a.md", Description: "After " + memoryNoDescription, ModTime: mod}},
+			Page{Path: "a.md", Description: "After " + NoDescription, ModTime: mod}},
 		{"indented heading", "a.md",
 			"  ## Loader notes\n",
-			memoryPage{Path: "a.md", Description: "Loader notes " + memoryNoDescription, ModTime: mod}},
+			Page{Path: "a.md", Description: "Loader notes " + NoDescription, ModTime: mod}},
 		{"four-space indent is code", "a.md",
 			"    # code\n# Real\n",
-			memoryPage{Path: "a.md", Description: "Real " + memoryNoDescription, ModTime: mod}},
+			Page{Path: "a.md", Description: "Real " + NoDescription, ModTime: mod}},
 		{"tab indent is code", "a.md",
 			"\t# code\n \t# code too\n# Real\n",
-			memoryPage{Path: "a.md", Description: "Real " + memoryNoDescription, ModTime: mod}},
+			Page{Path: "a.md", Description: "Real " + NoDescription, ModTime: mod}},
 		{"long fence not closed by a short one", "a.md",
 			"````\n```\n# not a heading\n````\n# After\n",
-			memoryPage{Path: "a.md", Description: "After " + memoryNoDescription, ModTime: mod}},
+			Page{Path: "a.md", Description: "After " + NoDescription, ModTime: mod}},
 		{"backtick in a backtick fence's info string opens no fence", "a.md",
 			"```go`x\n# Heading\n",
-			memoryPage{Path: "a.md", Description: "Heading " + memoryNoDescription, ModTime: mod}},
+			Page{Path: "a.md", Description: "Heading " + NoDescription, ModTime: mod}},
 		{"backtick in a tilde fence's info string still opens it", "a.md",
 			"~~~go`x\n# fenced\n~~~\n# After\n",
-			memoryPage{Path: "a.md", Description: "After " + memoryNoDescription, ModTime: mod}},
+			Page{Path: "a.md", Description: "After " + NoDescription, ModTime: mod}},
 		{"closing hashes trimmed", "a.md",
 			"## Title ##\n",
-			memoryPage{Path: "a.md", Description: "Title " + memoryNoDescription, ModTime: mod}},
+			Page{Path: "a.md", Description: "Title " + NoDescription, ModTime: mod}},
 		{"hash without space stays", "a.md",
 			"# C#\n",
-			memoryPage{Path: "a.md", Description: "C# " + memoryNoDescription, ModTime: mod}},
+			Page{Path: "a.md", Description: "C# " + NoDescription, ModTime: mod}},
 		{"a carriage return ends a heading", "a.md",
 			"# A\rB\n",
-			memoryPage{Path: "a.md", Description: "A " + memoryNoDescription, ModTime: mod}},
+			Page{Path: "a.md", Description: "A " + NoDescription, ModTime: mod}},
 		{"carriage-return-only line endings", "a.md",
 			"\r# Title\rbody\r",
-			memoryPage{Path: "a.md", Description: "Title " + memoryNoDescription, ModTime: mod}},
+			Page{Path: "a.md", Description: "Title " + NoDescription, ModTime: mod}},
 		{"CRLF line endings", "a.md",
 			"# Title\r\nbody\r\n",
-			memoryPage{Path: "a.md", Description: "Title " + memoryNoDescription, ModTime: mod}},
+			Page{Path: "a.md", Description: "Title " + NoDescription, ModTime: mod}},
 		{"CRLF frontmatter", "a.md",
 			"---\r\ndescription: d\r\ntags: [x]\r\n---\r\n# T\r\n",
-			memoryPage{Path: "a.md", Description: "d", HasDescription: true, Tags: []string{"x"}, Frontmatter: true, ModTime: mod}},
+			Page{Path: "a.md", Description: "d", HasDescription: true, Tags: []string{"x"}, Frontmatter: true, ModTime: mod}},
 		{"carriage-return-only frontmatter", "a.md",
 			"---\rdescription: d\r---\r# T\r",
-			memoryPage{Path: "a.md", Description: "d", HasDescription: true, Frontmatter: true, ModTime: mod}},
+			Page{Path: "a.md", Description: "d", HasDescription: true, Frontmatter: true, ModTime: mod}},
 		{"a carriage return ends the fallback line", "a.md",
 			"first\rsecond\n",
-			memoryPage{Path: "a.md", Description: "first " + memoryNoDescription, ModTime: mod}},
+			Page{Path: "a.md", Description: "first " + NoDescription, ModTime: mod}},
 		{"whitespace runs in a heading collapse", "a.md",
 			"# A \t\v\f B\n",
-			memoryPage{Path: "a.md", Description: "A B " + memoryNoDescription, ModTime: mod}},
+			Page{Path: "a.md", Description: "A B " + NoDescription, ModTime: mod}},
 		{"whitespace runs in the fallback line collapse", "a.md",
 			"one\t\vtwo\n",
-			memoryPage{Path: "a.md", Description: "one two " + memoryNoDescription, ModTime: mod}},
+			Page{Path: "a.md", Description: "one two " + NoDescription, ModTime: mod}},
 		{"non-markdown file", "notes.txt", "anything",
-			memoryPage{Path: "notes.txt", Description: "notes.txt", ModTime: mod}},
+			Page{Path: "notes.txt", Description: "notes.txt", ModTime: mod}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := parseMemoryPage(tc.rel, []byte(tc.raw), mod)
+			got := ParsePage(tc.rel, []byte(tc.raw), mod)
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("got  %+v\nwant %+v", got, tc.want)
 			}
@@ -156,8 +156,8 @@ func TestParseMemoryPage(t *testing.T) {
 func TestParseMemoryPageFallbackCut(t *testing.T) {
 	t.Parallel()
 	line := strings.Repeat("é", 130)
-	got := parseMemoryPage("a.md", []byte(line+"\n"), time.Time{})
-	want := string([]rune(line)[:120]) + " " + memoryNoDescription
+	got := ParsePage("a.md", []byte(line+"\n"), time.Time{})
+	want := string([]rune(line)[:120]) + " " + NoDescription
 	if got.Description != want {
 		t.Fatalf("got %q want %q", got.Description, want)
 	}
@@ -227,8 +227,8 @@ func TestIsMemoryPagePathExcludesTheRootIndexInAnyCase(t *testing.T) {
 		"memory.md.txt": true,
 		"notes.md":      true,
 	} {
-		if got := isMemoryPagePath(rel); got != want {
-			t.Errorf("isMemoryPagePath(%q)=%v, want %v", rel, got, want)
+		if got := IsPagePath(rel); got != want {
+			t.Errorf("IsPagePath(%q)=%v, want %v", rel, got, want)
 		}
 	}
 }
@@ -275,7 +275,7 @@ func TestListedMemoryPagePath(t *testing.T) {
 		"new.md": "new.md", "New/y.md": "New/y.md",
 	}
 	for rel, listed := range want {
-		if got := listedMemoryPagePath(env, rel); got != listed {
+		if got := ListedPagePath(env, rel); got != listed {
 			t.Fatalf("%s: got %q, want %q", rel, got, listed)
 		}
 	}

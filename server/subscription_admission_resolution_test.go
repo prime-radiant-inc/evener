@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appserver"
 )
 
 // requestOutcome reduces a request error to the wire code the client saw, or 0
@@ -84,5 +85,34 @@ func TestLocalSubscriptionAdmissionUnsubscribe(t *testing.T) {
 	err := client.Request(ctx, appwire.MethodThreadUnsubscribe, json.RawMessage(`"not an object"`), nil)
 	if got := requestOutcome(err); got != appwire.CodeInvalidParams {
 		t.Fatalf("undecodable unsubscribe outcome = %d (%v), want invalid params", got, err)
+	}
+}
+
+// A request whose params cannot be decoded is Invalid, as on the hub; a read
+// that does not subscribe, or a method the resolver does not admit, is
+// NotSubscribe.
+func TestLocalSubscriptionAdmissionIntent(t *testing.T) {
+	cases := []struct {
+		name   string
+		method string
+		params string
+		want   appserver.SubscriptionAdmissionIntent
+	}{
+		{"undecodable read", appwire.MethodThreadRead, `"not an object"`, appserver.SubscriptionAdmissionInvalid},
+		{"undecodable unsubscribe", appwire.MethodThreadUnsubscribe, `"not an object"`, appserver.SubscriptionAdmissionInvalid},
+		{"non-subscribing read", appwire.MethodThreadRead, `{"ref":"local:th_1"}`, appserver.SubscriptionAdmissionNotSubscribe},
+		{"other method", appwire.MethodPing, `"not an object"`, appserver.SubscriptionAdmissionNotSubscribe},
+		{"subscribing read of the served thread", appwire.MethodThreadRead, `{"ref":"local:th_1","subscribe":true}`, appserver.SubscriptionAdmissionResolved},
+		{"subscribing read of an unknown thread", appwire.MethodThreadRead, `{"ref":"local:other","subscribe":true}`, appserver.SubscriptionAdmissionUnresolved},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := NewServer(ServerConfig{})
+			srv.SetAppIdentity("local", "th_1")
+			msg := appwire.Message{Request: &appwire.Request{Method: tc.method, Params: json.RawMessage(tc.params)}}
+			if got := srv.resolveSubscriptionAdmission(msg).Intent; got != tc.want {
+				t.Fatalf("intent = %d, want %d", got, tc.want)
+			}
+		})
 	}
 }

@@ -187,7 +187,7 @@ describe("useThreadsStore.listJobs / jobOutput", () => {
     encoding: "utf8",
     data: "6789",
   };
-  // The single-job read carries the activity-job shape verbatim (appwire/types.go's
+  // The single-job read carries the activity-job shape verbatim (appwire/types_jobs.go's
   // JobActivityJob), including the untruncated command.
   const JOB_DATA = {
     jobId: "job_1",

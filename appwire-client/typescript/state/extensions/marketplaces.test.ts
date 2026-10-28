@@ -106,7 +106,7 @@ describe("marketplaceRemovalOutcome", () => {
   });
 
   test("still accepts a minimal well-formed member and an empty applied list", () => {
-    // Every source field but kind is optional on the wire (appwire/types.go
+    // Every source field but kind is optional on the wire (appwire/types_auth_commands.go
     // omitempty) and an empty list is a legitimate empty registry, so member
     // validation must not reject payloads the hub really sends.
     const minimal = { name: "acme", source: { kind: "url" }, lastUpdated: 0 };

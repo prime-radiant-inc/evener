@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/frontmatter"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/memorypages"
 )
 
 func registerMemoryTools(reg *tool.Registry, s *Session) error {
@@ -171,13 +172,6 @@ var errMemoryIndexGenerated = errors.New(tool.MemoryIndexGenerated)
 // control character (execenv.PathHasControl), which no index line can link to.
 var errMemoryPathControlCharacter = errors.New("memory path holds a control character, such as a newline; choose a name without one")
 
-// isMemoryIndexPath reports whether file, cleaned and relative to the scope,
-// names the generated index. Case is ignored: on a case-insensitive
-// filesystem memory.md is the same file.
-func isMemoryIndexPath(file string) bool {
-	return strings.EqualFold(file, memoryIndexFile)
-}
-
 const (
 	memoryMissingWhenNote           = "\n\nThis page has no when line in its frontmatter. Add when: <one line> saying when a future session needs this page: the moments it would otherwise get this wrong, at the level that covers all of them."
 	memoryUnreadableFrontmatterNote = "\n\nThis page's frontmatter is not valid YAML, so its index line falls back to its first heading. Fix the frontmatter; quote a value that contains a colon."
@@ -187,20 +181,20 @@ const (
 // rel, the slash path its scope lists it at, with the updated and by stamps
 // set when the file is a Markdown page, and the notes the tool result should
 // end with. A description or evidence value left unquoted around a colon is
-// quoted first (repairMemoryFrontmatter), so the page parses without a second
+// quoted first (memorypages.RepairFrontmatter), so the page parses without a second
 // call. The stamps go into the tool's one write, so no second
 // read-modify-write can undo another session's write or delete. Any other
 // file passes through unchanged.
 func (s *Session) stampMemoryPage(rel string, raw []byte) (stamped []byte, notes string) {
-	if path.Ext(rel) != ".md" || !isMemoryPagePath(rel) {
+	if path.Ext(rel) != ".md" || !memorypages.IsPagePath(rel) {
 		return raw, ""
 	}
 	// updated is written by hand, unquoted, so it reads back as a YAML date.
 	// Valid frontmatter that can't take a key line, such as a flow mapping,
 	// stays unstamped rather than unreadable.
-	stamped = frontmatter.SetField(repairMemoryFrontmatter(raw), "updated: "+s.sclock().Now().UTC().Format(time.DateOnly)+"\n")
+	stamped = frontmatter.SetField(memorypages.RepairFrontmatter(raw), "updated: "+s.sclock().Now().UTC().Format(time.DateOnly)+"\n")
 	stamped = frontmatter.SetField(stamped, frontmatter.YAMLField("by", s.ID()))
-	switch page := parseMemoryPage(rel, stamped, time.Time{}); {
+	switch page := memorypages.ParsePage(rel, stamped, time.Time{}); {
 	case page.Unreadable:
 		notes = memoryUnreadableFrontmatterNote
 	case page.When == "":
@@ -217,7 +211,7 @@ func (s *Session) stampMemoryPage(rel string, raw []byte) (stamped []byte, notes
 // neither is echoed back.
 func (s *Session) execOwnMemoryWrite(args map[string]any, operation string, write func(env *execenv.LocalExecutionEnvironment, forwarded map[string]any, stamp func([]byte) []byte) (any, error)) (any, error) {
 	scope, file := stringArg(args, "scope"), filepath.Clean(stringArg(args, "file_path"))
-	if isMemoryIndexPath(file) {
+	if memorypages.IsIndexPath(file) {
 		return nil, errMemoryIndexGenerated
 	}
 	// A delete still takes such a path, so a file named that way from
@@ -237,7 +231,7 @@ func (s *Session) execOwnMemoryWrite(args map[string]any, operation string, writ
 	// creates is listed under its own name even beside one differing only in
 	// case; an edit needs no second look, as it only changes a file that
 	// exists.
-	listed := listedMemoryPagePath(env, filepath.ToSlash(file))
+	listed := memorypages.ListedPagePath(env, filepath.ToSlash(file))
 	var notes string
 	stamp := func(raw []byte) []byte {
 		var stamped []byte
@@ -254,7 +248,7 @@ func (s *Session) execOwnMemoryWrite(args map[string]any, operation string, writ
 		out = scopeRelativeText(env.WorkingDirectory(), text)
 	}
 	if operation == "write" {
-		listed = listedMemoryPagePath(env, filepath.ToSlash(file))
+		listed = memorypages.ListedPagePath(env, filepath.ToSlash(file))
 	}
 	if text, ok := out.(string); ok && notes != "" {
 		out = text + notes
@@ -264,7 +258,7 @@ func (s *Session) execOwnMemoryWrite(args map[string]any, operation string, writ
 }
 
 func (s *Session) execMemoryWrite(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-	page, err := memoryPageFromFields(args)
+	page, err := memorypages.PageFromFields(stringArg(args, "when"), stringArg(args, "body"))
 	if err != nil {
 		return nil, err
 	}
@@ -312,7 +306,7 @@ func (s *Session) execMemoryRead(ctx context.Context, _ execenv.ExecutionEnviron
 		return nil, err
 	}
 	defer release()
-	if isMemoryIndexPath(file) {
+	if memorypages.IsIndexPath(file) {
 		var rendered memoryProjection
 		if err := s.renderMemoryScope(ctx, env, &rendered); err != nil {
 			return nil, err
@@ -342,7 +336,7 @@ func (s *Session) execMemoryRead(ctx context.Context, _ execenv.ExecutionEnviron
 		}
 		// Keyed as the scope lists the page, so a write naming it in another
 		// case finds this record.
-		listed := filepath.FromSlash(listedMemoryPagePath(env, filepath.ToSlash(file)))
+		listed := filepath.FromSlash(memorypages.ListedPagePath(env, filepath.ToSlash(file)))
 		s.recordMemoryContent(scope, listed, raw, recordErr, true)
 		// A long page gets a note pointing at what a page should be.
 		if text, ok := out.(string); ok && size > memoryPageSizeLimit {
@@ -371,14 +365,14 @@ func (s *Session) execMemorySearch(ctx context.Context, _ execenv.ExecutionEnvir
 	defer release()
 	g := parseFileGrepArgs(forwarded)
 	target := filepath.Clean(stringArg(args, "path"))
-	if isMemoryIndexPath(target) {
+	if memorypages.IsIndexPath(target) {
 		// A search of the index itself finds nothing, but bad arguments are
 		// still an error.
 		return "", execenv.CheckGrepArgs(g.pattern, g.glob, g.caseInsensitive)
 	}
 	var skip func(rel string) bool
 	if target == "." {
-		skip = isMemoryIndexPath
+		skip = memorypages.IsIndexPath
 	}
 	return env.GrepConfinedFiles(ctx, g.pattern, g.path, g.glob, g.caseInsensitive, g.maxResults, g.outputMode, g.contextLines, skip)
 }

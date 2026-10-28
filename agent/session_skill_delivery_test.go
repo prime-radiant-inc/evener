@@ -1014,7 +1014,7 @@ func TestSkillDelivery_DenialFinalizedBeforeLoopContinues(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("persist obligations: %v", err)
 	}
-	ctx := &cancelAtCheck{Context: context.Background(), remaining: 1}
+	ctx := &agenttest.CountdownContext{Context: context.Background(), Allow: 1}
 	if _, _, err := s.prepareSkillDelivery(ctx, nil, nil, llm.Request{}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("prepare error = %v, want context.Canceled", err)
 	}

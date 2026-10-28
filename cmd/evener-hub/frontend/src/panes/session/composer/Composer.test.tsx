@@ -2164,7 +2164,7 @@ test("a second message composed before the first turn's status frame arrives que
   const queued = fake.calls.find((c) => c.method === "turn/queue");
   expect(queued?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "m2" }] });
   // turn/queue carries no expectedTurnId to be wrong about: appwire v3 dropped
-  // the field from the method outright (appwire/types.go's ProtocolVersion
+  // the field from the method outright (appwire/types_protocol.go's ProtocolVersion
   // note), which is what lets the queue land before any turn id exists.
   expect(fake.calls.find((c) => c.method === "turn/queue")?.params).not.toHaveProperty("expectedTurnId");
   expect(fake.calls.filter((c) => c.method === "turn/start")).toHaveLength(1);

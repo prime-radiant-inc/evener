@@ -327,7 +327,12 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
   }
 }
 
-export const RETRY_SAFE_MUTATION_METHODS: ReadonlySet<string> = new Set(GENERATED_RETRY_SAFE_MUTATION_METHODS);
+// The retry-safe methods the dispatcher can settle. urls/remove is retry-safe
+// on the wire, but its response carries no mutation receipt, so a queued
+// record for it could never settle; its callers resend it directly.
+export const RETRY_SAFE_MUTATION_METHODS: ReadonlySet<string> = new Set(
+  GENERATED_RETRY_SAFE_MUTATION_METHODS.filter((method) => method !== "urls/remove"),
+);
 
 // rejectionReason extracts what to show a user whose control was refused.
 // Preference order: the daemon's own structured explanation, then the wire

@@ -17,6 +17,7 @@ import (
 
 	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/frontmatter"
+	"primeradiant.com/evener/agent/memorypages"
 )
 
 // memoryRaceRounds is how many rounds of racing writes one run of the
@@ -109,7 +110,7 @@ func TestMemoryConcurrentSessionsKeepEachPageLastWrite(t *testing.T) {
 		for !writersDone.Load() {
 			p := observer.readMemoryIndex("personal")
 			renders.Add(1)
-			if p.Status != "current" && p.Status != "missing" || strings.Contains(p.Content, memoryNoDescription) || strings.Contains(p.Content, memoryFrontmatterUnreadable) {
+			if p.Status != "current" && p.Status != "missing" || strings.Contains(p.Content, memorypages.NoDescription) || strings.Contains(p.Content, memorypages.FrontmatterUnreadable) {
 				badRenders.Add(1)
 				firstBad.CompareAndSwap(nil, fmt.Sprintf("status=%s content=%q", p.Status, p.Content))
 			}
