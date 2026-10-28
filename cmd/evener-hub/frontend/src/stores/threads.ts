@@ -972,6 +972,15 @@ async function openEntryTranscript(ref: string, recovery = false, sourcePublishe
   let timer: ReturnType<typeof setTimeout> | undefined;
   let settlement: HydrationSettlementWait | undefined;
   try {
+    // A fenced baseline retires the attached reader's captured opening state:
+    // its openLocal answers the stale refusal without reading storage, so a
+    // recovery re-open reads through a fresh reader. A held pane keeps one
+    // attached either way, mirroring the backstop's swap, so the repository
+    // cannot reclaim the bodies behind the display it still shows.
+    if (recovery && fixture.reader) {
+      fixture.reader.dispose();
+      fixture.reader = heldCountsAtStore(ref) ? fixture.repository.attachReader() : undefined;
+    }
     fixture.reader ??= fixture.repository.attachReader();
     // Ongoing repository publication: every accepted recorded update republishes
     // the repository model, so continued UI changes are repository-owned rather
@@ -1064,10 +1073,19 @@ async function openEntryTranscript(ref: string, recovery = false, sourcePublishe
       // restore stay missing — so the expected window must hold real bodies
       // alongside the range.
       // A re-open the caller's own machinery published the model for — the
-      // A re-open the caller's own machinery published the model for — the
       // claim's post-hydration certification — is source-owned the same way:
       // the display holds what the claim just published, so a settling
       // confirmation certifies rather than strands.
+      // The verdict belongs to an open that still owns the route: a hydration
+      // that changed incarnation, thread identity or durable authority has
+      // already replaced and disposed this repository, and the replacement's
+      // own lifecycle owns the pane from there. Judging the disposed
+      // repository would report a miss that fences the healthy replacement,
+      // so a superseded open hands the pane to whatever replaced it.
+      if (!openingOwned()) {
+        fixture.lastLocalOpenStatus = "superseded-by-source";
+        return true;
+      }
       if (sourcePublished || (repository.holdsResidentForegroundRange() && repository.holdsBodiedForegroundWindow())) {
         fixture.lastLocalOpenStatus = "superseded-by-source";
         return true;
@@ -7480,7 +7498,15 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
             inflight = replacement;
             continue;
           }
-          if (lifecycleActive && threadsStore.getState().threads.has(ref)) return;
+          if (lifecycleActive && threadsStore.getState().threads.has(ref)) {
+            // The held model may be the shell a missed open published after
+            // fencing its local read: a failed source read must not strand a
+            // body-suppressed display on the next successful read. The
+            // chain's own guards make this a no-op for a healthy or already
+            // armed display.
+            scheduleEntryOpeningRecovery(ref);
+            return;
+          }
           // Release is terminal even when the failed read belongs to an old
           // connection. A reconnect cannot re-arm a pane that no longer exists.
           if (!lifecycleActive) return;

@@ -3210,6 +3210,174 @@ it("an open superseded by a replacement hydration settles without the displaced 
   await lease.release();
 });
 
+// Two source failures after a settlement that recovered nothing must not
+// strand the shell the miss verdict published: the pane's own recovery chain
+// re-opens from storage, and the successful cache read converges the display
+// even though both wire reads failed.
+it("a pane whose settlement recovered nothing converges from storage after two failed source reads", async () => {
+  const storage = cache();
+  const realGetLatestWindow = storage.getLatestWindow.bind(storage);
+  setProductionEntryCacheForTests(storage);
+  const ref = "local:a";
+  const read = response(
+    ref,
+    Array.from({ length: 225 }, (_, index) => turn(`row-${index + 1}`, index + 1)),
+  );
+  read.snapshot = { incarnation: "inc-a", length: 225 };
+  const client = connect(read);
+  const lease = acquireBackgroundThread(ref);
+  await lease.ready;
+  await settleEntryTranscriptForTests(ref);
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect(await storage.getLatest(key, 300)).toHaveLength(225);
+  const bodies = () =>
+    threadsStore
+      .getState()
+      .threads.get(ref)
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.text)
+      .filter(Boolean);
+  expect(bodies()).toEqual([]);
+
+  // The open's storage read parks; the resync's wire read fails, so its
+  // settlement recovers nothing and the open reports the miss — the fenced
+  // shell and the marker the one-owner chain runs on. The failure retry's
+  // wire read fails too, so nothing on the wire can converge the pane: the
+  // chain's own re-open from storage is what must.
+  const localReadEntered = deferred<void>();
+  const localReadReleased = deferred<void>();
+  let holding = false;
+  (storage as unknown as { getLatestWindow: unknown }).getLatestWindow = (...args: unknown[]) => {
+    if (holding) {
+      holding = false;
+      localReadEntered.resolve();
+      return localReadReleased.promise.then(() =>
+        realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>)),
+      ) as ReturnType<typeof realGetLatestWindow>;
+    }
+    return realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>)) as ReturnType<
+      typeof realGetLatestWindow
+    >;
+  };
+  let wireReads = 0;
+  client.on("thread/read", () => {
+    wireReads += 1;
+    return Promise.reject(new Error("wire unavailable"));
+  });
+  setSessionCacheStalledOpenForTests(250);
+  setSessionCacheOpenBackstopForTests(40);
+  holding = true;
+  const opened = threadsStore.getState().ensureThread(ref);
+  await localReadEntered.promise;
+  client.emitNotification({
+    method: "evener/thread/resync",
+    params: { ref, threadId: "thread-a" },
+  });
+  try {
+    await opened;
+    await vi.waitFor(() => {
+      expect(bodies()).toContain("row-26");
+    });
+    // The chain converged from storage: no further wire read was needed.
+    expect(wireReads).toBe(2);
+  } finally {
+    setSessionCacheStalledOpenForTests(5000);
+    setSessionCacheOpenBackstopForTests(10000);
+    threadsStore.getState().releaseThread(ref);
+    await lease.release();
+  }
+});
+
+// A tracked hydration carrying a new incarnation replaces the repository the
+// open captured, then publishes the full window through the replacement. The
+// open's verdict must certify the replacement rather than judge the disposed
+// repository: a miss would fence the healthy replacement and churn another
+// source read.
+it("a replacement incarnation settling over the open's captured repository certifies the replacement", async () => {
+  const storage = cache();
+  const realGetLatestWindow = storage.getLatestWindow.bind(storage);
+  setProductionEntryCacheForTests(storage);
+  const ref = "local:a";
+  const read = response(
+    ref,
+    Array.from({ length: 225 }, (_, index) => turn(`row-${index + 1}`, index + 1)),
+  );
+  read.snapshot = { incarnation: "inc-a", length: 225 };
+  const replacement = response(
+    ref,
+    Array.from({ length: 225 }, (_, index) => turn(`row-${index + 1}`, index + 1)),
+  );
+  replacement.snapshot = { incarnation: "inc-b", length: 225 };
+  const client = connect(read);
+  const lease = acquireBackgroundThread(ref);
+  await lease.ready;
+  await settleEntryTranscriptForTests(ref);
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect(await storage.getLatest(key, 300)).toHaveLength(225);
+  const bodies = () =>
+    threadsStore
+      .getState()
+      .threads.get(ref)
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.text)
+      .filter(Boolean);
+  expect(bodies()).toEqual([]);
+
+  const wireReleased = deferred<void>();
+  let wireReads = 0;
+  client.on("thread/read", (params) => {
+    wireReads += 1;
+    if (wireReads === 1) {
+      return wireReleased.promise.then(() => ({ ...read, requestGeneration: params.requestGeneration }));
+    }
+    return { ...replacement, requestGeneration: params.requestGeneration };
+  });
+  client.emitNotification({
+    method: "evener/thread/resync",
+    params: { ref, threadId: "thread-a" },
+  });
+  await vi.waitFor(() => {
+    expect(wireReads).toBe(1);
+  });
+  let holding = false;
+  const localReadEntered = deferred<void>();
+  const localReadReleased = deferred<void>();
+  (storage as unknown as { getLatestWindow: unknown }).getLatestWindow = (...args: unknown[]) => {
+    if (holding) {
+      holding = false;
+      localReadEntered.resolve();
+      return localReadReleased.promise.then(() =>
+        realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>)),
+      ) as ReturnType<typeof realGetLatestWindow>;
+    }
+    return realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>)) as ReturnType<
+      typeof realGetLatestWindow
+    >;
+  };
+  holding = true;
+  const opened = threadsStore.getState().ensureThread(ref);
+  await localReadEntered.promise;
+  client.emitNotification({
+    method: "evener/thread/resync",
+    params: { ref, threadId: "thread-a" },
+  });
+  await vi.waitFor(() => {
+    expect(wireReads).toBe(2);
+  });
+  await drainSettleSteps();
+  // The replacement owns the display: the superseded open certifies it
+  // instead of judging the disposed repository it captured.
+  expect(productionEntryTranscriptForTests(ref).lastLocalOpenStatus).toBe("superseded-by-source");
+  expect(productionEntryTranscriptForTests(ref).localOpenDeadlineMissed).toBe(false);
+  expect(wireReads).toBe(2);
+  expect(bodies()).toContain("row-26");
+  localReadReleased.resolve();
+  wireReleased.resolve();
+  await opened;
+  await threadsStore.getState().releaseThread(ref);
+  await lease.release();
+});
+
 it("a wedged storage read abandons the open at the backstop and hands the pane to the source", async () => {
   const storage = cache();
   const realGetLatestWindow = storage.getLatestWindow.bind(storage);
