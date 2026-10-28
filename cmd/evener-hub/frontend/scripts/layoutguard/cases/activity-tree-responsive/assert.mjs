@@ -23,17 +23,17 @@ export default function assert(measurements) {
     ].join(", ");
   }
 
-  function assertNoHorizontalOverflow(fixture, ownerName, box, diagnostics, { expectedOverflowX } = {}) {
+  function assertNoHorizontalOverflow(fixture, ownerName, box, diagnostics, { allowedOverflowX } = {}) {
     if (!box) {
       failures.push(`${fixture}: missing ${ownerName}`);
       return;
     }
-    if (expectedOverflowX !== undefined && box.overflowX !== expectedOverflowX) {
+    if (allowedOverflowX !== undefined && !allowedOverflowX.includes(box.overflowX)) {
       failures.push(
-        `${fixture}: ${ownerName} overflow-x is ${JSON.stringify(box.overflowX)}, expected ${JSON.stringify(expectedOverflowX)}`,
+        `${fixture}: ${ownerName} overflow-x is ${JSON.stringify(box.overflowX)}, expected one of ${JSON.stringify(allowedOverflowX)}`,
       );
     }
-    if (expectedOverflowX === undefined && /auto|scroll/.test(box.overflowX)) {
+    if (allowedOverflowX === undefined && /auto|scroll/.test(box.overflowX)) {
       failures.push(
         `${fixture}: ${ownerName} overflow-x is ${JSON.stringify(box.overflowX)} - non-output owners must not be horizontal scrollers`,
       );
@@ -81,7 +81,7 @@ export default function assert(measurements) {
     // The tree pane is the one sanctioned scroller in this view: it scrolls
     // vertically, never horizontally.
     assertNoHorizontalOverflow(fixture, "tree pane", measurement.treePane, diagnostics, {
-      expectedOverflowX: "hidden",
+      allowedOverflowX: ["hidden", "clip"],
     });
 
     // The dense tree is a single column in every form factor since the
