@@ -65,6 +65,35 @@ except where a line says so itself.
   measured 399/400px content boxes, a narrow desktop pane, and Send geometry
   at larger font sizes. The default browser guard includes the same checks.
 
+### Recovery selection ownership
+
+- A conversation composer's recovery selection belongs to a seat: a per-tab,
+  per-conversation identity stored with the composer drafts. The seat survives
+  a mobile route reconstruction and a desktop layout restore. A reconstructed
+  mobile route uses the conversation mapping first, never a pane-id mapping
+  left by another conversation under the same restarted id. The seat is never
+  part of shared layout geometry, so another tab cannot adopt or overwrite it.
+  A route placement does not write a pane-id mapping; those are written only
+  when a layout is saved or restored, so startup ordering cannot overwrite a
+  saved pane's seat before its layout returns. A retarget that retains a seat
+  rewrites the destination ref's mapping, so a mobile reconstruction recovers
+  that seat and its selection. Pane-id mappings store the conversation they
+  belong to; a shared layout that reuses the id for another conversation
+  falls back to this tab's mapping for the restored ref. Validated pane seats
+  are reserved across the layout before any ref fallback or fresh seat.
+- Independent panes on one conversation hold distinct seats and therefore
+  independent recovery selections. A `sessionZoom` cascade uses one tab-scoped
+  seat for its columns, with a separate selection entry per column ref.
+- Restoring a composer selects the recovery row its seat last chose, else the
+  oldest restorable rejected row. A preserved local row therefore wins over an
+  older rejected peer row after reload.
+- A refused write's preservation records the fresh row as the seat's selection;
+  retiring a lease clears the stored choice only when it still names the
+  retiring row. A resume or retarget carries the seat's selection to the
+  resumed ref, a successful recovery write reconciles the seat with the row's
+  durable ref, and a retained cascade column that owns a recovery selection
+  maps its ref to the pane's seat.
+
 ### Atomic skill and command selections
 
 - Session and launcher composers share the real ProseMirror editor. Explicit

@@ -2,8 +2,15 @@ import type { DockviewApi } from "dockview-core";
 import { lazy } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { createAttachmentOperations } from "../panes/session/composer/attachments/useAttachments";
+import {
+  composerSelectionScope,
+  readRecoverySelection,
+  readRefComposerSeat,
+  writeRecoverySelection,
+} from "../panes/session/composer/draft";
 import { retainedTranscriptReadView } from "../panes/session/transcript/transcriptReadView";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
+import type { MutationRecoveryRecord } from "../stores/mutationOutbox";
 import { captureAttentionPlacement, presentAttentionTarget, restoreAttentionPlacement } from "./attentionPlacement";
 import { conversationPaneLifetime, disposeConversationPaneLifetime } from "./paneLifetime";
 import { registerPaneForTests } from "./paneRegistry";
@@ -28,6 +35,25 @@ afterEach(() => {
 
 function rootPane(): OpenPaneRecord {
   return { id: "session-1", type: "session", params: { ref: "root" }, slot: "main" };
+}
+
+function recoveryRow(id: string, text: string): MutationRecoveryRecord {
+  const input = [{ type: "text" as const, text }];
+  return {
+    version: 1,
+    clientMutationId: id,
+    intentSequence: 1,
+    createdAt: 1,
+    targetRef: "root",
+    method: "turn/start",
+    payload: { ref: "root", input },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input },
+    composerText: text,
+    recoveryKind: "rejected",
+    state: "submitting",
+    attempted: false,
+  } as MutationRecoveryRecord;
 }
 
 test("attention substitution retains the source lifetime", async () => {
@@ -208,4 +234,61 @@ test.each([false, true])("layout restore success %s disposes only committed repl
     expect(conversationPaneLifetime(restored).composer).toBe(composer);
     expect(composer?.getSnapshot().text).toBe("keep this draft");
   }
+});
+
+test("a resumed identity carries the pane's selected recovery owner", () => {
+  const pane = rootPane();
+  const lifetime = conversationPaneLifetime(pane);
+  const composer = lifetime.composer;
+  if (!composer) throw new Error("session lifetime lacks its source");
+  const peer = recoveryRow("peer-row", "older peer work");
+  const preserved = recoveryRow("preserved-row", "local [image 1]");
+  composer.setActiveRecoveryId(preserved);
+  const scope = composer.recoverySelectionOwnerId;
+  expect(readRecoverySelection("root", scope)).toBe(preserved.clientMutationId);
+
+  lifetime.adoptResumedSource("resumed");
+  const resumed = lifetime.composer;
+  if (!resumed) throw new Error("resumed lifetime lacks its source");
+  expect(resumed.recoverySelectionOwnerId).toBe(scope);
+  expect(readRecoverySelection("resumed", scope)).toBe(preserved.clientMutationId);
+  expect(readRecoverySelection("resumed", scope)).not.toBe(peer.clientMutationId);
+  lifetime.dispose();
+});
+
+test("a resumed identity keeps a newer destination selection", () => {
+  const pane = rootPane();
+  const lifetime = conversationPaneLifetime(pane);
+  const composer = lifetime.composer;
+  if (!composer) throw new Error("session lifetime lacks its source");
+  const scope = composer.recoverySelectionOwnerId;
+  writeRecoverySelection("resumed", scope, "destination-row");
+  composer.setActiveRecoveryId(recoveryRow("preserved-row", "local [image 1]"));
+
+  lifetime.adoptResumedSource("resumed");
+  expect(readRecoverySelection("resumed", scope)).toBe("destination-row");
+  lifetime.dispose();
+});
+
+test("a resumed source seat survives a later mobile route reconstruction", () => {
+  const pane = rootPane();
+  workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
+  const lifetime = conversationPaneLifetime(pane);
+  const composer = lifetime.composer;
+  if (!composer) throw new Error("session lifetime lacks its source");
+  const preserved = recoveryRow("resumed-seat-row", "local resumed work");
+  composer.setActiveRecoveryId(preserved);
+  const seat = lifetime.composerSeatId;
+
+  lifetime.adoptResumedSource("local:mobile-resumed");
+  expect(readRefComposerSeat("local:mobile-resumed")).toBe(seat);
+
+  // A reload reconstructs the resumed route under a fresh pane id. Route
+  // placement must find this tab's seat through the conversation mapping.
+  resetWorkspaceStoreForTests();
+  const reloadedId = workspaceStore.getState().openPane("session", { ref: "local:mobile-resumed" });
+  const reloaded = workspaceStore.getState().panes.find((record) => record.id === reloadedId);
+  if (!reloaded?.composerSeatId) throw new Error("reloaded conversation lacks its seat");
+  expect(reloaded.composerSeatId).toBe(seat);
+  expect(readRecoverySelection("local:mobile-resumed", composerSelectionScope(seat))).toBe(preserved.clientMutationId);
 });

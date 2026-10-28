@@ -1,3 +1,4 @@
+import { carryRecoverySelection, readRefComposerSeat, writeRefComposerSeat } from "../panes/session/composer/draft";
 import { type ComposerSourceState, createComposerSourceState } from "../panes/session/composer/sourceState";
 import type { TranscriptReadView } from "../panes/session/transcript/transcriptReadView";
 import type { JobLogReader } from "../panes/transcript/jobLogReader";
@@ -12,6 +13,7 @@ export interface PaneLifetime {
   readonly sourceRef: string;
   readonly sourceType: "session" | "transcript";
   readonly compositionOwnerId: string;
+  readonly composerSeatId: string;
   readonly alive: boolean;
   readonly composer: ComposerSourceState | null;
   readonly composers: Map<string, ComposerSourceState>;
@@ -40,6 +42,7 @@ export function conversationPaneLifetime(pane: OpenPaneRecord): PaneLifetime {
     paneId: pane.id,
     serial: ++nextSerial,
     compositionOwnerId: createSecureUUID(),
+    composerSeatId: pane.composerSeatId ?? pane.id,
     get sourceRef() {
       return sourceRef;
     },
@@ -55,7 +58,7 @@ export function conversationPaneLifetime(pane: OpenPaneRecord): PaneLifetime {
       if (!alive || sourceType !== "session") return null;
       let state = lifetime.composers.get(sourceRef);
       if (state === undefined) {
-        state = createComposerSourceState(sourceRef, lifetime.compositionOwnerId);
+        state = createComposerSourceState(sourceRef, lifetime.compositionOwnerId, lifetime.composerSeatId);
         lifetime.composers.set(sourceRef, state);
       }
       return state;
@@ -68,7 +71,18 @@ export function conversationPaneLifetime(pane: OpenPaneRecord): PaneLifetime {
       // state; a fresh one for the resumed identity loads the draft the
       // resume carried, and any state already created for the resumed ref
       // keeps its newer work.
-      lifetime.composers.get(sourceRef)?.dispose();
+      const retired = lifetime.composers.get(sourceRef);
+      if (retired) {
+        carryRecoverySelection(sourceRef, resumedRef, retired.recoverySelectionOwnerId);
+        // A route reconstruction resolves the conversation mapping, so a
+        // resumed seat must be recoverable by its new ref. An owner already
+        // established for that ref is newer and keeps it.
+        const established = readRefComposerSeat(resumedRef);
+        if (established === undefined || established === lifetime.composerSeatId) {
+          writeRefComposerSeat(resumedRef, lifetime.composerSeatId);
+        }
+      }
+      retired?.dispose();
       lifetime.composers.delete(sourceRef);
       sourceRef = resumedRef;
     },

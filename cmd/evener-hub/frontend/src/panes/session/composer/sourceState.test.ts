@@ -18,7 +18,10 @@ import {
   readComposerDraft,
   readComposerDraftRevisionId,
   readDraftRevision,
+  readRecoverySelection,
+  readRefComposerSeat,
   writeComposerDraft,
+  writeRecoverySelection,
 } from "./draft";
 import { resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
 
@@ -586,3 +589,113 @@ test.each(["success", "failure"] as const)(
     );
   },
 );
+
+test("successful recovery writes follow a peer retarget", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const ref = "local:write-retarget-old";
+  const resumed = "local:write-retarget-middle";
+  const resumedAgain = "local:write-retarget-new";
+  const original = await storage.enqueueIntent({
+    targetRef: ref,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "old composition" }] },
+    attachments: [],
+    composerText: "old composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "old composition" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+  const source = createTestComposerSource(ref, undefined, "pane-a");
+  const peer = new MutationOutboxIndexedDB();
+  try {
+    await source.activateRecovery(recovery);
+    await peer.retargetOutbox(ref, resumed, { threadId: "thread-mid", instanceId: "instance-mid" });
+    expect(await source.queueRecoveryPersistence(original.clientMutationId, "first newer", [], [])).toBe(true);
+    expect(readRefComposerSeat(resumed)).toBe("pane-a");
+
+    // Another tab retargets the row again; the next successful write follows.
+    await peer.retargetOutbox(resumed, resumedAgain, { threadId: "thread-new", instanceId: "instance-new" });
+    expect(await source.queueRecoveryPersistence(original.clientMutationId, "second newer", [], [])).toBe(true);
+    expect(readRefComposerSeat(resumedAgain)).toBe("pane-a");
+  } finally {
+    source.dispose();
+    peer.close();
+    storage.close();
+  }
+});
+test("a retargeted autosave carries the selected row past an older peer row", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const ref = "local:retarget-selection-old";
+  const resumed = "local:retarget-selection-new";
+  const queue = async (text: string) => {
+    const record = await storage.enqueueIntent({
+      targetRef: ref,
+      method: "turn/start",
+      payload: { ref, input: [{ type: "text", text }] },
+      attachments: [],
+      composerText: text,
+      optimisticDisplay: { method: "turn/start", input: [{ type: "text", text }] },
+    });
+    await storage.transferToRecovery(record.clientMutationId, "rejected");
+    return record;
+  };
+  const olderPeer = await queue("older peer work");
+  const selected = await queue("selected local work");
+  const recovery = await storage.getRecovery(selected.clientMutationId);
+  if (!recovery) throw new Error("missing selected recovery fixture");
+  const source = createTestComposerSource(ref, undefined, "pane-a");
+  const peer = new MutationOutboxIndexedDB();
+  let reloaded: ReturnType<typeof createTestComposerSource> | undefined;
+  try {
+    await source.activateRecovery(recovery);
+    await peer.retargetOutbox(ref, resumed, { threadId: "thread-new", instanceId: "instance-new" });
+    expect(await source.queueRecoveryPersistence(selected.clientMutationId, "selected local work", [], [])).toBe(true);
+
+    expect(readRecoverySelection(resumed, source.recoverySelectionOwnerId)).toBe(selected.clientMutationId);
+    expect(readRecoverySelection(resumed, source.recoverySelectionOwnerId)).not.toBe(olderPeer.clientMutationId);
+    reloaded = createTestComposerSource(resumed, undefined, "pane-a");
+    expect(readRecoverySelection(resumed, reloaded.recoverySelectionOwnerId)).toBe(selected.clientMutationId);
+  } finally {
+    source.dispose();
+    reloaded?.dispose();
+    peer.close();
+    storage.close();
+  }
+});
+// A preservation that commits while this composer still holds its stale lease
+// selects a fresh preserved row for the seat. Retiring the stale lease
+// afterwards must clear only its own stored choice, never that newer
+// selection: it is a reopen's only path back to the preserved local work.
+test("retiring a lease clears only its own stored selection", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const ref = "local:retire-preserved-selection";
+  const original = await storage.enqueueIntent({
+    targetRef: ref,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "row composition" }] },
+    attachments: [],
+    composerText: "row composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "row composition" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+  const source = createTestComposerSource(ref, undefined, "pane-a");
+  try {
+    source.setActiveRecoveryId(recovery);
+    expect(readRecoverySelection(ref, source.recoverySelectionOwnerId)).toBe(original.clientMutationId);
+    // A preservation commits while this composer still holds the stale
+    // lease, selecting a fresh row for the seat.
+    writeRecoverySelection(ref, source.recoverySelectionOwnerId, "preserved-row");
+    source.setActiveRecoveryId(null);
+    expect(source.getSnapshot().activeRecoveryId).toBeNull();
+    expect(readRecoverySelection(ref, source.recoverySelectionOwnerId)).toBe("preserved-row");
+  } finally {
+    source.dispose();
+    storage.close();
+  }
+});
