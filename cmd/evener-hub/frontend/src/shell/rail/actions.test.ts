@@ -8,16 +8,12 @@ import { capability, completeSession, manifest, wireSnapshot } from "@evener/app
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { archivedListKey, archivedListStore, resetArchivedListStoreForTests } from "../../stores/archivedList";
+import { setCacheChannelFactoryForTests } from "../../stores/cacheLifetime";
 import { connectionStore } from "../../stores/connection";
 import { navigationStore } from "../../stores/navigation/store";
 import { SessionEntryCache } from "../../stores/sessionEntryCache";
 import { holdNextTransaction } from "../../stores/testing/stalledIndexedDB";
-import {
-  resetThreadsStoreForTests,
-  setCacheChannelFactoryForTests,
-  setProductionEntryCacheForTests,
-  threadsStore,
-} from "../../stores/threads";
+import { resetThreadsStoreForTests, setProductionEntryCacheForTests, threadsStore } from "../../stores/threads";
 import {
   assignSessionPin,
   deletePinSection,
