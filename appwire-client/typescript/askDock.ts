@@ -17,7 +17,8 @@ import { sessionActionError } from "./errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore, type StoreListener } from "./frameworkFreeStore";
 import type { ThreadModel } from "./model";
 import { type AskBatch, reconcileBatches } from "./reconcileBatches";
-import { comparePositions, itemTextPresence } from "./reducer";
+import { comparePositions } from "./reducer";
+import { itemTextPresence } from "./transcriptItems";
 
 export interface AskAnswerState {
   resolution: AskResolution | null;

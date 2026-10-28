@@ -6,9 +6,6 @@ import {
   currentTranscriptState,
   decodeCurrentTranscriptState,
   hydrateThread,
-  itemTextPresence,
-  markItemIdentityOnly,
-  markItemTextOmitted,
   mergeOlderItemPage,
   threadModelFromCurrentState,
 } from "./reducer";
@@ -17,6 +14,7 @@ import { notificationWireItem } from "./testing/notificationWireFixtures";
 import { appendChunk, chunkViewBackingForTests } from "./testing/reducerHooks";
 import { subagentCallItems } from "./testing/subagentWireFixtures";
 import { toolWireItems } from "./testing/toolWireFixtures";
+import { itemTextPresence, markItemIdentityOnly, markItemTextOmitted } from "./transcriptItems";
 import {
   type EvenerDelegateInfo,
   THREAD_ITEM_EVENT_KINDS,

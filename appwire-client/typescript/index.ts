@@ -538,7 +538,6 @@ export {
   cachedSessionRecord,
   collectAuthoritativeMutationIds,
   comparePositions,
-  copyItemTextPresence,
   currentTranscriptState,
   decodeCurrentTranscriptState,
   decodeTranscriptItem,
@@ -548,13 +547,7 @@ export {
   imageSessionRouteForSession,
   invalidateHistory,
   issueLatestWindowRead,
-  isToolCallItemId,
-  isToolResultItemId,
   itemIdentityMatches,
-  itemTextPresence,
-  joinedReasoningParagraphs,
-  markItemIdentityOnly,
-  markItemTextOmitted,
   mergeOlderItemPage,
   mergeOlderItemPageWithFolds,
   mergeTailTurns,
@@ -865,6 +858,15 @@ export type {
   TranscriptDraftStorage,
 } from "./transcriptDisplayStore";
 export { createTranscriptDisplayStore, fromWireChange, transcriptDisplaySupport } from "./transcriptDisplayStore";
+export {
+  copyItemTextPresence,
+  isToolCallItemId,
+  isToolResultItemId,
+  itemTextPresence,
+  joinedReasoningParagraphs,
+  markItemIdentityOnly,
+  markItemTextOmitted,
+} from "./transcriptItems";
 export type {
   ProjectedAnchor,
   ProjectedEntry,

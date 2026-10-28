@@ -16,10 +16,10 @@ import {
   hydrateThread,
   invalidateHistory,
   issueLatestWindowRead,
-  itemTextPresence,
   mergeOlderItemPage,
   pruneBackgroundHistoryBodies,
 } from "./reducer";
+import { itemTextPresence } from "./transcriptItems";
 import type {
   AnyNotification,
   HistoryChanges,

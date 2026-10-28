@@ -8,7 +8,7 @@ import { render } from "../renderNative.testkit";
 import { memoryStorage } from "../syncStringStorageTestUtils";
 import type { BoardState, ClassifiedRow } from "./attention";
 import { boardState } from "./attention";
-import { BoardRow, type BoardRowProps, sessionSubagentChip } from "./BoardRow";
+import { BoardRow, type BoardRowProps, sessionSubagentChip, spokenAge } from "./BoardRow";
 import { FreshDot } from "../reader/FreshDot";
 import { PulseMeter } from "./PulseMeter";
 import { StateMark } from "./StateMark";
@@ -524,3 +524,22 @@ function pressedStyle(tree: ReactTestRenderer, pressed: boolean): Style {
 	const style = pressable(tree).props.style;
 	return typeof style === "function" ? flatten(style({ pressed })) : {};
 }
+
+describe("spokenAge", () => {
+	it("leads with the count and names a different unit for each age suffix", () => {
+		const spoken = ["12m", "12h", "12d"].map(spokenAge);
+		for (const text of spoken) expect(text.startsWith("12")).toBe(true);
+		expect(new Set(spoken.map((text) => text.replace(/^12/, ""))).size).toBe(3);
+	});
+
+	it("pluralizes the unit from two up and not at one", () => {
+		for (const unit of ["m", "h", "d"]) {
+			const one = spokenAge(`1${unit}`);
+			expect(spokenAge(`2${unit}`)).toBe(`${one.replace(/^1/, "2")}s`);
+		}
+	});
+
+	it("passes through an age that is not a count and unit", () => {
+		expect(spokenAge("now")).toBe("now");
+	});
+});
