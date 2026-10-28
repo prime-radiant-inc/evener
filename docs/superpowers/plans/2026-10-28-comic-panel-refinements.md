@@ -20,7 +20,7 @@
 - Read `AGENTS.md`, `docs/developing-evener/testing.md` and `docs/developing-evener/design-system.md`. Assert behavior, not production copy. Do not mock Evener internals.
 - Before running checks, inspect their scripts. Use the worktree's matching dependency install; never run `npm ci` through a shared symlink. Run heavy gates sequentially.
 
-**Clarification for Jesse's approval:** The design's phrase “Preserve selection and reading location” is too broad when followed by reload. Keep rendered text selectable and preserve its reading location through reload; do not add persistent saved text selections. Apply this wording clarification to the spec once approved.
+**Selection scope:** Keep rendered text selectable and preserve its reading location through reload; do not add persistent saved text selections.
 
 ## Review Focus
 
@@ -129,4 +129,4 @@ expect(relocatedStrip.id).toBe(previousStrip.id);
 
 ## Execution
 
-Keep this plan as the execution checklist; the session task list tracks only phase status. Task 1 establishes the bounded reader first. Task 2 is one coherent rendering/source-map unit. Task 3 is a separately reviewable chronology change. Task 4 verifies their integration. Use subagent-driven execution if Jesse confirms retaining that approach; keep writers isolated when their paths overlap.
+The plan-scoped SDD ledger records execution progress; the session task list tracks only phase status. Task 1 establishes the bounded reader first. Task 2 is one coherent rendering/source-map unit. Task 3 is a separately reviewable chronology change. Task 4 verifies their integration. Jesse confirmed subagent-driven execution; keep writers isolated when their paths overlap.

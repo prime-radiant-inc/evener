@@ -77,9 +77,10 @@ no independent polling or speculative full-history download.
 ## Preservation and recovery
 
 Keep the raw transcript unchanged. Presentation retains source identities and
-source-offset anchors even where Markdown syntax has no visible glyph. Preserve
-selection and reading location through resize, streaming, font fallback, paging,
-reload and Standard/Comic switches. Incomplete streamed Markdown remains readable
+source-offset anchors even where Markdown syntax has no visible glyph. Keep text
+selectable and preserve reading location through resize, streaming, font fallback,
+paging, reload and Standard/Comic switches. Active text selections are not saved
+across reload. Incomplete streamed Markdown remains readable
 and settles without duplicate or lost content. Reuse the shared safe Markdown
 rendering and link behavior. Preserve existing tool images and author attribution.
 
