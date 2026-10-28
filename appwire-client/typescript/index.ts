@@ -521,30 +521,14 @@ export { createReadyGenerationFence } from "./readyGenerationFence";
 export { effortLabel, effortOptionLevels, sessionEffortLevels } from "./reasoningEffort";
 export type { AskBatch } from "./reconcileBatches";
 export { reconcileBatches } from "./reconcileBatches";
-export type {
-  CachedSessionRecord,
-  CurrentTranscriptAdmission,
-  NotificationRoutingKey,
-} from "./reducer";
+export type { NotificationRoutingKey } from "./reducer";
 export {
   applyNotification,
   applyOverlayEndForTranscriptHandoff,
-  cachedSessionRecord,
-  collectAuthoritativeMutationIds,
-  currentTranscriptState,
-  decodeCurrentTranscriptState,
-  decodeTranscriptItem,
-  encodeTranscriptItem,
-  hydrateThread,
-  mergeTailTurns,
   notificationRoutingKey,
   notificationTargetsThread,
   notificationTouchesTranscript,
-  prependOlderTurns,
-  readWindowBounds,
   resolvePendingEscalation,
-  threadModelFromCache,
-  threadModelFromCurrentState,
 } from "./reducer";
 export {
   type RetryEligibility,
@@ -772,6 +756,19 @@ export {
   words,
   writeFileSummary,
 } from "./toolSummaries";
+export type {
+  CachedSessionRecord,
+  CurrentTranscriptAdmission,
+} from "./transcriptCache";
+export {
+  cachedSessionRecord,
+  currentTranscriptState,
+  decodeCurrentTranscriptState,
+  decodeTranscriptItem,
+  encodeTranscriptItem,
+  threadModelFromCache,
+  threadModelFromCurrentState,
+} from "./transcriptCache";
 // TranscriptDisplayConfig (an unused alias of TranscriptDisplayConfigV1) is
 // deliberately absent: the root publishes the wire type of that name from
 // types.gen, which it would shadow.
@@ -841,16 +838,21 @@ export {
   applyHistoryReadFailure,
   applyReadModel,
   applyReadResponse,
+  collectAuthoritativeMutationIds,
   comparePositions,
+  hydrateThread,
   ITEM_OMISSION_TOLERANT_FIELDS,
   invalidateHistory,
   issueLatestWindowRead,
   mergeOlderItemPage,
+  mergeTailTurns,
   mergeTranscriptItemVersioned,
   mergeTranscriptReaderWindow,
   mergeTranscriptTurnVersioned,
+  prependOlderTurns,
   pruneBackgroundHistoryBodies,
   readDisposition,
+  readWindowBounds,
 } from "./transcriptHistory";
 export {
   copyItemTextPresence,

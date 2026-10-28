@@ -8,7 +8,8 @@
 // fakeClient.ts/fakeSocket.ts precedent for shared non-test test
 // infrastructure.
 import type { ThreadModel } from "../model";
-import { applyNotification, hydrateThread } from "../reducer";
+import { applyNotification } from "../reducer";
+import { hydrateThread } from "../transcriptHistory";
 import type { AnyNotification, OverlayItem, Thread, ThreadCapabilities, ThreadReadResponse } from "../types.gen";
 
 // mulberry32: a small, fast, deterministic PRNG (public-domain algorithm) -

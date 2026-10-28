@@ -198,7 +198,7 @@ establish range coverage or own persisted turn metadata.
 
 ## Transcript reader reducer helpers
 
-`reducer.ts` holds the transcript reducer. The warning fold (`foldWarningParams`,
+The transcript reducer is split by responsibility. The warning fold (`foldWarningParams`,
 `joinWarningParts`, the bounded raw-frame fallback) lives in `warningFold.ts`, a
 leaf module the reducer imports and that imports nothing from it. The cache
 and checkpoint shape validators (`valid*`, the persisted-record types they
@@ -209,10 +209,12 @@ predicates) in `transcriptItems.ts`; both are leaves over `model` and
 (`mergeTurnHistory*`, `mergeOlderItemPageWithFolds`, `itemIdentityMatches`) live in
 `turnHistoryMerge.ts`, which imports `transcriptItems` only. Versioned history and
 the live overlay (history state, versioned merges, overlay display, read dispositions,
-`applyReadResponse`/`applyReadModel`) live in `transcriptHistory.ts`, which imports
-`turnHistoryMerge` and `transcriptItems`. Further
-reducer pieces follow the same rule: a split-out module never imports
-`reducer.ts`.
+`applyReadResponse`/`applyReadModel`, `hydrateThread`) live in `transcriptHistory.ts`,
+which imports `turnHistoryMerge` and `transcriptItems`. The persisted session record
+codec (`cachedSessionRecord`, `threadModelFromCache`, the current-transcript
+checkpoint) lives in `transcriptCache.ts`, which imports the validators and
+`transcriptHistory`. `reducer.ts` is the notification fold and imports all of
+them; no split-out module imports `reducer.ts`.
 
 `mergeTranscriptReaderWindow(model, turns)` folds actual bounded local reader
 rows into `model.history` with the reducer's ordinary versioned merge rules.
