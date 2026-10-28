@@ -1647,7 +1647,7 @@ it("a superseded opening cannot overwrite the established marker of a newer open
     const read = { ...fullRead(), requestGeneration: params.requestGeneration };
     return wireReads > 2 ? wireReleased.promise.then(() => read) : read;
   });
-  // The first local open's cache read never answers inside its own deadline;
+  // The first local open's cache read stays held while its opening waits;
   // the newer open's cache read passes.
   const cacheReleased = deferred<void>();
   const original = storage.getLatestWindow.bind(storage);
@@ -1665,7 +1665,7 @@ it("a superseded opening cannot overwrite the established marker of a newer open
   const reopenedB = threadsStore.getState().ensureThread("local:a");
   await reopenedB;
   expect(productionEntryTranscriptForTests("local:a").lastLocalOpenUsable).toBe(true);
-  // Let the first opening's deadline fire after the newer open established.
+  // The first opening is still waiting here, after the newer open established.
   await new Promise((resolve) => setTimeout(resolve, 400));
   expect(productionEntryTranscriptForTests("local:a").lastLocalOpenUsable).toBe(true);
   expect(
@@ -2337,18 +2337,15 @@ it("ordinary older paging restores the bodies omitted by a 200-row local opening
   await lease.release();
 });
 
-// The 200-row local opening's bounded lookup (SESSION_CACHE_LOOKUP_DEADLINE_MS)
-// can miss under load. One miss self-heals: the authoritative read publishes and
-// the second open promotes the recorded window. Sustained slowness strands the
-// pane instead: ensureThread returns with the display body-suppressed, the
-// local demand cursor gone, and nothing scheduled to converge -- the exact
-// whole-suite flake signature (bodies [] after an awaited ensureThread). The
-// runner below withholds the repository's window reads so every one of the
-// acquisition's bounded local openings misses its deadline deterministically
-// (the withheld promise never resolves; only the store's own bounded deadline
-// resolves each race), then pins the documented load-seam contract: the thread
-// store's bounded source recovery converges the display, re-arming for as
-// many misses as the sustained slowness produced.
+// The 200-row local opening can miss under sustained slowness: its give-up
+// bound expires while storage has not answered, and ensureThread returns with
+// the display still body-suppressed. The runner below withholds the
+// repository's window reads so every one of the acquisition's local openings
+// misses its open bound deterministically (the withheld promise never
+// resolves; the pinned backstop seam resolves each race), then pins the
+// recovery contract: the thread store's bounded source recovery converges
+// the display, re-arming for as many misses as the sustained slowness
+// produced.
 async function convergesAfterMissedLookups(misses: number): Promise<void> {
   const storage = cache();
   // Withhold the first `misses` window reads once armed, so every one of the
@@ -2394,9 +2391,9 @@ async function convergesAfterMissedLookups(misses: number): Promise<void> {
   expect(bodies()).toEqual([]);
 
   withheldWindowReads = misses;
-  // The recovery's attempts race the stalled-open window, so pin it to the
-  // open backstop's cadence: each withheld read misses as fast here as the
-  // acquisition's own opens do.
+  // The acquisition's own openings miss at the pinned 40ms backstop; a
+  // recovery attempt races the stalled-open window instead, pinned to 250
+  // so each withheld attempt also misses quickly.
   setSessionCacheStalledOpenForTests(250);
   setSessionCacheOpenBackstopForTests(40);
   try {
@@ -3053,16 +3050,17 @@ it("an ordinary open outlives the retired lookup deadline while the backstop say
   });
   setSessionCacheOpenBackstopForTests(1500);
   holding = true;
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const opened = threadsStore.getState().ensureThread(ref);
   try {
     await localReadEntered.promise;
-    await new Promise((resolve) => {
-      setTimeout(resolve, 400);
-    });
-    // Still opening at 400ms: the deadline used to abandon the read at
-    // 250ms, the backstop keeps waiting because storage has not answered.
+    // Still opening well past where the retired 250ms lookup deadline used
+    // to abandon the read: no timer below the pinned backstop fires, and
+    // the backstop keeps waiting because storage has not answered.
+    await vi.advanceTimersByTimeAsync(400);
     expect(threadsStore.getState().localOpenings.has(ref)).toBe(true);
     expect(wireReads).toBe(0);
+    vi.useRealTimers();
     localReadReleased.resolve();
     await opened;
     await drainSettleSteps();
@@ -3072,6 +3070,7 @@ it("an ordinary open outlives the retired lookup deadline while the backstop say
     expect(bodies()).toContain("row-26");
     expect(bodies()).toContain("row-225");
   } finally {
+    vi.useRealTimers();
     setSessionCacheOpenBackstopForTests(10000);
     threadsStore.getState().releaseThread(ref);
     await lease.release();

@@ -969,6 +969,7 @@ async function openEntryTranscript(ref: string, recovery = false): Promise<boole
   const openingToken = beginEntryTranscriptLocalOpening(ref);
   fixture.localOpenDeadlineMissed = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let settlement: HydrationSettlementWait | undefined;
   try {
     fixture.reader ??= fixture.repository.attachReader();
     // Ongoing repository publication: every accepted recorded update republishes
@@ -997,6 +998,7 @@ async function openEntryTranscript(ref: string, recovery = false): Promise<boole
     const established = fixture.lastLocalOpenUsable && repository.holdsEstablishedView();
     let stalled = false;
     const restore = established ? reader.openLocal(200) : undefined;
+    settlement = established || recovery ? undefined : nextTrackedHydrationSettlement(ref);
     const result = established
       ? await Promise.race([
           restore,
@@ -1011,11 +1013,13 @@ async function openEntryTranscript(ref: string, recovery = false): Promise<boole
           reader.openLocal(200),
           // The open's primary deterministic bound, ordinary opens only: a
           // recovery attempt is the source machinery itself and must not
-          // supersede its own re-open. When the next tracked hydration for
-          // this ref settles — published or failed, owned by the hydration
-          // lifecycle either way — the local wait is over: the source owns
-          // the display from there.
-          ...(recovery ? [] : [nextTrackedHydrationSettlement(ref).then(() => OPEN_SUPERSEDED_BY_SOURCE)]),
+          // supersede its own re-open, and a foreign heal settling while a
+          // recovery re-open waits converges through the recovery's own
+          // compose registration rather than by superseding the re-open.
+          // When the next tracked hydration for this ref settles — published
+          // or failed, owned by the hydration lifecycle either way — the
+          // local wait is over: the source owns the display from there.
+          ...(settlement ? [settlement.settled.then(() => OPEN_SUPERSEDED_BY_SOURCE)] : []),
           new Promise<undefined>((resolve) => {
             timer = setTimeout(
               () => {
@@ -1128,6 +1132,7 @@ async function openEntryTranscript(ref: string, recovery = false): Promise<boole
     if (openingOwned()) fixture.lastLocalOpenUsable = usable;
     return usable;
   } finally {
+    settlement?.cancel();
     if (timer !== undefined) clearTimeout(timer);
     settleEntryTranscriptLocalOpening(ref, openingToken);
   }
@@ -1759,41 +1764,53 @@ const trackedHydrationCompletions = new Map<string, Promise<void>>();
 // outcome the source lifecycle owns the display's convergence.
 const hydrationSettlementWaiters = new Map<string, Set<() => void>>();
 
-// Registrations that already settled. A waiter must not attach to one: the
-// claim flow's open starts immediately after its own hydration settles, and
-// attaching there would end the open superseded before it ever reads storage.
-// The marker is written by the settlement itself, so the only registrations a
-// waiter can attach to are ones that were still pending when it looked.
-const settledHydrationRegistrations = new WeakSet<Promise<void>>();
+// The map above holds only pending registrations — every registration site
+// deletes its own entry on settlement — so an absent entry is the settled
+// signal and a waiter never attaches to a registration that already settled.
 
-function markHydrationSettled(completion: Promise<void>): void {
-  void completion.then(
-    () => settledHydrationRegistrations.add(completion),
-    () => settledHydrationRegistrations.add(completion),
-  );
-}
+// A waiter handle: `settled` resolves when the next tracked hydration for
+// the ref settles either way; `cancel` unparks a waiter whose open ended
+// without the settlement firing, so a ref that stops hydrating does not
+// accumulate waiters for the page's lifetime.
+type HydrationSettlementWait = {
+  settled: Promise<void>;
+  cancel: () => void;
+};
 
-function nextTrackedHydrationSettlement(ref: string): Promise<void> {
+function nextTrackedHydrationSettlement(ref: string): HydrationSettlementWait {
   const current = trackedHydrationCompletions.get(ref);
-  if (current && !settledHydrationRegistrations.has(current)) {
-    return current.then(
-      () => undefined,
-      () => undefined,
-    );
+  if (current) {
+    return {
+      settled: current.then(
+        () => undefined,
+        () => undefined,
+      ),
+      cancel: () => {},
+    };
   }
-  return new Promise<void>((resolve) => {
+  let wake!: () => void;
+  const settled = new Promise<void>((resolve) => {
+    wake = () => resolve();
     let waiters = hydrationSettlementWaiters.get(ref);
     if (!waiters) {
       waiters = new Set();
       hydrationSettlementWaiters.set(ref, waiters);
     }
-    waiters.add(() => resolve());
+    waiters.add(wake);
   });
+  return {
+    settled,
+    cancel: () => {
+      const waiters = hydrationSettlementWaiters.get(ref);
+      if (!waiters) return;
+      waiters.delete(wake);
+      if (waiters.size === 0) hydrationSettlementWaiters.delete(ref);
+    },
+  };
 }
 
 function registerHydrationCompletion(ref: string, completion: Promise<void>): void {
   trackedHydrationCompletions.set(ref, completion);
-  markHydrationSettled(completion);
   const waiters = hydrationSettlementWaiters.get(ref);
   if (!waiters) return;
   hydrationSettlementWaiters.delete(ref);
