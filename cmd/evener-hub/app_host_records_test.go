@@ -113,7 +113,7 @@ func TestHubTOMLGenerationsMarkIsNotALiveIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	hosts, err := hostreg.NewSeeded(hostRegistryEntries(cfg), hostHighWaterMarks(cfg))
+	hosts, err := hostreg.NewSeeded(hostRegistryEntries(cfg), cfg.recordSet().highWaterMarks())
 	if err != nil {
 		t.Fatalf("hostreg.NewSeeded: %v", err)
 	}
@@ -218,7 +218,7 @@ func TestHostRegistryBootMintsAboveRetainedMarks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	hosts, err := hostreg.NewSeeded(hostRegistryEntries(cfg), hostHighWaterMarks(cfg))
+	hosts, err := hostreg.NewSeeded(hostRegistryEntries(cfg), cfg.recordSet().highWaterMarks())
 	if err != nil {
 		t.Fatalf("hostreg.NewSeeded: %v", err)
 	}

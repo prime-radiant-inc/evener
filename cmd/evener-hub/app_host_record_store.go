@@ -175,11 +175,6 @@ func hostEntriesWithIdentity(configured []HostConfig, records hostRecordSet) []h
 	return entries
 }
 
-// hostHighWaterMarks is the registry's seed for a decoded hub.toml.
-func hostHighWaterMarks(cfg Config) map[string]hostreg.HighWater {
-	return cfg.recordSet().highWaterMarks()
-}
-
 // resolveHostIdentity maps the records a hub.toml file carries onto the
 // registry entry for one live host: the generation the file persisted (the boot
 // load restores it; spec §15) and the live record's incarnation id and presence

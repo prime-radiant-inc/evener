@@ -550,11 +550,10 @@ func TestBootCompensationWithIntentClearedClearsWithoutResurrection(t *testing.T
 	}
 }
 
-// TestRemovePurgesTokensThroughTheIntent pins §9's live remove half: the
-// removal's hub.toml commit carries the intent, the store purge drops the row,
-// the follow-up write clears the intent, and the committed record and stash do
-// not survive the commit point.
-func TestRemovePurgesTokensThroughTheIntent(t *testing.T) {
+// TestRemovePurgesTheOutstandingTokenRow pins the live remove half: a removal
+// drops the host's outstanding token row with the commit, and leaves no
+// intent, compensation record or stash behind.
+func TestRemovePurgesTheOutstandingTokenRow(t *testing.T) {
 	entry := pipelineEntry("keep", 2)
 	fixture := newPipelineFixture(t, []hostreg.Host{entry}, func(store *hostops.Store) {
 		pipelineToken(t, store, "keep", 2)
