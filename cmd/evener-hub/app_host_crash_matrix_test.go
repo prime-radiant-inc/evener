@@ -18,8 +18,10 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -33,27 +35,67 @@ import (
 // crashCut is the panic value the crash seams raise.
 type crashCut struct{}
 
-// crashHub is one hub's durable state directory: a hub.toml and the operation
-// store beside it. boot rebuilds a manager over whatever the directory holds.
+// crashHub is one hub's durable state: a hub.toml and the operation store's
+// state root. boot rebuilds a manager over whatever they hold.
 type crashHub struct {
-	dir        string
 	configPath string
+	// stateRoot is the state root of the most recent boot's store, and store is
+	// the handle that boot opened.
+	stateRoot string
+	store     *hostops.Store
 }
 
 func newCrashHub(t *testing.T, seed []hostreg.Host) *crashHub {
 	t.Helper()
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "hub.toml")
+	configPath := filepath.Join(t.TempDir(), "hub.toml")
 	if err := writeHubTOMLHosts(configPath, seed); err != nil {
 		t.Fatalf("seed hub.toml: %v", err)
 	}
-	return &crashHub{dir: dir, configPath: configPath}
+	return &crashHub{configPath: configPath, stateRoot: t.TempDir()}
 }
 
-// boot is a process start: registry from the file, a handle on the operation
-// store, and the manager constructor, which runs every boot recovery pass.
-func (h *crashHub) boot(t *testing.T) (*hubHostManager, *hostops.Store) {
+// restartStateRoot copies the operation store's files to a fresh state root and
+// makes that the hub's. The store caches its state per canonical path for the
+// life of the process, so reopening the old path would hand back the crashed
+// process's memory; a fresh path forces the load from the bytes on disk, which
+// is what a real restart reads.
+func (h *crashHub) restartStateRoot(t *testing.T) {
 	t.Helper()
+	next := t.TempDir()
+	storeDir := filepath.Dir(hostops.StorePath(h.stateRoot))
+	nextDir := filepath.Dir(hostops.StorePath(next))
+	if err := os.MkdirAll(nextDir, 0o700); err != nil {
+		t.Fatalf("mkdir %s: %v", nextDir, err)
+	}
+	files, err := os.ReadDir(storeDir)
+	if errors.Is(err, os.ErrNotExist) {
+		h.stateRoot = next
+		return
+	}
+	if err != nil {
+		t.Fatalf("read %s: %v", storeDir, err)
+	}
+	for _, file := range files {
+		data, err := os.ReadFile(filepath.Join(storeDir, file.Name()))
+		if err != nil {
+			t.Fatalf("read store file %s: %v", file.Name(), err)
+		}
+		if err := os.WriteFile(filepath.Join(nextDir, file.Name()), data, 0o600); err != nil {
+			t.Fatalf("copy store file %s: %v", file.Name(), err)
+		}
+	}
+	h.stateRoot = next
+}
+
+// boot is a process start: registry from the file, the operation store loaded
+// from its files, and the manager constructor, which runs every boot recovery
+// pass. The first boot opens the empty store; every later boot loads what the
+// previous one left on disk.
+func (h *crashHub) boot(t *testing.T, restart bool) (*hubHostManager, *hostops.Store) {
+	t.Helper()
+	if restart {
+		h.restartStateRoot(t)
+	}
 	cfg, err := LoadConfig(h.configPath)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
@@ -62,13 +104,37 @@ func (h *crashHub) boot(t *testing.T) (*hubHostManager, *hostops.Store) {
 	if err != nil {
 		t.Fatalf("hostreg.NewSeeded: %v", err)
 	}
-	store, err := hostops.Open(hostops.StorePath(h.dir))
+	store, err := hostops.Open(hostops.StorePath(h.stateRoot))
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
+	if restart {
+		requireSameStoreState(t, h.store, store)
+	}
+	h.store = store
 	webCfg := hubcore.WebConfig{RemoteHostOpsStore: store, RemoteHostConfigPath: h.configPath}
 	m := newHubHostManager(appsource.NewRegistry(), nil, webCfg, h.configPath, hosts, func(string, ...any) {})
 	return m, store
+}
+
+// requireSameStoreState fails when the store a restart loaded from disk differs
+// from the one the crashed process held in memory: every write the process
+// acknowledged must have landed in the file.
+func requireSameStoreState(t *testing.T, crashed, restarted *hostops.Store) {
+	t.Helper()
+	if crashed.Sequence() != restarted.Sequence() {
+		t.Fatalf("restarted store sequence = %d, the crashed process held %d", restarted.Sequence(), crashed.Sequence())
+	}
+	if !reflect.DeepEqual(crashed.Boundaries(), restarted.Boundaries()) {
+		t.Fatalf("restarted store boundaries = %+v, the crashed process held %+v", restarted.Boundaries(), crashed.Boundaries())
+	}
+	for _, host := range []string{"keep", "side"} {
+		before, hadBefore := crashed.OutstandingToken(host)
+		after, hasAfter := restarted.OutstandingToken(host)
+		if hadBefore != hasAfter || before.Value != after.Value {
+			t.Fatalf("restarted store token row for %s = (%q, %v), the crashed process held (%q, %v)", host, after.Value, hasAfter, before.Value, hadBefore)
+		}
+	}
 }
 
 // declaredHosts is the [[hosts]] set the file declares, name to address.
@@ -339,7 +405,7 @@ func TestHostMutationCrashCutsConvergeToTheCommittedOutcome(t *testing.T) {
 			t.Run(sc.name+"/"+string(step), func(t *testing.T) {
 				t.Parallel()
 				hub := newCrashHub(t, sc.seed)
-				m, store := hub.boot(t)
+				m, store := hub.boot(t, false)
 				if sc.prepare != nil {
 					sc.prepare(t, m, store)
 				}
@@ -366,7 +432,7 @@ func TestHostMutationCrashCutsConvergeToTheCommittedOutcome(t *testing.T) {
 					runUntilCrash(t, func() { _, _ = mutation.issue(m) })
 				}
 
-				recovered, recoveredStore := hub.boot(t)
+				recovered, recoveredStore := hub.boot(t, true)
 				requireSettledRecords(t, recovered, mutation.id, step != cutResponseLost)
 				rows := hostRows(t, recovered)
 				side, present := rows["side"]
@@ -422,7 +488,7 @@ func TestHostMutationCrashCutsConvergeToTheCommittedOutcome(t *testing.T) {
 				}
 
 				// A further restart over the recovered state changes nothing.
-				second, _ := hub.boot(t)
+				second, _ := hub.boot(t, true)
 				if after := hub.fileBytes(t); string(after) != string(before) {
 					t.Fatal("a second restart rewrote hub.toml")
 				}
