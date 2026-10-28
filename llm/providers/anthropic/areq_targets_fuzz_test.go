@@ -35,15 +35,21 @@ import (
 // routing the fuzzer's bytes into the bug-prone spots the translator handles
 // (tool-call argument JSON, image sources, thinking, web-search raw payloads,
 // tool results). imgPath is a real file inside the test sandbox; imgPath+".gone"
-// is a guaranteed-missing sibling used to exercise the os.ReadFile error branch.
-func areqPart(kindSel byte, s1, s2 string, blob []byte, imgPath string) (llm.ContentPart, bool) {
-	switch kindSel % 22 {
+// is a guaranteed-missing sibling used to exercise the os.ReadFile error branch,
+// and rawPath is an extension-less sibling whose read succeeds but whose media
+// type cannot be inferred from the path.
+func areqPart(kindSel byte, s1, s2 string, blob []byte, imgPath, rawPath string) (llm.ContentPart, bool) {
+	switch kindSel % 23 {
 	case 0:
 		return llm.ContentPart{Kind: llm.ContentText, Text: s1}, true
 	case 1:
 		return llm.ContentPart{Kind: llm.ContentImage, Image: &llm.ImageData{Data: blob, MediaType: "image/png"}}, true
 	case 2:
-		return llm.ContentPart{Kind: llm.ContentImage, Image: &llm.ImageData{URL: imgPath}}, true
+		url := imgPath
+		if s1 == "" {
+			url = rawPath
+		}
+		return llm.ContentPart{Kind: llm.ContentImage, Image: &llm.ImageData{URL: url}}, true
 	case 3:
 		return llm.ContentPart{Kind: llm.ContentImage, Image: &llm.ImageData{URL: imgPath + ".gone"}}, true
 	case 4:
@@ -80,6 +86,12 @@ func areqPart(kindSel byte, s1, s2 string, blob []byte, imgPath string) (llm.Con
 		return llm.ContentPart{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: s1, Content: s2, IsError: true}}, true
 	case 20:
 		return llm.ContentPart{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: s1, Content: map[string]any{"k": s2}}}, true
+	case 21:
+		return llm.ContentPart{Kind: llm.ContentDocument, Document: nil}, true
+	case 22:
+		// A tool-result image whose media type sits outside Anthropic's accepted
+		// set forces the normalize path; undecodable bytes take its error arm.
+		return llm.ContentPart{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: s1, Content: s2, ImageData: blob, ImageMediaType: "image/bmp"}}, true
 	default:
 		// An empty / unknown-kind part exercises the per-role default (ignore).
 		return llm.ContentPart{Kind: llm.ContentKind(s2)}, true
@@ -109,10 +121,10 @@ func areqRole(sel byte) llm.Role {
 // areqMessages deterministically constructs a message slice from fuzz primitives.
 // Consecutive script bytes that decode to the same role produce adjacent
 // same-role messages, exercising the alternation-merge path in toAnthropicMessages.
-func areqMessages(script []byte, s1, s2 string, blob []byte, imgPath string) []llm.Message {
+func areqMessages(script []byte, s1, s2 string, blob []byte, imgPath, rawPath string) []llm.Message {
 	msgs := make([]llm.Message, 0, len(script))
 	for _, b := range script {
-		part, _ := areqPart(b>>3, s1, s2, blob, imgPath)
+		part, _ := areqPart(b>>3, s1, s2, blob, imgPath, rawPath)
 		msgs = append(msgs, llm.Message{Role: areqRole(b), Content: []llm.ContentPart{part}})
 	}
 	return msgs
@@ -146,21 +158,47 @@ func FuzzAreqToAnthropicMessages(f *testing.F) {
 	f.Add([]byte{0x1b}, "id", "s", []byte(``))
 	f.Add([]byte{0x7b}, "id", "s", []byte(``))
 	f.Add([]byte{0x83}, "id", "s", []byte(``))
+	// Translation arms the earlier seeds never selected (kindSel|role bytes
+	// chosen to land on each shape): assistant text, a nil image part in an
+	// assistant message, tool-call arguments that are literal JSON null, an
+	// assistant thinking part whose signature is an OpenAI-compat wire field
+	// (replayed unsigned), redacted thinking, a web-search part with decodable
+	// raw JSON, a tool result with map content, a tool-result image outside the
+	// accepted media set with undecodable bytes (error arm), a document part
+	// with no document, a document with neither bytes nor a URL (dropped), and
+	// a local image read from the extension-less sibling (no media type
+	// inferable from the path).
+	f.Add([]byte{0x03}, "assistant text", "s", []byte(`{}`))
+	f.Add([]byte{0x2b}, "id", "s", []byte(`{}`))
+	f.Add([]byte{0x33}, "id", "s", []byte(`null`))
+	f.Add([]byte{0x43}, "reasoning_content", "thought", []byte(`{}`))
+	f.Add([]byte{0x53}, "id", "redacted text", []byte(`{}`))
+	f.Add([]byte{0x63}, "id", "s", []byte(`{"type":"web_search_tool_result","content":[]}`))
+	f.Add([]byte{0xa4}, "c1", "v", []byte(`{}`))
+	f.Add([]byte{0xb4}, "c1", "v", []byte(`not-an-image`))
+	f.Add([]byte{0xaa}, "id", "s", []byte(`{}`))
+	f.Add([]byte{0x82}, "id", "s", []byte(``))
+	f.Add([]byte{0x12}, "", "s", []byte(`{}`))
 
 	// One real file inside the test sandbox lets the local-path image branch read
 	// bytes without touching anything outside the sandbox; its ".gone" sibling is
-	// never created, exercising the os.ReadFile error path.
+	// never created, exercising the os.ReadFile error path, and the
+	// extension-less sibling exercises the no-media-type-inferable read.
 	dir := f.TempDir()
 	imgPath := filepath.Join(dir, "img.png")
 	if err := os.WriteFile(imgPath, []byte("\x89PNG\r\n\x1a\nfuzzbytes"), 0o600); err != nil {
 		f.Fatalf("seed image write: %v", err)
 	}
+	rawPath := filepath.Join(dir, "img")
+	if err := os.WriteFile(rawPath, []byte("\x89PNG\r\n\x1a\nfuzzbytes"), 0o600); err != nil {
+		f.Fatalf("seed raw image write: %v", err)
+	}
 
 	f.Fuzz(func(t *testing.T, script []byte, s1, s2 string, blob []byte) {
-		msgs := areqMessages(script, s1, s2, blob, imgPath)
+		msgs := areqMessages(script, s1, s2, blob, imgPath, rawPath)
 
 		sys1, out1, err1 := toAnthropicMessages(msgs)
-		sys2, out2, err2 := toAnthropicMessages(areqMessages(script, s1, s2, blob, imgPath))
+		sys2, out2, err2 := toAnthropicMessages(areqMessages(script, s1, s2, blob, imgPath, rawPath))
 
 		// Determinism.
 		if (err1 == nil) != (err2 == nil) {
@@ -335,6 +373,12 @@ func FuzzAreqParseUsage(f *testing.F) {
 	f.Add(0, 0, 0, 0, 0, byte(1), byte(3))
 	f.Add(-4, 1000000, 9, 0, 11, byte(2), byte(2))
 	f.Add(1, 1, 1, 1, 1, byte(3), byte(1))
+	// Cache-creation arms the earlier seeds never selected: a breakdown with
+	// only the 5m term, a breakdown with only the 1h term, and the flat
+	// cache_creation_input_tokens fallback with no breakdown.
+	f.Add(10, 5, 3, 7, 2, byte(1), byte(10))
+	f.Add(10, 5, 3, 7, 2, byte(1), byte(18))
+	f.Add(10, 5, 3, 7, 2, byte(1), byte(4))
 
 	f.Fuzz(func(t *testing.T, in, out, read, w5m, w1h int, enc, presence byte) {
 		u := map[string]any{
