@@ -406,7 +406,7 @@ test("wireItemToModel carries the wire description (tool-call intent) onto the i
 // (appwire.ThreadItemEventKind*), naming what happened — "system_prompt",
 // "compaction", etc. wireItemToModel historically dropped it, forcing the
 // transcript renderer to guess scaffold items from their char count. The model
-// must carry it so classification is by wire type, not a heuristic (kata ckgw).
+// must carry it so classification is by wire type, not a heuristic.
 test("wireItemToModel carries the wire eventKind (scaffold/system discriminator) onto the item", () => {
   const thread = testThread({
     turns: [
@@ -431,7 +431,7 @@ test("wireItemToModel carries the wire eventKind (scaffold/system discriminator)
 });
 
 // A system item can attach structured detail behind its prose text, e.g. a
-// round_timings item's per-phase durations (ThreadItem.raw; kata 7zkv) or a
+// round_timings item's per-phase durations (ThreadItem.raw) or a
 // compaction item's before/after counts. wireItemToModel historically dropped
 // it, forcing a renderer to re-parse numbers out of human-readable text. The
 // model must carry it so a renderer can read the real numbers instead.
@@ -494,7 +494,7 @@ test("a reloaded steering item carries steeringKind from the snapshot", () => {
 // arrive as two items sharing a callId, with different ids, in separate turns.
 // The Go contract says "the client merges the two by call id"; the reducer must
 // collapse them into the single item the live path already produces, and drop
-// the now-empty result turn so its TurnSeparator disappears. (zrzr)
+// the now-empty result turn so its TurnSeparator disappears.
 test("reload merges a tool CALL and its RESULT (separate turns, same callId) into one item", () => {
   const thread = testThread({
     turns: [

@@ -57,8 +57,8 @@ func TestFrozenDescriptorTakesTheAgentsDocPathFromTheLiveParent(t *testing.T) {
 // snapshot names the path that was true when the delegate was frozen. A hub
 // whose config root moved between runs would otherwise leave a resumed root
 // session and the delegates it restores on different personal instructions.
-func TestRestoredStableDelegateTakesTheAgentsDocPathFromTheLiveParent(t *testing.T) {
-	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+func TestRestoredDelegateTakesTheAgentsDocPathFromTheLiveParent(t *testing.T) {
+	fixture := newColdDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
 		descriptor.Config.AgentsDocPath = "/old/AGENTS.md"
 	})
 	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)

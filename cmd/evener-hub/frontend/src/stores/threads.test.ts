@@ -31,6 +31,7 @@ import { resetSubagentModuleStoreForTests } from "../panes/session/transcript/to
 import { resetWorkspaceStoreForTests } from "../shell/workspace";
 import { connectionStore } from "./connection";
 import "./humanNoteDrafts";
+import { setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { SessionEntryCache } from "./sessionEntryCache";
 import { holdNextWriteTransaction } from "./testing/stalledIndexedDB";
@@ -38,7 +39,6 @@ import {
   installHydrationRetrySchedulerForTests,
   resetThreadsStoreForTests,
   setMutationStorageForTests,
-  setProductionEntryCacheForTests,
   threadsStore,
 } from "./threads";
 

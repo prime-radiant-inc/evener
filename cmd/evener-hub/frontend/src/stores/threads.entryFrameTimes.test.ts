@@ -5,12 +5,8 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { connectionStore } from "./connection";
-import {
-  observePendingHydrationRetirementsForTests,
-  productionEntryTranscriptForTests,
-  resetThreadsStoreForTests,
-  threadsStore,
-} from "./threads";
+import { productionEntryTranscriptForTests } from "./entryTranscriptRoutes";
+import { observePendingHydrationRetirementsForTests, resetThreadsStoreForTests, threadsStore } from "./threads";
 
 beforeEach(() => {
   connectionStore.setState({ client: null, state: "idle", serverInfo: undefined });

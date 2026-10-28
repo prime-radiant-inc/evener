@@ -2422,7 +2422,7 @@ func (s *Session) acceptDelegateAttentionInput() {
 // stands down before reaching here when a served session could not be named, so
 // every wake that gets this far can address its own turn.
 func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (proceed bool) {
-	s.drivePendingStableDelegateAttention()
+	s.drivePendingDelegateAttention()
 	// Drive signal (b) (spec §3): a child driven on its pending caller-targeted
 	// watch sends may have no token queued yet (the drive was launched on the
 	// hasPendingWatchSends signal, not a token enqueue). Enqueue the OWN session's

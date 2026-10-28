@@ -265,11 +265,11 @@ func TestEnsureDeployHookRunsUnderTheGateBeforeAnyRemoteWrite(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	reg := testRegistry(t, host)
 	fr := &fakeRunner{
-		runFn: cannedRun(map[string][]byte{
+		runFn: cannedRun(map[remoteOp][]byte{
 			// The on-disk build and the running hub are an older revision, so the
 			// ladder decides to deploy this controller's build.
-			"launch-check": []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v5","version":"oldsha","launch_flags":["api-log"]}`),
-			"api/health":   []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`),
+			opLaunchCheck: []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v5","version":"oldsha","launch_flags":["api-log"]}`),
+			opHealth:      []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`),
 		}),
 		startFn: goodStartFn(t),
 	}

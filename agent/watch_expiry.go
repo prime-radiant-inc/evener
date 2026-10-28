@@ -152,7 +152,7 @@ func (jm *jobManager) noticeUnrestoredWatchEnds() error {
 		}
 		var trigger string
 		if watch.SourceDelegateID != "" {
-			trigger = watchLostAtRestartStableDelegateMessage(watch.SourceDelegateID)
+			trigger = watchLostAtRestartDelegateMessage(watch.SourceDelegateID)
 		} else if isWatchSessionTarget(watch.Target) {
 			// A session-target watch (source "self" or "parent") has no job
 			// record: its target is this session's own live event stream, not a

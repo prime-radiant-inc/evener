@@ -19,6 +19,7 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { installBackgroundTranscriptOptionsForTests } from "./backgroundTranscriptOptions";
 import { connectionStore } from "./connection";
+import { productionEntryTranscriptForTests, setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { SessionEntryCache } from "./sessionEntryCache";
 import {
   acquireBackgroundThread,
@@ -26,10 +27,8 @@ import {
   observePendingHydrationRetirementsForTests,
   pendingThreadHydrationBaseModelsForTests,
   pendingThreadHydrationUpdatesForTests,
-  productionEntryTranscriptForTests,
   putThreadModel,
   resetThreadsStoreForTests,
-  setProductionEntryCacheForTests,
   settleBackgroundTranscriptsForTests,
   settleEntryTranscriptForTests,
   threadsStore,

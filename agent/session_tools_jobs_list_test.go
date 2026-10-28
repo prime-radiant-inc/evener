@@ -31,7 +31,7 @@ func jobListState(t *testing.T, s *Session, args map[string]any) jobListResult {
 	return result
 }
 
-func TestJobListIncludesStableDelegateWithoutActivationAlias(t *testing.T) {
+func TestJobListIncludesDelegateWithoutActivationAlias(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
 	started := time.Unix(100, 0).UTC()

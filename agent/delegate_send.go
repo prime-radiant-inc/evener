@@ -15,7 +15,7 @@ import (
 // takeSendDriveGuard takes sub's drive guard for a send's start: it sets
 // driving unless the child can't take a new generation now (a run, a drive
 // or a finalizer in flight, or worktree disposal holding it), and reports
-// whether it did. The sibling guard in driveStableDelegateAttention routes
+// whether it did. The sibling guard in driveDelegateAttention routes
 // through startBlockedLocked too, and also refuses a closed or fatally gated
 // child and a committed-send claim, which a send has already settled by this
 // point.
@@ -140,10 +140,10 @@ func (s *Session) releaseFinishedGeneration(lease delegateLease, runtime *Sessio
 	}
 }
 
-func (runtime delegateRuntime) send(ctx context.Context, delegateID, message string, maxWaitMS int) stableDelegateSendOutcome {
+func (runtime delegateRuntime) send(ctx context.Context, delegateID, message string, maxWaitMS int) delegateSendOutcome {
 	s := runtime.owner
-	failed := func(err error) stableDelegateSendOutcome {
-		return stableDelegateSendOutcome{result: sendMessageFailed(delegateID, err)}
+	failed := func(err error) delegateSendOutcome {
+		return delegateSendOutcome{result: sendMessageFailed(delegateID, err)}
 	}
 	if s == nil || s.delegateController == nil {
 		return failed(errors.New("delegate controller is unavailable"))
@@ -180,7 +180,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 					break
 				}
 			}
-			return stableDelegateSendOutcome{result: sendMessageResult{
+			return delegateSendOutcome{result: sendMessageResult{
 				Target:              delegateID,
 				DelegateID:          delegateID,
 				Type:                delegateResourceType,
@@ -221,7 +221,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 			// The claim refused every drive for the claimed child that landed
 			// while it was held -- a child notification arriving mid-window runs
 			// the child's notify, driveChildIfNotStopGated, which returns early on
-			// the claim, and driveStableDelegateAttention refuses the stable
+			// the claim, and driveDelegateAttention refuses the stable
 			// attention the same way -- so that wake is DROPPED. The run about to
 			// launch would have drained the child's queue, but this exit did not
 			// hand a run over (the claim is still held here), so re-drive the
@@ -314,7 +314,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		}
 	}
 	// Hold the drive guard for the committed-start window, exactly as
-	// driveStableDelegateAttention does (#932/#940). CommitStart has already
+	// driveDelegateAttention does (#932/#940). CommitStart has already
 	// consumed the reservation, but sub.running stays false through the restored
 	// side effects and the start-input mutation plans (BeginStartInput,
 	// preseedInput, CompleteStartInput); the run goroutine only sets running at
@@ -346,7 +346,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		}
 		guarded = sub
 	}
-	bindStableDelegateActivity(sub.sess, s.delegateController, started.lease)
+	bindDelegateActivity(sub.sess, s.delegateController, started.lease)
 	if restored {
 		if err := sub.sess.runDeferredRestoreSideEffects(); err != nil {
 			s.emit(warningDataFromError("restored delegate side effects incomplete", err))
@@ -422,31 +422,31 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		TranscriptRef:       started.descriptor.TranscriptRef,
 	}
 	if waiter == nil {
-		return stableDelegateSendOutcome{result: result}
+		return delegateSendOutcome{result: result}
 	}
 	resolution := runtime.waitInline(ctx, waiter, maxWaitMS)
 	if resolution.fallback || resolution.packet == nil || resolution.commit == nil {
 		result.TimedOut = true
-		return stableDelegateSendOutcome{result: result}
+		return delegateSendOutcome{result: result}
 	}
-	completeStableDelegateSendResult(&result, *resolution.packet)
+	completeDelegateSendResult(&result, *resolution.packet)
 	return inlineOutcome(result, resolution)
 }
 
-// completeStableDelegateSendResult fills result as a send whose wait reached
+// completeDelegateSendResult fills result as a send whose wait reached
 // packet, a terminal result of its delegate.
-func completeStableDelegateSendResult(result *sendMessageResult, packet delegatestore.TerminalPacket) {
+func completeDelegateSendResult(result *sendMessageResult, packet delegatestore.TerminalPacket) {
 	result.RunningInBackground = false
 	result.Action = "completed"
-	populateStableDelegateSendResult(result, packet)
+	populateDelegateSendResult(result, packet)
 }
 
-func populateStableDelegateSendResult(result *sendMessageResult, packet delegatestore.TerminalPacket) {
+func populateDelegateSendResult(result *sendMessageResult, packet delegatestore.TerminalPacket) {
 	if result == nil {
 		return
 	}
 	finish := delegatePreparedFinish(packet)
-	result.Status = stableDelegateOutcomeJobStatus(finish.outcome)
+	result.Status = delegateOutcomeJobStatus(finish.outcome)
 	result.Reason = finish.reason
 	result.ExhaustionBudget = string(finish.exhaustionBudget)
 	result.ExhaustionLimit = finish.exhaustionLimit
@@ -500,7 +500,7 @@ func populateStableDelegateSendResult(result *sendMessageResult, packet delegate
 	}
 }
 
-func stableDelegateOutcomeJobStatus(outcome delegatestore.OutcomeStatus) jobstore.Status {
+func delegateOutcomeJobStatus(outcome delegatestore.OutcomeStatus) jobstore.Status {
 	switch outcome {
 	case delegatestore.OutcomeCompleted:
 		return jobstore.StatusCompleted
@@ -542,7 +542,7 @@ func (runtime delegateRuntime) waitInline(ctx context.Context, waiter *delegateI
 func populateFailedSendResultFromPacket(result *sendMessageResult, packet delegatestore.TerminalPacket) {
 	durableStatus := result.Status
 	durableReason := result.Reason
-	populateStableDelegateSendResult(result, packet)
+	populateDelegateSendResult(result, packet)
 	if durableReason != "" {
 		result.Reason = durableReason
 	}
@@ -553,37 +553,37 @@ func populateFailedSendResultFromPacket(result *sendMessageResult, packet delega
 	result.RunningInBackground = false
 }
 
-func (runtime delegateRuntime) failStableSendStartAfterDispatch(ctx context.Context, started delegateStartCommit, delegateID string, waiter *delegateInlineWaiter, maxWaitMS int, cause error, afterDispatch func()) stableDelegateSendOutcome {
+func (runtime delegateRuntime) failStableSendStartAfterDispatch(ctx context.Context, started delegateStartCommit, delegateID string, waiter *delegateInlineWaiter, maxWaitMS int, cause error, afterDispatch func()) delegateSendOutcome {
 	plans, finishErr := runtime.owner.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(cause, "construction_failed"))
 	return runtime.stableSendFailureOutcomeAfterDispatch(ctx, started, waiter, maxWaitMS, plans, errors.Join(cause, finishErr), afterDispatch)
 }
 
-func (runtime delegateRuntime) stableSendFailureOutcomeAfterDispatch(ctx context.Context, started delegateStartCommit, waiter *delegateInlineWaiter, maxWaitMS int, plans delegateMutationPlans, cause error, afterDispatch func()) stableDelegateSendOutcome {
+func (runtime delegateRuntime) stableSendFailureOutcomeAfterDispatch(ctx context.Context, started delegateStartCommit, waiter *delegateInlineWaiter, maxWaitMS int, plans delegateMutationPlans, cause error, afterDispatch func()) delegateSendOutcome {
 	executeErr := runtime.owner.executeDelegateMutationPlans(plans)
 	if afterDispatch != nil {
 		afterDispatch()
 	}
-	result := stableDelegateFailedSendResult(started, plans, errors.Join(cause, executeErr))
+	result := delegateFailedSendResult(started, plans, errors.Join(cause, executeErr))
 	if waiter == nil || result.Action == "recovery_required" {
-		return stableDelegateSendOutcome{result: result}
+		return delegateSendOutcome{result: result}
 	}
 	if runtime.owner.delegateController.dropStoppedDelegateWaiter(started.lease) {
 		// The failed start already settled this generation durably, and a
 		// covering stop owns its delivery, so no inline delivery will answer
 		// the wait: answer with the stopped outcome instead of sitting out
 		// max_wait (#3502).
-		return stableDelegateSendOutcome{result: result}
+		return delegateSendOutcome{result: result}
 	}
 	resolution := runtime.waitInline(ctx, waiter, maxWaitMS)
 	if resolution.fallback || resolution.packet == nil || resolution.commit == nil {
 		result.TimedOut = true
-		return stableDelegateSendOutcome{result: result}
+		return delegateSendOutcome{result: result}
 	}
 	populateFailedSendResultFromPacket(&result, *resolution.packet)
 	return inlineOutcome(result, resolution)
 }
 
-func stableDelegateFailedSendResult(started delegateStartCommit, plans delegateMutationPlans, cause error) sendMessageResult {
+func delegateFailedSendResult(started delegateStartCommit, plans delegateMutationPlans, cause error) sendMessageResult {
 	snapshot := latestDelegateMutationSnapshot(started.lease.delegateID, started.plan, plans)
 	resumable := snapshot.resumable
 	result := sendMessageResult{
@@ -601,7 +601,7 @@ func stableDelegateFailedSendResult(started delegateStartCommit, plans delegateM
 		Err:                 cause,
 	}
 	if snapshot.lastOutcome != nil {
-		result.Status = stableDelegateOutcomeJobStatus(snapshot.lastOutcome.Status)
+		result.Status = delegateOutcomeJobStatus(snapshot.lastOutcome.Status)
 		result.Reason = snapshot.lastOutcome.Reason
 		result.Action = "completed"
 	}

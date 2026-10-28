@@ -110,8 +110,8 @@ func stableJobListCandidates(s *Session, jm *jobManager, filter listFilter, now 
 		}
 	}
 	includeStableDescendants := filter.IncludeNested || filter.IncludeDescendants
-	for _, visible := range stableDelegateRowsForSession(s, includeStableDescendants) {
-		item := projectStableDelegateListItem(now, visible)
+	for _, visible := range delegateRowsForSession(s, includeStableDescendants) {
+		item := projectDelegateListItem(now, visible)
 		if stableJobListItemMatches(item, filter) {
 			items = append(items, item)
 		}
@@ -139,12 +139,12 @@ func turnSlotOccupancyOf(s *Session) *turnSlotOccupancy {
 	return &turnSlotOccupancy{InUse: total, Cap: limit, Jobs: jobs, Drives: drives}
 }
 
-type stableDelegateVisibleRow struct {
+type delegateVisibleRow struct {
 	snapshot delegateSnapshot
 	depth    int
 }
 
-func stableDelegateRowsForSession(s *Session, includeDescendants bool) []stableDelegateVisibleRow {
+func delegateRowsForSession(s *Session, includeDescendants bool) []delegateVisibleRow {
 	if s == nil || s.delegateController == nil {
 		return nil
 	}
@@ -182,17 +182,17 @@ func stableDelegateRowsForSession(s *Session, includeDescendants bool) []stableD
 		}
 	}
 
-	rows := make([]stableDelegateVisibleRow, 0, len(depths))
+	rows := make([]delegateVisibleRow, 0, len(depths))
 	for id, depth := range depths {
-		rows = append(rows, stableDelegateVisibleRow{snapshot: byID[id], depth: depth})
+		rows = append(rows, delegateVisibleRow{snapshot: byID[id], depth: depth})
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].snapshot.id < rows[j].snapshot.id })
 	return rows
 }
 
-func projectStableDelegateListItem(now time.Time, visible stableDelegateVisibleRow) jobListEntry {
+func projectDelegateListItem(now time.Time, visible delegateVisibleRow) jobListEntry {
 	snapshot := visible.snapshot
-	status := projectStableDelegateStatus(now, snapshot)
+	status := projectDelegateStatus(now, snapshot)
 	resumable := snapshot.resumable
 	item := jobListEntry{
 		ID:                   snapshot.id,

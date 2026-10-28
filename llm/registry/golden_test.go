@@ -144,6 +144,17 @@ func bp(v *bool) string {
 	return "false"
 }
 
+// checkCodexSixLite asserts what every Codex gpt-6 row shares: the Lite
+// shaping with original image detail, and its own window and default effort.
+func checkCodexSixLite(window int, defaultEffort string) func(t *testing.T, res Resolved) {
+	return func(t *testing.T, res Resolved) {
+		t.Helper()
+		if ip(res.Caps.ContextWindow) != window || sp(res.Caps.DefaultEffort) != defaultEffort || sp(res.Caps.ImageDetail) != "original" || sp(res.Caps.ReasoningSummary) != "detailed" || bp(res.Caps.ResponsesLite) != "true" || bp(res.Caps.ThinkingAlwaysOn) != "true" || bp(res.Caps.Sampling) != "false" || res.Transport.Body["text.verbosity"] != "low" {
+			t.Errorf("%+v", res)
+		}
+	}
+}
+
 func TestGoldenResolved(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -189,6 +200,10 @@ func TestGoldenResolved(t *testing.T) {
 				t.Errorf("codex header set must be empty at this layer (the authenticator adds its own): %v", res.Headers)
 			}
 		}},
+		{"openai-codex-gpt-6-astra", "openai-codex/gpt-6-astra", nil, checkCodexSixLite(272000, "low")},
+		{"openai-codex-gpt-6-luna", "openai-codex/gpt-6-luna", nil, checkCodexSixLite(272000, "medium")},
+		{"openai-codex-gpt-6.1-sol", "openai-codex/gpt-6.1-sol", nil, checkCodexSixLite(272000, "low")},
+		{"openai-codex-gpt-6.1-sol-1m", "openai-codex/gpt-6.1-sol-1m", nil, checkCodexSixLite(872000, "low")},
 		{"anthropic-sonnet-4-5", "anthropic/claude-sonnet-4-5", nil, func(t *testing.T, res Resolved) {
 			if sp(res.Caps.ThinkingShape) != "budget" || res.Caps.ThinkingAlwaysOn != nil || ip(res.Caps.ContextWindow) != 1000000 {
 				t.Errorf("%+v", res.Caps)

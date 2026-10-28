@@ -25,6 +25,7 @@ import type {
   MarketplaceEditParams,
   MarketplaceEntry,
 } from "../../types.gen";
+import { REFETCH_DEBOUNCE_MS } from "../refetchDebounce";
 import { HubWriteBusyError, type HubWriteGate } from "./hubWriteGate";
 import { createKeyedRevision } from "./keyedRevision";
 import { createListRevision, readRevisioned, writeRevisioned } from "./listRevision";
@@ -87,8 +88,6 @@ export interface MarketplacesStore extends FrameworkFreeStore<MarketplacesState>
    * screen unmounts. start() refuses afterwards. */
   dispose(): void;
 }
-
-export const MARKETPLACE_REFETCH_DEBOUNCE_MS = 250;
 
 /** Classifies the hub's post-apply marketplace removal rejections
  * (appwire/errors.go) for UI consumers. Both markers mean the removal already
@@ -234,7 +233,7 @@ export function createMarketplacesStore(client: MarketplacesClient, gate: HubWri
 
   const lifecycle = createStoreLifecycle<MarketplacesState>(client, {
     method: "evener/marketplace/updated",
-    debounceMs: MARKETPLACE_REFETCH_DEBOUNCE_MS,
+    debounceMs: REFETCH_DEBOUNCE_MS,
     store: () => store,
     refetch: (state) => state.fetchMarketplaces(),
     revision: listRevision,

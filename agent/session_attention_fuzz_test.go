@@ -86,7 +86,7 @@ func FuzzDelegateAttentionFold(f *testing.F) {
 	})
 }
 
-func FuzzStableDelegateWatchDelivery(f *testing.F) {
+func FuzzDelegateWatchDelivery(f *testing.F) {
 	f.Add([]byte{})
 	f.Add([]byte{0})
 	f.Add([]byte{1, 2, 3})

@@ -46,6 +46,7 @@ import type {
   InstanceSetModelDisabledParams,
   ProviderDescriptor,
 } from "../../types.gen";
+import { REFETCH_DEBOUNCE_MS } from "../refetchDebounce";
 import { type CredentialListing, listState } from "./listing";
 
 /** The client surface the store calls: requests, and the notification feed the
@@ -89,7 +90,7 @@ export interface CredentialInstancesState {
   availableProviders: ProviderDescriptor[];
   // diagnostics/userLayer/writesRefused mirror InstanceListResponse's own
   // optional fields (appwire/types_auth_commands.go), normalized here to always-present
-  // values (spec §11.3) so components never need an `?? []`/`?? false`
+  // values so components never need an `?? []`/`?? false`
   // fallback of their own.
   diagnostics: string[];
   userLayer: string;
@@ -263,7 +264,6 @@ function changedCounts(before: Map<string, number>, now: Map<string, number>): S
   return new Set([...now].filter(([name, count]) => (before.get(name) ?? 0) !== count).map(([name]) => name));
 }
 
-const REFETCH_DEBOUNCE_MS = 250;
 // Age budget from an own-echo marker's latest stamp - the issue, or the RPC
 // response that re-stamped it (authMutation's and applyMutation's landed
 // branches).

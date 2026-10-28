@@ -1,5 +1,5 @@
 {
-  "note": "evener/jobs/list's answer for a coordinator with three finished subagents: one that reported, one the user stopped, one whose provider failed. Each is finished through stableDelegateFinishFromRun and the controller's journal events, and read through Session.JobActivityTree; the session id is written as root.",
+  "note": "evener/jobs/list's answer for a coordinator with three finished subagents: one that reported, one the user stopped, one whose provider failed. Each is finished through delegateFinishFromRun and the controller's journal events, and read through Session.JobActivityTree; the session id is written as root.",
   "response": {
     "data": {
       "revision": 3,

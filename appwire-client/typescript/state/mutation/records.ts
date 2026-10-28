@@ -95,7 +95,7 @@ export interface MutationOutboxRecord<A extends MutationAttachmentRef = Mutation
   extends MutationRecord<A> {
   state: MutationOutboxState;
   attempted?: boolean;
-  // #4342: how many attempts this row has in flight or unresolved - a mark
+  // How many attempts this row has in flight or unresolved - a mark
   // increments, an in-band refusal decrements its own. `attempted` is the
   // boolean the reconcile park and Stop's cancel guard read; this count is
   // what keeps that boolean honest when one row carries more than one
@@ -104,12 +104,12 @@ export interface MutationOutboxRecord<A extends MutationAttachmentRef = Mutation
   // records written before the field existed carry none: a missing count
   // then reads as the attempted boolean's own evidence - one unresolved
   // attempt when true, zero when false - and a record with neither field
-  // (a pre-#936 row, persisted untouched through every later schema
+  // (a row from before this field, persisted untouched through every later schema
   // version) keeps one unresolved attempt as its baseline, because its
   // delivery state from that era is unknown and only an explicit
   // `attempted: false` proves no earlier attempt.
   unresolvedAttempts?: number;
-  // #4342: the ref's stop epoch at enqueue time - the barrier's own read,
+  // The ref's stop epoch at enqueue time - the barrier's own read,
   // stored. A refusal proves the attempt never landed, and a Stop whose
   // cancel scan skipped this attempted row bumped the epoch after this
   // capture - the refusal's rollback then holds the row canceled (released

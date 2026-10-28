@@ -47,7 +47,7 @@ func TestUnrestorableDelegateAttentionIsHandedToTheRoot(t *testing.T) {
 	}
 
 	for range 3 {
-		root.drivePendingStableDelegateAttention()
+		root.drivePendingDelegateAttention()
 	}
 
 	rootFold, err := readDelegateAttentionFold(transcriptPath(fixture.stateDir, fixture.meta.ID), fixture.meta.ID)
@@ -76,7 +76,7 @@ func TestDelegateAttentionIsNotHandedOverBeforeTheGiveUpLimit(t *testing.T) {
 	}
 
 	for range 2 {
-		root.drivePendingStableDelegateAttention()
+		root.drivePendingDelegateAttention()
 	}
 
 	rootFold, err := readDelegateAttentionFold(transcriptPath(fixture.stateDir, fixture.meta.ID), fixture.meta.ID)
@@ -108,7 +108,7 @@ func TestUndeliverableDelegateAttentionParksUntilNewAttention(t *testing.T) {
 	eventsDone := captureSessionEvents(root)
 
 	for range 4 {
-		root.drivePendingStableDelegateAttention()
+		root.drivePendingDelegateAttention()
 	}
 	controller := root.delegateController
 	if controller.hasPendingDelegateAttention() {
@@ -169,7 +169,7 @@ func TestASuccessfulRestoreResetsTheFailureCount(t *testing.T) {
 	c.recordDelegateAttentionRestoreFailure(fenced.grandchildDelegateID)
 	c.recordDelegateAttentionRestoreFailure(fenced.grandchildDelegateID)
 
-	root.drivePendingStableDelegateAttention()
+	root.drivePendingDelegateAttention()
 
 	c.mu.Lock()
 	count := attentionRestoreFailuresOf(c, fenced.grandchildDelegateID)
@@ -226,7 +226,7 @@ func TestGivingUpOnAMissingTranscriptParksInsteadOfDropping(t *testing.T) {
 	eventsDone := captureSessionEvents(root)
 
 	for range 2 {
-		root.drivePendingStableDelegateAttention()
+		root.drivePendingDelegateAttention()
 	}
 	stillOwed, parked := fenced.owedAndParked()
 	root.Close()
@@ -332,7 +332,7 @@ func TestAParkedDelegateIsEscalatedStrictlyWhenItsAncestorCloses(t *testing.T) {
 	t.Run("transcript present: handed to the root", func(t *testing.T) {
 		fenced := parkedUnderClosedParent(t)
 
-		fenced.root.drivePendingStableDelegateAttention()
+		fenced.root.drivePendingDelegateAttention()
 
 		rootFold, err := readDelegateAttentionFold(transcriptPath(fenced.fixture.stateDir, fenced.fixture.meta.ID), fenced.fixture.meta.ID)
 		if err != nil {
@@ -358,7 +358,7 @@ func TestAParkedDelegateIsEscalatedStrictlyWhenItsAncestorCloses(t *testing.T) {
 			t.Fatalf("remove grandchild transcript: %v", err)
 		}
 
-		fenced.root.drivePendingStableDelegateAttention()
+		fenced.root.drivePendingDelegateAttention()
 
 		if owed, parked := fenced.owedAndParked(); !owed || !parked {
 			t.Fatalf("after a failed strict escalation: owed=%t parked=%t, want the attention kept and parked", owed, parked)
@@ -384,7 +384,7 @@ func TestAParkedDelegateIsEscalatedStrictlyWhenItsAncestorCloses(t *testing.T) {
 		fenced.root.clock = clk
 		makeGrandchildTranscriptUnreadable(t, fenced)
 
-		fenced.root.drivePendingStableDelegateAttention()
+		fenced.root.drivePendingDelegateAttention()
 		if _, active := stableRetry(fenced); !active {
 			t.Fatal("a parked delegate's escalation failing on an unreadable transcript did not arm the retry")
 		}
@@ -403,7 +403,7 @@ func TestAParkedDelegateIsEscalatedStrictlyWhenItsAncestorCloses(t *testing.T) {
 		clk := agenttest.NewFakeClock()
 		fenced.root.clock = clk
 		restoreTranscript := makeGrandchildTranscriptUnreadable(t, fenced)
-		fenced.root.drivePendingStableDelegateAttention()
+		fenced.root.drivePendingDelegateAttention()
 		clk.Advance(jobNotificationRetryInitialDelay)
 		clk.Drain()
 		if backedOff, _ := stableRetry(fenced); backedOff != 2*jobNotificationRetryInitialDelay {
@@ -411,7 +411,7 @@ func TestAParkedDelegateIsEscalatedStrictlyWhenItsAncestorCloses(t *testing.T) {
 		}
 		restoreTranscript()
 
-		fenced.root.drivePendingStableDelegateAttention()
+		fenced.root.drivePendingDelegateAttention()
 
 		if owed, parked := fenced.owedAndParked(); owed || parked {
 			t.Fatalf("after escalation: owed=%t parked=%t, want neither", owed, parked)
@@ -505,12 +505,12 @@ func TestABackoffResetHoldsAcrossAnArmedRetry(t *testing.T) {
 	root.attentionMu.Lock()
 	root.stableAttentionRetry.delay = staleDelay
 	root.attentionMu.Unlock()
-	root.scheduleStableDelegateAttentionRetry()
+	root.scheduleDelegateAttentionRetry()
 	root.attentionMu.Lock()
 	armedGeneration := root.stableAttentionRetry.generation
 	root.attentionMu.Unlock()
 
-	root.resetStableDelegateAttentionRetryDelay()
+	root.resetDelegateAttentionRetryDelay()
 
 	root.attentionMu.Lock()
 	active, generation := root.stableAttentionRetry.active, root.stableAttentionRetry.generation

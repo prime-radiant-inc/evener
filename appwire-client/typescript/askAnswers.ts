@@ -1,11 +1,8 @@
-// The [answers] reply composition (parity contracts-composer-queue-pending.md
-// §"Ask User"/test-ask-compose.js): byte-exact for the ordinary format and
-// golden-string tested against cmd/evener-hub/assets/renderer.js's
-// composeAskAnswers/askResolutionText/quoteGoString. Headers containing line
-// framing characters use JSON encoding so the composed text remains parseable.
+// The [answers] reply composition: byte-exact for the ordinary format and
+// golden-string tested. Headers containing line framing characters use JSON
+// encoding so the composed text remains parseable.
 
-// AskResolution mirrors legacy's exactly-one-of-5-kinds rule (spec §4.3,
-// renderer.js:5874-5882): option (single or multi_select), free text,
+// AskResolution is exactly one of 5 kinds: option (single or multi_select), free text,
 // decide (with an optional leaning), fallback (only offered when the
 // question carries if_unanswered), and skip. `null` (no resolution chosen
 // yet) composes identically to an explicit skip - see askResolutionText.
@@ -36,7 +33,7 @@ function askAnswerHeader(header: string | undefined, index: number): string {
     .replace(/\u2029/g, "\\u2029");
 }
 
-// quoteGoString mirrors Go's %q escaping (renderer.js:6975-6994) exactly:
+// quoteGoString mirrors Go's %q escaping exactly:
 // backslash, double-quote, \n, \t, \r get their own escape; every other C0
 // control character (code < 0x20) becomes \xHH; everything else passes
 // through unchanged. Iterates by UTF-16 code unit (not code point,
@@ -61,8 +58,8 @@ export function quoteGoString(s: string | undefined): string {
   return `${out}"`;
 }
 
-// askResolutionText renders one question's resolution per spec §4.3's exact
-// vocabulary (renderer.js:6996-7014). An item with no resolution composes
+// askResolutionText renders one question's resolution in the reply format's
+// exact vocabulary. An item with no resolution composes
 // identically to an explicit skip ("skipped (no answer)") - the reply
 // format defines exactly 5 resolution kinds, not a 6th "unanswered" kind.
 function askResolutionText(item: AskAnswerItem): string {

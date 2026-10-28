@@ -636,16 +636,16 @@ func TestCovIsRootDelegateAttentionReceiver_RootRuntime(t *testing.T) {
 	}
 }
 
-// TestCovResetStableDelegateAttentionRetry covers
-// resetStableDelegateAttentionRetry.
-func TestCovResetStableDelegateAttentionRetry(t *testing.T) {
+// TestCovResetDelegateAttentionRetry covers
+// resetDelegateAttentionRetry.
+func TestCovResetDelegateAttentionRetry(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
 	s.attentionMu.Lock()
 	s.stableAttentionRetry.active = true
 	s.stableAttentionRetry.generation = 4
 	s.attentionMu.Unlock()
-	s.resetStableDelegateAttentionRetry()
+	s.resetDelegateAttentionRetry()
 	s.attentionMu.Lock()
 	if s.stableAttentionRetry.active {
 		t.Fatal("should be inactive after reset")

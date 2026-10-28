@@ -721,9 +721,8 @@ const layerState: client.LaunchLayerState = client.createLaunchLayerStore({ requ
       // top-level await, and a failure inside exits the consumer non-zero.
       smoke: `const offline = { request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined };
 const marketplacesStore = client.createMarketplacesStore(offline, client.createHubWriteGate());
-assert.equal(client.MARKETPLACE_REFETCH_DEBOUNCE_MS, 250);
+assert.equal(client.REFETCH_DEBOUNCE_MS, 250);
 const pluginsStore = client.createPluginsStore(offline, client.createHubWriteGate());
-assert.equal(client.PLUGIN_REFETCH_DEBOUNCE_MS, 250);
 assert.equal(pluginsStore.getState().pluginRevision, 0);
 pluginsStore.connectionChanged(offline, "ready");
 const keyed = client.createKeyedRevision();
@@ -731,7 +730,6 @@ const keyedRevision = keyed.issue("acme");
 keyed.retire("acme");
 assert.equal(keyed.current("acme", keyedRevision), false);
 const layerStore = client.createLaunchLayerStore(offline);
-assert.equal(client.LAUNCH_LAYER_REFETCH_DEBOUNCE_MS, 250);
 assert.equal(layerStore.getState().launchLayer, null);
 const listRevision = client.createListRevision();
 const first = listRevision.next();

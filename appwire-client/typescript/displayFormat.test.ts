@@ -48,7 +48,7 @@ test.each([
 });
 
 // --- formatDurationMs -------------------------------------------------------
-// Parity: renderer-format.js:636 (formatToolDuration) - same tier
+// Same tier
 // breakpoints/rounding as the terminal-footer variant, but floored at 1ms so
 // nothing ever prints the dishonest "0ms". Used for turn separators, whose
 // duration is real server-measured time (never fabricated client-side).

@@ -7,14 +7,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"math"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"syscall"
 	"text/tabwriter"
@@ -31,7 +29,6 @@ import (
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/identifier"
-	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/llm"
 	_ "primeradiant.com/evener/llm/providers/all"
@@ -384,7 +381,7 @@ func (e *startupInterruptedError) Unwrap() error { return e.err }
 // the one order an accepted interrupt needs: the runner first.
 //
 // The interrupt path does not consult the server cancel func; it calls
-// cancelAndWaitMutationRunner, which reads the runner fields under
+// serveBridge.cancelAndWaitMutationRunner, which reads the runner fields under
 // mutationRunnerMu and then waits for runnerDone before it finalizes the fence.
 // Armed cancel-first, a Stop accepted between the two statements finds the runner
 // fields still nil, returns without waiting, finalizes the fence and clears it --
@@ -838,222 +835,17 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			return c.Commit(claim)
 		}
 	}
-	retirementObserve := func(event, rootID string) {
-		if deps.retirementObserve != nil {
-			deps.retirementObserve(event, rootID)
-		}
-	}
+	retiring := &serveRetirement{deps: deps, live: live, retirement: retirement, rvRegistration: rvRegistration, commit: commitRetirement, ctx: ctx, cancel: cancel}
 	if err := retirement.AttachRoot(sess); err != nil {
 		sess.Close()
 		listener.Close() //nolint:errcheck // as above
 		return fmt.Errorf("retirement root: %w", err)
 	}
-	retirementObserve("root_published", sess.ID())
-	// consumeRetirementClaim is the single pipeline both triggers share. Any
-	// failure before Commit aborts the claim and leaves the daemon resident.
-	// Past Commit admission is closed permanently, so teardown runs under the
-	// daemon's own lifetime context rather than the caller's request context: a
-	// client that disconnects mid-teardown must not be able to wedge the process
-	// in "retiring". Exit is unconditional once Commit returns — a teardown
-	// failure is reported, never fatal to terminating the process.
-	consumeRetirementClaim := func(reqCtx context.Context, claim *agent.RetirementClaim) error {
-		root := live.session()
-		retirementObserve("claim_consumed", root.ID())
-		// Every failure before Commit must abort the claim, or it wedges in
-		// preparing and the daemon never retires and never recovers. This is
-		// deliberately NOT a defer: a failure at or after Commit must leave the
-		// process retiring, not abort it.
-		failBeforeCommit := func(err error) error {
-			_ = retirement.Abort(claim, "prepare_failed")
-			return err
-		}
-		if !rendezvous.StrongOwnershipAvailable() {
-			return failBeforeCommit(errors.New("retirement requires strong rendezvous ownership, unavailable on this platform"))
-		}
-		prepared, err := retirement.Prepare(reqCtx, claim)
-		if err != nil {
-			return failBeforeCommit(fmt.Errorf("retirement preparation: %w", err))
-		}
-		retirementObserve("prepared", root.ID())
-		if !live.reserveRetirementExit(root) {
-			return failBeforeCommit(errors.New("retirement exit is no longer owned by the prepared root"))
-		}
-		if err := commitRetirement(retirement, claim); err != nil {
-			// The process did not commit, so the exit is genuinely still
-			// undecided: drop the reservation reserveRetirementExit took before
-			// the claim aborts.
-			live.releaseRetirementExit()
-			return failBeforeCommit(fmt.Errorf("retirement commit: %w", err))
-		}
-		retirementObserve("committed", root.ID())
-		// Post-commit teardown is daemon-owned, not request-owned. The ctx used
-		// here is the daemon's lifetime context (the incoming request context is
-		// reqCtx): a committed retirement already closed admission forever, so
-		// request cancellation must never strand the process. The drain stays
-		// bounded by retirementReaderDrainBudget.
-		drainCtx, drainCancel := context.WithTimeout(ctx, retirementReaderDrainBudget)
-		drainErr := retirement.DrainReaders(drainCtx)
-		drainCancel()
-		var teardownErr error
-		if drainErr != nil {
-			serveLogf(os.Stderr, root.ID(), "retirement reader drain failed: %v", drainErr)
-			teardownErr = fmt.Errorf("retirement reader drain: %w", drainErr)
-		} else if err := agent.ReleaseForRetirement(ctx, prepared); err != nil {
-			serveLogf(os.Stderr, root.ID(), "retirement release failed: %v", err)
-			teardownErr = fmt.Errorf("retirement release: %w", err)
-		} else {
-			retirementObserve("released", root.ID())
-		}
-		// Exit is unconditional after Commit: teardown success is not the
-		// precondition for terminating the process. The cancel is what starts
-		// that exit -- the shutdown goroutine below waits on ctx.Done() -- so on
-		// the RPC trigger it must not run until the accepted response has reached
-		// the transport. Cancelling from inside the handler starts the shutdown
-		// pass before the response frame is written, which leaves the caller with
-		// a transport error and the Hub with a failure banner despite a
-		// successful retirement. AfterResponseWritten runs the cancel once that
-		// frame has been written, or at connection teardown if it never could be,
-		// so exit is preserved. The idle-timer trigger runs on the daemon's own
-		// lifetime context, which carries no connection, so it reports false and
-		// cancels immediately.
-		if !appserver.AfterResponseWritten(reqCtx, cancel) {
-			cancel()
-		}
-		if teardownErr != nil {
-			return &retirementTeardownError{err: teardownErr}
-		}
-		return nil
-	}
-	// requireExactOwnership is the one exact-ownership fence behind both
-	// identity-fenced daemon control RPCs: the current rendezvous entry must
-	// exist and the caller's generation fingerprint must match it, where an
-	// unrendered (empty) generation never compares equal. The retire path runs
-	// it again between TryManualClaim and the claim's prepare so a thread/clear
-	// that swapped ownership under an uncommitted claim cannot be retired by its
-	// predecessor's stale row.
-	requireExactOwnership := func(generation string) error {
-		entry, ok := rvRegistration.Entry()
-		if !ok {
-			return appwire.Unavailable("daemon rendezvous not registered")
-		}
-		if generation == "" || generation != rendezvous.OwnershipFingerprint(entry) {
-			return appwire.Conflict("daemon identity does not match current ownership")
-		}
-		return nil
-	}
-	// requestRetirement serves evener/daemon/retire. Exact-ownership
-	// revalidation runs BEFORE the admission fence is touched: a caller
-	// holding a stale generation (same PID, drifted identity) gets a conflict
-	// and no claim is consumed.
-	requestRetirement := func(ctx context.Context, params appwire.DaemonRetireParams) (appwire.DaemonRetireResponse, error) {
-		if err := requireExactOwnership(params.Identity.Generation); err != nil {
-			return appwire.DaemonRetireResponse{}, err
-		}
-		// claim_attempted marks the instant between the pre-claim identity check
-		// and the admission fence: the caller's generation has been accepted but
-		// TryManualClaim has not run. It is an observability beat outside every
-		// lock (retirementObserve is nil in production) so a test can interleave
-		// a thread/clear into exactly the window this closure must still defend.
-		// TryManualClaim widens that window: it first waits, up to the namer's
-		// timeout, for a session namer to settle (#3921). The ownership re-check
-		// after the claim covers the wider window the same way.
-		retirementObserve("claim_attempted", live.session().ID())
-		claim, snap, err := retirement.TryManualClaim(ctx)
-		if err != nil {
-			return appwire.DaemonRetireResponse{}, err
-		}
-		if claim == nil {
-			return appwire.DaemonRetireResponse{Accepted: false, Lifecycle: server.DaemonLifecycleFromSnapshot(snap)}, nil
-		}
-		// The pre-claim check above and TryManualClaim are not atomic: a thread/clear
-		// can run to completion between them. It holds its own admission lease
-		// (so TryClaim declines while it is in flight), rewrites rendezvous
-		// ownership to the replacement, swaps the session and re-roots the
-		// controller, then releases. The claim TryClaim just took is therefore
-		// against whatever root is current now, not necessarily the generation
-		// the caller proved. Re-read ownership and abort the uncommitted claim if
-		// it moved, so a stale request can never retire its replacement. The
-		// abort is essential: a claim left in "preparing" wedges the daemon.
-		if err := requireExactOwnership(params.Identity.Generation); err != nil {
-			_ = retirement.Abort(claim, "prepare_failed")
-			return appwire.DaemonRetireResponse{}, err
-		}
-		if err := consumeRetirementClaim(ctx, claim); err != nil {
-			// A post-commit teardown failure means the retirement already
-			// succeeded — admission is closed for good and the process exits —
-			// so it is reported as accepted. The failure is logged (serveLogf)
-			// and stays in the lifecycle's Failure field; it is observability,
-			// not an RPC error the caller could misread as a refused retire.
-			if _, ok := errors.AsType[*retirementTeardownError](err); !ok {
-				return appwire.DaemonRetireResponse{Accepted: false, Lifecycle: server.DaemonLifecycleFromSnapshot(retirement.Snapshot())}, err
-			}
-		}
-		return appwire.DaemonRetireResponse{Accepted: true, Lifecycle: server.DaemonLifecycleFromSnapshot(retirement.Snapshot())}, nil
-	}
+	retiring.observe("root_published", sess.ID())
 	srv.SetDaemonLifecycle(func() appwire.DaemonLifecycle {
 		return server.DaemonLifecycleFromSnapshot(retirement.Snapshot())
-	}, requestRetirement)
-	// requestIdleTimeoutSet serves evener/daemon/idle-timeout/set. Like retire,
-	// the exact-ownership fence runs BEFORE the controller is touched, so a
-	// caller holding a stale generation (same PID, drifted identity) gets a
-	// conflict and no deadline moves.
-	requestIdleTimeoutSet := func(_ context.Context, params appwire.DaemonIdleTimeoutSetParams) (appwire.DaemonIdleTimeoutSetResponse, error) {
-		if err := requireExactOwnership(params.Identity.Generation); err != nil {
-			return appwire.DaemonIdleTimeoutSetResponse{}, err
-		}
-		if params.TimeoutMillis < 0 {
-			return appwire.DaemonIdleTimeoutSetResponse{}, appwire.InvalidParams("timeoutMillis must not be negative")
-		}
-		// maxIdleTimeoutMillis is the largest value whose nanosecond conversion
-		// cannot overflow time.Duration: larger values would wrap — 1<<58 millis
-		// lands on exactly zero, a success response that silently disabled
-		// automatic retirement.
-		const maxIdleTimeoutMillis = math.MaxInt64 / int64(time.Millisecond)
-		if params.TimeoutMillis > maxIdleTimeoutMillis {
-			return appwire.DaemonIdleTimeoutSetResponse{}, appwire.InvalidParams("timeoutMillis exceeds the maximum representable duration")
-		}
-		// idle_timeout_attempted marks the instant between the pre-retarget
-		// identity check and the controller write: the caller's generation has
-		// been accepted but Retarget has not run. Like claim_attempted above, it
-		// is an observability beat outside every lock (retirementObserve is nil
-		// in production) so a test can interleave a thread/clear into exactly
-		// the window the revalidation below must still defend.
-		retirementObserve("idle_timeout_attempted", live.session().ID())
-		prev, token, err := retirement.RetargetStamped(time.Duration(params.TimeoutMillis) * time.Millisecond)
-		if err != nil {
-			return appwire.DaemonIdleTimeoutSetResponse{}, err
-		}
-		// idle_timeout_written parks the handler immediately after the
-		// controller write and before the revalidation fence — the exact
-		// window in which a later legitimate writer's deadline must survive
-		// the stale request's revert. Same contract as idle_timeout_attempted:
-		// observability only, nil in production.
-		retirementObserve("idle_timeout_written", live.session().ID())
-		// The pre-retarget check and Retarget are not atomic: a thread/clear can
-		// run to completion between them (mutations do not serialize with each
-		// other), re-rooting the controller to the replacement — and the write
-		// above then moved the REPLACEMENT's deadline, so a bare conflict would
-		// leave the harm in place. Re-read ownership and, if it moved, undo the
-		// write by its token: UndoRetarget restores the deadline the write
-		// replaced, but only while this request's write is still the newest — a
-		// later legitimate writer (the replacement's own archive decision) owns
-		// the deadline now and must survive the refusal, even when it chose the
-		// same value, which a value comparison could not tell apart. A clear
-		// that completed before this write reset the fresh root to the
-		// configured baseline, so this write landed after that reset and the
-		// undo below is the only thing that can take it back; a clear that
-		// completes after the write has already superseded this write's token
-		// with its own reset, and the undo correctly yields. Refuse like the
-		// retire path does after its claim. The undo is best-effort: a
-		// controller that is no longer resident never restores (the process is
-		// preparing or retiring and its deadline no longer matters).
-		if err := requireExactOwnership(params.Identity.Generation); err != nil {
-			retirement.UndoRetarget(token, prev)
-			return appwire.DaemonIdleTimeoutSetResponse{}, err
-		}
-		return appwire.DaemonIdleTimeoutSetResponse{Lifecycle: server.DaemonLifecycleFromSnapshot(retirement.Snapshot())}, nil
-	}
-	srv.SetDaemonIdleTimeoutSet(requestIdleTimeoutSet)
+	}, retiring.requestRetirement)
+	srv.SetDaemonIdleTimeoutSet(retiring.requestIdleTimeoutSet)
 	// Install the retirement admission boundary on the router. Every routed
 	// handler is classified by access kind (server/appwire_retirement_admission.go):
 	// a mutation holds a lease for the handler's duration and is refused while
@@ -1085,282 +877,8 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		closeEventObserver = tee.close
 	}
 
-	// Every bridge drain this serve starts, so teardown can wait for them.
-	// A session gets a new one on thread/clear, and each ends when its own session's
-	// event channel closes.
-	var drainsMu sync.Mutex
-	var bridgeStartMu sync.Mutex
-	var bridgeDrains []<-chan struct{}
-	bridgeDrainBySession := make(map[string]<-chan struct{})
-	// teardownStarted says the snapshot below has already been taken, so no
-	// later drain can ever appear in it. bridgeSession refuses to start one
-	// past this point; see the refusal there for why that is the right answer.
-	var teardownStarted bool
-	var shutdownExpiryOnce sync.Once
-	var shutdownExpiry <-chan struct{}
-	shutdownExpiryStop := make(chan struct{})
-	sharedShutdownExpiry := func() <-chan struct{} {
-		shutdownExpiryOnce.Do(func() {
-			source := deps.drainWaitExpiry()
-			done := make(chan struct{})
-			shutdownExpiry = done
-			go func() {
-				defer close(done)
-				select {
-				case <-source:
-				case <-shutdownExpiryStop:
-				}
-			}()
-		})
-		return shutdownExpiry
-	}
-	// The tee must OUTLIVE every drain. Session.Close() closes the event channel
-	// but does not wait for the buffered tail, so a drain is still calling the
-	// observer after the session is closed -- and observe on a closed tee panics
-	// on the drain's own goroutine, which kills the process and skips every
-	// defer registered above this one. Waiting and closing live in ONE defer so
-	// the order cannot be broken by inserting another defer between them.
-	//
-	// THE WAIT IS BUDGETED, AND EXPIRY SKIPS THE CLOSE. A drain wedged inside
-	// BridgeEvent -- on a lock, or on a subsystem that stopped answering --
-	// must not make the daemon ignore SIGTERM until something SIGKILLs it, so
-	// the wait gives up after shutdownDrainWaitBudget.
-	//
-	// Giving up means LEAVING THE TEE OPEN, not closing it anyway. Closing it
-	// under a live drain is the exact crash this defer exists to prevent, so an
-	// expiry that closed anyway would trade a hang for the bug rather than fix
-	// either. An abandoned tee costs a truncated NDJSON tail on a process that
-	// is exiting regardless, and the OS reclaims the goroutine and the buffer.
-	//
-	// The budget bounds the pathological case ONLY; it must never absorb real
-	// work, because a budget that can expire on a slow machine quietly converts
-	// a slowness bug into a truncated log. A healthy drain is the session's
-	// buffered tail -- at most its 256-deep channel, each event memory work plus
-	// at most one jobs.jsonl read -- which is milliseconds, and still under
-	// 100ms with the deliberately slowed observer serve_verbose_e2e_test uses.
-	// Thirty seconds is two orders of magnitude past that, so an expiry here
-	// means a genuine wedge, and it stays inside systemd's 90s default stop
-	// timeout so the daemon still gets to exit by its own decision.
-	//
-	// "Genuine wedge" is a claim about every drain that can reach this wait, and
-	// it holds because every session this daemon makes current is closed by
-	// someone: shutdown's one pass (closeForShutdown) over whatever was live
-	// when it ran, or the thread/clear that installed a replacement past that pass and
-	// therefore closes its own. Without that second half, a thread/clear landing in
-	// the window between the pass and this snapshot registered a drain on a
-	// session nothing would ever close, which no budget can end -- the expiry
-	// fired every time, on work that was neither wedged nor real.
-	defer func() {
-		defer close(shutdownExpiryStop)
-		bridgeStartMu.Lock()
-		drainsMu.Lock()
-		pending := append([]<-chan struct{}(nil), bridgeDrains...)
-		// The bridge-start lock prevents bridgeSession from slipping a drain
-		// behind this snapshot while drainsMu protects the list itself.
-		teardownStarted = true
-		drainsMu.Unlock()
-		bridgeStartMu.Unlock()
-		// One budget for the whole teardown, not one per drain: what must be
-		// bounded is how long SIGTERM goes unanswered.
-		expiry := sharedShutdownExpiry()
-		for _, drained := range pending {
-			select {
-			case <-drained:
-			case <-expiry:
-				return
-			}
-		}
-		if closeEventObserver != nil {
-			closeEventObserver()
-		}
-	}()
-
-	var notifyCallback func()
-	var subscriberCallback func() int
-	var mutationRunnerMu sync.Mutex
-	var mutationRunnerCancel context.CancelFunc
-	var mutationRunnerDone <-chan struct{}
-	setMutationRunner := func(cancel context.CancelFunc, done <-chan struct{}) {
-		mutationRunnerMu.Lock()
-		mutationRunnerCancel = cancel
-		mutationRunnerDone = done
-		mutationRunnerMu.Unlock()
-	}
-	clearMutationRunner := func(done <-chan struct{}) {
-		mutationRunnerMu.Lock()
-		if mutationRunnerDone == done {
-			mutationRunnerCancel = nil
-			mutationRunnerDone = nil
-		}
-		mutationRunnerMu.Unlock()
-	}
-	cancelAndWaitMutationRunner := func() {
-		mutationRunnerMu.Lock()
-		cancelRunner := mutationRunnerCancel
-		runnerDone := mutationRunnerDone
-		mutationRunnerMu.Unlock()
-		if cancelRunner != nil {
-			cancelRunner()
-		}
-		if runnerDone != nil {
-			<-runnerDone
-		}
-	}
-	bridgeSession := func(s *agent.Session) {
-		// The idle kick is set on the Session, so it must be re-established
-		// whenever the session is replaced (e.g. on thread/clear). It feeds the
-		// first continuation prompt back into the serve loop's input channel
-		// as an EntryContinuation-kind message (the agent module must not
-		// import server, so this is a callback into the server, spec §C4/§7).
-		s.SetKickFunc(func(prompt string) { srv.SubmitContinuation(prompt) })
-		// The notify wake is wired alongside the kick: when a child finishes
-		// and the parent is idle, the durable notification queue is already
-		// populated; this callback feeds a text-less EntryNotification kick
-		// into the serve loop so the parent drains it on the next turn.
-		notifyCallback = func() { srv.SubmitNotification() }
-		s.SetNotifyFunc(notifyCallback)
-		// Each execution the session starts publishes its TurnID, with the
-		// thread active, before its first entry is recorded, so clients hold
-		// the running turn before any of its history arrives.
-		s.SetExecutionStartedFunc(srv.SetProcessingTurn)
-		s.SetClientMutationStartWakeFunc(func() {
-			srv.SubmitClientMutationStart(s.ID())
-		})
-		s.SetPendingUserInputWakeFunc(func() {
-			srv.SubmitPendingUserInput(s.ID())
-		})
-		// Descendants do not have their own daemon or authoritative event
-		// consumer. Forward their enriched events synchronously into this
-		// daemon's per-thread AppWire projections instead.
-		ownerThreadID := s.ID()
-		s.SetDescendantEventFunc(func(event events.SessionEvent) {
-			srv.RecordDescendantAppEvent(ownerThreadID, event)
-		})
-		// A descendant's transcript lives alongside its owner's, under the same
-		// state dir convention every other session/transcript lookup in this
-		// codebase uses. A descendant's history is projected from it, from
-		// its first observation on (ledger #110/#111).
-		stateDir := s.StateDir()
-		srv.SetDescendantTranscriptPathFunc(func(threadID string) string {
-			return schema.SessionTranscriptPath(stateDir, threadID)
-		})
-		// A descendant session's own watches live in that child's job manager and
-		// appear on no row today, because only the root's status is projected. The
-		// root's own row also carries watches the diagnostics facet only re-samples
-		// on a few events and a turn boundary, so it can lag a watch armed in
-		// between. The appwire thread LIST samples both on read through this seam,
-		// resolving the root to its own rows and a descendant to that child's, for
-		// every row of a page in one walk of the live tree. Wire it beside the
-		// transcript resolver: both reach across the appwire-server/delegate-controller
-		// boundary, and both must track the session that is current after a
-		// thread/clear identity swap.
-		srv.SetDescendantLiveWatchesFunc(func(threadIDs []string) map[string][]agent.WatchStatusInfo {
-			return s.LiveWatchRowsForSessions(threadIDs)
-		})
-		// The root's row carries its whole tree's subagent tally (S3), read from
-		// the delegate controller when the list is served. Set per session so it
-		// follows the replacement a thread/clear installs.
-		srv.SetSubagentTallyFunc(s.SubagentTally)
-		// The M7 sandbox-escalation gate blocks a denied tool call only when a human
-		// is actually watching this thread; the probe reads the live AppWire
-		// subscriber count. Set per-session (like the kick/notify wakes) so it tracks
-		// the current session's id across thread/clear.
-		subscriberCallback = func() int { return deps.subscriberCount(srv, s.ID()) }
-		s.SetSubscriberCountFunc(subscriberCallback)
-		// Called synchronously, NOT with `go`: the bridge registers as the
-		// session's authoritative consumer and then drains on its own
-		// goroutine, so returning here means the registration has taken effect.
-		// Spawning this would reopen the window in which the session is live
-		// and its feed is still best-effort.
-		//
-		// The bridge start and drain registration are one critical section with
-		// teardown, but the bridge call itself must stay outside drainsMu because
-		// a closed session invokes onDrained synchronously.
-		drained := make(chan struct{})
-		bridgeStartMu.Lock()
-		defer bridgeStartMu.Unlock()
-		// Past the teardown's snapshot, a drain started here would be one the
-		// wait cannot see, and the tee would be closed under it -- the same
-		// crash the wait exists to prevent, reached from the other side. The
-		// lock that makes the registration atomic makes this mutually exclusive
-		// with the snapshot for free.
-		//
-		// Refusing leaves this session with no authoritative consumer, which
-		// anywhere else on this branch is the corruption being prevented. Here
-		// it costs nothing: the only caller that can reach this is thread/clear on a
-		// handler goroutine that outlived httpSrv.Close(), and by the time the
-		// snapshot has been taken the listener is closed, the rendezvous entry
-		// has been removed, and the input loop has exited. The replacement
-		// cannot take a turn and no client can read it, so there is no reader
-		// for its projection to be permanently wrong for.
-		//
-		// It costs nothing on disk either, and that is a SEPARATE guarantee
-		// rather than a consequence of this refusal: a thread/clear reaching here
-		// installed its replacement past shutdown's closing pass, so it has
-		// already closed it, which is what runs the env's Cleanup()
-		// (agent/execenv/local.go) and disposes the session's owned scratch
-		// directory. Left unclosed that directory is disk state -- unlike the
-		// tee's buffered tail above, which the OS reclaims once this process
-		// exits, it survives AFTER exit. Do not read this refusal as the thing
-		// that prevents that: declining to bridge a session and closing one are
-		// different acts, and only the second reaches the env.
-		drainsMu.Lock()
-		teardown := teardownStarted
-		drainsMu.Unlock()
-		if teardown {
-			return
-		}
-		deps.bridge(srv, s, eventObserver, func() {
-			close(drained)
-			drainsMu.Lock()
-			if bridgeDrainBySession[s.ID()] == drained {
-				delete(bridgeDrainBySession, s.ID())
-			}
-			drainsMu.Unlock()
-		})
-		drainsMu.Lock()
-		bridgeDrains = append(bridgeDrains, drained)
-		bridgeDrainBySession[s.ID()] = drained
-		completed := false
-		select {
-		case <-drained:
-			completed = true
-		default:
-		}
-		if completed && bridgeDrainBySession[s.ID()] == drained {
-			delete(bridgeDrainBySession, s.ID())
-		}
-		drainsMu.Unlock()
-	}
-	waitForSessionBridgeDrain := func(sessionID string) bool {
-		drainsMu.Lock()
-		drained := bridgeDrainBySession[sessionID]
-		drainsMu.Unlock()
-		if drained == nil {
-			return true
-		}
-		select {
-		case <-drained:
-			drainsMu.Lock()
-			if bridgeDrainBySession[sessionID] == drained {
-				delete(bridgeDrainBySession, sessionID)
-			}
-			drainsMu.Unlock()
-			return true
-		default:
-		}
-		select {
-		case <-drained:
-			drainsMu.Lock()
-			if bridgeDrainBySession[sessionID] == drained {
-				delete(bridgeDrainBySession, sessionID)
-			}
-			drainsMu.Unlock()
-			return true
-		case <-sharedShutdownExpiry():
-			return false
-		}
-	}
+	bridge := newServeBridge(srv, deps, eventObserver, closeEventObserver)
+	defer bridge.awaitDrains()
 
 	srv.SetSandboxEscalationResolveFunc(func(id string, approve bool) error {
 		return live.session().ResolveSandboxEscalation(id, approve)
@@ -1402,7 +920,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		},
 		Interrupt: func(waitCtx context.Context, params appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
 			return live.session().InterruptClientMutation(waitCtx, params, func() {
-				cancelAndWaitMutationRunner()
+				bridge.cancelAndWaitMutationRunner()
 			})
 		},
 	})
@@ -1556,7 +1074,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		shutdownClaimed := live.shutdownClosed()
 		if shutdownClaimed {
 			closeSupersededSession(oldSess, true) // disposes oldEnv
-			if !waitForSessionBridgeDrain(oldSess.ID()) {
+			if !bridge.waitForSessionBridgeDrain(oldSess.ID()) {
 				live.transitionMu.Unlock()
 				newSess.Close() // disposes clearEnv; old identity remains current
 				return errors.New("old session bridge did not drain before clear deadline")
@@ -1579,7 +1097,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		if err := retirement.AttachRoot(newSess); err != nil {
 			serveLogf(os.Stderr, newSess.ID(), "retirement root re-attach failed: %v", err)
 		}
-		retirementObserve("root_published", newSess.ID())
+		retiring.observe("root_published", newSess.ID())
 		// The commit above zeroed the envelope with the identity it described.
 		// Re-seed from the replacement session here rather than inside the
 		// commit: sampling every facet reads jobs.jsonl and the task store, and
@@ -1608,7 +1126,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		if live.shutdownClosed() {
 			newSess.Close() // disposes clearEnv
 		}
-		bridgeSession(newSess)
+		bridge.bridgeSession(newSess)
 		return nil
 	})
 
@@ -1622,7 +1140,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// no single event announces that; this is that moment for the first one.
 	srv.RefreshThreadEnvelope()
 	// Bridge session events to appwire notifications.
-	bridgeSession(sess)
+	bridge.bridgeSession(sess)
 	// Belt-and-suspenders with the Bridge/projector SessionStart fix (spec
 	// §5.4 "two touchpoints"): the session's SessionStart event may already be
 	// sitting in its buffered event channel by the time the bridge goroutine
@@ -1643,8 +1161,8 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	srv.SetState(sess.WireState())
 	if deps.observeCallbacks != nil {
 		deps.observeCallbacks(serveCallbackObserver{
-			notify:          notifyCallback,
-			subscriberCount: subscriberCallback, pendingEscalations: pendingEscalations,
+			notify:          bridge.notifyCallback,
+			subscriberCount: bridge.subscriberCallback, pendingEscalations: pendingEscalations,
 			setSession: func(next *agent.Session) { live.set(next, live.environment()) },
 			session:    sess,
 		})
@@ -1676,7 +1194,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 				// announced as running while nothing can stop it, and a
 				// capability set sampled in between says exactly that (5gdv).
 				srv.SetCancelFunc(cancelDrain)
-				setMutationRunner(cancelDrain, runnerDone)
+				bridge.setMutationRunner(cancelDrain, runnerDone)
 				srv.SetProcessing(true)
 				return drainCtx, cancelDrain
 			}
@@ -1692,7 +1210,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 				// finds the fields still nil, returns without waiting, finalizes
 				// the fence and clears it -- and the turn then runs anyway.
 				armInterruptRunner(
-					func() { setMutationRunner(cancelTurn, runnerDone) },
+					func() { bridge.setMutationRunner(cancelTurn, runnerDone) },
 					func() { srv.SetCancelFunc(cancelTurn) },
 				)
 				if !holdServeStateForAwaitingWake(msg.Kind, sess.HasPendingAsk()) {
@@ -1714,7 +1232,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 					// and then waits for runnerDone before finalizing the fence,
 					// and it never consults srv.SetCancelFunc.
 					armInterruptRunner(
-						func() { setMutationRunner(cancelTurn, runnerDone) },
+						func() { bridge.setMutationRunner(cancelTurn, runnerDone) },
 						func() { srv.SetCancelFunc(cancelTurn) },
 					)
 					// The execution the claim admits publishes its own TurnID
@@ -1728,7 +1246,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 					// The claim refused: nothing is running, so drop the runner
 					// armed for it rather than leave a Stop pointed at a turn
 					// that will never start.
-					clearMutationRunner(runnerDone)
+					bridge.clearMutationRunner(runnerDone)
 					srv.SetCancelFunc(nil)
 				}
 			} else if msg.QueuedInput {
@@ -1739,7 +1257,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 				// finalizes the unincorporated claim with nothing to cancel and
 				// the input is lost.
 				armInterruptRunner(
-					func() { setMutationRunner(cancelTurn, runnerDone) },
+					func() { bridge.setMutationRunner(cancelTurn, runnerDone) },
 					func() { srv.SetCancelFunc(cancelTurn) },
 				)
 				result, processed, processErr = sess.ProcessPendingUserInput(turnCtx, func(string) {
@@ -1749,7 +1267,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 					// The claim refused: nothing is running, so drop the runner
 					// armed for it rather than leave a Stop pointed at a turn
 					// that will never start.
-					clearMutationRunner(runnerDone)
+					bridge.clearMutationRunner(runnerDone)
 					srv.SetCancelFunc(nil)
 				}
 			} else {
@@ -1762,7 +1280,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			srv.SetCancelFunc(nil)
 			currentCancel()
 			close(runnerDone)
-			clearMutationRunner(runnerDone)
+			bridge.clearMutationRunner(runnerDone)
 			if processErr != nil {
 				serveLogf(os.Stderr, sess.ID(), "error: %s", turnFailureSummary(processErr))
 			}
@@ -1828,7 +1346,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		retirementLoopDone = make(chan struct{})
 		go func() {
 			defer close(retirementLoopDone)
-			_ = retirement.Run(ctx, consumeRetirementClaim, func(attempt agent.RetirementAttempt) {
+			_ = retirement.Run(ctx, retiring.consumeClaim, func(attempt agent.RetirementAttempt) {
 				serveLogf(os.Stderr, live.session().ID(), "%s", retirementAttemptSummary(attempt))
 			})
 		}()

@@ -91,7 +91,7 @@ type EvenerThread struct {
 	Capabilities     ThreadCapabilities `json:"capabilities"`
 	Diagnostics      *EvenerDiagnostics `json:"diagnostics,omitempty"`
 	// Queue carries authoritative queue depth + preview for the per-session
-	// input queue (kata r80p). Both UIs derive their queue-preview chrome
+	// input queue. Both UIs derive their queue-preview chrome
 	// from this field rather than mirroring queue mutations locally, which
 	// fixes multi-client incoherence and post-reload state. The empty zero
 	// value (Depth==0, Preview==nil) means "no queued messages".
@@ -394,7 +394,7 @@ type QueueState struct {
 // transition (currently: a drain folding the queue into steering), never a
 // property of the durable queue a client caches — a client settles those
 // optimistic records by positive evidence instead of inferring consumption
-// from sequence order (issue #1704). Absent on old daemons and on every push
+// from sequence order. Absent on old daemons and on every push
 // that is not the consuming transition.
 type ThreadQueueChangedParams struct {
 	ThreadID                  string     `json:"threadId"`
@@ -560,7 +560,7 @@ type ThreadCapabilities struct {
 	// ChangeVisionModel advertises support for thread/vision-model/set. True for
 	// a live evener session whose daemon wires a vision-model hook.
 	ChangeVisionModel bool `json:"changeVisionModel"`
-	// Queue advertises harness support for turn/queue (kata 111a, #1375): true
+	// Queue advertises harness support for turn/queue: true
 	// when the daemon wires a queue seam and the thread is not closed, not when
 	// a turn happens to be in flight. The client applies the status, so
 	// turn/queue is still meaningful only mid-turn.
@@ -602,7 +602,7 @@ type ThreadCapabilities struct {
 	// before position, with or without a cursor: a client that trimmed rows
 	// from the top of its window can page them back. The hub answers for its
 	// own local and saved threads. A thread on another host stays masked until
-	// the hub can join such a page to its remote paging window (#3176); an
+	// the hub can join such a page to its remote paging window; an
 	// older hub never sends it.
 	PageBefore bool `json:"pageBefore,omitempty"`
 }

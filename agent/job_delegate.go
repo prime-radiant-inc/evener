@@ -41,18 +41,24 @@ type delegateArgs struct {
 	TaskList            []taskpkg.TaskTemplate
 }
 
+// delegateWorktreeReport is the isolation lane's state as the delegate tool
+// results (create, send, stop) carry it on the wire.
 type delegateWorktreeReport struct {
-	Path         string
-	Branch       string
-	HeadSHA      string
-	Ahead        int
-	Dirty        bool
-	DisposalHint string
+	Path    string `json:"path"`
+	Branch  string `json:"branch"`
+	HeadSHA string `json:"head_sha"`
+	Ahead   int    `json:"ahead_commits"`
+	Dirty   bool   `json:"dirty"`
+	// DisposalHint carries the completion nudge. It MUST be exported: an
+	// unexported field is silently dropped by encoding/json. Empty (and
+	// omitted) unless the receiving session has the dispose op and owns the
+	// delegate.
+	DisposalHint string `json:"disposal_hint,omitempty"`
 }
 
 type delegateSandboxReport struct {
-	Mode    string
-	Network bool
+	Mode    string `json:"mode"`
+	Network bool   `json:"network"`
 }
 
 type delegateResult struct {
@@ -209,10 +215,10 @@ func sendMessageFailed(target string, err error) sendMessageResult {
 	}
 }
 
-func (s *Session) stableDelegateWorktreeReport(desc delegatestore.Descriptor) *delegateWorktreeReport {
+func (s *Session) descriptorWorktreeReport(desc delegatestore.Descriptor) *delegateWorktreeReport {
 	report := s.delegateWorktreeReport(desc.Isolation, desc.WorkingDir)
 	if report != nil {
-		report.DisposalHint = s.stableDelegateDisposalHint(desc, filepath.Base(report.Path))
+		report.DisposalHint = s.delegateDisposalHint(desc, filepath.Base(report.Path))
 	}
 	return report
 }
@@ -271,7 +277,7 @@ func (s *Session) delegateWorktreeReport(isolation, workingDir string) *delegate
 	}
 }
 
-func (s *Session) stableDelegateDisposalHint(desc delegatestore.Descriptor, delegateID string) string {
+func (s *Session) delegateDisposalHint(desc delegatestore.Descriptor, delegateID string) string {
 	if s == nil || desc.OwnerSessionID != s.id || !s.canInstructTool("manage_worktree") || !isDelegateID(delegateID) {
 		return ""
 	}

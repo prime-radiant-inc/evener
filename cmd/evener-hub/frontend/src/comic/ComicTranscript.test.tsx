@@ -25,12 +25,8 @@ import {
 } from "../panes/session/transcript/useTranscript";
 import { chromeStore, resetChromeStoreForTests } from "../shell/chromeStore";
 import { connectionStore } from "../stores/connection";
-import {
-  olderTranscriptPageKey,
-  resetThreadsStoreForTests,
-  settleEntryTranscriptForTests,
-  threadsStore,
-} from "../stores/threads";
+import { olderTranscriptPageKey } from "../stores/entryTranscriptRoutes";
+import { resetThreadsStoreForTests, settleEntryTranscriptForTests, threadsStore } from "../stores/threads";
 import { useThreadModel } from "../stores/useThreadModel";
 import * as widgets from "../widgets";
 import { ComicTranscript } from "./ComicTranscript";

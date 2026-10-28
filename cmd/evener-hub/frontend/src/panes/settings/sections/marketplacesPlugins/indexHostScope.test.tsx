@@ -1,5 +1,5 @@
 import type { HostRow, MarketplaceEntry, PluginEntry } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test } from "vitest";
@@ -7,6 +7,7 @@ import { connectionStore } from "../../../../stores/connection";
 import { resetExtensionsStoreForTests } from "../../../../stores/extensions";
 import { hostsStore } from "../../../../stores/hosts";
 import { resetSettingsHostForTests, setSettingsHost } from "../../../../stores/settingsHost";
+import { connectReadyFakeClient } from "../../../../testing/connectionTestUtils";
 import { resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { MarketplacesPluginsHostScope } from "./index";
 
@@ -47,10 +48,9 @@ const MARKETPLACE: MarketplaceEntry = {
 };
 
 function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] }));
-  connectionStore.getState().connect(fake);
-  return fake;
+  return connectReadyFakeClient((fake) => {
+    fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] }));
+  });
 }
 
 /** The marketplace edits the pane sent to ANY host through the proxy. */

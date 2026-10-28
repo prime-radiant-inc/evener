@@ -134,7 +134,7 @@ func gctManagerTails(t *testing.T, token string) {
 		schema.NewTurn(schema.TurnSteering, llm.User("steer")),
 		schema.NewTurn(schema.TurnUserInput, llm.User("recent")),
 	}
-	if _, err := cm.summarizeWithLLMSteered(ctx, history, 1, token); err == nil {
+	if _, err := cm.summarizeFold(ctx, history, 1, token, nil); err == nil {
 		t.Fatal("scripted summarization failure was swallowed")
 	}
 	if got := renderHistoryForElicit([]schema.Turn{{}}, 20); got != "" {

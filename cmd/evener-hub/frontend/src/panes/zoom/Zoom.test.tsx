@@ -1269,7 +1269,7 @@ test("a live origin replaced before its first summary resolves still retires sta
   expect(screen.getByRole("button", { name: "Return to previous view" })).toBeTruthy();
 });
 
-// AppShell.test.tsx's installMobileViewport, verbatim: the mobile query
+// appShellTestUtils.tsx's installMobileViewport, verbatim: the mobile query
 // matches, every other query (the reduced-motion read included) does not.
 function installMobileViewport(): void {
   vi.stubGlobal(

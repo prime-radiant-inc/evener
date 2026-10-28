@@ -320,7 +320,7 @@ export interface AuthStatusResponse {
   /**
    * ShadowedEnvVar names an environment variable that is set but loses to
    * a higher-precedence credential (api_key, credential_headers, or
-   * store, spec §10); empty when no such variable is set, including when
+   * store); empty when no such variable is set, including when
    * an env source is itself what resolves.
    */
   shadowedEnvVar?: string;
@@ -332,7 +332,7 @@ export interface AuthStatusResponse {
   needsLogin?: boolean;
   /**
    * RefreshRejected is true when the issuer permanently refused this
-   * instance's stored refresh token (authopenai.RefreshRejected, #2479):
+   * instance's stored refresh token (authopenai.RefreshRejected):
    * the access token may still be valid, but the session needs a fresh
    * sign-in before its next refresh. It is why NeedsLogin can be true for a
    * record whose access token has not expired, so a client must not read
@@ -848,7 +848,7 @@ export interface EvenerThread {
   diagnostics?: EvenerDiagnostics;
   /**
    * Queue carries authoritative queue depth + preview for the per-session
-   * input queue (kata r80p). Both UIs derive their queue-preview chrome
+   * input queue. Both UIs derive their queue-preview chrome
    * from this field rather than mirroring queue mutations locally, which
    * fixes multi-client incoherence and post-reload state. The empty zero
    * value (Depth==0, Preview==nil) means "no queued messages".
@@ -1777,7 +1777,7 @@ export interface InstanceEntry {
   /**
    * ShadowedEnvVar names an environment variable that is set but loses to
    * a higher-precedence credential (api_key, credential_headers, or
-   * store, spec §10); empty when no such variable is set, including when
+   * store); empty when no such variable is set, including when
    * an env source is itself what resolves.
    */
   shadowedEnvVar?: string;
@@ -2082,7 +2082,7 @@ export interface KeybindingsOverrides {
    * Rules then carries the shipped-default fallback (what is actually in
    * effect) while the diagnostic tells the client to keep editing read-only
    * - PATCH rejects in this state, so a client that treated the fallback as
-   * writable would fail every save (roborev PR #884 round 6). Absent from
+   * writable would fail every save. Absent from
    * broadcasts and patch responses, which only exist post-load.
    */
   loadError?: string;
@@ -2356,7 +2356,7 @@ export interface MutationReceipt {
    * queued entries into itself). It rides the durable mutation result, so
    * a replayed disposition carries the same ids the first execution did —
    * unlike queueChanged's own copy of this fact, a replay needs no live
-   * push to settle those records (issue #1704). Absent on every receipt
+   * push to settle those records. Absent on every receipt
    * that is not a drain's.
    */
   consumedClientMutationIds?: string[];
@@ -2666,7 +2666,7 @@ export interface NavigationSessionSummary {
    * appwire.SearchResult.Archived reports for a live hit). It sits BESIDE Live
    * rather than replacing it: a session archived while it is still running
    * stays reachable through a pin, and this flag lets a client suppress the
-   * row's unread dot for it (#4199). Absent when it is not, and from an
+   * row's unread dot for it. Absent when it is not, and from an
    * older hub.
    */
   archived?: boolean;
@@ -3896,7 +3896,7 @@ export interface ThreadCapabilities {
    */
   changeVisionModel: boolean;
   /**
-   * Queue advertises harness support for turn/queue (kata 111a, #1375): true
+   * Queue advertises harness support for turn/queue: true
    * when the daemon wires a queue seam and the thread is not closed, not when
    * a turn happens to be in flight. The client applies the status, so
    * turn/queue is still meaningful only mid-turn.
@@ -3952,7 +3952,7 @@ export interface ThreadCapabilities {
    * before position, with or without a cursor: a client that trimmed rows
    * from the top of its window can page them back. The hub answers for its
    * own local and saved threads. A thread on another host stays masked until
-   * the hub can join such a page to its remote paging window (#3176); an
+   * the hub can join such a page to its remote paging window; an
    * older hub never sends it.
    */
   pageBefore?: boolean;
@@ -4028,8 +4028,8 @@ export interface ThreadForkParams {
    * NOT read as one for this: send ThreadItem.TranscriptKey, never Turn.ID;
    * the entry ordinal a live turn's own id implies coincides with its
    * transcript entry index only on a transcript replayed from disk,
-   * because every live turn minter numbers turns off its own counter (kata
-   * 0jhh). Required unless Aside.
+   * because every live turn minter numbers turns off its own counter.
+   * Required unless Aside.
    */
   sourceItemKey?: string;
 }
@@ -4070,7 +4070,7 @@ export interface ThreadItem {
    * PrevalOnly is true when Error came from a pre-dispatch rejection (an
    * unknown tool name, or arguments that failed schema validation even
    * after repair) rather than the tool's own execution - the call never
-   * reached ExecuteCall (kata hgm1). A client uses this to tell a
+   * reached ExecuteCall. A client uses this to tell a
    * self-corrected malformed-call bounce apart from a real execution
    * failure or denial: same non-empty Error, different meaning. False (the
    * default) for a real execution failure, and meaningless when Error is
@@ -4087,8 +4087,8 @@ export interface ThreadItem {
   /**
    * DurationMS is the item's real server-measured runtime in milliseconds
    * (tool-call items only). Stamped live from the event stream's own
-   * timestamps; nil when no honest span was recorded (issue #37: the web
-   * hover meta shows real times or nothing).
+   * timestamps; nil when no honest span was recorded (the web hover meta
+   * shows real times or nothing).
    */
   durationMs?: number;
   /**
@@ -4115,7 +4115,7 @@ export interface ThreadItem {
   /**
    * Source carries item provenance for steering items: "user" for
    * human-sent steering (rendered as a user message), empty for
-   * daemon/system steering (issue #24).
+   * daemon/system steering.
    */
   source?: string;
   /**
@@ -4416,7 +4416,7 @@ export interface ThreadStatusChangedParams {
    * AskPending carries EvenerThread.AskPending — "this session is waiting on
    * a human answer" — for the reason the failure count rides along above: it
    * is otherwise snapshot-only, so after the user answers, every OTHER
-   * client keeps showing "question waiting" until its next read (#1613). The
+   * client keeps showing "question waiting" until its next read. The
    * pending set clears only at a turn boundary (a resolving user turn, an
    * interrupted turn: agent/session_tools_ask.go), which is exactly when a
    * status change is announced, so this refreshes it when it can have moved
@@ -4432,10 +4432,10 @@ export interface ThreadStatusChangedParams {
    * announced (see EvenerThread.Capabilities), for the same reason the failure
    * count rides along above: it is otherwise snapshot-only, and Send is the
    * entry defined by whether a turn is in flight (Steer, Interrupt and Queue
-   * advertise harness support and do not move with the status, #1363/#1375).
+   * advertise harness support and do not move with the status).
    * A client that read the thread while it was idle therefore holds send=true
    * for the whole turn that follows, and renders a session it KNOWS is active
-   * with a Send it must not offer until the page is reloaded (kata 06t8). A
+   * with a Send it must not offer until the page is reloaded. A
    * status transition is exactly when Send flips, so the set refreshes there
    * and nowhere else — no polling, no re-read of the transcript.
    *
@@ -4450,7 +4450,7 @@ export interface ThreadStatusChangedParams {
    * (cmd/evener-hub/app_relay.go's stampClosedThreadCapabilities), so a close
    * still arrives carrying a set — the same one the next thread/read returns.
    * A client that read the daemon's own all-false set there would lose the
-   * follow-up composer for a session the hub would happily resume (kata pk2d).
+   * follow-up composer for a session the hub would happily resume.
    */
   capabilities?: ThreadCapabilities;
   /**

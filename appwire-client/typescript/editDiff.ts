@@ -16,7 +16,7 @@ export function diffStats(text: string): { added: number; removed: number } {
   return { added, removed };
 }
 
-// editDiffText mirrors renderer-tools.js's editDiffText: a flat synthesized
+// editDiffText is a flat synthesized
 // diff (no real @@ hunk range) - every old_string line prefixed "-", every
 // new_string line prefixed "+", framed by "---"/"+++" file-name headers.
 export function editDiffText(path: string, oldString: string, newString: string): string {
