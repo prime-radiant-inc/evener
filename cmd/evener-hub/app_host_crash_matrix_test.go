@@ -17,6 +17,7 @@ package hub
 // constructors the hub's startup uses.
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -383,7 +384,7 @@ func TestHostMutationCrashCutsConvergeToTheCommittedOutcome(t *testing.T) {
 		},
 		{
 			name: "remove", steps: allSteps, seed: []hostreg.Host{keep, side},
-			mutate: func(t *testing.T, m *hubHostManager) crashMutation { return removeMutation(t, m) },
+			mutate: removeMutation,
 			want:   matrixOutcome{},
 		},
 		{
@@ -395,7 +396,7 @@ func TestHostMutationCrashCutsConvergeToTheCommittedOutcome(t *testing.T) {
 				}
 				mintHostToken(t, store, host)
 			},
-			mutate: func(t *testing.T, m *hubHostManager) crashMutation { return removeMutation(t, m) },
+			mutate: removeMutation,
 			want:   matrixOutcome{},
 		},
 	}
@@ -483,13 +484,13 @@ func TestHostMutationCrashCutsConvergeToTheCommittedOutcome(t *testing.T) {
 				if got := hostRows(t, recovered)["side"]; got.Generation != side.Generation || got.IncarnationID != side.IncarnationID || got.Removed != side.Removed {
 					t.Fatalf("the replay changed the host: before %+v after %+v", side, got)
 				}
-				if after := hub.fileBytes(t); string(after) != string(before) {
+				if after := hub.fileBytes(t); !bytes.Equal(after, before) {
 					t.Fatal("the replay rewrote hub.toml")
 				}
 
 				// A further restart over the recovered state changes nothing.
 				second, _ := hub.boot(t, true)
-				if after := hub.fileBytes(t); string(after) != string(before) {
+				if after := hub.fileBytes(t); !bytes.Equal(after, before) {
 					t.Fatal("a second restart rewrote hub.toml")
 				}
 				if got := hostRows(t, second)["side"]; got.Generation != side.Generation || got.Removed != side.Removed {
