@@ -1419,7 +1419,7 @@ func (s *Session) resetDelegateAttentionArmRetryLocked() {
 	s.delegateAttentionArmRetry.reset()
 }
 
-func (s *Session) scheduleStableDelegateAttentionRetry() {
+func (s *Session) scheduleDelegateAttentionRetry() {
 	if s == nil {
 		return
 	}
@@ -1454,12 +1454,12 @@ func (s *Session) scheduleStableDelegateAttentionRetry() {
 		s.stableAttentionRetry.settle(pending || runnable, s.stableAttentionRetry.delay, jobNotificationRetryMaxDelay)
 		s.attentionMu.Unlock()
 		if pending {
-			s.scheduleStableDelegateAttentionRetry()
+			s.scheduleDelegateAttentionRetry()
 		}
 	})
 }
 
-func (s *Session) resetStableDelegateAttentionRetry() {
+func (s *Session) resetDelegateAttentionRetry() {
 	if s == nil {
 		return
 	}
@@ -1468,12 +1468,12 @@ func (s *Session) resetStableDelegateAttentionRetry() {
 	s.attentionMu.Unlock()
 }
 
-// resetStableDelegateAttentionRetryDelay ends a backoff episode whose work
+// resetDelegateAttentionRetryDelay ends a backoff episode whose work
 // succeeded, so the next failure retries from the initial delay. It leaves an
 // armed retry in place, since other delegates' work may still need it; that
 // retry fires at the delay it was armed with and backs off from the reset
 // delay.
-func (s *Session) resetStableDelegateAttentionRetryDelay() {
+func (s *Session) resetDelegateAttentionRetryDelay() {
 	s.attentionMu.Lock()
 	s.stableAttentionRetry.delay = jobNotificationRetryInitialDelay
 	s.attentionMu.Unlock()

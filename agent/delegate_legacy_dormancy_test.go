@@ -100,7 +100,7 @@ func TestDelegateLegacyDormancy_NoActivationAliasResolvesForLiveControl(t *testi
 }
 
 func TestDelegateLegacyDormancy_StableWatchJournalStillDelivers(t *testing.T) {
-	TestStableDelegateWatch_ReceiverFsyncPrecedesDeliveredAck(t)
+	TestDelegateWatch_ReceiverFsyncPrecedesDeliveredAck(t)
 }
 
 func TestDelegateLegacyDormancy_QuietSupervisionStillDelivers(t *testing.T) {
@@ -112,12 +112,12 @@ func TestDelegateLegacyDormancy_RetentionStillReclaimsOnAdmission(t *testing.T) 
 }
 
 func TestDelegateLegacyDormancy_ShellParentDelegateIDStillRoutes(t *testing.T) {
-	TestStableDelegateShell_ParentDelegateIDReplacesSyntheticParentJob(t)
-	TestStableDelegateShell_OutputStatusWatchAndStopRemainJobAddressed(t)
+	TestDelegateShell_ParentDelegateIDReplacesSyntheticParentJob(t)
+	TestDelegateShell_OutputStatusWatchAndStopRemainJobAddressed(t)
 }
 
 func TestDelegateLegacyDormancy_HistoricalSendStillRendersReadOnly(t *testing.T) {
-	TestStableDelegateReadOnly_HistoricalSendRendersWithoutLiveAlias(t)
+	TestDelegateReadOnly_HistoricalSendRendersWithoutLiveAlias(t)
 }
 
 func TestDelegateLegacyDormancy_LegacyLifecycleAndWatchRowsAreIgnored(t *testing.T) {

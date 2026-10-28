@@ -198,7 +198,7 @@ func TestCreateDelegateSharedWorkspaceAdvisory(t *testing.T) {
 	barrier.awaitRun(t)
 
 	// The tool projection must surface the advisory to the model, once.
-	raw, err := stableDelegateCreateTool(context.Background(), root, map[string]any{"prompt": "third in the shared workspace"}, 8192)
+	raw, err := delegateCreateTool(context.Background(), root, map[string]any{"prompt": "third in the shared workspace"}, 8192)
 	if err != nil {
 		t.Fatalf("delegate tool: %v", err)
 	}

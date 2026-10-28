@@ -84,6 +84,7 @@ export interface ComposerSourceSnapshot {
   activeRecoveryId: string | null;
   recoveryActivating: boolean;
   recoveryOperationBusy: boolean;
+  builtinOperationBusy: boolean;
   freshRecoveryRef: string | null;
   restoreEpoch: number;
 }
@@ -124,6 +125,7 @@ export interface ComposerSourceState {
   runRecoveryOperation<T>(operation: () => Promise<T>): Promise<T>;
   flushRecoveryWrites(): Promise<void>;
   tryAcquireRecoveryOperation(): (() => void) | null;
+  tryAcquireBuiltinOperation(): (() => void) | null;
   activateRecovery(record: MutationRecoveryRecord): Promise<boolean>;
   queueRecoveryPersistence(
     id: string,
@@ -200,6 +202,7 @@ export function createComposerSourceState(
     activeRecoveryId: null,
     recoveryActivating: false,
     recoveryOperationBusy: false,
+    builtinOperationBusy: false,
     freshRecoveryRef: null,
     restoreEpoch: 0,
   }));
@@ -785,6 +788,21 @@ export function createComposerSourceState(
     };
   }
 
+  // A command belongs to the pane source, not the presentation that started it.
+  // Keep this separate from recovery operations, which Queue/Steer already own.
+  function tryAcquireBuiltinOperation(): (() => void) | null {
+    const snapshot = state.getState();
+    if (disposed || snapshot.builtinOperationBusy || snapshot.recoveryActivating || snapshot.recoveryOperationBusy)
+      return null;
+    state.setState({ builtinOperationBusy: true });
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      if (!disposed) state.setState({ builtinOperationBusy: false });
+    };
+  }
+
   function settleRecoverySubmission(
     clientMutationId: string,
     draftUnchanged: boolean,
@@ -909,6 +927,7 @@ export function createComposerSourceState(
     runRecoveryOperation,
     flushRecoveryWrites: () => recoveryWrites.catch(() => undefined),
     tryAcquireRecoveryOperation,
+    tryAcquireBuiltinOperation,
     queueRecoveryPersistence,
     activateRecovery,
     bindEditor(nextEditor) {

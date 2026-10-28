@@ -149,7 +149,7 @@ func TestExecTool_UnsupportedHostPreservesBenignRepairWithSandboxControlsOmitted
 	if result.IsError {
 		t.Fatalf("delegate exec with omitted controls and repairable extra arg failed: %#v", result)
 	}
-	var created stableDelegateCreateResult
+	var created delegateCreateResult
 	if err := json.Unmarshal([]byte(result.FullOutput), &created); err != nil {
 		t.Fatalf("decode delegate create result: %v", err)
 	}
@@ -203,7 +203,7 @@ func TestExecTool_SupportedHostPreservesExplicitSandboxControls(t *testing.T) {
 			s := sbxDelegateSession(t, facts)
 			if tc.parentMode != sandbox.ModeOff || !tc.parentNet {
 				setParentSandboxForContract(t, s, facts, lane, tc.parentMode, tc.parentNet)
-				if err := registerStableDelegateTool(s.reg, s); err != nil {
+				if err := registerDelegateTool(s.reg, s); err != nil {
 					t.Fatalf("refresh delegate tool schema: %v", err)
 				}
 			}
@@ -214,7 +214,7 @@ func TestExecTool_SupportedHostPreservesExplicitSandboxControls(t *testing.T) {
 			if result.IsError {
 				t.Fatalf("supported delegate sandbox request failed: %#v", result)
 			}
-			var created stableDelegateCreateResult
+			var created delegateCreateResult
 			if err := json.Unmarshal([]byte(result.FullOutput), &created); err != nil {
 				t.Fatalf("decode delegate create result: %v", err)
 			}
@@ -228,12 +228,12 @@ func TestExecTool_SupportedHostPreservesExplicitSandboxControls(t *testing.T) {
 	}
 }
 
-func TestStableDelegateCreateTool_UnsupportedSandboxReportsInvalidParameters(t *testing.T) {
+func TestDelegateCreateTool_UnsupportedSandboxReportsInvalidParameters(t *testing.T) {
 	t.Parallel()
 	_, home := sbxLane(t)
 	s := sbxDelegateSession(t, sandbox.HostFacts{OS: "linux", Home: home})
 
-	_, err := stableDelegateCreateTool(context.Background(), s, map[string]any{
+	_, err := delegateCreateTool(context.Background(), s, map[string]any{
 		"prompt":      "do work",
 		"sandbox":     "read-only",
 		"sandbox_net": true,
@@ -413,7 +413,7 @@ func TestExecTool_WriteBlockedParentSchemaAndRuntimeContract(t *testing.T) {
 	facts := sbxBwrapFacts(home)
 	s := sbxDelegateSession(t, facts)
 	setParentSandboxForContractWithWriteBlocked(t, s, facts, lane, sandbox.ModeRestricted, true, true)
-	if err := registerStableDelegateTool(s.reg, s); err != nil {
+	if err := registerDelegateTool(s.reg, s); err != nil {
 		t.Fatalf("refresh delegate tool schema: %v", err)
 	}
 
@@ -463,7 +463,7 @@ func TestExecTool_WriteBlockedParentSchemaAndRuntimeContract(t *testing.T) {
 	if netOnly.IsError {
 		t.Fatalf("write-blocked parent net-only tightening failed: %#v", netOnly)
 	}
-	var created stableDelegateCreateResult
+	var created delegateCreateResult
 	if err := json.Unmarshal([]byte(netOnly.FullOutput), &created); err != nil {
 		t.Fatalf("decode net-only delegate result: %v", err)
 	}
@@ -501,7 +501,7 @@ func setParentSandboxForContractWithWriteBlocked(t *testing.T, s *Session, facts
 	s.mu.Unlock()
 }
 
-func TestStableDelegateCreateTool_RejectsAffectedSandboxCombinations(t *testing.T) {
+func TestDelegateCreateTool_RejectsAffectedSandboxCombinations(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name              string
@@ -539,18 +539,18 @@ func TestStableDelegateCreateTool_RejectsAffectedSandboxCombinations(t *testing.
 			setParentSandboxForContract(t, s, sbxBwrapFacts(home), lane, tc.parentMode, tc.parentNet)
 			args := map[string]any{"prompt": "do work"}
 			maps.Copy(args, tc.args)
-			_, err := stableDelegateCreateTool(context.Background(), s, args, 8192)
+			_, err := delegateCreateTool(context.Background(), s, args, 8192)
 			requireDelegateSandboxRequestError(t, err, tc.invalidParameters)
 			requireNoDelegateLaunch(t, s)
 		})
 	}
 }
 
-func TestStableDelegateCreateTool_UnsupportedHostRejectsNetworkOnly(t *testing.T) {
+func TestDelegateCreateTool_UnsupportedHostRejectsNetworkOnly(t *testing.T) {
 	t.Parallel()
 	_, home := sbxLane(t)
 	s := sbxDelegateSession(t, sandbox.HostFacts{OS: "linux", Home: home})
-	_, err := stableDelegateCreateTool(context.Background(), s, map[string]any{
+	_, err := delegateCreateTool(context.Background(), s, map[string]any{
 		"prompt":  "do work",
 		"sandbox": "nonet",
 	}, 8192)

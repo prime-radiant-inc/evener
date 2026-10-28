@@ -80,7 +80,7 @@ func TestDelegateSendRunningDelegateSteerStaysSteered(t *testing.T) {
 	t.Parallel()
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
 			close(entered)

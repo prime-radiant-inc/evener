@@ -1,14 +1,15 @@
 import { configFingerprint, formatQuoteBlock, projectThread, resolveEffectiveConfig } from "@evener/appwire-client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
+import { ComicConversationBody } from "../../comic/ComicConversationBody";
 import { focusedSessionRef } from "../../shell/focusedSession";
-import { paneToURL, refParam } from "../../shell/routing";
+import { navigate, paneToURL, refParam } from "../../shell/routing";
 import { cadenceStateFor } from "../../shell/sessionStatus";
 import { workspaceStore } from "../../shell/workspace";
 import { controlsFor, recoveryFence } from "../../stores/liveControls";
 import { ownerRetainedRef } from "../../stores/recoveryFence";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
-import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
+import { transcriptDisplayStore, useTranscriptDisplayStore } from "../../stores/transcriptDisplay";
 import { useThreadClaim } from "../../stores/useThreadModel";
 import { Button, Cadence, EmptyState, InlineNotice, type VirtualListHandle, VisuallyHidden } from "../../widgets";
 import { zoomPaneCoversConversation } from "../zoom/cascadeCoverage";
@@ -17,7 +18,6 @@ import { TopNotesPanel } from "./chrome/TopNotesPanel";
 import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
 import { AskDock, AskDockAnnouncements, useAskDockActivationEpoch, useAskDockPending } from "./composer/askDock";
 import { Composer } from "./composer/Composer";
-import { carryComposerDraft, carryRecoverySelection } from "./composer/draft";
 import {
   useBlockedMutationEntries,
   usePendingTurnEntries,
@@ -45,10 +45,12 @@ import {
   transcriptRowsForProjection,
   transcriptSourceTurnRowIndexesForRows,
 } from "./transcript/TranscriptBody";
-import { SandboxEscalationRail } from "./transcript/tools/sandboxEscalation";
+import { TranscriptDetailControl } from "./transcript/TranscriptDetailControl";
+import { SandboxEscalationOwner, SandboxEscalationRail } from "./transcript/tools/sandboxEscalation";
 import type { TranscriptReadView } from "./transcript/transcriptReadView";
 import { isDormantTranscript } from "./transcript/transcriptVisibility";
 import { useTranscript } from "./transcript/useTranscript";
+import { useConversationIdentity } from "./useConversationIdentity";
 
 // A conversation rendered in a seat. The session pane is one seat; a drilled
 // cascade column is another. The seat supplies what the conversation cannot
@@ -132,16 +134,6 @@ export function ConversationBody({
   // session's blue dot clears on the phone too.
   useMarkSessionSeenOnOpen(ref);
 
-  const { model, hasOlder, loadOlder, loadingOlder, loadOlderReportingError, olderError, cancelOlder } = useTranscript(
-    ref,
-    seat.readView,
-  );
-  const deletedRef = useThreadsStore((s) => s.deletedRefs.has(ref));
-  const restartPending = useThreadsStore((s) => s.restartBlockingObligations.has(ref));
-  const mutationStateAuthoritative = useThreadsStore((s) => s.mutationAuthorityRefs.has(ref));
-  const blockedMutations = useBlockedMutationEntries(ref);
-  const reconciliationFailed = useThreadsStore((s) => s.mutationReconciliationFailures.has(ref));
-
   // Identity follow-up for a store-driven resume: the transcript is already
   // hydrated under the new ref (the driver's refreshThread). The draft
   // carries to the resumed identity in every seat; the seat then decides
@@ -153,20 +145,75 @@ export function ConversationBody({
   // retained view of `ref` still has to follow: an inactive view reads the
   // surviving entry on its next mount instead of reopening on the superseded
   // identity.
-  const resumedIdentity = useThreadsStore((s) => s.resumedIdentities.get(ref));
-  useEffect(() => {
-    if (resumedIdentity === undefined) return;
-    // The seat's selected recovery follows the resumed identity, so the
-    // replacement composer reads the same owner there. A seat without a
-    // composer has no selection to move.
-    const selectionOwnerId = seat.composerSource?.recoverySelectionOwnerId;
-    if (selectionOwnerId !== undefined) carryRecoverySelection(ref, resumedIdentity, selectionOwnerId);
-    carryComposerDraft(ref, resumedIdentity);
-    const applied = seat.onResumedIdentity?.(resumedIdentity);
-    if (applied !== false && !otherRetainedViewOf(ref, seat.viewFallbackId)) {
-      threadsStore.getState().clearResumedIdentity(ref);
-    }
-  }, [resumedIdentity, ref, seat]);
+  useConversationIdentity(ref, {
+    replace: (resumedRef) => seat.onResumedIdentity?.(resumedRef) !== false,
+    hasOtherReaders: (sourceRef) => otherRetainedViewOf(sourceRef, seat.viewFallbackId),
+  });
+
+  const presentation = useTranscriptDisplayStore((state) => state.presentation[state.viewport]);
+  const renderParts = (parts: ConversationParts) =>
+    render({
+      ...parts,
+      footer:
+        parts.state !== "live" && seat.sessionMenu ? (
+          <UnavailablePresentationControl />
+        ) : presentation === "comic" && parts.state === "live" ? (
+          <>
+            <ConversationRecoveryNotices sessionRef={ref} />
+            {parts.footer}
+          </>
+        ) : (
+          parts.footer
+        ),
+    });
+  return (
+    <SandboxEscalationOwner key={ref} sessionRef={ref}>
+      {presentation === "comic" ? (
+        <ComicConversationBody ref={ref} seat={seat} render={renderParts} />
+      ) : (
+        <StandardConversationBody ref={ref} seat={seat} render={renderParts} />
+      )}
+    </SandboxEscalationOwner>
+  );
+}
+
+function UnavailablePresentationControl() {
+  const [open, setOpen] = useState(false);
+  const layout = useTranscriptDisplayStore((state) => state.viewport);
+  return (
+    <>
+      <Button variant="quiet" onClick={() => setOpen(true)}>
+        Verbosity
+      </Button>
+      <TranscriptDetailControl
+        open={open}
+        onClose={() => setOpen(false)}
+        layout={layout}
+        onEditHubDefaults={() => {
+          const url = paneToURL("settings", { section: "transcript" });
+          if (url !== null) navigate(url);
+        }}
+      />
+    </>
+  );
+}
+
+function StandardConversationBody({
+  ref,
+  seat,
+  render,
+}: {
+  ref: string;
+  seat: ConversationSeat;
+  render(parts: ConversationParts): React.ReactNode;
+}) {
+  const { model, hasOlder, loadOlder, loadingOlder, loadOlderReportingError, olderError, cancelOlder } = useTranscript(
+    ref,
+    seat.readView,
+  );
+  const deletedRef = useThreadsStore((s) => s.deletedRefs.has(ref));
+  const restartPending = useThreadsStore((s) => s.restartBlockingObligations.has(ref));
+  const mutationStateAuthoritative = useThreadsStore((s) => s.mutationAuthorityRefs.has(ref));
 
   const frameTimes = useThreadsStore((s) => s.frameTimes.get(ref) ?? EMPTY_FRAME_TIMES);
   const now = useNowTick(NOW_TICK_MS);
@@ -308,20 +355,7 @@ export function ConversationBody({
     />
   );
 
-  // Send drives the resume on every recoverable shape, so the notice belongs
-  // only to the two Send cannot complete: an incompatible-protocol daemon that
-  // must be stopped first, and a retained child whose work its owner must
-  // reconcile. Every descendant read carries mutationStateAuthoritative=false,
-  // so retention alone would put the owner notice on every subagent pane; the
-  // notice also needs the uncertainty or the fence that gives it something to
-  // say.
-  const fence = recoveryFence(model, restartPending, {
-    uncertainMessages: blockedMutations.length > 0,
-  });
   const recoveryOwnerRef = ownerRetainedRef(model, mutationStateAuthoritative);
-  const showRestartNotice =
-    model.status.type === "restartRequired" ||
-    (recoveryOwnerRef !== undefined && (restartPending || blockedMutations.length > 0) && !fence.sendDriven);
 
   const cadence = <Cadence state={cadenceStateFor(model.status.type)} frameTimes={frameTimes} now={now} />;
 
@@ -433,7 +467,7 @@ export function ConversationBody({
           retry={model.modelRetry}
           primaryModel={model.model}
         />
-        {showRestartNotice && <RestartRequiredNotice sessionRef={ref} ownerRef={recoveryOwnerRef} />}
+        <ConversationRecoveryNotices sessionRef={ref} />
         {/* Recovery keeps the composer and its menu mounted. Retain the
             fallback only for other local snapshots with no Send surface;
             owner-retained sessions direct recovery to their owner. */}
@@ -445,11 +479,6 @@ export function ConversationBody({
           seat.sessionMenu && (
             <SessionChrome ref={ref} paneId={seat.viewFallbackId} placement="menu" discoverActivity />
           )}
-        {reconciliationFailed && (
-          <InlineNotice live="alert" data-testid="message-recovery-pending">
-            Message recovery has not completed. Sending will resume after recovery succeeds.
-          </InlineNotice>
-        )}
         <PendingChips sessionRef={ref} />
         {seat.composerSource && (
           <Composer
@@ -466,6 +495,32 @@ export function ConversationBody({
   );
 
   return render({ state: "live", content, footer, cadence });
+}
+
+function ConversationRecoveryNotices({ sessionRef }: { sessionRef: string }) {
+  const model = useThreadsStore((state) => state.threads.get(sessionRef));
+  const restartPending = useThreadsStore((state) => state.restartBlockingObligations.has(sessionRef));
+  const authoritative = useThreadsStore((state) => state.mutationAuthorityRefs.has(sessionRef));
+  const reconciliationFailed = useThreadsStore((state) => state.mutationReconciliationFailures.has(sessionRef));
+  const blocked = useBlockedMutationEntries(sessionRef);
+  if (!model) return null;
+  // Send recovers ordinary stopped sessions. Only version mismatch and owner-retained
+  // uncertainty need a separate explanation in either presentation.
+  const ownerRef = ownerRetainedRef(model, authoritative);
+  const fence = recoveryFence(model, restartPending, { uncertainMessages: blocked.length > 0 });
+  const showRestartNotice =
+    model.status.type === "restartRequired" ||
+    (ownerRef !== undefined && (restartPending || blocked.length > 0) && !fence.sendDriven);
+  return (
+    <>
+      {showRestartNotice && <RestartRequiredNotice sessionRef={sessionRef} ownerRef={ownerRef} />}
+      {reconciliationFailed && (
+        <InlineNotice live="alert" data-testid="message-recovery-pending">
+          Message recovery has not completed. Sending will resume after recovery succeeds.
+        </InlineNotice>
+      )}
+    </>
+  );
 }
 
 const EMPTY_FRAME_TIMES: number[] = [];

@@ -20,7 +20,7 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-func (c *delegateTreeController) stableDelegateOwnerRuntime(lease delegateLease) *Session {
+func (c *delegateTreeController) delegateOwnerRuntime(lease delegateLease) *Session {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	aggregate, _, err := c.exactLeaseLocked(lease)
@@ -123,7 +123,7 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	if selection.warning != nil {
 		s.emitDiagnosticWarning(*selection.warning)
 	}
-	toolNameCeiling := s.stableDelegateEffectiveToolNameCeiling(selection, args, isolationName)
+	toolNameCeiling := s.delegateEffectiveToolNameCeiling(selection, args, isolationName)
 	requestedSandbox, err := s.requestedDelegateSandbox(args, toolNameCeiling)
 	if err != nil {
 		return delegateStartFailed(err)
@@ -225,7 +225,7 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 		if artifactsCleanupWarning != "" {
 			result.Warnings = append(result.Warnings, artifactsCleanupWarning)
 		}
-		result.Worktree = s.stableDelegateWorktreeReport(started.descriptor)
+		result.Worktree = s.descriptorWorktreeReport(started.descriptor)
 		// Advertise the artifacts directory only when it still exists: a failure
 		// path that disposed the child removed it, and the result must not name a
 		// path that is gone. A retained candidate keeps its directory and so keeps
@@ -255,29 +255,29 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	if err != nil {
 		return createResult(runtime.failAdoptedStart(started, isolation, prepared, err, "input_admission_failed"))
 	}
-	preseedErr := runtime.preseedInput(prepared.sub.sess, task, started.transcriptPath)
+	preseedErr := runtime.preseedInput(prepared.sub.sess, task, started.transcriptPath, s.transcriptAuthor())
 	if preseedErr != nil {
 		finish := delegatePermanentStartFailure(preseedErr, "input_persist_failed")
 		plans, completeErr := s.delegateController.CompleteStartInput(claim, false, finish)
 		s.delegateController.emitDelegateUpdates(plans)
 		if completeErr != nil {
 			runtime.retainAdoptedWithoutLaunch(prepared)
-			return createResult(stableDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, errors.Join(preseedErr, completeErr)))
+			return createResult(startedDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, errors.Join(preseedErr, completeErr)))
 		}
 		runtime.retainAdoptedWithoutLaunch(prepared)
-		return createResult(stableDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, preseedErr))
+		return createResult(startedDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, preseedErr))
 	}
 	plans, err := s.delegateController.CompleteStartInput(claim, true, delegateFinish{})
 	s.delegateController.emitDelegateUpdates(plans)
 	if err != nil {
 		runtime.retainAdoptedWithoutLaunch(prepared)
-		return createResult(stableDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, err))
+		return createResult(startedDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, err))
 	}
-	bindStableDelegateActivity(prepared.sub.sess, s.delegateController, started.lease)
+	bindDelegateActivity(prepared.sub.sess, s.delegateController, started.lease)
 	s.startDelegateQuietWatchdog(started.ctx, started.lease)
 	degradedSandboxAdvisory := degradedReadOnlyDelegateAdvisory(prepared.sub.sess.currentEnv())
 	s.launchSubagentRun(prepared.runCtx, prepared.sub, prepared.runCancel, prepared.input, started.descriptor.Provenance)
-	result := createResult(stableDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, nil))
+	result := createResult(startedDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, nil))
 	// The advisories ride the launched delegate's own result only: they are
 	// metadata for the caller's next isolation choice, not delegate output, not
 	// an EventWarning, and not durable job state a later delegate_send replays.
@@ -301,9 +301,9 @@ func (s *Session) delegateActor(ctx context.Context) (delegateActor, error) {
 	return rootDelegateActor(s.delegateRootSessionID), nil
 }
 
-func (s *Session) stableDelegateEffectiveToolNameCeiling(selection subagentModelSelection, args delegateArgs, isolationName string) []string {
+func (s *Session) delegateEffectiveToolNameCeiling(selection subagentModelSelection, args delegateArgs, isolationName string) []string {
 	allTools, allowedTools, deniedTools := baseSubagentToolPolicy(selection.agent, args.grantsDelegation())
-	return stableDelegateToolNameCeiling(s.reg, s.resultToolName(), allTools, allowedTools, deniedTools, args.grantsDelegation(), isolationName)
+	return delegateToolNameCeiling(s.reg, s.resultToolName(), allTools, allowedTools, deniedTools, args.grantsDelegation(), isolationName)
 }
 
 func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, brief, isolationName string, requestedSandbox *sandbox.SandboxPolicy, selection subagentModelSelection, toolNameCeiling []string) (delegatestore.Descriptor, identifier.Project, error) {
@@ -319,7 +319,7 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 	if err := validateDelegateLabel(args.Name); err != nil {
 		return delegatestore.Descriptor{}, identifier.Project{}, err
 	}
-	agentName, rolePrompt := stableDelegateRole(selection, args.grantsDelegation(), s)
+	agentName, rolePrompt := delegateRole(selection, args.grantsDelegation(), s)
 	reasoningEffort := llm.NormalizeReasoningEffort(args.ReasoningEffort)
 	if reasoningEffort == "" {
 		reasoningEffort = llm.NormalizeReasoningEffort(childConfig.ReasoningEffort)
@@ -360,11 +360,11 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 	if len(args.ResultSchema) == 0 {
 		resultSchema = nil
 	}
-	sandboxSnapshot := stableDelegateSandboxSnapshot(requestedSandbox)
+	sandboxSnapshot := delegateSandboxSnapshot(requestedSandbox)
 	if requestedSandbox == nil {
 		if local, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment); ok && local.Sandbox != nil && local.Sandbox.Enforced() {
 			inherited := local.Sandbox.Inputs()
-			sandboxSnapshot = stableDelegateSandboxSnapshot(&inherited)
+			sandboxSnapshot = delegateSandboxSnapshot(&inherited)
 		}
 	}
 	childConfig.MaxTurns = 500
@@ -454,7 +454,7 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 	return descriptor, project, nil
 }
 
-func stableDelegateRole(selection subagentModelSelection, childCanDelegate bool, s *Session) (string, string) {
+func delegateRole(selection subagentModelSelection, childCanDelegate bool, s *Session) (string, string) {
 	if selection.agent != nil && strings.TrimSpace(selection.agent.SystemPrompt) != "" {
 		return selection.agent.Name, selection.agent.SystemPrompt
 	}
@@ -467,7 +467,7 @@ func stableDelegateRole(selection subagentModelSelection, childCanDelegate bool,
 	return "subagent", defaultSubagentInstructions
 }
 
-func stableDelegateSandboxSnapshot(policy *sandbox.SandboxPolicy) *delegatestore.SandboxSnapshot {
+func delegateSandboxSnapshot(policy *sandbox.SandboxPolicy) *delegatestore.SandboxSnapshot {
 	if policy == nil || policy.Mode == sandbox.ModeOff {
 		return nil
 	}
@@ -632,7 +632,7 @@ func (runtime delegateRuntime) construct(_ context.Context, args delegateArgs, s
 			return nil, err
 		}
 	}
-	prepared, err := s.prepareStableDelegateRun(ctx, started.descriptor, started.descriptor.ParentWatchGranted, selection, inheritedContext)
+	prepared, err := s.prepareDelegateRun(ctx, started.descriptor, started.descriptor.ParentWatchGranted, selection, inheritedContext)
 	if err != nil {
 		return nil, err
 	}
@@ -670,7 +670,7 @@ func (runtime delegateRuntime) adopt(prepared *preparedSubagentRun) error {
 	return nil
 }
 
-func (runtime delegateRuntime) preseedInput(child *Session, input, transcriptPath string) error {
+func (runtime delegateRuntime) preseedInput(child *Session, input, transcriptPath string, author schema.TranscriptAuthor) error {
 	if err := child.maybeAppendEnvironmentContext(); err != nil {
 		return fmt.Errorf("append environment context: %w", err)
 	}
@@ -678,7 +678,12 @@ func (runtime delegateRuntime) preseedInput(child *Session, input, transcriptPat
 	if observer := child.cfg.testOnly.delegateInitialInputAppend; observer != nil {
 		observer(child)
 	}
-	if err := child.appendTurnWithSyncedTranscriptMessage(schema.TurnUserInput, message, message); err != nil {
+	turn := schema.NewTurn(schema.TurnUserInput, message)
+	turn.Authorship = &schema.TranscriptAuthorship{Author: author}
+	if err := child.appendTurnAfterTranscriptWrite(turn,
+		func() error { return child.writeTranscriptSyncedLocked(turn) },
+		func() { child.history = append(child.history, turn) },
+	); err != nil {
 		return err
 	}
 	data, err := readStrictChildTranscript(transcriptPath, child.stateDir, child.ID(), child.strictTranscriptMaxLineBytes)
@@ -718,18 +723,18 @@ func (runtime delegateRuntime) failCommittedStart(started delegateStartCommit, i
 			}
 			isolation.cleanup(runtime.owner, started.lease.delegateID)
 		}
-		return stableDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, constructionErr)
+		return startedDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, constructionErr)
 	}
 	if finishErr != nil {
 		retainErr := runtime.retainFailedStartCandidate(prepared)
-		return stableDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, errors.Join(constructionErr, finishErr, retainErr))
+		return startedDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, errors.Join(constructionErr, finishErr, retainErr))
 	}
 	if prepared != nil {
 		prepared.runCancel()
 		prepared.disposeUnadopted()
 	}
 	isolation.cleanup(runtime.owner, started.lease.delegateID)
-	return stableDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, constructionErr)
+	return startedDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, constructionErr)
 }
 
 func (runtime delegateRuntime) retainFailedStartCandidate(prepared *preparedSubagentRun) error {
@@ -755,11 +760,11 @@ func (runtime delegateRuntime) failAdoptedStart(started delegateStartCommit, iso
 	runtime.owner.delegateController.emitDelegateUpdates(plans)
 	if finishErr != nil {
 		runtime.retainAdoptedWithoutLaunch(prepared)
-		return stableDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, errors.Join(startErr, finishErr))
+		return startedDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, errors.Join(startErr, finishErr))
 	}
 	runtime.discardAdopted(prepared)
 	isolation.cleanup(runtime.owner, started.lease.delegateID)
-	return stableDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, startErr)
+	return startedDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, startErr)
 }
 
 func (runtime delegateRuntime) retainAdoptedWithoutLaunch(prepared *preparedSubagentRun) {
@@ -792,7 +797,7 @@ func delegatePermanentStartFailure(err error, reason string) delegateFinish {
 	}
 }
 
-func stableDelegateResult(descriptor delegatestore.Descriptor, delegateID string, committed delegateUpdatePlan, plans delegateMutationPlans, err error) delegateResult {
+func startedDelegateResult(descriptor delegatestore.Descriptor, delegateID string, committed delegateUpdatePlan, plans delegateMutationPlans, err error) delegateResult {
 	snapshot := latestDelegateMutationSnapshot(delegateID, committed, plans)
 	resumable := snapshot.resumable
 	status := jobstore.Status(snapshot.lifecycle)

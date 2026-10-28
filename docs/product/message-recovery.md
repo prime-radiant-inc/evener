@@ -273,6 +273,11 @@ duplicate; only a reproduced identity/projection case can establish that cause.
   the real composer, stores and IndexedDB adapter with external transport and
   browser-platform seams.
 - Native integration and cached local identity: `mobile-native/src/screens.tsx`.
+- Native conversation store: `conversation/state/conversation.ts`; its durable
+  pending-row binding is `conversation/state/pendingMutations.ts` and its deferred
+  reread after a mutation settles is `conversation/state/trailingReread.ts`.
+  The screen's composer draft, handoff retry and staged images are
+  `session/useComposerDraft.ts`.
 - Native mutation authority: `nativeMutationRuntime.ts` and
   `mutationOutboxStorage.ts`; draft ownership and bytes: `draftDocument.ts` and
   `draftRepository.ts`; separate-store coordination: `queuedMessageControls.ts`;

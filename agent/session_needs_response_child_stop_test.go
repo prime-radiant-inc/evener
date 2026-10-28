@@ -20,7 +20,7 @@ func TestParentReadingAChildStopReportRestsByItsOwnEndReason(t *testing.T) {
 	for _, reportReason := range []string{"needs_response", "done"} {
 		t.Run(reportReason, func(t *testing.T) {
 			t.Parallel()
-			fixture := newColdStableDelegateFixture(t, "")
+			fixture := newColdDelegateFixture(t, "")
 			// The child sits in its model call until the stop cancels it; the
 			// parent asks for a reply, then answers the stop report. Any other
 			// call also waits to be cancelled, so an unexpected extra turn

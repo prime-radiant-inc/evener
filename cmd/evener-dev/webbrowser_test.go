@@ -215,6 +215,37 @@ func startAll(t *testing.T, launcher *fakeLauncher) []*fakeGuard {
 	return guards
 }
 
+func TestBrowserComicGuardContract(t *testing.T) {
+	if !slices.Contains(browserGuards, "comicguard") {
+		t.Fatal("comicguard missing from browser registry")
+	}
+	spec := browserGuardSpec("comicguard", t.TempDir())
+	want := []string{"go", "test", "-tags", "browserguard", "./cmd/evener-hub", "-run", "^TestComicChatBrowser$", "-count=1"}
+	if !slices.Equal(spec.argv, want) || spec.dir != "." || !spec.needsBuild || !spec.waitOnInterrupt {
+		t.Fatalf("comicguard launch contract = %+v, want %q with build and cleanup ownership", spec, want)
+	}
+}
+
+func TestBrowserComicGuardRequiresSuccessfulBuild(t *testing.T) {
+	launcher := newFakeLauncher()
+	launcher.buildStatus = 17
+	gate := newBrowserGate(1, true)
+	gate.checks = []string{"comicguard"}
+	tg := startGate(t, gate, launcher, make(chan os.Signal, 1))
+	select {
+	case name := <-launcher.started:
+		launcher.guard(name).exit <- 0
+		tg.await(t)
+		t.Fatalf("%s launched despite failed frontend build", name)
+	case result := <-tg.result:
+		if result.status != 17 || !launcher.built {
+			t.Fatalf("failed build result = %+v, built=%t", result, launcher.built)
+		}
+	case <-time.After(tripwire):
+		t.Fatal("comicguard build fence did not settle")
+	}
+}
+
 func TestBrowserGateSuccessIsConcise(t *testing.T) {
 	launcher := newFakeLauncher()
 	launcher.output["layoutguard"] = "browser chatter\n"
@@ -244,7 +275,7 @@ func TestBrowserGuardIncludesMemoryGuard(t *testing.T) {
 		t.Fatalf("memoryguard missing from browserGuards: %q", browserGuards)
 	}
 	for i, guard := range browserGuards {
-		if guard == "memoryguard" && i >= len(browserGuards)-4 {
+		if guard == "memoryguard" && i >= len(browserGuards)-5 {
 			t.Fatalf("memoryguard must precede the never-signalled tail: %q", browserGuards)
 		}
 	}
@@ -423,20 +454,20 @@ func TestBrowserGateBuildFailureFailsOnlyTheProductionGuards(t *testing.T) {
 	launcher.buildStatus = 17
 	launcher.buildOutput = "vite build exploded\n"
 	tg := startTestGate(t, launcher, len(browserGuards), true)
-	for range len(browserGuards) - 4 {
+	for range len(browserGuards) - 5 {
 		launcher.awaitStart(t).exit <- 0
 	}
 	r := tg.await(t)
 	if r.status != 17 {
 		t.Fatalf("status = %d, want the build's 17", r.status)
 	}
-	if launcher.guard(skillGuard) != nil || launcher.guard(cascadeGuard) != nil || launcher.guard(backgroundJobsGuard) != nil || launcher.guard(backgroundTranscriptGuard) != nil {
+	if launcher.guard(skillGuard) != nil || launcher.guard(cascadeGuard) != nil || launcher.guard(backgroundJobsGuard) != nil || launcher.guard(backgroundTranscriptGuard) != nil || launcher.guard("comicguard") != nil {
 		t.Fatal("a production guard started without a built frontend")
 	}
 	if !strings.Contains(tg.stderr.String(), "FAIL  web-skillguard (frontend build, exit 17)") || !strings.Contains(tg.stdout.String(), "vite build exploded") {
 		t.Fatalf("stdout = %s\nstderr = %s", tg.stdout.String(), tg.stderr.String())
 	}
-	for _, guard := range browserGuards[:len(browserGuards)-4] {
+	for _, guard := range browserGuards[:len(browserGuards)-5] {
 		if !strings.Contains(tg.stdout.String(), "PASS  web-"+guard+" (0.0s)\n") {
 			t.Errorf("web-%s did not reach its verdict", guard)
 		}
@@ -499,7 +530,7 @@ func TestBrowserGateRunsEveryGuardAfterASuccessfulBuild(t *testing.T) {
 		t.Fatal("the gate did not build the missing frontend")
 	}
 	var want strings.Builder
-	want.WriteString("building the production frontend for web-skillguard, web-cascadeguard, web-backgroundjobsguard, web-backgroundtranscriptguard…\n")
+	want.WriteString("building the production frontend for web-skillguard, web-cascadeguard, web-backgroundjobsguard, web-backgroundtranscriptguard, web-comicguard…\n")
 	for _, guard := range browserGuards {
 		want.WriteString("PASS  web-" + guard + " (0.0s)\n")
 	}
@@ -540,7 +571,7 @@ func TestBrowserGateFinishesWhenTheLastGuardNeverStarts(t *testing.T) {
 	launcher := newFakeLauncher()
 	launcher.buildStatus = 17
 	tg := startTestGate(t, launcher, 1, true)
-	for range len(browserGuards) - 4 {
+	for range len(browserGuards) - 5 {
 		launcher.awaitStart(t).exit <- 0
 	}
 	if r := tg.await(t); r.status != 17 {
@@ -605,7 +636,7 @@ func TestBrowserGateBuildsOnlyAMissingFrontend(t *testing.T) {
 // each is a go test (the retirement guard's behind npm) whose driver, Chrome
 // and helper daemons are cleaned up by the test binary's own t.Cleanup, which
 // a TERM would skip, and a TERM to npm alone would orphan.
-var waitedNotSignalled = []string{retirementGuard, skillGuard, cascadeGuard, backgroundJobsGuard, backgroundTranscriptGuard}
+var waitedNotSignalled = []string{retirementGuard, skillGuard, cascadeGuard, backgroundJobsGuard, backgroundTranscriptGuard, "comicguard"}
 
 // An interrupt TERMs every running guard except the go-test guards, and waits
 // for all of them before the gate exits.

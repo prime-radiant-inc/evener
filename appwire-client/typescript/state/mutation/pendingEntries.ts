@@ -79,9 +79,8 @@ export function skillMarkers(names: readonly string[]): string {
 }
 
 // The one entry-body composition every in-flight surface renders - the
-// chips for sends, the held-steer ghost stack for steer/drain/promote
-// (steering-ghost spec §2): the matching text-plus-markers preview
-// PendingChips used to compose inline, extracted so the ghost is not a
+// chips for sends, the held-steer ghost stack for steer/drain/promote:
+// the matching text-plus-markers preview PendingChips used to compose inline, extracted so the ghost is not a
 // second copy of the chip's composition. Contentless input still composes
 // to "" - the matching-key contract queueEntryPreviewText carries above.
 export function pendingEntryPreview(entry: {
@@ -148,7 +147,7 @@ function ownUnsettledInput(
 const DEFAULT_MAX_DISPLAY_LENGTH = 140;
 
 // The client-side visual cap layered on top of the daemon's own first-line
-// truncation (parity-m5-composer.md §B) - independent of and smaller than
+// truncation - independent of and smaller than
 // most real messages, so this mostly matters for a single very long line.
 export function truncateForDisplay(text: string, max: number = DEFAULT_MAX_DISPLAY_LENGTH): string {
   if (text.length <= max) return text;
@@ -312,7 +311,7 @@ export function reconcilePendingEntries(
   // daemon sorts pendingMutations lexicographically by id, so their
   // relative order is stable within a snapshot only). The stable sort keeps
   // array order for equal createdAt - a same-millisecond double-submit
-  // keeps submission order in-session, a corner the spec accepts. This is
+  // keeps submission order in-session, an accepted corner. This is
   // the ONE home of the rule: queue rows, chips, and the held-steer ghost
   // stack all render this order.
   return [...entries.values()].sort((left, right) => {

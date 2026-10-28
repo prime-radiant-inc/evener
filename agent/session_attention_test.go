@@ -746,7 +746,7 @@ func TestDelegateAttention_RecoveryStopWaitsForOldRunnerBeforeReuse(t *testing.T
 		releaseSuccessorOnce.Do(func() { close(releaseSuccessor) })
 	})
 
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	adapter := &fakeErrAdapter{
 		name: "openai",
 		steps: []func(llm.Request) (llm.Response, error){
@@ -2356,7 +2356,7 @@ func TestDelegateAttention_ColdPostAckReadFailureRetriesExactID(t *testing.T) {
 }
 
 func TestDelegateAttention_SettledResidentChildStartsExactAttentionGeneration(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	attentionEntered := make(chan struct{})
 	releaseAttention := make(chan struct{})
 	var releaseOnce sync.Once
@@ -4070,7 +4070,7 @@ func TestRootDelegateAttention_RestoreRearmsPendingIDsWithoutProviderCall(t *tes
 }
 
 func TestDelegateAttention_RestartRearmsColdChildAndDrainsExactAttention(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	const (
 		owedID            = "watch:restart-attention:owed"
 		owedContent       = `<job-notification event="watch_send">recover consumed owed generation</job-notification>`
@@ -4213,7 +4213,7 @@ func TestDelegateAttention_RestartRearmsColdChildAndDrainsExactAttention(t *test
 	waitForStableSupervisionRun(t, root, fixture.childID)
 
 	t.Run("rejects exact non-attention generation", func(t *testing.T) {
-		fixture := newColdStableDelegateFixture(t, "")
+		fixture := newColdDelegateFixture(t, "")
 		const attentionID = "watch:restart-attention:trigger-conflict"
 		childPath := transcriptPath(fixture.stateDir, fixture.childID)
 		if appended, err := appendColdDelegateNotificationDurablyWithOpen(childPath, fixture.childID, attentionID, "trigger conflict", time.Unix(1_700_000_400, 0).UTC(), transcript.OpenWriterForSession); err != nil || !appended {
@@ -4281,7 +4281,7 @@ func TestDelegateAttention_RestartRearmsColdChildAndDrainsExactAttention(t *test
 }
 
 func TestDelegateAttention_PrelaunchRecoveryDoesNotWaitForUnlaunchedRunner(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
 	if err != nil {
 		t.Fatalf("restore root: %v", err)
@@ -4743,7 +4743,7 @@ func (file *attentionFailNextSyncFile) Sync() error {
 	return file.File.Sync()
 }
 
-func TestStableDelegateAttention_ReachableColdOwnerRetainsAttentionAfterRestoreFailure(t *testing.T) {
+func TestDelegateAttention_ReachableColdOwnerRetainsAttentionAfterRestoreFailure(t *testing.T) {
 	c, journalPath := newDelegateControllerTestHarness(t, 2, 1)
 	seedStableAttentionRepairDelegate(t, c, "dlg_owner", "", true)
 	const attentionID = "delegate:reachable-owner"
@@ -4779,7 +4779,7 @@ func TestStableDelegateAttention_ReachableColdOwnerRetainsAttentionAfterRestoreF
 	}
 }
 
-func TestStableDelegateAttention_UnreachableOwnerTransfersToNearestReachableAncestor(t *testing.T) {
+func TestDelegateAttention_UnreachableOwnerTransfersToNearestReachableAncestor(t *testing.T) {
 	c, journalPath := newDelegateControllerTestHarness(t, 3, 1)
 	seedStableAttentionRepairDelegate(t, c, "dlg_parent", "", true)
 	seedStableAttentionRepairDelegate(t, c, "dlg_child", "dlg_parent", false)
@@ -4819,7 +4819,7 @@ func TestStableDelegateAttention_UnreachableOwnerTransfersToNearestReachableAnce
 	}
 }
 
-func TestStableDelegateAttention_AncestorFsyncPrecedesChildDiscard(t *testing.T) {
+func TestDelegateAttention_AncestorFsyncPrecedesChildDiscard(t *testing.T) {
 	c, journalPath := newDelegateControllerTestHarness(t, 3, 1)
 	seedStableAttentionRepairDelegate(t, c, "dlg_parent", "", true)
 	seedStableAttentionRepairDelegate(t, c, "dlg_child", "dlg_parent", false)
@@ -4847,7 +4847,7 @@ func TestStableDelegateAttention_AncestorFsyncPrecedesChildDiscard(t *testing.T)
 	}
 }
 
-func TestStableDelegateAttention_ConsumedEntryIsNeverEscalated(t *testing.T) {
+func TestDelegateAttention_ConsumedEntryIsNeverEscalated(t *testing.T) {
 	c, journalPath := newDelegateControllerTestHarness(t, 3, 1)
 	seedStableAttentionRepairDelegate(t, c, "dlg_parent", "", true)
 	seedStableAttentionRepairDelegate(t, c, "dlg_child", "dlg_parent", false)
@@ -4883,7 +4883,7 @@ func TestStableDelegateAttention_ConsumedEntryIsNeverEscalated(t *testing.T) {
 	}
 }
 
-func TestStableDelegateAttention_StartupRepairUsesNoProvider(t *testing.T) {
+func TestDelegateAttention_StartupRepairUsesNoProvider(t *testing.T) {
 	c, journalPath := newDelegateControllerTestHarness(t, 2, 1)
 	seedStableAttentionRepairDelegate(t, c, "dlg_child", "", false)
 	const attentionID = "delegate:provider-free-transfer"

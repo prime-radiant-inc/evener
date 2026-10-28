@@ -18,6 +18,30 @@ except where a line says so itself.
 
 ## Composer
 
+### Accepted-read recovery ownership
+
+- Both browser clients use the shared threads store's recovery admission. A
+  fresh accepted repository end/final read reconciles mutation authority and
+  arms the same recovery obligation as a tracked hydration when the server
+  requires resume. Send parks its durable input until the shared resume flow
+  completes, preserving mutation identity and the expected-instance fence
+  across same-identity completion or an authorized changed-ref handoff.
+- Repository reads do not clear recovery obligations or prove uncertain outbox
+  rows absent. Tracked mutation reconciliation keeps that responsibility,
+  including Stop ownership, FIFO and foldable/non-foldable recovery rules.
+- A readiness wake racing a retiring gated dispatch is retained. Dispatch stays
+  serialized per ref, and a still-closed gate does not spin. This handoff does
+  not retry transient refusals or uncertain transport outcomes inside the same
+  drive; pacing and authoritative reconciliation retain ownership of those.
+- Stale, canceled, retired and suppressed responses supply no recovery
+  authority. Cache opening and generic model publication alone neither arm nor
+  clear recovery obligations. Existing status-fold rules remain unchanged.
+- Reopening behavior is unchanged: same-connection reacquisition can cancel an
+  outgoing final read and reuse retained history without a new read. Opening
+  never starts or resumes a daemon and does not create an unconditional refresh
+  barrier. A genuine current-owner read is needed to learn changed recovery
+  state from the server.
+
 ### Attention history retention
 
 - A browser attention entry binds a runtime generation and entry token to the

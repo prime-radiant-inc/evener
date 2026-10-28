@@ -184,6 +184,9 @@ Keep afero in the hub stores (`hubcore` `writeStateFileAtomic` and its stores, `
 ### W1-37. Thought duration
 `formatThoughtDuration` switches to the shared `formatDurationMs`. Visible changes: 0 ms shows `1ms` instead of `0ms`, and 9,999 ms shows `10s` instead of `10.0s`.
 
+### W1-37. Plugin age wording (2026-10-28)
+`mobile-native/src/hub/PluginsPage.tsx` drops `agoText` and uses the shared `timeAgo`. Visible change: a plugin installed or updated under a minute ago reads "just now" instead of "30s ago".
+
 ## Wave 2 follow-ups (2026-10-28)
 
 ### Jesse

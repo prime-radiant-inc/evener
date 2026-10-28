@@ -20,6 +20,7 @@ import { deleteSession } from "../shell/rail/actions";
 import { emitHistoryUpdated as emitHistoryUpdatedFor } from "../threadTestUtils";
 import { VirtualList, type VirtualListHandle } from "../widgets";
 import { installBackgroundTranscriptOptionsForTests } from "./backgroundTranscriptOptions";
+import { setCacheChannelFactoryForTests } from "./cacheLifetime";
 import { connectionStore } from "./connection";
 import { entryWriteAdmissionFor } from "./entryWriteAdmission";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
@@ -39,7 +40,6 @@ import {
   markCacheSessionsDeleted,
   productionEntryTranscriptForTests,
   resetThreadsStoreForTests,
-  setCacheChannelFactoryForTests,
   setProductionEntryCacheForTests,
   setSessionCacheStalledOpenForTests,
   settleBackgroundTranscriptsForTests,

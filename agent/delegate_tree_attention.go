@@ -658,7 +658,7 @@ func (c *delegateTreeController) retryDelegateAttentionLater() {
 	root := c.rootRuntime
 	c.mu.Unlock()
 	if root != nil {
-		root.scheduleStableDelegateAttentionRetry()
+		root.scheduleDelegateAttentionRetry()
 	}
 }
 

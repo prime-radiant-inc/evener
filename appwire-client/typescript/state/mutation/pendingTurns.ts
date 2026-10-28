@@ -36,10 +36,9 @@ import type {
 // snapshot field (only refreshed by a thread/read), while runningTurnId is
 // kept current by every live thread/status/changed frame too (reducer.ts's
 // model comment). A live session that never re-reads would otherwise never
-// see this go true once its send's echo lands (kata-shaped regression:
-// the skeleton this gates would drop the instant the echo's own
-// clientMutationId got reconciled out of the pending outbox, with nothing
-// live to pick up the baton).
+// see this go true once its send's echo lands: the skeleton this gates
+// would drop the instant the echo's own clientMutationId got reconciled out
+// of the pending outbox, with nothing live to pick up the baton.
 export function awaitingFirstFrameSend(model: ThreadModel | undefined): boolean {
   const activeTurn = model?.turns.find((turn) => turn.id === model.runningTurnId);
   if (!activeTurn) return false;

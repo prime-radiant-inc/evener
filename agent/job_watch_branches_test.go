@@ -110,12 +110,12 @@ func TestWatchLostAtRestartSessionMessage(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// watchLostAtRestartStableDelegateMessage
+// watchLostAtRestartDelegateMessage
 // ---------------------------------------------------------------------------
 
-func TestWatchLostAtRestartStableDelegateMessage(t *testing.T) {
+func TestWatchLostAtRestartDelegateMessage(t *testing.T) {
 	t.Parallel()
-	msg := watchLostAtRestartStableDelegateMessage("dlg_abc")
+	msg := watchLostAtRestartDelegateMessage("dlg_abc")
 	if !strings.Contains(msg, "dlg_abc") {
 		t.Fatalf("expected source in message: %q", msg)
 	}
@@ -207,7 +207,7 @@ func TestNormalizeWatchSource(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if src.Kind != watchSourceStableDelegate {
+		if src.Kind != watchSourceDelegate {
 			t.Fatalf("Kind = %v", src.Kind)
 		}
 	})

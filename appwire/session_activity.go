@@ -38,21 +38,23 @@ type SessionActivityListParams struct {
 
 // SessionActivityAncestor provides breadcrumbs without reading sibling activity.
 type SessionActivityAncestor struct {
-	Ref        string `json:"ref"`
-	SessionID  string `json:"sessionId"`
-	DelegateID string `json:"delegateId,omitempty"`
-	Title      string `json:"title"`
+	Ref          string `json:"ref"`
+	SessionID    string `json:"sessionId"`
+	DelegateID   string `json:"delegateId,omitempty"`
+	DelegateName string `json:"delegateName,omitempty"`
+	Title        string `json:"title"`
 }
 
 // SessionActivityContext separates the routing alias from the resolved session
 // identity. Epoch identifies the read source incarnation, not its recency.
 type SessionActivityContext struct {
-	Ref        string                    `json:"ref"`
-	SessionID  string                    `json:"sessionId"`
-	RootRef    string                    `json:"rootRef"`
-	ParentRef  string                    `json:"parentRef,omitempty"`
-	DelegateID string                    `json:"delegateId,omitempty"`
-	Ancestors  []SessionActivityAncestor `json:"ancestors"`
+	Ref          string                    `json:"ref"`
+	SessionID    string                    `json:"sessionId"`
+	RootRef      string                    `json:"rootRef"`
+	ParentRef    string                    `json:"parentRef,omitempty"`
+	DelegateID   string                    `json:"delegateId,omitempty"`
+	DelegateName string                    `json:"delegateName,omitempty"`
+	Ancestors    []SessionActivityAncestor `json:"ancestors"`
 	// AncestryKnown distinguishes proven root/lineage from bounded retained index progress.
 	AncestryKnown bool   `json:"ancestryKnown"`
 	Epoch         string `json:"epoch"`

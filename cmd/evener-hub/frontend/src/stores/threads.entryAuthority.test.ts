@@ -75,8 +75,9 @@ async function openTab(hydrate = true) {
   vi.resetModules();
   const threads = await import("./threads");
   const connection = await import("./connection");
+  const { setCacheChannelFactoryForTests } = await import("./cacheLifetime");
   threads.resetThreadsStoreForTests();
-  threads.setCacheChannelFactoryForTests(() => null);
+  setCacheChannelFactoryForTests(() => null);
   const cache = new SessionEntryCache({
     databaseName: SESSION_CACHE_DATABASE_NAME,
     indexedDB: factory,

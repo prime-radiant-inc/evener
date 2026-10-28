@@ -279,7 +279,7 @@ func TestRestoreDelegate_ReadOnlyRoleSandboxFloor(t *testing.T) {
 		{name: "restricted write-blocked floor", snapshot: &delegatestore.SandboxSnapshot{Mode: "restricted", WriteBlocked: true}, allowed: true, wantMode: sandbox.ModeRestricted, wantWriteBlocked: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+			fixture := newColdDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
 				descriptor.ToolNameCeiling = []string{"communicate", "read_file", "shell"}
 				descriptor.Sandbox = tc.snapshot
 				descriptor.Config.Sandbox = ""
@@ -399,7 +399,7 @@ func TestCreateDelegate_WriteBlockedParentCannotBeRelaxed(t *testing.T) {
 }
 
 func TestRestoreDelegate_WriteBlockedParentCannotBeRelaxed(t *testing.T) {
-	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+	fixture := newColdDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
 		descriptor.ToolNameCeiling = []string{"communicate", "read_file", "shell", "write_file"}
 		descriptor.Sandbox = &delegatestore.SandboxSnapshot{Mode: "restricted", Network: new(true)}
 		descriptor.Config.Sandbox = "restricted"

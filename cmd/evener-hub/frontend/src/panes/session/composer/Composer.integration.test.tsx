@@ -2230,7 +2230,8 @@ test.each([
   // a stronger, more meaningful signal than probing the `inert` IDL
   // property directly, and it also proves the textarea can't be tabbed to.
   await waitFor(() => expect(textarea()).toBeNull());
-  expect(screen.queryByRole("button", { name: /session actions/i })).toBeNull();
+  expect(screen.getAllByRole("button", { name: /session actions/i })).toHaveLength(1);
+  expect(screen.getAllByRole("button", { name: /session actions/i, hidden: true })).toHaveLength(1);
   expect(screen.queryByRole("button", { name: "Send" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
   // Nothing ask-shaped renders here: the answering surface is the

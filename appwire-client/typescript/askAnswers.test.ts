@@ -3,9 +3,7 @@ import { expect, test } from "vitest";
 import { type AskAnswerItem, composeAskAnswers, quoteGoString } from "./askAnswers";
 
 // Byte-exact / golden-string coverage for the [answers] reply format
-// (contracts-composer-queue-pending.md's test-ask-compose.js rows), ported
-// verbatim from cmd/evener-hub/assets/renderer.js's composeAskAnswers/
-// askResolutionText/quoteGoString (renderer.js:6980-7031) - this is the
+// of composeAskAnswers/askResolutionText/quoteGoString - this is the
 // text the daemon parses back on the other end, so it must match exactly,
 // not just "look right".
 

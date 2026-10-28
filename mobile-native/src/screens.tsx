@@ -1,7 +1,6 @@
 import { canWriteSharedNotes } from "@evener/appwire-client";
 import { isValidTranscriptRef } from "@evener/appwire-client";
 import { reconcilePendingEntries } from "@evener/appwire-client/state/mutation";
-import type { CellRendererProps } from "@react-native/virtualized-lists";
 import { bindFilePath, type FileReference } from "@evener/appwire-client/docContent";
 import { ownPendingTurnInput } from "@evener/appwire-client/state/mutation";
 import { useHeaderHeight } from "@react-navigation/elements";
@@ -11,7 +10,6 @@ import * as Clipboard from "expo-clipboard";
 import { randomUUID } from "expo-crypto";
 import { Storage } from "expo-sqlite/kv-store";
 import {
-	Component,
 	type RefObject,
 	useCallback,
 	useEffect,
@@ -188,6 +186,7 @@ import { SessionHeader, useHeaderHiding } from "./session/SessionHeader";
 import { type SessionMenuAction, sessionMenu } from "./session/sessionMenu";
 import { type SessionInfoAction, type SessionInfoHost, sessionInfoHosts } from "./session/SessionInfoSheet";
 import { confirmShutDown } from "./session/confirmShutDown";
+import { createReaderCell } from "./session/ReaderCell";
 import { SessionNotice } from "./session/SessionNotice";
 import { useSessionRestart } from "./session/sessionRestart";
 import {
@@ -3287,40 +3286,21 @@ function ConversationScreenView({
 		},
 		onMore: openQueue,
 	};
-	const readerCellRenderer = useMemo(() => {
-		return class ReaderCell extends Component<CellRendererProps<SessionListRow>> {
-			componentWillUnmount() {
-				readerMeasurements.current.delete(sessionListKey(this.props.item));
-			}
-			render() {
-				const { children, item, onLayout, onFocusCapture, style } = this.props;
-				return (
-					<View
-						style={style}
-						{...{ onFocusCapture }}
-						onLayout={(event) => {
-							onLayout?.(event);
-							if (!item) return;
-							const key = sessionListKey(item);
-							readerMeasurements.current.set(key, {
-								key,
-								y: event.nativeEvent.layout.y,
-								height: event.nativeEvent.layout.height,
-							});
-							// Opening at the live end lands once its last row has
-							// measured: pin the end, then show the list.
-							if (!openingLandedNow.current && key === listEndKey.current && follow.state.current.following) {
-								pinOpeningToEnd();
-							}
-							restoreAfterLayout();
-						}}
-					>
-						{children}
-					</View>
-				);
-			}
-		};
-	}, []);
+	const readerCellRenderer = useMemo(
+		() =>
+			createReaderCell({
+				measurements: readerMeasurements,
+				onLaidOut: (key) => {
+					// Opening at the live end lands once its last row has
+					// measured: pin the end, then show the list.
+					if (!openingLandedNow.current && key === listEndKey.current && follow.state.current.following) {
+						pinOpeningToEnd();
+					}
+					restoreAfterLayout();
+				},
+			}),
+		[],
+	);
 
 	// One render function for the list's lifetime: FlatList sees the same
 	// reference across a re-render that changes nothing a row reads (the

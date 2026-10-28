@@ -300,7 +300,7 @@ find $HOME/.local/state/evener/projects -name "$SID*" -delete
   `Manager.ForceCompact` (`agent/internal/contextmgr/compact.go#ForceCompact`),
   which is Layer 1 (a deterministic checkpoint) **plus** Layer 2 (LLM
   summarization) whenever a client is available. Layer 2 short-circuits on a
-  short history — `summarizeFold` (which `summarizeWithLLMSteered` calls) returns the input
+  short history — `summarizeFold` returns the input
   unchanged when the history is no longer than `PreserveRecentTurns`
   (`agent/internal/contextmgr/summarize_fold.go#summarizeFold`, `:41-43`) — which is why this
   card's two-turn session sees a fast 204 and why a longer one will not.

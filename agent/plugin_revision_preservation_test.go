@@ -172,7 +172,7 @@ func testPluginRevisionPreservation(t *testing.T, migrate bool) {
 
 	// The cold delegate's durable descriptor has an independently frozen A,
 	// even while its root has not restored the child runtime.
-	frozen := newColdStableDelegateFixtureConfigured(t, "", func(d *delegatestore.Descriptor) {
+	frozen := newColdDelegateFixtureConfigured(t, "", func(d *delegatestore.Descriptor) {
 		d.Config.PluginDirs = []string{oldPath}
 	})
 	revisionFile(t, pluginRepo, "skills/probe/SKILL.md", []byte("---\nname: probe\ndescription: revision fixture\n---\nB-SKILL\n"), 0o644)

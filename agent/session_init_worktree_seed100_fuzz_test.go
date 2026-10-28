@@ -60,7 +60,7 @@ func fuzzSubagentRegressionPrograms(t *testing.T) {
 		name string
 		run  func(*testing.T)
 	}{
-		{"cancel-running", TestStableDelegate_StopRunningChildThenResume},
+		{"cancel-running", TestDelegate_StopRunningChildThenResume},
 		{"cancel-race", TestCancelAgent_GenuineFailureRacingCancelStaysFailed},
 		{"snapshot-shape", TestResultSnapshot_CurrentShape},
 		{"snapshot-status", TestResultSnapshot_CarriesAgentIDAndStatus},
@@ -68,9 +68,9 @@ func fuzzSubagentRegressionPrograms(t *testing.T) {
 		{"timestamps", TestSubagentTimestamps_ResetOnResume},
 		{"zero-allowance", TestSelectSubagentModel_AllowanceGuardPrecedesEnumeration},
 		{"recursion", TestSelectSubagentModelAllowsRecursionWithAllowance},
-		{"sandbox-failure", TestStableDelegate_PerDelegateSandboxCleansScratchOnSpawnFailure},
-		{"sandbox-parent", TestStableDelegate_PerDelegateSandboxOverridesSandboxedParent},
-		{"sandbox-no-isolation", TestStableDelegate_PerDelegateSandboxWithoutIsolationDoesNotMutateParent},
+		{"sandbox-failure", TestDelegate_PerDelegateSandboxCleansScratchOnSpawnFailure},
+		{"sandbox-parent", TestDelegate_PerDelegateSandboxOverridesSandboxedParent},
+		{"sandbox-no-isolation", TestDelegate_PerDelegateSandboxWithoutIsolationDoesNotMutateParent},
 		{"spawn-default", TestSpawnAgent_DefaultSubagentGetsComposedPrompt},
 		{"spawn-system-prompt", TestSpawnAgent_SystemPromptFileDoesNotOverrideSubagentPrompt},
 		{"spawn-tools", TestSpawnAgent_BuiltinSubagentKeepsDelegateSendTool},

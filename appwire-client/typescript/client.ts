@@ -92,9 +92,9 @@ export const HEARTBEAT_INTERVAL_MS = 20_000;
 export const HEARTBEAT_TIMEOUT_MS = 10_000;
 
 // Reconnect backoff: doubles from the base up to the cap, then holds there
-// until a successful re-handshake. Unlike legacy appwire.js's fixed 250ms
-// retry (renderer.js scheduleAppwireReconnect), this backs off so a
-// prolonged outage doesn't hammer the hub with reconnect attempts. Each delay
+// until a successful re-handshake. Backing off, rather than retrying at a
+// fixed interval, keeps a prolonged outage from hammering the hub with
+// reconnect attempts. Each delay
 // also carries bounded jitter (see scheduleReconnect) so clients dropped by
 // the same outage spread their retries instead of reconnecting in lockstep.
 export const RECONNECT_BASE_MS = 250;

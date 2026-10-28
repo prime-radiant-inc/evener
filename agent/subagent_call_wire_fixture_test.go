@@ -145,7 +145,7 @@ func TestSubagentCallWireFixtures(t *testing.T) {
 			"intent": "Fix race in tree settle",
 		},
 	}.run(t, s)
-	var receipt stableDelegateCreateResult
+	var receipt delegateCreateResult
 	if err := json.Unmarshal([]byte(delegate.output), &receipt); err != nil || receipt.DelegateID == "" {
 		t.Fatalf("delegate receipt %q names no delegate: %v", delegate.output, err)
 	}

@@ -10,6 +10,7 @@ import {
   itemTextPresence,
   markItemIdentityOnly,
   markItemTextOmitted,
+  normalizeAuthorship,
 } from "./transcriptItems";
 import {
   type CachedSessionHistory,
@@ -113,6 +114,7 @@ function encodeCachedItem(item: ItemModel, includeIdentityOnly = false): CachedS
 
 function decodeCachedItem(cached: CachedSessionItem): ItemModel {
   const { textOmitted, identityOnly, ...item } = cached;
+  if (item.authorship !== undefined) item.authorship = normalizeAuthorship(item.authorship);
   const decoded = textOmitted === true ? markItemTextOmitted(item) : copyItemTextPresence(cached, item);
   return identityOnly === true ? markItemIdentityOnly(decoded) : decoded;
 }

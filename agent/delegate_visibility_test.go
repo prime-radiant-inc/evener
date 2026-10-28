@@ -23,7 +23,7 @@ func TestDelegateVisibility_NestedCreatorAndAncestorSeeCreatedDelegate(t *testin
 	if got := delegateVisibilityRowIDs(creatorRows); !slices.Equal(got, []string{tree.grandchildID}) {
 		t.Errorf("creator job_list(delegate) rows = %v, want its own delegate %s", got, tree.grandchildID)
 	}
-	if _, err := stableDelegateStatusTool(tree.parentRuntime, tree.grandchildID, 1<<20); err != nil {
+	if _, err := delegateStatusTool(tree.parentRuntime, tree.grandchildID, 1<<20); err != nil {
 		t.Errorf("creator job_status for its own delegate: %v", err)
 	}
 
@@ -42,7 +42,7 @@ func TestDelegateVisibility_NestedCreatorAndAncestorSeeCreatedDelegate(t *testin
 			t.Errorf("ancestor row %s depth = %d, want %d", row.ID, row.Depth, wantDepth)
 		}
 	}
-	if _, err := stableDelegateStatusTool(tree.s, tree.grandchildID, 1<<20); err != nil {
+	if _, err := delegateStatusTool(tree.s, tree.grandchildID, 1<<20); err != nil {
 		t.Errorf("ancestor job_status for a descendant delegate: %v", err)
 	}
 
@@ -79,7 +79,7 @@ func TestDelegateVisibility_NestedRowsSurviveRootColdRestore(t *testing.T) {
 	if got := delegateVisibilityRowIDs(rows); !slices.Equal(got, want) {
 		t.Errorf("restored root job_list(include_nested, delegate) rows = %v, want %v", got, want)
 	}
-	if _, err := stableDelegateStatusTool(restored, tree.grandchildID, 1<<20); err != nil {
+	if _, err := delegateStatusTool(restored, tree.grandchildID, 1<<20); err != nil {
 		t.Errorf("restored root job_status for a descendant delegate: %v", err)
 	}
 }
@@ -106,7 +106,7 @@ func TestDelegateVisibility_CreatorSlotOwnershipIsTheLogicalOwner(t *testing.T) 
 	if !slices.Contains(delegateVisibilityRowIDs(rootRows), rootChild) {
 		t.Errorf("root job_list(delegate) rows = %v, want the root-slot row its subagent created (%s)", delegateVisibilityRowIDs(rootRows), rootChild)
 	}
-	if _, err := stableDelegateStatusTool(tree.s, rootChild, 1<<20); err != nil {
+	if _, err := delegateStatusTool(tree.s, rootChild, 1<<20); err != nil {
 		t.Errorf("root job_status for a root-slot row its subagent created: %v", err)
 	}
 }

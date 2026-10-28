@@ -19,11 +19,11 @@ import (
 
 func TestSessionActivityRemoteReferences(t *testing.T) {
 	source := &RemoteHubSource{id: "remote"}
-	context := appwire.SessionActivityContext{Ref: "local:child", SessionID: "child", RootRef: "local:root", ParentRef: "local:root", Ancestors: []appwire.SessionActivityAncestor{{Ref: "local:root", SessionID: "root"}}, Epoch: "opaque", AncestryKnown: true}
+	context := appwire.SessionActivityContext{Ref: "local:child", SessionID: "child", RootRef: "local:root", ParentRef: "local:parent", DelegateID: "dlg_child", DelegateName: "local:child is display text", Ancestors: []appwire.SessionActivityAncestor{{Ref: "local:root", SessionID: "root"}, {Ref: "local:parent", SessionID: "parent", DelegateID: "dlg_parent", DelegateName: "local:parent is display text", Title: "Parent description"}}, Epoch: "opaque", AncestryKnown: true}
 	page := appwire.SessionActivityPage{NextCursor: "opaque", Issues: []appwire.SessionActivityIssue{{Ref: "local:grandchild", Code: "unavailable"}}}
 	wantContext := context
-	wantContext.Ref, wantContext.RootRef, wantContext.ParentRef = "remote:child", "remote:root", "remote:root"
-	wantContext.Ancestors = []appwire.SessionActivityAncestor{{Ref: "remote:root", SessionID: "root"}}
+	wantContext.Ref, wantContext.RootRef, wantContext.ParentRef = "remote:child", "remote:root", "remote:parent"
+	wantContext.Ancestors = []appwire.SessionActivityAncestor{{Ref: "remote:root", SessionID: "root"}, {Ref: "remote:parent", SessionID: "parent", DelegateID: "dlg_parent", DelegateName: "local:parent is display text", Title: "Parent description"}}
 	type translationCase struct {
 		name  string
 		value any
@@ -192,7 +192,7 @@ func TestSessionActivityRemoteSourceIsolation(t *testing.T) {
 				if err := json.Unmarshal(raw, &params); err != nil {
 					return scriptedReply{wireErr: new(appwire.InvalidParams(err.Error()))}
 				}
-				activityContext := appwire.SessionActivityContext{Ref: params.Ref, SessionID: "same-id", RootRef: "local:root", Epoch: id, Availability: "live", AncestryKnown: true}
+				activityContext := appwire.SessionActivityContext{Ref: params.Ref, SessionID: "same-id", RootRef: "local:root", ParentRef: "local:parent", DelegateID: "dlg_same", DelegateName: id + " named child", Ancestors: []appwire.SessionActivityAncestor{{Ref: "local:root", SessionID: "root", Title: "Root"}, {Ref: "local:parent", SessionID: "parent", DelegateID: "dlg_parent", DelegateName: id + " named parent", Title: "Distinct parent description"}}, Epoch: id, Availability: "live", AncestryKnown: true}
 				switch method {
 				case appwire.MethodEvenerThreadActivityRead:
 					return scriptedReply{result: appwire.SessionActivitySummary{Context: activityContext}}
@@ -208,7 +208,7 @@ func TestSessionActivityRemoteSourceIsolation(t *testing.T) {
 			})
 			for _, method := range []string{appwire.MethodEvenerThreadActivityRead, appwire.MethodEvenerThreadDelegatesList, appwire.MethodEvenerThreadJobsList, appwire.MethodEvenerThreadWatchesList} {
 				response := sessionActivitySourceRead(t, source, method, id+":same-id")
-				if response.Ref != id+":same-id" || response.SessionID != "same-id" || response.RootRef != id+":root" || response.Epoch != id || !response.AncestryKnown {
+				if response.Ref != id+":same-id" || response.SessionID != "same-id" || response.RootRef != id+":root" || response.ParentRef != id+":parent" || response.DelegateID != "dlg_same" || response.DelegateName != id+" named child" || response.Epoch != id || !response.AncestryKnown || len(response.Ancestors) != 2 || response.Ancestors[0].Ref != id+":root" || response.Ancestors[0].DelegateName != "" || response.Ancestors[1].Ref != id+":parent" || response.Ancestors[1].DelegateID != "dlg_parent" || response.Ancestors[1].DelegateName != id+" named parent" || response.Ancestors[1].Title != "Distinct parent description" {
 					t.Fatalf("qualified remote context = %+v", response)
 				}
 				var params appwire.SessionActivityListParams
@@ -224,6 +224,26 @@ func TestSessionActivityRemoteSourceIsolation(t *testing.T) {
 				t.Fatal("foreign source read reached remote")
 			}
 		})
+	}
+}
+
+func TestSessionActivityUnavailableRemoteCannotBorrowSameIDNames(t *testing.T) {
+	good, _ := newScriptedRemote(t, "east", func(_ string, _ json.RawMessage) scriptedReply {
+		return scriptedReply{result: appwire.SessionActivitySummary{Context: appwire.SessionActivityContext{Ref: "local:same-id", SessionID: "same-id", RootRef: "local:root", DelegateID: "dlg_east", DelegateName: "East canonical child", Ancestors: []appwire.SessionActivityAncestor{{Ref: "local:root", SessionID: "root", DelegateName: "East canonical parent"}}}}}
+	})
+	read, err := good.ThreadActivityRead(t.Context(), appwire.SessionActivityReadParams{Ref: "east:same-id"})
+	if err != nil || read.Context.DelegateName != "East canonical child" || len(read.Context.Ancestors) != 1 || read.Context.Ancestors[0].DelegateName != "East canonical parent" {
+		t.Fatalf("healthy source fixture = %+v, %v", read, err)
+	}
+	denied := appwire.Unavailable("host unavailable")
+	bad, calls := newScriptedRemote(t, "west", func(_ string, _ json.RawMessage) scriptedReply { return scriptedReply{wireErr: &denied} })
+	missing, err := bad.ThreadActivityRead(t.Context(), appwire.SessionActivityReadParams{Ref: "west:same-id"})
+	if err == nil || missing.Context.DelegateName != "" || len(missing.Context.Ancestors) != 0 {
+		t.Fatalf("unavailable west borrowed east's names: %+v, %v", missing, err)
+	}
+	var params appwire.SessionActivityReadParams
+	if err := json.Unmarshal(lastMethodCall(t, calls(), appwire.MethodEvenerThreadActivityRead), &params); err != nil || params.Ref != "local:same-id" {
+		t.Fatalf("unavailable remote request = %+v, %v", params, err)
 	}
 }
 

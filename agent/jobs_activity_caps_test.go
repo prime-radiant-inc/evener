@@ -54,7 +54,7 @@ func TestDelegateStatusInfo_PayloadCapMatchesTheRead(t *testing.T) {
 	}
 	snap := activitySessionSnapshot{
 		SessionID: "root", Ref: "local:root", RootID: "root",
-		StableDelegates: map[string]delegateSnapshot{"dlg_1": row},
+		Delegates: map[string]delegateSnapshot{"dlg_1": row},
 	}
 	delegate := projectActivitySession(snap, newActivityBudget()).Entries[0].Delegate
 	if delegate.Usage != nil || delegate.Worktree != nil {
@@ -103,8 +103,8 @@ func TestProjectBoundedActivityTree_CapsOutcomeReasonAndOriginIDs(t *testing.T) 
 	row.lastOutcome = &delegatestore.Outcome{Status: delegatestore.OutcomeCompleted, Reason: huge}
 	root := activitySessionSnapshot{
 		SessionID: "root", Ref: "local:root", RootID: "root",
-		StableDelegates: map[string]delegateSnapshot{"dlg_0": row},
-		Children:        map[string]*activitySessionSnapshot{"child": child},
+		Delegates: map[string]delegateSnapshot{"dlg_0": row},
+		Children:  map[string]*activitySessionSnapshot{"child": child},
 	}
 
 	got, err := projectBoundedActivityTree(root, "root", 0, 0, 0, time.Unix(10, 0).UTC())
@@ -164,8 +164,8 @@ func TestProjectBoundedActivityTree_BoundsMaxDepthAncestorChain(t *testing.T) {
 		}
 		node = &activitySessionSnapshot{
 			SessionID: ownerID, Ref: "local:" + ownerID, RootID: "root",
-			StableDelegates: map[string]delegateSnapshot{row.id: row},
-			Children:        map[string]*activitySessionSnapshot{childID: node},
+			Delegates: map[string]delegateSnapshot{row.id: row},
+			Children:  map[string]*activitySessionSnapshot{childID: node},
 		}
 	}
 
@@ -246,7 +246,7 @@ func TestProjectActivitySession_CapsDelegateProse(t *testing.T) {
 	row.descriptor.Description = prose
 	snap := activitySessionSnapshot{
 		SessionID: "root", Ref: "local:root", RootID: "root",
-		StableDelegates: map[string]delegateSnapshot{"dlg_1": row},
+		Delegates: map[string]delegateSnapshot{"dlg_1": row},
 	}
 	got := projectActivitySession(snap, newActivityBudget())
 	if len(got.Entries) != 1 || got.Entries[0].Delegate == nil {
@@ -383,7 +383,7 @@ func TestProjectActivitySession_CapsDelegatePayloads(t *testing.T) {
 	}
 	snap := activitySessionSnapshot{
 		SessionID: "root", Ref: "local:root", RootID: "root",
-		StableDelegates: map[string]delegateSnapshot{"dlg_1": row},
+		Delegates: map[string]delegateSnapshot{"dlg_1": row},
 	}
 	got := projectActivitySession(snap, newActivityBudget())
 	delegate := got.Entries[0].Delegate
@@ -458,8 +458,8 @@ func TestProjectBoundedActivityTree_BoundsPacketPayloadsOnContinuationAncestors(
 		}
 		node = &activitySessionSnapshot{
 			SessionID: ownerID, Ref: "local:" + ownerID, RootID: "root",
-			StableDelegates: map[string]delegateSnapshot{row.id: row},
-			Children:        map[string]*activitySessionSnapshot{childID: node},
+			Delegates: map[string]delegateSnapshot{row.id: row},
+			Children:  map[string]*activitySessionSnapshot{childID: node},
 		}
 	}
 

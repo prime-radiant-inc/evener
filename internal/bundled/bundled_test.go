@@ -105,7 +105,7 @@ func bundledMetaStringList(t *testing.T, meta map[string]any, key string) []stri
 	return out
 }
 
-// TestBundledCoordinatorUsesStableDelegateAndShellIdentities pins the
+// TestBundledCoordinatorUsesDelegateAndShellIdentities pins the
 // coordinator agent's declared capability surface, not the wording of its role
 // prompt. The runtime consumes the frontmatter tools: list as an allowlist
 // (baseSubagentToolPolicy hands it to Registry.RestrictKeepingResultTool), so
@@ -116,7 +116,7 @@ func bundledMetaStringList(t *testing.T, meta map[string]any, key string) []stri
 //
 // Not parallel: Plugins() reads the package-wide subFS seam that
 // TestMustSubPanics swaps out.
-func TestBundledCoordinatorUsesStableDelegateAndShellIdentities(t *testing.T) {
+func TestBundledCoordinatorUsesDelegateAndShellIdentities(t *testing.T) {
 	meta := bundledMeta(t, Plugins(), "coordinator-workflow/agents/coordinator.md")
 	if name := bundledMetaString(t, meta, "name"); name != "coordinator" {
 		t.Fatalf("coordinator agent name = %q, want %q", name, "coordinator")

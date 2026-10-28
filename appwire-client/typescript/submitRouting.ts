@@ -1,5 +1,4 @@
-// Pure send/steer/queue/drain routing decisions (parity-m5-composer.md §A,
-// kata 0bq1) - framework-agnostic on purpose so Composer.tsx's own
+// Pure send/steer/queue/drain routing decisions - framework-agnostic on purpose so Composer.tsx's own
 // click/keydown handlers stay thin dispatchers over these, and every branch
 // is unit-testable without mounting anything.
 import type { SendQueueAvailability } from "./sendQueueAvailability";
@@ -8,7 +7,7 @@ import type { ThreadCapabilities } from "./types.gen";
 export type SubmitRoute = "send" | "queue" | "none";
 
 // decideSubmitRoute: submit is a no-op when the composer is empty of both
-// text and attachments (parity-m5-composer.md §A); otherwise queue-mode
+// text and attachments; otherwise queue-mode
 // takes priority when available (the daemon is mid-turn and Send is
 // deliberately routed to the queue), else plain send, else neither
 // capability is available and there is nothing to do. deriveSendQueueAvailability's
@@ -30,7 +29,7 @@ export function decideSubmitRoute(opts: { hasContent: boolean; availability: Sen
 export type SteerRoute = "steer" | "drain" | "none";
 
 // decideSteerRoute forks the Steer button/Shift+Enter action on composer +
-// queue state (kata 0bq1):
+// queue state:
 //   - a non-empty queue, OR any staged attachments, ALWAYS routes to
 //     turn/drainAsSteer - regardless of the textarea's own text content (an
 //     empty textarea with a non-empty queue still drains).
@@ -68,14 +67,14 @@ export function decideSteerRoute(opts: {
 // the hub relays each as its own message, and the status never leaves active.
 // A predicate that read the id went false between those frames, which took
 // Steer off the composer at every inline turn boundary and passed the skill
-// guard's turn-end barrier mid-input (#1330). The daemon says idle with a
+// guard's turn-end barrier mid-input. The daemon says idle with a
 // thread/status/changed frame that always follows the closing turn/completed,
 // so the status alone is never late in that direction.
 //
 // Capabilities are the harness's. The hub's `steer`, `interrupt` and `queue`
 // are harness support alone (server/appwire_thread_projection.go appCapabilitiesLocked;
 // none folds the status in, so an idle client can still tell a harness that
-// supports an action from one that cannot, #1363, #1375). This derivation
+// supports an action from one that cannot). This derivation
 // applies the status for all of them, so every action below reads one rule and
 // no caller has to know which flags arrive pre-gated.
 //
