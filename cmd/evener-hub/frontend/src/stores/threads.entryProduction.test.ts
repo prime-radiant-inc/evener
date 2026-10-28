@@ -3130,6 +3130,86 @@ it("an ordinary open outlives the retired lookup deadline while the backstop say
   }
 });
 
+it("an open superseded by a replacement hydration settles without the displaced one", async () => {
+  const storage = cache();
+  const realGetLatestWindow = storage.getLatestWindow.bind(storage);
+  setProductionEntryCacheForTests(storage);
+  const ref = "local:a";
+  const read = response(
+    ref,
+    Array.from({ length: 225 }, (_, index) => turn(`row-${index + 1}`, index + 1)),
+  );
+  read.snapshot = { incarnation: "inc-a", length: 225 };
+  const client = connect(read);
+  const lease = acquireBackgroundThread(ref);
+  await lease.ready;
+  await settleEntryTranscriptForTests(ref);
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect(await storage.getLatest(key, 300)).toHaveLength(225);
+  const bodies = () =>
+    threadsStore
+      .getState()
+      .threads.get(ref)
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.text)
+      .filter(Boolean);
+  expect(bodies()).toEqual([]);
+
+  // Hydration A parks on a wire read that never answers, the open's local
+  // read is held, and a second resync displaces A with a hydration that
+  // publishes. The displaced registration must not own the open's wait: the
+  // replacement's settlement supersedes the open while both held operations
+  // are still pending, so the opening settles long before the backstop.
+  const wireReleased = deferred<void>();
+  let wireReads = 0;
+  client.on("thread/read", (params) => {
+    wireReads += 1;
+    const echoed = { ...read, requestGeneration: params.requestGeneration };
+    return wireReads === 1 ? wireReleased.promise.then(() => echoed) : echoed;
+  });
+  client.emitNotification({
+    method: "evener/thread/resync",
+    params: { ref, threadId: "thread-a" },
+  });
+  await vi.waitFor(() => {
+    expect(wireReads).toBe(1);
+  });
+  let holding = false;
+  const localReadEntered = deferred<void>();
+  const localReadReleased = deferred<void>();
+  (storage as unknown as { getLatestWindow: unknown }).getLatestWindow = (...args: unknown[]) => {
+    if (holding) {
+      holding = false;
+      localReadEntered.resolve();
+      return localReadReleased.promise.then(() =>
+        realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>)),
+      ) as ReturnType<typeof realGetLatestWindow>;
+    }
+    return realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>)) as ReturnType<
+      typeof realGetLatestWindow
+    >;
+  };
+  holding = true;
+  const opened = threadsStore.getState().ensureThread(ref);
+  await localReadEntered.promise;
+  client.emitNotification({
+    method: "evener/thread/resync",
+    params: { ref, threadId: "thread-a" },
+  });
+  await vi.waitFor(() => {
+    expect(wireReads).toBe(2);
+  });
+  await drainSettleSteps();
+  expect(threadsStore.getState().localOpenings.has(ref)).toBe(false);
+  expect(productionEntryTranscriptForTests(ref).lastLocalOpenStatus).toBe("superseded-by-source");
+  expect(bodies()).toContain("row-26");
+  localReadReleased.resolve();
+  wireReleased.resolve();
+  await opened;
+  await threadsStore.getState().releaseThread(ref);
+  await lease.release();
+});
+
 it("a wedged storage read abandons the open at the backstop and hands the pane to the source", async () => {
   const storage = cache();
   const realGetLatestWindow = storage.getLatestWindow.bind(storage);

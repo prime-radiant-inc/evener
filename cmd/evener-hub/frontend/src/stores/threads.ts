@@ -1397,7 +1397,6 @@ function scheduleEntryOpeningRecovery(ref: string): void {
   void recovery.then(() => {
     if (pendingOpeningRecoveries.get(ref) === route) pendingOpeningRecoveries.delete(ref);
     if (openingRecoveryCompletions.get(ref) === recovery) openingRecoveryCompletions.delete(ref);
-    if (trackedHydrationCompletions.get(ref) === recovery) trackedHydrationCompletions.delete(ref);
   });
 }
 
@@ -1764,16 +1763,11 @@ function newestItemPosition(turns: TurnModel[]): ThreadItemPosition | undefined 
 const trackedHydrationCompletions = new Map<string, Promise<void>>();
 
 // Waiters for "the next tracked hydration for this ref settled" — the open
-// path's primary deterministic bound. A waiter that starts while a completion
-// is already registered attaches to it; otherwise it parks until the next
-// registration wakes it. Settlement means settled-either-way: a published
-// heal and a failed read both end the local wait, because from either
-// outcome the source lifecycle owns the display's convergence.
+// path's primary deterministic bound. A waiter parks until the registration
+// that is still current settles; settlement means settled-either-way: a
+// published heal and a failed read both end the local wait, because from
+// either outcome the source lifecycle owns the display's convergence.
 const hydrationSettlementWaiters = new Map<string, Set<() => void>>();
-
-// The map above holds only pending registrations — every registration site
-// deletes its own entry on settlement — so an absent entry is the settled
-// signal and a waiter never attaches to a registration that already settled.
 
 // A waiter handle: `settled` resolves when the next tracked hydration for
 // the ref settles either way; `cancel` unparks a waiter whose open ended
@@ -1785,16 +1779,6 @@ type HydrationSettlementWait = {
 };
 
 function nextTrackedHydrationSettlement(ref: string): HydrationSettlementWait {
-  const current = trackedHydrationCompletions.get(ref);
-  if (current) {
-    return {
-      settled: current.then(
-        () => undefined,
-        () => undefined,
-      ),
-      cancel: () => {},
-    };
-  }
   let wake!: () => void;
   const settled = new Promise<void>((resolve) => {
     wake = () => resolve();
@@ -1818,14 +1802,27 @@ function nextTrackedHydrationSettlement(ref: string): HydrationSettlementWait {
 
 function registerHydrationCompletion(ref: string, completion: Promise<void>): void {
   trackedHydrationCompletions.set(ref, completion);
+  void completion.then(
+    () => settleHydrationRegistration(ref, completion),
+    () => settleHydrationRegistration(ref, completion),
+  );
+}
+
+// The map holds only pending registrations: an entry leaves through this
+// settle or through a release retiring the lifecycle the pending read
+// belonged to, so absence means settled-or-released. A displaced
+// registration never settles the wait — the newer attempt owns the ref's
+// convergence, so the waiters stay parked for the replacement — and the
+// identity check keeps a superseded registration from deleting the newer
+// entry that displaced it.
+function settleHydrationRegistration(ref: string, completion: Promise<void>): void {
+  if (trackedHydrationCompletions.get(ref) !== completion) return;
+  trackedHydrationCompletions.delete(ref);
   const waiters = hydrationSettlementWaiters.get(ref);
   if (!waiters) return;
   hydrationSettlementWaiters.delete(ref);
   for (const wake of waiters) {
-    void completion.then(
-      () => wake(),
-      () => wake(),
-    );
+    wake();
   }
 }
 
@@ -6874,9 +6871,6 @@ async function refreshTrackedThreadNow(
           () => undefined,
         );
     registerHydrationCompletion(ref, completion);
-    void completion.then(() => {
-      if (trackedHydrationCompletions.get(ref) === completion) trackedHydrationCompletions.delete(ref);
-    });
   }
   const hasPublishedModel = threadsStore.getState().threads.has(ref);
   // A failed targeted predecessor may already have removed `previous`.
