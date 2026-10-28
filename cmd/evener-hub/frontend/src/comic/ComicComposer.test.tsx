@@ -533,6 +533,145 @@ test.each([
   expect(editor().textContent).toBe(draft.text);
 });
 
+test.each(["", "PENDING_QUESTION_DRAFT"])(
+  "pending questions keep Stop usable without changing draft %j",
+  async (text) => {
+    const fake = await setup("active", true);
+    fake.on("turn/interrupt", (p) => ({
+      receipt: {
+        clientMutationId: p.clientMutationId,
+        disposition: "applied",
+        threadId: `thread-${ref}`,
+        projectionState: "reflected",
+      },
+    }));
+    writeComposerDraft(ref, { text, skillNames: [] });
+    const source = sourceFor();
+    const view = render(<ComicComposer source={source} />);
+    await settle(source);
+    expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("active");
+    expect(askDockStore.getState().byRef.get(ref)?.batches).toHaveLength(1);
+    const message = view.container.querySelector('[contenteditable="true"]')!;
+    expect(message.closest("[hidden][inert]")).not.toBeNull();
+    const stop = screen.getByTestId("composer-stop") as HTMLButtonElement;
+    expect(stop.closest("[hidden], [inert]")).toBeNull();
+    expect(screen.getByRole("button", { name: "Stop" })).toBe(stop);
+    expect(stop.disabled).toBe(false);
+
+    let release!: (() => void) | null;
+    act(() => {
+      release = source.tryAcquireRecoveryOperation();
+    });
+    expect(release).not.toBeNull();
+    expect(stop.disabled).toBe(true);
+    fireEvent.click(stop);
+    expect(fake.calls.filter((call) => call.method === "turn/interrupt")).toEqual([]);
+    act(() => release?.());
+    expect(stop.disabled).toBe(false);
+    act(() => {
+      fireEvent.click(stop);
+      fireEvent.click(stop);
+    });
+    expect(stop.disabled).toBe(true);
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/interrupt")).toHaveLength(1));
+    expect(fake.calls.find((call) => call.method === "turn/interrupt")?.params).toMatchObject({
+      ref,
+      clientMutationId: expect.any(String),
+    });
+    expect(fake.calls.filter((call) => call.method === "turn/start" || call.method === "turn/queue")).toEqual([]);
+    expect(source.getSnapshot().text).toBe(text);
+    expect(message.textContent).toBe(text);
+    expect(readComposerDraft(ref).text).toBe(text);
+  },
+);
+
+test.each(["", "ANSWER_RETURN_DRAFT"])(
+  "answering a question restores draft %j and resting removes Stop",
+  async (text) => {
+    const fake = await setup("active", true);
+    writeComposerDraft(ref, { text, skillNames: [] });
+    const view = render(page(ref));
+    await screen.findByRole("radio", { name: "OPTION_SENTINEL" });
+    const message = view.container.querySelector('[data-comic-composer] [contenteditable="true"]')!;
+    expect(message.closest("[hidden][inert]")).not.toBeNull();
+    const stop = screen.getByTestId("composer-stop");
+    expect(screen.getByRole("button", { name: "Stop" })).toBe(stop);
+    expect(stop.closest("[hidden], [inert]")).toBeNull();
+    fireEvent.click(screen.getByRole("radio", { name: "OPTION_SENTINEL" }));
+    act(() => connectionStore.setState({ state: "idle" }));
+    fireEvent.click(screen.getByRole("button", { name: /send answers/i }));
+    await waitFor(async () => expect(await storage.listOutbox(ref)).toHaveLength(1));
+    await waitFor(() => expect(message.closest("[hidden], [inert]")).toBeNull());
+    expect(editor()).toBe(message);
+    expect(editor().textContent).toBe(text);
+    expect(readComposerDraft(ref).text).toBe(text);
+    expect(document.activeElement).toBe(message);
+    expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("active");
+    expect(screen.getAllByTestId("composer-stop")).toHaveLength(1);
+    expect(screen.getByTestId("composer-stop").closest("[hidden], [inert]")).toBeNull();
+
+    act(() =>
+      fake.emitNotification({
+        method: "thread/status/changed",
+        params: { ref, threadId: `thread-${ref}`, status: { type: "idle" }, askPending: false },
+      }),
+    );
+    expect(screen.queryByTestId("composer-stop")).toBeNull();
+    expect(editor()).toBe(message);
+    expect(editor().textContent).toBe(text);
+    expect((screen.getByTestId("composer-submit") as HTMLButtonElement).disabled).toBe(text === "");
+    replaceEditorText(editor(), "NEXT_MESSAGE_DRAFT");
+    expect(readComposerDraft(ref).text).toBe("NEXT_MESSAGE_DRAFT");
+    expect((screen.getByTestId("composer-submit") as HTMLButtonElement).disabled).toBe(false);
+    expect(fake.calls.filter((call) => call.method === "turn/interrupt")).toEqual([]);
+  },
+);
+
+test("question arrival preserves the inline Stop disarm guard", async () => {
+  const fake = await setup("active", true);
+  fake.on("turn/interrupt", (p) => ({
+    receipt: {
+      clientMutationId: p.clientMutationId,
+      disposition: "applied",
+      threadId: `thread-${ref}`,
+      projectionState: "reflected",
+    },
+  }));
+  const publishPending = (askPending: boolean) =>
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { ref, threadId: `thread-${ref}`, status: { type: "active" }, askPending },
+    });
+  act(() => publishPending(false));
+  const source = sourceFor();
+  const view = render(<ComicComposer source={source} />);
+  await settle(source);
+  replaceEditorText(editor(), "DISARM_DRAFT");
+  const message = editor();
+  const send = screen.getByTestId("composer-submit");
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  replaceEditorText(message, "");
+  act(() => publishPending(true));
+  expect(askDockStore.getState().byRef.get(ref)?.batches).toHaveLength(1);
+  expect(message.closest("[hidden][inert]")).not.toBeNull();
+  const stop = screen.getByTestId("composer-stop") as HTMLButtonElement;
+  expect(stop.closest("[hidden], [inert]")).toBeNull();
+  expect(send.isConnected).toBe(false);
+  expect(stop.disabled).toBe(true);
+  fireEvent.click(stop);
+  act(() => vi.advanceTimersByTime(499));
+  expect(stop.disabled).toBe(true);
+  fireEvent.click(stop);
+  expect(fake.calls.filter((call) => call.method === "turn/interrupt")).toEqual([]);
+  act(() => vi.advanceTimersByTime(1));
+  expect(stop.disabled).toBe(false);
+  vi.useRealTimers();
+  await act(async () => fireEvent.click(stop));
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/interrupt")).toHaveLength(1));
+  expect(view.container.querySelector('[contenteditable="true"]')).toBe(message);
+  expect(source.getSnapshot().text).toBe("");
+});
+
 test("opening a stopped full-page conversation does not resume and keeps a usable draft", async () => {
   const fake = await setup("notLoaded");
   writeComposerDraft(ref, { text: "saved followup", skillNames: [] });
