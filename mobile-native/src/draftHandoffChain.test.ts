@@ -147,8 +147,9 @@ describe("handoff chain obligations", () => {
 		first.settle(true);
 		await first.submitted;
 		expect(storageLedger.readGraph().obligations[0].state).toBe("completed");
-		storageLedger.settleEdge(edge.edgeId, [], "hash");
-		expect(storageLedger.readGraph().edges[0].state).toBe("settled");
+		// The resolution schedules the handoff pass, which settles the edge the
+		// open obligation had blocked - no explicit transition or retry needed.
+		expect(storageLedger.readGraph().edges[0].resolvedAs).toBe("settled");
 	});
 
 	test("a new edge carries the chain's open obligations from more than one origin", async () => {
@@ -221,15 +222,9 @@ describe("handoff chain obligations", () => {
 		const completed = storageLedger.readGraph().obligations.find((obligation) => obligation.obligationId === token);
 		expect(completed).toMatchObject({ state: "completed", completedCommandIds: ["recovered-b"] });
 
-		storageLedger.refuseEdge(bc.edgeId, [
-			{
-				chainId: bc.chainId,
-				destination: endpoint("c"),
-				recoveryId: "recovered-b",
-				disposition: "completed",
-				edgeId: bc.edgeId,
-			},
-		]);
+		// The resolution's scheduled pass settles the next hop with the
+		// completion's delivery recorded at its destination.
+		expect(storageLedger.readGraph().edges.find((edge) => edge.edgeId === bc.edgeId)?.resolvedAs).toBe("settled");
 		expect(storageLedger.readGraph().deliveries).toMatchObject([
 			{ destination: endpoint("c"), recoveryId: "recovered-b", disposition: "completed" },
 		]);
@@ -538,7 +533,7 @@ describe("handoff chain obligations", () => {
 		expect(repository.read(endpoint("a"))).toEqual({ draft: "", unconfirmed: null });
 
 		library.retryPendingHandoffs();
-		expect(storageLedger.readGraph().edges[0]).toMatchObject({ state: "settled" });
+		expect(storageLedger.readGraph().edges[0]).toMatchObject({ resolvedAs: "settled" });
 	});
 
 	test("a completion does not delete image bytes a live document's failed restore retains", async () => {
@@ -678,7 +673,7 @@ describe("handoff chain obligations", () => {
 				recoveryKind: "editing",
 			}),
 		).toBe("already-restored");
-		expect(storageLedger.readGraph().edges.find((edge) => edge.from.sessionRef === "a")?.state).toBe("settled");
+		expect(storageLedger.readGraph().edges.find((edge) => edge.from.sessionRef === "a")?.resolvedAs).toBe("settled");
 	});
 
 	test("a completion between a failed transfer and its retry reaches the destination", async () => {
@@ -736,10 +731,11 @@ describe("handoff chain obligations", () => {
 		expect(repository.read(endpoint("b"))).toEqual({ draft: "", unconfirmed: null });
 
 		// The recovered command completes at the origin while the transfer is
-		// missing, so its markers land in the origin's record.
+		// missing; the resolution's scheduled pass then composes again and the
+		// re-transfer carries the markers to the destination.
 		finish();
 		await submitted;
-		expect(repository.read(endpoint("a")).completedCommandRecoveryIds).toEqual([captured.clientMutationId]);
+		expect(repository.read(endpoint("b")).completedCommandRecoveryIds).toEqual([captured.clientMutationId]);
 
 		library.retryPendingHandoffs();
 		// The obligation's own resolved ids prove nothing about the destination:
@@ -763,7 +759,7 @@ describe("handoff chain obligations", () => {
 				recoveryKind: "editing",
 			}),
 		).toBe("already-restored");
-		expect(storageLedger.readGraph().edges.find((edge) => edge.from.sessionRef === "a")?.state).toBe("settled");
+		expect(storageLedger.readGraph().edges.find((edge) => edge.from.sessionRef === "a")?.resolvedAs).toBe("settled");
 	});
 
 	test("a refusal forwards dispositions to the identity owning the retargeted rows", async () => {
@@ -805,9 +801,14 @@ describe("handoff chain obligations", () => {
 		finish();
 		await submitted;
 		library.retryPendingHandoffs();
-		expect(storageLedger.readGraph().edges.map((edge) => edge.state)).toEqual(
-			expect.arrayContaining(["refused", "refused"]),
-		);
+		// Both hops refused; cleanup may already have retired their tombstones,
+		// so the durable decisions are asserted through resolvedAs.
+		expect(
+			storageLedger
+				.readGraph()
+				.edges.map((edge) => edge.resolvedAs)
+				.sort(),
+		).toEqual(["refused", "refused"]);
 		// The immediate destination received its markers...
 		expect(repository.read(endpoint("b")).completedCommandRecoveryIds).toEqual([captured.clientMutationId]);
 		// ...and so did the identity the retargets moved the row to, although no
@@ -930,14 +931,36 @@ describe("handoff chain obligations", () => {
 		finish();
 		await submitted;
 
-		// The first forwarding write fails, so the settlement stays pending.
-		library.retryPendingHandoffs();
+		// The resolution's scheduled pass attempted the forwarding write and its
+		// save failed once, so the settlement stays pending with the markers
+		// still owed to the row owner.
 		expect(storageLedger.readGraph().edges.find((edge) => edge.from.sessionRef === "a")?.state).toBe("pending");
 
 		// The next pass retries the row owner's own save - preserving its live
 		// record - and the forwarded markers land.
 		library.retryPendingHandoffs();
 		expect(repository.read(endpoint("c")).completedCommandRecoveryIds).toEqual([captured.clientMutationId]);
-		expect(storageLedger.readGraph().edges.find((edge) => edge.from.sessionRef === "a")?.state).toBe("settled");
+		expect(storageLedger.readGraph().edges.find((edge) => edge.from.sessionRef === "a")?.resolvedAs).toBe("settled");
+	});
+
+	test("a new edge carries a reopened source's current composition", () => {
+		const { storage, storageLedger, repository, library } = setup();
+		repository.write(endpoint("a"), { draft: "first", unconfirmed: null });
+		expect(library.handoff(endpoint("a"), endpoint("b"))).toBe(true);
+		library.retryPendingHandoffs();
+		expect(repository.read(endpoint("a"))).toEqual({ draft: "", unconfirmed: null });
+
+		// The identity reopens and composes new work after the first handoff.
+		const reopened = library.open(endpoint("a"));
+		reopened.edit("second");
+		expect(repository.read(endpoint("a")).draft).toBe("second");
+
+		// A later retarget creates a fresh edge from the same endpoint: the new
+		// edge must carry the current composition, never the snapshot the first
+		// handoff carried away, or the transfer would delete the newer work.
+		resume(storage, "a", "c");
+		library.retryPendingHandoffs();
+		expect(repository.read(endpoint("c")).draft).toBe("second");
+		expect(storageLedger.readGraph().edges.every((edge) => edge.state !== "pending")).toBe(true);
 	});
 });

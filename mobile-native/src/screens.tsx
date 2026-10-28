@@ -2959,6 +2959,12 @@ function ConversationScreenView({
 	// uses fresh exact-source proof, never absence from an outbox projection.
 	const [editedRecoveryFailure, setEditedRecoveryFailure] = useState<unknown>(null);
 	const [editedRecoveryAttempt, retryEditedRecovery] = useState(0);
+	// An obligation's durable resolution - a failed command just as much as a
+	// completed one - lifts the destination's recovery suppression and unblocks
+	// its handoff. The ledger publishes the transition so the mounted screen
+	// re-runs this reconciliation instead of waiting for a remount.
+	const [obligationTransitions, noteObligationTransition] = useState(0);
+	useEffect(() => drafts.onObligationTransition(() => noteObligationTransition((count) => count + 1)), [drafts]);
 	const recoveryWork = JSON.stringify({
 		sources: recovery.snapshot?.recovery
 			.filter((row) => row.recoveryKind === "editing")
@@ -3022,6 +3028,7 @@ function ConversationScreenView({
 		draft.loaded,
 		draft.submitting,
 		draft.error,
+		obligationTransitions,
 		imageState.busy,
 		imageSelection,
 		localThread,

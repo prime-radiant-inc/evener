@@ -392,7 +392,7 @@ describe("durable handoff library", () => {
 		});
 
 		draftLibrary.retryPendingHandoffs();
-		expect(edgeFor(ledger, "a", "b")).toMatchObject({ state: "settled" });
+		expect(edgeFor(ledger, "a", "b")).toMatchObject({ resolvedAs: "settled" });
 		expect(repository.read(destination("b"))).toMatchObject({
 			draft: "",
 			unconfirmed: null,
@@ -446,7 +446,7 @@ describe("durable handoff library", () => {
 		settle(true);
 		await submitted;
 		draftLibrary.retryPendingHandoffs();
-		expect(edgeFor(ledger, "a", "b")).toMatchObject({ state: "settled" });
+		expect(edgeFor(ledger, "a", "b")).toMatchObject({ resolvedAs: "settled" });
 		expect(repository.read(destination("b"))).toMatchObject({ draft: "", unconfirmed: null });
 		expect(repository.read(destination("b")).unconfirmedCaptureToken).toBeUndefined();
 	});
@@ -478,7 +478,7 @@ describe("durable handoff library", () => {
 		settle(true);
 		await submitted;
 		draftLibrary.retryPendingHandoffs();
-		expect(edgeFor(ledger, "a", "b")?.state).toBe("settled");
+		expect(edgeFor(ledger, "a", "b")?.resolvedAs).toBe("settled");
 		// The send resolved as a message admission: its recovered capture settles
 		// through the resend receipt, not through the handoff graph, so it stays
 		// recoverable input instead of being cleared here.
@@ -521,7 +521,7 @@ describe("durable handoff library", () => {
 		settle(true);
 		await submitted;
 		draftLibrary.retryPendingHandoffs();
-		expect(edgeFor(ledger, "a", "b")?.state).toBe("settled");
+		expect(edgeFor(ledger, "a", "b")?.resolvedAs).toBe("settled");
 		expect(repository.read(destination("b")).completedCommandRecoveryIds).toEqual(["recovered-a"]);
 		expect(repository.read(destination("a"))).toEqual({ draft: "", unconfirmed: null });
 	});
@@ -540,6 +540,48 @@ describe("durable handoff library", () => {
 		expect(unavailable.hasPendingHandoff(destination("b"))).toBe(false);
 		expect(unavailable.openObligationRecoveryIds(destination("a"))).toEqual(new Set());
 		expect(() => unavailable.retryPendingHandoffs()).not.toThrow();
+	});
+
+	test("a failed resolution notifies consumers and unblocks the chain", async () => {
+		const { ledger, repository, library } = setup();
+		repository.write(destination("a"), {
+			draft: "current",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		const draftLibrary = library();
+		let transitions = 0;
+		const unsubscribe = draftLibrary.onObligationTransition(() => {
+			transitions++;
+		});
+		const source = draftLibrary.open(destination("a"));
+		let settle!: (sent: boolean) => void;
+		const submitted = source.submitBuiltinCommand(
+			() =>
+				new Promise<boolean>((resolve) => {
+					settle = resolve;
+				}),
+		);
+		const token = repository.read(destination("a")).unconfirmedCaptureToken;
+		if (token === undefined) throw new Error("missing capture token");
+		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(true);
+		// The destination adopted the running command mid-flight: its recovery
+		// effect excludes the still-open obligation's sources.
+		expect(repository.read(destination("b")).unconfirmedCaptureToken).toBe(token);
+		expect(draftLibrary.openObligationRecoveryIds(destination("b"))).toEqual(new Set(["recovered-a"]));
+
+		// The command fails after the destination has mounted. The resolution
+		// publishes and schedules the handoff pass, so the suppression lifts and
+		// the chain unblocks without a remount or an explicit retry.
+		settle(false);
+		await submitted;
+		await Promise.resolve();
+		expect(transitions).toBe(1);
+		expect(draftLibrary.openObligationRecoveryIds(destination("b"))).toEqual(new Set());
+		expect(edgeFor(ledger, "a", "b")?.state).not.toBe("pending");
+		// A failed capture stays recoverable input at its owner.
+		expect(repository.read(destination("b"))).toMatchObject({ unconfirmed: "current" });
+		unsubscribe();
 	});
 
 	test("a refusal write failure leaves the hop pending until the ledger accepts it", () => {
@@ -604,8 +646,8 @@ describe("durable handoff library", () => {
 			completedCommandRecoveryIds: ["recovered-a"],
 		});
 		draftLibrary.retryPendingHandoffs();
-		expect(edgeFor(ledger, "b", "c")?.state).toBe("settled");
-		expect(edgeFor(ledger, "a", "b")?.state).toBe("settled");
+		expect(edgeFor(ledger, "b", "c")?.resolvedAs).toBe("settled");
+		expect(edgeFor(ledger, "a", "b")?.resolvedAs).toBe("settled");
 		expect(repository.read(destination("a"))).toEqual({ draft: "", unconfirmed: null });
 		expect(repository.read(destination("b"))).toEqual({ draft: "", unconfirmed: null });
 		expect(repository.read(destination("c")).completedCommandRecoveryIds).toEqual(["recovered-a"]);

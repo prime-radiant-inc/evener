@@ -36,9 +36,17 @@ export type DraftStorage = Pick<
  * its own. */
 export class DraftLibrary {
 	private hubs = new Map<string, Map<string, DraftDocument>>();
-	/** Documents retired by a handoff, kept per hub so hub removal still
-	 * invalidates a source the live document map no longer holds. */
-	private retired = new Map<string, Set<DraftDocument>>();
+	/** Documents retired by a handoff, keyed by the edge that transferred them:
+	 * only that edge's own retry reads the snapshot it wrote back. A newer
+	 * edge from the same endpoint reads the endpoint's current document
+	 * instead, so a reopened identity's fresh composition is never overwritten
+	 * by the snapshot an earlier handoff carried away. The entry keeps the hub
+	 * so hub removal still invalidates retired sources. */
+	private retired = new Map<string, { hubId: string; document: DraftDocument }>();
+	/** Consumers that must hear a durable obligation transition, so a mounted
+	 * destination recomputes its recovery exclusions and re-runs reconciliation
+	 * without waiting for a remount. */
+	private obligationListeners = new Set<() => void>();
 	constructor(
 		private repository: () => DraftStorage,
 		private createImageId: () => string = () =>
@@ -67,10 +75,32 @@ export class DraftLibrary {
 				undefined,
 				this.handoffLedger,
 				(terminal, completion) => this.deliverCompletionAt(terminal, completion),
+				() => this.onObligationResolved(),
 			);
 			sessions.set(destination.sessionRef, document);
 		}
 		return document;
+	}
+
+	/** Subscribe to durable obligation transitions. Every resolution publishes -
+	 * completed, not-sent, and failed alike - because a failed outcome lifts
+	 * the destination's suppression just as much as a successful one. Returns
+	 * an unsubscribe. */
+	onObligationTransition(listener: () => void): () => void {
+		this.obligationListeners.add(listener);
+		return () => {
+			this.obligationListeners.delete(listener);
+		};
+	}
+
+	/** One obligation durably resolved: publish the transition and schedule the
+	 * handoff pass, which every edge waiting on the obligation just unblocked.
+	 * Deferring keeps the pass off the resolving submission's own stack. */
+	private onObligationResolved(): void {
+		queueMicrotask(() => {
+			for (const listener of [...this.obligationListeners]) listener();
+			this.retryPendingHandoffs();
+		});
 	}
 
 	/** Hand a destination's complete draft, image bytes and settlement markers
@@ -85,9 +115,10 @@ export class DraftLibrary {
 		if (ledger === undefined) return false;
 		const pending = this.pendingEdge(ledger, from, to);
 		if (pending !== undefined) return this.applyEdge(ledger, pending);
-		// A source retired by an earlier hop has already given its composition
-		// away; composing it again would resurrect the stale record.
-		if (this.retiredSource(from) !== undefined) return false;
+		// A source that gave its composition away and composed nothing since
+		// would hand a new identity an empty snapshot; a reopened source with
+		// fresh work hands that work over instead.
+		if (this.sourceRetiredIdle(from)) return false;
 		const load = readHandoffGraph(ledger);
 		if (load.state === "ready") {
 			if (load.graph.edges.some((entry) => samePair(entry, from, to) && entry.state === "settled")) return true;
@@ -117,7 +148,7 @@ export class DraftLibrary {
 		for (const sessions of this.hubs.values())
 			for (const document of sessions.values()) document.flushObligationResolutions();
 		// A retired document can still hold a resolution its ledger write missed.
-		for (const documents of this.retired.values()) for (const document of documents) document.retry();
+		for (const entry of this.retired.values()) entry.document.retry();
 		const load = readHandoffGraph(ledger);
 		if (load.state !== "ready") return;
 		// A reconciled obligation unblocks the edges waiting on it, so the
@@ -264,9 +295,11 @@ export class DraftLibrary {
 		mayDecide: boolean,
 	): boolean {
 		// A failed settlement leaves the edge pending after this edge retired the
-		// source. The retired document still holds the record the edge wrote, so a
-		// retry must read it, not a fresh empty document.
-		const source = this.retiredSource(edge.from) ?? this.open(edge.from);
+		// source. This edge's own retired document still holds the record it
+		// wrote, so its retry reads that; a different edge from the same endpoint
+		// reads the endpoint's current document, never the snapshot an earlier
+		// handoff carried away.
+		const source = this.retired.get(edge.edgeId)?.document ?? this.open(edge.from);
 		let snapshot = source.getSnapshot();
 		if (!snapshot.loaded) {
 			source.retry();
@@ -380,7 +413,7 @@ export class DraftLibrary {
 		destination.adopt(snapshot.record);
 		if (destination !== source) {
 			source.retire();
-			this.rememberRetired(edge.from.hubId, source);
+			this.rememberRetired(edge, source);
 			const sessions = this.hubs.get(edge.from.hubId);
 			if (sessions?.get(edge.from.sessionRef) === source) sessions.delete(edge.from.sessionRef);
 		}
@@ -673,20 +706,25 @@ export class DraftLibrary {
 		}
 	}
 
-	private rememberRetired(hubId: string, document: DraftDocument): void {
-		let documents = this.retired.get(hubId);
-		if (!documents) {
-			documents = new Set();
-			this.retired.set(hubId, documents);
-		}
-		documents.add(document);
+	private rememberRetired(edge: DraftHandoffEdge, document: DraftDocument): void {
+		this.retired.set(edge.edgeId, { hubId: edge.from.hubId, document });
 	}
 
-	private retiredSource(destination: DraftDestination): DraftDocument | undefined {
-		const targetKey = JSON.stringify([destination.hubId, destination.sessionRef]);
-		for (const documents of this.retired.values())
-			for (const document of documents) if (document.targetKey === targetKey) return document;
-		return undefined;
+	/** True when a handoff already retired this endpoint's document and the
+	 * identity has composed nothing since: its durable record is empty, so a
+	 * new edge would move an empty snapshot. Fresh work reopens the identity -
+	 * the current document is what a new edge must carry. */
+	private sourceRetiredIdle(from: DraftDestination): boolean {
+		const targetKey = JSON.stringify([from.hubId, from.sessionRef]);
+		let retired = false;
+		for (const entry of this.retired.values()) if (entry.document.targetKey === targetKey) retired = true;
+		if (!retired) return false;
+		try {
+			return !isOccupied(this.repository().read(from));
+		} catch {
+			// An unreadable source has nothing a new edge could carry.
+			return true;
+		}
 	}
 
 	refsWithDrafts(hubId: string): Set<string> {
@@ -697,8 +735,11 @@ export class DraftLibrary {
 		try {
 			this.repository().removeHub(hubId);
 		} finally {
-			for (const document of this.retired.get(hubId) ?? []) document.forget();
-			this.retired.delete(hubId);
+			for (const [edgeId, entry] of this.retired)
+				if (entry.hubId === hubId) {
+					entry.document.forget();
+					this.retired.delete(edgeId);
+				}
 			for (const document of this.hubs.get(hubId)?.values() ?? []) document.forget();
 			this.hubs.delete(hubId);
 		}

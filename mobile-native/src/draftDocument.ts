@@ -261,6 +261,10 @@ export class DraftDocument {
 			terminal: DraftDestination,
 			completion: DraftCompletionDelivery,
 		) => CompletionDeliveryOutcome,
+		/** Called after an obligation durably resolves - completed, not-sent, or
+		 * failed - so the library can publish the transition and schedule the
+		 * handoff pass the resolution unblocks. */
+		private onObligationResolved?: () => void,
 	) {
 		this.retry();
 	}
@@ -862,6 +866,7 @@ export class DraftDocument {
 			this.submissionLedger?.().resolveSubmission(captureToken, state, completedCommandIds, releasedRecoveryIds);
 			this.unresolvedResolutions.delete(captureToken);
 			inFlightCaptures.delete(captureToken);
+			this.onObligationResolved?.();
 			return true;
 		} catch {
 			this.unresolvedResolutions.set(captureToken, {
@@ -899,6 +904,7 @@ export class DraftDocument {
 				);
 				this.unresolvedResolutions.delete(captureToken);
 				inFlightCaptures.delete(captureToken);
+				this.onObligationResolved?.();
 				if (resolution.state !== "failed")
 					this.deliverCompletion(
 						captureToken,
