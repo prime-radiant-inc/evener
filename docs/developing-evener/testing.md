@@ -1448,6 +1448,39 @@ When adding a runtime env var:
 - Keep live-test opt-in gates explicit; a provider credential alone must not make a
   default test issue network requests.
 
+## Test File Layout
+
+A test file covers one topic and stays under roughly 2,500 lines. The cap is a
+guide, not a gate: a lint on file length makes every large test addition a
+rule fight. Split a file that has outgrown it, and split before adding to one
+that is already far past it.
+
+- Name a file for the behavior it covers (`app_rpc_deletion_fence_test.go`),
+  never a sprint, round, pass or coverage label.
+- Shared helpers live in one `<area>_helpers_test.go` (Go) or
+  `<area>Fixtures.ts` / `<area>TestHarness.tsx` (TypeScript) beside the tests.
+  A helper used by one topical file stays in that file.
+- Topical files import the helpers file. Helpers never import topical files,
+  and topical files never import each other; a helper two of them need moves
+  to the helpers file.
+- A split moves tests whole. It never merges, deletes or rewrites one, so the
+  test names are the same before and after. Where a file has `describe`
+  blocks, a block moves whole. Where it has none, group by the first noun in
+  the test names, and add a `describe` in the new file only when the group
+  already shares a `beforeEach`.
+- Mocks that vitest hoists (`vi.mock`) move with the tests that need them.
+
+Prove a split lost nothing with `scripts/ops/test-inventory.sh`: list the
+test names before, list them after, and diff. The diff must be empty, and the
+PR description carries it.
+
+```sh
+scripts/ops/test-inventory.sh go cmd/evener-hub > before.txt
+# ...move tests...
+scripts/ops/test-inventory.sh go cmd/evener-hub > after.txt
+scripts/ops/test-inventory.sh diff before.txt after.txt
+```
+
 ## Targets
 
 <!-- BEGIN GENERATED: make targets. Edit make/testing.mk, then run `make generate`. -->
