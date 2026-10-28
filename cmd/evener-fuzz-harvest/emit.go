@@ -14,17 +14,25 @@ import (
 type Emitter struct {
 	dryRun       bool
 	maxSeedBytes int
+	// maxPerTarget caps the files a target directory may hold, counting those
+	// already on disk, so re-harvesting cannot regrow a pruned corpus.
+	maxPerTarget int
 	seen         map[string]bool
+	dirCount     map[string]int
 
 	written    int
 	deduped    int
 	oversized  int
+	capped     int
 	wouldWrite int
 }
 
 // NewEmitter builds an emitter with the given drop threshold (seed-data bytes).
 func NewEmitter(dryRun bool, maxSeedBytes int) *Emitter {
-	return &Emitter{dryRun: dryRun, maxSeedBytes: maxSeedBytes, seen: map[string]bool{}}
+	return &Emitter{
+		dryRun: dryRun, maxSeedBytes: maxSeedBytes, maxPerTarget: defaultMaxPerTarget,
+		seen: map[string]bool{}, dirCount: map[string]int{},
+	}
 }
 
 // emitStatus is the disposition of one Emit call, for per-surface accounting.
@@ -34,6 +42,7 @@ const (
 	statusWritten   emitStatus = iota // new file written
 	statusDeduped                     // identical seed already present (this run or on disk)
 	statusOversized                   // seed-data bytes exceeded the drop threshold
+	statusCapped                      // target directory already holds --max-per-target files
 	statusDryRun                      // would have written, but --dry-run
 )
 
@@ -70,6 +79,11 @@ func (e *Emitter) write(dir string, encoded []byte, seedLen int) (emitStatus, er
 		e.deduped++ // already committed; re-run produces no diff
 		return statusDeduped, nil
 	}
+	if e.filesIn(dir) >= e.maxPerTarget {
+		e.capped++
+		return statusCapped, nil
+	}
+	e.dirCount[dir]++
 	if e.dryRun {
 		e.wouldWrite++
 		return statusDryRun, nil
@@ -82,6 +96,16 @@ func (e *Emitter) write(dir string, encoded []byte, seedLen int) (emitStatus, er
 	}
 	e.written++
 	return statusWritten, nil
+}
+
+// filesIn counts the files in dir: those on disk when first asked, plus the
+// seeds this run has since accepted.
+func (e *Emitter) filesIn(dir string) int {
+	if _, ok := e.dirCount[dir]; !ok {
+		entries, _ := os.ReadDir(dir) //nolint:errcheck // a missing directory holds no files
+		e.dirCount[dir] = len(entries)
+	}
+	return e.dirCount[dir]
 }
 
 // encodeBytesSeed renders a one-argument []byte corpus file.

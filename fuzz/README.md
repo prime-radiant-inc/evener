@@ -238,6 +238,15 @@ evener fuzz-harvest --surface sse,toolargs --dry-run
 evener fuzz-harvest --state-dir ~/.local/state/evener --surface toolargs
 ```
 
+Each target directory holds at most `--max-per-target` files (default 100,
+counting what is already committed), so a re-run cannot regrow a pruned corpus.
+`evener fuzz-harvest --prune <testdata/fuzz/FuzzName dir>` (repeatable) drops the
+harvester-written seeds (full 64-hex names) that add no covered block, measured
+over the target's module under `-tags evenerfuzz`, after the target's `f.Add`
+seeds and every other file in the directory. Files with shorter names were
+written by Go's fuzzing toolchain (crashers and campaign corpus entries) and are
+never pruned.
+
 **Sanitization is the load-bearing part.** By default every string/number leaf
 is **shape-scrubbed** to a length-bucketed placeholder; structure, SSE framing,
 and a small allowlist of structural enum values (`type`, `role`, `status`,
