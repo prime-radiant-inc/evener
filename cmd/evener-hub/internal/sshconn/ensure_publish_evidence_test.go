@@ -83,13 +83,23 @@ func TestEnsureReapsReplacementClosedBetweenPublishAndValidation(t *testing.T) {
 		t.Parallel()
 		var armed atomic.Bool
 		events := &ensureEvidenceEvents{}
+		// The dropped predecessor's supervisor wakes on the markLost below and,
+		// once the host gate frees, clears the mapping itself — a legal
+		// interleaving in which the second Ensure never retires the predecessor
+		// and the pairing this test pins never happens. Park the supervisor in
+		// beforeSuperviseGate until the assertions are done; the deferred open
+		// releases it ahead of the manager cleanup's Close.
+		supGate := newGateHook()
+		supGate.arm()
+		defer supGate.open()
 		m, _ := newEnsureEvidenceManager(t, Options{
 			afterPublish: func(_ string, ch *Channel) {
 				if armed.Load() {
 					ch.Close()
 				}
 			},
-			OnEvent: events.record,
+			OnEvent:             events.record,
+			beforeSuperviseGate: func(string, *Channel) { supGate.hook() },
 		})
 		first, err := m.Ensure(context.Background(), "alpha")
 		if err != nil {
@@ -99,6 +109,7 @@ func TestEnsureReapsReplacementClosedBetweenPublishAndValidation(t *testing.T) {
 		// reconnect), so the next Ensure attaches a replacement while the
 		// dropped channel is the stale predecessor.
 		first.markLost()
+		supGate.wait(t, "the dropped predecessor's supervisor")
 		armed.Store(true)
 
 		_, err = m.Ensure(context.Background(), "alpha")
@@ -162,8 +173,18 @@ func TestEnsureRefusesReplacementLostAfterAnnounce(t *testing.T) {
 	t.Parallel()
 	var published *Channel
 	var once sync.Once
+	// The supervisor this refusal leaves in charge wakes on the announce-time
+	// markLost and, once the host gate frees, closes the lost channel — a legal
+	// interleaving in which published.isClosed() is true during correct
+	// operation and the assertion below fails spuriously. Park the supervisor
+	// in beforeSuperviseGate until the assertion is done; the deferred open
+	// releases it ahead of the manager cleanup's Close.
+	supGate := newGateHook()
+	supGate.arm()
+	defer supGate.open()
 	m, _ := newEnsureEvidenceManager(t, Options{
-		afterPublish: func(_ string, ch *Channel) { published = ch },
+		afterPublish:        func(_ string, ch *Channel) { published = ch },
+		beforeSuperviseGate: func(string, *Channel) { supGate.hook() },
 		OnEvent: func(ev Event) {
 			if ev.Kind == EventAttached {
 				once.Do(func() { published.markLost() })
@@ -174,6 +195,7 @@ func TestEnsureRefusesReplacementLostAfterAnnounce(t *testing.T) {
 	if err == nil || !errors.Is(err, ErrSSHStart) {
 		t.Fatalf("Ensure = %v, want the dropped-link refusal for a replacement lost after its announce", err)
 	}
+	supGate.wait(t, "the refused replacement's supervisor")
 	if published == nil || !published.isLost() || published.isClosed() {
 		t.Fatal("replacement lost after its announce must stay with its supervisor, closed but not reaped here")
 	}

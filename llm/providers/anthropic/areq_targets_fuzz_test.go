@@ -34,12 +34,13 @@ import (
 // areqPart builds one fuzzed content part. kindSel selects the content shape,
 // routing the fuzzer's bytes into the bug-prone spots the translator handles
 // (tool-call argument JSON, image sources, thinking, web-search raw payloads,
-// tool results). imgPath is a real file inside the test sandbox; imgPath+".gone"
-// is a guaranteed-missing sibling used to exercise the os.ReadFile error branch,
-// and rawPath is an extension-less sibling whose read succeeds but whose media
-// type cannot be inferred from the path.
+// tool results), with remainder 23 reserved for the default arm's unknown
+// kinds. imgPath is a real file inside the test sandbox; imgPath+".gone" is a
+// guaranteed-missing sibling used to exercise the os.ReadFile error branch, and
+// rawPath is an extension-less sibling whose read succeeds but whose media type
+// cannot be inferred from the path.
 func areqPart(kindSel byte, s1, s2 string, blob []byte, imgPath, rawPath string) (llm.ContentPart, bool) {
-	switch kindSel % 23 {
+	switch kindSel % 24 {
 	case 0:
 		return llm.ContentPart{Kind: llm.ContentText, Text: s1}, true
 	case 1:
@@ -94,6 +95,9 @@ func areqPart(kindSel byte, s1, s2 string, blob []byte, imgPath, rawPath string)
 		return llm.ContentPart{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: s1, Content: s2, ImageData: blob, ImageMediaType: "image/bmp"}}, true
 	default:
 		// An empty / unknown-kind part exercises the per-role default (ignore).
+		// The % 24 above reserves exactly this arm: every remainder 0-22 has an
+		// explicit case, so only kindSel%24 == 23 reaches here, keeping the
+		// fuzzer's ability to generate unknown content kinds alive.
 		return llm.ContentPart{Kind: llm.ContentKind(s2)}, true
 	}
 }
@@ -130,11 +134,47 @@ func areqMessages(script []byte, s1, s2 string, blob []byte, imgPath, rawPath st
 	return msgs
 }
 
+// areqKnownKind reports whether k is one of llm's declared content kinds. The
+// part builder's default arm stamps an arbitrary string into Kind, so a part
+// whose kind matches no declared constant is exactly the unknown-kind shape
+// whose handling the oracle below pins.
+func areqKnownKind(k llm.ContentKind) bool {
+	switch k {
+	case llm.ContentText, llm.ContentImage, llm.ContentAudio, llm.ContentDocument,
+		llm.ContentToolCall, llm.ContentToolResult, llm.ContentThinking,
+		llm.ContentRedThinking, llm.ContentWebSearch:
+		return true
+	default:
+		return false
+	}
+}
+
+// areqStripUnknownKinds removes every part whose kind is not a declared llm
+// content kind. The translator's per-role default arms ignore those parts, so a
+// correct translation is unchanged by the strip.
+func areqStripUnknownKinds(msgs []llm.Message) []llm.Message {
+	stripped := make([]llm.Message, len(msgs))
+	for i, m := range msgs {
+		parts := make([]llm.ContentPart, 0, len(m.Content))
+		for _, p := range m.Content {
+			if areqKnownKind(p.Kind) {
+				parts = append(parts, p)
+			}
+		}
+		m.Content = parts
+		stripped[i] = m
+	}
+	return stripped
+}
+
 // FuzzAreqToAnthropicMessages drives the unified-Message -> Anthropic-wire
 // translation. Oracles:
 //   - never panics (floor);
 //   - determinism: translating the same messages twice yields an identical
 //     (error, system, messages) triple;
+//   - unknown-kind invisibility: parts whose kind matches none of llm's
+//     declared content kinds are ignored, so stripping exactly those parts
+//     reproduces the translation;
 //   - request-shape contract on success: every emitted message has role
 //     user|assistant, carries a non-empty []map[string]any content, no two
 //     adjacent messages share a role (Anthropic's alternation requirement), and
@@ -179,6 +219,12 @@ func FuzzAreqToAnthropicMessages(f *testing.F) {
 	f.Add([]byte{0xaa}, "id", "s", []byte(`{}`))
 	f.Add([]byte{0x82}, "id", "s", []byte(``))
 	f.Add([]byte{0x12}, "", "s", []byte(`{}`))
+	// Unknown content kinds: the part selector's default arm is reserved for
+	// these (kindSel%24 == 23), so 0xba — a user-role byte — and 0xbb — an
+	// assistant-role byte — reach the translator's per-role default arms with
+	// a kind matching none of llm's declared constants.
+	f.Add([]byte{0xba}, "id", "hologram", []byte(`{}`))
+	f.Add([]byte{0xbb}, "id", "hologram", []byte(`{}`))
 
 	// One real file inside the test sandbox lets the local-path image branch read
 	// bytes without touching anything outside the sandbox; its ".gone" sibling is
@@ -211,6 +257,13 @@ func FuzzAreqToAnthropicMessages(f *testing.F) {
 			if !reflect.DeepEqual(out1, out2) {
 				t.Fatalf("nondeterministic messages:\n a=%#v\n b=%#v", out1, out2)
 			}
+		}
+		// Unknown-kind invisibility: the per-role default arms ignore parts
+		// whose kind matches none of llm's declared constants, so stripping
+		// exactly those parts cannot change the translation.
+		stripSys, stripOut, stripErr := toAnthropicMessages(areqStripUnknownKinds(msgs))
+		if (stripErr == nil) != (err1 == nil) || stripSys != sys1 || !reflect.DeepEqual(stripOut, out1) {
+			t.Fatalf("unknown-kind parts changed the translation:\n with=%#v (err=%v)\n without=%#v (err=%v)\n msgs=%#v", out1, err1, stripOut, stripErr, msgs)
 		}
 		if err1 != nil {
 			return // a structured translation error (unsupported audio, or an assistant-role document) is acceptable.
