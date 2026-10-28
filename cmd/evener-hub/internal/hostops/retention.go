@@ -397,14 +397,10 @@ func cloneTombstone(tombstone Tombstone) Tombstone {
 	return out
 }
 
-// MirrorHostState persists one mirror write's boundaries and removal markers
-// in one atomic store write, the same discipline MirrorBoundaries uses. It is
-// the hub's path for forwarding the registry's live names and removal
-// tombstones into the store §4's removed-host ordering reads.
-func (s *Store) MirrorHostState(mirror HostMirror) error {
-	if s == nil {
-		return errors.New("hostops: store is not configured")
-	}
+// validateMirror checks one mirror write's inputs against the boundary and
+// removal-marker schemas, so no value outside the writers' schema enters the
+// file.
+func validateMirror(mirror HostMirror) error {
 	for name, boundary := range mirror.Boundaries {
 		if err := validateBoundary(name, boundary); err != nil {
 			return err
@@ -420,6 +416,7 @@ func (s *Store) MirrorHostState(mirror HostMirror) error {
 			return err
 		}
 	}
+	live := mirrorLiveSet(mirror.Live)
 	for name, removed := range mirror.Removed {
 		if err := validateBoundaryName(name); err != nil {
 			return err
@@ -427,17 +424,43 @@ func (s *Store) MirrorHostState(mirror HostMirror) error {
 		if err := validateRemovedHost(name, removed); err != nil {
 			return err
 		}
-		if _, live := mirrorLiveSet(mirror.Live)[name]; live {
+		if _, isLive := live[name]; isLive {
 			return fmt.Errorf("%w: host %q is both live and removed in one mirror write", ErrInvalidBoundary, name)
 		}
+	}
+	return nil
+}
+
+// MirrorHostState persists one mirror write's boundaries and removal markers
+// in one atomic store write, the same discipline MirrorBoundaries uses. It is
+// the hub's path for forwarding the registry's live names and removal
+// tombstones into the store §4's removed-host ordering reads.
+func (s *Store) MirrorHostState(mirror HostMirror) error {
+	if s == nil {
+		return errors.New("hostops: store is not configured")
+	}
+	if err := validateMirror(mirror); err != nil {
+		return err
 	}
 
 	s.cell.mu.Lock()
 	defer s.cell.mu.Unlock()
 
+	next := cloneSnapshot(s.cell.state)
+	if !s.applyMirrorLocked(&next, mirror) {
+		return nil
+	}
+	if _, err := s.commitLocked(next); err != nil {
+		return err
+	}
+	return nil
+}
+
+// applyMirrorLocked applies one validated mirror write to next and reports
+// whether it changed anything. Callers hold the store mutex and commit next.
+func (s *Store) applyMirrorLocked(next *snapshot, mirror HostMirror) bool {
 	now := s.now()
 	policy := s.retentionPolicy()
-	next := cloneSnapshot(s.cell.state)
 	changed := false
 	if len(mirror.Boundaries) > 0 && next.Boundaries == nil {
 		next.Boundaries = make(map[string]Boundary, len(mirror.Boundaries))
@@ -446,7 +469,7 @@ func (s *Store) MirrorHostState(mirror HostMirror) error {
 		if existing, ok := next.Boundaries[name]; ok && existing == boundary {
 			continue
 		}
-		if s.skipBoundaryProposal(&next, name, mirror, now, policy) {
+		if s.skipBoundaryProposal(next, name, mirror, now, policy) {
 			// The name is a removed host whose history is gone: re-proposing
 			// the boundary would commit a write that §4's own rule discards
 			// with the host's last record, once per hub.toml mutation.
@@ -481,13 +504,7 @@ func (s *Store) MirrorHostState(mirror HostMirror) error {
 			changed = true
 		}
 	}
-	if !changed {
-		return nil
-	}
-	if _, err := s.commitLocked(next); err != nil {
-		return err
-	}
-	return nil
+	return changed
 }
 
 // mirrorLiveSet is a small lookup helper for the one-mirror-write validation.

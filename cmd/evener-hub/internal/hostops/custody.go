@@ -10,6 +10,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"slices"
 	"sort"
 	"time"
 
@@ -66,6 +67,11 @@ type custodyFile struct {
 	Fences []custodyFence `json:"fences"`
 	// Ownership carries one entry per name the corrupt file yielded.
 	Ownership []custodyOwnership `json:"ownership"`
+	// HostRecords carries the corrupt file's machine-record family verbatim
+	// (hostrecords.go), so the replacement store opens with the records the hub
+	// keeps for its hosts instead of losing them with the operation history. It
+	// is absent when the corrupt file had imported none.
+	HostRecords json.RawMessage `json:"hostRecords,omitempty"`
 }
 
 // custodyRecordID is one imported record's identity for the replacement import.
@@ -241,6 +247,11 @@ func assembleCustody(custody custodyFile) (custodyFile, error) {
 				ErrQuarantineIncomplete, fence.RecordID, fence.Host)
 		}
 	}
+	if len(custody.HostRecords) > 0 {
+		if _, err := decodeHostRecordsRegion(custody.HostRecords); err != nil {
+			return custodyFile{}, fmt.Errorf("%w: %w", ErrQuarantineIncomplete, err)
+		}
+	}
 	// Every entry must be resolvable: the import set is built and validated here
 	// so a custody file the operator reads is one the replacement store can hold.
 	records, err := custodyImports(custody)
@@ -329,6 +340,10 @@ type custodyDocument struct {
 	// raw region — a prior file loads, and the replacement store never carries a
 	// marker again.
 	FencingQuarantines json.RawMessage `json:"fencingQuarantines"`
+	// HostRecords is the machine-record family. Unlike the families above it is
+	// not discarded: the replacement store keeps it, so it is decoded strictly
+	// and a region this store cannot read means the snapshot is incomplete.
+	HostRecords json.RawMessage `json:"hostRecords"`
 }
 
 // readStoreForCustody decodes a corrupt store file for the custody snapshot. It
@@ -429,6 +444,13 @@ func readStoreForCustody(fs afero.Fs, path string) (snapshot, error) {
 			return snapshot{}, fmt.Errorf("%s: removal marker %q: %w", path, name, err)
 		}
 		state.RemovedHosts[name] = removed
+	}
+	if len(file.HostRecords) > 0 && !jsonFieldIsNull(file.HostRecords) {
+		family, err := decodeHostRecordsRegion(file.HostRecords)
+		if err != nil {
+			return snapshot{}, fmt.Errorf("%s: %w", path, err)
+		}
+		state.HostRecords = family
 	}
 	return state, nil
 }
@@ -665,6 +687,14 @@ func custodyFromStore(state snapshot, path string, epoch uint64, now time.Time, 
 	}
 	sort.Slice(recordIDs, func(i, j int) bool { return recordIDs[i].RecordID < recordIDs[j].RecordID })
 
+	var familyRegion json.RawMessage
+	if state.HostRecords != nil {
+		encoded, err := json.Marshal(state.HostRecords)
+		if err != nil {
+			return custodyFile{}, fmt.Errorf("%w: marshal the host-record family: %w", ErrQuarantineIncomplete, err)
+		}
+		familyRegion = encoded
+	}
 	return assembleCustody(custodyFile{
 		QuarantineEpoch:        epoch,
 		QuarantinedFile:        path,
@@ -673,6 +703,7 @@ func custodyFromStore(state snapshot, path string, epoch uint64, now time.Time, 
 		AllocatorHighWaterMark: state.AllocatorHighWaterMark,
 		Fences:                 fences,
 		Ownership:              ownership,
+		HostRecords:            familyRegion,
 	})
 }
 
@@ -818,15 +849,17 @@ func readCustodyFile(fs afero.Fs, path, storePath string) (custodyFile, error) {
 	if err := json.Unmarshal(raw, &top); err != nil {
 		return custodyFile{}, fmt.Errorf("%w: decode %s: %w", ErrQuarantineIncomplete, path, err)
 	}
-	sameKeySet := map[string]bool{
-		"quarantineEpoch": true, "quarantinedFile": true, "custodiedAt": true, "recordIds": true,
-		"allocatorHighWaterMark": true, "fences": true, "ownership": true,
+	requiredKeys := []string{
+		"quarantineEpoch", "quarantinedFile", "custodiedAt", "recordIds",
+		"allocatorHighWaterMark", "fences", "ownership",
 	}
-	if len(top) != len(sameKeySet) {
-		return custodyFile{}, fmt.Errorf("%w: %s is not the custody schema", ErrQuarantineIncomplete, path)
+	for _, name := range requiredKeys {
+		if _, ok := top[name]; !ok {
+			return custodyFile{}, fmt.Errorf("%w: %s is not the custody schema", ErrQuarantineIncomplete, path)
+		}
 	}
 	for name := range top {
-		if !sameKeySet[name] {
+		if name != "hostRecords" && !slices.Contains(requiredKeys, name) {
 			return custodyFile{}, fmt.Errorf("%w: %s carries unknown key %q", ErrQuarantineIncomplete, path, name)
 		}
 	}
@@ -880,6 +913,13 @@ func replacementState(custody custodyFile, floor uint64) (snapshot, error) {
 		Tokens:                 []Token{},
 		ProbeEpochs:            []ProbeEpoch{},
 		ProbeEpochSeq:          map[string]uint64{},
+	}
+	if len(custody.HostRecords) > 0 {
+		family, err := decodeHostRecordsRegion(custody.HostRecords)
+		if err != nil {
+			return snapshot{}, fmt.Errorf("%w: %w", ErrQuarantineIncomplete, err)
+		}
+		state.HostRecords = family
 	}
 	if err := validateSnapshot(state); err != nil {
 		return snapshot{}, fmt.Errorf("%w: the replacement store does not validate: %w", ErrQuarantineIncomplete, err)
