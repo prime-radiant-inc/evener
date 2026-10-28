@@ -32,6 +32,7 @@ import { connectionStore } from "../stores/connection";
 import { MutationOutboxIndexedDB } from "../stores/mutationOutboxIndexedDB";
 import { resetNavigationStoreForTests } from "../stores/navigation/store";
 import { prefsStore, resetPrefsStoreForTests } from "../stores/prefs";
+import { holdNextWriteTransaction } from "../stores/testing/stalledIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../stores/threads";
 import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../stores/transcriptDisplay";
 import { getToasts, resetToastStoreForTests } from "../widgets/toast/store";
@@ -361,6 +362,49 @@ test.each(["queue", "steer"] as const)("/%s submits only its parsed body with du
   ]);
   await waitFor(() => expect(editor().textContent).toBe(""));
   expect(readComposerDraft(ref).text).toBe("");
+});
+
+test.each([
+  ["standard", "queue"],
+  ["standard", "steer"],
+  ["comic", "queue"],
+  ["comic", "steer"],
+] as const)("%s /%s keeps an invocation retyped while durable enqueue completes", async (presentation, verb) => {
+  const fake = await setup("active");
+  const source = sourceFor();
+  render(
+    <ClientProvider client={fake}>
+      {presentation === "comic" ? (
+        <ComicComposer source={source} />
+      ) : (
+        <Composer ref={ref} focused={false} source={source} />
+      )}
+    </ClientProvider>,
+  );
+  await settle(source);
+  act(() => connectionStore.setState({ state: "idle" }));
+  const invocation = `/${verb} MESSAGE_BODY`;
+  replaceEditorText(editor(), invocation);
+  const hold = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
+  try {
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("composer-submit"));
+      await hold.reached;
+    });
+    expect((screen.getByTestId("composer-submit") as HTMLButtonElement).disabled).toBe(true);
+    replaceEditorText(editor(), "NEWER_DRAFT");
+    replaceEditorText(editor(), invocation);
+  } finally {
+    await act(async () => hold.release());
+  }
+  await settle(source);
+  await waitFor(() => expect(source.getSnapshot().recoveryOperationBusy).toBe(false));
+  expect(await storage.listOutbox(ref)).toMatchObject([
+    { method: `turn/${verb}`, payload: { input: [{ type: "text", text: "MESSAGE_BODY" }] } },
+  ]);
+  expect(editor().textContent).toBe(invocation);
+  expect(source.getSnapshot().text).toBe(invocation);
+  expect(readComposerDraft(ref).text).toBe(invocation);
 });
 
 test("a live unavailable steer preserves the literal invocation without sending", async () => {

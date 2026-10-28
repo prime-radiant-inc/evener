@@ -546,22 +546,17 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
         submittedSkillNames,
         submittedCommandNames,
       );
-      // A typed message-producing built-in submits its body while the editor
-      // still holds the invocation. Settlement preserves that literal command,
-      // which changes the edit revision, so the revision-guarded clear above
-      // can decline. Clear the persisted invocation by content instead when the
-      // editor still holds exactly what was submitted.
+      // Recovery settlement can persist the literal built-in invocation with
+      // a new stored revision. It does not advance the source's edit revision,
+      // so only a successful guarded clear may retire that owned stored draft.
+      // Equal content alone cannot distinguish an edit away and back.
       if (
+        cleared &&
         options.clearDraftText !== undefined &&
         options.text !== undefined &&
         options.text !== options.clearDraftText &&
         submittedEditorMatches
       ) {
-        if (!cleared) {
-          updateText("");
-          updateSkillNames([]);
-          updateSelectionMeta({ text: "", skillNames: [] });
-        }
         if (ownedDraftRevisionRef.current === readDraftRevision(ref)) {
           clearDraft(ref);
           ownedDraftRevisionRef.current = readDraftRevision(ref);
