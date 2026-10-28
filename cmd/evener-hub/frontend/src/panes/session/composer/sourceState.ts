@@ -563,6 +563,14 @@ export function createComposerSourceState(
           }
           return false;
         }
+        // A peer retarget can move the row while this write was in flight;
+        // the commit names the row's durable target. Carry the seat's
+        // selection and its ref mapping there even when the pane closed
+        // before the commit settled: the durable row outlives the source,
+        // and a reopen of that ref must find the seat and its selected row
+        // rather than a fresh seat and an older peer row. Local lease state
+        // updates stay inside the lifetime guard below.
+        reconcileRecoverySeat(updated.targetRef);
         // A goal replacement (or another owner) retires this lease while the
         // write is in flight; do not resurrect it in the local mirror.
         if (
@@ -575,9 +583,6 @@ export function createComposerSourceState(
             compositionRevision: recoveryCompositionRevision(updated),
           };
           recoveryBaseRecord = updated;
-          // The write returned the row's current durable target; a peer may
-          // have retargeted it without changing the composition revision.
-          reconcileRecoverySeat(updated.targetRef);
           committedRecoveryComposition = recoveryCompositionFingerprint({
             text: nextText,
             attachments: nextAttachments,

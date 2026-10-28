@@ -783,3 +783,67 @@ test("a preservation that commits after disposal still records its selection", a
     storage.close();
   }
 });
+
+// A peer retarget moves the selected row while its autosave is in flight,
+// then the pane closes before the committed write returns. The write's
+// durable target still names the resumed ref: the seat's selection and the
+// ref-to-seat mapping must be recorded there even though the source is gone,
+// or a reopen of that ref allocates a fresh seat and restores an older peer
+// row instead of this seat's row.
+test("a retargeted write that settles after disposal still carries the selection", async () => {
+  class HeldWriteStorage extends MutationOutboxIndexedDB {
+    holdNextWrite = false;
+    readonly reached = deferred<void>();
+    readonly release = deferred<void>();
+
+    override async updateRecoveryInput(
+      ...args: Parameters<MutationOutboxIndexedDB["updateRecoveryInput"]>
+    ): ReturnType<MutationOutboxIndexedDB["updateRecoveryInput"]> {
+      const result = await super.updateRecoveryInput(...args);
+      if (this.holdNextWrite) {
+        this.holdNextWrite = false;
+        this.reached.resolve();
+        await this.release.promise;
+      }
+      return result;
+    }
+  }
+  const storage = new HeldWriteStorage();
+  setMutationStorageForTests(storage);
+  const ref = "local:disposed-retarget-write-old";
+  const resumed = "local:disposed-retarget-write-new";
+  const original = await storage.enqueueIntent({
+    targetRef: ref,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "selected composition" }] },
+    attachments: [],
+    composerText: "selected composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "selected composition" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+  const source = createTestComposerSource(ref, undefined, "pane-a");
+  const peer = new MutationOutboxIndexedDB();
+  try {
+    await source.activateRecovery(recovery);
+    expect(readRecoverySelection(ref, source.recoverySelectionOwnerId)).toBe(original.clientMutationId);
+    await peer.retargetOutbox(ref, resumed, { threadId: "thread-new", instanceId: "instance-new" });
+
+    storage.holdNextWrite = true;
+    source.editText("newer selected work");
+    const saving = source.queueRecoveryPersistence(original.clientMutationId, "newer selected work", [], []);
+    await storage.reached.promise;
+    // The pane closes while the committed write has not settled back yet.
+    source.dispose();
+    storage.release.resolve();
+    expect(await saving).toBe(true);
+
+    expect(readRecoverySelection(resumed, source.recoverySelectionOwnerId)).toBe(original.clientMutationId);
+    expect(readRefComposerSeat(resumed)).toBe("pane-a");
+  } finally {
+    source.dispose();
+    peer.close();
+    storage.close();
+  }
+});

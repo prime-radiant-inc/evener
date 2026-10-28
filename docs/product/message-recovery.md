@@ -91,7 +91,15 @@ mapping records the conversation it belongs to; a shared layout that reuses
 that id for another conversation falls back to this tab's mapping for the
 restored ref instead of assigning the other conversation's seat. Validated
 pane-specific seats are reserved across the whole restored layout before any
-pane falls back to the ref mapping or a fresh seat.
+pane falls back to the ref mapping or a fresh seat. Whenever a collision
+forces a pane onto a replacement seat, the stored selection migrates to it,
+preserving any choice already established there.
+
+Every pane transition that un-assigns a conversation - closing a pane,
+retyping it away, returning a cascade to its source - derives the departed
+conversations from its before and after paths and reconciles each against
+the surviving panes, so a surviving retainer's own selected row wins the
+ref mapping.
 
 Restoring a composer prefers the recovery row its seat last selected, falling
 back to the oldest restorable rejected row. This keeps a pane's preserved local
@@ -101,7 +109,8 @@ A refused write's preservation records the fresh row as the seat's selection,
 and retiring a lease clears that stored choice only when it still names the
 retiring row. A resume or retarget carries the seat's selection to the resumed
 ref, and a successful recovery write reconciles the seat with the row's
-durable ref. A retained cascade column that owns a recovery selection maps its
+durable ref - even when the pane closed before that write settled, because
+the durable row outlives the source. A retained cascade column that owns a recovery selection maps its
 ref to the pane's seat, so reopening a conversation the pane never showed as
 its own still restores the column's selected row.
 

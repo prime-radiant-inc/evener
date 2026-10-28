@@ -443,6 +443,43 @@ test("a cascade restore keeps this tab's seat when the layout drilled deeper", (
     setMutationClientIdentityForTests(undefined);
   }
 });
+// This tab held two conversations on one cascade seat; another tab saved the
+// shared layout with them as two separate panes. Restoring claims the shared
+// seat for the first pane, so the second must have that seat's saved
+// selection migrated to its own distinct seat - or a reload of the second
+// conversation restores an older rejected row instead of its preserved work.
+test("a restore resolving a seat collision transfers the saved selection", () => {
+  installLocalStorage(new MemoryStorage());
+  try {
+    setMutationClientIdentityForTests("tab-a");
+    writeRefComposerSeat("ref_parent", "seat-s");
+    writeRefComposerSeat("ref_child", "seat-s");
+    writeRecoverySelection("ref_child", composerSelectionScope("seat-s"), "child-row");
+    writeComposerSeat("p1", "ref_parent", "seat-s");
+
+    restorePanels({
+      p1: {
+        id: "p1",
+        contentComponent: "default",
+        params: { paneType: "session", paneParams: { ref: "ref_parent" } },
+      },
+      p2: {
+        id: "p2",
+        contentComponent: "default",
+        params: { paneType: "session", paneParams: { ref: "ref_child" } },
+      },
+    });
+
+    const parent = workspaceStore.getState().panes.find((record) => record.id === "p1");
+    expect(parent?.composerSeatId).toBe("seat-s");
+    const child = workspaceStore.getState().panes.find((record) => record.id === "p2");
+    if (!child?.composerSeatId) throw new Error("child lacks its seat");
+    expect(child.composerSeatId).not.toBe("seat-s");
+    expect(readRecoverySelection("ref_child", composerSelectionScope(child.composerSeatId))).toBe("child-row");
+  } finally {
+    setMutationClientIdentityForTests(undefined);
+  }
+});
 
 test("restoring two panes for one conversation allocates distinct seats", () => {
   installLocalStorage(new MemoryStorage());

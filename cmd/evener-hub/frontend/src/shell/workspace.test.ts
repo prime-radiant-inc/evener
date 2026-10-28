@@ -1893,6 +1893,87 @@ test("closing one of two cascades points a shared ancestor at the survivor", () 
     "shared-ancestor-second-row",
   );
 });
+// Returning a deep cascade to its source removes the whole departed path,
+// not only the previous leaf. When another cascade retains a removed column
+// with its own selected row, the departed column's mapping must point at the
+// survivor, or a later route reconstruction restores the departed cascade's
+// choice instead.
+test("returning a deep cascade to its source points removed columns at the survivor", () => {
+  installLocalStorage(new MemoryStorage());
+  const sourceRef = "local:return-source";
+  const midRef = "local:return-mid";
+  const survivorLeafRef = "local:return-survivor-leaf";
+  const departedLeafRef = "local:return-departed-leaf";
+  const departedId = workspaceStore.getState().openPane("sessionZoom", {
+    ref: departedLeafRef,
+    source: { type: "session", params: { ref: sourceRef } },
+    edges: [
+      { ownerRef: sourceRef, childRef: midRef, delegateId: "delegate-return-mid" },
+      { ownerRef: midRef, childRef: departedLeafRef, delegateId: "delegate-return-leaf" },
+    ],
+  });
+  const departed = workspaceStore.getState().panes.find((pane) => pane.id === departedId);
+  if (!departed?.composerSeatId) throw new Error("departed cascade lacks its seat");
+  const departedColumn = retainedConversationComposer(conversationPaneLifetime(departed), midRef);
+  if (!departedColumn) throw new Error("departed column lacks a composer");
+  departedColumn.setActiveRecoveryId({
+    version: 1,
+    clientMutationId: "return-mid-departed-row",
+    targetRef: midRef,
+    intentSequence: 1,
+    createdAt: 0,
+    method: "turn/start",
+    payload: { ref: midRef, input: [] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [] },
+    composerText: "",
+    state: "submitting",
+    recoveryKind: "rejected",
+  });
+  expect(readRefComposerSeat(midRef)).toBe(departed.composerSeatId);
+
+  const survivorId = workspaceStore.getState().openPane(
+    "sessionZoom",
+    {
+      ref: survivorLeafRef,
+      source: { type: "session", params: { ref: sourceRef } },
+      edges: [
+        { ownerRef: sourceRef, childRef: midRef, delegateId: "delegate-return-mid-2" },
+        { ownerRef: midRef, childRef: survivorLeafRef, delegateId: "delegate-return-survivor" },
+      ],
+    },
+    { slot: "secondary" },
+  );
+  const survivor = workspaceStore.getState().panes.find((pane) => pane.id === survivorId);
+  if (!survivor?.composerSeatId) throw new Error("survivor cascade lacks its seat");
+  const survivorColumn = retainedConversationComposer(conversationPaneLifetime(survivor), midRef);
+  if (!survivorColumn) throw new Error("survivor column lacks a composer");
+  survivorColumn.setActiveRecoveryId({
+    version: 1,
+    clientMutationId: "return-mid-survivor-row",
+    targetRef: midRef,
+    intentSequence: 1,
+    createdAt: 0,
+    method: "turn/start",
+    payload: { ref: midRef, input: [] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [] },
+    composerText: "",
+    state: "submitting",
+    recoveryKind: "rejected",
+  });
+  // The live departed cascade keeps the mapping while both cascades live.
+  expect(readRefComposerSeat(midRef)).toBe(departed.composerSeatId);
+  expect(readRecoverySelection(midRef, composerSelectionScope(survivor.composerSeatId))).toBe(
+    "return-mid-survivor-row",
+  );
+
+  // Return the departed cascade to its source: mid and its old leaf leave
+  // its path, and the survivor retains mid.
+  expect(workspaceStore.getState().retypePane(departed, "session", { ref: sourceRef })).toBe(true);
+  expect(readRefComposerSeat(midRef)).toBe(survivor.composerSeatId);
+  expect(readRefComposerSeat(departedLeafRef)).toBe(departed.composerSeatId);
+});
 
 // A pane retyped to a read-only transcript keeps its lifetime's seat in
 // reserve. Another pane opening the same conversation must receive a distinct

@@ -91,8 +91,15 @@ except where a line says so itself.
   retiring a lease clears the stored choice only when it still names the
   retiring row. A resume or retarget carries the seat's selection to the
   resumed ref, a successful recovery write reconciles the seat with the row's
-  durable ref, and a retained cascade column that owns a recovery selection
-  maps its ref to the pane's seat.
+  durable ref - including when the pane closed before the write settled - and
+  a retained cascade column that owns a recovery selection maps its ref to the
+  pane's seat.
+- A pane transition that un-assigns conversations - closing a pane, retyping
+  it away, returning a cascade to its source - reconciles every departed
+  conversation against the surviving panes, so a surviving retainer's own
+  selected row wins the ref mapping. Whenever a collision forces seat
+  allocation to hand out a replacement seat, the stored selection migrates to
+  it, preserving any choice already established there.
 
 ### Atomic skill and command selections
 
