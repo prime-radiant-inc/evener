@@ -2,31 +2,42 @@
 
 ## Temporary CI runtime trace, not acceptance
 
-`runtime-trace.patch` temporarily adds private data-only observations to Comic's
-reader, child publication and `useTranscript` owner binding. CI applies it with
-`git apply --check` then `git apply`, builds fresh with `make build-web`, and runs
-the unchanged `make test-web-browser` gate with `EVENER_COMIC_GUARD_TRACE=1`.
-Other jobs, assertions, deadlines and browser concurrency are unchanged.
-`COMICGUARD_EVIDENCE_DIR=/tmp/comicguard-runtime-trace` keeps evidence outside
-the Go fixture's successful-cleanup directory; CI uploads it on either verdict.
+`runtime-trace.patch` adds private observations only to the CI browser build.
+The web-browser job checks/applies it, builds fresh, then runs the unchanged guard
+with `EVENER_COMIC_GUARD_TRACE=1`. Other CI jobs use unpatched sources.
+`COMICGUARD_EVIDENCE_DIR=/tmp/comicguard-runtime-trace` survives fixture cleanup
+and is uploaded on success or failure. This instrumented build is not acceptance.
 
-The runner installs the collector only for the first later-child reload document,
-dumps `runtime-trace.json` in the existing verdict `finally`, and removes the
-new-document script. Dump failures are separate and never replace a browser
-failure. The ring retains at most 2048 events with sequence, dropped count,
-monotonic time and document time origin. Only the fixture root/child refs and
-allowlisted primitive fields survive. No transcript, draft, error text, raw
-models, live owners, extra DOM/Range scans or per-event CDP traffic are exported.
-Opaque owner/promise IDs, binding snapshots and before/after request state can
-distinguish a repeated in-flight request from a new loading transition; network
-evidence still decides whether an actual page request occurred. Observation adds
-synchronous work and can perturb scheduling. A passing diagnostic is not a fix.
+The collector starts in the first later-child reload document. It dumps
+`runtime-trace-initial.json` at the existing initial placement verdict, then
+**keeps recording through the existing cached post-hydration recovery verdict**
+into `runtime-trace-final.json`. An initial-placement failure also gets a final
+dump, labeled with that earlier stage. No extra recovery wait or input is added.
+Dump errors are separate `*-error.json` files and never replace assertion errors.
+The new-document collector script is removed after the final dump, before the
+existing partial/cold cache reload journeys.
 
-Local checks: `node --test scripts/comicguard/runtime-trace.test.mjs` from the
-frontend directory, then apply the patch, build fresh, and run the ordinary Go
-command below once with the trace flag and a fresh evidence directory. Before
-final acceptance, reverse/check the patch, remove all temporary trace tooling,
-runner and workflow wiring, and build fresh again. Never reuse instrumented dist.
+Each dump holds at most 2048 events with sequence/drop counts, monotonic event and
+capture times, document time origin, stage/verdict and wire index bounds. Only
+fixture-qualified root/child events and allowlisted primitive fields survive.
+There are no message bodies, raw models or exported live owners. Signals include
+all paging exits, restoring/moving/opening, captured/live cursor and loading state,
+lastPage, snapshot/row target membership, owner/binding IDs and before/after request
+state. Actual activation/release/cancel calls and existing restoration DOM/source
+lookups are recorded without extra DOM/Range scans. DOM presence is known only
+when that lookup executes, not continuously. Owner admission labels infer the
+immediate loading transition, not private SDK state; connection-qualified wire
+requests/replies decide whether pages were sent and completed. Sequence gaps from
+ring overflow are explicit. Observation can perturb scheduling; a pass is not a fix.
+
+From the frontend directory, run
+`node --test scripts/comicguard/runtime-trace-check.mjs scripts/comicguard.test.mjs`.
+The diagnostic check filename intentionally does not match Vitest's discovery;
+verify with `node_modules/.bin/vitest list --filesOnly`. Apply the patch and build
+fresh before the single local smoke below, adding the trace flag and a new evidence
+directory. Before final acceptance, reverse/check the source patch, remove all six
+temporary tooling/workflow/runner changes, and build fresh. Never reuse instrumented
+dist. Do not commit applied source instrumentation.
 
 From the repository root:
 

@@ -7,7 +7,7 @@ function bootstrap(fixture) {
   const kinds = new Set(['paging', 'restore', 'transition', 'compose', 'child', 'binding', 'owner', 'opening']);
   const strings = new Set(['reason', 'outcome', 'readerId', 'binding', 'committedBinding', 'targetRef', 'entryId', 'path', 'pageKey', 'livePageKey', 'lastPage', 'mode', 'availability']);
   const numbers = new Set(['ownerId', 'committedOwnerId', 'promiseId', 'rows', 'entries', 'offset', 'viewportOffset', 'scrollTop', 'commanded', 'revision', 'snapshotId', 'rowsId']);
-  const booleans = new Set(['restoring', 'moving', 'opening', 'rootOpening', 'targetOpening', 'alive', 'readable', 'loading', 'pending', 'capturedLoading', 'capturedPending', 'error', 'permanent', 'hasOlder', 'sameOwner', 'sameBinding', 'snapshotHasTarget', 'rowHasTarget', 'currentRows', 'currentReader', 'layoutCurrent', 'sourcePresent', 'activityReady', 'activityLoading', 'activityError', 'activityUnavailable', 'activityHasMore', 'expanded', 'hasChild']);
+  const booleans = new Set(['restoring', 'moving', 'opening', 'rootOpening', 'targetOpening', 'alive', 'readable', 'loading', 'pending', 'capturedLoading', 'capturedPending', 'error', 'permanent', 'hasOlder', 'sameOwner', 'sameBinding', 'snapshotHasTarget', 'rowHasTarget', 'currentRows', 'currentReader', 'layoutCurrent', 'sourcePresent', 'pointPresent', 'activityReady', 'activityLoading', 'activityError', 'activityUnavailable', 'activityHasMore', 'expanded', 'hasChild']);
   const allowedRef = (ref) => ref === fixture.rootRef || ref === fixture.childRef;
   window.addEventListener('comicguard:trace-config', (event) => {
     event.detail.config = { ...fixture };
@@ -26,11 +26,28 @@ function bootstrap(fixture) {
   // JSON, not live objects or application/store access. No polling or CDP per event.
   window.__comicRuntimeTrace = () => JSON.stringify({
     version: 1, capacity, sequence, dropped: Math.max(0, sequence - capacity),
-    timeOrigin: performance.timeOrigin, fixture: { ...fixture },
+    timeOrigin: performance.timeOrigin, capturedAt: performance.now(), fixture: { ...fixture },
     events: Array.from({ length: Math.min(sequence, capacity) }, (_, i) => ring[(Math.max(0, sequence - capacity) + i) % capacity]),
   });
 }
 
 export function runtimeTraceSource(fixture) {
   return `(${bootstrap.toString()})(${JSON.stringify(fixture)})`;
+}
+
+// Used around the actual guard verdicts, not a separate diagnostic journey.
+// With capture disabled, preserve even the original action's promise identity.
+export function captureRuntimeTraceVerdict(action, dump) {
+  if (!dump) return action();
+  return (async () => {
+    let verdict = 'failed';
+    try {
+      const result = await action();
+      verdict = 'passed';
+      return result;
+    } finally {
+      // A diagnostic write must not turn an assertion failure into a dump error.
+      try { await dump(verdict); } catch { /* reported separately by the dump */ }
+    }
+  })();
 }

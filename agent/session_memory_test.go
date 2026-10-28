@@ -23,6 +23,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/artifactstore"
+	"primeradiant.com/evener/agent/internal/frontmatter"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/sandbox"
@@ -828,7 +829,7 @@ func TestMemoryContextTrustAndBounds(t *testing.T) {
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		page := []byte("---\n" + memoryYAMLField("description", raw) + "---\n")
+		page := []byte("---\n" + frontmatter.YAMLField("description", raw) + "---\n")
 		if err := os.WriteFile(path, page, 0o600); err != nil {
 			t.Fatal(err)
 		}

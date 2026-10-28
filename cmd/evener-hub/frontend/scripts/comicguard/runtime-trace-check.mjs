@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import vm from 'node:vm';
-import { runtimeTraceSource } from './runtime-trace.mjs';
+import { runtimeTraceSource, captureRuntimeTraceVerdict } from './runtime-trace.mjs';
 
 function fixture() {
   const events = new EventTarget();
@@ -47,4 +47,41 @@ test('configuration exposes copied fixture identifiers only, not the ring or liv
   detail.config.childRef = 'local:other';
   assert.equal(snapshot().fixture.childRef, 'local:child');
   assert.deepEqual(Object.keys(window).sort(), ['__comicRuntimeTrace', 'addEventListener', 'dispatchEvent']);
+});
+
+for (const fails of [false, true]) {
+  test(`final verdict retains post-hydration events and ${fails ? 'rethrows the original failure' : 'returns the result'}`, async () => {
+    const { emit, snapshot } = fixture();
+    const dumps = [];
+    const failure = new Error('original assertion');
+    const result = captureRuntimeTraceVerdict(async () => {
+      await captureRuntimeTraceVerdict(async () => {
+        emit({ ref: 'local:child', kind: 'transition', reason: 'placed' });
+      }, (verdict) => dumps.push({ stage: 'initial', verdict, trace: snapshot() }));
+      emit({ ref: 'local:child', kind: 'child', reason: 'publish', pageKey: '96', snapshotHasTarget: false });
+      emit({ ref: 'local:child', kind: 'owner', reason: 'request-before', pageKey: '96' });
+      emit({ ref: 'local:child', kind: 'owner', reason: 'request-before', pageKey: '56' });
+      if (fails) throw failure;
+      return 'original result';
+    }, (verdict) => dumps.push({ stage: 'final', verdict, trace: snapshot() }));
+    if (fails) await assert.rejects(result, error => error === failure);
+    else assert.equal(await result, 'original result');
+    assert.equal(dumps.length, 2);
+    assert.equal(dumps[0].trace.sequence, 1);
+    assert.equal(dumps[1].trace.sequence, 4);
+    assert.equal(dumps[1].verdict, fails ? 'failed' : 'passed');
+    assert.deepEqual(dumps[1].trace.events.slice(1).map(event => event.pageKey), ['96', '96', '56']);
+  });
+}
+
+test('dump errors never replace the original assertion or successful value', async () => {
+  const failure = new Error('assertion');
+  const dump = async () => { throw new Error('unavailable browser'); };
+  await assert.rejects(captureRuntimeTraceVerdict(async () => { throw failure; }, dump), error => error === failure);
+  assert.equal(await captureRuntimeTraceVerdict(async () => 42, dump), 42);
+});
+
+test('disabled capture directly returns the original action promise', () => {
+  const result = Promise.resolve(42);
+  assert.equal(captureRuntimeTraceVerdict(() => result), result);
 });

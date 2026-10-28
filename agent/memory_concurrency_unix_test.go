@@ -222,7 +222,7 @@ func memoryStampRace(t *testing.T, root, page, when, body, marker string) (finis
 		}
 	}
 	raw, err := os.ReadFile(clk.path)
-	if err != nil || !strings.Contains(string(raw), memoryYAMLField("by", a.ID())) {
+	if err != nil || !strings.Contains(string(raw), frontmatter.YAMLField("by", a.ID())) {
 		t.Errorf("A's write landed without A's stamps (A returned=%t): page=%q err=%v", returned, raw, err)
 	}
 	return func() {

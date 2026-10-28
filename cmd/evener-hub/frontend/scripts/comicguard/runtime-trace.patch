@@ -1,5 +1,5 @@
 diff --git a/cmd/evener-hub/frontend/src/comic/ComicTranscript.tsx b/cmd/evener-hub/frontend/src/comic/ComicTranscript.tsx
-index 21c803a411..8fa1a2e6f1 100644
+index 21c803a411..ebe595a2f4 100644
 --- a/cmd/evener-hub/frontend/src/comic/ComicTranscript.tsx
 +++ b/cmd/evener-hub/frontend/src/comic/ComicTranscript.tsx
 @@ -29,6 +29,7 @@ import styles from "./comic.module.css";
@@ -88,7 +88,15 @@ index 21c803a411..8fa1a2e6f1 100644
      return () => {
        revision.current += 1;
      };
-@@ -299,6 +353,12 @@ export function ComicTranscript({
+@@ -285,6 +339,7 @@ export function ComicTranscript({
+       if (index >= 0) {
+         restoring.current = true;
+         lastPage.current = undefined;
++        traceState("transition", "source-disappeared", target);
+         const available = new Set(target.entries.map((entry) => entry.id));
+         nearest.current = undefined;
+         for (let distance = 1; distance < previous.length; distance += 1) {
+@@ -299,6 +354,12 @@ export function ComicTranscript({
        }
      }
      priorSnapshots.current = snapshots;
@@ -101,7 +109,7 @@ index 21c803a411..8fa1a2e6f1 100644
      for (const key of fitsCache.current.keys()) if (!used.has(key)) fitsCache.current.delete(key);
      setRows(next);
    }, [geometry, root, subchats, snapshots]);
-@@ -307,6 +367,13 @@ export function ComicTranscript({
+@@ -307,6 +368,13 @@ export function ComicTranscript({
      (layout: CommittedVirtualListLayout) => {
        const current = latest.current;
        const port = list.current?.getScrollElement();
@@ -115,7 +123,70 @@ index 21c803a411..8fa1a2e6f1 100644
        if (
          !port ||
          current.reader !== reader ||
-@@ -368,6 +435,7 @@ export function ComicTranscript({
+@@ -314,28 +382,39 @@ export function ComicTranscript({
+         !current.reader.reader.alive ||
+         !layout.isCurrent() ||
+         layout.virtualizer.scrollElement !== port
+-      )
++      ) {
++        traceState("restore", "invalid-layout");
+         return;
++      }
+       committed.current = layout;
+       if (moving.current) {
+         // A valid commit replaces the cancelled anchor before any placement.
++        traceState("restore", "moving");
+         captureMovement(port);
+         return;
+       }
+       const position = anchor.current;
+-      if (restoring.current && isOpening()) return;
++      if (restoring.current && isOpening()) {
++        traceState("restore", "opening");
++        return;
++      }
+       const rowIndex = findComicFlowAnchorRow(current.rows, position);
+-      if (rowIndex === undefined) return;
++      if (rowIndex === undefined) {
++        traceState("restore", "no-row");
++        return;
++      }
+       if (position.mode === "end") {
+         const lastPanel = current.rows.reduce((last, row, index) => (row.kind === "panels" ? index : last), -1);
+         if (rowIndex < lastPanel) {
+           list.current?.scrollToIndex(rowIndex, { align: "end" });
+           commanded.current = port.scrollTop;
++          traceState("restore", "end-row");
+           return;
+         }
+         const bottom = Math.max(0, port.scrollHeight - port.clientHeight);
+         if (Math.abs(port.scrollTop - bottom) > 1) layout.scrollToOffset(bottom);
+         commanded.current = port.scrollTop;
++        traceState("restore", "end-bottom");
+         return;
+       }
+       const flow = current.rows[rowIndex];
+@@ -351,11 +430,13 @@ export function ComicTranscript({
+           (flow?.kind === "strip" || Number(node.dataset.comicStart) === slice?.start),
+       );
+       if (!source) {
++        traceState("restore", "source-not-mounted", undefined, { sourcePresent: false });
+         list.current?.scrollToIndex(rowIndex, { align: "start" });
+         commanded.current = port.scrollTop;
+         return;
+       }
+       const point = textPoint(source, position.offset);
++      traceState("restore", "dom-source", undefined, { sourcePresent: true, pointPresent: !!point });
+       if (!point) return;
+       const delta = point.top - port.getBoundingClientRect().top - position.viewportOffset;
+       const shortage = port.scrollTop + delta - (port.scrollHeight - port.clientHeight);
+@@ -363,11 +444,13 @@ export function ComicTranscript({
+         // A shorter plain view may otherwise clamp the same source point to the
+         // bottom. Keep only the needed tail space until the reader moves again.
+         setTailSpace((space) => space + shortage);
++        traceState("restore", "tail-space");
+         return;
+       }
        if (Math.abs(delta) > 1) layout.scrollToOffset(port.scrollTop + delta);
        commanded.current = port.scrollTop;
        restoring.current = false;
@@ -123,7 +194,7 @@ index 21c803a411..8fa1a2e6f1 100644
      },
      [reader, rows, captureMovement, isOpening],
    );
-@@ -388,6 +456,7 @@ export function ComicTranscript({
+@@ -388,6 +471,7 @@ export function ComicTranscript({
        revision.current += 1;
        const requestedRevision = revision.current;
        restoring.current = false;
@@ -131,7 +202,7 @@ index 21c803a411..8fa1a2e6f1 100644
        moving.current = true;
        movementStart.current = event ? port.scrollTop : undefined;
        setTailSpace(0);
-@@ -524,7 +593,20 @@ export function ComicTranscript({
+@@ -524,7 +608,20 @@ export function ComicTranscript({
    }, [captureMovement, reader, ownerDocument]);
 
    useEffect(() => {
@@ -153,7 +224,7 @@ index 21c803a411..8fa1a2e6f1 100644
      const position = anchor.current;
      let target = root;
      for (let depth = 0; depth < position.path.length; depth += 1) {
-@@ -533,8 +615,12 @@ export function ComicTranscript({
+@@ -533,8 +630,12 @@ export function ComicTranscript({
        const strip = target.activity.strips.find((s) => s.key === key);
        if (!strip) {
          const activity = target.activity.snapshot?.delegates;
@@ -167,7 +238,7 @@ index 21c803a411..8fa1a2e6f1 100644
            void target.activity.loadMore();
            return;
          }
-@@ -542,16 +628,31 @@ export function ComicTranscript({
+@@ -542,16 +643,31 @@ export function ComicTranscript({
            const page = target.history.olderPageKey ?? undefined;
            if (!target.history.loadingOlder && !target.history.olderError && lastPage.current !== page) {
              lastPage.current = page;
@@ -201,7 +272,7 @@ index 21c803a411..8fa1a2e6f1 100644
          subchats.expand(target.path, strip);
          return;
        }
-@@ -566,9 +667,13 @@ export function ComicTranscript({
+@@ -566,9 +682,13 @@ export function ComicTranscript({
            viewportOffset: position.mode === "away" ? position.viewportOffset : 0,
          });
          restoring.current = false;
@@ -216,7 +287,7 @@ index 21c803a411..8fa1a2e6f1 100644
        target = child;
      }
      // Child history can publish before the composed rows commit. Loaded source
-@@ -577,21 +682,38 @@ export function ComicTranscript({
+@@ -577,21 +697,38 @@ export function ComicTranscript({
        position.mode !== "away" ||
        target.entries.some((entry) => entry.id === position.entryId) ||
        findComicFlowAnchorRow(rows, position) !== undefined
@@ -258,7 +329,7 @@ index 21c803a411..8fa1a2e6f1 100644
    });
 
    const toggle = (flow: Extract<ComicFlowRow, { kind: "strip" }>) => {
-@@ -633,6 +755,7 @@ export function ComicTranscript({
+@@ -633,6 +770,7 @@ export function ComicTranscript({
    const jump = () => {
      revision.current += 1;
      restoring.current = false;
@@ -266,7 +337,7 @@ index 21c803a411..8fa1a2e6f1 100644
      moving.current = false;
      movementStart.current = undefined;
      for (const snapshot of snapshots.values()) snapshot.history.cancelOlder();
-@@ -650,6 +773,7 @@ export function ComicTranscript({
+@@ -650,6 +788,7 @@ export function ComicTranscript({
    function keyboardIntent() {
      revision.current += 1;
      restoring.current = false;
@@ -321,7 +392,7 @@ index f4ab1ecb4c..692c8843a7 100644
    return null;
  }
 diff --git a/cmd/evener-hub/frontend/src/panes/session/transcript/useTranscript.ts b/cmd/evener-hub/frontend/src/panes/session/transcript/useTranscript.ts
-index 13bef77157..32c01a6379 100644
+index 13bef77157..1e8dc0973a 100644
 --- a/cmd/evener-hub/frontend/src/panes/session/transcript/useTranscript.ts
 +++ b/cmd/evener-hub/frontend/src/panes/session/transcript/useTranscript.ts
 @@ -5,6 +5,7 @@
@@ -332,7 +403,13 @@ index 13bef77157..32c01a6379 100644
  import { useConnectionStore } from "../../../stores/connection";
  import { olderTranscriptPageKey, useThreadsStore } from "../../../stores/threads";
  import type { TranscriptReadView } from "./transcriptReadView";
-@@ -85,11 +86,38 @@ function useTranscriptInternal(
+@@ -80,16 +81,44 @@ function useTranscriptInternal(
+     if (retained && retained !== selected) {
+       for (const id of retained.paneConsumers.keys()) {
+         retained.paging.cancel(id);
++        runtimeTrace(ref, "owner", { reason: "cancel-binding", readerId: id, ownerId: traceId(retained) });
+         forgetConsumer(retained, id);
+       }
      }
      if (binding !== undefined) selected.binding = binding;
      pagingByRef.set(ref, selected);
@@ -371,7 +448,59 @@ index 13bef77157..32c01a6379 100644
    // Wait for hydration when a pane returns before resuming its demand.
    const ready = reader !== null && model !== undefined && connection === "ready";
    useLayoutEffect(() => {
-@@ -149,12 +177,49 @@ function useTranscriptInternal(
+@@ -97,13 +126,25 @@ function useTranscriptInternal(
+     return () => view?.setReadable(false);
+   }, [view]);
+   useEffect(() => {
+-    if (!ready || pagingByRef.get(ref) !== entry) return;
++    if (!ready || pagingByRef.get(ref) !== entry) {
++      runtimeTrace(ref, "owner", {
++        reason: ready ? "activation-stale-owner" : "activation-not-ready",
++        readerId: viewId,
++        ownerId: traceId(entry),
++        committedOwnerId: traceId(pagingByRef.get(ref)),
++      });
++      return;
++    }
+     let release: (() => void) | undefined;
+     const sync = () => {
+       if (document.visibilityState === "hidden" || (view && !view.readable) || (typedReader && !typedReader.readable)) {
++        if (release) runtimeTrace(ref, "owner", { reason: "release-unreadable", readerId: viewId, ownerId: traceId(entry) });
+         release?.();
+         release = undefined;
+-      } else if (!release) release = paging.activate(viewId);
++      } else if (!release) {
++        release = paging.activate(viewId);
++        runtimeTrace(ref, "owner", { reason: "activate", readerId: viewId, ownerId: traceId(entry) });
++      }
+     };
+     sync();
+     const unsubscribe = (typedReader ?? view)?.subscribe(sync);
+@@ -111,6 +152,7 @@ function useTranscriptInternal(
+     return () => {
+       document.removeEventListener("visibilitychange", sync);
+       unsubscribe?.();
++      if (release) runtimeTrace(ref, "owner", { reason: "release-cleanup", readerId: viewId, ownerId: traceId(entry) });
+       release?.();
+     };
+   }, [paging, ready, ref, entry, viewId, view, typedReader]);
+@@ -121,6 +163,7 @@ function useTranscriptInternal(
+       const selected = pagingByRef.get(ref);
+       if (!selected) return;
+       selected.paging.cancel(viewId);
++      runtimeTrace(ref, "owner", { reason: "cancel-unmount", readerId: viewId, ownerId: traceId(selected) });
+       forgetConsumer(selected, viewId);
+     };
+   }, [standalone, ref, viewId]);
+@@ -138,6 +181,7 @@ function useTranscriptInternal(
+   const cancelOlder = useCallback(() => {
+     const selected = committedEntry();
+     selected.paging.cancel(viewId);
++    runtimeTrace(ref, "owner", { reason: "cancel-older", readerId: viewId, ownerId: traceId(selected) });
+     forgetConsumer(selected, viewId);
+     if (!standalone) cancelRemovedConsumers(selected, ref);
+   }, [committedEntry, viewId, ref, standalone]);
+@@ -149,12 +193,49 @@ function useTranscriptInternal(
      cancelOlder,
      loadingOlder: state.loading || (state.pending && state.error === null),
      loadOlderReportingError: () => {

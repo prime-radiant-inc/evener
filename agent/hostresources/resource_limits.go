@@ -1,4 +1,4 @@
-package agent
+package hostresources
 
 import (
 	"errors"
@@ -59,12 +59,12 @@ type cgroupMembership struct {
 	v2          bool
 }
 
-// resourceCapsFromEnv reads only process-visible resource metadata. A Linux
+// CapsFromEnv reads only process-visible resource metadata. A Linux
 // cgroup mount is authoritative for that resource: a missing or malformed
 // controller file remains unknown instead of falling back to /proc host data.
 // Host fallbacks are used only when no cgroup hierarchy is visible, or when a
 // visible controller explicitly says it is unlimited.
-func resourceCapsFromEnv(env execenv.ExecutionEnvironment) *schema.ResourceCaps {
+func CapsFromEnv(env execenv.ExecutionEnvironment) *schema.ResourceCaps {
 	if env == nil || strings.ToLower(strings.TrimSpace(env.Platform())) != "linux" {
 		return nil
 	}

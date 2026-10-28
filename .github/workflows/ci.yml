@@ -94,9 +94,10 @@ jobs:
           bwrap --unshare-user --unshare-pid --die-with-parent --new-session \
             --ro-bind / / --proc /proc --dev /dev --argv0 true -- true
 
-      # Temporary, one-run Comic diagnostic. This instrumented build is not acceptance.
+      # Temporary diagnostic, never final acceptance. Other jobs use clean sources.
       - name: Apply temporary Comic runtime trace and build fresh
         run: |
+          node --test cmd/evener-hub/frontend/scripts/comicguard/runtime-trace-check.mjs
           git apply --check cmd/evener-hub/frontend/scripts/comicguard/runtime-trace.patch
           git apply cmd/evener-hub/frontend/scripts/comicguard/runtime-trace.patch
           make build-web

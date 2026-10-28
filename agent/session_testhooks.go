@@ -154,8 +154,6 @@ type testConfig struct {
 	// filesystem reads for this session. Nil preserves the production paths.
 	delegateRestoreStat     func(string) (os.FileInfo, error)
 	delegateRestoreReadFile func(string) ([]byte, error)
-	// subagentStopGated overrides child stop-gating when handled is true.
-	subagentStopGated func(*Session, string) (stopped, handled bool)
 	// subagentRunIteration observes each production subagent input iteration.
 	// Tests use it only as a deterministic barrier around continuation decisions.
 	subagentRunIteration func(*subagent, int)

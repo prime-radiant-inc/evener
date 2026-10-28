@@ -8,7 +8,7 @@ import {
   createChromeProfileDir, findChrome, parseChromeDevToolsAnnouncement, requestBrowserClose,
 } from "../browserGuardProcess.mjs";
 import { connectBrowser, connectPage, connectOnlyPage, navigateTo, evaluate, waitForHttp, devtoolsHttpURL } from "../browserGuardCdp.mjs";
-import { runtimeTraceSource } from "./runtime-trace.mjs";
+import { runtimeTraceSource, captureRuntimeTraceVerdict } from "./runtime-trace.mjs";
 
 export function comicScenario(scenario) {
   if (scenario === undefined || scenario === '') return { focused: false, rosterCount: 102 };
@@ -1592,22 +1592,24 @@ async function childJourney(page, fixture, { command, complete, incoming, outgoi
   const cachedReloadStart=wireTrace.length;
   await reloadPage(page);
   const cachedDocumentOrigin=await evaluateHere('performance.timeOrigin');
-  let runtimeTraceVerdict='failed';
-  try { await measure('later-child-reload'); runtimeTraceVerdict='passed'; } finally {
-    if(runtimeTraceScript) {
-      // Diagnostic failures never replace the original browser assertion.
-      try {
-        const trace=await evaluateHere('window.__comicRuntimeTrace?.()');
-        writeFileSync(`${fixture.evidenceDir}/runtime-trace.json`,JSON.stringify({verdict:runtimeTraceVerdict,wireStart:cachedReloadStart,trace:trace?JSON.parse(trace):null},null,2));
-      } catch {
-        try { writeFileSync(`${fixture.evidenceDir}/runtime-trace-error.json`,JSON.stringify({stage:'dump',verdict:runtimeTraceVerdict})); } catch { console.error('comic runtime trace dump failed'); }
-      }
-      try { await page.send('Page.removeScriptToEvaluateOnNewDocument',{identifier:runtimeTraceScript.result.identifier}); }
-      catch { console.error('comic runtime trace script removal failed'); }
+  let runtimeTraceStage='later-child-reload';
+  const dumpRuntimeTrace=async(name,verdict)=>{
+    try {
+      const trace=await evaluateHere('window.__comicRuntimeTrace?.()');
+      writeFileSync(`${fixture.evidenceDir}/${name}.json`,JSON.stringify({stage:runtimeTraceStage,verdict,wireStart:cachedReloadStart,wireEnd:wireTrace.length,trace:trace?JSON.parse(trace):null},null,2));
+    } catch {
+      try { writeFileSync(`${fixture.evidenceDir}/${name}-error.json`,JSON.stringify({stage:runtimeTraceStage,verdict})); }
+      catch { console.error('comic runtime trace dump failed'); }
     }
+  };
+  await captureRuntimeTraceVerdict(async()=>{
+  try {
+    await captureRuntimeTraceVerdict(()=>measure('later-child-reload'),runtimeTraceScript?verdict=>dumpRuntimeTrace('runtime-trace-initial',verdict):undefined);
+  } finally {
     writeFileSync(`${fixture.evidenceDir}/later-child-restore-checkpoints.json`,JSON.stringify({expected:saved,before:reloadBefore,after:await evaluateHere(`(${readGeometry.toString()})(${JSON.stringify(saved)},${JSON.stringify(fixture.refs.live)})`),paneOwnersBefore,paneOwnersAfter:await evaluateHere(`[...document.querySelectorAll('[data-session-actions-ref][data-pane-id]')].map(node=>({ref:node.dataset.sessionActionsRef,pane:node.dataset.paneId,visible:!!node.getClientRects().length}))`),events:await evaluateHere('window.__comicReloadEvents'),requests:outgoing.slice(beforeReload)},null,2));
     await page.send('Page.removeScriptToEvaluateOnNewDocument',{identifier:diagnosticScript.result.identifier});
   }
+  runtimeTraceStage='cached-post-hydration';
   let cachedRecovery;
   try {
     await until('cached child post-hydration source recovery',async()=>{
@@ -1618,6 +1620,11 @@ async function childJourney(page, fixture, { command, complete, incoming, outgoi
   } finally {
     writeFileSync(`${fixture.evidenceDir}/later-child-cached-recovery.json`,JSON.stringify({expected:saved,...cachedRecovery},null,2));
   }
+  },runtimeTraceScript?async verdict=>{
+    await dumpRuntimeTrace('runtime-trace-final',verdict);
+    try { await page.send('Page.removeScriptToEvaluateOnNewDocument',{identifier:runtimeTraceScript.result.identifier}); }
+    catch { console.error('comic runtime trace script removal failed'); }
+  }:undefined);
   if (outgoing.slice(beforeReload).some(frame => frame.method === 'thread/read' && frame.params.ref === grandchild.ref && frame.params.includeTurns !== false)) throw Error('restoration fetched an unopened descendant');
   for (const partial of [true,false]) {
     const eviction=await evictChildHistory(page,header.ref,partial);
