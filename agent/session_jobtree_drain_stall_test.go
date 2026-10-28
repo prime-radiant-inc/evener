@@ -538,3 +538,58 @@ func TestDrainStallGiveUpRechecksTheWakeEdge(t *testing.T) {
 		t.Fatalf("want one stall warning naming shell-wedge, got %+v", warnings)
 	}
 }
+
+// A pass whose kick the idle backoff skipped must not give up on a verdict
+// assembled without that kick: it runs one unthrottled kick and re-evaluates,
+// and only the confirming full-rate pass gives up.
+func TestDrainStallGiveUpOnAThrottledPassKicksBeforeReturning(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newSession(t, withConfig(SessionConfig{clock: clk}))
+	seedOwnedDurablePending(t, sess.jobManager, "shell-wedge", jobstore.JobShell)
+
+	d := newStallDriver(t.Context(), sess)
+	sendRecheck := func() {
+		t.Helper()
+		select {
+		case d.recheck <- time.Time{}:
+		case <-d.done:
+			t.Fatal("drain returned before consuming the recheck tick")
+		case <-time.After(stallHandshakeTimeout):
+			t.Fatal("drain did not consume the recheck tick")
+		}
+	}
+	// Pass 0 and the full-rate prefix kick on every pass.
+	d.releaseKick(t)
+	for range drainIdleBackoffFullRatePasses {
+		sendRecheck()
+		d.releaseKick(t)
+	}
+	d.assertParked(t, "the full-rate prefix must keep waiting before the timeout")
+
+	// The next pass is the first throttled one and reads the expired clock.
+	clk.Advance(DrainStallTimeout + time.Second)
+	sendRecheck()
+	select {
+	case <-d.top:
+	case <-d.done:
+		t.Fatal("throttled pass gave up without the unthrottled kick")
+	case <-time.After(stallHandshakeTimeout):
+		t.Fatal("throttled pass neither kicked nor gave up")
+	}
+	d.releaseKickSend(t)
+
+	// The re-run pass kicks at full rate before it may give up.
+	d.releaseKick(t)
+	select {
+	case <-d.done:
+	case <-time.After(stallHandshakeTimeout):
+		t.Fatal("confirming pass did not give up")
+	}
+	if d.err != nil {
+		t.Fatalf("give-up must return nil error, got %v", d.err)
+	}
+	if warnings := collectStallWarnings(sess); len(warnings) != 1 {
+		t.Fatalf("stall warnings = %d, want 1", len(warnings))
+	}
+}
