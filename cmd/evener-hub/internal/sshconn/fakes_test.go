@@ -347,8 +347,8 @@ func resolveTarget(argv []string) string {
 // a missing file does on a host.
 func resolveAnswers(argv []string, resolved map[string]string) ([]byte, error) {
 	target := resolveTarget(argv)
-	if real, ok := resolved[target]; ok {
-		return []byte(real + "\n"), nil
+	if path, ok := resolved[target]; ok {
+		return []byte(path + "\n"), nil
 	}
 	return nil, fmt.Errorf("resolver: %s: no such file or directory", target)
 }
