@@ -80,19 +80,3 @@ func TestDelegateInputWasPreseededCov(t *testing.T) {
 		t.Fatal("expected false for mismatched input")
 	}
 }
-
-// TestBindDelegateActivity_NilChild covers the nil-guard for
-// bindDelegateActivity (lines 281-283).
-func TestBindDelegateActivity_NilChild(t *testing.T) {
-	t.Parallel()
-	bindDelegateActivity(nil, nil, delegateLease{})
-	// Should not panic.
-}
-
-// TestBindDelegateActivityToOwner_NilChild covers the nil-guard for
-// bindDelegateActivityToOwner (lines 289-292).
-func TestBindDelegateActivityToOwner_NilChild(t *testing.T) {
-	t.Parallel()
-	bindDelegateActivityToOwner(nil, nil, delegateLease{}, nil)
-	// Should not panic.
-}

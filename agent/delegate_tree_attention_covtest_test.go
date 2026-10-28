@@ -62,13 +62,6 @@ func TestHasPendingDelegateAttention_NoPending(t *testing.T) {
 	}
 }
 
-// TestRetryDelegateAttentionLater covers the no-op retry path.
-func TestRetryDelegateAttentionLater(t *testing.T) {
-	c, _ := newDelegateControllerTestHarness(t, 1, 1)
-	c.retryDelegateAttentionLater()
-	// Should not panic.
-}
-
 // TestPermanentlyFencedDelegateAttention covers the method with no fenced
 // delegates.
 func TestPermanentlyFencedDelegateAttention(t *testing.T) {

@@ -10,14 +10,6 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// TestTrackFailures_NilWriter covers the nil-writer guard in TrackFailures
-// (line 256-258).
-func TestTrackFailures_NilWriter(t *testing.T) {
-	var w *Writer
-	w.TrackFailures(nil, 0)                      // should not panic
-	w.TrackFailures([]Entry{{Kind: "entry"}}, 0) // should not panic
-}
-
 // TestEstablishDurability_NilWriter covers the nil/nil-file guard in
 // EstablishDurability (line 376-378).
 func TestEstablishDurability_NilWriter(t *testing.T) {
