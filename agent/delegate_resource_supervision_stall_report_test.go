@@ -1,10 +1,12 @@
 package agent
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/llm"
 )
 
@@ -56,25 +58,6 @@ func stableSupervisionStateWithin(t *testing.T, root *Session, sub *subagent) st
 	}
 }
 
-// uncontendedStableSupervisionState retries the report until no source is busy,
-// so a caller that pins the whole uncontended output reads it with every field
-// present. Paths outside the run, such as the child's session namer, can hold a
-// source lock briefly right after it quiesces; the report never waits for them.
-func uncontendedStableSupervisionState(t *testing.T, root *Session, sub *subagent) string {
-	t.Helper()
-	deadline := time.Now().Add(supervisionSnapshotUncontendedTripwire)
-	for {
-		state := stableSupervisionState(root, sub)
-		if !strings.Contains(state, "_lock_busy") {
-			return state
-		}
-		if !time.Now().Before(deadline) {
-			t.Fatalf("report sources still busy after %s: %q", supervisionSnapshotUncontendedTripwire, state)
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-}
-
 // TestStableSupervisionStatePrintsWhileControllerLockHeld pins the timeout
 // report's reason to exist. The report runs after the quiescence bound has
 // already fired, so it must print the state it can read instead of waiting on a
@@ -111,7 +94,9 @@ func TestStableSupervisionStateMarksEveryBusySource(t *testing.T) {
 		hold   func() func()
 	}{
 		{"controller", "controller_lock_busy", func() func() { root.delegateController.mu.Lock(); return root.delegateController.mu.Unlock }},
-		{"root attention", "attention_lock_busy", func() func() { root.attentionMu.Lock(); return root.attentionMu.Unlock }},
+		// Receiver retry belongs to root.mu, not root.attentionMu. The latter
+		// does not own any source this report reads.
+		{"root attention", "", func() func() { root.attentionMu.Lock(); return root.attentionMu.Unlock }},
 		{"subagent", "subagent_lock_busy", func() func() { sub.mu.Lock(); return sub.mu.Unlock }},
 		{"root", "root_lock_busy", func() func() { root.mu.Lock(); return root.mu.Unlock }},
 		{"child session", "session_lock_busy", func() func() { sub.sess.mu.Lock(); return sub.sess.mu.Unlock }},
@@ -126,30 +111,55 @@ func TestStableSupervisionStateMarksEveryBusySource(t *testing.T) {
 		func() {
 			release := tc.hold()
 			defer release()
-			state := stableSupervisionStateWithin(t, root, sub)
-			if tc.marker != "" && !strings.Contains(state, tc.marker) {
-				t.Errorf("report with the %s lock held = %q, want marker %q", tc.name, state, tc.marker)
+			done := make(chan map[string]any, 1)
+			go func() { _, state := stableSupervisionStateSnapshot(root, sub); done <- state }()
+			select {
+			case state := <-done:
+				if tc.marker != "" && state[tc.marker] != true {
+					t.Errorf("report with the %s lock held = %#v, want marker %q", tc.name, state, tc.marker)
+				}
+				if tc.name == "root attention" {
+					if _, ok := state["root_retry"]; !ok || state["attention_lock_busy"] == true {
+						t.Errorf("attention lock hid session-owned retry: %#v", state)
+					}
+				}
+				if tc.name == "root" {
+					if _, ok := state["root_retry"]; ok || state["attention_lock_busy"] == true {
+						t.Errorf("root lock misattributed retry ownership: %#v", state)
+					}
+				}
+			case <-time.After(stableSupervisionReportDeadline): // TRIPWIRE: report must return while this exact source stays held.
+				t.Fatalf("report blocked on %s", tc.name)
 			}
 		}()
 	}
 }
 
-// TestStableSupervisionStatePrintsTheFullStateWhenIdle pins the whole
-// uncontended report as a golden. Making the report non-blocking must drop no
-// field: with no source busy it renders every token the timeout report printed
-// before, in the same order.
+// The idle report must retain every source, without pinning human-readable copy.
 func TestStableSupervisionStatePrintsTheFullStateWhenIdle(t *testing.T) {
 	t.Parallel()
 	root, sub := stableSupervisionReportFixture(t)
-	const want = "aggregate{gen=1 phase=idle open=false needs=false} " +
-		"live{binding=false finalizing=false recovery=false} " +
-		"reservations=0 eligible=true delivery=false " +
-		"rootRetry{active=false delay=0s} " +
-		"sub{running=false driving=false finalizing=false dispose=false closed=false fatal=false status=completed} " +
-		"root{state=idle} child{state=idle} " +
-		"childGates{stop=false fatalRun=false drainAbandoned=false drainGrace=false committedSend=false}"
-	if got := uncontendedStableSupervisionState(t, root, sub); got != want {
-		t.Fatalf("idle report = %q, want %q", got, want)
+	var got map[string]any
+	// TRIPWIRE: only incidental namer/wake lock holders outlive the joined run.
+	waitForCondition(t, supervisionSnapshotUncontendedTripwire, "uncontended structured report", func() bool {
+		_, got = stableSupervisionStateSnapshot(root, sub)
+		return len(supervisionSnapshotBusyLockNames(got)) == 0
+	})
+	retry, ok := got["root_retry"].(notificationRetry)
+	if !ok || retry.active || retry.delay != 250*time.Millisecond {
+		t.Fatalf("inactive receiver retry = %#v, want initial 250ms delay", got["root_retry"])
+	}
+	delete(got, "root_retry")
+	want := map[string]any{
+		"aggregate":    map[string]any{"generation": uint64(1), "phase": delegatestore.PhaseIdle, "open": false, "needs_attention": false},
+		"live":         map[string]any{"binding": false, "finalizing": false, "recovery": false},
+		"reservations": 0, "eligible": true, "delivery": false,
+		"subagent":   map[string]any{"running": false, "driving": false, "finalizing": false, "dispose": false, "closed": false, "fatal": false, "status": SubagentCompleted},
+		"root_state": SessionIdle, "child_state": SessionIdle,
+		"child_gates": map[string]string{"stop": "false", "fatal_run": "false", "drain_abandoned": "false", "drain_grace": "false", "committed_send": "false"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("idle structured report = %#v, want %#v", got, want)
 	}
 }
 

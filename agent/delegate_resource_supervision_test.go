@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1144,18 +1145,33 @@ func TestDelegateResourceSupervision_PostAcknowledgementAttentionBeforeRelease(t
 		{"unblocked_hook_context", "attention:postack-hook-context", `{"hookSpecificOutput":{"additionalContext":"hook model context"}}`, 0, 3},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			var root *Session
+			response := llm.Assistant("postack-response-sentinel-" + tc.name)
+			responses := []llm.Message{response}
 			fixture := newColdStableDelegateFixture(t, "")
 			fixture.adapter.steps = []func(llm.Request) llm.Response{
 				func(llm.Request) llm.Response { return finalResponse("warm result") },
-				func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("attention no action")} },
+				func(req llm.Request) llm.Response {
+					assertStableSupervisionPresentingLease(t, root, fixture.delegateID, 2)
+					observationRequest(t, req, []string{"postack-attention-sentinel"}, nil)
+					return llm.Response{Message: response}
+				},
 			}
 			for range tc.bareContinuations {
+				continuation := llm.Assistant("hook continuation without report")
+				responses = append(responses, continuation)
 				fixture.adapter.steps = append(fixture.adapter.steps, func(llm.Request) llm.Response {
-					return llm.Response{Message: llm.Assistant("hook continuation without report")}
+					assertStableSupervisionPresentingLease(t, root, fixture.delegateID, 2)
+					return llm.Response{Message: continuation}
 				})
 			}
-			fixture.adapter.steps = append(fixture.adapter.steps, func(llm.Request) llm.Response { return finalResponse("recovered after hook") })
-			root := restoreSupervisionRoot(t, fixture, nil)
+			final := finalResponse("recovered after hook")
+			responses = append(responses, final.Message)
+			fixture.adapter.steps = append(fixture.adapter.steps, func(llm.Request) llm.Response {
+				assertStableSupervisionPresentingLease(t, root, fixture.delegateID, 2)
+				return final
+			})
+			root = restoreSupervisionRoot(t, fixture, nil)
 			entered := make(chan delegateLease, 1)
 			release := make(chan struct{})
 			var once sync.Once
@@ -1230,9 +1246,12 @@ func TestDelegateResourceSupervision_PostAcknowledgementAttentionBeforeRelease(t
 				t.Fatalf("post-ack attention finish = %#v, want reported generation 2", finished)
 			}
 			fold, err = readDelegateAttentionFold(transcriptPath(root.stateDir, fixture.childID), fixture.childID)
-			if err != nil || fold.resolutions[tc.attentionID] != delegateAttentionConsumed || fold.resumeGenerations[tc.attentionID] != 2 {
+			if err != nil || fold.resolutions[tc.attentionID] != delegateAttentionConsumed || len(fold.pendingIDs()) != 0 {
 				t.Fatalf("post-ack resolution identity = resolutions:%#v generations:%#v err:%v", fold.resolutions, fold.resumeGenerations, err)
 			}
+			// Each hook continuation presents the retained history again. Its
+			// distinct response earns coverage, not another start or resolution.
+			assertStableSupervisionAttentionReceipt(t, root, sub, tc.attentionID, 2, responses...)
 			requests := fixture.adapter.Requests()
 			if len(requests) != tc.wantRequests || !requestMessagesContainText(requests[1].Messages, "postack-attention-sentinel") {
 				t.Fatalf("post-ack provider requests = %#v, want %d including exact attention payload", requests, tc.wantRequests)
@@ -3667,12 +3686,20 @@ func stableSupervisionReservedAttentionIDLocked(c *delegateTreeController, runti
 // from the TryLocked source that already printed its fields, and each predicate
 // names the accessor it mirrors, so a change there shows up here as a drift.
 func stableSupervisionState(root *Session, sub *subagent) string {
+	text, _ := stableSupervisionStateSnapshot(root, sub)
+	return text
+}
+
+// Capture structured evidence in the same TryLock reads that render the report.
+// Tests assert these values, not a frozen human-readable report.
+func stableSupervisionStateSnapshot(root *Session, sub *subagent) (string, map[string]any) {
+	fields := map[string]any{}
 	// sub.sess is assigned once, at subagent creation (delegate_runtime.go's cold
 	// restore and subagents.go's start), and never reassigned, so an unlocked read
 	// cannot race a writer; stableSupervisionFailureSnapshot reads it the same way.
 	sess := sub.sess
 	if sess == nil || sess.delegateController == nil {
-		return "child has no session or controller"
+		return "child has no session or controller", fields
 	}
 	c := sess.delegateController
 	owner := sess.owningDelegateID
@@ -3681,14 +3708,18 @@ func stableSupervisionState(root *Session, sub *subagent) string {
 	var b strings.Builder
 	if c.mu.TryLock() {
 		if agg := c.durable[owner]; agg != nil {
+			fields["aggregate"] = map[string]any{"generation": agg.Generation, "phase": agg.Phase, "open": agg.CurrentRunOpen, "needs_attention": agg.NeedsAttention}
 			fmt.Fprintf(&b, "aggregate{gen=%d phase=%v open=%v needs=%v} ", agg.Generation, agg.Phase, agg.CurrentRunOpen, agg.NeedsAttention)
 		}
 		if live := c.live[owner]; live != nil {
+			fields["live"] = map[string]any{"binding": live.binding != nil, "finalizing": live.finalizing != nil, "recovery": live.recoveryRequired}
 			fmt.Fprintf(&b, "live{binding=%v finalizing=%v recovery=%v} ", live.binding != nil, live.finalizing != nil, live.recoveryRequired)
 		}
 		if st := c.attention[owner]; st != nil {
+			fields["attention"] = map[string]any{"wake_ids": slices.Sorted(maps.Keys(st.wakeIDs)), "parked": st.parked, "restore_failures": st.restoreFailures, "drive_turn": st.driveTurn}
 			fmt.Fprintf(&b, "attention{wake=%v parked=%v restoreFailures=%d turn=%d} ", st.wakeIDs, st.parked, st.restoreFailures, st.driveTurn)
 		}
+		fields["reservations"], fields["eligible"], fields["delivery"] = len(c.reservations), c.delegateAttentionWakeEligibleLocked(owner), c.hasDeliveryWorkForOwnerLocked(owner)
 		fmt.Fprintf(&b, "reservations=%d eligible=%v delivery=%v ", len(c.reservations), c.delegateAttentionWakeEligibleLocked(owner), c.hasDeliveryWorkForOwnerLocked(owner))
 		row, ok := stableSupervisionDirectRowLocked(c, root, id)
 		c.mu.Unlock()
@@ -3703,37 +3734,42 @@ func stableSupervisionState(root *Session, sub *subagent) string {
 			// childDrainGracePending: row.currentRunOpen && drainGraceChildForRow(id, row) matched.
 			drainGrace = strconv.FormatBool(ok && row.currentRunOpen && graceOK && grace.delegateID == row.id && grace.generation == row.generation)
 		} else {
+			fields["drain_lock_busy"] = true
 			drainAbandoned, drainGrace = "drain_lock_busy", "drain_lock_busy"
 		}
 	} else {
+		fields["controller_lock_busy"] = true
 		b.WriteString("controller_lock_busy ")
 	}
 	if root.mu.TryLock() {
+		fields["root_retry"] = root.notificationSchedule.retry
+		fields["root_state"] = root.state
 		fmt.Fprintf(&b, "rootRetry{active=%v delay=%v} ", root.notificationSchedule.retry.active, root.notificationSchedule.retry.delay)
+		rootState := root.state
 		root.mu.Unlock()
+		fmt.Fprintf(&b, "root{state=%v} ", rootState)
 	} else {
-		b.WriteString("session_lock_busy ")
+		fields["root_lock_busy"] = true
+		b.WriteString("root_lock_busy ")
 	}
 	fatalRun := "subagent_lock_busy"
 	if sub.mu.TryLock() {
+		fields["subagent"] = map[string]any{"running": sub.running, "driving": sub.driving, "finalizing": sub.finalizing, "dispose": sub.disposeGated, "closed": sub.closed, "fatal": sub.fatalRunGated, "status": sub.status}
 		fmt.Fprintf(&b, "sub{running=%v driving=%v finalizing=%v dispose=%v closed=%v fatal=%v status=%v} ", sub.running, sub.driving, sub.finalizing, sub.disposeGated, sub.closed, sub.fatalRunGated, sub.status)
 		// childFatalRunGated: getSub(id).fatalRunGated. The report reads the passed
 		// sub, so it never takes the subagent registry's mu.
 		fatalRun = strconv.FormatBool(sub.fatalRunGated)
 		sub.mu.Unlock()
 	} else {
+		fields["subagent_lock_busy"] = true
 		b.WriteString("subagent_lock_busy ")
 	}
-	if root.mu.TryLock() {
-		fmt.Fprintf(&b, "root{state=%v} ", root.state)
-		root.mu.Unlock()
-	} else {
-		b.WriteString("root_lock_busy ")
-	}
 	if sess.mu.TryLock() {
+		fields["child_state"] = sess.state
 		fmt.Fprintf(&b, "child{state=%v} ", sess.state)
 		sess.mu.Unlock()
 	} else {
+		fields["session_lock_busy"] = true
 		b.WriteString("session_lock_busy ")
 	}
 	committedSend := "send_start_lock_busy"
@@ -3742,9 +3778,12 @@ func stableSupervisionState(root *Session, sub *subagent) string {
 		_, held := root.childCommittedSendChildren[id]
 		root.childCommittedSendMu.Unlock()
 		committedSend = strconv.FormatBool(held)
+	} else {
+		fields["send_start_lock_busy"] = true
 	}
+	fields["child_gates"] = map[string]string{"stop": stop, "fatal_run": fatalRun, "drain_abandoned": drainAbandoned, "drain_grace": drainGrace, "committed_send": committedSend}
 	fmt.Fprintf(&b, "childGates{stop=%s fatalRun=%s drainAbandoned=%s drainGrace=%s committedSend=%s}", stop, fatalRun, drainAbandoned, drainGrace, committedSend)
-	return b.String()
+	return b.String(), fields
 }
 
 // stableSupervisionDirectRowLocked captures the direct stable delegate row for
