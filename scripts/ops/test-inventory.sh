@@ -28,6 +28,8 @@ usage() { sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 die() { echo "test-inventory: $*" >&2; exit 2; }
 
 root="$(cd "$(dirname "$0")/../.." && pwd -P)"
+# Absolute: vitest runs in another directory and must write where jq reads.
+scratch="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
 
 [ $# -ge 1 ] || usage
 cmd="$1"; shift
@@ -48,7 +50,6 @@ $out"
   vitest)
     [ $# -ge 1 ] || usage
     command -v jq >/dev/null || die "jq is required"
-    scratch="${TMPDIR:-/tmp}"
     tmp="$(mktemp "$scratch/test-inventory.XXXXXX")"; names="$(mktemp "$scratch/test-inventory.XXXXXX")"
     trap 'rm -f "$tmp" "$names"' EXIT
     # Absolute, normalized paths: vitest reports absolute file names, and the
@@ -83,7 +84,6 @@ $out"
   diff)
     [ $# -eq 2 ] || usage
     [ -f "$1" ] && [ -f "$2" ] || die "both arguments must be files"
-    scratch="${TMPDIR:-/tmp}"
     tmp1="$(mktemp "$scratch/test-inventory.XXXXXX")"; tmp2="$(mktemp "$scratch/test-inventory.XXXXXX")"
     trap 'rm -f "$tmp1" "$tmp2"' EXIT
     LC_ALL=C sort "$1" > "$tmp1" || die "cannot read $1"
