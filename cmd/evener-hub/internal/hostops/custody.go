@@ -445,7 +445,7 @@ func readStoreForCustody(fs afero.Fs, path string) (snapshot, error) {
 		}
 		state.RemovedHosts[name] = removed
 	}
-	if len(file.HostRecords) > 0 && !jsonFieldIsNull(file.HostRecords) {
+	if file.HostRecords != nil {
 		family, err := decodeHostRecordsRegion(file.HostRecords)
 		if err != nil {
 			return snapshot{}, fmt.Errorf("%s: %w", path, err)

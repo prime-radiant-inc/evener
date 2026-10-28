@@ -677,9 +677,10 @@ type storeFile struct {
 	// WallClockHighWaterMark is optional on read: absent, null and the zero
 	// instant all mean no pass has observed a clock yet.
 	WallClockHighWaterMark time.Time `json:"wallClockHighWaterMark"`
-	// HostRecords is optional on read (see snapshot.HostRecords); a present
-	// family must carry every field.
-	HostRecords *hostRecordsFile `json:"hostRecords"`
+	// HostRecords is optional on read (see snapshot.HostRecords). It is held raw
+	// so an absent key (nil) can be told from a present one: a present family,
+	// null included, must decode in full.
+	HostRecords json.RawMessage `json:"hostRecords"`
 }
 
 // compensationFile is the decode shape of one pendingCompensation record. Every
@@ -969,7 +970,7 @@ func readStoreFS(fs afero.Fs, path string) (snapshot, error) {
 		WallClockHighWaterMark: wallClockMark(file.WallClockHighWaterMark),
 	}
 	if file.HostRecords != nil {
-		family, err := file.HostRecords.state()
+		family, err := decodeHostRecordsRegion(file.HostRecords)
 		if err != nil {
 			return snapshot{}, fmt.Errorf("%w: %s: %w", ErrStoreCorrupt, path, err)
 		}
