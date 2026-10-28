@@ -116,6 +116,7 @@
     "transcriptItems.ts",
     "transcriptValidators.ts",
     "turnContinuation.ts",
+    "turnHistoryMerge.ts",
     "warningFold.ts",
     "warningText.ts",
     "warnings.ts",
