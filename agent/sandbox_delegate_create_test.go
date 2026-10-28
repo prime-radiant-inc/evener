@@ -539,7 +539,7 @@ func TestCreateDelegate_ResultEchoesSandboxBox(t *testing.T) {
 		Reason:         res.Reason,
 		Resumable:      res.Resumable,
 		TranscriptRef:  res.TranscriptRef,
-		Sandbox:        delegateSandboxToolResultFrom(res.Sandbox),
+		Sandbox:        res.Sandbox,
 	}, 30000)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)

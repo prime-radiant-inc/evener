@@ -21,7 +21,7 @@ func TestDisposalHint_StableOwnedDelegateCarriesSentence(t *testing.T) {
 
 func TestDisposalHint_JSONRoundTripEmitsField(t *testing.T) {
 	t.Parallel()
-	in := &delegateWorktreeToolResult{Path: "/lane", Branch: "b", HeadSHA: "abc123", DisposalHint: wantDisposalSentence}
+	in := &delegateWorktreeReport{Path: "/lane", Branch: "b", HeadSHA: "abc123", DisposalHint: wantDisposalSentence}
 	blob, err := json.Marshal(in)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -29,7 +29,7 @@ func TestDisposalHint_JSONRoundTripEmitsField(t *testing.T) {
 	if !strings.Contains(string(blob), `"disposal_hint":`) {
 		t.Fatalf("JSON missing disposal_hint key: %s", blob)
 	}
-	var back delegateWorktreeToolResult
+	var back delegateWorktreeReport
 	if err := json.Unmarshal(blob, &back); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestDisposalHint_JSONRoundTripEmitsField(t *testing.T) {
 
 func TestDisposalHint_EmptyHintOmittedFromJSON(t *testing.T) {
 	t.Parallel()
-	blob, err := json.Marshal(&delegateWorktreeToolResult{Path: "/lane", Branch: "b"})
+	blob, err := json.Marshal(&delegateWorktreeReport{Path: "/lane", Branch: "b"})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}

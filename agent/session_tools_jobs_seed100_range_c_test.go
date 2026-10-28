@@ -15,8 +15,8 @@ func seed100ToolsRangeC(t *testing.T) {
 
 	wt := &delegateWorktreeReport{Path: "/tmp/seed", Branch: "seed", Ahead: 2, Dirty: true}
 	sb := &delegateSandboxReport{Mode: "workspace-write", Network: true}
-	_ = delegateWorktreeToolResultFrom(wt)
-	_ = delegateSandboxToolResultFrom(sb)
+	_ = wt
+	_ = sb
 
 	_, _ = marshalDelegateSendResult(sendMessageResult{
 		DelegateID: "dlg_seed", Type: delegateResourceType, Status: jobstore.StatusCompleted,
@@ -67,7 +67,7 @@ func seed100ToolsRangeC(t *testing.T) {
 	_, _ = marshalDelegateCreateResult(delegateCreateResult{
 		DelegateID: "dlg_seed", ChildSessionID: "child-dlg_seed", Type: delegateResourceType,
 		Status: string(jobstore.StatusRunning), TranscriptRef: "local:child-dlg_seed",
-		Sandbox: delegateSandboxToolResultFrom(sb),
+		Sandbox: sb,
 	}, 4096)
 
 	_, _ = jobListFilterFromArgs(map[string]any{"status": "running"})

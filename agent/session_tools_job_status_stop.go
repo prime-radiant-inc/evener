@@ -237,7 +237,7 @@ func populateDelegateStopEvidence(stop *jobStopResult, s *Session, delegateID st
 			if err := json.Unmarshal(packet.Metadata, &metadata); err == nil {
 				stop.ScratchPath = metadata.ScratchPath
 				if wt := metadata.Worktree; wt != nil {
-					stop.Worktree = &delegateWorktreeToolResult{
+					stop.Worktree = &delegateWorktreeReport{
 						Path: wt.Path, Branch: wt.Branch, HeadSHA: wt.HeadSHA, Ahead: wt.Ahead, Dirty: wt.Dirty,
 					}
 				}
@@ -407,11 +407,11 @@ type jobStopResult struct {
 	// is reported on every delegate stop; the rest are read from the settled
 	// delegate row and stay empty/nil until the stop completes (status/outcome
 	// still "running"/"stop_requested").
-	RequestedBy        string                      `json:"requested_by,omitempty"`
-	Resumable          *bool                       `json:"resumable,omitempty"`
-	NotResumableReason string                      `json:"not_resumable_reason,omitempty"`
-	ScratchPath        string                      `json:"scratch_path,omitempty"`
-	Worktree           *delegateWorktreeToolResult `json:"worktree,omitempty"`
+	RequestedBy        string                  `json:"requested_by,omitempty"`
+	Resumable          *bool                   `json:"resumable,omitempty"`
+	NotResumableReason string                  `json:"not_resumable_reason,omitempty"`
+	ScratchPath        string                  `json:"scratch_path,omitempty"`
+	Worktree           *delegateWorktreeReport `json:"worktree,omitempty"`
 	// LiveWatches is the #655 provenance: watches that survive this stop and
 	// keep delivering to the stopped delegate (receiver-keyed). Reported on
 	// every delegate stop — admission-time as well as settle-time — because

@@ -12,21 +12,21 @@ import (
 )
 
 type delegateCreateResult struct {
-	DelegateID     string                      `json:"delegate_id"`
-	ChildSessionID string                      `json:"child_session_id"`
-	Type           string                      `json:"type"`
-	Status         string                      `json:"status"`
-	Name           string                      `json:"name,omitempty"`
-	AgentType      string                      `json:"agent_type,omitempty"`
-	Tools          []string                    `json:"tools,omitempty"`
-	Reason         string                      `json:"reason,omitempty"`
-	Resumable      *bool                       `json:"resumable,omitempty"`
-	TranscriptRef  string                      `json:"transcript_ref"`
-	Model          string                      `json:"model,omitempty"`
-	Sandbox        *delegateSandboxToolResult  `json:"sandbox,omitempty"`
-	Worktree       *delegateWorktreeToolResult `json:"worktree,omitempty"`
-	Warnings       []string                    `json:"warnings,omitempty"`
-	StartError     string                      `json:"error,omitempty"`
+	DelegateID     string                  `json:"delegate_id"`
+	ChildSessionID string                  `json:"child_session_id"`
+	Type           string                  `json:"type"`
+	Status         string                  `json:"status"`
+	Name           string                  `json:"name,omitempty"`
+	AgentType      string                  `json:"agent_type,omitempty"`
+	Tools          []string                `json:"tools,omitempty"`
+	Reason         string                  `json:"reason,omitempty"`
+	Resumable      *bool                   `json:"resumable,omitempty"`
+	TranscriptRef  string                  `json:"transcript_ref"`
+	Model          string                  `json:"model,omitempty"`
+	Sandbox        *delegateSandboxReport  `json:"sandbox,omitempty"`
+	Worktree       *delegateWorktreeReport `json:"worktree,omitempty"`
+	Warnings       []string                `json:"warnings,omitempty"`
+	StartError     string                  `json:"error,omitempty"`
 	// ArtifactsDir names the delegation's durable per-delegation artifacts
 	// directory so the controller can reference it in briefs and hand it to
 	// later seats. It dies with the delegate's own session state.
@@ -118,8 +118,8 @@ func delegateCreateTool(ctx context.Context, s *Session, args map[string]any, ma
 		Resumable:      result.Resumable,
 		TranscriptRef:  result.TranscriptRef,
 		Model:          result.Model,
-		Sandbox:        delegateSandboxToolResultFrom(result.Sandbox),
-		Worktree:       delegateWorktreeToolResultFrom(result.Worktree),
+		Sandbox:        result.Sandbox,
+		Worktree:       result.Worktree,
 		ArtifactsDir:   result.ArtifactsDir,
 		Warnings:       append([]string(nil), result.Warnings...),
 	}

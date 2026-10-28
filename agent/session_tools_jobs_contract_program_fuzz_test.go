@@ -111,7 +111,7 @@ func FuzzJobtoolsContractProgram(f *testing.F) {
 			Status:         string(jobstore.StatusRunning),
 			TranscriptRef:  "local:child-dlg_contract",
 			Model:          r.str(),
-			Sandbox:        delegateSandboxToolResultFrom(&delegateSandboxReport{Mode: "workspace-write", Network: r.booln()}),
+			Sandbox:        &delegateSandboxReport{Mode: "workspace-write", Network: r.booln()},
 		}
 		maxChars := 800 + r.intn(1200)
 		first, firstErr := marshalDelegateCreateResult(delegate, maxChars)

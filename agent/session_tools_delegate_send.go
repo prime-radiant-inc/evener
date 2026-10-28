@@ -44,45 +44,12 @@ type delegateSendResult struct {
 	// Worktree carries the isolation lane's path/branch/ahead/dirty state for
 	// an isolated delegate's terminal job (native worktree tools spec §9
 	// lifecycle step 3); nil for a non-isolated delegate.
-	Worktree          *delegateWorktreeToolResult `json:"worktree,omitempty"`
-	WaitIgnoredReason string                      `json:"wait_ignored_reason,omitempty"`
+	Worktree          *delegateWorktreeReport `json:"worktree,omitempty"`
+	WaitIgnoredReason string                  `json:"wait_ignored_reason,omitempty"`
 	// EarlierResults are results of the same delegate the caller had not
 	// yet received, oldest first, carried ahead of this one by a wait that
 	// collected them (#3906).
 	EarlierResults []delegateSendResult `json:"earlier_results,omitempty"`
-}
-
-// delegateWorktreeToolResult is the tool-facing shape of delegateWorktreeReport
-// (native worktree tools spec §9 lifecycle step 3).
-type delegateWorktreeToolResult struct {
-	Path    string `json:"path"`
-	Branch  string `json:"branch"`
-	HeadSHA string `json:"head_sha"`
-	Ahead   int    `json:"ahead_commits"`
-	Dirty   bool   `json:"dirty"`
-	// DisposalHint carries the spec §P2 completion nudge. It MUST be exported —
-	// an unexported field is silently dropped by encoding/json. Empty (and omitted) unless the receiving session has the dispose
-	// op and owns the delegate.
-	DisposalHint string `json:"disposal_hint,omitempty"`
-}
-
-func delegateWorktreeToolResultFrom(wt *delegateWorktreeReport) *delegateWorktreeToolResult {
-	if wt == nil {
-		return nil
-	}
-	return &delegateWorktreeToolResult{Path: wt.Path, Branch: wt.Branch, HeadSHA: wt.HeadSHA, Ahead: wt.Ahead, Dirty: wt.Dirty, DisposalHint: wt.DisposalHint}
-}
-
-type delegateSandboxToolResult struct {
-	Mode    string `json:"mode"`
-	Network bool   `json:"network"`
-}
-
-func delegateSandboxToolResultFrom(sb *delegateSandboxReport) *delegateSandboxToolResult {
-	if sb == nil {
-		return nil
-	}
-	return &delegateSandboxToolResult{Mode: sb.Mode, Network: sb.Network}
 }
 
 func marshalDelegateSendResult(res sendMessageResult, maxChars int) (any, error) {
@@ -118,7 +85,7 @@ func delegateSendResultFrom(res sendMessageResult) delegateSendResult {
 		RunEndedAt:          res.RunEndedAt,
 		LatestActivityAt:    res.LatestActivityAt,
 		CumulativeUsage:     res.CumulativeUsage,
-		Worktree:            delegateWorktreeToolResultFrom(res.Worktree),
+		Worktree:            res.Worktree,
 		WaitIgnoredReason:   res.WaitIgnoredReason,
 	}
 	if !res.RunningInBackground || res.TimedOut {

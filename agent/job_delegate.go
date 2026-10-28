@@ -41,18 +41,24 @@ type delegateArgs struct {
 	TaskList            []taskpkg.TaskTemplate
 }
 
+// delegateWorktreeReport is the isolation lane's state as the delegate tool
+// results (create, send, stop) carry it on the wire.
 type delegateWorktreeReport struct {
-	Path         string
-	Branch       string
-	HeadSHA      string
-	Ahead        int
-	Dirty        bool
-	DisposalHint string
+	Path    string `json:"path"`
+	Branch  string `json:"branch"`
+	HeadSHA string `json:"head_sha"`
+	Ahead   int    `json:"ahead_commits"`
+	Dirty   bool   `json:"dirty"`
+	// DisposalHint carries the completion nudge. It MUST be exported: an
+	// unexported field is silently dropped by encoding/json. Empty (and
+	// omitted) unless the receiving session has the dispose op and owns the
+	// delegate.
+	DisposalHint string `json:"disposal_hint,omitempty"`
 }
 
 type delegateSandboxReport struct {
-	Mode    string
-	Network bool
+	Mode    string `json:"mode"`
+	Network bool   `json:"network"`
 }
 
 type delegateResult struct {

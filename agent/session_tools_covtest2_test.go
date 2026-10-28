@@ -16,8 +16,8 @@ func TestMarshalDelegateCreateResult_ProgressiveTruncation(t *testing.T) {
 		Type:           "general",
 		Status:         "created",
 		Model:          strings.Repeat("m", 100),
-		Sandbox:        &delegateSandboxToolResult{Mode: strings.Repeat("s", 100)},
-		Worktree:       &delegateWorktreeToolResult{Branch: strings.Repeat("w", 100)},
+		Sandbox:        &delegateSandboxReport{Mode: strings.Repeat("s", 100)},
+		Worktree:       &delegateWorktreeReport{Branch: strings.Repeat("w", 100)},
 		Warnings:       []string{strings.Repeat("z", 100)},
 		StartError:     strings.Repeat("e", 100),
 	}
