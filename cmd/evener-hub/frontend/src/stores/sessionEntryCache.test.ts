@@ -1340,10 +1340,16 @@ it("preserves a longer peer read and its cursor after a shorter compatible read"
 });
 
 it("stores requested aliases separately from resolved identity with typed session metadata", async () => {
+  const now = 1_791_550_012_345;
   const name = `entry-cache-${crypto.randomUUID()}`;
   const factory = new IDBFactory();
   databases.push({ factory, name });
-  const cache = new SessionEntryCache({ indexedDB: factory, keyRange: IDBKeyRange, databaseName: name });
+  const cache = new SessionEntryCache({
+    indexedDB: factory,
+    keyRange: IDBKeyRange,
+    databaseName: name,
+    now: () => now,
+  });
   caches.push(cache);
   const resolvedIdentity = {
     clientId: "client-main",
@@ -1360,7 +1366,7 @@ it("stores requested aliases separately from resolved identity with typed sessio
     ],
     resolvedIdentity,
     savedAt: 1_791_550_000_000,
-    accessedAt: 1_791_550_012_345,
+    accessedAt: now,
     formatVersion: 1,
   };
   const batch = { historyKey, clearEpoch: 0, items: [], sessionMetadata: metadata };
