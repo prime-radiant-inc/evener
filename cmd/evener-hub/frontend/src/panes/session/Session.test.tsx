@@ -27,6 +27,7 @@ import { resetMobileViewportForTests } from "../../shell/useIsMobile";
 import { type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { activityPanelStore, resetActivityPanelStoreForTests } from "../../stores/activityPanel";
 import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
+import { setProductionEntryCacheForTests } from "../../stores/entryTranscriptRoutes";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { sessionActivitySnapshot } from "../../stores/sessionActivity";
@@ -44,7 +45,6 @@ import {
   resetThreadsStoreForTests,
   sendResumesModel,
   setMutationStorageForTests,
-  setProductionEntryCacheForTests,
   settleEntryTranscriptForTests,
   subscribeMutationPersistence,
   threadsStore,

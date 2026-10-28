@@ -49,6 +49,7 @@ import { resetAuthStatusesStoreForTests } from "../stores/authStatuses";
 import * as backgroundTranscriptsModule from "../stores/backgroundTranscripts";
 import { connectionStore } from "../stores/connection";
 import { credentialsStore } from "../stores/credentials";
+import { productionEntryTranscriptForTests, setProductionEntryCacheForTests } from "../stores/entryTranscriptRoutes";
 import { selectNeedsYouRows } from "../stores/navigation/selectors";
 import { initNavigation, navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
 import { resetPrefsStoreForTests } from "../stores/prefs";
@@ -63,7 +64,7 @@ import { resetSettingsHostForTests, settingsHostStore } from "../stores/settings
 import { resetSettingsOverviewStoreForTests } from "../stores/settingsOverview";
 import { holdNextWriteTransaction } from "../stores/testing/stalledIndexedDB";
 import * as threadsModule from "../stores/threads";
-import { resetThreadsStoreForTests, setProductionEntryCacheForTests, threadsStore } from "../stores/threads";
+import { resetThreadsStoreForTests, threadsStore } from "../stores/threads";
 import { readModuleCss } from "../styles/cssBlock";
 import { emptyStateReasons } from "../widgets/emptystate/emptyStateTestUtils";
 import { AppShell } from "./AppShell";
@@ -1354,7 +1355,7 @@ async function expectHealthyBackgroundUsable() {
     healthyView = render(<AppShell client={healthyClient} />);
     await screen.findByText("No session open");
     await waitFor(() => expect(membershipReads(healthyClient)).toBeGreaterThanOrEqual(1));
-    await waitFor(() => expect(threadsModule.productionEntryTranscriptForTests("local:s1").baseline).toBeDefined());
+    await waitFor(() => expect(productionEntryTranscriptForTests("local:s1").baseline).toBeDefined());
     healthyView.unmount();
     healthyView = undefined;
     await healthyOwners.joinDisposals();
@@ -1583,7 +1584,7 @@ test("a client replacement holds the predecessor's real release cleanup and keep
     // valid content, so its release drains a real cache write.
     await waitFor(() => expect(membershipReads(predecessor)).toBeGreaterThanOrEqual(1));
     await waitFor(() => expect(threadsStore.getState().threads.get("local:s1")?.history?.incarnation).toBeDefined());
-    await waitFor(() => expect(threadsModule.productionEntryTranscriptForTests("local:s1").baseline).toBeDefined());
+    await waitFor(() => expect(productionEntryTranscriptForTests("local:s1").baseline).toBeDefined());
     expect(owners.activeCount()).toBe(1);
     const predecessorRecord = owners.records[0];
     if (!predecessorRecord) throw new Error("no predecessor owner was tracked");
@@ -1641,13 +1642,11 @@ test("a client replacement holds the predecessor's real release cleanup and keep
         appliedGeneration: refreshGeneration,
       }),
     );
-    const historyKey = threadsModule.productionEntryTranscriptForTests("local:s1").historyKey;
+    const historyKey = productionEntryTranscriptForTests("local:s1").historyKey;
     if (!historyKey) throw new Error("successor has no resolved entry history identity");
     await waitFor(() =>
       expect(
-        JSON.stringify(
-          threadsModule.productionEntryTranscriptForTests("local:s1").repository?.retainedInventoryForTesting(),
-        ),
+        JSON.stringify(productionEntryTranscriptForTests("local:s1").repository?.retainedInventoryForTesting()),
       ).toContain("successor-content"),
     );
     // R36: the accepted ordinary background-only contract excludes bodies from
@@ -1713,7 +1712,7 @@ test("an early failure before the predecessor release write joins real cleanup w
     await screen.findByText("No session open");
     await waitFor(() => expect(membershipReads(predecessor)).toBeGreaterThanOrEqual(1));
     await waitFor(() => expect(threadsStore.getState().threads.get("local:s1")?.history?.incarnation).toBeDefined());
-    await waitFor(() => expect(threadsModule.productionEntryTranscriptForTests("local:s1").baseline).toBeDefined());
+    await waitFor(() => expect(productionEntryTranscriptForTests("local:s1").baseline).toBeDefined());
     expect(owners.activeCount()).toBe(1);
     // A valid resident model exists and no release write has been held yet, so
     // the injected failure lands BEFORE the first hold is consumed.
@@ -1760,7 +1759,7 @@ test("a failure after the predecessor release entry joins the held predecessor b
     await screen.findByText("No session open");
     await waitFor(() => expect(membershipReads(predecessor)).toBeGreaterThanOrEqual(1));
     await waitFor(() => expect(threadsStore.getState().threads.get("local:s1")?.history?.incarnation).toBeDefined());
-    await waitFor(() => expect(threadsModule.productionEntryTranscriptForTests("local:s1").baseline).toBeDefined());
+    await waitFor(() => expect(productionEntryTranscriptForTests("local:s1").baseline).toBeDefined());
     expect(owners.activeCount()).toBe(1);
     const predecessorRecord = owners.records[0];
     if (!predecessorRecord) throw new Error("no predecessor owner was tracked");
@@ -3749,7 +3748,7 @@ test("closes the client it constructed itself on unmount", async () => {
       resetNavigationStoreForTests();
       initNavigation(wired!, { version: 1, generationId: "generation_test", sequence: 0, readVersions: [3] });
     });
-    await waitFor(() => expect(threadsModule.productionEntryTranscriptForTests("local:s1").baseline).toBeDefined());
+    await waitFor(() => expect(productionEntryTranscriptForTests("local:s1").baseline).toBeDefined());
     await owners.records[0]!.owner.settled();
     final = true;
     const boundary = request.mock.calls.length;

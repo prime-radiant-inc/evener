@@ -32,6 +32,7 @@ import { recoveryComposerDraft } from "../panes/session/composer/recovery/recove
 import { resetSubagentModuleStoreForTests } from "../panes/session/transcript/tools/subagentModuleStore";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
 import { connectionStore } from "./connection";
+import { setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { editHumanNote, syncHumanNote, useHumanNoteDraft } from "./humanNoteDrafts";
 import { IDBUpgradeError } from "./idbConnection";
 import type { MutationOutboxRecord } from "./mutationOutbox";
@@ -62,7 +63,6 @@ import {
   retryBlockedMutation,
   sendResumesModel,
   setMutationStorageForTests,
-  setProductionEntryCacheForTests,
   subscribeMutationPersistence,
   threadsStore,
 } from "./threads";

@@ -6,7 +6,8 @@ import type { ThreadModel } from "@evener/appwire-client";
 import { sessionActionError } from "@evener/appwire-client";
 import { useCallback, useEffect, useLayoutEffect, useState, useSyncExternalStore } from "react";
 import { useConnectionStore } from "../../../stores/connection";
-import { olderTranscriptPageKey, useThreadsStore } from "../../../stores/threads";
+import { olderTranscriptPageKey } from "../../../stores/entryTranscriptRoutes";
+import { useThreadsStore } from "../../../stores/threads";
 import type { TranscriptReadView } from "./transcriptReadView";
 
 export interface UseTranscriptResult {

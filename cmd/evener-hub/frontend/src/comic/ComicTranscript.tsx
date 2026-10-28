@@ -13,7 +13,8 @@ import { isAtBottom } from "../panes/session/transcript/flow/scrollMetrics";
 import { useTranscriptScrollKeys } from "../panes/session/transcript/flow/useTranscriptScrollKeys";
 import { useChromeStore } from "../shell/chromeStore";
 import { useIsMobile } from "../shell/useIsMobile";
-import { isEntryTranscriptLocalOpening, threadsStore } from "../stores/threads";
+import { isEntryTranscriptLocalOpening } from "../stores/entryTranscriptRoutes";
+import { threadsStore } from "../stores/threads";
 import {
   Button,
   type CommittedVirtualListLayout,

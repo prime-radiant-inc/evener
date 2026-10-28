@@ -9,11 +9,11 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { resetPendingTurnsStoreForTests } from "../panes/session/composer/queue/pendingTurnsStore";
 import { connectReadyFakeClient } from "../testing/connectionTestUtils";
 import { connectionStore } from "./connection";
+import { productionEntryTranscriptForTests } from "./entryTranscriptRoutes";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { isResumeOnly } from "./recoveryFence";
 import {
   notifyReadyForMutationDispatch,
-  productionEntryTranscriptForTests,
   resetThreadsStoreForTests,
   setMutationStorageForTests,
   settleEntryTranscriptForTests,

@@ -1,5 +1,6 @@
 import { type RefObject, useCallback, useLayoutEffect, useReducer, useRef } from "react";
-import { isEntryTranscriptLocalOpening, threadsStore } from "../../../../stores/threads";
+import { isEntryTranscriptLocalOpening } from "../../../../stores/entryTranscriptRoutes";
+import { threadsStore } from "../../../../stores/threads";
 import type { CommittedVirtualListLayout, VirtualListHandle } from "../../../../widgets";
 import type { TranscriptReadView } from "../transcriptReadView";
 import { isAtBottom, readScrollMetrics, type ScrollMetrics } from "./scrollMetrics";
