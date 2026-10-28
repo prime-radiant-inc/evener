@@ -863,7 +863,7 @@ rendered and was reconciled" from "pending chip never rendered." A chip
 that is still present after the settle window is the failure signal:
 reconciliation is driven by the `clientMutationId` coming back on
 `thread/queueChanged`, `evener/steering/injected`, `item/*` or `turn/*`
-(`stores/threads.ts:797-810`), so a stuck chip means the ack never
+(the notification handling in `stores/threads.ts`), so a stuck chip means the ack never
 arrived.
 
 ### Probing without a renderer handle

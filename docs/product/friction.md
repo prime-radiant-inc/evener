@@ -144,7 +144,7 @@ Native open-session rehydration also retains open status on failure, outside its
 initial-read retry loop. The server can repair a projection on a later read.
 
 **Evidence.** Browser
-[hydrateAndSubscribe](../../cmd/evener-hub/frontend/src/stores/threads.ts#L1818),
+[refreshTrackedThread](../../cmd/evener-hub/frontend/src/stores/threads.ts),
 native [rehydrate](../../mobile-native/src/conversation/state/conversation.ts) and
 [entry read actor](../../mobile-native/src/session/nativeConversationSessions.ts#L417), and server
 [recoverForRead](../../server/thread_history.go#L355) expose the ownership gap.
@@ -427,15 +427,15 @@ no in-memory ordering guard, so the per-ref ordering gap applies without
 a refusal, and its dispatch gate does not apply to the fallback. With no
 ready connection the storage error is the send's failure.
 
-**Evidence.** [enqueueMutationIntent](../../cmd/evener-hub/frontend/src/stores/threads.ts#L2999)
-and its [direct-fallback branch and ordering guard](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3092);
-[dispatchMutationDirectly](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3303)
+**Evidence.** [enqueueMutationIntent](../../cmd/evener-hub/frontend/src/stores/threads.ts)
+and its [direct-fallback branch and ordering guard](../../cmd/evener-hub/frontend/src/stores/threads.ts);
+[dispatchMutationDirectly](../../cmd/evener-hub/frontend/src/stores/threads.ts)
 mints one `clientMutationId` before its retry ladder; the missing fence is the
 [click-time stop epoch](../../appwire-client/typescript/state/mutation/outbox.ts#L73)
 the enqueue compares against. The [reconcile
-classification](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3865)
+classification](../../cmd/evener-hub/frontend/src/stores/threads.ts)
 splits the storage-caused failure from a genuine one, and
-[currentDispatchClient](../../cmd/evener-hub/frontend/src/stores/threads.ts#L1150)
+[currentDispatchClient](../../cmd/evener-hub/frontend/src/stores/threads.ts)
 fences a storage-blocked ref everywhere except the send fallback's own re-earn.
 [NativeMutationRuntime.submit](../../mobile-native/src/nativeMutationRuntime.ts)
 and `isSqliteStorageFailure` in
