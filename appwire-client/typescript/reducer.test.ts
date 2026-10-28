@@ -16,9 +16,6 @@ import {
   encodeTranscriptItem,
   hydrateThread,
   imageSessionRouteForSession,
-  itemTextPresence,
-  markItemIdentityOnly,
-  markItemTextOmitted,
   mergeOlderItemPage,
   mergeTranscriptItemVersioned,
   mergeTranscriptTurnVersioned,
@@ -30,6 +27,7 @@ import {
   resolvePendingEscalation,
 } from "./reducer";
 import { itemAt, turnAt } from "./testing/modelAccessors";
+import { itemTextPresence, markItemIdentityOnly, markItemTextOmitted } from "./transcriptItems";
 import type {
   AnyNotification,
   EvenerDelegateInfo,
