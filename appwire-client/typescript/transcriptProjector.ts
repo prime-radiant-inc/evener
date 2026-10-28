@@ -9,7 +9,6 @@ import {
 } from "./itemFailure";
 import { MEMORY_CONTEXT_EVENT_KIND } from "./memoryContext";
 import type { ItemModel, ThreadModel, TurnModel } from "./model";
-import { comparePositions } from "./reducer";
 import { isParentSteer } from "./steeringLabels";
 import { ERROR_EVENT_KIND } from "./systemEventCopy";
 import {
@@ -22,6 +21,7 @@ import {
   sharedNotesVisible,
   type TranscriptDisplayConfigV1,
 } from "./transcriptDisplayConfig";
+import { comparePositions } from "./transcriptHistory";
 import { THREAD_ITEM_EVENT_KINDS } from "./types.gen";
 import { isInformationalWarning } from "./warnings";
 import { hasWarningText } from "./warningText";

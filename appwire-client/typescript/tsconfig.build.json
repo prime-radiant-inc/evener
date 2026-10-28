@@ -113,6 +113,7 @@
     "transcriptDisplayConfig.ts",
     "transcriptProjector.ts",
     "retryEligibility.ts",
+    "transcriptHistory.ts",
     "transcriptItems.ts",
     "transcriptValidators.ts",
     "turnContinuation.ts",

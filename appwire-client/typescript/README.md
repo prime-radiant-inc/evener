@@ -207,7 +207,10 @@ the omitted-text and identity-only marks, `wireItemToModel`, the tool-id
 predicates) in `transcriptItems.ts`; both are leaves over `model` and
 `types.gen`. The tool-call fold and turn/page history merge
 (`mergeTurnHistory*`, `mergeOlderItemPageWithFolds`, `itemIdentityMatches`) live in
-`turnHistoryMerge.ts`, which imports `transcriptItems` only. Further
+`turnHistoryMerge.ts`, which imports `transcriptItems` only. Versioned history and
+the live overlay (history state, versioned merges, overlay display, read dispositions,
+`applyReadResponse`/`applyReadModel`) live in `transcriptHistory.ts`, which imports
+`turnHistoryMerge` and `transcriptItems`. Further
 reducer pieces follow the same rule: a split-out module never imports
 `reducer.ts`.
 
