@@ -131,7 +131,7 @@ import { createVersionedChannel, makeSourceId, type VersionedChannelMessage } fr
 export type { InputAttachment } from "@evener/appwire-client";
 
 // InputAttachment is this store's real-attachment shape: base64 bytes, not a
-// hosted URL. The wire's InputItem (appwire/types.go:561-570) supports EITHER
+// hosted URL. The wire's InputItem (appwire/types_turn.go) supports EITHER
 // a Data+MediaType+Name triple OR a URL string (both fields are independently
 // optional on the same struct), but nothing in this codebase ever constructs
 // a url-based InputItem (verified: no caller of send/steer/queue/drainAsSteer
@@ -149,8 +149,8 @@ export type { InputAttachment } from "@evener/appwire-client";
 // array position. buildInput drops it when it assembles the wire input.
 export type ComposerMutationRoute = "send" | "queue" | "steer" | "drain";
 
-// ForkFromTurnOptions mirrors ThreadForkParams verbatim (appwire/types.go:
-// 692-711) minus ref (a separate positional argument, like every other
+// ForkFromTurnOptions mirrors ThreadForkParams verbatim (appwire/types_turn.go)
+// minus ref (a separate positional argument, like every other
 // action here). Fork and aside are the SAME wire method with mutually
 // exclusive param sets (aside excludes sourceItemKey/editedInput/deferInput/
 // label per that struct's own doc comment) - the Go type itself is one flat

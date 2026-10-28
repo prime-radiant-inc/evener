@@ -328,7 +328,7 @@ export interface ThreadModel {
   visionModel: string;
   askPending: boolean;
   // Surface-on-entry snapshot of blocked sandbox-exemption approval cards
-  // (M7) — appwire/types.go's ThreadEvener.PendingEscalations doc comment: "a
+  // (M7) — appwire/types_thread.go's ThreadEvener.PendingEscalations doc comment: "a
   // HUMAN-CLIENT field only ... never part of the model's transcript or any
   // model-visible projection." THREAD-level, never a turn item; always an
   // array (hydrateThread defaults an absent wire value to []).
@@ -384,7 +384,7 @@ export interface ThreadModel {
   // reasoning, tool call) - see reducer.ts's applyNotification.
   modelRetry?: ModelRetryState;
   // Wave 5 T1: the following are all sourced from thread.evener
-  // (appwire/types.go's EvenerThread, lines 223-274) and are SNAPSHOT-ONLY -
+  // (appwire/types_thread.go's EvenerThread) and are SNAPSHOT-ONLY -
   // hydrateThread populates them, and applyNotification updates them ONLY
   // where a real notification actually carries the field (see each field's
   // own note below); everything else here is stale until the next

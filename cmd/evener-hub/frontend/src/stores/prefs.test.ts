@@ -24,11 +24,10 @@ beforeAll(() => {
 
 // Every key this store reads/writes lives under this prefix - the plan's own
 // "evener.prefs.<name>" contract (docs/superpowers/plans/
-// 2026-07-21-webui-rewrite-wave7-settings.md). enterToSend/showCost are
-// PINNED exact names (the composer and transcript read them through this
-// store), so those two get their own named contract test below rather
-// than relying only on the generic round-trip coverage every other field
-// gets.
+// 2026-07-21-webui-rewrite-wave7-settings.md). enterToSend is a
+// PINNED exact name (the composer reads it through this store), so it gets
+// its own named contract test below rather than relying only on the generic
+// round-trip coverage every other field gets.
 const KEY = (name: string) => `evener.prefs.${name}`;
 
 beforeEach(() => {
@@ -55,31 +54,8 @@ describe("defaults (empty localStorage)", () => {
   test("fontSize defaults to m", () => {
     expect(prefsStore.getState().fontSize).toBe("m");
   });
-  // promptLoaded and roundTimings are the two transcript toggles that default
-  // ON. promptLoaded governs items the transcript already renders
-  // unconditionally (the system-prompt scaffold and each "prompt loaded"
-  // notice); defaulting it off would delete those for every user who never
-  // opened Settings. roundTimings ships on per the five-participant study
-  // (docs/web-ui/ux-plan-2026-07.md): its absence was the most-repeated
-  // complaint, independently, from four of the five participants. The other
-  // three gate lines that do not exist until you ask for them.
-  test("transcript toggles default off, except promptLoaded and roundTimings", () => {
-    expect(prefsStore.getState().transcript).toEqual({
-      roundTimings: true,
-      tokenCounts: false,
-      hookExitsAll: false,
-      hookExitsNormal: false,
-      promptLoaded: true,
-    });
-  });
   test("enterToSend defaults to false", () => {
     expect(prefsStore.getState().enterToSend).toBe(false);
-  });
-  // The per-turn transcript meta line is opt-in in all three of its
-  // segments (duration/tokens/cost); the session's total cost in the footer
-  // strip is not gated by this pref.
-  test("showCost defaults to false", () => {
-    expect(prefsStore.getState().showCost).toBe(false);
   });
   // 2026-08-14 reversal (docs/web-ui/decisions.md): title-count is now the
   // one channel that defaults ON - the attention system was otherwise
@@ -122,47 +98,20 @@ describe("hydration from existing localStorage", () => {
     expect(prefsStore.getState().fontSize).toBe("xl");
   });
 
-  test("reads previously stored transcript toggles independently", () => {
-    localStorage.setItem(KEY("transcriptRoundTimings"), "1");
-    localStorage.setItem(KEY("transcriptTokenCounts"), "1");
-    localStorage.setItem(KEY("transcriptHookExitsNormal"), "1");
-    resetPrefsStoreForTests();
-    expect(prefsStore.getState().transcript).toEqual({
-      roundTimings: true,
-      tokenCounts: true,
-      hookExitsAll: false,
-      // Stored nothing for this one, so it falls back to its ON default.
-      promptLoaded: true,
-      hookExitsNormal: true,
-    });
-  });
-
-  // The mirror of the case above: promptLoaded's stored "0" has to WIN over its
-  // ON default, or turning it off would not survive a reload.
-  test("a stored promptLoaded of 0 beats its on-by-default", () => {
-    localStorage.setItem(KEY("transcriptPromptLoaded"), "0");
-    resetPrefsStoreForTests();
-    expect(prefsStore.getState().transcript.promptLoaded).toBe(false);
-  });
-
-  // Both default off, so "1" is the value that actually proves the stored
+  // Defaults off, so "1" is the value that actually proves the stored
   // value wins over the fallback rather than coinciding with it.
-  test("reads a previously stored enterToSend/showCost", () => {
+  test("reads a previously stored enterToSend", () => {
     localStorage.setItem(KEY("enterToSend"), "1");
-    localStorage.setItem(KEY("showCost"), "1");
     resetPrefsStoreForTests();
     expect(prefsStore.getState().enterToSend).toBe(true);
-    expect(prefsStore.getState().showCost).toBe(true);
   });
 
-  // Proves "0" never decodes truthy - not branch-reached for either pref:
+  // Proves "0" never decodes truthy - not branch-reached:
   // the false fallback coincides with "0"'s own decoding.
-  test("reads a previously stored enterToSend/showCost of '0' as false", () => {
+  test("reads a previously stored enterToSend of '0' as false", () => {
     localStorage.setItem(KEY("enterToSend"), "0");
-    localStorage.setItem(KEY("showCost"), "0");
     resetPrefsStoreForTests();
     expect(prefsStore.getState().enterToSend).toBe(false);
-    expect(prefsStore.getState().showCost).toBe(false);
   });
 
   test("reads previously stored notification toggles and loud scope", () => {
@@ -212,9 +161,9 @@ describe("corrupted/unrecognized localStorage values fall back to the documented
     // a truthy "something is stored here" the way a naive `!== null` read
     // would. readBool's fallback ARGUMENT is what carries the other
     // direction, and it is a plain parameter shared by every caller.
-    localStorage.setItem(KEY("showCost"), "yes");
+    localStorage.setItem(KEY("enterToSend"), "yes");
     resetPrefsStoreForTests();
-    expect(prefsStore.getState().showCost).toBe(false);
+    expect(prefsStore.getState().enterToSend).toBe(false);
   });
 
   // Pins the exact regression this store must never reintroduce: the
@@ -244,13 +193,13 @@ describe("transcriptMeasure (Settings -> Theme -> Transcript width)", () => {
   });
 });
 
-describe("pinned key contract: evener.prefs.enterToSend / evener.prefs.showCost", () => {
+describe("pinned key contract: evener.prefs.enterToSend", () => {
   // This is a live contract reachable from Settings today, not a
-  // hypothetical one - Settings -> Display's own setEnterToSend/setShowCost
-  // write both keys, and Composer.tsx reads enterToSend from this same
+  // hypothetical one - Settings -> Display's own setEnterToSend
+  // writes the key, and Composer.tsx reads enterToSend from this same
   // store. The "1"/"0" VALUE ENCODING (this store's own uniform encoding
   // for every persisted boolean - readBool/writeBool, shared across
-  // enterToSend, showCost, and every transcript/notifications member, not
+  // enterToSend and every notifications member, not
   // JS's "true"/"false") already broke this contract once during
   // development: commit 932eeddca ("fix boolean
   // encoding to '1'/'0' (cross-wave contract break)") fixed readBool/
@@ -263,24 +212,17 @@ describe("pinned key contract: evener.prefs.enterToSend / evener.prefs.showCost"
     expect(localStorage.getItem("evener.prefs.enterToSend")).toBe("0");
   });
 
-  test("setShowCost writes the literal key evener.prefs.showCost with '1'/'0' encoding", () => {
-    prefsStore.getState().setShowCost(false);
-    expect(localStorage.getItem("evener.prefs.showCost")).toBe("0");
-    prefsStore.getState().setShowCost(true);
-    expect(localStorage.getItem("evener.prefs.showCost")).toBe("1");
-  });
-
   // The pin covers the key NAME and the value ENCODING. A browser that has
   // ever toggled the switch keeps whatever it stored, whatever the default
   // for an UNSET key happens to be - so a default change can never silently
   // flip an existing user's preference.
   test("a stored value wins over the default in both directions", () => {
-    localStorage.setItem("evener.prefs.showCost", "1");
+    localStorage.setItem("evener.prefs.enterToSend", "1");
     resetPrefsStoreForTests();
-    expect(prefsStore.getState().showCost).toBe(true);
-    localStorage.setItem("evener.prefs.showCost", "0");
+    expect(prefsStore.getState().enterToSend).toBe(true);
+    localStorage.setItem("evener.prefs.enterToSend", "0");
     resetPrefsStoreForTests();
-    expect(prefsStore.getState().showCost).toBe(false);
+    expect(prefsStore.getState().enterToSend).toBe(false);
   });
 });
 
@@ -504,29 +446,6 @@ describe("setFontSize", () => {
   });
 });
 
-describe("setTranscriptStatus", () => {
-  test("persists under a per-key name and updates only the targeted field", () => {
-    prefsStore.getState().setTranscriptStatus("hookExitsAll", true);
-    expect(localStorage.getItem(KEY("transcriptHookExitsAll"))).toBe("1");
-    expect(prefsStore.getState().transcript).toEqual({
-      // Untouched by this call, so it stays at its shipped default (on).
-      roundTimings: true,
-      tokenCounts: false,
-      hookExitsAll: true,
-      hookExitsNormal: false,
-      promptLoaded: true,
-    });
-  });
-
-  test("tokenCounts persists under its own evener.prefs.transcriptTokenCounts key", () => {
-    prefsStore.getState().setTranscriptStatus("tokenCounts", true);
-    expect(localStorage.getItem(KEY("transcriptTokenCounts"))).toBe("1");
-    expect(prefsStore.getState().transcript.tokenCounts).toBe(true);
-    // Untouched by this call, so it stays at its shipped default (on).
-    expect(prefsStore.getState().transcript.roundTimings).toBe(true);
-  });
-});
-
 describe("setNotification", () => {
   test("persists under a per-key name and updates only the targeted field", () => {
     prefsStore.getState().setNotification("favicon", true);
@@ -585,7 +504,6 @@ describe("localStorage unavailable (e.g. Safari private mode)", () => {
     });
     expect(() => resetPrefsStoreForTests()).not.toThrow();
     expect(prefsStore.getState().theme).toBe("system");
-    expect(prefsStore.getState().showCost).toBe(false);
     // Migrated from W5's interim hook (enterToSendPref.test.ts, deleted at the
     // absorb-a2 merge): "degrades to off when localStorage throws" - readBool
     // shares the exact same readRaw try/catch this asserts generically above,

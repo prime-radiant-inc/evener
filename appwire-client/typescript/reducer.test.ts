@@ -5729,8 +5729,8 @@ test("thread/vision-model/changed updates visionModel", () => {
   expect(model.visionModel).toBe("anthropic/claude-haiku-4-5");
 });
 
-// Wave 5 T1: thread/model/changed's real payload (appwire/types.go's
-// ThreadModelChangedParams, lines 867-874) carries reasoningEffortLevels/
+// Wave 5 T1: thread/model/changed's real payload (appwire/types_turn.go's
+// ThreadModelChangedParams) carries reasoningEffortLevels/
 // supportsReasoning alongside modelProvider/model — "describe the NEW
 // profile so a client's effort picker re-keys without a separate model/list
 // round trip" (that struct's own doc comment), so a model switch replaces
@@ -6729,7 +6729,7 @@ test("item/completed inserting a never-started item has no argumentsJSON (no cra
   expect(item.argumentsJSON).toBeUndefined();
 });
 
-// pendingEscalations (M7): appwire/types.go's ThreadEvener.PendingEscalations
+// pendingEscalations (M7): appwire/types_thread.go's ThreadEvener.PendingEscalations
 // doc comment calls it the "surface-on-entry snapshot ... so a client
 // entering / reconnecting to / not-having-seen-live this session surfaces
 // the card(s)" and rules it a HUMAN-CLIENT field only, never part of the
@@ -6891,7 +6891,7 @@ test("a job notification for another thread leaves the model untouched", () => {
 
 // Wave 5 T1: ThreadModel gains capabilities/goal/context*/usage/workMillis/
 // activeTurnStartedAt/reasoningEffortLevels/supportsReasoning, all hydrated
-// from thread.evener (appwire/types.go's EvenerThread, lines 223-274). None of
+// from thread.evener (appwire/types_thread.go's EvenerThread). None of
 // these except reasoningEffortLevels/supportsReasoning (via
 // thread/model/changed, tested above) and reasoningEffort (via
 // thread/reasoning-effort/changed, tested above) ever get a live push - see
@@ -7126,7 +7126,7 @@ test('"evener/sandbox/escalation/requested" appends a new card with full field m
 test('"evener/sandbox/escalation/requested" with an already-present escalationId replaces that entry IN PLACE, index-preserving — not a filter-then-append', () => {
   // Snapshot-then-subscribe overlap: hydration's pendingEscalations snapshot
   // and a live requested notification can race and both deliver the same
-  // card (appwire/types.go's PendingEscalations doc comment). Last write
+  // card (appwire/types_thread.go's PendingEscalations doc comment). Last write
   // wins — replace in place, don't drop the update or duplicate the entry.
   //
   // A single seeded entry can't tell an index-preserving replace apart from

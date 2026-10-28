@@ -42,7 +42,7 @@ func FuzzDecodeSubscriptionAdmissionParams(f *testing.F) {
 			Method: subscriptionAdmissionMethods[idx],
 			Params: params,
 		}}
-		decoded, ok := decodeSubscriptionAdmissionParams(msg)
+		decoded, ok, _ := decodeSubscriptionAdmissionParams(msg)
 		if !ok {
 			return
 		}

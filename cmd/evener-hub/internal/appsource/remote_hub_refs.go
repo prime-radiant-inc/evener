@@ -180,7 +180,7 @@ func maskRemoteThreadCapabilities(remote, forwarded appwire.ThreadCapabilities) 
 // translateThreadRaw plus the status-frame branch of translateNotification cover
 // both:
 //
-//   - EvenerThread.Capabilities (appwire/types.go), nested as
+//   - EvenerThread.Capabilities (appwire/types_thread.go), nested as
 //     "capabilities" inside the "evener" object of every Thread — the snapshot's
 //     thread and the one a thread/started notification carries.
 //   - ThreadStatusChangedParams.Capabilities, the top-level "capabilities" of
