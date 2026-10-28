@@ -757,7 +757,7 @@ from the assertion that fails:
 
 - A store fixture's `thread/read` handler must echo the request generation
   (`requestGeneration: params.requestGeneration ?? …`), or the response is
-  thrown away: `readDisposition` (appwire-client/typescript/reducer.ts)
+  thrown away: `readDisposition` (appwire-client/typescript/transcriptHistory.ts)
   discards a latest-window response whose `requestGeneration` is older than
   the held history's `issuedGeneration`, so a handler returning a static
   fixture with a stale default generation turns the read into a silent no-op
@@ -1021,7 +1021,7 @@ and wait for the real evidence global separately, with its own timeout.
 
 The full-stack skill guard is a different KIND of check:
 
-- **`web-skillguard`** (`make test-web-browser`'s last step;
+- **`web-skillguard`** (a production-build-dependent `make test-web-browser` check;
   `cmd/evener-hub/skill_composer_browser_test.go` driving
   `cmd/evener-hub/frontend/scripts/skillguard/run.mjs`, behind the `browserguard`
   build tag) proves canonical SKILL SELECTION through the real stack: the
@@ -1039,6 +1039,17 @@ The full-stack skill guard is a different KIND of check:
   the embedded dist): `make test-web-browser` builds it first via `build-web`, and
   the gate (`evener-dev dev web-browser-guards`, cmd/evener-dev/webbrowser.go)
   still builds one when the dist is missing rather than skipping.
+
+- **`web-comicguard`** runs
+  `go test -tags browserguard ./cmd/evener-hub -run '^TestComicChatBrowser$' -count=1`.
+  Its registered build dependency prevents launch after a failed frontend build;
+  interruption waits for the Go fixture's daemon/browser cleanup. The real hub,
+  daemon transcripts and Chrome drive the alternate Comic reader and shared root
+  interactions. Only the external provider is scripted. Default runs inspect actual
+  glyphs from the bundled historical Comic Sans font, including synthesized bold.
+  `EVENER_COMIC_BLOCK_FONTS=1` exercises failed-font fallback and usable controls.
+  See the [driver guide](../../cmd/evener-hub/frontend/scripts/comicguard/README.md)
+  for commands, retained evidence and the limits of viewport emulation.
 
 These guards are owned by `make test-web-browser`, which is required by the CI web
 job and remains separate from `make lint` and `make test` because it needs Chrome.

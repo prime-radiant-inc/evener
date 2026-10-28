@@ -1,10 +1,10 @@
 import { testThread } from "../threadTestUtils";
 import "fake-indexeddb/auto";
 import type { ThreadReadResponse } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { connectReadyFakeClient } from "../testing/connectionTestUtils";
 import { connectionStore } from "./connection";
 import { SessionEntryCache } from "./sessionEntryCache";
 import { resetThreadsStoreForTests, setProductionEntryCacheForTests, threadsStore, useThreadsStore } from "./threads";
@@ -27,12 +27,7 @@ afterEach(() => {
   cache.close();
   vi.restoreAllMocks();
 });
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  fake.on("thread/unsubscribe", () => ({}));
-  connectionStore.getState().connect(fake);
-  return fake;
-}
+const connectFakeClient = () => connectReadyFakeClient((fake) => fake.on("thread/unsubscribe", () => ({})));
 
 function readResponse(ref: string, requestGeneration?: number): ThreadReadResponse {
   return {

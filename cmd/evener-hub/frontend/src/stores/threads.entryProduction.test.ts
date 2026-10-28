@@ -20,6 +20,7 @@ import { deleteSession } from "../shell/rail/actions";
 import { emitHistoryUpdated as emitHistoryUpdatedFor } from "../threadTestUtils";
 import { VirtualList, type VirtualListHandle } from "../widgets";
 import { installBackgroundTranscriptOptionsForTests } from "./backgroundTranscriptOptions";
+import { setCacheChannelFactoryForTests } from "./cacheLifetime";
 import { connectionStore } from "./connection";
 import { entryWriteAdmissionFor } from "./entryWriteAdmission";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
@@ -39,7 +40,6 @@ import {
   markCacheSessionsDeleted,
   productionEntryTranscriptForTests,
   resetThreadsStoreForTests,
-  setCacheChannelFactoryForTests,
   setProductionEntryCacheForTests,
   setSessionCacheStalledOpenForTests,
   settleBackgroundTranscriptsForTests,
@@ -2416,6 +2416,57 @@ it("a foreground opening that misses its bounded lookup twice still converges th
 
 it("a foreground opening that misses its bounded lookup three times still converges the recorded display", () =>
   convergesAfterMissedLookups(3));
+
+// The source read's bodies make the display complete before the open's
+// lookup misses its deadline, so the display itself shows no stranding. The
+// miss disposed the pane's reader, though, and the repository then reclaims the
+// bodies it no longer has a reader for: the next publication (any live update)
+// would put that body-suppressed model on a pane that still holds the session.
+// The held pane must keep its bodies through that publication.
+it("a held pane keeps its displayed bodies through a live update after its opening missed the lookup deadline", async () => {
+  const storage = cache();
+  let withheldWindowReads = 2;
+  const realGetLatestWindow = storage.getLatestWindow.bind(storage);
+  (storage as unknown as { getLatestWindow: unknown }).getLatestWindow = (...args: unknown[]) => {
+    if (withheldWindowReads > 0) {
+      withheldWindowReads -= 1;
+      return new Promise(() => {}) as ReturnType<typeof realGetLatestWindow>;
+    }
+    return realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>)) as ReturnType<
+      typeof realGetLatestWindow
+    >;
+  };
+  setProductionEntryCacheForTests(storage);
+  const ref = "local:a";
+  const read = response(
+    ref,
+    Array.from({ length: 225 }, (_, index) => turn(`row-${index + 1}`, index + 1)),
+  );
+  read.snapshot = { incarnation: "inc-a", length: 225 };
+  const client = connect(read);
+  const bodies = () =>
+    threadsStore
+      .getState()
+      .threads.get(ref)
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.text)
+      .filter(Boolean);
+  setSessionCacheStalledOpenForTests(250);
+  try {
+    await threadsStore.getState().ensureThread(ref);
+    await settleEntryTranscriptForTests(ref);
+    await settleBackgroundTranscriptsForTests();
+    emitHistoryUpdated(client, {
+      snapshot: { incarnation: "inc-a", length: 226 },
+      items: turn("row-226", 226).items,
+    });
+    await settleEntryTranscriptForTests(ref);
+    expect(bodies()).toEqual(Array.from({ length: 226 }, (_, index) => `row-${index + 1}`));
+  } finally {
+    setSessionCacheStalledOpenForTests(5000);
+    threadsStore.getState().releaseThread(ref);
+  }
+});
 
 it("a foreground opening whose cache reads answer slowly but successfully still converges the recorded display", async () => {
   const storage = cache();

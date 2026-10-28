@@ -1257,13 +1257,13 @@ func (s *RemoteHubSource) translateNotification(n appwire.Notification, client *
 		if err != nil {
 			return n, "", false
 		}
-		fields["thread"] = s.rewriteRawThreadImageURLs(translated)
+		fields["thread"] = s.translateRawThreadAuthorship(s.rewriteRawThreadImageURLs(translated))
 	}
 	// turn/started and turn/completed carry a Turn; item/started and
 	// item/completed carry a ThreadItem. Both are image carriers, so the shared
 	// visitor runs on them here exactly as it runs on a thread.
 	if raw, ok := fields["turn"]; ok {
-		fields["turn"] = s.rewriteRawTurnImageURLs(raw)
+		fields["turn"] = s.translateRawTurnAuthorship(s.rewriteRawTurnImageURLs(raw))
 	}
 	if raw, ok := fields["item"]; ok {
 		fields["item"] = s.rewriteRawItemImageURLs(raw)

@@ -2600,8 +2600,11 @@ func TestHubRelayRemapRetainsAuthoritativeRouteDuringReplacementRead(t *testing.
 	case <-time.After(time.Second):
 		t.Fatal("changed-target notification was not acknowledged after replacement routes published")
 	}
+	// The barrier rides the subscription the delta was published to, so it is
+	// sequenced behind that delta even while the read's hydration still buffers
+	// it; a hub-wide broadcast bypasses that sequencing.
 	const barrierMethod = "test/remap-read-barrier"
-	appServer.BroadcastAll(barrierMethod, map[string]any{})
+	appServer.Broadcast(downstreamRef, barrierMethod, map[string]any{})
 	timer := time.NewTimer(time.Second)
 	defer timer.Stop()
 	deltaCount := 0

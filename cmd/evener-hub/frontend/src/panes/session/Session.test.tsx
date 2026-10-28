@@ -5052,6 +5052,9 @@ test("a newer draft typed before the resume lands follows the pane to the resume
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Adraft-current"));
   await waitFor(() => expect(threadsStore.getState().threads.get(currentRef)?.status.type).toBe("idle"));
   expect(screen.getByRole("textbox", { name: /^message$/i }).textContent).toBe("newer draft");
+  expect(readDraft(stableRef)).toBe("newer draft");
+  expect(readDraft(currentRef)).toBe("newer draft");
+  expect(threadsStore.getState().resumedIdentities.has(stableRef)).toBe(false);
 });
 
 // RoboRev finding on the reduced branch: the explicit Resume passed

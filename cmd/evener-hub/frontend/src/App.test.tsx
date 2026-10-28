@@ -7,11 +7,12 @@ import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { initNotifications, resetNotificationsForTests } from "./notifications";
 import { StubResizeObserver } from "./resizeObserverTestUtils";
 import { AppShell } from "./shell/AppShell";
-import { resetWorkspaceStoreForTests } from "./shell/workspace";
+import { resetWorkspaceStoreForTests, workspaceStore } from "./shell/workspace";
 import { installLocalStorage, MemoryStorage } from "./storageTestUtils";
 import { connectionStore } from "./stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "./stores/navigation/store";
 import { resetThreadsStoreForTests } from "./stores/threads";
+import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "./stores/transcriptDisplay";
 import { resetToastStoreForTests } from "./widgets/toast/store";
 
 // AppShell's default createClient constructs a REAL AppwireClient (no test
@@ -164,6 +165,7 @@ beforeEach(() => {
   closeAllCreatedClients();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   localStorage.clear();
+  resetTranscriptDisplayStoreForTests();
   // The dev widget gallery route pushes real toasts through the
   // module-singleton toast store (widgets/toast/store.ts), and unmounting
   // cancels their timers without removing them; reset so no test starts
@@ -206,6 +208,43 @@ test("renders the app shell (welcome pane) at the default route", async () => {
   // DevHarness moved out of the default route onto its own /dev/harness
   // route (see the next test) - it must not also render here.
   expect(screen.queryByText(/connection:/i)).toBeNull();
+});
+
+test.each(["/comic", "/comic/s/remote%3Ahost%2Fsession"])(
+  "retired Comic path %s uses ordinary unknown-route recovery",
+  async (path) => {
+    window.history.pushState({}, "", path);
+    await act(async () => {
+      render(<App />);
+    });
+    const home = await screen.findByRole("button", { name: "Go home" });
+    expect(document.querySelector("[data-comic-route]")).toBeNull();
+    const client = connectionStore.getState().client;
+    expect(client).toBeInstanceOf(AppwireClient);
+    await act(async () => home.click());
+    expect(await screen.findByTestId("workspace-host")).toBeTruthy();
+    expect(window.location.pathname).toBe("/");
+    expect(connectionStore.getState().client).toBe(client);
+    expect(allCreatedClients.size).toBe(1);
+  },
+);
+
+test("presentation changes preserve the workspace, URL and connection owner", async () => {
+  await act(async () => {
+    render(<App />);
+  });
+  const panes = workspaceStore.getState().panes;
+  const client = connectionStore.getState().client;
+  const url = window.location.href;
+  expect(panes).toHaveLength(1);
+  expect(client).toBeInstanceOf(AppwireClient);
+  for (const mode of ["comic", "standard"] as const) {
+    await act(async () => transcriptDisplayStore.getState().setPresentation("desktop", mode));
+    expect(workspaceStore.getState().panes).toBe(panes);
+    expect(window.location.href).toBe(url);
+    expect(connectionStore.getState().client).toBe(client);
+    expect(allCreatedClients.size).toBe(1);
+  }
 });
 
 test("initiates and settles the welcome navigation load without an error", async () => {

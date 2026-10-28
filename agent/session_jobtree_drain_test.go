@@ -44,8 +44,8 @@ func outstandingWorkReasons(s *Session) []string {
 	if s.hasPendingDelegateAttentionArmRetry() {
 		reasons = append(reasons, "hasPendingDelegateAttentionArmRetry")
 	}
-	if s.hasPendingStableDelegateAttention() {
-		reasons = append(reasons, "hasPendingStableDelegateAttention")
+	if s.hasPendingDelegateAttention() {
+		reasons = append(reasons, "hasPendingDelegateAttention")
 	}
 	for _, sub := range s.liveDirectSubagents() {
 		sub.mu.Lock()
@@ -268,7 +268,7 @@ func TestDrainJobTreeWaitsWhilePendingDelegateDeliveryUnflushed(t *testing.T) {
 // from a FALSE quiescence. Something still has to resolve it, or the drain
 // just waits out its stall timeout instead of making progress. kickDriveTree
 // runs at the top of every pass (before the outstanding check), alongside
-// drivePendingStableDelegateAttention and rematerializeDurablePendings -- the
+// drivePendingDelegateAttention and rematerializeDurablePendings -- the
 // same "drive whatever is waiting" role -- so it is where the flush belongs.
 //
 // The seeded entry is a placeholder with no live controller, not a delegate

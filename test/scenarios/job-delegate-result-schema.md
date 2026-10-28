@@ -16,10 +16,10 @@ judges outcome.
 
 **Identity and transport.** Stable `delegate` creation is asynchronous
 and returns `delegate_id` / `child_session_id` / `transcript_ref` and no
-`job_id` at all (`agent/session_tools_delegate.go#stableDelegateCreateResult`);
+`job_id` at all (`agent/session_tools_delegate.go#delegateCreateResult`);
 passing `max_wait_ms` is rejected outright with
 `invalid_request: delegate creation does not accept max_wait_ms`
-(`agent/session_tools_delegate.go#stableDelegateCreateTool`), so there is no
+(`agent/session_tools_delegate.go#delegateCreateTool`), so there is no
 foreground delegate creation to read a result from. Delegate generations
 create no job records ("Durable job records" "Delegate generations never
 create job records."), so `read_transcript(transcript_ref="job:<id>")`
@@ -223,7 +223,7 @@ own `transcript_ref`, the `delegate_send` result, or `delegates.jsonl`.
   guarantee is pinned by
   `agent/delegate_resource_runtime_test.go#TestDelegateResourceRuntime_PositiveWaitCannotSteerAfterIdleToRunningTransition`
   and the tool-facing fields by
-  `agent/delegate_resource_tools_test.go#TestStableDelegateTools_LiveSteerRejectsIgnoredWait`,
+  `agent/delegate_resource_tools_test.go#TestDelegateTools_LiveSteerRejectsIgnoredWait`,
   which asserts the positive-wait running-target refusal (`call.IsError` and
   `call.Output == "target_busy"`).
   By contrast, a zero/omitted-wait send to a running delegate may live-steer:

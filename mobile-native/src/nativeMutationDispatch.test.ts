@@ -33,11 +33,6 @@ import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.te
 
 const expoSQLite = vi.hoisted(() => ({ openDatabaseSync: vi.fn() }));
 vi.mock("expo-sqlite", () => expoSQLite);
-vi.mock("expo-crypto", () => ({
-	randomUUID: () => "test-uuid",
-	getRandomValues: (array: Uint8Array) => array,
-}));
-
 const ALL_TRUE_CAPS: ThreadCapabilities = {
 	send: true,
 	steer: true,

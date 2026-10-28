@@ -3330,6 +3330,7 @@ export interface SessionActivityAncestor {
   ref: string;
   sessionId: string;
   delegateId?: string;
+  delegateName?: string;
   title: string;
 }
 
@@ -3346,6 +3347,7 @@ export interface SessionActivityContext {
   rootRef: string;
   parentRef?: string;
   delegateId?: string;
+  delegateName?: string;
   ancestors: SessionActivityAncestor[];
   /**
    * AncestryKnown distinguishes proven root/lineage from bounded retained index progress.
@@ -4042,6 +4044,7 @@ export interface ThreadForkResponse {
 }
 
 export interface ThreadItem {
+  authorship?: TranscriptAuthorship;
   type: string;
   id: string;
   transcriptKey?: string;
@@ -4567,6 +4570,19 @@ export interface ThreadVisionModelChangedParams {
 export interface ThreadVisionModelSetParams {
   ref: string;
   visionModel: string;
+}
+
+export interface TranscriptAuthor {
+  kind: string;
+  sessionRef?: string;
+  ownerRef?: string;
+  delegateId?: string;
+  delegateName?: string;
+}
+
+export interface TranscriptAuthorship {
+  author: TranscriptAuthor;
+  inherited: boolean;
 }
 
 export interface TranscriptDisplayAdvanced {
@@ -5235,7 +5251,7 @@ export const WIRE_FIELD_KEYS = {
   ThreadItemPosition: ["entry", "item", "sub"],
   TurnError: ["message", "additionalDetails", "codexErrorInfo", "source", "title", "hint", "cause"],
   DiagnosticCause: ["kind", "provider", "model", "status"],
-  ThreadItem: ["type", "id", "transcriptKey", "position", "turnId", "transcriptEntryIndex", "text", "delta", "images", "toolName", "callId", "argumentsJson", "description", "output", "error", "outputImages", "status", "prevalOnly", "startedAt", "completedAt", "durationMs", "exitCode", "raw", "eventKind", "source", "steeringKind", "clientMutationId", "version", "roundId", "completedAtEntry"],
+  ThreadItem: ["authorship", "type", "id", "transcriptKey", "position", "turnId", "transcriptEntryIndex", "text", "delta", "images", "toolName", "callId", "argumentsJson", "description", "output", "error", "outputImages", "status", "prevalOnly", "startedAt", "completedAt", "durationMs", "exitCode", "raw", "eventKind", "source", "steeringKind", "clientMutationId", "version", "roundId", "completedAtEntry"],
   InputItem: ["type", "text", "mentions", "url", "mediaType", "data", "name", "path", "metadata"],
   InputMention: ["kind", "name", "offset"],
   OutputImage: ["source", "name", "mediaType", "size", "url", "sha", "path"],

@@ -1,11 +1,9 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { LaunchConfigResolved, LaunchOption } from "@evener/appwire-client";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { expect, test, vi } from "vitest";
+import { readModuleCss } from "../../styles/cssBlock";
 import { enterText } from "../../textEntryTestUtils";
 import type { ModelCatalog as ModelCatalogEnvelope } from "../../widgets";
 import { AdvancedOptions } from "./AdvancedOptions";
@@ -777,7 +775,7 @@ test("a pathList field rejects a path already in the list", async () => {
 // tap floor, same pattern as askdock.module.css's own .tab rule and
 // askquestioncard.module.css's own .optionRow rule.
 test("the Advanced options toggle gets comfortable padding and reaches the tap floor on a coarse pointer", () => {
-  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "advancedOptions.module.css"), "utf8");
+  const css = readModuleCss(import.meta.url, "advancedOptions.module.css");
   const desktopRule = css.match(/\.toggle\s*\{([^}]*)\}/);
   expect(desktopRule, "advancedOptions.module.css must declare a base .toggle rule").not.toBeNull();
   expect(desktopRule![1]).toMatch(/padding:\s*var\(--space-2\) var\(--space-3\)/);

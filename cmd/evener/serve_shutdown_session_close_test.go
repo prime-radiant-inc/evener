@@ -18,7 +18,7 @@ import (
 // shutdown drain wait rests on: the daemon closes EVERY session it makes
 // current, not only the one that happened to be live when shutdown ran.
 //
-// Shutdown makes ONE closing pass (closeLiveSession) once the input loop has
+// Shutdown makes ONE closing pass (closeForShutdown) once the input loop has
 // exited. typed thread/clear is still live at that moment -- httpSrv.Close()
 // joins no handlers, and the clear closure never consults the cancelled request
 // context -- so thread/clear can install a whole replacement session just after

@@ -215,7 +215,7 @@ func TestDelegateResourceCreate_RegisteredPostCommitFailureRetainsStableIdentity
 	if got := jsonCharLen(resultJSON); got > jobToolResultMinJSONChars {
 		t.Fatalf("registered post-commit result length = %d, want <= %d", got, jobToolResultMinJSONChars)
 	}
-	var result stableDelegateCreateResult
+	var result delegateCreateResult
 	if err := json.Unmarshal(resultJSON, &result); err != nil {
 		t.Fatalf("decode registered post-commit result %q: %v", resultJSON, err)
 	}
@@ -1366,7 +1366,7 @@ func buildCommittedDelegate(root *Session, args delegateArgs, lane committedDele
 	if err != nil {
 		return runtime, delegateStartCommit{}, delegateIsolation{}, nil, fmt.Errorf("selectSubagentModel: %w", err)
 	}
-	toolNameCeiling := root.stableDelegateEffectiveToolNameCeiling(selection, args, "")
+	toolNameCeiling := root.delegateEffectiveToolNameCeiling(selection, args, "")
 	requestedSandbox := lane.sandbox
 	if requestedSandbox == nil {
 		requestedSandbox, err = root.requestedDelegateSandbox(args, toolNameCeiling)
@@ -1572,7 +1572,7 @@ func TestDelegateResourceCreate_InputTranscriptAppendRunsAfterControllerUnlock(t
 	adapter.releaseRun()
 }
 
-func TestDelegateResourceCreate_RegisteredToolReturnsOnlyStableDelegateIdentity(t *testing.T) {
+func TestDelegateResourceCreate_RegisteredToolReturnsOnlyDelegateIdentity(t *testing.T) {
 	t.Parallel()
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 	result := executeTask6RegisteredDelegate(context.Background(), t, root, "registered stable identity", 0)

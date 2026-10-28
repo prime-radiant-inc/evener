@@ -59,6 +59,7 @@ func cloneThreadItems(items []ThreadItem) []ThreadItem {
 // CloneThreadItem returns a copy of item that shares no mutable state with
 // it.
 func CloneThreadItem(item ThreadItem) ThreadItem {
+	item.Authorship = ClonePointer(item.Authorship)
 	item.Images = cloneInputItems(item.Images)
 	item.OutputImages = CloneOutputImages(item.OutputImages)
 	item.Position = ClonePointer(item.Position)

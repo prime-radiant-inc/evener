@@ -289,7 +289,7 @@ func SetLaneClosePassBudget(d time.Duration) (restore func()) {
 	})
 }
 
-func (jm *jobManager) bindStableDelegateParent(controller *delegateTreeController, lease delegateLease, forward func(jobstore.Event) error, owner *Session) {
+func (jm *jobManager) bindDelegateParent(controller *delegateTreeController, lease delegateLease, forward func(jobstore.Event) error, owner *Session) {
 	jm.mu.Lock()
 	jm.parentJobID = ""
 	jm.parentDelegateID = lease.delegateID
@@ -384,7 +384,7 @@ type runningJob struct {
 	completion atomic.Uint32
 	// delegateShell is the exact process receipt for a shell owned by a stable
 	// delegate generation. It remains nil for root-owned shells.
-	delegateShell *stableDelegateShellReceipt
+	delegateShell *delegateShellReceipt
 }
 
 // treeReservation is a single tree-counter slot held by a running delegate turn.
@@ -506,7 +506,7 @@ type jobRuntimeHandle struct {
 	done      chan struct{}
 	closeDone func()
 	output    *jobstore.OutputStore
-	shell     *stableDelegateShellReceipt
+	shell     *delegateShellReceipt
 }
 
 type jobNotificationKind uint8

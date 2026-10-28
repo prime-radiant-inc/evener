@@ -20,6 +20,7 @@ import { FakeClient, type RequestHandler } from "@evener/appwire-client/testing/
 import { IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readComposerDraft, writeComposerDraft } from "../panes/session/composer/draft";
+import { setCacheChannelFactoryForTests } from "./cacheLifetime";
 import { connectionStore } from "./connection";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { settleProjectionWorkForTests } from "./projectionWork";
@@ -38,7 +39,6 @@ import {
   pendingThreadHydrationUpdatesForTests,
   productionEntryTranscriptForTests,
   resetThreadsStoreForTests,
-  setCacheChannelFactoryForTests,
   setProductionEntryCacheForTests,
   settleBackgroundTranscriptsForTests,
   threadsStore,

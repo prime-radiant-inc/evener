@@ -8,11 +8,6 @@ import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "../sqliteSync.t
 import { BoardStops, type StopOutcome, stopToast } from "./boardStops";
 
 vi.mock("expo-sqlite", () => ({ openDatabaseSync: vi.fn() }));
-vi.mock("expo-crypto", () => ({
-	randomUUID: () => "test-uuid",
-	getRandomValues: (array: Uint8Array) => array,
-}));
-
 const CAPS: ThreadCapabilities = {
 	send: true,
 	steer: true,

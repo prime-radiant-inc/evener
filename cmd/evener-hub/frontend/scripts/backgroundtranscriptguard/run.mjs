@@ -2063,10 +2063,19 @@ async function runJourney(driver, entryProduction = false, harnessUrl) {
 // runTwoTabFencing drives the entry route's Clear and delete fences across two
 // REAL tabs sharing one native BroadcastChannel and one IndexedDB. The first tab
 // is the journey's own page; the second is a real second document on the same
-// guard harness. Only the fence entry points are invoked (threads.clearCachedSessions
-// and markCacheSessionsDeleted, the same effect set a real Clear/delete owes the
-// cache); the propagation and the durable removal are the browser's own.
+// guard harness. The real stopped-project delete action removes the source as
+// well as its cache, and Clear uses threads.clearCachedSessions. Propagation and
+// durable removal are the browser's own.
 async function runTwoTabFencing(driver, endpoint, harnessUrl) {
+  const call = (send, method, ...args) =>
+    evaluate(send, `window.backgroundTranscriptGuard.${method}(${args.map((arg) => JSON.stringify(arg)).join(",")})`);
+  // Preserve B's producer transcript for the Go owner's independent history
+  // assertions. Stop A before the sibling boots, so it cannot acquire a live
+  // background lease while this phase is preparing a fresh deleted-ref open.
+  const ref = SESSION_A;
+  const stopped = await fetch(new URL("/background-guard/stop-sustained", HUB_URL), { method: "POST" });
+  if (!stopped.ok) throw new Error(`two-tab stop: ${await stopped.text()}`);
+  const project = await stopped.json();
   const opened = await openPage(endpoint, "about:blank");
   const tab = await connectPage(endpoint, opened.id);
   try {
@@ -2090,7 +2099,8 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
            const deadline = Date.now() + 30000;
            while (Date.now() < deadline) {
              if (typeof window.backgroundTranscriptEvidence !== "undefined" &&
-                 typeof window.backgroundTranscriptGuard !== "undefined") return true;
+                 typeof window.backgroundTranscriptGuard !== "undefined" &&
+                 window.backgroundTranscriptEvidence.connectionState() === "ready") return true;
              await new Promise((resolve) => setTimeout(resolve, 100));
            }
            return { booted: typeof window.backgroundTranscriptBooted, evidence: typeof window.backgroundTranscriptEvidence,
@@ -2111,13 +2121,10 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
     // rail row is pressed.
     await driver.send("Page.bringToFront");
     await waitForResponsiveHost(driver);
-    const call = (send, method, ...args) =>
-      evaluate(send, `window.backgroundTranscriptGuard.${method}(${args.map((arg) => JSON.stringify(arg)).join(",")})`);
     const fence = (send, ref) => call(send, "fenceState", ref);
     const durable = (send, ref) => evaluate(send, nativeEntryEvidenceExpression(ref));
 
     // ---- delete fence: one tab deletes, the sibling observes over the channel ----
-    const ref = SESSION_B;
     const seeded = await durable(tab.send, ref);
     if (!seeded || seeded.rows.length === 0) {
       throw new Error(`two-tab delete: the target has no durable entry rows to fence: ${JSON.stringify(seeded)}`);
@@ -2127,7 +2134,10 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
     if (aBefore.deletedRefs.includes(ref) || bBefore.deletedRefs.includes(ref)) {
       throw new Error(`two-tab delete: the ref was already fenced: ${JSON.stringify({ aBefore, bBefore })}`);
     }
-    await call(driver.send, "delete", ref);
+    const deletion = await call(driver.send, "delete", project.key, project.workingDir);
+    if (!deletion.deleted.some((id) => id === ref || `local:${id}` === ref) || deletion.skipped.length !== 0) {
+      throw new Error(`two-tab delete: the source session was not deleted: ${JSON.stringify(deletion)}`);
+    }
     const suppressDeadline = Date.now() + 15000;
     let bAfter = await fence(tab.send, ref);
     while (bAfter.lifetime?.suppressed !== true && Date.now() < suppressDeadline) {
@@ -2163,6 +2173,11 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
     if (!(removed === null || removed.rows.length === 0)) {
       throw new Error("two-tab delete: the durable record still exists in the shared IndexedDB");
     }
+    const sourceReadOutcome = await call(tab.send, "sourceReadOutcome", ref);
+    driver.milestone("two-tab-delete-source", { ref, sourceReadOutcome });
+    if (sourceReadOutcome !== "rejected") {
+      throw new Error("two-tab delete: the target remains readable on the source after deletion");
+    }
     // The sibling's fresh acquisition must not resurrect the deleted session:
     // the deletion fence refuses the hydration and no route or durable row
     // appears. Poll the real condition (the ref acquired no route) rather than
@@ -2191,12 +2206,12 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
     }
 
     // ---- clear fence: a held old-epoch lease is suppressed, not rebound ----
-    await driver.openSession(SESSION_A);
+    await driver.openSession(SESSION_B);
     const armDeadline = Date.now() + 15000;
-    let aClearBefore = await fence(driver.send, SESSION_A);
+    let aClearBefore = await fence(driver.send, SESSION_B);
     while (aClearBefore.lifetime?.leaseEpoch === undefined && Date.now() < armDeadline) {
       await delay(100);
-      aClearBefore = await fence(driver.send, SESSION_A);
+      aClearBefore = await fence(driver.send, SESSION_B);
     }
     if (aClearBefore.lifetime?.leaseEpoch === undefined) {
       throw new Error(`two-tab clear: the holding tab never captured a cache lease: ${JSON.stringify(aClearBefore)}`);
@@ -2206,13 +2221,13 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
       throw new Error(`two-tab clear: the sibling clear did not commit: ${JSON.stringify(cleared)}`);
     }
     const clearDeadline = Date.now() + 15000;
-    let aClearAfter = await fence(driver.send, SESSION_A);
+    let aClearAfter = await fence(driver.send, SESSION_B);
     while (aClearAfter.lifetime?.suppressed !== true && Date.now() < clearDeadline) {
       await delay(100);
-      aClearAfter = await fence(driver.send, SESSION_A);
+      aClearAfter = await fence(driver.send, SESSION_B);
     }
     driver.milestone("two-tab-clear-fence", {
-      ref: SESSION_A,
+      ref: SESSION_B,
       epochBefore: aClearBefore.lifetime?.leaseEpoch ?? null,
       epochAfter: aClearAfter.lifetime?.leaseEpoch ?? null,
       suppressed: aClearAfter.lifetime?.suppressed === true,

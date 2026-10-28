@@ -14,8 +14,6 @@ import {
 } from "./sessionMessage";
 
 vi.mock("expo-sqlite", () => ({ openDatabaseSync: vi.fn() }));
-vi.mock("expo-crypto", () => ({ randomUUID: () => "test-uuid", getRandomValues: (array: Uint8Array) => array }));
-
 const capabilities = (over: Partial<ThreadCapabilities> = {}): ThreadCapabilities => ({
 	send: true,
 	steer: true,

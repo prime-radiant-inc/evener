@@ -93,7 +93,7 @@ func TestDelegateSandboxSchemaNoOneOfOrSandboxNet(t *testing.T) {
 func TestExecTool_DelegateOffPlusNonetRejectedByHandler(t *testing.T) {
 	t.Parallel()
 	s := sbxDelegateSession(t, sandbox.HostFacts{OS: "linux", Home: t.TempDir(), BwrapPath: "/usr/bin/bwrap", BwrapCapable: true})
-	if err := registerStableDelegateTool(s.reg, s); err != nil {
+	if err := registerDelegateTool(s.reg, s); err != nil {
 		t.Fatalf("register delegate tool: %v", err)
 	}
 	res := s.execTool(context.Background(), llm.ToolCallData{

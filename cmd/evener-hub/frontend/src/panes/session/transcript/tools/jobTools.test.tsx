@@ -156,9 +156,9 @@ test("job_status: body falls back to raw text when item.raw is not a delegate st
 });
 
 // --- job_status: structured delegate status body (DelegateStatusBody) ---
-// When item.raw carries a stableDelegateStatusResult (the State field of
+// When item.raw carries a delegateStatusResult (the State field of
 // tool.StateResult from agent/session_tools_jobs.go's
-// stableDelegateStatusTool), the body renders a structured card instead of
+// delegateStatusTool), the body renders a structured card instead of
 // raw JSON.
 
 function delegateStatusRaw(overrides: Record<string, unknown> = {}): unknown {

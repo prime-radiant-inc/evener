@@ -166,7 +166,7 @@ func watchLostAtRestartSessionMessage() string {
 	return "watch ended: this session restarted and the watch did not survive it; the observed session is still running, so its condition may still occur with nothing watching — re-arm the watch if you still care"
 }
 
-func watchLostAtRestartStableDelegateMessage(source string) string {
+func watchLostAtRestartDelegateMessage(source string) string {
 	return fmt.Sprintf("watch ended: this session restarted and the watch did not survive it; stable delegate %s may still emit matching events — re-arm the watch if you still care", source)
 }
 
@@ -318,7 +318,7 @@ const (
 	watchSourceConcreteJob watchSourceKind = iota
 	watchSourceSelfSession
 	watchSourceParentSession
-	watchSourceStableDelegate
+	watchSourceDelegate
 )
 
 type watchSource struct {
@@ -345,7 +345,7 @@ func normalizeWatchSource(source string) (watchSource, error) {
 			return watchSource{Kind: watchSourceConcreteJob, Public: source, Internal: source}, nil
 		}
 		if strings.HasPrefix(source, "dlg_") {
-			return watchSource{Kind: watchSourceStableDelegate, Public: source, Internal: runtimeMessageAliasCaller}, nil
+			return watchSource{Kind: watchSourceDelegate, Public: source, Internal: runtimeMessageAliasCaller}, nil
 		}
 		return watchSource{}, fmt.Errorf("source_not_watchable: %q is not self, parent, a concrete job_id, or a stable delegate_id", source)
 	}

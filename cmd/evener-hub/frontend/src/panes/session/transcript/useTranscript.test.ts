@@ -23,7 +23,12 @@ import { ALL_CAPABILITIES as CAPABILITIES } from "../../../threadTestUtils";
 import { enterAgentCascade, returnFromAgentCascade } from "../../zoom/actions";
 import { useTranscriptScroll } from "./flow/useTranscriptScroll";
 import { retainedTranscriptReadView } from "./transcriptReadView";
-import { resetTranscriptPagingForTests, useTranscript } from "./useTranscript";
+import {
+  resetTranscriptPagingForTests,
+  type TranscriptReader,
+  useTranscript,
+  useTranscriptReader,
+} from "./useTranscript";
 import "../index";
 import "../../transcript/index";
 
@@ -95,6 +100,90 @@ function cascadeReaders() {
     b: retainedTranscriptReadView(conversationPaneLifetime(b), "ref_a", "cascade"),
   };
 }
+
+test("a workspace TranscriptReader needs only its documented reader methods", () => {
+  const reader: TranscriptReader = {
+    id: "workspace-structural",
+    membership: "workspace",
+    alive: true,
+    readable: true,
+    subscribe: () => () => {},
+  };
+  const mounted = renderHook(() => useTranscriptReader("ref_a", reader));
+  expect(mounted.result.current.model).toBeUndefined();
+  mounted.unmount();
+});
+
+test("retiring one reader preserves another reader's demand", async () => {
+  vi.useFakeTimers();
+  try {
+    const fake = connectReadyFakeClient();
+    fake.on("thread/read", () => {
+      return { thread: testThread("ref_a"), olderCursor: "older" };
+    });
+    let attempts = 0;
+    fake.on("thread/turns/list", () => {
+      attempts++;
+      if (attempts === 1) throw new Error("offline");
+      return { data: [{ id: "older-turn", status: "completed", itemsView: "full", items: [] }], nextCursor: undefined };
+    });
+    await act(async () => {
+      await threadsStore.getState().ensureThread("ref_a");
+    });
+    const makeReader = (id: string) => {
+      let alive = true;
+      const listeners = new Set<() => void>();
+      const reader: TranscriptReader & { dispose(): void } = {
+        id,
+        membership: "standalone",
+        get alive() {
+          return alive;
+        },
+        get readable() {
+          return alive;
+        },
+        subscribe(listener) {
+          listeners.add(listener);
+          return () => {
+            listeners.delete(listener);
+          };
+        },
+        dispose() {
+          alive = false;
+          for (const listener of listeners) listener();
+        },
+      };
+      return reader;
+    };
+    const firstReader = makeReader("standalone-one");
+    const secondReader = makeReader("standalone-two");
+    const first = renderHook(() => useTranscriptReader("ref_a", firstReader));
+    const second = renderHook(() => useTranscriptReader("ref_a", secondReader));
+    await act(async () => {
+      await first.result.current.loadOlder().catch(() => {});
+    });
+    expect(attempts).toBe(1);
+    act(() => {
+      second.result.current.loadOlderReportingError();
+      firstReader.dispose();
+      first.unmount();
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    const completedReaders: string[] = [];
+    if (!second.result.current.hasOlder) completedReaders.push(secondReader.id);
+    expect(attempts).toBe(2);
+    const methods = fake.calls.map((call) => call.method);
+    expect(methods.filter((m) => m === "turn/start")).toHaveLength(0);
+    expect(methods.filter((m) => m === "thread/resume")).toHaveLength(0);
+    expect(completedReaders).toEqual([secondReader.id]);
+    second.unmount();
+    threadsStore.getState().releaseThread("ref_a");
+  } finally {
+    vi.useRealTimers();
+  }
+});
 
 test("loadOlder schedules cached bodies after a bounded opening without a server cursor", async () => {
   const cache = new SessionEntryCache({

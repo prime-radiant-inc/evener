@@ -1491,20 +1491,20 @@ var jobResultKnownKeys = map[string]bool{
 	// ("Route delegate creation through stable resources"), 731a6bf05
 	// ("Preserve stable delegate identity in bounded create results"), and
 	// 0c182da4f ("fix: preserve stable delegate tool projections") — see
-	// stableDelegateCreateResult (agent/session_tools.go) and
+	// delegateCreateResult (agent/session_tools.go) and
 	// delegateSendResult (agent/session_tools_jobs.go). Neither struct carries a
 	// job_id family member; a "delegate"/"delegate_send" result identifies
 	// itself via delegate_id alone (jobResult.effectiveJobID's fallback).
 	// TestJobResultKnownKeysCoversLiveDelegateShapes (transcript_render_job_test.go)
 	// walks both structs' real marshaled output and fails, naming the key, the
 	// next time either struct grows a field this allowlist doesn't know — issue #194.
-	"child_session_id":    true, // stableDelegateCreateResult
-	"name":                true, // stableDelegateCreateResult (display label)
-	"model":               true, // stableDelegateCreateResult
-	"sandbox":             true, // stableDelegateCreateResult
-	"worktree":            true, // stableDelegateCreateResult, delegateSendResult
-	"warnings":            true, // stableDelegateCreateResult, delegateSendResult
-	"error":               true, // stableDelegateCreateResult (StartError)
+	"child_session_id":    true, // delegateCreateResult
+	"name":                true, // delegateCreateResult (display label)
+	"model":               true, // delegateCreateResult
+	"sandbox":             true, // delegateCreateResult
+	"worktree":            true, // delegateCreateResult, delegateSendResult
+	"warnings":            true, // delegateCreateResult, delegateSendResult
+	"error":               true, // delegateCreateResult (StartError)
 	"task":                true, // delegateSendResult
 	"description":         true, // delegateSendResult
 	"agent_type":          true, // delegateSendResult
@@ -1516,8 +1516,8 @@ var jobResultKnownKeys = map[string]bool{
 	"run_ended_at":        true, // delegateSendResult
 	"latest_activity_at":  true, // delegateSendResult
 	"cumulative_usage":    true, // delegateSendResult
-	"tools":               true, // stableDelegateCreateResult, delegateSendResult
-	"artifacts_dir":       true, // stableDelegateCreateResult
+	"tools":               true, // delegateCreateResult, delegateSendResult
+	"artifacts_dir":       true, // delegateCreateResult
 	"earlier_results":     true, // delegateSendResult, each rendered as a reply is
 }
 

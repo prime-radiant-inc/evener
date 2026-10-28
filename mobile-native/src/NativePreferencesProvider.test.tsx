@@ -31,7 +31,6 @@ const harness = vi.hoisted(() => {
 	};
 });
 
-vi.mock("expo-crypto", () => ({ randomUUID: () => "provider-test-id" }));
 vi.mock("expo-sqlite/kv-store", () => ({ Storage: harness.storage }));
 vi.mock("./ConnectionProvider", () => ({
 	useConnection: () => harness.connection,
