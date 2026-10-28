@@ -437,6 +437,39 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 		});
 	}
 
+	/** A removed hub's drafts are gone, so its edges can never deliver, settle,
+	 * or refuse. Their deliveries and dependency rows leave with them;
+	 * obligations survive, because their dispositions can still be owed to
+	 * identities in other hubs. */
+	removeHub(hubId: string): void {
+		withSavepoint(this.db, "draft_handoff_remove_hub", () => {
+			this.db.runSync(
+				`DELETE FROM draft_handoff_deliveries WHERE hub_id = ? OR edge_id IN
+				 (SELECT edge_id FROM draft_handoff_edges WHERE from_hub_id = ? OR to_hub_id = ?)`,
+				hubId,
+				hubId,
+				hubId,
+			);
+			this.db.runSync(
+				`DELETE FROM draft_handoff_dependencies WHERE edge_id IN
+				 (SELECT edge_id FROM draft_handoff_edges WHERE from_hub_id = ? OR to_hub_id = ?)
+				 OR depends_on_edge_id IN
+				 (SELECT edge_id FROM draft_handoff_edges WHERE from_hub_id = ? OR to_hub_id = ?)`,
+				hubId,
+				hubId,
+				hubId,
+				hubId,
+			);
+			this.db.runSync(
+				`DELETE FROM draft_handoff_edge_obligations WHERE edge_id IN
+				 (SELECT edge_id FROM draft_handoff_edges WHERE from_hub_id = ? OR to_hub_id = ?)`,
+				hubId,
+				hubId,
+			);
+			this.db.runSync(`DELETE FROM draft_handoff_edges WHERE from_hub_id = ? OR to_hub_id = ?`, hubId, hubId);
+		});
+	}
+
 	beginSubmission(obligationId: string, origin: DraftHandoffEndpoint, recoveryIds: readonly string[] = []): void {
 		withSavepoint(this.db, "draft_handoff_begin_submission", () => {
 			this.db.runSync(

@@ -1159,10 +1159,162 @@ describe("handoff chain obligations", () => {
 
 		library.retryPendingHandoffs();
 		// The retry must not move the stale snapshot over the source's newer
-		// durable work; without destination evidence the edge keeps waiting.
+		// durable work; the committed transfer's own evidence settles the
+		// edge instead, and the newer work survives untouched.
 		expect(repository.read(endpoint("a"))).toMatchObject({ draft: "newer work" });
 		expect(repository.read(endpoint("b"))).toEqual({ draft: "", unconfirmed: null });
-		expect(storageLedger.readGraph().edges[0].state).toBe("pending");
+		expect(storageLedger.readGraph().edges[0].resolvedAs).toBe("settled");
+	});
+
+	test("a live source edited after a failed transfer moves its current record", () => {
+		const { storageLedger, repository } = setup();
+		// The delivery marker records, then the transfer savepoint fails once.
+		let transfers = 0;
+		const flakyRepository = new Proxy(repository, {
+			get(target, property) {
+				const value = Reflect.get(target, property, target);
+				if (property === "transfer" && typeof value === "function")
+					return (...args: unknown[]) => {
+						if (++transfers === 1) throw new Error("transfer failed");
+						return (value as (...inner: unknown[]) => unknown).apply(target, args);
+					};
+				return typeof value === "function" ? (value as (...inner: unknown[]) => unknown).bind(target) : value;
+			},
+		}) as DraftRepository;
+		const library = new DraftLibrary(
+			() => flakyRepository,
+			undefined,
+			() => storageLedger,
+		);
+		repository.write(endpoint("a"), { draft: "one", unconfirmed: null });
+		expect(library.handoff(endpoint("a"), endpoint("b"))).toBe(false);
+		// The source is edited while the delivery marker still names the old
+		// bytes, and the transfer never landed.
+		library.open(endpoint("a")).edit("two");
+
+		library.retryPendingHandoffs();
+		// The retry moves the source's current record instead of refusing the
+		// handoff and stranding the updated composition at the old identity.
+		expect(repository.read(endpoint("b"))).toMatchObject({ draft: "two" });
+		expect(repository.read(endpoint("a"))).toEqual({ draft: "", unconfirmed: null });
+		expect(storageLedger.readGraph().edges[0].resolvedAs).toBe("settled");
+	});
+
+	test("a cleared destination is never resurrected by a stale re-transfer", () => {
+		const { storageLedger, repository } = setup();
+		const failing = flaky(flaky(storageLedger, "recordComposed", 1), "settleEdge", 1);
+		const library = new DraftLibrary(
+			() => repository,
+			undefined,
+			() => failing,
+		);
+		repository.write(endpoint("a"), { draft: "original work", unconfirmed: null });
+		expect(library.handoff(endpoint("a"), endpoint("b"))).toBe(false);
+		// The destination discards the transferred composition.
+		library.open(endpoint("b")).edit("");
+
+		library.retryPendingHandoffs();
+		// The discarded composition does not come back: the retained snapshot
+		// is evidence the transfer committed, so the edge settles from that
+		// evidence and the destination keeps its own state.
+		expect(repository.read(endpoint("b"))).toEqual({ draft: "", unconfirmed: null });
+		expect(storageLedger.readGraph().edges[0].resolvedAs).toBe("settled");
+	});
+
+	test("a destination that moved on settles the committed handoff without overwrite", () => {
+		const { storageLedger, repository } = setup();
+		const failing = flaky(flaky(storageLedger, "recordComposed", 1), "settleEdge", 1);
+		const library = new DraftLibrary(
+			() => repository,
+			undefined,
+			() => failing,
+		);
+		repository.write(endpoint("a"), { draft: "original work", unconfirmed: null });
+		expect(library.handoff(endpoint("a"), endpoint("b"))).toBe(false);
+		// The destination discards the transferred composition and composes
+		// its own work.
+		library.open(endpoint("b")).edit("");
+		library.open(endpoint("b")).edit("destination work");
+
+		library.retryPendingHandoffs();
+		// The destination's newer work survives untouched, and the committed
+		// handoff settles instead of being refused as if it never happened.
+		expect(repository.read(endpoint("b"))).toMatchObject({ draft: "destination work" });
+		expect(storageLedger.readGraph().edges[0].resolvedAs).toBe("settled");
+	});
+
+	test("a converged capture stays findable across another chain's continuation", async () => {
+		const { storage, storageLedger, repository } = setup();
+		const library = new DraftLibrary(
+			() => repository,
+			undefined,
+			() => storageLedger,
+		);
+		repository.write(endpoint("a"), {
+			draft: "a work",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		// A recovered command runs while its draft hands off to B.
+		const source = library.open(endpoint("a"));
+		let finish!: () => void;
+		const submitted = source.submitBuiltinCommand(
+			() =>
+				new Promise<boolean>((resolve) => {
+					finish = () => resolve(true);
+				}),
+		);
+		resume(storage, "a", "b");
+		expect(library.handoff(endpoint("a"), endpoint("b"))).toBe(true);
+		// A second origin converges on B, then B continues to C: the newest
+		// inbound edge hands the continuation the other chain.
+		resume(storage, "x", "b");
+		resume(storage, "b", "c");
+		library.retryPendingHandoffs();
+		expect(repository.read(endpoint("b"))).toEqual({ draft: "", unconfirmed: null });
+		const token = repository.read(endpoint("c")).unconfirmedCaptureToken;
+		if (token === undefined) throw new Error("missing capture at c");
+
+		// The command completes after the convergence: its capture must be
+		// findable at C even though the graph routes B -> C through the other
+		// chain, or the completed command stays restorable there.
+		finish();
+		await submitted;
+		const settled = repository.read(endpoint("c"));
+		expect(settled.unconfirmedCaptureToken).toBeUndefined();
+		expect(settled).toMatchObject({ completedCommandRecoveryIds: ["recovered-a"] });
+	});
+
+	test("a removed hub never receives late completion writes", async () => {
+		const { library, storage, storageLedger, repository } = setup();
+		const intent = (ref: string): MutationIntent => ({
+			targetRef: targetKey(ref),
+			threadId: `thread-${ref}`,
+			method: "notes/human/set",
+			payload: { ref, expectedInstanceId: `instance-${ref}`, note: "recovered command input" },
+			attachments: [],
+			optimisticDisplay: null,
+		});
+		// The command's recovery row targets another ref of the hub.
+		const captured = await storage.enqueueIntent(intent("b"));
+		await storage.transferToRecovery(captured.clientMutationId, "editing");
+		storageLedger.beginSubmission("token-late", endpoint("a"), [captured.clientMutationId]);
+		repository.write(endpoint("a"), {
+			draft: "current",
+			unconfirmed: null,
+			composer: { recoveryIds: [captured.clientMutationId] },
+			unconfirmedCaptureToken: "token-late",
+		});
+		// The submission resolves durably, a handoff settles into the hub, and
+		// then the hub goes away with the resolution unapplied.
+		storageLedger.resolveSubmission("token-late", "completed", [captured.clientMutationId]);
+		expect(library.handoff(endpoint("a"), endpoint("d"))).toBe(true);
+		library.removeHub("hub");
+		library.retryPendingHandoffs();
+		// The late reconciliation must not recreate the removed hub's deleted
+		// draft storage, and its ledger work leaves the graph.
+		expect(repository.read(endpoint("b"))).toEqual({ draft: "", unconfirmed: null });
+		expect(storageLedger.readGraph().edges).toEqual([]);
 	});
 
 	test("a recovery pass applies a resolved completion with no pending edge", () => {

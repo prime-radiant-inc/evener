@@ -74,9 +74,11 @@ function sameEndpoint(a: DraftHandoffEndpoint, b: DraftHandoffEndpoint): boolean
  * the answer unless one of the chain's hops durably holds the capture token: a
  * transfer can commit while its composed-marker write fails, and a delayed
  * predecessor can land its composition at an intermediate identity after the
- * continuation moved on, and a submission begun at a reopened origin durably
- * holds its token there while historical edges would route it elsewhere. The
- * capture token is unique, so durable evidence at any hop - or at the origin
+ * continuation moved on, a submission begun at a reopened origin durably holds
+ * its token there while historical edges would route it elsewhere, and a
+ * converged chain's continuation can carry a capture through edges this
+ * obligation's own chain never names. The capture token is unique, so durable
+ * evidence at any identity the origin's handoffs reached - or at the origin
  * itself - wins over the graph's routing, and an obligation no edge ever
  * adopted is never routed through unrelated historical edges. */
 export function captureTerminal(
@@ -88,13 +90,24 @@ export function captureTerminal(
 	},
 	read: (endpoint: DraftHandoffEndpoint) => DraftRecord | undefined,
 ): DraftHandoffEndpoint {
-	const hops = edges
-		.filter((edge) => sameEndpoint(edge.from, obligation.origin) || obligation.chainId === edge.chainId)
-		.sort(compareEdges)
-		.reverse() as DraftHandoffEdge[];
-	for (const hop of hops) {
-		const record = read(hop.to);
-		if (record?.unconfirmedCaptureToken === obligation.obligationId) return hop.to;
+	// Walk every identity the origin's handoffs could have reached, in
+	// deterministic order: converging chains can move a capture through a
+	// continuation this obligation's own chain never names, so routing by chain
+	// alone can miss it. Every read is gated on the exact token, so only the
+	// record durably holding it can match.
+	const ordered = [...edges].sort(compareEdges);
+	const queue: DraftHandoffEndpoint[] = [obligation.origin];
+	const seen = new Set([endpointKey(obligation.origin)]);
+	for (let index = 0; index < queue.length; index++) {
+		const current = queue[index];
+		for (const edge of ordered) {
+			if (!sameEndpoint(edge.from, current)) continue;
+			if (seen.has(endpointKey(edge.to))) continue;
+			seen.add(endpointKey(edge.to));
+			queue.push(edge.to);
+			const record = read(edge.to);
+			if (record?.unconfirmedCaptureToken === obligation.obligationId) return edge.to;
+		}
 	}
 	// The origin's own durable record can hold the exact token: a submission
 	// begun after every historical handoff cleaned up never moved, and durable
@@ -105,6 +118,10 @@ export function captureTerminal(
 	// routing it through unrelated historical edges would strand it.
 	if (obligation.chainId === null) return obligation.origin;
 	return terminalDestination(edges, obligation.origin, obligation.chainId ?? undefined);
+}
+
+function endpointKey(endpoint: DraftHandoffEndpoint): string {
+	return `${endpoint.hubId}\u0000${endpoint.sessionRef}`;
 }
 
 /** Deterministic settlement planning over the durable graph.

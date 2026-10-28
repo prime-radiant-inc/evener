@@ -37,14 +37,17 @@ export type DraftStorage = Pick<
 export class DraftLibrary {
 	private hubs = new Map<string, Map<string, DraftDocument>>();
 	/** Documents retired by a handoff, keyed by the edge that transferred them:
-	 * only that edge's own retry reads the snapshot it wrote back. A newer
-	 * edge from the same endpoint reads the endpoint's current document
-	 * instead, so a reopened identity's fresh composition is never overwritten
-	 * by the snapshot an earlier handoff carried away. The entry keeps the hub
-	 * so hub removal still invalidates retired sources, and the durable
-	 * identity of the source endpoint's record at capture time: a retry may
-	 * only move the snapshot again while that record still matches it. */
-	private retired = new Map<string, { hubId: string; document: DraftDocument; sourceIdentity: string | null }>();
+	 * only that edge's own retry reads the snapshot it wrote back, and the
+	 * snapshot is durable evidence the transfer committed - rememberRetired
+	 * runs only after the repository write - so that edge never re-transfers
+	 * it. A newer edge from the same endpoint reads the endpoint's current
+	 * document instead. The entry keeps the hub so hub removal still
+	 * invalidates retired sources. */
+	private retired = new Map<string, { hubId: string; document: DraftDocument }>();
+	/** Hubs whose storage was removed: every later open maps to one inert,
+	 * never-loading document, so a late obligation resolution cannot recreate
+	 * the hub's deleted drafts. */
+	private removedHubs = new Map<string, DraftDocument>();
 	/** Consumers that must hear a durable obligation transition, so a mounted
 	 * destination recomputes its recovery exclusions and re-runs reconciliation
 	 * without waiting for a remount. */
@@ -59,6 +62,10 @@ export class DraftLibrary {
 	) {}
 
 	open(destination: DraftDestination): DraftDocument {
+		// A removed hub never reopens: a fresh document here would persist into
+		// the storage the removal just deleted.
+		const removed = this.removedHubs.get(destination.hubId);
+		if (removed !== undefined) return removed;
 		// A resolved completion is applied before a screen reads the document, so
 		// it never renders a stale capture.
 		this.applyObligationsFor(destination);
@@ -418,29 +425,20 @@ export class DraftLibrary {
 				)
 			)
 				return mayDecide ? this.settle(ledger, edge, destination, current.record, edge.deliveredHash) : true;
-			if (compositionFingerprint(snapshot.record) !== edge.deliveredHash)
-				return mayDecide ? this.refuse(ledger, edge, source) : false;
-			// Snapshot validity: the retained retired snapshot may only move
-			// again while the source endpoint's durable record still matches
-			// the identity captured at retirement. The transfer that captured
-			// it removed that record, so anything the endpoint holds now is
-			// work composed since, and re-transferring would delete it.
-			// Durable destination evidence that the original transfer
-			// committed settles the edge without moving anything; otherwise
-			// the stale handoff keeps waiting and the newer work survives.
-			if (!this.snapshotStillOwnsSource(edge)) {
-				if (destinationNow === edge.deliveredHash && this.transferProven(ledger, edge, snapshot.record)) {
-					try {
-						ledger.recordComposed(edge.edgeId);
-					} catch {
-						// The marker stays missing; the next retry repairs it.
-					}
-					return mayDecide;
-				}
-				return false;
-			}
-			// The intended write never landed (or cannot be proven); fall
-			// through and compose again.
+			// A retained retired snapshot is durable evidence its transfer
+			// committed - rememberRetired runs only after the repository write -
+			// so it never re-transfers. A destination that moved on from the
+			// delivered evidence, cleared or recomposed, must never be
+			// overwritten: the mirror of the rule that newer source work is
+			// never deleted. The edge settles from the delivered evidence and
+			// the destination keeps whatever it holds now.
+			if (this.retired.has(edge.edgeId)) return mayDecide ? this.settleDelivered(ledger, edge, snapshot.record) : true;
+			// A live source whose composition no longer matches the recorded
+			// delivery hash was edited after a transfer that never landed: no
+			// retirement exists, so nothing reached the destination. Refusing
+			// would strand the updated composition at the old identity; the
+			// fall-through re-records the current fingerprint and moves the
+			// current record instead.
 		}
 		if (isOccupied(current.record)) return mayDecide ? this.refuse(ledger, edge, source) : false;
 
@@ -580,6 +578,23 @@ export class DraftLibrary {
 			return false;
 		}
 		destination.adopt(record);
+		return true;
+	}
+
+	/** Settle an edge whose transfer already committed, from the delivered
+	 * evidence the retained retired snapshot holds. The destination keeps
+	 * whatever it holds now - its own newer work, or its own clearing - while
+	 * the delivery's dispositions still reach the identities owning their
+	 * rows. */
+	private settleDelivered(ledger: DraftHandoffLedger, edge: DraftHandoffEdge, delivered: DraftRecord): boolean {
+		const completed = [...(delivered.completedCommandRecoveryIds ?? [])];
+		const released = releasedSources(delivered);
+		if (!this.forwardDispositions(ledger, edge, completed, released)) return false;
+		try {
+			ledger.settleEdge(edge.edgeId, deliveriesFor(edge, completed, released), edge.deliveredHash ?? "");
+		} catch {
+			return false;
+		}
 		return true;
 	}
 
@@ -821,36 +836,7 @@ export class DraftLibrary {
 	}
 
 	private rememberRetired(edge: DraftHandoffEdge, document: DraftDocument): void {
-		// Snapshot validity: capture the source endpoint's durable record
-		// identity beside the snapshot. The transfer that retired this
-		// document removed that record, so a later retry may only move the
-		// snapshot while the endpoint's record still matches this identity -
-		// content composed since is newer work the retry must never delete.
-		let sourceIdentity: string | null = null;
-		try {
-			sourceIdentity = durableRecordIdentity(this.repository().read(edge.from));
-		} catch {
-			// Unreadable now: the snapshot is never provably valid again, so it
-			// never re-transfers; settlement needs destination evidence.
-		}
-		this.retired.set(edge.edgeId, { hubId: edge.from.hubId, document, sourceIdentity });
-	}
-
-	/** Snapshot validity: a retained retired snapshot is only re-transferable
-	 * while the source endpoint's durable record still matches the identity
-	 * captured when the snapshot was taken. The transfer removed that record,
-	 * so an unchanged identity proves the endpoint composed nothing since; any
-	 * change is newer work a stale handoff must never delete. A record that
-	 * cannot be read is never provably unchanged. */
-	private snapshotStillOwnsSource(edge: DraftHandoffEdge): boolean {
-		const entry = this.retired.get(edge.edgeId);
-		if (entry === undefined) return true;
-		if (entry.sourceIdentity === null) return false;
-		try {
-			return durableRecordIdentity(this.repository().read(edge.from)) === entry.sourceIdentity;
-		} catch {
-			return false;
-		}
+		this.retired.set(edge.edgeId, { hubId: edge.from.hubId, document });
 	}
 
 	/** True when a handoff already retired this endpoint's document and the
@@ -885,6 +871,21 @@ export class DraftLibrary {
 				}
 			for (const document of this.hubs.get(hubId)?.values() ?? []) document.forget();
 			this.hubs.delete(hubId);
+			// The hub's ledger work can never progress - its drafts are gone -
+			// so its edges and their deliveries leave the graph. Obligations
+			// survive: their dispositions can still be owed to identities in
+			// other hubs.
+			try {
+				this.availableHandoffLedger()?.removeHub?.(hubId);
+			} catch {
+				// A ledger that cannot clean up keeps inert rows; the inert
+				// document below still blocks every write into the hub.
+			}
+			if (!this.removedHubs.has(hubId)) {
+				const inert = new DraftDocument(this.repository, { hubId, sessionRef: "" }, this.createImageId);
+				inert.forget();
+				this.removedHubs.set(hubId, inert);
+			}
 		}
 	}
 }
@@ -957,13 +958,6 @@ function isOccupied(record: DraftRecord): boolean {
 /** Stable fingerprint of the composition a handoff transfers, so a retry can
  * tell its own write from work added at the destination. Submission lifecycle
  * fields are deliberately excluded: this edge's own completion changes them. */
-/** The durable identity of a persisted record: every field the repository
- * round-trips, compared verbatim. Snapshot validity uses it to prove an
- * endpoint's record has not changed since a handoff captured its snapshot. */
-function durableRecordIdentity(record: DraftRecord): string {
-	return JSON.stringify(record);
-}
-
 function compositionFingerprint(record: DraftRecord): string {
 	const canonical = JSON.stringify({
 		draft: record.draft,

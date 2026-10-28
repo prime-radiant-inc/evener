@@ -122,6 +122,12 @@ export interface DraftHandoffLedger extends DraftSubmissionLedger {
 	settleEdge(edgeId: string, deliveries: readonly DraftHandoffDelivery[], deliveredHash: string): void;
 	refuseEdge(edgeId: string, deliveries: readonly DraftHandoffDelivery[]): void;
 	cleanEdge(edgeId: string): void;
+	/** A removed hub's drafts are gone, so its edges can never deliver, settle,
+	 * or refuse: drop them and their dependency and delivery rows. Obligations
+	 * survive - their dispositions can still be owed to identities in other
+	 * hubs. Optional: without the method the library's own guards still keep a
+	 * removed hub inert. */
+	removeHub?(hubId: string): void;
 }
 
 /** The target key is the composite `[hubId, sessionRef]` encoding used by every
