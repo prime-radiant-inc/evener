@@ -576,8 +576,9 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   that were connected) and the `start`/`reset`/`dispose` trio a host drives
   from its screen, and `createHubWriteGate`, the one write gate the marketplaces
   and plugins stores share. In every store fetches record their failure in state and
-  mutations reject. The subpath resolves to `state/extensions/index.ts`, a
-  barrel over the layer's modules.
+  mutations reject. `REFETCH_DEBOUNCE_MS` is the one debounce every store uses,
+  exported from this subpath and from `state/credentials`. The subpath resolves
+  to `state/extensions/index.ts`, a barrel that names its exports.
 - `@evener/appwire-client/state/credentials` - the credentials state layer:
   `createCredentialInstancesStore({ ownClientId })` is the framework-free
   store core (`instances`) each app's Providers & credentials store adapts:
@@ -590,7 +591,7 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   hub's credential statuses (`evener/auth/list`) by provider, each with the
   error the hub found with its credential, over the extensions stores'
   lifecycle (it follows `evener/auth/updated` and re-reads on reconnect).
-  Resolves to `state/credentials/index.ts`, a barrel.
+  Resolves to `state/credentials/index.ts`, a barrel that names its exports.
 - `@evener/appwire-client/state/mutation` - the mutation state layer: the
   durable record shapes both apps' outboxes store (`MutationIntent`,
   `MutationRecord`, `MutationOutboxRecord`, `MutationOptimisticRecord`,

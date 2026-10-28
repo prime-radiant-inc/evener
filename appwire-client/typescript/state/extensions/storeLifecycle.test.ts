@@ -16,11 +16,12 @@ import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../framewo
 import { answerRequests, callsTo, FakeClient, failRequests, gateSettlements } from "../../testing/fakeClient";
 import { permissiveHubWriteGate } from "../../testing/hubWriteGate";
 import type { MethodName } from "../../types.gen";
+import { REFETCH_DEBOUNCE_MS } from "../refetchDebounce";
 import { createHubWriteGate, type HubWriteGate } from "./hubWriteGate";
-import { createLaunchLayerStore, LAUNCH_LAYER_REFETCH_DEBOUNCE_MS, type LaunchLayerState } from "./launchLayer";
+import { createLaunchLayerStore, type LaunchLayerState } from "./launchLayer";
 import { createListRevision } from "./listRevision";
-import { createMarketplacesStore, MARKETPLACE_REFETCH_DEBOUNCE_MS, type MarketplacesState } from "./marketplaces";
-import { createPluginsStore, PLUGIN_REFETCH_DEBOUNCE_MS, type PluginsState } from "./plugins";
+import { createMarketplacesStore, type MarketplacesState } from "./marketplaces";
+import { createPluginsStore, type PluginsState } from "./plugins";
 import { createStoreLifecycle, type HostLifecycle } from "./storeLifecycle";
 
 type LifecycleStore<S> = FrameworkFreeStore<S> & HostLifecycle<S>;
@@ -61,7 +62,7 @@ const MARKETPLACES: LifecycleCase<MarketplacesState> = {
     const fake = new FakeClient("ready");
     return { fake, store: createMarketplacesStore(fake, gate) };
   },
-  debounceMs: MARKETPLACE_REFETCH_DEBOUNCE_MS,
+  debounceMs: REFETCH_DEBOUNCE_MS,
   notifyUpdated: (fake) => fake.emitNotification({ method: "evener/marketplace/updated", params: {} }),
   notifyUnrelated: (fake) => fake.emitNotification({ method: "evener/plugin/updated", params: {} }),
   listMethod: "evener/marketplace/list",
@@ -81,7 +82,7 @@ const PLUGINS: LifecycleCase<PluginsState> = {
     const fake = new FakeClient("ready");
     return { fake, store: createPluginsStore(fake, gate) };
   },
-  debounceMs: PLUGIN_REFETCH_DEBOUNCE_MS,
+  debounceMs: REFETCH_DEBOUNCE_MS,
   notifyUpdated: (fake) => fake.emitNotification({ method: "evener/plugin/updated", params: {} }),
   notifyUnrelated: (fake) => fake.emitNotification({ method: "evener/marketplace/updated", params: {} }),
   listMethod: "evener/plugin/list",
@@ -101,7 +102,7 @@ const LAUNCH_LAYER: LifecycleCase<LaunchLayerState> = {
     const fake = new FakeClient("ready");
     return { fake, store: createLaunchLayerStore(fake) };
   },
-  debounceMs: LAUNCH_LAYER_REFETCH_DEBOUNCE_MS,
+  debounceMs: REFETCH_DEBOUNCE_MS,
   notifyUpdated: (fake) =>
     fake.emitNotification({ method: "evener/launch/updated", params: { cwd: "/", layer: "global" } }),
   notifyUnrelated: (fake) => fake.emitNotification({ method: "evener/plugin/updated", params: {} }),
