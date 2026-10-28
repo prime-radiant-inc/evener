@@ -120,7 +120,7 @@ const valueRecordKeys = <T>(table: ValueRecordKeyTable<T>, nested?: ValueRecordK
 // knownKeys is exactKeys for a value record: every required key is present,
 // and a key the record's keys do not name is allowed. A newer hub adds
 // optional keys to value records without a ProtocolVersion bump
-// (appwire/types.go), and an app built before a key existed must keep reading
+// (appwire/types_protocol.go), and an app built before a key existed must keep reading
 // every page that carries it. The validators still check every key they name;
 // decodeNavigationResponse then drops the rest (dropUnknownKeys).
 const knownKeys = (value: unknown, keys: ValueRecordKeys): value is Record<string, unknown> =>

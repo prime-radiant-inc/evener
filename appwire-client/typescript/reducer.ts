@@ -2312,7 +2312,7 @@ function threadFields(resp: ThreadReadResponse, ref: string, now: number): Omit<
     artifactsDir: thread.evener.artifactsDir || undefined,
     modelProvider: thread.modelProvider,
     // Thread has no separate "model id" field on the wire snapshot — only
-    // ModelProvider, which appwire/types.go documents as overloaded to
+    // ModelProvider, which appwire/types_thread.go documents as overloaded to
     // "stay[ing] the model field" for this exact reason. thread/model/changed
     // (below) is what later splits provider and model id apart properly.
     model: thread.modelProvider,
@@ -4644,7 +4644,7 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
 
     case "thread/model/changed": {
       if (!notificationTargetsThread(n, model)) return model;
-      // ThreadModelChangedParams (appwire/types.go:867-874) carries
+      // ThreadModelChangedParams (appwire/types_turn.go) carries
       // reasoningEffortLevels/supportsReasoning alongside modelProvider/
       // model, describing the NEW model's full reasoning profile - not a
       // partial patch, so an omitted/empty ladder on the new payload
@@ -4709,7 +4709,7 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
     }
 
     // PendingEscalations is THREAD-level human-client state, never a
-    // transcript item (appwire/types.go's ThreadEvener.PendingEscalations doc
+    // transcript item (appwire/types_thread.go's ThreadEvener.PendingEscalations doc
     // comment: "a HUMAN-CLIENT field only ... never part of the model's
     // transcript or any model-visible projection"). The catalog entry
     // (appwire/protocol.go:185) declares this notification with its real

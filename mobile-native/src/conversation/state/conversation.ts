@@ -710,7 +710,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 
 	// A turn a history/updated frame marks itemsView "full" carries its
 	// complete current item list in this frame's own `items` (turnId-matched) —
-	// never accumulated across frames (Go's Turn.ItemsView, appwire/types.go).
+	// never accumulated across frames (Go's Turn.ItemsView, appwire/types_turn.go).
 	// The shared reducer's mergeHistory deliberately never removes an item (an
 	// invariant reducer.history.test.ts pins for every OTHER caller), so a full
 	// turn's withdrawal of an item it omits is this store's own product

@@ -3,6 +3,7 @@ package appwire
 import (
 	"bytes"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -282,6 +283,20 @@ func TestRetrySafeMutationMethod(t *testing.T) {
 	for _, name := range []string{MethodThreadStart, MethodPing, "turn/bogus", ""} {
 		if RetrySafeMutationMethod(name) {
 			t.Errorf("RetrySafeMutationMethod(%q) = true, want false", name)
+		}
+	}
+}
+
+// Every method ValidateMutationParams requires a clientMutationId for is
+// deduplicated by that id on the daemon, so a resend is a replay no-op and the
+// method is retry-safe.
+func TestMutationsRequiringClientMutationIDAreRetrySafe(t *testing.T) {
+	for method, fields := range mutationRequiredFields {
+		if !slices.Contains(fields, "clientMutationId") {
+			continue
+		}
+		if !RetrySafeMutationMethod(method) {
+			t.Errorf("%q requires clientMutationId but is not retry-safe", method)
 		}
 	}
 }

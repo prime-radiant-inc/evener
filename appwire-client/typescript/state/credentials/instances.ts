@@ -7,7 +7,7 @@
 // bookkeeping.
 //
 // Every evener/instance/* mutation's Go handler returns the FULL updated
-// InstanceListResponse (appwire/types.go), so create/edit/remove/setDefault
+// InstanceListResponse (appwire/types_auth_commands.go), so create/edit/remove/setDefault
 // apply that response directly to the listing instead of issuing a separate
 // evener/instance/list refetch. Auth mutations return the raw wire response
 // and the store schedules its own listing refresh, correlated with the hub's
@@ -87,7 +87,7 @@ export interface CredentialInstancesState {
   instances: InstanceEntry[];
   availableProviders: ProviderDescriptor[];
   // diagnostics/userLayer/writesRefused mirror InstanceListResponse's own
-  // optional fields (appwire/types.go), normalized here to always-present
+  // optional fields (appwire/types_auth_commands.go), normalized here to always-present
   // values (spec §11.3) so components never need an `?? []`/`?? false`
   // fallback of their own.
   diagnostics: string[];

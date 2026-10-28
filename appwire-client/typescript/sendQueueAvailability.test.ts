@@ -150,7 +150,7 @@ describe("deriveSendQueueAvailability", () => {
   // active branch does rather than firing a request that cannot land.
   //
   // The queue lands with no turn id: appwire v3 dropped expectedTurnId from
-  // turn/queue outright (appwire/types.go's ProtocolVersion note), so neither
+  // turn/queue outright (appwire/types_protocol.go's ProtocolVersion note), so neither
   // handleAppTurnQueue nor the agent's own clientMutationQueue has a turn
   // precondition left to fail - pinned live by
   // cmd/evener-hub/e2e_control_without_turn_ids_test.go's
