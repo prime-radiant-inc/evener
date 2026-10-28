@@ -1,5 +1,44 @@
 # Comic Chat browser guard
 
+## Temporary CI runtime trace, not acceptance
+
+`runtime-trace.patch` adds private observations only to the CI browser build.
+The web-browser job checks/applies it, builds fresh, then runs the unchanged guard
+with `EVENER_COMIC_GUARD_TRACE=1`. Other CI jobs use unpatched sources.
+`COMICGUARD_EVIDENCE_DIR=/tmp/comicguard-runtime-trace` survives fixture cleanup
+and is uploaded on success or failure. This instrumented build is not acceptance.
+
+The collector starts in the first later-child reload document. It dumps
+`runtime-trace-initial.json` at the existing initial placement verdict, then
+**keeps recording through the existing cached post-hydration recovery verdict**
+into `runtime-trace-final.json`. An initial-placement failure also gets a final
+dump, labeled with that earlier stage. No extra recovery wait or input is added.
+Dump errors are separate `*-error.json` files and never replace assertion errors.
+The new-document collector script is removed after the final dump, before the
+existing partial/cold cache reload journeys.
+
+Each dump holds at most 2048 events with sequence/drop counts, monotonic event and
+capture times, document time origin, stage/verdict and wire index bounds. Only
+fixture-qualified root/child events and allowlisted primitive fields survive.
+There are no message bodies, raw models or exported live owners. Signals include
+all paging exits, restoring/moving/opening, captured/live cursor and loading state,
+lastPage, snapshot/row target membership, owner/binding IDs and before/after request
+state. Actual activation/release/cancel calls and existing restoration DOM/source
+lookups are recorded without extra DOM/Range scans. DOM presence is known only
+when that lookup executes, not continuously. Owner admission labels infer the
+immediate loading transition, not private SDK state; connection-qualified wire
+requests/replies decide whether pages were sent and completed. Sequence gaps from
+ring overflow are explicit. Observation can perturb scheduling; a pass is not a fix.
+
+From the frontend directory, run
+`node --test scripts/comicguard/runtime-trace-check.mjs scripts/comicguard.test.mjs`.
+The diagnostic check filename intentionally does not match Vitest's discovery;
+verify with `node_modules/.bin/vitest list --filesOnly`. Apply the patch and build
+fresh before the single local smoke below, adding the trace flag and a new evidence
+directory. Before final acceptance, reverse/check the source patch, remove all six
+temporary tooling/workflow/runner changes, and build fresh. Never reuse instrumented
+dist. Do not commit applied source instrumentation.
+
 From the repository root:
 
 ```sh
