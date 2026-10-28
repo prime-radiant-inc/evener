@@ -65,7 +65,7 @@ import {
 import { type BoardItem, groupItems, liveItems, pinnedItems, projectItems } from "./boardItems";
 import type { OrganizeBy, SeenMarkers } from "./boardMemory";
 import { ROW_MOVE } from "./boardMotion";
-import { createSearchController, projectResults, type SearchScope } from "./boardSearch";
+import { projectResults } from "./boardSearch";
 import { documentMemory } from "../reader/nativeDocumentMemory";
 import { openDocumentInSession } from "../reader/openDocument";
 import { BoardNotices, NoticeRow } from "./BoardNotices";
@@ -92,14 +92,7 @@ import { BoardReplay } from "./boardReplay";
 import { BoardStops, stopToast } from "./boardStops";
 import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { type HubSeenMarks, hubSeenMarks } from "./hubSeen";
-import {
-	boardHold,
-	foldedSections,
-	organizeByPreference,
-	recentSearches,
-	seenMarkers,
-	useBoardSeen,
-} from "./nativeBoardMemory";
+import { boardHold, foldedSections, organizeByPreference, seenMarkers, useBoardSeen } from "./nativeBoardMemory";
 import { notices } from "./notices";
 import { PinnedEmptyHint, PinnedSection, useBoardFolds, useCategoryFolds } from "./PinnedSections";
 import { journalHoldsProject, PROJECT_MENU_LABELS, type ProjectMenuAction, projectMenuActions } from "./projectMenu";
@@ -136,6 +129,7 @@ import { SearchResults } from "./SearchResults";
 import { listScrollHandlers } from "./settledList";
 import { journalOperation, organizationOpen } from "./organizationCheck";
 import { type BoardOrganization, useBoardOrganization } from "./useBoardOrganization";
+import { useBoardSearch } from "./useBoardSearch";
 import { PROJECT_SECTIONS, showExpanded, useProjectSections } from "./useProjectSections";
 import { useSettledList } from "./useSettledList";
 import { FLOAT_GAP, underBar } from "../design/underBar";
@@ -385,26 +379,23 @@ function Board({
 	// rule): a reconnect while a pushed screen covers the Board must not send
 	// one `evener/search` for the query the field still holds. A sheet over
 	// the Board is still the Board (ruling 28), so it stays bound then.
-	const search = useSearch(connected && inFront ? client : null);
-	const searchInput = useRef<TextInput>(null);
-	const [searchText, setSearchText] = useState("");
-	// Searching from the moment the field takes focus until Cancel.
-	const [searching, setSearching] = useState(false);
-	const [scope, setScope] = useState<SearchScope>("all");
+	const {
+		search,
+		searchInput,
+		searchText,
+		searching,
+		setSearching,
+		scope,
+		setScope,
+		recentList,
+		typeSearch,
+		leaveSearch,
+		clearRecent,
+		rememberSearch,
+	} = useBoardSearch(hubId, connected && inFront ? client : null);
 	const searchFieldHeight = searchFieldHeightAt(useTextScale());
 	const reduceMotion = useReduceMotion();
 	const { height: windowHeight } = useWindowDimensions();
-	const recent = recentSearches(hubId);
-	const [recentList, setRecentList] = useState(() => recent.list());
-	const typeSearch = (text: string) => {
-		setSearchText(text);
-		search.controller.setQuery(text);
-	};
-	const leaveSearch = () => {
-		typeSearch("");
-		setSearching(false);
-		searchInput.current?.blur?.();
-	};
 	const cancelSearch = () => {
 		leaveSearch();
 		// Tuck the field back out of view, where the Board keeps it.
@@ -424,14 +415,6 @@ function Board({
 		const row = loadedRows.find((loaded) => loaded.ref === result.ref);
 		if (row) openSession(row);
 		else navigation.navigate("Conversation", { hubId, ref: result.ref, title: result.title });
-	};
-	const clearRecent = () => {
-		recent.clear();
-		setRecentList(recent.list());
-	};
-	const rememberSearch = () => {
-		recent.add(search.snapshot.query);
-		setRecentList(recent.list());
 	};
 
 	// Where each section starts in the scroller, for the chips and the
@@ -1447,15 +1430,6 @@ function openProjectMenu(
 		...actions.map((action) => ({ text: PROJECT_MENU_LABELS[action], onPress: () => act(action) })),
 		{ text: "Cancel", style: "cancel" },
 	]);
-}
-
-/** The Board's search controller, bound to the ready client or none. */
-function useSearch(client: ConversationClientLike | null) {
-	const [controller] = useState(createSearchController);
-	useEffect(() => () => controller.dispose(), [controller]);
-	useEffect(() => controller.setClient(client), [controller, client]);
-	const snapshot = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
-	return { controller, snapshot };
 }
 
 /** The chips' panel on the glass: over the Board's top, which runs under it. */
