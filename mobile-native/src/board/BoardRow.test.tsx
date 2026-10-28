@@ -8,7 +8,7 @@ import { render } from "../renderNative.testkit";
 import { memoryStorage } from "../syncStringStorageTestUtils";
 import type { BoardState, ClassifiedRow } from "./attention";
 import { boardState } from "./attention";
-import { BoardRow, type BoardRowProps, sessionSubagentChip } from "./BoardRow";
+import { BoardRow, type BoardRowProps, sessionSubagentChip, spokenAge } from "./BoardRow";
 import { FreshDot } from "../reader/FreshDot";
 import { PulseMeter } from "./PulseMeter";
 import { StateMark } from "./StateMark";
@@ -524,3 +524,18 @@ function pressedStyle(tree: ReactTestRenderer, pressed: boolean): Style {
 	const style = pressable(tree).props.style;
 	return typeof style === "function" ? flatten(style({ pressed })) : {};
 }
+
+describe("spokenAge", () => {
+	it("says each relative-age unit in words, singular at one", () => {
+		expect(spokenAge("1m")).toBe("1 minute");
+		expect(spokenAge("2m")).toBe("2 minutes");
+		expect(spokenAge("1h")).toBe("1 hour");
+		expect(spokenAge("5h")).toBe("5 hours");
+		expect(spokenAge("1d")).toBe("1 day");
+		expect(spokenAge("12d")).toBe("12 days");
+	});
+
+	it("passes through an age that is not a count and unit", () => {
+		expect(spokenAge("now")).toBe("now");
+	});
+});
