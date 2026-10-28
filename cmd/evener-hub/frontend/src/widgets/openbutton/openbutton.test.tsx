@@ -1,14 +1,12 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
+import { readModuleCss } from "../../styles/cssBlock";
 import { OpenButton, OpenIcon } from ".";
 
 // The repo's CSS-source test idiom (difftable.test.tsx, select.test.tsx):
 // jsdom has no layout, so geometry contracts are pinned by reading the
 // stylesheet's own source.
-const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "openbutton.module.css"), "utf8");
+const css = readModuleCss(import.meta.url, "openbutton.module.css");
 
 test("the button form is icon-only: named by label, tooltip defaults to the one word 'Open'", () => {
   const onClick = vi.fn();
