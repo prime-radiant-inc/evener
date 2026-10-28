@@ -438,6 +438,75 @@ test("a completion after a handoff never reads the whole submission history", as
 	});
 });
 
+test("an unrecorded begin keeps the running command's capture suppressed after a handoff", async () => {
+	const f = fixture();
+	const captured = await f.enqueue();
+	f.document.edit("current");
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, captured, f.document)).toBe("restored");
+	f.document.edit("edited recovered text");
+
+	// The obligation store fails every begin while the send itself still goes
+	// out: no durable obligation row can ever show this running command.
+	const failingLedger = new Proxy(f.runtime.storage.handoffLedger, {
+		get(target, property) {
+			const value = Reflect.get(target, property, target);
+			if (property === "beginSubmission" && typeof value === "function")
+				return (...args: unknown[]) => {
+					void args;
+					throw new Error("ledger down");
+				};
+			return typeof value === "function" ? (value as (...inner: unknown[]) => unknown).bind(target) : value;
+		},
+	}) as typeof f.runtime.storage.handoffLedger;
+	const library = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => failingLedger,
+	);
+	const source = library.open(destination);
+	let finish!: () => void;
+	const submitted = source.submitBuiltinCommand(
+		() =>
+			new Promise<boolean>((resolve) => {
+				finish = () => resolve(true);
+			}),
+	);
+	// Another waiting message is what drives the resume and moves the
+	// claimed row's recovery to the resumed identity.
+	await f.enqueue();
+
+	const resumedRef = "session-resumed";
+	const resumedKey = nativeMutationTargetKey(destination.hubId, resumedRef);
+	const resumedDestination = { hubId: destination.hubId, sessionRef: resumedRef };
+	expect(
+		f.runtime.storage.retarget(key, {
+			ref: resumedKey,
+			wireRef: resumedRef,
+			threadId: "thread-2",
+			instanceId: "instance-2",
+		}),
+	).toHaveLength(1);
+	// The handoff writes succeed while the begin still fails: the empty
+	// destination accepts the running command's capture.
+	expect(library.handoff(destination, resumedDestination)).toBe(true);
+	const resumed = library.open(resumedDestination);
+	expect(resumed.getSnapshot().record).toMatchObject({ unconfirmed: "edited recovered text" });
+
+	// The screen's recovery effect runs while the begin is still unrecorded:
+	// ownership of the running command's sources must not read as empty.
+	library.retryPendingHandoffs();
+	await reconcileEditedResends(f.runtime, resumedKey, resumed, () =>
+		library.openObligationRecoveryIds(resumedDestination),
+	);
+	// Restoring the still-running command's sources would make the command
+	// available for duplicate execution; the suppression holds.
+	expect(resumed.getSnapshot().record).toMatchObject({ unconfirmed: "edited recovered text" });
+
+	finish();
+	await submitted;
+	expect(resumed.getSnapshot().record).toMatchObject({ unconfirmed: "edited recovered text" });
+});
+
 test("a restart preserves a recovered message capture for receipt reconciliation", async () => {
 	const f = fixture();
 	const captured = await f.enqueue();

@@ -147,6 +147,13 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 		this.addColumnIfMissing("draft_submission_obligations", "recovery_ids", "TEXT NOT NULL DEFAULT '[]'");
 		this.addColumnIfMissing("draft_submission_obligations", "released_recovery_ids", "TEXT NOT NULL DEFAULT '[]'");
 		this.addColumnIfMissing("draft_submission_obligations", "applied_at", "INTEGER");
+		// The routine pass prices in unresolved work: a partial index keeps the
+		// outstanding scan and its ordering off acknowledged and failed
+		// history, which grows for the life of the device. It comes after the
+		// migrations because it names applied_at.
+		this.db.execSync(`CREATE INDEX IF NOT EXISTS draft_submission_obligations_outstanding
+			 ON draft_submission_obligations (created_at)
+			 WHERE state = 'open' OR (applied_at IS NULL AND state != 'failed')`);
 	}
 
 	private addColumnIfMissing(table: string, column: string, definition: string): void {

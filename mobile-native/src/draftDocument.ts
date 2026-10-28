@@ -59,6 +59,21 @@ export function captureInFlight(token: string): boolean {
 	return inFlightCaptures.has(token);
 }
 
+/** Capture tokens whose begin write has not durably recorded. The submission
+ * is running - or queued to resolve - with no obligation row the ledger can
+ * show, so ownership reads must treat those sources as owned wherever the
+ * record holding the token lives: unrecorded ownership suppresses
+ * restoration, and the suppression survives a transfer. */
+const unrecordedBegins = new Set<string>();
+
+export function submissionBeginsUnrecorded(): boolean {
+	return unrecordedBegins.size !== 0;
+}
+
+export function submissionBeginUnrecorded(token: string): boolean {
+	return unrecordedBegins.has(token);
+}
+
 function sameSources(owned: readonly string[] | undefined, supplied: readonly string[]): boolean {
 	return (
 		!!owned?.length &&
@@ -747,6 +762,7 @@ export class DraftDocument {
 				// this submission, because the ledger that would carry the
 				// obligation is what is failing.
 				this.unrecordedCaptures.set(draftCaptureToken, [...(metadata?.recoveryIds ?? [])]);
+				unrecordedBegins.add(draftCaptureToken);
 				this.scheduleObligationRetry();
 			}
 			const context: ConversationMutationContext = {
@@ -907,6 +923,7 @@ export class DraftDocument {
 			try {
 				this.submissionLedger?.().beginSubmission(captureToken, this.destination, recoveryIds);
 				this.unrecordedCaptures.delete(captureToken);
+				unrecordedBegins.delete(captureToken);
 				inFlightCaptures.add(captureToken);
 			} catch {
 				// Still failing; the capture stays unrecorded and its resolution queued.

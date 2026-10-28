@@ -5,6 +5,8 @@ import {
 	DraftDocument,
 	mergeCompletion,
 	messageAdmissionCapture,
+	submissionBeginUnrecorded,
+	submissionBeginsUnrecorded,
 } from "./draftDocument";
 import type {
 	DraftHandoffDelivery,
@@ -787,6 +789,23 @@ export class DraftLibrary {
 			});
 			if (!sameDestination(owner, destination)) continue;
 			for (const id of obligation.recoveryIds) ids.add(id);
+		}
+		// A begin that never recorded is ownership the graph cannot show: the
+		// submission is running - or queued to resolve - with no obligation
+		// row, so nothing above suppresses its capture. The record holding
+		// the token owns the suppression, wherever a transfer moved it: an
+		// unrecorded capture's sources must not be restored while its
+		// submission is unresolved.
+		if (submissionBeginsUnrecorded()) {
+			let record: DraftRecord | undefined;
+			try {
+				record = this.repository().read(destination);
+			} catch {
+				return undefined;
+			}
+			const token = record?.unconfirmedCaptureToken;
+			if (token !== undefined && submissionBeginUnrecorded(token))
+				for (const id of record?.unconfirmedComposer?.recoveryIds ?? []) ids.add(id);
 		}
 		if (readsFailed) return undefined;
 		return ids;

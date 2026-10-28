@@ -52,6 +52,35 @@ describe("draft handoff ledger", () => {
 		]);
 	});
 
+	test("the routine obligation read prices in unresolved work by index", () => {
+		const { database, ledger } = setup();
+		// Resolved history: acknowledged completions and failed resolutions,
+		// all excluded from the routine predicate, which typing issues on
+		// every draft edit.
+		for (let i = 0; i < 20; i += 1) {
+			const token = `token-${i}`;
+			ledger.beginSubmission(token, a, [`recovered-${i}`]);
+			ledger.resolveSubmission(token, i % 2 === 0 ? "completed" : "failed", [`recovered-${i}`]);
+			if (i % 2 === 0) ledger.acknowledgeAppliedCompletion(token);
+		}
+		const details = (
+			database
+				.prepare(
+					`EXPLAIN QUERY PLAN SELECT * FROM draft_submission_obligations
+					 WHERE state = 'open' OR (applied_at IS NULL AND state != 'failed')
+					 ORDER BY created_at, rowid`,
+				)
+				.all() as { detail: string }[]
+		)
+			.map((row) => row.detail)
+			.join(" | ");
+		// History contributes nothing: the plan scans only the partial index
+		// of outstanding rows - in order, with no temp b-tree - instead of
+		// every submission the device ever made.
+		expect(details).toContain("SCAN draft_submission_obligations USING INDEX draft_submission_obligations_outstanding");
+		expect(details).not.toContain("USE TEMP B-TREE");
+	});
+
 	test("round-trips edges, dependencies, obligations, and deliveries", () => {
 		const { ledger } = setup();
 		ledger.beginSubmission("obligation-1", a);
