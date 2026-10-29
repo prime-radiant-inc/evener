@@ -88,7 +88,7 @@ func fixtureRoot(t *testing.T) string {
 		"cmd/evener-hub/config.go":              fixtureHubConfig,
 		"cmd/evener-hub/use.go":                 "package main\ntype other struct{ Dead, Addr int }\nfunc f(c Config, p *Config, o other) { _ = c.Addr; _ = p.Timeout; _ = o.Dead; c.Dead = 1 }\n",
 		"cmd/evener-hub/other_test.go":          "package main\nvar _ = cfg.Dead\n",
-		"cmd/dev/direct.go":                     "package main\nvar _ = os.Getenv(\"SHARD_DIR\")\nvar _ = \"EVENER_READ\"\n",
+		"cmd/dev/direct.go":                     "package main\nvar _ = os.Getenv(\"SHARD_DIR\")\nvar _ = \"EVENER_READ\"\nconst rig = \"EVENER_RIG\"\nvar cleared = []string{\"EVENER_ONLY_CLEARED_LIST\"}\n",
 		"docs/developing-evener/environment.md": "| `EVENER_READ` | doc |\n",
 		"docs/evener-hub.md":                    "`addr` and\ntimeout = \"5s\"\n",
 		"docs/superpowers/plans/dated.md":       "`EVENER_ORPHAN` `dead`\n",
@@ -142,8 +142,8 @@ func TestDirectEnvRowsSkipRegistryNames(t *testing.T) {
 	for _, r := range rows {
 		names = append(names, r.Name)
 	}
-	if !slices.Equal(names, []string{"SHARD_DIR"}) {
-		t.Errorf("direct rows = %v, want only the name the registry does not declare", names)
+	if !slices.Equal(names, []string{"EVENER_RIG", "SHARD_DIR"}) {
+		t.Errorf("direct rows = %v, want the names a tool declares or reads that the registry does not (a name only listed for clearing is not a knob)", names)
 	}
 }
 

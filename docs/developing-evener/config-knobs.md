@@ -136,7 +136,6 @@ Dev tooling and test rigs declare these themselves.
 | Variable | Doc row | Consumer |
 |---|---|---|
 | `BROWSER_GUARD_CONCURRENCY` | none | `cmd/evener-dev` |
-| `EVENER_API_TOKEN` | none | `cmd/evener-hub/internal/hubtestenv` |
 | `EVENER_FUZZ_PERSIST` | [developing-evener/fuzzing.md](../developing-evener/fuzzing.md) | `fuzz/promoter` |
 | `EVENER_HUB_TEST_ENV_ROOT` | none | `cmd/evener-hub/internal/hubtestenv` |
 | `EVENER_LIVE_TESTS` | none | `agent/internal/liveeval` |

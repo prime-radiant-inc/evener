@@ -161,7 +161,12 @@ var quotedOrExpanded = regexp.MustCompile(`(?:"|\$\{?)([A-Z][A-Z0-9_]*)\b`)
 // Go sources name. Provider variables have no Go identifier at their reader, so
 // appearing here is how the registry consumes one.
 func registryNames(root string) (map[string]bool, error) {
-	var text bytes.Buffer
+	names := map[string]bool{}
+	addQuoted := func(text []byte) {
+		for _, m := range quotedOrExpanded.FindAllSubmatch(text, -1) {
+			names[string(m[1])] = true
+		}
+	}
 	dir := filepath.Join(root, "llm", "registry")
 	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -183,7 +188,20 @@ func registryNames(root string) (map[string]bool, error) {
 		if err != nil {
 			return err
 		}
-		if strings.HasSuffix(p, ".gz") {
+		switch {
+		case strings.HasSuffix(p, ".go"):
+			// String literals only: a comment naming a variable reads nothing.
+			file, err := parser.ParseFile(token.NewFileSet(), p, data, 0)
+			if err != nil {
+				return err
+			}
+			ast.Inspect(file, func(n ast.Node) bool {
+				if lit, ok := n.(*ast.BasicLit); ok && lit.Kind == token.STRING {
+					addQuoted([]byte(lit.Value))
+				}
+				return true
+			})
+		case strings.HasSuffix(p, ".gz"):
 			zr, err := gzip.NewReader(bytes.NewReader(data))
 			if err != nil {
 				return fmt.Errorf("%s: %w", p, err)
@@ -191,21 +209,30 @@ func registryNames(root string) (map[string]bool, error) {
 			if data, err = io.ReadAll(zr); err != nil {
 				return fmt.Errorf("%s: %w", p, err)
 			}
+			addQuoted(data)
+		default:
+			addQuoted(withoutCommentLines(data))
 		}
-		text.Write(data)
 		return nil
 	})
-	names := map[string]bool{}
-	for _, m := range quotedOrExpanded.FindAllSubmatch(text.Bytes(), -1) {
-		names[string(m[1])] = true
-	}
 	return names, err
+}
+
+// withoutCommentLines drops the lines of a TOML file that are only a comment.
+func withoutCommentLines(data []byte) []byte {
+	var kept [][]byte
+	for _, line := range bytes.Split(data, []byte("\n")) {
+		if !bytes.HasPrefix(bytes.TrimSpace(line), []byte("#")) {
+			kept = append(kept, line)
+		}
+	}
+	return bytes.Join(kept, []byte("\n"))
 }
 
 // fileRefs are the environment references one Go file makes.
 type fileRefs struct {
 	registry map[string]bool // envvars identifiers used other than to set or clear the variable
-	literals []string        // every string literal
+	declared []string        // string constants and variables: a name a tool declares for itself
 	getenvs  []string        // names passed literally to os.Getenv / os.LookupEnv
 }
 
@@ -273,10 +300,12 @@ func scanRefs(src goSource) (fileRefs, error) {
 			} else if isIdent(v.X, "envvars") && !skip[v] {
 				refs.registry[v.Sel.Name] = true
 			}
-		case *ast.BasicLit:
-			if v.Kind == token.STRING && !writes[v] {
-				if lit, err := strconv.Unquote(v.Value); err == nil {
-					refs.literals = append(refs.literals, lit)
+		case *ast.ValueSpec:
+			for _, value := range v.Values {
+				if lit, ok := value.(*ast.BasicLit); ok && lit.Kind == token.STRING {
+					if name, err := strconv.Unquote(lit.Value); err == nil {
+						refs.declared = append(refs.declared, name)
+					}
 				}
 			}
 		case *ast.CallExpr:
@@ -340,7 +369,7 @@ func directEnvRows(root string, sources []goSource) ([]directRow, error) {
 		if err != nil {
 			return nil, err
 		}
-		for _, name := range append(refs.getenvs, refs.literals...) {
+		for _, name := range append(refs.getenvs, refs.declared...) {
 			if !known[name] && (evenerName.MatchString(name) || slices.Contains(refs.getenvs, name)) {
 				addTo(byName, name, src.dir())
 			}
