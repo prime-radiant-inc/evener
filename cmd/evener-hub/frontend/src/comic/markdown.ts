@@ -91,13 +91,16 @@ function unquote(raw: MappedText, text: string): MappedText {
 
 function listBody(raw: MappedText, item: Tokens.ListItem): MappedText {
   const prefix = item.raw.match(/^ {0,3}(?:[*+-]|\d{1,9}[.)])/)?.[0].length ?? 0;
-  const checkbox = item.tokens[0]?.type === "checkbox" ? item.tokens[0].raw : "";
+  const first = item.tokens[0];
+  // Loose lists can place the checkbox inside the first paragraph.
+  const head = first?.type === "paragraph" ? (first as Tokens.Paragraph).tokens[0] : first;
+  const checkbox = head?.type === "checkbox" ? head.raw : "";
   const target = checkbox + item.text;
   const targetLines = target.split("\n");
   // Marked expands first-line tabs to tab stops and continuation tabs to four
   // spaces before removing the item's indentation. Each expanded unit still
   // belongs to the authored tab, including after a second block-level dedent.
-  const expanded = joinLines(
+  let expanded = joinLines(
     lines(raw).map((line, row) => {
       // Lazy continuation lines retain tabs verbatim in the lexer's item text.
       if (targetLines[row]?.includes("\t")) return line;
@@ -113,6 +116,17 @@ function listBody(raw: MappedText, item: Tokens.ListItem): MappedText {
     }),
     raw,
   );
+  // Marked collapses whitespace after a task marker to one separator. Keep
+  // that unit anchored to the first authored space/tab, without shifting body text.
+  const taskPrefix = checkbox && expanded.text.slice(prefix).match(/^ +\[[ xX]\]( +)/);
+  if (taskPrefix) {
+    const end = prefix + taskPrefix[0].length;
+    const start = end - (taskPrefix[1]?.length ?? 0);
+    expanded = {
+      text: expanded.text.slice(0, start + 1) + expanded.text.slice(end),
+      offsets: [...expanded.offsets.slice(0, start + 1), ...expanded.offsets.slice(end)],
+    };
+  }
   return bodyLines(expanded, target, prefix);
 }
 
@@ -165,6 +179,9 @@ function inline(tokens: Token[], raw: MappedText): VisibleRun[] {
       case "image":
       case "br":
         return [];
+      case "checkbox":
+        // The shared sanitizer removes the input, not Marked's separator.
+        return [cut(value, 3, 4)];
       case "escape":
         return [cut(value, 1)];
       case "codespan": {
@@ -223,8 +240,9 @@ function visible(token: Token, raw: MappedText): VisibleRun[] {
     case "space":
     case "def":
     case "hr":
-    case "checkbox":
       return [];
+    case "checkbox":
+      return inline([token], raw);
     case "blockquote": {
       const t = token as Tokens.Blockquote;
       return blockRuns(t.tokens, unquote(raw, t.text));

@@ -72,8 +72,19 @@ test("every live prefix partitions its own input and settles without stale parsi
 test("task-list checkbox syntax never consumes the following visible text offsets", () => {
   const raw = "- [x] one\n- **two**\n";
   const runs = projectComicMarkdown(raw, false).parts.flatMap((part) => part.visible);
-  expect(runs.map((run) => run.text).join("")).toBe("onetwo");
-  expect(runs.flatMap((run) => run.offsets)).toEqual([6, 7, 8, 14, 15, 16]);
+  expect(runs.map((run) => run.text).join("")).toBe(" onetwo");
+  expect(runs.flatMap((run) => run.offsets)).toEqual([5, 6, 7, 8, 14, 15, 16]);
+});
+
+test.each([
+  ["- [ ] ax", " ax", [5, 6, 7]],
+  ["- [x] ax\n\n- [ ] by", " ax by", [5, 6, 7, 15, 16, 17]],
+  ["- [x]\t**ax**", " ax", [5, 8, 9]],
+  ["- [x]  ax", " ax", [5, 7, 8]],
+] as const)("checkbox separator maps to authored whitespace in %s", (raw, text, offsets) => {
+  const runs = projectComicMarkdown(raw, false).parts.flatMap((part) => part.visible);
+  expect(runs.map((run) => run.text).join("")).toBe(text);
+  expect(runs.flatMap((run) => run.offsets)).toEqual(offsets);
 });
 
 test("table cell maps retain CRLF, entities and astral UTF-16 identity", () => {

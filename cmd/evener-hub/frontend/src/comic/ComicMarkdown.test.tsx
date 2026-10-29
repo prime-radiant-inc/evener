@@ -29,6 +29,106 @@ function ranges(doc: Document) {
 }
 
 test.each([
+  { source: "- [x] ax", points: [["li", "ax", 1]] },
+  { source: "- [ ] ax", points: [["li", "ax", 1]] },
+  { source: "- ax", points: [["li", "ax", 0]] },
+  {
+    source: "- [x] ax\n\n- [ ] by",
+    points: [
+      ["li:first-child p", "ax", 1],
+      ["li:last-child p", "by", 1],
+    ],
+  },
+  {
+    source: "> - [x] ax\n>   - [ ] by",
+    points: [
+      ["blockquote > ul > li", "ax", 1],
+      ["li li", "by", 1],
+    ],
+  },
+  {
+    source: "- [ ] ax\n\n  > - [x] by",
+    points: [
+      ["ul > li > p", "ax", 0],
+      ["blockquote li", "by", 1],
+    ],
+  },
+  { source: "- [x]\t**ax**", points: [["li strong", "ax", 0]] },
+  { source: "- [ ] `a  b`", points: [["li code", "a  b", 0]] },
+  {
+    source: "- [x] ax\n\n  ```txt\n  by\n  ```\n\n  cz",
+    points: [
+      ["li", "ax", 0],
+      ["code span span", "by", 0],
+      ["[data-comic-markdown]:last-child li", "cz", 0],
+    ],
+  },
+] as const)("task-list glyphs bind and stay connected for $source", ({ source, points }) => {
+  const document = projectComicMarkdown(source, false);
+  expect(document.parts.map((part) => source.slice(part.start, part.end)).join("")).toBe(source);
+  const view = () => document.parts.map((part) => <ComicMarkdown key={part.start} document={document} part={part} />);
+  const rendered = render(view());
+  const probe = ranges(rendered.container.ownerDocument);
+  const check = () => {
+    expect(rendered.container.querySelectorAll("input")).toHaveLength(0);
+    for (const [selector, authored, local] of points) {
+      const element = rendered.container.querySelector(selector);
+      const node = element?.firstChild;
+      const root = element?.closest<HTMLElement>("[data-comic-markdown]");
+      expect(root).toBeTruthy();
+      if (!root) throw new Error("missing root");
+      // Expected positions come from the authored fixture, never the projector's map.
+      const start = source.indexOf(authored);
+      expect(start).toBeGreaterThanOrEqual(0);
+      for (let i = 0; i < authored.length; i++) {
+        comicMarkdownPoint(root, start + i);
+        expect(probe.last?.startContainer).toBe(node);
+        expect(probe.last?.startOffset).toBe(local + i);
+        expect(probe.last?.toString()).toBe(source[start + i]);
+        expect(node?.isConnected).toBe(true);
+        expect(root.contains(node ?? null)).toBe(true);
+      }
+    }
+  };
+  try {
+    check();
+    rendered.rerender(view());
+    check();
+  } finally {
+    probe.spy.mockRestore();
+  }
+});
+
+test("task-list streaming prefixes retain original glyphs through settlement", () => {
+  const source = "- [x] ax\n- [ ] by";
+  const rendered = render(formatted("", true));
+  const probe = ranges(rendered.container.ownerDocument);
+  const check = (end: number) => {
+    for (const [item, authored] of ["ax", "by"].entries()) {
+      const start = source.indexOf(authored);
+      for (let offset = start; offset < Math.min(start + authored.length, end); offset++) {
+        const node = rendered.container.querySelectorAll("li")[item]?.firstChild;
+        comicMarkdownPoint(rendered.container, offset);
+        expect(probe.last?.startContainer).toBe(node);
+        expect(probe.last?.startOffset).toBe(1 + offset - start);
+        expect(probe.last?.toString()).toBe(source[offset]);
+        expect(node?.isConnected).toBe(true);
+      }
+    }
+  };
+  try {
+    for (let end = 1; end <= source.length; end++) {
+      rendered.rerender(formatted(source.slice(0, end), true));
+      check(end);
+    }
+    rendered.rerender(formatted(source, false));
+    check(source.length);
+  } finally {
+    probe.spy.mockRestore();
+  }
+});
+
+test.each([
   {
     source: "  abc\n  ===",
     selector: "h1",
