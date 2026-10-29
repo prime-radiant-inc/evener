@@ -1156,7 +1156,7 @@ func TestJobActivityTree_LiveContinuationRejectedAfterRevisionChanges(t *testing
 	// continuation minted above stale.
 	s.jobActivityClock.nextRevision()
 
-	if _, err := s.JobActivityTree(appwire.JobsListParams{Continuation: token}); err == nil {
+	if _, err := s.JobActivityTree(t.Context(), appwire.JobsListParams{Continuation: token}); err == nil {
 		t.Fatal("expected the stale live continuation to be rejected")
 	} else if !strings.Contains(err.Error(), "live session changed") {
 		t.Fatalf("error = %v, want a live-session-changed staleness error", err)
@@ -1170,7 +1170,7 @@ func TestJobActivityTree_LiveContinuationRejectedAfterRevisionChanges(t *testing
 		SessionID: s.ID(),
 		Revision:  activityCurrentRootRevision(s.jobActivityClock),
 	}
-	if _, err := s.JobActivityTree(appwire.JobsListParams{Continuation: encodeActivityContinuation(fresh)}); err != nil {
+	if _, err := s.JobActivityTree(t.Context(), appwire.JobsListParams{Continuation: encodeActivityContinuation(fresh)}); err != nil {
 		t.Fatalf("continuation minted against the current revision was rejected: %v", err)
 	}
 }
@@ -1245,11 +1245,11 @@ func TestJobActivityTree_LiveRootChildContinuationSurvivesHistoricalEpochs(t *te
 
 	// Warm the delegate fold cache, then restamp that journal so the child's
 	// next historical read reports a nonzero generation.
-	if _, err := s.JobActivityTree(appwire.JobsListParams{}); err != nil {
+	if _, err := s.JobActivityTree(t.Context(), appwire.JobsListParams{}); err != nil {
 		t.Fatalf("warm the fold caches: %v", err)
 	}
 	bumpFoldGeneration(t, filepath.Join(jobsDir(stateDir, s.ID()), "delegates.jsonl"), func() {
-		if _, err := s.JobActivityTree(appwire.JobsListParams{}); err != nil {
+		if _, err := s.JobActivityTree(t.Context(), appwire.JobsListParams{}); err != nil {
 			t.Fatalf("observe the delegate journal gone: %v", err)
 		}
 	})
@@ -1273,7 +1273,7 @@ func TestJobActivityTree_LiveRootChildContinuationSurvivesHistoricalEpochs(t *te
 		DelegatesEpoch: childBase.snapshot.DelegatesEpoch,
 		Revision:       activityCurrentRootRevision(s.jobActivityClock),
 	})
-	if _, err := s.JobActivityTree(appwire.JobsListParams{Continuation: token}); err != nil {
+	if _, err := s.JobActivityTree(t.Context(), appwire.JobsListParams{Continuation: token}); err != nil {
 		t.Fatalf("live root's own continuation into its untouched closed child was rejected: %v", err)
 	}
 }
@@ -1316,7 +1316,7 @@ func TestJobActivityTree_LiveRootChildContinuationRejectedAfterTheChildIsRewritt
 	})
 	savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Child", s.ID(), 0)
 
-	if _, err := s.JobActivityTree(appwire.JobsListParams{}); err != nil {
+	if _, err := s.JobActivityTree(t.Context(), appwire.JobsListParams{}); err != nil {
 		t.Fatalf("warm the fold caches: %v", err)
 	}
 	childBase, err := loadHistoricalActivityBase(stateDir, childID, true, newHistoricalActivityCache(context.Background(), s.ID()))
@@ -1344,7 +1344,7 @@ func TestJobActivityTree_LiveRootChildContinuationRejectedAfterTheChildIsRewritt
 		}
 	})
 
-	if _, err := s.JobActivityTree(appwire.JobsListParams{Continuation: token}); err == nil {
+	if _, err := s.JobActivityTree(t.Context(), appwire.JobsListParams{Continuation: token}); err == nil {
 		t.Fatal("resumed into a closed child whose journal was rewritten; want the continuation refused")
 	} else if !strings.Contains(err.Error(), "underlying journal changed") {
 		t.Fatalf("error = %v, want a journal-changed staleness error", err)
@@ -1387,7 +1387,7 @@ func TestJobActivityTree_LiveContinuationRejectedAfterADelegateAppears(t *testin
 		withoutGitSnapshot(),
 	)
 	seedRetainedActivityDelegate(t, s, "dlg_b")
-	page, err := s.JobActivityTree(appwire.JobsListParams{})
+	page, err := s.JobActivityTree(t.Context(), appwire.JobsListParams{})
 	if err != nil {
 		t.Fatalf("first page: %v", err)
 	}
@@ -1405,7 +1405,7 @@ func TestJobActivityTree_LiveContinuationRejectedAfterADelegateAppears(t *testin
 	// A delegate created now sorts ahead of dlg_b and shifts it by one.
 	seedRetainedActivityDelegate(t, s, "dlg_a")
 
-	resumed, err := s.JobActivityTree(appwire.JobsListParams{Continuation: token})
+	resumed, err := s.JobActivityTree(t.Context(), appwire.JobsListParams{Continuation: token})
 	if err == nil {
 		delivered := make([]string, 0, len(resumed.Root.Entries))
 		for _, entry := range resumed.Root.Entries {

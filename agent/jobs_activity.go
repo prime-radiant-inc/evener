@@ -355,7 +355,7 @@ func decodeActivityContinuation(token, expectedRoot string) (activityContinuatio
 
 // JobActivityTree builds the session's job-activity tree reported over
 // appwire, after validating params' root reference against this session.
-func (s *Session) JobActivityTree(params appwire.JobsListParams) (appwire.JobActivityTree, error) {
+func (s *Session) JobActivityTree(ctx context.Context, params appwire.JobsListParams) (appwire.JobActivityTree, error) {
 	if s == nil {
 		return appwire.JobActivityTree{}, errors.New("session unavailable")
 	}
@@ -365,32 +365,18 @@ func (s *Session) JobActivityTree(params appwire.JobsListParams) (appwire.JobAct
 	root := activitySessionLocator{live: s, stateDir: s.stateDir, sessionID: s.ID()}
 	now := s.sclock().Now().UTC()
 	if s.jobActivityClock == nil {
-		// context.Background() here is a real, known gap, not a soft one:
-		// this root's OWN job list loads via loadLiveActivityBase ->
-		// jm.store.LoadOrdered(), a completely separate, unbounded,
-		// non-cancelable read on jobstore.Store's stateful, cursor-caching,
-		// mutex-protected internal path (readAllLocked) — NOT the bounded
-		// jobstore.ScanEvents this ctx would otherwise reach. Store.LoadOrdered
-		// has one caller; retrofitting it with the same ScanLimits+ctx
-		// ScanEvents uses would mean redesigning how its cursor-trust
-		// invariants interact with a resumable, ceiling-respecting read,
-		// inside code shared with the live append path — real, but out of
-		// scope here; flagged for a follow-up. What context.Background()
-		// DOES still reach: any already-exited descendant of this live
-		// root, loaded through loadHistoricalActivityBase's bounded
-		// scanners exactly like the hub's persisted fallback. Separately,
-		// this path's own caller (cmd/evener/serve.go's SetJobsFunc hook)
-		// takes no context to thread through in the first place, so even a
-		// bounded LoadOrdered would only gain the byte/event ceilings
-		// here, not cancellation.
-		snapshot, startDepth, resumeIndex, err := loadActivitySnapshotForParams(context.Background(), root, params)
+		// ctx reaches the bounded scanners that load already-exited descendants
+		// of this live root. The root's own job list loads through
+		// jm.store.LoadOrdered, a separate unbounded read on jobstore.Store's
+		// cursor-caching path that does not take a context.
+		snapshot, startDepth, resumeIndex, err := loadActivitySnapshotForParams(ctx, root, params)
 		if err != nil {
 			return appwire.JobActivityTree{}, err
 		}
 		return projectBoundedActivityTree(*snapshot, root.sessionID, startDepth, resumeIndex, 0, now)
 	}
 	return projectStableLiveActivityTreeAt(s.jobActivityClock, root.sessionID, now, func() (*activitySessionSnapshot, int, int, error) {
-		return loadActivitySnapshotForParams(context.Background(), root, params)
+		return loadActivitySnapshotForParams(ctx, root, params)
 	})
 }
 

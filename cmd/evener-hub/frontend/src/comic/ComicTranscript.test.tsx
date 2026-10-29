@@ -24,7 +24,7 @@ import {
   useTranscriptReader,
 } from "../panes/session/transcript/useTranscript";
 import { chromeStore, resetChromeStoreForTests } from "../shell/chromeStore";
-import { connectionStore } from "../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../stores/connection";
 import { olderTranscriptPageKey } from "../stores/entryTranscriptRoutes";
 import { resetThreadsStoreForTests, settleEntryTranscriptForTests, threadsStore } from "../stores/threads";
 import { useThreadModel } from "../stores/useThreadModel";
@@ -56,7 +56,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   sessionStorage.clear();
-  connectionStore.setState({ state: "idle", client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetTranscriptPagingForTests();
   resetChromeStoreForTests();

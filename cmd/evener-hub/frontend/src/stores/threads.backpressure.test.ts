@@ -10,7 +10,7 @@ import {
 import { flushPendingTurnsProjectionForTests } from "../panes/session/composer/queue/testing/flushPendingTurnsProjection";
 import { resetSubagentModuleStoreForTests } from "../panes/session/transcript/tools/subagentModuleStore";
 import { resetWorkspaceStoreForTests } from "../shell/workspace";
-import { connectionStore } from "./connection";
+import { resetConnectionStoreForTests } from "./connection";
 import { setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { MutationOutboxIndexedDB, MutationStorageTimeoutError } from "./mutationOutboxIndexedDB";
 import { settleProjectionWorkForTests } from "./projectionWork";
@@ -44,7 +44,7 @@ let restoreHydrationRetryScheduler: (() => void) | null = null;
 let cache: SessionEntryCache;
 
 beforeEach(async () => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetPendingTurnsStoreForTests();
   resetWorkspaceStoreForTests();

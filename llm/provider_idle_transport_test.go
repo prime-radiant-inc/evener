@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -157,5 +158,36 @@ func TestProviderConnectPreservesShorterTLSHandshake(t *testing.T) {
 	tr := configuredAdapterTransport(&http.Transport{TLSHandshakeTimeout: time.Millisecond}, &AdapterTimeout{Connect: time.Second})
 	if tr.TLSHandshakeTimeout != time.Millisecond {
 		t.Fatalf("TLS timeout=%v", tr.TLSHandshakeTimeout)
+	}
+}
+
+// A body that claims gzip but is not gzip must surface the decoder's own
+// sentinel through the idle wrapper, not a silent substitution: the first
+// read builds the reader, and every read reports its failure.
+func TestIdleGzipBodyRejectsANonGzipPayload(t *testing.T) {
+	tr := &idleResponseTransport{
+		base: idleTestRoundTripper(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("not gzip at all")),
+				Header:     http.Header{"Content-Encoding": []string{"gzip"}},
+				Request:    req,
+			}, nil
+		}),
+		timeout:     time.Minute,
+		compression: true,
+	}
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://provider.invalid/", nil)
+	resp, err := tr.RoundTrip(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	buf := make([]byte, 64)
+	if _, err := resp.Body.Read(buf); !errors.Is(err, gzip.ErrHeader) {
+		t.Fatalf("first read error = %v, want gzip.ErrHeader", err)
+	}
+	if _, err := resp.Body.Read(buf); !errors.Is(err, gzip.ErrHeader) {
+		t.Fatalf("later read error = %v, want the same stored failure", err)
 	}
 }

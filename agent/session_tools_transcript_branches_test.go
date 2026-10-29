@@ -1546,25 +1546,25 @@ func TestExecReadTranscriptRejectedParams(t *testing.T) {
 	t.Parallel()
 	deps := &toolDeps{}
 	t.Run("source rejected", func(t *testing.T) {
-		_, err := execReadTranscript(deps, map[string]any{"source": "api_log"})
+		_, err := execReadTranscript(context.Background(), deps, map[string]any{"source": "api_log"})
 		if err == nil || !strings.Contains(err.Error(), "invalid_request: source is not supported") {
 			t.Fatalf("expected source rejection, got %v", err)
 		}
 	})
 	t.Run("attempt_id rejected", func(t *testing.T) {
-		_, err := execReadTranscript(deps, map[string]any{"attempt_id": "att_1"})
+		_, err := execReadTranscript(context.Background(), deps, map[string]any{"attempt_id": "att_1"})
 		if err == nil || !strings.Contains(err.Error(), "invalid_request: attempt_id is not supported") {
 			t.Fatalf("expected attempt_id rejection, got %v", err)
 		}
 	})
 	t.Run("body rejected", func(t *testing.T) {
-		_, err := execReadTranscript(deps, map[string]any{"body": "request"})
+		_, err := execReadTranscript(context.Background(), deps, map[string]any{"body": "request"})
 		if err == nil || !strings.Contains(err.Error(), "invalid_request: body is not supported") {
 			t.Fatalf("expected body rejection, got %v", err)
 		}
 	})
 	t.Run("max_bytes rejected", func(t *testing.T) {
-		_, err := execReadTranscript(deps, map[string]any{"max_bytes": float64(100)})
+		_, err := execReadTranscript(context.Background(), deps, map[string]any{"max_bytes": float64(100)})
 		if err == nil || !strings.Contains(err.Error(), "invalid_request: max_bytes is not supported") {
 			t.Fatalf("expected max_bytes rejection, got %v", err)
 		}
@@ -1722,7 +1722,7 @@ func TestReadJobTranscriptEmptyJobID(t *testing.T) {
 func TestExecReadTranscriptSearchOnSessionRef(t *testing.T) {
 	t.Parallel()
 	deps := &toolDeps{}
-	_, err := execReadTranscript(deps, map[string]any{"transcript_ref": "local:abc", "output_match": "x"})
+	_, err := execReadTranscript(context.Background(), deps, map[string]any{"transcript_ref": "local:abc", "output_match": "x"})
 	if err == nil || !strings.Contains(err.Error(), "output_match applies only to job: and artifact: refs") {
 		t.Fatalf("expected error, got %v", err)
 	}
@@ -2005,7 +2005,7 @@ func TestExecReadTranscriptArtifactSearch(t *testing.T) {
 	deps := &toolDeps{openArtifact: func(ref string) (artifactReadSeekCloser, error) {
 		return store.Open(ref)
 	}}
-	_, err = execReadTranscript(deps, map[string]any{"transcript_ref": ref, "output_match": "found"})
+	_, err = execReadTranscript(context.Background(), deps, map[string]any{"transcript_ref": ref, "output_match": "found"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2024,7 +2024,7 @@ func TestExecReadTranscriptArtifactPage(t *testing.T) {
 	deps := &toolDeps{openArtifact: func(ref string) (artifactReadSeekCloser, error) {
 		return store.Open(ref)
 	}}
-	_, err = execReadTranscript(deps, map[string]any{"transcript_ref": ref, "offset_bytes": float64(0)})
+	_, err = execReadTranscript(context.Background(), deps, map[string]any{"transcript_ref": ref, "offset_bytes": float64(0)})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2034,7 +2034,7 @@ func TestExecReadTranscriptArtifactRangeRejected(t *testing.T) {
 	t.Parallel()
 	ref := "artifact:" + strings.Repeat("a", 32)
 	deps := &toolDeps{}
-	_, err := execReadTranscript(deps, map[string]any{"transcript_ref": ref, "range": "1-5"})
+	_, err := execReadTranscript(context.Background(), deps, map[string]any{"transcript_ref": ref, "range": "1-5"})
 	if err == nil || !strings.Contains(err.Error(), "range applies only to session") {
 		t.Fatalf("expected error, got %v", err)
 	}
@@ -2047,7 +2047,7 @@ func TestExecReadTranscriptArtifactRangeRejected(t *testing.T) {
 func TestExecReadTranscriptJobFormatNonMarkdown(t *testing.T) {
 	t.Parallel()
 	deps := &toolDeps{}
-	_, err := execReadTranscript(deps, map[string]any{"transcript_ref": "job:abc", "format": "jsonl"})
+	_, err := execReadTranscript(context.Background(), deps, map[string]any{"transcript_ref": "job:abc", "format": "jsonl"})
 	if err == nil || !strings.Contains(err.Error(), "job: refs support only format=markdown") {
 		t.Fatalf("expected error, got %v", err)
 	}
@@ -2056,7 +2056,7 @@ func TestExecReadTranscriptJobFormatNonMarkdown(t *testing.T) {
 func TestExecReadTranscriptJobRangeRejected(t *testing.T) {
 	t.Parallel()
 	deps := &toolDeps{}
-	_, err := execReadTranscript(deps, map[string]any{"transcript_ref": "job:abc", "range": "1-5"})
+	_, err := execReadTranscript(context.Background(), deps, map[string]any{"transcript_ref": "job:abc", "range": "1-5"})
 	if err == nil || !strings.Contains(err.Error(), "range applies only to session") {
 		t.Fatalf("expected error, got %v", err)
 	}
@@ -2395,7 +2395,7 @@ func TestReadTranscriptPublicRejectedParams(t *testing.T) {
 func TestExecReadTranscriptArtifactFormatRejected(t *testing.T) {
 	t.Parallel()
 	ref := "artifact:" + strings.Repeat("a", 32)
-	_, err := execReadTranscript(&toolDeps{}, map[string]any{"transcript_ref": ref, "format": "markdown"})
+	_, err := execReadTranscript(context.Background(), &toolDeps{}, map[string]any{"transcript_ref": ref, "format": "markdown"})
 	if err == nil || !strings.Contains(err.Error(), "format is not supported for artifact") {
 		t.Fatalf("expected error, got %v", err)
 	}
@@ -2501,7 +2501,7 @@ func TestExecReadTranscriptSourceThenAttemptID(t *testing.T) {
 	t.Parallel()
 	deps := &toolDeps{}
 	// Source is checked first
-	_, err := execReadTranscript(deps, map[string]any{"source": "api_log", "attempt_id": "x"})
+	_, err := execReadTranscript(context.Background(), deps, map[string]any{"source": "api_log", "attempt_id": "x"})
 	if err == nil || !strings.Contains(err.Error(), "source is not supported") {
 		t.Fatalf("expected source error first, got %v", err)
 	}
@@ -2510,7 +2510,7 @@ func TestExecReadTranscriptSourceThenAttemptID(t *testing.T) {
 func TestExecReadTranscriptBodyOnlyRejected(t *testing.T) {
 	t.Parallel()
 	deps := &toolDeps{}
-	_, err := execReadTranscript(deps, map[string]any{"body": "request"})
+	_, err := execReadTranscript(context.Background(), deps, map[string]any{"body": "request"})
 	if err == nil || !strings.Contains(err.Error(), "body is not supported") {
 		t.Fatalf("expected body error, got %v", err)
 	}
@@ -2583,7 +2583,7 @@ func TestArtifactReadSeekCloserInterface(t *testing.T) {
 func TestExecReadTranscriptJobPageFormatRejected(t *testing.T) {
 	t.Parallel()
 	deps := &toolDeps{}
-	_, err := execReadTranscript(deps, map[string]any{
+	_, err := execReadTranscript(context.Background(), deps, map[string]any{
 		"transcript_ref": "job:abc",
 		"offset_bytes":   float64(0),
 		"format":         "outline",
@@ -2596,7 +2596,7 @@ func TestExecReadTranscriptJobPageFormatRejected(t *testing.T) {
 func TestExecReadTranscriptJobSearchFormatRejected(t *testing.T) {
 	t.Parallel()
 	deps := &toolDeps{}
-	_, err := execReadTranscript(deps, map[string]any{
+	_, err := execReadTranscript(context.Background(), deps, map[string]any{
 		"transcript_ref": "job:abc",
 		"output_match":   "x",
 		"format":         "outline",
@@ -2685,24 +2685,6 @@ func TestDefaultExpansionBytes(t *testing.T) {
 	t.Parallel()
 	if defaultExpansionBytes != 16<<10 {
 		t.Fatalf("defaultExpansionBytes = %d, want %d", defaultExpansionBytes, 16<<10)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// execReadSessionTranscript / execReadSessionTranscriptWithContext
-// ---------------------------------------------------------------------------
-
-func TestExecReadSessionTranscriptDelegatesToContext(t *testing.T) {
-	t.Parallel()
-	// Both functions should produce the same error for invalid args
-	deps := &toolDeps{}
-	_, err1 := execReadSessionTranscript(deps, map[string]any{"format": "xml"})
-	_, err2 := execReadSessionTranscriptWithContext(context.TODO(), deps, map[string]any{"format": "xml"})
-	if err1 == nil || err2 == nil {
-		t.Fatalf("expected errors for invalid format")
-	}
-	if err1.Error() != err2.Error() {
-		t.Fatalf("errors should match: %v vs %v", err1, err2)
 	}
 }
 
@@ -2915,7 +2897,7 @@ func TestExecReadTranscriptJobDefaultOp(t *testing.T) {
 	deps := &toolDeps{}
 	// Default operation on a job: ref goes to readJobTranscript which
 	// will fail on snapshot read but should not fail on argument validation
-	_, err := execReadTranscript(deps, map[string]any{"transcript_ref": "job:nonexistent"})
+	_, err := execReadTranscript(context.Background(), deps, map[string]any{"transcript_ref": "job:nonexistent"})
 	if err == nil {
 		t.Fatalf("expected error for nonexistent job")
 	}

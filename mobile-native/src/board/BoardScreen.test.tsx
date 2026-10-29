@@ -224,6 +224,7 @@ beforeEach(() => {
 	harness.reduceMotion = false;
 	harness.fontScale = 1;
 	harness.readerMemory = null;
+	harness.actionSheet.mockClear();
 });
 
 function setFocused(focused: boolean) {

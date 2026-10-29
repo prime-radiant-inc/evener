@@ -1,14 +1,7 @@
 import { appliedReceipt } from "../mutationReceiptTestUtils";
 import { ALL_CAPABILITIES as CAPABILITIES, type TestThreadOverrides, testThread } from "../threadTestUtils";
 import "fake-indexeddb/auto";
-import type {
-  ConnectionState,
-  MethodName,
-  MethodTypes,
-  Thread,
-  ThreadClearResponse,
-  ThreadReadResponse,
-} from "@evener/appwire-client";
+import type { MethodName, MethodTypes, Thread, ThreadClearResponse, ThreadReadResponse } from "@evener/appwire-client";
 import { FakeClient, type RequestHandler } from "@evener/appwire-client/testing/fakeClient";
 import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { connectionStore } from "./connection";
@@ -74,12 +67,6 @@ export function clearResponse(params: { clientMutationId: string }, thread: Thre
       projectionState: "reflected",
     },
   };
-}
-
-export function connectFakeClient(state: ConnectionState = "ready"): FakeClient {
-  const fake = new FakeClient(state);
-  connectionStore.getState().connect(fake);
-  return fake;
 }
 
 export function connectMutationClient(): FakeClient {

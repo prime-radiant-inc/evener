@@ -15,7 +15,7 @@ import { createElement } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { TranscriptBody } from "../panes/session/transcript/TranscriptBody";
 import { installBackgroundTranscriptOptionsForTests } from "./backgroundTranscriptOptions";
-import { connectionStore } from "./connection";
+import { connectionStore, resetConnectionStoreForTests } from "./connection";
 import { productionEntryTranscriptForTests, setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { SessionEntryCache } from "./sessionEntryCache";
 import {
@@ -27,7 +27,7 @@ import {
 
 let cache: SessionEntryCache;
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   cache = new SessionEntryCache({
     indexedDB: new IDBFactory(),

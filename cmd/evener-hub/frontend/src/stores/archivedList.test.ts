@@ -15,7 +15,7 @@ import {
   refreshArchivedList,
   resetArchivedListStoreForTests,
 } from "./archivedList";
-import { connectedClientPort, connectionStore } from "./connection";
+import { connectedClientPort, resetConnectionStoreForTests } from "./connection";
 
 const row = (ref: string) => completeSession({ ref, updated_at: "2026-09-01T00:00:00Z" });
 
@@ -26,7 +26,7 @@ function page(refs: string[], total: number, nextCursor?: string): ArchivedListR
 const list = (projectKey: string) => archivedListStore.getState().lists[archivedListKey("projects", projectKey)];
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetArchivedListStoreForTests();
 });
 

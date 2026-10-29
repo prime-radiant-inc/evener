@@ -19,7 +19,7 @@ import {
   type UseTranscriptResult,
   useTranscriptReader,
 } from "../panes/session/transcript/useTranscript";
-import { connectionStore } from "../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../stores/connection";
 import { resetThreadsStoreForTests } from "../stores/threads";
 import { useThreadModel } from "../stores/useThreadModel";
 import { VirtualList } from "../widgets";
@@ -32,7 +32,7 @@ const root = fixture.context.ref;
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
-  connectionStore.setState({ state: "idle", client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetTranscriptPagingForTests();
 });

@@ -174,6 +174,17 @@ say — and never runs `npm ci` itself; it fails loudly and names the command
 instead). Never run `npm ci` through a
 symlinked `node_modules` in any of the three.
 
+## Pinning the JavaScript toolchain
+
+Biome, Vitest (and `@vitest/coverage-v8`), TypeScript, `@types/react` and
+`@types/react-dom` are pinned to exact versions, and every npm tree that
+declares one uses the same version, because the trees compile, format and test
+the same shared client sources. Bump such a package in all trees in one change,
+and keep each `biome.jsonc` `$schema` URL on its tree's Biome version. React
+and `react-dom` are exact in every tree but may differ between trees:
+mobile-native stays on the one version `react-native` ships its renderer for.
+`make lint-js-toolchain-pins` enforces this.
+
 ## Importing the AppWire TypeScript package
 
 The shared client lives at `appwire-client/typescript` and every consumer in

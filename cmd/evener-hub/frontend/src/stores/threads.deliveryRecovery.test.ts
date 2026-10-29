@@ -1,3 +1,4 @@
+import { connectFakeClient } from "../testing/connectionTestUtils";
 import { ALL_CAPABILITIES as CAPABILITIES } from "../threadTestUtils";
 import "fake-indexeddb/auto";
 import { RequestTimeoutError, type ThreadReadResponse, WireError } from "@evener/appwire-client";
@@ -7,7 +8,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { resetPendingTurnsStoreForTests } from "../panes/session/composer/queue/pendingTurnsStore";
 import { resetSubagentModuleStoreForTests } from "../panes/session/transcript/tools/subagentModuleStore";
 import { resetWorkspaceStoreForTests } from "../shell/workspace";
-import { connectionStore } from "./connection";
+import { resetConnectionStoreForTests } from "./connection";
 import { setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { MutationOutboxIndexedDB, MutationStorageTimeoutError } from "./mutationOutboxIndexedDB";
 import { SessionEntryCache } from "./sessionEntryCache";
@@ -19,7 +20,6 @@ import {
   threadsStore,
 } from "./threads";
 import {
-  connectFakeClient,
   connectMutationClient,
   deferred,
   ensureActiveMutationTarget,
@@ -45,7 +45,7 @@ let restoreHydrationRetryScheduler: (() => void) | null = null;
 let cache: SessionEntryCache;
 
 beforeEach(async () => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetPendingTurnsStoreForTests();
   resetWorkspaceStoreForTests();

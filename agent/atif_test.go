@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -88,7 +89,7 @@ func TestSession_ExcludesConfiguredCredentialFromResponseEndpointArtifacts(t *te
 		t.Fatalf("ReadFile transcript: %v", err)
 	}
 	assertEndpointSentinelsAbsent(t, "transcript", transcriptBytes, credential)
-	_, entries, _, err := readTranscript(transcriptPath, "")
+	_, entries, _, err := readTranscript(context.Background(), transcriptPath, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}

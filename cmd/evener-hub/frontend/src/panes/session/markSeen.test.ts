@@ -3,7 +3,7 @@ import { keyID } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { seenThroughToMark, seenThroughWithMotion, useMarkSessionSeenOnOpen } from "./markSeen";
 
@@ -78,7 +78,7 @@ function setVisibility(next: DocumentVisibilityState): void {
 }
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetNavigationStoreForTests();
   visibility = "visible";
   Object.defineProperty(document, "visibilityState", { configurable: true, get: () => visibility });
@@ -87,7 +87,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   Reflect.deleteProperty(document, "visibilityState");
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetNavigationStoreForTests();
 });
 

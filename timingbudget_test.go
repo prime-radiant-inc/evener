@@ -1062,3 +1062,22 @@ func TestCheckedInTimingBudgetAcceptsHealthyWebMeasurement(t *testing.T) {
 		t.Fatalf("a healthy CI web measurement must pass the strict check:\n%s", out)
 	}
 }
+
+// TestTimingTSVLibParsesFromAnyDirectoryWithoutRepoRoot pins the way CI's
+// web-unit lane uses the lib: sourced in a bare step by a relative path, with
+// no repo_root set and a report path relative to the caller's directory, after
+// the caller has changed directory. The lib must find its own checkout and read
+// the report where the caller meant it.
+func TestTimingTSVLibParsesFromAnyDirectoryWithoutRepoRoot(t *testing.T) {
+	work := t.TempDir()
+	writeAuditScriptFixture(t, filepath.Join(work, "vitest.json"), `{"testResults":[{"assertionResults":[{"fullName":"a b","duration":1500}]}]}`)
+	cmd := exec.Command("bash", "-c", `. scripts/lib/timing-tsv-lib.sh && cd "$WORK" && vitest_json_to_tsv vitest.json`)
+	cmd.Env = append(os.Environ(), "WORK="+work, "repo_root=")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("vitest_json_to_tsv without repo_root: %v\n%s", err, out)
+	}
+	if want := "SUM\tweb\t1.5\n"; !strings.Contains(string(out), want) {
+		t.Fatalf("rows = %q, want the web SUM row %q", out, want)
+	}
+}

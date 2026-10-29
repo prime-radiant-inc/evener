@@ -24,6 +24,10 @@ func FuzzGeminiImageRequestBuild(f *testing.F) {
 	f.Add("gemini-test", "look", []byte{1, 2, 3}, "image/jpeg", "", uint8(0))
 	f.Add("gemini-2.5-pro", "", []byte{}, "", "pics/cat.png", uint8(1))
 	f.Add("m", "u", []byte("\xff\xfe"), "image/png", "", uint8(2))
+	// Inline bytes with no media type (must default to image/png), and an
+	// image part with neither bytes nor a URL (dropped from the request).
+	f.Add("gemini-test", "u", []byte{4, 5, 6}, "", "", uint8(3))
+	f.Add("gemini-test", "u", []byte{}, "", "", uint8(4))
 
 	f.Fuzz(func(t *testing.T, model, user string, imgData []byte, imgMedia, imgURL string, sel uint8) {
 		img := &llm.ImageData{Data: imgData, MediaType: imgMedia}

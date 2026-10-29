@@ -29,7 +29,7 @@ import { flushPendingTurnsProjectionForTests } from "../../panes/session/compose
 import { createTestComposerSource } from "../../panes/session/testing/composerSource";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { useCommandCatalog } from "../../stores/commandCatalog";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../stores/threads";
@@ -109,7 +109,7 @@ function focusSession(ref: string, overrides: Partial<ThreadModel> = {}): void {
 
 beforeEach(() => {
   paletteStore.setState({ open: false, query: "", openSeq: 0 });
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   useCommandCatalog.setState(useCommandCatalog.getInitialState());
   resetToastStoreForTests();
   resetThreadsStoreForTests();

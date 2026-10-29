@@ -118,7 +118,7 @@ type serveServer interface {
 	// the live session's registry resolution of an instance/model reference.
 	SetCostLookupFunc(func(string) *registry.Cost)
 	SetTasksFunc(func() []appwire.Task)
-	SetJobsFunc(func(appwire.JobsListParams) (any, error))
+	SetJobsFunc(func(context.Context, appwire.JobsListParams) (any, error))
 	SetThreadActivityReadFunc(func(context.Context, appwire.SessionActivityReadParams) (appwire.SessionActivitySummary, error))
 	SetThreadDelegatesListFunc(func(context.Context, appwire.SessionActivityListParams) (appwire.SessionDelegatesResponse, error))
 	SetThreadJobsListFunc(func(context.Context, appwire.SessionActivityListParams) (appwire.SessionJobsResponse, error))
@@ -985,7 +985,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		return sess.ListActivityWatches(ctx, params)
 	})
 
-	srv.SetJobsFunc(func(params appwire.JobsListParams) (any, error) {
+	srv.SetJobsFunc(func(ctx context.Context, params appwire.JobsListParams) (any, error) {
 		sess := live.session()
 		if strings.TrimSpace(params.Ref) != "" {
 			ref, err := appwire.ParseRef(params.Ref)
@@ -1000,7 +1000,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			// current instance after a thread/clear replacement.
 			params.Ref = appwire.Ref{SourceID: "local", ThreadID: sess.ID()}.String()
 		}
-		return sess.JobActivityTree(params)
+		return sess.JobActivityTree(ctx, params)
 	})
 	srv.SetJobOutputFunc(func(jobID string, beforeBytes *int64, maxBytes int64) (appwire.JobOutputPage, bool, error) {
 		return live.session().JobOutputPage(jobID, beforeBytes, maxBytes)

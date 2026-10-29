@@ -6,7 +6,7 @@ import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { beforeEach, describe, expect, test } from "vitest";
 import { appliedReceipt } from "../../../../mutationReceiptTestUtils";
-import { connectionStore } from "../../../../stores/connection";
+import { resetConnectionStoreForTests } from "../../../../stores/connection";
 import {
   putThreadModel,
   readMutationPersistence,
@@ -146,7 +146,7 @@ beforeEach(() => {
   // environment, which has neither browser global.
   globalThis.IDBKeyRange = IDBKeyRange;
   globalThis.location = { origin: "http://localhost:3000" } as Location;
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetAskDockStoreForTests();
 });

@@ -32,7 +32,7 @@ func artifactTranscriptFixture(t *testing.T, output string) (*toolDeps, string) 
 
 func execRead(t *testing.T, deps *toolDeps, args map[string]any) map[string]any {
 	t.Helper()
-	value, err := execReadTranscript(deps, args)
+	value, err := execReadTranscript(context.Background(), deps, args)
 	if err != nil {
 		t.Fatalf("execReadTranscript(%v): %v", args, err)
 	}
@@ -160,7 +160,7 @@ func TestReadTranscriptRetainedValidation(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := execReadTranscript(deps, tc.args)
+			_, err := execReadTranscript(context.Background(), deps, tc.args)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("error = %v, want substring %q", err, tc.want)
 			}
@@ -171,7 +171,7 @@ func TestReadTranscriptRetainedValidation(t *testing.T) {
 func TestReadTranscriptArtifactExpiredWhenNoStoreIsAvailable(t *testing.T) {
 	t.Parallel()
 	ref := "artifact:" + strings.Repeat("a", 32)
-	_, err := execReadTranscript(nil, map[string]any{"transcript_ref": ref})
+	_, err := execReadTranscript(context.Background(), nil, map[string]any{"transcript_ref": ref})
 	if err == nil || !strings.Contains(err.Error(), "artifact_expired:") {
 		t.Fatalf("nil dependency error = %v, want artifact_expired", err)
 	}
@@ -210,7 +210,7 @@ func TestReadTranscriptArtifactPostOpenReadErrorsArePathFree(t *testing.T) {
 		{name: "search", args: map[string]any{"transcript_ref": ref, "output_match": "needle"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := execReadTranscript(deps, tc.args)
+			_, err := execReadTranscript(context.Background(), deps, tc.args)
 			if err == nil || err.Error() != "artifact_unavailable: retained artifact could not be read" {
 				t.Fatalf("error = %v, want stable artifact_unavailable read error", err)
 			}
@@ -262,7 +262,7 @@ func TestReadTranscriptSearchEnvelopeStaysBelowRegistryBackstop(t *testing.T) {
 
 func TestReadTranscriptRejectsOutputMatchOverEnvelopeBound(t *testing.T) {
 	deps, ref := artifactTranscriptFixture(t, "line\n")
-	_, err := execReadTranscript(deps, map[string]any{
+	_, err := execReadTranscript(context.Background(), deps, map[string]any{
 		"transcript_ref": ref,
 		"output_match":   strings.Repeat("a", 65_537),
 	})

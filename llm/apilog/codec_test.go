@@ -382,3 +382,47 @@ func (r *sparseTailReadSeeker) Seek(offset int64, whence int) (int64, error) {
 	r.offset = next
 	return next, nil
 }
+
+var errFlakyRecoveryRead = errors.New("recovery read failed")
+
+// flakyRecoveryReader fails every read from the Nth on, so a recovery pass can
+// be stopped at an exact read boundary.
+type flakyRecoveryReader struct {
+	r             io.ReadSeeker
+	failReadsFrom int
+	reads         int
+}
+
+func (f *flakyRecoveryReader) Seek(off int64, whence int) (int64, error) {
+	return f.r.Seek(off, whence)
+}
+func (f *flakyRecoveryReader) Read(p []byte) (int, error) {
+	f.reads++
+	if f.reads >= f.failReadsFrom {
+		return 0, errFlakyRecoveryRead
+	}
+	return f.r.Read(p)
+}
+
+// TestScanRecoverySurfacesReaderFailures pins that a reader that dies mid
+// recovery surfaces its error from either read: the backward scan that finds
+// the boundary line's start, and the read of the boundary record itself. The
+// first read (the final byte) always succeeds, so the failing read is the
+// one each case names.
+func TestScanRecoverySurfacesReaderFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		failReadsFrom int
+	}{
+		{"boundary line scan fails", 2},
+		{"boundary record read fails", 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &flakyRecoveryReader{r: bytes.NewReader([]byte("first\nsecond\n")), failReadsFrom: tc.failReadsFrom}
+			_, _, err := ScanRecovery(r, 1<<20)
+			if !errors.Is(err, errFlakyRecoveryRead) {
+				t.Fatalf("err = %v, want the reader's own failure surfaced", err)
+			}
+		})
+	}
+}

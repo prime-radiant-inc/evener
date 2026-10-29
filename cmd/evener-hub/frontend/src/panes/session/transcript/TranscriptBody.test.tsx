@@ -9,7 +9,7 @@ import {
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createRef, type RefObject, StrictMode, useRef, useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { connectionStore } from "../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
 import { sessionActivitySnapshot } from "../../../stores/sessionActivity";
 import { activityClient, activitySummary } from "../../../stores/sessionActivityTestUtils";
 import { threadsStore } from "../../../stores/threads";
@@ -1455,7 +1455,7 @@ test.each([
     ]);
   } finally {
     cleanup();
-    connectionStore.setState({ client: null, state: "idle" });
+    resetConnectionStoreForTests();
   }
 });
 

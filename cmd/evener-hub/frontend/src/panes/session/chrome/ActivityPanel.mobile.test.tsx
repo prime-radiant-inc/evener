@@ -9,7 +9,7 @@ import { StackHost } from "../../../shell/mobile/StackHost";
 import { type PaneProps, registerPaneForTests } from "../../../shell/paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { resetActivityPanelStoreForTests } from "../../../stores/activityPanel";
-import { connectionStore } from "../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
 import { resetNavigationStoreForTests } from "../../../stores/navigation/store";
 import { sessionActivitySnapshot } from "../../../stores/sessionActivity";
 import {
@@ -42,7 +42,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  connectionStore.setState({ client: null, state: "idle" });
+  resetConnectionStoreForTests();
   resetActivityPanelStoreForTests();
   resetActivitySidebarStoreForTests();
   resetWorkspaceStoreForTests();

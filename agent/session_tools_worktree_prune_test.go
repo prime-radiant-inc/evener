@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/worktree"
 )
 
@@ -1422,5 +1423,34 @@ func TestWorktreePrune_Sweep3_SkippedWhenNonManagedPrunable(t *testing.T) {
 	}
 	if !found {
 		t.Error("non-managed prunable sibling was deregistered; sweep 3 must have skipped")
+	}
+}
+
+// A prune whose request is cancelled after the worktree listing stops before
+// it collects any lane: the sweeps inherit the request context.
+func TestWorktreePrune_CancelReachesSweeps(t *testing.T) {
+	r := newWorktreeRepo(t)
+	path := r.addManagedWorktreeFixture(t, "unchanged")
+
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	// The runner itself ignores cancellation, so only the sweeps' own check of
+	// the context can stop the collection.
+	r.s.cfg.testOnly.worktreeGitRunner = func(_ context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
+		inner := gitRunner(context.WithoutCancel(ctx), env)
+		return func(args ...string) (string, error) {
+			out, err := inner(args...)
+			if len(args) > 1 && args[0] == "worktree" && args[1] == "list" {
+				cancel()
+			}
+			return out, err
+		}
+	}
+
+	if _, err := r.s.worktreePrune(ctx); err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Fatalf("lane collected after the request was cancelled: %v", statErr)
 	}
 }
