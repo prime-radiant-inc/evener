@@ -210,7 +210,7 @@
   "primeradiant.com/evener/internal/fuzzroutes": 2.0,
   "primeradiant.com/evener/internal/httpguard": 2.0,
   "primeradiant.com/evener/internal/hubendpoint": 2.0,
-  "primeradiant.com/evener/internal/knobtable": 2.0,
+  "primeradiant.com/evener/internal/knobtable": 3.5,
   "primeradiant.com/evener/internal/maketargetsdoc": 2.0,
   "primeradiant.com/evener/internal/remoteinstall": 2.0,
   "primeradiant.com/evener/llm/internal/imagerepair": 2.0,

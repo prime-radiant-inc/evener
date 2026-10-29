@@ -101,7 +101,7 @@ func envRows(root string, sources []goSource) ([]envRow, error) {
 		if err != nil {
 			return nil, err
 		}
-		if !strings.HasPrefix(src.path, "envvars/") {
+		if src.dir() != "envvars" {
 			for ident := range refs.registry {
 				addTo(byIdent, ident, src.dir())
 			}
@@ -222,6 +222,41 @@ type fileRefs struct {
 // child process or a test does not read it.
 var setterMethods = map[string]bool{"Setenv": true, "Unsetenv": true, "Assignment": true}
 
+// isSetterCall reports whether call is to a function named like a setter
+// (Setenv, setEnv, unsetEnv, set...), whose variable-name arguments are being
+// written.
+func isSetterCall(call *ast.CallExpr) bool {
+	var name string
+	switch fn := call.Fun.(type) {
+	case *ast.Ident:
+		name = fn.Name
+	case *ast.SelectorExpr:
+		name = fn.Sel.Name
+	}
+	name = strings.ToLower(name)
+	return strings.HasPrefix(name, "set") || strings.HasPrefix(name, "unset")
+}
+
+// markWrites marks the expressions a statement or call writes through: the
+// map key of an assignment target (overlay[envvars.X.Name] = v) and every
+// argument of a setter call.
+func markWrites(n ast.Node, writes map[ast.Node]bool) {
+	switch v := n.(type) {
+	case *ast.AssignStmt:
+		for _, lhs := range v.Lhs {
+			if idx, ok := lhs.(*ast.IndexExpr); ok {
+				writes[idx.Index] = true
+			}
+		}
+	case *ast.CallExpr:
+		if isSetterCall(v) {
+			for _, arg := range v.Args {
+				writes[arg] = true
+			}
+		}
+	}
+}
+
 // scanRefs finds a file's environment references in its syntax tree, so
 // comments and strings that mention an identifier are not references.
 func scanRefs(src goSource) (fileRefs, error) {
@@ -233,13 +268,15 @@ func scanRefs(src goSource) (fileRefs, error) {
 	if err != nil {
 		return refs, err
 	}
-	skip := map[ast.Node]bool{} // envvars.X selectors already classified through their method
+	skip := map[ast.Node]bool{}   // envvars.X selectors already classified through their method
+	writes := map[ast.Node]bool{} // expressions that only name a variable to write it
 	ast.Inspect(file, func(n ast.Node) bool {
+		markWrites(n, writes)
 		switch v := n.(type) {
 		case *ast.SelectorExpr:
 			if inner, ok := v.X.(*ast.SelectorExpr); ok && isIdent(inner.X, "envvars") {
 				skip[inner] = true
-				if !setterMethods[v.Sel.Name] {
+				if !setterMethods[v.Sel.Name] && !writes[v] {
 					refs.registry[inner.Sel.Name] = true
 				}
 			} else if isIdent(v.X, "envvars") && !skip[v] {
@@ -440,9 +477,19 @@ func configReads(sources []goSource) (map[string]map[string]bool, error) {
 		if err != nil {
 			return nil, err
 		}
+		assigned := map[ast.Node]bool{} // plain assignment destinations: written, not read
 		ast.Inspect(file, func(n ast.Node) bool {
-			if sel, ok := n.(*ast.SelectorExpr); ok && isConfigExpr(sel.X) {
-				addTo(reads, sel.Sel.Name, src.path)
+			switch v := n.(type) {
+			case *ast.AssignStmt:
+				if v.Tok == token.ASSIGN {
+					for _, lhs := range v.Lhs {
+						assigned[lhs] = true
+					}
+				}
+			case *ast.SelectorExpr:
+				if isConfigExpr(v.X) && !assigned[v] {
+					addTo(reads, v.Sel.Name, src.path)
+				}
 			}
 			return true
 		})
@@ -469,7 +516,7 @@ func tomlKey(f *ast.Field) string {
 		return ""
 	}
 	m := tomlTag.FindStringSubmatch(f.Tag.Value)
-	if m == nil || m[1] == "-" {
+	if len(m) < 2 || m[1] == "-" {
 		return ""
 	}
 	return m[1]

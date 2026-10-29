@@ -25,8 +25,8 @@ packages do not count.
 | `EVENER_FLUENCY_MODEL` | tooling | [developing-evener/environment.md](../developing-evener/environment.md) | `tools/tool-fluency/cmd/evener-fluency` |
 | `EVENER_HOST_TEMP_BASES` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/sandbox` |
 | `EVENER_HUB_LISTEN_ADDR` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener-hub`, `cmd/evener-hub/internal/sshconn` |
-| `EVENER_HUB_SPAWNED` | internal | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener`, `cmd/evener-hub/internal/launchconfig` |
-| `EVENER_HUB_TOKEN` | internal | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener`, `cmd/evener-hub/internal/launchconfig` |
+| `EVENER_HUB_SPAWNED` | internal | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener` |
+| `EVENER_HUB_TOKEN` | internal | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener` |
 | `EVENER_HUB_URL` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener-hub` |
 | `EVENER_LOGIN_HEADLESS` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener` |
 | `EVENER_MODEL` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener`, `cmd/evener-hub/internal/launchconfig`, `cmd/llmcall` and 2 more |
@@ -35,17 +35,17 @@ packages do not count.
 | `EVENER_OPENAI_RESPONSES_CONTINUATION` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener`, `cmd/evener-hub/internal/launchconfig` |
 | `EVENER_PPROF_ADDR` | tooling | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener`, `cmd/evener-hub`, `cmdutil` |
 | `EVENER_PROVIDER` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/llmcall` |
-| `EVENER_PROVIDERS_CONFIG` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/internal/liveeval`, `cmd/evener`, `cmd/evener-hub` and 3 more |
-| `EVENER_CREDENTIALS_CONFIG` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener-hub`, `cmd/evener-hub/internal/launchconfig`, `cmdutil` |
+| `EVENER_PROVIDERS_CONFIG` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/internal/liveeval`, `cmd/evener`, `cmd/evener-hub` and 2 more |
+| `EVENER_CREDENTIALS_CONFIG` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener-hub`, `cmdutil` |
 | `EVENER_REASONING_EFFORT` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener`, `cmd/evener-hub/internal/launchconfig`, `tools/tool-fluency/cmd/evener-fluency` |
 | `EVENER_RECORD_APPWIRE` | tooling | [developing-evener/environment.md](../developing-evener/environment.md) | `appwire` |
 | `EVENER_RECORD_HTTP` | tooling | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener-hub` |
 | `EVENER_FUZZ_RECORD` | tooling | [developing-evener/environment.md](../developing-evener/environment.md) | `envvars` |
 | `EVENER_FUZZ_CAPTURE_ENV` | tooling | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener-fuzz-harvest` |
-| `EVENER_RUN_DIR` | internal | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener`, `cmd/evener-hub/internal/launchconfig` |
+| `EVENER_RUN_DIR` | internal | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener` |
 | `EVENER_SCRATCH_DIR` | internal | [developing-evener/environment.md](../developing-evener/environment.md) | `agent`, `agent/execenv`, `agent/sandbox` |
 | `EVENER_SESSION_ORIGIN` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `agent` |
-| `EVENER_STATE_DIR` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/doctor`, `cmd/evener`, `cmd/evener-doctor` and 2 more |
+| `EVENER_STATE_DIR` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/doctor`, `cmd/evener`, `cmd/evener-doctor` and 1 more |
 | `LLM_MODEL` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/llmcall` |
 | `LLM_PROVIDER` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/llmcall` |
 | `OPENAI_API_KEY` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `auth/openai`, `cmd/evener`, `cmd/evener-hub` and 2 more |
@@ -106,8 +106,8 @@ packages do not count.
 | `OPENAI_COMPATIBLE_API_KEY` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `llm/registry` |
 | `OPENAI_COMPATIBLE_BASE_URL` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `llm/registry` |
 | `XDG_CACHE_HOME` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent`, `agent/execenv`, `agent/sandbox` |
-| `XDG_CONFIG_HOME` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/internal/liveeval`, `agent/mcpconfig` and 8 more |
-| `XDG_STATE_HOME` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent`, `agent/doctor`, `auth/openai` and 5 more |
+| `XDG_CONFIG_HOME` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/internal/liveeval`, `agent/mcpconfig` and 9 more |
+| `XDG_STATE_HOME` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent`, `agent/doctor`, `auth/openai` and 6 more |
 | `CARGO_HOME` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/sandbox` |
 | `DISPLAY` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener` |
 | `GOCACHE` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/sandbox` |

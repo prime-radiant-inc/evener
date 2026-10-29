@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"slices"
@@ -42,6 +43,7 @@ var (
 	Internal = Var{Name: "EVENER_USED_INSIDE", Visibility: Internal}
 	SetOnly  = Var{Name: "EVENER_SET_ONLY", Visibility: Public}
 	Mentioned = Var{Name: "EVENER_MENTIONED", Visibility: Public}
+	Written  = Var{Name: "EVENER_WRITTEN", Visibility: Public}
 	Unread   = Var{Name: "EVENER_UNREAD", Summary: "Unread is only named here", Visibility: Public}
 )
 
@@ -76,13 +78,14 @@ var removedKnobs = []string{"old_key"}
 func fixtureRoot(t *testing.T) string {
 	return writeTree(t, map[string]string{
 		"envvars/envvars.go":                    fixtureRegistry,
-		"cmd/setter/main.go":                    "package main\n// envvars.Mentioned and \"EVENER_MENTIONED\" appear only in this comment.\nvar _ = envvars.SetOnly.Setenv(\"1\")\n",
+		"envvars/userdirs/u.go":                 "package userdirs\nvar _ = envvars.Read.Getenv()\n",
+		"cmd/setter/main.go":                    "package main\n// envvars.Mentioned and \"EVENER_MENTIONED\" appear only in this comment.\nvar _ = envvars.SetOnly.Setenv(\"1\")\nfunc f() { overlay[envvars.Written.Name] = \"1\"; setEnv(out, envvars.Written.Name, \"1\") }\n",
 		"auth/acmetest/isolate.go":              "package acmetest\nvar _ = envvars.Isolated\n",
 		"llm/registry/data/overlay.toml":        "headers = { \"Org\" = \"$ACME_ORG_ID\" }\n",
 		"cmd/tool/main.go":                      "package main\nvar _ = envvars.Read\nvar _ = \"EVENER_BY_NAME\"\n",
 		"cmd/tool/main_test.go":                 "package main\nvar _ = envvars.Orphan\n",
 		"cmd/evener-hub/config.go":              fixtureHubConfig,
-		"cmd/evener-hub/use.go":                 "package main\nvar _ = cfg.Addr\nvar _ = cfg.Timeout\nvar _ = other.Dead\n",
+		"cmd/evener-hub/use.go":                 "package main\nvar _ = cfg.Addr\nvar _ = cfg.Timeout\nvar _ = other.Dead\nfunc f() { cfg.Dead = 1 }\n",
 		"cmd/evener-hub/other_test.go":          "package main\nvar _ = cfg.Dead\n",
 		"cmd/dev/direct.go":                     "package main\nvar _ = os.Getenv(\"SHARD_DIR\")\nvar _ = \"EVENER_READ\"\n",
 		"docs/developing-evener/environment.md": "| `EVENER_READ` | doc |\n",
@@ -108,7 +111,7 @@ func TestEnvRowsReportConsumersAndDocRows(t *testing.T) {
 	if _, ok := byName["EVENER_RETIRED"]; ok {
 		t.Error("a variable with no visibility is retired and must not be listed")
 	}
-	if got := byName["EVENER_READ"]; !slices.Equal(got.Consumers, []string{"cmd/dev", "cmd/tool"}) || got.DocRow != "developing-evener/environment.md" {
+	if got := byName["EVENER_READ"]; !slices.Equal(got.Consumers, []string{"cmd/dev", "cmd/tool", "envvars/userdirs"}) || got.DocRow != "developing-evener/environment.md" {
 		t.Errorf("EVENER_READ row = %+v, want consumers from the identifier and the name, and its doc row", got)
 	}
 	if got := byName["EVENER_BY_NAME"]; !slices.Equal(got.Consumers, []string{"cmd/tool"}) {
@@ -120,7 +123,7 @@ func TestEnvRowsReportConsumersAndDocRows(t *testing.T) {
 	if got := byName["ACME_ORG_ID"]; !slices.Equal(got.Consumers, []string{"llm/registry"}) {
 		t.Errorf("expanded variable consumers = %v, want the registry that expands it", got.Consumers)
 	}
-	for _, name := range []string{"ACME_API_KEY", "GHOST_API_KEY", "EVENER_ONLY_CLEARED", "EVENER_UNREAD", "EVENER_SET_ONLY", "EVENER_MENTIONED"} {
+	for _, name := range []string{"ACME_API_KEY", "GHOST_API_KEY", "EVENER_ONLY_CLEARED", "EVENER_UNREAD", "EVENER_SET_ONLY", "EVENER_MENTIONED", "EVENER_WRITTEN"} {
 		if got := byName[name]; len(got.Consumers) != 0 {
 			t.Errorf("%s consumers = %v, want none: no reader names it (a catalog entry, a function body in the registry package, or a non-test-support package that gets the value rather than sets it)", name, got.Consumers)
 		}
@@ -227,7 +230,7 @@ func TestGenerateWritesOutputDoc(t *testing.T) {
 		t.Fatal(err)
 	}
 	second, _ := os.ReadFile(filepath.Join(root, outputDoc))
-	if string(first) != string(second) {
+	if !bytes.Equal(first, second) {
 		t.Error("regenerating changed the output: the generator must be deterministic and ignore its own output")
 	}
 }
