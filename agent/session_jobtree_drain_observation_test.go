@@ -140,7 +140,7 @@ func TestDrainAnnouncementReceiptIndexRepairIsNotObservation(t *testing.T) {
 	// Entry repairs this real index debt. Neither that repair nor the following
 	// announcement responses earn any new canonical observation identity.
 	fs.resolution.Store(false)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	result, err := sess.drainJobTreeWith(ctx, drainWakeForTest(sess), feedRechecks(ctx), sess.kickDriveTree, sess.ProcessInputKind)
 	if err != nil || result != "" {

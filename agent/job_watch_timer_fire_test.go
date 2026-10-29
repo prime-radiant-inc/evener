@@ -449,6 +449,8 @@ func TestConditionFireBudget_UnfiredWatchExcuseFollowsConditionFires(t *testing.
 func TestOneShotTimer_FailedTeardownWarnsThroughTheSession(t *testing.T) {
 	t.Parallel()
 	jm, clk, got := newTimerTestJM(t)
+	ownedClock := &progressSnapshotClock{FakeClock: clk, started: make(chan struct{}), stopped: make(chan struct{})}
+	jm.clock = ownedClock
 	var mu sync.Mutex
 	var warnings []events.WarningData
 	jm.emit = func(kind events.EventKind, data events.EventData, _ *provenance.Causal) {
@@ -492,7 +494,7 @@ func TestOneShotTimer_FailedTeardownWarnsThroughTheSession(t *testing.T) {
 		if err := jm.close(); err != nil {
 			t.Error(err)
 		}
-		waitForCondition(t, 5*time.Second, "closed timer to stop", func() bool { return clk.BlockedCount() == 0 })
+		waitForTestSignal(t, ownedClock.stopped, "closed one-shot ticker Stop")
 		mu.Lock()
 		defer mu.Unlock()
 		if len(warnings) != 1 || len(teardownResults) != 1 || !errors.Is(teardownResults[0], teardownErr) {
@@ -500,10 +502,15 @@ func TestOneShotTimer_FailedTeardownWarnsThroughTheSession(t *testing.T) {
 		}
 	})
 
-	clk.BlockUntil(1)
+	waitForTestSignal(t, ownedClock.started, "one-shot ticker registration")
 	clk.Advance(60 * time.Second)
 	if n := recvNotification(t, got); n.Reason != "after" {
 		t.Fatalf("one-shot fire = %+v, want the fire delivered despite the failed teardown", n)
+	}
+	select {
+	case <-ownedClock.stopped:
+		t.Fatal("failed teardown stopped the still-live one-shot ticker")
+	default:
 	}
 
 	mu.Lock()
@@ -527,6 +534,8 @@ func TestOneShotTimer_FailedTeardownWarnsThroughTheSession(t *testing.T) {
 func TestOneShotTimer_FailedTeardownRetriesOnTheNextTick(t *testing.T) {
 	t.Parallel()
 	jm, clk, got := newTimerTestJM(t)
+	ownedClock := &progressSnapshotClock{FakeClock: clk, started: make(chan struct{}), stopped: make(chan struct{})}
+	jm.clock = ownedClock
 	res, err := jm.configureWatch(watchArgs{Operation: "create", Source: "self", Target: "caller", AfterSeconds: 60})
 	if err != nil {
 		t.Fatal(err)
@@ -566,7 +575,7 @@ func TestOneShotTimer_FailedTeardownRetriesOnTheNextTick(t *testing.T) {
 		if err := jm.close(); err != nil {
 			t.Error(err)
 		}
-		waitForCondition(t, 5*time.Second, "retried timer to stop", func() bool { return clk.BlockedCount() == 0 })
+		waitForTestSignal(t, ownedClock.stopped, "retried one-shot ticker Stop")
 		mu.Lock()
 		defer mu.Unlock()
 		if len(warnings) != 1 {
@@ -574,10 +583,15 @@ func TestOneShotTimer_FailedTeardownRetriesOnTheNextTick(t *testing.T) {
 		}
 	})
 
-	clk.BlockUntil(1)
+	waitForTestSignal(t, ownedClock.started, "one-shot ticker registration")
 	clk.Advance(60 * time.Second)
 	if n := recvNotification(t, got); n.Reason != "after" {
 		t.Fatalf("one-shot fire = %+v, want the single fire delivered", n)
+	}
+	select {
+	case <-ownedClock.stopped:
+		t.Fatal("failed teardown stopped the ticker before its retry")
+	default:
 	}
 	jm.mu.Lock()
 	_, _, live := jm.watchConfigByIDLocked(res.WatchID)
@@ -597,14 +611,13 @@ func TestOneShotTimer_FailedTeardownRetriesOnTheNextTick(t *testing.T) {
 	teardownFails = false
 	mu.Unlock()
 	clk.Advance(60 * time.Second)
-	// TRIPWIRE: the retry runs on the tick this Advance just fired, so the
-	// watch leaves the live set in microseconds. 5s only fires on a genuine hang.
-	waitForCondition(t, 5*time.Second, "the retried one-shot teardown to end the watch", func() bool {
-		jm.mu.Lock()
-		defer jm.mu.Unlock()
-		_, _, stillLive := jm.watchConfigByIDLocked(res.WatchID)
-		return !stillLive
-	})
+	waitForTestSignal(t, ownedClock.stopped, "successful retry's deferred ticker Stop")
+	jm.mu.Lock()
+	_, _, stillLive := jm.watchConfigByIDLocked(res.WatchID)
+	jm.mu.Unlock()
+	if stillLive {
+		t.Fatal("successful teardown left the one-shot watch live")
+	}
 	select {
 	case extra := <-got:
 		t.Fatalf("the retry tick delivered a second notification: %+v", extra)

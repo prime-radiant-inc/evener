@@ -10,7 +10,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
@@ -108,8 +107,10 @@ func TestTerminalFlushHandoff(t *testing.T) {
 					}
 				}
 				workerDone := make(chan error, 1)
+				workerExited := make(chan struct{})
 				ctx, cancel := context.WithCancel(context.Background())
 				go func() {
+					defer close(workerExited)
 					select {
 					case <-wake:
 						_, err := s.ProcessInputKind(ctx, "", nil, EntryNotification)
@@ -123,33 +124,21 @@ func TestTerminalFlushHandoff(t *testing.T) {
 					release()
 					cancel()
 					if !workerJoined {
-						select {
-						case <-workerDone:
-						case <-time.After(5 * time.Second):
-							t.Error("worker did not join")
-						}
+						waitForTestSignal(t, workerExited, "handoff worker exit after release and cancellation")
 					}
 					waitForShellDone(t, jm, jobID)
 				}()
 				if err := os.WriteFile(gate, []byte("go"), 0o600); err != nil {
 					t.Fatal(err)
 				}
-				select {
-				case <-hookEntered:
-				case <-time.After(5 * time.Second):
-					t.Fatal("producer hook did not fire")
-				}
+				waitForTestSignal(t, hookEntered, "terminal producer hook")
 				early := wakes.Load()
 				t.Logf("PRODUCER_BARRIER_REACHED wakes=%d, no shell canonical custody yet", early)
 				if early != 0 {
-					select {
-					case err := <-workerDone:
-						workerJoined = true
-						if err != nil {
-							t.Fatal(err)
-						}
-					case <-time.After(5 * time.Second):
-						t.Fatal("eager worker did not finish before terminal publication")
+					waitForTestSignal(t, workerExited, "eager worker before terminal publication")
+					workerJoined = true
+					if err := <-workerDone; err != nil {
+						t.Fatal(err)
 					}
 					t.Logf("EARLY_PROVIDER_DONE requests=%d", len(a.Requests()))
 					t.Error("same completion published a wake before terminal custody")
@@ -157,14 +146,10 @@ func TestTerminalFlushHandoff(t *testing.T) {
 				release()
 				waitForShellDone(t, jm, jobID)
 				if !workerJoined {
-					select {
-					case err := <-workerDone:
-						workerJoined = true
-						if err != nil {
-							t.Fatal(err)
-						}
-					case <-time.After(5 * time.Second):
-						t.Fatal("no handoff worker after publication")
+					waitForTestSignal(t, workerExited, "handoff worker after publication")
+					workerJoined = true
+					if err := <-workerDone; err != nil {
+						t.Fatal(err)
 					}
 				}
 				for range 2 {

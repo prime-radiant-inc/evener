@@ -195,7 +195,7 @@ func testNotificationShutdownLifetimeCallback(t *testing.T) {
 			return finalResponse("shutdown-observed-71af")
 		},
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	if _, err := s.ProcessInput(ctx, "shutdown-start-71af", nil); err != nil {
 		t.Fatal(err)
@@ -204,11 +204,7 @@ func testNotificationShutdownLifetimeCallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	observationEnqueue(t, s, "shutdown-late-71af", "shutdown-body-71af")
-	select {
-	case <-wakes:
-	case <-ctx.Done():
-		t.Fatal("terminal drain removed lifetime wake owner")
-	}
+	waitForTestSignal(t, wakes, "lifetime wake after terminal drain")
 	if _, err := s.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +316,18 @@ func TestNotificationShutdownPreservesDetachedJob(t *testing.T) {
 	}
 	defer f.Close()
 	finished := make(chan error, 1)
-	go func() { var b [1]byte; _, err := f.Read(b[:]); finished <- err }()
+	readerExited := make(chan struct{})
+	go func() {
+		defer close(readerExited)
+		var b [1]byte
+		_, err := f.Read(b[:])
+		finished <- err
+	}()
+	defer func() {
+		release()
+		_ = f.Close()
+		waitForTestSignal(t, readerExited, "detached completion FIFO reader cleanup")
+	}()
 	clock := agenttest.NewFakeClock()
 	adapter := &fakeAdapter{name: "openai"}
 	// Timers are correctly refused in a fresh one-shot session. A daemon may
@@ -343,7 +350,7 @@ func TestNotificationShutdownPreservesDetachedJob(t *testing.T) {
 			return finalResponse("detached-frame-observed-731a")
 		},
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	if _, err := s.ProcessInput(ctx, "detached-start-731a", nil); err != nil {
 		t.Fatal(err)
@@ -355,16 +362,12 @@ func TestNotificationShutdownPreservesDetachedJob(t *testing.T) {
 	}
 	clock.BlockUntil(1)
 	clock.Advance(time.Minute)
-	select {
-	case <-wakes:
-	case <-ctx.Done():
-		t.Fatal("real timer did not produce receiver custody")
-	}
+	waitForTestSignal(t, wakes, "real timer receiver custody")
 	s.jobManager.watchCallbackMu.Lock()
 	produced := s.jobManager.watchCallbacksDone
 	s.jobManager.watchCallbackMu.Unlock()
 	if produced != nil {
-		<-produced
+		waitForTestSignal(t, produced, "produced timer callback return")
 	}
 	producedFrames := producerSourceEvents(t, s.jobManager, jobstore.EventWatchSendPending)
 	if len(producedFrames) != 1 {
@@ -416,13 +419,9 @@ func TestNotificationShutdownPreservesDetachedJob(t *testing.T) {
 	}
 	s.Close()
 	release()
-	select {
-	case err := <-finished:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-ctx.Done():
-		t.Fatal("detached process did not survive session close")
+	waitForTestSignal(t, readerExited, "detached process completion after session close")
+	if err := <-finished; err != nil {
+		t.Fatal(err)
 	}
 }
 

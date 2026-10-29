@@ -2398,8 +2398,10 @@ func TestDelegateAttention_ColdPostAckReadFailureRetriesExactID(t *testing.T) {
 	fixture := newColdStableDelegateFixture(t, "")
 	clock := agenttest.NewFakeClock()
 	reached := make(chan llm.Request, 1)
+	providerEntered := make(chan struct{})
 	fixture.adapter.steps = []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
 		reached <- req
+		close(providerEntered)
 		return finalResponse("cold read recovery handled")
 	}}
 	root := restoreSupervisionRoot(t, fixture, clock)
@@ -2441,10 +2443,11 @@ func TestDelegateAttention_ColdPostAckReadFailureRetriesExactID(t *testing.T) {
 	if err := c.armColdDelegateAttention(fixture.delegateID, attentionID); err != nil {
 		t.Fatalf("caller retry cold attention: %v", err)
 	}
+	awaitSignal(t, providerEntered, "exact cold receiver's provider request")
 	select {
 	case req := <-reached:
 		observationRequest(t, req, []string{body}, nil)
-	case <-time.After(5 * time.Second):
+	default:
 		c.mu.Lock()
 		generation := c.durable[fixture.delegateID].Generation
 		receiver := c.live[fixture.delegateID].runtime

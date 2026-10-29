@@ -8,7 +8,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
@@ -30,7 +29,7 @@ func TestNotificationProgressHeldReceipt(t *testing.T) {
 			clock := agenttest.NewFakeClock()
 			sess, adapter, id := drainingDelegateWithUpdate(t, func(cfg *SessionConfig) { cfg.clock = clock })
 			fs := installResolutionSyncFailuresWriter(t, sess, 1)
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err == nil || fs.injectedFailures() != 1 || len(adapter.requestsFor("root")) != 1 {
 				t.Fatalf("response error=%v failures=%d requests=%d", err, fs.injectedFailures(), len(adapter.requestsFor("root")))
@@ -91,7 +90,7 @@ func TestNotificationProgressReleaseDuringRetryTail(t *testing.T) {
 		}
 	})
 	fs := installResolutionSyncFailuresWriter(t, sess, 1)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err == nil || fs.injectedFailures() != 1 || len(adapter.requestsFor("root")) != 1 {
 		t.Fatalf("response error=%v failures=%d requests=%d", err, fs.injectedFailures(), len(adapter.requestsFor("root")))
@@ -114,11 +113,7 @@ func TestNotificationProgressReleaseDuringRetryTail(t *testing.T) {
 	resume := sync.OnceFunc(func() { close(resumeGate) })
 	cleanupProgressWorkers(t, sess, clock, resume, nil)
 	clock.Advance(jobNotificationRetryInitialDelay)
-	select {
-	case <-entered:
-	case <-ctx.Done():
-		t.Fatal("retry never reached post-custody gate")
-	}
+	waitForProgress(t, entered, "retry post-custody gate")
 	sess.attentionMu.Lock()
 	callbacks := sess.attentionCallbacks
 	sess.attentionMu.Unlock()
@@ -163,7 +158,7 @@ func TestNotificationProgressReleaseBeforeRetryDispatch(t *testing.T) {
 		}
 	})
 	fs := installResolutionSyncFailuresWriter(t, sess, 1)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err == nil || fs.injectedFailures() != 1 || len(adapter.requestsFor("root")) != 1 {
 		t.Fatalf("response error=%v failures=%d requests=%d", err, fs.injectedFailures(), len(adapter.requestsFor("root")))
@@ -191,11 +186,7 @@ func TestNotificationProgressReleaseBeforeRetryDispatch(t *testing.T) {
 	resume := sync.OnceFunc(func() { close(resumeGate) })
 	cleanupProgressWorkers(t, sess, clock, resume, nil)
 	clock.Advance(jobNotificationRetryInitialDelay)
-	select {
-	case <-entered:
-	case <-ctx.Done():
-		t.Fatal("retry never reached pre-dispatch gate")
-	}
+	waitForProgress(t, entered, "retry pre-dispatch gate")
 	sess.attentionMu.Lock()
 	callbacks := sess.attentionCallbacks
 	sess.attentionMu.Unlock()
@@ -297,7 +288,7 @@ func TestNotificationProgressReleaseSuppression(t *testing.T) {
 				}
 			})
 			fs := installResolutionSyncFailuresWriter(t, sess, 1)
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			var inputDone chan error
 			var inputExited chan struct{}
@@ -310,11 +301,7 @@ func TestNotificationProgressReleaseSuppression(t *testing.T) {
 					_, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification)
 					inputDone <- err
 				}()
-				select {
-				case <-inputAtRelease:
-				case <-ctx.Done():
-					t.Fatal("real input did not reach its running release boundary")
-				}
+				waitForProgress(t, inputAtRelease, "real input running release boundary")
 			} else if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err == nil {
 				t.Fatal("response must hit the injected resolution-sync failure")
 			}
@@ -377,6 +364,7 @@ func TestNotificationProgressReleaseSuppression(t *testing.T) {
 			}
 			if mode == "running" {
 				resume()
+				waitForProgress(t, inputExited, "real input worker return")
 				if err := <-inputDone; err == nil {
 					t.Fatal("real response lost its injected error")
 				}
@@ -484,11 +472,11 @@ func cleanupProgressWorkers(t *testing.T, s *Session, clock *agenttest.FakeClock
 
 func joinProgressWorker(t *testing.T, done <-chan struct{}, what string) bool {
 	t.Helper()
+	awaitSignal(t, done, "cleanup "+what)
 	select {
 	case <-done:
 		return true
-	case <-time.After(10 * time.Second):
-		t.Errorf("cleanup %s join timed out", what)
+	default:
 		return false
 	}
 }
@@ -991,7 +979,7 @@ func TestNotificationProgressConcurrentWatchTransportIsIndependent(t *testing.T)
 	if err != nil || !watch.Watching || watch.WatchID == "" {
 		t.Fatalf("phase=configure watch=%+v err=%v", watch, err)
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second) // Tripwire, not pacing.
+	ctx, cancel := context.WithCancel(t.Context())
 	initialEntered, initialResume, initialDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	watchEntered, watchResume := make(chan struct{}), make(chan struct{})
 	retryEntered, retryResume := make(chan struct{}), make(chan struct{})
@@ -1038,11 +1026,12 @@ func TestNotificationProgressConcurrentWatchTransportIsIndependent(t *testing.T)
 	}
 	wait := func(ch <-chan struct{}, what string) {
 		t.Helper()
-		select {
-		case <-ch:
-		case <-ctx.Done():
-			t.Fatalf("%s %s err=%v", diagnostic(), what, ctx.Err())
-		}
+		defer func() {
+			if t.Failed() {
+				t.Logf("%s %s err=%v", diagnostic(), what, ctx.Err())
+			}
+		}()
+		waitForTestSignal(t, ch, what)
 	}
 	// Registered before any worker starts. LIFO cleanup runs before newMessagingRoot's
 	// session shutdown. Release every gate before joining producer/timer workers.
@@ -1050,23 +1039,19 @@ func TestNotificationProgressConcurrentWatchTransportIsIndependent(t *testing.T)
 		releaseInitial()
 		releaseRetry()
 		releaseWatch()
+		cancel()
 		if producerStarted {
-			select {
-			case <-initialDone:
-			case <-time.After(10 * time.Second):
-				t.Errorf("cleanup producer join timed out: phase=%s %s", phase.Load(), identity())
+			if !joinProgressWorker(t, initialDone, "producer "+identity()) {
+				return
 			}
 		}
 		drained := make(chan struct{})
 		go func() { clock.Drain(); close(drained) }()
-		select {
-		case <-drained:
-			s.testOnlyNotificationProgress.Store(nil)
-			jm.appendEvent = originalAppend
-		case <-time.After(10 * time.Second):
-			t.Errorf("cleanup timer join timed out: phase=%s %s", phase.Load(), identity())
+		if !joinProgressWorker(t, drained, "timer callbacks "+identity()) {
+			return
 		}
-		cancel()
+		s.testOnlyNotificationProgress.Store(nil)
+		jm.appendEvent = originalAppend
 	})
 	jm.appendEvent = func(e jobstore.Event) error {
 		if e.Kind != jobstore.EventWatchSendDelivered || e.WatchSend == nil || e.WatchSend.Key.WatchID != watch.WatchID {
@@ -1128,9 +1113,9 @@ func TestNotificationProgressConcurrentWatchTransportIsIndependent(t *testing.T)
 				return unexpected()
 			}
 			close(watchEntered)
-			// The main wait owns the deadline. Preserve this unrelated custody
+			// The main wait owns the hang guard. Preserve this unrelated custody
 			// until success or cleanup explicitly opens the gate, including on a
-			// negative publication check, rather than race that check's deadline.
+			// negative publication check, rather than race that check's hang guard.
 			<-watchResume
 			err := originalAppend(e)
 			if err == nil {

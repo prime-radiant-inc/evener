@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/agent/internal/agenttest"
 )
@@ -113,13 +112,7 @@ func TestNotificationRetryLoggerCaptureAcrossFixtureCleanup(t *testing.T) {
 	t.Logf("store-only fixture ended with callbacks=%d closing=%t, outer test retains cleanup ownership", pendingAfterFixture, closing)
 
 	clock.Advance(jobNotificationRetryInitialDelay)
-	timer := time.NewTimer(time.Second)
-	defer timer.Stop()
-	select {
-	case <-handler.entered:
-	case <-timer.C:
-		t.Fatal("retry did not reach the global logger capture")
-	}
+	waitForTestSignal(t, handler.entered, "retry callback at global logger capture")
 	// Releasing the writer and taking the snapshot are sibling operations.
 	// Only the shared capture helper synchronizes their buffer accesses.
 	unblock()

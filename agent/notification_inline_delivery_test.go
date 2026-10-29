@@ -89,11 +89,8 @@ func notificationToolCall(id, name string, args map[string]any) llm.Response {
 }
 func notificationAwait(t *testing.T, ch <-chan struct{}) {
 	t.Helper()
-	select {
-	case <-ch:
-	case <-time.After(10 * time.Second):
-		t.Fatal("async boundary did not complete")
-	}
+	// Scripted provider steps also call this helper off the test goroutine.
+	awaitSignal(t, ch, "notification async boundary")
 }
 func notificationSession(t *testing.T, a *notificationDeliveryAdapter, env execenv.ExecutionEnvironment, delivered chan struct{}, configure ...func(*SessionConfig)) *Session {
 	t.Helper()
