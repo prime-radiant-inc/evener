@@ -72,9 +72,9 @@ func (m *hubHostManager) breakBootTombstoneCollision(records hostRecordSet) bool
 // A derivation that refuses (a hand-edited file already over a global
 // tombstone cap with every candidate remnant-gated) is logged and leaves the
 // file alone; the next mutation surfaces the typed refusal to its caller.
-func (m *hubHostManager) reconcileBootRecords(hasFile bool, collided bool, write bootWrite) (bool, error) {
+func (m *hubHostManager) reconcileBootRecords(hasFile bool, collided bool, write bootWrite) bool {
 	if !hasFile || strings.TrimSpace(m.cfg.configPath) == "" {
-		return false, nil
+		return false
 	}
 	entries := m.cfg.store.snapshot()
 	required := collided
@@ -82,18 +82,17 @@ func (m *hubHostManager) reconcileBootRecords(hasFile bool, collided bool, write
 		records, err := m.deriveHostTOMLRecords(entries, entries, hostPersistChange{})
 		if err != nil {
 			m.logf("boot host-record prune refused: %v", err)
-			return false, nil
+			return false
 		}
 		required = !sameHostTOMLRecords(records, m.cfg.store.recordsSnapshot())
 	}
 	if !required {
-		return false, nil
+		return false
 	}
-	if err := m.persistBootRecords(entries, write); err != nil {
+	if err := m.persistHosts(entries, entries, hostPersistChange{recordsOnly: write == bootWriteRecordsOnly}); err != nil {
 		m.logf("boot host-record prune for %s not written: %v", m.cfg.configPath, err)
-		return true, err
 	}
-	return true, nil
+	return true
 }
 
 // bootWrite is where the boot's record maintenance writes land: with the host
@@ -104,20 +103,6 @@ const (
 	bootWriteHostFile bootWrite = iota
 	bootWriteRecordsOnly
 )
-
-// bootMaintenanceFault, when set, fails the boot's record-maintenance writes
-// (the prune and the identity mint). It is nil in production.
-var bootMaintenanceFault func() error
-
-// persistBootRecords is the one write the boot's record maintenance makes.
-func (m *hubHostManager) persistBootRecords(entries []hostreg.Host, write bootWrite) error {
-	if bootMaintenanceFault != nil {
-		if err := bootMaintenanceFault(); err != nil {
-			return err
-		}
-	}
-	return m.persistHosts(entries, entries, hostPersistChange{recordsOnly: write == bootWriteRecordsOnly})
-}
 
 // seedHighWater seeds the store's retained high-water records plus the
 // registry's counters from the file's [generations] tables: a name with no live
@@ -145,9 +130,9 @@ func (m *hubHostManager) seedHighWater(records hostRecordSet) {
 // here. A write that cannot land is logged and retried by the next boot (or by
 // the next mutation, which records the same in-memory pair); the hub still
 // serves, because the pair is already the registry's current identity.
-func (m *hubHostManager) materializeHostRecords(records hostRecordSet, hasFile bool, write bootWrite) error {
+func (m *hubHostManager) materializeHostRecords(records hostRecordSet, hasFile bool, write bootWrite) {
 	if !hasFile {
-		return nil
+		return
 	}
 	entries := m.cfg.store.snapshot()
 	for _, entry := range entries {
@@ -163,14 +148,12 @@ func (m *hubHostManager) materializeHostRecords(records hostRecordSet, hasFile b
 		drifted := record.IncarnationID != entry.IncarnationID || record.PresenceEpoch != entry.PresenceEpoch ||
 			mark.Generation != entry.Generation || mark.IncarnationID != entry.IncarnationID || mark.PresenceEpoch != entry.PresenceEpoch
 		if !record.complete() || !mark.complete() || drifted {
-			if err := m.persistBootRecords(entries, write); err != nil {
+			if err := m.persistHosts(entries, entries, hostPersistChange{recordsOnly: write == bootWriteRecordsOnly}); err != nil {
 				m.logf("host %q records for %s not recorded yet: %v", entry.Name, m.cfg.configPath, err)
-				return err
 			}
-			return nil
+			return
 		}
 	}
-	return nil
 }
 
 // hostFileAbsentOrEmpty reports whether the selected config path genuinely holds
@@ -225,7 +208,11 @@ func (m *hubHostManager) reconcilePipelineBoot() {
 	// load, interrupted, host-removed, mirror, intents). The store-open pass
 	// already ran it as an interim; the pass is idempotent — with nothing left
 	// pending/running it moves nothing and writes nothing.
-	m.recoverInterruptedOnce(m.opsStore())
+	if moved, err := m.opsStore().RecoverInterrupted(); err != nil {
+		m.logf("boot interrupted transition not completed: %v", err)
+	} else if moved > 0 {
+		m.logf("boot moved %d in-flight operation(s) to interrupted", moved)
+	}
 	m.reconcileHostRemovedPass(doc.Records)
 	m.reconcileGenerationMirror(doc)
 	m.reconcileCompensations()

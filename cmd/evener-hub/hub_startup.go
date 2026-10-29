@@ -156,10 +156,10 @@ type hubRuntime struct {
 	sshManager       *sshconn.Manager
 	opsStore         *hostops.Store
 	// opsUnavailable marks a hub whose operation store failed to open: it serves
-	// its hosts, refuses host changes, and retries the open in the background
-	// through reopenOps.
+	// its hosts and refuses host changes until it is started with a store that
+	// opens. openOps opens the store (a test replaces it).
 	opsUnavailable bool
-	reopenOps      func() (*hostops.Store, error)
+	openOps        func() (*hostops.Store, error)
 
 	resumeLocks               *hubcore.ResumeLocks
 	deletionStore             *hubcore.DeletionStore
@@ -829,14 +829,6 @@ func (r *hubRuntime) startBackground(web *WebServer) (context.Context, func()) {
 	// broadcasts evener/notices/changed when they change (S11).
 	goBackground(func() { watchHubNotices(ctx, web) })
 
-	// A hub that started without its operation store, or could not settle the
-	// host records in it, keeps serving its hosts and refuses host changes. The
-	// condition clears on its own: retry until the store opens and the records
-	// settle.
-	if web.hostManage != nil && web.hostManage.mutationRefusal() != nil {
-		goBackground(func() { r.retryHostRecords(ctx, web.hostManage) })
-	}
-
 	// Seed the bundled default marketplaces (best-effort, first-run-gated —
 	// see SeedDefaultMarketplaces). Every evener CLI path does this already
 	// (cmd/evener/run.go, serve.go, plugincmd.go); the hub was the one surface
@@ -884,54 +876,32 @@ func (r *hubRuntime) startBackground(web *WebServer) (context.Context, func()) {
 	return ctx, cleanup
 }
 
-// The delays between attempts to open the operation store and settle the host
-// records after startup could not.
-var (
-	hostRecordsRetryInitial = 5 * time.Second
-	hostRecordsRetryMax     = time.Minute
-)
+// hostOpsOpenRetryDelays are the waits between the attempts startup makes to
+// open the operation store before it gives up and serves without it.
+var hostOpsOpenRetryDelays = []time.Duration{250 * time.Millisecond, 500 * time.Millisecond, time.Second}
 
-// retryHostRecords reopens the operation store when it is not attached and
-// settles the host records, backing off between attempts, until host changes
-// are no longer refused or the hub stops.
-func (r *hubRuntime) retryHostRecords(ctx context.Context, manage *hubHostManager) {
-	delay := hostRecordsRetryInitial
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(delay):
-		}
-		var store *hostops.Store
-		if manage.opsStore() == nil {
-			opened, err := r.reopenOps()
-			if err != nil {
-				r.logf("host operation store still unavailable: %v", err)
-				delay = min(delay*2, hostRecordsRetryMax)
-				continue
-			}
-			store = opened
-		}
-		manage.attachOps(store)
-		if manage.mutationRefusal() == nil {
-			r.logf("host operation store and host records are settled; host changes resume")
-			return
-		}
-		delay = min(delay*2, hostRecordsRetryMax)
-	}
-}
-
-// openOpsStore opens the operation store at startup. A store that cannot open
-// does not stop the hub: it serves the hosts in hub.toml, refuses host changes
-// and retries the open in the background.
+// openOpsStore opens the operation store at startup, retrying a failed open a
+// few times for the transient failures a start can meet. A store that still
+// cannot open does not stop the hub: it serves the hosts in hub.toml and
+// refuses host changes until the hub is started with a store that opens.
 func (r *hubRuntime) openOpsStore() {
-	r.reopenOps = func() (*hostops.Store, error) {
-		return openHostOpsStore(r.hubStateRoot, r.stderr, hostOperationRetention(r.cfg))
+	if r.openOps == nil {
+		r.openOps = func() (*hostops.Store, error) {
+			return openHostOpsStore(r.hubStateRoot, r.stderr, hostOperationRetention(r.cfg))
+		}
 	}
-	store, err := r.reopenOps()
+	store, err := r.openOps()
+	for _, delay := range hostOpsOpenRetryDelays {
+		if err == nil {
+			break
+		}
+		r.logf("host operation store not opened yet; retrying: %v", err)
+		time.Sleep(delay)
+		store, err = r.openOps()
+	}
 	if err != nil {
 		r.opsUnavailable = true
-		r.logf("host operation store unavailable; hosts keep serving and host changes pause while the hub retries: %v", err)
+		r.logf("host operation store unavailable; hosts keep serving and host changes stay paused until the hub is started with a store that opens: %v", err)
 		return
 	}
 	r.opsStore = store

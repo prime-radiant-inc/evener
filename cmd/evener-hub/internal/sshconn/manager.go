@@ -1353,37 +1353,6 @@ func (m *Manager) UpdateHostUnderGate(entry hostreg.Host, holder hostops.Holder,
 	return err
 }
 
-// RetireHostUnderGate tears down the host's connection (supervisor, channel and
-// the caches tied to them: the dial decisions and any pending restart, which
-// belong to the registration that is about to change) under the caller's
-// already-held gate and leaves the registry entry exactly as it is, so a
-// registration can then change with nothing attached to the old one. It reports
-// whether there was a connection to retire: a mapped channel or a reconnect
-// loop, one parked in backoff included. Like the other under-gate entries it
-// never acquires the gate: a free gate, or one held by a different holder,
-// refuses with hostops.ErrGateNotHeld before anything moves. An unknown name is
-// a no-op.
-func (m *Manager) RetireHostUnderGate(name string, holder hostops.Holder) (retired bool, err error) {
-	if m.reg == nil {
-		return false, errors.New("sshconn: RetireHostUnderGate with no registry")
-	}
-	name = strings.TrimSpace(name)
-	if !m.hostGateHeldBy(name, holder) {
-		return false, fmt.Errorf("%w: host %q; RetireHostUnderGate runs under the caller's hold and never acquires the gate", hostops.ErrGateNotHeld, name)
-	}
-	host, ok := m.reg.Get(name)
-	if !ok {
-		return false, nil
-	}
-	m.mu.Lock()
-	retired = m.chans[host.Name] != nil || len(m.supervisors[host.Name]) > 0
-	m.mu.Unlock()
-	if ch := m.teardownHostChannel(host.Name, host, true); ch != nil {
-		_ = ch.Close()
-	}
-	return retired, nil
-}
-
 // clearHostCaches drops every per-host record that must not survive a detach or
 // removal: the resolved executable path and any pending deployment or restart.
 // A re-added host starts clean instead of inheriting

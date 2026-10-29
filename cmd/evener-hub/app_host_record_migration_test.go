@@ -3,7 +3,8 @@ package hub
 // The machine records live in the operation store; hub.toml keeps the hosts. A
 // hub that last ran a build that kept the records in hub.toml's reserved
 // sections moves them at its first boot, and a hub whose store is unavailable
-// keeps serving its hosts and takes host changes again once the store is back.
+// keeps serving its hosts and takes host changes again once it is started with
+// a store that opens.
 // These tests drive the real constructors over real files.
 
 import (
@@ -15,8 +16,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"sync/atomic"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
@@ -45,6 +46,21 @@ func bootOverStore(t *testing.T, configPath, stateRoot string) (*hubHostManager,
 	}
 	webCfg := hubcore.WebConfig{RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: configPath}
 	return newHubHostManager(appsource.NewRegistry(), nil, webCfg, configPath, hosts, t.Logf), store
+}
+
+// restartOver is a process start over configPath and a store that is already
+// open: the registry is built from the files the way startup builds it, then the
+// manager boots.
+func restartOver(t *testing.T, configPath string, store *hostops.Store) *hubHostManager {
+	t.Helper()
+	doc := hostBootDocument(mustLoadConfig(t, configPath), configPath, store)
+	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
+	if err != nil {
+		t.Fatalf("hostreg.NewSeeded: %v", err)
+	}
+	return newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: configPath,
+	}, configPath, hosts, t.Logf)
 }
 
 // legacyHub builds a hub.toml the previous build could have left: hosts, and
@@ -281,8 +297,8 @@ func TestBootMintsRecordsForAHostThatNeverHadAny(t *testing.T) {
 
 // TestHostsKeepServingAndChangesResumeWhenTheStoreReturns pins the store-down
 // disposition end to end: the hosts in hub.toml are listed, add, edit and remove
-// refuse as retryable without touching hub.toml, and once a store attaches the
-// same requests succeed and their records are durable.
+// refuse as retryable without touching hub.toml, and once the hub starts with a
+// store the same requests succeed and their records are durable.
 func TestHostsKeepServingAndChangesResumeWhenTheStoreReturns(t *testing.T) {
 	ctx := context.Background()
 	configPath := filepath.Join(t.TempDir(), "hub.toml")
@@ -312,14 +328,11 @@ func TestHostsKeepServingAndChangesResumeWhenTheStoreReturns(t *testing.T) {
 		t.Fatal("a refused host change touched hub.toml")
 	}
 
+	// The hub started again with a store that opens.
 	stateRoot := t.TempDir()
-	store, err := hostops.Open(hostops.StorePath(stateRoot))
-	if err != nil {
-		t.Fatalf("hostops.Open: %v", err)
-	}
-	m.attachOps(store)
+	m, store := bootOverStore(t, configPath, stateRoot)
 	if _, _, imported := store.HostRecords(); !imported {
-		t.Fatal("attaching the store did not move the host records into it")
+		t.Fatal("starting with the store did not move the host records into it")
 	}
 
 	if _, err := m.AddResult(ctx, appwire.HostAddParams{Entry: appwire.HostEntry{Name: "extra", Address: "extra.example"}, MutationID: "add-extra"}); err != nil {
@@ -350,79 +363,56 @@ func TestHostsKeepServingAndChangesResumeWhenTheStoreReturns(t *testing.T) {
 	}
 }
 
-// TestRetryHostRecordsAttachesTheStoreWhenItOpens pins the automatic part of
-// the store-down disposition: the retry loop keeps reopening the store, backs
-// off while it cannot, and attaches it the moment it opens, after which host
-// changes are taken again with no restart.
-func TestRetryHostRecordsAttachesTheStoreWhenItOpens(t *testing.T) {
-	previous := hostRecordsRetryInitial
-	hostRecordsRetryInitial = 0
-	t.Cleanup(func() { hostRecordsRetryInitial = previous })
-
-	configPath := filepath.Join(t.TempDir(), "hub.toml")
-	if err := writeHubTOMLHosts(configPath, []hostreg.Host{{Name: "keep", SSH: "keep.example"}}); err != nil {
-		t.Fatalf("seed hub.toml: %v", err)
-	}
-	hosts, err := hostreg.New(hostRegistryEntries(mustLoadConfig(t, configPath)))
-	if err != nil {
-		t.Fatalf("hostreg.New: %v", err)
-	}
-	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
-		RemoteHostRegistry: hosts, RemoteHostConfigPath: configPath, RemoteHostOpsUnavailable: true,
-	}, configPath, hosts, t.Logf)
-	if m.mutationRefusal() == nil {
-		t.Fatal("a manager without its store takes host changes")
-	}
-
-	stateRoot := t.TempDir()
-	var attempts atomic.Int32
-	r := &hubRuntime{
-		stderr: new(bytes.Buffer),
-		reopenOps: func() (*hostops.Store, error) {
-			if attempts.Add(1) < 3 {
-				return nil, errors.New("the store is still unavailable")
-			}
-			return hostops.Open(hostops.StorePath(stateRoot))
-		},
-	}
-	r.retryHostRecords(context.Background(), m)
-
-	if got := attempts.Load(); got != 3 {
-		t.Fatalf("the store was opened %d time(s), want the two failures and the success", got)
-	}
-	if err := m.mutationRefusal(); err != nil {
-		t.Fatalf("host changes are still refused after the store attached: %v", err)
-	}
-	if _, _, imported := m.opsStore().HostRecords(); !imported {
-		t.Fatal("the retry attached the store without moving the host records into it")
-	}
-	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "extra", Address: "extra.example"}}); err != nil {
-		t.Fatalf("Add after the retry attached the store: %v", err)
-	}
-}
-
 // TestStartupKeepsServingWhenTheStoreCannotOpen pins startup's half: an
-// operation store that cannot open leaves the runtime serving the hosts in
-// hub.toml with host changes paused, and the open is retried through reopenOps.
+// operation store that still cannot open after the startup retries leaves the
+// runtime serving the hosts in hub.toml with host changes paused until the hub
+// is started with a store that opens.
 func TestStartupKeepsServingWhenTheStoreCannotOpen(t *testing.T) {
-	stateRoot := t.TempDir()
-	path := hostops.StorePath(stateRoot)
-	if err := os.MkdirAll(path, 0o700); err != nil {
-		t.Fatalf("make the store path unopenable: %v", err)
-	}
-	r := &hubRuntime{hubStateRoot: stateRoot, stderr: new(bytes.Buffer)}
+	previous := hostOpsOpenRetryDelays
+	hostOpsOpenRetryDelays = []time.Duration{time.Millisecond, time.Millisecond}
+	t.Cleanup(func() { hostOpsOpenRetryDelays = previous })
+
+	attempts := 0
+	r := &hubRuntime{stderr: new(bytes.Buffer), openOps: func() (*hostops.Store, error) {
+		attempts++
+		return nil, errors.New("the store path cannot be opened")
+	}}
 
 	r.openOpsStore()
 
 	if r.opsStore != nil || !r.opsUnavailable {
 		t.Fatalf("runtime = store %v unavailable %v, want no store and the unavailable disposition", r.opsStore, r.opsUnavailable)
 	}
-	if err := os.Remove(path); err != nil {
-		t.Fatalf("clear the store path: %v", err)
+	if attempts != 1+len(hostOpsOpenRetryDelays) {
+		t.Fatalf("the store was opened %d time(s), want the first attempt and each retry", attempts)
 	}
-	store, err := r.reopenOps()
-	if err != nil || store == nil {
-		t.Fatalf("reopenOps after the path cleared = (%v, %v), want a store", store, err)
+}
+
+// TestStartupRetriesATransientStoreOpenFailure pins the retry that lets a start
+// over a store that opens a moment late come up whole: a failed open is tried
+// again before the hub gives up and serves without the store.
+func TestStartupRetriesATransientStoreOpenFailure(t *testing.T) {
+	previous := hostOpsOpenRetryDelays
+	hostOpsOpenRetryDelays = []time.Duration{time.Millisecond, time.Millisecond}
+	t.Cleanup(func() { hostOpsOpenRetryDelays = previous })
+
+	opened, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	attempts := 0
+	r := &hubRuntime{stderr: new(bytes.Buffer), openOps: func() (*hostops.Store, error) {
+		attempts++
+		if attempts < 3 {
+			return nil, errors.New("the store is busy")
+		}
+		return opened, nil
+	}}
+
+	r.openOpsStore()
+
+	if r.opsStore != opened || r.opsUnavailable {
+		t.Fatalf("runtime = store %v unavailable %v, want the store opened on the third attempt", r.opsStore, r.opsUnavailable)
 	}
 }
 
@@ -555,14 +545,14 @@ func TestHostsKeepServingWhenTheStoreHoldsRecordsThisBuildCannotRead(t *testing.
 		t.Fatal("the unreadable records were rewritten")
 	}
 
-	// Once the store holds records this build reads, the next attempt settles
-	// them and host changes resume with no restart.
+	// Once the store holds records this build reads (a start with the build that
+	// wrote them), host changes resume.
 	repaired := foreign
 	repaired.Hosts = map[string]json.RawMessage{"keep": json.RawMessage(`{"incarnation_id":"inc-keep","presence_epoch":1}`)}
 	if err := store.CommitHostRecords(repaired, hostops.HostMirror{}); err != nil {
 		t.Fatalf("repair the records: %v", err)
 	}
-	m.attachOps(nil)
+	m, _ = bootOverStore(t, configPath, stateRoot)
 	if err := m.mutationRefusal(); err != nil {
 		t.Fatalf("host changes are still refused after the records became readable: %v", err)
 	}
@@ -577,9 +567,9 @@ func TestHostsKeepServingWhenTheStoreHoldsRecordsThisBuildCannotRead(t *testing.
 // changes paused, and once the file is repaired the retry attaches the store,
 // moves the records into it and host changes work again.
 func TestStartupKeepsServingWhenTheStoreCannotBeProvenAndResumesWhenItCan(t *testing.T) {
-	previous := hostRecordsRetryInitial
-	hostRecordsRetryInitial = 0
-	t.Cleanup(func() { hostRecordsRetryInitial = previous })
+	previous := hostOpsOpenRetryDelays
+	hostOpsOpenRetryDelays = nil
+	t.Cleanup(func() { hostOpsOpenRetryDelays = previous })
 
 	configPath := filepath.Join(t.TempDir(), "hub.toml")
 	if err := writeHubTOMLHosts(configPath, []hostreg.Host{{Name: "keep", SSH: "keep.example"}}); err != nil {
@@ -613,16 +603,16 @@ func TestStartupKeepsServingWhenTheStoreCannotBeProvenAndResumesWhenItCan(t *tes
 	_, err = m.AddResult(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "extra", Address: "extra.example"}})
 	requireWireError(t, err, appwire.CodeUnavailable)
 
-	// The operator repairs the file; the retry attaches the store.
+	// The operator repairs the file and starts the hub again.
 	if err := os.WriteFile(path, []byte(`{"version":1,"sequence":0,"allocatorHighWaterMark":0,"records":[]}`), 0o600); err != nil {
 		t.Fatalf("repair the store: %v", err)
 	}
-	r.retryHostRecords(context.Background(), m)
+	m, repaired := bootOverStore(t, configPath, stateRoot)
 
 	if err := m.mutationRefusal(); err != nil {
 		t.Fatalf("host changes are still paused after the store was repaired: %v", err)
 	}
-	if records := mustRecords(t, m.opsStore()); records.HostRecords["keep"].IncarnationID == "" {
+	if records := mustRecords(t, repaired); records.HostRecords["keep"].IncarnationID == "" {
 		t.Fatalf("the host records were not moved into the repaired store: %+v", records.HostRecords)
 	}
 	if _, err := m.AddResult(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "extra", Address: "extra.example"}}); err != nil {
@@ -664,7 +654,7 @@ func TestUnreadableHubTOMLAtBootDoesNotMoveEmptyRecordsIntoTheStore(t *testing.T
 		t.Fatal("host changes are taken while the records are unsettled")
 	}
 
-	m.attachOps(nil)
+	m = restartOver(t, configPath, store)
 
 	requireFamilyEquals(t, store, records)
 	if err := m.mutationRefusal(); err != nil {
@@ -672,110 +662,6 @@ func TestUnreadableHubTOMLAtBootDoesNotMoveEmptyRecordsIntoTheStore(t *testing.T
 	}
 	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "extra", Address: "extra.example"}}); err != nil {
 		t.Fatalf("Add after the records moved: %v", err)
-	}
-}
-
-// TestLateAttachOfAPopulatedStoreRecordsTheIdentitiesTheHubServes pins the
-// agreement between what the registry serves and what the store holds: a hub
-// that started without its store minted identities for its hosts, and attaching
-// a store that holds other ones must leave the store recording the served pair.
-func TestLateAttachOfAPopulatedStoreRecordsTheIdentitiesTheHubServes(t *testing.T) {
-	configPath, _ := legacyHub(t)
-	stateRoot := t.TempDir()
-	first, store := bootOverStore(t, configPath, stateRoot)
-	if _, _, imported := store.HostRecords(); !imported {
-		t.Fatalf("the first boot did not move the records into the store")
-	}
-	_ = first
-
-	cfg := mustLoadConfig(t, configPath)
-	hosts, err := hostreg.New(hostRegistryEntries(cfg))
-	if err != nil {
-		t.Fatalf("hostreg.New: %v", err)
-	}
-	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
-		RemoteHostRegistry: hosts, RemoteHostConfigPath: configPath, RemoteHostOpsUnavailable: true,
-	}, configPath, hosts, t.Logf)
-	reopened, err := hostops.Open(hostops.StorePath(stateRoot))
-	if err != nil {
-		t.Fatalf("hostops.Open: %v", err)
-	}
-	m.attachOps(reopened)
-
-	if err := m.mutationRefusal(); err != nil {
-		t.Fatalf("host changes are refused after the attach: %v", err)
-	}
-	stored := mustRecords(t, reopened)
-	for _, entry := range hosts.All() {
-		record := stored.HostRecords[entry.Name]
-		mark := stored.Generations[entry.Name]
-		if record.IncarnationID != entry.IncarnationID || record.PresenceEpoch != entry.PresenceEpoch {
-			t.Errorf("host %q: the store records %+v, the hub serves %q/%d", entry.Name, record, entry.IncarnationID, entry.PresenceEpoch)
-		}
-		if mark.Generation != entry.Generation || mark.IncarnationID != entry.IncarnationID || mark.PresenceEpoch != entry.PresenceEpoch {
-			t.Errorf("host %q: the store's mark %+v disagrees with what the hub serves (%d, %q, %d)", entry.Name, mark, entry.Generation, entry.IncarnationID, entry.PresenceEpoch)
-		}
-	}
-}
-
-// TestLateAttachOfAStoreWithOneFreshHostRecordsTheServedIdentity is the minimal
-// form of the attach agreement: no receipts or tombstones exist to make the
-// records differ for another reason, so only the identity mismatch can ask for
-// the write.
-func TestLateAttachOfAStoreWithOneFreshHostRecordsTheServedIdentity(t *testing.T) {
-	configPath := filepath.Join(t.TempDir(), "hub.toml")
-	if err := writeHubTOMLHosts(configPath, []hostreg.Host{{Name: "solo", SSH: "solo.example"}}); err != nil {
-		t.Fatalf("seed hub.toml: %v", err)
-	}
-	stateRoot := t.TempDir()
-	if _, store := bootOverStore(t, configPath, stateRoot); store == nil {
-		t.Fatal("no store")
-	}
-
-	hosts, err := hostreg.New(hostRegistryEntries(mustLoadConfig(t, configPath)))
-	if err != nil {
-		t.Fatalf("hostreg.New: %v", err)
-	}
-	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
-		RemoteHostRegistry: hosts, RemoteHostConfigPath: configPath, RemoteHostOpsUnavailable: true,
-	}, configPath, hosts, t.Logf)
-	reopened, err := hostops.Open(hostops.StorePath(stateRoot))
-	if err != nil {
-		t.Fatalf("hostops.Open: %v", err)
-	}
-	m.attachOps(reopened)
-
-	served := hosts.All()[0]
-	stored := mustRecords(t, reopened)
-	if got := stored.HostRecords["solo"]; got.IncarnationID != served.IncarnationID || got.PresenceEpoch != served.PresenceEpoch {
-		t.Errorf("the store records %+v, the hub serves %q/%d", got, served.IncarnationID, served.PresenceEpoch)
-	}
-	if got := stored.Generations["solo"]; got.Generation != served.Generation || got.IncarnationID != served.IncarnationID {
-		t.Errorf("the store's mark %+v disagrees with what the hub serves (%d, %q)", got, served.Generation, served.IncarnationID)
-	}
-}
-
-// TestSettlementRetryLeavesALiveOperationRunning pins the retry's reach: the
-// pass that interrupts what a crash left in flight belongs to the first boot
-// over a store, not to the retries of a store already serving requests.
-func TestSettlementRetryLeavesALiveOperationRunning(t *testing.T) {
-	configPath := filepath.Join(t.TempDir(), "hub.toml")
-	if err := writeHubTOMLHosts(configPath, []hostreg.Host{{Name: "keep", SSH: "keep.example"}}); err != nil {
-		t.Fatalf("seed hub.toml: %v", err)
-	}
-	m, store := bootOverStore(t, configPath, t.TempDir())
-	served := m.cfg.hosts.All()[0]
-	live := seedOperationRecord(t, store, "keep", "live-op", served.Generation, served.IncarnationID)
-
-	m.refuseMutations("a settlement is pending")
-	m.attachOps(nil)
-
-	if err := m.mutationRefusal(); err != nil {
-		t.Fatalf("host changes are still refused after the retry: %v", err)
-	}
-	after, ok := store.Record(live.ID)
-	if !ok || after.State != live.State {
-		t.Fatalf("the retry moved the live operation from %q to %+v", live.State, after)
 	}
 }
 
@@ -824,73 +710,6 @@ func TestAnUnreadableRecordDoesNotHideAnOpenTeardownRemnant(t *testing.T) {
 	}
 }
 
-// TestLateAttachInterruptsWhatACrashLeftInFlight pins the recovery a store gets
-// when it attaches after the hub started serving: an operation a crash left
-// pending is a terminal unknown outcome before anything uses the store.
-func TestLateAttachInterruptsWhatACrashLeftInFlight(t *testing.T) {
-	configPath := filepath.Join(t.TempDir(), "hub.toml")
-	if err := writeHubTOMLHosts(configPath, []hostreg.Host{{Name: "keep", SSH: "keep.example"}}); err != nil {
-		t.Fatalf("seed hub.toml: %v", err)
-	}
-	hosts, err := hostreg.New(hostRegistryEntries(mustLoadConfig(t, configPath)))
-	if err != nil {
-		t.Fatalf("hostreg.New: %v", err)
-	}
-	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
-		RemoteHostRegistry: hosts, RemoteHostConfigPath: configPath, RemoteHostOpsUnavailable: true,
-	}, configPath, hosts, t.Logf)
-	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
-	if err != nil {
-		t.Fatalf("hostops.Open: %v", err)
-	}
-	served := hosts.All()[0]
-	left := seedOperationRecord(t, store, "keep", "left-in-flight", served.Generation, served.IncarnationID)
-
-	m.attachOps(store)
-
-	if after, ok := store.Record(left.ID); !ok || after.State != hostops.StateInterrupted {
-		t.Fatalf("the operation the crash left in flight is %+v after the attach, want interrupted", after)
-	}
-}
-
-// TestLateAttachFencesTeardownRemnantsBeforeOperationsCanUseTheStore pins the
-// publication order: operations are admitted from the moment the store is
-// published, so an open remnant it holds must already fence its host then.
-func TestLateAttachFencesTeardownRemnantsBeforeOperationsCanUseTheStore(t *testing.T) {
-	configPath, records := legacyHub(t)
-	stateRoot := t.TempDir()
-	bootOverStore(t, configPath, stateRoot)
-	fenced := ""
-	for _, remnant := range records.TeardownRemnants {
-		if remnant.Resolved == nil {
-			fenced = remnant.Host
-		}
-	}
-	if fenced == "" {
-		t.Fatal("the legacy fixture left no open remnant")
-	}
-
-	hosts, err := hostreg.New(hostRegistryEntries(mustLoadConfig(t, configPath)))
-	if err != nil {
-		t.Fatalf("hostreg.New: %v", err)
-	}
-	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
-		RemoteHostRegistry: hosts, RemoteHostConfigPath: configPath, RemoteHostOpsUnavailable: true,
-	}, configPath, hosts, t.Logf)
-	reopened, err := hostops.Open(hostops.StorePath(stateRoot))
-	if err != nil {
-		t.Fatalf("hostops.Open: %v", err)
-	}
-	fencedAtPublication := false
-	m.testOnlyAfterPublish = func() { _, fencedAtPublication = m.openRemnantID(fenced) }
-
-	m.attachOps(reopened)
-
-	if !fencedAtPublication {
-		t.Fatalf("the open remnant for %q was not fencing it when the store was published", fenced)
-	}
-}
-
 // TestAReadFailureAfterTheLegacyBootStartedStillKeepsTheRecordsInHubTOML pins
 // the guard on the actual load rather than on a read before it: hub.toml reads
 // once and then fails, as a transient error can, and nothing may be imported
@@ -919,7 +738,7 @@ func TestAReadFailureAfterTheLegacyBootStartedStillKeepsTheRecordsInHubTOML(t *t
 		return previous(path)
 	}
 	webCfg := hubcore.WebConfig{RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: configPath}
-	m := newHubHostManager(appsource.NewRegistry(), nil, webCfg, configPath, hosts, t.Logf)
+	newHubHostManager(appsource.NewRegistry(), nil, webCfg, configPath, hosts, t.Logf)
 	configReadFile = previous
 
 	if _, _, imported := store.HostRecords(); imported {
@@ -928,7 +747,7 @@ func TestAReadFailureAfterTheLegacyBootStartedStillKeepsTheRecordsInHubTOML(t *t
 	if !bytes.Equal(fileBytes(t, configPath), original) {
 		t.Fatal("hub.toml changed although its records could not be read")
 	}
-	m.attachOps(nil)
+	restartOver(t, configPath, store)
 	requireFamilyEquals(t, store, records)
 }
 
@@ -970,7 +789,7 @@ func TestMigrationWaitsForADurableCopyOfTheOriginalHubTOML(t *testing.T) {
 	if err := os.Remove(copyPath); err != nil {
 		t.Fatalf("clear the copy path: %v", err)
 	}
-	m.attachOps(nil)
+	m = restartOver(t, configPath, store)
 
 	requireFamilyEquals(t, store, records)
 	if !bytes.Equal(fileBytes(t, copyPath), original) {

@@ -549,24 +549,3 @@ func TestAddRestoredKeepsThePersistedIdentityAndRefusesALiveName(t *testing.T) {
 		t.Fatalf("AddRestored of a live name = %v, want ErrDuplicateHost", err)
 	}
 }
-
-func TestRestoreIncarnationReplacesALiveNamesIDAndNothingElse(t *testing.T) {
-	r, err := New([]Host{{Name: "a", SSH: "a.example"}})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	before, _ := r.Get("a")
-	if err := r.RestoreIncarnation("a", "inc-stored"); err != nil {
-		t.Fatalf("RestoreIncarnation: %v", err)
-	}
-	after, _ := r.Get("a")
-	if after.IncarnationID != "inc-stored" || after.Generation != before.Generation || after.PresenceEpoch != before.PresenceEpoch {
-		t.Fatalf("entry = %+v, want only the incarnation replaced in %+v", after, before)
-	}
-	if err := r.RestoreIncarnation("missing", "inc-x"); !errors.Is(err, ErrUnknownHost) {
-		t.Fatalf("RestoreIncarnation of an unknown name = %v, want ErrUnknownHost", err)
-	}
-	if err := r.RestoreIncarnation("a", ""); err == nil {
-		t.Fatal("an empty incarnation id was accepted")
-	}
-}

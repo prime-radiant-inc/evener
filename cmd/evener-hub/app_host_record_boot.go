@@ -7,13 +7,10 @@ import (
 	"os"
 	"slices"
 	"strings"
-	"sync"
-	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
-	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
 )
 
 // This file owns how the manager finds its machine records at boot. Records
@@ -88,26 +85,22 @@ func (m *hubHostManager) mutationRefusal() error {
 //   - a store that does not has the records still in hub.toml: settle the old
 //     build's half-done work, import, and strip;
 //   - no store: the records stay in hub.toml (tests, embedders), or, when a
-//     configured store failed to open, hosts keep serving and mutations refuse.
+//     configured store failed to open, hosts keep serving and mutations refuse
+//     until the hub starts with a store that opens.
 func (m *hubHostManager) bootRecords() {
 	ops := m.opsStore()
 	if ops == nil {
-		// A configured store that has not opened leaves hub.toml's bytes alone:
-		// the hosts serve with what was read, and every settlement or minting
-		// write waits for the store, so nothing is normalized before the staged
-		// commits there can be compared with the file as they saw it.
-		// Nothing here can wait on a gate (no attach is running) and an
-		// unreadable file only leaves the manager serving what it has.
+		// A configured store that did not open leaves hub.toml's bytes alone: the
+		// hosts serve with what was read, and every settlement or minting write
+		// waits for the store, so nothing is normalized before the staged commits
+		// there can be compared with the file as they saw it.
 		_ = m.bootLegacyRecords(!m.cfg.opsUnavailable)
 		if m.cfg.opsUnavailable {
 			m.refuseMutations("the operation store is unavailable")
 		}
 		return
 	}
-	// Operations a crash left in flight are interrupted before anything else
-	// can return early: a settlement that retries later must find them done and
-	// leave alone what this process admits in between.
-	m.recoverInterruptedOnce(ops)
+	m.recoverInterrupted(ops)
 	if _, _, imported := ops.HostRecords(); imported {
 		m.bootStoreRecords(ops)
 		return
@@ -119,299 +112,14 @@ func (m *hubHostManager) bootRecords() {
 		m.refuseMutations(fmt.Sprintf("the original hub.toml could not be kept before its records move: %v", err))
 		return
 	}
-	if m.cfg.attaching.Load() && m.legacyCrossFileWorkOpen(ops) {
-		// The previous build's removal never finished, and settling it replaces
-		// hub.toml with the copy it kept before the removal: that copy would undo
-		// whatever the operator changed while the store was unavailable. A start
-		// reads the file fresh and settles it safely.
-		m.refuseMutations("an earlier removal's cross-file work is still open; a restart of the hub settles it")
-		return
-	}
-	if m.cfg.attaching.Load() {
-		// The move into the store follows, so the settlement writes no file: the
-		// host list in hub.toml is the operator's by now, not the registry's
-		// startup copy, and the import carries what the settlement derived.
-		m.cfg.persistInMemory.Store(true)
-	}
-	err := m.bootLegacyRecords(true)
-	m.cfg.persistInMemory.Store(false)
-	switch {
-	case errors.Is(err, errLegacyRecordsUnreadable):
+	if !m.bootLegacyRecords(true) {
 		// The records to move could not be read, so what the legacy boot saw is
 		// empty. Importing that would make the store their home and strand the
-		// real ones in hub.toml; hosts keep serving and the move is retried.
+		// real ones in hub.toml; hosts keep serving until a start can read them.
 		m.refuseMutations("hub.toml could not be read; its records move into the operation store once it can")
 		return
-	case err != nil:
-		m.refuseMutations(fmt.Sprintf("the move of the host records is retried: %v", err))
-		return
 	}
-	// The import raises live registrations to the mirror's counters, so the
-	// gates are held for it as for the other registration changes.
-	release, err := m.holdLiveHosts(m.mirrorMovedHosts(ops))
-	if err != nil {
-		m.refuseMutations(fmt.Sprintf("a host is busy; the move of its records is retried: %v", err))
-		return
-	}
-	defer release()
 	m.migrateLegacyRecords(ops)
-}
-
-// storeSettlementMovedHosts names the live hosts whose registration settling
-// over the stored records would change: a stored incarnation to adopt, counters
-// to raise to a stored mark, or a removed name that is live again for the
-// collision rule.
-func (m *hubHostManager) storeSettlementMovedHosts(records hostRecordSet) []string {
-	var moved []string
-	for _, entry := range m.cfg.hosts.All() {
-		stored, held := records.HostRecords[entry.Name]
-		if !held {
-			stored, _ = unlandedRemovalIdentity(records, entry.Name, m.cfg.configPath)
-		}
-		mark, marked := records.Generations[entry.Name]
-		_, tombstoned := records.Tombstones[entry.Name]
-		if tombstoned {
-			_, unlanded := unlandedRemovalIdentity(records, entry.Name, m.cfg.configPath)
-			tombstoned = !unlanded
-		}
-		if (validIncarnationID(stored.IncarnationID) && stored.IncarnationID != entry.IncarnationID) ||
-			(marked && (mark.Generation > entry.Generation || mark.PresenceEpoch > entry.PresenceEpoch)) ||
-			tombstoned {
-			moved = append(moved, entry.Name)
-		}
-	}
-	return moved
-}
-
-// legacySettlementMovedHosts is the same for the records still in hub.toml,
-// whose marks and tombstones the legacy boot seeds and weighs, and whose mirror
-// may sit above the live hosts.
-func (m *hubHostManager) legacySettlementMovedHosts(file hostRecordSet) []string {
-	moved := m.mirrorMovedHosts(m.opsStore())
-	for _, entry := range m.cfg.hosts.All() {
-		mark, marked := file.Generations[entry.Name]
-		_, tombstoned := file.Tombstones[entry.Name]
-		if (marked && (mark.Generation > entry.Generation || mark.PresenceEpoch > entry.PresenceEpoch)) || tombstoned {
-			moved = append(moved, entry.Name)
-		}
-	}
-	return slices.Compact(slices.Sorted(slices.Values(moved)))
-}
-
-// mirrorMovedHosts names the live hosts the store's mirror holds a counter above,
-// which the settlement raises them to.
-func (m *hubHostManager) mirrorMovedHosts(ops *hostops.Store) []string {
-	if ops == nil {
-		return nil
-	}
-	var moved []string
-	boundaries := ops.Boundaries()
-	for _, entry := range m.cfg.hosts.All() {
-		if b, ok := boundaries[entry.Name]; ok && (b.Generation > entry.Generation || b.PresenceEpoch > entry.PresenceEpoch) {
-			moved = append(moved, entry.Name)
-		}
-	}
-	return moved
-}
-
-// holdLiveHosts takes the gate of the named live hosts, the ones whose
-// registration the settlement is about to change, and tears down the
-// connection of each that holds one, through the SSH manager (the registry
-// entries stay as they are), so the steps that
-// follow can change registrations (stored incarnations, raised counters, the
-// collision rule's rebases) without any channel or supervisor staying attached
-// to a registration that moved. The gates stay held until the returned release
-// runs; a busy host is not touched: every gate taken is released and the error
-// says which, so the settlement stays pending. Outside an attach, or with no
-// SSH manager, no host can hold a connection and nothing is held; nor is
-// anything when the settlement would change no registration (no names), so a
-// retry that only has records to write leaves healthy connections alone, and a
-// host whose registration stays is never touched.
-func (m *hubHostManager) holdLiveHosts(names []string) (func(), error) {
-	if len(names) == 0 || m.cfg.manager == nil || !m.cfg.attaching.Load() {
-		return func() {}, nil
-	}
-	var releases []func()
-	releaseAll := sync.OnceFunc(func() {
-		for _, release := range slices.Backward(releases) {
-			release()
-		}
-	})
-	holder := hostops.Holder{Kind: hostops.HolderManager, Activity: "settle-records"}
-	// Every gate first: a busy host stops the attempt before any healthy
-	// connection is touched, so a retry never interrupts them again for nothing.
-	for _, name := range names {
-		release, err := m.acquireHostGate(name, holder)
-		if err != nil {
-			releaseAll()
-			return nil, fmt.Errorf("host %q: %w", name, err)
-		}
-		releases = append(releases, release)
-	}
-	for _, name := range names {
-		retired, err := m.cfg.manager.RetireHostUnderGate(name, holder)
-		if err != nil {
-			releaseAll()
-			return nil, fmt.Errorf("host %q: %w", name, err)
-		}
-		if retired || m.redialing(name) {
-			m.cfg.reconnectMu.Lock()
-			m.cfg.reconnect = append(m.cfg.reconnect, name)
-			m.cfg.reconnectMu.Unlock()
-		}
-	}
-	return releaseAll, nil
-}
-
-// attachOps brings the records to the state a boot would have, after the hub
-// started serving without that state. store is a store that opened since, or
-// nil to retry settling the records of the one already attached. Host
-// mutations are refused until this returns clean, so none is in flight.
-func (m *hubHostManager) attachOps(store *hostops.Store) {
-	attaching := &hostRefusal{reason: "the operation store is attaching"}
-	m.cfg.refusal.Store(attaching)
-	m.cfg.attaching.Store(true)
-	defer m.cfg.attaching.Store(false)
-	if store != nil && m.opsStore() == nil {
-		// Operations a crash left in flight are interrupted before the store is
-		// published, while nothing of this process can be running on it.
-		m.recoverInterruptedOnce(store)
-		// Operations admitted from the moment the store is published read the
-		// teardown fences, so the fences it holds are installed first.
-		if family, _, imported := store.HostRecords(); imported {
-			remnants, attempts := decodeTeardownFences(family)
-			m.cfg.store.setRemnantMaps(m.cfg.store.stagedSnapshot(), remnants, attempts)
-		}
-		m.cfg.ops.Store(store)
-		if m.testOnlyAfterPublish != nil {
-			m.testOnlyAfterPublish()
-		}
-	}
-	m.bootRecords()
-	// A boot that could not settle the records left its own refusal in place.
-	m.cfg.refusal.CompareAndSwap(attaching, nil)
-	m.reconnectRetiredHosts()
-}
-
-// hostReconnectTimeout bounds one dial of a host whose connection an attach
-// retired; hostReconnectRetryInitial and hostReconnectRetryMax pace the dials
-// that follow a failure.
-const hostReconnectTimeout = 2 * time.Minute
-
-var (
-	hostReconnectRetryInitial = 2 * time.Second
-	hostReconnectRetryMax     = time.Minute
-)
-
-// reconnectRetiredHosts dials again the hosts whose connections the attach
-// tore down, once their gates are free: sessions of those hosts are read through
-// attached connections only, so without this they would stay unreachable until
-// someone connected each host by hand.
-func (m *hubHostManager) reconnectRetiredHosts() {
-	m.cfg.reconnectMu.Lock()
-	names := m.cfg.reconnect
-	m.cfg.reconnect = nil
-	m.cfg.reconnectMu.Unlock()
-	for _, name := range slices.Compact(slices.Sorted(slices.Values(names))) {
-		registration, registered := m.cfg.hosts.Get(name)
-		if !registered {
-			continue
-		}
-		m.cfg.reconnectMu.Lock()
-		if owner := m.cfg.redials[name]; owner != nil {
-			// A loop is already restoring this host (backing off after a failed
-			// dial); it carries on with the registration as it stands now.
-			owner.registration = registration
-			m.cfg.reconnectMu.Unlock()
-			continue
-		}
-		if m.cfg.redials == nil {
-			m.cfg.redials = map[string]*redialOwner{}
-		}
-		m.cfg.redials[name] = &redialOwner{registration: registration}
-		m.cfg.reconnectMu.Unlock()
-		go m.redial(name, hostReconnectRetryInitial, hostReconnectRetryMax)
-	}
-}
-
-// redialOwner is the registration a host's redial loop is restoring.
-type redialOwner struct{ registration hostreg.Host }
-
-// redialing reports whether a redial loop is restoring name.
-func (m *hubHostManager) redialing(name string) bool {
-	m.cfg.reconnectMu.Lock()
-	defer m.cfg.reconnectMu.Unlock()
-	return m.cfg.redials[name] != nil
-}
-
-// redial connects name again, retrying a failed dial under backoff until the
-// host is connected, removed or replaced, fenced by an open teardown remnant (an explicit
-// attach is refused then too), or the manager is closed. The supervisor that
-// would otherwise bring a lost link back was stopped by the retirement and a
-// failed dial starts none, so this loop is what keeps the host from staying
-// disconnected after a network blip.
-func (m *hubHostManager) redial(name string, retryInitial, retryMax time.Duration) {
-	delay := retryInitial
-	for first := true; ; first = false {
-		m.cfg.reconnectMu.Lock()
-		registration := m.cfg.redials[name].registration
-		m.cfg.reconnectMu.Unlock()
-		stop := false
-		switch {
-		case !m.cfg.hosts.SameRegistration(name, registration):
-			// Removed, or removed and added again: the connection the user lost
-			// is not this one's to restore.
-			stop = true
-		case m.openRemnantFences(name):
-			stop = true
-		case m.cfg.manager.Attached(name):
-			stop = true
-		default:
-			ctx, cancel := context.WithTimeout(context.Background(), hostReconnectTimeout)
-			_, err := m.cfg.manager.ReconnectRegistration(ctx, registration)
-			cancel()
-			switch {
-			case err == nil, errors.Is(err, sshconn.ErrManagerClosed):
-				stop = true
-			case first && !errors.Is(err, sshconn.ErrHostNotFound):
-				m.logf("host %q was not reconnected after the records settled; retrying: %v", name, err)
-			}
-		}
-		if stop {
-			if m.endRedial(name, registration) {
-				return
-			}
-			// A settlement handed this loop a new registration while it was
-			// deciding to stop; it carries on with that one.
-			continue
-		}
-		time.Sleep(delay)
-		delay = min(delay*2, retryMax)
-	}
-}
-
-// openRemnantFences reports, and says so in the log, whether an open teardown
-// remnant fences name, which keeps it detached as an explicit attach would be.
-func (m *hubHostManager) openRemnantFences(name string) bool {
-	remnantID, fenced := m.openRemnantID(name)
-	if fenced {
-		m.logf("host %q stays disconnected: open remnant %s fences it", name, remnantID)
-	}
-	return fenced
-}
-
-// endRedial ends name's redial loop if the registration it decided on is still
-// the one it owns, under the lock a handoff takes, so a registration handed over
-// while the loop was deciding to stop is never lost with it.
-func (m *hubHostManager) endRedial(name string, decided hostreg.Host) bool {
-	m.cfg.reconnectMu.Lock()
-	defer m.cfg.reconnectMu.Unlock()
-	owner := m.cfg.redials[name]
-	if owner != nil && !hostreg.SameRegistration(owner.registration, decided) {
-		return false
-	}
-	delete(m.cfg.redials, name)
-	return true
 }
 
 // mirrorCountersAbove returns the counters the store's mirror holds for names
@@ -441,17 +149,6 @@ func (m *hubHostManager) mirrorCountersAbove(ops *hostops.Store, entries []hostr
 		}
 	}
 	return raises
-}
-
-// legacyCrossFileWorkOpen reports whether the previous build left a removal's
-// cross-file work unfinished: an armed compensation in the store or a commit
-// intent in hub.toml.
-func (m *hubHostManager) legacyCrossFileWorkOpen(ops *hostops.Store) bool {
-	if len(ops.Compensations()) != 0 {
-		return true
-	}
-	doc, ok := m.recordStore().load()
-	return ok && len(doc.Records.PendingStoreSync) != 0
 }
 
 // migrateLegacyRecords moves the records the legacy boot just settled from
@@ -620,26 +317,6 @@ func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
 		m.refuseMutations(m.cfg.configPath + " could not be read; staged commits are settled once it can")
 		return
 	}
-	releaseHosts, err := m.holdLiveHosts(m.storeSettlementMovedHosts(records))
-	if err != nil {
-		m.cfg.store.set(m.cfg.hosts.All())
-		m.refuseMutations(fmt.Sprintf("a host is busy; the settlement of its stored identity is retried: %v", err))
-		return
-	}
-	defer releaseHosts()
-	for _, entry := range m.cfg.hosts.All() {
-		// A hub that started before its records were readable minted ids of its
-		// own; operations and cleanup handles are bound to the stored ones.
-		stored, held := records.HostRecords[entry.Name]
-		if !held {
-			stored, _ = unlandedRemovalIdentity(records, entry.Name, m.cfg.configPath)
-		}
-		if validIncarnationID(stored.IncarnationID) && stored.IncarnationID != entry.IncarnationID {
-			if err := m.cfg.hosts.RestoreIncarnation(entry.Name, stored.IncarnationID); err != nil {
-				m.logf("host %q keeps the incarnation minted at start: %v", entry.Name, err)
-			}
-		}
-	}
 	m.installRestoredRecords(hostRecordDocument{Hosts: m.cfg.hosts.All(), Records: records})
 	// Seeding the stored marks raised the registry's counters past the entries
 	// just copied; the manager's view follows what the registry serves.
@@ -675,7 +352,6 @@ func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
 		return
 	}
 	collided := m.breakBootTombstoneCollision(records)
-	releaseHosts()
 	// The sections go only now: every check above compares hub.toml with the
 	// file the staged commits saw, and the strip rewrites it.
 	m.stripLegacySections(true)
@@ -686,16 +362,10 @@ func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
 	}
 	// hub.toml holds only the hosts in this mode, so the maintenance writes carry
 	// records alone and never put the registry's host list over the file's.
-	attempted, writeErr := m.reconcileBootRecords(hasFile, collided, bootWriteRecordsOnly)
-	if !attempted {
-		writeErr = m.materializeHostRecords(records, hasFile, bootWriteRecordsOnly)
+	if attempted := m.reconcileBootRecords(hasFile, collided, bootWriteRecordsOnly); !attempted {
+		m.materializeHostRecords(records, hasFile, bootWriteRecordsOnly)
 	}
 	m.reconcileStoreBoot()
-	if writeErr != nil && m.cfg.attaching.Load() {
-		// Served identities and stored records still differ; the settlement
-		// stays pending and the retry loop writes them again.
-		m.refuseMutations(fmt.Sprintf("the host records could not be written yet; the next attempt retries: %v", writeErr))
-	}
 }
 
 // rollBackUnlandedCommits drops the staged marker and the provisional receipt
@@ -800,17 +470,11 @@ func hostFromReceiptRow(row HostMutationReceiptRow) hostreg.Host {
 	}
 }
 
-// recoverInterruptedOnce moves the operations a crash left in flight to
-// interrupted, the first time it runs over the attached store. A settlement
-// retry runs the boot again over a store that is serving, where a running
-// operation is live and must stay so; a pass that fails is therefore not
-// repeated in this process either, and the next start makes it again.
-func (m *hubHostManager) recoverInterruptedOnce(ops *hostops.Store) {
-	if !m.cfg.interruptedHandled.CompareAndSwap(false, true) {
-		return
-	}
+// recoverInterrupted moves the operations a crash left in flight to
+// interrupted, before anything else can use the store.
+func (m *hubHostManager) recoverInterrupted(ops *hostops.Store) {
 	if moved, err := ops.RecoverInterrupted(); err != nil {
-		m.logf("boot interrupted transition not completed; the next start retries it: %v", err)
+		m.logf("boot interrupted transition not completed: %v", err)
 	} else if moved > 0 {
 		m.logf("boot moved %d in-flight operation(s) to interrupted", moved)
 	}
@@ -821,7 +485,6 @@ func (m *hubHostManager) recoverInterruptedOnce(ops *hostops.Store) {
 // interrupted, removed hosts' operation records and token rows are marked
 // and dropped, and the boundary mirror is rebuilt from the records.
 func (m *hubHostManager) reconcileStoreBoot() {
-	m.recoverInterruptedOnce(m.opsStore())
 	if doc, ok := m.recordStore().load(); ok {
 		m.reconcileHostRemovedPass(doc.Records)
 	}
@@ -839,12 +502,10 @@ func (m *hubHostManager) reconcileStoreBoot() {
 // prune and identity mint land in hub.toml.
 //
 // With settle false it only loads what the file holds into the manager and
-// writes nothing. It returns errLegacyRecordsUnreadable when the records were
-// not actually read (a file that is absent or empty holds none, but one that
-// cannot be read leaves the boot looking at an empty set that nothing may be
-// built from), or the error of a host that was busy when the settlement needed
-// its gate.
-func (m *hubHostManager) bootLegacyRecords(settle bool) error {
+// writes nothing. It reports whether the records were actually read: a file that
+// is absent or empty holds none, but one that cannot be read leaves the boot
+// looking at an empty set that nothing may be built from.
+func (m *hubHostManager) bootLegacyRecords(settle bool) bool {
 	hosts := m.cfg.hosts
 	// The file's records are read once, before anything else can mint: its
 	// retained marks seed the counters, so a host folded in below mints above
@@ -856,20 +517,6 @@ func (m *hubHostManager) bootLegacyRecords(settle bool) error {
 	loaded, hasFile := m.recordStore().load()
 	readable := hasFile || strings.TrimSpace(m.cfg.configPath) == "" || m.hostFileAbsentOrEmpty()
 	fileRecords := loaded.Records
-	if settle && !readable {
-		// Nothing is built from a file that did not read, so no connection is
-		// interrupted for an attempt that cannot proceed.
-		return errLegacyRecordsUnreadable
-	}
-	releaseHosts := func() {}
-	if settle {
-		// Seeding and the collision rule below change live registrations.
-		var err error
-		if releaseHosts, err = m.holdLiveHosts(m.legacySettlementMovedHosts(fileRecords)); err != nil {
-			return err
-		}
-		defer releaseHosts()
-	}
 	if hasFile {
 		m.seedHighWater(fileRecords)
 	}
@@ -894,20 +541,13 @@ func (m *hubHostManager) bootLegacyRecords(settle bool) error {
 	// decodeConfig already validated each shape, so they are restored as-is (the
 	// same hard startup-error posture a corrupt host entry takes).
 	m.cfg.store.setRemnantMaps(fileRecords.StagedReceipts, fileRecords.TeardownRemnants, fileRecords.TeardownAttempts)
-	unreadable := func() error {
-		if readable {
-			return nil
-		}
-		return errLegacyRecordsUnreadable
-	}
 	if !settle {
-		return unreadable()
+		return readable
 	}
 	collided := false
 	if hasFile {
 		collided = m.breakBootTombstoneCollision(fileRecords)
 	}
-	releaseHosts()
 	// Boot finalizes each staged-receipt marker by the persisted phase and flags
 	// (spec §5: "Boot finalizes each host entry by the persisted phase and flags
 	// ... and the receipt records `bootRecovered: true`"). A marker is the
@@ -947,35 +587,13 @@ func (m *hubHostManager) bootLegacyRecords(settle bool) error {
 	// nothing to prune writes nothing, so an untouched file stays
 	// byte-identical. A boot without that write may still owe the initial
 	// identity records.
-	attempted, writeErr := m.reconcileBootRecords(hasFile, collided, bootWriteHostFile)
-	if !attempted {
-		writeErr = m.materializeHostRecords(fileRecords, hasFile, bootWriteHostFile)
+	if attempted := m.reconcileBootRecords(hasFile, collided, bootWriteHostFile); !attempted {
+		m.materializeHostRecords(fileRecords, hasFile, bootWriteHostFile)
 	}
-	// The generation-mirror reconciliation below can raise live registrations,
-	// so the gates are held again, retiring any connection made since the first
-	// hold, until the pipeline is done.
-	if m.testOnlyBeforePipelineHold != nil {
-		m.testOnlyBeforePipelineHold()
-	}
-	releasePipeline, err := m.holdLiveHosts(m.mirrorMovedHosts(m.opsStore()))
-	if err != nil {
-		return err
-	}
-	defer releasePipeline()
 	// Spec 08b §7's boot passes, in their fixed order, before the
 	// manager serves: the tombstone-derived host-removed pass, the bidirectional
 	// generation-mirror reconciliation, and the cross-file intent
 	// reconciliation (§9).
 	m.reconcilePipelineBoot()
-	if err := unreadable(); err != nil {
-		return err
-	}
-	if writeErr != nil && m.cfg.attaching.Load() {
-		return fmt.Errorf("the host records could not be written: %w", writeErr)
-	}
-	return nil
+	return readable
 }
-
-// errLegacyRecordsUnreadable reports a hub.toml whose record sections could not
-// be read by the legacy boot.
-var errLegacyRecordsUnreadable = errors.New("hub.toml could not be read")

@@ -74,25 +74,6 @@ type hostManagerConfig struct {
 	// is unavailable, or the records it holds could not be settled or read. It
 	// clears when a boot attach converges.
 	refusal atomic.Pointer[hostRefusal]
-	// interruptedHandled is set once the pass that interrupts what a crash left
-	// in flight has been attempted over the attached store; later boots of the same store
-	// (settlement retries) must not interrupt operations that are running now.
-	interruptedHandled atomic.Bool
-	// attaching is set while attachOps settles the records of a hub that is
-	// already serving: hosts may hold connections then, so every step that
-	// changes a live host's registration holds the host gates first.
-	attaching atomic.Bool
-	// persistInMemory makes persistHosts install what it derives without writing
-	// a file; the legacy settlement of a late attach sets it (see persistHosts).
-	persistInMemory atomic.Bool
-	// reconnect names the hosts whose connections an attach retired so a
-	// registration could change; attachOps dials them again afterward.
-	reconnectMu sync.Mutex
-	reconnect   []string
-	// redials holds, per host, the registration the one running redial loop is
-	// restoring; a settlement that moves the registration again hands the loop
-	// the new one rather than starting another.
-	redials map[string]*redialOwner
 	// sources is the component-05 registry; a remote host's source is where
 	// attachment state (Online) and the per-host client live.
 	sources *appsource.Registry

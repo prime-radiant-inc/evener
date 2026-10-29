@@ -9,23 +9,17 @@ package hub
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
 	"os"
 	"path/filepath"
-	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
-	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
 )
 
 // requireNoReceiptFor fails when the records hold any receipt for mutationID.
@@ -187,7 +181,7 @@ func TestAHostChangeHubTOMLRefusesLeavesTheStoreAsItWasAndRetriesCleanly(t *test
 // posture: a staged commit whose host change never reached hub.toml, and whose
 // rollback write fails, stays staged and is never finalized forward (that would
 // commit an edit hub.toml does not hold); host changes pause, and the next
-// attempt, once the write works, rolls the commit back and resumes them.
+// start, once the write works, rolls the commit back and resumes them.
 func TestBootDoesNotFinalizeACommitItCouldNotRollBack(t *testing.T) {
 	const staged = "staged-mutation"
 	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
@@ -228,7 +222,7 @@ func TestBootDoesNotFinalizeACommitItCouldNotRollBack(t *testing.T) {
 	requireWireError(t, err, appwire.CodeUnavailable)
 
 	bootRollbackFault = nil
-	recovered.attachOps(nil)
+	recovered, store = hub.boot(t, true)
 	if err := recovered.mutationRefusal(); err != nil {
 		t.Fatalf("host changes are still refused after the rollback could be written: %v", err)
 	}
@@ -248,8 +242,8 @@ func TestBootDoesNotFinalizeACommitItCouldNotRollBack(t *testing.T) {
 // TestBootKeepsAnUnrolledRemovalStagedUntilItCanBeRolledBack pins the same
 // posture for a removal: while its rollback cannot be written, the staged
 // marker and tombstone stay, the host keeps serving, and a retried request
-// is not answered as a committed removal; the retry that can write rolls it
-// back for good.
+// is not answered as a committed removal; the next start, which can write,
+// rolls it back for good.
 func TestBootKeepsAnUnrolledRemovalStagedUntilItCanBeRolledBack(t *testing.T) {
 	const staged = "staged-removal"
 	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
@@ -280,7 +274,7 @@ func TestBootKeepsAnUnrolledRemovalStagedUntilItCanBeRolledBack(t *testing.T) {
 	requireWireError(t, err, appwire.CodeUnavailable)
 
 	bootRollbackFault = nil
-	recovered.attachOps(nil)
+	recovered, store = hub.boot(t, true)
 	if err := recovered.mutationRefusal(); err != nil {
 		t.Fatalf("host changes are still refused after the rollback could be written: %v", err)
 	}
@@ -425,8 +419,8 @@ func TestBootRollsBackAFirstAddThatNeverCreatedHubTOML(t *testing.T) {
 
 // TestBootLeavesStagedCommitsAloneWhileHubTOMLCannotBeRead pins the posture for
 // an unreadable host file: it says nothing about which commits landed, so no
-// marker is rolled back or finalized, host changes pause, and the retry that can
-// read the file settles them.
+// marker is rolled back or finalized, host changes pause, and the next start,
+// which can read the file, settles them.
 func TestBootLeavesStagedCommitsAloneWhileHubTOMLCannotBeRead(t *testing.T) {
 	const staged = "staged-mutation"
 	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
@@ -470,13 +464,13 @@ func TestBootLeavesStagedCommitsAloneWhileHubTOMLCannotBeRead(t *testing.T) {
 		t.Fatal("host changes are taken while staged commits are unsettled")
 	}
 
-	recovered.attachOps(nil)
+	again, store := hub.boot(t, true)
 
-	if err := recovered.mutationRefusal(); err != nil {
+	if err := again.mutationRefusal(); err != nil {
 		t.Fatalf("host changes are still refused once hub.toml reads: %v", err)
 	}
 	if staged := mustRecords(t, store).StagedReceipts; len(staged) != 0 {
-		t.Fatalf("the retry left staged markers: %+v", staged)
+		t.Fatalf("the next start left staged markers: %+v", staged)
 	}
 }
 
@@ -517,44 +511,6 @@ func TestBootRollbackOfAnUnlandedRemovalKeepsTheHostsIdentity(t *testing.T) {
 	}
 }
 
-// TestRetryAfterAFailedInitialSettlementLeavesLiveOperationsRunning pins the
-// crash recovery's place in the boot: operations a crash left in flight are
-// interrupted by the first boot even when its settlement stops early, so the
-// retry that finally succeeds never sweeps up operations this process admitted
-// in between.
-func TestRetryAfterAFailedInitialSettlementLeavesLiveOperationsRunning(t *testing.T) {
-	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
-	m, store := hub.boot(t, false)
-	served := hostRows(t, m)["keep"]
-	crashLeft := seedOperationRecord(t, store, "keep", "left-by-the-crash", served.Generation, served.IncarnationID)
-	beforeBytes := fileBytes(t, hub.configPath)
-	params := updateRequest(t, m, "side", appwire.HostEntry{Address: "edited.example"})
-	params.MutationID = "staged-mutation"
-	armCut(m, cutStaged)
-	runUntilCrash(t, func() { _, _ = m.UpdateResult(context.Background(), params) })
-	if err := os.WriteFile(hub.configPath, beforeBytes, 0o600); err != nil {
-		t.Fatalf("put the pre-mutation hub.toml back: %v", err)
-	}
-
-	bootRollbackFault = func(string) error { return errors.New("injected rollback write failure") }
-	t.Cleanup(func() { bootRollbackFault = nil })
-	recovered, restarted := hub.boot(t, true)
-	if after, ok := restarted.Record(crashLeft.ID); !ok || after.State != hostops.StateInterrupted {
-		t.Fatalf("the operation the crash left in flight is %+v after the first boot, want interrupted", after)
-	}
-	live := seedOperationRecord(t, restarted, "keep", "admitted-since", served.Generation, served.IncarnationID)
-
-	bootRollbackFault = nil
-	recovered.attachOps(nil)
-
-	if err := recovered.mutationRefusal(); err != nil {
-		t.Fatalf("host changes are still refused after the retry: %v", err)
-	}
-	if after, ok := restarted.Record(live.ID); !ok || after.State != live.State {
-		t.Fatalf("the retry moved the live operation from %q to %+v", live.State, after)
-	}
-}
-
 // TestBootKeepsALandedRemovalWhenTheNameWasAddedAgainByHand pins the other
 // reading of a staged removal beside a configured host: the removal landed
 // (hub.toml lost the host) and an operator added the name again before the next
@@ -585,90 +541,6 @@ func TestBootKeepsALandedRemovalWhenTheNameWasAddedAgainByHand(t *testing.T) {
 	_, _ = recovered.RemoveResult(context.Background(), params)
 	if row := hostRows(t, recovered)["side"]; row.Removed || row.Address != "side-again.example" {
 		t.Fatalf("retrying the removal left the replacement as %+v", row)
-	}
-}
-
-// TestLateAttachKeepsTheIdentityAnOpenTeardownRemnantPins pins which side wins
-// when a store attaches after the hub minted identities of its own: the records
-// are the durable truth, operations and teardown handles are bound to them, so
-// the live host comes up as the incarnation they name and an open remnant can
-// still be retried to completion.
-func TestLateAttachKeepsTheIdentityAnOpenTeardownRemnantPins(t *testing.T) {
-	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
-	m, _ := hub.boot(t, false)
-	generation, incarnation := testMutationIdentity(t, m, "side")
-	m.testOnlyTeardown = func(context.Context, string) error { return errors.New("injected teardown failure") }
-	result, err := m.UpdateResult(context.Background(), updateRequest(t, m, "side", appwire.HostEntry{Address: "edited.example"}))
-	if err != nil || result.HostMutationTeardownFailure == nil {
-		t.Fatalf("Update = (%+v, %v), want the teardown-failure arm", result, err)
-	}
-	remnantID := result.HostMutationTeardownFailure.RemnantID
-	stored := mustRecords(t, hub.store).Generations["side"]
-	if stored.IncarnationID != incarnation || stored.Generation < generation {
-		t.Fatalf("the stored mark for side is %+v after the edit from (%d, %q)", stored, generation, incarnation)
-	}
-
-	hub.restartStateRoot(t)
-	reopened, err := hostops.Open(hostops.StorePath(hub.stateRoot))
-	if err != nil {
-		t.Fatalf("hostops.Open: %v", err)
-	}
-	hosts, err := hostreg.New(hostRegistryEntries(mustLoadConfig(t, hub.configPath)))
-	if err != nil {
-		t.Fatalf("hostreg.New: %v", err)
-	}
-	late := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
-		RemoteHostRegistry: hosts, RemoteHostConfigPath: hub.configPath, RemoteHostOpsUnavailable: true,
-	}, hub.configPath, hosts, t.Logf)
-	late.attachOps(reopened)
-
-	if lateGeneration, lateIncarnation := testMutationIdentity(t, late, "side"); lateIncarnation != stored.IncarnationID || lateGeneration != stored.Generation {
-		t.Fatalf("side serves (%d, %q) after the late attach, want the stored (%d, %q)", lateGeneration, lateIncarnation, stored.Generation, stored.IncarnationID)
-	}
-	retry, err := late.TeardownRetry(context.Background(), appwire.HostTeardownRetryParams{RemnantID: remnantID})
-	if err != nil {
-		t.Fatalf("TeardownRetry after the late attach: %v", err)
-	}
-	if retry.HostTeardownRetryCompleteLive == nil {
-		t.Fatalf("retry = %+v, want the teardown-complete live arm", retry)
-	}
-}
-
-// TestLateAttachRestoresTheIdentityOfAHostWhoseStagedRemovalNeverLanded is the
-// late-attach half of the unlanded-removal rule: a hub that started without its
-// store minted an incarnation for the host, and the attach gives back the one
-// the removal's tombstone names.
-func TestLateAttachRestoresTheIdentityOfAHostWhoseStagedRemovalNeverLanded(t *testing.T) {
-	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
-	m, _ := hub.boot(t, false)
-	_, incarnation := testMutationIdentity(t, m, "side")
-	beforeBytes := fileBytes(t, hub.configPath)
-	params := removeRequest(t, m, "side")
-	armCut(m, cutStaged)
-	runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
-	if err := os.WriteFile(hub.configPath, beforeBytes, 0o600); err != nil {
-		t.Fatalf("put the pre-mutation hub.toml back: %v", err)
-	}
-
-	hub.restartStateRoot(t)
-	reopened, err := hostops.Open(hostops.StorePath(hub.stateRoot))
-	if err != nil {
-		t.Fatalf("hostops.Open: %v", err)
-	}
-	hosts, err := hostreg.New(hostRegistryEntries(mustLoadConfig(t, hub.configPath)))
-	if err != nil {
-		t.Fatalf("hostreg.New: %v", err)
-	}
-	late := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
-		RemoteHostRegistry: hosts, RemoteHostConfigPath: hub.configPath, RemoteHostOpsUnavailable: true,
-	}, hub.configPath, hosts, t.Logf)
-	late.attachOps(reopened)
-
-	if _, got := testMutationIdentity(t, late, "side"); got != incarnation {
-		t.Fatalf("side serves incarnation %q after the late attach, want the one it had, %q", got, incarnation)
-	}
-	if _, tombstoned := mustRecords(t, reopened).Tombstones["side"]; tombstoned {
-		t.Fatal("the rolled-back removal left its tombstone")
 	}
 }
 
@@ -716,307 +588,29 @@ func TestADegradedBootLeavesHubTOMLBytesAlone(t *testing.T) {
 	}
 }
 
-// TestLateAttachDoesNotLeaveAChannelBoundToAnIdentityThatChanged pins the
-// coordination with the SSH manager: a host that connected while the store was
-// unavailable is rebound to its stored incarnation through the manager, so the
-// channel it held is torn down with the old registration instead of staying
-// attached to an entry that no longer matches it.
-func TestLateAttachDoesNotLeaveAChannelBoundToAnIdentityThatChanged(t *testing.T) {
-	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
-	first, _ := hub.boot(t, false)
-	_, incarnation := testMutationIdentity(t, first, "side")
-
-	hub.restartStateRoot(t)
-	reopened, err := hostops.Open(hostops.StorePath(hub.stateRoot))
-	if err != nil {
-		t.Fatalf("hostops.Open: %v", err)
-	}
-	hosts, err := hostreg.New(hostRegistryEntries(mustLoadConfig(t, hub.configPath)))
-	if err != nil {
-		t.Fatalf("hostreg.New: %v", err)
-	}
-	manager := sshconn.New(hosts, sshconn.Options{Runner: &attachedUpdateRunner{}})
-	t.Cleanup(func() { _ = manager.Close() })
-	late := newHubHostManager(appsource.NewRegistry(), manager, hubcore.WebConfig{
-		RemoteHostRegistry: hosts, RemoteHostConfigPath: hub.configPath, RemoteHostOpsUnavailable: true,
-	}, hub.configPath, hosts, t.Logf)
-	if _, err := manager.Ensure(context.Background(), "side"); err != nil {
-		t.Fatalf("Ensure while the store is unavailable: %v", err)
-	}
-
-	late.attachOps(reopened)
-
-	entry, _ := hosts.Get("side")
-	if entry.IncarnationID != incarnation {
-		t.Fatalf("side serves incarnation %q after the late attach, want the stored %q", entry.IncarnationID, incarnation)
-	}
-	requireReconnected(t, manager, hosts, "side")
-}
-
-// TestLateAttachWaitsForABusyHostBeforeTakingItsStoredIdentity pins the
-// failure posture of the rebind: a host whose gate is held cannot be rebound,
-// so the settlement stays pending with host changes paused instead of recording
-// the minted identity over the stored one, and a retry after the gate frees
-// finishes it.
-func TestLateAttachWaitsForABusyHostBeforeTakingItsStoredIdentity(t *testing.T) {
-	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
-	first, _ := hub.boot(t, false)
-	_, incarnation := testMutationIdentity(t, first, "side")
-
-	hub.restartStateRoot(t)
-	reopened, err := hostops.Open(hostops.StorePath(hub.stateRoot))
-	if err != nil {
-		t.Fatalf("hostops.Open: %v", err)
-	}
-	hosts, err := hostreg.New(hostRegistryEntries(mustLoadConfig(t, hub.configPath)))
-	if err != nil {
-		t.Fatalf("hostreg.New: %v", err)
-	}
-	manager := sshconn.New(hosts, sshconn.Options{Runner: &attachedUpdateRunner{}})
-	t.Cleanup(func() { _ = manager.Close() })
-	late := newHubHostManager(appsource.NewRegistry(), manager, hubcore.WebConfig{
-		RemoteHostRegistry: hosts, RemoteHostConfigPath: hub.configPath, RemoteHostOpsUnavailable: true,
-	}, hub.configPath, hosts, t.Logf)
-	acquired, err := late.acquireHostGate("side", hostops.Holder{Kind: hostops.HolderOperation, OperationID: "busy"})
-	if err != nil {
-		t.Fatalf("hold the gate: %v", err)
-	}
-	release := sync.OnceFunc(acquired)
-	t.Cleanup(release)
-
-	late.attachOps(reopened)
-
-	if late.mutationRefusal() == nil {
-		t.Fatal("host changes resumed although side could not take its stored identity")
-	}
-	if got := mustRecords(t, reopened).HostRecords["side"].IncarnationID; got != incarnation {
-		t.Fatalf("the stored incarnation became %q while the host was busy, want %q kept", got, incarnation)
-	}
-
-	release()
-	late.attachOps(nil)
-
-	if err := late.mutationRefusal(); err != nil {
-		t.Fatalf("host changes are still paused after the gate freed: %v", err)
-	}
-	if _, got := testMutationIdentity(t, late, "side"); got != incarnation {
-		t.Fatalf("side serves incarnation %q after the retry, want the stored %q", got, incarnation)
-	}
-}
-
-// requireReconnected fails unless the host holds a connection again that
-// belongs to its current registration: the attach retires connections so
-// registrations can change, and dials the hosts again once their gates are free.
-func requireReconnected(t *testing.T, manager *sshconn.Manager, hosts *hostreg.Registry, name string) {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		entry, _ := hosts.Get(name)
-		if ch, attached := manager.ChannelIfAttached(name); attached && ch.MatchesRegistration(entry) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s was not reconnected under its current registration after the attach", name)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-}
-
-// lateAttachOverAReAddedName builds a hub that started without its store over a
-// hub.toml in which the removed name "side" was added again by hand, and
-// connects side through a real SSH manager before the store attaches.
-func lateAttachOverAReAddedName(t *testing.T) (*hubHostManager, *sshconn.Manager, *hostops.Store, *hostreg.Registry) {
-	t.Helper()
-	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
-	first, _ := hub.boot(t, false)
-	// Edits raise side's generation, so the removal's stored mark ends above the
-	// generation a hub minting afresh would give the name.
-	for i := range 3 {
-		if _, err := first.UpdateResult(context.Background(), updateRequest(t, first, "side", appwire.HostEntry{Address: fmt.Sprintf("edit%d.example", i)})); err != nil {
-			t.Fatalf("Update(side) %d: %v", i, err)
-		}
-	}
-	if _, err := first.RemoveResult(context.Background(), removeRequest(t, first, "side")); err != nil {
-		t.Fatalf("Remove(side): %v", err)
-	}
-	if err := writeHubTOMLHosts(hub.configPath, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side-again.example"}}); err != nil {
-		t.Fatalf("add side again by hand: %v", err)
-	}
-	hub.restartStateRoot(t)
-	reopened, err := hostops.Open(hostops.StorePath(hub.stateRoot))
-	if err != nil {
-		t.Fatalf("hostops.Open: %v", err)
-	}
-	hosts, err := hostreg.New(hostRegistryEntries(mustLoadConfig(t, hub.configPath)))
-	if err != nil {
-		t.Fatalf("hostreg.New: %v", err)
-	}
-	manager := sshconn.New(hosts, sshconn.Options{Runner: &attachedUpdateRunner{}})
-	t.Cleanup(func() { _ = manager.Close() })
-	late := newHubHostManager(appsource.NewRegistry(), manager, hubcore.WebConfig{
-		RemoteHostRegistry: hosts, RemoteHostConfigPath: hub.configPath, RemoteHostOpsUnavailable: true,
-	}, hub.configPath, hosts, t.Logf)
-	if _, err := manager.Ensure(context.Background(), "side"); err != nil {
-		t.Fatalf("Ensure while the store is unavailable: %v", err)
-	}
-	return late, manager, reopened, hosts
-}
-
-// TestLateAttachRetiresTheConnectionOfAHostItRebasesAsACollision pins the boot
-// collision rule under a running hub: a removed name that hub.toml carries again
-// is rebased as a new incarnation, and the channel the host held under the old
-// identity is torn down under the gate rather than left attached to it.
-func TestLateAttachRetiresTheConnectionOfAHostItRebasesAsACollision(t *testing.T) {
-	late, manager, reopened, hosts := lateAttachOverAReAddedName(t)
-
-	late.attachOps(reopened)
-
-	requireReconnected(t, manager, hosts, "side")
-	if err := late.mutationRefusal(); err != nil {
-		t.Fatalf("host changes are still paused: %v", err)
-	}
-}
-
-// TestLateAttachWaitsForABusyHostBeforeRebasingACollision is the busy half: a
-// host whose gate is held is not rebased under its running work; the settlement
-// stays pending and finishes once the gate frees.
-func TestLateAttachWaitsForABusyHostBeforeRebasingACollision(t *testing.T) {
-	late, manager, reopened, hosts := lateAttachOverAReAddedName(t)
-	before, _ := hosts.Get("side")
-	acquired, err := late.acquireHostGate("side", hostops.Holder{Kind: hostops.HolderOperation, OperationID: "busy"})
-	if err != nil {
-		t.Fatalf("hold the gate: %v", err)
-	}
-	release := sync.OnceFunc(acquired)
-	t.Cleanup(release)
-
-	late.attachOps(reopened)
-
-	if late.mutationRefusal() == nil {
-		t.Fatal("host changes resumed although side was busy")
-	}
-	if during, _ := hosts.Get("side"); during.IncarnationID != before.IncarnationID || during.Generation != before.Generation {
-		t.Fatalf("a busy host was rebased: %+v became %+v", before, during)
-	}
-
-	release()
-	late.attachOps(nil)
-
-	if err := late.mutationRefusal(); err != nil {
-		t.Fatalf("host changes are still paused after the gate freed: %v", err)
-	}
-	if after, _ := hosts.Get("side"); after.IncarnationID == before.IncarnationID {
-		t.Fatal("the collision was never rebased after the gate freed")
-	}
-	requireReconnected(t, manager, hosts, "side")
-}
-
-// TestLateAttachRetiresAConnectionBeforeCountersRaiseItsGeneration covers a
-// registration change that is neither an adopted incarnation nor a collision: a
-// returning store that kept only a generation mark for the name (its tombstone
-// expired) raises the live host's generation when the counters are seeded, and
-// the channel the host held must not be left attached to the old registration.
-func TestLateAttachRetiresAConnectionBeforeCountersRaiseItsGeneration(t *testing.T) {
-	late, manager, reopened, hosts := lateAttachOverAReAddedName(t)
-	family, _, _ := reopened.HostRecords()
-	delete(family.Tombstones, "side")
-	if err := reopened.CommitHostRecords(family, hostops.HostMirror{}); err != nil {
-		t.Fatalf("expire the tombstone: %v", err)
-	}
-	before, _ := hosts.Get("side")
-
-	late.attachOps(reopened)
-
-	entry, _ := hosts.Get("side")
-	if entry.Generation <= before.Generation {
-		t.Fatalf("side kept generation %d; the fixture's stored mark did not raise it", entry.Generation)
-	}
-	requireReconnected(t, manager, hosts, "side")
-}
-
-// TestLateAttachOfAStoreNotYetImportedRetiresCollidingConnections is the same
-// rule on the other attach path: the store has not imported the records, which
-// still sit in hub.toml, and the legacy collision rule rebases a host a removed
-// name's tombstone collides with while the host holds a connection.
-func TestLateAttachOfAStoreNotYetImportedRetiresCollidingConnections(t *testing.T) {
-	configPath, records := legacyHub(t)
-	// gamma was removed cleanly; delta's removal left an open remnant, which
-	// excludes a returning name instead of rebasing it.
-	const removed = "gamma"
-	if _, tombstoned := records.Tombstones[removed]; !tombstoned {
-		t.Fatalf("the legacy fixture holds no tombstone for %s", removed)
-	}
-	body := fileBytes(t, configPath)
-	if err := os.WriteFile(configPath, append(body, []byte("\n[[hosts]]\nname = \""+removed+"\"\nssh = \"again.example\"\n")...), 0o600); err != nil {
-		t.Fatalf("add %s again by hand: %v", removed, err)
-	}
-	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
-	if err != nil {
-		t.Fatalf("hostops.Open: %v", err)
-	}
-	hosts, err := hostreg.New(hostRegistryEntries(mustLoadConfig(t, configPath)))
-	if err != nil {
-		t.Fatalf("hostreg.New: %v", err)
-	}
-	manager := sshconn.New(hosts, sshconn.Options{Runner: &attachedUpdateRunner{}})
-	t.Cleanup(func() { _ = manager.Close() })
-	late := newHubHostManager(appsource.NewRegistry(), manager, hubcore.WebConfig{
-		RemoteHostRegistry: hosts, RemoteHostConfigPath: configPath, RemoteHostOpsUnavailable: true,
-	}, configPath, hosts, t.Logf)
-	if _, err := manager.Ensure(context.Background(), removed); err != nil {
-		t.Fatalf("Ensure while the store is unavailable: %v", err)
-	}
-
-	before, _ := hosts.Get(removed)
-
-	late.attachOps(store)
-
-	entry, _ := hosts.Get(removed)
-	if entry.IncarnationID == before.IncarnationID {
-		t.Fatalf("the fixture did not make %s collide with its tombstone: still %+v", removed, entry)
-	}
-	requireReconnected(t, manager, hosts, removed)
-}
-
-// TestRollbackAfterAPausedSettlementKeepsWhatTheOperatorChangedInHubTOML pins
-// the rollback's reach: it settles machine records, so a host the operator
-// edited or removed in hub.toml while the settlement was paused stays as they
-// left it when the retry rolls an unrelated staged commit back.
-func TestRollbackAfterAPausedSettlementKeepsWhatTheOperatorChangedInHubTOML(t *testing.T) {
+// TestRollbackLeavesTheHostListInHubTOMLAlone pins the rollback's reach: it
+// settles machine records, so a hub.toml the operator edited after the crash (a
+// host edited, another removed) reads back exactly as they left it once the
+// unrelated staged commit is rolled back.
+func TestRollbackLeavesTheHostListInHubTOMLAlone(t *testing.T) {
 	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}, {Name: "gone", SSH: "gone.example"}})
 	m, _ := hub.boot(t, false)
-	beforeBytes := fileBytes(t, hub.configPath)
 	params := updateRequest(t, m, "side", appwire.HostEntry{Address: "edited.example"})
 	params.MutationID = "staged-mutation"
 	armCut(m, cutStaged)
 	runUntilCrash(t, func() { _, _ = m.UpdateResult(context.Background(), params) })
-	if err := os.WriteFile(hub.configPath, beforeBytes, 0o600); err != nil {
-		t.Fatalf("put the pre-mutation hub.toml back: %v", err)
-	}
-
-	bootRollbackFault = func(string) error { return errors.New("injected rollback write failure") }
-	t.Cleanup(func() { bootRollbackFault = nil })
-	recovered, _ := hub.boot(t, true)
-	if recovered.mutationRefusal() == nil {
-		t.Fatal("the settlement did not pause")
-	}
 	if err := writeHubTOMLHosts(hub.configPath, []hostreg.Host{{Name: "keep", SSH: "keep-by-hand.example"}, {Name: "side", SSH: "side.example"}}); err != nil {
 		t.Fatalf("edit hub.toml by hand: %v", err)
 	}
+	edited := fileBytes(t, hub.configPath)
 
-	bootRollbackFault = nil
-	recovered.attachOps(nil)
+	_, store := hub.boot(t, true)
 
-	cfg := mustLoadConfig(t, hub.configPath)
-	got := map[string]string{}
-	for _, h := range cfg.Hosts {
-		got[h.Name] = h.SSH
+	if len(mustRecords(t, store).StagedReceipts) != 0 {
+		t.Fatal("the staged commit was not rolled back")
 	}
-	if got["keep"] != "keep-by-hand.example" {
-		t.Fatalf("the rollback undid the operator's edit of keep: %v", got)
-	}
-	if _, resurrected := got["gone"]; resurrected {
-		t.Fatalf("the rollback brought back the host the operator removed: %v", got)
+	if !bytes.Equal(fileBytes(t, hub.configPath), edited) {
+		t.Fatal("the rollback rewrote the host list the operator left")
 	}
 }
 
@@ -1055,178 +649,6 @@ func TestRollbackLeavesAnotherHostsTombstoneForTheCollisionRule(t *testing.T) {
 	}
 }
 
-// TestLateAttachOfALegacyHostKeepsTheMirrorsHigherGeneration pins the order of
-// the legacy boot's writes under an attach: retiring a connected host re-mints
-// its generation, and the identity write that follows must not record that value
-// over a higher generation the store's mirror already holds, or the spent
-// generations between them could be minted again.
-func TestLateAttachOfALegacyHostKeepsTheMirrorsHigherGeneration(t *testing.T) {
-	configPath, records := legacyHub(t)
-	keep := records.HostRecords["keep"]
-	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
-	if err != nil {
-		t.Fatalf("hostops.Open: %v", err)
-	}
-	spent := records.Generations["keep"].Generation + 40
-	if err := store.MirrorHostState(hostops.HostMirror{Boundaries: map[string]hostops.Boundary{
-		"keep": {Generation: spent, IncarnationID: keep.IncarnationID, PresenceEpoch: keep.PresenceEpoch},
-	}, Live: []string{"keep"}}); err != nil {
-		t.Fatalf("MirrorHostState: %v", err)
-	}
-	cfg := mustLoadConfig(t, configPath)
-	boot := hostBootDocument(cfg, configPath, nil)
-	hosts, err := hostreg.NewSeeded(boot.Hosts, boot.Records.highWaterMarks())
-	if err != nil {
-		t.Fatalf("hostreg.NewSeeded: %v", err)
-	}
-	manager := sshconn.New(hosts, sshconn.Options{Runner: &attachedUpdateRunner{}})
-	t.Cleanup(func() { _ = manager.Close() })
-	late := newHubHostManager(appsource.NewRegistry(), manager, hubcore.WebConfig{
-		RemoteHostRegistry: hosts, RemoteHostConfigPath: configPath, RemoteHostOpsUnavailable: true,
-	}, configPath, hosts, t.Logf)
-	if _, err := manager.Ensure(context.Background(), "keep"); err != nil {
-		t.Fatalf("Ensure while the store is unavailable: %v", err)
-	}
-	// The operator edits a sibling host while the store is unavailable.
-	edited := bytes.Replace(fileBytes(t, configPath), []byte("epsilon.example"), []byte("epsilon-by-hand.example"), 1)
-	if bytes.Equal(edited, fileBytes(t, configPath)) {
-		t.Fatal("the fixture's hub.toml does not carry epsilon.example")
-	}
-	if err := os.WriteFile(configPath, edited, 0o600); err != nil {
-		t.Fatalf("edit epsilon by hand: %v", err)
-	}
-
-	late.attachOps(store)
-
-	if mark := mustRecords(t, store).Generations["keep"]; mark.Generation < spent {
-		t.Fatalf("the family holds generation %d for keep, below the mirror's %d", mark.Generation, spent)
-	}
-	for _, h := range mustLoadConfig(t, configPath).Hosts {
-		if h.Name == "epsilon" && h.SSH != "epsilon-by-hand.example" {
-			t.Fatalf("the mirror reconciliation undid the operator's edit: epsilon is %q", h.SSH)
-		}
-	}
-	requireReconnected(t, manager, hosts, "keep")
-}
-
-// TestLegacyAttachHoldsTheGatesAgainForTheMirrorReconciliation pins the second
-// hold: a host that connects after the first hold is released and before the
-// mirror reconciliation raises live registrations is retired too, so no channel
-// is left on a registration the raise replaced.
-func TestLegacyAttachHoldsTheGatesAgainForTheMirrorReconciliation(t *testing.T) {
-	configPath, records := legacyHub(t)
-	keep := records.HostRecords["keep"]
-	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
-	if err != nil {
-		t.Fatalf("hostops.Open: %v", err)
-	}
-	spent := records.Generations["keep"].Generation + 40
-	if err := store.MirrorHostState(hostops.HostMirror{Boundaries: map[string]hostops.Boundary{
-		"keep": {Generation: spent, IncarnationID: keep.IncarnationID, PresenceEpoch: keep.PresenceEpoch},
-	}, Live: []string{"keep"}}); err != nil {
-		t.Fatalf("MirrorHostState: %v", err)
-	}
-	boot := hostBootDocument(mustLoadConfig(t, configPath), configPath, nil)
-	hosts, err := hostreg.NewSeeded(boot.Hosts, boot.Records.highWaterMarks())
-	if err != nil {
-		t.Fatalf("hostreg.NewSeeded: %v", err)
-	}
-	manager := sshconn.New(hosts, sshconn.Options{Runner: &attachedUpdateRunner{}})
-	t.Cleanup(func() { _ = manager.Close() })
-	late := newHubHostManager(appsource.NewRegistry(), manager, hubcore.WebConfig{
-		RemoteHostRegistry: hosts, RemoteHostConfigPath: configPath, RemoteHostOpsUnavailable: true,
-	}, configPath, hosts, t.Logf)
-	late.testOnlyBeforePipelineHold = func() {
-		if _, err := manager.Ensure(context.Background(), "keep"); err != nil {
-			t.Errorf("Ensure between the holds: %v", err)
-		}
-	}
-
-	late.attachOps(store)
-
-	requireReconnected(t, manager, hosts, "keep")
-}
-
-// TestAttachDoesNotReconnectAHostAnOpenRemnantFences pins the redial's fence: a
-// connected host with an open teardown remnant is retired by the attach and
-// stays detached until the remnant resolves, as an explicit attach would be
-// refused.
-func TestAttachDoesNotReconnectAHostAnOpenRemnantFences(t *testing.T) {
-	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
-	m, _ := hub.boot(t, false)
-	m.testOnlyTeardown = func(context.Context, string) error { return errors.New("injected teardown failure") }
-	result, err := m.UpdateResult(context.Background(), updateRequest(t, m, "side", appwire.HostEntry{Address: "edited.example"}))
-	if err != nil || result.HostMutationTeardownFailure == nil {
-		t.Fatalf("Update = (%+v, %v), want the teardown-failure arm", result, err)
-	}
-
-	hub.restartStateRoot(t)
-	reopened, err := hostops.Open(hostops.StorePath(hub.stateRoot))
-	if err != nil {
-		t.Fatalf("hostops.Open: %v", err)
-	}
-	hosts, err := hostreg.New(hostRegistryEntries(mustLoadConfig(t, hub.configPath)))
-	if err != nil {
-		t.Fatalf("hostreg.New: %v", err)
-	}
-	manager := sshconn.New(hosts, sshconn.Options{Runner: &attachedUpdateRunner{}})
-	t.Cleanup(func() { _ = manager.Close() })
-	late := newHubHostManager(appsource.NewRegistry(), manager, hubcore.WebConfig{
-		RemoteHostRegistry: hosts, RemoteHostConfigPath: hub.configPath, RemoteHostOpsUnavailable: true,
-	}, hub.configPath, hosts, t.Logf)
-	if _, err := manager.Ensure(context.Background(), "side"); err != nil {
-		t.Fatalf("Ensure while the store is unavailable: %v", err)
-	}
-
-	late.attachOps(reopened)
-
-	time.Sleep(500 * time.Millisecond)
-	if manager.Attached("side") {
-		t.Fatal("the attach reconnected a host an open remnant fences")
-	}
-}
-
-// TestAttachTakesEveryGateBeforeRetiringAnyConnection pins the order inside the
-// hold: with a connected host ahead of a busy one, the attempt that cannot
-// proceed must leave the connected host's healthy connection alone, or every
-// retry would interrupt it again.
-func TestAttachTakesEveryGateBeforeRetiringAnyConnection(t *testing.T) {
-	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
-	hub.boot(t, false)
-	hub.restartStateRoot(t)
-	reopened, err := hostops.Open(hostops.StorePath(hub.stateRoot))
-	if err != nil {
-		t.Fatalf("hostops.Open: %v", err)
-	}
-	hosts, err := hostreg.New(hostRegistryEntries(mustLoadConfig(t, hub.configPath)))
-	if err != nil {
-		t.Fatalf("hostreg.New: %v", err)
-	}
-	manager := sshconn.New(hosts, sshconn.Options{Runner: &attachedUpdateRunner{}})
-	t.Cleanup(func() { _ = manager.Close() })
-	late := newHubHostManager(appsource.NewRegistry(), manager, hubcore.WebConfig{
-		RemoteHostRegistry: hosts, RemoteHostConfigPath: hub.configPath, RemoteHostOpsUnavailable: true,
-	}, hub.configPath, hosts, t.Logf)
-	if _, err := manager.Ensure(context.Background(), "keep"); err != nil {
-		t.Fatalf("Ensure while the store is unavailable: %v", err)
-	}
-	acquired, err := late.acquireHostGate("side", hostops.Holder{Kind: hostops.HolderOperation, OperationID: "busy"})
-	if err != nil {
-		t.Fatalf("hold the gate: %v", err)
-	}
-	release := sync.OnceFunc(acquired)
-	t.Cleanup(release)
-
-	late.attachOps(reopened)
-
-	if late.mutationRefusal() == nil {
-		t.Fatal("the settlement went ahead although side was busy")
-	}
-	if !manager.Attached("keep") {
-		t.Fatal("a settlement that could not proceed disconnected a healthy host")
-	}
-}
-
 // TestRecoveryClassifiesAStagedRemovalAgainstTheFileAsItWas pins the order of the
 // legacy-section strip: it rewrites hub.toml, so the comparison with the file the
 // commit staged against has to come first. A strip that never landed before the
@@ -1259,86 +681,6 @@ func TestRecoveryClassifiesAStagedRemovalAgainstTheFileAsItWas(t *testing.T) {
 	requireNoRecordSections(t, hub.configPath)
 }
 
-// TestLateAttachMaintenanceWritesNoHostList pins that record maintenance after a
-// pause never rewrites the host list: an operator who edited a host in hub.toml
-// while the store was unavailable keeps the edit when the attach has to
-// materialize a record the store lacked.
-func TestLateAttachMaintenanceWritesNoHostList(t *testing.T) {
-	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
-	_, store := hub.boot(t, false)
-	family, _, _ := store.HostRecords()
-	delete(family.Hosts, "keep")
-	delete(family.Generations, "keep")
-	if err := store.CommitHostRecords(family, hostops.HostMirror{}); err != nil {
-		t.Fatalf("drop keep's records: %v", err)
-	}
-	hub.restartStateRoot(t)
-	reopened, err := hostops.Open(hostops.StorePath(hub.stateRoot))
-	if err != nil {
-		t.Fatalf("hostops.Open: %v", err)
-	}
-	hosts, err := hostreg.New(hostRegistryEntries(mustLoadConfig(t, hub.configPath)))
-	if err != nil {
-		t.Fatalf("hostreg.New: %v", err)
-	}
-	late := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
-		RemoteHostRegistry: hosts, RemoteHostConfigPath: hub.configPath, RemoteHostOpsUnavailable: true,
-	}, hub.configPath, hosts, t.Logf)
-	if err := writeHubTOMLHosts(hub.configPath, []hostreg.Host{{Name: "keep", SSH: "keep-by-hand.example"}, {Name: "side", SSH: "side.example"}}); err != nil {
-		t.Fatalf("edit keep by hand: %v", err)
-	}
-
-	late.attachOps(reopened)
-
-	if got := mustRecords(t, reopened).HostRecords["keep"].IncarnationID; got == "" {
-		t.Fatal("the attach did not materialize the record the store lacked")
-	}
-	for _, h := range mustLoadConfig(t, hub.configPath).Hosts {
-		if h.Name == "keep" && h.SSH != "keep-by-hand.example" {
-			t.Fatalf("the attach's maintenance write undid the operator's edit: keep is %q", h.SSH)
-		}
-	}
-}
-
-// TestBootFinalizationOverStoredRecordsKeepsTheOperatorsHostList pins the
-// marker claim and finalization writes of boot recovery: a staged commit that
-// did land is finalized with records alone, so an edit the operator made to
-// hub.toml while the settlement was paused survives it.
-func TestBootFinalizationOverStoredRecordsKeepsTheOperatorsHostList(t *testing.T) {
-	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
-	m, _ := hub.boot(t, false)
-	params := updateRequest(t, m, "side", appwire.HostEntry{Address: "edited.example"})
-	params.MutationID = "landed-mutation"
-	armCut(m, cutFlipped)
-	runUntilCrash(t, func() { _, _ = m.UpdateResult(context.Background(), params) })
-	hub.restartStateRoot(t)
-	reopened, err := hostops.Open(hostops.StorePath(hub.stateRoot))
-	if err != nil {
-		t.Fatalf("hostops.Open: %v", err)
-	}
-	hosts, err := hostreg.New(hostRegistryEntries(mustLoadConfig(t, hub.configPath)))
-	if err != nil {
-		t.Fatalf("hostreg.New: %v", err)
-	}
-	late := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
-		RemoteHostRegistry: hosts, RemoteHostConfigPath: hub.configPath, RemoteHostOpsUnavailable: true,
-	}, hub.configPath, hosts, t.Logf)
-	if err := writeHubTOMLHosts(hub.configPath, []hostreg.Host{{Name: "keep", SSH: "keep-by-hand.example"}, {Name: "side", SSH: "edited.example"}}); err != nil {
-		t.Fatalf("edit keep by hand: %v", err)
-	}
-
-	late.attachOps(reopened)
-
-	if len(mustRecords(t, reopened).StagedReceipts) != 0 {
-		t.Fatal("the landed commit was not finalized")
-	}
-	for _, h := range mustLoadConfig(t, hub.configPath).Hosts {
-		if h.Name == "keep" && h.SSH != "keep-by-hand.example" {
-			t.Fatalf("finalizing the marker undid the operator's edit: keep is %q", h.SSH)
-		}
-	}
-}
-
 // TestMigrationRaisesALiveHostToTheMirrorsHigherGeneration covers a legacy
 // reconciliation whose raise of a live host never reached hub.toml: the import
 // must not replace the mirror's higher generation with the file's.
@@ -1357,235 +699,6 @@ func TestMigrationRaisesALiveHostToTheMirrorsHigherGeneration(t *testing.T) {
 	}
 	if got, _ := m.cfg.hosts.Get("keep"); got.Generation < spent.Generation {
 		t.Fatalf("keep is served at generation %d, below the mirror's %d", got.Generation, spent.Generation)
-	}
-}
-
-// flakyDialRunner fails the first dials, then serves like the attached runner:
-// the transient network failure a redial must outlast.
-type flakyDialRunner struct {
-	attachedUpdateRunner
-	mu       sync.Mutex
-	failures int
-}
-
-func (r *flakyDialRunner) Run(ctx context.Context, argv []string, in io.Reader) ([]byte, error) {
-	r.mu.Lock()
-	failing := r.failures > 0
-	if failing {
-		r.failures--
-	}
-	r.mu.Unlock()
-	if failing {
-		return nil, errors.New("flakyDialRunner: network unreachable")
-	}
-	return r.attachedUpdateRunner.Run(ctx, argv, in)
-}
-
-// TestAttachKeepsRedialingARetiredHostThroughATransientFailure pins the redial's
-// persistence: the retirement stopped the supervisor that would have brought the
-// link back, so a first dial that fails must not leave the host disconnected for
-// good.
-func TestAttachKeepsRedialingARetiredHostThroughATransientFailure(t *testing.T) {
-	previousInitial, previousMax := hostReconnectRetryInitial, hostReconnectRetryMax
-	hostReconnectRetryInitial, hostReconnectRetryMax = 5*time.Millisecond, 20*time.Millisecond
-	t.Cleanup(func() { hostReconnectRetryInitial, hostReconnectRetryMax = previousInitial, previousMax })
-
-	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
-	hub.boot(t, false)
-	hub.restartStateRoot(t)
-	reopened, err := hostops.Open(hostops.StorePath(hub.stateRoot))
-	if err != nil {
-		t.Fatalf("hostops.Open: %v", err)
-	}
-	hosts, err := hostreg.New(hostRegistryEntries(mustLoadConfig(t, hub.configPath)))
-	if err != nil {
-		t.Fatalf("hostreg.New: %v", err)
-	}
-	runner := &flakyDialRunner{}
-	manager := sshconn.New(hosts, sshconn.Options{Runner: runner})
-	t.Cleanup(func() { _ = manager.Close() })
-	late := newHubHostManager(appsource.NewRegistry(), manager, hubcore.WebConfig{
-		RemoteHostRegistry: hosts, RemoteHostConfigPath: hub.configPath, RemoteHostOpsUnavailable: true,
-	}, hub.configPath, hosts, t.Logf)
-	if _, err := manager.Ensure(context.Background(), "side"); err != nil {
-		t.Fatalf("Ensure while the store is unavailable: %v", err)
-	}
-	runner.mu.Lock()
-	runner.failures = 3
-	runner.mu.Unlock()
-
-	late.attachOps(reopened)
-
-	requireReconnected(t, manager, hosts, "side")
-}
-
-// TestAttachRetriesRecordMaintenanceThatFailedToWrite pins the failure posture of
-// the attach's record writes: a write that does not land leaves the settlement
-// pending, and the retry converges the served identities and the stored records
-// once storage works, without any host change in between.
-func TestAttachRetriesRecordMaintenanceThatFailedToWrite(t *testing.T) {
-	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
-	_, store := hub.boot(t, false)
-	family, _, _ := store.HostRecords()
-	delete(family.Hosts, "keep")
-	delete(family.Generations, "keep")
-	if err := store.CommitHostRecords(family, hostops.HostMirror{}); err != nil {
-		t.Fatalf("drop keep's records: %v", err)
-	}
-	hub.restartStateRoot(t)
-	reopened, err := hostops.Open(hostops.StorePath(hub.stateRoot))
-	if err != nil {
-		t.Fatalf("hostops.Open: %v", err)
-	}
-	hosts, err := hostreg.New(hostRegistryEntries(mustLoadConfig(t, hub.configPath)))
-	if err != nil {
-		t.Fatalf("hostreg.New: %v", err)
-	}
-	late := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
-		RemoteHostRegistry: hosts, RemoteHostConfigPath: hub.configPath, RemoteHostOpsUnavailable: true,
-	}, hub.configPath, hosts, t.Logf)
-	bootMaintenanceFault = func() error { return errors.New("injected write failure") }
-	t.Cleanup(func() { bootMaintenanceFault = nil })
-
-	late.attachOps(reopened)
-
-	if late.mutationRefusal() == nil {
-		t.Fatal("the attach finished although the records could not be written")
-	}
-	bootMaintenanceFault = nil
-	late.attachOps(nil)
-
-	if err := late.mutationRefusal(); err != nil {
-		t.Fatalf("host changes are still paused after storage recovered: %v", err)
-	}
-	if got := mustRecords(t, reopened).HostRecords["keep"].IncarnationID; got == "" {
-		t.Fatal("the retry did not materialize the record the store lacked")
-	}
-}
-
-// TestLateAttachToAnUnimportedStoreKeepsTheOperatorsHostList pins the legacy
-// path's writes under an attach: the records are about to move into the store,
-// so settling them writes no host list; edits an operator made to hub.toml while
-// the store was unavailable survive the move.
-func TestLateAttachToAnUnimportedStoreKeepsTheOperatorsHostList(t *testing.T) {
-	configPath := filepath.Join(t.TempDir(), "hub.toml")
-	if err := writeHubTOMLHosts(configPath, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}}); err != nil {
-		t.Fatalf("seed hub.toml: %v", err)
-	}
-	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
-	if err != nil {
-		t.Fatalf("hostops.Open: %v", err)
-	}
-	hosts, err := hostreg.New(hostRegistryEntries(mustLoadConfig(t, configPath)))
-	if err != nil {
-		t.Fatalf("hostreg.New: %v", err)
-	}
-	late := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
-		RemoteHostRegistry: hosts, RemoteHostConfigPath: configPath, RemoteHostOpsUnavailable: true,
-	}, configPath, hosts, t.Logf)
-	if err := writeHubTOMLHosts(configPath, []hostreg.Host{{Name: "keep", SSH: "keep-by-hand.example"}}); err != nil {
-		t.Fatalf("edit hub.toml by hand: %v", err)
-	}
-
-	late.attachOps(store)
-
-	got := map[string]string{}
-	for _, h := range mustLoadConfig(t, configPath).Hosts {
-		got[h.Name] = h.SSH
-	}
-	if got["keep"] != "keep-by-hand.example" {
-		t.Fatalf("the move undid the operator's edit of keep: %v", got)
-	}
-	if _, resurrected := got["side"]; resurrected {
-		t.Fatalf("the move brought back the host the operator removed: %v", got)
-	}
-	if mustRecords(t, store).HostRecords["keep"].IncarnationID == "" {
-		t.Fatal("the move did not record keep's identity")
-	}
-}
-
-// TestRedialStopsWhenTheHostIsReplacedDuringBackoff pins the registration a redial
-// is bound to: a host removed and added again while the dial backs off is a new
-// registration, and the connection lost under the old one is not restored to it.
-func TestRedialStopsWhenTheHostIsReplacedDuringBackoff(t *testing.T) {
-	previousInitial, previousMax := hostReconnectRetryInitial, hostReconnectRetryMax
-	hostReconnectRetryInitial, hostReconnectRetryMax = 200*time.Millisecond, 200*time.Millisecond
-	t.Cleanup(func() { hostReconnectRetryInitial, hostReconnectRetryMax = previousInitial, previousMax })
-
-	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
-	hub.boot(t, false)
-	hub.restartStateRoot(t)
-	reopened, err := hostops.Open(hostops.StorePath(hub.stateRoot))
-	if err != nil {
-		t.Fatalf("hostops.Open: %v", err)
-	}
-	hosts, err := hostreg.New(hostRegistryEntries(mustLoadConfig(t, hub.configPath)))
-	if err != nil {
-		t.Fatalf("hostreg.New: %v", err)
-	}
-	runner := &flakyDialRunner{}
-	manager := sshconn.New(hosts, sshconn.Options{Runner: runner})
-	t.Cleanup(func() { _ = manager.Close() })
-	late := newHubHostManager(appsource.NewRegistry(), manager, hubcore.WebConfig{
-		RemoteHostRegistry: hosts, RemoteHostConfigPath: hub.configPath, RemoteHostOpsUnavailable: true,
-	}, hub.configPath, hosts, t.Logf)
-	if _, err := manager.Ensure(context.Background(), "side"); err != nil {
-		t.Fatalf("Ensure while the store is unavailable: %v", err)
-	}
-	runner.mu.Lock()
-	runner.failures = 1
-	runner.mu.Unlock()
-
-	late.attachOps(reopened)
-	time.Sleep(50 * time.Millisecond) // the first dial has failed and the loop is backing off
-	if err := manager.RemoveHost("side"); err != nil {
-		t.Fatalf("remove side: %v", err)
-	}
-	if err := hosts.Add(hostreg.Host{Name: "side", SSH: "side-again.example"}); err != nil {
-		t.Fatalf("add side again: %v", err)
-	}
-
-	time.Sleep(500 * time.Millisecond)
-	if manager.Attached("side") {
-		t.Fatal("the redial connected the replacement the user never asked to connect")
-	}
-}
-
-// TestUnreadableHubTOMLDoesNotCostAnAttachItsConnections pins the order of the
-// attempt: a file that cannot be read stops it before any connection is retired,
-// so a persistent configuration problem does not interrupt healthy hosts on every
-// retry.
-func TestUnreadableHubTOMLDoesNotCostAnAttachItsConnections(t *testing.T) {
-	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
-	hub.boot(t, false)
-	hub.restartStateRoot(t)
-	reopened, err := hostops.Open(hostops.StorePath(hub.stateRoot))
-	if err != nil {
-		t.Fatalf("hostops.Open: %v", err)
-	}
-	hosts, err := hostreg.New(hostRegistryEntries(mustLoadConfig(t, hub.configPath)))
-	if err != nil {
-		t.Fatalf("hostreg.New: %v", err)
-	}
-	manager := sshconn.New(hosts, sshconn.Options{Runner: &attachedUpdateRunner{}})
-	t.Cleanup(func() { _ = manager.Close() })
-	late := newHubHostManager(appsource.NewRegistry(), manager, hubcore.WebConfig{
-		RemoteHostRegistry: hosts, RemoteHostConfigPath: hub.configPath, RemoteHostOpsUnavailable: true,
-	}, hub.configPath, hosts, t.Logf)
-	if _, err := manager.Ensure(context.Background(), "keep"); err != nil {
-		t.Fatalf("Ensure while the store is unavailable: %v", err)
-	}
-	previous := configReadFile
-	configReadFile = func(string) ([]byte, error) { return nil, errors.New("injected read failure") }
-	t.Cleanup(func() { configReadFile = previous })
-
-	late.attachOps(reopened)
-
-	if late.mutationRefusal() == nil {
-		t.Fatal("the attach finished although hub.toml could not be read")
-	}
-	if !manager.Attached("keep") {
-		t.Fatal("an attempt that could not proceed interrupted a healthy connection")
 	}
 }
 
@@ -1622,85 +735,6 @@ func TestUnreadableHubTOMLAtStartupStillFencesAnOpenRemnantHost(t *testing.T) {
 	}
 	if _, fenced := recovered.openRemnantID("side"); !fenced {
 		t.Fatal("the open remnant did not fence its host while the settlement was stopped")
-	}
-}
-
-// TestLateAttachFinalizesAStagedLegacyCommitWithoutRewritingTheHostList pins the
-// legacy marker finalization under an attach: a landed commit's marker is
-// finalized in the manager and carried into the store, and the host list in
-// hub.toml stays what the operator left, whatever the registry started with.
-func TestLateAttachFinalizesAStagedLegacyCommitWithoutRewritingTheHostList(t *testing.T) {
-	fixture := newPipelineFixture(t, []hostreg.Host{pipelineEntry("m4", 2), pipelineEntry("keep", 3)}, nil)
-	m := fixture.legacyManager(t)
-	params := updateRequest(t, m, "keep", appwire.HostEntry{Address: "keep-edited.example"})
-	params.MutationID = "landed-mutation"
-	armCut(m, cutFlipped)
-	runUntilCrash(t, func() { _, _ = m.UpdateResult(context.Background(), params) })
-	boot := hostBootDocument(mustLoadConfig(t, fixture.configPath), fixture.configPath, nil)
-	hosts, err := hostreg.NewSeeded(boot.Hosts, boot.Records.highWaterMarks())
-	if err != nil {
-		t.Fatalf("hostreg.NewSeeded: %v", err)
-	}
-	late := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
-		RemoteHostRegistry: hosts, RemoteHostConfigPath: fixture.configPath, RemoteHostOpsUnavailable: true,
-	}, fixture.configPath, hosts, t.Logf)
-	edited := bytes.Replace(fileBytes(t, fixture.configPath), []byte("m4.example"), []byte("m4-by-hand.example"), 1)
-	if bytes.Equal(edited, fileBytes(t, fixture.configPath)) {
-		t.Fatal("the fixture's hub.toml does not carry m4.example")
-	}
-	if err := os.WriteFile(fixture.configPath, edited, 0o600); err != nil {
-		t.Fatalf("edit m4 by hand: %v", err)
-	}
-
-	late.attachOps(fixture.store)
-
-	if len(receiptKeysFor(mustRecords(t, fixture.store), "landed-mutation")) == 0 {
-		t.Fatal("the landed commit was not finalized into the store")
-	}
-	for _, h := range mustLoadConfig(t, fixture.configPath).Hosts {
-		if h.Name == "m4" && h.SSH != "m4-by-hand.example" {
-			t.Fatalf("finalizing the marker undid the operator's edit: m4 is %q", h.SSH)
-		}
-	}
-}
-
-// TestLateAttachLeavesAnUnfinishedLegacyCompensationToARestart pins the guard on
-// the previous build's cross-file work: restoring the stash would replace
-// hub.toml with a copy older than the operator's changes during the outage, so
-// the attach changes nothing and says a restart settles it.
-func TestLateAttachLeavesAnUnfinishedLegacyCompensationToARestart(t *testing.T) {
-	entry := pipelineEntry("m4", 2)
-	fixture, token, _ := newPipelineRemovalFixture(t, entry, false)
-	fixture.appendTOML(t, "[pending_store_sync.m4]\ngeneration = 2\ntoken_values = [\""+token.Value+"\"]\n")
-	stash := hubTOMLStashPath(fixture.configPath, "test-key")
-	if err := os.WriteFile(stash, []byte("[[hosts]]\nname = \"m4\"\nssh = \"stale-copy.example\"\n"), 0o600); err != nil {
-		t.Fatalf("write stash: %v", err)
-	}
-	if err := fixture.store.ArmCompensation(hostops.Compensation{
-		Host: "m4", Phase: hostops.CompensationArmed, Rows: []hostops.Token{token}, Stash: stash, Generation: 2,
-	}); err != nil {
-		t.Fatalf("ArmCompensation: %v", err)
-	}
-	boot := hostBootDocument(mustLoadConfig(t, fixture.configPath), fixture.configPath, nil)
-	hosts, err := hostreg.NewSeeded(boot.Hosts, boot.Records.highWaterMarks())
-	if err != nil {
-		t.Fatalf("hostreg.NewSeeded: %v", err)
-	}
-	late := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
-		RemoteHostRegistry: hosts, RemoteHostConfigPath: fixture.configPath, RemoteHostOpsUnavailable: true,
-	}, fixture.configPath, hosts, t.Logf)
-	if err := os.WriteFile(fixture.configPath, append(fileBytes(t, fixture.configPath), []byte("\n# edited during the outage\n")...), 0o600); err != nil {
-		t.Fatalf("edit hub.toml: %v", err)
-	}
-	edited := fileBytes(t, fixture.configPath)
-
-	late.attachOps(fixture.store)
-
-	if !bytes.Equal(fileBytes(t, fixture.configPath), edited) {
-		t.Fatal("the attach restored an older copy over the operator's hub.toml")
-	}
-	if late.mutationRefusal() == nil {
-		t.Fatal("host changes resumed with the previous build's removal still open")
 	}
 }
 
@@ -1800,8 +834,8 @@ func TestAHostChangeWaitsForTheStoreToBeDurableBeforeTouchingHubTOML(t *testing.
 
 // TestMigrationKeepsTheLegacySectionsUntilTheStoreIsDurable pins the same order
 // for the move: the legacy sections are the records' other copy, so they stay in
-// hub.toml while the import is published but not proven durable, and a later
-// attempt that can sync drops them.
+// hub.toml while the import is published but not proven durable, and the next
+// start, which can sync, drops them.
 func TestMigrationKeepsTheLegacySectionsUntilTheStoreIsDurable(t *testing.T) {
 	configPath, records := legacyHub(t)
 	storePath := hostops.StorePath(t.TempDir())
@@ -1817,7 +851,7 @@ func TestMigrationKeepsTheLegacySectionsUntilTheStoreIsDurable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hostreg.NewSeeded: %v", err)
 	}
-	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+	newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
 		RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: configPath,
 	}, configPath, hosts, t.Logf)
 
@@ -1826,8 +860,16 @@ func TestMigrationKeepsTheLegacySectionsUntilTheStoreIsDurable(t *testing.T) {
 		t.Fatal("the legacy sections were dropped before the import was durable")
 	}
 
+	// The next start, with the directory sync working, drops them.
 	dir.failing.Store(false)
-	m.attachOps(nil)
+	next := hostBootDocument(mustLoadConfig(t, configPath), configPath, store)
+	nextHosts, err := hostreg.NewSeeded(next.Hosts, next.Records.highWaterMarks())
+	if err != nil {
+		t.Fatalf("hostreg.NewSeeded: %v", err)
+	}
+	newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+		RemoteHostRegistry: nextHosts, RemoteHostOpsStore: store, RemoteHostConfigPath: configPath,
+	}, configPath, nextHosts, t.Logf)
 
 	requireNoRecordSections(t, configPath)
 }
@@ -1840,71 +882,6 @@ func mustReadDocument(t *testing.T, path string) map[string]any {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	return doc
-}
-
-// dialCountingRunner counts the connections it is asked to start.
-type dialCountingRunner struct {
-	attachedUpdateRunner
-	dials atomic.Int32
-}
-
-func (r *dialCountingRunner) Start(ctx context.Context, argv []string, stderr io.Writer) (sshconn.Stdio, error) {
-	r.dials.Add(1)
-	return r.attachedUpdateRunner.Start(ctx, argv, stderr)
-}
-
-// TestRetriesThatOnlyHaveRecordsToWriteLeaveHealthyConnectionsAlone pins what a
-// retry costs: when the registrations already match the stored records and only
-// a record write keeps failing (a full or unwritable state directory), every
-// retry leaves the connected hosts connected instead of cycling them for the
-// length of the outage.
-func TestRetriesThatOnlyHaveRecordsToWriteLeaveHealthyConnectionsAlone(t *testing.T) {
-	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
-	_, store := hub.boot(t, false)
-	family, _, _ := store.HostRecords()
-	delete(family.Hosts, "side")
-	delete(family.Generations, "side")
-	if err := store.CommitHostRecords(family, hostops.HostMirror{}); err != nil {
-		t.Fatalf("drop side's records: %v", err)
-	}
-	hub.restartStateRoot(t)
-	reopened, err := hostops.Open(hostops.StorePath(hub.stateRoot))
-	if err != nil {
-		t.Fatalf("hostops.Open: %v", err)
-	}
-	boot := hostBootDocument(mustLoadConfig(t, hub.configPath), hub.configPath, reopened)
-	hosts, err := hostreg.NewSeeded(boot.Hosts, boot.Records.highWaterMarks())
-	if err != nil {
-		t.Fatalf("hostreg.NewSeeded: %v", err)
-	}
-	runner := &dialCountingRunner{}
-	manager := sshconn.New(hosts, sshconn.Options{Runner: runner})
-	t.Cleanup(func() { _ = manager.Close() })
-	late := newHubHostManager(appsource.NewRegistry(), manager, hubcore.WebConfig{
-		RemoteHostRegistry: hosts, RemoteHostConfigPath: hub.configPath, RemoteHostOpsUnavailable: true,
-	}, hub.configPath, hosts, t.Logf)
-	if _, err := manager.Ensure(context.Background(), "keep"); err != nil {
-		t.Fatalf("Ensure while the store is unavailable: %v", err)
-	}
-	dialsBefore := runner.dials.Load()
-	bootMaintenanceFault = func() error { return errors.New("injected write failure") }
-	t.Cleanup(func() { bootMaintenanceFault = nil })
-
-	for range 3 {
-		late.attachOps(reopened)
-		if late.mutationRefusal() == nil {
-			t.Fatal("the attach finished although the records could not be written")
-		}
-	}
-
-	if !manager.Attached("keep") || runner.dials.Load() != dialsBefore {
-		t.Fatalf("the retries disconnected a healthy host: attached=%v dials %d -> %d", manager.Attached("keep"), dialsBefore, runner.dials.Load())
-	}
-	bootMaintenanceFault = nil
-	late.attachOps(nil)
-	if err := late.mutationRefusal(); err != nil {
-		t.Fatalf("host changes are still paused after the write works: %v", err)
-	}
 }
 
 // TestACompensationRestoresTheHostFileBeforeDroppingTheStagedRecords pins the
@@ -1945,60 +922,6 @@ func TestACompensationRestoresTheHostFileBeforeDroppingTheStagedRecords(t *testi
 	}
 }
 
-// TestARedialInBackoffFollowsTheRegistrationASecondSettlementMoves pins the
-// ownership of a reconnection across settlement attempts: a host whose dial is
-// backing off has neither a channel nor a supervisor, so a retry that moves its
-// registration again must still hand the loop the new registration, or the host
-// stays disconnected after everything recovers.
-func TestARedialInBackoffFollowsTheRegistrationASecondSettlementMoves(t *testing.T) {
-	previousInitial, previousMax := hostReconnectRetryInitial, hostReconnectRetryMax
-	hostReconnectRetryInitial, hostReconnectRetryMax = 30*time.Millisecond, 30*time.Millisecond
-	t.Cleanup(func() { hostReconnectRetryInitial, hostReconnectRetryMax = previousInitial, previousMax })
-
-	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
-	hub.boot(t, false)
-	hub.restartStateRoot(t)
-	reopened, err := hostops.Open(hostops.StorePath(hub.stateRoot))
-	if err != nil {
-		t.Fatalf("hostops.Open: %v", err)
-	}
-	hosts, err := hostreg.New(hostRegistryEntries(mustLoadConfig(t, hub.configPath)))
-	if err != nil {
-		t.Fatalf("hostreg.New: %v", err)
-	}
-	runner := &flakyDialRunner{}
-	manager := sshconn.New(hosts, sshconn.Options{Runner: runner})
-	t.Cleanup(func() { _ = manager.Close() })
-	late := newHubHostManager(appsource.NewRegistry(), manager, hubcore.WebConfig{
-		RemoteHostRegistry: hosts, RemoteHostConfigPath: hub.configPath, RemoteHostOpsUnavailable: true,
-	}, hub.configPath, hosts, t.Logf)
-	if _, err := manager.Ensure(context.Background(), "side"); err != nil {
-		t.Fatalf("Ensure while the store is unavailable: %v", err)
-	}
-	runner.mu.Lock()
-	runner.failures = 1 << 20
-	runner.mu.Unlock()
-	bootMaintenanceFault = func() error { return errors.New("injected write failure") }
-	t.Cleanup(func() { bootMaintenanceFault = nil })
-
-	late.attachOps(reopened) // moves side, retires its connection, the redial starts failing
-	time.Sleep(100 * time.Millisecond)
-	family, _, _ := reopened.HostRecords()
-	mark := mustRecords(t, reopened).Generations["side"]
-	raised, _ := json.Marshal(HostGeneration{Generation: mark.Generation + 25, IncarnationID: mark.IncarnationID, PresenceEpoch: mark.PresenceEpoch})
-	family.Generations["side"] = raised
-	if err := reopened.CommitHostRecords(family, hostops.HostMirror{}); err != nil {
-		t.Fatalf("raise side's stored mark: %v", err)
-	}
-	late.attachOps(nil) // a second settlement moves side's registration again
-	runner.mu.Lock()
-	runner.failures = 0
-	runner.mu.Unlock()
-	bootMaintenanceFault = nil
-
-	requireReconnected(t, manager, hosts, "side")
-}
-
 // TestACompensationWhoseStoreWriteFailsStillSettlesTheManagersRecords pins what
 // the manager believes once the host file is back: a store outage between the
 // restore and the record write must not leave the manager holding the failed
@@ -2027,34 +950,5 @@ func TestACompensationWhoseStoreWriteFailsStillSettlesTheManagersRecords(t *test
 	result, err := m.AddResult(context.Background(), params)
 	if err == nil && result.HostMutationCommitted != nil {
 		t.Fatalf("the retry replayed the failed commit as a committed add: %+v", result.HostMutationCommitted)
-	}
-}
-
-// TestARedialHandoffIsNotLostToTheLoopThatIsStopping pins the primitive the
-// handoff relies on: a loop that decided to stop under one registration ends
-// only if that is still the registration it owns, so one handed over in between
-// keeps the loop alive instead of being deleted with it.
-func TestARedialHandoffIsNotLostToTheLoopThatIsStopping(t *testing.T) {
-	hosts, err := hostreg.New([]hostreg.Host{{Name: "side", SSH: "side.example"}})
-	if err != nil {
-		t.Fatalf("hostreg.New: %v", err)
-	}
-	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{RemoteHostRegistry: hosts}, "", hosts, t.Logf)
-	decided, _ := hosts.Get("side")
-	handed := decided
-	handed.Generation++
-	m.cfg.redials = map[string]*redialOwner{"side": {registration: handed}}
-
-	if m.endRedial("side", decided) {
-		t.Fatal("the loop ended although a settlement had handed it a new registration")
-	}
-	if m.cfg.redials["side"] == nil {
-		t.Fatal("the handoff was deleted with the stopping loop")
-	}
-	if !m.endRedial("side", handed) {
-		t.Fatal("the loop did not end on the registration it owns")
-	}
-	if m.cfg.redials["side"] != nil {
-		t.Fatal("the ended loop's ownership stayed registered")
 	}
 }

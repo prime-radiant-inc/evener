@@ -23,20 +23,6 @@ import (
 // exponential backoff and jitter until Manager.Close. ctx bounds this call and
 // the handshake, not the channel's lifetime.
 func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
-	return m.ensure(ctx, name, nil, true)
-}
-
-// ReconnectRegistration restores the connection of one registration the way the
-// supervisor does after a lost link: the attach proceeds only while the registry
-// still holds captured, checked at the lookup and again under the host gate (a
-// name removed and added again in between is refused with ErrHostNotFound
-// instead of the replacement being dialed), and it never starts a hub the host
-// has stopped, which only an explicit Ensure does.
-func (m *Manager) ReconnectRegistration(ctx context.Context, captured hostreg.Host) (*Channel, error) {
-	return m.ensure(ctx, captured.Name, &captured, false)
-}
-
-func (m *Manager) ensure(ctx context.Context, name string, expected *hostreg.Host, explicit bool) (*Channel, error) {
 	if !m.beginEnsure() {
 		return nil, ErrManagerClosed
 	}
@@ -45,7 +31,7 @@ func (m *Manager) ensure(ctx context.Context, name string, expected *hostreg.Hos
 		return nil, fmt.Errorf("%w: %q", ErrHostNotFound, name)
 	}
 	host, ok := m.reg.Get(name)
-	if !ok || (expected != nil && !hostreg.SameRegistration(host, *expected)) {
+	if !ok {
 		return nil, fmt.Errorf("%w: %q", ErrHostNotFound, name)
 	}
 	// The registry is the authority on the name's spelling, and every lookup
@@ -136,7 +122,7 @@ func (m *Manager) ensure(ctx context.Context, name string, expected *hostreg.Hos
 	defer cancel()
 	stopClose := context.AfterFunc(m.baseCtx, cancel)
 	defer stopClose()
-	ch, err := m.ensureOnce(attemptCtx, host, explicit)
+	ch, err := m.ensureOnce(attemptCtx, host, true)
 	if err != nil {
 		err = m.mapAttemptErr(err)
 		// Shutdown began while this attach was in flight. Close owns the last

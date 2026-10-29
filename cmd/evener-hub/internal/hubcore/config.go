@@ -136,8 +136,8 @@ type WebConfig struct {
 	RemoteHostOpsStore *hostops.Store
 	// RemoteHostOpsUnavailable marks a hub whose operation store is configured
 	// but could not be opened. The hosts in hub.toml keep serving; host add,
-	// edit and remove refuse as unavailable until the store attaches
-	// (hubHostManager.attachOps), which the hub retries.
+	// edit and remove refuse as unavailable until the hub is started with a
+	// store that opens.
 	RemoteHostOpsUnavailable bool
 	// RemoteHostClient returns an attached, initialized AppWire client for a
 	// remote host, attaching over SSH on first use (component 04). nil
