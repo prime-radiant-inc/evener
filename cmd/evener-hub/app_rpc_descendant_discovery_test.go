@@ -78,13 +78,20 @@ func TestHubChildDiscoveryRecoveryBoundaries(t *testing.T) {
 // readChildRetryingIndexContention follows the typed locked answer's automatic
 // retry disposition: the child's daemon extends the transcript index on its
 // own projection goroutine, so a fallback read can meet that writer mid-extension.
-// Each attempt starts with fresh counters, so the final read still has to
-// match its scenario exactly.
-func readChildRetryingIndexContention(ctx context.Context, t *testing.T, client *appwire.Client, params appwire.ThreadReadParams, resetCounters func()) (appwire.ThreadReadResponse, error) {
+// The scenario's discovery counters are those of the first attempt, which is
+// the one that runs discovery; a retry only repeats the saved-history read, and
+// its own refreshes and reads are discarded.
+func readChildRetryingIndexContention(ctx context.Context, t *testing.T, client *appwire.Client, params appwire.ThreadReadParams, refreshes, reads *atomic.Int32) (appwire.ThreadReadResponse, error) {
 	t.Helper()
-	for {
-		resetCounters()
+	var firstRefreshes, firstReads int32
+	for attempt := 0; ; attempt++ {
 		read, err := client.ThreadRead(ctx, params)
+		if attempt == 0 {
+			firstRefreshes, firstReads = refreshes.Load(), reads.Load()
+		} else {
+			refreshes.Store(firstRefreshes)
+			reads.Store(firstReads)
+		}
 		if err == nil {
 			return read, nil
 		}
@@ -231,7 +238,7 @@ func testHubChildDiscovery(t *testing.T, scenario string) {
 		if scenario == "remote" {
 			params.Ref = "unattached:" + childID
 		}
-		read, err = readChildRetryingIndexContention(readCtx, t, client, params, func() { refreshes.Store(0); reads.Store(0) })
+		read, err = readChildRetryingIndexContention(readCtx, t, client, params, &refreshes, &reads)
 	}
 	if scenario == "remote" {
 		if err == nil || refreshes.Load() != 0 || reads.Load() != 0 {
