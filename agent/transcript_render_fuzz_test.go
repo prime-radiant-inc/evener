@@ -373,7 +373,7 @@ not json
 			t.Fatalf("write temp transcript: %v", err)
 		}
 
-		result, lines, skipped, truncated, err := rawLinesForRange(path, "", startSeq, endSeq)
+		result, lines, skipped, truncated, err := rawLinesForRange(context.Background(), path, "", startSeq, endSeq)
 		if err != nil {
 			return // open/empty/scan error: no-panic floor proven for this input
 		}

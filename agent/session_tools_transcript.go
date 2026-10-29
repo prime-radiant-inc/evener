@@ -1561,7 +1561,7 @@ func readRaw(ctx context.Context, path, root, ref, rangeArg string) (any, error)
 	}
 
 	start, end := parseRange(effectiveRange, len(entries))
-	content, lines, skipped, truncated, err := readRawLinesForRange(path, root, start, end)
+	content, lines, skipped, truncated, err := readRawLinesForRange(ctx, path, root, start, end)
 	if err != nil {
 		return nil, err
 	}

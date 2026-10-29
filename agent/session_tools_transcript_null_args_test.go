@@ -179,3 +179,24 @@ func TestReadTranscriptToolHonorsCancelledContext(t *testing.T) {
 		})
 	}
 }
+
+// A jsonl read cancelled after its first scan stops in the second pass that
+// projects the requested range.
+func TestReadTranscriptRawSecondPassHonorsCancellation(t *testing.T) {
+	dir := newBucket(t)
+	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
+	writeFindSession(t, dir, findMetaSpec{id: sessionID}, "semantic turn")
+	path := transcriptPath(dir, sessionID)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	original := readRawLinesForRange
+	readRawLinesForRange = func(ctx context.Context, path, root string, start, end int) (string, int, int, bool, error) {
+		cancel()
+		return original(ctx, path, root, start, end)
+	}
+	t.Cleanup(func() { readRawLinesForRange = original })
+
+	if _, err := readRaw(ctx, path, dir, "local:"+sessionID, ""); !errors.Is(err, context.Canceled) {
+		t.Fatalf("readRaw error = %v, want context.Canceled", err)
+	}
+}

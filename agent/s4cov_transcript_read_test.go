@@ -72,7 +72,7 @@ func TestTranscriptReadersAndRawOutputRejectUnknownFields(t *testing.T) {
 			if _, err := readStrictChildTranscript(path, "", "01SESS", 0); err == nil {
 				t.Fatal("readStrictChildTranscript accepted unknown field")
 			}
-			if content, _, _, _, err := rawLinesForRange(path, "", 0, 0); err == nil || content != "" {
+			if content, _, _, _, err := rawLinesForRange(context.Background(), path, "", 0, 0); err == nil || content != "" {
 				t.Fatalf("rawLinesForRange = (%q, %v), want no raw bytes and an error", content, err)
 			}
 		})

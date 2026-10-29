@@ -81,7 +81,7 @@ func FuzzTranscriptReplay(f *testing.F) {
 
 func assertSemanticTranscriptJSONL(t *testing.T, path string, entryCount int) {
 	t.Helper()
-	content, _, _, _, err := rawLinesForRange(path, "", 0, entryCount-1)
+	content, _, _, _, err := rawLinesForRange(context.Background(), path, "", 0, entryCount-1)
 	if err != nil {
 		t.Fatalf("read semantic transcript JSONL: %v", err)
 	}

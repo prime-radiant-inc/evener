@@ -67,7 +67,7 @@ func trteReadFailures(t *testing.T) {
 	}
 
 	oldRawLines := readRawLinesForRange
-	readRawLinesForRange = func(string, string, int, int) (string, int, int, bool, error) {
+	readRawLinesForRange = func(context.Context, string, string, int, int) (string, int, int, bool, error) {
 		return "", 0, 0, false, want
 	}
 	if _, err := readRaw(context.Background(), path, "", "local:child", ""); !errors.Is(err, want) {
