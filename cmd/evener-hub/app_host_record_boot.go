@@ -351,40 +351,67 @@ func (m *hubHostManager) redialing(name string) bool {
 // failed dial starts none, so this loop is what keeps the host from staying
 // disconnected after a network blip.
 func (m *hubHostManager) redial(name string, retryInitial, retryMax time.Duration) {
-	defer func() {
-		m.cfg.reconnectMu.Lock()
-		delete(m.cfg.redials, name)
-		m.cfg.reconnectMu.Unlock()
-	}()
 	delay := retryInitial
 	for first := true; ; first = false {
 		m.cfg.reconnectMu.Lock()
 		registration := m.cfg.redials[name].registration
 		m.cfg.reconnectMu.Unlock()
-		if !m.cfg.hosts.SameRegistration(name, registration) {
+		stop := false
+		switch {
+		case !m.cfg.hosts.SameRegistration(name, registration):
 			// Removed, or removed and added again: the connection the user lost
 			// is not this one's to restore.
-			return
+			stop = true
+		case m.openRemnantFences(name):
+			stop = true
+		case m.cfg.manager.Attached(name):
+			stop = true
+		default:
+			ctx, cancel := context.WithTimeout(context.Background(), hostReconnectTimeout)
+			_, err := m.cfg.manager.ReconnectRegistration(ctx, registration)
+			cancel()
+			switch {
+			case err == nil, errors.Is(err, sshconn.ErrManagerClosed):
+				stop = true
+			case first && !errors.Is(err, sshconn.ErrHostNotFound):
+				m.logf("host %q was not reconnected after the records settled; retrying: %v", name, err)
+			}
 		}
-		if remnantID, fenced := m.openRemnantID(name); fenced {
-			m.logf("host %q stays disconnected: open remnant %s fences it", name, remnantID)
-			return
-		}
-		if m.cfg.manager.Attached(name) {
-			return
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), hostReconnectTimeout)
-		_, err := m.cfg.manager.ReconnectRegistration(ctx, registration)
-		cancel()
-		switch {
-		case err == nil, errors.Is(err, sshconn.ErrManagerClosed):
-			return
-		case first && !errors.Is(err, sshconn.ErrHostNotFound):
-			m.logf("host %q was not reconnected after the records settled; retrying: %v", name, err)
+		if stop {
+			if m.endRedial(name, registration) {
+				return
+			}
+			// A settlement handed this loop a new registration while it was
+			// deciding to stop; it carries on with that one.
+			continue
 		}
 		time.Sleep(delay)
 		delay = min(delay*2, retryMax)
 	}
+}
+
+// openRemnantFences reports, and says so in the log, whether an open teardown
+// remnant fences name, which keeps it detached as an explicit attach would be.
+func (m *hubHostManager) openRemnantFences(name string) bool {
+	remnantID, fenced := m.openRemnantID(name)
+	if fenced {
+		m.logf("host %q stays disconnected: open remnant %s fences it", name, remnantID)
+	}
+	return fenced
+}
+
+// endRedial ends name's redial loop if the registration it decided on is still
+// the one it owns, under the lock a handoff takes, so a registration handed over
+// while the loop was deciding to stop is never lost with it.
+func (m *hubHostManager) endRedial(name string, decided hostreg.Host) bool {
+	m.cfg.reconnectMu.Lock()
+	defer m.cfg.reconnectMu.Unlock()
+	owner := m.cfg.redials[name]
+	if owner != nil && !hostreg.SameRegistration(owner.registration, decided) {
+		return false
+	}
+	delete(m.cfg.redials, name)
+	return true
 }
 
 // mirrorCountersAbove returns the counters the store's mirror holds for names

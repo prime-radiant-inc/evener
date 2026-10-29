@@ -1922,14 +1922,15 @@ func TestACompensationRestoresTheHostFileBeforeDroppingTheStagedRecords(t *testi
 		}
 	}
 	var fileRestored, markerStillStaged bool
-	hostFileFirstSeam = func() {
+	hostFileFirstSeam = func() error {
 		for _, h := range mustLoadConfig(t, hub.configPath).Hosts {
 			if h.Name == "new" {
-				return
+				return nil
 			}
 		}
 		fileRestored = true
 		_, markerStillStaged = mustRecords(t, store).StagedReceipts["new"]
+		return nil
 	}
 	t.Cleanup(func() { hostFileFirstSeam = nil })
 
@@ -1996,4 +1997,64 @@ func TestARedialInBackoffFollowsTheRegistrationASecondSettlementMoves(t *testing
 	bootMaintenanceFault = nil
 
 	requireReconnected(t, manager, hosts, "side")
+}
+
+// TestACompensationWhoseStoreWriteFailsStillSettlesTheManagersRecords pins what
+// the manager believes once the host file is back: a store outage between the
+// restore and the record write must not leave the manager holding the failed
+// commit's provisional receipt, which a retry of the same mutation would replay
+// as a committed one.
+func TestACompensationWhoseStoreWriteFailsStillSettlesTheManagersRecords(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}})
+	m, _ := hub.boot(t, false)
+	m.testOnlyAfterStage = func(name string) {
+		if err := m.cfg.hosts.Add(hostreg.Host{Name: name, SSH: "raced.example"}); err != nil {
+			t.Errorf("race the registry: %v", err)
+		}
+	}
+	hostFileFirstSeam = func() error { return errors.New("injected store outage") }
+	t.Cleanup(func() { hostFileFirstSeam = nil })
+	params := appwire.HostAddParams{Entry: appwire.HostEntry{Name: "new", Address: "new.example"}, MutationID: "failed-add"}
+
+	if _, err := m.AddResult(context.Background(), params); err == nil {
+		t.Fatal("the add succeeded although its registration failed")
+	}
+
+	if _, staged := m.cfg.store.stagedSnapshot()["new"]; staged {
+		t.Fatal("the manager still holds the failed commit's staged marker")
+	}
+	m.testOnlyAfterStage = nil
+	result, err := m.AddResult(context.Background(), params)
+	if err == nil && result.HostMutationCommitted != nil {
+		t.Fatalf("the retry replayed the failed commit as a committed add: %+v", result.HostMutationCommitted)
+	}
+}
+
+// TestARedialHandoffIsNotLostToTheLoopThatIsStopping pins the primitive the
+// handoff relies on: a loop that decided to stop under one registration ends
+// only if that is still the registration it owns, so one handed over in between
+// keeps the loop alive instead of being deleted with it.
+func TestARedialHandoffIsNotLostToTheLoopThatIsStopping(t *testing.T) {
+	hosts, err := hostreg.New([]hostreg.Host{{Name: "side", SSH: "side.example"}})
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{RemoteHostRegistry: hosts}, "", hosts, t.Logf)
+	decided, _ := hosts.Get("side")
+	handed := decided
+	handed.Generation++
+	m.cfg.redials = map[string]*redialOwner{"side": {registration: handed}}
+
+	if m.endRedial("side", decided) {
+		t.Fatal("the loop ended although a settlement had handed it a new registration")
+	}
+	if m.cfg.redials["side"] == nil {
+		t.Fatal("the handoff was deleted with the stopping loop")
+	}
+	if !m.endRedial("side", handed) {
+		t.Fatal("the loop did not end on the registration it owns")
+	}
+	if m.cfg.redials["side"] != nil {
+		t.Fatal("the ended loop's ownership stayed registered")
+	}
 }

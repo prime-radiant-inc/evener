@@ -325,7 +325,7 @@ func (s hostOpsRecordStore) writeFamily(entries []hostreg.Host, records hostTOML
 
 // hostFileFirstSeam, when set, is called between commitHostFileFirst's two
 // writes. It is nil in production.
-var hostFileFirstSeam func()
+var hostFileFirstSeam func() error
 
 // commitHostFileFirst is commit with the order reversed, for the compensation of
 // a commit that already reached hub.toml (see hostPersistChange.hostFileFirst).
@@ -333,11 +333,22 @@ func (s hostOpsRecordStore) commitHostFileFirst(entries, known []hostreg.Host, r
 	if err := writeHubTOMLHostsOnly(s.path, entries, known); err != nil {
 		return err
 	}
+	var err error
 	if hostFileFirstSeam != nil {
-		hostFileFirstSeam()
+		err = hostFileFirstSeam()
 	}
-	_, err := s.writeFamily(entries, records)
-	return err
+	if err == nil {
+		_, err = s.writeFamily(entries, records)
+	}
+	if err != nil {
+		// The host change is already out of the file, which is the state that
+		// matters: the manager follows it, and the store's staged records, which
+		// a boot rolls back and the next successful write replaces, are left to
+		// that. Reporting the compensation as failed would suggest the file
+		// still holds the change it no longer does.
+		s.log("the staged records were not dropped after the host file was restored: %v", err)
+	}
+	return nil
 }
 
 func (s hostOpsRecordStore) commit(entries, known []hostreg.Host, records hostTOMLRecords) error {
