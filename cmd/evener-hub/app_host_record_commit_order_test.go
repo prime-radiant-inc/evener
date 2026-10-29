@@ -440,7 +440,7 @@ func TestBootLeavesStagedCommitsAloneWhileHubTOMLCannotBeRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
-	doc := hostBootDocument(cfg, hub.configPath, store)
+	doc := hostBootDocument(cfg, store)
 	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
 	if err != nil {
 		t.Fatalf("hostreg.NewSeeded: %v", err)
@@ -718,7 +718,7 @@ func TestUnreadableHubTOMLAtStartupStillFencesAnOpenRemnantHost(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
-	boot := hostBootDocument(mustLoadConfig(t, hub.configPath), hub.configPath, reopened)
+	boot := hostBootDocument(mustLoadConfig(t, hub.configPath), reopened)
 	hosts, err := hostreg.NewSeeded(boot.Hosts, boot.Records.highWaterMarks())
 	if err != nil {
 		t.Fatalf("hostreg.NewSeeded: %v", err)
@@ -804,7 +804,7 @@ func TestAHostChangeWaitsForTheStoreToBeDurableBeforeTouchingHubTOML(t *testing.
 		t.Fatalf("OpenWithDirSync: %v", err)
 	}
 	cfg := mustLoadConfig(t, configPath)
-	boot := hostBootDocument(cfg, configPath, store)
+	boot := hostBootDocument(cfg, store)
 	hosts, err := hostreg.NewSeeded(boot.Hosts, boot.Records.highWaterMarks())
 	if err != nil {
 		t.Fatalf("hostreg.NewSeeded: %v", err)
@@ -846,7 +846,7 @@ func TestMigrationKeepsTheLegacySectionsUntilTheStoreIsDurable(t *testing.T) {
 		t.Fatalf("OpenWithDirSync: %v", err)
 	}
 	cfg := mustLoadConfig(t, configPath)
-	boot := hostBootDocument(cfg, configPath, nil)
+	boot := hostBootDocument(cfg, nil)
 	hosts, err := hostreg.NewSeeded(boot.Hosts, boot.Records.highWaterMarks())
 	if err != nil {
 		t.Fatalf("hostreg.NewSeeded: %v", err)
@@ -862,7 +862,7 @@ func TestMigrationKeepsTheLegacySectionsUntilTheStoreIsDurable(t *testing.T) {
 
 	// The next start, with the directory sync working, drops them.
 	dir.failing.Store(false)
-	next := hostBootDocument(mustLoadConfig(t, configPath), configPath, store)
+	next := hostBootDocument(mustLoadConfig(t, configPath), store)
 	nextHosts, err := hostreg.NewSeeded(next.Hosts, next.Records.highWaterMarks())
 	if err != nil {
 		t.Fatalf("hostreg.NewSeeded: %v", err)
@@ -1039,5 +1039,110 @@ func TestACompensationWhoseDirectorySyncFailsStillSettlesTheManagersRecords(t *t
 	result, err := m.AddResult(context.Background(), params)
 	if err == nil && result.HostMutationCommitted != nil {
 		t.Fatalf("the retry replayed the failed commit as a committed add: %+v", result.HostMutationCommitted)
+	}
+}
+
+// TestNoSingleReadFailureAtBootFinalizesARemovalThatNeverLanded pins that a
+// transient failure of any one hub.toml read during recovery is never taken as
+// evidence about a staged removal: whatever that boot defers, a clean restart
+// finds the host with the identity it had and no tombstone.
+func TestNoSingleReadFailureAtBootFinalizesARemovalThatNeverLanded(t *testing.T) {
+	crash := func(t *testing.T) (*crashHub, string) {
+		hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+		m, _ := hub.boot(t, false)
+		_, incarnation := testMutationIdentity(t, m, "side")
+		params := removeRequest(t, m, "side")
+		unlanded := fileBytes(t, hub.configPath)
+		armCut(m, cutStaged)
+		runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
+		// The removal staged and never reached hub.toml.
+		if err := os.WriteFile(hub.configPath, unlanded, 0o600); err != nil {
+			t.Fatalf("restore the file the crash left behind: %v", err)
+		}
+		return hub, incarnation
+	}
+	bootFailingRead := func(t *testing.T, hub *crashHub, failAt int) (*hubHostManager, *hostops.Store, int) {
+		hub.restartStateRoot(t)
+		cfg := mustLoadConfig(t, hub.configPath)
+		store, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+		if err != nil {
+			t.Fatalf("hostops.Open: %v", err)
+		}
+		previous := configReadFile
+		reads := 0
+		configReadFile = func(path string) ([]byte, error) {
+			reads++
+			if reads == failAt {
+				return nil, errors.New("injected read failure")
+			}
+			return previous(path)
+		}
+		defer func() { configReadFile = previous }()
+		doc := hostBootDocument(cfg, store)
+		hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
+		if err != nil {
+			t.Fatalf("hostreg.NewSeeded: %v", err)
+		}
+		m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+			RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: hub.configPath,
+		}, hub.configPath, hosts, t.Logf)
+		return m, store, reads
+	}
+
+	hub, _ := crash(t)
+	_, _, total := bootFailingRead(t, hub, 0)
+	if total == 0 {
+		t.Fatal("recovery read hub.toml no times")
+	}
+	for failAt := 1; failAt <= total; failAt++ {
+		hub, incarnation := crash(t)
+		bootFailingRead(t, hub, failAt)
+
+		recovered, store, _ := bootFailingRead(t, hub, 0)
+
+		if _, got := testMutationIdentity(t, recovered, "side"); got != incarnation {
+			t.Fatalf("read %d failing: side serves incarnation %q after a clean restart, want %q", failAt, got, incarnation)
+		}
+		if _, tombstoned := mustRecords(t, store).Tombstones["side"]; tombstoned {
+			t.Fatalf("read %d failing: the never-landed removal left its tombstone", failAt)
+		}
+	}
+}
+
+// TestAnUnsyncedCompensationKeepsTheStagedRecordsThroughLaterWrites pins that
+// the staged records a compensation left in the store are not dropped by a later
+// write until the restored host file's directory is proven durable: a write that
+// leaves the host file as it is would otherwise discard the only evidence a
+// crash needs to roll the change back.
+func TestAnUnsyncedCompensationKeepsTheStagedRecordsThroughLaterWrites(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}})
+	m, store := hub.boot(t, false)
+	m.testOnlyAfterStage = func(name string) {
+		if err := m.cfg.hosts.Add(hostreg.Host{Name: name, SSH: "raced.example"}); err != nil {
+			t.Errorf("race the registry: %v", err)
+		}
+	}
+	syncFails := true
+	flakyHubTOMLDirSync(t, func(call int) bool { return call >= 2 && syncFails })
+	params := appwire.HostAddParams{Entry: appwire.HostEntry{Name: "new", Address: "new.example"}, MutationID: "failed-add"}
+	if _, err := m.AddResult(context.Background(), params); err == nil {
+		t.Fatal("the add succeeded although its registration failed")
+	}
+	m.testOnlyAfterStage = nil
+
+	entries := m.cfg.store.snapshot()
+	if err := m.persistHosts(entries, entries, hostPersistChange{recordsOnly: true}); err == nil {
+		t.Fatal("a write went through while the restored host file was not proven durable")
+	}
+	if _, held := mustRecords(t, store).StagedReceipts["new"]; !held {
+		t.Fatal("a later write dropped the staged marker before the restored host file was durable")
+	}
+
+	syncFails = false
+	if err := m.persistHosts(entries, entries, hostPersistChange{recordsOnly: true}); err != nil {
+		t.Fatalf("the write is still refused once the directory syncs: %v", err)
+	}
+	if _, held := mustRecords(t, store).StagedReceipts["new"]; held {
+		t.Fatal("the staged marker outlived the proven restore")
 	}
 }

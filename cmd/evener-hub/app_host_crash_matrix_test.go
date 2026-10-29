@@ -109,7 +109,7 @@ func (h *crashHub) boot(t *testing.T, restart bool) (*hubHostManager, *hostops.S
 		requireSameStoreState(t, h.store, store)
 	}
 	h.store = store
-	doc := hostBootDocument(cfg, h.configPath, store)
+	doc := hostBootDocument(cfg, store)
 	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
 	if err != nil {
 		t.Fatalf("hostreg.NewSeeded: %v", err)

@@ -473,7 +473,7 @@ func (r *hubRuntime) connectHosts() (func(), error) {
 	// when its custody can be shown whole; one whose custody cannot is left as it
 	// is until it is repaired (openHostOpsStore).
 	r.openOpsStore()
-	boot := hostBootDocument(cfg, r.opts.configPath, r.opsStore)
+	boot := hostBootDocument(cfg, r.opsStore)
 	r.hostEntries = boot.Hosts
 	// Config loading already validated these through hostreg.New; build the
 	// real registry used by the SSH manager and handle the (impossible) error

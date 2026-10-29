@@ -402,10 +402,21 @@ func (m *hubHostManager) rollBackUnlandedCommits(doc hostRecordDocument) map[str
 		if markerLanded(marker, doc.Hosts) {
 			continue
 		}
-		if scope, ok := parseHostReceiptScopedKey(marker.Key); ok && scope.Kind == hostMutationRemove && !stagedRemovalNeverLanded(marker, m.cfg.configPath) {
-			// The host is configured, but hub.toml changed since the removal
-			// staged against it: the removal landed and the name was added again.
-			continue
+		if scope, ok := parseHostReceiptScopedKey(marker.Key); ok && scope.Kind == hostMutationRemove {
+			file, state := readHubTOMLConfig(m.cfg.configPath)
+			if state == hostFileUnreadable {
+				// A read that failed is no evidence either way; the next boot
+				// judges it.
+				m.logf("boot rollback of the staged removal for %q deferred: hub.toml could not be read", name)
+				failed[name] = struct{}{}
+				continue
+			}
+			if !stagedRemovalNeverLanded(marker, file.Hosts) {
+				// The host is configured, but hub.toml changed since the removal
+				// staged against it: the removal landed and the name was added
+				// again.
+				continue
+			}
 		}
 		if bootRollbackFault != nil {
 			if err := bootRollbackFault(name); err != nil {

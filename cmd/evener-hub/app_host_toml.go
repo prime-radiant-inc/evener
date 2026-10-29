@@ -351,6 +351,12 @@ func hubTOMLRenameCommitted(err error) bool {
 // onto its wire envelope here, the one choke point every mutation path runs
 // through.
 func (m *hubHostManager) persistHosts(entries, known []hostreg.Host, change hostPersistChange) error {
+	if m.hostFileSyncOwed.Load() {
+		if err := hubTOMLSyncDir(filepath.Dir(m.cfg.configPath)); err != nil {
+			return fmt.Errorf("the restored host file is not yet durable: %w", err)
+		}
+		m.hostFileSyncOwed.Store(false)
+	}
 	records, err := m.deriveHostTOMLRecords(entries, known, change)
 	if err != nil {
 		return tombstoneCapacityRefusal(err)
@@ -368,6 +374,7 @@ func (m *hubHostManager) persistHosts(entries, known []hostreg.Host, change host
 			// hosts and only its durability is uncertain, so the manager settles
 			// the failed commit's records all the same.
 			m.cfg.store.installRecords(records)
+			m.hostFileSyncOwed.Store(true)
 		}
 		return err
 	}

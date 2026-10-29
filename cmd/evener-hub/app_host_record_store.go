@@ -477,9 +477,9 @@ func (s hostOpsRecordStore) syncMirror() error {
 // the boot rolls the removal back and the host comes up as the incarnation the
 // tombstone names instead of a new one. A hub.toml that changed since may have
 // lost the host and had it added again by hand, which is a new incarnation.
-func restoreUnlandedRemovalIdentities(configured []HostConfig, configPath string, set hostRecordSet) hostRecordSet {
+func restoreUnlandedRemovalIdentities(configured []HostConfig, set hostRecordSet) hostRecordSet {
 	for _, h := range configured {
-		if record, ok := unlandedRemovalIdentity(set, h.Name, configPath); ok {
+		if record, ok := unlandedRemovalIdentity(set, h.Name, configured); ok {
 			set.HostRecords[h.Name] = record
 		}
 	}
@@ -488,34 +488,40 @@ func restoreUnlandedRemovalIdentities(configured []HostConfig, configPath string
 
 // unlandedRemovalIdentity returns the live record name had before a staged
 // removal that never reached hub.toml dropped it.
-func unlandedRemovalIdentity(set hostRecordSet, name, configPath string) (HostRecord, bool) {
+func unlandedRemovalIdentity(set hostRecordSet, name string, configured []HostConfig) (HostRecord, bool) {
 	marker, staged := set.StagedReceipts[name]
 	tombstone, removed := set.Tombstones[name]
-	if !staged || !removed || !stagedRemovalNeverLanded(marker, configPath) {
+	if !staged || !removed || !stagedRemovalNeverLanded(marker, configured) {
 		return HostRecord{}, false
 	}
 	return HostRecord{IncarnationID: tombstone.IncarnationID, PresenceEpoch: tombstone.PresenceEpoch}, true
 }
 
 // stagedRemovalNeverLanded reports whether marker stages a removal whose host
-// change cannot have reached hub.toml: the entry the file holds for the host is
-// the one the commit staged against.
-func stagedRemovalNeverLanded(marker HostStagedReceipt, configPath string) bool {
+// change cannot have reached hub.toml: the entry configured holds for the host
+// is the one the commit staged against.
+func stagedRemovalNeverLanded(marker HostStagedReceipt, configured []HostConfig) bool {
 	scope, ok := parseHostReceiptScopedKey(marker.Key)
 	if !ok || scope.Kind != hostMutationRemove || marker.HostFingerprint == "" {
 		return false
 	}
-	return hubTOMLHostFingerprint(configPath, scope.Name) == marker.HostFingerprint
+	return hostConfigFingerprint(configured, scope.Name) == marker.HostFingerprint
 }
 
-// hubTOMLHostFingerprint digests the entry hub.toml holds for name; empty when
-// the file cannot be read or holds none. Other hosts and settings do not move it.
+// hubTOMLHostFingerprint digests the entry hub.toml holds for name at staging;
+// empty when the file cannot be read or holds none.
 func hubTOMLHostFingerprint(path, name string) string {
 	cfg, state := readHubTOMLConfig(path)
 	if state == hostFileUnreadable {
 		return ""
 	}
-	for _, h := range cfg.Hosts {
+	return hostConfigFingerprint(cfg.Hosts, name)
+}
+
+// hostConfigFingerprint digests the entry configured holds for name; empty when
+// it holds none. Other hosts and settings do not move it.
+func hostConfigFingerprint(configured []HostConfig, name string) string {
+	for _, h := range configured {
 		if h.Name != name {
 			continue
 		}
@@ -534,14 +540,14 @@ func hubTOMLHostFingerprint(path, name string) string {
 // records are the ones hub.toml still carries. Records the store holds but this
 // build cannot read are not guessed at: the hosts come up with identities
 // minted at load, and the manager keeps host changes paused (bootStoreRecords).
-func hostBootDocument(cfg Config, configPath string, ops *hostops.Store) hostRecordDocument {
+func hostBootDocument(cfg Config, ops *hostops.Store) hostRecordDocument {
 	if ops != nil {
 		if _, _, imported := ops.HostRecords(); imported {
 			set, err := hostOpsRecordStore{ops: ops}.records()
 			if err != nil {
 				return hostRecordDocument{Hosts: hostEntriesWithIdentity(cfg.Hosts, hostRecordSet{})}
 			}
-			set = restoreUnlandedRemovalIdentities(cfg.Hosts, configPath, set)
+			set = restoreUnlandedRemovalIdentities(cfg.Hosts, set)
 			return hostRecordDocument{Hosts: hostEntriesWithIdentity(cfg.Hosts, set), Records: set}
 		}
 	}

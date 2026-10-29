@@ -39,7 +39,7 @@ func bootOverStore(t *testing.T, configPath, stateRoot string) (*hubHostManager,
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	doc := hostBootDocument(cfg, configPath, store)
+	doc := hostBootDocument(cfg, store)
 	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
 	if err != nil {
 		t.Fatalf("hostreg.NewSeeded: %v", err)
@@ -53,7 +53,7 @@ func bootOverStore(t *testing.T, configPath, stateRoot string) (*hubHostManager,
 // manager boots.
 func restartOver(t *testing.T, configPath string, store *hostops.Store) *hubHostManager {
 	t.Helper()
-	doc := hostBootDocument(mustLoadConfig(t, configPath), configPath, store)
+	doc := hostBootDocument(mustLoadConfig(t, configPath), store)
 	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
 	if err != nil {
 		t.Fatalf("hostreg.NewSeeded: %v", err)
@@ -632,7 +632,7 @@ func TestUnreadableHubTOMLAtBootDoesNotMoveEmptyRecordsIntoTheStore(t *testing.T
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
-	doc := hostBootDocument(cfg, configPath, store)
+	doc := hostBootDocument(cfg, store)
 	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
 	if err != nil {
 		t.Fatalf("hostreg.NewSeeded: %v", err)
@@ -722,7 +722,7 @@ func TestAReadFailureAfterTheLegacyBootStartedStillKeepsTheRecordsInHubTOML(t *t
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
-	doc := hostBootDocument(cfg, configPath, store)
+	doc := hostBootDocument(cfg, store)
 	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
 	if err != nil {
 		t.Fatalf("hostreg.NewSeeded: %v", err)
@@ -767,7 +767,7 @@ func TestMigrationWaitsForADurableCopyOfTheOriginalHubTOML(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
-	doc := hostBootDocument(cfg, configPath, store)
+	doc := hostBootDocument(cfg, store)
 	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
 	if err != nil {
 		t.Fatalf("hostreg.NewSeeded: %v", err)
@@ -862,7 +862,7 @@ func TestMigrationRaisesAGenerationBelowTheMirrorsForARemovedName(t *testing.T) 
 	}}); err != nil {
 		t.Fatalf("MirrorHostState: %v", err)
 	}
-	doc := hostBootDocument(cfg, configPath, store)
+	doc := hostBootDocument(cfg, store)
 	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
 	if err != nil {
 		t.Fatalf("hostreg.NewSeeded: %v", err)
@@ -898,7 +898,7 @@ func TestMigrationRaisesAPresenceEpochTheMirrorHoldsEvenAtTheSameGeneration(t *t
 	}}); err != nil {
 		t.Fatalf("MirrorHostState: %v", err)
 	}
-	doc := hostBootDocument(cfg, configPath, nil)
+	doc := hostBootDocument(cfg, nil)
 	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
 	if err != nil {
 		t.Fatalf("hostreg.NewSeeded: %v", err)
@@ -952,7 +952,7 @@ func TestMigrationWaitsWhenTheOriginalCannotBeInspectedForTheCopy(t *testing.T) 
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
-	doc := hostBootDocument(cfg, configPath, store)
+	doc := hostBootDocument(cfg, store)
 	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
 	if err != nil {
 		t.Fatalf("hostreg.NewSeeded: %v", err)

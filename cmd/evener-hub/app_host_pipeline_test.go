@@ -92,7 +92,7 @@ func (f *pipelineFixture) restart(t *testing.T) *hubHostManager {
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	doc := hostBootDocument(cfg, f.configPath, f.store)
+	doc := hostBootDocument(cfg, f.store)
 	registry, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
 	if err != nil {
 		t.Fatalf("hostreg.NewSeeded: %v", err)
