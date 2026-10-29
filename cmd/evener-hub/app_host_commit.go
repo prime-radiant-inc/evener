@@ -558,7 +558,11 @@ func (m *hubHostManager) finalizeOrphanMarkerIfAny(ctx context.Context, name str
 	// carries — the marker would drop while its finalized outcome, remnant, or
 	// `bootRecovered` marker never rendered.
 	known := ownedEntrySet(entries, name)
-	if err := m.persistHosts(entries, known, hostPersistChange{marker: &pendingHostMarker{Name: name, Marker: claimed}}); err != nil {
+	// Boot recovery over records in the operation store carries the records
+	// alone: hub.toml holds only the hosts there, and the registry's list must
+	// not be written over what the file holds now.
+	recordsOnly := bootRecovered && m.recordsInStore()
+	if err := m.persistHosts(entries, known, hostPersistChange{marker: &pendingHostMarker{Name: name, Marker: claimed}, recordsOnly: recordsOnly}); err != nil {
 		m.cfg.mu.Unlock()
 		return nil, err
 	}
@@ -614,8 +618,9 @@ func (m *hubHostManager) finalizeOrphanMarkerIfAny(ctx context.Context, name str
 	receipt.RemnantID = remnantID
 	receipt.BootRecovered = bootRecovered
 	change := hostPersistChange{
-		receipt:    &pendingHostReceipt{Key: marker.Key, Receipt: receipt},
-		dropMarker: name,
+		receipt:     &pendingHostReceipt{Key: marker.Key, Receipt: receipt},
+		dropMarker:  name,
+		recordsOnly: recordsOnly,
 	}
 	if runErr != nil {
 		seam := remnant.Seam

@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sync"
 	"testing"
@@ -1281,4 +1282,123 @@ func TestLateAttachMaintenanceWritesNoHostList(t *testing.T) {
 			t.Fatalf("the attach's maintenance write undid the operator's edit: keep is %q", h.SSH)
 		}
 	}
+}
+
+// TestBootFinalizationOverStoredRecordsKeepsTheOperatorsHostList pins the
+// marker claim and finalization writes of boot recovery: a staged commit that
+// did land is finalized with records alone, so an edit the operator made to
+// hub.toml while the settlement was paused survives it.
+func TestBootFinalizationOverStoredRecordsKeepsTheOperatorsHostList(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, _ := hub.boot(t, false)
+	params := updateRequest(t, m, "side", appwire.HostEntry{Address: "edited.example"})
+	params.MutationID = "landed-mutation"
+	armCut(m, cutFlipped)
+	runUntilCrash(t, func() { _, _ = m.UpdateResult(context.Background(), params) })
+	hub.restartStateRoot(t)
+	reopened, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	hosts, err := hostreg.New(hostRegistryEntries(mustLoadConfig(t, hub.configPath)))
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	late := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostConfigPath: hub.configPath, RemoteHostOpsUnavailable: true,
+	}, hub.configPath, hosts, t.Logf)
+	if err := writeHubTOMLHosts(hub.configPath, []hostreg.Host{{Name: "keep", SSH: "keep-by-hand.example"}, {Name: "side", SSH: "edited.example"}}); err != nil {
+		t.Fatalf("edit keep by hand: %v", err)
+	}
+
+	late.attachOps(reopened)
+
+	if len(mustRecords(t, reopened).StagedReceipts) != 0 {
+		t.Fatal("the landed commit was not finalized")
+	}
+	for _, h := range mustLoadConfig(t, hub.configPath).Hosts {
+		if h.Name == "keep" && h.SSH != "keep-by-hand.example" {
+			t.Fatalf("finalizing the marker undid the operator's edit: keep is %q", h.SSH)
+		}
+	}
+}
+
+// TestMigrationRaisesALiveHostToTheMirrorsHigherGeneration covers a legacy
+// reconciliation whose raise of a live host never reached hub.toml: the import
+// must not replace the mirror's higher generation with the file's.
+func TestMigrationRaisesALiveHostToTheMirrorsHigherGeneration(t *testing.T) {
+	fixture := newPipelineFixture(t, []hostreg.Host{pipelineEntry("keep", 3)}, nil)
+	spent := hostops.Boundary{Generation: 40, IncarnationID: "inc-keep", PresenceEpoch: 3}
+	if err := fixture.store.MirrorHostState(hostops.HostMirror{Boundaries: map[string]hostops.Boundary{"keep": spent}, Live: []string{"keep"}}); err != nil {
+		t.Fatalf("MirrorHostState: %v", err)
+	}
+	m := fixture.legacyManager(t)
+
+	m.migrateLegacyRecords(fixture.store)
+
+	if mark := mustRecords(t, fixture.store).Generations["keep"]; mark.Generation < spent.Generation {
+		t.Fatalf("the family holds generation %d for keep, below the mirror's %d", mark.Generation, spent.Generation)
+	}
+	if got, _ := m.cfg.hosts.Get("keep"); got.Generation < spent.Generation {
+		t.Fatalf("keep is served at generation %d, below the mirror's %d", got.Generation, spent.Generation)
+	}
+}
+
+// flakyDialRunner fails the first dials, then serves like the attached runner:
+// the transient network failure a redial must outlast.
+type flakyDialRunner struct {
+	attachedUpdateRunner
+	mu       sync.Mutex
+	failures int
+}
+
+func (r *flakyDialRunner) Run(ctx context.Context, argv []string, in io.Reader) ([]byte, error) {
+	r.mu.Lock()
+	failing := r.failures > 0
+	if failing {
+		r.failures--
+	}
+	r.mu.Unlock()
+	if failing {
+		return nil, errors.New("flakyDialRunner: network unreachable")
+	}
+	return r.attachedUpdateRunner.Run(ctx, argv, in)
+}
+
+// TestAttachKeepsRedialingARetiredHostThroughATransientFailure pins the redial's
+// persistence: the retirement stopped the supervisor that would have brought the
+// link back, so a first dial that fails must not leave the host disconnected for
+// good.
+func TestAttachKeepsRedialingARetiredHostThroughATransientFailure(t *testing.T) {
+	previousInitial, previousMax := hostReconnectRetryInitial, hostReconnectRetryMax
+	hostReconnectRetryInitial, hostReconnectRetryMax = 5*time.Millisecond, 20*time.Millisecond
+	t.Cleanup(func() { hostReconnectRetryInitial, hostReconnectRetryMax = previousInitial, previousMax })
+
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	hub.boot(t, false)
+	hub.restartStateRoot(t)
+	reopened, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	hosts, err := hostreg.New(hostRegistryEntries(mustLoadConfig(t, hub.configPath)))
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	runner := &flakyDialRunner{}
+	manager := sshconn.New(hosts, sshconn.Options{Runner: runner})
+	t.Cleanup(func() { _ = manager.Close() })
+	late := newHubHostManager(appsource.NewRegistry(), manager, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostConfigPath: hub.configPath, RemoteHostOpsUnavailable: true,
+	}, hub.configPath, hosts, t.Logf)
+	if _, err := manager.Ensure(context.Background(), "side"); err != nil {
+		t.Fatalf("Ensure while the store is unavailable: %v", err)
+	}
+	runner.mu.Lock()
+	runner.failures = 3
+	runner.mu.Unlock()
+
+	late.attachOps(reopened)
+
+	requireReconnected(t, manager, hosts, "side")
 }

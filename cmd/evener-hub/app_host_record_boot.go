@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
+	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
 )
 
 // This file owns how the manager finds its machine records at boot. Records
@@ -129,6 +130,14 @@ func (m *hubHostManager) bootRecords() {
 		m.refuseMutations(fmt.Sprintf("a host is busy; the move of its records is retried: %v", err))
 		return
 	}
+	// The import raises live registrations to the mirror's counters, so the
+	// gates are held for it as for the other registration changes.
+	release, err := m.holdLiveHosts()
+	if err != nil {
+		m.refuseMutations(fmt.Sprintf("a host is busy; the move of its records is retried: %v", err))
+		return
+	}
+	defer release()
 	m.migrateLegacyRecords(ops)
 }
 
@@ -209,8 +218,14 @@ func (m *hubHostManager) attachOps(store *hostops.Store) {
 }
 
 // hostReconnectTimeout bounds one dial of a host whose connection an attach
-// retired.
+// retired; hostReconnectRetryInitial and hostReconnectRetryMax pace the dials
+// that follow a failure.
 const hostReconnectTimeout = 2 * time.Minute
+
+var (
+	hostReconnectRetryInitial = 2 * time.Second
+	hostReconnectRetryMax     = time.Minute
+)
 
 // reconnectRetiredHosts dials again the hosts whose connections the attach
 // tore down, once their gates are free: sessions of those hosts are read through
@@ -222,19 +237,40 @@ func (m *hubHostManager) reconnectRetiredHosts() {
 	m.cfg.reconnect = nil
 	m.cfg.reconnectMu.Unlock()
 	for _, name := range slices.Compact(slices.Sorted(slices.Values(names))) {
-		if remnantID, fenced := m.openRemnantID(name); fenced {
-			// An open teardown remnant keeps its host detached until it
-			// resolves, exactly as an explicit attach is refused.
-			m.logf("host %q stays disconnected: open remnant %s fences it", name, remnantID)
-			continue
+		go m.redial(name)
+	}
+}
+
+// redial connects name again, retrying a failed dial under backoff until the
+// host is connected, removed, fenced by an open teardown remnant (an explicit
+// attach is refused then too), or the manager is closed. The supervisor that
+// would otherwise bring a lost link back was stopped by the retirement and a
+// failed dial starts none, so this loop is what keeps the host from staying
+// disconnected after a network blip.
+func (m *hubHostManager) redial(name string) {
+	delay := hostReconnectRetryInitial
+	for first := true; ; first = false {
+		if _, registered := m.cfg.hosts.Get(name); !registered {
+			return
 		}
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), hostReconnectTimeout)
-			defer cancel()
-			if _, err := m.cfg.manager.Ensure(ctx, name); err != nil {
-				m.logf("host %q was not reconnected after the records settled: %v", name, err)
-			}
-		}()
+		if remnantID, fenced := m.openRemnantID(name); fenced {
+			m.logf("host %q stays disconnected: open remnant %s fences it", name, remnantID)
+			return
+		}
+		if m.cfg.manager.Attached(name) {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), hostReconnectTimeout)
+		_, err := m.cfg.manager.Ensure(ctx, name)
+		cancel()
+		switch {
+		case err == nil, errors.Is(err, sshconn.ErrManagerClosed), errors.Is(err, sshconn.ErrHostNotFound):
+			return
+		case first:
+			m.logf("host %q was not reconnected after the records settled; retrying: %v", name, err)
+		}
+		time.Sleep(delay)
+		delay = min(delay*2, hostReconnectRetryMax)
 	}
 }
 
@@ -273,6 +309,15 @@ func (m *hubHostManager) migrateLegacyRecords(ops *hostops.Store) {
 		m.refuseMutations("an earlier removal's cross-file work is still open; it is retried on the next attempt")
 		return
 	}
+	// The mirror's counters are spent whether or not the legacy pass managed to
+	// write them into hub.toml; a live host that sits below them rises to them
+	// before the records are derived.
+	marks := map[string]hostreg.HighWater{}
+	for name, boundary := range ops.Boundaries() {
+		marks[name] = hostreg.HighWater{Generation: boundary.Generation, PresenceEpoch: boundary.PresenceEpoch}
+	}
+	m.cfg.hosts.SeedHighWater(marks)
+	m.cfg.store.set(m.cfg.hosts.All())
 	entries := m.cfg.store.snapshot()
 	records, err := m.deriveHostTOMLRecords(entries, entries, hostPersistChange{highWaterRaises: m.mirrorCountersAbove(ops, entries)})
 	if err != nil {
