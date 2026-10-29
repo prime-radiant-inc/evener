@@ -17,9 +17,6 @@ concurrency:
 permissions:
   contents: read
 
-# Runners are pinned to ubuntu-24.04. ubuntu-latest moved to 26.04 on
-# 2026-10-29, where the agent and root suites ran 2-4x slower and
-# hit their timeouts; move the pin only after measuring a 26.04 run.
 jobs:
   # The frontend gate runs as two lanes on separate runners, because its two
   # halves share nothing: the unit/type/lint checks, and the production build
