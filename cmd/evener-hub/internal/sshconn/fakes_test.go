@@ -348,6 +348,18 @@ func requireNoRemoteOps(t *testing.T, fr *fakeRunner, what string, ops ...remote
 	}
 }
 
+// launchCheckTarget returns the executable an opLaunchCheck command runs: a
+// bare name resolved on the host's PATH, or the path preflight settled on.
+func launchCheckTarget(argv []string) string {
+	words := strings.Fields(strings.Join(argv, " "))
+	for i := len(words) - 1; i > 0; i-- {
+		if words[i] == "launch-check" {
+			return words[i-1]
+		}
+	}
+	return ""
+}
+
 // resolveTarget returns the path an opResolveExec command resolves.
 func resolveTarget(argv []string) string {
 	joined := strings.Join(argv, " ")
