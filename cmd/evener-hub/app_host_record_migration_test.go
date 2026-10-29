@@ -1002,4 +1002,20 @@ func TestMigrationKeepsTheCountersOfANameOnlyTheMirrorRemembers(t *testing.T) {
 	if got := fixture.store.Boundaries()["ghost"]; got != boundary {
 		t.Fatalf("the mirror holds %+v for ghost after the import, want %+v", got, boundary)
 	}
+
+	// The manager carries the counters on: an unrelated host change keeps them,
+	// and a re-add of the name mints above them.
+	if _, err := m.AddResult(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "extra", Address: "extra.example"}, MutationID: newTestMutationID()}); err != nil {
+		t.Fatalf("Add(extra): %v", err)
+	}
+	if kept := mustRecords(t, fixture.store).Generations["ghost"]; kept != mark {
+		t.Fatalf("an unrelated host change left ghost's counters as %+v, want %+v", kept, mark)
+	}
+	if _, err := m.AddResult(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "ghost", Address: "ghost.example"}, MutationID: newTestMutationID()}); err != nil {
+		t.Fatalf("Add(ghost): %v", err)
+	}
+	readded := mustRecords(t, fixture.store).Generations["ghost"]
+	if readded.Generation <= boundary.Generation || readded.PresenceEpoch <= boundary.PresenceEpoch {
+		t.Fatalf("the re-add of ghost minted %+v, want generation and presence epoch above %+v", readded, boundary)
+	}
 }

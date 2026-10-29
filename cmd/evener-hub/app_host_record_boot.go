@@ -202,7 +202,13 @@ func (m *hubHostManager) migrateLegacyRecords(ops *hostops.Store) {
 		if _, isLive := live[name]; isLive {
 			continue
 		}
-		set.Generations[name] = HostGeneration{Generation: boundary.Generation, IncarnationID: boundary.IncarnationID, PresenceEpoch: boundary.PresenceEpoch}
+		mark := HostGeneration{Generation: boundary.Generation, IncarnationID: boundary.IncarnationID, PresenceEpoch: boundary.PresenceEpoch}
+		set.Generations[name] = mark
+		if records.highWater == nil {
+			records.highWater = map[string]HostGeneration{}
+		}
+		records.highWater[name] = mark
+		m.cfg.hosts.SeedHighWater(map[string]hostreg.HighWater{name: {Generation: mark.Generation, PresenceEpoch: mark.PresenceEpoch}})
 	}
 	family, err := encodeHostRecords(set)
 	if err != nil {
