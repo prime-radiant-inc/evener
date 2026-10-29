@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -27,12 +28,12 @@ func (s goSource) dir() string { return filepath.ToSlash(filepath.Dir(s.path)) }
 // are left out.
 func repoFiles(root string, pathspecs ...string) ([]string, error) {
 	args := append([]string{"-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--"}, pathspecs...)
-	listing, err := exec.Command("git", args...).Output()
+	listing, err := exec.CommandContext(context.Background(), "git", args...).Output()
 	if err != nil {
 		return nil, fmt.Errorf("listing %v in %s: %w", pathspecs, root, err)
 	}
 	var out []string
-	for _, rel := range strings.Split(string(listing), "\x00") {
+	for rel := range strings.SplitSeq(string(listing), "\x00") {
 		if rel == "" || strings.HasSuffix(rel, "_test.go") || underTestdata(rel) {
 			continue
 		}
