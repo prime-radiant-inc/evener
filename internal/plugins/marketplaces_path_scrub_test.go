@@ -1004,3 +1004,41 @@ func TestUpgradeCorruptCatalogNamesNoPath(t *testing.T) {
 		t.Fatalf("err = %v, want it to name marketplace.json", err)
 	}
 }
+
+// migrationFailedErr hands a lock holder's failure to its caller scrubbed:
+// a raw error naming store paths becomes path-free, while the sentinels a
+// caller can still act on survive errors.Is.
+func TestMigrationFailedErrScrubsPathsAndKeepsSentinels(t *testing.T) {
+	t.Parallel()
+	m, _ := newQuietManager(t)
+
+	raw := fmt.Errorf("open %s: %w", filepath.Join(m.Root, "marker"), errStoreBetweenNames)
+	scrubbed := m.migrationFailedErr(raw)
+	if !errors.Is(scrubbed, errStoreBetweenNames) {
+		t.Fatalf("scrubbed migration error lost the between-names sentinel: %v", scrubbed)
+	}
+	if !alreadyPathFree(scrubbed) {
+		t.Fatal("scrubbed migration error is not marked path-free")
+	}
+
+	plain := m.migrationFailedErr(errors.New("open marker: no such file"))
+	if !alreadyPathFree(plain) {
+		t.Fatal("a migration failure without sentinels is not marked path-free")
+	}
+	if errors.Is(plain, errStoreBetweenNames) {
+		t.Fatal("an unrelated migration failure claims the between-names sentinel")
+	}
+}
+
+// AddMarketplace reads the registry before anything else, so a registry that
+// cannot be parsed fails the add without touching the staging area.
+func TestAddMarketplaceReportsAnUnreadableRegistry(t *testing.T) {
+	t.Parallel()
+	m, ctx := newQuietManager(t)
+	if err := os.WriteFile(filepath.Join(m.Root, marketplacesFileName), []byte("not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.AddMarketplace(ctx, "acme", Source{}); err == nil {
+		t.Fatal("an add over an unreadable marketplace registry succeeded")
+	}
+}

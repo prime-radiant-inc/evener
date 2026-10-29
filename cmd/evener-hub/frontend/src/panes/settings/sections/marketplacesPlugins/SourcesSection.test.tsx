@@ -2,14 +2,14 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test } from "vitest";
-import { connectionStore } from "../../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../../stores/connection";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../../../stores/extensions";
 import { hostsStore } from "../../../../stores/hosts";
 import { resetSettingsHostForTests, setSettingsHost } from "../../../../stores/settingsHost";
 import { MarketplacesPluginsHostScope, MarketplacesPluginsSection } from "./index";
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetExtensionsStoreForTests();
   hostsStore.getState().resetForTests();
   resetSettingsHostForTests();

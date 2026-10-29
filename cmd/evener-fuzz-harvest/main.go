@@ -35,7 +35,10 @@ func (s *stringSlice) Set(v string) error {
 	return nil
 }
 
-const defaultMaxSeedBytes = 32768
+const (
+	defaultMaxSeedBytes = 32768
+	defaultMaxPerTarget = 100
+)
 
 var allSurfaces = []string{"sse", "toolargs", "appwire", "http", "jobs"}
 
@@ -60,11 +63,26 @@ func run(args []string, stdout, stderr io.Writer) int {
 	surfaceList := fs.String("surface", strings.Join(allSurfaces, ","), "comma-separated surfaces to harvest")
 	keepValues := fs.Bool("keep-values", false, "skip shape-scrub, keep real values (GATED; local-only, never committed)")
 	maxSeedBytes := fs.Int("max-seed-bytes", defaultMaxSeedBytes, "drop seeds whose data exceeds this many bytes")
+	maxPerTarget := fs.Int("max-per-target", defaultMaxPerTarget, "cap on files per target directory; at the cap the directory is pruned by coverage, then further seeds are dropped")
+	var pruneDirs stringSlice
+	fs.Var(&pruneDirs, "prune", "corpus directory (relative to --out-root, repeatable) to prune by coverage instead of harvesting")
 	dryRun := fs.Bool("dry-run", false, "report counts and would-write paths; write nothing")
 	logPath := fs.String("log", "", "write per-seed provenance to this file")
 	noGitleaks := fs.Bool("no-gitleaks", false, "skip the post-write gitleaks barrier")
 	if err := fs.Parse(args); err != nil {
 		return 2
+	}
+
+	if len(pruneDirs) > 0 {
+		for _, dir := range pruneDirs {
+			report, err := pruneCorpus(filepath.Join(*outRoot, dir), *dryRun)
+			if err != nil {
+				fmt.Fprintf(stderr, "prune %s: %v\n", dir, err) //nolint:errcheck
+				return 1
+			}
+			fmt.Fprintf(stdout, "%s: %s\n", dir, report) //nolint:errcheck
+		}
+		return 0
 	}
 
 	surfaces, err := parseSurfaces(*surfaceList)
@@ -107,6 +125,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	emit := NewEmitter(*dryRun, *maxSeedBytes)
+	emit.maxPerTarget = *maxPerTarget
+	emit.makeRoom = func(dir string) error {
+		_, err := pruneCorpus(dir, false)
+		return err
+	}
 	r := newRunner(*outRoot, emit, logw)
 
 	for _, sd := range stateDirs {
@@ -142,6 +165,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 	exit := 0
 	if r.leaks > 0 {
 		fmt.Fprintf(stderr, "FAIL: %d seed(s) dropped because a secret survived sanitization\n", r.leaks) //nolint:errcheck
+		exit = 1
+	}
+
+	for _, err := range emit.roomErrs {
+		fmt.Fprintf(stderr, "FAIL: %v\n", err) //nolint:errcheck
 		exit = 1
 	}
 

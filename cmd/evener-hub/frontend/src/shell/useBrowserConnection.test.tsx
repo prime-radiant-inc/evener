@@ -2,14 +2,14 @@ import { AppwireClient } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
-import { connectionStore } from "../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../stores/connection";
 import { useBrowserConnection } from "./useBrowserConnection";
 
 const disposals: Array<() => void> = [];
 afterEach(() => {
   cleanup();
   for (const dispose of disposals.splice(0)) dispose();
-  connectionStore.setState({ client: null, state: "idle", serverInfo: undefined });
+  resetConnectionStoreForTests();
   vi.restoreAllMocks();
 });
 

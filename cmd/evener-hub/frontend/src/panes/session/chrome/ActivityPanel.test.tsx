@@ -6,7 +6,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { JobsTab } from "../../../shell/activitybar/JobsTab";
 import { deriveScope } from "../../../shell/statusbar/statusScope";
 import { activityPanelStore } from "../../../stores/activityPanel";
-import { connectionStore } from "../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
 import { navigationStore } from "../../../stores/navigation/store";
 import { sessionActivitySnapshot } from "../../../stores/sessionActivity";
 import {
@@ -25,7 +25,7 @@ const ref = "remote:owner";
 const model = (r = ref) => hydrateThread(activityThread(r), r, 0);
 afterEach(() => {
   cleanup();
-  connectionStore.setState({ client: null, state: "idle" });
+  resetConnectionStoreForTests();
   activityPanelStore.getState().resetForTests();
   vi.restoreAllMocks();
   vi.useRealTimers();

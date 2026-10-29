@@ -43,6 +43,15 @@ func FuzzAnthropicComplete(f *testing.F) {
 	f.Add(byte(29), []byte(`{"error":{"message":"bad request"}}`)) // 429
 	f.Add(byte(0), []byte(`{"error":{"type":"invalid_request"}}`)) // 200
 	f.Add(byte(204), []byte(`garbage`))                            // 204 -> success branch
+	// Decoder arms: the server_tool_use / web_search_tool_result content
+	// blocks, a non-object content item (skipped), a tool_use whose stop_reason
+	// normalized to stop (finish falls back to tool_calls), and stop_details
+	// that describe no refusal (no warning).
+	f.Add(byte(0), []byte(`{"content":[{"type":"server_tool_use","id":"srvu_1","name":"web_search","input":{"query":"tokyo weather"}}]}`))
+	f.Add(byte(0), []byte(`{"content":[{"type":"web_search_tool_result","content":[{"title":"t","url":"https://e/"}]}]}`))
+	f.Add(byte(0), []byte(`{"content":["nope",{"type":"text","text":"hi"}],"stop_reason":"end_turn"}`))
+	f.Add(byte(0), []byte(`{"content":[{"type":"tool_use","id":"t1","name":"shell","input":{}}],"stop_reason":"end_turn"}`))
+	f.Add(byte(0), []byte(`{"stop_reason":"end_turn","stop_details":{"type":"stop"}}`))
 
 	f.Fuzz(func(t *testing.T, statusSel byte, body []byte) {
 		status := http.StatusOK

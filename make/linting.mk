@@ -1,4 +1,4 @@
-.PHONY: lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-package-imports lint-js-toolchain-pins lint-biome lint-cache-clean secret-scan
+.PHONY: lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-package-imports lint-js-toolchain-pins lint-tracked-file-size lint-biome lint-cache-clean secret-scan
 
 # secret-scan runs gitleaks over the whole working tree using the committed
 # .gitleaks.toml ruleset. Part of the gate (`make lint`); skips with a warning
@@ -188,17 +188,19 @@ lint-gofmt:
 # every expected output to remain tracked. Otherwise deleting an output from
 # HEAD and letting the generator recreate it would make the gate pass. The
 # output list is bound once so the trackedness and content checks cannot drift.
-## Fail if any committed generated output is stale: the two AppWire outputs
-## and the six docs/developing-evener/ target tables.
+## Fail if any committed generated output is stale: the two AppWire outputs,
+## the six docs/developing-evener/ target tables and the configuration knob
+## table.
 ## proves: docs/appwire-protocol.md, the generated TypeScript protocol
-##   types, and the marked target-table regions in docs/developing-evener/'s
-##   six family docs all match what `make generate` produces right now.
+##   types, the marked target-table regions in docs/developing-evener/'s
+##   six family docs, and docs/developing-evener/config-knobs.md all match
+##   what `make generate` produces right now.
 ## trigger: Required CI (via make lint); local pre-merge.
 ## requires: None beyond the Go toolchain.
 ## fails-when: `make generate` exits nonzero, an expected output is no longer
 ##   tracked, or regenerated output differs from what is committed.
 lint-generated:
-	$(call run_quiet_lint,$(MAKE) generate && { outputs='docs/appwire-protocol.md appwire-client/typescript/types.gen.ts docs/developing-evener/README.md docs/developing-evener/building.md docs/developing-evener/testing.md docs/developing-evener/linting.md docs/developing-evener/fuzzing.md docs/developing-evener/coverage.md'; git ls-files --error-unmatch -- $$outputs >/dev/null && git diff --exit-code HEAD -- $$outputs || { echo "the paths above are untracked or differ from HEAD. make generate has already run; the fix is to commit that diff - it is either a regenerated table or a hand-written edit inside one of these files."; exit 1; }; })
+	$(call run_quiet_lint,$(MAKE) generate && { outputs='docs/appwire-protocol.md appwire-client/typescript/types.gen.ts docs/developing-evener/README.md docs/developing-evener/building.md docs/developing-evener/testing.md docs/developing-evener/linting.md docs/developing-evener/fuzzing.md docs/developing-evener/coverage.md docs/developing-evener/config-knobs.md'; git ls-files --error-unmatch -- $$outputs >/dev/null && git diff --exit-code HEAD -- $$outputs || { echo "the paths above are untracked or differ from HEAD. make generate has already run; the fix is to commit that diff - it is either a regenerated table or a hand-written edit inside one of these files."; exit 1; }; })
 
 # lint-fuzz-registry wraps the SAME check as `make fuzz-registry-check`
 # (scripts/fuzz/fuzz-registry-check.sh) so a native/Rapid fuzz target that
@@ -260,6 +262,18 @@ lint-package-imports:
 lint-js-toolchain-pins:
 	$(call run_quiet_lint,node scripts/sdk/js-toolchain-pins-check.mjs)
 
+# lint-tracked-file-size keeps large blobs out of git. A file stays in history
+# after it is deleted, so the budget stops it at the PR that adds it; the
+# script holds the short allowlist of files that have to be committed.
+## Fail if a tracked file is over 1 MiB and is not on the script's allowlist.
+## proves: No git-tracked file exceeds 1 MiB except the allowlisted ones in
+##   scripts/ops/tracked-file-size-check.sh.
+## trigger: Required CI (via make lint); local pre-merge. Well under a second.
+## requires: None beyond a POSIX shell and git.
+## fails-when: A tracked file over 1 MiB is not on the allowlist.
+lint-tracked-file-size:
+	$(call run_quiet_lint,scripts/ops/tracked-file-size-check.sh)
+
 # lint-biome delegates to the frontend's own `lint` script, the same command
 # the web job's `make test-web` runs, so the two scopes are defined in exactly
 # one place and cannot drift. It runs that script from cmd/evener-hub/frontend
@@ -285,7 +299,7 @@ lint-js-toolchain-pins:
 lint-biome: web-preflight
 	$(call run_quiet_lint,cd cmd/evener-hub/frontend && npm run lint)
 
-LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-package-imports lint-js-toolchain-pins lint-biome secret-scan
+LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-package-imports lint-js-toolchain-pins lint-tracked-file-size lint-biome secret-scan
 
 ## Go lint, formatting, tagged floors, generated outputs, imports, frontend
 ## Biome, and secrets.
@@ -294,7 +308,8 @@ LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal l
 ##   workspace module; generated-output freshness; the fuzz registry check;
 ##   that no web or native import names the AppWire TypeScript package by
 ##   path; that Biome, Vitest, TypeScript and React are pinned to one exact
-##   version across the npm trees; that the frontend's Biome lint script passes over both frontend scopes;
+##   version across the npm trees; that no tracked file is over 1 MiB beyond a
+##   short allowlist; that the frontend's Biome lint script passes over both frontend scopes;
 ##   and the repo secret scan.
 ## trigger: Required CI; local pre-merge.
 ## requires: golangci-lint, gitleaks, and the frontend node_modules install.

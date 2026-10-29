@@ -40,7 +40,7 @@ import { replaceEditorText } from "../panes/session/testing/editor";
 import { ClientProvider } from "../shell/clientContext";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { ALL_CAPABILITIES as FULL_CAPABILITIES } from "../threadTestUtils";
-import { connectionStore } from "./connection";
+import { connectionStore, resetConnectionStoreForTests } from "./connection";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "./threads";
 
@@ -473,7 +473,7 @@ async function openRetirementClientFixture(): Promise<RetirementClientFixture> {
 beforeEach(() => {
   installLocalStorage(new MemoryStorage());
   globalThis.indexedDB = new IDBFactory();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetPendingTurnsStoreForTests();
 });

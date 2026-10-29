@@ -118,7 +118,7 @@ func TestCompactionReplay_RealRoundWritesReplayTailAndResumes(t *testing.T) {
 		t.Fatalf("the merged-back turn appears %d times in live history, want exactly 1", got)
 	}
 
-	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id), "")
+	data, err := readTranscriptFull(context.Background(), transcriptPath(s.stateDir, s.id), "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}
@@ -227,7 +227,7 @@ func TestCompactionReplay_RealRoundMarkerLessFoldWritesNoReplayTail(t *testing.T
 		t.Fatalf("prepareModelRequestWithError: %v", err)
 	}
 
-	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id), "")
+	data, err := readTranscriptFull(context.Background(), transcriptPath(s.stateDir, s.id), "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}

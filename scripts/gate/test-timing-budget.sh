@@ -12,7 +12,7 @@
 # skip. A Go package's duration is its own wall time, read from the package-level
 # terminal event `go test -json` emits for it (the Elapsed field); the per-test
 # and per-subtest Elapsed values feed only the per-test ceiling below, never the
-# per-package number (issue #172). `evener-dev timing-parse` reads the stream.
+# per-package number (issue #172). `evener-dev timing-parse` reads that stream and the vitest report.
 # The frontend has no per-package shape, so its whole vitest run rolls up under
 # the single key "web", read from the vitest JSON reporter.
 #

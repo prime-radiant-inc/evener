@@ -16,8 +16,6 @@ replace primeradiant.com/evener v0.0.0 => .
 
 replace primeradiant.com/evener/auth v0.0.0 => ./auth
 
-replace primeradiant.com/evener/auth v0.1.0 => ./auth
-
 replace primeradiant.com/evener/llm v0.0.0 => ./llm
 
 replace primeradiant.com/evener/agent v0.0.0 => ./agent

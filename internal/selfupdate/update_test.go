@@ -4,7 +4,9 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -302,6 +304,69 @@ func TestStageExecutableLeavesNoTempFile(t *testing.T) {
 	}
 	if len(leftovers) != 0 {
 		t.Fatalf("temp files left behind: %v", leftovers)
+	}
+}
+
+func TestCtxReaderStopsWhenTheCallerLeft(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := ctxReader(ctx, strings.NewReader("body")).Read(make([]byte, 4)); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want the caller's cancellation", err)
+	}
+}
+
+func TestStageExecutableStopsForACallerThatLeft(t *testing.T) {
+	t.Parallel()
+	src := filepath.Join(t.TempDir(), "evener")
+	if err := os.WriteFile(src, []byte("new evener"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	shareBin := t.TempDir()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	if _, err := stageExecutable(ctx, src, shareBin, "evener"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want the caller's cancellation", err)
+	}
+	staged, globErr := filepath.Glob(filepath.Join(shareBin, "*.stage"))
+	if globErr != nil {
+		t.Fatal(globErr)
+	}
+	if len(staged) != 0 {
+		t.Fatalf("a cancelled staging left a temp binary behind: %v", staged)
+	}
+}
+
+func TestSwapSymlinkRefusesUnusableLinkPaths(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the directory permissions this test relies on")
+	}
+	unwritable := t.TempDir()
+	if err := os.Chmod(unwritable, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(unwritable, 0o700) })
+	if err := swapSymlink("/managed/evener", filepath.Join(unwritable, "evener")); err == nil {
+		t.Fatal("an entrypoint swap beside an unwritable directory succeeded")
+	}
+
+	occupied := filepath.Join(t.TempDir(), "evener")
+	if err := os.Mkdir(occupied, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := swapSymlink("/managed/evener", occupied); err == nil {
+		t.Fatal("an entrypoint swap over a directory succeeded")
+	}
+	leftovers, globErr := filepath.Glob(filepath.Dir(occupied) + "/*.link")
+	if globErr != nil {
+		t.Fatal(globErr)
+	}
+	if len(leftovers) != 0 {
+		t.Fatalf("a failed swap left temp links behind: %v", leftovers)
+	}
+	if fi, err := os.Lstat(occupied); err != nil || !fi.IsDir() {
+		t.Fatalf("the directory entrypoint did not survive: %v", err)
 	}
 }
 

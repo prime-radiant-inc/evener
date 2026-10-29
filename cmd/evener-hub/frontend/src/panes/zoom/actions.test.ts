@@ -18,7 +18,7 @@ import {
   workspaceStore,
 } from "../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { acquireSessionActivity } from "../../stores/sessionActivity";
 import { activityDelegate } from "../../stores/sessionActivityTestUtils";
 import { readRecoveryPick, resolveRecoveryPick, writeRecoveryPick } from "../session/composer/draft";
@@ -33,7 +33,7 @@ beforeEach(() => {
   installLocalStorage(new MemoryStorage());
   resetWorkspaceStoreForTests();
   resetTranscriptViewRegistryForTests();
-  connectionStore.setState({ state: "idle", client: null, serverInfo: undefined });
+  resetConnectionStoreForTests();
 });
 afterEach(() => resetWorkspaceStoreForTests());
 

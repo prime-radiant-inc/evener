@@ -4,6 +4,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -61,7 +62,7 @@ func FuzzTranscriptReplayStructured(f *testing.F) {
 		if err := os.WriteFile(inPath, raw, 0o644); err != nil {
 			t.Fatalf("write input transcript: %v", err)
 		}
-		d, err := readTranscriptFull(inPath, "")
+		d, err := readTranscriptFull(context.Background(), inPath, "")
 		if err != nil {
 			return // no header / unreadable: no-panic floor proven, stop
 		}

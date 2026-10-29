@@ -142,6 +142,25 @@ func FuzzChatCompletionsStreamMetamorphic(f *testing.F) {
 		": just a comment\n\n",
 		"\n\n\n",
 		"",
+		// A reasoning-only stream closes with ReasoningEnd at [DONE].
+		`data: {"choices":[{"index":0,"delta":{"reasoning_content":"only thinking"}}]}` + "\n\n" +
+			"data: [DONE]\n\n",
+		// Encrypted reasoning_details items accumulate onto the thinking part.
+		`data: {"choices":[{"index":0,"delta":{"reasoning_details":[{"type":"reasoning.encrypted","id":"e1","data":"d1"}]}}]}` + "\n\n" +
+			"data: [DONE]\n\n",
+		// reasoning_details deltas with text items and a thinking-fallback item.
+		`data: {"choices":[{"index":0,"delta":{"reasoning_details":[{"type":"reasoning.text","text":"th"},{"type":"thinking","thinking":"tk"}]}}]}` + "\n\n" +
+			"data: [DONE]\n\n",
+		// A tool call after reasoning closes the reasoning segment first.
+		`data: {"choices":[{"index":0,"delta":{"reasoning_content":"prelude"}}]}` + "\n\n" +
+			`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_r","type":"function","function":{"name":"f","arguments":"{}"}}]}}]}` + "\n\n" +
+			"data: [DONE]\n\n",
+		// Moonshot/Kimi report usage on choices[0].usage instead of the chunk.
+		`data: {"choices":[{"index":0,"delta":{"content":"hi"},"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}]}` + "\n\n" +
+			"data: [DONE]\n\n",
+		// An in-band error with no message still ends the stream typed, via
+		// the generic in-band text.
+		`data: {"error":{"code":429,"type":"rate_limit_error"}}` + "\n\n",
 	}
 	for _, s := range seeds {
 		f.Add([]byte(s))

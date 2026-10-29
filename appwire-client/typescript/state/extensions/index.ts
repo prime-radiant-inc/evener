@@ -16,12 +16,8 @@ export {
   isHubWriteBusy,
   runGatedMutation,
 } from "./hubWriteGate";
-export type { KeyedRevision } from "./keyedRevision";
-export { createKeyedRevision } from "./keyedRevision";
 export type { LaunchLayerClient, LaunchLayerState, LaunchLayerStore } from "./launchLayer";
 export { createLaunchLayerStore } from "./launchLayer";
-export type { ListRevision } from "./listRevision";
-export { createListRevision, readRevisioned, writeRevisioned } from "./listRevision";
 export type {
   MarketplaceCatalogEntry,
   MarketplaceRemovalOutcome,
@@ -32,5 +28,3 @@ export type {
 export { createMarketplacesStore, marketplaceRemovalOutcome } from "./marketplaces";
 export type { PluginsClient, PluginsState, PluginsStore } from "./plugins";
 export { createPluginsStore, PLUGIN_UPDATE_CHECK_TIMEOUT_MS } from "./plugins";
-export type { HostLifecycle, StoreLifecycle, StoreLifecycleOptions } from "./storeLifecycle";
-export { attachLifecycle, createStoreLifecycle } from "./storeLifecycle";

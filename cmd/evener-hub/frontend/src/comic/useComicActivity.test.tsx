@@ -8,14 +8,14 @@ import {
 } from "@evener/appwire-client/testing/subagentWireFixtures";
 import { act, cleanup, render, waitFor } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
-import { connectionStore } from "../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../stores/connection";
 import { acquireSessionActivity } from "../stores/sessionActivity";
 import { projectComicConversation } from "./projection";
 import { useComicActivity } from "./useComicActivity";
 
 afterEach(() => {
   cleanup();
-  connectionStore.setState({ client: null, state: "idle" });
+  resetConnectionStoreForTests();
 });
 test("pages only bounded session delegates and keeps unavailable evidence with its chosen generation", async () => {
   const fixture = subagentOutcomesDelegatesResponse();

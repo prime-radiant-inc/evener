@@ -138,6 +138,91 @@ func parseGoTestJSON(r io.Reader, expected []string) ([]string, error) {
 	return rows, nil
 }
 
+// vitestReport is the subset of vitest's Jest-compatible JSON reporter output
+// the ratchet reads. Durations are milliseconds. The lists stay raw so a
+// literal null (a malformed report) can be told from an absent key.
+type vitestReport struct {
+	TestResults json.RawMessage `json:"testResults"` //nolint:tagliatelle // vitest's reporter spells the key in camelCase
+}
+
+type vitestSuite struct {
+	AssertionResults json.RawMessage `json:"assertionResults"` //nolint:tagliatelle // vitest's reporter spells the key in camelCase
+}
+
+type vitestAssertion struct {
+	FullName string   `json:"fullName"` //nolint:tagliatelle // vitest's reporter spells the key in camelCase
+	Title    string   `json:"title"`
+	Duration *float64 `json:"duration"`
+}
+
+// decodeVitestList decodes an optional JSON array of objects. An absent key is
+// an empty list; a null list or a null entry is a malformed report, which must
+// not measure as a clean, smaller frontend.
+func decodeVitestList[T any](raw json.RawMessage, what string) ([]*T, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var items []*T
+	if err := json.Unmarshal(raw, &items); err != nil || items == nil {
+		return nil, fmt.Errorf("vitest report: %s is not a list of objects", what)
+	}
+	for _, item := range items {
+		if item == nil {
+			return nil, fmt.Errorf("vitest report: %s has a null entry", what)
+		}
+	}
+	return items, nil
+}
+
+// parseVitestJSON rolls the whole frontend suite up under one package key,
+// "web": vitest has no per-package shape the way a Go module does. Each
+// assertion is a TEST row and the SUM is their total, in seconds. Whitespace in
+// a name is flattened so a tab or newline cannot split a row and make the
+// comparator read a truncated line.
+func parseVitestJSON(r io.Reader) ([]string, error) {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, fmt.Errorf("reading vitest report: %w", err)
+	}
+	// Unmarshal, not a stream decode: content after the first document is a
+	// malformed report, not a smaller one.
+	var report *vitestReport
+	if err := json.Unmarshal(data, &report); err != nil {
+		return nil, fmt.Errorf("reading vitest report: %w", err)
+	}
+	if report == nil {
+		return nil, errors.New("vitest report: the document is null")
+	}
+	suites, err := decodeVitestList[vitestSuite](report.TestResults, "testResults")
+	if err != nil {
+		return nil, err
+	}
+	var rows []string
+	total := 0.0
+	for _, suite := range suites {
+		assertions, err := decodeVitestList[vitestAssertion](suite.AssertionResults, "assertionResults")
+		if err != nil {
+			return nil, err
+		}
+		for _, a := range assertions {
+			seconds := 0.0
+			if a.Duration != nil {
+				seconds = *a.Duration / 1000
+			}
+			name := a.FullName
+			if name == "" {
+				name = a.Title
+			}
+			if name = strings.Join(strings.Fields(name), " "); name == "" {
+				name = "(unnamed)"
+			}
+			rows = append(rows, "TEST\tweb\t"+name+"\t"+formatSeconds(seconds))
+			total += seconds
+		}
+	}
+	return append(rows, "SUM\tweb\t"+formatSeconds(total)), nil
+}
+
 // formatSeconds writes a duration the way the ratchet's Python comparator has
 // always read it: the shortest decimal that round-trips.
 func formatSeconds(v float64) string {
@@ -174,31 +259,35 @@ func runTimingParse(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	jsonPath := fs.String("json", "", "path to the go test -json stream")
 	pkgPath := fs.String("packages", "", "path to the go list package inventory, one per line")
+	vitestPath := fs.String("vitest", "", "path to the vitest JSON report; prints the frontend's rows instead")
 	fs.Usage = func() {
-		_, _ = fmt.Fprint(stderr, "usage: evener-dev timing-parse --json FILE --packages FILE\n\n"+
+		_, _ = fmt.Fprint(stderr, "usage: evener-dev timing-parse --json FILE --packages FILE\n"+
+			"       evener-dev timing-parse --vitest FILE\n\n"+
 			"Print the test-timing-budget ratchet's rows for one module's go test -json\n"+
 			"stream: PKG/TEST rows as results arrive, SUM rows from each package's own\n"+
-			"wall time. Fails when a package in the inventory never ends.\n")
+			"wall time. Fails when a package in the inventory never ends. With --vitest,\n"+
+			"print the frontend's TEST rows and one SUM row under the key web.\n")
 	}
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if *jsonPath == "" || *pkgPath == "" {
+	var rows []string
+	var err error
+	switch {
+	case *vitestPath != "" && *jsonPath == "" && *pkgPath == "":
+		rows, err = readRows(*vitestPath, func(f *os.File) ([]string, error) { return parseVitestJSON(f) })
+	case *vitestPath == "" && *jsonPath != "" && *pkgPath != "":
+		rows, err = readRows(*jsonPath, func(f *os.File) ([]string, error) {
+			expected, err := readTimingPackages(*pkgPath)
+			if err != nil {
+				return nil, err
+			}
+			return parseGoTestJSON(f, expected)
+		})
+	default:
 		fs.Usage()
 		return 2
 	}
-	f, err := os.Open(*jsonPath)
-	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "evener-dev timing-parse: %v\n", err)
-		return 1
-	}
-	defer func() { _ = f.Close() }()
-	expected, err := readTimingPackages(*pkgPath)
-	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "evener-dev timing-parse: %v\n", err)
-		return 1
-	}
-	rows, err := parseGoTestJSON(f, expected)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "evener-dev timing-parse: %v\n", err)
 		return 1
@@ -210,4 +299,14 @@ func runTimingParse(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	return 0
+}
+
+// readRows opens path and hands it to parse.
+func readRows(path string, parse func(*os.File) ([]string, error)) ([]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	return parse(f)
 }

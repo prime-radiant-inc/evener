@@ -1502,7 +1502,7 @@ func TestDelegateResourceCreate_ChildTranscriptIsPreseededBeforeRun(t *testing.T
 	case <-time.After(30 * time.Second):
 		t.Fatal("provider was not reached")
 	}
-	_, entries, _, err := readTranscript(filepath.Join(stateDir, "", schema.SessionsSubdir, childID+".transcript.jsonl"), "")
+	_, entries, _, err := readTranscript(context.Background(), filepath.Join(stateDir, "", schema.SessionsSubdir, childID+".transcript.jsonl"), "")
 	if err != nil {
 		t.Fatalf("read child transcript at provider boundary: %v", err)
 	}
@@ -1556,7 +1556,7 @@ func TestDelegateResourceCreate_InputTranscriptAppendRunsAfterControllerUnlock(t
 	if providerChildID != childID {
 		t.Fatalf("provider child = %q, want registered child %q", providerChildID, childID)
 	}
-	_, entries, _, err := readTranscript(filepath.Join(root.stateDir, "", schema.SessionsSubdir, childID+".transcript.jsonl"), "")
+	_, entries, _, err := readTranscript(context.Background(), filepath.Join(root.stateDir, "", schema.SessionsSubdir, childID+".transcript.jsonl"), "")
 	if err != nil {
 		t.Fatalf("read real child transcript at provider boundary: %v", err)
 	}

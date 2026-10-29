@@ -9,7 +9,7 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { archivedListKey, archivedListStore, resetArchivedListStoreForTests } from "../../stores/archivedList";
 import { setCacheChannelFactoryForTests } from "../../stores/cacheLifetime";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { setProductionEntryCacheForTests } from "../../stores/entryTranscriptRoutes";
 import { navigationStore } from "../../stores/navigation/store";
 import { SessionEntryCache } from "../../stores/sessionEntryCache";
@@ -29,7 +29,7 @@ import {
 } from "./actions";
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetArchivedListStoreForTests();
 });
@@ -37,7 +37,7 @@ beforeEach(() => {
 afterEach(() => {
   resetThreadsStoreForTests();
   vi.restoreAllMocks();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
 });
 
 describe("named pin sections", () => {

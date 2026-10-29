@@ -17,7 +17,7 @@ import {
 import { ClientProvider } from "../shell/clientContext";
 import { navigate, paneToURL } from "../shell/routing";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
-import { connectionStore } from "../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../stores/connection";
 import { acquireSessionActivity, sessionActivitySnapshot } from "../stores/sessionActivity";
 import { installHydrationRetrySchedulerForTests, resetThreadsStoreForTests, threadsStore } from "../stores/threads";
 import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../stores/transcriptDisplay";
@@ -264,7 +264,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   sessionStorage.clear();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetTranscriptPagingForTests();
   resetWorkspaceStoreForTests();

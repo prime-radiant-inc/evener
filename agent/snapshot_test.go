@@ -97,7 +97,7 @@ func TestSession_AutoSave_WritesMetaAfterProcessInput(t *testing.T) {
 
 	// History should be in the transcript, not the meta.
 	tpath := schema.SessionTranscriptPath(dir, sess.ID())
-	_, entries, _, err := readTranscript(tpath, "")
+	_, entries, _, err := readTranscript(context.Background(), tpath, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestSession_AutoSave_PersistsToolResults(t *testing.T) {
 
 	// Tool results should be in the transcript.
 	tpath := schema.SessionTranscriptPath(dir, sess.ID())
-	_, entries, _, err := readTranscript(tpath, "")
+	_, entries, _, err := readTranscript(context.Background(), tpath, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -281,7 +281,7 @@ func TestSession_AutoSave_DoesNotPersistMidToolRound(t *testing.T) {
 
 	// Verify tool results are complete in the transcript.
 	tpath := schema.SessionTranscriptPath(dir, sess.ID())
-	_, entries, _, err := readTranscript(tpath, "")
+	_, entries, _, err := readTranscript(context.Background(), tpath, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -341,7 +341,7 @@ func TestRestoreSession_AutoSaveContinues(t *testing.T) {
 
 	// Verify transcript has the initial history.
 	tpath := schema.SessionTranscriptPath(dir, sess.ID())
-	_, entries, _, err := readTranscript(tpath, "")
+	_, entries, _, err := readTranscript(context.Background(), tpath, "")
 	if err != nil {
 		t.Fatalf("readTranscript after phase 1: %v", err)
 	}
@@ -376,7 +376,7 @@ func TestRestoreSession_AutoSaveContinues(t *testing.T) {
 	}
 
 	// Verify the transcript grew with new entries.
-	_, entries2, _, err := readTranscript(tpath, "")
+	_, entries2, _, err := readTranscript(context.Background(), tpath, "")
 	if err != nil {
 		t.Fatalf("readTranscript after phase 2: %v", err)
 	}

@@ -1,3 +1,0 @@
-go test fuzz v1
-int(7)
-[]byte("{\"glob_filter\":\"xxxxxxxx\",\"output_mode\":\"xxxxxxxx\",\"path\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\",\"pattern\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"}")

@@ -8,7 +8,7 @@ import { resetChromeStoreForTests } from "../../shell/chromeStore";
 import { navigate } from "../../shell/routing";
 import { resetWorkspaceStoreForTests } from "../../shell/workspace";
 import { installLocalStorage } from "../../storageTestUtils";
-import { connectionStore } from "../../stores/connection";
+import { resetConnectionStoreForTests } from "../../stores/connection";
 import { resetCredentialsStoreForTests, resetHostInstancesForTests } from "../../stores/credentials";
 import { hostsStore } from "../../stores/hosts";
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
@@ -105,7 +105,7 @@ async function renderSettledOnBeta(): Promise<ReturnType<typeof render>> {
 
 beforeEach(() => {
   stubMatchMedia(false);
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetCredentialsStoreForTests();
   resetHostInstancesForTests();
   hostsStore.getState().resetForTests();
@@ -121,7 +121,7 @@ afterEach(() => {
   resetPrefsStoreForTests();
   resetWorkspaceStoreForTests();
   resetChromeStoreForTests();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetCredentialsStoreForTests();
   resetSettingsHostForTests();
 });

@@ -21,7 +21,7 @@ import { ClientProvider } from "../../../shell/clientContext";
 import { resetFocusedActivityScopeForTests } from "../../../shell/focusedSession";
 import { registerPaneForTests } from "../../../shell/paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
-import { connectionStore } from "../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../../stores/navigation/store";
 import { sessionActivitySnapshot } from "../../../stores/sessionActivity";
 import { activityClient, activitySummary } from "../../../stores/sessionActivityTestUtils";
@@ -143,7 +143,7 @@ function render(ui: ReactElement) {
 
 beforeEach(() => {
   chromeClient = new FakeClient("ready");
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
   resetNavigationStoreForTests();

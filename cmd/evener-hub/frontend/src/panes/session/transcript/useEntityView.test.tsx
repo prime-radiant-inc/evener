@@ -3,7 +3,7 @@ import { findEntityView } from "@evener/appwire-client";
 import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { connectionStore } from "../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
 import { sessionActivitySnapshot, useSessionActivity } from "../../../stores/sessionActivity";
 import {
   activityClient,
@@ -49,10 +49,10 @@ function thread(turns: TurnModel[]): ThreadModel {
   return { ref: SESSION_REF, turns } as unknown as ThreadModel;
 }
 
-beforeEach(() => connectionStore.setState({ client: null, state: "idle" }));
+beforeEach(() => resetConnectionStoreForTests());
 afterEach(() => {
   cleanup();
-  connectionStore.setState({ client: null, state: "idle" });
+  resetConnectionStoreForTests();
 });
 
 test("prose-only turn replacement preserves the derived map identity", () => {

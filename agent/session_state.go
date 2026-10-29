@@ -487,7 +487,9 @@ func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context)
 	path := s.TranscriptPath()
 	s.attentionMu.Lock()
 	if path != "" {
-		_, entries, _, err := readTranscript(path, s.stateDir)
+		// The interrupt that sends us here already cancelled ctx; the durable
+		// transcript must still be read to reconcile the boundary.
+		_, entries, _, err := readTranscript(context.Background(), path, s.stateDir)
 		if err == nil {
 			restoredHistory, restoredRepairInsertions = resumeHistoryIndexed(entries)
 			restoredEntries = entries

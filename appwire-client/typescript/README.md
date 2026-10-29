@@ -568,14 +568,14 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   `HubWriteBusyError`. The global launch-layer store
   (`createLaunchLayerStore(client)`, the one `LaunchConfigLayer` the plugin and
   skill directory lists and the MCP server list are four fields of, read and
-  written at cwd `/` and layer `global`), and the pieces they are built over:
-  `createListRevision`, the fence on a list every response replaces whole, and
-  `createStoreLifecycle`, the notification subscription, debounced refetch,
+  written at cwd `/` and layer `global`), and `createHubWriteGate`, the one
+  write gate the marketplaces and plugins stores share. Every store follows
+  the same lifecycle: a notification subscription, debounced refetch,
   `connectionChanged` recovery (a list a host has read is read again when the
   connection is ready again, because the hub's broadcast only reaches clients
   that were connected) and the `start`/`reset`/`dispose` trio a host drives
-  from its screen, and `createHubWriteGate`, the one write gate the marketplaces
-  and plugins stores share. In every store fetches record their failure in state and
+  from its screen. The revision fence and lifecycle helpers the stores are
+  built over are internal to the package. In every store fetches record their failure in state and
   mutations reject. `REFETCH_DEBOUNCE_MS` is the one debounce every store uses,
   exported from this subpath and from `state/credentials`. The subpath resolves
   to `state/extensions/index.ts`, a barrel that names its exports.

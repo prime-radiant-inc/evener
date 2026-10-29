@@ -62,3 +62,19 @@ func TestEncodedHeaderValueRejectsUnknownFields(t *testing.T) {
 		t.Fatal("json.Unmarshal() accepted an unknown encoded header field")
 	}
 }
+
+// A header value that cannot decode fails the whole header decode, while a
+// well-formed value round-trips through the map.
+func TestEncodedHeaderRejectsAnUndecodableValue(t *testing.T) {
+	var bad EncodedHeader
+	if err := json.Unmarshal([]byte(`{"x":[{"encoding":"base64","data":"!!!!","byte_count":4}]}`), &bad); err == nil {
+		t.Fatal("an undecodable header value must fail the header decode")
+	}
+	var ok EncodedHeader
+	if err := json.Unmarshal([]byte(`{"x":[{"encoding":"utf8","data":"v","byte_count":1}]}`), &ok); err != nil {
+		t.Fatalf("a well-formed header value failed to decode: %v", err)
+	}
+	if v := ok["x"]; len(v) != 1 || v[0] != "v" {
+		t.Fatalf("decoded header = %v, want the round-tripped value", ok)
+	}
+}

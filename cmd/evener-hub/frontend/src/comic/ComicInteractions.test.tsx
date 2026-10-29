@@ -16,7 +16,7 @@ import { ClientProvider } from "../shell/clientContext";
 import { conversationPaneLifetime } from "../shell/paneLifetime";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
-import { connectionStore } from "../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../stores/connection";
 import { MutationOutboxIndexedDB } from "../stores/mutationOutboxIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../stores/threads";
 import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../stores/transcriptDisplay";
@@ -39,7 +39,7 @@ beforeEach(() => {
   );
   installLocalStorage(new MemoryStorage());
   globalThis.indexedDB = new IDBFactory();
-  connectionStore.setState({ state: "idle", client: null, serverInfo: undefined });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
   resetTranscriptDisplayStoreForTests();

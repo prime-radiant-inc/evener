@@ -8,7 +8,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { appliedReceipt } from "../../../mutationReceiptTestUtils";
 import { ClientProvider } from "../../../shell/clientContext";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
-import { connectionStore } from "../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import { holdNextTransaction, holdNextWriteTransaction } from "../../../stores/testing/stalledIndexedDB";
 import {
@@ -43,7 +43,7 @@ import {
 beforeEach(() => {
   installLocalStorage(new MemoryStorage());
   globalThis.indexedDB = new IDBFactory();
-  connectionStore.setState({ state: "idle", client: null, serverInfo: undefined });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetPendingTurnsStoreForTests();
 });

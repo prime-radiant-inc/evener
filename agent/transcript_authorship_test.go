@@ -70,7 +70,7 @@ func TestTranscriptAuthorshipParentInputs(t *testing.T) {
 			t.Fatal(outcome.result.Err)
 		}
 		<-adapter.entered
-		data, err := readTranscriptFull(transcriptPath(root.stateDir, result.ChildSessionID), "")
+		data, err := readTranscriptFull(context.Background(), transcriptPath(root.stateDir, result.ChildSessionID), "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -157,7 +157,7 @@ func TestTranscriptAuthorshipNestedParent(t *testing.T) {
 	done = sub.done
 	sub.mu.Unlock()
 	<-done
-	data, err := readTranscriptFull(transcriptPath(root.stateDir, result.ChildSessionID), "")
+	data, err := readTranscriptFull(context.Background(), transcriptPath(root.stateDir, result.ChildSessionID), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +256,7 @@ func TestTranscriptAuthorshipForkCopiesKnown(t *testing.T) {
 			t.Fatal(result.Err)
 		}
 		<-adapter.entered
-		data, err := readTranscriptFull(transcriptPath(root.stateDir, result.ChildSessionID), "")
+		data, err := readTranscriptFull(context.Background(), transcriptPath(root.stateDir, result.ChildSessionID), "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -294,7 +294,7 @@ func TestTranscriptAuthorshipForkCopiesKnown(t *testing.T) {
 	}
 	// Ordinary edited forks use the same durable evidence but a fresh human edit.
 	root.appendTurn(schema.TurnUserInput, llm.User("edit-target"))
-	data, err := readTranscriptFull(transcriptPath(root.stateDir, root.id), "")
+	data, err := readTranscriptFull(context.Background(), transcriptPath(root.stateDir, root.id), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +302,7 @@ func TestTranscriptAuthorshipForkCopiesKnown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	child, err := readTranscriptFull(transcriptPath(root.stateDir, childID), "")
+	child, err := readTranscriptFull(context.Background(), transcriptPath(root.stateDir, childID), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -374,7 +374,7 @@ func TestTranscriptAuthorshipInternalNudgeAndExplicitHuman(t *testing.T) {
 	if sub == nil {
 		t.Fatal("missing child")
 	}
-	data, err := readTranscriptFull(sub.sess.TranscriptPath(), "")
+	data, err := readTranscriptFull(context.Background(), sub.sess.TranscriptPath(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -403,7 +403,7 @@ func TestTranscriptAuthorshipInternalNudgeAndExplicitHuman(t *testing.T) {
 	if err := sub.sess.acceptUserInput(context.Background(), "explicit human", nil, nil, false); err != nil {
 		t.Fatal(err)
 	}
-	data, err = readTranscriptFull(sub.sess.TranscriptPath(), "")
+	data, err = readTranscriptFull(context.Background(), sub.sess.TranscriptPath(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -432,7 +432,7 @@ func TestTranscriptAuthorshipQueuedExecution(t *testing.T) {
 	if _, ran, err := s.ProcessClientMutationStart(context.Background(), nil); err != nil || !ran {
 		t.Fatalf("ran=%v err=%v", ran, err)
 	}
-	data, err := readTranscriptFull(s.TranscriptPath(), "")
+	data, err := readTranscriptFull(context.Background(), s.TranscriptPath(), "")
 	if err != nil {
 		t.Fatal(err)
 	}

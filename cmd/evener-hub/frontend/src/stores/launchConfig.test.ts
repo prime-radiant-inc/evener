@@ -3,7 +3,7 @@
 import type { LaunchConfigLayer, LaunchConfigResolved, LaunchOptionSchemaResponse } from "@evener/appwire-client";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { connectReadyFakeClient } from "../testing/connectionTestUtils";
-import { connectionStore } from "./connection";
+import { resetConnectionStoreForTests } from "./connection";
 import { launchConfigStore, resetLaunchConfigStoreForTests } from "./launchConfig";
 
 const SCHEMA: LaunchOptionSchemaResponse = {
@@ -23,12 +23,12 @@ const RESOLVED: LaunchConfigResolved = {
 };
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetLaunchConfigStoreForTests();
 });
 
 afterEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
 });
 
 describe("schema", () => {

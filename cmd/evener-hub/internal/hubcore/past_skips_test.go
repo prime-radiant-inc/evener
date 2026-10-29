@@ -146,11 +146,11 @@ func fuzzScenarioPastIndex_RebuildCapsSkipReport(t *testing.T) {
 	idx := NewPastIndex(filepath.Join(projects, "*"))
 	out := captureSkipReport(t, func() { _, _ = idx.Rebuild() })
 
-	named := strings.Count(out, ": invalid project id")
+	named := strings.Count(out, " path=")
 	if named != maxReportedSkips {
 		t.Fatalf("report named %d skips, want the %d cap:\n%s", named, maxReportedSkips, out)
 	}
-	if want := fmt.Sprintf("skipped %d more unindexable entries", strays-maxReportedSkips); !strings.Contains(out, want) {
+	if want := fmt.Sprintf("count=%d", strays-maxReportedSkips); !strings.Contains(out, want) {
 		t.Fatalf("report must count the remainder as %q:\n%s", want, out)
 	}
 }
