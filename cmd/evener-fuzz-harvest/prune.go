@@ -2,6 +2,7 @@ package fuzzharvest
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -86,7 +87,7 @@ func parseCoverProfile(path string) (coverageSet, error) {
 // third-party dependencies such as the schema validator a target's oracle runs
 // inside.
 func instrumentedPackages(pkgDir string) (string, error) {
-	out, err := exec.Command("go", "-C", pkgDir, "list", "-tags", "evenerfuzz", "-deps", "-test",
+	out, err := exec.CommandContext(context.Background(), "go", "-C", pkgDir, "list", "-tags", "evenerfuzz", "-deps", "-test",
 		"-f", "{{if not .Standard}}{{.ImportPath}}{{end}}", ".").Output()
 	if err != nil {
 		return "", fmt.Errorf("go list deps of %s: %w", pkgDir, err)
@@ -95,7 +96,7 @@ func instrumentedPackages(pkgDir string) (string, error) {
 	// only the real import path of each is a coverage target.
 	seen := map[string]bool{}
 	var pkgs []string
-	for _, line := range strings.Split(string(out), "\n") {
+	for line := range strings.SplitSeq(string(out), "\n") {
 		path, _, _ := strings.Cut(line, " ")
 		if path == "" || strings.HasSuffix(path, ".test") || strings.HasSuffix(path, "_test") || seen[path] {
 			continue
@@ -131,7 +132,7 @@ func pruneCorpus(corpusDir string, dryRun bool) (string, error) {
 		return "", err
 	}
 	bin := filepath.Join(tmp, "target.test")
-	build := exec.Command("go", "-C", pkgDir, "test", "-tags", "evenerfuzz", "-c", "-cover",
+	build := exec.CommandContext(context.Background(), "go", "-C", pkgDir, "test", "-tags", "evenerfuzz", "-c", "-cover",
 		"-coverpkg", coverPkgs, "-o", bin, ".")
 	if out, err := build.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("build %s: %w\n%s", pkgDir, err, out)
@@ -143,7 +144,7 @@ func pruneCorpus(corpusDir string, dryRun bool) (string, error) {
 	// removed target would otherwise replay nothing, look redundant, and be
 	// pruned.
 	replay := func(pattern, wantSubtest string) (coverageSet, error) {
-		run := exec.Command(bin, "-test.v", "-test.run", "^"+target+"$/^"+pattern+"$", "-test.coverprofile", profile)
+		run := exec.CommandContext(context.Background(), bin, "-test.v", "-test.run", "^"+target+"$/^"+pattern+"$", "-test.coverprofile", profile)
 		run.Dir = pkgDir
 		out, err := run.CombinedOutput()
 		if err != nil {
