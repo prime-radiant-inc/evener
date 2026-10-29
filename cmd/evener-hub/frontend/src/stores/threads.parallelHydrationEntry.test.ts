@@ -8,7 +8,7 @@ import { resetPendingTurnsStoreForTests } from "../panes/session/composer/queue/
 import { resetWorkspaceStoreForTests } from "../shell/workspace";
 import { connectReadyFakeClient } from "../testing/connectionTestUtils";
 import { type TestThreadOverrides, testThread } from "../threadTestUtils";
-import { connectionStore } from "./connection";
+import { connectionStore, resetConnectionStoreForTests } from "./connection";
 import { productionEntryTranscriptForTests, setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { SessionEntryCache } from "./sessionEntryCache";
 import { installHydrationRetrySchedulerForTests, resetThreadsStoreForTests, threadsStore } from "./threads";
@@ -68,7 +68,7 @@ function runScheduledHydrationRetry(index = 0): void {
 
 let cache: SessionEntryCache;
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetPendingTurnsStoreForTests();
   resetWorkspaceStoreForTests();

@@ -5,7 +5,7 @@ import { StubResizeObserver } from "../resizeObserverTestUtils";
 import { AppShell } from "../shell/AppShell";
 import { resetWorkspaceStoreForTests } from "../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
-import { connectionStore } from "../stores/connection";
+import { resetConnectionStoreForTests } from "../stores/connection";
 import { resetNavigationStoreForTests } from "../stores/navigation/store";
 import { resetThreadsStoreForTests } from "../stores/threads";
 import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../stores/transcriptDisplay";
@@ -34,7 +34,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  connectionStore.setState({ client: null, state: "idle" });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetNavigationStoreForTests();
   resetWorkspaceStoreForTests();

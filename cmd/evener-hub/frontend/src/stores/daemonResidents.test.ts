@@ -10,7 +10,7 @@ import { friendlyErrorMessage } from "@evener/appwire-client";
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, test } from "vitest";
 import { connectReadyFakeClient } from "../testing/connectionTestUtils";
-import { connectedClientPort, connectionStore } from "./connection";
+import { connectedClientPort, resetConnectionStoreForTests } from "./connection";
 import {
   _clearDaemonResidentsInflightForTests,
   daemonResidentsStore,
@@ -32,7 +32,7 @@ const IDENTITY_A: DaemonIdentity = {
 };
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetDaemonResidentsStoreForTests();
 });
 

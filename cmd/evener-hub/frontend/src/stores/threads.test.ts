@@ -29,7 +29,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { resetPendingTurnsStoreForTests } from "../panes/session/composer/queue/pendingTurnsStore";
 import { resetSubagentModuleStoreForTests } from "../panes/session/transcript/tools/subagentModuleStore";
 import { resetWorkspaceStoreForTests } from "../shell/workspace";
-import { connectionStore } from "./connection";
+import { connectionStore, resetConnectionStoreForTests } from "./connection";
 import "./humanNoteDrafts";
 import { setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
@@ -215,7 +215,7 @@ function runScheduledHydrationRetry(index = 0): void {
 }
 
 beforeEach(async () => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   // The store-wide resume-only predicate reads the pending-turns projection
   // (threads.ts's installResumeOnlyProjection), so clear any blockedUnknown
@@ -2419,7 +2419,7 @@ test.each(["output", "metadata"] as const)("fences obsolete job %s after readine
     expect(peer.requests(method)).toEqual([]);
   } finally {
     client.close();
-    connectionStore.setState({ client: null, state: "idle" });
+    resetConnectionStoreForTests();
   }
 });
 

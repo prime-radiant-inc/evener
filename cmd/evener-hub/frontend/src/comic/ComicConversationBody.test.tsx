@@ -11,7 +11,7 @@ import { resetTranscriptPagingForTests } from "../panes/session/transcript/useTr
 import { ClientProvider } from "../shell/clientContext";
 import { installKeybindings } from "../shell/installKeybindings";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
-import { connectionStore } from "../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../stores/threads";
 import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../stores/transcriptDisplay";
 import { type ComicReadingPosition, readComicPosition, writeComicPosition } from "./readerPosition";
@@ -53,7 +53,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
-  connectionStore.setState({ state: "idle", client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetTranscriptPagingForTests();
   resetWorkspaceStoreForTests();

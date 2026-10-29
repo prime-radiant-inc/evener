@@ -4,7 +4,7 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 import { type Dispatch, type SetStateAction, useEffect, useState } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { connectionStore, useConnectionStore } from "../../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests, useConnectionStore } from "../../../../stores/connection";
 import { extensionsStore, resetExtensionsStoreForTests, useExtensionsStore } from "../../../../stores/extensions";
 import { connectReadyFakeClient } from "../../../../testing/connectionTestUtils";
 import { Toast } from "../../../../widgets";
@@ -176,7 +176,7 @@ function listCalls(fake: FakeClient): number {
 }
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetExtensionsStoreForTests();
   resetToastStoreForTests();
   connectReadyFakeClient();

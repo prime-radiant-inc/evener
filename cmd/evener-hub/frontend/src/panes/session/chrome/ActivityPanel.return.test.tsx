@@ -6,7 +6,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { registerPaneForTests } from "../../../shell/paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { activityPanelStore, resetActivityPanelStoreForTests } from "../../../stores/activityPanel";
-import { connectionStore } from "../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
 import { sessionActivitySnapshot } from "../../../stores/sessionActivity";
 import {
   activityClient,
@@ -37,7 +37,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
-  connectionStore.setState({ client: null, state: "idle" });
+  resetConnectionStoreForTests();
   resetActivityPanelStoreForTests();
   resetWorkspaceStoreForTests();
   restorePane();

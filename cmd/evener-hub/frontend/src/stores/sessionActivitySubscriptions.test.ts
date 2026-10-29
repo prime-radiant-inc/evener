@@ -7,14 +7,14 @@ import {
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import { connectionStore } from "./connection";
+import { connectionStore, resetConnectionStoreForTests } from "./connection";
 import { acquireSessionActivity } from "./sessionActivity";
 import { activityClient, activityContext, activityDelegate, activitySummary } from "./sessionActivityTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "./threads";
 
 afterEach(() => {
   resetThreadsStoreForTests();
-  connectionStore.setState({ client: null, state: "idle" });
+  resetConnectionStoreForTests();
 });
 
 describe("activity and transcript subscription ownership", () => {

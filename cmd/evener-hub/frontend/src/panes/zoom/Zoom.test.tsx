@@ -21,7 +21,7 @@ import {
   workspaceStore,
 } from "../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import {
   activityContext,
@@ -49,7 +49,7 @@ import "./index";
 let height: PropertyDescriptor | undefined;
 beforeEach(() => {
   installLocalStorage(new MemoryStorage());
-  connectionStore.setState({ state: "idle", client: null, serverInfo: undefined });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetNavigationStoreForTests();
   resetTranscriptPagingForTests();
@@ -65,7 +65,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   resetNavigationStoreForTests();
   resetWorkspaceStoreForTests();
-  connectionStore.setState({ state: "idle", client: null });
+  resetConnectionStoreForTests();
   resetNavigationStoreForTests();
   if (height) Object.defineProperty(HTMLElement.prototype, "offsetHeight", height);
   else Reflect.deleteProperty(HTMLElement.prototype, "offsetHeight");

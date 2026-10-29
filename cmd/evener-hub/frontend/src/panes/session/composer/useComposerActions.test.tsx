@@ -4,7 +4,7 @@ import { act, cleanup, renderHook } from "@testing-library/react";
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
-import { connectionStore } from "../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import { holdNextWriteTransaction } from "../../../stores/testing/stalledIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../../stores/threads";
@@ -21,7 +21,7 @@ let storage: MutationOutboxIndexedDB;
 beforeEach(() => {
   installLocalStorage(new MemoryStorage());
   globalThis.indexedDB = new IDBFactory();
-  connectionStore.setState({ state: "idle", client: null, serverInfo: undefined });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetPendingTurnsStoreForTests();
   storage = new MutationOutboxIndexedDB();

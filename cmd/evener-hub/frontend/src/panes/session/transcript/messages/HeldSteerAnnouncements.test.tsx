@@ -10,7 +10,7 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { IDBFactory } from "fake-indexeddb";
 import { beforeEach, expect, test } from "vitest";
-import { connectionStore } from "../../../../stores/connection";
+import { resetConnectionStoreForTests } from "../../../../stores/connection";
 import type { MutationRecoveryKind } from "../../../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexedDB";
 import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
@@ -42,7 +42,7 @@ const REJECTED_AT_ACCEPTANCE: MutationRecoveryKind = "rejected";
 
 beforeEach(() => {
   globalThis.indexedDB = new IDBFactory();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetPendingTurnsStoreForTests();
 });

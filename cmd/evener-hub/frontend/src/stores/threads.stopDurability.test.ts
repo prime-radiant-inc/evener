@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { resetPendingTurnsStoreForTests } from "../panes/session/composer/queue/pendingTurnsStore";
 import { resetSubagentModuleStoreForTests } from "../panes/session/transcript/tools/subagentModuleStore";
 import { resetWorkspaceStoreForTests } from "../shell/workspace";
-import { connectionStore } from "./connection";
+import { connectionStore, resetConnectionStoreForTests } from "./connection";
 import { setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { IDBUpgradeError } from "./idbConnection";
 import type { MutationOutboxRecord } from "./mutationOutbox";
@@ -53,7 +53,7 @@ let restoreHydrationRetryScheduler: (() => void) | null = null;
 let cache: SessionEntryCache;
 
 beforeEach(async () => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetPendingTurnsStoreForTests();
   resetWorkspaceStoreForTests();
@@ -141,7 +141,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
       // store state, connection - while the durable rows survive it untouched.
       before.close();
       resetThreadsStoreForTests();
-      connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+      resetConnectionStoreForTests();
       const after = new MutationOutboxIndexedDB();
       setMutationStorageForTests(after);
       const reloadedClient = connectMutationClient();

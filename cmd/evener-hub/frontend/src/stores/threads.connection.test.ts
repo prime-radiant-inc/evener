@@ -5,14 +5,14 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectFakeClient } from "../testing/connectionTestUtils";
 import { type TestThreadOverrides, testThread } from "../threadTestUtils";
-import { connectionStore, useConnectionStore } from "./connection";
+import { connectionStore, resetConnectionStoreForTests, useConnectionStore } from "./connection";
 import { setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { SessionEntryCache } from "./sessionEntryCache";
 import { resetThreadsStoreForTests } from "./threads";
 
 let cache: SessionEntryCache;
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   cache = new SessionEntryCache({
     indexedDB: new IDBFactory(),

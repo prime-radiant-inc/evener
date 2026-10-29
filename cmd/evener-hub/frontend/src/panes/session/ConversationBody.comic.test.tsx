@@ -9,7 +9,7 @@ import { ClientProvider } from "../../shell/clientContext";
 import { conversationPaneLifetime } from "../../shell/paneLifetime";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../stores/threads";
@@ -47,7 +47,7 @@ beforeEach(() => {
   installLocalStorage(new MemoryStorage());
   globalThis.indexedDB = new IDBFactory();
   sessionStorage.clear();
-  connectionStore.setState({ state: "idle", client: null, serverInfo: undefined });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
   resetNavigationStoreForTests();

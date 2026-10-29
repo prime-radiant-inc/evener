@@ -1,13 +1,13 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { connectionStore } from "../../../stores/connection";
+import { resetConnectionStoreForTests } from "../../../stores/connection";
 import { resetExtensionsStoreForTests } from "../../../stores/extensions";
 import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
 import { SkillsDirsSection } from "./skillsDirs";
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetExtensionsStoreForTests();
 });
 
