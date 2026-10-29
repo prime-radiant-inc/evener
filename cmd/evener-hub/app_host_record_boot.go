@@ -152,13 +152,18 @@ func (m *hubHostManager) holdLiveHosts() (func(), error) {
 		}
 	})
 	holder := hostops.Holder{Kind: hostops.HolderManager, Activity: "settle-records"}
-	for _, entry := range m.cfg.hosts.All() {
+	// Every gate first: a busy host stops the attempt before any healthy
+	// connection is touched, so a retry never interrupts them again for nothing.
+	entries := m.cfg.hosts.All()
+	for _, entry := range entries {
 		release, err := m.acquireHostGate(entry.Name, holder)
 		if err != nil {
 			releaseAll()
 			return nil, fmt.Errorf("host %q: %w", entry.Name, err)
 		}
 		releases = append(releases, release)
+	}
+	for _, entry := range entries {
 		retired, err := m.cfg.manager.RetireHostUnderGate(entry.Name, holder)
 		if err != nil {
 			releaseAll()
@@ -401,9 +406,6 @@ func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
 		m.refuseMutations(fmt.Sprintf("the host records in the operation store are in a shape this build cannot read, so a build that can read them has to run: %v", err))
 		return
 	}
-	// The legacy sections go first: the unlanded-removal check below reads
-	// hub.toml as the commit saw it.
-	m.stripLegacySections(true)
 	releaseHosts, err := m.holdLiveHosts()
 	if err != nil {
 		m.cfg.store.set(m.cfg.hosts.All())
@@ -460,13 +462,18 @@ func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
 	}
 	collided := m.breakBootTombstoneCollision(records)
 	releaseHosts()
+	// The sections go only now: every check above compares hub.toml with the
+	// file the staged commits saw, and the strip rewrites it.
+	m.stripLegacySections(true)
 	for _, name := range sortedStagedMarkerNames(m.cfg.store.stagedSnapshot()) {
 		if _, err := m.finalizeOrphanMarkerIfAny(context.Background(), name, true); err != nil {
 			m.logf("boot finalization of the staged receipt marker for %q refused: %v", name, err)
 		}
 	}
-	if attempted := m.reconcileBootRecords(hasFile, collided); !attempted {
-		m.materializeHostRecords(records, hasFile)
+	// hub.toml holds only the hosts in this mode, so the maintenance writes carry
+	// records alone and never put the registry's host list over the file's.
+	if attempted := m.reconcileBootRecords(hasFile, collided, true); !attempted {
+		m.materializeHostRecords(records, hasFile, true)
 	}
 	m.reconcileStoreBoot()
 }
@@ -499,7 +506,7 @@ func (m *hubHostManager) rollBackUnlandedCommits(doc hostRecordDocument) map[str
 				continue
 			}
 		}
-		change := hostPersistChange{dropMarker: name, dropReceipt: marker.Key, recordsOnly: true}
+		change := hostPersistChange{dropMarker: name, dropReceipt: marker.Key, recordsOnly: true, leaveReturningNames: true}
 		if scope, ok := parseHostReceiptScopedKey(marker.Key); ok && scope.Kind == hostMutationRemove {
 			// The host was never removed: its tombstone goes with the rollback.
 			change.dropTombstone = name
@@ -711,8 +718,8 @@ func (m *hubHostManager) bootLegacyRecords(settle bool) error {
 	// nothing to prune writes nothing, so an untouched file stays
 	// byte-identical. A boot without that write may still owe the initial
 	// identity records.
-	if attempted := m.reconcileBootRecords(hasFile, collided); !attempted {
-		m.materializeHostRecords(fileRecords, hasFile)
+	if attempted := m.reconcileBootRecords(hasFile, collided, false); !attempted {
+		m.materializeHostRecords(fileRecords, hasFile, false)
 	}
 	// The generation-mirror reconciliation below can raise live registrations,
 	// so the gates are held again, retiring any connection made since the first

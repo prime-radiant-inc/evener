@@ -1168,3 +1168,117 @@ func TestAttachDoesNotReconnectAHostAnOpenRemnantFences(t *testing.T) {
 		t.Fatal("the attach reconnected a host an open remnant fences")
 	}
 }
+
+// TestAttachTakesEveryGateBeforeRetiringAnyConnection pins the order inside the
+// hold: with a connected host ahead of a busy one, the attempt that cannot
+// proceed must leave the connected host's healthy connection alone, or every
+// retry would interrupt it again.
+func TestAttachTakesEveryGateBeforeRetiringAnyConnection(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	hub.boot(t, false)
+	hub.restartStateRoot(t)
+	reopened, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	hosts, err := hostreg.New(hostRegistryEntries(mustLoadConfig(t, hub.configPath)))
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	manager := sshconn.New(hosts, sshconn.Options{Runner: &attachedUpdateRunner{}})
+	t.Cleanup(func() { _ = manager.Close() })
+	late := newHubHostManager(appsource.NewRegistry(), manager, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostConfigPath: hub.configPath, RemoteHostOpsUnavailable: true,
+	}, hub.configPath, hosts, t.Logf)
+	if _, err := manager.Ensure(context.Background(), "keep"); err != nil {
+		t.Fatalf("Ensure while the store is unavailable: %v", err)
+	}
+	acquired, err := late.acquireHostGate("side", hostops.Holder{Kind: hostops.HolderOperation, OperationID: "busy"})
+	if err != nil {
+		t.Fatalf("hold the gate: %v", err)
+	}
+	release := sync.OnceFunc(acquired)
+	t.Cleanup(release)
+
+	late.attachOps(reopened)
+
+	if late.mutationRefusal() == nil {
+		t.Fatal("the settlement went ahead although side was busy")
+	}
+	if !manager.Attached("keep") {
+		t.Fatal("a settlement that could not proceed disconnected a healthy host")
+	}
+}
+
+// TestRecoveryClassifiesAStagedRemovalAgainstTheFileAsItWas pins the order of the
+// legacy-section strip: it rewrites hub.toml, so the comparison with the file the
+// commit staged against has to come first. A strip that never landed before the
+// crash leaves the sections in the file the removal staged against, and the
+// unlanded removal must still read as unlanded.
+func TestRecoveryClassifiesAStagedRemovalAgainstTheFileAsItWas(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, _ := hub.boot(t, false)
+	_, incarnation := testMutationIdentity(t, m, "side")
+	leftover := "\n[generations.leftover]\ngeneration = 3\nincarnation_id = \"inc-leftover\"\npresence_epoch = 1\n"
+	if err := os.WriteFile(hub.configPath, append(fileBytes(t, hub.configPath), []byte(leftover)...), 0o600); err != nil {
+		t.Fatalf("leave legacy sections in hub.toml: %v", err)
+	}
+	staged := fileBytes(t, hub.configPath)
+	params := removeRequest(t, m, "side")
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
+	if err := os.WriteFile(hub.configPath, staged, 0o600); err != nil {
+		t.Fatalf("put hub.toml back as the removal staged against it: %v", err)
+	}
+
+	recovered, store := hub.boot(t, true)
+
+	if _, got := testMutationIdentity(t, recovered, "side"); got != incarnation {
+		t.Fatalf("side serves incarnation %q, want the one it had, %q: the unlanded removal was read as a landed one", got, incarnation)
+	}
+	if _, tombstoned := mustRecords(t, store).Tombstones["side"]; tombstoned {
+		t.Fatal("the rolled-back removal left its tombstone")
+	}
+	requireNoRecordSections(t, hub.configPath)
+}
+
+// TestLateAttachMaintenanceWritesNoHostList pins that record maintenance after a
+// pause never rewrites the host list: an operator who edited a host in hub.toml
+// while the store was unavailable keeps the edit when the attach has to
+// materialize a record the store lacked.
+func TestLateAttachMaintenanceWritesNoHostList(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	_, store := hub.boot(t, false)
+	family, _, _ := store.HostRecords()
+	delete(family.Hosts, "keep")
+	delete(family.Generations, "keep")
+	if err := store.CommitHostRecords(family, hostops.HostMirror{}); err != nil {
+		t.Fatalf("drop keep's records: %v", err)
+	}
+	hub.restartStateRoot(t)
+	reopened, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	hosts, err := hostreg.New(hostRegistryEntries(mustLoadConfig(t, hub.configPath)))
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	late := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostConfigPath: hub.configPath, RemoteHostOpsUnavailable: true,
+	}, hub.configPath, hosts, t.Logf)
+	if err := writeHubTOMLHosts(hub.configPath, []hostreg.Host{{Name: "keep", SSH: "keep-by-hand.example"}, {Name: "side", SSH: "side.example"}}); err != nil {
+		t.Fatalf("edit keep by hand: %v", err)
+	}
+
+	late.attachOps(reopened)
+
+	if got := mustRecords(t, reopened).HostRecords["keep"].IncarnationID; got == "" {
+		t.Fatal("the attach did not materialize the record the store lacked")
+	}
+	for _, h := range mustLoadConfig(t, hub.configPath).Hosts {
+		if h.Name == "keep" && h.SSH != "keep-by-hand.example" {
+			t.Fatalf("the attach's maintenance write undid the operator's edit: keep is %q", h.SSH)
+		}
+	}
+}

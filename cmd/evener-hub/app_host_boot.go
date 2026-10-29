@@ -72,7 +72,7 @@ func (m *hubHostManager) breakBootTombstoneCollision(records hostRecordSet) bool
 // A derivation that refuses (a hand-edited file already over a global
 // tombstone cap with every candidate remnant-gated) is logged and leaves the
 // file alone; the next mutation surfaces the typed refusal to its caller.
-func (m *hubHostManager) reconcileBootRecords(hasFile bool, collided bool) bool {
+func (m *hubHostManager) reconcileBootRecords(hasFile bool, collided bool, recordsOnly bool) bool {
 	if !hasFile || strings.TrimSpace(m.cfg.configPath) == "" {
 		return false
 	}
@@ -89,7 +89,7 @@ func (m *hubHostManager) reconcileBootRecords(hasFile bool, collided bool) bool 
 	if !required {
 		return false
 	}
-	if err := m.persistHosts(entries, entries, hostPersistChange{}); err != nil {
+	if err := m.persistHosts(entries, entries, hostPersistChange{recordsOnly: recordsOnly}); err != nil {
 		m.logf("boot host-record prune for %s not written: %v", m.cfg.configPath, err)
 	}
 	return true
@@ -121,7 +121,7 @@ func (m *hubHostManager) seedHighWater(records hostRecordSet) {
 // here. A write that cannot land is logged and retried by the next boot (or by
 // the next mutation, which records the same in-memory pair); the hub still
 // serves, because the pair is already the registry's current identity.
-func (m *hubHostManager) materializeHostRecords(records hostRecordSet, hasFile bool) {
+func (m *hubHostManager) materializeHostRecords(records hostRecordSet, hasFile bool, recordsOnly bool) {
 	if !hasFile {
 		return
 	}
@@ -139,7 +139,7 @@ func (m *hubHostManager) materializeHostRecords(records hostRecordSet, hasFile b
 		drifted := record.IncarnationID != entry.IncarnationID || record.PresenceEpoch != entry.PresenceEpoch ||
 			mark.Generation != entry.Generation || mark.IncarnationID != entry.IncarnationID || mark.PresenceEpoch != entry.PresenceEpoch
 		if !record.complete() || !mark.complete() || drifted {
-			if err := m.persistHosts(entries, entries, hostPersistChange{}); err != nil {
+			if err := m.persistHosts(entries, entries, hostPersistChange{recordsOnly: recordsOnly}); err != nil {
 				m.logf("host %q records for %s not recorded yet: %v", entry.Name, m.cfg.configPath, err)
 			}
 			return

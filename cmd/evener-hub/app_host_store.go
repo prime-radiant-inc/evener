@@ -61,6 +61,10 @@ type hostPersistChange struct {
 	// hub.toml: boot recovery that settles records must not write the registry's
 	// idea of the hosts over what the file holds now.
 	recordsOnly bool
+	// leaveReturningNames keeps the tombstone of a removed name that is live
+	// again, with its history, for the boot collision rule to settle; the
+	// re-add purge that would consume it is skipped.
+	leaveReturningNames bool
 	// restore puts back the history a re-add's staging write purged, when the
 	// re-add is rolled back.
 	restore *HostConsumedRecords

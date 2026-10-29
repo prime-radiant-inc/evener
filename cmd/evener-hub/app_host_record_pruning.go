@@ -378,10 +378,7 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 	// superseded receipts go with it except the retained same-key remove
 	// receipts (§6).
 	for name := range records.tombstones {
-		if _, ok := live[name]; !ok || change.recordsOnly {
-			// A records-only write (boot recovery) leaves a returning name's
-			// tombstone for the boot collision rule, which also weighs its
-			// teardown remnants.
+		if _, ok := live[name]; !ok || change.leaveReturningNames {
 			continue
 		}
 		consumed := &HostConsumedRecords{Tombstone: records.tombstones[name]}
