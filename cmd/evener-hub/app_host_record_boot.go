@@ -26,6 +26,12 @@ import (
 // the reserved sections, can be recovered by hand.
 const hostPreRecordsSuffix = ".pre-records"
 
+// bootRollbackFault, when set, fails the write that rolls back an unlanded
+// staged commit at boot. It exists so the failure posture (the commit stays
+// staged, never finalized forward) is falsifiable without a store write that
+// fails on demand. Nil in production.
+var bootRollbackFault func(name string) error
+
 // hostRefusal is why host mutations are refused: the store that holds the
 // machine records is unavailable, or what it holds could not be settled.
 type hostRefusal struct{ reason string }
@@ -90,6 +96,14 @@ func (m *hubHostManager) bootRecords() {
 	}
 	if _, _, imported := ops.HostRecords(); imported {
 		m.bootStoreRecords(ops)
+		return
+	}
+	if _, state := readHubTOMLConfig(m.cfg.configPath); state == hostFileUnreadable {
+		// The records to move cannot be read, so what the legacy boot sees is
+		// empty. Importing that would make the store their home and strand the
+		// real ones in hub.toml; hosts keep serving and the move is retried.
+		m.bootLegacyRecords()
+		m.refuseMutations("hub.toml could not be read; its records move into the operation store once it can")
 		return
 	}
 	m.keepPreRecordsCopy()
@@ -235,13 +249,20 @@ func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
 		return
 	}
 	m.installRestoredRecords(hostRecordDocument{Hosts: m.cfg.hosts.All(), Records: records})
+	// Seeding the stored marks raised the registry's counters past the entries
+	// just copied; the manager's view follows what the registry serves.
+	m.cfg.store.set(m.cfg.hosts.All())
 	m.stripLegacySections(true)
 	doc, hasFile := store.load()
+	var unrolled map[string]struct{}
 	if hasFile {
-		m.rollBackUnlandedCommits(doc)
+		unrolled = m.rollBackUnlandedCommits(doc)
 	}
 	collided := m.breakBootTombstoneCollision(records)
 	for _, name := range sortedStagedMarkerNames(m.cfg.store.stagedSnapshot()) {
+		if _, stuck := unrolled[name]; stuck {
+			continue
+		}
 		if _, err := m.finalizeOrphanMarkerIfAny(context.Background(), name, true); err != nil {
 			m.logf("boot finalization of the staged receipt marker for %q refused: %v", name, err)
 		}
@@ -250,6 +271,9 @@ func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
 		m.materializeHostRecords(records, hasFile)
 	}
 	m.reconcileStoreBoot()
+	if len(unrolled) != 0 {
+		m.refuseMutations(fmt.Sprintf("%d staged commit(s) could not be rolled back; the next attempt retries", len(unrolled)))
+	}
 }
 
 // rollBackUnlandedCommits drops the staged marker and the provisional receipt
@@ -258,18 +282,31 @@ func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
 // hub.toml does not hold; finalizing it would commit a mutation the caller was
 // never told succeeded. The host set hub.toml holds is the truth, and the
 // generation the commit minted stays recorded so it is not handed out again.
-func (m *hubHostManager) rollBackUnlandedCommits(doc hostRecordDocument) {
+// It returns the names whose rollback did not land: those markers must stay out
+// of forward finalization, which would commit a change hub.toml does not hold.
+func (m *hubHostManager) rollBackUnlandedCommits(doc hostRecordDocument) map[string]struct{} {
+	failed := map[string]struct{}{}
 	entries := m.cfg.store.snapshot()
 	for _, name := range sortedStagedMarkerNames(m.cfg.store.stagedSnapshot()) {
 		marker := m.cfg.store.stagedSnapshot()[name]
 		if markerLanded(marker, doc.Hosts) {
 			continue
 		}
-		m.logf("boot rolled back the staged commit for %q: its host change never reached %s", name, m.cfg.configPath)
+		if bootRollbackFault != nil {
+			if err := bootRollbackFault(name); err != nil {
+				m.logf("boot rollback of the staged commit for %q not written: %v", name, err)
+				failed[name] = struct{}{}
+				continue
+			}
+		}
 		if err := m.persistHosts(entries, entries, hostPersistChange{dropMarker: name, dropReceipt: marker.Key}); err != nil {
 			m.logf("boot rollback of the staged commit for %q not written: %v", name, err)
+			failed[name] = struct{}{}
+			continue
 		}
+		m.logf("boot rolled back the staged commit for %q: its host change never reached %s", name, m.cfg.configPath)
 	}
+	return failed
 }
 
 // markerLanded reports whether hub.toml holds the host change a staged marker's

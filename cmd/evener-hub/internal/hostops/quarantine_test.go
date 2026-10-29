@@ -894,3 +894,19 @@ func mustReadFSFile(t *testing.T, fs afero.Fs, path string) []byte {
 	}
 	return body
 }
+
+func TestSetAsideUnprovableLeavesAStoreThatLoads(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "operations.json")
+	before := []byte(`{"version":1,"sequence":0,"allocatorHighWaterMark":0,"records":[]}`)
+	if err := os.WriteFile(path, before, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	aside, err := SetAsideUnprovable(path)
+	if !errors.Is(err, ErrStoreLoads) || aside != "" {
+		t.Fatalf("a loadable store was not refused: aside=%q err=%v", aside, err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("the loadable store was disturbed: %v", err)
+	}
+}

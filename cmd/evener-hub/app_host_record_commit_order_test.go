@@ -8,6 +8,7 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 
@@ -167,5 +168,61 @@ func TestAHostChangeHubTOMLRefusesLeavesTheStoreAsItWasAndRetriesCleanly(t *test
 	}
 	if rows := hostRows(t, m); rows["ghost"].Address != "ghost.example" || rows["ghost"].Removed {
 		t.Fatalf("the retried add left %+v", rows["ghost"])
+	}
+}
+
+// TestBootDoesNotFinalizeACommitItCouldNotRollBack pins the rollback's failure
+// posture: a staged commit whose host change never reached hub.toml, and whose
+// rollback write fails, stays staged and is never finalized forward (that would
+// commit an edit hub.toml does not hold); host changes pause, and the next
+// attempt, once the write works, rolls the commit back and resumes them.
+func TestBootDoesNotFinalizeACommitItCouldNotRollBack(t *testing.T) {
+	const staged = "staged-mutation"
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, _ := hub.boot(t, false)
+	beforeBytes := fileBytes(t, hub.configPath)
+	params := updateRequest(t, m, "side", appwire.HostEntry{Address: "edited.example"})
+	params.MutationID = staged
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() { _, _ = m.UpdateResult(context.Background(), params) })
+	if err := os.WriteFile(hub.configPath, beforeBytes, 0o600); err != nil {
+		t.Fatalf("put the pre-mutation hub.toml back: %v", err)
+	}
+
+	bootRollbackFault = func(string) error { return errors.New("injected rollback write failure") }
+	t.Cleanup(func() { bootRollbackFault = nil })
+	recovered, store := hub.boot(t, true)
+
+	records := mustRecords(t, store)
+	marker, stillStaged := records.StagedReceipts["side"]
+	if !stillStaged {
+		t.Fatal("the commit that could not be rolled back lost its marker")
+	}
+	for key, receipt := range records.MutationReceipts {
+		if scope, ok := parseHostReceiptScopedKey(key); ok && scope.MutationID == staged && receipt.BootRecovered {
+			t.Fatalf("the unrolled commit was finalized forward: %q = %+v", key, receipt)
+		}
+	}
+	if row := hostRows(t, recovered)["side"]; row.Address != "side.example" {
+		t.Fatalf("side serves %+v, want the address hub.toml still holds", row)
+	}
+	_, err := recovered.UpdateResult(context.Background(), updateRequest(t, recovered, "side", appwire.HostEntry{Address: "again.example"}))
+	requireWireError(t, err, appwire.CodeUnavailable)
+
+	bootRollbackFault = nil
+	recovered.attachOps(nil)
+	if err := recovered.mutationRefusal(); err != nil {
+		t.Fatalf("host changes are still refused after the rollback could be written: %v", err)
+	}
+	records = mustRecords(t, store)
+	if len(records.StagedReceipts) != 0 {
+		t.Fatalf("the retry left staged markers: %+v", records.StagedReceipts)
+	}
+	requireNoReceiptFor(t, records, staged)
+	if after := hostRows(t, recovered)["side"]; after.Generation <= marker.Provisional.Generation-1 {
+		t.Fatalf("side serves generation %d after the rollback", after.Generation)
+	}
+	if _, err := recovered.UpdateResult(context.Background(), updateRequest(t, recovered, "side", appwire.HostEntry{Address: "again.example"})); err != nil {
+		t.Fatalf("the edit after the rollback: %v", err)
 	}
 }

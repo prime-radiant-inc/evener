@@ -4,6 +4,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -163,4 +165,53 @@ func TestOpenHostOpsStoreSetsAsideAStoreWhoseCustodyCannotBeProven(t *testing.T)
 	if len(kept) != 1 {
 		t.Fatalf("the corrupt bytes were kept in %d file(s) (%v), want exactly one", len(kept), kept)
 	}
+}
+
+// TestOpenHostOpsStoreKeepsAHealthyStoreWhenOnlyItsQuarantineArtifactsAreBroken
+// pins that a store file that loads is never set aside: an incomplete-custody
+// refusal can come from the quarantine's own bookkeeping (here an intent naming
+// a custody file that is gone) while the active store is fine, and moving the
+// fine store away would lose it and still leave the bookkeeping broken.
+func TestOpenHostOpsStoreKeepsAHealthyStoreWhenOnlyItsQuarantineArtifactsAreBroken(t *testing.T) {
+	stateRoot := t.TempDir()
+	path := hostops.StorePath(stateRoot)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	healthy := `{"version":1,"sequence":0,"allocatorHighWaterMark":0,"records":[]}`
+	if err := os.WriteFile(path, []byte(healthy), 0o600); err != nil {
+		t.Fatalf("write store: %v", err)
+	}
+	const stamp = "20260101T000000.000000000Z"
+	intent := `{"corruptFile":` + strconv.Quote(path) + `,"custodyFile":` + strconv.Quote(path+".custody-"+stamp+".json") +
+		`,"asideFile":` + strconv.Quote(path+".quarantined-"+stamp) + `,"quarantinedAt":"2026-01-01T00:00:00Z","quarantineEpoch":1}`
+	if err := os.WriteFile(path+".quarantine-intent.json", []byte(intent), 0o600); err != nil {
+		t.Fatalf("write intent: %v", err)
+	}
+	before := dirNames(t, filepath.Dir(path))
+
+	store, err := openHostOpsStore(stateRoot, new(strings.Builder), hostops.RetentionPolicy{})
+
+	if store != nil || !errors.Is(err, hostops.ErrQuarantineIncomplete) {
+		t.Fatalf("openHostOpsStore = (%v, %v), want the incomplete-custody refusal and no store", store, err)
+	}
+	if body, readErr := os.ReadFile(path); readErr != nil || string(body) != healthy {
+		t.Fatalf("the healthy store was disturbed: %q, %v", body, readErr)
+	}
+	if after := dirNames(t, filepath.Dir(path)); !slices.Equal(before, after) {
+		t.Fatalf("the open left artifacts: before %v after %v", before, after)
+	}
+}
+
+func dirNames(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	names := make([]string, len(entries))
+	for i, entry := range entries {
+		names[i] = entry.Name()
+	}
+	return names
 }

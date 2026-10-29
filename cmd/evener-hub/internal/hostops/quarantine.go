@@ -919,15 +919,25 @@ func checkQuarantineBytes(raw []byte) error {
 // the custody-first quarantine's aside, which always has a custody file beside it.
 const unprovableAsideInfix = ".unprovable-"
 
+// ErrStoreLoads reports a store file that loads: whatever refused the open lies
+// in the quarantine's own artifacts, and the file is not the caller's to move.
+var ErrStoreLoads = errors.New("hostops: the store file loads")
+
 // SetAsideUnprovable moves a corrupt store file whose custody cannot be shown
 // whole out of the way, keeping every byte, so a fresh store can open at path.
 // The custody-first quarantine refuses such a file because it cannot prove the
 // names it would carry; a caller that must keep serving anyway sets the file
-// aside and rebuilds what it can from elsewhere. It returns the path the file
-// was kept at.
+// aside and rebuilds what it can from elsewhere. A file that loads is never
+// moved (ErrStoreLoads): the refusal then comes from the quarantine bookkeeping
+// beside it, and moving a good store would lose it without clearing that. It
+// returns the path the file was kept at.
 func SetAsideUnprovable(path string) (string, error) {
+	fs := afero.NewOsFs()
+	if _, err := loadFS(fs, path); err == nil {
+		return "", ErrStoreLoads
+	}
 	aside := path + unprovableAsideInfix + quarantineStamp(nowUTC())
-	if err := renameStoreAside(afero.NewOsFs(), path, aside, storeFaults{}); err != nil && !RenameLanded(err) {
+	if err := renameStoreAside(fs, path, aside, storeFaults{}); err != nil && !RenameLanded(err) {
 		return "", err
 	}
 	return aside, nil

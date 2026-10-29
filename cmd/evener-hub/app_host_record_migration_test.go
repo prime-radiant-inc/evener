@@ -606,3 +606,91 @@ func TestStartupRebuildsTheRecordsWhenTheStoreIsSetAside(t *testing.T) {
 		t.Fatalf("Add after the rebuild: %v", err)
 	}
 }
+
+// TestUnreadableHubTOMLAtBootDoesNotMoveEmptyRecordsIntoTheStore pins the guard
+// on the import: a boot that cannot read the records it would move must not
+// mark the store as their home, or the real records become unreachable once the
+// file reads again.
+func TestUnreadableHubTOMLAtBootDoesNotMoveEmptyRecordsIntoTheStore(t *testing.T) {
+	configPath, records := legacyHub(t)
+	original := fileBytes(t, configPath)
+	cfg := mustLoadConfig(t, configPath)
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	doc := hostBootDocument(cfg, store)
+	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
+	if err != nil {
+		t.Fatalf("hostreg.NewSeeded: %v", err)
+	}
+
+	previous := configReadFile
+	configReadFile = func(string) ([]byte, error) { return nil, errors.New("injected read failure") }
+	webCfg := hubcore.WebConfig{RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: configPath}
+	m := newHubHostManager(appsource.NewRegistry(), nil, webCfg, configPath, hosts, t.Logf)
+	configReadFile = previous
+
+	if _, _, imported := store.HostRecords(); imported {
+		t.Fatal("a boot that could not read hub.toml moved records into the store")
+	}
+	if !bytes.Equal(fileBytes(t, configPath), original) {
+		t.Fatal("hub.toml changed although it could not be read")
+	}
+	if m.mutationRefusal() == nil {
+		t.Fatal("host changes are taken while the records are unsettled")
+	}
+
+	m.attachOps(nil)
+
+	requireFamilyEquals(t, store, records)
+	if err := m.mutationRefusal(); err != nil {
+		t.Fatalf("host changes are still refused once hub.toml reads: %v", err)
+	}
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "extra", Address: "extra.example"}}); err != nil {
+		t.Fatalf("Add after the records moved: %v", err)
+	}
+}
+
+// TestLateAttachOfAPopulatedStoreRecordsTheIdentitiesTheHubServes pins the
+// agreement between what the registry serves and what the store holds: a hub
+// that started without its store minted identities for its hosts, and attaching
+// a store that holds other ones must leave the store recording the served pair.
+func TestLateAttachOfAPopulatedStoreRecordsTheIdentitiesTheHubServes(t *testing.T) {
+	configPath, _ := legacyHub(t)
+	stateRoot := t.TempDir()
+	first, store := bootOverStore(t, configPath, stateRoot)
+	if _, _, imported := store.HostRecords(); !imported {
+		t.Fatalf("the first boot did not move the records into the store")
+	}
+	_ = first
+
+	cfg := mustLoadConfig(t, configPath)
+	hosts, err := hostreg.New(hostRegistryEntries(cfg))
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostConfigPath: configPath, RemoteHostOpsUnavailable: true,
+	}, configPath, hosts, t.Logf)
+	reopened, err := hostops.Open(hostops.StorePath(stateRoot))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	m.attachOps(reopened)
+
+	if err := m.mutationRefusal(); err != nil {
+		t.Fatalf("host changes are refused after the attach: %v", err)
+	}
+	stored := mustRecords(t, reopened)
+	for _, entry := range hosts.All() {
+		record := stored.HostRecords[entry.Name]
+		mark := stored.Generations[entry.Name]
+		if record.IncarnationID != entry.IncarnationID || record.PresenceEpoch != entry.PresenceEpoch {
+			t.Errorf("host %q: the store records %+v, the hub serves %q/%d", entry.Name, record, entry.IncarnationID, entry.PresenceEpoch)
+		}
+		if mark.Generation != entry.Generation || mark.IncarnationID != entry.IncarnationID || mark.PresenceEpoch != entry.PresenceEpoch {
+			t.Errorf("host %q: the store's mark %+v disagrees with what the hub serves (%d, %q, %d)", entry.Name, mark, entry.Generation, entry.IncarnationID, entry.PresenceEpoch)
+		}
+	}
+}
