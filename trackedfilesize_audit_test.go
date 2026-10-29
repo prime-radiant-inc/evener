@@ -1,6 +1,7 @@
 package evener_test
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -41,7 +42,7 @@ func runTrackedFileSizeCheck(t *testing.T, files map[string]int) (bool, string) 
 	cmd.Env = gittest.Env()
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		if _, ok := err.(*exec.ExitError); !ok {
+		if !errors.As(err, new(*exec.ExitError)) {
 			t.Fatalf("running %s: %v", script, err)
 		}
 		return false, string(output)
