@@ -48,8 +48,9 @@ with a warning.
 An environment variable has no default of its own: unset means the consuming
 code's built-in behavior, which the doc row describes. A variable the
 models.dev catalog or the provider overlay names is read by ` + "`llm/registry`" + `
-without a Go identifier, so that is its consumer; references from test-support
-packages that only clear a variable do not count.
+without a Go identifier, so that is its consumer; a Go reference counts
+unless it only sets or clears the variable, and references from test-support
+packages do not count.
 
 ## Environment variables in the registry
 

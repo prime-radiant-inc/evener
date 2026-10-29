@@ -13,6 +13,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -41,9 +42,7 @@ type hubRow struct {
 }
 
 var (
-	qualifiedRef = regexp.MustCompile(`\benvvars\.([A-Za-z0-9_]+)`)
-	evenerName   = regexp.MustCompile(`"(EVENER_[A-Z0-9_]+)"`)
-	getenvName   = regexp.MustCompile(`os\.(?:Getenv|LookupEnv)\("([A-Z][A-Z0-9_]*)"\)`)
+	evenerName = regexp.MustCompile(`^EVENER_[A-Z0-9_]+$`)
 )
 
 // registryEntry is a Var declared in envvars/envvars.go.
@@ -98,16 +97,22 @@ func envRows(root string, sources []goSource) ([]envRow, error) {
 	byIdent := map[string]map[string]bool{}
 	byName := map[string]map[string]bool{}
 	for _, src := range sources {
+		refs, err := scanRefs(src)
+		if err != nil {
+			return nil, err
+		}
 		if !strings.HasPrefix(src.path, "envvars/") {
-			for _, m := range qualifiedRef.FindAllStringSubmatch(src.text, -1) {
-				addTo(byIdent, m[1], src.dir())
+			for ident := range refs.registry {
+				addTo(byIdent, ident, src.dir())
 			}
 		}
 		if src.path == "envvars/envvars.go" {
 			continue
 		}
-		for _, m := range evenerName.FindAllStringSubmatch(src.text, -1) {
-			addTo(byName, m[1], src.dir())
+		for _, lit := range refs.literals {
+			if evenerName.MatchString(lit) {
+				addTo(byName, lit, src.dir())
+			}
 		}
 	}
 	catalog, err := registryNames(root)
@@ -206,6 +211,60 @@ func registryNames(root string) (map[string]bool, error) {
 	return names, err
 }
 
+// fileRefs are the environment references one Go file makes.
+type fileRefs struct {
+	registry map[string]bool // envvars identifiers used other than to set or clear the variable
+	literals []string        // every string literal
+	getenvs  []string        // names passed literally to os.Getenv / os.LookupEnv
+}
+
+// setterMethods only write the variable, so a file that merely sets it for a
+// child process or a test does not read it.
+var setterMethods = map[string]bool{"Setenv": true, "Unsetenv": true, "Assignment": true}
+
+// scanRefs finds a file's environment references in its syntax tree, so
+// comments and strings that mention an identifier are not references.
+func scanRefs(src goSource) (fileRefs, error) {
+	refs := fileRefs{registry: map[string]bool{}}
+	if !strings.Contains(src.text, "envvars.") && !strings.Contains(src.text, `"EVENER_`) && !strings.Contains(src.text, "os.Getenv") && !strings.Contains(src.text, "os.LookupEnv") {
+		return refs, nil
+	}
+	file, err := parser.ParseFile(token.NewFileSet(), src.path, src.text, 0)
+	if err != nil {
+		return refs, err
+	}
+	skip := map[ast.Node]bool{} // envvars.X selectors already classified through their method
+	ast.Inspect(file, func(n ast.Node) bool {
+		switch v := n.(type) {
+		case *ast.SelectorExpr:
+			if inner, ok := v.X.(*ast.SelectorExpr); ok && isIdent(inner.X, "envvars") {
+				skip[inner] = true
+				if !setterMethods[v.Sel.Name] {
+					refs.registry[inner.Sel.Name] = true
+				}
+			} else if isIdent(v.X, "envvars") && !skip[v] {
+				refs.registry[v.Sel.Name] = true
+			}
+		case *ast.BasicLit:
+			if v.Kind == token.STRING {
+				if lit, err := strconv.Unquote(v.Value); err == nil {
+					refs.literals = append(refs.literals, lit)
+				}
+			}
+		case *ast.CallExpr:
+			if sel, ok := v.Fun.(*ast.SelectorExpr); ok && isIdent(sel.X, "os") && (sel.Sel.Name == "Getenv" || sel.Sel.Name == "LookupEnv") && len(v.Args) == 1 {
+				if lit, ok := v.Args[0].(*ast.BasicLit); ok && lit.Kind == token.STRING {
+					if name, err := strconv.Unquote(lit.Value); err == nil {
+						refs.getenvs = append(refs.getenvs, name)
+					}
+				}
+			}
+		}
+		return true
+	})
+	return refs, nil
+}
+
 // registryFuncReads is the set of registry identifiers that envvars.go's own
 // function bodies refer to, as the recorder master switch does. Declarations,
 // the allVars list, comments and strings are not reads.
@@ -249,11 +308,13 @@ func directEnvRows(root string, sources []goSource) ([]directRow, error) {
 		if src.path == "envvars/envvars.go" {
 			continue
 		}
-		for _, re := range []*regexp.Regexp{evenerName, getenvName} {
-			for _, m := range re.FindAllStringSubmatch(src.text, -1) {
-				if !known[m[1]] {
-					addTo(byName, m[1], src.dir())
-				}
+		refs, err := scanRefs(src)
+		if err != nil {
+			return nil, err
+		}
+		for _, name := range append(refs.getenvs, refs.literals...) {
+			if !known[name] && (evenerName.MatchString(name) || slices.Contains(refs.getenvs, name)) {
+				addTo(byName, name, src.dir())
 			}
 		}
 	}

@@ -13,8 +13,9 @@ with a warning.
 An environment variable has no default of its own: unset means the consuming
 code's built-in behavior, which the doc row describes. A variable the
 models.dev catalog or the provider overlay names is read by `llm/registry`
-without a Go identifier, so that is its consumer; references from test-support
-packages that only clear a variable do not count.
+without a Go identifier, so that is its consumer; a Go reference counts
+unless it only sets or clears the variable, and references from test-support
+packages do not count.
 
 ## Environment variables in the registry
 
@@ -22,15 +23,15 @@ packages that only clear a variable do not count.
 |---|---|---|---|
 | `EVENER_ALLOWED_DECISIONS` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener`, `tools/tool-fluency/cmd/evener-fluency` |
 | `EVENER_FLUENCY_MODEL` | tooling | [developing-evener/environment.md](../developing-evener/environment.md) | `tools/tool-fluency/cmd/evener-fluency` |
-| `EVENER_HOST_TEMP_BASES` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/sandbox`, `test/e2e/turncpu` |
+| `EVENER_HOST_TEMP_BASES` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/sandbox` |
 | `EVENER_HUB_LISTEN_ADDR` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener-hub`, `cmd/evener-hub/internal/sshconn` |
 | `EVENER_HUB_SPAWNED` | internal | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener`, `cmd/evener-hub/internal/launchconfig` |
 | `EVENER_HUB_TOKEN` | internal | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener`, `cmd/evener-hub/internal/launchconfig` |
 | `EVENER_HUB_URL` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener-hub` |
 | `EVENER_LOGIN_HEADLESS` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener` |
 | `EVENER_MODEL` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener`, `cmd/evener-hub/internal/launchconfig`, `cmd/llmcall` and 2 more |
-| `EVENER_NO_USER_SKILLS` | tooling | [developing-evener/environment.md](../developing-evener/environment.md) | `agent`, `agent/mcpconfig`, `agent/plugin` and 2 more |
-| `EVENER_OFFLINE` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `llm/registry`, `test/e2e/turncpu` |
+| `EVENER_NO_USER_SKILLS` | tooling | [developing-evener/environment.md](../developing-evener/environment.md) | `agent`, `agent/mcpconfig`, `agent/plugin` and 1 more |
+| `EVENER_OFFLINE` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `llm/registry` |
 | `EVENER_OPENAI_RESPONSES_CONTINUATION` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener`, `cmd/evener-hub/internal/launchconfig` |
 | `EVENER_PPROF_ADDR` | tooling | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener`, `cmd/evener-hub`, `cmdutil` |
 | `EVENER_PROVIDER` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/llmcall` |

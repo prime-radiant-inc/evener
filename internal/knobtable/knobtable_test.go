@@ -40,6 +40,8 @@ var (
 	Isolated = Var{Name: "EVENER_ONLY_CLEARED", Visibility: Public}
 	Retired  = Var{Name: "EVENER_RETIRED"}
 	Internal = Var{Name: "EVENER_USED_INSIDE", Visibility: Internal}
+	SetOnly  = Var{Name: "EVENER_SET_ONLY", Visibility: Public}
+	Mentioned = Var{Name: "EVENER_MENTIONED", Visibility: Public}
 	Unread   = Var{Name: "EVENER_UNREAD", Summary: "Unread is only named here", Visibility: Public}
 )
 
@@ -74,6 +76,7 @@ var removedKnobs = []string{"old_key"}
 func fixtureRoot(t *testing.T) string {
 	return writeTree(t, map[string]string{
 		"envvars/envvars.go":                    fixtureRegistry,
+		"cmd/setter/main.go":                    "package main\n// envvars.Mentioned and \"EVENER_MENTIONED\" appear only in this comment.\nvar _ = envvars.SetOnly.Setenv(\"1\")\n",
 		"auth/acmetest/isolate.go":              "package acmetest\nvar _ = envvars.Isolated\n",
 		"llm/registry/data/overlay.toml":        "headers = { \"Org\" = \"$ACME_ORG_ID\" }\n",
 		"cmd/tool/main.go":                      "package main\nvar _ = envvars.Read\nvar _ = \"EVENER_BY_NAME\"\n",
@@ -117,9 +120,9 @@ func TestEnvRowsReportConsumersAndDocRows(t *testing.T) {
 	if got := byName["ACME_ORG_ID"]; !slices.Equal(got.Consumers, []string{"llm/registry"}) {
 		t.Errorf("expanded variable consumers = %v, want the registry that expands it", got.Consumers)
 	}
-	for _, name := range []string{"ACME_API_KEY", "GHOST_API_KEY", "EVENER_ONLY_CLEARED", "EVENER_UNREAD"} {
+	for _, name := range []string{"ACME_API_KEY", "GHOST_API_KEY", "EVENER_ONLY_CLEARED", "EVENER_UNREAD", "EVENER_SET_ONLY", "EVENER_MENTIONED"} {
 		if got := byName[name]; len(got.Consumers) != 0 {
-			t.Errorf("%s consumers = %v, want none: no reader names it (a catalog entry, a function body in the registry package or a non-test-support package)", name, got.Consumers)
+			t.Errorf("%s consumers = %v, want none: no reader names it (a catalog entry, a function body in the registry package, or a non-test-support package that gets the value rather than sets it)", name, got.Consumers)
 		}
 	}
 	if got := byName["EVENER_USED_INSIDE"]; !slices.Equal(got.Consumers, []string{"envvars"}) {
