@@ -1294,3 +1294,33 @@ func TestBootRollbackWaitsUntilTheHostFileDirectoryIsDurable(t *testing.T) {
 		t.Fatalf("side serves incarnation %q after the rollback, want %q", got, incarnation)
 	}
 }
+
+// TestBootRollsBackAFlippedEditWhoseHostFileWasRestored pins what recovery
+// believes when a compensation restored hub.toml and its record write never
+// landed, leaving the flipped marker behind: the file holds the host as it was
+// before the edit, so the edit did not land, whatever phase the marker reached.
+func TestBootRollsBackAFlippedEditWhoseHostFileWasRestored(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, _ := hub.boot(t, false)
+	before := fileBytes(t, hub.configPath)
+	params := updateRequest(t, m, "side", appwire.HostEntry{Address: "edited.example"})
+	armCut(m, cutFlipped)
+	runUntilCrash(t, func() { _, _ = m.UpdateResult(context.Background(), params) })
+	// The compensation put the host file back; its record write never landed.
+	if err := os.WriteFile(hub.configPath, before, 0o600); err != nil {
+		t.Fatalf("restore the host file: %v", err)
+	}
+
+	recovered, store := hub.boot(t, true)
+
+	if staged := mustRecords(t, store).StagedReceipts; len(staged) != 0 {
+		t.Fatalf("the boot left staged markers for an edit the host file does not hold: %+v", staged)
+	}
+	if entry, ok := recovered.cfg.hosts.Get("side"); !ok || entry.SSH != "side.example" {
+		t.Fatalf("side serves %+v after the boot, want the entry the file holds", entry)
+	}
+	result, err := recovered.UpdateResult(context.Background(), params)
+	if err == nil && result.HostMutationCommitted != nil {
+		t.Fatalf("the replay reported the restored edit as committed: %+v", result.HostMutationCommitted)
+	}
+}

@@ -419,28 +419,29 @@ func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
 // of forward finalization, which would commit a change hub.toml does not hold.
 func (m *hubHostManager) rollBackUnlandedCommits(doc hostRecordDocument) map[string]struct{} {
 	failed := map[string]struct{}{}
+	staged := sortedStagedMarkerNames(m.cfg.store.stagedSnapshot())
+	// One read of the file judges every marker; a read that failed is no
+	// evidence either way, and the next boot judges them.
+	file, state := readHubTOMLConfig(m.cfg.configPath)
+	if state == hostFileUnreadable {
+		for _, name := range staged {
+			m.logf("boot rollback of the staged commit for %q deferred: hub.toml could not be read", name)
+			failed[name] = struct{}{}
+		}
+		return failed
+	}
 	hostFileDurable := false
 	entries := m.cfg.store.snapshot()
-	for _, name := range sortedStagedMarkerNames(m.cfg.store.stagedSnapshot()) {
+	for _, name := range staged {
 		marker := m.cfg.store.stagedSnapshot()[name]
-		if markerLanded(marker, doc.Hosts) {
+		if markerLanded(marker, doc.Hosts, file.Hosts) {
 			continue
 		}
-		if scope, ok := parseHostReceiptScopedKey(marker.Key); ok && scope.Kind == hostMutationRemove {
-			file, state := readHubTOMLConfig(m.cfg.configPath)
-			if state == hostFileUnreadable {
-				// A read that failed is no evidence either way; the next boot
-				// judges it.
-				m.logf("boot rollback of the staged removal for %q deferred: hub.toml could not be read", name)
-				failed[name] = struct{}{}
-				continue
-			}
-			if !stagedRemovalNeverLanded(marker, file.Hosts) {
-				// The host is configured, but hub.toml changed since the removal
-				// staged against it: the removal landed and the name was added
-				// again.
-				continue
-			}
+		if scope, ok := parseHostReceiptScopedKey(marker.Key); ok && scope.Kind == hostMutationRemove && !stagedRemovalNeverLanded(marker, file.Hosts) {
+			// The host is configured, but hub.toml changed since the removal
+			// staged against it: the removal landed and the name was added
+			// again.
+			continue
 		}
 		if !hostFileDurable {
 			// The file may be a restore whose directory sync never succeeded; the
@@ -501,22 +502,41 @@ func (m *hubHostManager) rollBackUnlandedCommits(doc hostRecordDocument) map[str
 
 // markerLanded reports whether hub.toml holds the host change a staged marker's
 // commit made: the host present as the commit staged it for an add or an edit,
-// absent for a removal, or a marker whose runtime swap already started.
-func markerLanded(marker HostStagedReceipt, hosts []hostreg.Host) bool {
+// absent for a removal. A marker whose runtime swap already started is landed
+// unless the file shows the change was taken back (postSwapLanded).
+func markerLanded(marker HostStagedReceipt, hosts []hostreg.Host, configured []HostConfig) bool {
 	scope, ok := parseHostReceiptScopedKey(marker.Key)
 	if !ok {
 		return true
 	}
 	if marker.SwapStarted || marker.TeardownStarted || marker.Phase == hostStagedPhaseRuntimeSwapped {
-		// The runtime swap starts only after the host change is in hub.toml, so
-		// a later edit of the file does not un-land the commit.
-		return true
+		return postSwapLanded(marker, scope, configured)
 	}
 	entry, present := hostEntryNamed(hosts, scope.Name)
 	if scope.Kind == hostMutationRemove {
 		return !present
 	}
 	return present && sameEffectiveHostEntryFields(entry, hostFromReceiptRow(marker.Provisional.Row))
+}
+
+// postSwapLanded judges a marker past its flip. The runtime swap starts only
+// after the host change is in hub.toml, so a later hand edit of the file does
+// not un-land the commit. The one thing that does is a compensation that put the
+// host file back and whose record write never landed: the file then holds the
+// host exactly as the commit staged against it, and an edit that changed the
+// entry (or a removal) cannot be there. An edit that changed nothing the file
+// records, and an add, leave nothing to tell the two apart, and read as landed.
+func postSwapLanded(marker HostStagedReceipt, scope hostReceiptScope, configured []HostConfig) bool {
+	if marker.HostFingerprint == "" {
+		return true
+	}
+	if scope.Kind == hostMutationUpdate {
+		after := hubTOMLHostTables([]hostreg.Host{hostFromReceiptRow(marker.Provisional.Row)})
+		if hostConfigFingerprint(after, scope.Name) == marker.HostFingerprint {
+			return true
+		}
+	}
+	return hostConfigFingerprint(configured, scope.Name) != marker.HostFingerprint
 }
 
 // hostFromReceiptRow is the effective entry a receipt row records.
