@@ -75,3 +75,19 @@ func TestTrackedFileSizeAllowsListedFile(t *testing.T) {
 		t.Fatalf("an allowlisted file must pass; the gate said:\n%s", output)
 	}
 }
+
+func TestTrackedFileSizeFailsWhenRootIsNotARepository(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("scripts/ops/tracked-file-size-check.sh gate runs on Unix CI")
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	script := filepath.Join(wd, "scripts", "ops", "tracked-file-size-check.sh")
+	cmd := exec.Command(script, "--root", t.TempDir())
+	cmd.Env = append(os.Environ(), "GIT_CEILING_DIRECTORIES="+filepath.Dir(t.TempDir()))
+	if err := cmd.Run(); err == nil {
+		t.Fatal("the gate passed a root with no git repository, so it checked nothing")
+	}
+}
