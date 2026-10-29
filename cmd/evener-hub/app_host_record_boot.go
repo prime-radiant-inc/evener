@@ -621,9 +621,13 @@ func (m *hubHostManager) rollBackUnlandedCommits(doc hostRecordDocument) map[str
 		// settle; keeping it out of this write keeps its tombstone beside no
 		// live entry, which the records refuse.
 		tombstoned := m.cfg.store.tombstoneSnapshot()
+		restoredName := ""
+		if change.restore != nil {
+			restoredName = change.restore.Tombstone.Name
+		}
 		writable := slices.DeleteFunc(slices.Clone(entries), func(entry hostreg.Host) bool {
 			_, held := tombstoned[entry.Name]
-			return held && entry.Name != change.dropTombstone
+			return (held && entry.Name != change.dropTombstone) || entry.Name == restoredName
 		})
 		if err := m.persistHosts(writable, writable, change); err != nil {
 			m.logf("boot rollback of the staged commit for %q not written: %v", name, err)

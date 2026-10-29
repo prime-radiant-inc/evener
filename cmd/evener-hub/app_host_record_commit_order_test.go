@@ -1701,3 +1701,35 @@ func TestLateAttachLeavesAnUnfinishedLegacyCompensationToARestart(t *testing.T) 
 		t.Fatal("host changes resumed with the previous build's removal still open")
 	}
 }
+
+// TestRollbackOfAReAddBesideADifferentlyConfiguredHostOfTheSameName pins the
+// restore's clash with a live entry: the re-add never landed, an operator has
+// since configured the name differently, and the restored tombstone beside that
+// live host is the collision rule's to settle, not a write the records refuse
+// on every retry.
+func TestRollbackOfAReAddBesideADifferentlyConfiguredHostOfTheSameName(t *testing.T) {
+	const staged = "staged-re-add"
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, _ := hub.boot(t, false)
+	if _, err := m.RemoveResult(context.Background(), removeRequest(t, m, "side")); err != nil {
+		t.Fatalf("Remove(side): %v", err)
+	}
+	params := appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "again.example"}, MutationID: staged}
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() { _, _ = m.AddResult(context.Background(), params) })
+	if err := writeHubTOMLHosts(hub.configPath, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "configured-differently.example"}}); err != nil {
+		t.Fatalf("configure side differently: %v", err)
+	}
+
+	recovered, _ := hub.boot(t, true)
+
+	if err := recovered.mutationRefusal(); err != nil {
+		t.Fatalf("host changes are still paused: %v", err)
+	}
+	if staged := mustRecords(t, hub.store).StagedReceipts; len(staged) != 0 {
+		t.Fatalf("recovery left staged markers: %+v", staged)
+	}
+	if row := hostRows(t, recovered)["side"]; row.Removed || row.Address != "configured-differently.example" {
+		t.Fatalf("side serves %+v, want the host the operator configured", row)
+	}
+}

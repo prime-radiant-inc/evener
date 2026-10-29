@@ -1376,10 +1376,24 @@ func (m *Manager) RetireHostUnderGate(name string, holder hostops.Holder) (retir
 	m.mu.Lock()
 	retired = m.chans[host.Name] != nil || len(m.supervisors[host.Name]) > 0
 	m.mu.Unlock()
-	if ch := m.teardownHostChannel(host.Name, host, true); ch != nil {
+	if !retired {
+		return false, nil
+	}
+	// The connection comes down; the per-host lifecycle state (a pending
+	// restart's recovery intent, the dial decisions) stays, because the
+	// registration it belongs to is not changing.
+	m.stopSupervisorsBefore(host.Name, func(uint64) bool { return false })
+	m.mu.Lock()
+	ch := m.chans[host.Name]
+	delete(m.chans, host.Name)
+	m.mu.Unlock()
+	if ch != nil && m.claimAnnounced(host.Name, ch) {
+		m.detachEvent(host.Name, StateDisconnected)
+	}
+	if ch != nil {
 		_ = ch.Close()
 	}
-	return retired, nil
+	return true, nil
 }
 
 // clearHostCaches drops every per-host record that must not survive a detach or

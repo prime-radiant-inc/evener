@@ -353,9 +353,18 @@ func TestRetireHostUnderGateTearsTheConnectionDownAndLeavesTheEntry(t *testing.T
 		t.Fatalf("TryAcquire: %v", err)
 	}
 	defer release()
+	m.mu.Lock()
+	m.pendingRestarts["alpha"] = pendingRestartState{command: "restart-alpha"}
+	m.mu.Unlock()
 	retired, err := m.RetireHostUnderGate("alpha", holder)
 	if err != nil || !retired {
 		t.Fatalf("RetireHostUnderGate = (%v, %v), want the attached connection retired", retired, err)
+	}
+	m.mu.Lock()
+	_, pending := m.pendingRestarts["alpha"]
+	m.mu.Unlock()
+	if !pending {
+		t.Fatal("the retirement cleared the host's pending restart, which the unchanged registration still owes")
 	}
 
 	if m.Attached("alpha") {
