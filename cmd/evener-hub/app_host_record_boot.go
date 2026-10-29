@@ -400,14 +400,14 @@ func hostFromReceiptRow(row HostMutationReceiptRow) hostreg.Host {
 // recoverInterruptedOnce moves the operations a crash left in flight to
 // interrupted, the first time it runs over the attached store. A settlement
 // retry runs the boot again over a store that is serving, where a running
-// operation is live and must stay so.
+// operation is live and must stay so; a pass that fails is therefore not
+// repeated in this process either, and the next start makes it again.
 func (m *hubHostManager) recoverInterruptedOnce(ops *hostops.Store) {
 	if !m.cfg.interruptedHandled.CompareAndSwap(false, true) {
 		return
 	}
 	if moved, err := ops.RecoverInterrupted(); err != nil {
-		m.cfg.interruptedHandled.Store(false)
-		m.logf("boot interrupted transition not completed: %v", err)
+		m.logf("boot interrupted transition not completed; the next start retries it: %v", err)
 	} else if moved > 0 {
 		m.logf("boot moved %d in-flight operation(s) to interrupted", moved)
 	}

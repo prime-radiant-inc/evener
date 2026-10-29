@@ -75,7 +75,7 @@ type hostManagerConfig struct {
 	// clears when a boot attach converges.
 	refusal atomic.Pointer[hostRefusal]
 	// interruptedHandled is set once the pass that interrupts what a crash left
-	// in flight has run over the attached store; later boots of the same store
+	// in flight has been attempted over the attached store; later boots of the same store
 	// (settlement retries) must not interrupt operations that are running now.
 	interruptedHandled atomic.Bool
 	// sources is the component-05 registry; a remote host's source is where
