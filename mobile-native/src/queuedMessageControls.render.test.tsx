@@ -45,6 +45,7 @@ import { sessionInfoHosts } from "./session/SessionInfoSheet";
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
 	kvFailure: "" as "" | "read" | "write",
+	handoffReadFailure: false,
 	rpcFailure: "" as string,
 	reopenKV: () => {},
 	manipulate: vi.fn(),
@@ -114,12 +115,25 @@ vi.mock("expo-sqlite", async () => {
 			let port = sqlite.ports.get(database);
 			if (!port) {
 				let opened = openSqliteSyncDouble(join(sqlite.directory, database));
+				// Failing the handoff ledger's queries models a ledger that
+				// exists but cannot be read: ownership stays unknown, which
+				// the screen must treat as defer, never as empty.
+				const handoffReadFails = (sql: unknown) =>
+					harness.handoffReadFailure &&
+					database === "evener-mutations.db" &&
+					(String(sql).includes("draft_handoff") || String(sql).includes("draft_submission"));
 				// A stable platform handle delegates to the reopened on-disk database.
 				port = {
 					execSync: (...args: Parameters<SqliteSync["execSync"]>) => opened.port.execSync(...args),
 					runSync: (...args: Parameters<SqliteSync["runSync"]>) => opened.port.runSync(...args),
-					getFirstSync: (...args: Parameters<SqliteSync["getFirstSync"]>) => opened.port.getFirstSync(...args),
-					getAllSync: (...args: Parameters<SqliteSync["getAllSync"]>) => opened.port.getAllSync(...args),
+					getFirstSync: (...args: Parameters<SqliteSync["getFirstSync"]>) => {
+						if (handoffReadFails(args[0])) throw new Error("handoff read failed");
+						return opened.port.getFirstSync(...args);
+					},
+					getAllSync: (...args: Parameters<SqliteSync["getAllSync"]>) => {
+						if (handoffReadFails(args[0])) throw new Error("handoff read failed");
+						return opened.port.getAllSync(...args);
+					},
 				};
 				sqlite.handles.push({ close: () => opened.database.close() });
 				sqlite.reopen.push(() => {
@@ -227,6 +241,7 @@ let serial = 0;
 afterEach(async () => {
 	unmountMountedTrees();
 	harness.kvFailure = "";
+	harness.handoffReadFailure = false;
 	harness.rpcFailure = "";
 	await getNativeMutationRuntime().stop();
 });
@@ -685,6 +700,39 @@ it("actual screen restores an interrupted Edit after cached identity Retry", asy
 	await settle();
 	expect(f.document.getSnapshot().record).toMatchObject({
 		draft: "exact interrupted source text",
+		composer: { recoveryIds: [source.clientMutationId] },
+	});
+	expect((await f.runtime.read(f.targetKey)).recovery.map((row) => row.clientMutationId)).toEqual([
+		source.clientMutationId,
+	]);
+});
+
+it("actual screen retries a deferred ownership read without user action", async () => {
+	const f = await mount();
+	await f.offline();
+	const source = await enqueue(f, "ownership retry source");
+	act(() => f.tree.unmount());
+	await act(async () => {
+		const claimed = await f.runtime.storage.transferToRecovery(source.clientMutationId, "editing");
+		expect(claimed?.clientMutationId).toBe(source.clientMutationId);
+	});
+	// The ledger exists but its ownership read fails: unknown ownership defers
+	// restoration rather than restoring a possibly running command's sources,
+	// and the deferral is not the user's to repair.
+	harness.handoffReadFailure = true;
+	const tree = await f.recreateOffline();
+	await settle();
+	expect(tree.root.findAllByProps({ accessibilityLabel: "Retry" })).toHaveLength(0);
+	expect(f.document.getSnapshot().record.composer?.recoveryIds).toBeUndefined();
+	harness.handoffReadFailure = false;
+	// No Retry press, no remount: the screen retries the deferred read on its
+	// own timer and the interrupted capture converges to the draft.
+	await act(async () => {
+		await new Promise((resolve) => setTimeout(resolve, 1500));
+	});
+	await settle();
+	expect(f.document.getSnapshot().record).toMatchObject({
+		draft: "ownership retry source",
 		composer: { recoveryIds: [source.clientMutationId] },
 	});
 	expect((await f.runtime.read(f.targetKey)).recovery.map((row) => row.clientMutationId)).toEqual([

@@ -120,9 +120,12 @@ export interface DraftHandoffLedger extends DraftSubmissionLedger {
 	 * target, read from the durable outbox and recovery tables. Retargets move
 	 * rows with the identity regardless of whether the destination accepted
 	 * the draft, so this - not the handoff graph - is the durable row
-	 * ownership. Undefined when those tables are absent or unreadable: the
-	 * caller then falls back to the graph's continuation trace. Optional:
-	 * without the method the fallback applies as well. */
+	 * ownership. Undefined only when the query itself is absent - the ledger
+	 * has no mutation tables, or does not implement the method - and the
+	 * caller then falls back to the graph's continuation trace. A read of
+	 * tables that exist but cannot be read throws instead: that ownership is
+	 * unknown, never absent, and the caller defers its action rather than
+	 * trust the trace the rows may have moved past. */
 	recoveryRowOwners?(recoveryIds: readonly string[]): DraftHandoffEndpoint[] | undefined;
 	settleEdge(edgeId: string, deliveries: readonly DraftHandoffDelivery[], deliveredHash: string): void;
 	refuseEdge(edgeId: string, deliveries: readonly DraftHandoffDelivery[]): void;

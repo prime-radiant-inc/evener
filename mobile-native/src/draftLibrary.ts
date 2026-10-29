@@ -711,7 +711,16 @@ export class DraftLibrary {
 		// each row currently targets, across refused handoffs and uncomposed
 		// edges alike. Ledgers without that query fall back to the graph's
 		// continuation trace from this edge's destination.
-		const owners = ledger.recoveryRowOwners?.([...completed, ...released]);
+		let owners: DraftHandoffEndpoint[] | undefined;
+		try {
+			owners = ledger.recoveryRowOwners?.([...completed, ...released]);
+		} catch {
+			// A failed ownership read is unknown, never absent: the
+			// dispositions defer - the obligation stays for the next pass
+			// instead of trusting the graph's older trace and acknowledging
+			// on it.
+			return false;
+		}
 		const rowOwners: DraftHandoffEndpoint[] = [];
 		if (owners !== undefined) {
 			for (const owner of owners) if (!sameDestination(owner, skip)) rowOwners.push(owner);
@@ -870,15 +879,20 @@ export class DraftLibrary {
 			// An acknowledged obligation's completion already applied; nothing
 			// of it can render as a stale capture.
 			if (obligation.appliedAt != null) continue;
+			let readsFailed = false;
 			// A transfer can commit while its composed-marker write fails, so the
 			// graph can name an origin whose capture durably lives elsewhere.
 			const owner = captureTerminal(graph.edges, obligation, (endpoint) => {
 				try {
 					return this.repository().read(endpoint);
 				} catch {
+					readsFailed = true;
 					return undefined;
 				}
 			});
+			// A record that cannot be read may be the one holding the capture:
+			// unknown ownership defers to the retry pass, which re-reads.
+			if (readsFailed) continue;
 			if (!sameDestination(owner, destination)) continue;
 			this.applyCompletion(obligation, owner);
 		}

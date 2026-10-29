@@ -406,6 +406,11 @@ export function ConversationScreen(
 	return <ConversationScreenView {...props} attachment={attachment} />;
 }
 
+/** A deferred ownership read retries itself on this cadence for as long as the
+ * screen is mounted, so a transient ledger or record failure converges to
+ * restoration without the user acting. */
+const UNKNOWN_OWNERSHIP_RETRY_MS = 1000;
+
 function ConversationScreenView({
 	route,
 	navigation,
@@ -2861,6 +2866,11 @@ function ConversationScreenView({
 	// re-runs this reconciliation instead of waiting for a remount.
 	const [obligationTransitions, noteObligationTransition] = useState(0);
 	useEffect(() => drafts.onObligationTransition(() => noteObligationTransition((count) => count + 1)), [drafts]);
+	// Ownership that cannot be read is unknown, and unknown ownership defers
+	// restoration. Deferring is not waiting for the user: this counter re-runs
+	// the reconciliation on the timer above, so a transient read failure
+	// converges with no action and no remount.
+	const [ownershipRetry, setOwnershipRetry] = useState(0);
 	const recoveryWork = JSON.stringify({
 		sources: recovery.snapshot?.recovery
 			.filter((row) => row.recoveryKind === "editing")
@@ -2875,6 +2885,7 @@ function ConversationScreenView({
 	useEffect(() => {
 		if (!recoveryAvailable || !draft.loaded || draft.submitting || draft.error || imageState.busy) return;
 		let current = true;
+		let ownershipRetryTimer: ReturnType<typeof setTimeout> | null = null;
 		const targetKey = recovery.targetKey;
 		void (async () => {
 			const runtime = getNativeMutationRuntime();
@@ -2892,8 +2903,13 @@ function ConversationScreenView({
 			// Unknown ownership is not empty: a ledger or record that cannot be
 			// read must defer restoration, or a still-running command's sources
 			// could be restored and its capture cleared before its completion
-			// attaches.
-			if (pendingObligations === undefined) return;
+			// attaches. Deferring schedules its own retry, so the deferral
+			// ends when the read recovers - not when the user acts.
+			if (pendingObligations === undefined) {
+				if (current)
+					ownershipRetryTimer = setTimeout(() => setOwnershipRetry((count) => count + 1), UNKNOWN_OWNERSHIP_RETRY_MS);
+				return;
+			}
 			// Ownership is passed as a reader, so the serialized reconciliation
 			// re-reads it when it actually runs: a handoff can adopt a running
 			// command's capture into this document while the reconciliation
@@ -2927,6 +2943,7 @@ function ConversationScreenView({
 		});
 		return () => {
 			current = false;
+			if (ownershipRetryTimer !== null) clearTimeout(ownershipRetryTimer);
 		};
 	}, [
 		document,
@@ -2940,6 +2957,7 @@ function ConversationScreenView({
 		draft.submitting,
 		draft.error,
 		obligationTransitions,
+		ownershipRetry,
 		imageState.busy,
 		imageSelection,
 		localThread,

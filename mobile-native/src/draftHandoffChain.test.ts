@@ -836,6 +836,121 @@ describe("handoff chain obligations", () => {
 		).toBe("already-restored");
 	});
 
+	test("a failed ownership read defers the refusal until the read recovers", async () => {
+		const mutations = openSqliteSyncDouble();
+		databases.push(mutations.database);
+		let next = 0;
+		// The row-owner query alone fails while every write succeeds: an
+		// unreadable ownership read is unknown, not an absent ownership query,
+		// so the actions it feeds must defer instead of trusting the graph's
+		// older trace.
+		let failOwnershipRead = false;
+		const guardedPort = new Proxy(mutations.port, {
+			get(target, property) {
+				const value = Reflect.get(target, property, target);
+				if (failOwnershipRead && (property === "getAllSync" || property === "getFirstSync"))
+					return (...args: unknown[]) => {
+						if (String(args[0]).includes("SELECT DISTINCT target_ref FROM mutation_outbox"))
+							throw new Error("ownership read failed");
+						return (value as (...inner: unknown[]) => unknown).apply(target, args);
+					};
+				return typeof value === "function" ? (value as (...inner: unknown[]) => unknown).bind(target) : value;
+			},
+		});
+		const storage = new MutationOutboxSQLite(guardedPort, {
+			createMutationId: () => `mutation-${++next}`,
+			now: () => 1000,
+		});
+		const drafts = openSqliteSyncDouble();
+		databases.push(drafts.database);
+		const repository = new DraftRepository(drafts.port);
+		const library = new DraftLibrary(
+			() => repository,
+			undefined,
+			() => storage.handoffLedger,
+		);
+		const intent = (note: string): MutationIntent => ({
+			targetRef: targetKey("a"),
+			threadId: "thread-a",
+			method: "notes/human/set",
+			payload: { ref: "a", expectedInstanceId: "instance-a", note },
+			attachments: [],
+			optimisticDisplay: null,
+		});
+		await storage.enqueueIntent(intent("drives the retarget"));
+		const captured = await storage.enqueueIntent(intent("recovered command input"));
+		await storage.transferToRecovery(captured.clientMutationId, "editing");
+		repository.write(endpoint("a"), {
+			draft: "current",
+			unconfirmed: null,
+			composer: { recoveryIds: [captured.clientMutationId] },
+		});
+		repository.write(endpoint("b"), { draft: "b work", unconfirmed: null });
+		repository.write(endpoint("c"), { draft: "c work", unconfirmed: null });
+		const source = library.open(endpoint("a"));
+		let finish!: () => void;
+		const submitted = source.submitBuiltinCommand(
+			() =>
+				new Promise<boolean>((resolve) => {
+					finish = () => resolve(true);
+				}),
+		);
+		resume(storage, "a", "b");
+		resume(storage, "b", "c");
+		library.retryPendingHandoffs();
+
+		// The row-owner query fails from the resolution onward, so every pass
+		// in the failure window must defer: the refusal is not committed and
+		// the obligation is not acknowledged on ownership it could not read,
+		// or the markers could be owed to the wrong identity forever.
+		failOwnershipRead = true;
+		finish();
+		await submitted;
+		library.retryPendingHandoffs();
+		expect(storage.handoffLedger.readGraph().edges.find((edge) => edge.from.sessionRef === "a")?.state).toBe("pending");
+		const outstanding = storage.handoffLedger.readOutstandingGraph().obligations;
+		expect(outstanding).toHaveLength(1);
+		expect(outstanding[0]?.appliedAt).toBeNull();
+		expect(repository.read(endpoint("c")).completedCommandRecoveryIds).toBeUndefined();
+
+		// The read recovers: the next pass refuses and the markers reach both
+		// the immediate destination and the identity the retargets moved the
+		// row to, so the executed command cannot be restored there.
+		failOwnershipRead = false;
+		library.retryPendingHandoffs();
+		expect(repository.read(endpoint("b")).completedCommandRecoveryIds).toEqual([captured.clientMutationId]);
+		expect(repository.read(endpoint("c")).completedCommandRecoveryIds).toEqual([captured.clientMutationId]);
+		expect(
+			library.open(endpoint("c")).appendEditedRecovery({
+				version: 1,
+				clientMutationId: captured.clientMutationId,
+				targetRef: targetKey("c"),
+				method: "turn/start",
+				payload: { input: [{ type: "text", text: "encoded" }] },
+				attachments: [],
+				composerText: "encoded",
+				optimisticDisplay: {},
+				intentSequence: 1,
+				createdAt: 1,
+				state: "canceled",
+				attempted: false,
+				recoveryKind: "editing",
+			}),
+		).toBe("already-restored");
+		expect(
+			storage.handoffLedger
+				.readGraph()
+				.edges.map((edge) => edge.resolvedAs)
+				.sort(),
+		).toEqual(["refused", "refused"]);
+		// The obligation is acknowledged - applied durably - so the routine pass
+		// stops revisiting it, and once the refused edge finishes cleaning the
+		// outstanding load no longer carries it.
+		expect(storage.handoffLedger.readGraph().obligations).toMatchObject([{ appliedAt: 1000 }]);
+		library.retryPendingHandoffs();
+		expect(storage.handoffLedger.readOutstandingGraph().obligations).toEqual([]);
+	});
+
 	test("a failed resolution on a live source is retried once storage recovers", async () => {
 		const { storageLedger, repository } = setup();
 		// The occupied destination keeps the source live: no transfer retires it.

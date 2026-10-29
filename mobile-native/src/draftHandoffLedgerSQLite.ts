@@ -348,9 +348,14 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 				...recoveryIds,
 				...recoveryIds,
 			);
-		} catch {
-			// A ledger constructed on a database without the mutation tables has
-			// no row ownership to read; the caller falls back to the graph.
+		} catch (error) {
+			// A ledger constructed on a database without the mutation tables
+			// has no row ownership to read at all: the API is absent, and the
+			// caller falls back to the graph. A database that has them and
+			// cannot be read is different: ownership is unknown, so the read
+			// throws and the caller defers its action instead of trusting the
+			// graph's older trace.
+			if (!(error instanceof Error) || !error.message.includes("no such table")) throw error;
 			return undefined;
 		}
 		const owners = new Map<string, DraftHandoffEndpoint>();
@@ -752,6 +757,9 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 				// Only rows that durably continue through this destination ride
 				// the continuation: the command's recovery rows follow the
 				// retargets, and the terminal they target is the one at risk.
+				// A read that fails throws rather than reading as absent, so
+				// unreadable ownership defers the whole identity change: the
+				// savepoint rolls back and the handoff retries.
 				const owners = this.recoveryRowOwners(obligation.recoveryIds);
 				if (owners === undefined) continue;
 				if (!owners.some((owner) => owner.hubId === from.hubId && owner.sessionRef === from.sessionRef)) continue;
