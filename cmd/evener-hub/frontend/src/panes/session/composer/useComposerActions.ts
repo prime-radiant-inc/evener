@@ -15,7 +15,13 @@ import {
 import { useToasts } from "../../../widgets";
 import { createAttachmentOperations, useAttachments } from "./attachments/useAttachments";
 import { STEER_RECOVERY_FENCED_REASON } from "./controlTooltips";
-import { clearDraft, clearPersistedDraft, readDraftRevision, resolveRecoveryPick } from "./draft";
+import {
+  clearDraft,
+  clearPersistedDraftIfRevisionMatches,
+  readComposerDraftRevisionId,
+  readDraftRevision,
+  resolveRecoveryPick,
+} from "./draft";
 import { pendingTurnEntries, type QueueStripProps, submitWithPendingTracking, usePendingTurnEntries } from "./queue";
 import { resendRecoveryPendingTurn, useBlockedMutationEntries, useComposerSubmitting } from "./queue/pendingTurnsStore";
 import { mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recovery/recoveryDraft";
@@ -192,9 +198,19 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
   ]);
 
   useEffect(() => {
+    if (freshRecoveryRef !== ref) {
+      return;
+    }
+    // Consume the mount restoration opportunity the moment readiness is
+    // first established for this ref - occupied composer or not - so no
+    // later asynchronous event (a Send clearing its owner, a projection
+    // update, an effect restart) can re-arm a restore: the one legitimate
+    // attempt is this same first-ready run, and only into an empty
+    // composer.
+    const firstReadyRun = !restoreAttemptedRef.current;
+    restoreAttemptedRef.current = true;
     if (
-      freshRecoveryRef !== ref ||
-      restoreAttemptedRef.current ||
+      !firstReadyRun ||
       activeRecoveryId !== null ||
       textRef.current.trim() !== "" ||
       attachments.items.length > 0 ||
@@ -203,10 +219,6 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     ) {
       return;
     }
-    // Mount-time restore only, attempted at most once per mount: neither an
-    // effect restart (a focus change, a recovery projection update) nor any
-    // later asynchronous event may re-arm a restore.
-    restoreAttemptedRef.current = true;
     let cancelled = false;
     // The IndexedDB lookup can outlast a user edit: capture the edit and
     // replacement generations and fence the restore if either moved, so a
@@ -214,6 +226,11 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     // replaced by the old row's content.
     const editGeneration = draftEditRevisionRef.current;
     const replacementEpoch = recoveryReplacementEpochRef.current;
+    // The persisted draft's identity as it stands BEFORE the IndexedDB
+    // lookup: the cleanup after the restore may delete only this same
+    // draft, never a newer one another pane saved while the lookup was
+    // pending.
+    const draftRevisionId = readComposerDraftRevisionId(ref);
     void (async () => {
       // Resolve this tab's pick registry against the rows' current targets
       // (an IndexedDB read), so a pick follows its row across retargets and
@@ -254,7 +271,7 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
       updateSkillNames(restoredSkillNames(recovered));
       updateSelectionMeta(recovered);
       attachments.replaceWithSettled(recovered.attachments);
-      clearPersistedDraft(ref);
+      if (draftRevisionId !== undefined) clearPersistedDraftIfRevisionMatches(ref, draftRevisionId);
     })();
     return () => {
       cancelled = true;

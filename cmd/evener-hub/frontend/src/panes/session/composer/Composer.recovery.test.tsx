@@ -39,7 +39,7 @@ import {
   submitButton,
   textarea,
 } from "./composerTestUtils";
-import { readDraft, writeComposerDraft, writeRecoveryPick } from "./draft";
+import { readComposerDraft, readDraft, writeComposerDraft, writeRecoveryPick } from "./draft";
 import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./queue/testing/flushPendingTurnsProjection";
 import { resetQuoteInsertStoreForTests } from "./quoteInsert";
@@ -837,6 +837,90 @@ test.each([false, true])(
     expect(readDraft("ref_a")).toBe("newer shared draft");
   },
 );
+
+// The pick-resolution read is an IndexedDB lookup that can outlast a
+// concurrent save from another pane: the restore must capture the persisted
+// draft's identity BEFORE awaiting and delete only that same draft after.
+test("a draft another tab saves during the restore lookup survives the restore", async () => {
+  class HeldPickReadStorage extends MutationOutboxIndexedDB {
+    readonly reached = deferred<void>();
+    readonly release = deferred<void>();
+    private holding = true;
+
+    override async getRecovery(
+      ...args: Parameters<MutationOutboxIndexedDB["getRecovery"]>
+    ): ReturnType<MutationOutboxIndexedDB["getRecovery"]> {
+      if (this.holding) {
+        this.holding = false;
+        this.reached.resolve();
+        await this.release.promise;
+      }
+      return super.getRecovery(...args);
+    }
+  }
+  const storage = new HeldPickReadStorage();
+  setMutationStorageForTests(storage);
+  const recovered = await seedRejectedRecovery(storage, "ref_a", "picked work");
+  writeRecoveryPick(recovered.clientMutationId);
+  const fake = await mountComposer("ref_a", { status: { type: "idle" } });
+  void fake;
+  await storage.reached.promise;
+  // Another pane saves newer work for this conversation while this pane's
+  // IndexedDB pick lookup is still pending.
+  writeComposerDraft("ref_a", { text: "newer work from another tab", skillNames: [] });
+  storage.release.resolve();
+  await flushPendingTurnsProjectionForTests();
+  await waitFor(() => expect(textarea().textContent).toBe("picked work"));
+  // The restore must not delete the shared persisted draft: it now belongs
+  // to the other pane, and a reload must still show that newer work.
+  expect(readComposerDraft("ref_a")?.text).toBe("newer work from another tab");
+});
+
+// A retained source arrives with its recovery already active, so its mount
+// consumed no restore attempt. When the user later sends that recovery
+// away, no asynchronous event may re-arm a restore of another pick.
+test("a retained source consumed after its mount never auto-restores another pick", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const first = await seedRejectedRecovery(storage, "ref_a", "first recovery");
+  const second = await seedRejectedRecovery(storage, "ref_a", "second recovery");
+  writeRecoveryPick(first.clientMutationId);
+  const source = createTestComposerSource("ref_a");
+  const view = await mountComposerWithHandle(
+    "ref_a",
+    {
+      status: { type: "idle" },
+      evener: {
+        ref: "ref_a",
+        capabilities: FULL_CAPABILITIES,
+        mutationStateAuthoritative: true,
+        queue: { revision: 0 },
+      },
+    },
+    { source },
+  );
+  view.fake.on("turn/start", (params) => ({
+    receipt: appliedReceipt(params.clientMutationId, "thread_a"),
+    turn: { id: "turn_1", status: "inProgress", itemsView: "full", items: [] },
+  }));
+  await flushPendingTurnsProjectionForTests();
+  await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(first.clientMutationId));
+  // The pane goes away while the retained source keeps its active recovery;
+  // meanwhile another tab records a newer pick for a different row.
+  view.unmount();
+  writeRecoveryPick(second.clientMutationId);
+  const user = userEvent.setup();
+  render(<Composer ref="ref_a" source={source} focused={false} />);
+  await flushPendingTurnsProjectionForTests();
+  await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(first.clientMutationId));
+  // Sending the mounted recovery is the user's explicit action; once it
+  // consumes the row, no later event may restore the other tab's pick into
+  // this composer.
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBeNull());
+  expect(textarea().textContent).toBe("");
+});
 
 test("a remounted Composer does not activate a stale recovery projection", async () => {
   const storage = new PausedRecoveryReadStorage();

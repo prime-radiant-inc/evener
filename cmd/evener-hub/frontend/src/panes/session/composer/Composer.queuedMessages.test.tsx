@@ -1013,6 +1013,116 @@ test("a same-ref conflict keeps the picked row's durable content across reload",
     storage.close();
   }
 });
+test("keystrokes typed during a stalled preservation survive reload durably", async () => {
+  // The held preservation publishes its projection between assertions; expect
+  // only React's act warnings for those updates.
+  const actWarnings = vi.spyOn(console, "error").mockImplementation(() => {});
+  class HeldPreservationStorage extends MutationOutboxIndexedDB {
+    readonly reached = deferred<void>();
+    readonly release = deferred<void>();
+
+    override async preserveRecoveryComposition(
+      ...args: Parameters<MutationOutboxIndexedDB["preserveRecoveryComposition"]>
+    ): ReturnType<MutationOutboxIndexedDB["preserveRecoveryComposition"]> {
+      this.reached.resolve();
+      await this.release.promise;
+      return super.preserveRecoveryComposition(...args);
+    }
+  }
+  const storage = new HeldPreservationStorage();
+  const { fake } = await setup(false, storage);
+  const original = await storage.enqueueIntent({
+    targetRef: "root",
+    method: "turn/start",
+    payload: { ref: "root", input: [{ type: "text", text: "old composition" }] },
+    attachments: [],
+    composerText: "old composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "old composition" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  writeRecoveryPick(original.clientMutationId);
+  const source = createTestComposerSource("root");
+  const peer = new MutationOutboxIndexedDB();
+  let reloaded: ReturnType<typeof createTestComposerSource> | undefined;
+  try {
+    await act(async () => {
+      mount(fake, source);
+    });
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(source.getSnapshot().freshRecoveryRef).toBe("root"));
+    await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(original.clientMutationId));
+    const peerRecovery = await peer.getRecovery(original.clientMutationId);
+    if (!peerRecovery) throw new Error("missing peer recovery fixture");
+    await peer.updateRecoveryInput(
+      original.clientMutationId,
+      [{ type: "text", text: "peer composition" }],
+      [],
+      "peer composition",
+      [],
+      [],
+      undefined,
+      undefined,
+      { [original.clientMutationId]: recoveryCompositionRevision(peerRecovery) },
+    );
+
+    const preservedText = "local preserved work";
+    await act(async () => {
+      source.editText(preservedText);
+    });
+    // The refused autosave settles into a preservation that stalls on its
+    // durable write; keystrokes landing while it is pending are in neither
+    // the preserved row nor any later queued write.
+    await storage.reached.promise;
+    const lateText = "local preserved work plus late typing";
+    await act(async () => {
+      source.editText(lateText);
+    });
+    await act(async () => {
+      storage.release.resolve();
+      await source.flushRecoveryWrites();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(async () => {
+      expect(
+        (await storage.listRecovery("root")).find((record) => record.clientMutationId !== original.clientMutationId),
+      ).toBeDefined();
+    });
+    // The composition as it stands NOW - including the keystrokes typed
+    // during the pending preservation - must be durably preserved, so a
+    // reload cannot lose it with the retired lease.
+    expect((await storage.listRecovery("root")).filter((record) => record.composerText === lateText)).toHaveLength(1);
+
+    // Reload: the pick still names the original row (its durable content the
+    // peer replaced), and the late work remains durably reachable through its
+    // preserved row.
+    act(() => cleanup());
+    source.dispose();
+    reloaded = createTestComposerSource("root");
+    await act(async () => {
+      mount(fake, reloaded);
+    });
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(reloaded?.getSnapshot().freshRecoveryRef).toBe("root"));
+    await waitFor(() => expect(reloaded?.getSnapshot().activeRecoveryId).toBe(original.clientMutationId));
+    expect((screen.getByRole("textbox", { name: "Message" }) as HTMLElement).textContent).toBe("peer composition");
+    expect((await storage.listRecovery("root")).filter((record) => record.composerText === lateText)).toHaveLength(1);
+  } finally {
+    storage.release.resolve();
+    act(() => cleanup());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(actWarnings.mock.calls.every(([message]) => String(message).includes("not wrapped in act"))).toBe(true);
+    actWarnings.mockRestore();
+    source.dispose();
+    reloaded?.dispose();
+    peer.close();
+    storage.close();
+  }
+});
+
 test.each(["edit", "remove"] as const)(
   "failed %s write retains identity then storage recovery permits the action",
   async (action) => {

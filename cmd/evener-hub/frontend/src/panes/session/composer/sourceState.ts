@@ -495,6 +495,19 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
             // owner this tab can no longer write. A draft carries no image
             // bytes, so preserve the complete local composition under a fresh
             // recovery owner before retiring the lease.
+            // The preservation captured the composition as it stood when
+            // its durable write began. Keystrokes that land while that write
+            // is pending are in neither the preserved row nor any later
+            // queued write, whose owner check dies with the retired lease -
+            // so the composition as it stands NOW must be preserved too
+            // before the lease retires, or those edits vanish on reload.
+            const compositionAtPreservation = recoveryCompositionFingerprint({
+              text: textRef.current,
+              attachments: operations.toInputAttachments(),
+              skillNames: skillNamesRef.current,
+              commandNames: selectionMetaRef.current.commandNames,
+              mentions: selectionMetaRef.current.mentions,
+            });
             const preserved = await preserveStaleRecovery(clientMutationId, localDraftRevisionId);
             if (
               !disposed &&
@@ -504,10 +517,21 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
               // Automatic background restoration is cut from this PR: the
               // settle adopts neither the fresh row nor the composer and
               // never touches the pick registry. The local composition stays
-              // exactly as the user left it - the preserved row (when the
-              // preservation committed) carries it durably, and an explicit
-              // action reaches that row. Only a failed preservation falls
-              // back to the ordinary draft as the carrier.
+              // exactly as the user left it - a preserved row carries it
+              // durably, and an explicit action reaches that row. Only a
+              // failed preservation falls back to the ordinary draft as the
+              // carrier.
+              const compositionNow = recoveryCompositionFingerprint({
+                text: textRef.current,
+                attachments: operations.toInputAttachments(),
+                skillNames: skillNamesRef.current,
+                commandNames: selectionMetaRef.current.commandNames,
+                mentions: selectionMetaRef.current.mentions,
+              });
+              if (compositionNow !== compositionAtPreservation) {
+                const newer = await preserveStaleRecovery(clientMutationId, localDraftRevisionId);
+                if (!newer) persistDraft(textRef.current);
+              }
               if (!preserved) persistDraft(textRef.current);
               setActiveRecoveryId(null, { restore: true });
             }
