@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1731,5 +1732,176 @@ func TestRollbackOfAReAddBesideADifferentlyConfiguredHostOfTheSameName(t *testin
 	}
 	if row := hostRows(t, recovered)["side"]; row.Removed || row.Address != "configured-differently.example" {
 		t.Fatalf("side serves %+v, want the host the operator configured", row)
+	}
+}
+
+// flakyDirSync fails the store's directory sync while armed, which makes every
+// store write publish its state and report RenameLanded.
+type flakyDirSync struct {
+	failing  atomic.Bool
+	storeDir string
+}
+
+// sync fails only the store's own directory, the sync behind the rename; the
+// syncs that create the directory tree before a first write still succeed.
+func (f *flakyDirSync) sync(dir string) error {
+	if f.failing.Load() && dir == f.storeDir {
+		return errors.New("injected directory sync failure")
+	}
+	return nil
+}
+
+// TestAHostChangeWaitsForTheStoreToBeDurableBeforeTouchingHubTOML pins the order
+// of the two files' durability: a store write whose rename landed but whose
+// directory sync failed is published, but the host file does not move forward on
+// it, so a power loss cannot keep the host change and lose its records. The
+// change is refused as retryable, leaves hub.toml and the store as they were, and
+// goes through once the sync works.
+func TestAHostChangeWaitsForTheStoreToBeDurableBeforeTouchingHubTOML(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "hub.toml")
+	if err := writeHubTOMLHosts(configPath, []hostreg.Host{{Name: "keep", SSH: "keep.example"}}); err != nil {
+		t.Fatalf("seed hub.toml: %v", err)
+	}
+	storePath := hostops.StorePath(t.TempDir())
+	dir := flakyDirSync{storeDir: filepath.Dir(storePath)}
+	store, err := hostops.OpenWithDirSync(storePath, dir.sync)
+	if err != nil {
+		t.Fatalf("OpenWithDirSync: %v", err)
+	}
+	cfg := mustLoadConfig(t, configPath)
+	boot := hostBootDocument(cfg, configPath, store)
+	hosts, err := hostreg.NewSeeded(boot.Hosts, boot.Records.highWaterMarks())
+	if err != nil {
+		t.Fatalf("hostreg.NewSeeded: %v", err)
+	}
+	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: configPath,
+	}, configPath, hosts, t.Logf)
+	before := fileBytes(t, configPath)
+
+	dir.failing.Store(true)
+	_, err = m.UpdateResult(context.Background(), updateRequest(t, m, "keep", appwire.HostEntry{Address: "edited.example"}))
+	if err == nil {
+		t.Fatal("the change went ahead on a store write that was not durable")
+	}
+	if !bytes.Equal(fileBytes(t, configPath), before) {
+		t.Fatal("hub.toml moved forward on a store write that was not durable")
+	}
+	if staged := mustRecords(t, store).StagedReceipts; len(staged) != 0 {
+		t.Fatalf("the refused change left staged markers: %+v", staged)
+	}
+
+	dir.failing.Store(false)
+	if _, err := m.UpdateResult(context.Background(), updateRequest(t, m, "keep", appwire.HostEntry{Address: "edited.example"})); err != nil {
+		t.Fatalf("the change after the sync works: %v", err)
+	}
+}
+
+// TestMigrationKeepsTheLegacySectionsUntilTheStoreIsDurable pins the same order
+// for the move: the legacy sections are the records' other copy, so they stay in
+// hub.toml while the import is published but not proven durable, and a later
+// attempt that can sync drops them.
+func TestMigrationKeepsTheLegacySectionsUntilTheStoreIsDurable(t *testing.T) {
+	configPath, records := legacyHub(t)
+	storePath := hostops.StorePath(t.TempDir())
+	dir := flakyDirSync{storeDir: filepath.Dir(storePath)}
+	dir.failing.Store(true)
+	store, err := hostops.OpenWithDirSync(storePath, dir.sync)
+	if err != nil {
+		t.Fatalf("OpenWithDirSync: %v", err)
+	}
+	cfg := mustLoadConfig(t, configPath)
+	boot := hostBootDocument(cfg, configPath, nil)
+	hosts, err := hostreg.NewSeeded(boot.Hosts, boot.Records.highWaterMarks())
+	if err != nil {
+		t.Fatalf("hostreg.NewSeeded: %v", err)
+	}
+	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: configPath,
+	}, configPath, hosts, t.Logf)
+
+	requireFamilyEquals(t, store, records)
+	if sections := legacyRecordSections(mustReadDocument(t, configPath)); len(sections) == 0 {
+		t.Fatal("the legacy sections were dropped before the import was durable")
+	}
+
+	dir.failing.Store(false)
+	m.attachOps(nil)
+
+	requireNoRecordSections(t, configPath)
+}
+
+// mustReadDocument reads hub.toml's raw TOML document.
+func mustReadDocument(t *testing.T, path string) map[string]any {
+	t.Helper()
+	doc, _, err := readHubTOMLDocument(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return doc
+}
+
+// dialCountingRunner counts the connections it is asked to start.
+type dialCountingRunner struct {
+	attachedUpdateRunner
+	dials atomic.Int32
+}
+
+func (r *dialCountingRunner) Start(ctx context.Context, argv []string, stderr io.Writer) (sshconn.Stdio, error) {
+	r.dials.Add(1)
+	return r.attachedUpdateRunner.Start(ctx, argv, stderr)
+}
+
+// TestRetriesThatOnlyHaveRecordsToWriteLeaveHealthyConnectionsAlone pins what a
+// retry costs: when the registrations already match the stored records and only
+// a record write keeps failing (a full or unwritable state directory), every
+// retry leaves the connected hosts connected instead of cycling them for the
+// length of the outage.
+func TestRetriesThatOnlyHaveRecordsToWriteLeaveHealthyConnectionsAlone(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	_, store := hub.boot(t, false)
+	family, _, _ := store.HostRecords()
+	delete(family.Hosts, "side")
+	delete(family.Generations, "side")
+	if err := store.CommitHostRecords(family, hostops.HostMirror{}); err != nil {
+		t.Fatalf("drop side's records: %v", err)
+	}
+	hub.restartStateRoot(t)
+	reopened, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	boot := hostBootDocument(mustLoadConfig(t, hub.configPath), hub.configPath, reopened)
+	hosts, err := hostreg.NewSeeded(boot.Hosts, boot.Records.highWaterMarks())
+	if err != nil {
+		t.Fatalf("hostreg.NewSeeded: %v", err)
+	}
+	runner := &dialCountingRunner{}
+	manager := sshconn.New(hosts, sshconn.Options{Runner: runner})
+	t.Cleanup(func() { _ = manager.Close() })
+	late := newHubHostManager(appsource.NewRegistry(), manager, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostConfigPath: hub.configPath, RemoteHostOpsUnavailable: true,
+	}, hub.configPath, hosts, t.Logf)
+	if _, err := manager.Ensure(context.Background(), "keep"); err != nil {
+		t.Fatalf("Ensure while the store is unavailable: %v", err)
+	}
+	dialsBefore := runner.dials.Load()
+	bootMaintenanceFault = func() error { return errors.New("injected write failure") }
+	t.Cleanup(func() { bootMaintenanceFault = nil })
+
+	for range 3 {
+		late.attachOps(reopened)
+		if late.mutationRefusal() == nil {
+			t.Fatal("the attach finished although the records could not be written")
+		}
+	}
+
+	if !manager.Attached("keep") || runner.dials.Load() != dialsBefore {
+		t.Fatalf("the retries disconnected a healthy host: attached=%v dials %d -> %d", manager.Attached("keep"), dialsBefore, runner.dials.Load())
+	}
+	bootMaintenanceFault = nil
+	late.attachOps(nil)
+	if err := late.mutationRefusal(); err != nil {
+		t.Fatalf("host changes are still paused after the write works: %v", err)
 	}
 }

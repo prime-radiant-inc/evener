@@ -148,13 +148,68 @@ func (m *hubHostManager) bootRecords() {
 	}
 	// The import raises live registrations to the mirror's counters, so the
 	// gates are held for it as for the other registration changes.
-	release, err := m.holdLiveHosts()
+	release, err := m.holdLiveHosts(m.mirrorAboveLiveHosts(ops))
 	if err != nil {
 		m.refuseMutations(fmt.Sprintf("a host is busy; the move of its records is retried: %v", err))
 		return
 	}
 	defer release()
 	m.migrateLegacyRecords(ops)
+}
+
+// storeSettlementMovesRegistrations reports whether settling over the stored
+// records would change a live host's registration: a stored incarnation to
+// adopt, counters to raise to a stored mark, or a removed name that is live
+// again for the collision rule.
+func (m *hubHostManager) storeSettlementMovesRegistrations(records hostRecordSet) bool {
+	for _, entry := range m.cfg.hosts.All() {
+		stored, held := records.HostRecords[entry.Name]
+		if !held {
+			stored, _ = unlandedRemovalIdentity(records, entry.Name, m.cfg.configPath)
+		}
+		if validIncarnationID(stored.IncarnationID) && stored.IncarnationID != entry.IncarnationID {
+			return true
+		}
+		if mark, ok := records.Generations[entry.Name]; ok && (mark.Generation > entry.Generation || mark.PresenceEpoch > entry.PresenceEpoch) {
+			return true
+		}
+		if _, tombstoned := records.Tombstones[entry.Name]; tombstoned {
+			if _, unlanded := unlandedRemovalIdentity(records, entry.Name, m.cfg.configPath); !unlanded {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// legacySettlementMovesRegistrations is the same question for the records still
+// in hub.toml, whose marks and tombstones the legacy boot seeds and weighs, and
+// whose mirror may sit above the live hosts.
+func (m *hubHostManager) legacySettlementMovesRegistrations(file hostRecordSet) bool {
+	for _, entry := range m.cfg.hosts.All() {
+		if mark, ok := file.Generations[entry.Name]; ok && (mark.Generation > entry.Generation || mark.PresenceEpoch > entry.PresenceEpoch) {
+			return true
+		}
+		if _, tombstoned := file.Tombstones[entry.Name]; tombstoned {
+			return true
+		}
+	}
+	return m.mirrorAboveLiveHosts(m.opsStore())
+}
+
+// mirrorAboveLiveHosts reports whether the store's mirror holds a counter above
+// a live host's, which the settlement raises the host to.
+func (m *hubHostManager) mirrorAboveLiveHosts(ops *hostops.Store) bool {
+	if ops == nil {
+		return false
+	}
+	boundaries := ops.Boundaries()
+	for _, entry := range m.cfg.hosts.All() {
+		if b, ok := boundaries[entry.Name]; ok && (b.Generation > entry.Generation || b.PresenceEpoch > entry.PresenceEpoch) {
+			return true
+		}
+	}
+	return false
 }
 
 // holdLiveHosts takes the gate of every live host and tears down the
@@ -165,9 +220,11 @@ func (m *hubHostManager) bootRecords() {
 // to a registration that moved. The gates stay held until the returned release
 // runs; a busy host is not touched: every gate taken is released and the error
 // says which, so the settlement stays pending. Outside an attach, or with no
-// SSH manager, no host can hold a connection and nothing is held.
-func (m *hubHostManager) holdLiveHosts() (func(), error) {
-	if m.cfg.manager == nil || !m.cfg.attaching.Load() {
+// SSH manager, no host can hold a connection and nothing is held; nor is
+// anything when the settlement would not change a registration (needed false),
+// so a retry that only has records to write leaves healthy connections alone.
+func (m *hubHostManager) holdLiveHosts(needed bool) (func(), error) {
+	if !needed || m.cfg.manager == nil || !m.cfg.attaching.Load() {
 		return func() {}, nil
 	}
 	var releases []func()
@@ -428,6 +485,14 @@ func (m *hubHostManager) stripLegacySections(keepCopy bool) {
 	if len(sections) == 0 {
 		return
 	}
+	if ops := m.opsStore(); ops != nil {
+		// The sections are the records' other copy until the import is proven to
+		// survive a crash.
+		if err := ops.SyncDir(); err != nil {
+			m.logf("hub.toml record sections not dropped: the operation store is not durable yet: %v", err)
+			return
+		}
+	}
 	cfg, state := readHubTOMLConfig(path)
 	if state != hostFileReadable {
 		m.logf("hub.toml record sections not dropped: %s is unreadable", path)
@@ -493,7 +558,7 @@ func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
 		m.refuseMutations(m.cfg.configPath + " could not be read; staged commits are settled once it can")
 		return
 	}
-	releaseHosts, err := m.holdLiveHosts()
+	releaseHosts, err := m.holdLiveHosts(m.storeSettlementMovesRegistrations(records))
 	if err != nil {
 		m.cfg.store.set(m.cfg.hosts.All())
 		m.refuseMutations(fmt.Sprintf("a host is busy; the settlement of its stored identity is retried: %v", err))
@@ -738,7 +803,7 @@ func (m *hubHostManager) bootLegacyRecords(settle bool) error {
 	if settle {
 		// Seeding and the collision rule below change live registrations.
 		var err error
-		if releaseHosts, err = m.holdLiveHosts(); err != nil {
+		if releaseHosts, err = m.holdLiveHosts(m.legacySettlementMovesRegistrations(fileRecords)); err != nil {
 			return err
 		}
 		defer releaseHosts()
@@ -830,7 +895,7 @@ func (m *hubHostManager) bootLegacyRecords(settle bool) error {
 	if m.testOnlyBeforePipelineHold != nil {
 		m.testOnlyBeforePipelineHold()
 	}
-	releasePipeline, err := m.holdLiveHosts()
+	releasePipeline, err := m.holdLiveHosts(m.mirrorAboveLiveHosts(m.opsStore()))
 	if err != nil {
 		return err
 	}

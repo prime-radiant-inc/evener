@@ -2,6 +2,7 @@ package hub
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"slices"
 	"strings"
@@ -290,6 +291,10 @@ func (s hostOpsRecordStore) absentOrEmpty() bool {
 	return state == hostFileAbsent && strings.TrimSpace(s.path) != ""
 }
 
+// errRecordsNotDurable reports a store write whose state is published but whose
+// directory sync has not succeeded.
+var errRecordsNotDurable = errors.New("the host records are published but not yet durable")
+
 // commitRecords writes the machine records alone, leaving hub.toml as it is.
 func (s hostOpsRecordStore) commitRecords(entries []hostreg.Host, records hostTOMLRecords) error {
 	_, err := s.writeFamily(entries, records)
@@ -305,8 +310,15 @@ func (s hostOpsRecordStore) writeFamily(entries []hostreg.Host, records hostTOML
 		return hostops.HostRecords{}, err
 	}
 	prior, _, _ := s.ops.HostRecords()
-	if err := s.ops.CommitHostRecords(family, hostMirrorFor(set, s.ops.Boundaries())); err != nil && !hostops.RenameLanded(err) {
-		return hostops.HostRecords{}, err
+	if err := s.ops.CommitHostRecords(family, hostMirrorFor(set, s.ops.Boundaries())); err != nil {
+		if !hostops.RenameLanded(err) {
+			return hostops.HostRecords{}, err
+		}
+		// The state is published but its rename is not proven durable; the host
+		// file does not move on until it is.
+		if syncErr := s.ops.SyncDir(); syncErr != nil {
+			return prior, fmt.Errorf("%w: %w", errRecordsNotDurable, syncErr)
+		}
 	}
 	return prior, nil
 }
@@ -314,6 +326,12 @@ func (s hostOpsRecordStore) writeFamily(entries []hostreg.Host, records hostTOML
 func (s hostOpsRecordStore) commit(entries, known []hostreg.Host, records hostTOMLRecords) error {
 	prior, err := s.writeFamily(entries, records)
 	if err != nil {
+		if errors.Is(err, errRecordsNotDurable) {
+			// Published but not durable: the host change must not reach hub.toml,
+			// so the records staged for it are taken back like those of a refused
+			// host-file write.
+			s.restore(prior)
+		}
 		return err
 	}
 	if err := writeHubTOMLHostsOnly(s.path, entries, known); err != nil {
