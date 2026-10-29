@@ -1437,9 +1437,9 @@ func TestWorktreePrune_CancelReachesSweeps(t *testing.T) {
 	// The runner itself ignores cancellation, so only the sweeps' own check of
 	// the context can stop the collection.
 	r.s.cfg.testOnly.worktreeGitRunner = func(_ context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
-		real := gitRunner(context.WithoutCancel(ctx), env)
+		inner := gitRunner(context.WithoutCancel(ctx), env)
 		return func(args ...string) (string, error) {
-			out, err := real(args...)
+			out, err := inner(args...)
 			if len(args) > 1 && args[0] == "worktree" && args[1] == "list" {
 				cancel()
 			}
