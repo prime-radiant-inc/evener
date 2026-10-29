@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
@@ -158,6 +159,9 @@ func (m *hubHostManager) holdLiveHosts() (func(), error) {
 			releaseAll()
 			return nil, fmt.Errorf("host %q: %w", entry.Name, err)
 		}
+		m.cfg.reconnectMu.Lock()
+		m.cfg.reconnect = append(m.cfg.reconnect, entry.Name)
+		m.cfg.reconnectMu.Unlock()
 	}
 	return releaseAll, nil
 }
@@ -189,6 +193,31 @@ func (m *hubHostManager) attachOps(store *hostops.Store) {
 	m.bootRecords()
 	// A boot that could not settle the records left its own refusal in place.
 	m.cfg.refusal.CompareAndSwap(attaching, nil)
+	m.reconnectRetiredHosts()
+}
+
+// hostReconnectTimeout bounds one dial of a host whose connection an attach
+// retired.
+const hostReconnectTimeout = 2 * time.Minute
+
+// reconnectRetiredHosts dials again the hosts whose connections the attach
+// tore down, once their gates are free: sessions of those hosts are read through
+// attached connections only, so without this they would stay unreachable until
+// someone connected each host by hand.
+func (m *hubHostManager) reconnectRetiredHosts() {
+	m.cfg.reconnectMu.Lock()
+	names := m.cfg.reconnect
+	m.cfg.reconnect = nil
+	m.cfg.reconnectMu.Unlock()
+	for _, name := range names {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), hostReconnectTimeout)
+			defer cancel()
+			if _, err := m.cfg.manager.Ensure(ctx, name); err != nil {
+				m.logf("host %q was not reconnected after the records settled: %v", name, err)
+			}
+		}()
+	}
 }
 
 // mirrorCountersAbove returns the counters the store's mirror holds for names
@@ -457,7 +486,7 @@ func (m *hubHostManager) rollBackUnlandedCommits(doc hostRecordDocument) map[str
 				continue
 			}
 		}
-		change := hostPersistChange{dropMarker: name, dropReceipt: marker.Key}
+		change := hostPersistChange{dropMarker: name, dropReceipt: marker.Key, recordsOnly: true}
 		if scope, ok := parseHostReceiptScopedKey(marker.Key); ok && scope.Kind == hostMutationRemove {
 			// The host was never removed: its tombstone goes with the rollback.
 			change.dropTombstone = name

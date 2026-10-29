@@ -290,14 +290,30 @@ func (s hostOpsRecordStore) absentOrEmpty() bool {
 	return state == hostFileAbsent && strings.TrimSpace(s.path) != ""
 }
 
-func (s hostOpsRecordStore) commit(entries, known []hostreg.Host, records hostTOMLRecords) error {
+// commitRecords writes the machine records alone, leaving hub.toml as it is.
+func (s hostOpsRecordStore) commitRecords(entries []hostreg.Host, records hostTOMLRecords) error {
+	_, err := s.writeFamily(entries, records)
+	return err
+}
+
+// writeFamily commits the record family and its boundary mirror in one store
+// write and returns the family it replaced.
+func (s hostOpsRecordStore) writeFamily(entries []hostreg.Host, records hostTOMLRecords) (hostops.HostRecords, error) {
 	set := recordSetFor(entries, records)
 	family, err := encodeHostRecords(set)
 	if err != nil {
-		return err
+		return hostops.HostRecords{}, err
 	}
 	prior, _, _ := s.ops.HostRecords()
 	if err := s.ops.CommitHostRecords(family, hostMirrorFor(set, s.ops.Boundaries())); err != nil && !hostops.RenameLanded(err) {
+		return hostops.HostRecords{}, err
+	}
+	return prior, nil
+}
+
+func (s hostOpsRecordStore) commit(entries, known []hostreg.Host, records hostTOMLRecords) error {
+	prior, err := s.writeFamily(entries, records)
+	if err != nil {
 		return err
 	}
 	if err := writeHubTOMLHostsOnly(s.path, entries, known); err != nil {

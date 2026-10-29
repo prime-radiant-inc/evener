@@ -14,6 +14,7 @@ import (
 	"os"
 	"sync"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
@@ -745,9 +746,7 @@ func TestLateAttachDoesNotLeaveAChannelBoundToAnIdentityThatChanged(t *testing.T
 	if entry.IncarnationID != incarnation {
 		t.Fatalf("side serves incarnation %q after the late attach, want the stored %q", entry.IncarnationID, incarnation)
 	}
-	if ch, attached := manager.ChannelIfAttached("side"); attached && !ch.MatchesRegistration(entry) {
-		t.Fatal("the channel from before the attach is still attached to an identity the host no longer has")
-	}
+	requireReconnected(t, manager, hosts, "side")
 }
 
 // TestLateAttachWaitsForABusyHostBeforeTakingItsStoredIdentity pins the
@@ -801,6 +800,24 @@ func TestLateAttachWaitsForABusyHostBeforeTakingItsStoredIdentity(t *testing.T) 
 	}
 }
 
+// requireReconnected fails unless the host holds a connection again that
+// belongs to its current registration: the attach retires connections so
+// registrations can change, and dials the hosts again once their gates are free.
+func requireReconnected(t *testing.T, manager *sshconn.Manager, hosts *hostreg.Registry, name string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		entry, _ := hosts.Get(name)
+		if ch, attached := manager.ChannelIfAttached(name); attached && ch.MatchesRegistration(entry) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s was not reconnected under its current registration after the attach", name)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 // lateAttachOverAReAddedName builds a hub that started without its store over a
 // hub.toml in which the removed name "side" was added again by hand, and
 // connects side through a real SSH manager before the store attaches.
@@ -850,10 +867,7 @@ func TestLateAttachRetiresTheConnectionOfAHostItRebasesAsACollision(t *testing.T
 
 	late.attachOps(reopened)
 
-	entry, _ := hosts.Get("side")
-	if ch, attached := manager.ChannelIfAttached("side"); attached && !ch.MatchesRegistration(entry) {
-		t.Fatal("the channel from before the attach is still attached to an identity the collision replaced")
-	}
+	requireReconnected(t, manager, hosts, "side")
 	if err := late.mutationRefusal(); err != nil {
 		t.Fatalf("host changes are still paused: %v", err)
 	}
@@ -863,7 +877,7 @@ func TestLateAttachRetiresTheConnectionOfAHostItRebasesAsACollision(t *testing.T
 // host whose gate is held is not rebased under its running work; the settlement
 // stays pending and finishes once the gate frees.
 func TestLateAttachWaitsForABusyHostBeforeRebasingACollision(t *testing.T) {
-	late, _, reopened, hosts := lateAttachOverAReAddedName(t)
+	late, manager, reopened, hosts := lateAttachOverAReAddedName(t)
 	before, _ := hosts.Get("side")
 	acquired, err := late.acquireHostGate("side", hostops.Holder{Kind: hostops.HolderOperation, OperationID: "busy"})
 	if err != nil {
@@ -890,6 +904,7 @@ func TestLateAttachWaitsForABusyHostBeforeRebasingACollision(t *testing.T) {
 	if after, _ := hosts.Get("side"); after.IncarnationID == before.IncarnationID {
 		t.Fatal("the collision was never rebased after the gate freed")
 	}
+	requireReconnected(t, manager, hosts, "side")
 }
 
 // TestLateAttachRetiresAConnectionBeforeCountersRaiseItsGeneration covers a
@@ -912,9 +927,7 @@ func TestLateAttachRetiresAConnectionBeforeCountersRaiseItsGeneration(t *testing
 	if entry.Generation <= before.Generation {
 		t.Fatalf("side kept generation %d; the fixture's stored mark did not raise it", entry.Generation)
 	}
-	if ch, attached := manager.ChannelIfAttached("side"); attached && !ch.MatchesRegistration(entry) {
-		t.Fatal("the channel from before the attach is still attached to the registration the counters replaced")
-	}
+	requireReconnected(t, manager, hosts, "side")
 }
 
 // TestLateAttachOfAStoreNotYetImportedRetiresCollidingConnections is the same
@@ -923,10 +936,11 @@ func TestLateAttachRetiresAConnectionBeforeCountersRaiseItsGeneration(t *testing
 // name's tombstone collides with while the host holds a connection.
 func TestLateAttachOfAStoreNotYetImportedRetiresCollidingConnections(t *testing.T) {
 	configPath, records := legacyHub(t)
-	var removed string
-	for name := range records.Tombstones {
-		removed = name
-		break
+	// gamma was removed cleanly; delta's removal left an open remnant, which
+	// excludes a returning name instead of rebasing it.
+	const removed = "gamma"
+	if _, tombstoned := records.Tombstones[removed]; !tombstoned {
+		t.Fatalf("the legacy fixture holds no tombstone for %s", removed)
 	}
 	body := fileBytes(t, configPath)
 	if err := os.WriteFile(configPath, append(body, []byte("\n[[hosts]]\nname = \""+removed+"\"\nssh = \"again.example\"\n")...), 0o600); err != nil {
@@ -957,7 +971,47 @@ func TestLateAttachOfAStoreNotYetImportedRetiresCollidingConnections(t *testing.
 	if entry.IncarnationID == before.IncarnationID {
 		t.Fatalf("the fixture did not make %s collide with its tombstone: still %+v", removed, entry)
 	}
-	if ch, attached := manager.ChannelIfAttached(removed); attached && !ch.MatchesRegistration(entry) {
-		t.Fatal("the channel from before the attach is still attached to the registration the collision replaced")
+	requireReconnected(t, manager, hosts, removed)
+}
+
+// TestRollbackAfterAPausedSettlementKeepsWhatTheOperatorChangedInHubTOML pins
+// the rollback's reach: it settles machine records, so a host the operator
+// edited or removed in hub.toml while the settlement was paused stays as they
+// left it when the retry rolls an unrelated staged commit back.
+func TestRollbackAfterAPausedSettlementKeepsWhatTheOperatorChangedInHubTOML(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}, {Name: "gone", SSH: "gone.example"}})
+	m, _ := hub.boot(t, false)
+	beforeBytes := fileBytes(t, hub.configPath)
+	params := updateRequest(t, m, "side", appwire.HostEntry{Address: "edited.example"})
+	params.MutationID = "staged-mutation"
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() { _, _ = m.UpdateResult(context.Background(), params) })
+	if err := os.WriteFile(hub.configPath, beforeBytes, 0o600); err != nil {
+		t.Fatalf("put the pre-mutation hub.toml back: %v", err)
+	}
+
+	bootRollbackFault = func(string) error { return errors.New("injected rollback write failure") }
+	t.Cleanup(func() { bootRollbackFault = nil })
+	recovered, _ := hub.boot(t, true)
+	if recovered.mutationRefusal() == nil {
+		t.Fatal("the settlement did not pause")
+	}
+	if err := writeHubTOMLHosts(hub.configPath, []hostreg.Host{{Name: "keep", SSH: "keep-by-hand.example"}, {Name: "side", SSH: "side.example"}}); err != nil {
+		t.Fatalf("edit hub.toml by hand: %v", err)
+	}
+
+	bootRollbackFault = nil
+	recovered.attachOps(nil)
+
+	cfg := mustLoadConfig(t, hub.configPath)
+	got := map[string]string{}
+	for _, h := range cfg.Hosts {
+		got[h.Name] = h.SSH
+	}
+	if got["keep"] != "keep-by-hand.example" {
+		t.Fatalf("the rollback undid the operator's edit of keep: %v", got)
+	}
+	if _, resurrected := got["gone"]; resurrected {
+		t.Fatalf("the rollback brought back the host the operator removed: %v", got)
 	}
 }

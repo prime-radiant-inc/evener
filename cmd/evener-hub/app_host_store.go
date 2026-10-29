@@ -57,6 +57,10 @@ type hostPersistChange struct {
 	// the rollback of a removal that never reached hub.toml, which leaves the
 	// host live.
 	dropTombstone string
+	// recordsOnly commits the machine records without rewriting the host list in
+	// hub.toml: boot recovery that settles records must not write the registry's
+	// idea of the hosts over what the file holds now.
+	recordsOnly bool
 	// restore puts back the history a re-add's staging write purged, when the
 	// re-add is rolled back.
 	restore *HostConsumedRecords
