@@ -15,9 +15,12 @@ type Emitter struct {
 	dryRun       bool
 	maxSeedBytes int
 	// maxPerTarget caps the files a target directory may hold, counting those
-	// already on disk, which bounds how far a re-harvest can regrow a corpus
-	// until the next --prune.
+	// already on disk. A directory at the cap is first pruned by coverage via
+	// makeRoom, so redundant seeds written earlier in a run free their slots
+	// (and stay in seen, so they are not re-admitted) instead of starving the
+	// later seeds that add coverage.
 	maxPerTarget int
+	makeRoom     func(dir string) error
 	seen         map[string]bool
 	dirCount     map[string]int
 
@@ -69,8 +72,7 @@ func (e *Emitter) write(dir string, encoded []byte, seedLen int) (emitStatus, er
 		e.oversized++
 		return statusOversized, nil
 	}
-	sum := sha256.Sum256(encoded)
-	path := filepath.Join(dir, hex.EncodeToString(sum[:]))
+	path := filepath.Join(dir, seedFileName(encoded))
 	if e.seen[path] {
 		e.deduped++
 		return statusDeduped, nil
@@ -79,6 +81,12 @@ func (e *Emitter) write(dir string, encoded []byte, seedLen int) (emitStatus, er
 	if fileExists(path) {
 		e.deduped++ // already committed; re-run produces no diff
 		return statusDeduped, nil
+	}
+	if e.filesIn(dir) >= e.maxPerTarget && e.makeRoom != nil && !e.dryRun {
+		if err := e.makeRoom(dir); err != nil {
+			return statusCapped, err
+		}
+		delete(e.dirCount, dir)
 	}
 	if e.filesIn(dir) >= e.maxPerTarget {
 		e.capped++
@@ -97,6 +105,12 @@ func (e *Emitter) write(dir string, encoded []byte, seedLen int) (emitStatus, er
 	}
 	e.written++
 	return statusWritten, nil
+}
+
+// seedFileName is the content-addressed file name of an encoded seed.
+func seedFileName(encoded []byte) string {
+	sum := sha256.Sum256(encoded)
+	return hex.EncodeToString(sum[:])
 }
 
 // filesIn counts the files in dir: those on disk when first asked, plus the

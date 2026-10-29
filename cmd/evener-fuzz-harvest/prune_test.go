@@ -204,3 +204,32 @@ func TestPruneCorpusAbortsWhenTargetNoLongerExists(t *testing.T) {
 		t.Fatalf("failed prune changed the corpus: %v, want %v", got, before)
 	}
 }
+
+func TestEmitterPrunesFullDirectoryAndDoesNotReadmitPrunedSeeds(t *testing.T) {
+	dir := t.TempDir()
+	e := NewEmitter(false, 32768)
+	e.maxPerTarget = 2
+	// Stands in for the coverage prune: it finds the first two seeds redundant.
+	e.makeRoom = func(d string) error {
+		for _, seed := range []string{"one", "two"} {
+			if err := os.Remove(filepath.Join(d, seedFileName(encodeBytesSeed([]byte(seed))))); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	var statuses []emitStatus
+	for _, seed := range []string{"one", "two", "three", "one"} {
+		s, err := e.emitBytes(dir, []byte(seed))
+		if err != nil {
+			t.Fatal(err)
+		}
+		statuses = append(statuses, s)
+	}
+	if want := []emitStatus{statusWritten, statusWritten, statusWritten, statusDeduped}; !reflect.DeepEqual(statuses, want) {
+		t.Fatalf("statuses = %v, want %v", statuses, want)
+	}
+	if names := corpusNames(t, dir); len(names) != 1 || names[0] != seedFileName(encodeBytesSeed([]byte("three"))) {
+		t.Fatalf("corpus = %v, want only the seed that arrived after the prune", names)
+	}
+}

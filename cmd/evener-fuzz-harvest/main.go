@@ -63,7 +63,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	surfaceList := fs.String("surface", strings.Join(allSurfaces, ","), "comma-separated surfaces to harvest")
 	keepValues := fs.Bool("keep-values", false, "skip shape-scrub, keep real values (GATED; local-only, never committed)")
 	maxSeedBytes := fs.Int("max-seed-bytes", defaultMaxSeedBytes, "drop seeds whose data exceeds this many bytes")
-	maxPerTarget := fs.Int("max-per-target", defaultMaxPerTarget, "stop adding seeds to a target directory that already holds this many files")
+	maxPerTarget := fs.Int("max-per-target", defaultMaxPerTarget, "cap on files per target directory; at the cap the directory is pruned by coverage, then further seeds are dropped")
 	var pruneDirs stringSlice
 	fs.Var(&pruneDirs, "prune", "corpus directory (relative to --out-root, repeatable) to prune by coverage instead of harvesting")
 	dryRun := fs.Bool("dry-run", false, "report counts and would-write paths; write nothing")
@@ -126,6 +126,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	emit := NewEmitter(*dryRun, *maxSeedBytes)
 	emit.maxPerTarget = *maxPerTarget
+	emit.makeRoom = func(dir string) error {
+		_, err := pruneCorpus(dir, false)
+		return err
+	}
 	r := newRunner(*outRoot, emit, logw)
 
 	for _, sd := range stateDirs {
