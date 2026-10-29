@@ -28,6 +28,7 @@ type surfaceStat struct {
 	scanned   int // source records examined
 	seeds     int // seeds written (or, under --dry-run, would-write)
 	oversized int // dropped for exceeding --max-seed-bytes
+	capped    int // dropped because the target directory is at --max-per-target
 	skipped   int // unscrubbable (e.g. malformed JSON) — dropped for safety
 	leaks     int // dropped because a secret survived sanitization
 }
@@ -93,6 +94,8 @@ func (r *runner) recordEmit(st *surfaceStat, status emitStatus) {
 		st.seeds++
 	case statusOversized:
 		st.oversized++
+	case statusCapped:
+		st.capped++
 	}
 }
 
@@ -118,8 +121,8 @@ func (r *runner) summary() string {
 	var b []byte
 	for _, s := range surfaces {
 		st := r.stats[s]
-		line := fmt.Sprintf("%s: scanned %d → %d seeds / %d oversized / %d skipped / %d secret-aborts\n",
-			s, st.scanned, st.seeds, st.oversized, st.skipped, st.leaks)
+		line := fmt.Sprintf("%s: scanned %d → %d seeds / %d oversized / %d capped / %d skipped / %d secret-aborts\n",
+			s, st.scanned, st.seeds, st.oversized, st.capped, st.skipped, st.leaks)
 		b = append(b, line...)
 	}
 	return string(b)

@@ -260,7 +260,11 @@ const (
 	opLaunchdList     remoteOp = "launchctl list"
 	opLaunchdKick     remoteOp = "launchctl kickstart"
 	opInstallDirProbe remoteOp = "test -d"
-	opExecutableProbe remoteOp = "test -x"
+	opRunnableProbe   remoteOp = "test -x"
+	opPresenceProbe   remoteOp = "executable presence probe"
+	opCreateTarget    remoteOp = "create target check"
+	opMakeDir         remoteOp = "mkdir -p"
+	opDefaultInstall  remoteOp = "installer-default binary probe"
 	opResolveExec     remoteOp = "evener_resolve"
 	opCommandLookup   remoteOp = "command -v evener"
 )
@@ -297,7 +301,15 @@ func classifyRemote(argv []string) remoteOp {
 	case strings.Contains(joined, "launchctl kickstart"):
 		return opLaunchdKick
 	case strings.Contains(joined, "if test -x"):
-		return opExecutableProbe
+		return opRunnableProbe
+	case strings.Contains(joined, "if test -e "), strings.Contains(joined, "if command -v "):
+		return opPresenceProbe
+	case strings.Contains(joined, `if [ -e "$p" ]`):
+		return opCreateTarget
+	case strings.Contains(joined, `if [ -n "${HOME-}" ] && [ -f`):
+		return opDefaultInstall
+	case strings.Contains(joined, "mkdir -p "):
+		return opMakeDir
 	case strings.Contains(joined, "test -d"):
 		return opInstallDirProbe
 	case strings.Contains(joined, "command -v evener"):
@@ -455,7 +467,7 @@ func deployRunnerForFixture(t *testing.T, goos, goarch string, launch func(call 
 				return out, err
 			case opInstallDirProbe:
 				return nil, nil
-			case opExecutableProbe:
+			case opRunnableProbe:
 				return nil, nil // This fixture's installed executable is runnable.
 			case opResolveExec:
 				return []byte("/opt/evener/bin/evener\n"), nil

@@ -62,13 +62,12 @@ func TestDeployBuildsPushesAtomicallyAndCleansStaging(t *testing.T) {
 
 	fr := &fakeRunner{
 		runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
-			joined := strings.Join(argv, " ")
-			switch {
-			case strings.Contains(joined, "test -d /opt/evener/bin"):
+			switch classifyRemote(argv) {
+			case opInstallDirProbe:
 				return nil, nil
-			case strings.Contains(joined, "evener_resolve /opt/evener/bin/evener"):
-				return []byte("/opt/evener/bin/evener\n"), nil
-			case strings.Contains(joined, "cat >"):
+			case opResolveExec:
+				return resolveAnswers(argv, map[string]string{"/opt/evener/bin/evener": "/opt/evener/bin/evener"})
+			case opBinaryInstall:
 				pushArgv = append([]string(nil), argv...)
 				if stdin != nil {
 					pushedBytes, _ = io.ReadAll(stdin)
@@ -115,7 +114,7 @@ func TestDeployTargetDirectoryMissingFailsClearly(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/nope/bin/evener"}
 	buildCalled := false
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-		if strings.Contains(strings.Join(argv, " "), "test -d /nope/bin") {
+		if classifyRemote(argv) == opInstallDirProbe {
 			return []byte("test: /nope/bin: No such file or directory\n"), errors.New("exit status 1")
 		}
 		return nil, fmt.Errorf("unexpected remote command: %v", argv)
@@ -247,11 +246,10 @@ func TestDeployTargetAcceptsEvenerRunTargets(t *testing.T) {
 		const exe = "/opt/evener/current/evener"
 		host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: exe}
 		fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-			joined := strings.Join(argv, " ")
-			switch {
-			case strings.Contains(joined, "test -d /opt/evener/current"):
+			switch classifyRemote(argv) {
+			case opInstallDirProbe:
 				return nil, nil
-			case strings.Contains(joined, "evener_resolve "+exe):
+			case opResolveExec:
 				return []byte(exe + "\n"), nil
 			default:
 				return nil, fmt.Errorf("unexpected remote command: %v", argv)
@@ -272,13 +270,12 @@ func TestDeployTargetAcceptsEvenerRunTargets(t *testing.T) {
 		const exe = "/home/dev/.local/bin/evener"
 		host := hostreg.Host{Name: "beta", SSH: "beta.example"}
 		fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-			joined := strings.Join(argv, " ")
-			switch {
-			case strings.Contains(joined, "lsof -ti :9180"):
+			switch classifyRemote(argv) {
+			case opListenerProbe:
 				return []byte(noListenerMarker + "\n"), nil
-			case strings.Contains(joined, "command -v evener"):
+			case opCommandLookup:
 				return []byte(exe + "\n"), nil
-			case strings.Contains(joined, "evener_resolve "+exe):
+			case opResolveExec:
 				return []byte(exe + "\n"), nil
 			default:
 				return nil, fmt.Errorf("unexpected remote command: %v", argv)
@@ -432,29 +429,28 @@ func TestEnsureInstallerFallbackDeploysPinnedRelease(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	launchCalls := 0
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.HasSuffix(joined, "uname -s"):
+		switch classifyRemote(argv) {
+		case opUnameKernel:
 			return []byte("Linux\n"), nil
-		case strings.HasSuffix(joined, "uname -m"):
+		case opUnameArch:
 			return []byte("x86_64\n"), nil
-		case strings.HasSuffix(joined, "id -u"):
+		case opUserID:
 			return []byte("1000\n"), nil
-		case argv[len(argv)-1] == envProbeScript:
+		case opEnvironment:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
-		case strings.Contains(joined, "launch-check"):
+		case opLaunchCheck:
 			launchCalls++
 			if launchCalls == 1 {
 				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`), nil
 			}
 			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
-		case strings.Contains(joined, "evener-install.XXXXXX"):
+		case opBinaryInstall:
 			return nil, nil
-		case strings.Contains(joined, "api/health"):
+		case opHealth:
 			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
-		case strings.Contains(joined, "list-units"):
+		case opSystemdUnits:
 			return []byte("evener-hub.service loaded active running Evener Hub\n"), nil
-		case strings.Contains(joined, "systemctl restart"):
+		case opSystemdRestart:
 			return nil, nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
@@ -507,32 +503,31 @@ func TestInstallerFallbackRecordsDefaultRunTarget(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	launchCalls := 0
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.HasSuffix(joined, "uname -s"):
+		switch classifyRemote(argv) {
+		case opUnameKernel:
 			return []byte("Linux\n"), nil
-		case strings.HasSuffix(joined, "uname -m"):
+		case opUnameArch:
 			return []byte("x86_64\n"), nil
-		case strings.HasSuffix(joined, "id -u"):
+		case opUserID:
 			return []byte("1000\n"), nil
-		case argv[len(argv)-1] == envProbeScript:
+		case opEnvironment:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
-		case strings.Contains(joined, "launch-check"):
+		case opLaunchCheck:
 			launchCalls++
 			if launchCalls == 1 {
 				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`), nil
 			}
 			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
-		case strings.Contains(joined, "evener-install.XXXXXX"):
+		case opBinaryInstall:
 			return nil, nil
-		case strings.Contains(joined, "api/health"):
+		case opHealth:
 			// This controller is on the snapshot channel (buildinfo.Channel above), so
 			// the post-restart probe requires backend_git_sha to match buildinfo.GitSHA
 			// (waitHealthy); the real hub reports the field (cmd/evener-hub/web_api.go).
 			return []byte(`{"version":"newsha","backend_git_sha":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
-		case strings.Contains(joined, "list-units"):
+		case opSystemdUnits:
 			return []byte("evener-hub.service loaded active running Evener Hub\n"), nil
-		case strings.Contains(joined, "systemctl restart"):
+		case opSystemdRestart:
 			return nil, nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
@@ -587,14 +582,13 @@ func TestDeployTargetEmptyResolvesRemotePATH(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	var pushJoined string
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.Contains(joined, "command -v evener"):
+		switch classifyRemote(argv) {
+		case opCommandLookup:
 			return []byte("/home/dev/.local/bin/evener\n"), nil
-		case strings.Contains(joined, "evener_resolve"):
+		case opResolveExec:
 			return []byte("/home/dev/.local/bin/evener\n"), nil
-		case strings.Contains(joined, "cat >"):
-			pushJoined = joined
+		case opBinaryInstall:
+			pushJoined = strings.Join(argv, " ")
 			if stdin != nil {
 				_, _ = io.ReadAll(stdin)
 			}
@@ -630,15 +624,14 @@ func TestDeployQuotesRemotePaths(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: target}
 	var testDirRemote, pushRemote string
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.Contains(joined, "test -d"):
-			testDirRemote = joined
+		switch classifyRemote(argv) {
+		case opInstallDirProbe:
+			testDirRemote = strings.Join(argv, " ")
 			return nil, nil
-		case strings.Contains(joined, "evener_resolve"):
+		case opResolveExec:
 			return []byte(target + "\n"), nil
-		case strings.Contains(joined, "cat >"):
-			pushRemote = joined
+		case opBinaryInstall:
+			pushRemote = strings.Join(argv, " ")
 			if stdin != nil {
 				_, _ = io.ReadAll(stdin)
 			}
@@ -675,14 +668,13 @@ func TestDeployResolvesSymlinkTarget(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: link}
 	var pushRemote string
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.Contains(joined, "test -d /usr/local/bin"):
+		switch classifyRemote(argv) {
+		case opInstallDirProbe:
 			return nil, nil
-		case strings.Contains(joined, "evener_resolve "+link):
+		case opResolveExec:
 			return []byte(realPath + "\n"), nil
-		case strings.Contains(joined, "cat >"):
-			pushRemote = joined
+		case opBinaryInstall:
+			pushRemote = strings.Join(argv, " ")
 			if stdin != nil {
 				_, _ = io.ReadAll(stdin)
 			}
@@ -939,13 +931,12 @@ func TestDeployBuildsFromTheConfiguredSource(t *testing.T) {
 
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.Contains(joined, "test -d /opt/evener/bin"):
+		switch classifyRemote(argv) {
+		case opInstallDirProbe:
 			return nil, nil
-		case strings.Contains(joined, "evener_resolve /opt/evener/bin/evener"):
-			return []byte("/opt/evener/bin/evener\n"), nil
-		case strings.Contains(joined, "cat >"):
+		case opResolveExec:
+			return resolveAnswers(argv, map[string]string{"/opt/evener/bin/evener": "/opt/evener/bin/evener"})
+		case opBinaryInstall:
 			if stdin != nil {
 				_, _ = io.ReadAll(stdin)
 			}
@@ -1047,13 +1038,12 @@ func TestDeployDoesNotBuildFromAnUnconfiguredWorkingDirectory(t *testing.T) {
 
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.Contains(joined, "test -d /opt/evener/bin"):
+		switch classifyRemote(argv) {
+		case opInstallDirProbe:
 			return nil, nil
-		case strings.Contains(joined, "evener_resolve /opt/evener/bin/evener"):
-			return []byte("/opt/evener/bin/evener\n"), nil
-		case strings.Contains(joined, "cat >"):
+		case opResolveExec:
+			return resolveAnswers(argv, map[string]string{"/opt/evener/bin/evener": "/opt/evener/bin/evener"})
+		case opBinaryInstall:
 			return nil, nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
@@ -1216,12 +1206,11 @@ func TestDeployTargetRefusesMultilineCommandV(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	var resolverJoined string
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.Contains(joined, "command -v evener"):
+		switch classifyRemote(argv) {
+		case opCommandLookup:
 			return []byte("/usr/local/bin/evener\nnote: wrapper\n"), nil
-		case strings.HasSuffix(joined, "evener_resolve /usr/local/bin/evener"):
-			resolverJoined = joined
+		case opResolveExec:
+			resolverJoined = strings.Join(argv, " ")
 			return []byte("/usr/local/bin/evener\n"), nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
@@ -1323,45 +1312,45 @@ func TestEnsureMissingEvenerReachesTheInstallerFallback(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	installerRan, launched := false, false
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.HasPrefix(argv[len(argv)-1], `if [ -n "${HOME-}" ]`):
+		switch classifyRemote(argv) {
+		case opDefaultInstall:
 			return nil, nil // no installer-default binary
-		case strings.HasSuffix(joined, "uname -s"):
+		case opUnameKernel:
 			return []byte("Linux\n"), nil
-		case strings.HasSuffix(joined, "uname -m"):
+		case opUnameArch:
 			return []byte("x86_64\n"), nil
-		case strings.HasSuffix(joined, "id -u"):
+		case opUserID:
 			return []byte("1000\n"), nil
-		case argv[len(argv)-1] == envProbeScript:
+		case opEnvironment:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
-		case strings.Contains(joined, "launch-check"):
-			if strings.Contains(joined, " evener launch-check") || !installerRan {
+		case opLaunchCheck:
+			if strings.Contains(strings.Join(argv, " "), " evener launch-check") || !installerRan {
 				// No evener on the host's non-interactive PATH.
 				return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
 			}
 			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
-		case strings.Contains(joined, executableProbeRemote("evener")):
-			// The dedicated executable probe: absent.
-			return nil, exitStatus(t, 1)
-		case strings.Contains(joined, executableProbeRemote("/home/dev/.local/bin/evener")):
+		case opPresenceProbe:
+			if strings.Contains(strings.Join(argv, " "), executableProbeRemote("evener")) {
+				// The dedicated executable probe: absent.
+				return nil, exitStatus(t, 1)
+			}
 			if !installerRan {
 				return nil, exitStatus(t, 1)
 			}
 			return nil, nil
-		case strings.Contains(joined, "list-units"):
+		case opSystemdUnits:
 			return nil, nil
-		case strings.Contains(joined, "lsof -ti :9180"):
+		case opListenerProbe:
 			return []byte(noListenerMarker + "\n"), nil
-		case strings.Contains(joined, "evener-install.XXXXXX"):
+		case opBinaryInstall:
 			installerRan = true
 			return nil, nil
-		case strings.Contains(joined, "evener_resolve"):
+		case opResolveExec:
 			return []byte("/home/dev/.local/bin/evener\n"), nil
-		case strings.Contains(joined, "nohup"):
+		case opRelaunch:
 			launched = true
 			return nil, nil
-		case strings.Contains(joined, "api/health"):
+		case opHealth:
 			if !launched {
 				return nil, errors.New("curl: (7) Failed to connect")
 			}
@@ -1406,21 +1395,20 @@ func TestDeployInstallerPreservesExistingHubTarget(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"} // no evener_path
 	var installerJoined string
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.Contains(joined, "lsof -ti :9180"):
+		switch classifyRemote(argv) {
+		case opListenerProbe:
 			return []byte("4242\n"), nil
-		case strings.Contains(joined, "-ww -o "):
+		case opProcessArgv:
 			// The running hub lives at /usr/local/bin, not the installer default.
 			return []byte("/usr/local/bin/evener hub -addr 127.0.0.1:9180\n"), nil
-		case strings.Contains(joined, "evener_resolve /usr/local/bin/evener"):
+		case opResolveExec:
+			return resolveAnswers(argv, map[string]string{"/usr/local/bin/evener": "/usr/local/bin/evener"})
+		case opCommandLookup:
 			return []byte("/usr/local/bin/evener\n"), nil
-		case strings.Contains(joined, "command -v evener"):
-			return []byte("/usr/local/bin/evener\n"), nil
-		case strings.Contains(joined, "launch-check"):
+		case opLaunchCheck:
 			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
-		case strings.Contains(joined, "evener-install.XXXXXX"):
-			installerJoined = joined
+		case opBinaryInstall:
+			installerJoined = strings.Join(argv, " ")
 			return nil, nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
@@ -1448,17 +1436,16 @@ func TestDeployPushCreatesMissingEvenerPathTarget(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	var pushJoined string
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.Contains(joined, "test -d /opt/evener/bin"):
+		switch classifyRemote(argv) {
+		case opInstallDirProbe:
 			return nil, nil
-		case strings.Contains(joined, "evener_resolve /opt/evener/bin/evener"):
+		case opResolveExec:
 			// The file is not installed yet.
 			return nil, exitStatus(t, 1)
-		case strings.Contains(joined, "if [ -e "):
+		case opCreateTarget:
 			return []byte("/opt/evener/bin/evener\n"), nil
-		case strings.Contains(joined, "cat >"):
-			pushJoined = joined
+		case opBinaryInstall:
+			pushJoined = strings.Join(argv, " ")
 			if stdin != nil {
 				_, _ = io.ReadAll(stdin)
 			}
@@ -1489,18 +1476,17 @@ func TestDeployPushFallsBackToDefaultTargetOnFreshHost(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	var pushJoined string
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.Contains(joined, "command -v evener"):
+		switch classifyRemote(argv) {
+		case opCommandLookup:
 			return []byte(evenerPathMissingMarker + "\n"), nil
-		case strings.Contains(joined, "mkdir -p /home/dev/.local/bin"):
+		case opMakeDir:
 			return nil, nil
-		case strings.Contains(joined, "evener_resolve"):
+		case opResolveExec:
 			return nil, exitStatus(t, 1)
-		case strings.Contains(joined, "if [ -e "):
+		case opCreateTarget:
 			return []byte("/home/dev/.local/bin/evener\n"), nil
-		case strings.Contains(joined, "cat >"):
-			pushJoined = joined
+		case opBinaryInstall:
+			pushJoined = strings.Join(argv, " ")
 			if stdin != nil {
 				_, _ = io.ReadAll(stdin)
 			}
@@ -1535,13 +1521,12 @@ func TestDeployPrefersTheOperatorArtifactOverTheBuildSource(t *testing.T) {
 	var pushArgv []string
 	var pushed []byte
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.Contains(joined, "test -d /opt/evener/bin"):
+		switch classifyRemote(argv) {
+		case opInstallDirProbe:
 			return nil, nil
-		case strings.Contains(joined, "evener_resolve /opt/evener/bin/evener"):
-			return []byte("/opt/evener/bin/evener\n"), nil
-		case strings.Contains(joined, "cat >"):
+		case opResolveExec:
+			return resolveAnswers(argv, map[string]string{"/opt/evener/bin/evener": "/opt/evener/bin/evener"})
+		case opBinaryInstall:
 			pushArgv = append([]string(nil), argv...)
 			if stdin != nil {
 				pushed, _ = io.ReadAll(stdin)
@@ -1621,13 +1606,12 @@ func TestDevControllerPreservesCompatibleBuildButExplicitDeployWorks(t *testing.
 	builds := 0
 	var pushed []byte
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.Contains(joined, "test -d /opt/evener/bin"):
+		switch classifyRemote(argv) {
+		case opInstallDirProbe:
 			return nil, nil
-		case strings.Contains(joined, "evener_resolve /opt/evener/bin/evener"):
-			return []byte("/opt/evener/bin/evener\n"), nil
-		case strings.Contains(joined, "cat >"):
+		case opResolveExec:
+			return resolveAnswers(argv, map[string]string{"/opt/evener/bin/evener": "/opt/evener/bin/evener"})
+		case opBinaryInstall:
 			if stdin != nil {
 				pushed, _ = io.ReadAll(stdin)
 			}
@@ -1719,39 +1703,38 @@ func postDeployBuildRunner(t *testing.T, postDeploy string) *fakeRunner {
 	t.Helper()
 	launchCalls, launches := 0, 0
 	return &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.HasSuffix(joined, "uname -s"):
+		switch classifyRemote(argv) {
+		case opUnameKernel:
 			return []byte("Linux\n"), nil
-		case strings.HasSuffix(joined, "uname -m"):
+		case opUnameArch:
 			return []byte("x86_64\n"), nil
-		case strings.HasSuffix(joined, "id -u"):
+		case opUserID:
 			return []byte("1000\n"), nil
-		case argv[len(argv)-1] == envProbeScript:
+		case opEnvironment:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
-		case strings.Contains(joined, "launch-check"):
+		case opLaunchCheck:
 			launchCalls++
 			if launchCalls == 1 {
 				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":[]}`), nil
 			}
 			return []byte(fmt.Sprintf(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":%q,"launch_flags":["api-log"]}`, postDeploy)), nil
-		case strings.Contains(joined, "test -d /opt/evener/bin"):
+		case opInstallDirProbe:
 			return nil, nil
-		case strings.Contains(joined, "list-units"):
+		case opSystemdUnits:
 			return nil, nil // no supervisor: an ad hoc host
-		case strings.Contains(joined, "lsof -ti :9180"):
+		case opListenerProbe:
 			return []byte(noListenerMarker + "\n"), nil // nothing is listening
-		case strings.Contains(joined, "evener_resolve"):
+		case opResolveExec:
 			return []byte("/opt/evener/bin/evener\n"), nil
-		case strings.Contains(joined, "cat >"):
+		case opBinaryInstall:
 			if stdin != nil {
 				_, _ = io.ReadAll(stdin)
 			}
 			return nil, nil
-		case strings.Contains(joined, "nohup"):
+		case opRelaunch:
 			launches++
 			return nil, nil
-		case strings.Contains(joined, "api/health"):
+		case opHealth:
 			if launches == 0 {
 				return nil, errors.New("curl: (7) Failed to connect")
 			}
@@ -1794,7 +1777,7 @@ func TestEnsurePostDeployBuildMismatchRefusesTerminally(t *testing.T) {
 		requireUnstampedRefusal(t, err)
 		requireNoAttach(t, fr)
 		for _, argv := range fr.recordedRuns() {
-			if strings.Contains(strings.Join(argv, " "), "nohup") {
+			if classifyRemote(argv) == opRelaunch {
 				t.Fatalf("a hub was started on the mismatched build: %v", argv)
 			}
 		}
@@ -1903,15 +1886,8 @@ func TestDeployArtifactUnusableIsTerminal(t *testing.T) {
 	if !strings.Contains(err.Error(), "-deploy-binary") || !strings.Contains(err.Error(), "linux/amd64") {
 		t.Fatalf("refusal does not name the flag and the host target: %v", err)
 	}
-	for _, argv := range fr.recordedRuns() {
-		joined := strings.Join(argv, " ")
-		if strings.Contains(joined, "cat >") {
-			t.Fatalf("the unusable artifact was pushed: %v", argv)
-		}
-		if strings.Contains(joined, "systemctl restart") || strings.Contains(joined, "nohup") {
-			t.Fatalf("the refused artifact restarted or started a hub: %v", argv)
-		}
-	}
+	requireNoRemoteOps(t, fr, "the unusable artifact was pushed", opBinaryInstall)
+	requireNoRemoteOps(t, fr, "the refused artifact restarted or started a hub", opSystemdRestart, opRelaunch)
 	hostGate := m.hostLock(host.Name)
 	defer m.releaseHostLock(host.Name)
 	if more := m.reconnectOnce(context.Background(), host, hostGate); more {
@@ -1962,11 +1938,10 @@ func TestEnsureWrongArtifactAgainstRunningHubRefusesBeforeRestart(t *testing.T) 
 	// restart is where ErrRestart used to surface and drive the loop).
 	pushes, restarts := 0, 0
 	for _, argv := range fr.recordedRuns() {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.Contains(joined, "cat >"):
+		switch classifyRemote(argv) {
+		case opBinaryInstall:
 			pushes++
-		case strings.Contains(joined, "systemctl restart"):
+		case opSystemdRestart:
 			restarts++
 		}
 	}
@@ -1988,7 +1963,7 @@ func TestEnsureWrongArtifactAgainstRunningHubRefusesBeforeRestart(t *testing.T) 
 		t.Fatal("reconnectOnce asked for another attempt, so the supervisor would loop on the terminal refusal")
 	}
 	for _, argv := range fr.recordedRuns() {
-		if strings.Contains(strings.Join(argv, " "), "systemctl restart") {
+		if classifyRemote(argv) == opSystemdRestart {
 			t.Fatalf("the terminal refusal still restarted the hub onto the wrong artifact: %v", argv)
 		}
 	}
@@ -2068,14 +2043,11 @@ func TestEnsureRestartOnlyMismatchAttachesTheServingBuild(t *testing.T) {
 	}
 	restarted := false
 	for _, argv := range fr.recordedRuns() {
-		joined := strings.Join(argv, " ")
-		if strings.Contains(joined, "systemctl restart") {
+		if classifyRemote(argv) == opSystemdRestart {
 			restarted = true
 		}
-		if strings.Contains(joined, "cat >") {
-			t.Fatalf("a restart-only attempt pushed a binary: %v", argv)
-		}
 	}
+	requireNoRemoteOps(t, fr, "a restart-only attempt pushed a binary", opBinaryInstall)
 	if !restarted {
 		t.Fatal("no restart ran, so the pass under test was not the restart-only one")
 	}
