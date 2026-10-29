@@ -1060,3 +1060,39 @@ func TestMigrationRaisesAGenerationBelowTheMirrorsForARemovedName(t *testing.T) 
 		t.Fatalf("the family holds mark %+v and tombstone generation %d for %q, want the mirror's %d", family.Generations[removed], family.Tombstones[removed].Generation, removed, spent)
 	}
 }
+
+// TestMigrationRaisesAPresenceEpochTheMirrorHoldsEvenAtTheSameGeneration is the
+// epoch half of the mirror rule: the two counters rise on their own, and the
+// tombstone twin follows the mark so the family still validates.
+func TestMigrationRaisesAPresenceEpochTheMirrorHoldsEvenAtTheSameGeneration(t *testing.T) {
+	configPath, records := legacyHub(t)
+	removed := firstKey(records.Tombstones)
+	held := records.Tombstones[removed]
+	cfg := mustLoadConfig(t, configPath)
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	spentEpoch := held.PresenceEpoch + 3
+	if err := store.MirrorHostState(hostops.HostMirror{Boundaries: map[string]hostops.Boundary{
+		removed: {Generation: held.Generation, IncarnationID: held.IncarnationID, PresenceEpoch: spentEpoch},
+	}}); err != nil {
+		t.Fatalf("MirrorHostState: %v", err)
+	}
+	doc := hostBootDocument(cfg, configPath, nil)
+	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
+	if err != nil {
+		t.Fatalf("hostreg.NewSeeded: %v", err)
+	}
+	legacy := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostConfigPath: configPath,
+	}, configPath, hosts, t.Logf)
+	legacy.cfg.ops.Store(store)
+
+	legacy.migrateLegacyRecords(store)
+
+	family := mustRecords(t, store)
+	if family.Generations[removed].PresenceEpoch != spentEpoch || family.Tombstones[removed].PresenceEpoch != spentEpoch {
+		t.Fatalf("the family holds mark %+v and tombstone epoch %d for %q, want the mirror's epoch %d", family.Generations[removed], family.Tombstones[removed].PresenceEpoch, removed, spentEpoch)
+	}
+}

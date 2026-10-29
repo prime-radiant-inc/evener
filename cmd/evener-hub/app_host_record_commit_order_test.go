@@ -1402,3 +1402,47 @@ func TestAttachKeepsRedialingARetiredHostThroughATransientFailure(t *testing.T) 
 
 	requireReconnected(t, manager, hosts, "side")
 }
+
+// TestAttachRetriesRecordMaintenanceThatFailedToWrite pins the failure posture of
+// the attach's record writes: a write that does not land leaves the settlement
+// pending, and the retry converges the served identities and the stored records
+// once storage works, without any host change in between.
+func TestAttachRetriesRecordMaintenanceThatFailedToWrite(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	_, store := hub.boot(t, false)
+	family, _, _ := store.HostRecords()
+	delete(family.Hosts, "keep")
+	delete(family.Generations, "keep")
+	if err := store.CommitHostRecords(family, hostops.HostMirror{}); err != nil {
+		t.Fatalf("drop keep's records: %v", err)
+	}
+	hub.restartStateRoot(t)
+	reopened, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	hosts, err := hostreg.New(hostRegistryEntries(mustLoadConfig(t, hub.configPath)))
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	late := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostConfigPath: hub.configPath, RemoteHostOpsUnavailable: true,
+	}, hub.configPath, hosts, t.Logf)
+	bootMaintenanceFault = func() error { return errors.New("injected write failure") }
+	t.Cleanup(func() { bootMaintenanceFault = nil })
+
+	late.attachOps(reopened)
+
+	if late.mutationRefusal() == nil {
+		t.Fatal("the attach finished although the records could not be written")
+	}
+	bootMaintenanceFault = nil
+	late.attachOps(nil)
+
+	if err := late.mutationRefusal(); err != nil {
+		t.Fatalf("host changes are still paused after storage recovered: %v", err)
+	}
+	if got := mustRecords(t, reopened).HostRecords["keep"].IncarnationID; got == "" {
+		t.Fatal("the retry did not materialize the record the store lacked")
+	}
+}

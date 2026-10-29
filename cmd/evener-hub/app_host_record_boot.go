@@ -127,7 +127,7 @@ func (m *hubHostManager) bootRecords() {
 		m.refuseMutations("hub.toml could not be read; its records move into the operation store once it can")
 		return
 	case err != nil:
-		m.refuseMutations(fmt.Sprintf("a host is busy; the move of its records is retried: %v", err))
+		m.refuseMutations(fmt.Sprintf("the move of the host records is retried: %v", err))
 		return
 	}
 	// The import raises live registrations to the mirror's counters, so the
@@ -292,10 +292,11 @@ func (m *hubHostManager) mirrorCountersAbove(ops *hostops.Store, entries []hostr
 			raises[name] = HostGeneration{Generation: boundary.Generation, IncarnationID: boundary.IncarnationID, PresenceEpoch: boundary.PresenceEpoch}
 			continue
 		}
-		if boundary.Generation > mark.Generation {
-			// A mark that is a tombstone's twin keeps the incarnation and epoch
-			// the pair agrees on; only the spent generation moves up.
-			mark.Generation = boundary.Generation
+		if boundary.Generation > mark.Generation || boundary.PresenceEpoch > mark.PresenceEpoch {
+			// Each counter rises on its own; a mark that is a tombstone's twin
+			// keeps its incarnation, and the derivation raises the twin with it.
+			mark.Generation = max(mark.Generation, boundary.Generation)
+			mark.PresenceEpoch = max(mark.PresenceEpoch, boundary.PresenceEpoch)
 			raises[name] = mark
 		}
 	}
@@ -517,10 +518,16 @@ func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
 	}
 	// hub.toml holds only the hosts in this mode, so the maintenance writes carry
 	// records alone and never put the registry's host list over the file's.
-	if attempted := m.reconcileBootRecords(hasFile, collided, true); !attempted {
-		m.materializeHostRecords(records, hasFile, true)
+	attempted, writeErr := m.reconcileBootRecords(hasFile, collided, true)
+	if !attempted {
+		writeErr = m.materializeHostRecords(records, hasFile, true)
 	}
 	m.reconcileStoreBoot()
+	if writeErr != nil && m.cfg.attaching.Load() {
+		// Served identities and stored records still differ; the settlement
+		// stays pending and the retry loop writes them again.
+		m.refuseMutations(fmt.Sprintf("the host records could not be written yet; the next attempt retries: %v", writeErr))
+	}
 }
 
 // rollBackUnlandedCommits drops the staged marker and the provisional receipt
@@ -763,8 +770,9 @@ func (m *hubHostManager) bootLegacyRecords(settle bool) error {
 	// nothing to prune writes nothing, so an untouched file stays
 	// byte-identical. A boot without that write may still owe the initial
 	// identity records.
-	if attempted := m.reconcileBootRecords(hasFile, collided, false); !attempted {
-		m.materializeHostRecords(fileRecords, hasFile, false)
+	attempted, writeErr := m.reconcileBootRecords(hasFile, collided, false)
+	if !attempted {
+		writeErr = m.materializeHostRecords(fileRecords, hasFile, false)
 	}
 	// The generation-mirror reconciliation below can raise live registrations,
 	// so the gates are held again, retiring any connection made since the first
@@ -782,7 +790,13 @@ func (m *hubHostManager) bootLegacyRecords(settle bool) error {
 	// generation-mirror reconciliation, and the cross-file intent
 	// reconciliation (§9).
 	m.reconcilePipelineBoot()
-	return unreadable()
+	if err := unreadable(); err != nil {
+		return err
+	}
+	if writeErr != nil && m.cfg.attaching.Load() {
+		return fmt.Errorf("the host records could not be written: %w", writeErr)
+	}
+	return nil
 }
 
 // errLegacyRecordsUnreadable reports a hub.toml whose record sections could not

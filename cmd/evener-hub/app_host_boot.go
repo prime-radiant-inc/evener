@@ -72,9 +72,9 @@ func (m *hubHostManager) breakBootTombstoneCollision(records hostRecordSet) bool
 // A derivation that refuses (a hand-edited file already over a global
 // tombstone cap with every candidate remnant-gated) is logged and leaves the
 // file alone; the next mutation surfaces the typed refusal to its caller.
-func (m *hubHostManager) reconcileBootRecords(hasFile bool, collided bool, recordsOnly bool) bool {
+func (m *hubHostManager) reconcileBootRecords(hasFile bool, collided bool, recordsOnly bool) (bool, error) {
 	if !hasFile || strings.TrimSpace(m.cfg.configPath) == "" {
-		return false
+		return false, nil
 	}
 	entries := m.cfg.store.snapshot()
 	required := collided
@@ -82,17 +82,32 @@ func (m *hubHostManager) reconcileBootRecords(hasFile bool, collided bool, recor
 		records, err := m.deriveHostTOMLRecords(entries, entries, hostPersistChange{})
 		if err != nil {
 			m.logf("boot host-record prune refused: %v", err)
-			return false
+			return false, nil
 		}
 		required = !sameHostTOMLRecords(records, m.cfg.store.recordsSnapshot())
 	}
 	if !required {
-		return false
+		return false, nil
 	}
-	if err := m.persistHosts(entries, entries, hostPersistChange{recordsOnly: recordsOnly}); err != nil {
+	if err := m.persistBootRecords(entries, recordsOnly); err != nil {
 		m.logf("boot host-record prune for %s not written: %v", m.cfg.configPath, err)
+		return true, err
 	}
-	return true
+	return true, nil
+}
+
+// bootMaintenanceFault, when set, fails the boot's record-maintenance writes
+// (the prune and the identity mint). It is nil in production.
+var bootMaintenanceFault func() error
+
+// persistBootRecords is the one write the boot's record maintenance makes.
+func (m *hubHostManager) persistBootRecords(entries []hostreg.Host, recordsOnly bool) error {
+	if bootMaintenanceFault != nil {
+		if err := bootMaintenanceFault(); err != nil {
+			return err
+		}
+	}
+	return m.persistHosts(entries, entries, hostPersistChange{recordsOnly: recordsOnly})
 }
 
 // seedHighWater seeds the store's retained high-water records plus the
@@ -121,9 +136,9 @@ func (m *hubHostManager) seedHighWater(records hostRecordSet) {
 // here. A write that cannot land is logged and retried by the next boot (or by
 // the next mutation, which records the same in-memory pair); the hub still
 // serves, because the pair is already the registry's current identity.
-func (m *hubHostManager) materializeHostRecords(records hostRecordSet, hasFile bool, recordsOnly bool) {
+func (m *hubHostManager) materializeHostRecords(records hostRecordSet, hasFile bool, recordsOnly bool) error {
 	if !hasFile {
-		return
+		return nil
 	}
 	entries := m.cfg.store.snapshot()
 	for _, entry := range entries {
@@ -139,12 +154,14 @@ func (m *hubHostManager) materializeHostRecords(records hostRecordSet, hasFile b
 		drifted := record.IncarnationID != entry.IncarnationID || record.PresenceEpoch != entry.PresenceEpoch ||
 			mark.Generation != entry.Generation || mark.IncarnationID != entry.IncarnationID || mark.PresenceEpoch != entry.PresenceEpoch
 		if !record.complete() || !mark.complete() || drifted {
-			if err := m.persistHosts(entries, entries, hostPersistChange{recordsOnly: recordsOnly}); err != nil {
+			if err := m.persistBootRecords(entries, recordsOnly); err != nil {
 				m.logf("host %q records for %s not recorded yet: %v", entry.Name, m.cfg.configPath, err)
+				return err
 			}
-			return
+			return nil
 		}
 	}
+	return nil
 }
 
 // hostFileAbsentOrEmpty reports whether the selected config path genuinely holds

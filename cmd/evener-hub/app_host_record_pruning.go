@@ -323,6 +323,7 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 		records.raisedHighWater[name] = struct{}{}
 		if tombstone, ok := records.tombstones[name]; ok {
 			tombstone.Generation = raised.Generation
+			tombstone.PresenceEpoch = max(tombstone.PresenceEpoch, raised.PresenceEpoch)
 			records.tombstones[name] = tombstone
 		}
 	}
