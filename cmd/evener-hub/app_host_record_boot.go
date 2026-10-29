@@ -254,7 +254,7 @@ func (m *hubHostManager) holdLiveHosts(names []string) (func(), error) {
 			releaseAll()
 			return nil, fmt.Errorf("host %q: %w", name, err)
 		}
-		if retired {
+		if retired || m.redialing(name) {
 			m.cfg.reconnectMu.Lock()
 			m.cfg.reconnect = append(m.cfg.reconnect, name)
 			m.cfg.reconnectMu.Unlock()
@@ -313,10 +313,35 @@ func (m *hubHostManager) reconnectRetiredHosts() {
 	m.cfg.reconnect = nil
 	m.cfg.reconnectMu.Unlock()
 	for _, name := range slices.Compact(slices.Sorted(slices.Values(names))) {
-		if registration, registered := m.cfg.hosts.Get(name); registered {
-			go m.redial(registration, hostReconnectRetryInitial, hostReconnectRetryMax)
+		registration, registered := m.cfg.hosts.Get(name)
+		if !registered {
+			continue
 		}
+		m.cfg.reconnectMu.Lock()
+		if owner := m.cfg.redials[name]; owner != nil {
+			// A loop is already restoring this host (backing off after a failed
+			// dial); it carries on with the registration as it stands now.
+			owner.registration = registration
+			m.cfg.reconnectMu.Unlock()
+			continue
+		}
+		if m.cfg.redials == nil {
+			m.cfg.redials = map[string]*redialOwner{}
+		}
+		m.cfg.redials[name] = &redialOwner{registration: registration}
+		m.cfg.reconnectMu.Unlock()
+		go m.redial(name, hostReconnectRetryInitial, hostReconnectRetryMax)
 	}
+}
+
+// redialOwner is the registration a host's redial loop is restoring.
+type redialOwner struct{ registration hostreg.Host }
+
+// redialing reports whether a redial loop is restoring name.
+func (m *hubHostManager) redialing(name string) bool {
+	m.cfg.reconnectMu.Lock()
+	defer m.cfg.reconnectMu.Unlock()
+	return m.cfg.redials[name] != nil
 }
 
 // redial connects name again, retrying a failed dial under backoff until the
@@ -325,10 +350,17 @@ func (m *hubHostManager) reconnectRetiredHosts() {
 // would otherwise bring a lost link back was stopped by the retirement and a
 // failed dial starts none, so this loop is what keeps the host from staying
 // disconnected after a network blip.
-func (m *hubHostManager) redial(registration hostreg.Host, retryInitial, retryMax time.Duration) {
-	name := registration.Name
+func (m *hubHostManager) redial(name string, retryInitial, retryMax time.Duration) {
+	defer func() {
+		m.cfg.reconnectMu.Lock()
+		delete(m.cfg.redials, name)
+		m.cfg.reconnectMu.Unlock()
+	}()
 	delay := retryInitial
 	for first := true; ; first = false {
+		m.cfg.reconnectMu.Lock()
+		registration := m.cfg.redials[name].registration
+		m.cfg.reconnectMu.Unlock()
 		if !m.cfg.hosts.SameRegistration(name, registration) {
 			// Removed, or removed and added again: the connection the user lost
 			// is not this one's to restore.
@@ -345,9 +377,9 @@ func (m *hubHostManager) redial(registration hostreg.Host, retryInitial, retryMa
 		_, err := m.cfg.manager.ReconnectRegistration(ctx, registration)
 		cancel()
 		switch {
-		case err == nil, errors.Is(err, sshconn.ErrManagerClosed), errors.Is(err, sshconn.ErrHostNotFound):
+		case err == nil, errors.Is(err, sshconn.ErrManagerClosed):
 			return
-		case first:
+		case first && !errors.Is(err, sshconn.ErrHostNotFound):
 			m.logf("host %q was not reconnected after the records settled; retrying: %v", name, err)
 		}
 		time.Sleep(delay)

@@ -323,6 +323,23 @@ func (s hostOpsRecordStore) writeFamily(entries []hostreg.Host, records hostTOML
 	return prior, nil
 }
 
+// hostFileFirstSeam, when set, is called between commitHostFileFirst's two
+// writes. It is nil in production.
+var hostFileFirstSeam func()
+
+// commitHostFileFirst is commit with the order reversed, for the compensation of
+// a commit that already reached hub.toml (see hostPersistChange.hostFileFirst).
+func (s hostOpsRecordStore) commitHostFileFirst(entries, known []hostreg.Host, records hostTOMLRecords) error {
+	if err := writeHubTOMLHostsOnly(s.path, entries, known); err != nil {
+		return err
+	}
+	if hostFileFirstSeam != nil {
+		hostFileFirstSeam()
+	}
+	_, err := s.writeFamily(entries, records)
+	return err
+}
+
 func (s hostOpsRecordStore) commit(entries, known []hostreg.Host, records hostTOMLRecords) error {
 	prior, err := s.writeFamily(entries, records)
 	if err != nil {

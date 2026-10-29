@@ -89,6 +89,10 @@ type hostManagerConfig struct {
 	// registration could change; attachOps dials them again afterward.
 	reconnectMu sync.Mutex
 	reconnect   []string
+	// redials holds, per host, the registration the one running redial loop is
+	// restoring; a settlement that moves the registration again hands the loop
+	// the new one rather than starting another.
+	redials map[string]*redialOwner
 	// sources is the component-05 registry; a remote host's source is where
 	// attachment state (Online) and the per-host client live.
 	sources *appsource.Registry

@@ -61,6 +61,12 @@ type hostPersistChange struct {
 	// hub.toml: boot recovery that settles records must not write the registry's
 	// idea of the hosts over what the file holds now.
 	recordsOnly bool
+	// hostFileFirst writes the host list before the records. Every un-commit
+	// wants it: the host change being taken back already reached hub.toml, so
+	// the file is restored first and the staged records go second; a crash
+	// between leaves the host where it belongs with a staged marker boot rolls
+	// back, instead of a missing host with no marker to say why.
+	hostFileFirst bool
 	// leaveReturningNames keeps the tombstone of a removed name that is live
 	// again, with its history, for the boot collision rule to settle; the
 	// re-add purge that would consume it is skipped.

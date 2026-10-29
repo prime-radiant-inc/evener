@@ -185,6 +185,7 @@ func (m *hubHostManager) stageCommit(plan *hostCommitPlan, now time.Time) error 
 func compensationChange(plan *hostCommitPlan) hostPersistChange {
 	return hostPersistChange{
 		dropMarker: plan.Name, dropReceipt: plan.Key, dropStoreSync: plan.Name,
+		hostFileFirst: true,
 	}
 }
 

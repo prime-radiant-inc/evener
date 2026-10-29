@@ -9,6 +9,7 @@ package hub
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -1904,4 +1905,95 @@ func TestRetriesThatOnlyHaveRecordsToWriteLeaveHealthyConnectionsAlone(t *testin
 	if err := late.mutationRefusal(); err != nil {
 		t.Fatalf("host changes are still paused after the write works: %v", err)
 	}
+}
+
+// TestACompensationRestoresTheHostFileBeforeDroppingTheStagedRecords pins the
+// order of an un-commit: the host change being taken back already reached
+// hub.toml, so the file is restored first and the staged marker goes second. A
+// crash between then leaves the host where it belongs with a marker boot rolls
+// back; the other order would leave the staged commit's trace gone while the file
+// still holds its change.
+func TestACompensationRestoresTheHostFileBeforeDroppingTheStagedRecords(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}})
+	m, store := hub.boot(t, false)
+	m.testOnlyAfterStage = func(name string) {
+		if err := m.cfg.hosts.Add(hostreg.Host{Name: name, SSH: "raced.example"}); err != nil {
+			t.Errorf("race the registry: %v", err)
+		}
+	}
+	var fileRestored, markerStillStaged bool
+	hostFileFirstSeam = func() {
+		for _, h := range mustLoadConfig(t, hub.configPath).Hosts {
+			if h.Name == "new" {
+				return
+			}
+		}
+		fileRestored = true
+		_, markerStillStaged = mustRecords(t, store).StagedReceipts["new"]
+	}
+	t.Cleanup(func() { hostFileFirstSeam = nil })
+
+	_, err := m.AddResult(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "new", Address: "new.example"}, MutationID: newTestMutationID()})
+	requireRefusal(t, err)
+
+	if !fileRestored || !markerStillStaged {
+		t.Fatalf("the compensation did not write the host file before the records: fileRestored=%v markerStillStaged=%v", fileRestored, markerStillStaged)
+	}
+	if staged := mustRecords(t, store).StagedReceipts; len(staged) != 0 {
+		t.Fatalf("the compensation left staged markers: %+v", staged)
+	}
+}
+
+// TestARedialInBackoffFollowsTheRegistrationASecondSettlementMoves pins the
+// ownership of a reconnection across settlement attempts: a host whose dial is
+// backing off has neither a channel nor a supervisor, so a retry that moves its
+// registration again must still hand the loop the new registration, or the host
+// stays disconnected after everything recovers.
+func TestARedialInBackoffFollowsTheRegistrationASecondSettlementMoves(t *testing.T) {
+	previousInitial, previousMax := hostReconnectRetryInitial, hostReconnectRetryMax
+	hostReconnectRetryInitial, hostReconnectRetryMax = 30*time.Millisecond, 30*time.Millisecond
+	t.Cleanup(func() { hostReconnectRetryInitial, hostReconnectRetryMax = previousInitial, previousMax })
+
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	hub.boot(t, false)
+	hub.restartStateRoot(t)
+	reopened, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	hosts, err := hostreg.New(hostRegistryEntries(mustLoadConfig(t, hub.configPath)))
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	runner := &flakyDialRunner{}
+	manager := sshconn.New(hosts, sshconn.Options{Runner: runner})
+	t.Cleanup(func() { _ = manager.Close() })
+	late := newHubHostManager(appsource.NewRegistry(), manager, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostConfigPath: hub.configPath, RemoteHostOpsUnavailable: true,
+	}, hub.configPath, hosts, t.Logf)
+	if _, err := manager.Ensure(context.Background(), "side"); err != nil {
+		t.Fatalf("Ensure while the store is unavailable: %v", err)
+	}
+	runner.mu.Lock()
+	runner.failures = 1 << 20
+	runner.mu.Unlock()
+	bootMaintenanceFault = func() error { return errors.New("injected write failure") }
+	t.Cleanup(func() { bootMaintenanceFault = nil })
+
+	late.attachOps(reopened) // moves side, retires its connection, the redial starts failing
+	time.Sleep(100 * time.Millisecond)
+	family, _, _ := reopened.HostRecords()
+	mark := mustRecords(t, reopened).Generations["side"]
+	raised, _ := json.Marshal(HostGeneration{Generation: mark.Generation + 25, IncarnationID: mark.IncarnationID, PresenceEpoch: mark.PresenceEpoch})
+	family.Generations["side"] = raised
+	if err := reopened.CommitHostRecords(family, hostops.HostMirror{}); err != nil {
+		t.Fatalf("raise side's stored mark: %v", err)
+	}
+	late.attachOps(nil) // a second settlement moves side's registration again
+	runner.mu.Lock()
+	runner.failures = 0
+	runner.mu.Unlock()
+	bootMaintenanceFault = nil
+
+	requireReconnected(t, manager, hosts, "side")
 }
