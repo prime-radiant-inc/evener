@@ -119,6 +119,9 @@ func (m *hubHostManager) attachOps(store *hostops.Store) {
 	attaching := &hostRefusal{reason: "the operation store is attaching"}
 	m.cfg.refusal.Store(attaching)
 	if store != nil && m.opsStore() == nil {
+		// The opener moved the crash's in-flight operations to interrupted
+		// before handing the store over; anything running now is live.
+		m.cfg.interruptedHandled.Store(true)
 		m.cfg.ops.Store(store)
 	}
 	m.bootRecords()
@@ -254,15 +257,18 @@ func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
 	m.cfg.store.set(m.cfg.hosts.All())
 	m.stripLegacySections(true)
 	doc, hasFile := store.load()
-	var unrolled map[string]struct{}
 	if hasFile {
-		unrolled = m.rollBackUnlandedCommits(doc)
+		if unrolled := m.rollBackUnlandedCommits(doc); len(unrolled) != 0 {
+			// Every later step reads a staged commit as one hub.toml holds: a
+			// removal's tombstone would read as a re-add, and its marker would
+			// be pruned or finalized. Hosts keep serving from hub.toml and the
+			// whole boot runs again on the next attempt.
+			m.refuseMutations(fmt.Sprintf("%d staged commit(s) could not be rolled back; the next attempt retries", len(unrolled)))
+			return
+		}
 	}
 	collided := m.breakBootTombstoneCollision(records)
 	for _, name := range sortedStagedMarkerNames(m.cfg.store.stagedSnapshot()) {
-		if _, stuck := unrolled[name]; stuck {
-			continue
-		}
 		if _, err := m.finalizeOrphanMarkerIfAny(context.Background(), name, true); err != nil {
 			m.logf("boot finalization of the staged receipt marker for %q refused: %v", name, err)
 		}
@@ -271,9 +277,6 @@ func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
 		m.materializeHostRecords(records, hasFile)
 	}
 	m.reconcileStoreBoot()
-	if len(unrolled) != 0 {
-		m.refuseMutations(fmt.Sprintf("%d staged commit(s) could not be rolled back; the next attempt retries", len(unrolled)))
-	}
 }
 
 // rollBackUnlandedCommits drops the staged marker and the provisional receipt
@@ -338,17 +341,28 @@ func hostFromReceiptRow(row HostMutationReceiptRow) hostreg.Host {
 	}
 }
 
+// recoverInterruptedOnce moves the operations a crash left in flight to
+// interrupted, the first time it runs over the attached store. A settlement
+// retry runs the boot again over a store that is serving, where a running
+// operation is live and must stay so.
+func (m *hubHostManager) recoverInterruptedOnce() {
+	if !m.cfg.interruptedHandled.CompareAndSwap(false, true) {
+		return
+	}
+	if moved, err := m.opsStore().RecoverInterrupted(); err != nil {
+		m.cfg.interruptedHandled.Store(false)
+		m.logf("boot interrupted transition not completed: %v", err)
+	} else if moved > 0 {
+		m.logf("boot moved %d in-flight operation(s) to interrupted", moved)
+	}
+}
+
 // reconcileStoreBoot runs the boot passes that depend on the records rather
 // than on how they were stored: in-flight operations a crash left running are
 // interrupted, removed hosts' operation records and token rows are marked
 // and dropped, and the boundary mirror is rebuilt from the records.
 func (m *hubHostManager) reconcileStoreBoot() {
-	ops := m.opsStore()
-	if moved, err := ops.RecoverInterrupted(); err != nil {
-		m.logf("boot interrupted transition not completed: %v", err)
-	} else if moved > 0 {
-		m.logf("boot moved %d in-flight operation(s) to interrupted", moved)
-	}
+	m.recoverInterruptedOnce()
 	if doc, ok := m.recordStore().load(); ok {
 		m.reconcileHostRemovedPass(doc.Records)
 	}

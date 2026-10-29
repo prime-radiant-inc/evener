@@ -694,3 +694,64 @@ func TestLateAttachOfAPopulatedStoreRecordsTheIdentitiesTheHubServes(t *testing.
 		}
 	}
 }
+
+// TestLateAttachOfAStoreWithOneFreshHostRecordsTheServedIdentity is the minimal
+// form of the attach agreement: no receipts or tombstones exist to make the
+// records differ for another reason, so only the identity mismatch can ask for
+// the write.
+func TestLateAttachOfAStoreWithOneFreshHostRecordsTheServedIdentity(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "hub.toml")
+	if err := writeHubTOMLHosts(configPath, []hostreg.Host{{Name: "solo", SSH: "solo.example"}}); err != nil {
+		t.Fatalf("seed hub.toml: %v", err)
+	}
+	stateRoot := t.TempDir()
+	if _, store := bootOverStore(t, configPath, stateRoot); store == nil {
+		t.Fatal("no store")
+	}
+
+	hosts, err := hostreg.New(hostRegistryEntries(mustLoadConfig(t, configPath)))
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostConfigPath: configPath, RemoteHostOpsUnavailable: true,
+	}, configPath, hosts, t.Logf)
+	reopened, err := hostops.Open(hostops.StorePath(stateRoot))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	m.attachOps(reopened)
+
+	served := hosts.All()[0]
+	stored := mustRecords(t, reopened)
+	if got := stored.HostRecords["solo"]; got.IncarnationID != served.IncarnationID || got.PresenceEpoch != served.PresenceEpoch {
+		t.Errorf("the store records %+v, the hub serves %q/%d", got, served.IncarnationID, served.PresenceEpoch)
+	}
+	if got := stored.Generations["solo"]; got.Generation != served.Generation || got.IncarnationID != served.IncarnationID {
+		t.Errorf("the store's mark %+v disagrees with what the hub serves (%d, %q)", got, served.Generation, served.IncarnationID)
+	}
+}
+
+// TestSettlementRetryLeavesALiveOperationRunning pins the retry's reach: the
+// pass that interrupts what a crash left in flight belongs to the first boot
+// over a store, not to the retries of a store already serving requests.
+func TestSettlementRetryLeavesALiveOperationRunning(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "hub.toml")
+	if err := writeHubTOMLHosts(configPath, []hostreg.Host{{Name: "keep", SSH: "keep.example"}}); err != nil {
+		t.Fatalf("seed hub.toml: %v", err)
+	}
+	m, store := bootOverStore(t, configPath, t.TempDir())
+	served := m.cfg.hosts.All()[0]
+	live := seedOperationRecord(t, store, "keep", "live-op", served.Generation, served.IncarnationID)
+
+	m.refuseMutations("a settlement is pending")
+	m.attachOps(nil)
+
+	if err := m.mutationRefusal(); err != nil {
+		t.Fatalf("host changes are still refused after the retry: %v", err)
+	}
+	after, ok := store.Record(live.ID)
+	if !ok || after.State != live.State {
+		t.Fatalf("the retry moved the live operation from %q to %+v", live.State, after)
+	}
+}

@@ -208,6 +208,12 @@ func TestBootDoesNotFinalizeACommitItCouldNotRollBack(t *testing.T) {
 	}
 	_, err := recovered.UpdateResult(context.Background(), updateRequest(t, recovered, "side", appwire.HostEntry{Address: "again.example"}))
 	requireWireError(t, err, appwire.CodeUnavailable)
+	// The client retrying the very request that was staged must not be told it
+	// succeeded: hub.toml does not hold the edit.
+	replay := updateRequest(t, recovered, "side", appwire.HostEntry{Address: "edited.example"})
+	replay.MutationID = staged
+	_, err = recovered.UpdateResult(context.Background(), replay)
+	requireWireError(t, err, appwire.CodeUnavailable)
 
 	bootRollbackFault = nil
 	recovered.attachOps(nil)
@@ -224,5 +230,57 @@ func TestBootDoesNotFinalizeACommitItCouldNotRollBack(t *testing.T) {
 	}
 	if _, err := recovered.UpdateResult(context.Background(), updateRequest(t, recovered, "side", appwire.HostEntry{Address: "again.example"})); err != nil {
 		t.Fatalf("the edit after the rollback: %v", err)
+	}
+}
+
+// TestBootKeepsAnUnrolledRemovalStagedUntilItCanBeRolledBack pins the same
+// posture for a removal: while its rollback cannot be written, the staged
+// marker and tombstone stay, the host keeps serving, and a retried request
+// is not answered as a committed removal; the retry that can write rolls it
+// back for good.
+func TestBootKeepsAnUnrolledRemovalStagedUntilItCanBeRolledBack(t *testing.T) {
+	const staged = "staged-removal"
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, _ := hub.boot(t, false)
+	beforeBytes := fileBytes(t, hub.configPath)
+	params := removeRequest(t, m, "side")
+	params.MutationID = staged
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
+	if err := os.WriteFile(hub.configPath, beforeBytes, 0o600); err != nil {
+		t.Fatalf("put the pre-mutation hub.toml back: %v", err)
+	}
+
+	bootRollbackFault = func(string) error { return errors.New("injected rollback write failure") }
+	t.Cleanup(func() { bootRollbackFault = nil })
+	recovered, store := hub.boot(t, true)
+
+	records := mustRecords(t, store)
+	if _, stillStaged := records.StagedReceipts["side"]; !stillStaged {
+		t.Fatal("the removal that could not be rolled back lost its marker")
+	}
+	if rows := hostRows(t, recovered); rows["side"].Removed || rows["side"].Address != "side.example" {
+		t.Fatalf("side serves %+v while its removal is unsettled", rows["side"])
+	}
+	replay := removeRequestFor("side", params.ExpectedGeneration, params.ExpectedIncarnationID)
+	replay.MutationID = staged
+	_, err := recovered.RemoveResult(context.Background(), replay)
+	requireWireError(t, err, appwire.CodeUnavailable)
+
+	bootRollbackFault = nil
+	recovered.attachOps(nil)
+	if err := recovered.mutationRefusal(); err != nil {
+		t.Fatalf("host changes are still refused after the rollback could be written: %v", err)
+	}
+	records = mustRecords(t, store)
+	if len(records.StagedReceipts) != 0 {
+		t.Fatalf("the retry left staged markers: %+v", records.StagedReceipts)
+	}
+	requireNoReceiptFor(t, records, staged)
+	if _, tombstoned := records.Tombstones["side"]; tombstoned {
+		t.Fatal("the rolled-back removal left its tombstone")
+	}
+	if _, err := recovered.RemoveResult(context.Background(), removeRequest(t, recovered, "side")); err != nil {
+		t.Fatalf("removing side after the rollback: %v", err)
 	}
 }

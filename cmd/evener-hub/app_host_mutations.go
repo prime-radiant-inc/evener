@@ -166,11 +166,13 @@ func (m *hubHostManager) settleOrphanMarker(ctx context.Context, kind hostMutati
 // when the request is a replay (the gate is then not taken), and otherwise the
 // release of the gate it holds.
 func (m *hubHostManager) admitMutation(ctx context.Context, kind hostMutationKind, name, mutationID string, holder hostops.Holder) (release func(), replay *appwire.HostMutationResult, err error) {
-	if replay, err = m.replayArm(kind, name, mutationID); err != nil || replay != nil {
-		return nil, replay, err
-	}
+	// The pause comes first: while records are unsettled a staged receipt for a
+	// change hub.toml may not hold would otherwise replay as a committed one.
 	if refusal := m.mutationRefusal(); refusal != nil {
 		return nil, nil, refusal
+	}
+	if replay, err = m.replayArm(kind, name, mutationID); err != nil || replay != nil {
+		return nil, replay, err
 	}
 	if replay, err = m.settleOrphanMarker(ctx, kind, name, mutationID); err != nil || replay != nil {
 		return nil, replay, err
@@ -295,6 +297,9 @@ func (m *hubHostManager) AddResult(ctx context.Context, params appwire.HostAddPa
 			return appwire.HostMutationResult{}, err
 		}
 	}
+	if err := m.mutationRefusal(); err != nil {
+		return appwire.HostMutationResult{}, err
+	}
 	if params.MutationID != "" {
 		replay, err := m.replayArm(hostMutationAdd, name, params.MutationID)
 		if err != nil {
@@ -303,9 +308,6 @@ func (m *hubHostManager) AddResult(ctx context.Context, params appwire.HostAddPa
 		if replay != nil {
 			return *replay, nil
 		}
-	}
-	if err := m.mutationRefusal(); err != nil {
-		return appwire.HostMutationResult{}, err
 	}
 	auditKey := params.MutationID
 	if auditKey == "" {

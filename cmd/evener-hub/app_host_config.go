@@ -74,6 +74,10 @@ type hostManagerConfig struct {
 	// is unavailable, or the records it holds could not be settled or read. It
 	// clears when a boot attach converges.
 	refusal atomic.Pointer[hostRefusal]
+	// interruptedHandled is set once the pass that interrupts what a crash left
+	// in flight has run over the attached store; later boots of the same store
+	// (settlement retries) must not interrupt operations that are running now.
+	interruptedHandled atomic.Bool
 	// sources is the component-05 registry; a remote host's source is where
 	// attachment state (Online) and the per-host client live.
 	sources *appsource.Registry

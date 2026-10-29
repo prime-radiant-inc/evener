@@ -133,7 +133,12 @@ func (m *hubHostManager) materializeHostRecords(records hostRecordSet, hasFile b
 		// of them would leave the other's value unrecorded — the incarnation
 		// pair or the generation the next boot restores — so the boot write
 		// repairs the pair in the canonical shape instead of skipping it.
-		if !record.complete() || !mark.complete() {
+		// The stored pair must also be the one the registry serves: a hub that
+		// started before its records were readable minted its own, and guarded
+		// mutations compare against what is served.
+		drifted := record.IncarnationID != entry.IncarnationID || record.PresenceEpoch != entry.PresenceEpoch ||
+			mark.Generation != entry.Generation || mark.IncarnationID != entry.IncarnationID || mark.PresenceEpoch != entry.PresenceEpoch
+		if !record.complete() || !mark.complete() || drifted {
 			if err := m.persistHosts(entries, entries, hostPersistChange{}); err != nil {
 				m.logf("host %q records for %s not recorded yet: %v", entry.Name, m.cfg.configPath, err)
 			}
@@ -194,11 +199,7 @@ func (m *hubHostManager) reconcilePipelineBoot() {
 	// load, interrupted, host-removed, mirror, intents). The store-open pass
 	// already ran it as an interim; the pass is idempotent — with nothing left
 	// pending/running it moves nothing and writes nothing.
-	if moved, err := m.opsStore().RecoverInterrupted(); err != nil {
-		m.logf("boot interrupted transition not completed: %v", err)
-	} else if moved > 0 {
-		m.logf("boot moved %d in-flight operation(s) to interrupted", moved)
-	}
+	m.recoverInterruptedOnce()
 	m.reconcileHostRemovedPass(doc.Records)
 	m.reconcileGenerationMirror(doc)
 	m.reconcileCompensations()
@@ -557,14 +558,15 @@ func (m *hubHostManager) reapplyRestoredRuntime(host string) error {
 	}
 	// §9's runtime arm re-applies the restored set to the live handles: the
 	// process must actually serve the restored entry before the record may
-	// clear. hostreg has no boot-restore setter for a persisted identity, so a
-	// name the boot registry did not register (or registered under another
-	// identity) leaves the record open — the next boot loads the restored file
-	// and converges it.
+	// clear. A name the boot registry did not register (the compensation
+	// restored it after the registry was built) is registered now, under the
+	// identity the restored file records.
 	current, registered := m.cfg.hosts.Get(host)
 	if !registered {
-		return fmt.Errorf("host %q is live in the restored %s but the boot registry did not register it; leaving the compensation open for the next boot",
-			host, m.cfg.configPath)
+		if err := m.cfg.hosts.AddRestored(entry); err != nil {
+			return fmt.Errorf("host %q is live in the restored %s but could not be registered: %w", host, m.cfg.configPath, err)
+		}
+		current, _ = m.cfg.hosts.Get(host)
 	}
 	if entry.IncarnationID != "" && current.IncarnationID != entry.IncarnationID {
 		return fmt.Errorf("host %q carries a different restored incarnation id; leaving the compensation open", host)

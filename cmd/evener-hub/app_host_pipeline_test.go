@@ -453,14 +453,14 @@ func TestBootCompensationResumesTheOwedRowsAfterAFailedAdvance(t *testing.T) {
 	}
 }
 
-// TestBootCompensationArmedWithRowsPresentLeavesTheRecordWhenTheRegistryLacks
-// TheHost pins the armed rows-present arm's runtime continuation: after the
-// restore, the record must run the rows and runtime arms (not re-enter the
-// hubtoml arm's commit-point check, which would clear it against the restored
-// no-intent bytes) — so a process whose registry does not serve the restored
-// host leaves the record open in `compensating-runtime` instead of clearing a
-// compensation it cannot serve.
-func TestBootCompensationArmedWithRowsPresentLeavesTheRecordWhenTheRegistryLacksTheHost(t *testing.T) {
+// TestBootCompensationArmedWithRowsPresentServesTheHostTheRegistryLacked pins
+// the armed rows-present arm's runtime continuation: after the restore, the
+// record runs the rows and runtime arms (not the hubtoml arm's commit-point
+// check, which would clear it against the restored no-intent bytes), and a
+// host the registry was built without is registered, so the compensation
+// clears and host changes resume in the same boot instead of waiting for a
+// restart.
+func TestBootCompensationArmedWithRowsPresentServesTheHostTheRegistryLacked(t *testing.T) {
 	entry := pipelineEntry("m4", 2)
 	fixture, token, _ := newPipelineRemovalFixture(t, entry, false)
 	fixture.appendTOML(t, "[pending_store_sync.m4]\ngeneration = 2\ntoken_values = [\""+token.Value+"\"]\n")
@@ -471,19 +471,24 @@ func TestBootCompensationArmedWithRowsPresentLeavesTheRecordWhenTheRegistryLacks
 		t.Fatalf("ArmCompensation: %v", err)
 	}
 	m := fixture.manager(t)
-	record, open := m.opsStore().Compensation("m4")
-	if !open || record.Phase != hostops.CompensationRuntime {
-		t.Fatalf("record = %+v/%v, want it left in %s (the restored host is not served)", record, open, hostops.CompensationRuntime)
+	if record, open := m.opsStore().Compensation("m4"); open {
+		t.Fatalf("the compensation stayed open: %+v", record)
 	}
 	if _, carried := m.cfg.store.storeSyncSnapshot()["m4"]; carried {
 		t.Fatal("the store model kept the compensated commit's intent")
+	}
+	if _, served := m.cfg.hosts.Get("m4"); !served {
+		t.Fatal("the restored host is not served")
 	}
 	cfg, _ := readPipelineConfig(t, fixture.configPath)
 	if _, live := hostEntryNamed(hostRegistryEntries(cfg), "m4"); !live {
 		t.Fatal("the compensation did not restore hub.toml")
 	}
-	if _, ok := m.opsStore().OutstandingToken("m4"); !ok {
-		t.Fatal("the restored row is missing")
+	if err := m.mutationRefusal(); err != nil {
+		t.Fatalf("host changes are still paused: %v", err)
+	}
+	if _, err := m.UpdateResult(context.Background(), updateRequest(t, m, "m4", appwire.HostEntry{Address: "m4b.example"})); err != nil {
+		t.Fatalf("editing the restored host: %v", err)
 	}
 }
 
@@ -893,12 +898,11 @@ func TestBootCompensationHubTOMLWithIntentClearedDoesNotRestore(t *testing.T) {
 	}
 }
 
-// TestBootCompensationRuntimeLeavesTheRecordWhenTheRestoredHostIsNotRegistered
-// pins the runtime arm's failure posture: the restored file carries a live host
-// the boot registry did not register, so the record stays in
-// `compensating-runtime` with its stash intact — and the next boot, whose
-// registry loads the restored file, converges and clears it.
-func TestBootCompensationRuntimeLeavesTheRecordWhenTheRestoredHostIsNotRegistered(t *testing.T) {
+// TestBootCompensationRuntimeRegistersTheRestoredHostTheRegistryLacked pins the
+// runtime arm for a restored file that carries a live host the boot registry
+// did not register: the host is registered, the record clears and its stash is
+// pruned in the same boot, so nothing waits on a restart.
+func TestBootCompensationRuntimeRegistersTheRestoredHostTheRegistryLacked(t *testing.T) {
 	entry := pipelineEntry("m4", 2)
 	var token hostops.Token
 	fixture := newPipelineFixture(t, nil, func(store *hostops.Store) {
@@ -930,27 +934,14 @@ func TestBootCompensationRuntimeLeavesTheRecordWhenTheRestoredHostIsNotRegistere
 	}
 	// The registry is empty: the boot loaded the committed (host-less) file.
 	m := fixture.manager(t)
-	record, open := m.opsStore().Compensation("m4")
-	if !open || record.Phase != hostops.CompensationRuntime {
-		t.Fatalf("record after the unserved runtime revert = %+v/%v, want it left in %s", record, open, hostops.CompensationRuntime)
+	if record, open := m.opsStore().Compensation("m4"); open {
+		t.Fatalf("the compensation stayed open: %+v", record)
 	}
-	if _, err := os.Stat(stash); err != nil {
-		t.Fatalf("the unserved runtime revert pruned the stash: %v", err)
+	if _, served := m.cfg.hosts.Get("m4"); !served {
+		t.Fatal("the restored host is not served")
 	}
-	// The next boot loads the restored file, so its registry carries the host
-	// with the restored identity: the retry converges and clears.
-	restored, _ := readPipelineConfig(t, fixture.configPath)
-	registry, err := hostreg.New(hostRegistryEntries(restored))
-	if err != nil {
-		t.Fatalf("hostreg.New: %v", err)
-	}
-	second := newHubHostManager(nil, nil, hubcore.WebConfig{
-		RemoteHostRegistry:   registry,
-		RemoteHostOpsStore:   fixture.store,
-		RemoteHostConfigPath: fixture.configPath,
-	}, fixture.configPath, registry, t.Logf)
-	if _, open := second.opsStore().Compensation("m4"); open {
-		t.Fatal("the next boot did not converge the left-open compensation")
+	if _, err := os.Stat(stash); !os.IsNotExist(err) {
+		t.Fatal("the converged compensation left its stash behind")
 	}
 }
 
@@ -1119,28 +1110,28 @@ func TestBootRestoreInstallsTheMachineRecords(t *testing.T) {
 	if _, err := fixture.store.PurgeCompensated("keep", []string{token.Value}); err != nil {
 		t.Fatalf("PurgeCompensated: %v", err)
 	}
-	// The first boot restores hub.toml and the row, but its registry was built
-	// from the committed, host-less file and cannot serve the restored host: the
-	// compensation stays open for the next start, and host changes pause, typed
-	// as retryable, rather than writing records over an unsettled removal.
+	// The first boot restores hub.toml and the row; its registry was built from
+	// the committed, host-less file, so it registers the restored host under
+	// the identity the file records, the compensation clears and host changes
+	// continue in the same boot.
 	first := fixture.manager(t)
 	if _, ok := first.opsStore().OutstandingToken("keep"); !ok {
 		t.Fatal("boot did not re-insert the restored row")
 	}
-	_, err := first.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "extra", Address: "extra.example"}})
-	requireWireError(t, err, appwire.CodeUnavailable)
-	// The next start loads the restored file's live set: the compensation
-	// converges, the records move into the store, and the hub takes host changes.
-	second := fixture.restart(t)
-	if _, open := second.opsStore().Compensation("keep"); open {
-		t.Fatal("the compensation did not converge on the next start")
+	if _, open := first.opsStore().Compensation("keep"); open {
+		t.Fatal("the compensation did not converge in the boot that restored it")
 	}
+	if _, err := first.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "extra", Address: "extra.example"}}); err != nil {
+		t.Fatalf("Add(extra) after the restore: %v", err)
+	}
+	// A restart keeps the restored row and takes host changes.
+	second := fixture.restart(t)
 	if _, ok := second.opsStore().OutstandingToken("keep"); !ok {
 		t.Fatal("the next start purged the restored row")
 	}
 	// The next write derives from the restored records: no intent.
-	if _, err := second.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "extra", Address: "extra.example"}}); err != nil {
-		t.Fatalf("Add(extra): %v", err)
+	if _, err := second.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "extra2", Address: "extra2.example"}}); err != nil {
+		t.Fatalf("Add(extra2): %v", err)
 	}
 	cfg, _ := readPipelineConfig(t, fixture.configPath)
 	if _, carried := cfg.PendingStoreSync["keep"]; carried {
@@ -1209,34 +1200,19 @@ func TestBootRestoreReversesTheHostRemovedMarks(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("re-install the staged marker: %v", err)
 	}
-	// Boot 1 (the crash's boot): the registry loads the committed, host-less
-	// file. The host-removed pass marks the record and drops its row; the
-	// marker must NOT be finalized as committed (the open compensation owns the
-	// name); the compensation restores hub.toml but cannot yet serve the host,
-	// so the record stays open in `compensating-runtime`.
+	// The crash's boot: the registry loads the committed, host-less file. The
+	// host-removed pass marks the record and drops its row; the marker must NOT
+	// be finalized as committed (the open compensation owns the name); the
+	// compensation restores hub.toml, registers the restored host under its
+	// restored identity, and the runtime arm reverses the marks the removed
+	// incarnation's records carried.
 	crashed := newHubHostManager(nil, nil, hubcore.WebConfig{
 		RemoteHostOpsStore:   fixture.store,
 		RemoteHostConfigPath: fixture.configPath,
 	}, fixture.configPath, nil, t.Logf)
-	_ = crashed
 	if _, staged := crashed.cfg.store.stagedSnapshot()["keep"]; staged {
 		t.Fatal("the crash boot left the marker staged in the model")
 	}
-	if record, open := fixture.store.Compensation("keep"); !open || record.Phase != hostops.CompensationRuntime {
-		t.Fatalf("record after the crash boot = %+v/%v, want it left in %s", record, open, hostops.CompensationRuntime)
-	}
-	// Boot 2 loads the restored file's live set: the runtime arm converges and
-	// reverses the marks the removed incarnation's records carried.
-	registry, err := hostreg.New([]hostreg.Host{entry})
-	if err != nil {
-		t.Fatalf("hostreg.New: %v", err)
-	}
-	second := newHubHostManager(nil, nil, hubcore.WebConfig{
-		RemoteHostRegistry:   registry,
-		RemoteHostOpsStore:   fixture.store,
-		RemoteHostConfigPath: fixture.configPath,
-	}, fixture.configPath, registry, t.Logf)
-	_ = second
 	if _, open := fixture.store.Compensation("keep"); open {
 		t.Fatal("the compensation did not converge")
 	}
