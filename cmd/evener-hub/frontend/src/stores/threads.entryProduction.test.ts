@@ -46,6 +46,7 @@ import {
   backgroundTranscriptSnapshotForTests,
   clearCachedSessions,
   countCachedSessions,
+  installHydrationRetrySchedulerForTests,
   markCacheSessionsDeleted,
   pendingThreadHydrationUpdatesForTests,
   resetThreadsStoreForTests,
@@ -4812,6 +4813,124 @@ it("a settled empty recorded history with a live overlay completes the pending o
     setSessionCacheStalledOpenForTests(5000);
     threadsStore.getState().releaseThread(ref);
     await lease.release();
+  }
+});
+
+it("a composed registration's recovery span settling first still wakes the reopened pane's parked open", async () => {
+  const storage = cache();
+  const realGetLatestWindow = storage.getLatestWindow.bind(storage);
+  setProductionEntryCacheForTests(storage);
+  const ref = "local:a";
+  const read = response(ref, [turn("row-1", 1), turn("row-2", 2), turn("row-3", 3)]);
+  read.snapshot = { incarnation: "inc-a", length: 3 };
+  const client = connect(read);
+  const lease = acquireBackgroundThread(ref);
+  await lease.ready;
+  await settleEntryTranscriptForTests(ref);
+  const bodies = () =>
+    threadsStore
+      .getState()
+      .threads.get(ref)
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.text)
+      .filter(Boolean);
+  expect(bodies()).toEqual([]);
+  // Wire reads after the prologue: the pane's claim, which fails in
+  // transport, and the foreign resync refresh, which stays held - the
+  // composed registration's hydration side never settles inside this test.
+  let wireReads = 0;
+  const claimRead = deferred<void>();
+  client.on("thread/read", () => {
+    wireReads += 1;
+    if (wireReads === 1) {
+      return claimRead.promise.then((): ThreadReadResponse => {
+        throw new Error("connection reset by peer");
+      });
+    }
+    return new Promise(() => {}) as Promise<ThreadReadResponse>;
+  });
+  // Local window reads, scripted in call order: the pane's first open
+  // (missed at the pinned backstop), the chain's stalled first attempt, the
+  // reopened pane's own read (held), then the chain's restoring second
+  // attempt.
+  const pane2ReadEntered = deferred<void>();
+  const pane2ReadReleased = deferred<void>();
+  const behaviors: Array<(...args: unknown[]) => ReturnType<typeof realGetLatestWindow>> = [
+    () => new Promise(() => {}) as ReturnType<typeof realGetLatestWindow>,
+    () => new Promise(() => {}) as ReturnType<typeof realGetLatestWindow>,
+    (...args: unknown[]) => {
+      pane2ReadEntered.resolve();
+      return pane2ReadReleased.promise.then(() =>
+        realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>)),
+      ) as ReturnType<typeof realGetLatestWindow>;
+    },
+    (...args: unknown[]) =>
+      pane2ReadEntered.promise.then(() =>
+        realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>)),
+      ) as ReturnType<typeof realGetLatestWindow>,
+  ];
+  (storage as unknown as { getLatestWindow: unknown }).getLatestWindow = (...args: unknown[]) => {
+    const behavior = behaviors.shift();
+    return (
+      behavior ? behavior(...args) : realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>))
+    ) as ReturnType<typeof realGetLatestWindow>;
+  };
+  const restoreRetryScheduler = installHydrationRetrySchedulerForTests((_attempt, retry) => {
+    const timer = setTimeout(retry, 5000);
+    return () => clearTimeout(timer);
+  });
+  setSessionCacheOpenBackstopForTests(40);
+  // The chain's paced second attempt must not start until the reopened pane's
+  // open has parked, whatever the waitFor polling grid does to the reopen's
+  // start time: a long first-attempt stall keeps the ordering structural.
+  setSessionCacheStalledOpenForTests(500);
+  try {
+    const openedByFirstPane = threadsStore.getState().ensureThread(ref);
+    // The claim's read parks. Releasing it fails the claim in transport and
+    // arms the opening recovery chain, whose whole-span registration stays
+    // pending while its first attempt stalls.
+    await vi.waitFor(() => expect(wireReads).toBe(1));
+    claimRead.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    // A foreign resync refresh starts while the chain's span is pending, so
+    // its registration composes with that span; its read stays held.
+    client.emitNotification({ method: "evener/thread/resync", params: { ref, threadId: "thread-a" } });
+    await vi.waitFor(() => expect(wireReads).toBe(2));
+    // The pane closes - the lease keeps the route - and the reopened pane's
+    // open parks on its own held local read, waiting on the composed
+    // settlement under the real backstop.
+    threadsStore.getState().releaseThread(ref);
+    setSessionCacheOpenBackstopForTests(10000);
+    const openedBySecondPane = threadsStore.getState().ensureThread(ref);
+    await pane2ReadEntered.promise;
+    const baselineBefore = productionEntryTranscriptForTests(ref).baseline;
+    // The chain's second attempt restores the recorded bodies and its span
+    // settles FIRST - the foreign refresh is still held. The parked open
+    // must wake from the span's own settlement, certify the restored
+    // display and keep the healed baseline instead of riding the backstop
+    // to an invalidating timeout and another source read.
+    const settled = await Promise.race([
+      openedBySecondPane.then(() => true),
+      new Promise((resolve) => setTimeout(resolve, 900)).then(() => false),
+    ]);
+    expect(settled).toBe(true);
+    // The open ended through the span's settlement wake, not a missed bound.
+    expect(productionEntryTranscriptForTests(ref).localOpenDeadlineMissed).not.toBe(true);
+    expect(productionEntryTranscriptForTests(ref).baseline).toBe(baselineBefore);
+    expect(bodies()).toContain("row-1");
+    expect(wireReads).toBe(2);
+    await openedByFirstPane.catch(() => {});
+    await openedBySecondPane;
+  } finally {
+    setSessionCacheOpenBackstopForTests(10000);
+    setSessionCacheStalledOpenForTests(5000);
+    restoreRetryScheduler();
+    claimRead.resolve();
+    pane2ReadReleased.resolve();
+    threadsStore.getState().releaseThread(ref);
+    // The foreign refresh's read is deliberately held for the whole test,
+    // so the lease's own settle cannot complete: release must not wait it out.
+    await Promise.race([lease.release(), new Promise((resolve) => setTimeout(resolve, 1000))]);
   }
 });
 

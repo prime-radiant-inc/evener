@@ -1093,6 +1093,21 @@ function registerHydrationSettlement(ref: string, hydration: Promise<unknown>): 
       () => notifyHydrationSettlementWaiters(ref, completion),
       () => notifyHydrationSettlementWaiters(ref, completion),
     );
+    // The recovery span needs the same wake: a span that finishes FIRST -
+    // its chain restored the display's bodies while the foreign hydration's
+    // read is still held - leaves the composed entry pending for the
+    // recovery consumers that captured it, but a parked opening's verdict
+    // must re-run now, or the pane rides its backstop to an invalidating
+    // timeout and another source read over a display recovery already
+    // healed. The span's own registration settle cannot do this: the
+    // composed entry displaced it, so its identity check ignores the map -
+    // this notify is the span side's only wake. It wakes without settling
+    // or displacing the composed entry, and the identity guard still keeps a
+    // displaced registration silent.
+    void outstandingRecovery.then(
+      () => notifyHydrationSettlementWaiters(ref, completion),
+      () => notifyHydrationSettlementWaiters(ref, completion),
+    );
   }
   return completion;
 }

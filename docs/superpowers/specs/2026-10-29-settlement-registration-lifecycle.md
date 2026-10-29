@@ -24,8 +24,11 @@ settlement beside the reads it composes with. Each registration:
 - is **composed** with a recovery span: the chain's whole-span registration
   may not be displaced by a plain hydration's, and a tracked read joins under
   it. Waiters are notified early, when the current hydration itself settles —
-  published or failed — and a wake that fails certification re-arms the wait
-  rather than falling through to the backstop.
+  published or failed — and equally when the composed recovery span settles
+  first, whichever comes sooner; the composed completion itself stays
+  pending for the recovery consumers that captured it. A wake that fails
+  certification re-arms the wait rather than falling through to the
+  backstop.
 - is **superseded** by a quiet certification: a claim's post-hydration
   certification whose own publication completed the display, with an older
   frontier still outstanding, runs without the consumer hold, and when it
