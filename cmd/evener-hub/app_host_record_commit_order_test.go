@@ -1324,3 +1324,59 @@ func TestBootRollsBackAFlippedEditWhoseHostFileWasRestored(t *testing.T) {
 		t.Fatalf("the replay reported the restored edit as committed: %+v", result.HostMutationCommitted)
 	}
 }
+
+// TestAnIdenticalReAddAfterAFlippedRemovalIsANewHost pins that a removal past its
+// flip stays landed when the operator recreates the host with the same settings:
+// the file cannot tell a recreated host from a restored one, and rolling the
+// removal back would hand the new host the old incarnation and let a retry of the
+// original removal take it down.
+func TestAnIdenticalReAddAfterAFlippedRemovalIsANewHost(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, _ := hub.boot(t, false)
+	_, incarnation := testMutationIdentity(t, m, "side")
+	before := fileBytes(t, hub.configPath)
+	params := removeRequest(t, m, "side")
+	armCut(m, cutFlipped)
+	runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
+	if err := os.WriteFile(hub.configPath, before, 0o600); err != nil {
+		t.Fatalf("recreate the host by hand: %v", err)
+	}
+
+	recovered, _ := hub.boot(t, true)
+
+	if _, got := testMutationIdentity(t, recovered, "side"); got == incarnation {
+		t.Fatal("the recreated host was handed the removed host's incarnation")
+	}
+	if result, err := recovered.RemoveResult(context.Background(), params); err == nil && result.HostMutationCommitted == nil && result.HostMutationTeardownFailureRemoved == nil {
+		t.Fatalf("a retry of the original removal returned %+v", result)
+	}
+	if _, ok := recovered.cfg.hosts.Get("side"); !ok {
+		t.Fatal("a retry of the original removal took down the recreated host")
+	}
+}
+
+// TestAStagedRemovalIsNotMirroredAsRemovedUntilItsFlip pins that the operation
+// store's retention does not treat a host as removed while its removal can still
+// be rolled back: the mirror marks the removal only once the commit is past its
+// flip, so a restart long after a crash cannot compact the history of a host that
+// is still configured.
+func TestAStagedRemovalIsNotMirroredAsRemovedUntilItsFlip(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, store := hub.boot(t, false)
+	params := removeRequest(t, m, "side")
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
+
+	if _, marked := store.RemovedHosts()["side"]; marked {
+		t.Fatal("the store counts a host as removed before its removal reached hub.toml")
+	}
+
+	m, store = hub.boot(t, true)
+	params = removeRequest(t, m, "keep")
+	armCut(m, cutFlipped)
+	runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
+
+	if _, marked := store.RemovedHosts()["keep"]; !marked {
+		t.Fatal("the store does not count a host as removed after its removal reached hub.toml")
+	}
+}

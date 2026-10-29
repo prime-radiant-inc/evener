@@ -509,7 +509,7 @@ func markerLanded(marker HostStagedReceipt, hosts []hostreg.Host, configured []H
 	if !ok {
 		return true
 	}
-	if marker.SwapStarted || marker.TeardownStarted || marker.Phase == hostStagedPhaseRuntimeSwapped {
+	if markerPastFlip(marker) {
 		return postSwapLanded(marker, scope, configured)
 	}
 	entry, present := hostEntryNamed(hosts, scope.Name)
@@ -519,22 +519,27 @@ func markerLanded(marker HostStagedReceipt, hosts []hostreg.Host, configured []H
 	return present && sameEffectiveHostEntryFields(entry, hostFromReceiptRow(marker.Provisional.Row))
 }
 
-// postSwapLanded judges a marker past its flip. The runtime swap starts only
-// after the host change is in hub.toml, so a later hand edit of the file does
-// not un-land the commit. The one thing that does is a compensation that put the
+// markerPastFlip reports whether the commit's runtime swap started, which it
+// does only after the host change is in hub.toml.
+func markerPastFlip(marker HostStagedReceipt) bool {
+	return marker.SwapStarted || marker.TeardownStarted || marker.Phase == hostStagedPhaseRuntimeSwapped
+}
+
+// postSwapLanded judges a marker past its flip. A later hand edit of the file
+// does not un-land the commit, and neither does a host the operator recreated
+// after a removal: the file cannot tell it from a restored one, and it is a new
+// host. The one thing that does un-land an edit is a compensation that put the
 // host file back and whose record write never landed: the file then holds the
-// host exactly as the commit staged against it, and an edit that changed the
-// entry (or a removal) cannot be there. An edit that changed nothing the file
-// records, and an add, leave nothing to tell the two apart, and read as landed.
+// host exactly as the edit staged against it, and an edit that changed the entry
+// cannot be there. An edit that changed nothing the file records, an add and a
+// removal leave nothing to tell the two apart, and read as landed.
 func postSwapLanded(marker HostStagedReceipt, scope hostReceiptScope, configured []HostConfig) bool {
-	if marker.HostFingerprint == "" {
+	if scope.Kind != hostMutationUpdate || marker.HostFingerprint == "" {
 		return true
 	}
-	if scope.Kind == hostMutationUpdate {
-		after := hubTOMLHostTables([]hostreg.Host{hostFromReceiptRow(marker.Provisional.Row)})
-		if hostConfigFingerprint(after, scope.Name) == marker.HostFingerprint {
-			return true
-		}
+	after := hubTOMLHostTables([]hostreg.Host{hostFromReceiptRow(marker.Provisional.Row)})
+	if hostConfigFingerprint(after, scope.Name) == marker.HostFingerprint {
+		return true
 	}
 	return hostConfigFingerprint(configured, scope.Name) != marker.HostFingerprint
 }

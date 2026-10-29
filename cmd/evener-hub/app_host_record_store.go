@@ -416,8 +416,8 @@ func recordSetFor(entries []hostreg.Host, records hostTOMLRecords) hostRecordSet
 // hostMirrorFor projects a record set onto the boundary mirror the operation
 // records are validated against: every complete generation record is a
 // boundary, a boundary the set no longer carries is dropped, live names clear
-// their removal markers and tombstoned names are dated from their removal.
-// existing is the mirror's current boundaries.
+// their removal markers and tombstoned names are dated from their removal once
+// it is past its flip. existing is the mirror's current boundaries.
 func hostMirrorFor(set hostRecordSet, existing map[string]hostops.Boundary) hostops.HostMirror {
 	mirror := hostops.HostMirror{Boundaries: make(map[string]hostops.Boundary, len(set.Generations))}
 	for name, mark := range set.Generations {
@@ -441,6 +441,11 @@ func hostMirrorFor(set hostRecordSet, existing map[string]hostops.Boundary) host
 	slices.Sort(mirror.Live)
 	for name, tombstone := range set.Tombstones {
 		if _, live := set.HostRecords[name]; live {
+			continue
+		}
+		if marker, staged := set.StagedReceipts[name]; staged && !markerPastFlip(marker) {
+			// The removal can still be rolled back, and the store's retention
+			// must not compact the history of a host that stays configured.
 			continue
 		}
 		removedAt, err := time.Parse(time.RFC3339, tombstone.RemovedAt)
@@ -499,10 +504,11 @@ func unlandedRemovalIdentity(set hostRecordSet, name string, configured []HostCo
 
 // stagedRemovalNeverLanded reports whether marker stages a removal whose host
 // change cannot have reached hub.toml: the entry configured holds for the host
-// is the one the commit staged against.
+// is the one the commit staged against, and the commit never got as far as its
+// runtime swap (past it, a host in the file is one the operator recreated).
 func stagedRemovalNeverLanded(marker HostStagedReceipt, configured []HostConfig) bool {
 	scope, ok := parseHostReceiptScopedKey(marker.Key)
-	if !ok || scope.Kind != hostMutationRemove || marker.HostFingerprint == "" {
+	if !ok || scope.Kind != hostMutationRemove || marker.HostFingerprint == "" || markerPastFlip(marker) {
 		return false
 	}
 	return hostConfigFingerprint(configured, scope.Name) == marker.HostFingerprint
