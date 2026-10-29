@@ -638,7 +638,10 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 				 ORDER BY intent_sequence`,
 				ref,
 			);
-			if (rows.length === 0) return [];
+			// The migrations below run whether or not a dispatchable outbox row
+			// moves: the identity change still strands recovery rows, resend
+			// receipts, and optimistic records at the retired ref, and a resume
+			// that carries none of its outbox forward must not leave them behind.
 			const ids = rows.map((row) => row.client_mutation_id);
 			// A recovery resend's receipt is the draft owner's proof that its
 			// captured sources were consumed. Its source rows move below, so the

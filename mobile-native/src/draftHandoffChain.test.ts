@@ -1320,6 +1320,185 @@ describe("handoff chain obligations", () => {
 		expect(storageLedger.readGraph().edges[0].resolvedAs).toBe("settled");
 	});
 
+	test("a restart settles a committed transfer's dispositions from durable evidence", async () => {
+		const { storage, storageLedger, repository } = setup();
+		// Two intents at A: one drives the retargets, one becomes the captured
+		// editing row whose consumed content must never come back at the row
+		// owner.
+		const intent = (note: string): MutationIntent => ({
+			targetRef: targetKey("a"),
+			threadId: "thread-a",
+			method: "notes/human/set",
+			payload: { ref: "a", expectedInstanceId: "instance-a", note },
+			attachments: [],
+			optimisticDisplay: null,
+		});
+		await storage.enqueueIntent(intent("drives the retarget"));
+		const captured = await storage.enqueueIntent(intent("recovered command input"));
+		await storage.transferToRecovery(captured.clientMutationId, "editing");
+		// A's record carries the delivery's dispositions: the command that
+		// consumed the captured row completed earlier, and the composed draft
+		// still cites it.
+		repository.write(endpoint("a"), {
+			draft: "current",
+			unconfirmed: null,
+			composer: { recoveryIds: [captured.clientMutationId] },
+			completedCommandRecoveryIds: [captured.clientMutationId],
+		});
+		// The intermediate identity is occupied by its own draft, so the
+		// delivery's dispositions can only reach the row owner through
+		// forwarding, never by riding the record onward.
+		repository.write(endpoint("b"), { draft: "b work", unconfirmed: null });
+		// A running submission keeps the live pass from deciding the edge:
+		// only its transfer runs.
+		const failing = flaky(storageLedger, "recordComposed", 2);
+		const live = new DraftLibrary(
+			() => repository,
+			undefined,
+			() => failing,
+		);
+		pendingSubmission(live.open(endpoint("a")));
+
+		// Two retargets move the recovered row to the terminal identity.
+		resume(storage, "a", "b");
+		resume(storage, "b", "c");
+		expect(await storage.getRecovery(captured.clientMutationId)).toMatchObject({ targetRef: targetKey("c") });
+
+		// Live pass: both transfers commit while both compose-marker writes
+		// fail, so the edge keeps only the committed transfer's evidence.
+		live.retryPendingHandoffs();
+		expect(repository.read(endpoint("c")).draft).toBe("b work");
+		expect(repository.read(endpoint("b"))).toMatchObject({ unconfirmed: "current" });
+		const settledEdge = () => storageLedger.readGraph().edges.find((candidate) => candidate.from.sessionRef === "a");
+		expect(settledEdge()).toMatchObject({ state: "pending", composedAt: null });
+
+		// The process dies mid-submission. The next process's abandoned
+		// reconciliation would resolve the orphaned obligation as failed -
+		// the test performs that durable write directly through the ledger,
+		// because this process still registers the capture as in flight - and
+		// the failed state clears no capture, so no obligation path can carry
+		// the dispositions to the row owner.
+		const [orphaned] = storageLedger.readGraph().obligations.filter((candidate) => candidate.state === "open");
+		storageLedger.resolveSubmission(orphaned.obligationId, "failed");
+
+		// B discards the delivered copy: its durable record no longer carries
+		// the delivery's dispositions.
+		repository.write(endpoint("b"), { draft: "cleared by b", unconfirmed: null });
+
+		// A restart loses the in-memory retired map that carried the
+		// dispositions; the recovery pass must settle from the durable
+		// evidence the transfer savepoint recorded.
+		const restarted = new DraftLibrary(
+			() => repository,
+			undefined,
+			() => storageLedger,
+		);
+		for (let pass = 0; pass < 3; pass++) restarted.retryPendingHandoffs();
+
+		// The dispositions reach the identity owning the retargeted rows...
+		expect(repository.read(endpoint("c")).completedCommandRecoveryIds).toEqual([captured.clientMutationId]);
+		expect(repository.read(endpoint("c")).releasedRecoveryIds).toEqual([captured.clientMutationId]);
+		// ...so the already-consumed recovery content cannot be restored there...
+		expect(
+			restarted.open(endpoint("c")).appendEditedRecovery({
+				version: 1,
+				clientMutationId: captured.clientMutationId,
+				targetRef: targetKey("c"),
+				method: "turn/start",
+				payload: { input: [{ type: "text", text: "encoded" }] },
+				attachments: [],
+				composerText: "encoded",
+				optimisticDisplay: {},
+				intentSequence: 1,
+				createdAt: 1,
+				state: "canceled",
+				attempted: false,
+				recoveryKind: "editing",
+			}),
+		).toBe("already-restored");
+		// ...and only then the edge settles.
+		expect(settledEdge()?.resolvedAs).toBe("settled");
+	});
+
+	test("a restart refuses a committed composed edge with its delivered dispositions", async () => {
+		const { storage, storageLedger, repository } = setup();
+		const intent = (note: string): MutationIntent => ({
+			targetRef: targetKey("a"),
+			threadId: "thread-a",
+			method: "notes/human/set",
+			payload: { ref: "a", expectedInstanceId: "instance-a", note },
+			attachments: [],
+			optimisticDisplay: null,
+		});
+		await storage.enqueueIntent(intent("drives the retarget"));
+		const captured = await storage.enqueueIntent(intent("recovered command input"));
+		await storage.transferToRecovery(captured.clientMutationId, "editing");
+		repository.write(endpoint("a"), {
+			draft: "current",
+			unconfirmed: null,
+			composer: { recoveryIds: [captured.clientMutationId] },
+			completedCommandRecoveryIds: [captured.clientMutationId],
+		});
+		repository.write(endpoint("b"), { draft: "b work", unconfirmed: null });
+		// The same running submission blocks the live pass's decision, while
+		// the compose marker records: a committed, composed edge whose
+		// dispositions never leave the retired document before the restart.
+		const live = new DraftLibrary(
+			() => repository,
+			undefined,
+			() => storageLedger,
+		);
+		pendingSubmission(live.open(endpoint("a")));
+		resume(storage, "a", "b");
+		resume(storage, "b", "c");
+		expect(await storage.getRecovery(captured.clientMutationId)).toMatchObject({ targetRef: targetKey("c") });
+
+		live.retryPendingHandoffs();
+		expect(repository.read(endpoint("c")).draft).toBe("b work");
+		const refusedEdge = () => storageLedger.readGraph().edges.find((candidate) => candidate.from.sessionRef === "a");
+		expect(refusedEdge()).toMatchObject({ state: "pending" });
+		expect(refusedEdge()?.composedAt).not.toBeNull();
+
+		// The process dies mid-submission: the orphaned obligation resolves as
+		// failed through the ledger, exactly as the next process's abandoned
+		// reconciliation would.
+		const [orphaned] = storageLedger.readGraph().obligations.filter((candidate) => candidate.state === "open");
+		storageLedger.resolveSubmission(orphaned.obligationId, "failed");
+
+		// B discards the delivered copy and diverges from the delivered hash.
+		repository.write(endpoint("b"), { draft: "cleared by b", unconfirmed: null });
+
+		const restarted = new DraftLibrary(
+			() => repository,
+			undefined,
+			() => storageLedger,
+		);
+		for (let pass = 0; pass < 3; pass++) restarted.retryPendingHandoffs();
+
+		// The refusal keeps the delivery's exclusions: they reach the identity
+		// owning the retargeted rows, so the consumed content cannot be
+		// restored there, and only then the edge refuses.
+		expect(refusedEdge()?.resolvedAs).toBe("refused");
+		expect(repository.read(endpoint("c")).completedCommandRecoveryIds).toEqual([captured.clientMutationId]);
+		expect(
+			restarted.open(endpoint("c")).appendEditedRecovery({
+				version: 1,
+				clientMutationId: captured.clientMutationId,
+				targetRef: targetKey("c"),
+				method: "turn/start",
+				payload: { input: [{ type: "text", text: "encoded" }] },
+				attachments: [],
+				composerText: "encoded",
+				optimisticDisplay: {},
+				intentSequence: 1,
+				createdAt: 1,
+				state: "canceled",
+				attempted: false,
+				recoveryKind: "editing",
+			}),
+		).toBe("already-restored");
+	});
+
 	test("a live source edited after a failed transfer moves its current record", () => {
 		const { storageLedger, repository } = setup();
 		// The delivery marker records, then the transfer savepoint fails once.

@@ -50,10 +50,21 @@ export class DraftRepository {
 		this.creation = new CreationDraftRepository(db);
 		// Durable evidence of committed handoff transfers: written inside the
 		// transfer's own savepoint, so a restart cannot lose the proof the
-		// way the library's in-memory retired map can.
+		// way the library's in-memory retired map can. The disposition lists
+		// ride beside the delivered hash for the same reason: they are the
+		// delivery's own exclusions, and after a restart nothing else carries
+		// what the transferred composition had completed or released.
 		db.execSync(`CREATE TABLE IF NOT EXISTS draft_transfer_log (
-      edge_id TEXT PRIMARY KEY, hub_id TEXT NOT NULL, session_ref TEXT NOT NULL, delivered_hash TEXT NOT NULL
+      edge_id TEXT PRIMARY KEY, hub_id TEXT NOT NULL, session_ref TEXT NOT NULL, delivered_hash TEXT NOT NULL,
+      completed_command_recovery_ids TEXT NOT NULL DEFAULT '[]', released_recovery_ids TEXT NOT NULL DEFAULT '[]'
     )`);
+		const transferLogColumns = new Set(
+			db.getAllSync<{ name: string }>("PRAGMA table_info(draft_transfer_log)").map((column) => column.name),
+		);
+		for (const name of ["completed_command_recovery_ids", "released_recovery_ids"] as const) {
+			if (!transferLogColumns.has(name))
+				db.execSync(`ALTER TABLE draft_transfer_log ADD COLUMN ${name} TEXT NOT NULL DEFAULT '[]'`);
+		}
 		db.execSync(`CREATE TABLE IF NOT EXISTS draft_images (
       hub_id TEXT NOT NULL, session_ref TEXT NOT NULL, id TEXT NOT NULL,
       media_type TEXT NOT NULL, data TEXT NOT NULL,
@@ -312,19 +323,29 @@ export class DraftRepository {
 		to: DraftDestination,
 		record: DraftRecord,
 		additions: DraftImageData[] = [],
-		evidence?: { edgeId: string; deliveredHash: string },
+		evidence?: {
+			edgeId: string;
+			deliveredHash: string;
+			completedCommandRecoveryIds?: readonly string[];
+			releasedRecoveryIds?: readonly string[];
+		},
 	): void {
 		withSavepoint(this.db, "draft_transfer", () => {
 			if (evidence !== undefined) {
 				this.db.runSync(
-					`INSERT INTO draft_transfer_log (edge_id, hub_id, session_ref, delivered_hash)
-					 VALUES (?, ?, ?, ?)
+					`INSERT INTO draft_transfer_log (edge_id, hub_id, session_ref, delivered_hash,
+					     completed_command_recovery_ids, released_recovery_ids)
+					 VALUES (?, ?, ?, ?, ?, ?)
 					 ON CONFLICT (edge_id) DO UPDATE SET hub_id = excluded.hub_id,
-						 session_ref = excluded.session_ref, delivered_hash = excluded.delivered_hash`,
+						 session_ref = excluded.session_ref, delivered_hash = excluded.delivered_hash,
+						 completed_command_recovery_ids = excluded.completed_command_recovery_ids,
+						 released_recovery_ids = excluded.released_recovery_ids`,
 					evidence.edgeId,
 					to.hubId,
 					to.sessionRef,
 					evidence.deliveredHash,
+					JSON.stringify(evidence.completedCommandRecoveryIds ?? []),
+					JSON.stringify(evidence.releasedRecoveryIds ?? []),
 				);
 			}
 			this.write(to, record, additions);
@@ -334,15 +355,51 @@ export class DraftRepository {
 
 	/** Durable evidence that a handoff edge's transfer committed: written in
 	 * the transfer's own savepoint, so it survives restarts and the
-	 * destination later clearing or recomposing its copy. */
-	readTransferEvidence(edgeId: string): { hubId: string; sessionRef: string; deliveredHash: string } | undefined {
-		return (
-			this.db.getFirstSync<{ hubId: string; sessionRef: string; deliveredHash: string }>(
-				`SELECT hub_id AS "hubId", session_ref AS "sessionRef", delivered_hash AS "deliveredHash"
-				 FROM draft_transfer_log WHERE edge_id = ?`,
-				edgeId,
-			) ?? undefined
+	 * destination later clearing or recomposing its copy. The disposition
+	 * lists are the delivery's own exclusions as they were at transfer time -
+	 * after a restart they are the only durable record of what the
+	 * transferred composition had completed or released. */
+	readTransferEvidence(edgeId: string):
+		| {
+				hubId: string;
+				sessionRef: string;
+				deliveredHash: string;
+				completedCommandRecoveryIds: string[];
+				releasedRecoveryIds: string[];
+		  }
+		| undefined {
+		const row = this.db.getFirstSync<{
+			hubId: string;
+			sessionRef: string;
+			deliveredHash: string;
+			completedCommandRecoveryIds: string | null;
+			releasedRecoveryIds: string | null;
+		}>(
+			`SELECT hub_id AS "hubId", session_ref AS "sessionRef", delivered_hash AS "deliveredHash",
+			     completed_command_recovery_ids AS "completedCommandRecoveryIds",
+			     released_recovery_ids AS "releasedRecoveryIds"
+			 FROM draft_transfer_log WHERE edge_id = ?`,
+			edgeId,
 		);
+		if (row === null) return undefined;
+		// A stored list is JSON; a missing one predates the column and reads
+		// as empty, never as an unknown the caller must defer on.
+		const list = (raw: string | null): string[] => {
+			if (raw === null) return [];
+			try {
+				const parsed: unknown = JSON.parse(raw);
+				return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : [];
+			} catch {
+				return [];
+			}
+		};
+		return {
+			hubId: row.hubId,
+			sessionRef: row.sessionRef,
+			deliveredHash: row.deliveredHash,
+			completedCommandRecoveryIds: list(row.completedCommandRecoveryIds),
+			releasedRecoveryIds: list(row.releasedRecoveryIds),
+		};
 	}
 
 	remove(destination: DraftDestination): void {

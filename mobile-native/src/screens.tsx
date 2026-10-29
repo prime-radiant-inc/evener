@@ -2949,7 +2949,17 @@ function ConversationScreenView({
 				...(draft.record.unconfirmedComposer?.recoveryIds ?? []),
 				...pendingObligations,
 			]);
-			if (handoffPending) return;
+			if (handoffPending) {
+				// A pending handoff can be waiting on its own failed writes - a
+				// claim or transfer the storage refused - and this effect's
+				// retry pass is the only runner that completes it. The deferral
+				// re-runs that pass on the same timer as the ownership reads, so
+				// restoring the storage alone converges the handoff with no
+				// user action. Waits on open obligations wake on obligation
+				// transitions, and the timer stops once no edge is pending.
+				deferUntilOwnershipReads();
+				return;
+			}
 			for (const row of retained.recovery) {
 				if (!current || imageSelection.getSnapshot().busy) return;
 				if (row.recoveryKind === "editing" && !deliberatelyReleased.has(row.clientMutationId))

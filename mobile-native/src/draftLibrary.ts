@@ -34,7 +34,15 @@ export type DraftStorage = Pick<
 > & {
 	/** Durable evidence of a handoff edge's committed transfer, when the
 	 * drafts store keeps one. */
-	readTransferEvidence?: (edgeId: string) => { hubId: string; sessionRef: string; deliveredHash: string } | undefined;
+	readTransferEvidence?: (edgeId: string) =>
+		| {
+				hubId: string;
+				sessionRef: string;
+				deliveredHash: string;
+				completedCommandRecoveryIds: string[];
+				releasedRecoveryIds: string[];
+		  }
+		| undefined;
 };
 
 /** One document per destination keeps pending work coherent across navigation.
@@ -523,6 +531,12 @@ export class DraftLibrary {
 			this.repository().transfer(edge.from, edge.to, deliveredRecord, additions, {
 				edgeId: edge.edgeId,
 				deliveredHash: intended,
+				// The delivery's dispositions ride with the transfer's own
+				// evidence: after a restart the retired document is gone, and
+				// these lists are the only durable record of what the
+				// transferred composition excludes.
+				completedCommandRecoveryIds: deliveredRecord.completedCommandRecoveryIds ?? [],
+				releasedRecoveryIds: releasedSources(deliveredRecord),
 			});
 		} catch {
 			return false;
@@ -592,8 +606,24 @@ export class DraftLibrary {
 
 	private refuse(ledger: DraftHandoffLedger, edge: DraftHandoffEdge, source: DraftDocument): boolean {
 		const record = source.getSnapshot().record;
-		const completed = [...(record.completedCommandRecoveryIds ?? [])];
-		const released = releasedSources(record);
+		let completed = [...(record.completedCommandRecoveryIds ?? [])];
+		let released = releasedSources(record);
+		// A committed transfer removed the source endpoint's record: after a
+		// restart the reopened source reads empty, while the delivery's
+		// dispositions survive only in the transfer's durable evidence. The
+		// refusal reads them there, so it never acknowledges a committed edge
+		// with no exclusions; evidence that cannot be read is unknown, and
+		// unknown defers the refusal to the next pass.
+		if (this.retired.get(edge.edgeId) === undefined) {
+			const committed = this.transferCommitted(edge.edgeId);
+			if (committed === undefined) return false;
+			if (committed) {
+				const dispositions = this.deliveredDispositions(edge);
+				if (dispositions === undefined) return false;
+				completed = dispositions.completed;
+				released = dispositions.released;
+			}
+		}
 		const destination = this.open(edge.to);
 		let current = destination.getSnapshot();
 		if (!current.loaded || current.error !== null) {
@@ -661,8 +691,19 @@ export class DraftLibrary {
 		edge: DraftHandoffEdge,
 		delivered: DraftRecord | undefined,
 	): boolean {
-		const completed = [...(delivered?.completedCommandRecoveryIds ?? [])];
-		const released = delivered === undefined ? [] : releasedSources(delivered);
+		let completed = [...(delivered?.completedCommandRecoveryIds ?? [])];
+		let released = delivered === undefined ? [] : releasedSources(delivered);
+		if (delivered === undefined) {
+			// A restart lost the retired document that carried the delivery's
+			// dispositions; the transfer savepoint recorded them beside its
+			// evidence, so settlement reads the same durable proof. Evidence
+			// that cannot be read is unknown - it defers the settlement
+			// rather than settling a committed edge with no exclusions.
+			const dispositions = this.deliveredDispositions(edge);
+			if (dispositions === undefined) return false;
+			completed = dispositions.completed;
+			released = dispositions.released;
+		}
 		if (!this.forwardDispositions(ledger, edge, completed, released)) return false;
 		try {
 			ledger.settleEdge(edge.edgeId, deliveriesFor(edge, completed, released), edge.deliveredHash ?? "");
@@ -670,6 +711,32 @@ export class DraftLibrary {
 			return false;
 		}
 		return true;
+	}
+
+	/** The dispositions of the record a committed transfer delivered, read
+	 * from the live retired document while it still holds the transferred
+	 * record, and from the transfer's durable evidence once a restart has
+	 * lost it. Undefined when the evidence cannot be read: unknown
+	 * dispositions defer - they never settle or refuse a committed edge
+	 * empty. */
+	private deliveredDispositions(edge: DraftHandoffEdge): { completed: string[]; released: string[] } | undefined {
+		const retained = this.retired.get(edge.edgeId)?.document.getSnapshot().record;
+		if (retained !== undefined)
+			return {
+				completed: [...(retained.completedCommandRecoveryIds ?? [])],
+				released: releasedSources(retained),
+			};
+		let evidence: ReturnType<NonNullable<DraftStorage["readTransferEvidence"]>> = undefined;
+		try {
+			evidence = this.repository().readTransferEvidence?.(edge.edgeId);
+		} catch {
+			return undefined;
+		}
+		if (evidence === undefined || evidence === null) return { completed: [], released: [] };
+		return {
+			completed: [...evidence.completedCommandRecoveryIds],
+			released: [...evidence.releasedRecoveryIds],
+		};
 	}
 
 	/** Whether the drafts store holds durable evidence this edge's transfer

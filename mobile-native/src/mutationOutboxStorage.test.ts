@@ -912,6 +912,61 @@ test("retarget moves recovery routing identity and preserves composition and own
 	expect(JSON.parse(otherRow.payload)).toMatchObject({ ref: "local:other", expectedInstanceId: "instance-1" });
 });
 
+// The identity change moves recovery rows and resend receipts whether or not
+// any dispatchable outbox row travels with them: a resume carrying only an
+// interrupted Edit must still bring its capture to the new identity, or the
+// resumed screen can never prove the exact interruption.
+test("retarget migrates an editing recovery row when no outbox row moves", async () => {
+	const destination = "local:thread-2";
+	const source = await storage.enqueueIntent(noteIntent("editing only"));
+	await storage.transferToRecovery(source.clientMutationId, "editing");
+
+	expect(
+		storage.retarget(TARGET, {
+			ref: destination,
+			wireRef: "wire-2",
+			threadId: "thread-2",
+			instanceId: "instance-2",
+		}),
+	).toEqual([]);
+
+	const row = rawRow("mutation_recovery", source.clientMutationId)!;
+	expect(row).toMatchObject({ target_ref: destination, thread_id: "thread-2", instance_id: "instance-2" });
+	expect(JSON.parse(row.payload)).toMatchObject({
+		ref: "wire-2",
+		expectedInstanceId: "instance-2",
+		note: "editing only",
+		clientMutationId: source.clientMutationId,
+	});
+});
+
+// A receipt is the draft owner's proof that its captured sources were
+// consumed; only its explicit acknowledgment retires it. It must follow the
+// identity even when the resend's own row has long settled and nothing
+// dispatchable remains at the old ref.
+test("retarget migrates an outstanding resend receipt when no outbox row moves", async () => {
+	const destination = "local:thread-2";
+	const source = await storage.enqueueIntent(noteIntent("resend me"));
+	await storage.transferToRecovery(source.clientMutationId, "editing");
+	const resend = await storage.resendRecovery([source.clientMutationId], noteIntent("resend"));
+	if (resend === undefined) throw new Error("resend did not commit");
+	// The resend's own outbox row has settled and gone; only its receipt
+	// remains at the old identity.
+	database.prepare("DELETE FROM mutation_outbox WHERE client_mutation_id = ?").run(resend.clientMutationId);
+
+	expect(
+		storage.retarget(TARGET, {
+			ref: destination,
+			wireRef: "wire-2",
+			threadId: "thread-2",
+			instanceId: "instance-2",
+		}),
+	).toEqual([]);
+
+	expect(await storage.readRecoveryResend(destination, [source.clientMutationId])).toBeDefined();
+	expect(await storage.readRecoveryResend(TARGET, [source.clientMutationId])).toBeUndefined();
+});
+
 // --- Read path --------------------------------------------------------------
 
 test("listTargetRefs reports every ref with a waiting outbox or optimistic record", async () => {

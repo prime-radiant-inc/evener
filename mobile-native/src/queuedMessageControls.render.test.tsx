@@ -46,6 +46,7 @@ const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
 	kvFailure: "" as "" | "read" | "write",
 	handoffReadFailure: false,
+	handoffWriteFailure: false,
 	handoffEdgesReads: 0,
 	handoffEdgesReadFailFrom: 0,
 	rpcFailure: "" as string,
@@ -134,10 +135,26 @@ vi.mock("expo-sqlite", async () => {
 					const index = ++harness.handoffEdgesReads;
 					return index >= harness.handoffEdgesReadFailFrom;
 				};
+				// Fails the handoff ledger's row writes while its reads succeed:
+				// a storage whose pending-handoff decisions cannot record, so a
+				// claimed transfer strands until the writes recover. Schema
+				// statements stay healthy - the ledger can open and read.
+				const handoffWriteFails = (sql: unknown) => {
+					if (!harness.handoffWriteFailure || database !== "evener-mutations.db") return false;
+					const text = String(sql).trimStart();
+					if (!/^(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(text)) return false;
+					return text.includes("draft_handoff") || text.includes("draft_submission");
+				};
 				// A stable platform handle delegates to the reopened on-disk database.
 				port = {
-					execSync: (...args: Parameters<SqliteSync["execSync"]>) => opened.port.execSync(...args),
-					runSync: (...args: Parameters<SqliteSync["runSync"]>) => opened.port.runSync(...args),
+					execSync: (...args: Parameters<SqliteSync["execSync"]>) => {
+						if (handoffWriteFails(args[0])) throw new Error("handoff write failed");
+						return opened.port.execSync(...args);
+					},
+					runSync: (...args: Parameters<SqliteSync["runSync"]>) => {
+						if (handoffWriteFails(args[0])) throw new Error("handoff write failed");
+						return opened.port.runSync(...args);
+					},
 					getFirstSync: (...args: Parameters<SqliteSync["getFirstSync"]>) => {
 						if (handoffReadFails(args[0])) throw new Error("handoff read failed");
 						return opened.port.getFirstSync(...args);
@@ -255,6 +272,7 @@ afterEach(async () => {
 	unmountMountedTrees();
 	harness.kvFailure = "";
 	harness.handoffReadFailure = false;
+	harness.handoffWriteFailure = false;
 	harness.handoffEdgesReads = 0;
 	harness.handoffEdgesReadFailFrom = 0;
 	harness.rpcFailure = "";
@@ -783,6 +801,42 @@ it("actual screen defers restoration while pending handoffs are unreadable", asy
 		draft: "pendingness retry source",
 		composer: { recoveryIds: [source.clientMutationId] },
 	});
+});
+
+it("actual screen completes a pending handoff after its write failures recover", async () => {
+	const f = await mount();
+	await f.offline();
+	// A sibling identity holds work destined for this screen: the retarget
+	// records the identity change, so a pending handoff edge points here and
+	// the screen's reconciliation must wait for it.
+	const sibling = `sibling-of-${f.ref}`;
+	nativeDrafts().write({ hubId: "hub-1", sessionRef: sibling }, { draft: "incoming work", unconfirmed: null });
+	act(() => {
+		f.runtime.storage.retarget(nativeMutationTargetKey("hub-1", sibling), {
+			ref: f.targetKey,
+			wireRef: f.ref,
+			threadId: f.thread.id,
+			instanceId: "instance",
+		});
+	});
+	// The handoff ledger's writes fail: the claim cannot record, so the
+	// effect's retry pass defers with the edge still pending. Its reads stay
+	// healthy, so the pendingness is known - not unreadable.
+	harness.handoffWriteFailure = true;
+	const tree = await f.recreateOffline();
+	await settle();
+	expect(drafts.hasPendingHandoff({ hubId: "hub-1", sessionRef: f.ref })).toBe(true);
+	// No user-facing failure is surfaced for the user to repair.
+	expect(tree.root.findAllByProps({ accessibilityLabel: "Retry" })).toHaveLength(0);
+	harness.handoffWriteFailure = false;
+	// No Retry press, no remount: the screen retries the pending handoff on
+	// its own timer, and restoring the storage alone completes the transfer.
+	await act(async () => {
+		await new Promise((resolve) => setTimeout(resolve, 1500));
+	});
+	await settle();
+	expect(drafts.hasPendingHandoff({ hubId: "hub-1", sessionRef: f.ref })).toBe(false);
+	expect(f.document.getSnapshot().record.draft).toBe("incoming work");
 });
 
 it("actual screen retries a settle deferred on unknown ownership after awaits", async () => {
