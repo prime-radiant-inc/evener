@@ -2,8 +2,11 @@
 
 # Configuration Knobs
 
-Every environment variable and `hub.toml` key the code reads, with the doc
-that explains it and the code that consumes it. The tables are generated from
+Every registered environment variable, every variable a tool declares as a
+string constant or reads through a literal `os.Getenv`, and every scalar
+`hub.toml` key, with the doc that explains it and the code that consumes it.
+Names built at run time or read through an injected lookup function are not
+found. The tables are generated from
 the `envvars` registry and the decoder in `cmd/evener-hub/config.go`, so
 a knob that nothing reads shows up as "none" in the Consumer column, and
 `internal/knobtable`'s repo test fails on it. Delete such a knob, and list a

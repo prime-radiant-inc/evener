@@ -17,6 +17,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/BurntSushi/toml"
 )
 
 // envRow is one variable in the envvars registry.
@@ -152,6 +154,11 @@ func isTestSupport(dir string) bool {
 	return strings.HasSuffix(base, "test") || strings.HasSuffix(base, "testenv")
 }
 
+var (
+	variableName = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
+	expansion    = regexp.MustCompile(`\$\{?([A-Z][A-Z0-9_]*)\b`)
+)
+
 // quotedOrExpanded matches a variable name written as a quoted string or as a
 // $NAME / ${NAME} expansion, the two ways the registry's data and code name one.
 var quotedOrExpanded = regexp.MustCompile(`(?:"|\$\{?)([A-Z][A-Z0-9_]*)\b`)
@@ -210,23 +217,43 @@ func registryNames(root string) (map[string]bool, error) {
 				return fmt.Errorf("%s: %w", p, err)
 			}
 			addQuoted(data)
-		default:
-			addQuoted(withoutCommentLines(data))
+		case strings.HasSuffix(p, ".toml"):
+			var doc map[string]any
+			if _, err := toml.Decode(string(data), &doc); err != nil {
+				return fmt.Errorf("%s: %w", p, err)
+			}
+			addTomlNames(doc, names)
 		}
 		return nil
 	})
 	return names, err
 }
 
-// withoutCommentLines drops the lines of a TOML file that are only a comment.
-func withoutCommentLines(data []byte) []byte {
-	var kept [][]byte
-	for _, line := range bytes.Split(data, []byte("\n")) {
-		if !bytes.HasPrefix(bytes.TrimSpace(line), []byte("#")) {
-			kept = append(kept, line)
+// addTomlNames adds every variable name a decoded TOML value holds: a string
+// that is a name, or a $NAME / ${NAME} expansion inside one. Decoding drops
+// comments, so only values count.
+func addTomlNames(v any, names map[string]bool) {
+	switch t := v.(type) {
+	case map[string]any:
+		for _, e := range t {
+			addTomlNames(e, names)
+		}
+	case []map[string]any:
+		for _, e := range t {
+			addTomlNames(e, names)
+		}
+	case []any:
+		for _, e := range t {
+			addTomlNames(e, names)
+		}
+	case string:
+		if variableName.MatchString(t) {
+			names[t] = true
+		}
+		for _, m := range expansion.FindAllStringSubmatch(t, -1) {
+			names[m[1]] = true
 		}
 	}
-	return bytes.Join(kept, []byte("\n"))
 }
 
 // fileRefs are the environment references one Go file makes.
