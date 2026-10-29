@@ -519,7 +519,7 @@ func (r *hubRuntime) connectHosts() (func(), error) {
 			r.logf("pruned %d orphaned host-running probe file(s) under %s", pruned, root)
 		}
 	}
-	for _, key := range cfg.removedHostKnobs {
+	for _, key := range cfg.removedKnobs {
 		r.logf("hub.toml sets %s, which is no longer tunable; the hub ignores it and uses its built-in default", key)
 	}
 	// The operation store loads before the web server is built; a loaded

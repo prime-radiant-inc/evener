@@ -59,14 +59,13 @@ type Config struct {
 	Addr        string `toml:"addr"`
 	PublicURL   string `toml:"public_url"`
 	addrPresent bool   `toml:"-"`
-	// removedHostKnobs names the retired host_* retention keys the file still
-	// sets. They are ignored; runMain warns about each one at boot.
-	removedHostKnobs   []string         `toml:"-"`
+	// removedKnobs names the retired keys the file still sets. They are
+	// ignored; runMain warns about each one at boot.
+	removedKnobs       []string         `toml:"-"`
 	HubStateRoot       string           `toml:"hub_state_root"`
 	StateGlob          string           `toml:"state_glob"`
 	RunDir             string           `toml:"run_dir"`
 	PastIndexDB        string           `toml:"past_index_db"`
-	StatusPollInterval time.Duration    `toml:"status_poll_interval"`
 	PastIndexRebuild   time.Duration    `toml:"past_index_rebuild_interval"`
 	SpawnTimeout       time.Duration    `toml:"spawn_timeout"`
 	PastResultsPerPage int              `toml:"past_results_per_page"`
@@ -198,10 +197,12 @@ const (
 	DefaultHostTombstoneRetention = 7 * 24 * time.Hour
 )
 
-// removedHostKnobs are the host_* retention and pruning keys that were once
-// tunable. The hub now reads one internal default policy (defaultHostRecordPolicy)
-// for them, so a hub.toml that still sets one starts normally and warns.
-var removedHostKnobs = []string{
+// removedKnobs are the keys that were once tunable. The host_* retention and
+// pruning keys fold into one internal default policy (defaultHostRecordPolicy);
+// status_poll_interval had no reader. A hub.toml that still sets one starts
+// normally and warns.
+var removedKnobs = []string{
+	"status_poll_interval",
 	"host_tombstone_max_rows",
 	"host_tombstone_max_row_bytes",
 	"host_tombstone_max_count",
@@ -238,7 +239,6 @@ func DefaultConfig() Config {
 		HubStateRoot:              hubStateRoot,
 		StateGlob:                 "",
 		RunDir:                    "",
-		StatusPollInterval:        2 * time.Second,
 		PastIndexRebuild:          60 * time.Second,
 		SpawnTimeout:              30 * time.Second,
 		PastResultsPerPage:        50,
@@ -390,9 +390,9 @@ func decodeConfig(name, data string) (Config, error) {
 	if metadata.Type("host_tombstone_retention") == "Integer" {
 		return cfg, fmt.Errorf("host_tombstone_retention %[1]w such as \"168h\" (got the integer %[2]d, which TOML decodes as %[2]d nanoseconds)", errIntegerDuration, int64(cfg.HostTombstoneRetention))
 	}
-	for _, key := range removedHostKnobs {
+	for _, key := range removedKnobs {
 		if metadata.IsDefined(key) {
-			cfg.removedHostKnobs = append(cfg.removedHostKnobs, key)
+			cfg.removedKnobs = append(cfg.removedKnobs, key)
 		}
 	}
 	applyConfigDefaults(&cfg)
@@ -538,9 +538,6 @@ func validatePublicURL(raw string) error {
 }
 
 func applyConfigDefaults(cfg *Config) {
-	if cfg.StatusPollInterval == 0 {
-		cfg.StatusPollInterval = 2 * time.Second
-	}
 	if cfg.PastIndexRebuild == 0 {
 		cfg.PastIndexRebuild = 60 * time.Second
 	}

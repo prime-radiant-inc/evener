@@ -27,6 +27,9 @@ Keep those references current when changing the behavior they describe.
   to do when no widget fits.
 - **[environment.md](environment.md)** — every environment variable evener
   reads, keyed to the `envvars` package that's their source of truth.
+- **[config-knobs.md](config-knobs.md)** — generated: every environment
+  variable and `hub.toml` key with its default, doc row and consumer, so a
+  knob nothing reads is visible.
 - **[worktrees.md](worktrees.md)** — the `manage_worktree` tool and delegate
   worktree isolation: what a worktree is for here and how it's cleaned up.
 - **[agentic-testing.md](agentic-testing.md)** — the practical guide for
@@ -171,7 +174,7 @@ The tests for both scripts are in `hooks_test.go` (part of `make test`); `EVENER
 | `make tools-gitleaks` | Install the CI-pinned gitleaks version from .tool-versions. |
 | `make hooks` | Install the checked-in git hooks (core.hooksPath=scripts/hooks): pre-commit formats staged TypeScript with each tree's own pinned Biome. |
 | `make refresh-model-catalog` | Replace the embedded models.dev snapshot in llm/registry/data/ with the current upstream and run the converter tests and overlay report. |
-| `make generate` | Run the appwire and maketargetsdoc `go generate` directives: the AppWire protocol reference and frontend TypeScript declarations from appwire/protocol.go, and the per-family make-target tables in docs/developing-evener/. |
+| `make generate` | Run the appwire, maketargetsdoc and knobtable `go generate` directives: the AppWire protocol reference and frontend TypeScript declarations from appwire/protocol.go, the per-family make-target tables in docs/developing-evener/, and the configuration knob table. |
 | `make clean` | Remove the built binaries from the repo root. |
 | `make help` | Print every make target, grouped by family, with its one-line summary. |
 <!-- END GENERATED -->
