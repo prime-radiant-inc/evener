@@ -75,3 +75,22 @@ func TestGroupsKeepAttrsDistinct(t *testing.T) {
 		}
 	}
 }
+
+func TestControlCharactersInKeysAndGroupsCannotForgeRecords(t *testing.T) {
+	var buf bytes.Buffer
+	l := NewWriter("hub", &buf).WithGroup("g\n[hub] forged")
+	l.Info("m", "x\n[hub] forged", "v")
+	if n := strings.Count(buf.String(), "\n"); n != 1 {
+		t.Fatalf("record spans %d lines: %q", n, buf.String())
+	}
+}
+
+func TestUnnamedAndEmptyBoundAttrsInsideGroup(t *testing.T) {
+	var buf bytes.Buffer
+	l := NewWriter("hub", &buf).WithGroup("child").With(slog.Group("", "id", "kid"), slog.Attr{})
+	l.Info("m")
+	got := strings.Fields(buf.String())[2:]
+	if len(got) != 1 || got[0] != "child.id=kid" {
+		t.Fatalf("attrs = %v", got)
+	}
+}

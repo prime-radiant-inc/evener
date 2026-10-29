@@ -38,7 +38,14 @@ type handler struct {
 	prefix string
 	out    *lockedWriter
 	group  string // qualified-key prefix from WithGroup, "" or ending in "."
-	attrs  []slog.Attr
+	bound  []boundAttr
+}
+
+// boundAttr is an attribute fixed by With, remembered with the group prefix
+// that was open when it was bound.
+type boundAttr struct {
+	prefix string
+	attr   slog.Attr
 }
 
 func (h *handler) Enabled(context.Context, slog.Level) bool { return true }
@@ -47,8 +54,8 @@ func (h *handler) Handle(_ context.Context, r slog.Record) error {
 	var b strings.Builder
 	b.WriteString(h.prefix)
 	b.WriteString(printable(r.Message))
-	for _, a := range h.attrs {
-		writeAttr(&b, "", a)
+	for _, ba := range h.bound {
+		writeAttr(&b, ba.prefix, ba.attr)
 	}
 	r.Attrs(func(a slog.Attr) bool {
 		writeAttr(&b, h.group, a)
@@ -63,9 +70,9 @@ func (h *handler) Handle(_ context.Context, r slog.Record) error {
 
 func (h *handler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	clone := *h
-	clone.attrs = append([]slog.Attr(nil), h.attrs...)
+	clone.bound = append([]boundAttr(nil), h.bound...)
 	for _, a := range attrs {
-		clone.attrs = append(clone.attrs, slog.Attr{Key: h.group + a.Key, Value: a.Value})
+		clone.bound = append(clone.bound, boundAttr{h.group, a})
 	}
 	return &clone
 }
@@ -82,6 +89,9 @@ func (h *handler) WithGroup(name string) slog.Handler {
 // writeAttr appends " key=value", qualifying the key with prefix and
 // flattening group values into dotted keys.
 func writeAttr(b *strings.Builder, prefix string, a slog.Attr) {
+	if a.Equal(slog.Attr{}) {
+		return
+	}
 	v := a.Value.Resolve()
 	if v.Kind() == slog.KindGroup {
 		if a.Key != "" {
@@ -92,10 +102,7 @@ func writeAttr(b *strings.Builder, prefix string, a slog.Attr) {
 		}
 		return
 	}
-	if a.Equal(slog.Attr{}) {
-		return
-	}
-	fmt.Fprintf(b, " %s%s=%s", prefix, a.Key, printable(fmt.Sprint(v.Any())))
+	fmt.Fprintf(b, " %s=%s", printable(prefix+a.Key), printable(fmt.Sprint(v.Any())))
 }
 
 // printable quotes s when it holds a control character, so no message or value
