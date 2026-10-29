@@ -1382,16 +1382,19 @@ export class TranscriptRepository {
    * restoration are indistinguishable from a genuinely empty transcript. So
    * only an accepted source read that named an empty window establishes it -
    * the same provenance openLocal's provenEmptySourceWindow requires
-   * (#coverageReadId set, and a read whose coverage named no rows). The
-   * window check already treats an empty expectation as missing nothing;
-   * this is its range-side complement.
+   * (#coverageReadId set, and a read whose coverage named no rows). And the
+   * expectation it judges is the RECORDED history: an accepted read can
+   * carry history.turns = [] while live overlays contribute display turns,
+   * and those overlay turns are not recorded history to restore - the same
+   * history-first `??` ordering the resident-range and window checks use.
+   * The window check already treats an empty expectation as missing
+   * nothing; this is its range-side complement.
    */
   expectsEmptyForegroundWindow(): boolean {
     if (this.#disposed || this.#invalidated) return false;
     const model = this.#model;
     if (!model) return false;
-    const historyTurns = model.history?.turns;
-    const expected = historyTurns !== undefined && historyTurns.length > 0 ? historyTurns : model.turns;
+    const expected = model.history?.turns ?? model.turns;
     return (
       expected.every((turn) => turn.items.length === 0) &&
       this.#coverageReadId !== undefined &&
