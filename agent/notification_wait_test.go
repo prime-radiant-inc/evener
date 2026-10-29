@@ -17,7 +17,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
@@ -32,6 +31,77 @@ import (
 
 func waitResponseFor(id, target string) llm.Response {
 	return toolCallResponse(communicateCallArgs(id, map[string]any{"message": "wait-payload-71a9", "end_turn": true, "end_reason": "waiting_on_work", "waiting_on": target}))
+}
+
+// Hold a real provider boundary until the test has captured its activation.
+// Callers defer release before launching work, including on assertion failures.
+type waitBoundary struct {
+	entered chan struct{}
+	gate    chan struct{}
+	release func()
+}
+
+func newWaitBoundary() *waitBoundary {
+	b := &waitBoundary{entered: make(chan struct{}, 1), gate: make(chan struct{})}
+	b.release = sync.OnceFunc(func() { close(b.gate) })
+	return b
+}
+
+func (b *waitBoundary) hold(t *testing.T) {
+	b.entered <- struct{}{}
+	awaitSignal(t, b.gate, "wait activation capture")
+}
+
+func (b *waitBoundary) take(t *testing.T, returns *activationReturns, id string) *activationReturn {
+	t.Helper()
+	waitForTestSignal(t, b.entered, "held wait provider")
+	return returns.take(t, id)
+}
+
+func assertWaitResume(t *testing.T, previous, next *activationReturn) {
+	t.Helper()
+	if previous == next || previous.sessionID != next.sessionID || previous.delegateID != next.delegateID || previous.lease != next.lease || previous.generationDone != next.generationDone {
+		t.Fatalf("wait resume changed generation or reused activation: %+v -> %+v", previous, next)
+	}
+}
+
+func waitYielded(t *testing.T, parent *Session, receipt *activationReturn, call, target string) {
+	t.Helper()
+	incidentYielded(t, parent, receipt.sessionID, receipt)
+	sub, c := parent.getSub(receipt.sessionID), parent.delegateController
+	cp, err := readWaitCheckpoint(sub.sess.TranscriptPath(), receipt.sessionID)
+	if err != nil || cp == nil || cp.ExecutionTurnID == "" || cp.SessionID != receipt.sessionID || cp.DelegateID != receipt.delegateID || cp.Generation != receipt.lease.generation || cp.CommunicateCallID != call || cp.WaitingOn != target || cp.ResumedByTurnID != "" {
+		t.Fatalf("wait checkpoint=%+v activation=%+v err=%v", cp, receipt, err)
+	}
+	sub.mu.Lock()
+	released, sameDone := !sub.running && !sub.driving && !sub.finalizing, sub.done == receipt.generationDone
+	sub.mu.Unlock()
+	c.mu.Lock()
+	live := c.live[receipt.delegateID]
+	yielded := live != nil && live.binding != nil && live.binding.yielded && live.binding.lease == receipt.lease
+	c.mu.Unlock()
+	if !released || !sameDone || !yielded {
+		t.Fatalf("unsafe wait yield: released=%v sameDone=%v yielded=%v", released, sameDone, yielded)
+	}
+}
+
+func waitShellRun(t *testing.T, jm *jobManager, id string) *runningJob {
+	t.Helper()
+	jm.mu.Lock()
+	run := jm.running[id]
+	jm.mu.Unlock()
+	if run == nil {
+		t.Fatalf("held shell %s has no running receipt", id)
+	}
+	return run
+}
+
+func waitShellFinished(t *testing.T, run *runningJob) {
+	t.Helper()
+	waitForTestSignal(t, run.done, "real shell durable completion")
+	if runningJobCompletion(run.completion.Load()) != runningJobCompletionDurable {
+		t.Fatal("shell completion was not durable")
+	}
 }
 
 func waitProducerFIFO(t *testing.T) (string, func()) {
@@ -235,6 +305,10 @@ func TestNotificationResumesYieldedWait(t *testing.T) {
 	for _, producer := range []string{"child", "shell"} {
 		t.Run(producer, func(t *testing.T) {
 			adapter := newMessagingAdapter("WAIT-OWNER-71", "WAIT-WORKER-71")
+			returns := newActivationReturns()
+			initialBoundary, terminalBoundary := newWaitBoundary(), newWaitBoundary()
+			defer initialBoundary.release()
+			defer terminalBoundary.release()
 			gate := make(chan struct{})
 			release := sync.OnceFunc(func() { close(gate) })
 			defer release()
@@ -253,10 +327,13 @@ func TestNotificationResumesYieldedWait(t *testing.T) {
 					args, _ := json.Marshal(map[string]any{"command": fmt.Sprintf("read value < %q", fifo), "mode": "background"})
 					return toolCallResponse(llm.ToolCallData{ID: "shell-71", Name: "shell", Arguments: args, Type: "function"})
 				})
+				bridgeDone := make(chan struct{})
 				go func() {
+					defer close(bridgeDone)
 					<-gate
 					releaseShell()
 				}()
+				defer func() { release(); waitForTestSignal(t, bridgeDone, "shell release bridge") }()
 			}
 			adapter.script("WAIT-OWNER-71", func(req llm.Request) llm.Response {
 				if producer == "child" {
@@ -267,12 +344,15 @@ func TestNotificationResumesYieldedWait(t *testing.T) {
 				if target == "" {
 					t.Error("missing real producer identity")
 				}
+				initialBoundary.hold(t)
 				return waitResponseFor("wait-71", target)
 			}, func(req llm.Request) llm.Response {
 				resumed <- req
+				terminalBoundary.hold(t)
 				return finalResponse("resumed-result-71")
 			})
-			root := newMessagingRoot(t, adapter, nil)
+			root := newMessagingRoot(t, adapter, returns.configure)
+			t.Cleanup(func() { returns.close(t, root) })
 			claimFenced := make(chan bool, 1)
 			root.SetDescendantRecordedFunc(func(_ string, rec transcript.Record) {
 				if cp := rec.Turn.WaitCheckpoint; cp != nil && cp.ResumedByTurnID != "" {
@@ -283,7 +363,7 @@ func TestNotificationResumesYieldedWait(t *testing.T) {
 					claimFenced <- !unlocked
 				}
 			})
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			if _, err := root.ProcessInput(ctx, "start-71", nil); err != nil {
 				t.Fatal(err)
@@ -303,7 +383,9 @@ func TestNotificationResumesYieldedWait(t *testing.T) {
 			})
 			// No producer can finish until release. The old polling loop never releases
 			// sub.running or its model capacity here.
-			waitForCondition(t, 3*time.Second, "yielded activation to release execution", func() bool { sub.mu.Lock(); defer sub.mu.Unlock(); return !sub.running })
+			initial := initialBoundary.take(t, returns, owner.ID())
+			initialBoundary.release()
+			waitYielded(t, root, initial, "wait-71", target)
 			checkpoint, err := readWaitCheckpoint(transcriptPath(root.stateDir, owner.ID()), owner.ID())
 			if err != nil || checkpoint == nil || checkpoint.ResumedByTurnID != "" || checkpoint.CommunicateCallID != "wait-71" {
 				t.Fatalf("yield checkpoint=%+v err=%v", checkpoint, err)
@@ -339,17 +421,15 @@ func TestNotificationResumesYieldedWait(t *testing.T) {
 				t.Fatalf("active model turns=%d want=%d", active, want)
 			}
 			release()
-			select {
-			case <-resumed:
-			case <-ctx.Done():
-				t.Fatal("producer did not resume yielded generation")
-			}
+			waitForTestSignal(t, terminalBoundary.entered, "producer resumed yielded generation")
+			<-resumed
+			terminal := returns.take(t, owner.ID())
+			assertWaitResume(t, initial, terminal)
 			if !<-claimFenced {
 				t.Fatal("resume checkpoint append escaped the original lease fence")
 			}
-			waitForCondition(t, 3*time.Second, "resumed generation settlement", func() bool {
-				return !delegateAggregateSnapshot(t, root.delegateController, owner.owningDelegateID).CurrentRunOpen
-			})
+			terminalBoundary.release()
+			incidentSettled(t, root, owner.ID(), terminal)
 			final := delegateAggregateSnapshot(t, root.delegateController, owner.owningDelegateID)
 			if final.Generation != 1 {
 				t.Fatalf("resumption created generation %d", final.Generation)
@@ -489,8 +569,12 @@ func TestParentSteeringResumesYieldedWait(t *testing.T) {
 	for _, cold := range []bool{false, true} {
 		t.Run(fmt.Sprintf("cold_%v", cold), func(t *testing.T) {
 			adapter := newMessagingAdapter("STEER-WAIT-93")
+			returns := newActivationReturns()
+			initialBoundary := newWaitBoundary()
+			defer initialBoundary.release()
 			fifo, releaseShell := waitProducerFIFO(t)
 			defer releaseShell()
+			resumeEntered := make(chan struct{})
 			resumed, modelGate := make(chan llm.Request, 1), make(chan struct{})
 			releaseModel := sync.OnceFunc(func() { close(modelGate) })
 			defer releaseModel()
@@ -499,24 +583,35 @@ func TestParentSteeringResumesYieldedWait(t *testing.T) {
 				args, _ := json.Marshal(map[string]any{"command": fmt.Sprintf("read value < %q", fifo), "mode": "background"})
 				return toolCallResponse(llm.ToolCallData{ID: "steer-shell-93", Name: "shell", Type: "function", Arguments: args})
 			}, func(req llm.Request) llm.Response {
+				initialBoundary.hold(t)
 				return waitResponseFor("steer-wait-93", regexp.MustCompile(`job_[A-Za-z0-9_]{10,}`).FindString(lastToolResultText(req.Messages)))
 			}, func(req llm.Request) llm.Response {
 				resumed <- req
+				close(resumeEntered)
 				<-modelGate
 				return finalResponse("steering-answered-93")
 			})
-			root := newMessagingRoot(t, adapter, nil)
+			root := newMessagingRoot(t, adapter, returns.configure)
+			t.Cleanup(func() { returns.close(t, root) })
 			if _, err := root.ProcessInput(context.Background(), "start-93", nil); err != nil {
 				t.Fatal(err)
 			}
 			owner := root.subagents.sessions()[0]
-			sub := root.getSub(owner.ID())
 			adapter.waitForRequests(t, "STEER-WAIT-93", 2)
-			waitForCondition(t, 3*time.Second, "steering fixture yielded", func() bool { sub.mu.Lock(); defer sub.mu.Unlock(); return !sub.running })
+			initial := initialBoundary.take(t, returns, owner.ID())
+			initialBoundary.release()
+			incidentYielded(t, root, owner.ID(), initial)
+			cp, err := readWaitCheckpoint(owner.TranscriptPath(), owner.ID())
+			if err != nil || cp == nil {
+				t.Fatalf("steering checkpoint=%+v err=%v", cp, err)
+			}
+			waitYielded(t, root, initial, "steer-wait-93", cp.WaitingOn)
 			assertNotificationPending(t, owner, []string{})
 			receiver := root
+			receiverReturns := returns
 			var deny atomic.Bool
 			if cold {
+				receiverReturns = newActivationReturns()
 				copyDir := copyWaitingState(t, root.stateDir)
 				meta, err := schema.LoadSessionMeta(copyDir, root.ID())
 				if err != nil {
@@ -531,12 +626,12 @@ func TestParentSteeringResumesYieldedWait(t *testing.T) {
 						}
 						return nil
 					},
-					testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, disableDelegateIdleRelease: true},
+					testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, disableDelegateIdleRelease: true, subagentActivationReturn: receiverReturns.capture},
 				})
 				if err != nil {
 					t.Fatal(err)
 				}
-				t.Cleanup(receiver.Close)
+				t.Cleanup(func() { receiverReturns.close(t, receiver) })
 				if receiver.subagentForChild(owner.ID()) != nil {
 					t.Fatal("input fixture is not cold")
 				}
@@ -563,8 +658,17 @@ func TestParentSteeringResumesYieldedWait(t *testing.T) {
 			if _, err := receiver.ProcessInput(context.Background(), "steer-93", nil); err != nil {
 				t.Fatal(err)
 			}
-			select {
-			case req := <-resumed:
+			waitForTestSignal(t, resumeEntered, "accepted parent steering resumed before FIFO release")
+			req := <-resumed
+			terminal := receiverReturns.take(t, owner.ID())
+			if cold {
+				if terminal.sessionID != initial.sessionID || terminal.delegateID != initial.delegateID || terminal.lease != initial.lease {
+					t.Fatalf("cold steering lease changed: %+v -> %+v", initial, terminal)
+				}
+			} else {
+				assertWaitResume(t, initial, terminal)
+			}
+			{
 				seen := 0
 				for _, msg := range req.Messages {
 					seen += strings.Count(msg.Text(), "actual-parent-steering-93")
@@ -572,8 +676,6 @@ func TestParentSteeringResumesYieldedWait(t *testing.T) {
 				if seen != 1 {
 					t.Fatalf("actual steering in resumed request=%d, want1", seen)
 				}
-			case <-time.After(3 * time.Second):
-				t.Fatal("accepted parent steering did not resume before FIFO release")
 			}
 			c := receiver.delegateController
 			run := delegateAggregateSnapshot(t, c, owner.owningDelegateID)
@@ -609,7 +711,7 @@ func TestParentSteeringResumesYieldedWait(t *testing.T) {
 			}
 			releaseShell()
 			releaseModel()
-			waitForCondition(t, 3*time.Second, "steered generation settled", func() bool { return !delegateAggregateSnapshot(t, c, owner.owningDelegateID).CurrentRunOpen })
+			incidentSettled(t, receiver, owner.ID(), terminal)
 		})
 	}
 }
@@ -620,6 +722,7 @@ func TestAlreadyObservedTargetCannotStrandWait(t *testing.T) {
 	for _, producer := range []string{"child", "shell"} {
 		t.Run(producer, func(t *testing.T) {
 			adapter := newMessagingAdapter("STALE-WORKER-19")
+			returns := newActivationReturns()
 			var target string
 			gate := make(chan struct{})
 			release := sync.OnceFunc(func() { close(gate) })
@@ -632,7 +735,9 @@ func TestAlreadyObservedTargetCannotStrandWait(t *testing.T) {
 				adapter.script("STALE-WORKER-19", func(llm.Request) llm.Response { <-gate; return finalResponse("terminal-payload-19") })
 			} else {
 				fifo, releaseShell := waitProducerFIFO(t)
-				go func() { <-gate; releaseShell() }()
+				bridgeDone := make(chan struct{})
+				go func() { defer close(bridgeDone); <-gate; releaseShell() }()
+				defer func() { release(); waitForTestSignal(t, bridgeDone, "stale-target shell release bridge") }()
 				adapter.script("root", func(llm.Request) llm.Response {
 					args, _ := json.Marshal(map[string]any{"command": fmt.Sprintf("read value < %q", fifo), "mode": "background"})
 					return toolCallResponse(llm.ToolCallData{ID: "shell-19", Name: "shell", Arguments: args, Type: "function"})
@@ -641,12 +746,27 @@ func TestAlreadyObservedTargetCannotStrandWait(t *testing.T) {
 					return finalResponse("initial-19")
 				})
 			}
-			root := newMessagingRoot(t, adapter, nil)
+			root := newMessagingRoot(t, adapter, returns.configure)
+			t.Cleanup(func() { returns.close(t, root) })
 			if _, err := root.ProcessInput(context.Background(), "start-19", nil); err != nil {
 				t.Fatal(err)
 			}
+			var childReceipt *activationReturn
+			var shellReceipt *runningJob
+			if producer == "child" {
+				childReceipt = returns.take(t, root.subagents.sessions()[0].ID())
+			} else {
+				shellReceipt = waitShellRun(t, root.jobManager, target)
+			}
 			release()
-			waitForCondition(t, 3*time.Second, "real producer completion custody", func() bool { ids, _ := root.pendingNotificationIDs(); return len(ids) > 0 })
+			if childReceipt != nil {
+				incidentSettled(t, root, childReceipt.sessionID, childReceipt)
+			} else {
+				waitShellFinished(t, shellReceipt)
+			}
+			if ids, err := root.pendingNotificationIDs(); err != nil || len(ids) != 1 {
+				t.Fatalf("real producer custody=%v err=%v", ids, err)
+			}
 			adapter.script("root", func(llm.Request) llm.Response { return finalResponse("observed-19") })
 			if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 				t.Fatal(err)
@@ -719,6 +839,9 @@ func TestAlreadyObservedTargetCannotStrandWait(t *testing.T) {
 
 func testWaitTargetCompletesBeforeCheckpoint(t *testing.T) {
 	adapter := newMessagingAdapter("RACE-WAIT-26", "RACE-CHILD-26")
+	returns := newActivationReturns()
+	terminalBoundary := newWaitBoundary()
+	defer terminalBoundary.release()
 	gate, recorded, checkpointGate := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	release := sync.OnceFunc(func() { close(gate) })
 	unblock := sync.OnceFunc(func() { close(checkpointGate) })
@@ -727,9 +850,10 @@ func testWaitTargetCompletesBeforeCheckpoint(t *testing.T) {
 	adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("race-owner", "RACE-WAIT-26") }, func(llm.Request) llm.Response { return finalResponse("root-26") })
 	adapter.script("RACE-WAIT-26", func(llm.Request) llm.Response { return delegateToolResponse("race-child", "RACE-CHILD-26") }, func(req llm.Request) llm.Response {
 		return waitResponseFor("race-wait-26", deferredHeadDelegateID.FindString(lastToolResultText(req.Messages)))
-	}, func(llm.Request) llm.Response { return finalResponse("race-result-26") })
+	}, func(llm.Request) llm.Response { terminalBoundary.hold(t); return finalResponse("race-result-26") })
 	adapter.script("RACE-CHILD-26", func(llm.Request) llm.Response { <-gate; return finalResponse("race-child-result-26") })
-	root := newMessagingRoot(t, adapter, nil)
+	root := newMessagingRoot(t, adapter, returns.configure)
+	t.Cleanup(func() { returns.close(t, root) })
 	root.SetDescendantRecordedFunc(func(_ string, rec transcript.Record) {
 		if rec.Turn.Communicate != nil && rec.Turn.Communicate.CallID == "race-wait-26" {
 			close(recorded)
@@ -742,18 +866,34 @@ func testWaitTargetCompletesBeforeCheckpoint(t *testing.T) {
 	awaitSignal(t, recorded, "accepted wait publication before checkpoint")
 	owner := root.subagents.sessions()[0]
 	child := owner.subagents.sessions()[0]
-	release()
-	waitForCondition(t, 3*time.Second, "target completion before checkpoint", func() bool {
-		return !delegateAggregateSnapshot(t, root.delegateController, child.owningDelegateID).CurrentRunOpen
+	initial := returns.take(t, owner.ID())
+	childReceipt := returns.take(t, child.ID())
+	targetSettled := make(chan struct{})
+	settledChild := make(chan *subagent, 1)
+	updateSessionTestConfig(child, func(cfg *testConfig) {
+		cfg.subagentBeforeGenerationAnnounced = func(a *subagent) { settledChild <- a; close(targetSettled) }
 	})
+	release()
+	// Owner publication holds its append lock, so result delivery cannot finish
+	// until unblock. This hook follows durable FinishGeneration, the original oracle.
+	waitForTestSignal(t, targetSettled, "target durable settlement before checkpoint")
+	if got := <-settledChild; got != owner.getSub(child.ID()) || got.sess.ID() != childReceipt.sessionID || got.sess.owningDelegateID != childReceipt.delegateID {
+		t.Fatal("settlement signal belongs to another child")
+	}
+	if run := delegateAggregateSnapshot(t, root.delegateController, child.owningDelegateID); run.CurrentRunOpen || run.Generation != childReceipt.lease.generation {
+		t.Fatalf("target settlement before checkpoint=%+v", run)
+	}
 	cp, err := readWaitCheckpoint(transcriptPath(root.stateDir, owner.ID()), owner.ID())
 	if err != nil || cp != nil {
 		t.Fatalf("checkpoint preceded target completion: %+v %v", cp, err)
 	}
 	unblock()
-	waitForCondition(t, 3*time.Second, "race accepted wait resumed", func() bool {
-		return !delegateAggregateSnapshot(t, root.delegateController, owner.owningDelegateID).CurrentRunOpen
-	})
+	incidentSettled(t, owner, child.ID(), childReceipt)
+	waitForTestSignal(t, terminalBoundary.entered, "race accepted wait third response")
+	terminal := returns.take(t, owner.ID())
+	assertWaitResume(t, initial, terminal)
+	terminalBoundary.release()
+	incidentSettled(t, root, owner.ID(), terminal)
 	if len(adapter.requestsFor("RACE-WAIT-26")) != 3 {
 		t.Fatal("completion lost between validation and checkpoint")
 	}
@@ -811,6 +951,23 @@ func restoreWaitingCopy(t *testing.T, root *Session, stateDir string) *Session {
 		t.Fatal(err)
 	}
 	t.Cleanup(restored.Close)
+	return restored
+}
+
+func restoreWaitingJoinCopy(t *testing.T, root *Session, stateDir string, returns *activationReturns) *Session {
+	t.Helper()
+	meta, err := schema.LoadSessionMeta(stateDir, root.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := RestoreSessionFromMetaWithConfig(root.client, root.profile, execenv.NewLocalExecutionEnvironment(meta.EnvInfo.WorkingDir), meta, RestoreSessionConfig{
+		StateDir: stateDir, ForceRealIO: true,
+		testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, disableDelegateIdleRelease: true, subagentActivationReturn: returns.capture},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { returns.close(t, restored) })
 	return restored
 }
 
@@ -890,6 +1047,9 @@ func TestWaitCheckpointBeforeCompletionMarkerReopen(t *testing.T) {
 
 func TestMissingWaitProducerNotifiesOnce(t *testing.T) {
 	adapter := newMessagingAdapter("COLD-WAIT-37")
+	returns := newActivationReturns()
+	initialBoundary := newWaitBoundary()
+	defer initialBoundary.release()
 	fifo, releaseShell := waitProducerFIFO(t)
 	defer releaseShell()
 	adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("cold-owner", "COLD-WAIT-37") }, func(llm.Request) llm.Response { return finalResponse("root-37") })
@@ -899,19 +1059,23 @@ func TestMissingWaitProducerNotifiesOnce(t *testing.T) {
 		args, _ := json.Marshal(map[string]any{"command": fmt.Sprintf("read value < %q", fifo), "mode": "background"})
 		return toolCallResponse(llm.ToolCallData{ID: "shell-37", Name: "shell", Type: "function", Arguments: args})
 	}, func(req llm.Request) llm.Response {
+		initialBoundary.hold(t)
 		return waitResponseFor("cold-wait-37", regexp.MustCompile(`job_[A-Za-z0-9_]{10,}`).FindString(lastToolResultText(req.Messages)))
 	})
-	root := newMessagingRoot(t, adapter, nil)
+	root := newMessagingRoot(t, adapter, returns.configure)
+	t.Cleanup(func() { returns.close(t, root) })
 	if _, err := root.ProcessInput(context.Background(), "start-37", nil); err != nil {
 		t.Fatal(err)
 	}
 	owner := root.subagents.sessions()[0]
-	sub := root.getSub(owner.ID())
-	waitForCondition(t, 3*time.Second, "cold fixture yield", func() bool { sub.mu.Lock(); defer sub.mu.Unlock(); return !sub.running })
+	initial := initialBoundary.take(t, returns, owner.ID())
+	initialBoundary.release()
+	incidentYielded(t, root, owner.ID(), initial)
 	cp, err := readWaitCheckpoint(transcriptPath(root.stateDir, owner.ID()), owner.ID())
 	if err != nil || cp == nil || cp.WaitingOn == "" {
 		t.Fatalf("missing original wait identity: %+v %v", cp, err)
 	}
+	waitYielded(t, root, initial, "cold-wait-37", cp.WaitingOn)
 	interruptionID := "wait-interrupted:" + owner.ID() + ":" + cp.ExecutionTurnID + ":" + cp.CommunicateCallID
 	copyDir := copyWaitingState(t, root.stateDir)
 	jobPath := filepath.Join(jobsDir(copyDir, owner.ID()), "jobs.jsonl")
@@ -921,14 +1085,26 @@ func TestMissingWaitProducerNotifiesOnce(t *testing.T) {
 	if err := os.Remove(filepath.Join(jobsDir(copyDir, root.ID()), "jobs.jsonl")); err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)
 	}
+	responseEntered := make(chan struct{})
 	entered, gate := make(chan llm.Request, 1), make(chan struct{})
 	release := sync.OnceFunc(func() { close(gate) })
 	defer release()
-	adapter.script("COLD-WAIT-37", func(req llm.Request) llm.Response { entered <- req; <-gate; return finalResponse("cold-result-37") })
+	adapter.script("COLD-WAIT-37", func(req llm.Request) llm.Response {
+		entered <- req
+		close(responseEntered)
+		<-gate
+		return finalResponse("cold-result-37")
+	})
 	root.Close()
-	restored := restoreWaitingCopy(t, root, copyDir)
-	select {
-	case req := <-entered:
+	restoredReturns := newActivationReturns()
+	restored := restoreWaitingJoinCopy(t, root, copyDir, restoredReturns)
+	waitForTestSignal(t, responseEntered, "cold wait resumed")
+	req := <-entered
+	terminal := restoredReturns.take(t, owner.ID())
+	if terminal.sessionID != initial.sessionID || terminal.delegateID != initial.delegateID || terminal.lease != initial.lease {
+		t.Fatalf("cold wait lease changed: %+v -> %+v", initial, terminal)
+	}
+	{
 		if req.SessionID != owner.ID() {
 			t.Fatal("cold interruption used another receiver")
 		}
@@ -938,8 +1114,6 @@ func TestMissingWaitProducerNotifiesOnce(t *testing.T) {
 		if !slices.Equal(ids, []string{interruptionID}) {
 			t.Fatalf("cold interruption payloads=%v", ids)
 		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("cold wait did not resume")
 	}
 
 	before := delegateAggregateSnapshot(t, restored.delegateController, owner.owningDelegateID)
@@ -947,9 +1121,7 @@ func TestMissingWaitProducerNotifiesOnce(t *testing.T) {
 		t.Fatalf("cold resumed generation=%+v", before)
 	}
 	release()
-	waitForCondition(t, 3*time.Second, "cold resumed settlement", func() bool {
-		return !delegateAggregateSnapshot(t, restored.delegateController, owner.owningDelegateID).CurrentRunOpen
-	})
+	incidentSettled(t, restored, owner.ID(), terminal)
 	if requests := len(adapter.requestsFor("COLD-WAIT-37")); requests != 4 {
 		t.Fatalf("model requests=%d want exactly4", requests)
 	}
@@ -1030,10 +1202,12 @@ func TestNotificationBatchCapacityRelease(t *testing.T) {
 		t.Fatal(err)
 	}
 	a.waitForRequests(t, "REAL-CAP-BUSY-11", 1)
+	shell := waitShellRun(t, owner.jobManager, jobID)
 	releaseShell()
-	waitForCondition(t, 3*time.Second, "real shell custody while capacity full", func() bool {
-		return len(producerSourceEvents(t, owner.jobManager, jobstore.EventJobNotificationDelivered)) == 1
-	})
+	waitShellFinished(t, shell)
+	if delivered := producerSourceEvents(t, owner.jobManager, jobstore.EventJobNotificationDelivered); len(delivered) != 1 {
+		t.Fatalf("real shell custody while capacity full=%+v", delivered)
+	}
 	finished := producerSourceEvents(t, owner.jobManager, jobstore.EventJobFinished)
 	if len(finished) != 1 {
 		t.Fatalf("terminal shell facts=%+v", finished)
@@ -1060,6 +1234,10 @@ func TestNotificationBatchCapacityRelease(t *testing.T) {
 
 func TestYieldedWaitCapacityReleaseAndStop(t *testing.T) {
 	adapter := newMessagingAdapter("CAP-WAIT-52", "CAP-BUSY-52")
+	returns := newActivationReturns()
+	initialBoundary, againBoundary := newWaitBoundary(), newWaitBoundary()
+	defer initialBoundary.release()
+	defer againBoundary.release()
 	fifo, releaseShell := waitProducerFIFO(t)
 	defer releaseShell()
 	busyGate := make(chan struct{})
@@ -1073,22 +1251,27 @@ func TestYieldedWaitCapacityReleaseAndStop(t *testing.T) {
 		return toolCallResponse(llm.ToolCallData{ID: "shell-52", Name: "shell", Type: "function", Arguments: args})
 	}, func(req llm.Request) llm.Response {
 		target = regexp.MustCompile(`job_[A-Za-z0-9_]{10,}`).FindString(lastToolResultText(req.Messages))
+		initialBoundary.hold(t)
 		return waitResponseFor("cap-wait-52", target)
 	}, func(llm.Request) llm.Response {
 		resumed <- struct{}{}
+		againBoundary.hold(t)
 		return waitResponseFor("cap-wait-again-52", target)
 	})
 	adapter.script("CAP-BUSY-52", func(llm.Request) llm.Response { <-busyGate; return finalResponse("busy-result-52") })
 	root := newMessagingRoot(t, adapter, func(cfg *SessionConfig) {
+		returns.configure(cfg)
 		cfg.MaxConcurrentDelegateTurns = 1
 		cfg.clock = agenttest.NewFakeClock() // Never advance, retries cannot mask a missed release wake.
 	})
+	t.Cleanup(func() { returns.close(t, root) })
 	if _, err := root.ProcessInput(context.Background(), "start-52", nil); err != nil {
 		t.Fatal(err)
 	}
 	owner := root.subagents.sessions()[0]
-	sub := root.getSub(owner.ID())
-	waitForCondition(t, 3*time.Second, "capacity fixture yield", func() bool { sub.mu.Lock(); defer sub.mu.Unlock(); return !sub.running })
+	initial := initialBoundary.take(t, returns, owner.ID())
+	initialBoundary.release()
+	waitYielded(t, root, initial, "cap-wait-52", target)
 	adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("cap-busy", "CAP-BUSY-52") }, func(llm.Request) llm.Response { return finalResponse("root-busy-52") })
 	if _, err := root.ProcessInput(context.Background(), "busy-52", nil); err != nil {
 		t.Fatal(err)
@@ -1111,7 +1294,10 @@ func TestYieldedWaitCapacityReleaseAndStop(t *testing.T) {
 	if admissionOrder == 0 {
 		t.Fatal("same-generation admission did not advance existing fairness order")
 	}
-	waitForCondition(t, 3*time.Second, "second yield", func() bool { sub.mu.Lock(); defer sub.mu.Unlock(); return !sub.running })
+	again := againBoundary.take(t, returns, owner.ID())
+	assertWaitResume(t, initial, again)
+	againBoundary.release()
+	waitYielded(t, root, again, "cap-wait-again-52", target)
 	root.delegateController.mu.Lock()
 	active = root.delegateController.turnsInUse
 	root.delegateController.mu.Unlock()
@@ -1126,11 +1312,13 @@ func TestYieldedWaitCapacityReleaseAndStop(t *testing.T) {
 	if err := root.executeDelegateMutationPlans(mutations); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case <-result.done:
-	case <-time.After(3 * time.Second):
-		t.Fatal("Stop did not settle yielded generation")
+	if result.id != owner.owningDelegateID || result.requestSeq == 0 || result.outcome != "cancelled_by_request" || result.done == nil {
+		t.Fatalf("Stop admission=%+v", result)
 	}
+	waitForTestSignal(t, result.done, "Stop settled yielded generation")
+	stopped := returns.take(t, owner.ID())
+	assertWaitResume(t, again, stopped)
+	incidentSettled(t, root, owner.ID(), stopped)
 	root.delegateController.mu.Lock()
 	active = root.delegateController.turnsInUse
 	root.delegateController.mu.Unlock()
@@ -1141,27 +1329,41 @@ func TestYieldedWaitCapacityReleaseAndStop(t *testing.T) {
 
 func TestAttentionWaitPreservesSiblingDriveCapacity(t *testing.T) {
 	adapter := newMessagingAdapter("DRIVE-WAIT-72", "DRIVE-BUSY-72")
+	returns := newActivationReturns()
+	ownerInitialBoundary, busyInitialBoundary, attentionBoundary := newWaitBoundary(), newWaitBoundary(), newWaitBoundary()
+	defer ownerInitialBoundary.release()
+	defer busyInitialBoundary.release()
+	defer attentionBoundary.release()
+	shellResultBoundary := newWaitBoundary()
+	defer shellResultBoundary.release()
+	shellResult := make(chan llm.Request, 1)
 	fifo, releaseShell := waitProducerFIFO(t)
 	defer releaseShell()
 	busyGate := make(chan struct{})
 	releaseBusy := sync.OnceFunc(func() { close(busyGate) })
 	defer releaseBusy()
 	adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("drive-owner", "DRIVE-WAIT-72") }, func(llm.Request) llm.Response { return finalResponse("root-72") })
-	adapter.script("DRIVE-WAIT-72", func(llm.Request) llm.Response { return finalResponse("initial-owner-72") }, func(llm.Request) llm.Response {
+	adapter.script("DRIVE-WAIT-72", func(llm.Request) llm.Response { ownerInitialBoundary.hold(t); return finalResponse("initial-owner-72") }, func(llm.Request) llm.Response {
 		args, _ := json.Marshal(map[string]any{"command": fmt.Sprintf("read value < %q", fifo), "mode": "background"})
 		return toolCallResponse(llm.ToolCallData{ID: "shell-72", Name: "shell", Type: "function", Arguments: args})
 	}, func(req llm.Request) llm.Response {
+		attentionBoundary.hold(t)
 		return waitResponseFor("drive-wait-72", regexp.MustCompile(`job_[A-Za-z0-9_]{10,}`).FindString(lastToolResultText(req.Messages)))
+	}, func(req llm.Request) llm.Response {
+		shellResult <- req
+		shellResultBoundary.hold(t)
+		return finalResponse("stopped-shell-observed-72")
 	})
-	adapter.script("DRIVE-BUSY-72", func(llm.Request) llm.Response { return finalResponse("initial-busy-72") }, func(llm.Request) llm.Response { <-busyGate; return finalResponse("busy-drive-72") })
-	root := newMessagingRoot(t, adapter, nil)
+	adapter.script("DRIVE-BUSY-72", func(llm.Request) llm.Response { busyInitialBoundary.hold(t); return finalResponse("initial-busy-72") }, func(llm.Request) llm.Response { <-busyGate; return finalResponse("busy-drive-72") })
+	root := newMessagingRoot(t, adapter, returns.configure)
+	t.Cleanup(func() { returns.close(t, root) })
 	if _, err := root.ProcessInput(context.Background(), "start-72", nil); err != nil {
 		t.Fatal(err)
 	}
 	owner := root.subagents.sessions()[0]
-	waitForCondition(t, 3*time.Second, "owner initial settlement", func() bool {
-		return !delegateAggregateSnapshot(t, root.delegateController, owner.owningDelegateID).CurrentRunOpen
-	})
+	ownerInitial := ownerInitialBoundary.take(t, returns, owner.ID())
+	ownerInitialBoundary.release()
+	incidentSettled(t, root, owner.ID(), ownerInitial)
 	adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("drive-busy", "DRIVE-BUSY-72") }, func(llm.Request) llm.Response { return finalResponse("root-busy-72") })
 	if _, err := root.ProcessInput(context.Background(), "busy-72", nil); err != nil {
 		t.Fatal(err)
@@ -1175,19 +1377,28 @@ func TestAttentionWaitPreservesSiblingDriveCapacity(t *testing.T) {
 	if busy == nil {
 		t.Fatal("busy sibling missing")
 	}
-	waitForCondition(t, 3*time.Second, "busy initial settlement", func() bool {
-		return !delegateAggregateSnapshot(t, root.delegateController, busy.owningDelegateID).CurrentRunOpen
-	})
+	busyInitial := busyInitialBoundary.take(t, returns, busy.ID())
+	busyInitialBoundary.release()
+	incidentSettled(t, root, busy.ID(), busyInitial)
 	if err := root.delegateController.enqueueNotification(owner.ID(), notification{ID: "drive-owner-72", Message: llm.UserMachinery("drive-owner-payload-72")}); err != nil {
 		t.Fatal(err)
 	}
-	sub := root.getSub(owner.ID())
-	waitForCondition(t, 3*time.Second, "attention generation yield", func() bool {
-		run := delegateAggregateSnapshot(t, root.delegateController, owner.owningDelegateID)
-		sub.mu.Lock()
-		defer sub.mu.Unlock()
-		return run.Generation == 2 && run.Trigger == delegatestore.TriggerAttention && run.CurrentRunOpen && !sub.running
-	})
+	attention := attentionBoundary.take(t, returns, owner.ID())
+	if attention.lease.generation != 2 || attention.generationDone == ownerInitial.generationDone {
+		t.Fatalf("attention did not start generation two: %+v", attention)
+	}
+	attentionBoundary.release()
+	incidentYielded(t, root, owner.ID(), attention)
+	cp, err := readWaitCheckpoint(owner.TranscriptPath(), owner.ID())
+	if err != nil || cp == nil {
+		t.Fatalf("attention checkpoint=%+v err=%v", cp, err)
+	}
+	waitYielded(t, root, attention, "drive-wait-72", cp.WaitingOn)
+	shell := waitShellRun(t, owner.jobManager, cp.WaitingOn)
+	t.Cleanup(func() { waitShellFinished(t, shell) })
+	if run := delegateAggregateSnapshot(t, root.delegateController, owner.owningDelegateID); run.Generation != 2 || run.Trigger != delegatestore.TriggerAttention || !run.CurrentRunOpen {
+		t.Fatalf("attention generation=%+v", run)
+	}
 	if err := root.delegateController.enqueueNotification(busy.ID(), notification{ID: "drive-busy-72", Message: llm.UserMachinery("drive-busy-payload-72")}); err != nil {
 		t.Fatal(err)
 	}
@@ -1200,19 +1411,55 @@ func TestAttentionWaitPreservesSiblingDriveCapacity(t *testing.T) {
 	if err := root.executeDelegateMutationPlans(mutations); err != nil {
 		t.Fatal(err)
 	}
+	if result.id != owner.owningDelegateID || result.requestSeq == 0 || result.outcome != "cancelled_by_request" || result.done == nil {
+		t.Fatalf("attention Stop admission=%+v", result)
+	}
 	awaitSignal(t, result.done, "yielded attention generation Stop")
+	stopped := returns.take(t, owner.ID())
+	assertWaitResume(t, attention, stopped)
+	incidentSettled(t, root, owner.ID(), stopped)
 	root.delegateController.mu.Lock()
 	turns, drives := root.delegateController.turnsInUse, root.delegateController.drivesInUse
 	root.delegateController.mu.Unlock()
 	if turns != 0 || drives != 1 {
 		t.Fatalf("Stop stole sibling drive capacity: turns=%d drives=%d, want0,1", turns, drives)
 	}
+	busyDrive := returns.take(t, busy.ID())
+	if busyDrive.lease.generation != 2 || busyDrive.generationDone == busyInitial.generationDone {
+		t.Fatalf("busy drive reused initial generation: %+v", busyDrive)
+	}
 	releaseBusy()
-	waitForCondition(t, 3*time.Second, "sibling drive settlement", func() bool {
-		root.delegateController.mu.Lock()
-		defer root.delegateController.mu.Unlock()
-		return root.delegateController.drivesInUse == 0
-	})
+	incidentSettled(t, root, busy.ID(), busyDrive)
+	// Subtree Stop killed OWNER's real shell. Once BUSY returns its drive
+	// slot, that terminal input starts a distinct OWNER attention generation.
+	// Join its scripted response rather than polling past provider exhaustion.
+	completion := shellResultBoundary.take(t, returns, owner.ID())
+	if completion.sessionID != owner.ID() || completion.delegateID != owner.owningDelegateID || completion.lease.generation != 3 || completion.generationDone == stopped.generationDone {
+		t.Fatalf("shell result reused stopped generation: %+v", completion)
+	}
+	if run := delegateAggregateSnapshot(t, root.delegateController, owner.owningDelegateID); run.Generation != 3 || run.Trigger != delegatestore.TriggerAttention || !run.CurrentRunOpen {
+		t.Fatalf("shell result generation=%+v", run)
+	}
+	waitShellFinished(t, shell)
+	records, err := owner.jobManager.store.Load()
+	if err != nil || records[cp.WaitingOn] == nil {
+		t.Fatalf("stopped shell record=%+v err=%v", records[cp.WaitingOn], err)
+	}
+	record := records[cp.WaitingOn]
+	if record.Status != jobstore.StatusCommandKilled || !strings.HasPrefix(record.Reason, "killed_by_signal:") || record.TerminalGen == "" {
+		t.Fatalf("subtree Stop shell result=%+v", record)
+	}
+	if err := incidentJobPayload(<-shellResult, cp.WaitingOn, string(record.Status), record.Reason); err != nil {
+		t.Fatal(err)
+	}
+	shellResultBoundary.release()
+	incidentSettled(t, root, owner.ID(), completion)
+	root.delegateController.mu.Lock()
+	drives = root.delegateController.drivesInUse
+	root.delegateController.mu.Unlock()
+	if drives != 0 {
+		t.Fatalf("sibling drive capacity after return=%d", drives)
+	}
 }
 
 func TestDirectUserStopResumeHandoff(t *testing.T) {
@@ -1220,6 +1467,9 @@ func TestDirectUserStopResumeHandoff(t *testing.T) {
 		t.Run(order, func(t *testing.T) {
 			stopFirst := order != "resume_admitted"
 			adapter := newMessagingAdapter("HANDOFF-WAIT-94")
+			returns := newActivationReturns()
+			initialBoundary := newWaitBoundary()
+			defer initialBoundary.release()
 			fifo, releaseShell := waitProducerFIFO(t)
 			defer releaseShell()
 			adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("handoff-owner", "HANDOFF-WAIT-94") }, func(llm.Request) llm.Response { return finalResponse("root-94") })
@@ -1227,15 +1477,24 @@ func TestDirectUserStopResumeHandoff(t *testing.T) {
 				args, _ := json.Marshal(map[string]any{"command": fmt.Sprintf("read value < %q", fifo), "mode": "background"})
 				return toolCallResponse(llm.ToolCallData{ID: "handoff-shell-94", Name: "shell", Type: "function", Arguments: args})
 			}, func(req llm.Request) llm.Response {
+				initialBoundary.hold(t)
 				return waitResponseFor("handoff-wait-94", regexp.MustCompile(`job_[A-Za-z0-9_]{10,}`).FindString(lastToolResultText(req.Messages)))
 			})
-			root := newMessagingRoot(t, adapter, func(cfg *SessionConfig) { cfg.clock = agenttest.NewFakeClock() })
+			root := newMessagingRoot(t, adapter, func(cfg *SessionConfig) { returns.configure(cfg); cfg.clock = agenttest.NewFakeClock() })
+			t.Cleanup(func() { returns.close(t, root) })
 			if _, err := root.ProcessInput(context.Background(), "start-94", nil); err != nil {
 				t.Fatal(err)
 			}
 			owner := root.subagents.sessions()[0]
 			sub := root.getSub(owner.ID())
-			waitForCondition(t, 3*time.Second, "handoff fixture yielded", func() bool { sub.mu.Lock(); defer sub.mu.Unlock(); return !sub.running })
+			initial := initialBoundary.take(t, returns, owner.ID())
+			initialBoundary.release()
+			incidentYielded(t, root, owner.ID(), initial)
+			cp, err := readWaitCheckpoint(owner.TranscriptPath(), owner.ID())
+			if err != nil || cp == nil {
+				t.Fatalf("handoff checkpoint=%+v err=%v", cp, err)
+			}
+			waitYielded(t, root, initial, "handoff-wait-94", cp.WaitingOn)
 			// This is the same guard the attention driver owns when it calls
 			// resumeYieldedDelegate. Drive that handoff directly so Stop ordering
 			// does not depend on a scheduler or a fabricated incoming notification.
@@ -1274,8 +1533,26 @@ func TestDirectUserStopResumeHandoff(t *testing.T) {
 				err  error
 			}
 			stopped := make(chan stopResult, 1)
-			stop := func() { done, err := sub.requestRunCancel(true); stopped <- stopResult{done, err} }
+			stopFinished := make(chan struct{})
+			stopStarted := false
+			stop := func() {
+				defer close(stopFinished)
+				done, err := sub.requestRunCancel(true)
+				stopped <- stopResult{done, err}
+			}
+			t.Cleanup(func() {
+				releaseCancel()
+				releaseExecutor()
+				if stopStarted {
+					waitForTestSignal(t, stopFinished, "handoff Stop operation cleanup")
+				}
+			})
+			takeStop := func() stopResult {
+				waitForTestSignal(t, stopFinished, "direct Stop cancellation admission")
+				return <-stopped
+			}
 			if stopFirst {
+				stopStarted = true
 				go stop()
 				awaitSignal(t, cancelSelected, "direct Stop selected yielded cancellation after guard")
 			}
@@ -1289,6 +1566,7 @@ func TestDirectUserStopResumeHandoff(t *testing.T) {
 			}
 			if !stopFirst {
 				awaitSignal(t, executorEntered, "resumed executor before direct Stop")
+				stopStarted = true
 				go stop()
 				// A running executor's exact cancellation is installed by handoff.
 			} else if resumed {
@@ -1306,8 +1584,11 @@ func TestDirectUserStopResumeHandoff(t *testing.T) {
 			}
 			// Both orderings have admitted user Stop before either executor can
 			// read input. Inspect the flags actually consumed by finalization.
+			stoppedActivation := returns.take(t, owner.ID())
+			assertWaitResume(t, initial, stoppedActivation)
+			var admitted stopResult
 			if !stopFirst {
-				waitForCondition(t, 3*time.Second, "running Stop accepted", func() bool { sub.mu.Lock(); defer sub.mu.Unlock(); return sub.cancelRequested })
+				admitted = takeStop()
 			}
 			sub.mu.Lock()
 			cancelled, user := sub.cancelRequested, sub.userStopRequested
@@ -1316,21 +1597,14 @@ func TestDirectUserStopResumeHandoff(t *testing.T) {
 				t.Errorf("handoff lost cancellation ownership: requested=%v user=%v", cancelled, user)
 			}
 			releaseExecutor()
-			var admitted stopResult
-			select {
-			case admitted = <-stopped:
-			case <-time.After(3 * time.Second):
-				t.Fatal("direct Stop did not finish cancellation admission")
+			if stopFirst {
+				admitted = takeStop()
 			}
 			if admitted.err != nil || admitted.done != originalDone {
 				t.Errorf("Stop admitted done=%p original=%p err=%v", admitted.done, originalDone, admitted.err)
 			}
-			select {
-			case <-admitted.done:
-			case <-time.After(3 * time.Second):
-				t.Error("admitted direct Stop done channel never closed")
-			}
-			waitForCondition(t, 3*time.Second, "direct Stop handoff settled", func() bool { return !delegateAggregateSnapshot(t, c, owner.owningDelegateID).CurrentRunOpen })
+			waitForTestSignal(t, admitted.done, "admitted direct Stop done")
+			incidentSettled(t, root, owner.ID(), stoppedActivation)
 			checkpoint, err := readWaitCheckpoint(transcriptPath(root.stateDir, owner.ID()), owner.ID())
 			if err != nil || checkpoint == nil || checkpoint.ResumedByTurnID != "" {
 				t.Errorf("Stop before executor input wrote resumption claim=%+v err=%v", checkpoint, err)
@@ -1368,21 +1642,35 @@ func TestDirectUserStopResumeHandoff(t *testing.T) {
 
 func TestDirectUserStopYieldedWait(t *testing.T) {
 	adapter := newMessagingAdapter("USER-WAIT-63", "USER-CHILD-63")
+	returns := newActivationReturns()
+	initialBoundary, successorBoundary := newWaitBoundary(), newWaitBoundary()
+	defer initialBoundary.release()
+	defer successorBoundary.release()
 	gate := make(chan struct{})
 	release := sync.OnceFunc(func() { close(gate) })
 	defer release()
 	adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("user-owner", "USER-WAIT-63") }, func(llm.Request) llm.Response { return finalResponse("root-63") })
 	adapter.script("USER-WAIT-63", func(llm.Request) llm.Response { return delegateToolResponse("user-child", "USER-CHILD-63") }, func(req llm.Request) llm.Response {
+		initialBoundary.hold(t)
 		return waitResponseFor("user-wait-63", deferredHeadDelegateID.FindString(lastToolResultText(req.Messages)))
 	})
+	adapter.script("USER-WAIT-63", func(llm.Request) llm.Response { successorBoundary.hold(t); return finalResponse("done") })
 	adapter.script("USER-CHILD-63", func(llm.Request) llm.Response { <-gate; return finalResponse("child-result-63") })
-	root := newMessagingRoot(t, adapter, nil)
+	root := newMessagingRoot(t, adapter, returns.configure)
+	t.Cleanup(func() { returns.close(t, root) })
 	if _, err := root.ProcessInput(context.Background(), "start-63", nil); err != nil {
 		t.Fatal(err)
 	}
 	owner := root.subagents.sessions()[0]
 	sub := root.getSub(owner.ID())
-	waitForCondition(t, 3*time.Second, "direct Stop fixture yield", func() bool { sub.mu.Lock(); defer sub.mu.Unlock(); return !sub.running })
+	initial := initialBoundary.take(t, returns, owner.ID())
+	initialBoundary.release()
+	incidentYielded(t, root, owner.ID(), initial)
+	checkpoint, err := readWaitCheckpoint(owner.TranscriptPath(), owner.ID())
+	if err != nil || checkpoint == nil {
+		t.Fatalf("Stop checkpoint=%+v err=%v", checkpoint, err)
+	}
+	waitYielded(t, root, initial, "user-wait-63", checkpoint.WaitingOn)
 	sub.mu.Lock()
 	originalDone := sub.done
 	sub.mu.Unlock()
@@ -1390,9 +1678,10 @@ func TestDirectUserStopYieldedWait(t *testing.T) {
 	if err != nil || outcome != appwire.DelegateStopStopping {
 		t.Fatalf("direct Stop=%s err=%v", outcome, err)
 	}
-	waitForCondition(t, 3*time.Second, "direct Stop settlement", func() bool {
-		return !delegateAggregateSnapshot(t, root.delegateController, owner.owningDelegateID).CurrentRunOpen
-	})
+	stopped := returns.take(t, owner.ID())
+	assertWaitResume(t, initial, stopped)
+	waitForTestSignal(t, originalDone, "direct Stop original done")
+	incidentSettled(t, root, owner.ID(), stopped)
 	if again, err := root.StopDelegateRun(owner.owningDelegateID); err != nil || again != appwire.DelegateStopNotRunning {
 		t.Fatalf("repeated Stop=%s err=%v", again, err)
 	}
@@ -1423,10 +1712,12 @@ func TestDirectUserStopYieldedWait(t *testing.T) {
 		t.Fatalf("direct Stop finishes=%d want1", finishes)
 	}
 	release()
-	waitForCondition(t, 3*time.Second, "retained child result successor", func() bool {
-		run := delegateAggregateSnapshot(t, root.delegateController, owner.owningDelegateID)
-		return run.Generation == 2 && !run.CurrentRunOpen
-	})
+	successor := successorBoundary.take(t, returns, owner.ID())
+	if successor.lease.generation != 2 || successor.generationDone == initial.generationDone {
+		t.Fatalf("successor reused stopped generation: %+v", successor)
+	}
+	successorBoundary.release()
+	incidentSettled(t, root, owner.ID(), successor)
 	if requests := len(adapter.requestsFor("USER-WAIT-63")); requests != 3 {
 		t.Fatalf("retained child result model requests=%d want3", requests)
 	}
@@ -1456,9 +1747,17 @@ func TestColdDirectUserStopYieldedWait(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			adapter := newMessagingAdapter("COLD-STOP-84", "COLD-CHILD-84", "COLD-BUSY-84")
+			returns := newActivationReturns()
+			initialBoundary, againBoundary, childBoundary, successorBoundary, terminalBoundary := newWaitBoundary(), newWaitBoundary(), newWaitBoundary(), newWaitBoundary(), newWaitBoundary()
+			defer initialBoundary.release()
+			defer againBoundary.release()
+			defer childBoundary.release()
+			defer successorBoundary.release()
+			defer terminalBoundary.release()
 			fifo, releaseShell := waitProducerFIFO(t)
 			defer releaseShell()
 			successor := make(chan llm.Request, 1)
+			childRecovery := make(chan llm.Request, 1)
 			childGate := make(chan struct{})
 			releaseChild := sync.OnceFunc(func() { close(childGate) })
 			defer releaseChild()
@@ -1468,6 +1767,7 @@ func TestColdDirectUserStopYieldedWait(t *testing.T) {
 			adapter.script("COLD-BUSY-84", func(llm.Request) llm.Response { <-busyGate; return finalResponse("cold-busy-result-84") })
 			adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("cold-stop", "COLD-STOP-84") }, func(llm.Request) llm.Response { return finalResponse("root-84") })
 			adapter.script("COLD-STOP-84", func(llm.Request) llm.Response { return delegateToolResponse("cold-child", "COLD-CHILD-84") }, func(req llm.Request) llm.Response {
+				initialBoundary.hold(t)
 				return waitResponseFor("cold-stop-wait-84", deferredHeadDelegateID.FindString(lastToolResultText(req.Messages)))
 			}, func(req llm.Request) llm.Response {
 				// The child's own wait publication is real unrelated input to its parent.
@@ -1477,9 +1777,11 @@ func TestColdDirectUserStopYieldedWait(t *testing.T) {
 						childID = id
 					}
 				}
+				againBoundary.hold(t)
 				return waitResponseFor("cold-stop-wait-again-84", childID)
 			}, func(req llm.Request) llm.Response {
 				successor <- req
+				successorBoundary.hold(t)
 				if !test.pending {
 					return finalResponse("cold-stop-retained-child-result-84")
 				}
@@ -1490,33 +1792,56 @@ func TestColdDirectUserStopYieldedWait(t *testing.T) {
 					}
 				}
 				return waitResponseFor("cold-stop-successor-wait-84", childID)
-			}, func(llm.Request) llm.Response { return finalResponse("cold-stop-retained-child-result-84") })
+			}, func(llm.Request) llm.Response {
+				terminalBoundary.hold(t)
+				return finalResponse("cold-stop-retained-child-result-84")
+			})
 			adapter.script("COLD-CHILD-84", func(llm.Request) llm.Response {
 				args, _ := json.Marshal(map[string]any{"command": fmt.Sprintf("read value < %q", fifo), "mode": "background"})
 				return toolCallResponse(llm.ToolCallData{ID: "cold-shell-84", Name: "shell", Type: "function", Arguments: args})
 			}, func(req llm.Request) llm.Response {
+				childBoundary.hold(t)
 				return waitResponseFor("cold-child-wait-84", regexp.MustCompile(`job_[A-Za-z0-9_]{10,}`).FindString(lastToolResultText(req.Messages)))
-			}, func(llm.Request) llm.Response {
+			}, func(req llm.Request) llm.Response {
+				childRecovery <- req
 				<-childGate
 				return finalResponse("cold-stop-retained-child-payload-84")
 			})
-			root := newMessagingRoot(t, adapter, nil)
+			root := newMessagingRoot(t, adapter, returns.configure)
+			t.Cleanup(func() { returns.close(t, root) })
 			if _, err := root.ProcessInput(context.Background(), "start-84", nil); err != nil {
 				t.Fatal(err)
 			}
 			owner := root.subagents.sessions()[0]
 			sub := root.getSub(owner.ID())
-			adapter.waitForRequests(t, "COLD-STOP-84", 3)
+			initial := initialBoundary.take(t, returns, owner.ID())
+			initialBoundary.release()
+			incidentYielded(t, root, owner.ID(), initial)
+			initialCP, err := readWaitCheckpoint(owner.TranscriptPath(), owner.ID())
+			if err != nil || initialCP == nil {
+				t.Fatalf("initial cold Stop checkpoint=%+v err=%v", initialCP, err)
+			}
+			waitYielded(t, root, initial, "cold-stop-wait-84", initialCP.WaitingOn)
 			child := owner.subagents.sessions()[0]
-			childSub := owner.getSub(child.ID())
-			waitForCondition(t, 3*time.Second, "cold Stop fixture both yielded", func() bool {
-				sub.mu.Lock()
-				parentRunning := sub.running
-				sub.mu.Unlock()
-				childSub.mu.Lock()
-				defer childSub.mu.Unlock()
-				return !parentRunning && !childSub.running
-			})
+			childInitial := childBoundary.take(t, returns, child.ID())
+			childBoundary.release()
+			incidentYielded(t, owner, child.ID(), childInitial)
+			childCP, err := readWaitCheckpoint(child.TranscriptPath(), child.ID())
+			if err != nil || childCP == nil {
+				t.Fatalf("cold child checkpoint=%+v err=%v", childCP, err)
+			}
+			waitYielded(t, owner, childInitial, "cold-child-wait-84", childCP.WaitingOn)
+			shellID := childCP.WaitingOn
+			shell := waitShellRun(t, child.jobManager, shellID)
+			t.Cleanup(func() { waitShellFinished(t, shell) })
+			records, err := child.jobManager.store.Load()
+			if err != nil || records[shellID] == nil || records[shellID].Status != jobstore.StatusRunning || records[shellID].OwnerSessionID != child.ID() {
+				t.Fatalf("original held child shell=%+v err=%v", records[shellID], err)
+			}
+			again := againBoundary.take(t, returns, owner.ID())
+			assertWaitResume(t, initial, again)
+			againBoundary.release()
+			waitYielded(t, root, again, "cold-stop-wait-again-84", child.owningDelegateID)
 			// Keep the original executor out while accepting real addressed custody,
 			// then work only on an exact copy of that persisted state.
 			sub.mu.Lock()
@@ -1539,7 +1864,9 @@ func TestColdDirectUserStopYieldedWait(t *testing.T) {
 			var denyRestore atomic.Bool
 			denyRestore.Store(true)
 			restored := root
+			restoredReturns := returns
 			if !test.resident {
+				restoredReturns = newActivationReturns()
 				restored, err = RestoreSessionFromMetaWithConfig(root.client, root.profile, execenv.NewLocalExecutionEnvironment(meta.EnvInfo.WorkingDir), meta, RestoreSessionConfig{
 					StateDir: copyDir, ForceRealIO: true, clock: agenttest.NewFakeClock(),
 					AcquireSessionOwnership: func(id string) error {
@@ -1548,12 +1875,12 @@ func TestColdDirectUserStopYieldedWait(t *testing.T) {
 						}
 						return nil
 					},
-					testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, disableDelegateIdleRelease: true},
+					testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, disableDelegateIdleRelease: true, subagentActivationReturn: restoredReturns.capture},
 				})
 				if err != nil {
 					t.Fatal(err)
 				}
-				t.Cleanup(restored.Close)
+				t.Cleanup(func() { restoredReturns.close(t, restored) })
 				if resident := restored.subagentForChild(owner.ID()); resident != nil {
 					t.Fatal("fixture did not remain cold behind ownership refusal")
 				}
@@ -1622,6 +1949,7 @@ func TestColdDirectUserStopYieldedWait(t *testing.T) {
 				c.mu.Unlock()
 			}
 			var busyID string
+			var busyReceipt *activationReturn
 			if test.activeSibling {
 				adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("cold-busy", "COLD-BUSY-84") }, func(llm.Request) llm.Response { return finalResponse("root-busy-84") })
 				if _, err := restored.ProcessInput(context.Background(), "busy-84", nil); err != nil {
@@ -1631,6 +1959,7 @@ func TestColdDirectUserStopYieldedWait(t *testing.T) {
 				for _, candidate := range restored.subagents.sessions() {
 					if candidate.ID() != owner.ID() {
 						busyID = candidate.owningDelegateID
+						busyReceipt = restoredReturns.take(t, candidate.ID())
 					}
 				}
 				if busyID == "" {
@@ -1663,14 +1992,25 @@ func TestColdDirectUserStopYieldedWait(t *testing.T) {
 			if err != nil || outcome != wantOutcome {
 				t.Fatalf("cold direct Stop=%s err=%v, want stopping", outcome, err)
 			}
+			stopped := restoredReturns.take(t, owner.ID())
+			if stopped.sessionID != owner.ID() || stopped.delegateID != owner.owningDelegateID || stopped.lease != again.lease || test.resident && stopped.generationDone != again.generationDone {
+				t.Fatalf("cold Stop activation=%+v original=%+v", stopped, again)
+			}
+			waitForTestSignal(t, stopped.generationDone, "cold Stop admitted generation")
+			waitForTestSignal(t, stopped.returned, "cold Stop exact canceled tail")
 			if test.resident && releaseDriveGuard(sub) {
 				c.requestSessionWake(owner.ID())
 			}
 			wantStarts, wantCalls := 1, beforeCalls
 			if test.pending {
 				wantStarts, wantCalls = 2, beforeCalls+1
-				select {
-				case req := <-successor:
+				waitForTestSignal(t, successorBoundary.entered, "retained pending input successor")
+				successorActivation := restoredReturns.take(t, owner.ID())
+				if successorActivation.lease.generation != 2 || successorActivation.generationDone == stopped.generationDone {
+					t.Fatalf("successor reused stopped done: %+v", successorActivation)
+				}
+				{
+					req := <-successor
 					found := 0
 					for _, msg := range req.Messages {
 						found += strings.Count(msg.Text(), "pending-cold-stop-payload-84")
@@ -1678,16 +2018,9 @@ func TestColdDirectUserStopYieldedWait(t *testing.T) {
 					if found != 1 {
 						t.Fatalf("successor canonical payload count=%d want1", found)
 					}
-				case <-time.After(3 * time.Second):
-					t.Fatal("retained pending input did not drive successor")
 				}
-				waitForCondition(t, 3*time.Second, "legitimate successor yielded", func() bool {
-					run := delegateAggregateSnapshot(t, c, owner.owningDelegateID)
-					current := restored.subagentForChild(owner.ID())
-					current.mu.Lock()
-					defer current.mu.Unlock()
-					return run.Generation == 2 && run.CurrentRunOpen && !current.running
-				})
+				successorBoundary.release()
+				waitYielded(t, restored, successorActivation, "cold-stop-successor-wait-84", child.owningDelegateID)
 			} else {
 				if again, err := restored.StopDelegateRun(owner.owningDelegateID); err != nil || again != appwire.DelegateStopNotRunning {
 					t.Fatalf("repeated cold Stop=%s err=%v", again, err)
@@ -1750,12 +2083,55 @@ func TestColdDirectUserStopYieldedWait(t *testing.T) {
 					t.Fatal("cold direct Stop ended unrelated sibling")
 				}
 			}
-			if test.pending && !test.resident {
-				// Reopening the successor reconstructs its child. The copied shell
-				// has no surviving in-process producer, so that child's same lease
-				// legitimately resumes on the durable interruption notification.
+			var childTerminal *activationReturn
+			if !test.resident {
+				// Root bootstrap repairs the copied live shell into addressed
+				// child input even when the OWNER has no pending input. Stop's
+				// capacity release may therefore resume this exact child lease.
 				adapter.waitForRequests(t, "COLD-CHILD-84", 3)
-				wantTurns = 1
+				request := <-childRecovery
+				childTerminal = restoredReturns.take(t, child.ID())
+				if childTerminal.sessionID != child.ID() || childTerminal.delegateID != child.owningDelegateID || childTerminal.lease != childInitial.lease || childTerminal.generationDone == childInitial.generationDone {
+					t.Fatalf("restored child recovery identity=%+v original=%+v", childTerminal, childInitial)
+				}
+				if err := incidentJobPayload(request, shellID, "stopped", "runtime_lost"); err != nil {
+					t.Fatal(err)
+				}
+				recovered, err := readTranscriptFull(transcriptPath(copyDir, child.ID()), "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				claims := 0
+				for _, entry := range recovered.Entries {
+					cp := entry.Turn.WaitCheckpoint
+					if cp == nil || cp.ResumedByTurnID == "" {
+						continue
+					}
+					claims++
+					if cp.SessionID != childCP.SessionID || cp.DelegateID != childCP.DelegateID || cp.Generation != childCP.Generation || cp.ExecutionTurnID != childCP.ExecutionTurnID || cp.CommunicateCallID != childCP.CommunicateCallID || cp.WaitingOn != shellID || cp.ResumedByTurnID == cp.ExecutionTurnID {
+						t.Fatalf("restored child recovery claim=%+v original=%+v", cp, childCP)
+					}
+				}
+				if claims != 1 {
+					t.Fatalf("restored child resumption claims=%d want1", claims)
+				}
+				current := restored.subagentForChild(child.ID())
+				current.mu.Lock()
+				exactActive := current.running && !current.driving && current.done == childTerminal.generationDone
+				current.mu.Unlock()
+				c.mu.Lock()
+				live := c.live[child.owningDelegateID]
+				exactBinding := live != nil && live.runtime == current.sess && live.binding != nil && !live.binding.yielded && live.binding.lease == childTerminal.lease
+				c.mu.Unlock()
+				if !exactActive || !exactBinding {
+					t.Fatalf("restored child recovery active=%v exactBinding=%v", exactActive, exactBinding)
+				}
+				select {
+				case <-childTerminal.generationDone:
+					t.Fatal("held restored child generation closed")
+				default:
+				}
+				wantTurns++
 			}
 			c.mu.Lock()
 			turns, drives := c.turnsInUse, c.drivesInUse
@@ -1766,19 +2142,27 @@ func TestColdDirectUserStopYieldedWait(t *testing.T) {
 			if !test.pending {
 				if test.activeSibling {
 					releaseBusy()
-					waitForCondition(t, 3*time.Second, "unrelated sibling settlement", func() bool {
-						return !delegateAggregateSnapshot(t, c, busyID).CurrentRunOpen
-					})
+					incidentSettled(t, restored, busyReceipt.sessionID, busyReceipt)
 				}
 				return // no synthetic input is added merely to make Stop execute
 			}
 			releaseShell()
 			adapter.waitForRequests(t, "COLD-CHILD-84", 3)
+			if test.resident {
+				<-childRecovery
+				childTerminal = restoredReturns.take(t, child.ID())
+			}
+			if childTerminal.lease != childInitial.lease || test.resident && childTerminal.generationDone != childInitial.generationDone {
+				t.Fatalf("retained child lease changed: %+v", childTerminal)
+			}
 			releaseChild()
-			waitForCondition(t, 3*time.Second, "retained child report observed by successor", func() bool {
-				run := delegateAggregateSnapshot(t, c, owner.owningDelegateID)
-				return run.Generation == 2 && !run.CurrentRunOpen
-			})
+			terminal := terminalBoundary.take(t, restoredReturns, owner.ID())
+			if terminal.lease.generation != 2 || terminal.generationDone == stopped.generationDone {
+				t.Fatalf("retained-result activation reused stopped generation: %+v", terminal)
+			}
+			terminalBoundary.release()
+			incidentSettled(t, restored, owner.ID(), terminal)
+			incidentSettled(t, restored.subagentForChild(owner.ID()).sess, child.ID(), childTerminal)
 			childRun = delegateAggregateSnapshot(t, c, child.owningDelegateID)
 			if childRun.Generation != 1 || childRun.CurrentRunOpen || childRun.LatestOutcome == nil || childRun.LatestOutcome.Status != delegatestore.OutcomeCompleted {
 				t.Fatalf("retained child outcome=%+v", childRun)
@@ -1792,16 +2176,20 @@ func TestColdDirectUserStopYieldedWait(t *testing.T) {
 
 func TestColdDirectUserStopIdle(t *testing.T) {
 	adapter := newMessagingAdapter("COLD-IDLE-85")
+	returns := newActivationReturns()
+	terminalBoundary := newWaitBoundary()
+	defer terminalBoundary.release()
 	adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("cold-idle", "COLD-IDLE-85") }, func(llm.Request) llm.Response { return finalResponse("root-85") })
-	adapter.script("COLD-IDLE-85", func(llm.Request) llm.Response { return finalResponse("idle-85") })
-	root := newMessagingRoot(t, adapter, nil)
+	adapter.script("COLD-IDLE-85", func(llm.Request) llm.Response { terminalBoundary.hold(t); return finalResponse("idle-85") })
+	root := newMessagingRoot(t, adapter, returns.configure)
+	t.Cleanup(func() { returns.close(t, root) })
 	if _, err := root.ProcessInput(context.Background(), "start-85", nil); err != nil {
 		t.Fatal(err)
 	}
 	owner := root.subagents.sessions()[0]
-	waitForCondition(t, 3*time.Second, "idle fixture settlement", func() bool {
-		return !delegateAggregateSnapshot(t, root.delegateController, owner.owningDelegateID).CurrentRunOpen
-	})
+	terminal := terminalBoundary.take(t, returns, owner.ID())
+	terminalBoundary.release()
+	incidentSettled(t, root, owner.ID(), terminal)
 	copyDir := copyWaitingState(t, root.stateDir)
 	meta, err := schema.LoadSessionMeta(copyDir, root.ID())
 	if err != nil {
@@ -1830,6 +2218,9 @@ func TestWaitResumeClaimSerializesStop(t *testing.T) {
 	for _, claimFirst := range []bool{false, true} {
 		t.Run(fmt.Sprintf("claim_first=%v", claimFirst), func(t *testing.T) {
 			adapter := newMessagingAdapter("FENCE-WAIT-81")
+			returns := newActivationReturns()
+			initialBoundary := newWaitBoundary()
+			defer initialBoundary.release()
 			fifo, releaseShell := waitProducerFIFO(t)
 			defer releaseShell()
 			adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("fence-owner", "FENCE-WAIT-81") }, func(llm.Request) llm.Response { return finalResponse("root-81") })
@@ -1840,9 +2231,12 @@ func TestWaitResumeClaimSerializesStop(t *testing.T) {
 				args, _ := json.Marshal(map[string]any{"command": fmt.Sprintf("read value < %q", fifo), "mode": "background"})
 				return toolCallResponse(llm.ToolCallData{ID: "shell-81", Name: "shell", Type: "function", Arguments: args})
 			}, func(req llm.Request) llm.Response {
+				initialBoundary.hold(t)
 				return waitResponseFor("fence-wait-81", regexp.MustCompile(`job_[A-Za-z0-9_]{10,}`).FindString(lastToolResultText(req.Messages)))
 			}, func(llm.Request) llm.Response { <-modelGate; return finalResponse("fence-result-81") })
-			root := newMessagingRoot(t, adapter, nil)
+			root := newMessagingRoot(t, adapter, returns.configure)
+			t.Cleanup(func() { returns.close(t, root) })
+			claimRecorded := make(chan struct{})
 			claimEntered, claimGate := make(chan bool, 1), make(chan struct{})
 			releaseClaim := sync.OnceFunc(func() { close(claimGate) })
 			defer releaseClaim()
@@ -1853,6 +2247,7 @@ func TestWaitResumeClaimSerializesStop(t *testing.T) {
 						root.delegateController.mu.Unlock()
 					}
 					claimEntered <- !unlocked
+					close(claimRecorded)
 					<-claimGate
 				}
 			})
@@ -1860,22 +2255,25 @@ func TestWaitResumeClaimSerializesStop(t *testing.T) {
 				t.Fatal(err)
 			}
 			owner := root.subagents.sessions()[0]
-			sub := root.getSub(owner.ID())
-			waitForCondition(t, 3*time.Second, "fence fixture yielded", func() bool { sub.mu.Lock(); defer sub.mu.Unlock(); return !sub.running })
+			initial := initialBoundary.take(t, returns, owner.ID())
+			initialBoundary.release()
+			incidentYielded(t, root, owner.ID(), initial)
+			cp, err := readWaitCheckpoint(owner.TranscriptPath(), owner.ID())
+			if err != nil || cp == nil {
+				t.Fatalf("fence checkpoint=%+v err=%v", cp, err)
+			}
+			waitYielded(t, root, initial, "fence-wait-81", cp.WaitingOn)
 			if claimFirst {
 				if err := root.delegateController.enqueueNotification(owner.ID(), notification{ID: "fence-message-81", Message: llm.UserMachinery("fence-payload-81")}); err != nil {
 					t.Fatal(err)
 				}
-				select {
-				case fenced := <-claimEntered:
-					if !fenced {
-						t.Error("claim append is not serialized with Stop")
-					}
-				case <-time.After(3 * time.Second):
-					t.Fatal("resume claim did not reach the writer")
+				waitForTestSignal(t, claimRecorded, "resume claim reached writer with controller lock held")
+				if !<-claimEntered {
+					t.Error("claim append is not serialized with Stop")
 				}
 			}
 			stopStarted, stopDone := make(chan struct{}), make(chan struct{})
+			t.Cleanup(func() { releaseClaim(); releaseModel(); waitForTestSignal(t, stopDone, "Stop contender cleanup") })
 			go func() {
 				close(stopStarted)
 				result, plan, mutations, err := root.delegateController.StopSubtreeAndDrive(context.Background(), rootDelegateActor(root.ID()), owner.owningDelegateID)
@@ -1894,7 +2292,10 @@ func TestWaitResumeClaimSerializesStop(t *testing.T) {
 			}()
 			awaitSignal(t, stopStarted, "Stop contender started")
 			releaseClaim()
-			awaitSignal(t, stopDone, "Stop settles exact generation")
+			waitForTestSignal(t, stopDone, "Stop settles exact generation")
+			stopped := returns.take(t, owner.ID())
+			assertWaitResume(t, initial, stopped)
+			incidentSettled(t, root, owner.ID(), stopped)
 			data, err := readTranscriptFull(transcriptPath(root.stateDir, owner.ID()), "")
 			if err != nil {
 				t.Fatal(err)
@@ -1926,6 +2327,10 @@ func TestWaitResumeClaimSerializesStop(t *testing.T) {
 
 func TestUnrelatedNotificationResumesWait(t *testing.T) {
 	adapter := newMessagingAdapter("OTHER-WAIT-94", "OTHER-CHILD-94")
+	returns := newActivationReturns()
+	initialBoundary, resumedBoundary := newWaitBoundary(), newWaitBoundary()
+	defer initialBoundary.release()
+	defer resumedBoundary.release()
 	fifo, releaseShell := waitProducerFIFO(t)
 	defer releaseShell()
 	updateGate, finishGate := make(chan struct{}), make(chan struct{})
@@ -1942,24 +2347,33 @@ func TestUnrelatedNotificationResumesWait(t *testing.T) {
 	}, func(req llm.Request) llm.Response {
 		jobID = regexp.MustCompile(`job_[A-Za-z0-9_]{10,}`).FindString(lastToolResultText(req.Messages))
 		return delegateToolResponse("other-child", "OTHER-CHILD-94")
-	}, func(llm.Request) llm.Response { return waitResponseFor("other-wait-94", jobID) }, func(llm.Request) llm.Response {
+	}, func(llm.Request) llm.Response {
+		initialBoundary.hold(t)
+		return waitResponseFor("other-wait-94", jobID)
+	}, func(llm.Request) llm.Response {
 		resumed <- struct{}{}
+		resumedBoundary.hold(t)
 		return waitResponseFor("other-wait-again-94", jobID)
 	})
 	adapter.script("OTHER-CHILD-94", func(llm.Request) llm.Response {
 		<-updateGate
 		return updateResponse("other-update-94", "other-child-payload-94")
 	}, func(llm.Request) llm.Response { <-finishGate; return finalResponse("other-child-result-94") })
-	root := newMessagingRoot(t, adapter, nil)
+	root := newMessagingRoot(t, adapter, returns.configure)
+	t.Cleanup(func() { returns.close(t, root) })
 	if _, err := root.ProcessInput(context.Background(), "start-94", nil); err != nil {
 		t.Fatal(err)
 	}
 	owner := root.subagents.sessions()[0]
-	sub := root.getSub(owner.ID())
-	waitForCondition(t, 3*time.Second, "unrelated fixture yield", func() bool { sub.mu.Lock(); defer sub.mu.Unlock(); return !sub.running })
+	initial := initialBoundary.take(t, returns, owner.ID())
+	initialBoundary.release()
+	waitYielded(t, root, initial, "other-wait-94", jobID)
 	releaseUpdate()
 	awaitSignal(t, resumed, "unrelated child update resumes shell wait")
-	waitForCondition(t, 3*time.Second, "unrelated update processed and yielded again", func() bool { sub.mu.Lock(); defer sub.mu.Unlock(); return !sub.running })
+	again := resumedBoundary.take(t, returns, owner.ID())
+	assertWaitResume(t, initial, again)
+	resumedBoundary.release()
+	waitYielded(t, root, again, "other-wait-again-94", jobID)
 	journal, err := retirementJobJournal(filepath.Join(jobsDir(root.stateDir, owner.ID()), "jobs.jsonl"))
 	if err != nil {
 		t.Fatal(err)
@@ -1990,6 +2404,12 @@ func TestUnrelatedNotificationResumesWait(t *testing.T) {
 
 func TestColdWaitingAncestorRestoresOnlyAddressedDescendant(t *testing.T) {
 	adapter := newMessagingAdapter("TREE-WAIT-45", "TREE-CHILD-45")
+	returns := newActivationReturns()
+	initialBoundary, againBoundary, childBoundary, terminalBoundary := newWaitBoundary(), newWaitBoundary(), newWaitBoundary(), newWaitBoundary()
+	defer initialBoundary.release()
+	defer againBoundary.release()
+	defer childBoundary.release()
+	defer terminalBoundary.release()
 	fifo, releaseShell := waitProducerFIFO(t)
 	defer releaseShell()
 	childGate := make(chan struct{})
@@ -1999,34 +2419,44 @@ func TestColdWaitingAncestorRestoresOnlyAddressedDescendant(t *testing.T) {
 	adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("tree-owner", "TREE-WAIT-45") }, func(llm.Request) llm.Response { return finalResponse("root-45") })
 	adapter.script("TREE-WAIT-45", func(llm.Request) llm.Response { return delegateToolResponse("tree-child", "TREE-CHILD-45") }, func(req llm.Request) llm.Response {
 		childID = deferredHeadDelegateID.FindString(lastToolResultText(req.Messages))
+		initialBoundary.hold(t)
 		return waitResponseFor("tree-wait-45", childID)
-	}, func(llm.Request) llm.Response { return waitResponseFor("tree-wait-again-45", childID) })
+	}, func(llm.Request) llm.Response {
+		againBoundary.hold(t)
+		return waitResponseFor("tree-wait-again-45", childID)
+	})
 	adapter.script("TREE-CHILD-45", func(llm.Request) llm.Response {
 		<-childGate
 		args, _ := json.Marshal(map[string]any{"command": fmt.Sprintf("read value < %q", fifo), "mode": "background"})
 		return toolCallResponse(llm.ToolCallData{ID: "shell-45", Name: "shell", Type: "function", Arguments: args})
 	}, func(req llm.Request) llm.Response {
+		childBoundary.hold(t)
 		return waitResponseFor("tree-child-wait-45", regexp.MustCompile(`job_[A-Za-z0-9_]{10,}`).FindString(lastToolResultText(req.Messages)))
 	})
-	root := newMessagingRoot(t, adapter, nil)
+	root := newMessagingRoot(t, adapter, returns.configure)
+	t.Cleanup(func() { returns.close(t, root) })
 	if _, err := root.ProcessInput(context.Background(), "start-45", nil); err != nil {
 		t.Fatal(err)
 	}
 	owner := root.subagents.sessions()[0]
-	sub := root.getSub(owner.ID())
-	waitForCondition(t, 3*time.Second, "tree parent yield", func() bool { sub.mu.Lock(); defer sub.mu.Unlock(); return !sub.running })
+	initial := initialBoundary.take(t, returns, owner.ID())
+	initialBoundary.release()
+	waitYielded(t, root, initial, "tree-wait-45", childID)
 	releaseChild()
-	adapter.waitForRequests(t, "TREE-WAIT-45", 3)
 	child := owner.subagents.sessions()[0]
-	childSub := owner.getSub(child.ID())
-	waitForCondition(t, 3*time.Second, "both tree activations yielded", func() bool {
-		sub.mu.Lock()
-		parentRunning := sub.running
-		sub.mu.Unlock()
-		childSub.mu.Lock()
-		defer childSub.mu.Unlock()
-		return !parentRunning && !childSub.running
-	})
+	childInitial := childBoundary.take(t, returns, child.ID())
+	childBoundary.release()
+	incidentYielded(t, owner, child.ID(), childInitial)
+	childCP, err := readWaitCheckpoint(child.TranscriptPath(), child.ID())
+	if err != nil || childCP == nil {
+		t.Fatalf("child checkpoint=%+v err=%v", childCP, err)
+	}
+	waitYielded(t, owner, childInitial, "tree-child-wait-45", childCP.WaitingOn)
+	adapter.waitForRequests(t, "TREE-WAIT-45", 3)
+	again := againBoundary.take(t, returns, owner.ID())
+	assertWaitResume(t, initial, again)
+	againBoundary.release()
+	waitYielded(t, root, again, "tree-wait-again-45", childID)
 	copyDir := copyWaitingState(t, root.stateDir)
 	entered, finish := make(chan struct{}), make(chan struct{})
 	releaseFinish := sync.OnceFunc(func() { close(finish) })
@@ -2036,7 +2466,12 @@ func TestColdWaitingAncestorRestoresOnlyAddressedDescendant(t *testing.T) {
 		<-finish
 		return finalResponse("restored-child-result-45")
 	})
-	restored := restoreWaitingCopy(t, root, copyDir)
+	adapter.script("TREE-WAIT-45", func(llm.Request) llm.Response {
+		terminalBoundary.hold(t)
+		return finalResponse("restored-ancestor-result-45")
+	})
+	restoredReturns := newActivationReturns()
+	restored := restoreWaitingJoinCopy(t, root, copyDir, restoredReturns)
 	// The server installs the outer input owner after bootstrap returns.
 	restored.SetNotifyFunc(func() {})
 	awaitSignal(t, entered, "cold addressed descendant resume")
@@ -2050,9 +2485,12 @@ func TestColdWaitingAncestorRestoresOnlyAddressedDescendant(t *testing.T) {
 		}
 	}
 	releaseFinish()
-	waitForCondition(t, 3*time.Second, "cold child result resumes ancestor", func() bool {
-		return !delegateAggregateSnapshot(t, restored.delegateController, owner.owningDelegateID).CurrentRunOpen
-	})
+	terminal := terminalBoundary.take(t, restoredReturns, owner.ID())
+	if terminal.sessionID != again.sessionID || terminal.delegateID != again.delegateID || terminal.lease != again.lease {
+		t.Fatalf("cold ancestor lease changed: %+v -> %+v", again, terminal)
+	}
+	terminalBoundary.release()
+	incidentSettled(t, restored, owner.ID(), terminal)
 	starts := map[string]int{}
 	for _, event := range publicationEvents(t, restored) {
 		if event.RunStarted != nil {
