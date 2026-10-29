@@ -18,6 +18,7 @@ package agent
 // in internal/apptranscript/apptranscript_test.go.
 
 import (
+	"context"
 	"slices"
 	"strconv"
 	"strings"
@@ -140,7 +141,7 @@ func TestSetModel_PersistsModelSwitchIdentity(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	data, err := readTranscriptFull(sess.TranscriptPath(), "")
+	data, err := readTranscriptFull(context.Background(), sess.TranscriptPath(), "")
 	if err != nil {
 		t.Fatal(err)
 	}

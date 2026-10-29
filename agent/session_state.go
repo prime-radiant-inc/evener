@@ -487,7 +487,7 @@ func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context)
 	path := s.TranscriptPath()
 	s.attentionMu.Lock()
 	if path != "" {
-		_, entries, _, err := readTranscript(path, s.stateDir)
+		_, entries, _, err := readTranscript(ctx, path, s.stateDir)
 		if err == nil {
 			restoredHistory, restoredRepairInsertions = resumeHistoryIndexed(entries)
 			restoredEntries = entries

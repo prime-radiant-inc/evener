@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -48,7 +50,7 @@ func TestReadTranscriptSessionRefTreatsStrictSchemaPlaceholdersAsAbsent(t *testi
 	deps := &toolDeps{stateDir: dir, sessionID: sessionID}
 	reg := readTranscriptRegistry(t, deps)
 
-	omitted, err := execReadTranscript(deps, map[string]any{})
+	omitted, err := execReadTranscript(context.Background(), deps, map[string]any{})
 	if err != nil {
 		t.Fatalf("omitted options: %v", err)
 	}
@@ -58,7 +60,7 @@ func TestReadTranscriptSessionRefTreatsStrictSchemaPlaceholdersAsAbsent(t *testi
 	}
 	for _, tc := range strictSchemaPlaceholders {
 		t.Run("exec "+tc.name, func(t *testing.T) {
-			got, err := execReadTranscript(deps, tc.args)
+			got, err := execReadTranscript(context.Background(), deps, tc.args)
 			if err != nil {
 				t.Fatalf("execReadTranscript(%v): %v", tc.args, err)
 			}
@@ -96,7 +98,7 @@ func TestReadTranscriptSessionRefStillRefusesContradictoryOptions(t *testing.T) 
 		{"real output_match on a session ref", map[string]any{"output_match": "ready"}, "output_match applies only"},
 	} {
 		t.Run("exec "+tc.name, func(t *testing.T) {
-			_, err := execReadTranscript(deps, tc.args)
+			_, err := execReadTranscript(context.Background(), deps, tc.args)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("error = %v, want %q", err, tc.want)
 			}
@@ -118,11 +120,11 @@ func TestReadTranscriptJobRefTreatsNullStringsAsAbsent(t *testing.T) {
 	seedLocalJobRecord(t, stateDir, owner, jobID, "/decoy", output, maxJobOutputRetentionBytes, true, int64(len(output)), nil)
 	deps := &toolDeps{stateDir: stateDir, sessionID: owner}
 	ref := "job:" + jobID
-	omitted, err := execReadTranscript(deps, map[string]any{"transcript_ref": ref})
+	omitted, err := execReadTranscript(context.Background(), deps, map[string]any{"transcript_ref": ref})
 	if err != nil {
 		t.Fatalf("omitted options: %v", err)
 	}
-	got, err := execReadTranscript(deps, map[string]any{
+	got, err := execReadTranscript(context.Background(), deps, map[string]any{
 		"transcript_ref": ref, "format": "null", "range": "null", "expand_turn": "null",
 		"offset_bytes": "null", "context_lines": "null",
 	})
@@ -147,7 +149,7 @@ func TestReadTranscriptRetainedRefSearchesLiteralNull(t *testing.T) {
 		{"transcript_ref": "job:" + jobID, "output_match": "null"},
 		{"transcript_ref": "job:" + jobID, "output_match": "NULL", "context_lines": float64(1)},
 	} {
-		got, err := execReadTranscript(deps, args)
+		got, err := execReadTranscript(context.Background(), deps, args)
 		if err != nil {
 			t.Fatalf("search %v: %v", args, err)
 		}
@@ -155,5 +157,25 @@ func TestReadTranscriptRetainedRefSearchesLiteralNull(t *testing.T) {
 		if !strings.Contains(string(encoded), `"search_complete"`) {
 			t.Fatalf("search %v did not run a search: %s", args, encoded)
 		}
+	}
+}
+
+// A read_transcript call whose context is already cancelled stops before it
+// returns transcript content, for every transcript format.
+func TestReadTranscriptToolHonorsCancelledContext(t *testing.T) {
+	dir := newBucket(t)
+	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
+	writeFindSession(t, dir, findMetaSpec{id: sessionID}, "semantic turn")
+	registered := readTranscriptTool(&toolDeps{stateDir: dir, sessionID: sessionID})
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	for _, format := range []string{"markdown", "outline", "jsonl"} {
+		t.Run(format, func(t *testing.T) {
+			_, err := registered.Exec(ctx, nil, map[string]any{"format": format})
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("Exec error = %v, want context.Canceled", err)
+			}
+		})
 	}
 }

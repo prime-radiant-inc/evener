@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -175,7 +176,7 @@ func FuzzRfzForkSession(f *testing.F) {
 		}
 
 		childPath := schema.SessionTranscriptPath(stateDir, childID)
-		_, entries, _, rerr := readTranscript(childPath, "")
+		_, entries, _, rerr := readTranscript(context.Background(), childPath, "")
 		if rerr != nil {
 			t.Fatalf("child transcript unreadable after successful fork: %v", rerr)
 		}

@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -57,7 +58,7 @@ func FuzzTranscriptReplay(f *testing.F) {
 		if err := os.WriteFile(inPath, raw, 0o644); err != nil {
 			t.Fatalf("write input transcript: %v", err)
 		}
-		data, err := readTranscriptFull(inPath, "")
+		data, err := readTranscriptFull(context.Background(), inPath, "")
 		if err != nil {
 			return // no header / unreadable: no-panic floor proven, stop
 		}
@@ -115,7 +116,7 @@ func assertTranscriptWriteReadRoundTrip(t *testing.T, dir string, data transcrip
 	if err := w.Close(); err != nil {
 		t.Fatalf("close writer: %v", err)
 	}
-	_, got, _, err := readTranscript(out, "")
+	_, got, _, err := readTranscript(context.Background(), out, "")
 	if err != nil {
 		t.Fatalf("re-read transcript: %v", err)
 	}

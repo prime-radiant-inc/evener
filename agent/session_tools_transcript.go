@@ -277,8 +277,7 @@ func readTranscriptTool(deps *toolDeps) tool.RegisteredTool {
 		Definition: tool.DefReadTranscript(), ReadOnly: true,
 		NormalizeArgs: normalizeRetainedReadArgsForValidation,
 		Exec: func(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-			_ = ctx
-			value, err := execReadTranscript(deps, args)
+			value, err := execReadTranscript(ctx, deps, args)
 			if err != nil {
 				return nil, err
 			}
@@ -345,7 +344,7 @@ type retainedSearchResult struct {
 	Continuation          *retainedContinuation       `json:"continuation,omitempty"`
 }
 
-func execReadTranscript(deps *toolDeps, args map[string]any) (any, error) {
+func execReadTranscript(ctx context.Context, deps *toolDeps, args map[string]any) (any, error) {
 	// Preparation normally removes materialized retained defaults before hooks,
 	// but direct registry calls and PreToolUse updatedInput enter here afterward.
 	// This idempotent execution-boundary pass deliberately has no repair
@@ -395,7 +394,7 @@ func execReadTranscript(deps *toolDeps, args map[string]any) (any, error) {
 	if operation == retainedReadSearch {
 		return nil, errors.New("invalid_request: output_match applies only to job: and artifact: refs")
 	}
-	return execReadSessionTranscript(deps, args)
+	return execReadSessionTranscript(ctx, deps, args)
 }
 
 type retainedReadParseIssue struct {
@@ -784,11 +783,7 @@ func boundedRetainedSearchResult(args retainedReadArgs, jobStatus string, result
 
 // execReadSessionTranscript validates the source-specific arguments before it
 // resolves or opens either transcript artifact.
-func execReadSessionTranscript(deps *toolDeps, args map[string]any) (any, error) {
-	return execReadSessionTranscriptWithContext(context.Background(), deps, args)
-}
-
-func execReadSessionTranscriptWithContext(ctx context.Context, deps *toolDeps, args map[string]any) (any, error) {
+func execReadSessionTranscript(ctx context.Context, deps *toolDeps, args map[string]any) (any, error) {
 	parsed, err := parseReadSessionTranscriptArgs(args)
 	if err != nil {
 		return nil, err
@@ -823,11 +818,11 @@ func execReadSessionTranscriptWithContext(ctx context.Context, deps *toolDeps, a
 	meta := resolvedSessionMeta(deps, path, ref)
 	switch parsed.Format {
 	case "markdown":
-		return readMarkdownPage(path, bucketDir, ref, meta, parsed.Range, parsed.ExpandTurn, parsed.OffsetBytes, parsed.MaxBytes)
+		return readMarkdownPage(ctx, path, bucketDir, ref, meta, parsed.Range, parsed.ExpandTurn, parsed.OffsetBytes, parsed.MaxBytes)
 	case "outline":
-		return readOutline(path, bucketDir, ref, parsed.Range)
+		return readOutline(ctx, path, bucketDir, ref, parsed.Range)
 	case "jsonl":
-		return readRaw(path, bucketDir, ref, parsed.Range)
+		return readRaw(ctx, path, bucketDir, ref, parsed.Range)
 	default:
 		panic("validated transcript format")
 	}
@@ -1158,13 +1153,13 @@ func publicTranscriptLine(line []byte, seq int) ([]byte, bool, error) {
 // When turns_rendered < turns_total, a self-announcing window line is spliced
 // after the document header so a default read never silently masquerades as the
 // whole session.
-func readMarkdownPage(path, root, ref string, meta schema.SessionMeta, rangeArg string, expandTurn *int, offsetBytes, maxBytes int) (any, error) {
+func readMarkdownPage(ctx context.Context, path, root, ref string, meta schema.SessionMeta, rangeArg string, expandTurn *int, offsetBytes, maxBytes int) (any, error) {
 	var data transcriptData
 	var err error
 	if expandTurn == nil {
-		data, err = readTranscriptFull(path, root)
+		data, err = readTranscriptFull(ctx, path, root)
 	} else {
-		data, err = readTranscriptFullWithEntryLines(path, root)
+		data, err = readTranscriptFullWithEntryLines(ctx, path, root)
 	}
 	if err != nil {
 		return nil, err
@@ -1495,8 +1490,8 @@ const formatOutline = "outline"
 // rangeArg is non-empty and malformed, it falls back to the full session (no
 // range applied) so the model is never silently wrong. Valid ranges produce the
 // filtered outline with absolute turn numbers.
-func readOutline(path, root, ref, rangeArg string) (any, error) {
-	data, err := readTranscriptFull(path, root)
+func readOutline(ctx context.Context, path, root, ref, rangeArg string) (any, error) {
+	data, err := readTranscriptFull(ctx, path, root)
 	if err != nil {
 		return nil, err
 	}
@@ -1551,8 +1546,8 @@ type readRawMeta struct {
 // bounded by the 200k hard cap (head-only, valid NDJSON). A
 // malformed range falls back to the default and records range_warning; expand_turn
 // does not apply to raw output.
-func readRaw(path, root, ref, rangeArg string) (any, error) {
-	_, entries, _, err := readTranscript(path, root)
+func readRaw(ctx context.Context, path, root, ref, rangeArg string) (any, error) {
+	_, entries, _, err := readTranscript(ctx, path, root)
 	if err != nil {
 		return nil, err
 	}

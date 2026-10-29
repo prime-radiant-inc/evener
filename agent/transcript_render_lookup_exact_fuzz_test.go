@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -494,13 +495,13 @@ func rleLookupContracts(t *testing.T) {
 		t.Fatalf("fallback resolved metadata = %#v", meta)
 	}
 	for _, format := range []string{"", formatMarkdown, formatOutline, formatJSONL} {
-		got, err := execReadSessionTranscript(deps, map[string]any{"transcript_ref": encodeRef("", trenderCurrentSession), "format": format})
+		got, err := execReadSessionTranscript(context.Background(), deps, map[string]any{"transcript_ref": encodeRef("", trenderCurrentSession), "format": format})
 		if err != nil {
 			t.Fatalf("execReadSessionTranscript(%q): %v", format, err)
 		}
 		rleAssertReadEnvelope(t, got, format, encodeRef("", trenderCurrentSession))
 	}
-	if _, err := execReadSessionTranscript(deps, map[string]any{"transcript_ref": encodeRef("", trenderCurrentSession), "format": "future"}); err == nil {
+	if _, err := execReadSessionTranscript(context.Background(), deps, map[string]any{"transcript_ref": encodeRef("", trenderCurrentSession), "format": "future"}); err == nil {
 		t.Fatal("execReadSessionTranscript accepted unknown format")
 	}
 

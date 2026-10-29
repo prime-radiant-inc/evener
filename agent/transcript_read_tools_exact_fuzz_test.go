@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -35,10 +36,10 @@ func trteReadFailures(t *testing.T) {
 		body string
 		read func(string) error
 	}{
-		{name: "lenient-header", read: func(path string) error { _, _, _, err := readTranscript(path, ""); return err }},
-		{name: "lenient-body", body: `{"kind":"header","format_version":2}` + "\n", read: func(path string) error { _, _, _, err := readTranscript(path, ""); return err }},
-		{name: "full-header", read: func(path string) error { _, err := readTranscriptFull(path, ""); return err }},
-		{name: "full-body", body: `{"kind":"header","format_version":2}` + "\n", read: func(path string) error { _, err := readTranscriptFull(path, ""); return err }},
+		{name: "lenient-header", read: func(path string) error { _, _, _, err := readTranscript(context.Background(), path, ""); return err }},
+		{name: "lenient-body", body: `{"kind":"header","format_version":2}` + "\n", read: func(path string) error { _, _, _, err := readTranscript(context.Background(), path, ""); return err }},
+		{name: "full-header", read: func(path string) error { _, err := readTranscriptFull(context.Background(), path, ""); return err }},
+		{name: "full-body", body: `{"kind":"header","format_version":2}` + "\n", read: func(path string) error { _, err := readTranscriptFull(context.Background(), path, ""); return err }},
 		{name: "strict-header", read: func(path string) error { _, err := readStrictChildTranscript(path, "", "child", 64); return err }},
 		{name: "strict-body", body: `{"kind":"header","format_version":2,"session_id":"child"}` + "\n", read: func(path string) error { _, err := readStrictChildTranscript(path, "", "child", 64); return err }},
 	} {
@@ -61,7 +62,7 @@ func trteReadFailures(t *testing.T) {
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatalf("write transcript: %v", err)
 	}
-	if _, err := readMarkdownPage(path, "", "local:child", schema.SessionMeta{ID: "child"}, "0-0", nil, 0, 0); err != nil {
+	if _, err := readMarkdownPage(context.Background(), path, "", "local:child", schema.SessionMeta{ID: "child"}, "0-0", nil, 0, 0); err != nil {
 		t.Fatalf("read partial markdown: %v", err)
 	}
 
@@ -69,7 +70,7 @@ func trteReadFailures(t *testing.T) {
 	readRawLinesForRange = func(string, string, int, int) (string, int, int, bool, error) {
 		return "", 0, 0, false, want
 	}
-	if _, err := readRaw(path, "", "local:child", ""); !errors.Is(err, want) {
+	if _, err := readRaw(context.Background(), path, "", "local:child", ""); !errors.Is(err, want) {
 		t.Fatalf("raw second-pass error = %v, want injected failure", err)
 	}
 	readRawLinesForRange = oldRawLines

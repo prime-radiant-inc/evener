@@ -5,6 +5,7 @@ package agent
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -714,7 +715,7 @@ func trenderAssertPagedExpansion(t *testing.T, header transcript.Header, entries
 	want := trenderExpectedPairedExpansionJSONL(t, path, entries, *opt.fullResultFor)
 
 	const pageBytes = 64
-	firstAny, err := readMarkdownPage(path, "", "local:paged", opt.meta, rangeSpec, opt.fullResultFor, 0, pageBytes)
+	firstAny, err := readMarkdownPage(context.Background(), path, "", "local:paged", opt.meta, rangeSpec, opt.fullResultFor, 0, pageBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -742,7 +743,7 @@ func trenderAssertPagedExpansion(t *testing.T, header transcript.Header, entries
 		t.Fatalf("first continuation = %#v, want offset %d", first.Continuation, len(firstBytes))
 	}
 
-	secondAny, err := readMarkdownPage(path, "", "local:paged", opt.meta, rangeSpec, opt.fullResultFor, first.Continuation.OffsetBytes, pageBytes)
+	secondAny, err := readMarkdownPage(context.Background(), path, "", "local:paged", opt.meta, rangeSpec, opt.fullResultFor, first.Continuation.OffsetBytes, pageBytes)
 	if err != nil {
 		t.Fatal(err)
 	}

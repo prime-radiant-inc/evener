@@ -133,7 +133,7 @@ func TestUpgradeRunbookPreservesHistoryAndContinuesInFreshRoot(t *testing.T) {
 	muteNoteElicitation(restored)
 	completeTask(restored, "compatible.txt")
 	restored.Close()
-	_, restoredEntries, _, err := readTranscript(schema.SessionTranscriptPath(compatible, meta.ID), "")
+	_, restoredEntries, _, err := readTranscript(context.Background(), schema.SessionTranscriptPath(compatible, meta.ID), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +164,7 @@ func TestUpgradeRunbookPreservesHistoryAndContinuesInFreshRoot(t *testing.T) {
 			muteNoteElicitation(restored)
 			completeTask(restored, fmt.Sprintf("legacy-%t.txt", watch))
 			restored.Close()
-			_, entries, _, err := readTranscript(schema.SessionTranscriptPath(root, meta.ID), "")
+			_, entries, _, err := readTranscript(context.Background(), schema.SessionTranscriptPath(root, meta.ID), "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -187,7 +187,7 @@ func TestUpgradeRunbookPreservesHistoryAndContinuesInFreshRoot(t *testing.T) {
 	}
 	completeTask(fresh, "fresh-root.txt")
 	fresh.Close()
-	_, entries, _, err := readTranscript(schema.SessionTranscriptPath(freshRoot, fresh.ID()), "")
+	_, entries, _, err := readTranscript(context.Background(), schema.SessionTranscriptPath(freshRoot, fresh.ID()), "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -226,7 +226,7 @@ func TestReadTranscriptRejectsSessionPagingArgumentsForJobRefs(t *testing.T) {
 			if name == "range" {
 				value = "last:1"
 			}
-			_, err := execReadTranscript(nil, map[string]any{
+			_, err := execReadTranscript(context.Background(), nil, map[string]any{
 				"transcript_ref": "job:job_test",
 				name:             value,
 			})
@@ -752,7 +752,7 @@ func writeSessionWithToolTurn(t *testing.T, bucketDir string, spec findMetaSpec)
 // marshalRead calls execReadSessionTranscript and JSON-marshals the result.
 func marshalRead(t *testing.T, deps *toolDeps, args map[string]any) []byte {
 	t.Helper()
-	v, err := execReadSessionTranscript(deps, args)
+	v, err := execReadSessionTranscript(context.Background(), deps, args)
 	if err != nil {
 		t.Fatalf("execReadSessionTranscript: %v", err)
 	}
