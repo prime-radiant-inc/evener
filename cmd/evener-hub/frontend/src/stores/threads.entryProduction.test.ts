@@ -14,6 +14,7 @@ import { IDBFactory, IDBIndex, IDBKeyRange, IDBObjectStore } from "fake-indexedd
 import { createElement, createRef } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useStore } from "zustand";
+import { appliedReceipt } from "../mutationReceiptTestUtils";
 import { useTranscriptViewRegistration } from "../panes/session/transcript/flow/useTranscriptViewRegistration";
 import { installTranscriptGeometry } from "../panes/session/transcript/transcriptReadingGeometryTestUtils";
 import { deleteSession } from "../shell/rail/actions";
@@ -38,12 +39,14 @@ import {
   type TranscriptItemRow,
 } from "./sessionCacheSchema";
 import { SessionEntryCache } from "./sessionEntryCache";
+import { isMutationPinned } from "./threadOwners";
 import {
   acquireBackgroundThread,
   backgroundTranscriptSnapshotForTests,
   clearCachedSessions,
   countCachedSessions,
   markCacheSessionsDeleted,
+  pendingThreadHydrationUpdatesForTests,
   resetThreadsStoreForTests,
   setMutationStorageForTests,
   settleBackgroundTranscriptsForTests,
@@ -4347,6 +4350,122 @@ it("a quiet certification that establishes the display releases the superseded p
     refreshReadReleased.resolve();
     threadsStore.getState().releaseThread(ref);
     await lease.release();
+  }
+});
+
+it("a pin-drain that retires a pending claim drops its settlement registration for the next lease", async () => {
+  const storage = cache();
+  const realGetLatestWindow = storage.getLatestWindow.bind(storage);
+  setProductionEntryCacheForTests(storage);
+  const outboxStorage = new MutationOutboxIndexedDB({ indexedDB: factory });
+  setMutationStorageForTests(outboxStorage);
+  const ref = "local:a";
+  const read = response(ref, [turn("row-1", 1)]);
+  read.snapshot = { incarnation: "inc-a", length: 1 };
+  // The pinned row must never leave the outbox before the drain: the
+  // dispatcher's discovery dispatch parks on the controlled receipt, so
+  // the row stays in flight - attempted, still holding the pin - until the
+  // test settles it.
+  const queueReceiptReleased = deferred<void>();
+  await outboxStorage.enqueueIntent({
+    targetRef: ref,
+    threadId: "thread-a",
+    method: "turn/queue",
+    payload: { ref, input: [{ type: "text", text: "held" }] },
+    attachments: [],
+    optimisticDisplay: null,
+  });
+  const client = connect(read);
+  client.on("turn/queue", (params) =>
+    queueReceiptReleased.promise.then(() => ({
+      receipt: appliedReceipt(params.clientMutationId, "thread-a", { disposition: "applied" }),
+    })),
+  );
+  let queueRevisions = 0;
+  const emitQueueChanged = () => {
+    queueRevisions += 1;
+    client.emitNotification({
+      method: "thread/queueChanged",
+      params: { ref, threadId: "thread-a", queue: { revision: queueRevisions, clientMutationIds: ["cmid-foreign"] } },
+    });
+  };
+  const lease = acquireBackgroundThread(ref);
+  await lease.ready;
+  await settleEntryTranscriptForTests(ref);
+  expect(threadsStore.getState().threads.has(ref)).toBe(true);
+  // A queue frame carrying an identity no outbox row matches settles
+  // nothing and still runs the runtime's pin refresh, which observes the
+  // row and pins the ref. The runtime exists only now - the prologue's
+  // publication created it lazily - so the pin-establishing frame must
+  // follow it.
+  emitQueueChanged();
+  await vi.waitFor(() => expect(isMutationPinned(ref)).toBe(true));
+  // The pane's claim read parks until the test releases it; every later
+  // wire read belongs to the reacquired lease and must answer.
+  const claimReadReleased = deferred<void>();
+  let wireReads = 0;
+  client.on("thread/read", (params) => {
+    wireReads += 1;
+    if (wireReads === 1) {
+      return claimReadReleased.promise.then(() => ({ ...read, requestGeneration: params.requestGeneration }));
+    }
+    return read;
+  });
+  // The pane's first open over the settled shell: its storage read is
+  // withheld, so it misses the pinned backstop and the pane proceeds to its
+  // claim.
+  let withheldWindowReads = 1;
+  (storage as unknown as { getLatestWindow: unknown }).getLatestWindow = (...args: unknown[]) => {
+    if (withheldWindowReads > 0) {
+      withheldWindowReads -= 1;
+      return new Promise(() => {}) as ReturnType<typeof realGetLatestWindow>;
+    }
+    return realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>)) as ReturnType<
+      typeof realGetLatestWindow
+    >;
+  };
+  setSessionCacheOpenBackstopForTests(40);
+  const openedByPane = threadsStore.getState().ensureThread(ref);
+  try {
+    await vi.waitFor(() => expect(wireReads).toBe(1));
+    // The pane closes while its initial claim read is still pending. The
+    // mutation pin keeps the canonical owner active, so the pane's release
+    // skips its no-owner cleanup - the claim's pending and its settlement
+    // registration survive the release.
+    threadsStore.getState().releaseThread(ref);
+    // The seeding lease leaves too: the pin alone holds the shell.
+    await lease.release();
+    // The pin drains - the held row's receipt settles it and the dispatch
+    // tail's pin refresh reads an empty outbox - and the drain's unpinned
+    // drop retires the claim's pending hydration and its inflight
+    // bookkeeping. The settlement registration must retire with them: its
+    // read can no longer publish, so a later consumer that adopts it waits
+    // on a completion that carries no publication.
+    queueReceiptReleased.resolve();
+    await vi.waitFor(() => {
+      expect(threadsStore.getState().threads.has(ref)).toBe(false);
+      expect(isMutationPinned(ref)).toBe(false);
+      expect(pendingThreadHydrationUpdatesForTests().length).toBe(0);
+    });
+    // A fresh background lease must issue its own read, not adopt the dead
+    // claim's registration.
+    const reacquired = acquireBackgroundThread(ref);
+    const ready = await Promise.race([
+      reacquired.ready.then(() => true),
+      new Promise((resolve) => setTimeout(resolve, 400)).then(() => false),
+    ]);
+    expect(ready).toBe(true);
+    // The lease issued its own fresh read rather than adopting the dead
+    // claim's registration; a lifecycle resync may add one more.
+    expect(wireReads).toBeGreaterThanOrEqual(2);
+    await vi.waitFor(() => expect(threadsStore.getState().threads.has(ref)).toBe(true));
+    await reacquired.release();
+  } finally {
+    setSessionCacheOpenBackstopForTests(10000);
+    claimReadReleased.resolve();
+    await openedByPane.catch(() => {});
+    threadsStore.getState().releaseThread(ref);
+    queueReceiptReleased.resolve();
   }
 });
 

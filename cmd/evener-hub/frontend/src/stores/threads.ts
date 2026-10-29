@@ -1000,6 +1000,11 @@ const hydrationSettlementWaiters = new Map<string, Set<HydrationSettlementWaiter
 // notification reaches every parked opening waiter for the ref.
 const OPENING_ESTABLISHMENT_NOTIFICATION = Symbol("openingEstablishment");
 
+// The wake identity for a deliberate registration retirement: the lifetime
+// that owned the read just ended, nothing excepts it, and every parked
+// opening waiter must re-run its verdict now.
+const OPENING_LIFETIME_RETIREMENT_NOTIFICATION = Symbol("openingLifetimeRetirement");
+
 // A parked waiter plus the one registration whose settlement it must NOT
 // observe: an open the caller's own machinery just published for must not be
 // ended by that very publication's settlement (the claim's own hydration
@@ -1112,6 +1117,25 @@ function settleHydrationRegistration(ref: string, completion: Promise<void>): vo
   if (trackedHydrationCompletions.get(ref) !== completion) return;
   trackedHydrationCompletions.delete(ref);
   wakeHydrationSettlementWaiters(ref, completion);
+}
+
+// Deliberate retirement of the ref's current tracked settlement
+// registration, for a lifetime that just ended (the pin-drain's unpinned
+// drop): the registration's source read can no longer publish - its
+// pending entry is gone - so no later consumer may adopt it, and a parked
+// opening waiter must re-run its verdict now rather than ride its backstop
+// for a settlement that no longer carries a publication. The dead read's
+// own late resolution stays inert: settleHydrationRegistration's identity
+// check no longer matches the map it left, so it can neither wake waiters
+// nor touch whatever newer registration displaced this one. An entry
+// composed with an outstanding recovery span retires the same way here:
+// the hydration side is dead with the lifetime, and the span's own
+// settlement still reaches the consumers that captured it before.
+function retireTrackedHydrationRegistration(ref: string): void {
+  const completion = trackedHydrationCompletions.get(ref);
+  if (!completion) return;
+  trackedHydrationCompletions.delete(ref);
+  wakeHydrationSettlementWaiters(ref, OPENING_LIFETIME_RETIREMENT_NOTIFICATION);
 }
 
 function wakeHydrationSettlementWaiters(ref: string, settled: unknown): void {
@@ -1977,6 +2001,13 @@ function dropUnpinnedModel(ref: string, flush = true): void {
   // schedule a retry.
   pendingThreadHydrations.delete(ref);
   inflightHydrates.delete(ref);
+  // The settlement registration the claim entered for that read retires
+  // with the same lifetime, the way releaseThread's no-owner cleanup retires
+  // it beside the pending and inflight entries it ends: its read can no
+  // longer publish, so a reacquired background lease must issue a fresh read
+  // instead of awaiting it, and a parked opening waiter re-runs its verdict
+  // instead of riding the backstop for a settlement that never comes.
+  retireTrackedHydrationRegistration(ref);
   // The model is leaving `threads` here, so its index membership leaves with
   // it (see putThreadModel/removeThreadModel — the membership paths).
   const dropped = threadsStore.getState().threads.get(ref);
