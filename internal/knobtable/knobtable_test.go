@@ -35,6 +35,9 @@ var (
 	ByName   = Var{Name: "EVENER_BY_NAME", Visibility: Public}
 	Orphan   = Var{Name: "EVENER_ORPHAN", Visibility: Public}
 	Provider = Var{Name: "ACME_API_KEY", Visibility: Public}
+	Expanded = Var{Name: "ACME_ORG_ID", Visibility: Public}
+	Unlisted = Var{Name: "GHOST_API_KEY", Visibility: Public}
+	Isolated = Var{Name: "EVENER_ONLY_CLEARED", Visibility: Public}
 	Retired  = Var{Name: "EVENER_RETIRED"}
 	Internal = Var{Name: "EVENER_USED_INSIDE", Visibility: Internal}
 )
@@ -69,6 +72,8 @@ var removedKnobs = []string{"old_key"}
 func fixtureRoot(t *testing.T) string {
 	return writeTree(t, map[string]string{
 		"envvars/envvars.go":                    fixtureRegistry,
+		"auth/acmetest/isolate.go":              "package acmetest\nvar _ = envvars.Isolated\n",
+		"llm/registry/data/overlay.toml":        "headers = { \"Org\" = \"$ACME_ORG_ID\" }\n",
 		"cmd/tool/main.go":                      "package main\nvar _ = envvars.Read\nvar _ = \"EVENER_BY_NAME\"\n",
 		"cmd/tool/main_test.go":                 "package main\nvar _ = envvars.Orphan\n",
 		"cmd/evener-hub/config.go":              fixtureHubConfig,
@@ -107,8 +112,13 @@ func TestEnvRowsReportConsumersAndDocRows(t *testing.T) {
 	if got := byName["EVENER_ORPHAN"]; len(got.Consumers) != 0 || got.DocRow != "" {
 		t.Errorf("EVENER_ORPHAN row = %+v, want no consumer (a test is not one) and no doc row (a dated plan is not one)", got)
 	}
-	if got := byName["ACME_API_KEY"]; !slices.Equal(got.Consumers, []string{"llm/registry"}) {
-		t.Errorf("provider variable consumers = %v, want the catalog-named registry", got.Consumers)
+	if got := byName["ACME_ORG_ID"]; !slices.Equal(got.Consumers, []string{"llm/registry"}) {
+		t.Errorf("expanded variable consumers = %v, want the registry that expands it", got.Consumers)
+	}
+	for _, name := range []string{"ACME_API_KEY", "GHOST_API_KEY", "EVENER_ONLY_CLEARED"} {
+		if got := byName[name]; len(got.Consumers) != 0 {
+			t.Errorf("%s consumers = %v, want none: the registry does not name it and a test-support package only clears it", name, got.Consumers)
+		}
 	}
 	if got := byName["EVENER_USED_INSIDE"]; !slices.Equal(got.Consumers, []string{"envvars"}) {
 		t.Errorf("EVENER_USED_INSIDE consumers = %v, want the registry package that reads it", got.Consumers)

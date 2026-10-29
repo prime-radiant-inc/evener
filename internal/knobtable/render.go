@@ -46,9 +46,10 @@ removed ` + "`hub.toml`" + ` key in ` + "`removedKnobs`" + ` so a file that stil
 with a warning.
 
 An environment variable has no default of its own: unset means the consuming
-code's built-in behavior, which the doc row describes. Provider credentials and
-endpoints are read by the name the models.dev catalog gives them, so their
-consumer is ` + "`llm/registry`" + `.
+code's built-in behavior, which the doc row describes. A variable the
+models.dev catalog or the provider overlay names is read by ` + "`llm/registry`" + `
+without a Go identifier, so that is its consumer; references from test-support
+packages that only clear a variable do not count.
 
 ## Environment variables in the registry
 

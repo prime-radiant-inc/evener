@@ -1,11 +1,16 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
 	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
+	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -105,29 +110,96 @@ func envRows(root string, sources []goSource) ([]envRow, error) {
 			addTo(byName, m[1], src.dir())
 		}
 	}
+	catalog, err := registryNames(root)
+	if err != nil {
+		return nil, err
+	}
 	var rows []envRow
 	for _, e := range registry {
 		if e.visibility == "" {
 			continue
 		}
 		dirs := map[string]bool{}
-		for d := range byIdent[e.ident] {
-			dirs[d] = true
-		}
-		for d := range byName[e.name] {
-			dirs[d] = true
+		for _, index := range []map[string]bool{byIdent[e.ident], byName[e.name]} {
+			for d := range index {
+				// A test-support package that clears a variable to isolate a
+				// test refers to it without reading it.
+				if !isTestSupport(d) {
+					dirs[d] = true
+				}
+			}
 		}
 		if usedWithin(root, e.ident) {
 			dirs["envvars"] = true
 		}
-		row := envRow{Name: e.name, Visibility: e.visibility, Consumers: sorted(dirs)}
-		if len(row.Consumers) == 0 && isCatalogNamed(e) {
-			row.Consumers = []string{"llm/registry"}
+		if catalog[e.name] {
+			dirs["llm/registry"] = true
 		}
-		row.DocRow = docMention(root, mentionsBackticked(e.name))
-		rows = append(rows, row)
+		rows = append(rows, envRow{
+			Name:       e.name,
+			Visibility: e.visibility,
+			DocRow:     docMention(root, mentionsBackticked(e.name)),
+			Consumers:  sorted(dirs),
+		})
 	}
 	return rows, nil
+}
+
+// isTestSupport reports whether dir is a package that exists only to support
+// tests (oaitest, sandboxtest, hubtestenv).
+func isTestSupport(dir string) bool {
+	base := path.Base(dir)
+	return strings.HasSuffix(base, "test") || strings.HasSuffix(base, "testenv")
+}
+
+// quotedOrExpanded matches a variable name written as a quoted string or as a
+// $NAME / ${NAME} expansion, the two ways the registry's data and code name one.
+var quotedOrExpanded = regexp.MustCompile(`(?:"|\$\{?)([A-Z][A-Z0-9_]*)\b`)
+
+// registryNames is the set of variable names the provider registry reads: those
+// the embedded models.dev catalog, the overlay beside it and the registry's own
+// Go sources name. Provider variables have no Go identifier at their reader, so
+// appearing here is how the registry consumes one.
+func registryNames(root string) (map[string]bool, error) {
+	var text bytes.Buffer
+	dir := filepath.Join(root, "llm", "registry")
+	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if d.IsDir() {
+			if d.Name() == "testdata" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if strings.HasSuffix(p, "_test.go") {
+			return nil
+		}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		if strings.HasSuffix(p, ".gz") {
+			zr, err := gzip.NewReader(bytes.NewReader(data))
+			if err != nil {
+				return fmt.Errorf("%s: %w", p, err)
+			}
+			if data, err = io.ReadAll(zr); err != nil {
+				return fmt.Errorf("%s: %w", p, err)
+			}
+		}
+		text.Write(data)
+		return nil
+	})
+	names := map[string]bool{}
+	for _, m := range quotedOrExpanded.FindAllSubmatch(text.Bytes(), -1) {
+		names[string(m[1])] = true
+	}
+	return names, err
 }
 
 // usedWithin reports whether envvars/envvars.go refers to ident beyond its
@@ -138,12 +210,6 @@ func usedWithin(root, ident string) bool {
 		return false
 	}
 	return len(regexp.MustCompile(`\b`+ident+`\b`).FindAll(src, -1)) > 2
-}
-
-// isCatalogNamed reports whether the provider registry reads the variable by
-// the name the models.dev catalog gives it, so no Go identifier refers to it.
-func isCatalogNamed(e registryEntry) bool {
-	return e.visibility == "public" && !strings.HasPrefix(e.name, "EVENER_") && !strings.HasPrefix(e.name, "LLM_")
 }
 
 func mentionsBackticked(name string) func(string) bool {

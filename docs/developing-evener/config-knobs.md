@@ -11,9 +11,10 @@ removed `hub.toml` key in `removedKnobs` so a file that still sets it starts
 with a warning.
 
 An environment variable has no default of its own: unset means the consuming
-code's built-in behavior, which the doc row describes. Provider credentials and
-endpoints are read by the name the models.dev catalog gives them, so their
-consumer is `llm/registry`.
+code's built-in behavior, which the doc row describes. A variable the
+models.dev catalog or the provider overlay names is read by `llm/registry`
+without a Go identifier, so that is its consumer; references from test-support
+packages that only clear a variable do not count.
 
 ## Environment variables in the registry
 
@@ -21,7 +22,7 @@ consumer is `llm/registry`.
 |---|---|---|---|
 | `EVENER_ALLOWED_DECISIONS` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener`, `tools/tool-fluency/cmd/evener-fluency` |
 | `EVENER_FLUENCY_MODEL` | tooling | [developing-evener/environment.md](../developing-evener/environment.md) | `tools/tool-fluency/cmd/evener-fluency` |
-| `EVENER_HOST_TEMP_BASES` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/sandbox`, `agent/sandbox/sandboxtest`, `test/e2e/turncpu` |
+| `EVENER_HOST_TEMP_BASES` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/sandbox`, `test/e2e/turncpu` |
 | `EVENER_HUB_LISTEN_ADDR` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener-hub`, `cmd/evener-hub/internal/sshconn` |
 | `EVENER_HUB_SPAWNED` | internal | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener`, `cmd/evener-hub/internal/launchconfig` |
 | `EVENER_HUB_TOKEN` | internal | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener`, `cmd/evener-hub/internal/launchconfig` |
@@ -46,16 +47,15 @@ consumer is `llm/registry`.
 | `EVENER_STATE_DIR` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/doctor`, `cmd/evener`, `cmd/evener-doctor` and 2 more |
 | `LLM_MODEL` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/llmcall` |
 | `LLM_PROVIDER` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/llmcall` |
-| `OPENAI_API_KEY` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `auth/openai`, `auth/openai/oaitest`, `cmd/evener` and 2 more |
-| `OPENAI_BASE_URL` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `auth/openai/oaitest` |
-| `OPENAI_CODEX_BASE_URL` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `auth/openai/oaitest` |
-| `OPENAI_CHATGPT_CLIENT_ID` | tooling | [developing-evener/environment.md](../developing-evener/environment.md) | `auth/openai/oaitest` |
-| `OPENAI_ORG_ID` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `auth/openai/oaitest` |
-| `OPENAI_PROJECT_ID` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `auth/openai/oaitest` |
-| `ANTHROPIC_API_KEY` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener`, `cmd/evener-hub` |
+| `OPENAI_API_KEY` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `auth/openai`, `cmd/evener`, `cmd/evener-hub` and 2 more |
+| `OPENAI_BASE_URL` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `llm/registry` |
+| `OPENAI_CODEX_BASE_URL` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `llm/registry` |
+| `OPENAI_ORG_ID` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `llm/registry` |
+| `OPENAI_PROJECT_ID` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `llm/registry` |
+| `ANTHROPIC_API_KEY` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener`, `cmd/evener-hub`, `llm/registry` |
 | `ANTHROPIC_BASE_URL` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `llm/registry` |
-| `GEMINI_API_KEY` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener`, `cmd/evener-hub` |
-| `GOOGLE_API_KEY` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener`, `cmd/evener-hub` |
+| `GEMINI_API_KEY` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener`, `cmd/evener-hub`, `llm/registry` |
+| `GOOGLE_API_KEY` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener`, `cmd/evener-hub`, `llm/registry` |
 | `GOOGLE_BASE_URL` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `llm/registry` |
 | `GROQ_API_KEY` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `llm/registry` |
 | `GROQ_BASE_URL` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `llm/registry` |
@@ -78,7 +78,7 @@ consumer is `llm/registry`.
 | `KIMI_FOR_CODING_BASE_URL` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `llm/registry` |
 | `MINIMAX_API_KEY` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `llm/registry` |
 | `MINIMAX_BASE_URL` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `llm/registry` |
-| `OPENROUTER_API_KEY` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener`, `cmd/evener-hub` |
+| `OPENROUTER_API_KEY` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener`, `cmd/evener-hub`, `llm/registry` |
 | `OPENROUTER_BASE_URL` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `llm/registry` |
 | `OLLAMA_API_KEY` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `llm/registry` |
 | `OLLAMA_BASE_URL` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `llm/registry` |
@@ -104,16 +104,16 @@ consumer is `llm/registry`.
 | `GOOGLE_COMPATIBLE_BASE_URL` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `llm/registry` |
 | `OPENAI_COMPATIBLE_API_KEY` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `llm/registry` |
 | `OPENAI_COMPATIBLE_BASE_URL` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `llm/registry` |
-| `XDG_CACHE_HOME` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent`, `agent/execenv`, `agent/sandbox` and 1 more |
+| `XDG_CACHE_HOME` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent`, `agent/execenv`, `agent/sandbox` |
 | `XDG_CONFIG_HOME` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/internal/liveeval`, `agent/mcpconfig` and 8 more |
-| `XDG_STATE_HOME` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent`, `agent/doctor`, `auth/openai` and 6 more |
+| `XDG_STATE_HOME` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent`, `agent/doctor`, `auth/openai` and 5 more |
 | `CARGO_HOME` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/sandbox` |
 | `DISPLAY` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener` |
 | `GOCACHE` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/sandbox` |
 | `GOENV` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/sandbox` |
 | `GOMODCACHE` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent`, `agent/execenv`, `agent/sandbox` |
 | `GOPATH` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/sandbox` |
-| `HOME` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/sandbox`, `cmd/evener` and 4 more |
+| `HOME` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/sandbox`, `cmd/evener` and 5 more |
 | `LANG` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv` |
 | `NVM_DIR` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv` |
 | `PATH` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/sandbox`, `envvars` |
