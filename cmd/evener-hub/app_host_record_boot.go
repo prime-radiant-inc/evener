@@ -238,7 +238,7 @@ func (m *hubHostManager) reconnectRetiredHosts() {
 	m.cfg.reconnectMu.Unlock()
 	for _, name := range slices.Compact(slices.Sorted(slices.Values(names))) {
 		if registration, registered := m.cfg.hosts.Get(name); registered {
-			go m.redial(registration)
+			go m.redial(registration, hostReconnectRetryInitial, hostReconnectRetryMax)
 		}
 	}
 }
@@ -249,9 +249,9 @@ func (m *hubHostManager) reconnectRetiredHosts() {
 // would otherwise bring a lost link back was stopped by the retirement and a
 // failed dial starts none, so this loop is what keeps the host from staying
 // disconnected after a network blip.
-func (m *hubHostManager) redial(registration hostreg.Host) {
+func (m *hubHostManager) redial(registration hostreg.Host, retryInitial, retryMax time.Duration) {
 	name := registration.Name
-	delay := hostReconnectRetryInitial
+	delay := retryInitial
 	for first := true; ; first = false {
 		if !m.cfg.hosts.SameRegistration(name, registration) {
 			// Removed, or removed and added again: the connection the user lost
@@ -266,7 +266,7 @@ func (m *hubHostManager) redial(registration hostreg.Host) {
 			return
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), hostReconnectTimeout)
-		_, err := m.cfg.manager.Ensure(ctx, name)
+		_, err := m.cfg.manager.EnsureRegistration(ctx, registration)
 		cancel()
 		switch {
 		case err == nil, errors.Is(err, sshconn.ErrManagerClosed), errors.Is(err, sshconn.ErrHostNotFound):
@@ -275,7 +275,7 @@ func (m *hubHostManager) redial(registration hostreg.Host) {
 			m.logf("host %q was not reconnected after the records settled; retrying: %v", name, err)
 		}
 		time.Sleep(delay)
-		delay = min(delay*2, hostReconnectRetryMax)
+		delay = min(delay*2, retryMax)
 	}
 }
 

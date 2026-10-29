@@ -23,6 +23,19 @@ import (
 // exponential backoff and jitter until Manager.Close. ctx bounds this call and
 // the handshake, not the channel's lifetime.
 func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
+	return m.ensure(ctx, name, nil)
+}
+
+// EnsureRegistration is Ensure for one registration: the attach proceeds only
+// while the registry still holds captured, checked at the lookup and again under
+// the host gate, so a name removed and added again in between is refused with
+// ErrHostNotFound instead of the replacement being dialed. A caller restoring a
+// connection it lost uses this so it never connects what the user has replaced.
+func (m *Manager) EnsureRegistration(ctx context.Context, captured hostreg.Host) (*Channel, error) {
+	return m.ensure(ctx, captured.Name, &captured)
+}
+
+func (m *Manager) ensure(ctx context.Context, name string, expected *hostreg.Host) (*Channel, error) {
 	if !m.beginEnsure() {
 		return nil, ErrManagerClosed
 	}
@@ -31,7 +44,7 @@ func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
 		return nil, fmt.Errorf("%w: %q", ErrHostNotFound, name)
 	}
 	host, ok := m.reg.Get(name)
-	if !ok {
+	if !ok || (expected != nil && !hostreg.SameRegistration(host, *expected)) {
 		return nil, fmt.Errorf("%w: %q", ErrHostNotFound, name)
 	}
 	// The registry is the authority on the name's spelling, and every lookup
