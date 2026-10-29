@@ -39,14 +39,10 @@ func TestConcurrentRecordsStayOneLineEach(t *testing.T) {
 	l := NewWriter("hub", &buf)
 	var wg sync.WaitGroup
 	for range 50 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			l.Info("tick", "k", "v")
-		}()
+		wg.Go(func() { l.Info("tick", "k", "v") })
 	}
 	wg.Wait()
-	for _, line := range strings.Split(strings.TrimSuffix(buf.String(), "\n"), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSuffix(buf.String(), "\n"), "\n") {
 		if !strings.HasPrefix(line, "[hub] ") || !strings.HasSuffix(line, "k=v") {
 			t.Fatalf("interleaved record: %q", line)
 		}
