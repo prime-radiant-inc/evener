@@ -995,6 +995,11 @@ const hydrationRegistrations = new WeakMap<object, Promise<void>>();
 // either outcome the source lifecycle owns the display's convergence.
 const hydrationSettlementWaiters = new Map<string, Set<HydrationSettlementWaiter>>();
 
+// The wake identity for an open-superseding establishment: distinct from
+// every registration completion a waiter could except, so the establishment
+// notification reaches every parked opening waiter for the ref.
+const OPENING_ESTABLISHMENT_NOTIFICATION = Symbol("openingEstablishment");
+
 // A parked waiter plus the one registration whose settlement it must NOT
 // observe: an open the caller's own machinery just published for must not be
 // ended by that very publication's settlement (the claim's own hydration
@@ -1109,12 +1114,12 @@ function settleHydrationRegistration(ref: string, completion: Promise<void>): vo
   wakeHydrationSettlementWaiters(ref, completion);
 }
 
-function wakeHydrationSettlementWaiters(ref: string, completion: Promise<void>): void {
+function wakeHydrationSettlementWaiters(ref: string, settled: unknown): void {
   const waiters = hydrationSettlementWaiters.get(ref);
   if (!waiters) return;
   const remaining = new Set<HydrationSettlementWaiter>();
   for (const waiter of waiters) {
-    if (waiter.except === completion) {
+    if (waiter.except === settled) {
       remaining.add(waiter);
       continue;
     }
@@ -7637,6 +7642,8 @@ installEntryRouteHost({
   trackedHydrationCompletions,
   nextTrackedHydrationSettlement,
   registerHydrationCompletion,
+  notifyOpeningEstablishedOverSuperseded: (ref) =>
+    wakeHydrationSettlementWaiters(ref, OPENING_ESTABLISHMENT_NOTIFICATION),
   putThreadModel,
   dropUnpinnedModel,
   syncThreadSubscription,

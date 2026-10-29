@@ -52,6 +52,11 @@ export interface EntryRouteHost {
   /** Registers a completion in trackedHydrationCompletions and settles the
    * waiters parked on it when it settles. */
   registerHydrationCompletion(ref: string, completion: Promise<void>): void;
+  /** Wakes every parked opening waiter for `ref`: a quiet certification just
+   * established the display over an older published opening, whose parked
+   * wait can no longer count on the settlement it armed - the registration it
+   * observed was displaced by a pending refresh that has not settled. */
+  notifyOpeningEstablishedOverSuperseded(ref: string): void;
   putThreadModel(ref: string, model: ThreadModel): void;
   dropUnpinnedModel(ref: string, flush?: boolean): void;
   syncThreadSubscription(ref: string): unknown;
@@ -340,6 +345,25 @@ export function settleEntryTranscriptLocalOpening(ref: string, token: number): v
   });
 }
 
+// Exclusive ownership between quiet and published openings: a quiet
+// certification that establishes the display retires the older published
+// token's consumer hold - consumers wait on that token, and the display it
+// was held for now stands established. A newer published opening is never
+// touched (the monotonic token comparison), and a route with no older
+// published opening keeps nothing to retire. Returns whether a superseded
+// hold was retired.
+function retireSupersededPublishedOpening(ref: string, token: number): boolean {
+  const superseded = store().getState().localOpenings.get(ref);
+  if (superseded === undefined || superseded >= token) return false;
+  store().setState((state) => {
+    if (state.localOpenings.get(ref) !== superseded) return {};
+    const localOpenings = new Map(state.localOpenings);
+    localOpenings.delete(ref);
+    return { localOpenings };
+  });
+  return true;
+}
+
 // Drop any hold for a ref whose fixture route is gone (disposal): publish the
 // change so a consumer showing the port resumes ordinarily rather than waiting
 // for a frame that will never arrive.
@@ -475,10 +499,12 @@ export async function openEntryTranscript(
     // and only a genuinely stalled storage read settles the opening early.
     // Only the opening that still owns the route may record its verdict: a
     // superseded one (its pane released, its repository replaced, or a newer
-    // open already begun) must not overwrite what a newer open established.
+    // open already begun - quiet or published) must not overwrite what a
+    // newer open established.
     const openingOwned = () =>
       entryTranscriptRoute(ref) === fixture &&
       fixture.repository === repository &&
+      entryTranscriptLatestOpening.get(ref) === openingToken &&
       (store().getState().localOpenings.get(ref) === openingToken ||
         entryTranscriptQuietOpenings.get(ref) === openingToken);
     const established = fixture.lastLocalOpenUsable && repository.holdsEstablishedView();
@@ -685,6 +711,17 @@ export async function openEntryTranscript(
       result.retainedRangeComplete !== false &&
       (result.status !== "recovery-needed" || holdsCompleteForegroundWindow(result.model));
     if (openingOwned()) fixture.lastLocalOpenUsable = usable;
+    // A quiet certification that establishes the display takes exclusive
+    // ownership of the route's opening: the older published opening it
+    // superseded keeps the consumer gate held until its own read answers or
+    // the backstop fires - and the settlement it parked on can go silent when
+    // a pending refresh displaced the registration it observed. Retire that
+    // superseded hold so paging and placement resume on the established
+    // display, and wake the parked open so it ends through the superseded
+    // path and clears its backstop timer instead of lingering toward it.
+    if (quiet && usable && retireSupersededPublishedOpening(ref, openingToken)) {
+      routeHost().notifyOpeningEstablishedOverSuperseded(ref);
+    }
     return usable;
   } finally {
     settlement?.cancel();

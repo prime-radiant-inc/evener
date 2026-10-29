@@ -4218,6 +4218,138 @@ it("a foreign hydration settling during a held recovery supersedes the reopened 
   }
 });
 
+it("a quiet certification that establishes the display releases the superseded published opening's hold", async () => {
+  const storage = cache();
+  const realGetLatestWindow = storage.getLatestWindow.bind(storage);
+  setProductionEntryCacheForTests(storage);
+  const ref = "local:a";
+  const read = response(
+    ref,
+    Array.from({ length: 150 }, (_, index) => turn(`row-${index + 1}`, index + 1)),
+  );
+  read.snapshot = { incarnation: "inc-a", length: 150 };
+  read.olderCursor = "cursor-150";
+  const client = connect(read);
+  const lease = acquireBackgroundThread(ref);
+  await lease.ready;
+  await settleEntryTranscriptForTests(ref);
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect(await storage.getLatest(key, 300)).toHaveLength(150);
+  const bodies = () =>
+    threadsStore
+      .getState()
+      .threads.get(ref)
+      ?.turns.flatMap((turn) => turn.items ?? [])
+      .map((item) => item.text)
+      .filter(Boolean);
+  expect(bodies()).toEqual([]);
+  // The pane's claim read parks until the test releases it; when it answers
+  // it echoes its own request generation, so the claim publishes a complete
+  // window with an older frontier and certifies quietly. Every later wire
+  // read belongs to the displacing refresh and stays parked.
+  const claimReadReleased = deferred<void>();
+  const refreshReadReleased = deferred<void>();
+  let wireReads = 0;
+  client.on("thread/read", (params) => {
+    wireReads += 1;
+    if (wireReads === 1) {
+      return claimReadReleased.promise.then(() => ({ ...read, requestGeneration: params.requestGeneration }));
+    }
+    return refreshReadReleased.promise.then(() => ({ ...read, requestGeneration: params.requestGeneration }));
+  });
+
+  // Storage reads, in order: the pane's first open (withheld, misses the
+  // pinned backstop so the pane proceeds to its claim) and the reopened
+  // pane's open (withheld, stays parked for the race). The quiet
+  // certification's read after them must answer.
+  let withheldWindowReads = 2;
+  (storage as unknown as { getLatestWindow: unknown }).getLatestWindow = (...args: unknown[]) => {
+    if (withheldWindowReads > 0) {
+      withheldWindowReads -= 1;
+      return new Promise(() => {}) as ReturnType<typeof realGetLatestWindow>;
+    }
+    return realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>)) as ReturnType<
+      typeof realGetLatestWindow
+    >;
+  };
+  setSessionCacheOpenBackstopForTests(40);
+  // A pending refresh must displace the claim's registration before its own
+  // settle can notify the parked open, or the claim's settlement would
+  // supersede the reopened pane's open on its own. The displacement window is
+  // the claim's publication itself: the publish retires the claim's pending
+  // hydration before it puts the model, and the registration's settle only
+  // runs later microtasks - so a resync issued from the publication's
+  // synchronous store listener registers a pending refresh over the claim's
+  // still-recorded registration, and the claim's settle goes silent.
+  let refreshDisplacedClaim = false;
+  let subscriberInstalled = true;
+  let bodiesPublications = 0;
+  const unsubscribe = threadsStore.subscribe((state) => {
+    if (!subscriberInstalled || refreshDisplacedClaim) return;
+    const model = state.threads.get(ref);
+    const published = model?.turns.flatMap((turn) => turn.items ?? []).some((item) => item.text);
+    if (!published) return;
+    bodiesPublications += 1;
+    // The first bodies-carrying publication is the entry repository's
+    // ingestion of the claim's accepted read (inside accept, before the
+    // claim's own publish retires its pending hydration) - a refresh begun
+    // there would retire the claim's still-current pending and refuse the
+    // claim's publish. The second is the claim's own putThreadModel, whose
+    // pending is already retired: the refresh registers over the claim's
+    // still-recorded registration inside the settle's microtask window.
+    if (bodiesPublications < 2) return;
+    refreshDisplacedClaim = true;
+    client.emitNotification({ method: "evener/thread/resync", params: { ref, threadId: "thread-a" } });
+  });
+  try {
+    const firstEnsure = threadsStore.getState().ensureThread(ref);
+    // The pane's first open missed the pinned backstop and its claim's read
+    // is the pending opening now.
+    await vi.waitFor(() => expect(wireReads).toBe(1));
+    // The pane releases while its claim's read is still pending; a pane
+    // reopens over the shell the background lease preserves. Its plain open
+    // parks on the withheld storage read and the next tracked settlement.
+    threadsStore.getState().releaseThread(ref);
+    setSessionCacheOpenBackstopForTests(10000);
+    const reopened = threadsStore.getState().ensureThread(ref);
+    await vi.waitFor(() => expect(threadsStore.getState().localOpenings.has(ref)).toBe(true));
+    // The claim's read answers: its publication lands complete with an
+    // older frontier, the displacing refresh registers over its settlement,
+    // and the claim's post-hydration certification runs quietly and
+    // establishes the display over the reopened pane's still-parked open.
+    claimReadReleased.resolve();
+    const deadline = Date.now() + 400;
+    let consumerHoldReleased = false;
+    while (Date.now() < deadline) {
+      if (!threadsStore.getState().localOpenings.has(ref)) {
+        consumerHoldReleased = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(refreshDisplacedClaim).toBe(true);
+    expect(consumerHoldReleased).toBe(true);
+    await drainSettleSteps();
+    // The parked open ends through the establishment's notification, not the
+    // backstop, and the certification's established marker stands.
+    expect(productionEntryTranscriptForTests(ref).lastLocalOpenStatus).toBe("superseded-by-source");
+    expect(productionEntryTranscriptForTests(ref).lastLocalOpenUsable).toBe(true);
+    expect(bodies()).toContain("row-26");
+    expect(bodies()).toContain("row-150");
+    await firstEnsure;
+    await reopened;
+  } finally {
+    subscriberInstalled = false;
+    unsubscribe();
+    setSessionCacheOpenBackstopForTests(10000);
+    setSessionCacheStalledOpenForTests(5000);
+    claimReadReleased.resolve();
+    refreshReadReleased.resolve();
+    threadsStore.getState().releaseThread(ref);
+    await lease.release();
+  }
+});
+
 it("ordinary browser routes reads notifications paging reopen reconnect and final release through entries", async () => {
   const storage = cache();
   const ref = "local:a";
