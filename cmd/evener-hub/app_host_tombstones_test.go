@@ -839,8 +839,8 @@ func TestHostRetentionKnobsFoldIntoDefaults(t *testing.T) {
 		if cfg.HostTombstoneRetention != time.Hour || cfg.HostProbeTimeout != 30*time.Second {
 			t.Fatalf("loaded knobs = %v / %v, want the explicit values", cfg.HostTombstoneRetention, cfg.HostProbeTimeout)
 		}
-		if len(cfg.removedHostKnobs) != 0 {
-			t.Fatalf("removedHostKnobs = %v, want none", cfg.removedHostKnobs)
+		if len(cfg.removedKnobs) != 0 {
+			t.Fatalf("removedKnobs = %v, want none", cfg.removedKnobs)
 		}
 		policy := hostRecordPolicyFor(hubcore.WebConfig{HostTombstoneRetention: cfg.HostTombstoneRetention})
 		want := defaultHostRecordPolicy()
@@ -856,14 +856,24 @@ func TestHostRetentionKnobsFoldIntoDefaults(t *testing.T) {
 			t.Fatalf("LoadConfig: %v", err)
 		}
 		want := []string{"host_tombstone_max_rows", "host_keyless_audit_ttl", "host_remnant_escalation_age"}
-		got := slices.Clone(cfg.removedHostKnobs)
+		got := slices.Clone(cfg.removedKnobs)
 		slices.Sort(got)
 		slices.Sort(want)
 		if !slices.Equal(got, want) {
-			t.Fatalf("removedHostKnobs = %v, want %v", got, want)
+			t.Fatalf("removedKnobs = %v, want %v", got, want)
 		}
 		if policy := hostRecordPolicyFor(hubcore.WebConfig{HostTombstoneRetention: cfg.HostTombstoneRetention}); policy != defaultHostRecordPolicy() {
 			t.Fatalf("policy = %+v, want the defaults %+v", policy, defaultHostRecordPolicy())
+		}
+	})
+
+	t.Run("a removed polling key starts the hub and is reported", func(t *testing.T) {
+		cfg, err := load(t, "status_poll_interval = \"5s\"\n")
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		if !slices.Equal(cfg.removedKnobs, []string{"status_poll_interval"}) {
+			t.Fatalf("removedKnobs = %v, want the polling key", cfg.removedKnobs)
 		}
 	})
 
