@@ -91,18 +91,6 @@ except where a line says so itself.
 
 ### Recovery selection ownership
 
-- A conversation composer's recovery picks are keyed by row: the tab's client
-  identity plus the recovery row's clientMutationId, stored with the composer
-  drafts and never part of shared layout geometry, so another tab can never
-  read or overwrite this tab's picks. The row id is the one identity that
-  survives retargets, resumes and pane transitions, so a pick follows its row
-  wherever the durable target moves and nothing is carried at an identity
-  rewrite. Restoring resolves the registry at read time: among the picks whose
-  row currently targets the pane's conversation, the newest `pickedAt` wins. Pick
-  stamps are strictly increasing per tab (a persisted last-stamp outranks the
-  raw clock), so clock ties and backward steps cannot reorder picks, and the
-  restore is fenced against edits made while the IndexedDB lookup was
-  pending.
 - Conversation seats remain as pane identity: allocated at placement, stored
   per tab under the pane id (desktop restore) and the conversation ref (mobile
   route reconstruction), reused when a reload restores the same conversation,
@@ -113,27 +101,6 @@ except where a line says so itself.
   Validated pane seats are reserved across the layout before any ref fallback
   or fresh seat. Seats no longer scope selections, so no selection ever
   migrates between seats.
-- Restoring a composer reads the recovery row this tab explicitly picked and
-  restores it by row id without any kind filter. There is no fallback
-  discovery: with no recorded pick an empty composer stays empty and every
-  recovery row is reachable only through its explicit actions, with no
-  ancestry needed - a column revealed later by authoritative ancestry
-  resolves its own picks. Resolution lazily releases registry entries whose
-  row no longer exists.
-- Restoration is synchronous and user-owned only. Composer content is
-  restored at exactly three points: the mount-time restore of this tab's
-  recorded pick into an empty composer; an explicit user action on a
-  recovery row (Edit, Retry, Send now); and the same-tick failure path of
-  the user's own send, which keeps the pressed composition in the live
-  composer. Nothing else restores or mutates picks or composer content - a
-  preservation settle, a projection update, an effect restart or any other
-  asynchronous event never adopts a row, never writes or clears a pick, and
-  never replaces typed text. A refused write's preservation creates its
-  fresh row without recording any pick for it, including when the pane
-  closed before the write settled, because the durable row outlives the
-  source. Retiring a lease releases the retiring row's own pick entry only;
-  picks this tab holds for other rows survive it. Automatic background
-  restoration is explicitly deferred to issue #5317.
 
 ### Atomic skill and command selections
 

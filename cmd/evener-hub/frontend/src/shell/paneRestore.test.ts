@@ -28,35 +28,12 @@
 // pane-presence assertions are the ones that must carry the net).
 import { bindFilePath } from "@evener/appwire-client/docContent";
 import type { DockviewApi } from "dockview-core";
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { beforeEach, describe, expect, test } from "vitest";
 import { openDocBeside } from "../panes/doc/openDoc";
-import {
-  readRefComposerSeat,
-  resolveRecoveryPick,
-  writeComposerSeat,
-  writeRecoveryPick,
-  writeRefComposerSeat,
-} from "../panes/session/composer/draft";
+import { readRefComposerSeat, writeComposerSeat, writeRefComposerSeat } from "../panes/session/composer/draft";
 
 // Row-keyed picks resolve against the rows' current targets, and these tests
 // hold no live outbox: each registers the rows it picks by id. Seeded picks
-// take strictly increasing timestamps so a newest-pick-wins assertion stays
-// deterministic inside one millisecond.
-const pickRows = new Map<string, { targetRef: string }>();
-let pickClock = 0;
-const seedPick = (ref: string, rowId: string): void => {
-  pickClock += 1;
-  pickRows.set(rowId, { targetRef: ref });
-  const now = vi.spyOn(Date, "now").mockReturnValue(pickClock);
-  try {
-    writeRecoveryPick(rowId);
-  } finally {
-    now.mockRestore();
-  }
-};
-const pickUnder = async (ref: string): Promise<string | undefined> =>
-  (await resolveRecoveryPick(ref, async (rowId) => pickRows.get(rowId)))?.entry.rowId;
-
 import { retainedConversationComposer } from "../panes/session/composer/retainedComposer";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { setMutationClientIdentityForTests } from "../stores/mutationClientIdentity";
@@ -393,12 +370,10 @@ test("a sessionZoom restore keeps this tab's seat when another tab saved another
   try {
     setMutationClientIdentityForTests("tab-a");
     writeComposerSeat("p1", "ref_leaf", "tab-a-seat");
-    seedPick("ref_leaf", "preserved-local");
-    // Another tab saves a different seat and pick for the same conversation
-    // under its own identity. Its pick key is invisible to this tab.
+    // Another tab saves a different seat for the same conversation under
+    // its own identity.
     setMutationClientIdentityForTests("tab-b");
     writeComposerSeat("p1", "ref_leaf", "tab-b-seat");
-    seedPick("ref_leaf", "other-tab-row");
     setMutationClientIdentityForTests("tab-a");
 
     restorePanels({
@@ -418,7 +393,6 @@ test("a sessionZoom restore keeps this tab's seat when another tab saved another
 
     const pane = workspaceStore.getState().panes.find((record) => record.id === "p1");
     expect(pane?.composerSeatId).toBe("tab-a-seat");
-    expect(await pickUnder("ref_leaf")).toBe("preserved-local");
   } finally {
     setMutationClientIdentityForTests(undefined);
   }
@@ -434,8 +408,6 @@ test("a cascade restore keeps this tab's seat when the layout drilled deeper", a
   try {
     setMutationClientIdentityForTests("tab-a");
     writeComposerSeat("p1", "ref_child", "tab-a-seat");
-    seedPick("ref_owner", "owner-row");
-    seedPick("ref_child", "child-row");
 
     restorePanels({
       p1: {
@@ -458,24 +430,20 @@ test("a cascade restore keeps this tab's seat when the layout drilled deeper", a
     const pane = workspaceStore.getState().panes.find((record) => record.id === "p1");
     expect(pane?.type).toBe("sessionZoom");
     expect(pane?.composerSeatId).toBe("tab-a-seat");
-    expect(await pickUnder("ref_owner")).toBe("owner-row");
-    expect(await pickUnder("ref_child")).toBe("child-row");
   } finally {
     setMutationClientIdentityForTests(undefined);
   }
 });
 // This tab held two conversations on one cascade seat; another tab saved the
 // shared layout with them as two separate panes. Restoring claims the shared
-// seat for the first pane, so the second must have that seat's saved
-// selection migrated to its own distinct seat - or a reload of the second
-// conversation restores an older rejected row instead of its preserved work.
-test("a restore resolving a seat collision keeps the saved selection readable", async () => {
+// seat for the first pane, so the second must land on its own distinct
+// seat.
+test("a restore resolving a seat collision gives the second pane a distinct seat", async () => {
   installLocalStorage(new MemoryStorage());
   try {
     setMutationClientIdentityForTests("tab-a");
     writeRefComposerSeat("ref_parent", "seat-s");
     writeRefComposerSeat("ref_child", "seat-s");
-    seedPick("ref_child", "child-row");
     writeComposerSeat("p1", "ref_parent", "seat-s");
 
     restorePanels({
@@ -496,17 +464,14 @@ test("a restore resolving a seat collision keeps the saved selection readable", 
     const child = workspaceStore.getState().panes.find((record) => record.id === "p2");
     if (!child?.composerSeatId) throw new Error("child lacks its seat");
     expect(child.composerSeatId).not.toBe("seat-s");
-    expect(await pickUnder("ref_child")).toBe("child-row");
   } finally {
     setMutationClientIdentityForTests(undefined);
   }
 });
-// A restored cascade colliding onto a replacement seat must carry EVERY
-// column's stored selection with it, not only its leaf's: the ancestor
-// columns read the replacement seat, and their preserved work lives under
-// the seat that was claimed first. A reload of a non-leaf column then
-// restores its own selected work instead of an older rejected peer row.
-test("a seat-collision restore keeps every cascade column's pick readable", async () => {
+// A restored cascade colliding onto a replacement seat must still expose
+// EVERY column's retained composer, not only its leaf's: the ancestor
+// columns read the replacement seat the claimed pane left behind.
+test("a seat-collision restore keeps every cascade column a retained composer", async () => {
   installLocalStorage(new MemoryStorage());
   try {
     setMutationClientIdentityForTests("tab-a");
@@ -514,8 +479,6 @@ test("a seat-collision restore keeps every cascade column's pick readable", asyn
     // another pane saved on this tab claims that seat first.
     writeRefComposerSeat("ref_shared", "seat-s");
     writeRefComposerSeat("ref_leaf", "seat-s");
-    seedPick("ref_shared", "shared-row");
-    seedPick("ref_leaf", "leaf-row");
     writeComposerSeat("p1", "ref_parent", "seat-s");
     writeComposerSeat("p2", "ref_leaf", "seat-s");
 
@@ -549,17 +512,14 @@ test("a seat-collision restore keeps every cascade column's pick readable", asyn
     // replacement seat, exactly like the leaf does.
     const sharedColumn = retainedConversationComposer(conversationPaneLifetime(cascade), "ref_shared");
     if (!sharedColumn) throw new Error("shared column lacks a composer");
-    expect(await pickUnder("ref_shared")).toBe("shared-row");
-    expect(await pickUnder("ref_leaf")).toBe("leaf-row");
   } finally {
     setMutationClientIdentityForTests(undefined);
   }
 });
-// Row-keyed contract: a cold restore needs no ancestry to keep a column's
-// pick restorable. The pick is keyed by its row, so when authoritative
-// ancestry later reveals the column, its composer reads it without any
-// migration having run.
-test("a cold restore keeps an ancestry-only ancestor's pick restorable", async () => {
+// A cold restore has no ancestry, so a column supplied only by
+// authoritative ancestry still gets a retained composer on the cascade's
+// replacement seat.
+test("a cold restore keeps an ancestry-only ancestor column on its replacement seat", async () => {
   installLocalStorage(new MemoryStorage());
   try {
     setMutationClientIdentityForTests("tab-a");
@@ -569,8 +529,6 @@ test("a cold restore keeps an ancestry-only ancestor's pick restorable", async (
     const leafRef = "local:cold-leaf";
     writeRefComposerSeat(ancestorRef, "seat-s");
     writeRefComposerSeat(leafRef, "seat-s");
-    seedPick(ancestorRef, "cold-ancestor-row");
-    seedPick(leafRef, "cold-leaf-row");
     // Another pane saved on this tab claims the shared seat first, so the
     // cascade restores onto a replacement seat.
     writeComposerSeat("p0", "local:cold-other", "seat-s");
@@ -597,15 +555,13 @@ test("a cold restore keeps an ancestry-only ancestor's pick restorable", async (
     });
 
     // Cold load: no client, no ancestry. The cascade restored onto a
-    // replacement seat, and no migration ran for the ancestor. When ancestry
-    // later reveals the ancestor column, its composer still reads its own
-    // pick without any migration having run.
+    // replacement seat, and the ancestry-only ancestor column still has its
+    // retained composer.
     const cascade = workspaceStore.getState().panes.find((record) => record.id === "p1");
     if (!cascade?.composerSeatId) throw new Error("cascade lacks its seat");
     expect(cascade.composerSeatId).not.toBe("seat-s");
     const column = retainedConversationComposer(conversationPaneLifetime(cascade), ancestorRef);
     if (!column) throw new Error("ancestor column lacks a composer");
-    expect(await pickUnder(ancestorRef)).toBe("cold-ancestor-row");
   } finally {
     setMutationClientIdentityForTests(undefined);
   }
@@ -648,7 +604,6 @@ test("a route placement before restore keeps the saved pane seat", async () => {
     // The previous page saved conversation A on pane_session_1, with its seat
     // and selected recovery row.
     writeComposerSeat("pane_session_1", "local:a", "saved-a-seat");
-    seedPick("local:a", "a-row");
 
     // Cold startup reconstructs route B first; pane ids restarted, so B lands
     // on A's saved id.
@@ -665,9 +620,6 @@ test("a route placement before restore keeps the saved pane seat", async () => {
 
     const restored = workspaceStore.getState().panes.find((pane) => pane.id === "pane_session_1");
     expect(restored?.composerSeatId).toBe("saved-a-seat");
-    expect(await pickUnder("local:a")).toBe("a-row");
-    // B's route placement never touched A's pick.
-    expect(await pickUnder("local:b")).toBeUndefined();
   } finally {
     setMutationClientIdentityForTests(undefined);
   }
@@ -682,10 +634,8 @@ test("shared-layout restore ignores a pane seat saved for another conversation",
     setMutationClientIdentityForTests("tab-a");
     // This tab remembers p1 as conversation A.
     writeComposerSeat("p1", "ref_a", "seat-a");
-    seedPick("ref_a", "a-row");
     // This tab's correct mapping for conversation B.
     writeRefComposerSeat("ref_b", "seat-b");
-    seedPick("ref_b", "b-row");
 
     // Another tab saved conversation B under the same pane id.
     restorePanels({
@@ -698,9 +648,6 @@ test("shared-layout restore ignores a pane seat saved for another conversation",
 
     const restored = workspaceStore.getState().panes.find((pane) => pane.id === "p1");
     expect(restored?.composerSeatId).toBe("seat-b");
-    expect(await pickUnder("ref_b")).toBe("b-row");
-    // Conversation A's saved pick is not overwritten by the B restore.
-    expect(await pickUnder("ref_a")).toBe("a-row");
   } finally {
     setMutationClientIdentityForTests(undefined);
   }
@@ -715,7 +662,6 @@ test("restore reserves known pane seats before ref fallbacks", async () => {
   try {
     setMutationClientIdentityForTests("tab-a");
     writeComposerSeat("p_known", "ref_a", "seat-known");
-    seedPick("ref_a", "known-row");
 
     restorePanels({
       p_unknown: {
@@ -740,7 +686,6 @@ test("restore reserves known pane seats before ref fallbacks", async () => {
     const unknown = panes.find((pane) => pane.id === "p_unknown");
     expect(known?.composerSeatId).toBe("seat-known");
     expect(unknown?.composerSeatId).not.toBe("seat-known");
-    expect(await pickUnder("ref_a")).toBe("known-row");
   } finally {
     setMutationClientIdentityForTests(undefined);
   }
@@ -756,8 +701,6 @@ test("restore reconciles a shared conversation mapping from the focused pane", a
     setMutationClientIdentityForTests("tab-a");
     writeComposerSeat("p_session", "ref_shared", "session-seat");
     writeComposerSeat("p_cascade", "ref_shared", "cascade-seat");
-    // The focused session pane's picked row.
-    seedPick("ref_shared", "session-row");
 
     restorePanels({
       p_session: {
@@ -786,7 +729,6 @@ test("restore reconciles a shared conversation mapping from the focused pane", a
     const reloaded = workspaceStore.getState().panes.find((pane) => pane.id === reloadedId);
     if (!reloaded?.composerSeatId) throw new Error("reloaded route lacks its seat");
     expect(reloaded.composerSeatId).toBe("session-seat");
-    expect(await pickUnder("ref_shared")).toBe("session-row");
   } finally {
     setMutationClientIdentityForTests(undefined);
   }

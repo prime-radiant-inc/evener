@@ -34,7 +34,7 @@ import {
   testThread,
   textarea,
 } from "./composerTestUtils";
-import { readComposerDraft, readDraft, writeComposerDraft, writeRecoveryPick } from "./draft";
+import { readComposerDraft, readDraft, writeComposerDraft } from "./draft";
 import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./queue/testing/flushPendingTurnsProjection";
 import { resetQuoteInsertStoreForTests } from "./quoteInsert";
@@ -170,9 +170,7 @@ test.each([
     if (recovery) {
       const storage = new MutationOutboxIndexedDB();
       setMutationStorageForTests(storage);
-      const recovered = await seedRejectedRecoveryWithAttachment(storage, "ref_a");
-      // The user's recorded pick: mount-restore reads the pick only.
-      writeRecoveryPick(recovered.clientMutationId);
+      await seedRejectedRecoveryWithAttachment(storage, "ref_a");
     }
     const fake = await mountComposer(
       "ref_a",

@@ -5,7 +5,6 @@ import { controlsFor, liveThreadModel, pressLocalRecoveryFenced, pressRefusal } 
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import {
   captureRecoveryStopBarrier,
-  getMutationRuntime,
   hasBlockedUnknown,
   hasQueuedNonSend,
   type InputAttachment,
@@ -15,15 +14,14 @@ import {
 import { useToasts } from "../../../widgets";
 import { createAttachmentOperations, useAttachments } from "./attachments/useAttachments";
 import { STEER_RECOVERY_FENCED_REASON } from "./controlTooltips";
-import {
-  clearDraft,
-  clearPersistedDraftIfRevisionMatches,
-  readComposerDraftRevisionId,
-  readDraftRevision,
-  resolveRecoveryPick,
-} from "./draft";
+import { clearDraft, clearPersistedDraft, readDraftRevision } from "./draft";
 import { pendingTurnEntries, type QueueStripProps, submitWithPendingTracking, usePendingTurnEntries } from "./queue";
-import { resendRecoveryPendingTurn, useBlockedMutationEntries, useComposerSubmitting } from "./queue/pendingTurnsStore";
+import {
+  resendRecoveryPendingTurn,
+  useBlockedMutationEntries,
+  useComposerSubmitting,
+  useRecoveryEntries,
+} from "./queue/pendingTurnsStore";
 import { mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recovery/recoveryDraft";
 import {
   materializeSelectionReferences,
@@ -86,7 +84,6 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     selectionMetaRef,
     recoveryOwnerLeaseRef,
     recoveryOwnsLocalDraftRef,
-    recoveryReplacementEpochRef,
   } = source.continuity;
   const {
     updateText,
@@ -101,6 +98,7 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
   } = source;
   const observedAttachments = useAttachments(source.editor, source.attachments);
   const attachments = useMemo(() => createAttachmentOperations(source.editor, source.attachments), [source]);
+  const recoveryEntries = useRecoveryEntries(ref);
   const selectionMeta = useMemo(() => ({ commandNames, mentions }), [commandNames, mentions]);
   const [busyAction, updateBusyAction] = useState<BusyAction>(null);
   const busyActionRef = useRef<BusyAction>(null);
@@ -109,7 +107,6 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
   const submittingRef = useRef(submitting);
   submittingRef.current = submitting;
   const mountedRef = useRef(false);
-  const restoreAttemptedRef = useRef(false);
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -198,19 +195,8 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
   ]);
 
   useEffect(() => {
-    if (freshRecoveryRef !== ref) {
-      return;
-    }
-    // Consume the mount restoration opportunity the moment readiness is
-    // first established for this ref - occupied composer or not - so no
-    // later asynchronous event (a Send clearing its owner, a projection
-    // update, an effect restart) can re-arm a restore: the one legitimate
-    // attempt is this same first-ready run, and only into an empty
-    // composer.
-    const firstReadyRun = !restoreAttemptedRef.current;
-    restoreAttemptedRef.current = true;
     if (
-      !firstReadyRun ||
+      freshRecoveryRef !== ref ||
       activeRecoveryId !== null ||
       textRef.current.trim() !== "" ||
       attachments.items.length > 0 ||
@@ -219,72 +205,36 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     ) {
       return;
     }
-    let cancelled = false;
-    // The IndexedDB lookup can outlast a user edit: capture the edit and
-    // replacement generations and fence the restore if either moved, so a
-    // composition the user typed and cleared during the lookup is never
-    // replaced by the old row's content.
-    const editGeneration = draftEditRevisionRef.current;
-    const replacementEpoch = recoveryReplacementEpochRef.current;
-    // The persisted draft's identity as it stands BEFORE the IndexedDB
-    // lookup: the cleanup after the restore may delete only this same
-    // draft, never a newer one another pane saved while the lookup was
-    // pending.
-    const draftRevisionId = readComposerDraftRevisionId(ref);
-    void (async () => {
-      // Resolve this tab's pick registry against the rows' current targets
-      // (an IndexedDB read), so a pick follows its row across retargets and
-      // resumes with nothing to carry.
-      const runtime = getMutationRuntime();
-      const resolved = runtime
-        ? await resolveRecoveryPick(ref, (rowId) => runtime.storage.getRecovery(rowId))
-        : undefined;
-      if (
-        cancelled ||
-        draftEditRevisionRef.current !== editGeneration ||
-        recoveryReplacementEpochRef.current !== replacementEpoch ||
-        source.getSnapshot().activeRecoveryId !== null ||
-        textRef.current.trim() !== "" ||
-        attachments.items.length > 0 ||
-        skillNamesRef.current.length > 0 ||
-        selectionMetaRef.current.commandNames.length > 0
-      ) {
-        return;
-      }
-      // Restoration reads the user's recorded pick only - there is no
-      // fallback discovery, so nothing can adopt a row the durable lookup
-      // cannot find.
-      const record = resolved?.row;
-      if (!record) return;
-      const recovered = recoveryComposerDraft(record);
-      const visible = materializeSelectionReferences({ ...recovered, skillNames: restoredSkillNames(recovered) });
-      Object.assign(recovered, visible);
-      recoveryOwnsLocalDraftRef.current = false;
-      // A mount-restore touches content only: the registry is never written
-      // or cleared here.
-      setActiveRecoveryId(record, { restore: true });
-      // Restoration replaces this mount's local owner without editing the
-      // shared recovery draft that an earlier mount may still be submitting.
-      draftEditRevisionRef.current += 1;
-      markRestore();
-      updateText(recovered.text);
-      updateSkillNames(restoredSkillNames(recovered));
-      updateSelectionMeta(recovered);
-      attachments.replaceWithSettled(recovered.attachments);
-      if (draftRevisionId !== undefined) clearPersistedDraftIfRevisionMatches(ref, draftRevisionId);
-    })();
-    return () => {
-      cancelled = true;
-    };
+    // An interrupt is not a draft. It carries no input, so activating one
+    // loads an empty composer and then resends the user's next keystrokes as a
+    // turn/start -- a Stop becoming a message. QueueStrip renders it as a
+    // failure with its reason instead.
+    const record = recoveryEntries.find(
+      (entry) => entry.recoveryKind === "rejected" && entry.method !== "turn/interrupt" && !entry.preserveComposer,
+    );
+    if (!record) return;
+    const recovered = recoveryComposerDraft(record);
+    const visible = materializeSelectionReferences({ ...recovered, skillNames: restoredSkillNames(recovered) });
+    Object.assign(recovered, visible);
+    recoveryOwnsLocalDraftRef.current = false;
+    setActiveRecoveryId(record);
+    // Restoration replaces this mount's local owner without editing the
+    // shared recovery draft that an earlier mount may still be submitting.
+    draftEditRevisionRef.current += 1;
+    markRestore();
+    updateText(recovered.text);
+    updateSkillNames(restoredSkillNames(recovered));
+    updateSelectionMeta(recovered);
+    attachments.replaceWithSettled(recovered.attachments);
+    clearPersistedDraft(ref);
   }, [
     activeRecoveryId,
     attachments.replaceWithSettled,
     draftEditRevisionRef,
     freshRecoveryRef,
     markRestore,
+    recoveryEntries,
     recoveryOwnsLocalDraftRef,
-    recoveryReplacementEpochRef,
-    source.getSnapshot,
     ref,
     setActiveRecoveryId,
     skillNamesRef,

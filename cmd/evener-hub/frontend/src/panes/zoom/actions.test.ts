@@ -21,7 +21,6 @@ import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { acquireSessionActivity } from "../../stores/sessionActivity";
 import { activityDelegate } from "../../stores/sessionActivityTestUtils";
-import { readRecoveryPick, resolveRecoveryPick, writeRecoveryPick } from "../session/composer/draft";
 import { resetTranscriptViewRegistryForTests } from "../session/transcript/flow/transcriptViewRegistry";
 import { retainedTranscriptReadView } from "../session/transcript/transcriptReadView";
 import { enterAgentCascade, popAgentCascade, resumeCascadeScope, returnFromAgentCascade } from "./actions";
@@ -553,38 +552,6 @@ test("a resume of an ancestor recorded only by authoritative ancestry follows th
         (scope) => scope.requestedRef,
       ),
     ).toEqual(["root", "child-resumed", "grandchild"]);
-  } finally {
-    lease.release();
-  }
-});
-
-// The pick is keyed by conversation, so a resume that rewrites a column's
-// ref must carry the stored pick with it - even for a non-source column no
-// autosave touches - or the replacement composer restores the oldest
-// rejected row instead of the column's preserved work.
-test("a non-source cascade resume keeps the column's pick restorable", async () => {
-  const client = cascadeClient(ancestryContext);
-  connectionStore.getState().connect(client);
-  const lease = acquireSessionActivity(client, "grandchild", "session");
-  try {
-    await waitFor(() => expect(lease.store.getSnapshot().context?.ancestryKnown).toBe(true));
-    const paneId = workspaceStore.getState().openPane("sessionZoom", {
-      ref: "grandchild",
-      source: { type: "session", params: { ref: "root" } },
-      edges: [],
-    });
-    const lifetime = conversationPaneLifetime(pane(paneId));
-    writeRecoveryPick("child-pick");
-    const applied = resumeCascadeScope(lifetime, "child", "child-resumed");
-    expect(applied).toBe(true);
-    // The pick is keyed by row id, so the cascade resume leaves it
-    // untouched: once the row's durable target follows the resumed ref,
-    // resolution finds it there with nothing carried.
-    expect(readRecoveryPick("child-pick")).toBeDefined();
-    const resolved = await resolveRecoveryPick("child-resumed", async (rowId) =>
-      rowId === "child-pick" ? { targetRef: "child-resumed" } : undefined,
-    );
-    expect(resolved?.entry.rowId).toBe("child-pick");
   } finally {
     lease.release();
   }

@@ -15,14 +15,12 @@ import {
 import {
   clearDraft,
   clearPersistedDraftIfRevisionMatches,
-  clearRecoveryPick,
   markDraftEdited,
   readComposerDraft,
   readComposerDraftRevisionId,
   readComposerDraftSnapshot,
   readDraftRevision,
   writeComposerDraft,
-  writeRecoveryPick,
 } from "./draft";
 import {
   discardRecoveryPendingTurn,
@@ -109,7 +107,7 @@ export interface ComposerSourceState {
   updateSkillNames(names: string[]): void;
   editSkillNames(names: string[]): void;
   updateSelectionMeta(value: SkillEditorValue): void;
-  setActiveRecoveryId(record: MutationRecoveryRecord | null, options?: { restore?: boolean }): void;
+  setActiveRecoveryId(record: MutationRecoveryRecord | null): void;
   markRestore(): void;
   persistDraft(text: string): void;
   writeDraft(text: string, mayPersist: boolean, source?: TextEditSource): void;
@@ -318,40 +316,17 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     markEdited();
     updateSkillNames(names);
   }
-  function setActiveRecoveryId(record: MutationRecoveryRecord | null, options?: { restore?: boolean }): void {
+  function setActiveRecoveryId(record: MutationRecoveryRecord | null): void {
     if (disposed) return;
     const activeRecoveryId = record?.clientMutationId ?? null;
-    const previousRecoveryId = currentRecoveryId();
-    if (previousRecoveryId !== activeRecoveryId) {
+    if (currentRecoveryId() !== activeRecoveryId) {
       cancelCleanupRetry();
       committedRecoveryComposition = null;
     }
+    recoveryOwnerLeaseRef.current = record
+      ? { clientMutationId: record.clientMutationId, compositionRevision: recoveryCompositionRevision(record) }
+      : null;
     recoveryBaseRecord = record;
-    if (record === null) {
-      // Retirement releases the retiring row's own pick entry: the pick is
-      // keyed by that row, and the send consumed it. Picks this tab holds
-      // for other rows are separate entries and survive untouched. A
-      // restore-path retirement ({ restore: true }) never touches the
-      // registry - an asynchronous event must not mutate picks.
-      if (previousRecoveryId !== null && options?.restore !== true) clearRecoveryPick(previousRecoveryId);
-      recoveryOwnerLeaseRef.current = null;
-    } else if (options?.restore === true) {
-      // Mount-time restore of the user's recorded pick: content only. The
-      // registry is never written or cleared here - an asynchronous event
-      // must not mutate picks, and the pick that named this row already
-      // carries the rank the user gave it.
-      recoveryOwnerLeaseRef.current = {
-        clientMutationId: record.clientMutationId,
-        compositionRevision: recoveryCompositionRevision(record),
-      };
-    } else {
-      // A user pick is the newest choice by definition: it always wins.
-      writeRecoveryPick(record.clientMutationId);
-      recoveryOwnerLeaseRef.current = {
-        clientMutationId: record.clientMutationId,
-        compositionRevision: recoveryCompositionRevision(record),
-      };
-    }
     state.setState({ activeRecoveryId });
   }
   function persistDraft(text: string): void {
@@ -466,7 +441,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
             hasEmptyComposition()
           ) {
             recoveryOwnsLocalDraftRef.current = false;
-            setActiveRecoveryId(null, { restore: true });
+            setActiveRecoveryId(null);
             if (localDraftRevisionId) clearPersistedDraftIfRevisionMatches(ref, localDraftRevisionId);
           }
           return true;
@@ -495,45 +470,24 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
             // owner this tab can no longer write. A draft carries no image
             // bytes, so preserve the complete local composition under a fresh
             // recovery owner before retiring the lease.
-            // The preservation captured the composition as it stood when
-            // its durable write began. Keystrokes that land while that write
-            // is pending are in neither the preserved row nor any later
-            // queued write, whose owner check dies with the retired lease -
-            // so the composition as it stands NOW must be preserved too
-            // before the lease retires, or those edits vanish on reload.
-            const compositionAtPreservation = recoveryCompositionFingerprint({
-              text: textRef.current,
-              attachments: operations.toInputAttachments(),
-              skillNames: skillNamesRef.current,
-              commandNames: selectionMetaRef.current.commandNames,
-              mentions: selectionMetaRef.current.mentions,
-            });
             const preserved = await preserveStaleRecovery(clientMutationId, localDraftRevisionId);
             if (
               !disposed &&
               currentRecoveryId() === clientMutationId &&
               recoveryReplacementEpochRef.current === replacementEpoch
             ) {
-              // Automatic background restoration is cut from this PR: the
-              // settle adopts neither the fresh row nor the composer and
-              // never touches the pick registry. The local composition stays
-              // exactly as the user left it - a preserved row carries it
-              // durably, and an explicit action reaches that row. Only a
-              // failed preservation falls back to the ordinary draft as the
-              // carrier.
-              const compositionNow = recoveryCompositionFingerprint({
-                text: textRef.current,
-                attachments: operations.toInputAttachments(),
-                skillNames: skillNamesRef.current,
-                commandNames: selectionMetaRef.current.commandNames,
-                mentions: selectionMetaRef.current.mentions,
-              });
-              if (compositionNow !== compositionAtPreservation) {
-                const newer = await preserveStaleRecovery(clientMutationId, localDraftRevisionId);
-                if (!newer) persistDraft(textRef.current);
+              if (preserved) {
+                // Own the returned row, including the identical-composition
+                // fast path and its current revision: later edits update it,
+                // Send consumes it, and a reload restores its attachment
+                // bytes.
+                setActiveRecoveryId(preserved);
+              } else {
+                // Preservation failed, so nothing durable carries the images.
+                // Fall back to the ordinary draft and retire the lease.
+                persistDraft(textRef.current);
+                setActiveRecoveryId(null);
               }
-              if (!preserved) persistDraft(textRef.current);
-              setActiveRecoveryId(null, { restore: true });
             }
           }
           if (!disposed) {

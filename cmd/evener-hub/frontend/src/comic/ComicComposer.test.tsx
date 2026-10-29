@@ -13,7 +13,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { askDockStore, resetAskDockStoreForTests } from "../panes/session/composer/askDock/askDockStore";
 import { Composer } from "../panes/session/composer/Composer";
 import { resetComposerFocusStoreForTests } from "../panes/session/composer/composerFocus";
-import { readComposerDraft, writeComposerDraft, writeRecoveryPick } from "../panes/session/composer/draft";
+import { readComposerDraft, writeComposerDraft } from "../panes/session/composer/draft";
 import { resetPendingTurnsStoreForTests } from "../panes/session/composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "../panes/session/composer/queue/testing/flushPendingTurnsProjection";
 import { requestQuoteInsert, resetQuoteInsertStoreForTests } from "../panes/session/composer/quoteInsert";
@@ -811,8 +811,6 @@ test("cross-client editing preserves structured recovery", async () => {
   });
   const recovered = await storage.transferToRecovery(row.clientMutationId, "rejected");
   if (!recovered) throw Error("missing recovery fixture");
-  // The user's recorded pick: mount-restore reads the pick only.
-  writeRecoveryPick(row.clientMutationId);
   const fake = await setup();
   let source = sourceFor();
   let view = render(
@@ -1016,8 +1014,6 @@ test("background recovery ownership rollover preserves Comic editor selection", 
   });
   const recovery = await storage.transferToRecovery(row.clientMutationId, "rejected");
   if (!recovery) throw Error("missing recovery fixture");
-  // The user's recorded pick: mount-restore reads the pick only.
-  writeRecoveryPick(row.clientMutationId);
   const source = sourceFor();
   render(<ComicComposer source={source} />);
   await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(row.clientMutationId));
@@ -1043,14 +1039,11 @@ test("background recovery ownership rollover preserves Comic editor selection", 
     replaceEditorText(editor(), "newer composition");
     selectEditorText(editor(), 2, 6);
     await settle(source);
-    // The settle preserves the edited work durably but adopts nothing: the
-    // composer keeps no active recovery row, and the typed composition and
-    // selection stay in the live editor.
-    expect(source.getSnapshot().activeRecoveryId).toBeNull();
-    const preserved = (await storage.listRecovery(ref)).find(
-      (record) => record.clientMutationId !== row.clientMutationId,
-    );
-    expect(preserved).toMatchObject({ composerText: "newer composition" });
+    const newId = source.getSnapshot().activeRecoveryId;
+    expect(newId).not.toBeNull();
+    expect(newId).not.toBe(row.clientMutationId);
+    if (!newId) throw Error("preservation did not establish ownership");
+    expect(await storage.getRecovery(newId)).toMatchObject({ composerText: "newer composition" });
     expect(editor().textContent).toBe("newer composition");
     expect(editorCursor(editor())).toBe(6);
     expect(document.getSelection()?.toString()).toBe("wer ");

@@ -11,12 +11,8 @@ import {
   readComposerDraftRevisionId,
   readDraft,
   readDraftRevision,
-  readRecoveryPick,
-  recoveryPickEntries,
-  resolveRecoveryPick,
   writeComposerDraft,
   writeDraft,
-  writeRecoveryPick,
 } from "./draft";
 import { parseSkillDocument, serializeSkillDocument } from "./skillDocument";
 
@@ -432,44 +428,4 @@ test("writeComposerDraft never throws when localStorage throws", () => {
     throw new Error("quota exceeded");
   });
   expect(() => writeComposerDraft("local:01AAA", { text: "some text", skillNames: ["pkg:probe"] })).not.toThrow();
-});
-
-test("pick stamps order strictly when the clock ties or steps backward", async () => {
-  localStorage.clear();
-  // Two explicit picks inside one frozen clock tick must not tie: the later
-  // pick is the user's newest choice and must win at resolve time.
-  const frozen = vi.spyOn(Date, "now").mockReturnValue(1_000);
-  try {
-    writeRecoveryPick("first-row");
-    writeRecoveryPick("second-row");
-  } finally {
-    frozen.mockRestore();
-  }
-  const rows = new Map([
-    ["first-row", { targetRef: "local:order" }],
-    ["second-row", { targetRef: "local:order" }],
-  ]);
-  const resolve = () => resolveRecoveryPick("local:order", async (rowId) => rows.get(rowId));
-  expect((await resolve())?.entry.rowId).toBe("second-row");
-  // A backward clock adjustment after reload must not let a stale pick beat
-  // the user's newest one.
-  const backward = vi.spyOn(Date, "now").mockReturnValue(1);
-  try {
-    writeRecoveryPick("third-row");
-  } finally {
-    backward.mockRestore();
-  }
-  rows.set("third-row", { targetRef: "local:order" });
-  expect((await resolve())?.entry.rowId).toBe("third-row");
-});
-
-test("resolution cleans dangling registry entries lazily", async () => {
-  localStorage.clear();
-  writeRecoveryPick("gone-row");
-  writeRecoveryPick("live-row");
-  const rows = new Map([["live-row", { targetRef: "local:guard" }]]);
-  const resolved = await resolveRecoveryPick("local:guard", async (rowId) => rows.get(rowId));
-  expect(resolved?.entry.rowId).toBe("live-row");
-  expect(readRecoveryPick("gone-row")).toBeUndefined();
-  expect(recoveryPickEntries()).toHaveLength(1);
 });

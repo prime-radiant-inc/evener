@@ -2027,7 +2027,7 @@ async function refreshUncertainMutationAuthority(
   await handleReady(client, epoch, targetRef);
 }
 
-export function getMutationRuntime(): MutationRuntime | null {
+function getMutationRuntime(): MutationRuntime | null {
   if (mutationRuntime) return mutationRuntime;
   if (!globalThis.indexedDB) return null;
 
