@@ -21,7 +21,7 @@ import { emitHistoryUpdated as emitHistoryUpdatedFor } from "../threadTestUtils"
 import { VirtualList, type VirtualListHandle } from "../widgets";
 import { installBackgroundTranscriptOptionsForTests } from "./backgroundTranscriptOptions";
 import { setCacheChannelFactoryForTests } from "./cacheLifetime";
-import { connectionStore, resetConnectionStoreForTests } from "./connection";
+import { connectionStore } from "./connection";
 import {
   productionEntryTranscriptForTests,
   setProductionEntryCacheForTests,
@@ -60,7 +60,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   resetThreadsStoreForTests();
-  resetConnectionStoreForTests();
+  connectionStore.setState({ client: null, state: "idle" });
   for (const cache of caches.splice(0)) cache.close();
   vi.useRealTimers();
   vi.unstubAllGlobals();
@@ -425,7 +425,7 @@ async function seedDiskOnlyOpening(withPages = false): Promise<SessionEntryCache
   );
   // A reload drops every store model and repository, not just its reader.
   resetThreadsStoreForTests();
-  resetConnectionStoreForTests();
+  connectionStore.setState({ client: null, state: "idle" });
   expect(threadsStore.getState().threads.has("local:a")).toBe(false);
   return storage;
 }
