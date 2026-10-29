@@ -598,7 +598,16 @@ export async function openEntryTranscript(
         fixture.lastLocalOpenStatus = "superseded-by-source";
         return true;
       }
-      if (repository.holdsResidentForegroundRange() && repository.holdsBodiedForegroundWindow()) {
+      // An accepted empty source window is established too: an empty
+      // transcript never creates the foreground start the resident-range
+      // check requires, but it expects nothing, so it is missing nothing -
+      // the same empty-expectation semantics the window check carries. The
+      // non-empty verdict is unchanged: a window that expects items still
+      // needs the resident range AND the bodied window together.
+      if (
+        repository.holdsBodiedForegroundWindow() &&
+        (repository.holdsResidentForegroundRange() || repository.expectsEmptyForegroundWindow())
+      ) {
         fixture.lastLocalOpenStatus = "superseded-by-source";
         return true;
       }

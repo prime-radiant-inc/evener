@@ -1370,6 +1370,23 @@ export class TranscriptRepository {
     });
   }
 
+  /**
+   * The accepted source window expects no items at all. An empty transcript
+   * never creates the foreground start the resident-range check requires -
+   * only a published item moves that floor - so it has nothing to restore
+   * and nothing a local open could add: a successfully accepted empty
+   * source window is established. The window check already treats an empty
+   * expectation as missing nothing; this is its range-side complement.
+   */
+  expectsEmptyForegroundWindow(): boolean {
+    if (this.#disposed || this.#invalidated) return false;
+    const model = this.#model;
+    if (!model) return false;
+    const historyTurns = model.history?.turns;
+    const expected = historyTurns !== undefined && historyTurns.length > 0 ? historyTurns : model.turns;
+    return expected.length === 0;
+  }
+
   attachReader(): TranscriptReader {
     let active = true;
     this.#readerCount++;

@@ -4469,6 +4469,69 @@ it("a pin-drain that retires a pending claim drops its settlement registration f
   }
 });
 
+it("a settled empty source window completes the pending open without another source read", async () => {
+  const storage = cache();
+  const realGetLatestWindow = storage.getLatestWindow.bind(storage);
+  setProductionEntryCacheForTests(storage);
+  const ref = "local:a";
+  const read = response(ref, []);
+  read.snapshot = { incarnation: "inc-a", length: 0 };
+  const client = connect(read);
+  const lease = acquireBackgroundThread(ref);
+  await lease.ready;
+  await settleEntryTranscriptForTests(ref);
+  expect(threadsStore.getState().threads.get(ref)?.turns).toHaveLength(0);
+  // Wire reads after the prologue: the pane's claim (an accepted empty
+  // window) and the resync's tracked refresh, both answered. Pre-fix, the
+  // missed verdict's recovery chain churns a third.
+  let wireReads = 0;
+  client.on("thread/read", (params) => {
+    wireReads += 1;
+    return { ...read, requestGeneration: params.requestGeneration };
+  });
+  // Storage stays pending for every local read of this ref: the pane's
+  // first open, the claim's certification open and - pre-fix - the recovery
+  // chain's own attempts all park on it.
+  (storage as unknown as { getLatestWindow: unknown }).getLatestWindow = (..._args: unknown[]) => {
+    void realGetLatestWindow;
+    return new Promise(() => {}) as ReturnType<typeof realGetLatestWindow>;
+  };
+  setSessionCacheOpenBackstopForTests(40);
+  setSessionCacheStalledOpenForTests(40);
+  try {
+    const openedByPane = threadsStore.getState().ensureThread(ref);
+    // The pane's first open misses the pinned backstop and its claim's read
+    // answers the accepted empty window; the claim's certification open
+    // parks on the held storage read and the next tracked settlement.
+    await vi.waitFor(() => expect(wireReads).toBe(1));
+    setSessionCacheOpenBackstopForTests(10000);
+    const baselineBefore = productionEntryTranscriptForTests(ref).baseline;
+    // A foreign tracked hydration settles: the resync's refresh answers the
+    // same empty window and publishes it.
+    client.emitNotification({ method: "evener/thread/resync", params: { ref, threadId: "thread-a" } });
+    await vi.waitFor(() => expect(wireReads).toBe(2));
+    await drainSettleSteps();
+    // The parked certification open must complete from the settlement: the
+    // accepted empty source window is established - it expects nothing, so
+    // it is missing nothing - and no recovery chain may churn another
+    // source read against storage that only stays pending.
+    expect(productionEntryTranscriptForTests(ref).lastLocalOpenStatus).toBe("superseded-by-source");
+    // The accepted empty baseline must not be invalidated by the missed
+    // verdict's recovery handoff.
+    expect(productionEntryTranscriptForTests(ref).baseline).toBe(baselineBefore);
+    expect(threadsStore.getState().threads.get(ref)?.turns).toHaveLength(0);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await drainSettleSteps();
+    expect(wireReads).toBe(2);
+    await openedByPane;
+  } finally {
+    setSessionCacheOpenBackstopForTests(10000);
+    setSessionCacheStalledOpenForTests(5000);
+    threadsStore.getState().releaseThread(ref);
+    await lease.release();
+  }
+});
+
 it("ordinary browser routes reads notifications paging reopen reconnect and final release through entries", async () => {
   const storage = cache();
   const ref = "local:a";
