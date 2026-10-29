@@ -445,30 +445,72 @@ func TestCommunicate_StatusBatchedWithDelegateDoesNotEndTurn(t *testing.T) {
 	var boundaryOnce sync.Once
 	var custodyID string
 	var sess *Session
+	childPublished := make(chan struct{})
+	var published struct {
+		sub   *subagent
+		done  <-chan struct{}
+		lease delegateLease
+	}
 	cfg := SessionConfig{StateDir: t.TempDir()}
-	cfg.testOnly.subagentAfterFinalStatePublish = func(*subagent) { <-rootIdle }
+	cfg.testOnly.subagentAfterFinalStatePublish = func(sub *subagent) {
+		published.sub = sub
+		sub.mu.Lock()
+		published.done = sub.done
+		sub.mu.Unlock()
+		c := sub.sess.delegateController
+		c.mu.Lock()
+		if live := c.live[sub.sess.owningDelegateID]; live != nil && live.binding != nil && live.binding.runtime == sub.sess {
+			published.lease = live.binding.lease
+		}
+		c.mu.Unlock()
+		close(childPublished)
+		<-rootIdle
+	}
 	cfg.testOnly.afterCommunicateBoundary = func(s *Session) {
 		if s != sess {
 			return
 		}
 		boundaryOnce.Do(func() {
+			defer unblockChild()
 			// Root request 2 settled without the child body. Publish only at
 			// its terminal boundary, then distinguish custody from observation.
+			awaitSignal(t, childPublished, "child final-state publication gate")
+			select {
+			case <-childPublished:
+			default:
+				return
+			}
+			if published.done == nil || published.lease.delegateID == "" || published.lease.generation != 1 {
+				t.Errorf("captured child publication = %+v", published)
+				return
+			}
+			select {
+			case <-published.done:
+				t.Error("child generation finished before publication gate release")
+				return
+			default:
+			}
 			unblockChild()
-			waitForCondition(t, 30*time.Second, "late child report custody", func() bool {
-				ids, err := sess.pendingNotificationIDs()
-				if err != nil || len(ids) != 1 {
-					return false
-				}
-				custodyID = ids[0]
-				return true
-			})
+			awaitSignal(t, published.done, "captured child generation completion")
+			// This fixture has one child and admits no successor. The root
+			// ProcessInput is not in sendersWG, so this joins only the child
+			// executor tail, never the callback's own root turn.
+			executorsDone := make(chan struct{})
+			go func() { sess.sendersWG.Wait(); close(executorsDone) }()
+			awaitSignal(t, executorsDone, "communicate child executor tail")
+			custodyID = "delegate:" + published.lease.delegateID + "/delivery/1"
+			ids, err := sess.pendingNotificationIDs()
+			if err != nil || len(ids) != 1 || ids[0] != custodyID {
+				t.Errorf("terminal boundary pending = %v, err %v, want %s", ids, err, custodyID)
+				return
+			}
 			fold, err := readDelegateAttentionFold(sess.TranscriptPath(), sess.ID())
 			if err != nil {
-				t.Fatal(err)
+				t.Error(err)
+				return
 			}
-			if len(fold.observed) != 0 || fold.content[custodyID].Text() == "" {
-				t.Fatalf("terminal boundary: custody=%v observed=%v, want body custody without observation", fold.order, fold.observed)
+			if len(fold.observed) != 0 || len(fold.resolutions) != 0 || fold.content[custodyID].Text() == "" {
+				t.Errorf("terminal boundary: custody=%v observed=%v resolutions=%v, want body custody without observation", fold.order, fold.observed, fold.resolutions)
 			}
 		})
 	}
@@ -479,7 +521,12 @@ func TestCommunicate_StatusBatchedWithDelegateDoesNotEndTurn(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	t.Cleanup(sess.Close)
-	t.Cleanup(unblockChild)
+	t.Cleanup(func() {
+		unblockChild()
+		executorsDone := make(chan struct{})
+		go func() { sess.sendersWG.Wait(); close(executorsDone) }()
+		waitForTestSignal(t, executorsDone, "communicate fixture executor cleanup")
+	})
 	f.setRootSessionID(sess.ID())
 	// TRIPWIRE: every step here is a scripted single/two-round adapter call
 	// answered in-process with no I/O; the parent turn normally completes in
@@ -529,6 +576,9 @@ func TestCommunicate_StatusBatchedWithDelegateDoesNotEndTurn(t *testing.T) {
 	}
 	if !statusContinued || receipt.DelegateID == "" {
 		t.Fatal("request 2 did not continue from both batched tool results")
+	}
+	if published.sub == nil || published.sub.sess.ID() != receipt.ChildSessionID || published.lease.delegateID != receipt.DelegateID {
+		t.Fatalf("captured child publication = %+v, want delegate %s child %s", published, receipt.DelegateID, receipt.ChildSessionID)
 	}
 	wantID := "delegate:" + receipt.DelegateID + "/delivery/1"
 	if custodyID != wantID {

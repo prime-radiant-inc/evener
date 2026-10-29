@@ -7,7 +7,6 @@ import (
 	"maps"
 	"strings"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/agent/internal/jobstore"
 	tooldefs "primeradiant.com/evener/agent/internal/tool"
@@ -833,20 +832,44 @@ func TestJobWatchCanImmediatelyWatchReturnedBackgroundShellJob(t *testing.T) {
 	}))
 	const token = "WATCH_OUTPUT_TOKEN_ONCE"
 
-	// Use a long-running shell so the job stays alive without a timing
-	// dependency. The token is injected directly via the output pipeline below
-	// to avoid the wall-clock race that made the original sleep-based approach
-	// flaky in CI.
+	// Hold the real shell through observation and replay. It cannot publish a
+	// competing terminal notification while appendJobOutput dispatches the match.
+	fifo, releaseShell := waitProducerFIFO(t)
+	var shellOut struct {
+		JobID string `json:"job_id"`
+	}
+	var shellDone <-chan struct{}
+	var run *runningJob
+	t.Cleanup(func() {
+		defer releaseShell()
+		if shellOut.JobID != "" {
+			if _, err := s.jobManager.stop(shellOut.JobID); err != nil {
+				t.Errorf("stop owned watch shell: %v", err)
+			}
+			if run == nil {
+				waitForShellDone(t, s.jobManager, shellOut.JobID)
+				return
+			}
+			waitForTestSignal(t, shellDone, "owned watch shell completion")
+			if got := runningJobCompletion(run.completion.Load()); got != runningJobCompletionDurable {
+				t.Errorf("owned watch shell completion = %v, want durable", got)
+			}
+		}
+	})
+	shellArgs, err := json.Marshal(map[string]any{
+		"command": fmt.Sprintf("read value < %q", fifo),
+		"mode":    "background",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","mode":"background"}`),
+		Arguments: shellArgs,
 	})
 	if shellRes.IsError {
 		t.Fatalf("shell returned error: %s", shellRes.Output)
-	}
-	var shellOut struct {
-		JobID string `json:"job_id"`
 	}
 	if err := json.Unmarshal(toolResultJSON(shellRes), &shellOut); err != nil {
 		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
@@ -854,10 +877,15 @@ func TestJobWatchCanImmediatelyWatchReturnedBackgroundShellJob(t *testing.T) {
 	if shellOut.JobID == "" {
 		t.Fatal("background shell returned no job_id")
 	}
-	t.Cleanup(func() {
-		_, _ = s.jobManager.stop(shellOut.JobID)
-		waitForShellDone(t, s.jobManager, shellOut.JobID)
-	})
+	s.jobManager.mu.Lock()
+	run = s.jobManager.running[shellOut.JobID]
+	if run != nil {
+		shellDone = run.done
+	}
+	s.jobManager.mu.Unlock()
+	if run == nil {
+		t.Fatalf("job %s is not running while its FIFO is held", shellOut.JobID)
+	}
 
 	watchArgs, err := json.Marshal(map[string]any{
 		"operation":    "create",
@@ -884,24 +912,27 @@ func TestJobWatchCanImmediatelyWatchReturnedBackgroundShellJob(t *testing.T) {
 
 	// Inject the token through the full output pipeline so watch matchers fire
 	// deterministically, without relying on the real shell process timing.
-	s.jobManager.mu.Lock()
-	run := s.jobManager.running[shellOut.JobID]
-	s.jobManager.mu.Unlock()
-	if run == nil {
-		t.Fatalf("job %s is not running after watch install", shellOut.JobID)
-	}
 	if _, err := s.jobManager.appendJobOutput(shellOut.JobID, run.output, []byte(token+"\n")); err != nil {
 		t.Fatalf("inject token into job output: %v", err)
 	}
 
-	// Await real receiver custody, then earn observation through a successful
-	// provider response. A legacy queue token is neither requirement nor proof.
-	var pending []string
-	waitForCondition(t, 30*time.Second, "watch receiver custody", func() bool {
-		var err error
-		pending, err = s.pendingNotificationIDs()
-		return err == nil && len(pending) == 1
-	})
+	// With no competing producer or receiver consumer, appendJobOutput returns
+	// after source persistence, synchronous dispatch and receiver custody ack.
+	pending := producerSourceEvents(t, s.jobManager, jobstore.EventWatchSendPending)
+	delivered := producerSourceEvents(t, s.jobManager, jobstore.EventWatchSendDelivered)
+	dropped := producerSourceEvents(t, s.jobManager, jobstore.EventWatchSendDropped)
+	if len(pending) != 1 || len(delivered) != 1 || len(dropped) != 0 {
+		t.Fatalf("watch source pending/delivered/dropped = %d/%d/%d, want 1/1/0", len(pending), len(delivered), len(dropped))
+	}
+	state, ack := pending[0].WatchSend, delivered[0].WatchSend
+	if state == nil || ack == nil || state.DeliveryID == "" || state.UpdateSeq == 0 || state.Key.WatchID != created.WatchID || state.ReceiverSessionID != s.ID() || ack.DeliveryID != state.DeliveryID || ack.UpdateSeq != state.UpdateSeq {
+		t.Fatalf("watch source identity/ack = %+v / %+v", state, ack)
+	}
+	wantID := fmt.Sprintf("watch:%s:%d", state.DeliveryID, state.UpdateSeq)
+	assertNotificationPending(t, s, []string{wantID})
+	if got := len(loadWatchSendRecord(t, s.jobManager).Pending); got != 0 {
+		t.Fatalf("watch source still pending after custody: %d", got)
+	}
 	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 		t.Fatal(err)
 	}
@@ -910,7 +941,7 @@ func TestJobWatchCanImmediatelyWatchReturnedBackgroundShellJob(t *testing.T) {
 		t.Fatalf("watch provider requests = %d, want one carrying output sentinel", len(requests))
 	}
 	drainRequestNotice(t, requests[0], map[string]string{"job_id": shellOut.JobID, "event": "watch", "watch_id": created.WatchID})
-	requireOwnedDrainAttentionObservedOnce(t, s, pending[0])
+	requireOwnedDrainAttentionObservedOnce(t, s, wantID)
 	assertNotificationPending(t, s, []string{})
 	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 		t.Fatal(err)

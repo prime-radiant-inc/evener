@@ -3611,15 +3611,16 @@ func TestStableSupervisionAttentionRefusalTracksNotificationRetry(t *testing.T) 
 	defer sess.mu.Unlock()
 	sess.notificationSchedule.retry.active = false
 	result := make(chan string, 1)
-	go func() { result <- stableSupervisionAttentionRefusal(sess) }()
-	// TRIPWIRE: an in-memory TryLock probe must return without waiting.
-	select {
-	case got := <-result:
-		if got == "" {
-			t.Fatal("busy session lock read as quiescent")
-		}
-	case <-time.After(time.Second):
-		t.Fatal("supervision probe blocked behind the session lock")
+	probeDone := make(chan struct{})
+	// On a failed probe wait, the deferred unlock precedes this cleanup join.
+	t.Cleanup(func() { waitForTestSignal(t, probeDone, "supervision probe cleanup") })
+	go func() {
+		result <- stableSupervisionAttentionRefusal(sess)
+		close(probeDone)
+	}()
+	waitForTestSignal(t, probeDone, "supervision TryLock probe with session lock held")
+	if got := <-result; got == "" {
+		t.Fatal("busy session lock read as quiescent")
 	}
 }
 
@@ -3925,10 +3926,14 @@ func pauseStableTailBeforeRelease(t *testing.T, root *Session, sub *subagent, fi
 // go. Nothing wakes this root, so only that re-drive can deliver.
 func TestDelegateResourceSupervision_AttentionRefusedOnAHeldGuardIsRedriven(t *testing.T) {
 	fixture := newColdStableDelegateFixture(t, "")
+	attentionRequested := make(chan struct{})
+	var attentionRequest llm.Request
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return finalResponse("warm result") },
 		func(llm.Request) llm.Response { return finalResponse("second result") },
-		func(llm.Request) llm.Response {
+		func(req llm.Request) llm.Response {
+			attentionRequest = req
+			close(attentionRequested)
 			return llm.Response{Message: llm.Assistant("attention requires no action")}
 		},
 	}
@@ -3953,9 +3958,10 @@ func TestDelegateResourceSupervision_AttentionRefusedOnAHeldGuardIsRedriven(t *t
 	armStableSupervisionAttention(t, sub, "attention:held-guard", "inspect after the held guard")
 
 	// Admission may be paced after a refusal. No parent input is supplied.
-	waitForCondition(t, 10*time.Second, "accepted attention admitted after drive guard release", func() bool {
-		return starts.Load() == 1
-	})
+	waitForTestSignal(t, attentionRequested, "third provider request after drive guard release")
+	if !requestContainsText(attentionRequest, "inspect after the held guard") {
+		t.Fatal("re-driven request omitted the accepted message")
+	}
 	waitForStableSupervisionRun(t, root, fixture.childID)
 	finished := latestDelegateControllerRunFinished(t, root.delegateController, fixture.delegateID)
 	if finished.Generation != 3 || finished.Disposition != delegatestore.DispositionCompletedNoAction || finished.DeliveryID != "" {
@@ -4031,6 +4037,8 @@ func TestDelegateResourceSupervision_AttentionRedriveThatLosesStops(t *testing.T
 func TestDelegateResourceSupervision_AttentionRefusedOnANotificationTurnIsRedriven(t *testing.T) {
 	fixture := newColdStableDelegateFixture(t, "")
 	inTurn, endTurn := make(chan struct{}), make(chan struct{})
+	attentionRequested := make(chan struct{})
+	var attentionRequest llm.Request
 	var endOnce sync.Once
 	defer endOnce.Do(func() { close(endTurn) })
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
@@ -4041,9 +4049,8 @@ func TestDelegateResourceSupervision_AttentionRefusedOnANotificationTurnIsRedriv
 			return llm.Response{Message: llm.Assistant("noted the finished job")}
 		},
 		func(req llm.Request) llm.Response {
-			if !requestContainsText(req, "inspect after the notification turn") {
-				t.Error("later request omitted the message accepted during the first request")
-			}
+			attentionRequest = req
+			close(attentionRequested)
 			return llm.Response{Message: llm.Assistant("attention requires no action")}
 		},
 	}
@@ -4071,10 +4078,14 @@ func TestDelegateResourceSupervision_AttentionRefusedOnANotificationTurnIsRedriv
 	endOnce.Do(func() { close(endTurn) })
 
 	// The open generation drains the later message at its next safe boundary.
-	waitForCondition(t, 10*time.Second, "the message refused during the first request to reach the provider", func() bool {
-		return supervisionRequestCount(fixture.adapter) == 3
-	})
+	waitForTestSignal(t, attentionRequested, "third provider request after notification turn release")
+	if !requestContainsText(attentionRequest, "inspect after the notification turn") {
+		t.Fatal("later request omitted the message accepted during the first request")
+	}
 	waitForStableSupervisionRun(t, root, fixture.childID)
+	if got := supervisionRequestCount(fixture.adapter); got != 3 {
+		t.Fatalf("provider requests = %d, want 3", got)
+	}
 	finished := latestDelegateControllerRunFinished(t, root.delegateController, fixture.delegateID)
 	if finished.Generation != 2 || finished.Disposition != delegatestore.DispositionCompletedNoAction || finished.DeliveryID != "" {
 		t.Fatalf("re-driven attention finish = %#v, want generation 2's private no-action", finished)
