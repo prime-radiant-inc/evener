@@ -105,9 +105,12 @@ paired row at 850px. The formatted journey also sets actual mobile viewports at
 
 The `comic-formatted` external-provider role pauses at an unfinished fence and a
 partial table before completing them. It uses the real daemon's transcript and
-subscription path. `formatted-stream.json` retains all three observations and
-their source identity. No product store, parser or source-binding cache supplies
-the expected answer.
+subscription path. `formatted-stream.json` retains all blocks at the partial-code,
+partial-table, complete-text and canonical-completed-turn checkpoints. Each checks
+the entire independently authored source range, exact prose, code and cells, and
+one unchanged source identity. The settled sample is taken after the canonical
+item and its completed turn arrive. No product store, parser or source-binding
+cache supplies the expected answer.
 
 `inlineFixtureGlyphs` handles only the known inline syntax in the history fixture.
 The formatted fixture instead locates literal text directly in DOM Text nodes and
@@ -128,16 +131,25 @@ delayed-font, child cached/partial/cold recovery and error-presence checks remai
 mandatory.
 
 `creation-chronology.json` ties a strip to real delegate creation output between
-parent entries. `late-creation-relocation.json` checks that late launch placement
-retains the expanded identity without unsubscribe/re-read. `mounted-collapse.json`
+parent entries. `creation-chronology-completed.json` rechecks those exact entry IDs
+and strip key after completion and the expanded-reader checks. The disclosure is
+then collapsed solely to mount both original neighbors in one observation.
+`late-creation-position.json` records the same independently located source glyph
+before and after the final origin-revealing history page. Only that authentic
+WebSocket reply is held, then released unchanged after pinning the source. No
+scroll, reveal or anchor recapture intervenes before the post-release measurement.
+`late-creation-relocation.json` also checks that late launch placement retains the
+expanded identity without unsubscribe/re-read. `mounted-collapse.json`
 checks a mounted collapse's successful unsubscribe while its real sibling stays
 expanded and is neither unsubscribed nor re-read.
 
 Run the direct observation validators with
-`node --test cmd/evener-hub/frontend/scripts/comicguard.oracle.test.mjs` from the
+`node --test cmd/evener-hub/frontend/scripts/comicguard.oracle.test.mjs cmd/evener-hub/frontend/scripts/comicguard.test.mjs` from the
 repository root. Their negative cases reject missing semantics, wrong source
 order, whitespace loss, unsafe links, clipping, unreadable overflow, replacement
-stream identities and sibling retirement. They supplement, not replace, the
+stream identities, missing prefixes, duplicate code or whole-source identities,
+completion-time loss, shifted relocation glyphs, moved launch strips and sibling
+retirement. They supplement, not replace, the
 complete browser journeys and `make test-web`.
 
 Entry uses the normal authenticated `/s/<ref>` URL and trusted clicks through

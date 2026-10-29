@@ -418,6 +418,22 @@ async function journey(page, fixture, endpoint) {
       constructor(...args) {
         super(...args); window.__comicSockets.push(this);
         this.addEventListener('message', event => {
+          const reply = JSON.parse(event.data);
+          const originRequest = this.comicOriginRequests?.get(reply.id);
+          if (originRequest) {
+            this.comicOriginRequests.delete(reply.id);
+            if (JSON.stringify(reply.result).includes('comic_delegate_GRANDCHILD')) {
+              event.stopImmediatePropagation();
+              const data = event.data;
+              window.__comicOriginHold = {request:originRequest,response:reply,releaseCount:0};
+              window.__comicReleaseOrigin = () => {
+                if (window.__comicOriginHold.releaseCount++) throw Error('origin response already released');
+                window.__comicHoldOriginRef = undefined;
+                this.dispatchEvent(new MessageEvent('message', {data,origin:event.origin,lastEventId:event.lastEventId}));
+              };
+              return;
+            }
+          }
           if (this.comicResumeRequest && JSON.parse(event.data).id === this.comicResumeRequest.id) {
             event.stopImmediatePropagation();
             const hold = window.__comicResumeHold;
@@ -454,6 +470,10 @@ async function journey(page, fixture, endpoint) {
           return;
         }
         const request = JSON.parse(data);
+        if (request.method === 'thread/turns/list' && request.params?.ref === window.__comicHoldOriginRef) {
+          this.comicOriginRequests ??= new Map();
+          this.comicOriginRequests.set(request.id, request);
+        }
         const resumeHold = window.__comicResumeHold;
         if (resumeHold && request.method === 'turn/start') {
           resumeHold.starts.push({socket:window.__comicSockets.indexOf(this), beforeRelease:resumeHold.releaseCount === 0, bytes:data});
@@ -2693,6 +2713,99 @@ export function verifyFormattedObservation(value, expected) {
   }
 }
 
+export function observeFormattedStream() {
+  const port = window.__comicRoot()?.querySelector("[data-comic-scroll]")?.firstElementChild;
+  const parts = [...(port?.querySelectorAll("[data-comic-entry]") ?? [])];
+  const code = parts.find((node) => node.querySelector("pre code")?.textContent.includes("COMIC_STREAM_CODE"));
+  if (!code) return null;
+  const ids = new Set(
+    parts
+      .filter((node) => /COMIC_STREAM_(BEFORE|CODE|END|CELL|AFTER)\b/.test(node.textContent))
+      .map((node) => node.dataset.comicEntry),
+  );
+  const same = parts.filter((node) => ids.has(node.dataset.comicEntry));
+  return {
+    id: code.dataset.comicEntry,
+    code: code.querySelector("pre code").textContent,
+    cells: same.flatMap((node) => [...node.querySelectorAll("th,td")].map((cell) => cell.textContent)),
+    after: same.some((node) => node.querySelector("em")?.textContent === "done"),
+    literalFence: same.some((node) => node.textContent.includes(String.fromCharCode(96).repeat(3))),
+    blocks: same.map((node) => ({
+      id: node.dataset.comicEntry,
+      start: +node.dataset.comicStart,
+      end: +node.dataset.comicEnd,
+      kind: node.querySelector("[data-comic-markdown]")?.dataset.comicMarkdown,
+      prose: [...node.querySelectorAll('[data-comic-markdown="prose"] p')].map((p) => p.textContent),
+      codes: [...node.querySelectorAll("pre code")].map((code) => code.textContent),
+      cells: [...node.querySelectorAll("th,td")].map((cell) => cell.textContent),
+    })),
+  };
+}
+
+// These are the authored provider chunks, not the production part mapper.
+const streamPrefix = "COMIC_STREAM_BEFORE **bold**\n\n";
+const streamPartial = `${streamPrefix}\`\`\`text\n  COMIC_STREAM_CODE`;
+const streamTable = `${streamPartial}\n\tCOMIC_STREAM_END  \n\`\`\`\n\n| key | value |\n| --- | --- |\n| COMIC_STREAM_CELL |`;
+const streamComplete = `${streamTable} **settled** |\n\nCOMIC_STREAM_AFTER *done*`;
+function expectedStreamBlocks(source, id) {
+  const table = source.indexOf("| key"),
+    after = source.indexOf("COMIC_STREAM_AFTER");
+  const block = (start, end, kind, prose = [], codes = [], cells = []) => ({
+    id,
+    start,
+    end,
+    kind,
+    prose,
+    codes,
+    cells,
+  });
+  const result = [
+    block(0, streamPrefix.length, "prose", ["COMIC_STREAM_BEFORE bold"]),
+    block(
+      streamPrefix.length,
+      table < 0 ? source.length : table,
+      "code",
+      [],
+      [table < 0 ? "  COMIC_STREAM_CODE" : "  COMIC_STREAM_CODE\n\tCOMIC_STREAM_END  "],
+    ),
+  ];
+  if (table >= 0)
+    result.push(
+      block(
+        table,
+        after < 0 ? source.length : after,
+        "table",
+        [],
+        [],
+        ["key", "value", "COMIC_STREAM_CELL", after < 0 ? "" : "settled"],
+      ),
+    );
+  if (after >= 0) result.push(block(after, source.length, "prose", ["COMIC_STREAM_AFTER done"]));
+  return result;
+}
+
+export function verifyCreationChronology(value, completed) {
+  if (!(value.before >= 0 && value.launch > value.before && value.after > value.launch))
+    throw Error("parent messages do not surround actual launch");
+  if (completed) {
+    verifyCreationChronology(completed);
+    for (const key of ["before", "launch", "after"]) {
+      if (value.entries[value[key]]?.id !== completed.entries[completed[key]]?.id)
+        throw Error("completion changed launch neighbors or strip identity");
+    }
+  }
+}
+
+export function verifyDelegateRelocation(value) {
+  if (value.relocated.key !== value.grandchild.key || value.relocated.expanded !== "true")
+    throw Error("causal placement replaced expanded nested identity");
+  if (value.lifetime.length) throw Error("late creation relocation replaced the existing child reader");
+  if (value.relocation.unplaced || !value.relocation.following.some((text) => text.includes("COMIC_CHILD_SOURCE_00")))
+    throw Error("late launch not before first child continuation");
+  if (!savedSourcePlaced(value.before, value.expected) || !savedSourcePlaced(value.after, value.expected))
+    throw Error("late launch changed the pinned source glyph or viewport offset");
+}
+
 export function verifyFormattedStream(value) {
   if (
     value.ids.length !== 3 ||
@@ -2705,6 +2818,16 @@ export function verifyFormattedStream(value) {
     value.literalFence
   )
     throw Error("streamed Markdown source or completion changed");
+  for (const [phase, source] of [
+    ["partial", streamPartial],
+    ["table", streamTable],
+    ["final", streamComplete],
+    ["settled", streamComplete],
+  ]) {
+    const snapshot = value.snapshots?.[phase];
+    if (!snapshot || JSON.stringify(snapshot.blocks) !== JSON.stringify(expectedStreamBlocks(source, value.ids[0])))
+      throw Error(`streamed Markdown ${phase} content, identity or source ranges changed: ${JSON.stringify(snapshot)}`);
+  }
 }
 
 export function verifyBranchRetirement(value) {
@@ -2718,7 +2841,7 @@ export function verifyBranchRetirement(value) {
     throw Error("mounted collapse did not retire only its branch");
 }
 
-async function formattedStreamJourney(page, fixture, command) {
+async function formattedStreamJourney(page, fixture, command, wireTrace) {
   const here = (expression) => evaluate(page.send, expression);
   command("background-auto", "off");
   command("background-role", "comic-formatted");
@@ -2728,22 +2851,12 @@ async function formattedStreamJourney(page, fixture, command) {
       `(() => {const button=window.__comicRoot()?.querySelector('button[aria-label="Jump to latest"]');if(!button)return false;button.click();return true;})()`,
     ),
   );
-  const read = () =>
-    here(`(() => {
-    const port=window.__comicRoot()?.querySelector('[data-comic-scroll]')?.firstElementChild;
-    const parts=[...(port?.querySelectorAll('[data-comic-entry]')??[])];
-    const code=parts.find(node=>node.querySelector('pre code')?.textContent.includes('COMIC_STREAM_CODE'));
-    if(!code)return null;
-    const same=parts.filter(node=>node.dataset.comicEntry===code.dataset.comicEntry);
-    return {id:code.dataset.comicEntry,code:code.querySelector('pre code').textContent,cells:same.flatMap(node=>[...node.querySelectorAll('th,td')].map(cell=>cell.textContent)),after:same.some(node=>node.querySelector('em')?.textContent==='done'),literalFence:same.some(node=>node.textContent.includes(String.fromCharCode(96).repeat(3)))};
-  })()`);
+  const read = () => here(`(${observeFormattedStream.toString()})()`);
   const partial = await until("unfinished streamed code", read, (value) => value?.code === "  COMIC_STREAM_CODE");
   command("background-phase", "comic-formatted-code");
   const table = await until("streamed partial table", read, (value) => value?.cells.includes("COMIC_STREAM_CELL"));
   command("background-phase", "comic-formatted-finish");
   const final = await until("streamed complete table and prose", read, (value) => value?.after);
-  const value = { ids: [partial.id, table.id, final.id], partialCode: partial.code, ...final };
-  verifyFormattedStream(value);
   await until("formatted stream producer completion", () =>
     readFileSync(fixture.requestLog, "utf8")
       .split("\n")
@@ -2756,10 +2869,46 @@ async function formattedStreamJourney(page, fixture, command) {
         }
       }),
   );
+  const canonical = await until("canonical streamed source and completed turn", () => {
+    const updates = wireTrace
+      .filter((row) => row.event === "Network.webSocketFrameReceived")
+      .map((row) => JSON.parse(row.frame))
+      .filter((frame) => frame.method === "history/updated" && frame.params?.ref === fixture.refs.live);
+    const item = updates
+      .flatMap((frame) => frame.params.items ?? [])
+      .find((item) => item.type === "agentMessage" && item.text === streamComplete && item.status === "completed");
+    const turn =
+      item &&
+      updates
+        .flatMap((frame) => frame.params.turns ?? [])
+        .find((turn) => turn.id === item.turnId && turn.status === "completed");
+    return turn ? { item, turn } : null;
+  });
+  await here("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+  const settled = await read();
+  const value = {
+    ids: [partial.id, table.id, final.id],
+    partialCode: partial.code,
+    ...final,
+    snapshots: { partial, table, final, settled },
+  };
   writeFileSync(
     `${fixture.evidenceDir}/formatted-stream.json`,
-    JSON.stringify({ partial, table, final, value }, null, 2),
+    JSON.stringify(
+      {
+        partial,
+        table,
+        final,
+        settled,
+        canonical,
+        expected: { partial: streamPartial, table: streamTable, final: streamComplete },
+        value,
+      },
+      null,
+      2,
+    ),
   );
+  verifyFormattedStream(value);
   command("background-role", "history");
 }
 
@@ -2881,7 +3030,7 @@ async function formattedJourney(
   { command, complete, outgoing, screenshot, wireTrace, holdFonts, releaseFonts },
 ) {
   const firstRequest = outgoing.length;
-  await formattedStreamJourney(page, fixture, command);
+  await formattedStreamJourney(page, fixture, command, wireTrace);
   await complete(fixture.formattedSource);
   for (let index = 0; index < 45; index++) await complete(`COMIC_FORMATTED_TAIL_${index}`);
   const here = (expression) => evaluate(page.send, expression);
@@ -2902,6 +3051,7 @@ async function formattedJourney(
       deviceScaleFactor: 1,
       mobile: width <= 390,
     });
+    await here("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
     const value = await until(`complete formatted blocks at ${width}`, async () => {
       const value = await here(`(${formattedObservation.toString()})(${JSON.stringify(entryId)})`);
       if (value) return value;
@@ -3725,6 +3875,7 @@ async function childJourney(page, fixture, { command, incoming, outgoing, screen
       ),
     (value) => value.before >= 0 && value.launch > value.before && value.after > value.launch,
   );
+  verifyCreationChronology(chronology);
   writeFileSync(
     `${fixture.evidenceDir}/creation-chronology.json`,
     JSON.stringify({ header, creation, chronology }, null, 2),
@@ -3984,6 +4135,7 @@ async function childJourney(page, fixture, { command, incoming, outgoing, screen
   }
   const historySelector = `[data-comic-flow="history"][data-comic-session=${JSON.stringify(header.ref)}]`;
   const beforePaging = outgoing.length;
+  await evaluateHere(`window.__comicHoldOriginRef=${JSON.stringify(header.ref)}`);
   for (let index = 0; index < 12; index++) {
     await reveal(historySelector);
     const result = await evaluateHere(`(() => {
@@ -3994,9 +4146,45 @@ async function childJourney(page, fixture, { command, incoming, outgoing, screen
     })()`);
     if (result === "exhausted") break;
     await until("child page settled", () =>
-      evaluateHere(`!document.querySelector(${JSON.stringify(historySelector)})?.querySelector('button')?.disabled`),
+      evaluateHere(
+        `!!window.__comicOriginHold || !document.querySelector(${JSON.stringify(historySelector)})?.querySelector('button')?.disabled`,
+      ),
     );
+    if (await evaluateHere("!!window.__comicOriginHold")) break;
   }
+  const heldOrigin = await evaluateHere("window.__comicOriginHold");
+  if (heldOrigin?.releaseCount !== 0) throw Error("origin-revealing page was not held");
+  // The final page has not reached the reader yet. Pin once here, then release
+  // only the untouched native reply. No reveal, scroll or capture follows release.
+  const relocationSource = await reveal("[data-comic-entry]", "COMIC_THOUGHT_GRANDCHILD");
+  const relocationExpected = await capturedSource("pre-origin pinned glyph", relocationSource);
+  const relocationBefore = await evaluateHere(
+    `(${readGeometry.toString()})(${JSON.stringify(relocationExpected)},${JSON.stringify(fixture.refs.live)})`,
+  );
+  await evaluateHere("window.__comicReleaseOrigin()");
+  await until("origin reply applied without reader input", () =>
+    evaluateHere(`(() => {
+    const heading=[...window.__comicRoot().querySelectorAll('[data-comic-delegate]')].find(node=>node.dataset.comicChildRef===${JSON.stringify(grandchild.ref)});
+    return heading && !heading.closest('[data-comic-flow="unplaced-group"]');
+  })()`),
+  );
+  await evaluateHere("new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
+  const relocationAfter = await evaluateHere(
+    `(${readGeometry.toString()})(${JSON.stringify(relocationExpected)},${JSON.stringify(fixture.refs.live)})`,
+  );
+  writeFileSync(
+    `${fixture.evidenceDir}/late-creation-position.json`,
+    JSON.stringify(
+      { expected: relocationExpected, before: relocationBefore, after: relocationAfter, heldOrigin },
+      null,
+      2,
+    ),
+  );
+  if (
+    !savedSourcePlaced(relocationBefore, relocationExpected) ||
+    !savedSourcePlaced(relocationAfter, relocationExpected)
+  )
+    throw Error("late launch changed the pinned source glyph or viewport offset");
   const childPages = outgoing
     .slice(beforePaging)
     .filter((frame) => frame.method === "thread/turns/list" && frame.params.ref === header.ref);
@@ -4005,22 +4193,39 @@ async function childJourney(page, fixture, { command, incoming, outgoing, screen
   const relocated = await evaluateHere(
     `(() => { const node = window.__comicRoot()?.querySelector('[data-comic-child-ref=' + ${JSON.stringify(JSON.stringify(grandchild.ref))} + ']'); return {key:node?.dataset.comicDelegate, expanded:node?.querySelector('[aria-expanded]')?.getAttribute('aria-expanded')}; })()`,
   );
-  if (relocated.key !== grandchild.key || relocated.expanded !== "true")
-    throw Error("causal placement replaced expanded nested identity");
   const lifetime = outgoing
     .slice(beforePaging)
     .filter(
       (frame) => ["thread/read", "thread/unsubscribe"].includes(frame.method) && frame.params?.ref === grandchild.ref,
     );
-  if (lifetime.length) throw Error("late creation relocation replaced the existing child reader");
   const relocation = await evaluateHere(
     `(() => {const port=window.__comicRoot().querySelector('[data-comic-scroll]').firstElementChild;const heading=[...port.querySelectorAll('[data-comic-delegate]')].find(node=>node.dataset.comicChildRef===${JSON.stringify(grandchild.ref)});return {unplaced:!!heading?.closest('[data-comic-flow="unplaced-group"]'),following:[...port.querySelectorAll('[data-comic-entry]')].filter(node=>node.dataset.comicSession===${JSON.stringify(header.ref)}&&!!(heading.compareDocumentPosition(node)&Node.DOCUMENT_POSITION_FOLLOWING)).map(node=>node.textContent)};})()`,
   );
-  if (relocation.unplaced || !relocation.following.some((text) => text.includes("COMIC_CHILD_SOURCE_00")))
-    throw Error("late launch not before first child continuation");
+  verifyDelegateRelocation({
+    grandchild,
+    relocated,
+    lifetime,
+    relocation,
+    expected: relocationExpected,
+    before: relocationBefore,
+    after: relocationAfter,
+  });
   writeFileSync(
     `${fixture.evidenceDir}/late-creation-relocation.json`,
-    JSON.stringify({ grandchild, relocated, lifetime, relocation, childPages }, null, 2),
+    JSON.stringify(
+      {
+        grandchild,
+        relocated,
+        lifetime,
+        relocation,
+        childPages,
+        expected: relocationExpected,
+        before: relocationBefore,
+        after: relocationAfter,
+      },
+      null,
+      2,
+    ),
   );
   const laterSource = await reveal(
     `[data-comic-entry][data-comic-session=${JSON.stringify(header.ref)}]`,
@@ -4169,6 +4374,26 @@ async function childJourney(page, fixture, { command, incoming, outgoing, screen
   );
   await evaluateHere("history.back()");
   await measure("named-parent-back");
+  // All expanded-reader preservation checks are complete. Collapse the same
+  // real strip only to mount both original parent neighbors in one observation.
+  await reveal(`[data-comic-child-ref=${JSON.stringify(header.ref)}]`);
+  if (!(await operate(header.ref, "Collapse conversation"))) throw Error("missing completed child disclosure");
+  await reveal("[data-comic-entry]", "COMIC_SUBCHAT_ROOT");
+  const completedChronology = await until(
+    "same launch neighbors mounted after completion",
+    () =>
+      evaluateHere(`(() => {
+    const nodes=[...window.__comicRoot().querySelectorAll('[data-comic-entry]')];
+    const ids=${JSON.stringify(["before", "launch", "after"].map((key) => chronology.entries[chronology[key]].id))};
+    return {before:nodes.findIndex(node=>node.dataset.comicEntry===ids[0]),launch:nodes.findIndex(node=>node.dataset.comicEntry===ids[1]),after:nodes.findIndex(node=>node.dataset.comicEntry===ids[2]),entries:nodes.map(node=>({id:node.dataset.comicEntry,session:node.dataset.comicSession,text:node.textContent.slice(0,100)}))};
+  })()`),
+    (value) => value.before >= 0 && value.launch >= 0 && value.after >= 0,
+  );
+  writeFileSync(
+    `${fixture.evidenceDir}/creation-chronology-completed.json`,
+    JSON.stringify({ header, creation, before: chronology, after: completedChronology }, null, 2),
+  );
+  verifyCreationChronology(chronology, completedChronology);
   const mutations = outgoing
     .slice(firstRequest)
     .filter((frame) => frame.method === "turn/start" || frame.method === "thread/resume");

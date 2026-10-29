@@ -1,6 +1,152 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { JSDOM } from "jsdom";
 import * as guard from "./comicguard/run.mjs";
+
+const streamSource =
+  "COMIC_STREAM_BEFORE **bold**\n\n```text\n  COMIC_STREAM_CODE\n\tCOMIC_STREAM_END  \n```\n\n| key | value |\n| --- | --- |\n| COMIC_STREAM_CELL | **settled** |\n\nCOMIC_STREAM_AFTER *done*";
+const streamCuts = [
+  0,
+  streamSource.indexOf("```text"),
+  streamSource.indexOf("| key"),
+  streamSource.indexOf("COMIC_STREAM_AFTER"),
+  streamSource.length,
+];
+function streamDOM(mutate = () => {}) {
+  const dom = new JSDOM("<main><div data-comic-scroll><div></div></div></main>", { runScripts: "outside-only" });
+  const { window } = dom;
+  window.__comicRoot = () => window.document.querySelector("main");
+  const port = window.document.querySelector("[data-comic-scroll]").firstElementChild;
+  const html = [
+    "<p>COMIC_STREAM_BEFORE <strong>bold</strong></p>",
+    "<pre><code>  COMIC_STREAM_CODE\n\tCOMIC_STREAM_END  </code></pre>",
+    "<table><thead><tr><th>key</th><th>value</th></tr></thead><tbody><tr><td>COMIC_STREAM_CELL</td><td><strong>settled</strong></td></tr></tbody></table>",
+    "<p>COMIC_STREAM_AFTER <em>done</em></p>",
+  ];
+  for (const [index, content] of html.entries()) {
+    const node = window.document.createElement("article");
+    Object.assign(node.dataset, {
+      comicEntry: "source",
+      comicStart: String(streamCuts[index]),
+      comicEnd: String(streamCuts[index + 1]),
+    });
+    node.innerHTML = `<div data-comic-text><div data-comic-markdown="${["prose", "code", "table", "prose"][index]}">${content}</div></div>`;
+    port.append(node);
+  }
+  mutate(port);
+  const observation = window.eval(`(${guard.observeFormattedStream.toString()})()`);
+  dom.window.close();
+  return JSON.parse(JSON.stringify(observation));
+}
+function streamValue(final = streamDOM(), settled = streamDOM()) {
+  const partial = streamDOM((port) => {
+    port.children[3].remove();
+    port.children[2].remove();
+    port.children[1].dataset.comicEnd = String(streamSource.indexOf("\n\tCOMIC_STREAM_END"));
+    port.querySelector("code").textContent = "  COMIC_STREAM_CODE";
+  });
+  const table = streamDOM((port) => {
+    port.children[3].remove();
+    port.children[2].dataset.comicEnd = String(streamSource.indexOf(" **settled**"));
+    port.querySelector("td:last-child").textContent = "";
+  });
+  return {
+    ids: ["source", "source", "source"],
+    partialCode: "  COMIC_STREAM_CODE",
+    ...final,
+    snapshots: { partial, table, final, settled },
+  };
+}
+test("stream observer accepts complete content before and after settlement", () => {
+  assert.doesNotThrow(() => guard.verifyFormattedStream(streamValue()));
+});
+test("stream observer excludes the earlier unrelated stream input", () => {
+  const final = streamDOM((port) => {
+    const unrelated = port.ownerDocument.createElement("article");
+    unrelated.dataset.comicEntry = "earlier-input";
+    unrelated.textContent = "COMIC_STREAM_end";
+    port.prepend(unrelated);
+  });
+  assert.doesNotThrow(() => guard.verifyFormattedStream(streamValue(final)));
+});
+for (const [name, mutate] of [
+  ["missing prefix", (port) => port.firstElementChild.remove()],
+  ["duplicate code", (port) => port.children[1].after(port.children[1].cloneNode(true))],
+  [
+    "shifted source range",
+    (port) => {
+      port.children[1].dataset.comicStart = String(streamCuts[1] + 1);
+    },
+  ],
+  [
+    "changed prefix text",
+    (port) => {
+      port.querySelector("p").textContent = "COMIC_STREAM_BEFORE replacement";
+    },
+  ],
+  [
+    "duplicate whole-source identity",
+    (port) => {
+      for (const node of [...port.children]) {
+        const copy = node.cloneNode(true);
+        copy.dataset.comicEntry = "duplicate";
+        port.append(copy);
+      }
+    },
+  ],
+])
+  test(`stream observer rejects ${name}`, () => {
+    assert.throws(() => guard.verifyFormattedStream(streamValue(streamDOM(mutate))), Error);
+  });
+for (const [name, mutate] of [
+  ["drop", (port) => port.firstElementChild.remove()],
+  [
+    "replacement",
+    (port) => {
+      for (const node of port.children) node.dataset.comicEntry = "replacement";
+    },
+  ],
+])
+  test(`stream observer rejects completion-time ${name}`, () => {
+    assert.throws(() => guard.verifyFormattedStream(streamValue(streamDOM(), streamDOM(mutate))), Error);
+  });
+test("relocation rejects shifted glyph with unchanged identity and lifetime", () => {
+  const expected = {
+    mode: "away",
+    sessionRef: "child",
+    path: ["parent", "child"],
+    entryId: "source",
+    offset: 7,
+    viewportOffset: 24,
+  };
+  const before = { saved: expected, point: { ...expected, y: 24 } };
+  const value = {
+    grandchild: { key: "child" },
+    relocated: { key: "child", expanded: "true" },
+    lifetime: [],
+    relocation: { unplaced: false, following: ["COMIC_CHILD_SOURCE_00"] },
+    expected,
+    before,
+    after: structuredClone(before),
+  };
+  assert.doesNotThrow(() => guard.verifyDelegateRelocation(value));
+  value.after.point.y = 224;
+  assert.throws(() => guard.verifyDelegateRelocation(value), Error);
+});
+test("chronology rejects the same strip moved after the continuation on completion", () => {
+  const before = {
+    before: 0,
+    launch: 1,
+    after: 2,
+    entries: [{ id: "input" }, { id: "strip" }, { id: "continuation" }],
+  };
+  const after = { before: 0, launch: 2, after: 1, entries: [{ id: "input" }, { id: "continuation" }, { id: "strip" }] };
+  assert.doesNotThrow(() => guard.verifyCreationChronology(before, structuredClone(before)));
+  assert.throws(() => guard.verifyCreationChronology(before, after), Error);
+  const replaced = structuredClone(before);
+  replaced.entries[2].id = "different-continuation";
+  assert.throws(() => guard.verifyCreationChronology(before, replaced), Error);
+});
 
 const transition = {
   width: 850,
@@ -164,6 +310,7 @@ for (const [name, mutate] of [
 
 test("stream oracle requires one stable source and completed semantic blocks", () => {
   const value = {
+    snapshots: streamValue().snapshots,
     ids: ["source", "source", "source"],
     partialCode: "  COMIC_STREAM_CODE",
     code: "  COMIC_STREAM_CODE\n\tCOMIC_STREAM_END  ",
