@@ -88,7 +88,11 @@ func (m *hubHostManager) mutationRefusal() error {
 func (m *hubHostManager) bootRecords() {
 	ops := m.opsStore()
 	if ops == nil {
-		m.bootLegacyRecords()
+		// A configured store that has not opened leaves hub.toml's bytes alone:
+		// the hosts serve with what was read, and every settlement or minting
+		// write waits for the store, so nothing is normalized before the staged
+		// commits there can be compared with the file as they saw it.
+		m.bootLegacyRecords(!m.cfg.opsUnavailable)
 		if m.cfg.opsUnavailable {
 			m.refuseMutations("the operation store is unavailable")
 		}
@@ -103,7 +107,7 @@ func (m *hubHostManager) bootRecords() {
 		return
 	}
 	m.keepPreRecordsCopy()
-	if !m.bootLegacyRecords() {
+	if !m.bootLegacyRecords(true) {
 		// The records to move could not be read, so what the legacy boot saw is
 		// empty. Importing that would make the store their home and strand the
 		// real ones in hub.toml; hosts keep serving and the move is retried.
@@ -111,6 +115,23 @@ func (m *hubHostManager) bootRecords() {
 		return
 	}
 	m.migrateLegacyRecords(ops)
+}
+
+// adoptStoredIncarnation gives a live host the incarnation its stored records
+// name. With an SSH manager the host is rebound through it first, under the
+// host gate, so the channel and supervisor that captured the minted
+// registration are torn down with it rather than left attached to an entry
+// they no longer match; the host reconnects on demand.
+func (m *hubHostManager) adoptStoredIncarnation(entry hostreg.Host, incarnationID string) {
+	if m.cfg.manager != nil {
+		if err := m.cfg.manager.UpdateHost(entry, func(hostreg.Host) {}); err != nil {
+			m.logf("host %q keeps the incarnation minted at start: %v", entry.Name, err)
+			return
+		}
+	}
+	if err := m.cfg.hosts.RestoreIncarnation(entry.Name, incarnationID); err != nil {
+		m.logf("host %q keeps the incarnation minted at start: %v", entry.Name, err)
+	}
 }
 
 // attachOps brings the records to the state a boot would have, after the hub
@@ -276,9 +297,7 @@ func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
 			stored, _ = unlandedRemovalIdentity(records, entry.Name, m.cfg.configPath)
 		}
 		if validIncarnationID(stored.IncarnationID) && stored.IncarnationID != entry.IncarnationID {
-			if err := m.cfg.hosts.RestoreIncarnation(entry.Name, stored.IncarnationID); err != nil {
-				m.logf("host %q keeps the incarnation minted at start: %v", entry.Name, err)
-			}
+			m.adoptStoredIncarnation(entry, stored.IncarnationID)
 		}
 	}
 	m.installRestoredRecords(hostRecordDocument{Hosts: m.cfg.hosts.All(), Records: records})
@@ -385,10 +404,15 @@ func (m *hubHostManager) rollBackUnlandedCommits(doc hostRecordDocument) map[str
 
 // markerLanded reports whether hub.toml holds the host change a staged marker's
 // commit made: the host present as the commit staged it for an add or an edit,
-// absent for a removal.
+// absent for a removal, or a marker whose runtime swap already started.
 func markerLanded(marker HostStagedReceipt, hosts []hostreg.Host) bool {
 	scope, ok := parseHostReceiptScopedKey(marker.Key)
 	if !ok {
+		return true
+	}
+	if marker.SwapStarted || marker.TeardownStarted || marker.Phase == hostStagedPhaseRuntimeSwapped {
+		// The runtime swap starts only after the host change is in hub.toml, so
+		// a later edit of the file does not un-land the commit.
 		return true
 	}
 	entry, present := hostEntryNamed(hosts, scope.Name)
@@ -450,10 +474,11 @@ func (m *hubHostManager) reconcileStoreBoot() {
 // recovery passes settle whatever it left half done, and the boot's durable
 // prune and identity mint land in hub.toml.
 //
-// It reports whether the records were actually read: a file that is absent or
+// With settle false it only loads what the file holds into the manager and
+// writes nothing. It reports whether the records were actually read: a file that is absent or
 // empty holds none, and one that cannot be read leaves the boot looking at an
 // empty set that nothing may be built from.
-func (m *hubHostManager) bootLegacyRecords() bool {
+func (m *hubHostManager) bootLegacyRecords(settle bool) bool {
 	hosts := m.cfg.hosts
 	// The file's records are read once, before anything else can mint: its
 	// retained marks seed the counters, so a host folded in below mints above
@@ -489,6 +514,9 @@ func (m *hubHostManager) bootLegacyRecords() bool {
 	// decodeConfig already validated each shape, so they are restored as-is (the
 	// same hard startup-error posture a corrupt host entry takes).
 	m.cfg.store.setRemnantMaps(fileRecords.StagedReceipts, fileRecords.TeardownRemnants, fileRecords.TeardownAttempts)
+	if !settle {
+		return readable
+	}
 	collided := false
 	if hasFile {
 		collided = m.breakBootTombstoneCollision(fileRecords)

@@ -7,6 +7,7 @@ package hub
 // on taking host changes.
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
 )
 
 // requireNoReceiptFor fails when the records hold any receipt for mutationID.
@@ -660,5 +662,88 @@ func TestLateAttachRestoresTheIdentityOfAHostWhoseStagedRemovalNeverLanded(t *te
 	}
 	if _, tombstoned := mustRecords(t, reopened).Tombstones["side"]; tombstoned {
 		t.Fatal("the rolled-back removal left its tombstone")
+	}
+}
+
+// TestBootKeepsACommitWhoseRuntimeSwapStartedWhenHubTOMLWasEditedAfterwards pins
+// the phase evidence: the runtime swap starts only after the host change is in
+// hub.toml, so an operator's later edit of the same host does not make the
+// commit look unlanded, and the committed mutation keeps its receipt.
+func TestBootKeepsACommitWhoseRuntimeSwapStartedWhenHubTOMLWasEditedAfterwards(t *testing.T) {
+	const staged = "swapped-mutation"
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, _ := hub.boot(t, false)
+	params := updateRequest(t, m, "side", appwire.HostEntry{Address: "edited.example"})
+	params.MutationID = staged
+	armCut(m, cutFlipped)
+	runUntilCrash(t, func() { _, _ = m.UpdateResult(context.Background(), params) })
+	if err := writeHubTOMLHosts(hub.configPath, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "by-hand.example"}}); err != nil {
+		t.Fatalf("edit side by hand: %v", err)
+	}
+
+	hub.boot(t, true)
+
+	if len(receiptKeysFor(mustRecords(t, hub.store), staged)) == 0 {
+		t.Fatal("the committed mutation lost its receipt to a later edit of the file")
+	}
+}
+
+// TestADegradedBootLeavesHubTOMLBytesAlone pins the write posture while the
+// configured store has not opened: the hosts are served from what the file
+// holds and nothing is rewritten, so a later settlement compares staged commits
+// with the file exactly as they saw it.
+func TestADegradedBootLeavesHubTOMLBytesAlone(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}})
+	before := fileBytes(t, hub.configPath)
+	hosts, err := hostreg.New(hostRegistryEntries(mustLoadConfig(t, hub.configPath)))
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+
+	newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostConfigPath: hub.configPath, RemoteHostOpsUnavailable: true,
+	}, hub.configPath, hosts, t.Logf)
+
+	if !bytes.Equal(fileBytes(t, hub.configPath), before) {
+		t.Fatal("a boot without its store rewrote hub.toml")
+	}
+}
+
+// TestLateAttachDoesNotLeaveAChannelBoundToAnIdentityThatChanged pins the
+// coordination with the SSH manager: a host that connected while the store was
+// unavailable is rebound to its stored incarnation through the manager, so the
+// channel it held is torn down with the old registration instead of staying
+// attached to an entry that no longer matches it.
+func TestLateAttachDoesNotLeaveAChannelBoundToAnIdentityThatChanged(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	first, _ := hub.boot(t, false)
+	_, incarnation := testMutationIdentity(t, first, "side")
+
+	hub.restartStateRoot(t)
+	reopened, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	hosts, err := hostreg.New(hostRegistryEntries(mustLoadConfig(t, hub.configPath)))
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	manager := sshconn.New(hosts, sshconn.Options{Runner: &attachedUpdateRunner{}})
+	t.Cleanup(func() { _ = manager.Close() })
+	late := newHubHostManager(appsource.NewRegistry(), manager, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostConfigPath: hub.configPath, RemoteHostOpsUnavailable: true,
+	}, hub.configPath, hosts, t.Logf)
+	if _, err := manager.Ensure(context.Background(), "side"); err != nil {
+		t.Fatalf("Ensure while the store is unavailable: %v", err)
+	}
+
+	late.attachOps(reopened)
+
+	entry, _ := hosts.Get("side")
+	if entry.IncarnationID != incarnation {
+		t.Fatalf("side serves incarnation %q after the late attach, want the stored %q", entry.IncarnationID, incarnation)
+	}
+	if ch, attached := manager.ChannelIfAttached("side"); attached && !ch.MatchesRegistration(entry) {
+		t.Fatal("the channel from before the attach is still attached to an identity the host no longer has")
 	}
 }
