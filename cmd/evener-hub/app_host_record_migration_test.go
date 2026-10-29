@@ -571,11 +571,16 @@ func TestHostsKeepServingWhenTheStoreHoldsRecordsThisBuildCannotRead(t *testing.
 	}
 }
 
-// TestStartupRebuildsTheRecordsWhenTheStoreIsSetAside pins the corrupt-store
-// disposition end to end: a store file whose custody cannot be proven is kept
-// aside, startup opens a fresh store and serves the hosts in hub.toml, the
-// host records are rebuilt into it, and host changes work.
-func TestStartupRebuildsTheRecordsWhenTheStoreIsSetAside(t *testing.T) {
+// TestStartupKeepsServingWhenTheStoreCannotBeProvenAndResumesWhenItCan pins the
+// corrupt-store disposition end to end: a store file whose custody cannot be
+// proven is left untouched, startup serves the hosts in hub.toml with host
+// changes paused, and once the file is repaired the retry attaches the store,
+// moves the records into it and host changes work again.
+func TestStartupKeepsServingWhenTheStoreCannotBeProvenAndResumesWhenItCan(t *testing.T) {
+	previous := hostRecordsRetryInitial
+	hostRecordsRetryInitial = 0
+	t.Cleanup(func() { hostRecordsRetryInitial = previous })
+
 	configPath := filepath.Join(t.TempDir(), "hub.toml")
 	if err := writeHubTOMLHosts(configPath, []hostreg.Host{{Name: "keep", SSH: "keep.example"}}); err != nil {
 		t.Fatalf("seed hub.toml: %v", err)
@@ -592,18 +597,36 @@ func TestStartupRebuildsTheRecordsWhenTheStoreIsSetAside(t *testing.T) {
 
 	r.openOpsStore()
 
-	if r.opsStore == nil || r.opsUnavailable {
-		t.Fatalf("runtime = store %v unavailable %v, want a fresh store and no pause", r.opsStore, r.opsUnavailable)
+	if r.opsStore != nil || !r.opsUnavailable {
+		t.Fatalf("runtime = store %v unavailable %v, want no store and the unavailable disposition", r.opsStore, r.opsUnavailable)
 	}
-	m, store := bootOverStore(t, configPath, stateRoot)
+	hosts, err := hostreg.New(hostRegistryEntries(mustLoadConfig(t, configPath)))
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostConfigPath: configPath, RemoteHostOpsUnavailable: true,
+	}, configPath, hosts, t.Logf)
 	if rows := hostRows(t, m); rows["keep"].Name != "keep" || rows["keep"].Removed {
 		t.Fatalf("the hosts in hub.toml are not served: %+v", rows)
 	}
-	if records := mustRecords(t, store); records.HostRecords["keep"].IncarnationID == "" {
-		t.Fatalf("the host records were not rebuilt into the fresh store: %+v", records.HostRecords)
+	_, err = m.AddResult(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "extra", Address: "extra.example"}})
+	requireWireError(t, err, appwire.CodeUnavailable)
+
+	// The operator repairs the file; the retry attaches the store.
+	if err := os.WriteFile(path, []byte(`{"version":1,"sequence":0,"allocatorHighWaterMark":0,"records":[]}`), 0o600); err != nil {
+		t.Fatalf("repair the store: %v", err)
+	}
+	r.retryHostRecords(context.Background(), m)
+
+	if err := m.mutationRefusal(); err != nil {
+		t.Fatalf("host changes are still paused after the store was repaired: %v", err)
+	}
+	if records := mustRecords(t, m.opsStore()); records.HostRecords["keep"].IncarnationID == "" {
+		t.Fatalf("the host records were not moved into the repaired store: %+v", records.HostRecords)
 	}
 	if _, err := m.AddResult(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "extra", Address: "extra.example"}}); err != nil {
-		t.Fatalf("Add after the rebuild: %v", err)
+		t.Fatalf("Add after the repair: %v", err)
 	}
 }
 

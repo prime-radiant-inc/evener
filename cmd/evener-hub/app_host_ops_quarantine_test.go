@@ -119,12 +119,11 @@ func TestOpenHostOpsStoreReportsEveryOpenFailureWithoutAHandle(t *testing.T) {
 	}
 }
 
-// TestOpenHostOpsStoreSetsAsideAStoreWhoseCustodyCannotBeProven pins the open's
-// answer to a corrupt file the custody-first quarantine refuses: the file is
-// kept byte for byte beside the store, and a fresh, empty store opens at the
-// path, so the hub keeps working and rebuilds what it can instead of waiting on
-// a file nobody can repair.
-func TestOpenHostOpsStoreSetsAsideAStoreWhoseCustodyCannotBeProven(t *testing.T) {
+// TestOpenHostOpsStoreRefusesACorruptStoreWhoseCustodyCannotBeProvenAndKeepsIt
+// pins the open's answer to a corrupt file the custody-first quarantine cannot
+// take: no store opens, the file is left exactly as it was, and nothing is
+// written beside it, so whoever repairs it finds the evidence intact.
+func TestOpenHostOpsStoreRefusesACorruptStoreWhoseCustodyCannotBeProvenAndKeepsIt(t *testing.T) {
 	stateRoot := t.TempDir()
 	path := hostops.StorePath(stateRoot)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -134,44 +133,25 @@ func TestOpenHostOpsStoreSetsAsideAStoreWhoseCustodyCannotBeProven(t *testing.T)
 	if err := os.WriteFile(path, []byte(truncated), 0o600); err != nil {
 		t.Fatalf("write store: %v", err)
 	}
-	var logged strings.Builder
-	store, err := openHostOpsStore(stateRoot, &logged, hostops.RetentionPolicy{})
-	if err != nil || store == nil {
-		t.Fatalf("openHostOpsStore = (%v, %v), want a fresh store", store, err)
+	before := dirNames(t, filepath.Dir(path))
+
+	store, err := openHostOpsStore(stateRoot, new(strings.Builder), hostops.RetentionPolicy{})
+
+	if store != nil || err == nil {
+		t.Fatalf("openHostOpsStore = (%v, %v), want a refusal and no store", store, err)
 	}
-	if records := store.Records(); len(records) != 0 {
-		t.Fatalf("the fresh store carries records: %+v", records)
+	if body, readErr := os.ReadFile(path); readErr != nil || string(body) != truncated {
+		t.Fatalf("the corrupt store was disturbed: %q, %v", body, readErr)
 	}
-	if _, _, imported := store.HostRecords(); imported {
-		t.Fatal("the fresh store claims imported host records")
-	}
-	entries, readErr := os.ReadDir(filepath.Dir(path))
-	if readErr != nil {
-		t.Fatalf("ReadDir: %v", readErr)
-	}
-	var kept []string
-	for _, entry := range entries {
-		if entry.Name() == "operations.json" {
-			continue
-		}
-		body, readErr := os.ReadFile(filepath.Join(filepath.Dir(path), entry.Name()))
-		if readErr != nil {
-			t.Fatalf("ReadFile(%s): %v", entry.Name(), readErr)
-		}
-		if string(body) == truncated {
-			kept = append(kept, entry.Name())
-		}
-	}
-	if len(kept) != 1 {
-		t.Fatalf("the corrupt bytes were kept in %d file(s) (%v), want exactly one", len(kept), kept)
+	if after := dirNames(t, filepath.Dir(path)); !slices.Equal(before, after) {
+		t.Fatalf("the open left artifacts: before %v after %v", before, after)
 	}
 }
 
 // TestOpenHostOpsStoreKeepsAHealthyStoreWhenOnlyItsQuarantineArtifactsAreBroken
-// pins that a store file that loads is never set aside: an incomplete-custody
+// pins that a store file that loads is left alone: an incomplete-custody
 // refusal can come from the quarantine's own bookkeeping (here an intent naming
-// a custody file that is gone) while the active store is fine, and moving the
-// fine store away would lose it and still leave the bookkeeping broken.
+// a custody file that is gone) while the active store is fine.
 func TestOpenHostOpsStoreKeepsAHealthyStoreWhenOnlyItsQuarantineArtifactsAreBroken(t *testing.T) {
 	stateRoot := t.TempDir()
 	path := hostops.StorePath(stateRoot)

@@ -338,6 +338,7 @@ func TestBootRollbackOfAnUnlandedReAddKeepsTheRemovalItConsumed(t *testing.T) {
 		t.Fatal("the fixture's re-add did not consume the tombstone in its first write")
 	}
 	spent := marker.Provisional.Generation
+	spentEpoch := mustRecords(t, hub.store).Generations["side"].PresenceEpoch
 	if err := os.WriteFile(hub.configPath, beforeBytes, 0o600); err != nil {
 		t.Fatalf("put the pre-mutation hub.toml back: %v", err)
 	}
@@ -347,6 +348,9 @@ func TestBootRollbackOfAnUnlandedReAddKeepsTheRemovalItConsumed(t *testing.T) {
 	records := mustRecords(t, hub.store)
 	if len(records.StagedReceipts) != 0 {
 		t.Fatalf("recovery left staged markers: %+v", records.StagedReceipts)
+	}
+	if mark := records.Generations["side"]; mark.PresenceEpoch < spentEpoch || mark.Generation < spent {
+		t.Fatalf("the high-water mark after the rollback is %+v, below the spent generation %d and presence epoch %d", mark, spent, spentEpoch)
 	}
 	tombstone, kept := records.Tombstones["side"]
 	if !kept {

@@ -346,6 +346,11 @@ func (m *hubHostManager) rollBackUnlandedCommits(doc hostRecordDocument) map[str
 			// the generation the re-add spent stays spent.
 			restore := *consumed
 			restore.Tombstone.Generation = max(restore.Tombstone.Generation, marker.Provisional.Generation)
+			if spent, held := m.cfg.store.highWaterSnapshot()[name]; held {
+				// The staged re-add minted a presence epoch too; it stays spent.
+				restore.Tombstone.Generation = max(restore.Tombstone.Generation, spent.Generation)
+				restore.Tombstone.PresenceEpoch = max(restore.Tombstone.PresenceEpoch, spent.PresenceEpoch)
+			}
 			change.restore = &restore
 		}
 		if err := m.persistHosts(entries, entries, change); err != nil {
