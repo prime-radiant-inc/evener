@@ -40,9 +40,11 @@ var (
 	Isolated = Var{Name: "EVENER_ONLY_CLEARED", Visibility: Public}
 	Retired  = Var{Name: "EVENER_RETIRED"}
 	Internal = Var{Name: "EVENER_USED_INSIDE", Visibility: Internal}
+	Unread   = Var{Name: "EVENER_UNREAD", Summary: "Unread is only named here", Visibility: Public}
 )
 
-func Check() bool { return Internal.Name != "" }
+// Unread appears in this comment and in the string below, never in code.
+func Check() bool { return Internal.Name != "" && "Unread" != "" }
 `
 
 const fixtureHubConfig = `package main
@@ -77,7 +79,7 @@ func fixtureRoot(t *testing.T) string {
 		"cmd/tool/main.go":                      "package main\nvar _ = envvars.Read\nvar _ = \"EVENER_BY_NAME\"\n",
 		"cmd/tool/main_test.go":                 "package main\nvar _ = envvars.Orphan\n",
 		"cmd/evener-hub/config.go":              fixtureHubConfig,
-		"cmd/evener-hub/use.go":                 "package main\nvar _ = cfg.Addr\nvar _ = cfg.Timeout\n",
+		"cmd/evener-hub/use.go":                 "package main\nvar _ = cfg.Addr\nvar _ = cfg.Timeout\nvar _ = other.Dead\n",
 		"cmd/evener-hub/other_test.go":          "package main\nvar _ = cfg.Dead\n",
 		"cmd/dev/direct.go":                     "package main\nvar _ = os.Getenv(\"SHARD_DIR\")\nvar _ = \"EVENER_READ\"\n",
 		"docs/developing-evener/environment.md": "| `EVENER_READ` | doc |\n",
@@ -115,9 +117,9 @@ func TestEnvRowsReportConsumersAndDocRows(t *testing.T) {
 	if got := byName["ACME_ORG_ID"]; !slices.Equal(got.Consumers, []string{"llm/registry"}) {
 		t.Errorf("expanded variable consumers = %v, want the registry that expands it", got.Consumers)
 	}
-	for _, name := range []string{"ACME_API_KEY", "GHOST_API_KEY", "EVENER_ONLY_CLEARED"} {
+	for _, name := range []string{"ACME_API_KEY", "GHOST_API_KEY", "EVENER_ONLY_CLEARED", "EVENER_UNREAD"} {
 		if got := byName[name]; len(got.Consumers) != 0 {
-			t.Errorf("%s consumers = %v, want none: the registry does not name it and a test-support package only clears it", name, got.Consumers)
+			t.Errorf("%s consumers = %v, want none: no reader names it (a catalog entry, a function body in the registry package or a non-test-support package)", name, got.Consumers)
 		}
 	}
 	if got := byName["EVENER_USED_INSIDE"]; !slices.Equal(got.Consumers, []string{"envvars"}) {
@@ -164,7 +166,7 @@ func TestHubRowsResolveDefaultsAndSkipRecordTables(t *testing.T) {
 		t.Errorf("state_root default = %q, want it marked computed", got)
 	}
 	if got := byKey["dead"]; got.Default != "unset" || len(got.Consumers) != 0 {
-		t.Errorf("dead row = %+v, want unset with no consumer (a test is not one)", got)
+		t.Errorf("dead row = %+v, want unset with no consumer (a test is not one, and neither is another struct's field of the same name)", got)
 	}
 	if got := byKey["addr"]; !slices.Equal(got.Consumers, []string{"cmd/evener-hub/use.go"}) || got.DocRow != "evener-hub.md" {
 		t.Errorf("addr row = %+v, want its reader and its doc", got)

@@ -114,6 +114,10 @@ func envRows(root string, sources []goSource) ([]envRow, error) {
 	if err != nil {
 		return nil, err
 	}
+	internalReads, err := registryFuncReads(root)
+	if err != nil {
+		return nil, err
+	}
 	var rows []envRow
 	for _, e := range registry {
 		if e.visibility == "" {
@@ -129,7 +133,7 @@ func envRows(root string, sources []goSource) ([]envRow, error) {
 				}
 			}
 		}
-		if usedWithin(root, e.ident) {
+		if internalReads[e.ident] {
 			dirs["envvars"] = true
 		}
 		if catalog[e.name] {
@@ -202,14 +206,26 @@ func registryNames(root string) (map[string]bool, error) {
 	return names, err
 }
 
-// usedWithin reports whether envvars/envvars.go refers to ident beyond its
-// declaration and its entry in allVars, as the recorder master switch does.
-func usedWithin(root, ident string) bool {
-	src, err := os.ReadFile(filepath.Join(root, "envvars", "envvars.go"))
+// registryFuncReads is the set of registry identifiers that envvars.go's own
+// function bodies refer to, as the recorder master switch does. Declarations,
+// the allVars list, comments and strings are not reads.
+func registryFuncReads(root string) (map[string]bool, error) {
+	file, err := parser.ParseFile(token.NewFileSet(), filepath.Join(root, "envvars", "envvars.go"), nil, 0)
 	if err != nil {
-		return false
+		return nil, err
 	}
-	return len(regexp.MustCompile(`\b`+ident+`\b`).FindAll(src, -1)) > 2
+	reads := map[string]bool{}
+	for _, decl := range file.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Body != nil {
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				if id, ok := n.(*ast.Ident); ok {
+					reads[id.Name] = true
+				}
+				return true
+			})
+		}
+	}
+	return reads, nil
 }
 
 func mentionsBackticked(name string) func(string) bool {
@@ -326,6 +342,10 @@ func hubRows(root string, sources []goSource) ([]hubRow, []string, error) {
 		return nil, nil, fmt.Errorf("%s: no Config struct", path)
 	}
 
+	reads, err := configReads(sources)
+	if err != nil {
+		return nil, nil, err
+	}
 	var rows []hubRow
 	for _, f := range fields {
 		key := tomlKey(f)
@@ -338,17 +358,45 @@ func hubRows(root string, sources []goSource) ([]hubRow, []string, error) {
 			row.Default = defaultText(expr, consts, text)
 		}
 		row.DocRow = docMention(root, mentionsKey(key))
-		field := regexp.MustCompile(`\.` + name + `\b`)
-		files := map[string]bool{}
-		for _, s := range sources {
-			if strings.HasPrefix(s.path, "cmd/evener-hub/") && s.path != "cmd/evener-hub/config.go" && field.MatchString(s.text) {
-				files[s.path] = true
-			}
-		}
-		row.Consumers = sorted(files)
+		row.Consumers = sorted(reads[name])
 		rows = append(rows, row)
 	}
 	return rows, removed, nil
+}
+
+// configReads maps each Config field name to the hub files that read it. Config
+// is the hub's own type, so only package main's files can; a read is a selector
+// on the configuration the hub passes around (cfg, config, or a cfg/Cfg field),
+// which keeps a same-named field of another struct from counting.
+func configReads(sources []goSource) (map[string]map[string]bool, error) {
+	reads := map[string]map[string]bool{}
+	fset := token.NewFileSet()
+	for _, src := range sources {
+		if src.dir() != "cmd/evener-hub" || src.path == "cmd/evener-hub/config.go" {
+			continue
+		}
+		file, err := parser.ParseFile(fset, src.path, src.text, 0)
+		if err != nil {
+			return nil, err
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			if sel, ok := n.(*ast.SelectorExpr); ok && isConfigExpr(sel.X) {
+				addTo(reads, sel.Sel.Name, src.path)
+			}
+			return true
+		})
+	}
+	return reads, nil
+}
+
+func isConfigExpr(e ast.Expr) bool {
+	switch v := e.(type) {
+	case *ast.Ident:
+		return v.Name == "cfg" || v.Name == "config"
+	case *ast.SelectorExpr:
+		return v.Sel.Name == "cfg" || v.Sel.Name == "Cfg"
+	}
+	return false
 }
 
 var tomlTag = regexp.MustCompile(`toml:"([^",]*)`)

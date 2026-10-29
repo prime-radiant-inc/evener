@@ -113,10 +113,10 @@ packages that only clear a variable do not count.
 | `GOENV` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/sandbox` |
 | `GOMODCACHE` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent`, `agent/execenv`, `agent/sandbox` |
 | `GOPATH` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/sandbox` |
-| `HOME` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/sandbox`, `cmd/evener` and 5 more |
+| `HOME` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/sandbox`, `cmd/evener` and 4 more |
 | `LANG` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv` |
 | `NVM_DIR` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv` |
-| `PATH` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/sandbox`, `envvars` |
+| `PATH` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/sandbox` |
 | `PYENV_ROOT` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv` |
 | `RUSTUP_HOME` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv` |
 | `SHELL` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent`, `agent/execenv` |
@@ -153,20 +153,20 @@ machine-managed host records are described in [the hub guide](../evener-hub.md).
 
 | Key | Default | Doc row | Consumer |
 |---|---|---|---|
-| `addr` | `"127.0.0.1:9180"` | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener-hub/app_host_manage.go`, `cmd/evener-hub/app_host_mutations.go`, `cmd/evener-hub/app_host_ops.go` and 13 more |
-| `public_url` | unset | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener-hub/device_pairing.go`, `cmd/evener-hub/endpoint.go`, `cmd/evener-hub/endpoint_config.go` and 3 more |
-| `hub_state_root` | computed at startup | [evener-hub.md](../evener-hub.md) | `cmd/evener-hub/app_host_running.go`, `cmd/evener-hub/app_rpc_settings_overview.go`, `cmd/evener-hub/app_threadlifecycle.go` and 14 more |
-| `state_glob` | unset | [evener-hub.md](../evener-hub.md) | `cmd/evener-hub/hub_startup.go`, `cmd/evener-hub/web_api.go` |
-| `run_dir` | unset | [evener-hub.md](../evener-hub.md) | `cmd/evener-hub/app_daemons.go`, `cmd/evener-hub/app_force_stop.go`, `cmd/evener-hub/app_rpc_settings_overview.go` and 6 more |
+| `addr` | `"127.0.0.1:9180"` | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener-hub/endpoint_config.go`, `cmd/evener-hub/hub_startup.go` |
+| `public_url` | unset | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener-hub/device_pairing.go`, `cmd/evener-hub/endpoint_config.go`, `cmd/evener-hub/hub_startup.go` and 1 more |
+| `hub_state_root` | computed at startup | [evener-hub.md](../evener-hub.md) | `cmd/evener-hub/app_host_running.go`, `cmd/evener-hub/app_rpc_settings_overview.go`, `cmd/evener-hub/endpoint.go` and 3 more |
+| `state_glob` | unset | [evener-hub.md](../evener-hub.md) | `cmd/evener-hub/hub_startup.go` |
+| `run_dir` | unset | [evener-hub.md](../evener-hub.md) | `cmd/evener-hub/app_daemons.go`, `cmd/evener-hub/app_force_stop.go`, `cmd/evener-hub/app_rpc_settings_overview.go` and 4 more |
 | `past_index_db` | unset | [evener-hub.md](../evener-hub.md) | `cmd/evener-hub/hub_startup.go` |
 | `past_index_rebuild_interval` | `60 * time.Second` | [evener-hub.md](../evener-hub.md) | `cmd/evener-hub/hub_startup.go` |
 | `spawn_timeout` | `30 * time.Second` | [evener-hub.md](../evener-hub.md) | `cmd/evener-hub/app_rpc_settings_overview.go`, `cmd/evener-hub/hub_startup.go`, `cmd/evener-hub/spawn.go` |
 | `past_results_per_page` | `50` | [evener-hub.md](../evener-hub.md) | `cmd/evener-hub/hub_startup.go` |
-| `roots` | unset | [appwire-protocol.md](../appwire-protocol.md) | `cmd/evener-hub/app_host_deploy.go`, `cmd/evener-hub/app_host_manage.go`, `cmd/evener-hub/app_host_mutations.go` and 15 more |
-| `plugin_auto_upgrade` | `true` | [evener-hub.md](../evener-hub.md) | `cmd/evener-hub/hub_startup.go`, `cmd/evener-hub/main_background.go` |
-| `plugin_auto_upgrade_interval` | `12 * time.Hour` | [evener-hub.md](../evener-hub.md) | `cmd/evener-hub/hub_startup.go`, `cmd/evener-hub/main_background.go` |
-| `daemon_idle_timeout` | `time.Hour` | [evener-hub.md](../evener-hub.md) | `cmd/evener-hub/app_archive.go`, `cmd/evener-hub/app_daemons.go`, `cmd/evener-hub/app_rpc_settings_overview.go` and 3 more |
-| `api_log` | unset | [configuration.md](../configuration.md) | `cmd/evener-hub/app_threadlifecycle.go`, `cmd/evener-hub/hub_startup.go`, `cmd/evener-hub/internal/launchconfig/args.go` and 4 more |
+| `roots` | unset | [appwire-protocol.md](../appwire-protocol.md) | `cmd/evener-hub/hub_startup.go` |
+| `plugin_auto_upgrade` | `true` | [evener-hub.md](../evener-hub.md) | `cmd/evener-hub/main_background.go` |
+| `plugin_auto_upgrade_interval` | `12 * time.Hour` | [evener-hub.md](../evener-hub.md) | `cmd/evener-hub/main_background.go` |
+| `daemon_idle_timeout` | `time.Hour` | [evener-hub.md](../evener-hub.md) | `cmd/evener-hub/app_archive.go`, `cmd/evener-hub/app_daemons.go`, `cmd/evener-hub/app_rpc_settings_overview.go` and 2 more |
+| `api_log` | unset | [configuration.md](../configuration.md) | `cmd/evener-hub/hub_startup.go`, `cmd/evener-hub/spawn.go` |
 | `host_probe_timeout` | `10 * time.Second` | [evener-hub.md](../evener-hub.md) | `cmd/evener-hub/app_host_config.go`, `cmd/evener-hub/hub_startup.go` |
 | `host_min_free_space_bytes` | `512 << 20` | [evener-hub.md](../evener-hub.md) | `cmd/evener-hub/app_host_running.go`, `cmd/evener-hub/hub_startup.go` |
 | `host_tombstone_retention` | `7 * 24 * time.Hour` | [evener-hub.md](../evener-hub.md) | `cmd/evener-hub/app_host_record_pruning.go`, `cmd/evener-hub/hub_startup.go`, `cmd/evener-hub/main.go` |
