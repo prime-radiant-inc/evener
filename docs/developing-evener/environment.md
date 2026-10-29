@@ -7,6 +7,8 @@ Where a row here and `envvars/envvars.go` disagree, `envvars/envvars.go` is righ
 For user setup, scope, and precedence, see the public
 [environment variable reference](../environment-variables.md). This contributor
 reference also includes internal processes and test controls.
+[Configuration knobs](config-knobs.md) is the generated cross-check of every
+variable and `hub.toml` key against its doc row and consumer.
 
 ## Evener Commands
 
@@ -123,8 +125,6 @@ process environments.
 | `GOMODCACHE` | Inherited by core-only command environments; under the session-private cache strategy the sandbox environment floor redirects it into the session scratch directory, and under the overlay strategy it overlays a served value and redirects one the overlay does not serve (or every Go setting, when the go env file was unreadable) (see [docs/sandboxing.md](../sandboxing.md#cache-isolation-and-writable-root-exceptions)). |
 | `GOPATH` | Inherited by core-only command environments; under the session-private cache strategy the sandbox environment floor puts the session scratch directory first, keeping the ambient value after it where the spawned layer can read it (see [docs/sandboxing.md](../sandboxing.md#cache-isolation-and-writable-root-exceptions)). |
 | `HOME` | Home directory fallback for state/config paths and path expansion. |
-| `HOMEDRIVE` | Windows home drive fallback. |
-| `HOMEPATH` | Windows home path fallback. |
 | `LANG` | Inherited by core-only command environments. |
 | `NVM_DIR` | Inherited by core-only command environments. |
 | `PATH` | Executable search path for local commands and child processes; a session/daemon env overrides it with the resolved login-shell PATH when available, else the inherited process PATH. |

@@ -1,0 +1,218 @@
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"slices"
+	"testing"
+)
+
+// writeTree writes files (slash path -> content) under a fresh root.
+func writeTree(t *testing.T, files map[string]string) string {
+	t.Helper()
+	root := t.TempDir()
+	for rel, content := range files {
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
+}
+
+const fixtureRegistry = `package envvars
+
+type Var struct {
+	Name       string
+	Visibility string
+}
+
+var (
+	Read     = Var{Name: "EVENER_READ", Visibility: Public}
+	ByName   = Var{Name: "EVENER_BY_NAME", Visibility: Public}
+	Orphan   = Var{Name: "EVENER_ORPHAN", Visibility: Public}
+	Provider = Var{Name: "ACME_API_KEY", Visibility: Public}
+	Retired  = Var{Name: "EVENER_RETIRED"}
+	Internal = Var{Name: "EVENER_USED_INSIDE", Visibility: Internal}
+)
+
+func Check() bool { return Internal.Name != "" }
+`
+
+const fixtureHubConfig = `package main
+
+import "time"
+
+type Config struct {
+	Addr        string        ` + "`toml:\"addr\"`" + `
+	Timeout     time.Duration ` + "`toml:\"timeout\"`" + `
+	Dead        int           ` + "`toml:\"dead\"`" + `
+	StateRoot   string        ` + "`toml:\"state_root\"`" + `
+	Skipped     string        ` + "`toml:\"-\"`" + `
+	Hosts       []HostConfig  ` + "`toml:\"hosts\"`" + `
+	Records     map[string]string ` + "`toml:\"records\"`" + `
+}
+
+const defaultTimeout = 5 * time.Second
+
+func DefaultConfig() Config {
+	root, _ := stateRoot()
+	return Config{Addr: "127.0.0.1:1", Timeout: defaultTimeout, StateRoot: root}
+}
+
+var removedKnobs = []string{"old_key"}
+`
+
+func fixtureRoot(t *testing.T) string {
+	return writeTree(t, map[string]string{
+		"envvars/envvars.go":                    fixtureRegistry,
+		"cmd/tool/main.go":                      "package main\nvar _ = envvars.Read\nvar _ = \"EVENER_BY_NAME\"\n",
+		"cmd/tool/main_test.go":                 "package main\nvar _ = envvars.Orphan\n",
+		"cmd/evener-hub/config.go":              fixtureHubConfig,
+		"cmd/evener-hub/use.go":                 "package main\nvar _ = cfg.Addr\nvar _ = cfg.Timeout\n",
+		"cmd/evener-hub/other_test.go":          "package main\nvar _ = cfg.Dead\n",
+		"cmd/dev/direct.go":                     "package main\nvar _ = os.Getenv(\"SHARD_DIR\")\nvar _ = \"EVENER_READ\"\n",
+		"docs/developing-evener/environment.md": "| `EVENER_READ` | doc |\n",
+		"docs/evener-hub.md":                    "`addr` and\ntimeout = \"5s\"\n",
+		"docs/superpowers/plans/dated.md":       "`EVENER_ORPHAN` `dead`\n",
+	})
+}
+
+func TestEnvRowsReportConsumersAndDocRows(t *testing.T) {
+	root := fixtureRoot(t)
+	sources, err := scanGoSources(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := envRows(root, sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]envRow{}
+	for _, r := range rows {
+		byName[r.Name] = r
+	}
+	if _, ok := byName["EVENER_RETIRED"]; ok {
+		t.Error("a variable with no visibility is retired and must not be listed")
+	}
+	if got := byName["EVENER_READ"]; !slices.Equal(got.Consumers, []string{"cmd/dev", "cmd/tool"}) || got.DocRow != "developing-evener/environment.md" {
+		t.Errorf("EVENER_READ row = %+v, want consumers from the identifier and the name, and its doc row", got)
+	}
+	if got := byName["EVENER_BY_NAME"]; !slices.Equal(got.Consumers, []string{"cmd/tool"}) {
+		t.Errorf("EVENER_BY_NAME consumers = %v, want the directory that spells the name", got.Consumers)
+	}
+	if got := byName["EVENER_ORPHAN"]; len(got.Consumers) != 0 || got.DocRow != "" {
+		t.Errorf("EVENER_ORPHAN row = %+v, want no consumer (a test is not one) and no doc row (a dated plan is not one)", got)
+	}
+	if got := byName["ACME_API_KEY"]; !slices.Equal(got.Consumers, []string{"llm/registry"}) {
+		t.Errorf("provider variable consumers = %v, want the catalog-named registry", got.Consumers)
+	}
+	if got := byName["EVENER_USED_INSIDE"]; !slices.Equal(got.Consumers, []string{"envvars"}) {
+		t.Errorf("EVENER_USED_INSIDE consumers = %v, want the registry package that reads it", got.Consumers)
+	}
+}
+
+func TestDirectEnvRowsSkipRegistryNames(t *testing.T) {
+	root := fixtureRoot(t)
+	sources, _ := scanGoSources(root)
+	rows, err := directEnvRows(root, sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, r := range rows {
+		names = append(names, r.Name)
+	}
+	if !slices.Equal(names, []string{"SHARD_DIR"}) {
+		t.Errorf("direct rows = %v, want only the name the registry does not declare", names)
+	}
+}
+
+func TestHubRowsResolveDefaultsAndSkipRecordTables(t *testing.T) {
+	root := fixtureRoot(t)
+	sources, _ := scanGoSources(root)
+	rows, removed, err := hubRows(root, sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byKey := map[string]hubRow{}
+	var keys []string
+	for _, r := range rows {
+		byKey[r.Key] = r
+		keys = append(keys, r.Key)
+	}
+	if want := []string{"addr", "timeout", "dead", "state_root"}; !slices.Equal(keys, want) {
+		t.Fatalf("keys = %v, want %v: tables, maps and skipped fields are not scalar knobs", keys, want)
+	}
+	if got := byKey["timeout"].Default; got != "5 * time.Second" {
+		t.Errorf("timeout default = %q, want the constant's value", got)
+	}
+	if got := byKey["state_root"].Default; got != "computed at startup" {
+		t.Errorf("state_root default = %q, want it marked computed", got)
+	}
+	if got := byKey["dead"]; got.Default != "unset" || len(got.Consumers) != 0 {
+		t.Errorf("dead row = %+v, want unset with no consumer (a test is not one)", got)
+	}
+	if got := byKey["addr"]; !slices.Equal(got.Consumers, []string{"cmd/evener-hub/use.go"}) || got.DocRow != "evener-hub.md" {
+		t.Errorf("addr row = %+v, want its reader and its doc", got)
+	}
+	if got := byKey["timeout"].DocRow; got != "evener-hub.md" {
+		t.Errorf("timeout doc row = %q, want a key written as an assignment to count as documented", got)
+	}
+	if !slices.Equal(removed, []string{"old_key"}) {
+		t.Errorf("removed = %v", removed)
+	}
+}
+
+// TestRepoKnobsHaveConsumers is the audit this generator exists for: a
+// registered variable or hub.toml key that no code reads is dead and should be
+// deleted, and a removed hub.toml key belongs in removedKnobs.
+func TestRepoKnobsHaveConsumers(t *testing.T) {
+	root := "../.."
+	sources, err := scanGoSources(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err := envRows(root, sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range env {
+		if len(r.Consumers) == 0 {
+			t.Errorf("%s is registered in envvars but nothing reads it", r.Name)
+		}
+	}
+	hub, _, err := hubRows(root, sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range hub {
+		if len(r.Consumers) == 0 {
+			t.Errorf("hub.toml key %s is decoded but nothing reads it", r.Key)
+		}
+	}
+}
+
+func TestGenerateWritesOutputDoc(t *testing.T) {
+	root := fixtureRoot(t)
+	if err := os.MkdirAll(filepath.Join(root, "docs", "developing-evener"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := generate(root); err != nil {
+		t.Fatal(err)
+	}
+	first, err := os.ReadFile(filepath.Join(root, outputDoc))
+	if err != nil || len(first) == 0 {
+		t.Fatalf("output doc: %v (%d bytes)", err, len(first))
+	}
+	if err := generate(root); err != nil {
+		t.Fatal(err)
+	}
+	second, _ := os.ReadFile(filepath.Join(root, outputDoc))
+	if string(first) != string(second) {
+		t.Error("regenerating changed the output: the generator must be deterministic and ignore its own output")
+	}
+}

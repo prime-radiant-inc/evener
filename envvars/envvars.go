@@ -163,8 +163,6 @@ var (
 	GoModCache     = Var{Name: "GOMODCACHE", Summary: "Inherited by core-only command environments.", Visibility: Inherited}
 	GoPath         = Var{Name: "GOPATH", Summary: "Inherited by core-only command environments.", Visibility: Inherited}
 	Home           = Var{Name: "HOME", Summary: "Home directory fallback for state/config paths and path expansion.", Visibility: Inherited}
-	HomeDrive      = Var{Name: "HOMEDRIVE", Summary: "Windows home drive fallback.", Visibility: Inherited}
-	HomePath       = Var{Name: "HOMEPATH", Summary: "Windows home path fallback.", Visibility: Inherited}
 	Lang           = Var{Name: "LANG", Summary: "Inherited by core-only command environments.", Visibility: Inherited}
 	NVMDir         = Var{Name: "NVM_DIR", Summary: "Inherited by core-only command environments.", Visibility: Inherited}
 	Path           = Var{Name: "PATH", Summary: "Executable search path for local commands and child processes; a session/daemon env overrides it with the resolved login-shell PATH when available, else the inherited process PATH.", Visibility: Inherited}
@@ -299,8 +297,6 @@ var allVars = []Var{
 	GoModCache,
 	GoPath,
 	Home,
-	HomeDrive,
-	HomePath,
 	Lang,
 	NVMDir,
 	Path,

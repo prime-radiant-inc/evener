@@ -1,0 +1,353 @@
+package main
+
+import (
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
+)
+
+// envRow is one variable in the envvars registry.
+type envRow struct {
+	Name       string
+	Visibility string
+	DocRow     string
+	Consumers  []string
+}
+
+// directRow is an environment variable read by name outside the registry.
+type directRow struct {
+	Name      string
+	DocRow    string
+	Consumers []string
+}
+
+// hubRow is one scalar hub.toml key.
+type hubRow struct {
+	Key       string
+	Default   string
+	DocRow    string
+	Consumers []string
+}
+
+var (
+	qualifiedRef = regexp.MustCompile(`\benvvars\.([A-Za-z0-9_]+)`)
+	evenerName   = regexp.MustCompile(`"(EVENER_[A-Z0-9_]+)"`)
+	getenvName   = regexp.MustCompile(`os\.(?:Getenv|LookupEnv)\("([A-Z][A-Z0-9_]*)"\)`)
+)
+
+// registryEntry is a Var declared in envvars/envvars.go.
+type registryEntry struct {
+	ident, name, visibility string
+}
+
+func parseRegistry(root string) ([]registryEntry, error) {
+	file, err := parser.ParseFile(token.NewFileSet(), filepath.Join(root, "envvars", "envvars.go"), nil, 0)
+	if err != nil {
+		return nil, err
+	}
+	var out []registryEntry
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.VAR {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			vs := spec.(*ast.ValueSpec)
+			if len(vs.Values) != 1 {
+				continue
+			}
+			lit, ok := vs.Values[0].(*ast.CompositeLit)
+			if !ok || !isIdent(lit.Type, "Var") {
+				continue
+			}
+			entry := registryEntry{ident: vs.Names[0].Name}
+			for _, elt := range lit.Elts {
+				kv := elt.(*ast.KeyValueExpr)
+				switch kv.Key.(*ast.Ident).Name {
+				case "Name":
+					entry.name, _ = strconv.Unquote(kv.Value.(*ast.BasicLit).Value)
+				case "Visibility":
+					entry.visibility = strings.ToLower(kv.Value.(*ast.Ident).Name)
+				}
+			}
+			out = append(out, entry)
+		}
+	}
+	return out, nil
+}
+
+// envRows lists the supported variables (those with a Visibility; the one
+// retained only to diagnose a removed name has none) with their doc row and
+// the directories that read them, by registry identifier or by name.
+func envRows(root string, sources []goSource) ([]envRow, error) {
+	registry, err := parseRegistry(root)
+	if err != nil {
+		return nil, err
+	}
+	byIdent := map[string]map[string]bool{}
+	byName := map[string]map[string]bool{}
+	for _, src := range sources {
+		if !strings.HasPrefix(src.path, "envvars/") {
+			for _, m := range qualifiedRef.FindAllStringSubmatch(src.text, -1) {
+				addTo(byIdent, m[1], src.dir())
+			}
+		}
+		if src.path == "envvars/envvars.go" {
+			continue
+		}
+		for _, m := range evenerName.FindAllStringSubmatch(src.text, -1) {
+			addTo(byName, m[1], src.dir())
+		}
+	}
+	var rows []envRow
+	for _, e := range registry {
+		if e.visibility == "" {
+			continue
+		}
+		dirs := map[string]bool{}
+		for d := range byIdent[e.ident] {
+			dirs[d] = true
+		}
+		for d := range byName[e.name] {
+			dirs[d] = true
+		}
+		if usedWithin(root, e.ident) {
+			dirs["envvars"] = true
+		}
+		row := envRow{Name: e.name, Visibility: e.visibility, Consumers: sorted(dirs)}
+		if len(row.Consumers) == 0 && isCatalogNamed(e) {
+			row.Consumers = []string{"llm/registry"}
+		}
+		row.DocRow = docMention(root, mentionsBackticked(e.name))
+		rows = append(rows, row)
+	}
+	return rows, nil
+}
+
+// usedWithin reports whether envvars/envvars.go refers to ident beyond its
+// declaration and its entry in allVars, as the recorder master switch does.
+func usedWithin(root, ident string) bool {
+	src, err := os.ReadFile(filepath.Join(root, "envvars", "envvars.go"))
+	if err != nil {
+		return false
+	}
+	return len(regexp.MustCompile(`\b`+ident+`\b`).FindAll(src, -1)) > 2
+}
+
+// isCatalogNamed reports whether the provider registry reads the variable by
+// the name the models.dev catalog gives it, so no Go identifier refers to it.
+func isCatalogNamed(e registryEntry) bool {
+	return e.visibility == "public" && !strings.HasPrefix(e.name, "EVENER_") && !strings.HasPrefix(e.name, "LLM_")
+}
+
+func mentionsBackticked(name string) func(string) bool {
+	return func(text string) bool { return strings.Contains(text, "`"+name+"`") }
+}
+
+// directEnvRows lists variables read by name outside the registry: the
+// EVENER_* constants that dev tooling and test rigs declare themselves, and
+// literal os.Getenv names.
+func directEnvRows(root string, sources []goSource) ([]directRow, error) {
+	registry, err := parseRegistry(root)
+	if err != nil {
+		return nil, err
+	}
+	known := map[string]bool{}
+	for _, e := range registry {
+		known[e.name] = true
+	}
+	byName := map[string]map[string]bool{}
+	for _, src := range sources {
+		if src.path == "envvars/envvars.go" {
+			continue
+		}
+		for _, re := range []*regexp.Regexp{evenerName, getenvName} {
+			for _, m := range re.FindAllStringSubmatch(src.text, -1) {
+				if !known[m[1]] {
+					addTo(byName, m[1], src.dir())
+				}
+			}
+		}
+	}
+	var rows []directRow
+	for _, name := range sorted(keysOf(byName)) {
+		rows = append(rows, directRow{
+			Name:      name,
+			DocRow:    docMention(root, mentionsBackticked(name)),
+			Consumers: sorted(byName[name]),
+		})
+	}
+	return rows, nil
+}
+
+func isIdent(e ast.Expr, name string) bool {
+	id, ok := e.(*ast.Ident)
+	return ok && id.Name == name
+}
+
+func keysOf(m map[string]map[string]bool) map[string]bool {
+	out := make(map[string]bool, len(m))
+	for k := range m {
+		out[k] = true
+	}
+	return out
+}
+
+// hubRows reads cmd/evener-hub/config.go: the scalar toml keys of Config, the
+// default DefaultConfig gives each, the doc that mentions it, and the hub
+// files that read its field. It also returns removedKnobs, the retired keys a
+// hub.toml may still set.
+func hubRows(root string, sources []goSource) ([]hubRow, []string, error) {
+	path := filepath.Join(root, "cmd", "evener-hub", "config.go")
+	src, err := os.ReadFile(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	file, err := parser.ParseFile(token.NewFileSet(), path, src, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	text := func(n ast.Node) string {
+		return string(src[n.Pos()-file.FileStart : n.End()-file.FileStart])
+	}
+
+	consts := map[string]string{}
+	defaults := map[string]ast.Expr{}
+	var removed []string
+	var fields []*ast.Field
+	for _, decl := range file.Decls {
+		switch d := decl.(type) {
+		case *ast.GenDecl:
+			for _, spec := range d.Specs {
+				switch s := spec.(type) {
+				case *ast.ValueSpec:
+					if d.Tok == token.CONST && len(s.Values) == 1 {
+						consts[s.Names[0].Name] = text(s.Values[0])
+					}
+					if d.Tok == token.VAR && s.Names[0].Name == "removedKnobs" {
+						for _, elt := range s.Values[0].(*ast.CompositeLit).Elts {
+							key, _ := strconv.Unquote(elt.(*ast.BasicLit).Value)
+							removed = append(removed, key)
+						}
+					}
+				case *ast.TypeSpec:
+					if st, ok := s.Type.(*ast.StructType); ok && s.Name.Name == "Config" {
+						fields = st.Fields.List
+					}
+				}
+			}
+		case *ast.FuncDecl:
+			if d.Name.Name == "DefaultConfig" {
+				ast.Inspect(d.Body, func(n ast.Node) bool {
+					if lit, ok := n.(*ast.CompositeLit); ok && isIdent(lit.Type, "Config") {
+						for _, elt := range lit.Elts {
+							kv := elt.(*ast.KeyValueExpr)
+							defaults[kv.Key.(*ast.Ident).Name] = kv.Value
+						}
+					}
+					return true
+				})
+			}
+		}
+	}
+	if fields == nil {
+		return nil, nil, fmt.Errorf("%s: no Config struct", path)
+	}
+
+	var rows []hubRow
+	for _, f := range fields {
+		key := tomlKey(f)
+		if key == "" || !isScalarKnob(f.Type) {
+			continue
+		}
+		name := f.Names[0].Name
+		row := hubRow{Key: key, Default: "unset"}
+		if expr, ok := defaults[name]; ok {
+			row.Default = defaultText(expr, consts, text)
+		}
+		row.DocRow = docMention(root, mentionsKey(key))
+		field := regexp.MustCompile(`\.` + name + `\b`)
+		files := map[string]bool{}
+		for _, s := range sources {
+			if strings.HasPrefix(s.path, "cmd/evener-hub/") && s.path != "cmd/evener-hub/config.go" && field.MatchString(s.text) {
+				files[s.path] = true
+			}
+		}
+		row.Consumers = sorted(files)
+		rows = append(rows, row)
+	}
+	return rows, removed, nil
+}
+
+var tomlTag = regexp.MustCompile(`toml:"([^",]*)`)
+
+// tomlKey is the field's hub.toml key, or "" for an unexported or untagged
+// field and for a field the decoder skips.
+func tomlKey(f *ast.Field) string {
+	if f.Tag == nil || len(f.Names) != 1 || !f.Names[0].IsExported() {
+		return ""
+	}
+	m := tomlTag.FindStringSubmatch(f.Tag.Value)
+	if m == nil || m[1] == "-" {
+		return ""
+	}
+	return m[1]
+}
+
+// isScalarKnob excludes the machine-managed record tables (maps) and the
+// [[hosts]] and [[providers]] arrays of tables; strings, numbers, booleans,
+// durations and string lists are operator knobs.
+func isScalarKnob(t ast.Expr) bool {
+	switch v := t.(type) {
+	case *ast.Ident, *ast.SelectorExpr:
+		return true
+	case *ast.ArrayType:
+		id, ok := v.Elt.(*ast.Ident)
+		return ok && id.Name == "string"
+	}
+	return false
+}
+
+func mentionsKey(key string) func(string) bool {
+	assigned := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(key) + ` =`)
+	return func(text string) bool {
+		return strings.Contains(text, "`"+key+"`") || assigned.MatchString(text)
+	}
+}
+
+// defaultText renders a DefaultConfig value: a literal or an expression over
+// package constants prints as written (a constant name resolves to its value);
+// anything that calls a function is computed at startup.
+func defaultText(expr ast.Expr, consts map[string]string, text func(ast.Node) string) string {
+	computed := false
+	ast.Inspect(expr, func(n ast.Node) bool {
+		switch v := n.(type) {
+		case *ast.CallExpr:
+			computed = true
+		case *ast.SelectorExpr:
+			// time.Second and friends are constants of the standard library.
+			if isIdent(v.X, "time") {
+				return false
+			}
+		case *ast.Ident:
+			if _, isConst := consts[v.Name]; !isConst && v.Name != "true" && v.Name != "false" {
+				computed = true
+			}
+		}
+		return true
+	})
+	if computed {
+		return "computed at startup"
+	}
+	out := text(expr)
+	if id, ok := expr.(*ast.Ident); ok && consts[id.Name] != "" {
+		out = consts[id.Name]
+	}
+	return out
+}
