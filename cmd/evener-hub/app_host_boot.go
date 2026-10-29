@@ -567,6 +567,7 @@ func (m *hubHostManager) reapplyRestoredRuntime(host string) error {
 			return fmt.Errorf("host %q is live in the restored %s but could not be registered: %w", host, m.cfg.configPath, err)
 		}
 		current, _ = m.cfg.hosts.Get(host)
+		m.registerSource(current)
 	}
 	if entry.IncarnationID != "" && current.IncarnationID != entry.IncarnationID {
 		return fmt.Errorf("host %q carries a different restored incarnation id; leaving the compensation open", host)

@@ -330,6 +330,9 @@ type HostStagedReceipt struct {
 	// durable before the first teardown executes, so the target and its remnant
 	// survive any crash.
 	PendingTeardown HostPendingTeardown `toml:"pending_teardown" json:"pending_teardown"`
+	// ConsumedTombstone is the removal tombstone a re-add's staging write
+	// consumed. Boot restores it when the re-add never reached hub.toml.
+	ConsumedTombstone *HostTombstone `toml:"-" json:"consumed_tombstone,omitempty"`
 }
 
 // HostTeardownAttempt is one [teardown_attempts."<attemptId>"] record: the

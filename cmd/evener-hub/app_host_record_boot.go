@@ -257,7 +257,19 @@ func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
 	m.cfg.store.set(m.cfg.hosts.All())
 	m.stripLegacySections(true)
 	doc, hasFile := store.load()
-	if hasFile {
+	settle := hasFile
+	if !hasFile && strings.TrimSpace(m.cfg.configPath) != "" {
+		if !m.hostFileAbsentOrEmpty() {
+			// A file that cannot be read says nothing about which commits
+			// landed: none is rolled back or finalized until it can be.
+			m.refuseMutations(m.cfg.configPath + " could not be read; staged commits are settled once it can")
+			return
+		}
+		// No hub.toml yet is an empty host set: a first add that staged in the
+		// store and crashed before creating the file never landed.
+		doc, settle = hostRecordDocument{Records: records}, true
+	}
+	if settle {
 		if unrolled := m.rollBackUnlandedCommits(doc); len(unrolled) != 0 {
 			// Every later step reads a staged commit as one hub.toml holds: a
 			// removal's tombstone would read as a re-add, and its marker would
@@ -302,7 +314,16 @@ func (m *hubHostManager) rollBackUnlandedCommits(doc hostRecordDocument) map[str
 				continue
 			}
 		}
-		if err := m.persistHosts(entries, entries, hostPersistChange{dropMarker: name, dropReceipt: marker.Key}); err != nil {
+		change := hostPersistChange{dropMarker: name, dropReceipt: marker.Key}
+		if consumed := marker.ConsumedTombstone; consumed != nil {
+			// The re-add's staging write consumed the name's removal tombstone;
+			// the host change never landed, so the removal stands, and the
+			// generation the re-add spent stays spent.
+			restored := *consumed
+			restored.Generation = max(restored.Generation, marker.Provisional.Generation)
+			change.tombstone = &hostTombstoneStage{Tombstone: restored}
+		}
+		if err := m.persistHosts(entries, entries, change); err != nil {
 			m.logf("boot rollback of the staged commit for %q not written: %v", name, err)
 			failed[name] = struct{}{}
 			continue

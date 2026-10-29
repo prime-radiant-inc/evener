@@ -13,7 +13,10 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
 // requireNoReceiptFor fails when the records hold any receipt for mutationID.
@@ -282,5 +285,159 @@ func TestBootKeepsAnUnrolledRemovalStagedUntilItCanBeRolledBack(t *testing.T) {
 	}
 	if _, err := recovered.RemoveResult(context.Background(), removeRequest(t, recovered, "side")); err != nil {
 		t.Fatalf("removing side after the rollback: %v", err)
+	}
+}
+
+// TestBootRollbackOfAnUnlandedReAddKeepsTheRemovalItConsumed pins the rollback's
+// preservation: a re-add's first store write consumes the name's removal
+// tombstone, so rolling the re-add back must put the tombstone back, with the
+// generation the re-add spent, or a crash in that window would erase the
+// removed host's retained record.
+func TestBootRollbackOfAnUnlandedReAddKeepsTheRemovalItConsumed(t *testing.T) {
+	const staged = "staged-re-add"
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, _ := hub.boot(t, false)
+	if _, err := m.RemoveResult(context.Background(), removeRequest(t, m, "side")); err != nil {
+		t.Fatalf("Remove(side): %v", err)
+	}
+	removed, ok := mustRecords(t, hub.store).Tombstones["side"]
+	if !ok {
+		t.Fatal("the removal left no tombstone")
+	}
+	beforeBytes := fileBytes(t, hub.configPath)
+	params := appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "again.example"}, MutationID: staged}
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() { _, _ = m.AddResult(context.Background(), params) })
+	marker, ok := mustRecords(t, hub.store).StagedReceipts["side"]
+	if !ok {
+		t.Fatal("the store holds no staged marker after the cut")
+	}
+	if _, consumed := mustRecords(t, hub.store).Tombstones["side"]; consumed {
+		t.Fatal("the fixture's re-add did not consume the tombstone in its first write")
+	}
+	spent := marker.Provisional.Generation
+	if err := os.WriteFile(hub.configPath, beforeBytes, 0o600); err != nil {
+		t.Fatalf("put the pre-mutation hub.toml back: %v", err)
+	}
+
+	recovered, _ := hub.boot(t, true)
+
+	records := mustRecords(t, hub.store)
+	if len(records.StagedReceipts) != 0 {
+		t.Fatalf("recovery left staged markers: %+v", records.StagedReceipts)
+	}
+	tombstone, kept := records.Tombstones["side"]
+	if !kept {
+		t.Fatal("the rolled-back re-add erased the removal tombstone")
+	}
+	if tombstone.IncarnationID != removed.IncarnationID || tombstone.Generation < spent {
+		t.Fatalf("restored tombstone = %+v, want incarnation %q and a generation of at least the spent %d", tombstone, removed.IncarnationID, spent)
+	}
+	if row := hostRows(t, recovered)["side"]; !row.Removed {
+		t.Fatalf("side serves %+v after the rollback, want it removed", row)
+	}
+	if _, err := recovered.AddResult(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "side", Address: "again.example"}, MutationID: newTestMutationID(),
+	}); err != nil {
+		t.Fatalf("the re-add after the rollback: %v", err)
+	}
+}
+
+// TestBootRollsBackAFirstAddThatNeverCreatedHubTOML pins the rollback over an
+// absent host file: the first add stages in the store before it creates
+// hub.toml, and a crash between the two leaves a staged commit for a file that
+// does not exist. That is an empty host set, so the commit rolls back instead
+// of finalizing as a host that was never written.
+func TestBootRollsBackAFirstAddThatNeverCreatedHubTOML(t *testing.T) {
+	const staged = "staged-first-add"
+	hub := newCrashHub(t, nil)
+	m, _ := hub.boot(t, false)
+	if err := os.Remove(hub.configPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("remove hub.toml: %v", err)
+	}
+	params := appwire.HostAddParams{Entry: appwire.HostEntry{Name: "ghost", Address: "ghost.example"}, MutationID: staged}
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() { _, _ = m.AddResult(context.Background(), params) })
+	if _, ok := mustRecords(t, hub.store).StagedReceipts["ghost"]; !ok {
+		t.Fatal("the store holds no staged marker after the cut")
+	}
+	if err := os.Remove(hub.configPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("remove hub.toml: %v", err)
+	}
+
+	recovered, _ := hub.boot(t, true)
+
+	records := mustRecords(t, hub.store)
+	if len(records.StagedReceipts) != 0 {
+		t.Fatalf("recovery left staged markers: %+v", records.StagedReceipts)
+	}
+	requireNoReceiptFor(t, records, staged)
+	if row, present := hostRows(t, recovered)["ghost"]; present {
+		t.Fatalf("the rolled-back add left a row for ghost: %+v", row)
+	}
+	if _, err := recovered.AddResult(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "ghost", Address: "ghost.example"}, MutationID: staged,
+	}); err != nil {
+		t.Fatalf("the add again after the rollback: %v", err)
+	}
+	if row := hostRows(t, recovered)["ghost"]; row.Removed || row.Address != "ghost.example" {
+		t.Fatalf("the retried add left %+v", row)
+	}
+}
+
+// TestBootLeavesStagedCommitsAloneWhileHubTOMLCannotBeRead pins the posture for
+// an unreadable host file: it says nothing about which commits landed, so no
+// marker is rolled back or finalized, host changes pause, and the retry that can
+// read the file settles them.
+func TestBootLeavesStagedCommitsAloneWhileHubTOMLCannotBeRead(t *testing.T) {
+	const staged = "staged-mutation"
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, _ := hub.boot(t, false)
+	beforeBytes := fileBytes(t, hub.configPath)
+	params := updateRequest(t, m, "side", appwire.HostEntry{Address: "edited.example"})
+	params.MutationID = staged
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() { _, _ = m.UpdateResult(context.Background(), params) })
+	if err := os.WriteFile(hub.configPath, beforeBytes, 0o600); err != nil {
+		t.Fatalf("put the pre-mutation hub.toml back: %v", err)
+	}
+
+	hub.restartStateRoot(t)
+	cfg := mustLoadConfig(t, hub.configPath)
+	store, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	doc := hostBootDocument(cfg, store)
+	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
+	if err != nil {
+		t.Fatalf("hostreg.NewSeeded: %v", err)
+	}
+	previous := configReadFile
+	configReadFile = func(string) ([]byte, error) { return nil, errors.New("injected read failure") }
+	recovered := newHubHostManager(appsource.NewRegistry(), nil,
+		hubcore.WebConfig{RemoteHostOpsStore: store, RemoteHostConfigPath: hub.configPath}, hub.configPath, hosts, t.Logf)
+	configReadFile = previous
+
+	records := mustRecords(t, store)
+	if _, stillStaged := records.StagedReceipts["side"]; !stillStaged {
+		t.Fatal("a commit was settled although hub.toml could not be read")
+	}
+	for key, receipt := range records.MutationReceipts {
+		if scope, ok := parseHostReceiptScopedKey(key); ok && scope.MutationID == staged && receipt.BootRecovered {
+			t.Fatalf("the staged commit was finalized without reading hub.toml: %q", key)
+		}
+	}
+	if recovered.mutationRefusal() == nil {
+		t.Fatal("host changes are taken while staged commits are unsettled")
+	}
+
+	recovered.attachOps(nil)
+
+	if err := recovered.mutationRefusal(); err != nil {
+		t.Fatalf("host changes are still refused once hub.toml reads: %v", err)
+	}
+	if staged := mustRecords(t, store).StagedReceipts; len(staged) != 0 {
+		t.Fatalf("the retry left staged markers: %+v", staged)
 	}
 }

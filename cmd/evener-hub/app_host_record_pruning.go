@@ -356,6 +356,11 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 		if _, ok := live[name]; !ok {
 			continue
 		}
+		if marker, staging := records.stagedReceipts[name]; staging && name == protectedMarker {
+			consumed := records.tombstones[name]
+			marker.ConsumedTombstone = &consumed
+			records.stagedReceipts[name] = marker
+		}
 		delete(records.tombstones, name)
 		records.droppedTombstones[name] = struct{}{}
 		delete(records.highWater, name)

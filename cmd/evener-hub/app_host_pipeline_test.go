@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -470,7 +471,12 @@ func TestBootCompensationArmedWithRowsPresentServesTheHostTheRegistryLacked(t *t
 	}); err != nil {
 		t.Fatalf("ArmCompensation: %v", err)
 	}
-	m := fixture.manager(t)
+	sources := appsource.NewRegistry()
+	m := newHubHostManager(sources, nil, hubcore.WebConfig{
+		RemoteHostRegistry:   fixture.registry,
+		RemoteHostOpsStore:   fixture.store,
+		RemoteHostConfigPath: fixture.configPath,
+	}, fixture.configPath, fixture.registry, t.Logf)
 	if record, open := m.opsStore().Compensation("m4"); open {
 		t.Fatalf("the compensation stayed open: %+v", record)
 	}
@@ -479,6 +485,9 @@ func TestBootCompensationArmedWithRowsPresentServesTheHostTheRegistryLacked(t *t
 	}
 	if _, served := m.cfg.hosts.Get("m4"); !served {
 		t.Fatal("the restored host is not served")
+	}
+	if _, ok := sources.Source("m4"); !ok {
+		t.Fatal("the restored host has no application source, so its sessions are unreachable")
 	}
 	cfg, _ := readPipelineConfig(t, fixture.configPath)
 	if _, live := hostEntryNamed(hostRegistryEntries(cfg), "m4"); !live {
