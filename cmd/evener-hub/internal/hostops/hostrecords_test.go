@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -257,6 +258,21 @@ func TestHostRecordsBoundsAreEnforcedBeforeAnythingIsWritten(t *testing.T) {
 // record near the bound in the file's spelling must be refused on write and
 // treated as corrupt on load, never accepted and then written past the bound.
 func TestHostRecordsBoundsApplyToTheSizeAWriteEmits(t *testing.T) {
+	t.Run("keys count as they are spelled in the file", func(t *testing.T) {
+		store, path := openTestStore(t)
+		family := familyOf("ok")
+		// Each key is 2000 bytes of <, six times that once encoded: the family is
+		// well under its bound in decoded bytes and well over it as written.
+		for i := range MaxHostRecordsBytes / (6 * 2000) * 2 {
+			family.Receipts[fmt.Sprintf("%s%05d", strings.Repeat("<", 2000), i)] = json.RawMessage(`{"k":1}`)
+		}
+		if err := store.ImportHostRecords(family, HostMirror{}); !errors.Is(err, ErrInvalidHostRecords) {
+			t.Fatalf("ImportHostRecords = %v, want ErrInvalidHostRecords", err)
+		}
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("a refused family reached the store file")
+		}
+	})
 	escapes := func(n int) json.RawMessage {
 		return json.RawMessage(`{"pad":"` + strings.Repeat("<", n) + `"}`)
 	}
@@ -382,6 +398,9 @@ func TestHostRecordsQuarantineRefusesAnUnreadableFamily(t *testing.T) {
 		},
 		"a zero import instant": func(raw string) string {
 			return regexp.MustCompile(`"importedAt":"[^"]*"`).ReplaceAllString(raw, `"importedAt":"0001-01-01T00:00:00Z"`)
+		},
+		"a family that is null": func(raw string) string {
+			return regexp.MustCompile(`"hostRecords":\{.*\}\}`).ReplaceAllString(raw, `"hostRecords":null}`)
 		},
 		"a field spelled in two cases": func(raw string) string {
 			return strings.Replace(raw, `"hosts":{`, `"Hosts":{"hosts-key":{"kind":"stale"}},"hosts":{`, 1)

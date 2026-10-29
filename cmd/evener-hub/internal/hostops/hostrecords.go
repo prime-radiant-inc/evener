@@ -199,7 +199,13 @@ func (r HostRecords) validate() error {
 			if !json.Valid(value) || len(bytes.TrimSpace(value)) == 0 || bytes.TrimSpace(value)[0] != '{' {
 				return fmt.Errorf("%w: %s record %q is not a JSON object", ErrInvalidHostRecords, family.name, key)
 			}
-			total += len(key) + len(value)
+			// The size the family adds to the file: the key as the encoder spells
+			// it (<, > and & take six bytes), its colon and comma, and the value.
+			quoted, err := json.Marshal(key)
+			if err != nil {
+				return fmt.Errorf("%w: %s carries a key that cannot be encoded: %w", ErrInvalidHostRecords, family.name, err)
+			}
+			total += len(quoted) + 2 + len(value)
 		}
 	}
 	if total > MaxHostRecordsBytes {
