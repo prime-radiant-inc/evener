@@ -952,3 +952,32 @@ func TestACompensationWhoseStoreWriteFailsStillSettlesTheManagersRecords(t *test
 		t.Fatalf("the retry replayed the failed commit as a committed add: %+v", result.HostMutationCommitted)
 	}
 }
+
+// TestAnUnlandedRemovalIsStillUnlandedAfterAnUnrelatedSettingsEdit pins what
+// counts as the removal's landing evidence: the host list. An operator who
+// changed a setting that is not a host between the crash and the restart has not
+// changed whether the removal reached hub.toml, so the host keeps its identity
+// and the removal rolls back instead of being read as a landed removal followed
+// by a re-add.
+func TestAnUnlandedRemovalIsStillUnlandedAfterAnUnrelatedSettingsEdit(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, _ := hub.boot(t, false)
+	_, incarnation := testMutationIdentity(t, m, "side")
+	staged := fileBytes(t, hub.configPath)
+	params := removeRequest(t, m, "side")
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
+	edited := append([]byte("status_poll_interval = \"13s\"\n"), staged...)
+	if err := os.WriteFile(hub.configPath, edited, 0o600); err != nil {
+		t.Fatalf("edit a setting by hand: %v", err)
+	}
+
+	recovered, store := hub.boot(t, true)
+
+	if _, got := testMutationIdentity(t, recovered, "side"); got != incarnation {
+		t.Fatalf("side serves incarnation %q, want the one it had, %q: the unlanded removal was read as a landed one", got, incarnation)
+	}
+	if _, tombstoned := mustRecords(t, store).Tombstones["side"]; tombstoned {
+		t.Fatal("the rolled-back removal left its tombstone")
+	}
+}

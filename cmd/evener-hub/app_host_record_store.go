@@ -1,6 +1,9 @@
 package hub
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -490,15 +493,29 @@ func unlandedRemovalIdentity(set hostRecordSet, name, configPath string) (HostRe
 }
 
 // stagedRemovalNeverLanded reports whether marker stages a removal whose host
-// change cannot have reached hub.toml: the file is unchanged since the commit
-// validated against it.
+// change cannot have reached hub.toml: the host list in the file is the one the
+// commit staged against.
 func stagedRemovalNeverLanded(marker HostStagedReceipt, configPath string) bool {
 	scope, ok := parseHostReceiptScopedKey(marker.Key)
-	if !ok || scope.Kind != hostMutationRemove || marker.ReconcileFingerprint == "" {
+	if !ok || scope.Kind != hostMutationRemove || marker.HostsFingerprint == "" {
 		return false
 	}
-	fingerprint, readable := hubTOMLFingerprintAt(configPath)
-	return readable && fingerprint == marker.ReconcileFingerprint
+	return hubTOMLHostsFingerprint(configPath) == marker.HostsFingerprint
+}
+
+// hubTOMLHostsFingerprint digests the host list hub.toml holds; empty when the
+// file cannot be read. Settings other than the hosts do not move it.
+func hubTOMLHostsFingerprint(path string) string {
+	cfg, state := readHubTOMLConfig(path)
+	if state == hostFileUnreadable {
+		return ""
+	}
+	encoded, err := json.Marshal(cfg.Hosts)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(encoded)
+	return hex.EncodeToString(sum[:])
 }
 
 // hostBootDocument is the host set and the records startup builds the host
