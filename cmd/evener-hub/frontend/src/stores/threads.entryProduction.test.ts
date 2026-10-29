@@ -4494,24 +4494,56 @@ it("a settled empty source window completes the pending open without another sou
   // Storage stays pending for every local read of this ref: the pane's
   // first open, the claim's certification open and - pre-fix - the recovery
   // chain's own attempts all park on it.
+  // The second read is the claim's certification lookup: entering it parks
+  // the certification open, so it is the deferred signal the foreign
+  // hydration must be gated on - the claim's wire read says nothing about
+  // whether the certification open has armed its own deadline since.
+  let certificationParked = false;
+  let windowReads = 0;
   (storage as unknown as { getLatestWindow: unknown }).getLatestWindow = (..._args: unknown[]) => {
+    windowReads += 1;
+    if (windowReads === 2) certificationParked = true;
     void realGetLatestWindow;
     return new Promise(() => {}) as ReturnType<typeof realGetLatestWindow>;
   };
+  // The clock is fake from here: the first open's pinned backstop expires
+  // only when the test advances the clock, and the certification open's own
+  // armed deadline cannot fire behind the test's back - the load stall that
+  // used to decide this race is structurally inert.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   setSessionCacheOpenBackstopForTests(40);
   setSessionCacheStalledOpenForTests(40);
   try {
     const openedByPane = threadsStore.getState().ensureThread(ref);
-    // The pane's first open misses the pinned backstop and its claim's read
-    // answers the accepted empty window; the claim's certification open
-    // parks on the held storage read and the next tracked settlement.
-    await vi.waitFor(() => expect(wireReads).toBe(1));
+    // Advance the clock in gated steps until the certification lookup is
+    // entered: the first open's backstop expires on the clock, the claim's
+    // read answers the accepted empty window, and the certification open
+    // parks on the held storage read. The steps stop at the parking signal,
+    // so the certification open's own armed deadline is never advanced past.
+    for (let step = 0; step < 100 && !certificationParked; step += 1) {
+      await vi.advanceTimersByTimeAsync(5);
+    }
+    expect(certificationParked).toBe(true);
+    expect(wireReads).toBe(1);
     setSessionCacheOpenBackstopForTests(10000);
     const baselineBefore = productionEntryTranscriptForTests(ref).baseline;
     // A foreign tracked hydration settles: the resync's refresh answers the
     // same empty window and publishes it.
     client.emitNotification({ method: "evener/thread/resync", params: { ref, threadId: "thread-a" } });
-    await vi.waitFor(() => expect(wireReads).toBe(2));
+    // The refresh's settlement rides a durable authorities read whose
+    // event-loop turns arrive without moving the fake clock:
+    // zero-millisecond advances deliver those turns, so the certification
+    // open's armed deadline never comes closer while the wake is in flight -
+    // the load stall that used to decide this race is structurally inert.
+    for (
+      let step = 0;
+      step < 100 && productionEntryTranscriptForTests(ref).lastLocalOpenStatus !== "superseded-by-source";
+      step += 1
+    ) {
+      await vi.advanceTimersByTimeAsync(0);
+    }
+    await drainSettleSteps();
+    expect(wireReads).toBe(2);
     await drainSettleSteps();
     // The parked certification open must complete from the settlement: the
     // accepted empty source window is established - it expects nothing, so
@@ -4522,11 +4554,12 @@ it("a settled empty source window completes the pending open without another sou
     // verdict's recovery handoff.
     expect(productionEntryTranscriptForTests(ref).baseline).toBe(baselineBefore);
     expect(threadsStore.getState().threads.get(ref)?.turns).toHaveLength(0);
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await vi.advanceTimersByTimeAsync(50);
     await drainSettleSteps();
     expect(wireReads).toBe(2);
     await openedByPane;
   } finally {
+    vi.useRealTimers();
     setSessionCacheOpenBackstopForTests(10000);
     setSessionCacheStalledOpenForTests(5000);
     threadsStore.getState().releaseThread(ref);
@@ -4557,24 +4590,56 @@ it("a settled in-progress turn without items completes the pending open without 
   // Storage stays pending for every local read of this ref: the pane's
   // first open, the claim's certification open and - pre-fix - the recovery
   // chain's own attempts all park on it.
+  // The second read is the claim's certification lookup: entering it parks
+  // the certification open, so it is the deferred signal the foreign
+  // hydration must be gated on - the claim's wire read says nothing about
+  // whether the certification open has armed its own deadline since.
+  let certificationParked = false;
+  let windowReads = 0;
   (storage as unknown as { getLatestWindow: unknown }).getLatestWindow = (..._args: unknown[]) => {
+    windowReads += 1;
+    if (windowReads === 2) certificationParked = true;
     void realGetLatestWindow;
     return new Promise(() => {}) as ReturnType<typeof realGetLatestWindow>;
   };
+  // The clock is fake from here: the first open's pinned backstop expires
+  // only when the test advances the clock, and the certification open's own
+  // armed deadline cannot fire behind the test's back - the load stall that
+  // used to decide this race is structurally inert.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   setSessionCacheOpenBackstopForTests(40);
   setSessionCacheStalledOpenForTests(40);
   try {
     const openedByPane = threadsStore.getState().ensureThread(ref);
-    // The pane's first open misses the pinned backstop and its claim's read
-    // answers the accepted window; the claim's certification open parks on
-    // the held storage read and the next tracked settlement.
-    await vi.waitFor(() => expect(wireReads).toBe(1));
+    // Advance the clock in gated steps until the certification lookup is
+    // entered: the first open's backstop expires on the clock, the claim's
+    // read answers the accepted window, and the certification open parks on
+    // the held storage read. The steps stop at the parking signal, so the
+    // certification open's own armed deadline is never advanced past.
+    for (let step = 0; step < 100 && !certificationParked; step += 1) {
+      await vi.advanceTimersByTimeAsync(5);
+    }
+    expect(certificationParked).toBe(true);
+    expect(wireReads).toBe(1);
     setSessionCacheOpenBackstopForTests(10000);
     const baselineBefore = productionEntryTranscriptForTests(ref).baseline;
     // A foreign tracked hydration settles: the resync's refresh answers the
     // same window and publishes it.
     client.emitNotification({ method: "evener/thread/resync", params: { ref, threadId: "thread-a" } });
-    await vi.waitFor(() => expect(wireReads).toBe(2));
+    // The refresh's settlement rides a durable authorities read whose
+    // event-loop turns arrive without moving the fake clock:
+    // zero-millisecond advances deliver those turns, so the certification
+    // open's armed deadline never comes closer while the wake is in flight -
+    // the load stall that used to decide this race is structurally inert.
+    for (
+      let step = 0;
+      step < 100 && productionEntryTranscriptForTests(ref).lastLocalOpenStatus !== "superseded-by-source";
+      step += 1
+    ) {
+      await vi.advanceTimersByTimeAsync(0);
+    }
+    await drainSettleSteps();
+    expect(wireReads).toBe(2);
     await drainSettleSteps();
     // The parked certification open must complete from the settlement: the
     // accepted window expects no items - its one in-progress turn has none -
@@ -4585,11 +4650,12 @@ it("a settled in-progress turn without items completes the pending open without 
     // recovery handoff.
     expect(productionEntryTranscriptForTests(ref).baseline).toBe(baselineBefore);
     expect(threadsStore.getState().threads.get(ref)?.turns).toHaveLength(1);
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await vi.advanceTimersByTimeAsync(50);
     await drainSettleSteps();
     expect(wireReads).toBe(2);
     await openedByPane;
   } finally {
+    vi.useRealTimers();
     setSessionCacheOpenBackstopForTests(10000);
     setSessionCacheStalledOpenForTests(5000);
     threadsStore.getState().releaseThread(ref);
@@ -4775,24 +4841,56 @@ it("a settled empty recorded history with a live overlay completes the pending o
   // Storage stays pending for every local read of this ref: the pane's
   // first open, the claim's certification open and - pre-fix - the recovery
   // chain's own attempts all park on it.
+  // The second read is the claim's certification lookup: entering it parks
+  // the certification open, so it is the deferred signal the foreign
+  // hydration must be gated on - the claim's wire read says nothing about
+  // whether the certification open has armed its own deadline since.
+  let certificationParked = false;
+  let windowReads = 0;
   (storage as unknown as { getLatestWindow: unknown }).getLatestWindow = (..._args: unknown[]) => {
+    windowReads += 1;
+    if (windowReads === 2) certificationParked = true;
     void realGetLatestWindow;
     return new Promise(() => {}) as ReturnType<typeof realGetLatestWindow>;
   };
+  // The clock is fake from here: the first open's pinned backstop expires
+  // only when the test advances the clock, and the certification open's own
+  // armed deadline cannot fire behind the test's back - the load stall that
+  // used to decide this race is structurally inert.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   setSessionCacheOpenBackstopForTests(40);
   setSessionCacheStalledOpenForTests(40);
   try {
     const openedByPane = threadsStore.getState().ensureThread(ref);
-    // The pane's first open misses the pinned backstop and its claim's read
-    // answers the accepted window; the claim's certification open parks on
-    // the held storage read and the next tracked settlement.
-    await vi.waitFor(() => expect(wireReads).toBe(1));
+    // Advance the clock in gated steps until the certification lookup is
+    // entered: the first open's backstop expires on the clock, the claim's
+    // read answers the accepted window, and the certification open parks on
+    // the held storage read. The steps stop at the parking signal, so the
+    // certification open's own armed deadline is never advanced past.
+    for (let step = 0; step < 100 && !certificationParked; step += 1) {
+      await vi.advanceTimersByTimeAsync(5);
+    }
+    expect(certificationParked).toBe(true);
+    expect(wireReads).toBe(1);
     setSessionCacheOpenBackstopForTests(10000);
     const baselineBefore = productionEntryTranscriptForTests(ref).baseline;
     // A foreign tracked hydration settles: the resync's refresh answers the
     // same window and publishes it.
     client.emitNotification({ method: "evener/thread/resync", params: { ref, threadId: "thread-a" } });
-    await vi.waitFor(() => expect(wireReads).toBe(2));
+    // The refresh's settlement rides a durable authorities read whose
+    // event-loop turns arrive without moving the fake clock:
+    // zero-millisecond advances deliver those turns, so the certification
+    // open's armed deadline never comes closer while the wake is in flight -
+    // the load stall that used to decide this race is structurally inert.
+    for (
+      let step = 0;
+      step < 100 && productionEntryTranscriptForTests(ref).lastLocalOpenStatus !== "superseded-by-source";
+      step += 1
+    ) {
+      await vi.advanceTimersByTimeAsync(0);
+    }
+    await drainSettleSteps();
+    expect(wireReads).toBe(2);
     await drainSettleSteps();
     // The parked certification open must complete from the settlement: the
     // recorded history the accepted read named is empty, so it is missing
@@ -4804,11 +4902,12 @@ it("a settled empty recorded history with a live overlay completes the pending o
     expect(productionEntryTranscriptForTests(ref).baseline).toBe(baselineBefore);
     expect(threadsStore.getState().threads.get(ref)?.history?.turns).toHaveLength(0);
     expect(threadsStore.getState().threads.get(ref)?.turns).toHaveLength(1);
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await vi.advanceTimersByTimeAsync(50);
     await drainSettleSteps();
     expect(wireReads).toBe(2);
     await openedByPane;
   } finally {
+    vi.useRealTimers();
     setSessionCacheOpenBackstopForTests(10000);
     setSessionCacheStalledOpenForTests(5000);
     threadsStore.getState().releaseThread(ref);
