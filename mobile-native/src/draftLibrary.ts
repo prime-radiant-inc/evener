@@ -526,14 +526,17 @@ export class DraftLibrary {
 			// The destination still shows the composed record; the next retry settles
 			// from that comparison.
 		}
-		destination.adopt(snapshot.record);
+		// The live document adopts the delivered record: the merged
+		// dispositions must survive its next edit, or the storage record the
+		// transfer just wrote would lose them on the next persist.
+		destination.adopt(deliveredRecord);
 		if (destination !== source) {
 			source.retire();
 			this.rememberRetired(edge, source);
 			const sessions = this.hubs.get(edge.from.hubId);
 			if (sessions?.get(edge.from.sessionRef) === source) sessions.delete(edge.from.sessionRef);
 		}
-		return mayDecide ? this.settle(ledger, edge, destination, snapshot.record, intended) : true;
+		return mayDecide ? this.settle(ledger, edge, destination, deliveredRecord, intended) : true;
 	}
 
 	/** Durable evidence that an uncomposed edge's transfer actually landed. The

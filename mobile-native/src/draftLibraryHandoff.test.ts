@@ -317,6 +317,12 @@ describe("durable handoff library", () => {
 		draftLibrary.retryPendingHandoffs();
 		expect(repository.read(destination("b"))).toMatchObject({ draft: "a's work", releasedRecoveryIds: ["rel-1"] });
 		expect(edgeFor(ledger, "a", "b")).toMatchObject({ state: "settled" });
+		// The live document adopts the merged markers too: an edit from here
+		// must not overwrite the preserved dispositions in storage.
+		const live = draftLibrary.open(destination("b"));
+		expect(live.getSnapshot().record).toMatchObject({ draft: "a's work", releasedRecoveryIds: ["rel-1"] });
+		live.edit("more work");
+		expect(repository.read(destination("b"))).toMatchObject({ draft: "more work", releasedRecoveryIds: ["rel-1"] });
 	});
 
 	test("an uncomposed edge whose transfer landed settles from durable capture proof", () => {
