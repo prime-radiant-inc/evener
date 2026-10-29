@@ -7,6 +7,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
@@ -135,14 +136,18 @@ func (m *hubHostManager) retireCollidingConnections(records hostRecordSet) (func
 		return func() {}, nil
 	}
 	var releases []func()
-	releaseAll := func() {
+	releaseAll := sync.OnceFunc(func() {
 		for _, release := range slices.Backward(releases) {
 			release()
 		}
-	}
+	})
 	holder := hostops.Holder{Kind: hostops.HolderManager, Activity: "boot-collision"}
 	for _, entry := range m.cfg.hosts.All() {
 		if _, collides := records.Tombstones[entry.Name]; !collides {
+			continue
+		}
+		if _, unlanded := unlandedRemovalIdentity(records, entry.Name, m.cfg.configPath); unlanded {
+			// The removal never happened: the host is rolled back to, not rebased.
 			continue
 		}
 		release, err := m.acquireHostGate(entry.Name, holder)
@@ -393,6 +398,16 @@ func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
 		m.refuseMutations(fmt.Sprintf("%d host(s) could not take their stored identity yet; the next attempt retries", len(unadopted)))
 		return
 	}
+	// Installing the records seeds the registry's counters, which can raise a live
+	// host's generation; hosts the collision rule will rebase are retired under
+	// their gates first and stay held until the rule has run.
+	releaseCollisions, err := m.retireCollidingConnections(records)
+	if err != nil {
+		m.cfg.store.set(m.cfg.hosts.All())
+		m.refuseMutations(fmt.Sprintf("a host that collides with a removed name is busy; the next attempt retries: %v", err))
+		return
+	}
+	defer releaseCollisions()
 	m.installRestoredRecords(hostRecordDocument{Hosts: m.cfg.hosts.All(), Records: records})
 	// Seeding the stored marks raised the registry's counters past the entries
 	// just copied; the manager's view follows what the registry serves.
@@ -425,11 +440,6 @@ func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
 	records, err = store.records()
 	if err != nil {
 		m.refuseMutations(fmt.Sprintf("the host records in the operation store cannot be read: %v", err))
-		return
-	}
-	releaseCollisions, err := m.retireCollidingConnections(records)
-	if err != nil {
-		m.refuseMutations(fmt.Sprintf("a host that collides with a removed name is busy; the next attempt retries: %v", err))
 		return
 	}
 	collided := m.breakBootTombstoneCollision(records)

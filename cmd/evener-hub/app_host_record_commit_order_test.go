@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"sync"
 	"testing"
@@ -807,6 +808,13 @@ func lateAttachOverAReAddedName(t *testing.T) (*hubHostManager, *sshconn.Manager
 	t.Helper()
 	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
 	first, _ := hub.boot(t, false)
+	// Edits raise side's generation, so the removal's stored mark ends above the
+	// generation a hub minting afresh would give the name.
+	for i := range 3 {
+		if _, err := first.UpdateResult(context.Background(), updateRequest(t, first, "side", appwire.HostEntry{Address: fmt.Sprintf("edit%d.example", i)})); err != nil {
+			t.Fatalf("Update(side) %d: %v", i, err)
+		}
+	}
 	if _, err := first.RemoveResult(context.Background(), removeRequest(t, first, "side")); err != nil {
 		t.Fatalf("Remove(side): %v", err)
 	}
