@@ -2796,12 +2796,70 @@ export function verifyCreationChronology(value, completed) {
   }
 }
 
+export function observeDelegateRelocation(parentRef, childRef, origin) {
+  const port = window.__comicRoot().querySelector("[data-comic-scroll]").firstElementChild;
+  const heading = [...port.querySelectorAll("[data-comic-delegate]")].find(
+    (node) => node.dataset.comicChildRef === childRef,
+  );
+  const strip = heading?.closest('[data-comic-flow="strip"]');
+  const path = strip?.dataset.comicPath;
+  const owned = (node) => node.dataset.comicSession === parentRef && node.dataset.comicPath === path;
+  // Group labels and strips are sibling virtual rows, never ancestors. Ignore
+  // nested readers while following the owning reader's most recent group/row.
+  const rows = [...port.querySelectorAll("[data-comic-flow], [data-comic-row]")].filter(owned);
+  let unplaced = false;
+  for (const row of rows) {
+    if (row === strip) break;
+    if (row.dataset.comicFlow === "unplaced-group") unplaced = true;
+    else if (row.dataset.comicFlow !== "strip") unplaced = false;
+  }
+  const entries = [...port.querySelectorAll("[data-comic-entry]")].filter(owned);
+  const index = entries.findIndex((node) => node.contains(heading));
+  const beforeId = entries[index - 1]?.dataset.comicEntry;
+  const afterId = entries[index + 1]?.dataset.comicEntry;
+  return {
+    found: !!heading,
+    unplaced,
+    beforeId,
+    afterId,
+    atLaunch: !!strip && !unplaced && beforeId === origin.beforeId && afterId === origin.afterId,
+    entries: entries.map((node) => ({ id: node.dataset.comicEntry, text: node.textContent })),
+  };
+}
+
+export function recordedRelocationOrigin(held, parentRef, grandchild) {
+  const items = held.response.result.data.flatMap((turn) => turn.items);
+  const launchIndex = items.findIndex((item) => item.callId === "comic_delegate_GRANDCHILD");
+  const creation = items[launchIndex];
+  const before = items[launchIndex - 1];
+  const after = items[launchIndex + 1];
+  const receipt = creation?.output && JSON.parse(creation.output);
+  if (
+    held.request.params.ref !== parentRef ||
+    creation?.toolName !== "delegate" ||
+    receipt?.transcript_ref !== grandchild.ref ||
+    !grandchild.key.includes(receipt.delegate_id) ||
+    before?.type !== "userMessage" ||
+    before.text !== "COMIC_SUBCHAT_CHILD" ||
+    after?.type !== "agentMessage" ||
+    !after.text.startsWith("COMIC_CHILD_SOURCE_00 ") ||
+    !(before.position.entry < creation.position.entry && creation.position.entry < after.position.entry)
+  )
+    throw Error("missing recorded launch and neighboring source entries");
+  return {
+    creationId: creation.id,
+    beforeId: before.id,
+    afterId: after.roundId ? `round:${after.roundId}:agentMessage` : after.id,
+    receipt,
+  };
+}
+
 export function verifyDelegateRelocation(value) {
   if (value.relocated.key !== value.grandchild.key || value.relocated.expanded !== "true")
     throw Error("causal placement replaced expanded nested identity");
   if (value.lifetime.length) throw Error("late creation relocation replaced the existing child reader");
-  if (value.relocation.unplaced || !value.relocation.following.some((text) => text.includes("COMIC_CHILD_SOURCE_00")))
-    throw Error("late launch not before first child continuation");
+  if (!value.relocation.found || value.relocation.unplaced || !value.relocation.atLaunch)
+    throw Error("late launch not between its recorded source neighbors");
   if (!savedSourcePlaced(value.before, value.expected) || !savedSourcePlaced(value.after, value.expected))
     throw Error("late launch changed the pinned source glyph or viewport offset");
 }
@@ -4154,6 +4212,7 @@ async function childJourney(page, fixture, { command, incoming, outgoing, screen
   }
   const heldOrigin = await evaluateHere("window.__comicOriginHold");
   if (heldOrigin?.releaseCount !== 0) throw Error("origin-revealing page was not held");
+  const relocationOrigin = recordedRelocationOrigin(heldOrigin, header.ref, grandchild);
   // The final page has not reached the reader yet. Pin once here, then release
   // only the untouched native reply. No reveal, scroll or capture follows release.
   const relocationSource = await reveal("[data-comic-entry]", "COMIC_THOUGHT_GRANDCHILD");
@@ -4161,12 +4220,18 @@ async function childJourney(page, fixture, { command, incoming, outgoing, screen
   const relocationBefore = await evaluateHere(
     `(${readGeometry.toString()})(${JSON.stringify(relocationExpected)},${JSON.stringify(fixture.refs.live)})`,
   );
+  const observeRelocation = () =>
+    evaluateHere(
+      `(${observeDelegateRelocation.toString()})(${JSON.stringify(header.ref)},${JSON.stringify(grandchild.ref)},${JSON.stringify(relocationOrigin)})`,
+    );
+  const pendingRelocation = await observeRelocation();
+  if (!pendingRelocation.found || !pendingRelocation.unplaced || pendingRelocation.atLaunch)
+    throw Error("pending launch was not observed in the sibling unplaced group");
   await evaluateHere("window.__comicReleaseOrigin()");
-  await until("origin reply applied without reader input", () =>
-    evaluateHere(`(() => {
-    const heading=[...window.__comicRoot().querySelectorAll('[data-comic-delegate]')].find(node=>node.dataset.comicChildRef===${JSON.stringify(grandchild.ref)});
-    return heading && !heading.closest('[data-comic-flow="unplaced-group"]');
-  })()`),
+  const appliedRelocation = await until(
+    "origin reply applied without reader input",
+    observeRelocation,
+    (value) => value.found && !value.unplaced && value.atLaunch,
   );
   await evaluateHere("new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
   const relocationAfter = await evaluateHere(
@@ -4175,7 +4240,15 @@ async function childJourney(page, fixture, { command, incoming, outgoing, screen
   writeFileSync(
     `${fixture.evidenceDir}/late-creation-position.json`,
     JSON.stringify(
-      { expected: relocationExpected, before: relocationBefore, after: relocationAfter, heldOrigin },
+      {
+        expected: relocationExpected,
+        before: relocationBefore,
+        after: relocationAfter,
+        heldOrigin,
+        relocationOrigin,
+        pendingRelocation,
+        appliedRelocation,
+      },
       null,
       2,
     ),
@@ -4198,9 +4271,7 @@ async function childJourney(page, fixture, { command, incoming, outgoing, screen
     .filter(
       (frame) => ["thread/read", "thread/unsubscribe"].includes(frame.method) && frame.params?.ref === grandchild.ref,
     );
-  const relocation = await evaluateHere(
-    `(() => {const port=window.__comicRoot().querySelector('[data-comic-scroll]').firstElementChild;const heading=[...port.querySelectorAll('[data-comic-delegate]')].find(node=>node.dataset.comicChildRef===${JSON.stringify(grandchild.ref)});return {unplaced:!!heading?.closest('[data-comic-flow="unplaced-group"]'),following:[...port.querySelectorAll('[data-comic-entry]')].filter(node=>node.dataset.comicSession===${JSON.stringify(header.ref)}&&!!(heading.compareDocumentPosition(node)&Node.DOCUMENT_POSITION_FOLLOWING)).map(node=>node.textContent)};})()`,
-  );
+  const relocation = await observeRelocation();
   verifyDelegateRelocation({
     grandchild,
     relocated,
@@ -4218,6 +4289,9 @@ async function childJourney(page, fixture, { command, incoming, outgoing, screen
         relocated,
         lifetime,
         relocation,
+        relocationOrigin,
+        pendingRelocation,
+        appliedRelocation,
         childPages,
         expected: relocationExpected,
         before: relocationBefore,
@@ -4417,6 +4491,135 @@ async function childJourney(page, fixture, { command, incoming, outgoing, screen
       2,
     ),
   );
+  // Exercise the real phone host: opening a document unmounts the Comic reader.
+  // A subsequent real reconnect must not replace the focused document, and Back
+  // must return to the same containing pane rather than a separately read child.
+  await page.send("Emulation.setDeviceMetricsOverride", {
+    width: 390,
+    height: 900,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  const documentLinks = [];
+  for (const level of ["ROOT", "CHILD"]) {
+    if (level === "CHILD") {
+      await until("committed child document disclosure", async () => {
+        await reveal(`[data-comic-child-ref=${JSON.stringify(header.ref)}]`);
+        return operate(header.ref, "Expand conversation");
+      });
+    }
+    const label = `COMIC_DOCUMENT_${level}`;
+    const expectedRef = level === "ROOT" ? fixture.refs.live : header.ref;
+    const linkExpression = `[...window.__comicRoot().querySelectorAll('a')].find(node=>node.textContent===${JSON.stringify(label)})`;
+    const href = await until(`${label} served anchor mounted`, async () => {
+      await reveal("[data-comic-entry]", label, 1);
+      return evaluateHere(`${linkExpression}?.href`);
+    });
+    const before = await paneSnapshot(page);
+    const url = new URL(href);
+    const settled = repliesSince(
+      wireTrace,
+      0,
+      (frame) =>
+        frame.method === "evener/navigation/read" &&
+        frame.params?.resource === "location" &&
+        frame.params?.ref === fixture.refs.live,
+    )
+      .filter((reply) => reply.response.result && !reply.response.error)
+      .at(-1);
+    if (!settled) throw Error("document source route has no successful real location response");
+    if (
+      url.pathname !== "/doc/file" ||
+      url.searchParams.get("session") !== expectedRef ||
+      !url.searchParams.get("path")?.endsWith(`/comic-document-${level.toLowerCase()}.md`)
+    )
+      throw Error(`document link lost source ownership ${href}`);
+    await evaluateHere(`(() => {
+      window.__comicDocLink = ${linkExpression};
+      window.__comicDocEvents = [];
+      window.__comicDocObserve = event => window.__comicDocEvents.push({type:event.type, target:event.target.outerHTML?.slice(0,600), originalConnected:window.__comicDocLink.isConnected, same:window.__comicDocLink.contains(event.target), prevented:event.defaultPrevented});
+      for(const type of ['pointerdown','mousedown','pointerup','mouseup','click']) document.addEventListener(type,window.__comicDocObserve,true);
+    })()`);
+    const documentVisible = () =>
+      evaluateHere(
+        `document.body.textContent.includes(${JSON.stringify(`COMIC_DOCUMENT_BODY_${level}`)}) && !document.querySelector('[data-comic-font][data-session-ref]')`,
+      );
+    try {
+      await nativeClick(page, `activate ${label}`, linkExpression);
+      await until(`${label} actual file content with Comic unmounted`, documentVisible);
+    } finally {
+      const activation = await evaluateHere(`(async () => {
+        for(const type of ['pointerdown','mousedown','pointerup','mouseup','click']) document.removeEventListener(type,window.__comicDocObserve,true);
+        let readFailure;
+        if (!document.body.textContent.includes(${JSON.stringify(`COMIC_DOCUMENT_BODY_${level}`)})) {
+          const response = await fetch(${JSON.stringify(href)}, {credentials:'same-origin'});
+          readFailure = {status:response.status, body:(await response.text()).slice(0,1000)};
+        }
+        return {events:window.__comicDocEvents, originalConnected:window.__comicDocLink.isConnected, body:document.body.innerText, url:location.href, readFailure};
+      })()`);
+      writeFileSync(
+        `${fixture.evidenceDir}/document-${level.toLowerCase()}-activation.json`,
+        JSON.stringify(activation, null, 2),
+      );
+    }
+    const reconnectStart = wireTrace.length;
+    await evaluateHere("window.__comicSockets.forEach(socket=>socket.close(4000,'document companion reconciliation'))");
+    await until("document socket reconnected", () =>
+      evaluateHere("window.__comicSockets.some(socket=>socket.readyState===WebSocket.OPEN)"),
+    );
+    const rehydrated = await until("document source hydrated after reconnect", () =>
+      repliesSince(
+        wireTrace,
+        reconnectStart,
+        (frame) => frame.method === "thread/read" && frame.params?.ref === expectedRef,
+      ).find((reply) => reply.response.result && !reply.response.error),
+    );
+    await evaluateHere("new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
+    await until(`${label} stays focused after reconnect`, documentVisible);
+    await screenshot(`document-${level.toLowerCase()}-phone`);
+    await nativeClick(page, `Back from ${label}`, `document.querySelector('button[aria-label="Back"]')`);
+    const after = await until(
+      `${label} Back to containing Comic pane`,
+      () => paneSnapshot(page),
+      (value) => value.comic && value.pane === before.pane && value.ref === before.ref,
+    );
+    documentLinks.push({ level, expectedRef, href, before, settled, rehydrated, after });
+  }
+  writeFileSync(`${fixture.evidenceDir}/document-links-phone.json`, JSON.stringify(documentLinks, null, 2));
+  await page.send("Emulation.setDeviceMetricsOverride", {
+    width: 1360,
+    height: 900,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  // Back focuses the source but intentionally retains its document pane. Close
+  // those real readers before the later collapsed-roster reload: DocPane owns
+  // a thread claim even when its tab is inactive, independently of Comic.
+  const documentTab = `[...document.querySelectorAll('.dv-tab')].find(node=>/comic-document-(root|child)\\.md/.test(node.textContent))`;
+  await until("retained document desktop tab", () => evaluateHere(`!!${documentTab}`));
+  const retiredDocuments = [];
+  for (let index = 0; index < 2; index++) {
+    const title = await evaluateHere(`${documentTab}?.textContent`);
+    if (!title) break;
+    await nativeClick(
+      page,
+      "close completed document reader",
+      `${documentTab}?.querySelector('.dv-default-tab-action')`,
+    );
+    await until("completed document tab retired", () =>
+      evaluateHere(
+        `![...document.querySelectorAll('.dv-tab')].some(node=>node.textContent===${JSON.stringify(title)})`,
+      ),
+    );
+    retiredDocuments.push(title);
+  }
+  if (await evaluateHere(`!!${documentTab}`)) throw Error("completed document reader still retained");
+  await until(
+    "Comic source remains after document retirement",
+    () => paneSnapshot(page),
+    (value) => value.comic && value.ref === fixture.refs.live,
+  );
+  writeFileSync(`${fixture.evidenceDir}/document-reader-retirement.json`, JSON.stringify(retiredDocuments, null, 2));
   command("background-role", "history");
 }
 

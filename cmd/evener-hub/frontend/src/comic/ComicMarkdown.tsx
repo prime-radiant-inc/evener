@@ -1,4 +1,6 @@
-import { type ReactNode, useLayoutEffect, useRef } from "react";
+import { type ReactNode, useLayoutEffect, useMemo, useRef } from "react";
+import { enhanceFileReferences } from "../panes/session/transcript/messages/fileReferenceDOM";
+import { useTranscriptRenderContext } from "../transcriptDisplay/renderContext";
 import { CodeBlock, Markdown } from "../widgets";
 import styles from "./comic.module.css";
 import type { ComicMarkdownDocument, ComicMarkdownPart } from "./markdown";
@@ -93,33 +95,50 @@ export function comicMarkdownPoint(root: HTMLElement, offset: number): DOMRect |
 /** Bespoke source anchoring surrounds shared safe widgets, never replaces their rendering policy. */
 export function ComicMarkdown({ document, part }: { document: ComicMarkdownDocument; part: ComicMarkdownPart }) {
   const root = useRef<HTMLDivElement>(null);
+  const { thread, sourcePaneId } = useTranscriptRenderContext();
+  // Keep unchanged DOM through a native pointer down/up sequence. A fresh
+  // Markdown element can replace innerHTML and lose the pressed link target.
+  const content = useMemo<ReactNode>(() => {
+    if (part.plain) return part.input;
+    if (part.kind === "code") {
+      return (
+        <div className={styles.technicalContent}>
+          <CodeBlock
+            text={part.code ?? ""}
+            language={part.language}
+            fold={false}
+            renderLine={(line) => <span className={styles.codeLine}>{line}</span>}
+          />
+        </div>
+      );
+    }
+    if (part.kind === "table") {
+      return (
+        <div className={styles.technicalContent}>
+          <Markdown source={part.input} />
+        </div>
+      );
+    }
+    return <Markdown source={part.input} />;
+  }, [part.plain, part.input, part.kind, part.code, part.language]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: content identity is the DOM replacement epoch that must reinstall link listeners.
   useLayoutEffect(() => {
-    // Markdown may replace innerHTML even when its input and this part are unchanged.
+    const element = root.current;
+    if (!element) return;
+    return !part.plain && part.kind !== "code" && thread?.cwd && sourcePaneId
+      ? enhanceFileReferences(element, {
+          sessionRef: thread.ref,
+          cwd: thread.cwd,
+          artifactsDir: thread.artifactsDir,
+          sourcePaneId,
+        })
+      : undefined;
+  }, [content, part.plain, part.kind, thread?.ref, thread?.cwd, thread?.artifactsDir, sourcePaneId]);
+  useLayoutEffect(() => {
+    // File enhancement preserves authored text but may replace its Text nodes.
+    // Do not add entity/action portals, whose text has no authored source offset.
     if (root.current) bind(root.current, part);
   });
-  let content: ReactNode;
-  if (part.plain) {
-    content = part.input;
-  } else if (part.kind === "code") {
-    content = (
-      <div className={styles.technicalContent}>
-        <CodeBlock
-          text={part.code ?? ""}
-          language={part.language}
-          fold={false}
-          renderLine={(line) => <span className={styles.codeLine}>{line}</span>}
-        />
-      </div>
-    );
-  } else if (part.kind === "table") {
-    content = (
-      <div className={styles.technicalContent}>
-        <Markdown source={part.input} />
-      </div>
-    );
-  } else {
-    content = <Markdown source={part.input} />;
-  }
   return (
     <div
       ref={root}

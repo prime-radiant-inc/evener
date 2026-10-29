@@ -14,6 +14,7 @@ import {
   subagentOutcomesResponse,
 } from "@evener/appwire-client/testing/subagentWireFixtures";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { type ReactNode, useImperativeHandle, useRef } from "react";
 import { flushSync } from "react-dom";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -24,11 +25,16 @@ import {
   useTranscriptReader,
 } from "../panes/session/transcript/useTranscript";
 import { chromeStore, resetChromeStoreForTests } from "../shell/chromeStore";
+import { documentPaneState, resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
 import { connectionStore, resetConnectionStoreForTests } from "../stores/connection";
 import { olderTranscriptPageKey } from "../stores/entryTranscriptRoutes";
 import { resetThreadsStoreForTests, settleEntryTranscriptForTests, threadsStore } from "../stores/threads";
 import { useThreadModel } from "../stores/useThreadModel";
+import { TranscriptRenderProvider } from "../transcriptDisplay/renderContext";
 import * as widgets from "../widgets";
+import "../panes/doc";
+import "../panes/session";
+import { comicMarkdownPoint } from "./ComicMarkdown";
 import { ComicTranscript } from "./ComicTranscript";
 import * as comicRows from "./comicRows";
 import { type ComicDelegateStrip, projectComicDelegates } from "./delegates";
@@ -60,6 +66,7 @@ afterEach(() => {
   resetThreadsStoreForTests();
   resetTranscriptPagingForTests();
   resetChromeStoreForTests();
+  resetWorkspaceStoreForTests();
 });
 
 const entry: ComicEntry = {
@@ -85,6 +92,7 @@ function history(): UseTranscriptResult {
   };
 }
 function Reader({
+  sessionRef = "local:test",
   entries = [entry],
   mode = "comic",
   older,
@@ -92,6 +100,7 @@ function Reader({
   activitySnapshot = null,
   subchats = { readers: new Map(), expandedPaths: [], expand() {}, collapse() {} },
 }: {
+  sessionRef?: string;
   entries?: readonly ComicEntry[];
   mode?: "comic" | "plain";
   older: UseTranscriptResult;
@@ -99,11 +108,11 @@ function Reader({
   activitySnapshot?: SessionActivitySnapshot | null;
   subchats?: ComicSubchatState;
 }) {
-  const reader = useComicReader("local:test");
+  const reader = useComicReader(sessionRef);
   return (
     <ComicTranscript
       root={{
-        ref: "local:test",
+        ref: sessionRef,
         path: [],
         entries,
         history: older,
@@ -116,6 +125,153 @@ function Reader({
     />
   );
 }
+
+test.each(["root", "child"])("%s document links keep their reader and pane through hydration", async (target) => {
+  const rootModel = {
+    ...hydrateThread({ thread: wireThread("local:034MXwo6BpPH0QQCgdICSf") }, "local:034MXwo6BpPH0QQCgdICSf", 0),
+    cwd: "/workspace/root",
+    artifactsDir: "/retained/root",
+  };
+  const childModel = {
+    ...rootModel,
+    ref: "remote:034MXwo6BpPH0QQCgdICSg",
+    cwd: "/workspace/child",
+    artifactsDir: "/retained/child",
+  };
+  const model = target === "root" ? rootModel : childModel;
+  const entities = buildEntityView({
+    sessionRef: "local:root",
+    tree: parseActivityTree(subagentOutcomesResponse().data) ?? undefined,
+    turns: [],
+    stale: false,
+    ended: false,
+  });
+  const fixture = projectComicDelegates(
+    hydrateThread({ thread: wireThread("local:root", { sessionId: "root" }) }, "local:root", 0),
+    entities,
+  )[0];
+  if (!fixture) throw new Error("missing delegate fixture");
+  const strip = {
+    ...fixture,
+    ownerRef: rootModel.ref,
+    childRef: childModel.ref,
+    source: { itemId: entry.sourceItemId!, sourceIndex: 0 },
+  };
+  const source = `[**LOCAL**](docs/design.md) [ARTIFACT](file://${model.artifactsDir}/result.md) [EXTERNAL](https://example.com/a.md) [OUTSIDE](../outside.md) [UNSAFE](javascript:alert%281%29) and \`docs/bare.md\``;
+  const linked = { ...entry, text: source };
+  const owner = workspaceStore.getState().openPane("session", { ref: rootModel.ref });
+  // An unrelated focused pane must not steal the source owner.
+  workspaceStore.getState().openPane("session", { ref: childModel.ref });
+  const view = (hydrated: boolean) => (
+    <TranscriptRenderProvider thread={rootModel} sourcePaneId={owner}>
+      <Reader
+        sessionRef={rootModel.ref}
+        entries={target === "root" ? [linked] : [entry]}
+        older={{ ...history(), model: hydrated ? rootModel : undefined }}
+        strips={target === "child" ? [strip] : []}
+        subchats={{
+          readers: new Map([
+            [
+              JSON.stringify([strip.key]),
+              {
+                ref: childModel.ref,
+                path: [strip.key],
+                entries: [linked],
+                history: { ...history(), model: hydrated ? childModel : undefined },
+                activity: { snapshot: null, strips: [], entities: new Map(), context: {}, loadMore: async () => {} },
+              },
+            ],
+          ]),
+          expandedPaths: [[strip.key]],
+          expand() {},
+          collapse() {},
+        }}
+      />
+    </TranscriptRenderProvider>
+  );
+  const mounted = render(view(false));
+  await screen.findByRole("link", { name: "LOCAL" });
+  const checkGlyphs = () => {
+    const strong = screen.getByRole("link", { name: "LOCAL" }).querySelector("strong")!;
+    const create = document.createRange.bind(document);
+    const spy = vi.spyOn(document, "createRange").mockImplementation(() => {
+      const range = create();
+      range.getBoundingClientRect = () => {
+        expect(range.startContainer.isConnected).toBe(true);
+        expect(strong.contains(range.startContainer)).toBe(true);
+        expect(["L", "A"]).toContain(range.toString());
+        return new DOMRect();
+      };
+      return range;
+    });
+    try {
+      const root = strong.closest<HTMLElement>("[data-comic-markdown]")!;
+      comicMarkdownPoint(root, source.indexOf("LOCAL"));
+      comicMarkdownPoint(root, source.indexOf("LOCAL") + 3);
+      expect(spy).toHaveBeenCalledTimes(2);
+    } finally {
+      spy.mockRestore();
+    }
+  };
+  checkGlyphs();
+  expect(screen.getByRole("link", { name: "LOCAL" }).getAttribute("href")).toBe("docs/design.md");
+  for (let repeat = 0; repeat < 2; repeat++) {
+    mounted.rerender(view(true));
+    checkGlyphs();
+    for (const [name, path] of [
+      ["LOCAL", `${model.cwd}/docs/design.md`],
+      ["ARTIFACT", `${model.artifactsDir}/result.md`],
+    ] as const) {
+      const link = screen.getByRole("link", { name });
+      const url = new URL(link.getAttribute("href")!, "https://hub.example");
+      expect(url.pathname).toBe("/doc/file");
+      expect(url.searchParams.get("session")).toBe(model.ref);
+      expect(url.searchParams.get("path")).toBe(path);
+      expect(url.searchParams.get("format")).toBe("raw");
+      expect(fireEvent.click(link)).toBe(false);
+      const doc = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+      expect(doc?.params).toMatchObject({ session: model.ref, kind: "file" });
+      expect(doc && documentPaneState(doc)).toMatchObject({
+        reference: { cwd: name === "ARTIFACT" ? model.artifactsDir : model.cwd, readTarget: path },
+        origin: { id: owner },
+      });
+      if (doc) workspaceStore.getState().closePane(doc.id);
+    }
+    for (const [name, options] of [
+      ["LOCAL", { ctrlKey: true }],
+      ["LOCAL", { metaKey: true }],
+      ["EXTERNAL", {}],
+      ["OUTSIDE", {}],
+    ] as const) {
+      let prevented = true;
+      document.addEventListener(
+        "click",
+        (event) => {
+          prevented = event.defaultPrevented;
+          event.preventDefault();
+        },
+        { once: true },
+      );
+      fireEvent.click(screen.getByRole("link", { name }), options);
+      expect(prevented).toBe(false);
+      expect(workspaceStore.getState().panes.some((pane) => pane.type === "doc")).toBe(false);
+    }
+    expect(
+      [...mounted.container.querySelectorAll("a")].find((a) => a.textContent === "UNSAFE")?.hasAttribute("href"),
+    ).toBe(false);
+  }
+  const user = userEvent.setup();
+  for (const name of ["LOCAL", "docs/bare.md"]) {
+    await user.pointer({ target: screen.getByRole("link", { name }), keys: "[MouseLeft>]" });
+    mounted.rerender(view(true));
+    await user.pointer({ target: screen.getByRole("link", { name }), keys: "[/MouseLeft]" });
+    const doc = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+    expect(doc?.params).toMatchObject({ session: model.ref, kind: "file" });
+    expect(doc && documentPaneState(doc)?.origin?.id).toBe(owner);
+    if (doc) workspaceStore.getState().closePane(doc.id);
+    checkGlyphs();
+  }
+});
 
 test("mounted fit cache measures plain and Markdown versions of the same paragraph input", async () => {
   const plain = { ...entry, id: "plain", kind: "thought" as const, text: "First\n\nSecond" };

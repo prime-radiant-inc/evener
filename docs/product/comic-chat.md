@@ -45,6 +45,18 @@ leaving unused space as gutter. Paired panels retain their 15px gap when they fi
 Headings, emphasis, lists, quotations, safe links and inline code render through
 the shared Markdown renderer. Available thought content is expanded in source
 order; missing or redacted content is not invented.
+Local file links use the originating reader's session, working directory and
+artifacts directory, including expanded inline children. An ordinary click opens
+the document beside the containing Comic pane; modified clicks retain the served
+file URL. A separately open child pane does not take ownership. Phone Back returns
+to the containing pane after document navigation unmounts its reader. This opening
+proof belongs only to that document and the exact living pane, is not persisted,
+and cannot authorize another child-file open after collapse or unmount.
+Live file reads use the owning session's actual installed directory, not its
+parent's directory or cached launch metadata. Session start seeds that directory
+for shared and isolated children; supported environment changes update only the
+owning child's daemon projection and request a reader resync. An unavailable or
+empty live directory still refuses the read rather than borrowing past metadata.
 Routine tool text is hidden, while tool-produced images retain source attribution.
 The surrounding interface has no desktop title bars, menu bars or beveled chrome.
 

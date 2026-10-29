@@ -6,6 +6,7 @@ import type { AppwireClientLike, NavigationSessionLocation } from "@evener/appwi
 import { ACTIONS } from "@evener/appwire-client";
 import { isNavigationUnavailable, isSettledGone } from "@evener/appwire-client/state/navigation";
 import { useEffect, useReducer, useRef, useState } from "react";
+import { comicDocumentCoversConversation } from "../comic/comicPaneCoverage";
 import { keybindingsRegistry } from "../keybindings/appRegistry";
 import { isEditableTarget } from "../keybindings/dispatcher";
 import { MotionProvider } from "../motion";
@@ -291,7 +292,9 @@ function routePlacementIsApplied(
     // New/pending routes and generic or stale document bindings still reconcile.
     if (
       typeof sourceSession === "string" &&
-      docParams.session === sourceSession &&
+      typeof docParams.session === "string" &&
+      (docParams.session === sourceSession ||
+        (focusedPane !== undefined && comicDocumentCoversConversation(focusedPane, main, docParams.session))) &&
       docParams.path === documentState.reference.path
     ) {
       return true;

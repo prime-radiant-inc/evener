@@ -86,6 +86,11 @@ func comicGuardBrowser(t *testing.T, scenario string) {
 	if err := os.WriteFile(filepath.Join(fixture.workDir[0], "comic-interactions.json"), interactionConfig, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	for _, level := range []string{"root", "child"} {
+		if err := os.WriteFile(filepath.Join(fixture.workDir[0], "comic-document-"+level+".md"), []byte("# COMIC_DOCUMENT_BODY_"+strings.ToUpper(level)+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	entry := skillGuardStartHelper(t, fixture, 0)
 	ref := skillGuardSessionRef(entry)
 	authorRef := ""
@@ -696,6 +701,10 @@ func comicGuardCheckChildren(t *testing.T, stateDir, evidence string) {
 	}
 	counts := make(map[string]map[string]int)
 	for level, ref := range map[string]string{"CHILD": observed.Header.Ref, "GRANDCHILD": observed.Grandchild.Ref} {
+		answer := "COMIC_ANSWER_GRANDCHILD literal attributed answer"
+		if level == "CHILD" {
+			answer = "COMIC_ANSWER_CHILD literal attributed answer [COMIC_DOCUMENT_CHILD](comic-document-child.md)"
+		}
 		id := strings.TrimPrefix(ref, "local:")
 		if id == ref || id == "" || filepath.Base(id) != id {
 			t.Fatalf("expected actual local fixture child, got %q", ref)
@@ -722,7 +731,7 @@ func comicGuardCheckChildren(t *testing.T, stateDir, evidence string) {
 				if part.Thinking != nil && part.Thinking.Text == "COMIC_THOUGHT_"+level+" available literal reasoning" {
 					found["thought"]++
 				}
-				if part.Text == "COMIC_ANSWER_"+level+" literal attributed answer" {
+				if part.Text == answer {
 					found["answer"]++
 				}
 				for index := range 45 {
@@ -828,4 +837,70 @@ func comicGuardCheckProviderFailure(t *testing.T, stateDir, evidence string) {
 		t.Fatal(err)
 	}
 	t.Logf("Durable %s: typed provider failure, one failed completion, no assistant content (not itemless)", failedID)
+}
+
+func TestComicChildDocumentMetadata(t *testing.T) {
+	fixture := skillGuardSetup(t)
+	entry := skillGuardStartHelper(t, fixture, 0)
+	ctx, cancel := context.WithTimeout(t.Context(), 25*time.Second)
+	defer cancel()
+	roster := hubcore.NewRoster(fixture.runDir, &hubcore.StatusProber{Timeout: 500 * time.Millisecond})
+	if err := roster.RefreshAndWait(ctx); err != nil {
+		t.Fatal(err)
+	}
+	past := hubcore.NewPastIndex(filepath.Join(fixture.stateRoot, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	cfg := hubcore.WebConfig{Roster: roster, Past: past, StateDir: fixture.stateRoot, RunDir: fixture.runDir, HubStateRoot: filepath.Join(fixture.root, "probe-hub")}
+	web := newWebServer(cfg, nil)
+	_ = web.Handler()
+	for _, cmd := range []map[string]string{{"command": "background-mode"}, {"command": "background-role", "phase": "comic-subchats"}, {"command": "background-start-turn", "phase": "COMIC_SUBCHAT_ROOT"}} {
+		if err := appendFileLine(fixture.control[0], cmd); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	var child string
+	for child == "" {
+		if err := roster.RefreshAndWait(ctx); err != nil {
+			t.Fatal(err)
+		}
+		for _, live := range roster.List() {
+			if live.SessionID == entry.SessionID && len(live.RunningSubagentIDs) > 0 {
+				child = live.RunningSubagentIDs[0]
+				break
+			}
+		}
+		if child != "" {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-ticker.C:
+		}
+	}
+	state, owned := roster.SubagentState(child)
+	owner, ownerOK := roster.SubagentOwner(child)
+	t.Logf("child=%s state=%s rosterOwned=%v parent=%s ownerOK=%v ownerCrashed=%v", child, state, owned, owner.SessionID, ownerOK, owner.Crashed)
+	if !owned || !ownerOK || owner.Crashed || owner.SessionID != entry.SessionID || state != appwire.ThreadStatusActive {
+		t.Fatal("child does not have its expected live owner")
+	}
+	for _, id := range []string{entry.SessionID, child} {
+		ref := "local:" + id
+		source, err := sourceForThreadWithDeletionFence(ctx, cfg, web.sources, ref, id)
+		t.Logf("id=%s sourceType=%T resolveError=%v", id, source, err)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: false})
+		t.Logf("id=%s readError=%v responseID=%s cwd=%q status=%s", id, err, response.Thread.ID, response.Thread.CWD, response.Thread.Status.Type)
+		cwd, cwdErr := sessionCWD(ctx, cfg, web.sources, id)
+		t.Logf("id=%s sessionCWD=%q sessionCWDError=%v", id, cwd, cwdErr)
+		if err != nil || cwdErr != nil || response.Thread.ID != id || response.Thread.CWD != fixture.workDir[0] || cwd != fixture.workDir[0] {
+			t.Fatalf("source %s did not return actual shared directory %q", id, fixture.workDir[0])
+		}
+	}
 }

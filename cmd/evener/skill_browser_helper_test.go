@@ -882,7 +882,11 @@ func (a *skillBrowserAdapter) scriptComicSubchats(ctx context.Context, st *llm.C
 			}
 			_ = a.writeEvent("comic-child-growth-released")
 		}
-		st.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, Delta: "COMIC_ANSWER_" + level + " literal attributed answer"})
+		answer := "COMIC_ANSWER_" + level + " literal attributed answer"
+		if level == "ROOT" || level == "CHILD" {
+			answer += " [COMIC_DOCUMENT_" + level + "](comic-document-" + strings.ToLower(level) + ".md)"
+		}
+		st.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, Delta: answer})
 		if level == "CHILD" && !a.waitBackgroundPhase(ctx, "comic-child-finish") {
 			return
 		}

@@ -110,7 +110,7 @@ for (const [name, mutate] of [
   test(`stream observer rejects completion-time ${name}`, () => {
     assert.throws(() => guard.verifyFormattedStream(streamValue(streamDOM(), streamDOM(mutate))), Error);
   });
-test("relocation rejects shifted glyph with unchanged identity and lifetime", () => {
+function relocationValue(relocation) {
   const expected = {
     mode: "away",
     sessionRef: "child",
@@ -120,15 +120,176 @@ test("relocation rejects shifted glyph with unchanged identity and lifetime", ()
     viewportOffset: 24,
   };
   const before = { saved: expected, point: { ...expected, y: 24 } };
-  const value = {
+  return {
     grandchild: { key: "child" },
     relocated: { key: "child", expanded: "true" },
     lifetime: [],
-    relocation: { unplaced: false, following: ["COMIC_CHILD_SOURCE_00"] },
+    relocation,
     expected,
     before,
     after: structuredClone(before),
   };
+}
+
+function relocationDOM(placed, mutate = () => {}) {
+  const dom = new JSDOM("<main><div data-comic-scroll><div></div></div></main>", { runScripts: "outside-only" });
+  const { window } = dom;
+  window.__comicRoot = () => window.document.querySelector("main");
+  const port = window.document.querySelector("[data-comic-scroll]").firstElementChild;
+  const row = (content) => `<div data-index>${content}</div>`;
+  const before = row(
+    '<section data-comic-row="before" data-comic-session="parent" data-comic-path="[]"><div data-comic-entry="input" data-comic-session="parent" data-comic-path="[]">COMIC_SUBCHAT_CHILD</div></section>',
+  );
+  const strip = row(
+    '<div data-comic-flow="strip" data-comic-session="parent" data-comic-path="[]"><div data-comic-entry="child" data-comic-session="parent" data-comic-path="[]"><div data-comic-delegate="child" data-comic-child-ref="grandchild"><button aria-expanded="true"></button></div></div></div>',
+  );
+  const after = row(
+    '<section data-comic-row="after" data-comic-session="parent" data-comic-path="[]"><div data-comic-entry="continuation" data-comic-session="parent" data-comic-path="[]">COMIC_CHILD_SOURCE_00</div></section>',
+  );
+  const marker = row('<div data-comic-flow="unplaced-group" data-comic-session="parent" data-comic-path="[]"></div>');
+  port.innerHTML = placed ? before + strip + after : marker + strip + before + after;
+  mutate(port);
+  const observation = window.eval(
+    `(${guard.observeDelegateRelocation.toString()})('parent','grandchild',{beforeId:'input',afterId:'continuation'})`,
+  );
+  dom.window.close();
+  return JSON.parse(JSON.stringify(observation));
+}
+
+test("relocation observer rejects a pending strip after its sibling unplaced marker", () => {
+  const observation = relocationDOM(false);
+  assert.throws(() => guard.verifyDelegateRelocation(relocationValue(observation)), Error);
+  assert.equal(observation.unplaced, true);
+  assert.equal(observation.atLaunch, false);
+});
+
+for (const [name, mutate] of [
+  [
+    "wrong preceding source",
+    (port) => {
+      port.querySelector('[data-comic-entry="input"]').dataset.comicEntry = "other";
+    },
+  ],
+  [
+    "wrong following source",
+    (port) => {
+      port.querySelector('[data-comic-entry="continuation"]').dataset.comicEntry = "other";
+    },
+  ],
+  [
+    "strip before launch input without group marker",
+    (port) => {
+      port.prepend(port.children[1]);
+    },
+  ],
+  [
+    "strip after continuation",
+    (port) => {
+      port.append(port.children[1]);
+    },
+  ],
+  [
+    "missing heading",
+    (port) => {
+      port.querySelector("[data-comic-delegate]").remove();
+    },
+  ],
+  [
+    "wrong reader path",
+    (port) => {
+      port.querySelector('[data-comic-entry="input"]').dataset.comicPath = '["other"]';
+    },
+  ],
+])
+  test(`relocation observer rejects ${name}`, () => {
+    assert.throws(() => guard.verifyDelegateRelocation(relocationValue(relocationDOM(true, mutate))), Error);
+  });
+
+test("relocation observer ignores nested-reader rows between launch neighbors", () => {
+  const observation = relocationDOM(true, (port) => {
+    const nested = port.ownerDocument.createElement("div");
+    nested.innerHTML =
+      '<section data-comic-row="nested" data-comic-session="grandchild" data-comic-path="[&quot;child&quot;]"><div data-comic-entry="nested-source" data-comic-session="grandchild" data-comic-path="[&quot;child&quot;]">nested source</div></section>';
+    port.children[1].after(nested);
+  });
+  assert.doesNotThrow(() => guard.verifyDelegateRelocation(relocationValue(observation)));
+  assert.equal(observation.beforeId, "input");
+  assert.equal(observation.afterId, "continuation");
+});
+
+function recordedOrigin() {
+  return {
+    request: { params: { ref: "parent" } },
+    response: {
+      result: {
+        data: [
+          {
+            items: [
+              { id: "input", type: "userMessage", text: "COMIC_SUBCHAT_CHILD", position: { entry: 2 } },
+              {
+                id: "launch",
+                callId: "comic_delegate_GRANDCHILD",
+                toolName: "delegate",
+                output: JSON.stringify({ delegate_id: "delegate", transcript_ref: "grandchild" }),
+                position: { entry: 3 },
+              },
+              {
+                id: "answer",
+                roundId: "r_fixture",
+                type: "agentMessage",
+                text: "COMIC_CHILD_SOURCE_00 fixture",
+                position: { entry: 5 },
+              },
+            ],
+          },
+        ],
+      },
+    },
+  };
+}
+test("recorded relocation binds the receipt and both launch-neighbor identities", () => {
+  const value = guard.recordedRelocationOrigin(recordedOrigin(), "parent", {
+    ref: "grandchild",
+    key: '["parent","delegate"]',
+  });
+  assert.equal(value.creationId, "launch");
+  assert.equal(value.beforeId, "input");
+  assert.equal(value.afterId, "round:r_fixture:agentMessage");
+});
+for (const [name, mutate] of [
+  [
+    "wrong request",
+    (value) => {
+      value.request.params.ref = "other";
+    },
+  ],
+  [
+    "wrong receipt",
+    (value) => {
+      value.response.result.data[0].items[1].output = JSON.stringify({
+        delegate_id: "other",
+        transcript_ref: "grandchild",
+      });
+    },
+  ],
+  [
+    "wrong source order",
+    (value) => {
+      value.response.result.data[0].items[2].position.entry = 1;
+    },
+  ],
+])
+  test(`recorded relocation rejects ${name}`, () => {
+    const value = recordedOrigin();
+    mutate(value);
+    assert.throws(
+      () => guard.recordedRelocationOrigin(value, "parent", { ref: "grandchild", key: '["parent","delegate"]' }),
+      Error,
+    );
+  });
+
+test("relocation rejects shifted glyph with unchanged identity and lifetime", () => {
+  const value = relocationValue(relocationDOM(true));
   assert.doesNotThrow(() => guard.verifyDelegateRelocation(value));
   value.after.point.y = 224;
   assert.throws(() => guard.verifyDelegateRelocation(value), Error);

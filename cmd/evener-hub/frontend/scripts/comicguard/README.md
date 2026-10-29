@@ -138,17 +138,34 @@ then collapsed solely to mount both original neighbors in one observation.
 before and after the final origin-revealing history page. Only that authentic
 WebSocket reply is held, then released unchanged after pinning the source. No
 scroll, reveal or anchor recapture intervenes before the post-release measurement.
+The pending sample must see the sibling unplaced-group marker. The applied sample
+must see the same strip between both source neighbors of the recorded creation
+output, using its receipt to bind the child and its wire IDs to bind the neighbors.
+The observer follows sibling virtual rows in the owning reader's path, excluding
+nested readers, rather than looking for a group-label ancestor of the strip.
 `late-creation-relocation.json` also checks that late launch placement retains the
 expanded identity without unsubscribe/re-read. `mounted-collapse.json`
 checks a mounted collapse's successful unsubscribe while its real sibling stays
 expanded and is neither unsubscribed nor re-read.
+
+After those checks, the real provider's root and inline-child Markdown file links
+open actual fixture files on the phone host. `document-links-phone.json` records
+the served source-session URLs, the already-settled root location before activation,
+successful source hydration after reconnect, and the same containing pane before
+activation and after native Back. Reconnect need not issue a new location read.
+While each
+document is focused its actual file content must be visible and the Comic reader
+must be unmounted. These files share the fixture working directory; differing
+root/child cwd and artifacts roots, modified clicks, unsafe links and unchanged
+source glyph bindings are covered by mounted renderer tests.
 
 Run the direct observation validators with
 `node --test cmd/evener-hub/frontend/scripts/comicguard.oracle.test.mjs cmd/evener-hub/frontend/scripts/comicguard.test.mjs` from the
 repository root. Their negative cases reject missing semantics, wrong source
 order, whitespace loss, unsafe links, clipping, unreadable overflow, replacement
 stream identities, missing prefixes, duplicate code or whole-source identities,
-completion-time loss, shifted relocation glyphs, moved launch strips and sibling
+completion-time loss, shifted relocation glyphs, pending sibling-group strips,
+wrong launch neighbors, moved launch strips and sibling
 retirement. They supplement, not replace, the
 complete browser journeys and `make test-web`.
 

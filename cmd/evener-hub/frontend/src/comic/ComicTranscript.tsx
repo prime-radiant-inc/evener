@@ -13,8 +13,10 @@ import { isAtBottom } from "../panes/session/transcript/flow/scrollMetrics";
 import { useTranscriptScrollKeys } from "../panes/session/transcript/flow/useTranscriptScrollKeys";
 import { useChromeStore } from "../shell/chromeStore";
 import { useIsMobile } from "../shell/useIsMobile";
+import { useWorkspaceStore } from "../shell/workspace";
 import { isEntryTranscriptLocalOpening } from "../stores/entryTranscriptRoutes";
 import { threadsStore } from "../stores/threads";
+import { TranscriptRenderProvider, useTranscriptRenderContext } from "../transcriptDisplay/renderContext";
 import {
   Button,
   type CommittedVirtualListLayout,
@@ -28,6 +30,7 @@ import { type ComicExpression, ComicPanel, type ComicScene } from "./ComicPanel"
 import { ComicPlainTranscript } from "./ComicPlainTranscript";
 import { ComicSubchatHeader } from "./ComicSubchatHeader";
 import styles from "./comic.module.css";
+import { publishComicPaneCoverage } from "./comicPaneCoverage";
 import { type ComicFlowRow, composeComicFlow, findComicFlowAnchorRow } from "./comicRows";
 import { createComicMeasurer, loadComicFonts } from "./measure";
 import type { ComicReadingPosition } from "./readerPosition";
@@ -103,6 +106,7 @@ export function ComicTranscript({
   appearanceView?: ReactNode;
 }): React.ReactElement {
   const { entries, history } = root;
+  const { sourcePaneId } = useTranscriptRenderContext();
   const isMobile = useIsMobile();
   const host = useRef<HTMLDivElement>(null);
   const controlsId = useId();
@@ -145,6 +149,15 @@ export function ComicTranscript({
   const fitsCache = useRef(new Map<string, boolean>());
   const lastPage = useRef<string | undefined>(undefined);
   const snapshots = useMemo(() => new Map([[comicPathKey([]), root], ...subchats.readers]), [root, subchats.readers]);
+  const sourcePane = useWorkspaceStore((state) => state.panes.find((pane) => pane.id === sourcePaneId));
+  useLayoutEffect(() => {
+    if (sourcePane)
+      return publishComicPaneCoverage(
+        sourcePane,
+        sessionRef,
+        [...snapshots.values()].map((snapshot) => snapshot.ref),
+      );
+  }, [sourcePane, sessionRef, snapshots]);
   const entriesByPath = useMemo(
     () =>
       new Map(
@@ -863,27 +876,32 @@ export function ComicTranscript({
                       data-comic-start={slice.start}
                       data-comic-end={slice.end}
                     >
-                      {mode === "comic" ? (
-                        <ComicPanel
-                          entry={entry}
-                          document={document}
-                          part={part}
-                          slice={slice}
-                          composition={composition}
-                          scene={scene}
-                          expression={expression}
-                        />
-                      ) : (
-                        <ComicPlainTranscript
-                          entries={[
-                            {
-                              ...entry,
-                              text: entry.text.slice(slice.start, slice.end),
-                              images: slice.end === entry.text.length ? entry.images : undefined,
-                            },
-                          ]}
-                        />
-                      )}
+                      <TranscriptRenderProvider
+                        thread={snapshots.get(comicPathKey(flow.path))?.history.model}
+                        sourcePaneId={sourcePaneId}
+                      >
+                        {mode === "comic" ? (
+                          <ComicPanel
+                            entry={entry}
+                            document={document}
+                            part={part}
+                            slice={slice}
+                            composition={composition}
+                            scene={scene}
+                            expression={expression}
+                          />
+                        ) : (
+                          <ComicPlainTranscript
+                            entries={[
+                              {
+                                ...entry,
+                                text: entry.text.slice(slice.start, slice.end),
+                                images: slice.end === entry.text.length ? entry.images : undefined,
+                              },
+                            ]}
+                          />
+                        )}
+                      </TranscriptRenderProvider>
                     </div>
                   );
                 })}

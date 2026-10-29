@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { NavigationReadParams, NavigationReadResponse, NavigationSessionLocation } from "@evener/appwire-client";
 import { APPWIRE_PROTOCOL_VERSION, type ConnectionState } from "@evener/appwire-client";
+import { bindFilePath } from "@evener/appwire-client/docContent";
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
@@ -10,7 +11,9 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import userEvent from "@testing-library/user-event";
 
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { publishComicPaneCoverage } from "../comic/comicPaneCoverage";
 import { initNotifications, resetNotificationsForTests } from "../notifications";
+import { openDocBeside } from "../panes/doc/openDoc";
 import { OpenTranscriptButton } from "../panes/session/transcript/openTranscript";
 import { StubResizeObserver } from "../resizeObserverTestUtils";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
@@ -421,6 +424,39 @@ test("AppShell mounts useKeyboardInset, so a visualViewport resize sets --keyboa
   expect(document.documentElement.style.getPropertyValue("--keyboard-inset")).toBe("368px");
   unmount();
   vi.unstubAllGlobals();
+});
+
+test("Comic child document keeps phone focus after reader unmount and Back returns to its containing pane", async () => {
+  vi.stubGlobal("innerWidth", 390);
+  installMobileViewport();
+  installLocationForRoute("local:origin");
+  window.history.pushState({}, "", "/s/local%3Aorigin");
+  const client = navClient();
+  client.on("thread/read", () => ({ thread: threadStartResponse("local:origin").thread }));
+  render(<AppShell client={client} />);
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.type).toBe("session"));
+  const source = workspaceStore.getState().mainPane()!;
+  await act(async () => {
+    workspaceStore.getState().openPane("session", { ref: "local:child" });
+    workspaceStore.getState().focusPane(source.id);
+  });
+  const release = publishComicPaneCoverage(source, "local:origin", ["local:child"]);
+  await act(async () => {
+    openDocBeside({
+      session: "local:child",
+      sourcePaneId: source.id,
+      reference: bindFilePath("docs/child.md", "/child")!,
+    });
+    release();
+  });
+  const doc = workspaceStore.getState().panes.find((pane) => pane.type === "doc")!;
+  expect(workspaceStore.getState().focusedPaneId).toBe(doc.id);
+  await act(async () => {
+    installLocationForRoute("local:origin");
+  });
+  expect(workspaceStore.getState().focusedPaneId).toBe(doc.id);
+  await userEvent.click(await screen.findByRole("button", { name: "Back" }));
+  expect(workspaceStore.getState().focusedPaneId).toBe(source.id);
 });
 
 test("ordinary mobile toolbar Back publishes only the Welcome transition", async () => {
