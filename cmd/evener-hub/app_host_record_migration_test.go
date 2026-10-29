@@ -980,3 +980,26 @@ func TestMigrationWaitsForADurableCopyOfTheOriginalHubTOML(t *testing.T) {
 		t.Fatalf("host changes are still refused after the move: %v", err)
 	}
 }
+
+// TestMigrationKeepsTheCountersOfANameOnlyTheMirrorRemembers pins the import's
+// handling of a boundary the family would otherwise lack: the legacy pass that
+// writes such a boundary's counters into hub.toml can fail to land, and the
+// import must not forget a generation and presence epoch the mirror holds.
+func TestMigrationKeepsTheCountersOfANameOnlyTheMirrorRemembers(t *testing.T) {
+	fixture := newPipelineFixture(t, []hostreg.Host{pipelineEntry("keep", 3)}, nil)
+	boundary := hostops.Boundary{Generation: 9, IncarnationID: "inc-ghost", PresenceEpoch: 5}
+	if err := fixture.store.MirrorHostState(hostops.HostMirror{Boundaries: map[string]hostops.Boundary{"ghost": boundary}}); err != nil {
+		t.Fatalf("MirrorHostState: %v", err)
+	}
+	m := fixture.legacyManager(t)
+
+	m.migrateLegacyRecords(fixture.store)
+
+	mark := mustRecords(t, fixture.store).Generations["ghost"]
+	if mark.Generation != boundary.Generation || mark.IncarnationID != boundary.IncarnationID || mark.PresenceEpoch != boundary.PresenceEpoch {
+		t.Fatalf("the family holds %+v for ghost, want the mirror's %+v", mark, boundary)
+	}
+	if got := fixture.store.Boundaries()["ghost"]; got != boundary {
+		t.Fatalf("the mirror holds %+v for ghost after the import, want %+v", got, boundary)
+	}
+}

@@ -128,27 +128,26 @@ func (m *hubHostManager) bootRecords() {
 // happens under one reservation of the host's gate, through the manager: the
 // channel and supervisor that captured the minted registration are torn down
 // with it, no attach can capture the half-restored entry, and the host
-// reconnects on demand. A host whose gate is busy keeps the identity minted at
-// start, which the records then take.
-func (m *hubHostManager) adoptStoredIncarnation(entry hostreg.Host, incarnationID string, mark hostreg.HighWater) {
+// reconnects on demand. A host whose gate is busy is reported: the settlement
+// stays pending and runs again, because recording the minted identity over the
+// stored one would orphan what is bound to it.
+func (m *hubHostManager) adoptStoredIncarnation(entry hostreg.Host, incarnationID string, mark hostreg.HighWater) error {
 	if m.cfg.manager != nil {
 		holder := hostops.Holder{Kind: hostops.HolderManager, Activity: "restore-identity"}
 		release, err := m.acquireHostGate(entry.Name, holder)
 		if err != nil {
-			m.logf("host %q keeps the identity minted at start: %v", entry.Name, err)
-			return
+			return err
 		}
 		defer release()
 		if err := m.cfg.manager.UpdateHostUnderGate(entry, holder, func(hostreg.Host) {}); err != nil {
-			m.logf("host %q keeps the identity minted at start: %v", entry.Name, err)
-			return
+			return err
 		}
 	}
 	if err := m.cfg.hosts.RestoreIncarnation(entry.Name, incarnationID); err != nil {
-		m.logf("host %q keeps the identity minted at start: %v", entry.Name, err)
-		return
+		return err
 	}
 	m.cfg.hosts.SeedHighWater(map[string]hostreg.HighWater{entry.Name: mark})
+	return nil
 }
 
 // attachOps brings the records to the state a boot would have, after the hub
@@ -192,6 +191,19 @@ func (m *hubHostManager) migrateLegacyRecords(ops *hostops.Store) {
 		return
 	}
 	set := recordSetFor(entries, records)
+	live := hostNameSet(entries)
+	for name, boundary := range ops.Boundaries() {
+		// A name only the store's mirror still remembers keeps its generation and
+		// presence counters in the family: the import replaces the mirror with
+		// what the family says, so a counter left out would be forgotten.
+		if _, held := set.Generations[name]; held {
+			continue
+		}
+		if _, isLive := live[name]; isLive {
+			continue
+		}
+		set.Generations[name] = HostGeneration{Generation: boundary.Generation, IncarnationID: boundary.IncarnationID, PresenceEpoch: boundary.PresenceEpoch}
+	}
 	family, err := encodeHostRecords(set)
 	if err != nil {
 		m.refuseMutations(fmt.Sprintf("the existing records could not be encoded for the move: %v", err))
@@ -312,12 +324,13 @@ func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
 		family, _, _ := ops.HostRecords()
 		remnants, attempts := decodeTeardownFences(family)
 		m.cfg.store.setRemnantMaps(map[string]HostStagedReceipt{}, remnants, attempts)
-		m.refuseMutations(fmt.Sprintf("the host records in the operation store cannot be read: %v", err))
+		m.refuseMutations(fmt.Sprintf("the host records in the operation store are in a shape this build cannot read, so a build that can read them has to run: %v", err))
 		return
 	}
 	// The legacy sections go first: the unlanded-removal check below reads
 	// hub.toml as the commit saw it.
 	m.stripLegacySections(true)
+	var unadopted []string
 	for _, entry := range m.cfg.hosts.All() {
 		// A hub that started before its records were readable minted ids of its
 		// own; operations and cleanup handles are bound to the stored ones.
@@ -327,8 +340,16 @@ func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
 		}
 		if validIncarnationID(stored.IncarnationID) && stored.IncarnationID != entry.IncarnationID {
 			mark := records.Generations[entry.Name]
-			m.adoptStoredIncarnation(entry, stored.IncarnationID, hostreg.HighWater{Generation: mark.Generation, PresenceEpoch: mark.PresenceEpoch})
+			if err := m.adoptStoredIncarnation(entry, stored.IncarnationID, hostreg.HighWater{Generation: mark.Generation, PresenceEpoch: mark.PresenceEpoch}); err != nil {
+				m.logf("host %q could not take its stored identity: %v", entry.Name, err)
+				unadopted = append(unadopted, entry.Name)
+			}
 		}
+	}
+	if len(unadopted) != 0 {
+		m.cfg.store.set(m.cfg.hosts.All())
+		m.refuseMutations(fmt.Sprintf("%d host(s) could not take their stored identity yet; the next attempt retries", len(unadopted)))
+		return
 	}
 	m.installRestoredRecords(hostRecordDocument{Hosts: m.cfg.hosts.All(), Records: records})
 	// Seeding the stored marks raised the registry's counters past the entries

@@ -747,3 +747,52 @@ func TestLateAttachDoesNotLeaveAChannelBoundToAnIdentityThatChanged(t *testing.T
 		t.Fatal("the channel from before the attach is still attached to an identity the host no longer has")
 	}
 }
+
+// TestLateAttachWaitsForABusyHostBeforeTakingItsStoredIdentity pins the
+// failure posture of the rebind: a host whose gate is held cannot be rebound,
+// so the settlement stays pending with host changes paused instead of recording
+// the minted identity over the stored one, and a retry after the gate frees
+// finishes it.
+func TestLateAttachWaitsForABusyHostBeforeTakingItsStoredIdentity(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	first, _ := hub.boot(t, false)
+	_, incarnation := testMutationIdentity(t, first, "side")
+
+	hub.restartStateRoot(t)
+	reopened, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	hosts, err := hostreg.New(hostRegistryEntries(mustLoadConfig(t, hub.configPath)))
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	manager := sshconn.New(hosts, sshconn.Options{Runner: &attachedUpdateRunner{}})
+	t.Cleanup(func() { _ = manager.Close() })
+	late := newHubHostManager(appsource.NewRegistry(), manager, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostConfigPath: hub.configPath, RemoteHostOpsUnavailable: true,
+	}, hub.configPath, hosts, t.Logf)
+	release, err := late.acquireHostGate("side", hostops.Holder{Kind: hostops.HolderOperation, OperationID: "busy"})
+	if err != nil {
+		t.Fatalf("hold the gate: %v", err)
+	}
+
+	late.attachOps(reopened)
+
+	if late.mutationRefusal() == nil {
+		t.Fatal("host changes resumed although side could not take its stored identity")
+	}
+	if got := mustRecords(t, reopened).HostRecords["side"].IncarnationID; got != incarnation {
+		t.Fatalf("the stored incarnation became %q while the host was busy, want %q kept", got, incarnation)
+	}
+
+	release()
+	late.attachOps(nil)
+
+	if err := late.mutationRefusal(); err != nil {
+		t.Fatalf("host changes are still paused after the gate freed: %v", err)
+	}
+	if _, got := testMutationIdentity(t, late, "side"); got != incarnation {
+		t.Fatalf("side serves incarnation %q after the retry, want the stored %q", got, incarnation)
+	}
+}
