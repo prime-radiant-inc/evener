@@ -249,11 +249,16 @@ export class DraftLibrary {
 		return reconciled;
 	}
 
-	hasPendingHandoff(to: DraftDestination): boolean {
+	/** Whether a handoff is still trying to reach this destination. False only
+	 * when the ledger proves no pending edge exists: an unavailable ledger or a
+	 * failed graph read leaves pendingness unknown - undefined - and the caller
+	 * must defer whatever a pending transfer would own, the same fail-closed
+	 * rule as openObligationRecoveryIds. */
+	hasPendingHandoff(to: DraftDestination): boolean | undefined {
 		const ledger = this.availableHandoffLedger();
-		if (ledger === undefined) return false;
+		if (ledger === undefined) return undefined;
 		const load = readOutstandingHandoffGraph(ledger);
-		if (load.state !== "ready") return false;
+		if (load.state !== "ready") return undefined;
 		return load.graph.edges.some((edge) => edge.state === "pending" && sameDestination(edge.to, to));
 	}
 
@@ -928,7 +933,13 @@ export class DraftLibrary {
 		const live = open?.getSnapshot();
 		if (open !== undefined && live?.loaded) {
 			if (open.adoptCompletion(completion)) return "delivered";
-			if (live.error !== null) return open.mergeCompletionThroughLiveState(completion);
+			// The adoption's own save can fail after the in-memory merge, setting
+			// the document's error. The snapshot taken before the attempt cannot
+			// see that new error: re-read it, so the errored live document
+			// retries the completion through its own persistence path instead
+			// of a direct repository write that strands the document with its
+			// error while the obligation acknowledges on the write's success.
+			if (open.getSnapshot().error !== null) return open.mergeCompletionThroughLiveState(completion);
 		}
 		let current: DraftRecord;
 		try {

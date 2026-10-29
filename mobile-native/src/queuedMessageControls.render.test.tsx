@@ -46,6 +46,8 @@ const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
 	kvFailure: "" as "" | "read" | "write",
 	handoffReadFailure: false,
+	handoffEdgesReads: 0,
+	handoffEdgesReadFailFrom: 0,
 	rpcFailure: "" as string,
 	reopenKV: () => {},
 	manipulate: vi.fn(),
@@ -122,6 +124,16 @@ vi.mock("expo-sqlite", async () => {
 					harness.handoffReadFailure &&
 					database === "evener-mutations.db" &&
 					(String(sql).includes("draft_handoff") || String(sql).includes("draft_submission"));
+				// Fails the Nth-and-later handoff graph reads while every earlier
+				// read succeeds, so a test can fail one specific ownership read in
+				// the screen's sequence (the initial read, the serialized
+				// coordinator's re-read, the pendingness read) in isolation.
+				const edgesReadFails = (sql: unknown) => {
+					if (!harness.handoffEdgesReadFailFrom || database !== "evener-mutations.db") return false;
+					if (!String(sql).includes("FROM draft_handoff_edges")) return false;
+					const index = ++harness.handoffEdgesReads;
+					return index >= harness.handoffEdgesReadFailFrom;
+				};
 				// A stable platform handle delegates to the reopened on-disk database.
 				port = {
 					execSync: (...args: Parameters<SqliteSync["execSync"]>) => opened.port.execSync(...args),
@@ -132,6 +144,7 @@ vi.mock("expo-sqlite", async () => {
 					},
 					getAllSync: (...args: Parameters<SqliteSync["getAllSync"]>) => {
 						if (handoffReadFails(args[0])) throw new Error("handoff read failed");
+						if (edgesReadFails(args[0])) throw new Error(`handoff edges read #${harness.handoffEdgesReads} failed`);
 						return opened.port.getAllSync(...args);
 					},
 				};
@@ -242,6 +255,8 @@ afterEach(async () => {
 	unmountMountedTrees();
 	harness.kvFailure = "";
 	harness.handoffReadFailure = false;
+	harness.handoffEdgesReads = 0;
+	harness.handoffEdgesReadFailFrom = 0;
 	harness.rpcFailure = "";
 	await getNativeMutationRuntime().stop();
 });
@@ -738,6 +753,100 @@ it("actual screen retries a deferred ownership read without user action", async 
 	expect((await f.runtime.read(f.targetKey)).recovery.map((row) => row.clientMutationId)).toEqual([
 		source.clientMutationId,
 	]);
+});
+
+it("actual screen defers restoration while pending handoffs are unreadable", async () => {
+	const f = await mount();
+	await f.offline();
+	const source = await enqueue(f, "pendingness retry source");
+	act(() => f.tree.unmount());
+	await act(async () => {
+		const claimed = await f.runtime.storage.transferToRecovery(source.clientMutationId, "editing");
+		expect(claimed?.clientMutationId).toBe(source.clientMutationId);
+	});
+	// The graph read backing the pendingness gate fails while the ownership
+	// reads before it succeed: the screen must read that as unknown pendingness
+	// and defer restoration, not as handoff-free.
+	harness.handoffEdgesReads = 0;
+	harness.handoffEdgesReadFailFrom = 5;
+	const tree = await f.recreateOffline();
+	await settle();
+	expect(tree.root.findAllByProps({ accessibilityLabel: "Retry" })).toHaveLength(0);
+	expect(f.document.getSnapshot().record.composer?.recoveryIds).toBeUndefined();
+	harness.handoffEdgesReadFailFrom = 0;
+	// No user action, no remount: the deferred restoration retries itself.
+	await act(async () => {
+		await new Promise((resolve) => setTimeout(resolve, 1500));
+	});
+	await settle();
+	expect(f.document.getSnapshot().record).toMatchObject({
+		draft: "pendingness retry source",
+		composer: { recoveryIds: [source.clientMutationId] },
+	});
+});
+
+it("actual screen retries a settle deferred on unknown ownership after awaits", async () => {
+	const f = await mount();
+	await f.offline();
+	const source = await enqueue(f, "deferred settle source");
+	act(() => f.tree.unmount());
+	await act(async () => {
+		const claimed = await f.runtime.storage.transferToRecovery(source.clientMutationId, "editing");
+		expect(claimed?.clientMutationId).toBe(source.clientMutationId);
+	});
+	const tree = await f.recreateOffline();
+	await settle();
+	// The screen restored the captured edit into the live draft.
+	expect(f.document.getSnapshot().record.composer?.recoveryIds).toEqual([source.clientMutationId]);
+	await act(async () => {
+		f.document.edit("edited recovered text");
+	});
+	await reconnect(f);
+	act(() => tree.unmount());
+	// The resubmitted recovered message resolves as an admission: its capture
+	// stays for receipt reconciliation, and the resend receipt is durable -
+	// planted with no screen mounted to consume it.
+	await act(async () => {
+		await f.document.submit(async (text, images, context) => {
+			await f.runtime.submit({
+				kind: "send",
+				hubId: "hub-1",
+				targetRef: f.ref,
+				threadId: `thread-${f.ref}`,
+				instanceId: "instance",
+				recoverySourceIds: context.recoverySourceIds,
+				input: buildComposerInput(
+					text,
+					images,
+					context.composer?.skillNames ?? [],
+					context.composer?.commandNames ?? [],
+					context.composer?.mentions ?? [],
+				),
+				composer: { text, attachments: [], skillNames: [], commandNames: [], mentions: [] },
+			});
+			return true;
+		});
+	});
+	await settle();
+	expect(f.document.getSnapshot().record.unconfirmedComposer?.recoveryIds).toEqual([source.clientMutationId]);
+	expect(await f.runtime.readRecoveryResend(f.targetKey, [source.clientMutationId])).toBeDefined();
+	// The ownership read inside the serialized reconciliation fails while the
+	// reads before it succeed: the settle defers, and only the screen's own
+	// retry can finish it.
+	harness.handoffEdgesReads = 0;
+	harness.handoffEdgesReadFailFrom = 5;
+	await f.recreateOffline();
+	await settle();
+	expect(f.document.getSnapshot().record.unconfirmedComposer?.recoveryIds).toEqual([source.clientMutationId]);
+	harness.handoffEdgesReadFailFrom = 0;
+	// No user action, no remount: the deferred settle retries itself and the
+	// receipt reconciles.
+	await act(async () => {
+		await new Promise((resolve) => setTimeout(resolve, 1500));
+	});
+	await settle();
+	expect(f.document.getSnapshot().record.unconfirmed).toBeNull();
+	expect(f.document.getSnapshot().record.unconfirmedComposer).toBeUndefined();
 });
 
 it("actual screen releases owned recovery when text-only composition becomes empty", async () => {

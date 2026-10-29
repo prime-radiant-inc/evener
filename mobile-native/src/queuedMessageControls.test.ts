@@ -554,6 +554,48 @@ test("a restart preserves a recovered message capture for receipt reconciliation
 	expect(f.repository.read(destination)).toMatchObject({ unconfirmed: null });
 });
 
+test("a reconciliation that reads unknown ownership reports the deferral", async () => {
+	const f = fixture();
+	const captured = await f.enqueue();
+	f.document.edit("current");
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, captured, f.document)).toBe("restored");
+	f.document.edit("edited recovered text");
+	const library = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage.handoffLedger,
+	);
+	const source = library.open(destination);
+	await source.submit(async (text, images, context) => {
+		expect(f.repository.read(destination).unconfirmed).toBe(text);
+		await f.runtime.submit(
+			request({
+				input: buildComposerInput(
+					text,
+					images,
+					context.composer?.skillNames,
+					context.composer?.commandNames,
+					context.composer?.mentions,
+				),
+				...context,
+			}),
+		);
+		return true;
+	});
+	const reopened = library.open(destination);
+	// An ownership read that fails is unknown: the settle defers, and the
+	// coordinator reports the deferral so the caller can schedule the retry.
+	const outcome = await reconcileEditedResends(f.runtime, key, reopened, () => undefined);
+	expect(outcome).toBe("deferred");
+	// Suppression held: the capture still owes its receipt reconciliation.
+	expect(reopened.getSnapshot().record).toMatchObject({ unconfirmed: "edited recovered text" });
+	// The read recovers: the same coordinator settles the receipt.
+	expect(await reconcileEditedResends(f.runtime, key, reopened, () => new Set())).toBe("complete");
+	expect(reopened.getSnapshot().record).toMatchObject({ unconfirmed: null });
+	expect(reopened.getSnapshot().record.unconfirmedComposer).toBeUndefined();
+	expect(await f.runtime.readRecoveryResend(key, [captured])).toBeUndefined();
+});
+
 test("successful built-in completion durably cleans only captured sources without replay", async () => {
 	const f = fixture();
 	const captured = await f.enqueue();

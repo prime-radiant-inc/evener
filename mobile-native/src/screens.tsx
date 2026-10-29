@@ -2887,6 +2887,10 @@ function ConversationScreenView({
 		let current = true;
 		let ownershipRetryTimer: ReturnType<typeof setTimeout> | null = null;
 		const targetKey = recovery.targetKey;
+		const deferUntilOwnershipReads = (): void => {
+			if (current)
+				ownershipRetryTimer = setTimeout(() => setOwnershipRetry((count) => count + 1), UNKNOWN_OWNERSHIP_RETRY_MS);
+		};
 		void (async () => {
 			const runtime = getNativeMutationRuntime();
 			drafts.retryPendingHandoffs();
@@ -2906,8 +2910,7 @@ function ConversationScreenView({
 			// attaches. Deferring schedules its own retry, so the deferral
 			// ends when the read recovers - not when the user acts.
 			if (pendingObligations === undefined) {
-				if (current)
-					ownershipRetryTimer = setTimeout(() => setOwnershipRetry((count) => count + 1), UNKNOWN_OWNERSHIP_RETRY_MS);
+				deferUntilOwnershipReads();
 				return;
 			}
 			// Ownership is passed as a reader, so the serialized reconciliation
@@ -2915,17 +2918,32 @@ function ConversationScreenView({
 			// command's capture into this document while the reconciliation
 			// waits behind its predecessor, and the set read here would be
 			// stale by then.
-			await reconcileEditedResends(runtime, targetKey, document, () =>
+			const outcome = await reconcileEditedResends(runtime, targetKey, document, () =>
 				drafts.openObligationRecoveryIds({
 					hubId: route.params.hubId,
 					sessionRef: route.params.ref,
 				}),
 			);
+			// The serialized reconciliation re-reads ownership after its awaits:
+			// an unknown read there defers the settle just like the initial read
+			// above, and the screen retries it instead of leaving the capture
+			// unresolved until some unrelated refresh.
+			if (outcome === "deferred") {
+				deferUntilOwnershipReads();
+				return;
+			}
 			const retained = await runtime.read(targetKey);
 			const handoffPending = drafts.hasPendingHandoff({
 				hubId: route.params.hubId,
 				sessionRef: route.params.ref,
 			});
+			// Pendingness that cannot be read is unknown, not handoff-free:
+			// restoring into a destination a transfer is waiting for would
+			// strand the incoming composition at its origin, so defer and retry.
+			if (handoffPending === undefined) {
+				deferUntilOwnershipReads();
+				return;
+			}
 			const deliberatelyReleased = new Set([
 				...(draft.record.releasedRecoveryIds ?? []),
 				...(draft.record.unconfirmedComposer?.recoveryIds ?? []),

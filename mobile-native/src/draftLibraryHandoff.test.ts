@@ -603,11 +603,122 @@ describe("durable handoff library", () => {
 		document.edit("current");
 		expect(repository.read(destination("a")).draft).toBe("current");
 		expect(unavailable.handoff(destination("a"), destination("b"))).toBe(false);
-		expect(unavailable.hasPendingHandoff(destination("b"))).toBe(false);
-		// An unreachable ledger is unknown ownership, not empty: restoration
-		// defers instead of reading the outage as "nothing is running".
+		expect(unavailable.hasPendingHandoff(destination("b"))).toBeUndefined();
+		// An unreachable ledger is unknown ownership and unknown pendingness,
+		// never empty: restoration and the handoff gate defer instead of
+		// reading the outage as "nothing is running" or "nothing incoming".
 		expect(unavailable.openObligationRecoveryIds(destination("a"))).toBeUndefined();
 		expect(() => unavailable.retryPendingHandoffs()).not.toThrow();
+	});
+
+	test("an unreadable graph leaves pending handoffs unknown, not absent", async () => {
+		const { ledger, repository, library } = setup();
+		repository.write(destination("a"), { draft: "current", unconfirmed: null });
+		const source = library().open(destination("a"));
+		source.edit("current");
+		let finish!: (sent: boolean) => void;
+		const submitted = source.submit(
+			() =>
+				new Promise<boolean>((resolve) => {
+					finish = resolve;
+				}),
+		);
+		// The open obligation keeps the transferred edge from settling, so a
+		// handoff is durably pending at the destination.
+		expect(library().handoff(destination("a"), destination("b"))).toBe(true);
+		const failing = flaky(ledger, "readOutstandingGraph", 1);
+		const unreadable = library(() => failing);
+		// A failed graph read is unknown pendingness, never "no pending
+		// handoff": the caller defers whatever a pending transfer would own.
+		expect(unreadable.hasPendingHandoff(destination("b"))).toBeUndefined();
+		// The read recovers: pendingness reads as it durably is.
+		expect(unreadable.hasPendingHandoff(destination("b"))).toBe(true);
+		finish(true);
+		await submitted;
+	});
+
+	test("a failed completion adoption retries through the live document, not behind it", async () => {
+		const { ledger, repository } = setup();
+		// The completion's first save attempt fails; the next succeeds.
+		let failedWrites = 0;
+		const flakyRepository = new Proxy(repository, {
+			get(target, property) {
+				const value = Reflect.get(target, property, target);
+				if (property === "write" && typeof value === "function")
+					return (...args: unknown[]) => {
+						if (failedWrites > 0) {
+							failedWrites--;
+							throw new Error("draft save failed");
+						}
+						return (value as (...inner: unknown[]) => unknown).apply(target, args);
+					};
+				return typeof value === "function" ? (value as (...inner: unknown[]) => unknown).bind(target) : value;
+			},
+		}) as DraftRepository;
+		// The graph read fails while the resolution routes, so the
+		// reconciliation pass - not the resolution - makes the completion's
+		// first and only delivery attempt, exactly the crash shape between a
+		// resolution and its capture clear. The edge's own work stays blocked
+		// until the assertions ran: deliver retries an errored destination's
+		// save and a settle adopts into it, and either would persist over the
+		// live document's error and hide the strand the fix must prevent.
+		let blockEdgeWork = false;
+		let failGraphReads = false;
+		const guardedLedger = new Proxy(ledger, {
+			get(target, property) {
+				const value = Reflect.get(target, property, target);
+				if (typeof value !== "function") return value;
+				if ((property === "claimDestination" || property === "settleEdge") && blockEdgeWork)
+					return () => {
+						throw new Error("edge work blocked");
+					};
+				if (property === "readOutstandingGraph" && failGraphReads)
+					return () => {
+						throw new Error("graph read failed");
+					};
+				return (value as (...inner: unknown[]) => unknown).bind(target);
+			},
+		}) as DraftHandoffLedger;
+		const draftLibrary = new DraftLibrary(
+			() => flakyRepository,
+			undefined,
+			() => guardedLedger,
+		);
+		repository.write(destination("a"), {
+			draft: "current",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		const source = draftLibrary.open(destination("a"));
+		let finish!: () => void;
+		const submitted = source.submitBuiltinCommand(
+			() =>
+				new Promise<boolean>((resolve) => {
+					finish = () => resolve(true);
+				}),
+		);
+		const token = repository.read(destination("a")).unconfirmedCaptureToken;
+		if (token === undefined) throw new Error("missing capture token");
+		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(true);
+		// The destination's live document holds the transferred capture.
+		const live = draftLibrary.open(destination("b"));
+		expect(live.getSnapshot().record.unconfirmedCaptureToken).toBe(token);
+		blockEdgeWork = true;
+		failedWrites = 1;
+		failGraphReads = true;
+		finish();
+		await submitted;
+		failGraphReads = false;
+		draftLibrary.retryPendingHandoffs();
+		// The completion merged through the live document's own save path: its
+		// error cleared instead of an acknowledged completion landing behind a
+		// direct repository write that leaves the composer unable to submit.
+		expect(live.getSnapshot().error).toBeNull();
+		expect(live.getSnapshot().record.completedCommandRecoveryIds).toEqual(["recovered-a"]);
+		expect(repository.read(destination("b")).completedCommandRecoveryIds).toEqual(["recovered-a"]);
+		blockEdgeWork = false;
+		draftLibrary.retryPendingHandoffs();
+		expect(edgeFor(ledger, "a", "b")?.resolvedAs).toBe("settled");
 	});
 
 	test("a failed resolution notifies consumers and unblocks the chain", async () => {
