@@ -646,6 +646,19 @@ func (a *skillBrowserAdapter) scriptBackgroundStream(ctx context.Context, st *ll
 		a.scriptComicInteractions(st, req)
 		return
 	}
+	if role == "comic-formatted" {
+		st.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, Delta: "COMIC_STREAM_BEFORE **bold**\n\n```text\n  COMIC_STREAM_CODE"})
+		if !a.waitBackgroundPhase(ctx, "comic-formatted-code") {
+			return
+		}
+		st.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, Delta: "\n\tCOMIC_STREAM_END  \n```\n\n| key | value |\n| --- | --- |\n| COMIC_STREAM_CELL |"})
+		if !a.waitBackgroundPhase(ctx, "comic-formatted-finish") {
+			return
+		}
+		st.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, Delta: " **settled** |\n\nCOMIC_STREAM_AFTER *done*"})
+		sendScriptedCommunicate(st)
+		return
+	}
 	if role == "comic-composer" {
 		queued := false
 		for _, message := range req.Messages {

@@ -104,6 +104,9 @@ func comicGuardBrowser(t *testing.T, scenario string) {
 	}
 	defer func() { daemonProcessCommand = oldCommand }()
 	literal := "COMIC_READ_SOURCE_3f " + strings.Repeat("Literal *asterisks*, `code`, and a source-offset reading point. ", 24)
+	code := "  COMIC_CODE_FIRST\n\tCOMIC_CODE_TAB  \n\n" + strings.Repeat("    COMIC_CODE_BODY aligned\n", 12) + "  COMIC_CODE_WIDE_" + strings.Repeat("x", 160) + "\n  COMIC_CODE_LAST  "
+	cells := []string{"COMIC_TABLE_KEY", "COMIC_TABLE_VALUE", "COMIC_CELL_A", "COMIC_CELL_WORDS " + strings.TrimSpace(strings.Repeat("readable cell words ", 12)), "COMIC_CELL_B", "COMIC_CELL_WIDE_" + strings.Repeat("y", 140)}
+	formatted := "## COMIC_FORMATTED_HEADING\n\nCOMIC_FORMATTED_BEFORE 😀 **bold** *emphasis* and `inline`. A   collapsed gap. [safe](https://example.com/comic) [unsafe](javascript:alert%281%29)\n\n> COMIC_FORMATTED_QUOTE\n\n7. COMIC_FORMATTED_LIST\n\n```text\n" + code + "\n```\n\n| " + cells[0] + " | " + cells[1] + " |\n| --- | --- |\n| " + cells[2] + " | " + strings.TrimSpace(cells[3]) + " |\n| " + cells[4] + " | " + cells[5] + " |\n\nCOMIC_FORMATTED_AFTER **settled**."
 	ctx, cancel := comicGuardContext(t)
 	defer cancel()
 	roster := hubcore.NewRoster(fixture.runDir, &hubcore.StatusProber{Timeout: 500 * time.Millisecond})
@@ -255,6 +258,9 @@ func comicGuardBrowser(t *testing.T, scenario string) {
 		EvidenceDir        string   `json:"evidenceDir"`
 		RequireFonts       bool     `json:"requireFonts"`
 		ExpectedSourceText string   `json:"expectedSourceText"`
+		FormattedSource    string   `json:"formattedSource"`
+		FormattedCode      string   `json:"formattedCode"`
+		FormattedCells     []string `json:"formattedCells"`
 		HistoryTexts       []string `json:"historyTexts"`
 		ControlPath        string   `json:"controlPath"`
 		RequestLog         string   `json:"requestLog"`
@@ -264,7 +270,8 @@ func comicGuardBrowser(t *testing.T, scenario string) {
 		CheckpointURL      string   `json:"checkpointURL"`
 	}{BaseURL: hubedge.AuthURLFor(hub.URL, token), EvidenceDir: evidence, ExpectedSourceText: literal,
 		RequireFonts: os.Getenv("EVENER_COMIC_BLOCK_FONTS") != "1", ControlPath: fixture.control[0], RequestLog: fixture.requestLog[0],
-		Scenario: scenario, AuthorshipRef: authorRef, AuthorshipControl: fixture.control[1], AuthorshipLog: fixture.requestLog[1], CheckpointURL: checkpoint.URL}
+		Scenario: scenario, AuthorshipRef: authorRef, AuthorshipControl: fixture.control[1], AuthorshipLog: fixture.requestLog[1], CheckpointURL: checkpoint.URL,
+		FormattedSource: formatted, FormattedCode: code, FormattedCells: cells}
 	for i := range 75 {
 		text := fmt.Sprintf("COMIC_HISTORY_%02d literal history", i)
 		if i == 27 {
@@ -321,6 +328,7 @@ func comicGuardBrowser(t *testing.T, scenario string) {
 		return
 	}
 	comicGuardCheckProviderFailure(t, fixture.stateDir[0], evidence)
+	comicGuardCheckFormatted(t, fixture.stateDir[0], entry.SessionID, formatted, evidence)
 	comicGuardCheckChildren(t, fixture.stateDir[0], evidence)
 	comicGuardCheckRoster(t, fixture.stateDir[0], evidence)
 	comicGuardCheckAuthorship(t, fixture.stateDir[1], evidence)
@@ -345,6 +353,45 @@ func comicGuardCheckRecovery(t *testing.T, stateDir, literal string) {
 		}
 	}
 	t.Log("Durable recovery: exactly one literal seed and one input each for COMIC_RECOVERY_before, COMIC_RECOVERY_after, COMIC_RESUME_SAME, COMIC_RESUME_CHANGED")
+}
+
+func comicGuardCheckFormatted(t *testing.T, stateDir, sessionID, source, evidence string) {
+	t.Helper()
+	count, err := skillGuardCountTranscriptInputs(t, stateDir, source)
+	if err != nil || count != 1 {
+		t.Fatalf("durable formatted source count = %d, want 1: %v", count, err)
+	}
+	data, err := os.ReadFile(filepath.Join(stateDir, "sessions", sessionID+".transcript.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "COMIC_STREAM_BEFORE **bold**\n\n```text\n  COMIC_STREAM_CODE\n\tCOMIC_STREAM_END  \n```\n\n| key | value |\n| --- | --- |\n| COMIC_STREAM_CELL | **settled** |\n\nCOMIC_STREAM_AFTER *done*"
+	answers := 0
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	for {
+		var record struct{ Turn schema.Turn }
+		if err := decoder.Decode(&record); err == io.EOF {
+			break
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		for _, part := range record.Turn.Message.Content {
+			if record.Turn.Kind == schema.TurnAssistant && part.Text == want {
+				answers++
+			}
+		}
+	}
+	if answers != 1 {
+		t.Fatalf("durable formatted stream answers = %d, want 1", answers)
+	}
+	data, err = json.MarshalIndent(map[string]any{"source": source, "stream": want, "inputs": count, "answers": answers}, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(evidence, "formatted-durable.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Log("Durable formatted Markdown: one untouched original source and one complete streamed answer")
 }
 
 func comicGuardCheckInteractions(t *testing.T, stateDir, sessionID, outside, evidence string) {

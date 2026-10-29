@@ -4,7 +4,10 @@ From the repository root:
 
 ```sh
 make build-web
-COMICGUARD_EVIDENCE_DIR="$EVENER_SCRATCH_DIR/comic-browser-fonts" \
+COMICGUARD_EVIDENCE_DIR="$EVENER_SCRATCH_DIR/comic-refinements-bundled" \
+go test -tags browserguard ./cmd/evener-hub -run '^TestComicChatBrowser$' -count=1 -v
+EVENER_COMIC_BLOCK_FONTS=1 \
+COMICGUARD_EVIDENCE_DIR="$EVENER_SCRATCH_DIR/comic-refinements-fallback" \
 go test -tags browserguard ./cmd/evener-hub -run '^TestComicChatBrowser$' -count=1 -v
 ```
 
@@ -88,6 +91,54 @@ font states, responsive layout, plain/comic switching, durable provider failure,
 reconnect/reload, native no-scroll click, and away/end behavior during streaming.
 The provider failure produces a real user item and system error item. Itemless turn
 errors remain component-test evidence, not this runtime scenario.
+
+### Formatted source and recorded creation
+
+`comic_browser_test.go` authors the original prose → code → table → prose fixture.
+The raw source remains unchanged. The guard checks semantic headings, emphasis,
+ordered-list starts, quotations, safe links, complete code whitespace and table
+cells. Technical inserts must fit their 40rem/available-width bound, contain no
+character stage, retain their full height and expose usable horizontal scrolling.
+The ordinary-panel checks retain 1360/850/760/600/390/320 widths and an actual
+paired row at 850px. The formatted journey also sets actual mobile viewports at
+390 and 320px, not merely narrow desktop containers.
+
+The `comic-formatted` external-provider role pauses at an unfinished fence and a
+partial table before completing them. It uses the real daemon's transcript and
+subscription path. `formatted-stream.json` retains all three observations and
+their source identity. No product store, parser or source-binding cache supplies
+the expected answer.
+
+`inlineFixtureGlyphs` handles only the known inline syntax in the history fixture.
+The formatted fixture instead locates literal text directly in DOM Text nodes and
+measures native `Range` rectangles. Original UTF16 offsets come from the fixture,
+including hidden emphasis delimiters and collapsed whitespace. `formatted.json`
+records node text, local offsets, glyphs, line rectangles, viewport dimensions,
+virtual mounting and insert geometry. Observation waits for leading and trailing
+source content; a partial virtual window cannot satisfy the semantic validator.
+The table glyph comes from its second body row. Long cells retain their full text
+and horizontal overflow; this does not assert a multiline-cell Markdown syntax
+or force intrinsic-width cells to wrap. Code retains independently measured
+multiline whitespace and geometry.
+`formatted-recovery.json` and `formatted-cold-history.json` check a technical source
+point through resize, presentation switches, reload, reconnect and distinct real
+history pages without input. `formatted-font.json` records the technical point's
+font readiness or blocked-font result after reload. The existing formatted-prose,
+delayed-font, child cached/partial/cold recovery and error-presence checks remain
+mandatory.
+
+`creation-chronology.json` ties a strip to real delegate creation output between
+parent entries. `late-creation-relocation.json` checks that late launch placement
+retains the expanded identity without unsubscribe/re-read. `mounted-collapse.json`
+checks a mounted collapse's successful unsubscribe while its real sibling stays
+expanded and is neither unsubscribed nor re-read.
+
+Run the direct observation validators with
+`node --test cmd/evener-hub/frontend/scripts/comicguard.oracle.test.mjs` from the
+repository root. Their negative cases reject missing semantics, wrong source
+order, whitespace loss, unsafe links, clipping, unreadable overflow, replacement
+stream identities and sibling retirement. They supplement, not replace, the
+complete browser journeys and `make test-web`.
 
 Entry uses the normal authenticated `/s/<ref>` URL and trusted clicks through
 Session actions → Verbosity → Presentation → Comic. Standard/Comic handoffs
