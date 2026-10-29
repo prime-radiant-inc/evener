@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/events"
@@ -70,6 +72,31 @@ func TestHubChildDiscoveryFirstSubscribedRead(t *testing.T) {
 func TestHubChildDiscoveryRecoveryBoundaries(t *testing.T) {
 	for _, scenario := range []string{"absent", "owner-replaced", "source-removed", "transport-lost", "deleted", "cancelled", "remote"} {
 		t.Run(scenario, func(t *testing.T) { testHubChildDiscovery(t, scenario) })
+	}
+}
+
+// readChildRetryingIndexContention follows the typed locked answer's automatic
+// retry disposition: the child's daemon extends the transcript index on its
+// own projection goroutine, so a fallback read can meet that writer mid-extension.
+// Each attempt starts with fresh counters, so the final read still has to
+// match its scenario exactly.
+func readChildRetryingIndexContention(t *testing.T, ctx context.Context, client *appwire.Client, params appwire.ThreadReadParams, resetCounters func()) (appwire.ThreadReadResponse, error) {
+	t.Helper()
+	for {
+		resetCounters()
+		read, err := client.ThreadRead(ctx, params)
+		if err == nil {
+			return read, nil
+		}
+		wire, ok := wireErrorFromError(err)
+		if !ok || !wireErrorInfoIs(wire.Data, appwire.ErrorTranscriptIndexLocked) {
+			return read, err
+		}
+		select {
+		case <-ctx.Done():
+			return read, ctx.Err()
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
 }
 
@@ -156,7 +183,8 @@ func testHubChildDiscovery(t *testing.T, scenario string) {
 	hubRosterRefresh = func(ctx context.Context, r *hubcore.Roster) error {
 		refreshes.Add(1)
 		if scenario == "absent" {
-			if err := os.Remove(registration); err != nil {
+			// A retried read finds the registration already gone.
+			if err := os.Remove(registration); err != nil && !errors.Is(err, fs.ErrNotExist) {
 				return err
 			}
 		}
@@ -203,7 +231,7 @@ func testHubChildDiscovery(t *testing.T, scenario string) {
 		if scenario == "remote" {
 			params.Ref = "unattached:" + childID
 		}
-		read, err = client.ThreadRead(readCtx, params)
+		read, err = readChildRetryingIndexContention(t, readCtx, client, params, func() { refreshes.Store(0); reads.Store(0) })
 	}
 	if scenario == "remote" {
 		if err == nil || refreshes.Load() != 0 || reads.Load() != 0 {
