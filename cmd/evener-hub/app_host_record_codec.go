@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 )
@@ -169,7 +170,26 @@ func decodeReadableRecords[V any](encoded map[string]json.RawMessage) map[string
 // decodeTeardownFences reads the teardown remnants and attempts of the family
 // that this build can read. They fence lifecycle actions on their own, so a
 // record elsewhere in the family that cannot be read, another remnant or an
-// attempt included, must not hide them.
+// attempt included, must not hide them. A remnant this build cannot read in
+// full but that names its host and is still open keeps that host fenced: the
+// stand-in carries only the host, and the record itself stays in the store.
 func decodeTeardownFences(family hostops.HostRecords) (map[string]HostTeardownRemnant, map[string]HostTeardownAttempt) {
-	return decodeReadableRecords[HostTeardownRemnant](family.Remnants), decodeReadableRecords[HostTeardownAttempt](family.Attempts)
+	remnants := decodeReadableRecords[HostTeardownRemnant](family.Remnants)
+	for key, raw := range family.Remnants {
+		if _, readable := remnants[key]; readable {
+			continue
+		}
+		var partial struct {
+			Host     string          `json:"host"`
+			Resolved json.RawMessage `json:"resolved"`
+		}
+		if json.Unmarshal(raw, &partial) != nil || strings.TrimSpace(partial.Host) == "" {
+			continue
+		}
+		if len(partial.Resolved) != 0 && string(partial.Resolved) != "null" {
+			continue
+		}
+		remnants[key] = HostTeardownRemnant{Host: partial.Host}
+	}
+	return remnants, decodeReadableRecords[HostTeardownAttempt](family.Attempts)
 }

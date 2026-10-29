@@ -106,7 +106,13 @@ func (m *hubHostManager) bootRecords() {
 		m.bootStoreRecords(ops)
 		return
 	}
-	m.keepPreRecordsCopy()
+	if err := m.keepPreRecordsCopy(); err != nil {
+		// Everything that follows rewrites hub.toml; none of it starts without
+		// the original kept.
+		m.bootLegacyRecords(false)
+		m.refuseMutations(fmt.Sprintf("the original hub.toml could not be kept before its records move: %v", err))
+		return
+	}
 	if !m.bootLegacyRecords(true) {
 		// The records to move could not be read, so what the legacy boot saw is
 		// empty. Importing that would make the store their home and strand the
@@ -118,20 +124,31 @@ func (m *hubHostManager) bootRecords() {
 }
 
 // adoptStoredIncarnation gives a live host the incarnation its stored records
-// name. With an SSH manager the host is rebound through it first, under the
-// host gate, so the channel and supervisor that captured the minted
-// registration are torn down with it rather than left attached to an entry
-// they no longer match; the host reconnects on demand.
-func (m *hubHostManager) adoptStoredIncarnation(entry hostreg.Host, incarnationID string) {
+// name, and raises it to the stored marks. With an SSH manager the whole change
+// happens under one reservation of the host's gate, through the manager: the
+// channel and supervisor that captured the minted registration are torn down
+// with it, no attach can capture the half-restored entry, and the host
+// reconnects on demand. A host whose gate is busy keeps the identity minted at
+// start, which the records then take.
+func (m *hubHostManager) adoptStoredIncarnation(entry hostreg.Host, incarnationID string, mark hostreg.HighWater) {
 	if m.cfg.manager != nil {
-		if err := m.cfg.manager.UpdateHost(entry, func(hostreg.Host) {}); err != nil {
-			m.logf("host %q keeps the incarnation minted at start: %v", entry.Name, err)
+		holder := hostops.Holder{Kind: hostops.HolderManager, Activity: "restore-identity"}
+		release, err := m.acquireHostGate(entry.Name, holder)
+		if err != nil {
+			m.logf("host %q keeps the identity minted at start: %v", entry.Name, err)
+			return
+		}
+		defer release()
+		if err := m.cfg.manager.UpdateHostUnderGate(entry, holder, func(hostreg.Host) {}); err != nil {
+			m.logf("host %q keeps the identity minted at start: %v", entry.Name, err)
 			return
 		}
 	}
 	if err := m.cfg.hosts.RestoreIncarnation(entry.Name, incarnationID); err != nil {
-		m.logf("host %q keeps the incarnation minted at start: %v", entry.Name, err)
+		m.logf("host %q keeps the identity minted at start: %v", entry.Name, err)
+		return
 	}
+	m.cfg.hosts.SeedHighWater(map[string]hostreg.HighWater{entry.Name: mark})
 }
 
 // attachOps brings the records to the state a boot would have, after the hub
@@ -200,18 +217,27 @@ func (m *hubHostManager) migrateLegacyRecords(ops *hostops.Store) {
 // rewrites it. Only a file that holds record sections has an original worth
 // keeping: a file with the hosts alone loses nothing the upgrade did not
 // already lose to every earlier rewrite.
-func (m *hubHostManager) keepPreRecordsCopy() {
+func (m *hubHostManager) keepPreRecordsCopy() error {
 	path := m.cfg.configPath
 	if path == "" {
-		return
+		return nil
 	}
+	raw, holdsRecords := originalHoldingRecordSections(path)
+	if !holdsRecords {
+		return nil
+	}
+	return keepPreRecordsCopy(path, raw)
+}
+
+// originalHoldingRecordSections returns hub.toml's bytes when the file reads and
+// carries record sections, the only original worth keeping. An unreadable file
+// is not one: the legacy boot's own readability check stops the move.
+func originalHoldingRecordSections(path string) ([]byte, bool) {
 	doc, raw, err := readHubTOMLDocument(path)
-	if err != nil || len(legacyRecordSections(doc)) == 0 {
-		return
+	if err != nil {
+		return nil, false
 	}
-	if err := keepPreRecordsCopy(path, raw); err != nil {
-		m.logf("the original %s was not kept: %v", path, err)
-	}
+	return raw, len(legacyRecordSections(doc)) != 0
 }
 
 // stripLegacySections drops the reserved record sections from hub.toml once
@@ -257,7 +283,10 @@ func (m *hubHostManager) stripLegacySections(keepCopy bool) {
 // file.
 func keepPreRecordsCopy(path string, original []byte) error {
 	copyPath := path + hostPreRecordsSuffix
-	if _, err := os.Stat(copyPath); err == nil {
+	if info, err := os.Stat(copyPath); err == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("%s exists and is not a regular file", copyPath)
+		}
 		return nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("stat %s: %w", copyPath, err)
@@ -297,7 +326,8 @@ func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
 			stored, _ = unlandedRemovalIdentity(records, entry.Name, m.cfg.configPath)
 		}
 		if validIncarnationID(stored.IncarnationID) && stored.IncarnationID != entry.IncarnationID {
-			m.adoptStoredIncarnation(entry, stored.IncarnationID)
+			mark := records.Generations[entry.Name]
+			m.adoptStoredIncarnation(entry, stored.IncarnationID, hostreg.HighWater{Generation: mark.Generation, PresenceEpoch: mark.PresenceEpoch})
 		}
 	}
 	m.installRestoredRecords(hostRecordDocument{Hosts: m.cfg.hosts.All(), Records: records})

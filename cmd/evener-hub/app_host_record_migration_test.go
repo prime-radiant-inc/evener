@@ -794,6 +794,9 @@ func TestAnUnreadableRecordDoesNotHideAnOpenTeardownRemnant(t *testing.T) {
 	}
 	// Nor may a remnant or an attempt this build cannot read.
 	family.Remnants["remnant-from-a-newer-build"] = json.RawMessage(`{"from_a_newer_build":true}`)
+	// An open remnant that names its host keeps that host fenced even when this
+	// build cannot read the rest of it.
+	family.Remnants["open-remnant-from-a-newer-build"] = json.RawMessage(`{"host":"keep","from_a_newer_build":true}`)
 	family.Attempts = map[string]json.RawMessage{"attempt-from-a-newer-build": json.RawMessage(`{"from_a_newer_build":true}`)}
 	if err := store.CommitHostRecords(family, hostops.HostMirror{}); err != nil {
 		t.Fatalf("tamper with a receipt: %v", err)
@@ -815,6 +818,9 @@ func TestAnUnreadableRecordDoesNotHideAnOpenTeardownRemnant(t *testing.T) {
 	}
 	if _, open := m.openRemnantID(fenced); !open {
 		t.Fatalf("the open remnant for %q is hidden by an unrelated unreadable record", fenced)
+	}
+	if _, open := m.openRemnantID("keep"); !open {
+		t.Fatal("an open remnant this build cannot read in full no longer fences its host")
 	}
 }
 
@@ -924,4 +930,53 @@ func TestAReadFailureAfterTheLegacyBootStartedStillKeepsTheRecordsInHubTOML(t *t
 	}
 	m.attachOps(nil)
 	requireFamilyEquals(t, store, records)
+}
+
+// TestMigrationWaitsForADurableCopyOfTheOriginalHubTOML pins the order the
+// promise needs: the original hub.toml is kept before anything rewrites it, and
+// a copy that cannot be kept (here a directory in its place) stops the move and
+// leaves the file as it was until it can.
+func TestMigrationWaitsForADurableCopyOfTheOriginalHubTOML(t *testing.T) {
+	configPath, records := legacyHub(t)
+	original := fileBytes(t, configPath)
+	copyPath := configPath + hostPreRecordsSuffix
+	if err := os.Mkdir(copyPath, 0o700); err != nil {
+		t.Fatalf("occupy the copy path: %v", err)
+	}
+	cfg := mustLoadConfig(t, configPath)
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	doc := hostBootDocument(cfg, configPath, store)
+	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
+	if err != nil {
+		t.Fatalf("hostreg.NewSeeded: %v", err)
+	}
+	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: configPath,
+	}, configPath, hosts, t.Logf)
+
+	if _, _, imported := store.HostRecords(); imported {
+		t.Fatal("the records moved although the original could not be kept")
+	}
+	if !bytes.Equal(fileBytes(t, configPath), original) {
+		t.Fatal("hub.toml was rewritten although the original could not be kept")
+	}
+	if m.mutationRefusal() == nil {
+		t.Fatal("host changes are taken while the move is stopped")
+	}
+
+	if err := os.Remove(copyPath); err != nil {
+		t.Fatalf("clear the copy path: %v", err)
+	}
+	m.attachOps(nil)
+
+	requireFamilyEquals(t, store, records)
+	if !bytes.Equal(fileBytes(t, copyPath), original) {
+		t.Fatal("the kept copy is not the original hub.toml")
+	}
+	if err := m.mutationRefusal(); err != nil {
+		t.Fatalf("host changes are still refused after the move: %v", err)
+	}
 }
