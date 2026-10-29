@@ -133,10 +133,22 @@ func TestParseVitestJSONRollsTheSuiteUpUnderWeb(t *testing.T) {
 	}
 }
 
-// TestParseVitestJSONRefusesAMalformedReport keeps a truncated report from
-// reading as a clean, empty measurement of the frontend.
+// TestParseVitestJSONRefusesAMalformedReport keeps a truncated or null-shaped
+// report from reading as a clean, smaller measurement of the frontend: the
+// parser this replaced crashed on each of these, and a bless must not record
+// them.
 func TestParseVitestJSONRefusesAMalformedReport(t *testing.T) {
-	if _, err := parseVitestJSON(strings.NewReader(`{"testResults":[`)); err == nil {
-		t.Fatal("a truncated report must fail, not measure as empty")
+	for name, report := range map[string]string{
+		"truncated":              `{"testResults":[`,
+		"null document":          `null`,
+		"null suite list":        `{"testResults":null}`,
+		"null suite":             `{"testResults":[null]}`,
+		"null assertion list":    `{"testResults":[{"assertionResults":null}]}`,
+		"null assertion":         `{"testResults":[{"assertionResults":[null]}]}`,
+		"suite list is a number": `{"testResults":3}`,
+	} {
+		if _, err := parseVitestJSON(strings.NewReader(report)); err == nil {
+			t.Errorf("%s: a malformed report must fail, not measure as empty", name)
+		}
 	}
 }

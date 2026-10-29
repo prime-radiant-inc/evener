@@ -139,15 +139,39 @@ func parseGoTestJSON(r io.Reader, expected []string) ([]string, error) {
 }
 
 // vitestReport is the subset of vitest's Jest-compatible JSON reporter output
-// the ratchet reads. Durations are milliseconds.
+// the ratchet reads. Durations are milliseconds. The lists stay raw so a
+// literal null (a malformed report) can be told from an absent key.
 type vitestReport struct {
-	TestResults []struct {
-		AssertionResults []struct {
-			FullName string   `json:"fullName"`
-			Title    string   `json:"title"`
-			Duration *float64 `json:"duration"`
-		} `json:"assertionResults"`
-	} `json:"testResults"`
+	TestResults json.RawMessage `json:"testResults"` //nolint:tagliatelle // vitest's reporter spells the key in camelCase
+}
+
+type vitestSuite struct {
+	AssertionResults json.RawMessage `json:"assertionResults"` //nolint:tagliatelle // vitest's reporter spells the key in camelCase
+}
+
+type vitestAssertion struct {
+	FullName string   `json:"fullName"` //nolint:tagliatelle // vitest's reporter spells the key in camelCase
+	Title    string   `json:"title"`
+	Duration *float64 `json:"duration"`
+}
+
+// decodeVitestList decodes an optional JSON array of objects. An absent key is
+// an empty list; a null list or a null entry is a malformed report, which must
+// not measure as a clean, smaller frontend.
+func decodeVitestList[T any](raw json.RawMessage, what string) ([]*T, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var items []*T
+	if err := json.Unmarshal(raw, &items); err != nil || items == nil {
+		return nil, fmt.Errorf("vitest report: %s is not a list of objects", what)
+	}
+	for _, item := range items {
+		if item == nil {
+			return nil, fmt.Errorf("vitest report: %s has a null entry", what)
+		}
+	}
+	return items, nil
 }
 
 // parseVitestJSON rolls the whole frontend suite up under one package key,
@@ -156,14 +180,25 @@ type vitestReport struct {
 // a name is flattened so a tab or newline cannot split a row and make the
 // comparator read a truncated line.
 func parseVitestJSON(r io.Reader) ([]string, error) {
-	var report vitestReport
+	var report *vitestReport
 	if err := json.NewDecoder(r).Decode(&report); err != nil {
 		return nil, fmt.Errorf("reading vitest report: %w", err)
 	}
+	if report == nil {
+		return nil, errors.New("vitest report: the document is null")
+	}
+	suites, err := decodeVitestList[vitestSuite](report.TestResults, "testResults")
+	if err != nil {
+		return nil, err
+	}
 	var rows []string
 	total := 0.0
-	for _, suite := range report.TestResults {
-		for _, a := range suite.AssertionResults {
+	for _, suite := range suites {
+		assertions, err := decodeVitestList[vitestAssertion](suite.AssertionResults, "assertionResults")
+		if err != nil {
+			return nil, err
+		}
+		for _, a := range assertions {
 			seconds := 0.0
 			if a.Duration != nil {
 				seconds = *a.Duration / 1000
