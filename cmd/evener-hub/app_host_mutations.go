@@ -477,13 +477,13 @@ func (m *hubHostManager) compensateStagedCrossFile(plan *hostCommitPlan, previou
 		// The live set the rollback restored: the pre-mutation entries (with any
 		// adopted foreign edit for this name).
 		m.cfg.store.set(adopted)
-	} else if fileCfg, ok := m.hostFileRecords(); ok {
+	} else if doc, ok := m.cfg.records.load(); ok {
 		// The rollback did not land: the file still holds the failed commit's
 		// bytes, so the store's model converges to them — a model ahead of the
 		// file (the pre-mutation live set) would make the next write re-emit a
 		// live entry beside the committed tombstone and intent, a mix no writer
 		// produces.
-		m.installRestoredRecords(fileCfg)
+		m.installRestoredRecords(doc)
 	}
 	m.unmarkMutating(plan.Name)
 	if m.cfg.ops == nil {

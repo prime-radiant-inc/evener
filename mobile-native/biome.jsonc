@@ -1,5 +1,5 @@
 {
-  "$schema": "https://biomejs.dev/schemas/2.5.12/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.5.5/schema.json",
   // The native trees' formatter config (issue #1157): without one,
   // mobile-native/src disagreed on indentation file by file and
   // every change had to match the file it touched rather than a rule. Biome is

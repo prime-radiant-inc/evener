@@ -281,7 +281,7 @@ func (m *hubHostManager) persistHosts(entries, known []hostreg.Host, change host
 	if err != nil {
 		return tombstoneCapacityRefusal(err)
 	}
-	if err := writeHubTOMLHostsRecords(m.cfg.configPath, entries, known, records); err != nil {
+	if err := m.cfg.records.commit(entries, known, records); err != nil {
 		return err
 	}
 	m.cfg.store.installRecords(records)

@@ -876,96 +876,142 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 	sortSessionMetas(metas)
 	metas = dedupeMetasByID(metas)
 
-	lv := newTreeLive(metas, live, sessionIsIndexed)
+	b := &treeBuilder{
+		live:             live,
+		decisions:        decisions,
+		now:              now,
+		resolvedProjects: resolvedProjects,
+		lv:               newTreeLive(metas, live, sessionIsIndexed),
+		// roots: the shared lineage nesting (subagents, plus fork-superseded
+		// parents) attention.go's tierEligible also draws from — see
+		// nestedSessionIDs — so a session can't be top-level here and
+		// tier-eligible there, or vice versa.
+		roots:            NewRootIndex(metas),
+		childrenByParent: make(map[string][]schema.SessionMeta),
+	}
+	accums := b.groupTopLevel(metas)
+	workingRoots := b.lv.workingRoots(metas, b.roots, b.isSubagent)
 
-	// markArchivedTree sets the archived fact on a node tree (#4199): every row
-	// and every nested fork original, each from its own session identity, its
-	// owning source and its last activity. A session with no meta has none to
-	// age, so now stands in, the way the Live filter reads it. A nested row is
-	// served in its own right — a location summary and the archived list both
-	// carry it — so it must carry the fact too. projectKeyFor gives a row its
-	// canonical project identity.
-	markArchivedTree := func(nodes []TreeNode, projectKeyFor func(TreeNode) string) {
-		var walk func([]TreeNode)
-		walk = func(rows []TreeNode) {
-			for index := range rows {
-				node := &rows[index]
-				source := sessionSourceFromID(node.ID)
-				if entry, live := lv.liveMap[node.ID]; live {
-					source = liveEntrySource(entry)
-				}
-				lastActivity := now
-				if _, hasMeta := lv.metaMap[node.ID]; hasMeta {
-					lastActivity = node.UpdatedAt
-				}
-				node.Archived = SessionArchived(decisions, node.ID, projectKeyFor(*node), source, lastActivity, now)
-				walk(node.Children)
+	treeProjects := make([]TreeProject, 0, len(accums))
+	for _, acc := range accums {
+		treeProjects = append(treeProjects, b.buildProject(acc, workingRoots))
+	}
+	activeProjects, archivedProjects := splitProjectsByArchive(treeProjects)
+
+	liveNodes := b.liveTier()
+	needsYou := b.needsYouTier()
+
+	return Tree{
+		NeedsYou:         needsYou,
+		Live:             liveNodes,
+		Projects:         activeProjects,
+		ArchivedProjects: archivedProjects,
+		// Live already excludes archived sessions, which is exactly the
+		// candidate rule the pinned tier wants — one shared result, not a
+		// second copy of the rule.
+		favoriteLive: liveNodes,
+	}
+}
+
+// treeBuilder holds the inputs and shared indexes the navigation tree is
+// assembled from; each tier of the tree is one method.
+type treeBuilder struct {
+	live             []LiveEntry
+	decisions        map[ArchiveKey]bool
+	now              time.Time
+	resolvedProjects map[string]identifier.Project
+	lv               *treeLive
+	roots            *RootIndex
+	// childrenByParent maps a new active fork branch to the snapshotted
+	// originals nested under it; groupTopLevel fills it.
+	childrenByParent map[string][]schema.SessionMeta
+}
+
+// projectAccum gathers the sessions of one project while the tree is grouped.
+type projectAccum struct {
+	name       string // basename for display
+	topLevel   []schema.SessionMeta
+	workingDir string          // the full grouping path ("" for no-project)
+	worktrees  map[string]bool // distinct WorktreePath set
+	count      int             // number of sessions seen for this project
+	anyNonTest bool            // true once any session's Origin != "test"
+	project    identifier.Project
+	path       string
+	// sources is the set of owning sources of this project's sessions, used
+	// to resolve (source, project ID)-keyed archive decisions.
+	sources map[string]bool
+}
+
+// Navigation lists top-level sessions only. A subagent is one its meta
+// says so or one a live entry reports as its running child, whether or not
+// its parent resolves: it has no row of its own, and an orphan vanishes.
+// Its activity still reaches its root through the rollup.
+func (b *treeBuilder) isSubagent(id string) bool {
+	return b.roots.IsSubagent(id) || b.lv.runningSubagentIDs[id]
+}
+
+// markArchivedTree sets the archived fact on a node tree (#4199): every row
+// and every nested fork original, each from its own session identity, its
+// owning source and its last activity. A session with no meta has none to
+// age, so now stands in, the way the Live filter reads it. A nested row is
+// served in its own right — a location summary and the archived list both
+// carry it — so it must carry the fact too. projectKeyFor gives a row its
+// canonical project identity.
+func (b *treeBuilder) markArchivedTree(nodes []TreeNode, projectKeyFor func(TreeNode) string) {
+	var walk func([]TreeNode)
+	walk = func(rows []TreeNode) {
+		for index := range rows {
+			node := &rows[index]
+			source := sessionSourceFromID(node.ID)
+			if entry, live := b.lv.liveMap[node.ID]; live {
+				source = liveEntrySource(entry)
 			}
+			lastActivity := b.now
+			if _, hasMeta := b.lv.metaMap[node.ID]; hasMeta {
+				lastActivity = node.UpdatedAt
+			}
+			node.Archived = SessionArchived(b.decisions, node.ID, projectKeyFor(*node), source, lastActivity, b.now)
+			walk(node.Children)
 		}
-		walk(nodes)
 	}
-	// nodeProjectKey is a row's own canonical project identity, for the sections
-	// that are not grouped under one project: Live and Needs you.
-	nodeProjectKey := func(node TreeNode) string {
-		if m, ok := lv.metaMap[node.ID]; ok {
-			return projectKeyForPath(EffectiveWorkingDir(m), resolvedProjects)
-		}
-		if entry, ok := lv.liveMap[node.ID]; ok {
-			return projectKeyForPath(entry.WorkingDir, resolvedProjects)
-		}
-		return "no-project"
-	}
+	walk(nodes)
+}
 
-	// Group metas by canonical project identity while preserving each record's
-	// explicit parent lineage.
-	type projectAccum struct {
-		name       string // basename for display
-		topLevel   []schema.SessionMeta
-		workingDir string          // the full grouping path ("" for no-project)
-		worktrees  map[string]bool // distinct WorktreePath set
-		count      int             // number of sessions seen for this project
-		anyNonTest bool            // true once any session's Origin != "test"
-		project    identifier.Project
-		path       string
-		// sources is the set of owning sources of this project's sessions, used
-		// to resolve (source, project ID)-keyed archive decisions.
-		sources map[string]bool
+// nodeProjectKey is a row's own canonical project identity, for the sections
+// that are not grouped under one project: Live and Needs you.
+func (b *treeBuilder) nodeProjectKey(node TreeNode) string {
+	if m, ok := b.lv.metaMap[node.ID]; ok {
+		return projectKeyForPath(EffectiveWorkingDir(m), b.resolvedProjects)
 	}
+	if entry, ok := b.lv.liveMap[node.ID]; ok {
+		return projectKeyForPath(entry.WorkingDir, b.resolvedProjects)
+	}
+	return "no-project"
+}
+
+func (b *treeBuilder) resolveProject(path string) identifier.Project {
+	if path == "" {
+		return identifier.Project{}
+	}
+	return b.resolvedProjects[path]
+}
+
+// groupTopLevel groups the top-level metas by canonical project identity while
+// preserving each record's explicit parent lineage, in first-seen order. It
+// also records, in childrenByParent, which fork originals nest under their new
+// active branch (forkChildren maps origin_id -> latest_child_id). Per spec: the
+// new active branch is top-level; the original is the dim sibling.
+func (b *treeBuilder) groupTopLevel(metas []schema.SessionMeta) []*projectAccum {
+	forkChildren := b.roots.forkChildren
 	projects := make(map[string]*projectAccum) // keyed by canonical project ID or presentation path
-	projectOrder := []string{}                 // insertion order for stable output
-	resolveProject := func(path string) identifier.Project {
-		if path == "" {
-			return identifier.Project{}
-		}
-		return resolvedProjects[path]
-	}
-	// roots: the shared lineage nesting (subagents, plus fork-superseded
-	// parents) attention.go's tierEligible also draws from — see
-	// nestedSessionIDs — so a session can't be top-level here and
-	// tier-eligible there, or vice versa. forkChildren maps origin_id ->
-	// latest_child_id: which session forked from each origin, used below to
-	// attach a "snapshotted original" (the parent meta with ForkLabel set)
-	// under the new active branch (the child whose ParentSessionID matches).
-	// Per spec: the new active branch is top-level; the original is the dim
-	// sibling.
-	roots := NewRootIndex(metas)
-	forkChildren := roots.forkChildren
-	childrenByParent := make(map[string][]schema.SessionMeta)
-
-	// Navigation lists top-level sessions only. A subagent is one its meta
-	// says so or one a live entry reports as its running child, whether or not
-	// its parent resolves: it has no row of its own, and an orphan vanishes.
-	// Its activity still reaches its root through the rollup below.
-	isSubagent := func(id string) bool {
-		return roots.IsSubagent(id) || lv.runningSubagentIDs[id]
-	}
+	var projectOrder []*projectAccum           // insertion order for stable output
 
 	for _, m := range metas {
-		if isSubagent(m.ID) {
+		if b.isSubagent(m.ID) {
 			continue
 		}
 		path := EffectiveWorkingDir(m)
-		project := resolveProject(path)
+		project := b.resolveProject(path)
 		groupKey := path
 		if project.ID != "" {
 			groupKey = project.ID
@@ -982,7 +1028,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			}
 			acc = &projectAccum{name: name, worktrees: map[string]bool{}, project: project, path: path, sources: map[string]bool{}}
 			projects[groupKey] = acc
-			projectOrder = append(projectOrder, groupKey)
+			projectOrder = append(projectOrder, acc)
 		}
 		// A carried fallback identity can know the project's ID without its
 		// canonical path (the recorded working directory no longer resolves —
@@ -1019,7 +1065,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			// this one becomes the dim child of that active branch (membership:
 			// nestedSessionIDs).
 			if newID, ok := forkChildren[m.ID]; ok {
-				childrenByParent[newID] = append(childrenByParent[newID], m)
+				b.childrenByParent[newID] = append(b.childrenByParent[newID], m)
 			} else {
 				// No active branch references this — keep top-level.
 				acc.topLevel = append(acc.topLevel, m)
@@ -1030,211 +1076,211 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			acc.topLevel = append(acc.topLevel, m)
 		}
 	}
+	return projectOrder
+}
 
-	// buildNode is the single recursive path for top-level rows and their
-	// children. The path-local visited set prevents malformed lineage cycles
-	// from recursing forever or hoisting a cycle member elsewhere.
-	var buildNode func(schema.SessionMeta, string, *projectAccum, map[string]bool) TreeNode
-	buildNode = func(m schema.SessionMeta, kind string, acc *projectAccum, path map[string]bool) TreeNode {
-		path[m.ID] = true
-		defer delete(path, m.ID)
+// buildNode is the single recursive path for top-level rows and their
+// children. The path-local visited set prevents malformed lineage cycles
+// from recursing forever or hoisting a cycle member elsewhere.
+func (b *treeBuilder) buildNode(m schema.SessionMeta, kind string, acc *projectAccum, path map[string]bool) TreeNode {
+	path[m.ID] = true
+	defer delete(path, m.ID)
 
-		// Start from the one helper that fills every live-derived field, then
-		// overlay this node's meta-derived and node-specific ones.
-		node := lv.fieldsFor(m.ID)
-		node.ID = m.ID
-		node.Title = nodeTitle(m, kind)
-		node.Project = acc.name
-		node.Branch = m.EnvInfo.GitBranch
-		node.Kind = kind
-		node.CreatedAt = OrderCreatedAt(m.CreatedAt, m.UpdatedAt)
-		node.UpdatedAt = OrderUpdatedAt(m.UpdatedAt, m.CreatedAt)
-		node.Age = AgeString(OrderUpdatedAt(m.UpdatedAt, m.CreatedAt))
+	// Start from the one helper that fills every live-derived field, then
+	// overlay this node's meta-derived and node-specific ones.
+	node := b.lv.fieldsFor(m.ID)
+	node.ID = m.ID
+	node.Title = nodeTitle(m, kind)
+	node.Project = acc.name
+	node.Branch = m.EnvInfo.GitBranch
+	node.Kind = kind
+	node.CreatedAt = OrderCreatedAt(m.CreatedAt, m.UpdatedAt)
+	node.UpdatedAt = OrderUpdatedAt(m.UpdatedAt, m.CreatedAt)
+	node.Age = AgeString(OrderUpdatedAt(m.UpdatedAt, m.CreatedAt))
 
-		// Children are fork originals only; a subagent has no row.
-		forks := slices.Clone(childrenByParent[m.ID])
-		sortSessionMetas(forks)
-		seenChildren := make(map[string]struct{}, len(forks))
-		for _, c := range forks {
-			if path[c.ID] {
-				continue
-			}
-			if _, seen := seenChildren[c.ID]; seen {
-				continue
-			}
-			seenChildren[c.ID] = struct{}{}
-			node.Children = append(node.Children, buildNode(c, "fork", acc, path))
-		}
-		return node
-	}
-
-	workingRoots := lv.workingRoots(metas, roots, isSubagent)
-
-	// Build the Projects slice.
-	treeProjects := make([]TreeProject, 0, len(projectOrder))
-	for _, path := range projectOrder {
-		acc := projects[path]
-
-		// Sort top-level sessions by the Hub session ordering contract.
-		sortSessionMetas(acc.topLevel)
-
-		sessions := make([]TreeNode, 0, len(acc.topLevel))
-		for _, m := range acc.topLevel {
-			kind := nodeKind(m)
-			sessions = append(sessions, buildNode(m, kind, acc, map[string]bool{}))
-		}
-
-		// Rollup: highest-attention state (for the dot fallback) plus the
-		// magnitude counts the header renders. Each top-level session, its fork
-		// originals and its subagents form one task tree: descendant activity
-		// keeps the project working, but cannot inflate the count beyond one for
-		// that task tree. A descendant (any depth) can only ever raise the task
-		// tree's state to "active"; only the top-level session's own state can
-		// raise the rollup into an attention state (#2557). That state is read
-		// through hubapi.AttentionState, so a session blocked on an approval
-		// needs you rather than reading as working. Subagent failures still show
-		// in the session's own Subagents chip and list.
-		rollup := ""
-		rollupLive, rollupAttn := 0, 0
-		for _, s := range sessions {
-			taskState := hubapi.AttentionState(s.State, s.ApprovalPending)
-			var includeDescendants func(TreeNode)
-			includeDescendants = func(node TreeNode) {
-				if (node.State == "active" || len(node.RunningJobs) > 0) && hubapi.RollupRank("active") > hubapi.RollupRank(taskState) {
-					taskState = "active"
-				}
-				for _, child := range node.Children {
-					includeDescendants(child)
-				}
-			}
-			includeDescendants(s)
-			if workingRoots[s.ID] && hubapi.RollupRank("active") > hubapi.RollupRank(taskState) {
-				taskState = "active"
-			}
-			if hubapi.RollupRank(taskState) > hubapi.RollupRank(rollup) {
-				rollup = taskState
-			}
-			switch taskState {
-			case "awaiting", "warning", "errored", appwire.ThreadStatusRestartRequired:
-				rollupAttn++
-			case "active":
-				rollupLive++
-			}
-		}
-
-		// lastActivity: the project's most recent last-touched moment (max
-		// last-activity across its top-level sessions). s.UpdatedAt is already
-		// the normalized last-activity value (OrderUpdatedAt(m.UpdatedAt,
-		// m.CreatedAt), applied when each node was built above), so this just
-		// takes the max of it. Used to order active projects by last activity,
-		// not by when a session merely started.
-		var lastActivity time.Time
-		for _, s := range sessions {
-			if s.UpdatedAt.After(lastActivity) {
-				lastActivity = s.UpdatedAt
-			}
-		}
-
-		// The project's wire key is its canonical ID, or the shared
-		// "no-project" key for sessions that resolve to no project. It is
-		// resolved here, before the tier split, because a row's own archived
-		// flag consults its project decision.
-		projectKey := acc.project.ID
-		if projectKey == "" {
-			projectKey = "no-project"
-			acc.workingDir = ""
-		}
-
-		// Split the project's rows into activity tiers. A session's
-		// tier is its effective-archived classification: a user decision overrides
-		// the auto rule, otherwise inactivity > 2 weeks auto-archives.
-		var current, recent, archived []TreeNode
-		for _, row := range sessions {
-			switch classifySession(decisionFor(decisions, row.ID), row.UpdatedAt, now) {
-			case "current":
-				current = append(current, row)
-			case "recent":
-				recent = append(recent, row)
-			default:
-				archived = append(archived, row)
-			}
-		}
-		// Every row of a project shares the group's canonical key; the archived
-		// fact is set on each row and every nested fork original (#4199).
-		groupKeyFor := func(TreeNode) string { return projectKey }
-		markArchivedTree(current, groupKeyFor)
-		markArchivedTree(recent, groupKeyFor)
-		markArchivedTree(archived, groupKeyFor)
-
-		// Project placement: a project is archived when every source that owns
-		// it archived it, or when it has no non-archived (Current/Recent)
-		// sessions. The vote is taken per owning source to match the Live-tier
-		// filter below: a source-qualified decision clears only that source's
-		// own rows, so one host archiving a shared canonical ID/path must not
-		// move the merged row — and the other host's still-live rows under it —
-		// into the archived catalog.
-		projectSources := sortedDecisionSources(acc.sources)
-		isArchived := projectArchivedByEverySource(decisions, projectKey, projectSources) ||
-			(len(current) == 0 && len(recent) == 0)
-
-		// Cap each tier so a project with hundreds of runs can't bloat the
-		// sidebar payload; the kept rows are the most-recent N (already ordered).
-		allCurrent, allRecent, allArchived := current, recent, archived
-		current, moreCurrent := capTier(allCurrent, maxSidebarSessionsPerTier)
-		recent, moreRecent := capTier(allRecent, maxSidebarSessionsPerTier)
-		archived, moreArchived := capTier(allArchived, maxSidebarSessionsPerTier)
-
-		treeProjects = append(treeProjects, TreeProject{
-			Name:         acc.name,
-			Key:          projectKey,
-			WorkingDir:   acc.workingDir,
-			Worktrees:    len(acc.worktrees),
-			Current:      current,
-			Recent:       recent,
-			Archived:     archived,
-			IsArchived:   isArchived,
-			IsTestRun:    acc.count > 0 && !acc.anyNonTest,
-			LastActivity: lastActivity,
-			RollupState:  rollup,
-			RollupLive:   rollupLive,
-			RollupAttn:   rollupAttn,
-			Sources:      projectSources,
-			// Auto-open only live projects (a working or awaiting session).
-			Expanded:     rollupLive > 0 || rollupAttn > 0,
-			MoreCurrent:  moreCurrent,
-			MoreRecent:   moreRecent,
-			MoreArchived: moreArchived,
-			allCurrent:   allCurrent,
-			allRecent:    allRecent,
-			allArchived:  allArchived,
-			Age:          AgeString(lastActivity),
-		})
-	}
-
-	activeProjects, archivedProjects := splitProjectsByArchive(treeProjects)
-
-	// Build the Live slice: every live, top-level session, with its fork
-	// originals nested the same way the Projects tier builds them (buildNode),
-	// sorted by attention rank desc, then the Hub session ordering contract.
-	// Archived sessions are filtered out after the sort, below.
-	//
-	// Only top-level sessions get their own row. A subagent has none. A
-	// fork-superseded parent (nested under its active continuation, per
-	// nestedSessionIDs) nests under the continuation's row when that is live,
-	// and keeps its own row otherwise, the way the project accumulator keeps a
-	// fork-superseded parent top-level when no active branch references it.
-	// This is the same membership rule the NeedsYou tier (tierEligible) and the
-	// project accumulator (topLevel) apply; all three read the one
-	// nestedSessionIDs/forkChildren result, so they can never disagree about
-	// which sessions are top-level.
-	liveNodes := make([]TreeNode, 0, len(live))
-	for _, le := range live {
-		if le.SessionID == "" || isSubagent(le.SessionID) {
+	// Children are fork originals only; a subagent has no row.
+	forks := slices.Clone(b.childrenByParent[m.ID])
+	sortSessionMetas(forks)
+	seenChildren := make(map[string]struct{}, len(forks))
+	for _, c := range forks {
+		if path[c.ID] {
 			continue
 		}
-		metaValue, hasMeta := lv.metaMap[le.SessionID]
-		if continuation, ok := forkChildren[le.SessionID]; hasMeta && ok {
-			if _, continuationLive := lv.liveMap[continuation]; continuationLive {
+		if _, seen := seenChildren[c.ID]; seen {
+			continue
+		}
+		seenChildren[c.ID] = struct{}{}
+		node.Children = append(node.Children, b.buildNode(c, "fork", acc, path))
+	}
+	return node
+}
+
+// rollupSessions returns the project's highest-attention state (for the dot
+// fallback) plus the magnitude counts the header renders. Each top-level
+// session, its fork originals and its subagents form one task tree:
+// descendant activity keeps the project working, but cannot inflate the count
+// beyond one for that task tree. A descendant (any depth) can only ever raise
+// the task tree's state to "active"; only the top-level session's own state can
+// raise the rollup into an attention state (#2557). That state is read
+// through hubapi.AttentionState, so a session blocked on an approval
+// needs you rather than reading as working. Subagent failures still show
+// in the session's own Subagents chip and list.
+func rollupSessions(sessions []TreeNode, workingRoots map[string]bool) (rollup string, rollupLive, rollupAttn int) {
+	for _, s := range sessions {
+		taskState := hubapi.AttentionState(s.State, s.ApprovalPending)
+		var includeDescendants func(TreeNode)
+		includeDescendants = func(node TreeNode) {
+			if (node.State == "active" || len(node.RunningJobs) > 0) && hubapi.RollupRank("active") > hubapi.RollupRank(taskState) {
+				taskState = "active"
+			}
+			for _, child := range node.Children {
+				includeDescendants(child)
+			}
+		}
+		includeDescendants(s)
+		if workingRoots[s.ID] && hubapi.RollupRank("active") > hubapi.RollupRank(taskState) {
+			taskState = "active"
+		}
+		if hubapi.RollupRank(taskState) > hubapi.RollupRank(rollup) {
+			rollup = taskState
+		}
+		switch taskState {
+		case "awaiting", "warning", "errored", appwire.ThreadStatusRestartRequired:
+			rollupAttn++
+		case "active":
+			rollupLive++
+		}
+	}
+	return rollup, rollupLive, rollupAttn
+}
+
+// buildProject builds one project's row: its sessions split into activity
+// tiers, capped, rolled up and placed active or archived.
+func (b *treeBuilder) buildProject(acc *projectAccum, workingRoots map[string]bool) TreeProject {
+
+	// Sort top-level sessions by the Hub session ordering contract.
+	sortSessionMetas(acc.topLevel)
+
+	sessions := make([]TreeNode, 0, len(acc.topLevel))
+	for _, m := range acc.topLevel {
+		kind := nodeKind(m)
+		sessions = append(sessions, b.buildNode(m, kind, acc, map[string]bool{}))
+	}
+
+	rollup, rollupLive, rollupAttn := rollupSessions(sessions, workingRoots)
+
+	// lastActivity: the project's most recent last-touched moment (max
+	// last-activity across its top-level sessions). s.UpdatedAt is already
+	// the normalized last-activity value (OrderUpdatedAt(m.UpdatedAt,
+	// m.CreatedAt), applied when each node was built above), so this just
+	// takes the max of it. Used to order active projects by last activity,
+	// not by when a session merely started.
+	var lastActivity time.Time
+	for _, s := range sessions {
+		if s.UpdatedAt.After(lastActivity) {
+			lastActivity = s.UpdatedAt
+		}
+	}
+
+	// The project's wire key is its canonical ID, or the shared
+	// "no-project" key for sessions that resolve to no project. It is
+	// resolved here, before the tier split, because a row's own archived
+	// flag consults its project decision.
+	projectKey := acc.project.ID
+	if projectKey == "" {
+		projectKey = "no-project"
+		acc.workingDir = ""
+	}
+
+	// Split the project's rows into activity tiers. A session's
+	// tier is its effective-archived classification: a user decision overrides
+	// the auto rule, otherwise inactivity > 2 weeks auto-archives.
+	var current, recent, archived []TreeNode
+	for _, row := range sessions {
+		switch classifySession(decisionFor(b.decisions, row.ID), row.UpdatedAt, b.now) {
+		case "current":
+			current = append(current, row)
+		case "recent":
+			recent = append(recent, row)
+		default:
+			archived = append(archived, row)
+		}
+	}
+	// Every row of a project shares the group's canonical key; the archived
+	// fact is set on each row and every nested fork original (#4199).
+	groupKeyFor := func(TreeNode) string { return projectKey }
+	b.markArchivedTree(current, groupKeyFor)
+	b.markArchivedTree(recent, groupKeyFor)
+	b.markArchivedTree(archived, groupKeyFor)
+
+	// Project placement: a project is archived when every source that owns
+	// it archived it, or when it has no non-archived (Current/Recent)
+	// sessions. The vote is taken per owning source to match the Live-tier
+	// filter below: a source-qualified decision clears only that source's
+	// own rows, so one host archiving a shared canonical ID/path must not
+	// move the merged row — and the other host's still-live rows under it —
+	// into the archived catalog.
+	projectSources := sortedDecisionSources(acc.sources)
+	isArchived := projectArchivedByEverySource(b.decisions, projectKey, projectSources) ||
+		(len(current) == 0 && len(recent) == 0)
+
+	// Cap each tier so a project with hundreds of runs can't bloat the
+	// sidebar payload; the kept rows are the most-recent N (already ordered).
+	allCurrent, allRecent, allArchived := current, recent, archived
+	current, moreCurrent := capTier(allCurrent, maxSidebarSessionsPerTier)
+	recent, moreRecent := capTier(allRecent, maxSidebarSessionsPerTier)
+	archived, moreArchived := capTier(allArchived, maxSidebarSessionsPerTier)
+
+	return TreeProject{
+		Name:         acc.name,
+		Key:          projectKey,
+		WorkingDir:   acc.workingDir,
+		Worktrees:    len(acc.worktrees),
+		Current:      current,
+		Recent:       recent,
+		Archived:     archived,
+		IsArchived:   isArchived,
+		IsTestRun:    acc.count > 0 && !acc.anyNonTest,
+		LastActivity: lastActivity,
+		RollupState:  rollup,
+		RollupLive:   rollupLive,
+		RollupAttn:   rollupAttn,
+		Sources:      projectSources,
+		// Auto-open only live projects (a working or awaiting session).
+		Expanded:     rollupLive > 0 || rollupAttn > 0,
+		MoreCurrent:  moreCurrent,
+		MoreRecent:   moreRecent,
+		MoreArchived: moreArchived,
+		allCurrent:   allCurrent,
+		allRecent:    allRecent,
+		allArchived:  allArchived,
+		Age:          AgeString(lastActivity),
+	}
+}
+
+// liveTier builds the Live slice: every live, top-level session, with its fork
+// originals nested the same way the Projects tier builds them (buildNode),
+// sorted by attention rank desc, then the Hub session ordering contract.
+// Archived sessions are filtered out after the sort, below.
+//
+// Only top-level sessions get their own row. A subagent has none. A
+// fork-superseded parent (nested under its active continuation, per
+// nestedSessionIDs) nests under the continuation's row when that is live,
+// and keeps its own row otherwise, the way the project accumulator keeps a
+// fork-superseded parent top-level when no active branch references it.
+// This is the same membership rule the NeedsYou tier (tierEligible) and the
+// project accumulator (topLevel) apply; all three read the one
+// nestedSessionIDs/forkChildren result, so they can never disagree about
+// which sessions are top-level.
+func (b *treeBuilder) liveTier() []TreeNode {
+	liveNodes := make([]TreeNode, 0, len(b.live))
+	for _, le := range b.live {
+		if le.SessionID == "" || b.isSubagent(le.SessionID) {
+			continue
+		}
+		metaValue, hasMeta := b.lv.metaMap[le.SessionID]
+		if continuation, ok := b.roots.forkChildren[le.SessionID]; hasMeta && ok {
+			if _, continuationLive := b.lv.liveMap[continuation]; continuationLive {
 				continue
 			}
 		}
@@ -1243,17 +1289,17 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		// needs a meta to resolve kind/title/project, and a session with none
 		// has no lineage to recurse into.
 		if !hasMeta {
-			liveNodes = append(liveNodes, lv.sessionNode(le, nil))
+			liveNodes = append(liveNodes, b.lv.sessionNode(le, nil))
 			continue
 		}
 		kind := nodeKind(metaValue)
-		node := buildNode(metaValue, kind, &projectAccum{name: projectName(metaValue)}, map[string]bool{})
+		node := b.buildNode(metaValue, kind, &projectAccum{name: projectName(metaValue)}, map[string]bool{})
 		// buildNode attaches every child the metadata knows about, including
 		// non-live subagents and forks. The Live tier is only live sessions.
-		node = pruneLiveSubtree(node, lv.liveMap)
+		node = pruneLiveSubtree(node, b.lv.liveMap)
 		liveNodes = append(liveNodes, node)
 	}
-	sortLiveNodes(liveNodes, lv.metaMap, lv.liveMap)
+	sortLiveNodes(liveNodes, b.lv.metaMap, b.lv.liveMap)
 
 	// Drop archived sessions from the Live tier: an explicit session
 	// decision, age-based auto-archive, or a manually archived project all
@@ -1264,13 +1310,13 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 	// favoriteLive below is exactly the filtered Live slice.
 	unarchivedLive := make([]TreeNode, 0, len(liveNodes))
 	for _, node := range liveNodes {
-		entry := lv.liveMap[node.ID]
+		entry := b.lv.liveMap[node.ID]
 		// A live session with no meta has no last activity to age: now.
-		lastActivity := now
-		if _, hasMeta := lv.metaMap[node.ID]; hasMeta {
+		lastActivity := b.now
+		if _, hasMeta := b.lv.metaMap[node.ID]; hasMeta {
 			lastActivity = node.UpdatedAt
 		}
-		if LiveSessionArchived(decisions, entry, lastActivity, now) {
+		if LiveSessionArchived(b.decisions, entry, lastActivity, b.now) {
 			continue
 		}
 		unarchivedLive = append(unarchivedLive, node)
@@ -1281,30 +1327,33 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 	// summary serves the nested row (#4199). The top-level row is left alone:
 	// the Live filter, not this marker, decides its own archive status.
 	for index := range liveNodes {
-		markArchivedTree(liveNodes[index].Children, nodeProjectKey)
+		b.markArchivedTree(liveNodes[index].Children, b.nodeProjectKey)
 	}
 
-	// Build the NeedsYou triage tier: every top-level live session in the
-	// awaiting|warning|errored family, plus any other live session promoted by
-	// a pending sandbox-exemption escalation (M7), flat across all projects,
-	// errors first and then oldest-blocked first so the queue works top-down.
-	// Both "promoted" and "top-level" share their definition with
-	// attention.go's AttentionSummary — promotedAttentionLevel and
-	// tierEligible respectively — one function each, not a second,
-	// independently-maintained copy, so the tier and the badge can never
-	// drift apart again. Subagents and fork-superseded parents (nested under
-	// their live continuation) are excluded via tierEligible, along with
-	// plain working/idle sessions — this tier is strictly "what needs me
-	// right now." An archived session is suppressed even while live: archive
-	// is a clearing verb (spec v5, round-4 A4/B7), so an
-	// archived-but-still-awaiting session must not linger in the inbox. When
-	// nothing qualifies the tier is empty and the sidebar hides it entirely.
-	needsYou := make([]TreeNode, 0, len(live))
-	for _, le := range live {
+	return liveNodes
+}
+
+// needsYouTier builds the NeedsYou triage tier.
+// a pending sandbox-exemption escalation (M7), flat across all projects,
+// errors first and then oldest-blocked first so the queue works top-down.
+// Both "promoted" and "top-level" share their definition with
+// attention.go's AttentionSummary — promotedAttentionLevel and
+// tierEligible respectively — one function each, not a second,
+// independently-maintained copy, so the tier and the badge can never
+// drift apart again. Subagents and fork-superseded parents (nested under
+// their live continuation) are excluded via tierEligible, along with
+// plain working/idle sessions — this tier is strictly "what needs me
+// right now." An archived session is suppressed even while live: archive
+// is a clearing verb (spec v5, round-4 A4/B7), so an
+// archived-but-still-awaiting session must not linger in the inbox. When
+// nothing qualifies the tier is empty and the sidebar hides it entirely.
+func (b *treeBuilder) needsYouTier() []TreeNode {
+	needsYou := make([]TreeNode, 0, len(b.live))
+	for _, le := range b.live {
 		if le.SessionID == "" {
 			continue
 		}
-		st := lv.stateFor(le.SessionID)
+		st := b.lv.stateFor(le.SessionID)
 		// Membership mirrors attention.go's AttentionSummary exactly: one shared
 		// call, not a second, independently-maintained copy of this rule. The
 		// node keeps reporting st below — promotion changes membership, not the
@@ -1312,7 +1361,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		if lvl := promotedAttentionLevel(st, le.PendingEscalation); lvl != "needs_you" && lvl != "error" {
 			continue
 		}
-		metaValue, hasMeta := lv.metaMap[le.SessionID]
+		metaValue, hasMeta := b.lv.metaMap[le.SessionID]
 		var meta *schema.SessionMeta
 		if hasMeta {
 			meta = &metaValue
@@ -1322,33 +1371,21 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		// fork-superseded parent nested under its active continuation) and not
 		// manually archived sessions surface in triage — a nested session's
 		// live continuation is the actionable unit.
-		if !tierEligible(le.SessionID, roots, lv.runningSubagentIDs, decisions) {
+		if !tierEligible(le.SessionID, b.roots, b.lv.runningSubagentIDs, b.decisions) {
 			continue
 		}
-		needsYou = append(needsYou, lv.sessionNode(le, meta))
+		needsYou = append(needsYou, b.lv.sessionNode(le, meta))
 	}
 	// An age-archived live session still reaches Needs you (tierEligible clears
 	// only an explicit decision), so its row carries the archived fact too, and
 	// the Board suppresses its unread dot (#4199).
-	markArchivedTree(needsYou, nodeProjectKey)
+	b.markArchivedTree(needsYou, b.nodeProjectKey)
 	// Three bands, oldest-first inside each band (Track A §2 ask-tiering):
 	// errored (broken beats blocked) > blocked on a person (a question, an
 	// approval, or a turn that ended on needs_response, #4093) > the rest of
 	// the tier (warnings and restarts). hubapi.NeedsYouBand owns the bands.
 	sortNeedsYou(needsYou)
-
-	// Live already excludes archived sessions (the filter right after the
-	// liveNodes sort above), which is exactly the candidate rule the pinned
-	// tier wants — one shared result, not a second copy of the rule.
-	favoriteLive := liveNodes
-
-	return Tree{
-		NeedsYou:         needsYou,
-		Live:             liveNodes,
-		Projects:         activeProjects,
-		ArchivedProjects: archivedProjects,
-		favoriteLive:     favoriteLive,
-	}
+	return needsYou
 }
 
 // Split active projects from archived ones; order each newest-first by the

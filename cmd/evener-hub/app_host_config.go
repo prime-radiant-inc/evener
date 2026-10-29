@@ -53,6 +53,9 @@ type hostManagerConfig struct {
 	// rewrites in place. Empty (tests, embedders without a file) disables
 	// persistence: the store stays memory-only and every method still works.
 	configPath string
+	// records is the durable home of the machine records and the host set they
+	// travel with. The manager reads and writes records only through it.
+	records hostRecordStore
 	// ops is the operation store the per-host boundary records are mirrored
 	// into (registry spec 08 §7): the triple each hub.toml write commits is
 	// mirrored behind it, in one atomic store write. Nil (tests, embedders,
@@ -258,6 +261,7 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 		hosts:            hosts,
 		store:            &hostStore{},
 		configPath:       strings.TrimSpace(configPath),
+		records:          hubTOMLRecordStore{path: strings.TrimSpace(configPath)},
 		ops:              cfg.RemoteHostOpsStore,
 		sources:          sources,
 		remoteCache:      cfg.RemoteThreadCache,
@@ -372,7 +376,8 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 	// the store takes its snapshot, so the entries the snapshot carries are the
 	// seeded ones — a registry built before the marks were known would otherwise
 	// record its pre-seed epochs.
-	fileRecords, hasFile := m.hostFileRecords()
+	loaded, hasFile := m.cfg.records.load()
+	fileRecords := loaded.Records
 	if hasFile {
 		m.seedHighWater(fileRecords)
 	}
