@@ -187,7 +187,7 @@ test("indexes each reader once and reuses its entries across visible rows and pr
   });
   const original = projectComicDelegates(model, entities)[0];
   if (!original) throw new Error("Fixture has no delegate");
-  const strip = { ...original, ownerRef: "local:test" };
+  const strip = { ...original, ownerRef: "local:test", source: { itemId: entry.sourceItemId!, sourceIndex: 0 } };
   const entries = [{ ...entry }, { ...entry, id: "second", sourceIndex: 1 }];
   const childEntry = { ...entry, text: "CHILD_FIRST" };
   const childSecond = { ...entry, id: "second", sourceIndex: 1, text: "CHILD_SECOND" };
@@ -1241,7 +1241,7 @@ test("does not attach parent end to trailing child output", async () => {
     ended: false,
   });
   const original = projectComicDelegates(model, entities)[0]!;
-  const strip = { ...original, ownerRef: "local:test" };
+  const strip = { ...original, ownerRef: "local:test", source: { itemId: entry.sourceItemId!, sourceIndex: 0 } };
   let follow: boolean | undefined;
   const real = widgets.VirtualList;
   vi.spyOn(widgets, "VirtualList").mockImplementation((props) => {

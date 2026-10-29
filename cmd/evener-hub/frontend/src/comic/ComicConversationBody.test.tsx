@@ -218,15 +218,17 @@ test.each(
     }
     const initial = readers.get(root);
     if (!initial) throw Error("missing root reader");
-    await waitFor(() =>
-      expect(
-        mounted.container.querySelector(`[data-comic-entry][data-comic-session="${path.length ? child : root}"]`),
-      ).not.toBeNull(),
-    );
-    const source = mounted.container.querySelector<HTMLElement>(
-      `[data-comic-entry][data-comic-session="${path.length ? child : root}"]`,
-    );
+    const message = `[data-comic-entry="message-0"][data-comic-session="${path.length ? child : root}"]`;
+    const messageSource = () =>
+      [...mounted.container.querySelectorAll<HTMLElement>(message)].find(
+        (node) => Number(node.dataset.comicStart) <= 7 && Number(node.dataset.comicEnd) > 7,
+      );
+    await waitFor(() => expect(messageSource()).toBeDefined());
+    const source = messageSource();
     if (!source?.dataset.comicEntry) throw Error("missing projected source");
+    expect(source.querySelector("[data-comic-text]")?.textContent?.length).toBeGreaterThan(0);
+    expect(Number(source.dataset.comicStart)).toBeLessThanOrEqual(7);
+    expect(Number(source.dataset.comicEnd)).toBeGreaterThan(7);
     const position: ComicReadingPosition = {
       mode: "away",
       sessionRef: path.length ? child : root,
