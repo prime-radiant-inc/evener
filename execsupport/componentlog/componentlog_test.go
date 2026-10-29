@@ -2,6 +2,8 @@ package componentlog
 
 import (
 	"bytes"
+	"errors"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -46,6 +48,30 @@ func TestConcurrentRecordsStayOneLineEach(t *testing.T) {
 	for _, line := range strings.Split(strings.TrimSuffix(buf.String(), "\n"), "\n") {
 		if !strings.HasPrefix(line, "[hub] ") || !strings.HasSuffix(line, "k=v") {
 			t.Fatalf("interleaved record: %q", line)
+		}
+	}
+}
+
+func TestControlCharactersCannotForgeRecords(t *testing.T) {
+	var buf bytes.Buffer
+	l := NewWriter("hub", &buf)
+	l.Info("bad\n[hub] forged", "path", "a\r\n[hub] forged2", "err", errors.New("x\ny"))
+	if n := strings.Count(buf.String(), "\n"); n != 1 {
+		t.Fatalf("record spans %d lines: %q", n, buf.String())
+	}
+}
+
+func TestGroupsKeepAttrsDistinct(t *testing.T) {
+	var buf bytes.Buffer
+	l := NewWriter("hub", &buf).With("id", "parent").WithGroup("child").With("id", "kid")
+	l.Info("m", "id", "leaf", slog.Group("g", "id", "inner"))
+	got := map[string]bool{}
+	for _, f := range strings.Fields(buf.String())[2:] {
+		got[f] = true
+	}
+	for _, want := range []string{"id=parent", "child.id=kid", "child.id=leaf", "child.g.id=inner"} {
+		if !got[want] {
+			t.Errorf("missing %q in %q", want, buf.String())
 		}
 	}
 }

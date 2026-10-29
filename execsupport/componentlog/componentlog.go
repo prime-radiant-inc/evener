@@ -9,8 +9,10 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
+	"unicode"
 )
 
 // New returns a logger that writes "[component] message key=value ..." lines to
@@ -35,6 +37,7 @@ type lockedWriter struct {
 type handler struct {
 	prefix string
 	out    *lockedWriter
+	group  string // qualified-key prefix from WithGroup, "" or ending in "."
 	attrs  []slog.Attr
 }
 
@@ -43,12 +46,12 @@ func (h *handler) Enabled(context.Context, slog.Level) bool { return true }
 func (h *handler) Handle(_ context.Context, r slog.Record) error {
 	var b strings.Builder
 	b.WriteString(h.prefix)
-	b.WriteString(r.Message)
+	b.WriteString(printable(r.Message))
 	for _, a := range h.attrs {
-		writeAttr(&b, a)
+		writeAttr(&b, "", a)
 	}
 	r.Attrs(func(a slog.Attr) bool {
-		writeAttr(&b, a)
+		writeAttr(&b, h.group, a)
 		return true
 	})
 	b.WriteByte('\n')
@@ -60,16 +63,48 @@ func (h *handler) Handle(_ context.Context, r slog.Record) error {
 
 func (h *handler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	clone := *h
-	clone.attrs = append(append([]slog.Attr(nil), h.attrs...), attrs...)
+	clone.attrs = append([]slog.Attr(nil), h.attrs...)
+	for _, a := range attrs {
+		clone.attrs = append(clone.attrs, slog.Attr{Key: h.group + a.Key, Value: a.Value})
+	}
 	return &clone
 }
 
-// WithGroup is a no-op: component loggers do not nest attribute groups.
-func (h *handler) WithGroup(string) slog.Handler { return h }
+func (h *handler) WithGroup(name string) slog.Handler {
+	if name == "" {
+		return h
+	}
+	clone := *h
+	clone.group = h.group + name + "."
+	return &clone
+}
 
-func writeAttr(b *strings.Builder, a slog.Attr) {
+// writeAttr appends " key=value", qualifying the key with prefix and
+// flattening group values into dotted keys.
+func writeAttr(b *strings.Builder, prefix string, a slog.Attr) {
+	v := a.Value.Resolve()
+	if v.Kind() == slog.KindGroup {
+		if a.Key != "" {
+			prefix += a.Key + "."
+		}
+		for _, g := range v.Group() {
+			writeAttr(b, prefix, g)
+		}
+		return
+	}
 	if a.Equal(slog.Attr{}) {
 		return
 	}
-	fmt.Fprintf(b, " %s=%v", a.Key, a.Value.Resolve().Any())
+	fmt.Fprintf(b, " %s%s=%s", prefix, a.Key, printable(fmt.Sprint(v.Any())))
+}
+
+// printable quotes s when it holds a control character, so no message or value
+// can end the record's line or start a forged one.
+func printable(s string) string {
+	for _, r := range s {
+		if unicode.IsControl(r) {
+			return strconv.Quote(s)
+		}
+	}
+	return s
 }
