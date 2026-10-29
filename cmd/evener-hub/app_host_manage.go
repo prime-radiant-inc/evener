@@ -57,6 +57,10 @@ type hubHostManager struct {
 	// foreign hub.toml write) and prove the compensation drops the marker and
 	// the provisional receipt the staged write installed. Nil in production.
 	testOnlyAfterStage func(name string)
+	// testOnlyAfterPublish, when non-nil, is called right after a late-attached
+	// store is published and before the rest of the attach boot runs, the window
+	// in which operations can already be admitted.
+	testOnlyAfterPublish func()
 	// testOnlyTeardown, when non-nil, replaces the post-commit teardown the
 	// mutation handlers run (the manager's RemoveHost/UpdateHost, or the
 	// registry's own Remove/Update with no manager wired). It exists so a test

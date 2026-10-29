@@ -122,7 +122,21 @@ func (m *hubHostManager) attachOps(store *hostops.Store) {
 		// Operations a crash left in flight are interrupted before the store is
 		// published, while nothing of this process can be running on it.
 		m.recoverInterruptedOnce(store)
+		// Operations admitted from the moment the store is published read the
+		// teardown fences, so the fences it holds are installed first.
+		if family, _, imported := store.HostRecords(); imported {
+			if remnants, err := decodeTeardownRemnants(family); err == nil {
+				attempts, attemptErr := decodeTeardownAttempts(family)
+				if attemptErr != nil {
+					attempts = map[string]HostTeardownAttempt{}
+				}
+				m.cfg.store.setRemnantMaps(m.cfg.store.stagedSnapshot(), remnants, attempts)
+			}
+		}
 		m.cfg.ops.Store(store)
+		if m.testOnlyAfterPublish != nil {
+			m.testOnlyAfterPublish()
+		}
 	}
 	m.bootRecords()
 	// A boot that could not settle the records left its own refusal in place.
@@ -249,7 +263,11 @@ func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
 		// and the unreadable records stay in the store untouched.
 		m.cfg.store.set(m.cfg.hosts.All())
 		family, _, _ := ops.HostRecords()
-		if remnants, attempts, fenceErr := decodeTeardownFences(family); fenceErr == nil {
+		if remnants, remnantErr := decodeTeardownRemnants(family); remnantErr == nil {
+			attempts, attemptErr := decodeTeardownAttempts(family)
+			if attemptErr != nil {
+				attempts = map[string]HostTeardownAttempt{}
+			}
 			m.cfg.store.setRemnantMaps(map[string]HostStagedReceipt{}, remnants, attempts)
 		}
 		m.refuseMutations(fmt.Sprintf("the host records in the operation store cannot be read: %v", err))
@@ -282,6 +300,13 @@ func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
 			m.refuseMutations(fmt.Sprintf("%d staged commit(s) could not be rolled back; the next attempt retries", len(unrolled)))
 			return
 		}
+	}
+	// The rollback changed the records; the rest of the boot reads them as they
+	// are now.
+	records, err = store.records()
+	if err != nil {
+		m.refuseMutations(fmt.Sprintf("the host records in the operation store cannot be read: %v", err))
+		return
 	}
 	collided := m.breakBootTombstoneCollision(records)
 	for _, name := range sortedStagedMarkerNames(m.cfg.store.stagedSnapshot()) {
@@ -319,6 +344,10 @@ func (m *hubHostManager) rollBackUnlandedCommits(doc hostRecordDocument) map[str
 			}
 		}
 		change := hostPersistChange{dropMarker: name, dropReceipt: marker.Key}
+		if scope, ok := parseHostReceiptScopedKey(marker.Key); ok && scope.Kind == hostMutationRemove {
+			// The host was never removed: its tombstone goes with the rollback.
+			change.dropTombstone = name
+		}
 		if consumed := marker.ConsumedTombstone; consumed != nil {
 			// The re-add's staging write consumed the name's removal tombstone;
 			// the host change never landed, so the removal stands, and the

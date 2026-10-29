@@ -401,6 +401,26 @@ func (s hostOpsRecordStore) syncMirror() error {
 	return s.ops.CommitHostRecords(family, hostMirrorFor(set, s.ops.Boundaries()))
 }
 
+// restoreUnlandedRemovalIdentities gives a host the identity it had when its
+// staged removal never reached hub.toml: the removal's write dropped the host's
+// live record, but the host is still configured and the boot rolls the removal
+// back, so it comes up as the incarnation the tombstone names instead of a new
+// one.
+func restoreUnlandedRemovalIdentities(configured []HostConfig, set hostRecordSet) hostRecordSet {
+	for _, h := range configured {
+		marker, staged := set.StagedReceipts[h.Name]
+		tombstone, removed := set.Tombstones[h.Name]
+		if !staged || !removed {
+			continue
+		}
+		if scope, ok := parseHostReceiptScopedKey(marker.Key); !ok || scope.Kind != hostMutationRemove {
+			continue
+		}
+		set.HostRecords[h.Name] = HostRecord{IncarnationID: tombstone.IncarnationID, PresenceEpoch: tombstone.PresenceEpoch}
+	}
+	return set
+}
+
 // hostBootDocument is the host set and the records startup builds the host
 // registry from. A store that holds the records is their home; otherwise the
 // records are the ones hub.toml still carries. Records the store holds but this
@@ -413,6 +433,7 @@ func hostBootDocument(cfg Config, ops *hostops.Store) hostRecordDocument {
 			if err != nil {
 				return hostRecordDocument{Hosts: hostEntriesWithIdentity(cfg.Hosts, hostRecordSet{})}
 			}
+			set = restoreUnlandedRemovalIdentities(cfg.Hosts, set)
 			return hostRecordDocument{Hosts: hostEntriesWithIdentity(cfg.Hosts, set), Records: set}
 		}
 	}

@@ -278,6 +278,11 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 		delete(records.stagedReceipts, change.dropMarker)
 		records.droppedStaged[change.dropMarker] = struct{}{}
 	}
+	if change.dropTombstone != "" {
+		delete(records.tombstones, change.dropTombstone)
+		records.droppedTombstones[change.dropTombstone] = struct{}{}
+		delete(records.highWater, change.dropTombstone)
+	}
 	if change.dropStoreSync != "" {
 		// The follow-up write that clears a converged intent, and the
 		// compensation that drops the intent with its hub.toml restore: the

@@ -441,3 +441,40 @@ func TestBootLeavesStagedCommitsAloneWhileHubTOMLCannotBeRead(t *testing.T) {
 		t.Fatalf("the retry left staged markers: %+v", staged)
 	}
 }
+
+// TestBootRollbackOfAnUnlandedRemovalKeepsTheHostsIdentity pins what a removal
+// that never reached hub.toml leaves behind: the host was never removed, so it
+// serves under the identity it had, its operations are not marked removed, and
+// the removal's tombstone is gone.
+func TestBootRollbackOfAnUnlandedRemovalKeepsTheHostsIdentity(t *testing.T) {
+	const staged = "staged-removal"
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, store := hub.boot(t, false)
+	generation, incarnation := testMutationIdentity(t, m, "side")
+	op := seedOperationRecord(t, store, "side", "op-before", generation, incarnation)
+	beforeBytes := fileBytes(t, hub.configPath)
+	params := removeRequest(t, m, "side")
+	params.MutationID = staged
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
+	if err := os.WriteFile(hub.configPath, beforeBytes, 0o600); err != nil {
+		t.Fatalf("put the pre-mutation hub.toml back: %v", err)
+	}
+
+	recovered, restarted := hub.boot(t, true)
+
+	gotGeneration, gotIncarnation := testMutationIdentity(t, recovered, "side")
+	if gotGeneration != generation || gotIncarnation != incarnation {
+		t.Fatalf("side serves (%d, %q) after the rollback, want its identity (%d, %q)", gotGeneration, gotIncarnation, generation, incarnation)
+	}
+	records := mustRecords(t, restarted)
+	if _, tombstoned := records.Tombstones["side"]; tombstoned {
+		t.Fatal("the rolled-back removal left its tombstone")
+	}
+	if record, ok := restarted.Record(op.ID); !ok || record.HostRemoved {
+		t.Fatalf("the host's operation is %+v after the rollback, want it not marked removed", record)
+	}
+	if _, err := recovered.RemoveResult(context.Background(), removeRequest(t, recovered, "side")); err != nil {
+		t.Fatalf("removing side after the rollback: %v", err)
+	}
+}

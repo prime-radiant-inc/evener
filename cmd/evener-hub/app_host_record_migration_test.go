@@ -769,6 +769,8 @@ func TestAnUnreadableRecordDoesNotHideAnOpenTeardownRemnant(t *testing.T) {
 		family.Receipts[key] = json.RawMessage(`{"from_a_newer_build":true}`)
 		break
 	}
+	// An attempt this build cannot read must not hide the remnants either.
+	family.Attempts = map[string]json.RawMessage{"attempt-from-a-newer-build": json.RawMessage(`{"from_a_newer_build":true}`)}
 	if err := store.CommitHostRecords(family, hostops.HostMirror{}); err != nil {
 		t.Fatalf("tamper with a receipt: %v", err)
 	}
@@ -818,5 +820,43 @@ func TestLateAttachInterruptsWhatACrashLeftInFlight(t *testing.T) {
 
 	if after, ok := store.Record(left.ID); !ok || after.State != hostops.StateInterrupted {
 		t.Fatalf("the operation the crash left in flight is %+v after the attach, want interrupted", after)
+	}
+}
+
+// TestLateAttachFencesTeardownRemnantsBeforeOperationsCanUseTheStore pins the
+// publication order: operations are admitted from the moment the store is
+// published, so an open remnant it holds must already fence its host then.
+func TestLateAttachFencesTeardownRemnantsBeforeOperationsCanUseTheStore(t *testing.T) {
+	configPath, records := legacyHub(t)
+	stateRoot := t.TempDir()
+	bootOverStore(t, configPath, stateRoot)
+	fenced := ""
+	for _, remnant := range records.TeardownRemnants {
+		if remnant.Resolved == nil {
+			fenced = remnant.Host
+		}
+	}
+	if fenced == "" {
+		t.Fatal("the legacy fixture left no open remnant")
+	}
+
+	hosts, err := hostreg.New(hostRegistryEntries(mustLoadConfig(t, configPath)))
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostConfigPath: configPath, RemoteHostOpsUnavailable: true,
+	}, configPath, hosts, t.Logf)
+	reopened, err := hostops.Open(hostops.StorePath(stateRoot))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	fencedAtPublication := false
+	m.testOnlyAfterPublish = func() { _, fencedAtPublication = m.openRemnantID(fenced) }
+
+	m.attachOps(reopened)
+
+	if !fencedAtPublication {
+		t.Fatalf("the open remnant for %q was not fencing it when the store was published", fenced)
 	}
 }

@@ -53,6 +53,10 @@ type hostPersistChange struct {
 	// is a write that carries no marker for its host, and the derivation must
 	// drop the stored one rather than preserve it.
 	dropMarker string
+	// dropTombstone names a host whose removal tombstone this write removes:
+	// the rollback of a removal that never reached hub.toml, which leaves the
+	// host live.
+	dropTombstone string
 	// storeSync, when set, is the cross-file commit intent this write carries
 	// (deploy-pipeline 08b §9): a removal's staged write stages the exact store
 	// rows it is about to purge. dropStoreSync names a host whose intent this

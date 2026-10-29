@@ -154,17 +154,14 @@ func decodeHostRecords(family hostops.HostRecords) (hostRecordSet, error) {
 	return set, nil
 }
 
-// decodeTeardownFences reads only the teardown remnants and attempts of the
-// family. They fence lifecycle actions on their own, so a record elsewhere in
-// the family that this build cannot read must not hide them.
-func decodeTeardownFences(family hostops.HostRecords) (map[string]HostTeardownRemnant, map[string]HostTeardownAttempt, error) {
-	remnants, err := decodeRecordMap[HostTeardownRemnant]("teardown remnant", family.Remnants)
-	if err != nil {
-		return nil, nil, err
-	}
-	attempts, err := decodeRecordMap[HostTeardownAttempt]("teardown attempt", family.Attempts)
-	if err != nil {
-		return nil, nil, err
-	}
-	return remnants, attempts, nil
+// decodeTeardownRemnants reads only the teardown remnants of the family. They
+// fence lifecycle actions on their own, so a record elsewhere in the family that
+// this build cannot read, a teardown attempt included, must not hide them.
+func decodeTeardownRemnants(family hostops.HostRecords) (map[string]HostTeardownRemnant, error) {
+	return decodeRecordMap[HostTeardownRemnant]("teardown remnant", family.Remnants)
+}
+
+// decodeTeardownAttempts reads only the teardown attempts of the family.
+func decodeTeardownAttempts(family hostops.HostRecords) (map[string]HostTeardownAttempt, error) {
+	return decodeRecordMap[HostTeardownAttempt]("teardown attempt", family.Attempts)
 }
