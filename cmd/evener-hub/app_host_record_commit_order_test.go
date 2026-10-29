@@ -1661,3 +1661,43 @@ func TestLateAttachFinalizesAStagedLegacyCommitWithoutRewritingTheHostList(t *te
 		}
 	}
 }
+
+// TestLateAttachLeavesAnUnfinishedLegacyCompensationToARestart pins the guard on
+// the previous build's cross-file work: restoring the stash would replace
+// hub.toml with a copy older than the operator's changes during the outage, so
+// the attach changes nothing and says a restart settles it.
+func TestLateAttachLeavesAnUnfinishedLegacyCompensationToARestart(t *testing.T) {
+	entry := pipelineEntry("m4", 2)
+	fixture, token, _ := newPipelineRemovalFixture(t, entry, false)
+	fixture.appendTOML(t, "[pending_store_sync.m4]\ngeneration = 2\ntoken_values = [\""+token.Value+"\"]\n")
+	stash := hubTOMLStashPath(fixture.configPath, "test-key")
+	if err := os.WriteFile(stash, []byte("[[hosts]]\nname = \"m4\"\nssh = \"stale-copy.example\"\n"), 0o600); err != nil {
+		t.Fatalf("write stash: %v", err)
+	}
+	if err := fixture.store.ArmCompensation(hostops.Compensation{
+		Host: "m4", Phase: hostops.CompensationArmed, Rows: []hostops.Token{token}, Stash: stash, Generation: 2,
+	}); err != nil {
+		t.Fatalf("ArmCompensation: %v", err)
+	}
+	boot := hostBootDocument(mustLoadConfig(t, fixture.configPath), fixture.configPath, nil)
+	hosts, err := hostreg.NewSeeded(boot.Hosts, boot.Records.highWaterMarks())
+	if err != nil {
+		t.Fatalf("hostreg.NewSeeded: %v", err)
+	}
+	late := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostConfigPath: fixture.configPath, RemoteHostOpsUnavailable: true,
+	}, fixture.configPath, hosts, t.Logf)
+	if err := os.WriteFile(fixture.configPath, append(fileBytes(t, fixture.configPath), []byte("\n# edited during the outage\n")...), 0o600); err != nil {
+		t.Fatalf("edit hub.toml: %v", err)
+	}
+	edited := fileBytes(t, fixture.configPath)
+
+	late.attachOps(fixture.store)
+
+	if !bytes.Equal(fileBytes(t, fixture.configPath), edited) {
+		t.Fatal("the attach restored an older copy over the operator's hub.toml")
+	}
+	if late.mutationRefusal() == nil {
+		t.Fatal("host changes resumed with the previous build's removal still open")
+	}
+}

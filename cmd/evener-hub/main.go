@@ -373,11 +373,11 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 // custody file keeps the names it closed closed.
 //
 // A corrupt file whose custody snapshot is incomplete, so that the quarantine
-// cannot prove the names it would carry, is not a reason to stop serving the
-// hosts in hub.toml: the file is kept aside byte for byte, a fresh store opens,
-// and what can be rebuilt (the host records, from hub.toml and the live
-// registry) is. Every other open failure, a transient permission or I/O problem
-// for one, is returned with a nil store and the caller retries.
+// cannot prove the names it would carry, is returned as an error and left
+// exactly as it is. That is not a reason to stop serving the hosts in hub.toml:
+// the caller serves them with host changes paused and retries the open, which
+// succeeds once the file is repaired. Every other open failure, a transient
+// permission or I/O problem for one, is handled the same way.
 //
 // The opened store also runs §3's boot reap: expired confirmation tokens are
 // dropped at startup, so a restart never leaves an unexpired-looking row behind

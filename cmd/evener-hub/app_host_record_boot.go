@@ -119,6 +119,14 @@ func (m *hubHostManager) bootRecords() {
 		m.refuseMutations(fmt.Sprintf("the original hub.toml could not be kept before its records move: %v", err))
 		return
 	}
+	if m.cfg.attaching.Load() && m.legacyCrossFileWorkOpen(ops) {
+		// The previous build's removal never finished, and settling it replaces
+		// hub.toml with the copy it kept before the removal: that copy would undo
+		// whatever the operator changed while the store was unavailable. A start
+		// reads the file fresh and settles it safely.
+		m.refuseMutations("an earlier removal's cross-file work is still open; a restart of the hub settles it")
+		return
+	}
 	if m.cfg.attaching.Load() {
 		// The move into the store follows, so the settlement writes no file: the
 		// host list in hub.toml is the operator's by now, not the registry's
@@ -314,6 +322,17 @@ func (m *hubHostManager) mirrorCountersAbove(ops *hostops.Store, entries []hostr
 		}
 	}
 	return raises
+}
+
+// legacyCrossFileWorkOpen reports whether the previous build left a removal's
+// cross-file work unfinished: an armed compensation in the store or a commit
+// intent in hub.toml.
+func (m *hubHostManager) legacyCrossFileWorkOpen(ops *hostops.Store) bool {
+	if len(ops.Compensations()) != 0 {
+		return true
+	}
+	doc, ok := m.recordStore().load()
+	return ok && len(doc.Records.PendingStoreSync) != 0
 }
 
 // migrateLegacyRecords moves the records the legacy boot just settled from
