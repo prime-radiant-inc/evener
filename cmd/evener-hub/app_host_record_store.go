@@ -490,14 +490,16 @@ func hostMirrorFor(set hostRecordSet, existing map[string]hostops.Boundary) host
 	for name := range set.HostRecords {
 		mirror.Live = append(mirror.Live, name)
 	}
-	slices.Sort(mirror.Live)
 	for name, tombstone := range set.Tombstones {
 		if _, live := set.HostRecords[name]; live {
 			continue
 		}
 		if marker, staged := set.StagedReceipts[name]; staged && !markerPastFlip(marker) {
 			// The removal can still be rolled back, and the store's retention
-			// must not compact the history of a host that stays configured.
+			// must not compact the history of a host that stays configured: the
+			// name counts as live, which also clears a mark a flipped removal
+			// left before it was taken back.
+			mirror.Live = append(mirror.Live, name)
 			continue
 		}
 		removedAt, err := time.Parse(time.RFC3339, tombstone.RemovedAt)
@@ -513,6 +515,7 @@ func hostMirrorFor(set hostRecordSet, existing map[string]hostops.Boundary) host
 			IncarnationID: tombstone.IncarnationID,
 		}
 	}
+	slices.Sort(mirror.Live)
 	return mirror
 }
 

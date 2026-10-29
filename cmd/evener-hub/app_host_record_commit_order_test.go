@@ -1440,3 +1440,26 @@ func TestAStagedRemovalIsNotMirroredAsRemovedUntilItsFlip(t *testing.T) {
 		t.Fatal("the store does not count a host as removed after its removal reached hub.toml")
 	}
 }
+
+// TestTakingBackARemovalsFlipClearsItsRemovedMark pins that a removal returned to
+// its pre-flip phase is no longer counted as removed by the operation store: a
+// crash after that, before the host file is restored, must not leave a
+// configured host whose history the store's retention would compact.
+func TestTakingBackARemovalsFlipClearsItsRemovedMark(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, store := hub.boot(t, false)
+	params := removeRequest(t, m, "side")
+	armCut(m, cutFlipped)
+	runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
+	if _, marked := store.RemovedHosts()["side"]; !marked {
+		t.Fatal("the flipped removal is not counted as removed")
+	}
+
+	if err := (hostOpsRecordStore{path: hub.configPath, ops: store, logf: t.Logf}).takeBackFlip("side"); err != nil {
+		t.Fatalf("takeBackFlip: %v", err)
+	}
+
+	if _, marked := store.RemovedHosts()["side"]; marked {
+		t.Fatal("the store still counts a host as removed after its removal was taken back to before its flip")
+	}
+}
