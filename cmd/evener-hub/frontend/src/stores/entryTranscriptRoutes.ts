@@ -214,6 +214,17 @@ export interface EntryTranscriptRoute {
   // body-suppressed with no demand cursor. Distinguishes that strand from the
   // fast recovery-needed answers a repository without a usable record returns.
   localOpenDeadlineMissed?: boolean;
+  // True while some raced local opening missed its bounded lookup deadline and
+  // no later open has established a usable view since: the pane's recorded
+  // display is still owed its convergence. Unlike localOpenDeadlineMissed —
+  // per-open, cleared when the next open begins, and read by the recovery
+  // chain to pace its own attempts — this fact survives the acquisition's
+  // follow-up opens. The deadline-missed open's per-open marker is otherwise
+  // erased by the post-hydration promotion open that refuses while the
+  // hydration's durable phase is still settling (its read answers after the
+  // window's authority moved, so it discards a complete window and returns a
+  // body-suppressed model), and the stranding recovery would never arm.
+  unresolvedOpenMiss?: boolean;
 }
 
 const productionEntryRoutes = new Map<string, EntryTranscriptRoute>();
@@ -463,6 +474,7 @@ export async function openEntryTranscript(ref: string, recovery = false): Promis
               (settled.status !== "recovery-needed" || holdsCompleteForegroundWindow(settled.model));
             if (usable) {
               fixture.lastLocalOpenUsable = true;
+              fixture.unresolvedOpenMiss = false;
               return;
             }
             fixture.lastLocalOpenUsable = false;
@@ -488,7 +500,10 @@ export async function openEntryTranscript(ref: string, recovery = false): Promis
       // tracked re-open can heal; an established restore that stalled past
       // its own settled-opening window hands to source recovery instead
       // (the #4954 stalled-open contract), and must not arm this chain.
-      if (!stalled) fixture.localOpenDeadlineMissed = true;
+      if (!stalled) {
+        fixture.localOpenDeadlineMissed = true;
+        fixture.unresolvedOpenMiss = true;
+      }
       if (openingOwned()) fixture.lastLocalOpenUsable = false;
       return false;
     }
@@ -513,7 +528,10 @@ export async function openEntryTranscript(ref: string, recovery = false): Promis
     const usable =
       result.retainedRangeComplete !== false &&
       (result.status !== "recovery-needed" || holdsCompleteForegroundWindow(result.model));
-    if (openingOwned()) fixture.lastLocalOpenUsable = usable;
+    if (openingOwned()) {
+      fixture.lastLocalOpenUsable = usable;
+      if (usable) fixture.unresolvedOpenMiss = false;
+    }
     return usable;
   } finally {
     if (timer !== undefined) clearTimeout(timer);
@@ -626,6 +644,14 @@ export async function openCachedEntryTranscript(ref: string, generation: number)
       timer = setTimeout(() => {
         active = false;
         if (installed && route.repository === installed && route.cachedUnverified) {
+          // The deadline expired while a cached repository was being opened:
+          // the pane's recorded window was never served nor refused, so its
+          // convergence is owed exactly as a raced open's deadline miss owes
+          // it — the source hydration continues the acquisition, and its own
+          // promotion open may refuse while the hydration's durable phase is
+          // still settling (discarding a complete window behind a moved
+          // authority), which must not leave the chain disarmed.
+          route.unresolvedOpenMiss = true;
           retireEntryTranscriptRoute(route);
           clearEntryTranscriptLocalOpening(ref);
         }
@@ -667,6 +693,16 @@ export async function openCachedEntryTranscript(ref: string, generation: number)
 // route, and is registered in trackedHydrationCompletions so a caller
 // awaiting the acquisition's completion (including
 // settleEntryTranscriptForTests) also awaits the display's convergence.
+// The arming fact is the route's unresolvedOpenMiss, not the per-open
+// localOpenDeadlineMissed: a miss can be left unresolved by a LATER open of
+// the same acquisition. The deadline-missed open (a remount over a pruned
+// background model, or the cached opening) resets the per-open marker when
+// the post-hydration promotion open begins, and that open can refuse fast —
+// its read answers only after the window's authority moved, so it discards a
+// complete certified window — leaving the marker false and the pane
+// body-suppressed with nothing scheduled (the whole-suite CI strand where
+// bodies stayed [] after an awaited ensureThread). The owed fact survives
+// that refusal and clears only when an open establishes a usable view.
 // The route a pending recovery belongs to, keyed by ref: a recovery opened for
 // a retired route must never suppress a fresh acquisition's recovery, and a
 // released-then-reacquired pane (same ref, new route) still gets its own.
@@ -683,7 +719,10 @@ export function scheduleEntryOpeningRecovery(ref: string): void {
   if (!route || route.ref !== ref) return;
   if (pendingOpeningRecoveries.get(ref) === route) return;
   if (foregroundHolds(ref) <= 0) return; // no live foreground holder to recover for
-  if (route.localOpenDeadlineMissed !== true) return; // the open refused fast or handed to another path: not this chain's strand
+  // No raced opening's deadline miss is still owed convergence: the last open
+  // either answered storage (it refused or served on the record's merits) or
+  // a usable view was established, and another path owns the rest.
+  if (route.unresolvedOpenMiss !== true) return;
   // The chain exists to promote recorded bodies into a display that is still
   // body-suppressed; a display another path (main's source recovery, a newer
   // open) already healed needs no re-open churn against storage that may
