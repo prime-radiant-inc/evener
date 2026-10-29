@@ -3,15 +3,20 @@ package main
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"testing"
 )
 
-// writeTree writes files (slash path -> content) under a fresh root.
+// writeTree writes files (slash path -> content) under a fresh git repository,
+// since the inventory asks git which files exist.
 func writeTree(t *testing.T, files map[string]string) string {
 	t.Helper()
 	root := t.TempDir()
+	if out, err := exec.Command("git", "-C", root, "init", "-q").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
 	for rel, content := range files {
 		path := filepath.Join(root, filepath.FromSlash(rel))
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -43,6 +48,7 @@ var (
 	Internal = Var{Name: "EVENER_USED_INSIDE", Visibility: Internal}
 	SetOnly  = Var{Name: "EVENER_SET_ONLY", Visibility: Public}
 	Mentioned = Var{Name: "EVENER_MENTIONED", Visibility: Public}
+	InMap    = Var{Name: "EVENER_IN_MAP", Visibility: Public}
 	Written  = Var{Name: "EVENER_WRITTEN", Visibility: Public}
 	Unset    = Var{Name: "EVENER_UNSET_ONLY", Visibility: Public}
 	Unread   = Var{Name: "EVENER_UNREAD", Summary: "Unread is only named here", Visibility: Public}
@@ -80,7 +86,7 @@ func fixtureRoot(t *testing.T) string {
 	return writeTree(t, map[string]string{
 		"envvars/envvars.go":                    fixtureRegistry,
 		"envvars/userdirs/u.go":                 "package userdirs\nvar _ = envvars.Read.Getenv()\n",
-		"cmd/setter/main.go":                    "package main\n// envvars.Mentioned and \"EVENER_MENTIONED\" appear only in this comment.\nvar _ = envvars.SetOnly.Setenv(\"1\")\nfunc g() { os.Unsetenv(\"EVENER_UNSET_ONLY\") }\nfunc f() { overlay[envvars.Written.Name] = \"1\"; setEnv(out, envvars.Written.Name, \"1\") }\n",
+		"cmd/setter/main.go":                    "package main\n// envvars.Mentioned and \"EVENER_MENTIONED\" appear only in this comment.\nvar _ = envvars.SetOnly.Setenv(\"1\")\nfunc g() { os.Unsetenv(\"EVENER_UNSET_ONLY\") }\nfunc h() { _ = map[string]string{envvars.InMap.Name: \"1\"} }\nfunc f() { overlay[envvars.Written.Name] = \"1\"; setEnv(out, envvars.Written.Name, \"1\") }\n",
 		"auth/acmetest/isolate.go":              "package acmetest\nvar _ = envvars.Isolated\n",
 		"llm/registry/data/overlay.toml":        "# \"GHOST_API_KEY\" in a comment\nheaders = { \"Org\" = \"$ACME_ORG_ID\" } # \"$GHOST_API_KEY\" too\n",
 		"llm/registry/note.go":                  "package registry\n// \"GHOST_API_KEY\" in a comment\nvar _ = 1\n",
@@ -122,7 +128,7 @@ func TestEnvRowsReportConsumersAndDocRows(t *testing.T) {
 	if got := byName["ACME_ORG_ID"]; !slices.Equal(got.Consumers, []string{"llm/registry"}) {
 		t.Errorf("expanded variable consumers = %v, want the registry that expands it", got.Consumers)
 	}
-	for _, name := range []string{"ACME_API_KEY", "GHOST_API_KEY", "EVENER_ONLY_CLEARED", "EVENER_BY_NAME", "EVENER_UNREAD", "EVENER_SET_ONLY", "EVENER_MENTIONED", "EVENER_WRITTEN", "EVENER_UNSET_ONLY"} {
+	for _, name := range []string{"ACME_API_KEY", "GHOST_API_KEY", "EVENER_ONLY_CLEARED", "EVENER_BY_NAME", "EVENER_UNREAD", "EVENER_SET_ONLY", "EVENER_MENTIONED", "EVENER_WRITTEN", "EVENER_IN_MAP", "EVENER_UNSET_ONLY"} {
 		if got := byName[name]; len(got.Consumers) != 0 {
 			t.Errorf("%s consumers = %v, want none: no reader names it (a catalog entry, a function body in the registry package, or a non-test-support package that uses its envvars identifier other than to set it; a literal spelling of the name proves nothing)", name, got.Consumers)
 		}
@@ -231,5 +237,36 @@ func TestGenerateWritesOutputDoc(t *testing.T) {
 	second, _ := os.ReadFile(filepath.Join(root, outputDoc))
 	if !bytes.Equal(first, second) {
 		t.Error("regenerating changed the output: the generator must be deterministic and ignore its own output")
+	}
+}
+
+// TestIgnoredTreesDoNotChangeTheInventory: a Go file git ignores (a reference
+// copy, a review cache) is not part of the repository and must not supply a
+// consumer.
+func TestIgnoredTreesDoNotChangeTheInventory(t *testing.T) {
+	root := fixtureRoot(t)
+	write := func(rel, content string) {
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(".gitignore", "inspo/\n")
+	write("inspo/copy.go", "package inspo\nvar _ = envvars.Orphan\n")
+	sources, err := scanGoSources(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := envRows(root, sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows {
+		if r.Name == "EVENER_ORPHAN" && len(r.Consumers) != 0 {
+			t.Errorf("EVENER_ORPHAN consumers = %v, want none from an ignored tree", r.Consumers)
+		}
 	}
 }

@@ -283,8 +283,8 @@ func isSetterCall(call *ast.CallExpr) bool {
 }
 
 // markWrites marks the expressions a statement or call writes through: the
-// map key of an assignment target (overlay[envvars.X.Name] = v) and every
-// argument of a setter call.
+// map key of an assignment target (overlay[envvars.X.Name] = v), the key of a
+// map literal, and every argument of a setter call.
 func markWrites(n ast.Node, writes map[ast.Node]bool) {
 	switch v := n.(type) {
 	case *ast.AssignStmt:
@@ -293,6 +293,9 @@ func markWrites(n ast.Node, writes map[ast.Node]bool) {
 				writes[idx.Index] = true
 			}
 		}
+	case *ast.KeyValueExpr:
+		// An environment map built in one expression: map[string]string{envvars.X.Name: "1"}.
+		writes[v.Key] = true
 	case *ast.CallExpr:
 		if isSetterCall(v) {
 			for _, arg := range v.Args {

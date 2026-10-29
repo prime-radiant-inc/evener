@@ -1,8 +1,11 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -16,37 +19,37 @@ type goSource struct {
 
 func (s goSource) dir() string { return filepath.ToSlash(filepath.Dir(s.path)) }
 
-// scanGoSources reads every non-test Go file under root that the build can
-// compile. Worktrees, vendored trees and testdata are skipped: they hold other
-// checkouts or fixtures, not consumers.
+// scanGoSources reads every non-test Go file the repository tracks or would
+// track (untracked, not ignored). Asking git keeps ignored trees (reference
+// copies, review caches, nested checkouts) out of the inventory, so it does not
+// depend on what a particular checkout happens to hold.
 func scanGoSources(root string) ([]goSource, error) {
+	cmd := exec.Command("git", "-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "*.go")
+	listing, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("listing Go files in %s: %w", root, err)
+	}
 	var out []goSource
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	for _, rel := range strings.Split(string(listing), "\x00") {
+		if rel == "" || strings.HasSuffix(rel, "_test.go") || underTestdata(rel) {
+			continue
+		}
+		text, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
+		if errors.Is(err, fs.ErrNotExist) {
+			continue // tracked but deleted in this checkout
+		}
 		if err != nil {
-			return err
+			return nil, err
 		}
-		if d.IsDir() {
-			switch d.Name() {
-			case ".git", ".worktrees", "node_modules", "testdata", "vendor":
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-			return nil
-		}
-		text, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		out = append(out, goSource{path: filepath.ToSlash(rel), text: string(text)})
-		return nil
-	})
-	return out, err
+		out = append(out, goSource{path: rel, text: string(text)})
+	}
+	return out, nil
+}
+
+// underTestdata reports whether rel is inside a testdata directory, whose Go
+// files the build never compiles.
+func underTestdata(rel string) bool {
+	return strings.HasPrefix(rel, "testdata/") || strings.Contains(rel, "/testdata/")
 }
 
 // docDirs are the reference docs a knob's doc row can live in: the top-level
