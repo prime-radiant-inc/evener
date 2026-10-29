@@ -10,6 +10,7 @@ import {
   toWireConfig,
   WireError,
 } from "@evener/appwire-client";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
@@ -61,17 +62,6 @@ const legacyKeys = [
 
 function preset(level: "chat" | "intent" | "tools" | "activity" | "full"): TranscriptDisplayConfigV1 {
   return makeTranscriptDisplayConfig({ kind: "preset", level });
-}
-
-function deferred<T>(): {
-  promise: Promise<T>;
-  resolve(value: T): void;
-} {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((next) => {
-    resolve = next;
-  });
-  return { promise, resolve };
 }
 
 function viewSnapshot(id: string): CapturedTranscriptView {
