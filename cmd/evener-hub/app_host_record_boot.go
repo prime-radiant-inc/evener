@@ -94,20 +94,22 @@ func (m *hubHostManager) bootRecords() {
 		}
 		return
 	}
+	// Operations a crash left in flight are interrupted before anything else
+	// can return early: a settlement that retries later must find them done and
+	// leave alone what this process admits in between.
+	m.recoverInterruptedOnce(ops)
 	if _, _, imported := ops.HostRecords(); imported {
 		m.bootStoreRecords(ops)
 		return
 	}
-	if _, state := readHubTOMLConfig(m.cfg.configPath); state == hostFileUnreadable {
-		// The records to move cannot be read, so what the legacy boot sees is
+	m.keepPreRecordsCopy()
+	if !m.bootLegacyRecords() {
+		// The records to move could not be read, so what the legacy boot saw is
 		// empty. Importing that would make the store their home and strand the
 		// real ones in hub.toml; hosts keep serving and the move is retried.
-		m.bootLegacyRecords()
 		m.refuseMutations("hub.toml could not be read; its records move into the operation store once it can")
 		return
 	}
-	m.keepPreRecordsCopy()
-	m.bootLegacyRecords()
 	m.migrateLegacyRecords(ops)
 }
 
@@ -432,7 +434,11 @@ func (m *hubHostManager) reconcileStoreBoot() {
 // reserved sections: the store takes the file's records, the old build's
 // recovery passes settle whatever it left half done, and the boot's durable
 // prune and identity mint land in hub.toml.
-func (m *hubHostManager) bootLegacyRecords() {
+//
+// It reports whether the records were actually read: a file that is absent or
+// empty holds none, and one that cannot be read leaves the boot looking at an
+// empty set that nothing may be built from.
+func (m *hubHostManager) bootLegacyRecords() bool {
 	hosts := m.cfg.hosts
 	// The file's records are read once, before anything else can mint: its
 	// retained marks seed the counters, so a host folded in below mints above
@@ -442,6 +448,7 @@ func (m *hubHostManager) bootLegacyRecords() {
 	// seeded ones — a registry built before the marks were known would otherwise
 	// record its pre-seed epochs.
 	loaded, hasFile := m.recordStore().load()
+	readable := hasFile || strings.TrimSpace(m.cfg.configPath) == "" || m.hostFileAbsentOrEmpty()
 	fileRecords := loaded.Records
 	if hasFile {
 		m.seedHighWater(fileRecords)
@@ -518,4 +525,5 @@ func (m *hubHostManager) bootLegacyRecords() {
 	// generation-mirror reconciliation, and the cross-file intent
 	// reconciliation (§9).
 	m.reconcilePipelineBoot()
+	return readable
 }

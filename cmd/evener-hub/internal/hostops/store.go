@@ -871,6 +871,12 @@ func loadFS(fs afero.Fs, path string) (snapshot, error) {
 // custody snapshot, because a region of it was left unparsed or discarded.
 func readStoreFS(fs afero.Fs, path string) (snapshot, error) {
 	empty := snapshot{Version: storeVersion}
+	if asides, _ := afero.Glob(fs, path+unprovableAsideInfix+"*"); len(asides) > 0 {
+		// A store file set aside as unprovable left no readable ids behind, so a
+		// store that starts over beside it allocates above any id the old file
+		// could have handed out one at a time (the clock in nanoseconds).
+		empty.AllocatorHighWaterMark = uint64(nowUTC().UnixNano())
+	}
 	// The kind check runs on the path itself (never following a final link) and
 	// before the missing-file case: a dangling symlink reports "missing" to a
 	// following stat, and reading it as a fresh empty store is exactly what lets

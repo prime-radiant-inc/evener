@@ -860,3 +860,44 @@ func TestLateAttachFencesTeardownRemnantsBeforeOperationsCanUseTheStore(t *testi
 		t.Fatalf("the open remnant for %q was not fencing it when the store was published", fenced)
 	}
 }
+
+// TestAReadFailureAfterTheLegacyBootStartedStillKeepsTheRecordsInHubTOML pins
+// the guard on the actual load rather than on a read before it: hub.toml reads
+// once and then fails, as a transient error can, and nothing may be imported
+// from what the failed load left empty.
+func TestAReadFailureAfterTheLegacyBootStartedStillKeepsTheRecordsInHubTOML(t *testing.T) {
+	configPath, records := legacyHub(t)
+	original := fileBytes(t, configPath)
+	cfg := mustLoadConfig(t, configPath)
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	doc := hostBootDocument(cfg, store)
+	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
+	if err != nil {
+		t.Fatalf("hostreg.NewSeeded: %v", err)
+	}
+
+	previous := configReadFile
+	reads := 0
+	configReadFile = func(path string) ([]byte, error) {
+		reads++
+		if reads > 1 {
+			return nil, errors.New("injected read failure")
+		}
+		return previous(path)
+	}
+	webCfg := hubcore.WebConfig{RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: configPath}
+	m := newHubHostManager(appsource.NewRegistry(), nil, webCfg, configPath, hosts, t.Logf)
+	configReadFile = previous
+
+	if _, _, imported := store.HostRecords(); imported {
+		t.Fatal("a load that failed was imported as the hub's records")
+	}
+	if !bytes.Equal(fileBytes(t, configPath), original) {
+		t.Fatal("hub.toml changed although its records could not be read")
+	}
+	m.attachOps(nil)
+	requireFamilyEquals(t, store, records)
+}

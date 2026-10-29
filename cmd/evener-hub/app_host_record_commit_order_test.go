@@ -503,3 +503,41 @@ func TestBootRollbackOfAnUnlandedRemovalKeepsTheHostsIdentity(t *testing.T) {
 		t.Fatalf("removing side after the rollback: %v", err)
 	}
 }
+
+// TestRetryAfterAFailedInitialSettlementLeavesLiveOperationsRunning pins the
+// crash recovery's place in the boot: operations a crash left in flight are
+// interrupted by the first boot even when its settlement stops early, so the
+// retry that finally succeeds never sweeps up operations this process admitted
+// in between.
+func TestRetryAfterAFailedInitialSettlementLeavesLiveOperationsRunning(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, store := hub.boot(t, false)
+	served := hostRows(t, m)["keep"]
+	crashLeft := seedOperationRecord(t, store, "keep", "left-by-the-crash", served.Generation, served.IncarnationID)
+	beforeBytes := fileBytes(t, hub.configPath)
+	params := updateRequest(t, m, "side", appwire.HostEntry{Address: "edited.example"})
+	params.MutationID = "staged-mutation"
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() { _, _ = m.UpdateResult(context.Background(), params) })
+	if err := os.WriteFile(hub.configPath, beforeBytes, 0o600); err != nil {
+		t.Fatalf("put the pre-mutation hub.toml back: %v", err)
+	}
+
+	bootRollbackFault = func(string) error { return errors.New("injected rollback write failure") }
+	t.Cleanup(func() { bootRollbackFault = nil })
+	recovered, restarted := hub.boot(t, true)
+	if after, ok := restarted.Record(crashLeft.ID); !ok || after.State != hostops.StateInterrupted {
+		t.Fatalf("the operation the crash left in flight is %+v after the first boot, want interrupted", after)
+	}
+	live := seedOperationRecord(t, restarted, "keep", "admitted-since", served.Generation, served.IncarnationID)
+
+	bootRollbackFault = nil
+	recovered.attachOps(nil)
+
+	if err := recovered.mutationRefusal(); err != nil {
+		t.Fatalf("host changes are still refused after the retry: %v", err)
+	}
+	if after, ok := restarted.Record(live.ID); !ok || after.State != live.State {
+		t.Fatalf("the retry moved the live operation from %q to %+v", live.State, after)
+	}
+}
