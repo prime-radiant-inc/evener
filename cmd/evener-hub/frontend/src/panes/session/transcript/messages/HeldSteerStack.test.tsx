@@ -10,13 +10,14 @@ import { beforeEach, expect, test } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
 import type { InputAttachment } from "../../../../stores/threads";
 import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
+import { connectFakeClient } from "../../../../testing/connectionTestUtils";
 import type { PendingTurnEntry } from "../../composer/queue/pendingReconcile";
 import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "../../composer/queue/pendingTurnsStore";
 import { pendingEntryPreview } from "../../composer/queue/queueDisplay";
 import { flushPendingTurnsProjectionForTests } from "../../composer/queue/testing/flushPendingTurnsProjection";
 import { SessionNowContext } from "../../liveness";
 import { HeldSteerStack, heldCaption, heldCaptionParts, heldSteerEntries, useHeldSteerEpoch } from "./HeldSteerStack";
-import { CAPABILITIES, connectFakeClient, hydrate, readResponse, seedHeld } from "./testing/heldSteerTestUtils";
+import { CAPABILITIES, hydrate, readResponse, seedHeld } from "./testing/heldSteerTestUtils";
 
 // The fixed clock every render is wrapped in: SessionNowContext's default is
 // Date.now() frozen at module import, so caption assertions must pin their own

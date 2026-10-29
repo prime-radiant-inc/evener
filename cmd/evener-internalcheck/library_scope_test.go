@@ -42,6 +42,7 @@ type golangciConfig struct {
 }
 
 var allExecsupportPackages = []string{
+	"primeradiant.com/evener/execsupport/componentlog",
 	"primeradiant.com/evener/execsupport/fsatomic",
 	"primeradiant.com/evener/execsupport/orphanpipe",
 	"primeradiant.com/evener/execsupport/orphanpipe/orphanpipetest",
@@ -55,6 +56,7 @@ var execsupportPackagesByGOOS = map[string][]string{
 	"darwin": allExecsupportPackages,
 	"linux":  allExecsupportPackages,
 	"windows": {
+		"primeradiant.com/evener/execsupport/componentlog",
 		"primeradiant.com/evener/execsupport/fsatomic",
 		"primeradiant.com/evener/execsupport/orphanpipe",
 		"primeradiant.com/evener/execsupport/procgroup",

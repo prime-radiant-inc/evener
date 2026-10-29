@@ -14,13 +14,14 @@ import { connectionStore } from "../../../../stores/connection";
 import type { MutationRecoveryKind } from "../../../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexedDB";
 import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
+import { connectFakeClient } from "../../../../testing/connectionTestUtils";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import visuallyHiddenStyles from "../../../../widgets/visuallyhidden/visuallyhidden.module.css";
 import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "../../composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "../../composer/queue/testing/flushPendingTurnsProjection";
 import { SessionNowContext } from "../../liveness";
 import { HeldSteerAnnouncements } from "./HeldSteerAnnouncements";
-import { CAPABILITIES, connectFakeClient, hydrate, readResponse, seedHeld } from "./testing/heldSteerTestUtils";
+import { CAPABILITIES, hydrate, readResponse, seedHeld } from "./testing/heldSteerTestUtils";
 
 // Two fixed clock instants for the timer-cadence test. SessionNowContext's
 // default is Date.now() frozen at module import; any fixed instant at or

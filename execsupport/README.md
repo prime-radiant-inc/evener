@@ -13,6 +13,8 @@ used by Evener's root, agent, auth, and LLM modules:
   rename, directory fsync), has a `WriteWithoutSync` variant for derived data a
   crash may lose (caches, indexes), and owns the one predicate for "this
   filesystem cannot sync" and the one directory sync.
+- `componentlog` builds the component-tagged `*slog.Logger` daemons use for
+  stderr diagnostics (`[component] message key=value ...`, one line per record).
 - `syncio` wraps an io.Writer so concurrent writes from different goroutines
   serialize onto it instead of racing.
 
