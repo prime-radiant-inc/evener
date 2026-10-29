@@ -99,3 +99,44 @@ func TestParseGoTestJSONSkipsMalformedLines(t *testing.T) {
 		t.Fatalf("valid line after a malformed one was not measured; rows:\n%s", strings.Join(rows, "\n"))
 	}
 }
+
+// TestParseVitestJSONRollsTheSuiteUpUnderWeb pins the frontend's row contract:
+// one TEST row per assertion under the single package key "web" (duration in
+// milliseconds in the report, seconds in the row), and one SUM row totalling
+// them. A name falls back from fullName to title to "(unnamed)", a missing
+// duration counts as zero, and whitespace in a name is flattened so a tab or
+// newline cannot split the row.
+func TestParseVitestJSONRollsTheSuiteUpUnderWeb(t *testing.T) {
+	report := `{"testResults":[
+		{"assertionResults":[
+			{"fullName":"suite a\ttab\nnewline","duration":1500},
+			{"title":"only a title","duration":500},
+			{"duration":null}
+		]},
+		{"assertionResults":[{"fullName":"suite b works","duration":250}]},
+		{}
+	]}`
+
+	rows, err := parseVitestJSON(strings.NewReader(report))
+	if err != nil {
+		t.Fatalf("parseVitestJSON: %v", err)
+	}
+	want := []string{
+		"TEST\tweb\tsuite a tab newline\t1.5",
+		"TEST\tweb\tonly a title\t0.5",
+		"TEST\tweb\t(unnamed)\t0",
+		"TEST\tweb\tsuite b works\t0.25",
+		"SUM\tweb\t2.25",
+	}
+	if !slices.Equal(rows, want) {
+		t.Fatalf("rows:\n%s\nwant:\n%s", strings.Join(rows, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// TestParseVitestJSONRefusesAMalformedReport keeps a truncated report from
+// reading as a clean, empty measurement of the frontend.
+func TestParseVitestJSONRefusesAMalformedReport(t *testing.T) {
+	if _, err := parseVitestJSON(strings.NewReader(`{"testResults":[`)); err == nil {
+		t.Fatal("a truncated report must fail, not measure as empty")
+	}
+}
