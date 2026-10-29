@@ -942,6 +942,19 @@ export function scheduleEntryOpeningRecovery(ref: string): void {
       // never answer: hand to source recovery once, the same sequence a
       // stalled restore hands to (#4954), and let the ordinary owner-scoped
       // paths own the rest.
+      // A structured history failure is the one refusal that must not take
+      // that handoff: the read's own handling already recorded the single
+      // visible diagnostic (readThreadHydration's applyHistoryReadFailure)
+      // and schedules no retry - the next read comes from the next event, a
+      // resync, a reconnect or the user, never from us. The local attempts
+      // above remain this chain's contribution: storage that heals can still
+      // restore the display. But while the diagnostic stands, the automatic
+      // source handoff would be exactly the retry loop that contract
+      // forbids, so the chain stops here and the pane keeps its diagnostic.
+      // A transport failure never sets it, and a later successful read
+      // discards the failed history wholesale, so the gate cannot outlive
+      // the state it describes.
+      if (store().getState().threads.get(ref)?.history?.failed !== undefined) return;
       route.repository?.beginFreshBaseline();
       publishEntryTranscriptModel(ref);
       let sourceReadFailed = false;

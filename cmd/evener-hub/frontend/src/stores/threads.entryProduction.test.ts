@@ -1,5 +1,6 @@
 import type { AnyNotification, CachedSessionItem, HistoryUpdatedParams, ThreadItem } from "@evener/appwire-client";
 import {
+  ErrorTranscriptHistoryFailed,
   encodeTranscriptItem,
   hydrateThread,
   type ThreadReadResponse,
@@ -4523,6 +4524,123 @@ it("a settled empty source window completes the pending open without another sou
     await new Promise((resolve) => setTimeout(resolve, 50));
     await drainSettleSteps();
     expect(wireReads).toBe(2);
+    await openedByPane;
+  } finally {
+    setSessionCacheOpenBackstopForTests(10000);
+    setSessionCacheStalledOpenForTests(5000);
+    threadsStore.getState().releaseThread(ref);
+    await lease.release();
+  }
+});
+
+it("a settled in-progress turn without items completes the pending open without another source read", async () => {
+  const storage = cache();
+  const realGetLatestWindow = storage.getLatestWindow.bind(storage);
+  setProductionEntryCacheForTests(storage);
+  const ref = "local:a";
+  const read = response(ref, [{ id: "turn-empty", status: "inProgress", itemsView: "", version: 1, items: [] }]);
+  read.snapshot = { incarnation: "inc-a", length: 0 };
+  const client = connect(read);
+  const lease = acquireBackgroundThread(ref);
+  await lease.ready;
+  await settleEntryTranscriptForTests(ref);
+  expect(threadsStore.getState().threads.get(ref)?.turns).toHaveLength(1);
+  // Wire reads after the prologue: the pane's claim (an accepted window whose
+  // only turn has no items) and the resync's tracked refresh, both answered.
+  // Pre-fix, the missed verdict's recovery chain churns a third.
+  let wireReads = 0;
+  client.on("thread/read", (params) => {
+    wireReads += 1;
+    return { ...read, requestGeneration: params.requestGeneration };
+  });
+  // Storage stays pending for every local read of this ref: the pane's
+  // first open, the claim's certification open and - pre-fix - the recovery
+  // chain's own attempts all park on it.
+  (storage as unknown as { getLatestWindow: unknown }).getLatestWindow = (..._args: unknown[]) => {
+    void realGetLatestWindow;
+    return new Promise(() => {}) as ReturnType<typeof realGetLatestWindow>;
+  };
+  setSessionCacheOpenBackstopForTests(40);
+  setSessionCacheStalledOpenForTests(40);
+  try {
+    const openedByPane = threadsStore.getState().ensureThread(ref);
+    // The pane's first open misses the pinned backstop and its claim's read
+    // answers the accepted window; the claim's certification open parks on
+    // the held storage read and the next tracked settlement.
+    await vi.waitFor(() => expect(wireReads).toBe(1));
+    setSessionCacheOpenBackstopForTests(10000);
+    const baselineBefore = productionEntryTranscriptForTests(ref).baseline;
+    // A foreign tracked hydration settles: the resync's refresh answers the
+    // same window and publishes it.
+    client.emitNotification({ method: "evener/thread/resync", params: { ref, threadId: "thread-a" } });
+    await vi.waitFor(() => expect(wireReads).toBe(2));
+    await drainSettleSteps();
+    // The parked certification open must complete from the settlement: the
+    // accepted window expects no items - its one in-progress turn has none -
+    // so it is missing nothing, and no recovery chain may churn another
+    // source read against storage that only stays pending.
+    expect(productionEntryTranscriptForTests(ref).lastLocalOpenStatus).toBe("superseded-by-source");
+    // The accepted baseline must not be invalidated by the missed verdict's
+    // recovery handoff.
+    expect(productionEntryTranscriptForTests(ref).baseline).toBe(baselineBefore);
+    expect(threadsStore.getState().threads.get(ref)?.turns).toHaveLength(1);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await drainSettleSteps();
+    expect(wireReads).toBe(2);
+    await openedByPane;
+  } finally {
+    setSessionCacheOpenBackstopForTests(10000);
+    setSessionCacheStalledOpenForTests(5000);
+    threadsStore.getState().releaseThread(ref);
+    await lease.release();
+  }
+});
+
+it("a structured history failure after a missed open records its diagnostic without another source read", async () => {
+  const storage = cache();
+  const realGetLatestWindow = storage.getLatestWindow.bind(storage);
+  setProductionEntryCacheForTests(storage);
+  const ref = "local:a";
+  const read = response(ref, [turn("recorded")]);
+  const client = connect(read);
+  const lease = acquireBackgroundThread(ref);
+  await lease.ready;
+  await settleEntryTranscriptForTests(ref);
+  expect(threadsStore.getState().threads.get(ref)?.turns).toHaveLength(1);
+  // Wire reads after the prologue: the pane's claim answers a structured
+  // history failure. The deliberate handling records the diagnostic and waits
+  // for a later event - the chain's automatic source handoff is the retry
+  // loop that contract forbids, so the count must stay at one.
+  let wireReads = 0;
+  client.on("thread/read", () => {
+    wireReads += 1;
+    throw new WireError("thread history failed at entry 7", -32603, {
+      evenerErrorInfo: ErrorTranscriptHistoryFailed,
+    });
+  });
+  // Storage stays pending for every local read of this ref: the pane's first
+  // open and the recovery chain's own restoration attempts all park on it.
+  (storage as unknown as { getLatestWindow: unknown }).getLatestWindow = (..._args: unknown[]) => {
+    void realGetLatestWindow;
+    return new Promise(() => {}) as ReturnType<typeof realGetLatestWindow>;
+  };
+  setSessionCacheOpenBackstopForTests(40);
+  setSessionCacheStalledOpenForTests(40);
+  try {
+    const openedByPane = threadsStore.getState().ensureThread(ref);
+    // The pane's first open misses the pinned backstop; its claim's read
+    // answers the structured history failure, whose deliberate handling
+    // records the one visible diagnostic.
+    await vi.waitFor(() => expect(wireReads).toBe(1));
+    await vi.waitFor(() =>
+      expect(threadsStore.getState().threads.get(ref)?.history?.failed).toContain("history failed"),
+    );
+    setSessionCacheOpenBackstopForTests(10000);
+    // The chain may still try local restoration against storage that never
+    // answers; the source handoff is what the deliberate handling forbids.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    await drainSettleSteps();
+    expect(wireReads).toBe(1);
     await openedByPane;
   } finally {
     setSessionCacheOpenBackstopForTests(10000);

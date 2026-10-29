@@ -1371,12 +1371,14 @@ export class TranscriptRepository {
   }
 
   /**
-   * The accepted source window expects no items at all. An empty transcript
-   * never creates the foreground start the resident-range check requires -
-   * only a published item moves that floor - so it has nothing to restore
-   * and nothing a local open could add: a successfully accepted empty
-   * source window is established. The window check already treats an empty
-   * expectation as missing nothing; this is its range-side complement.
+   * The accepted source window expects no items at all: every expected turn
+   * carries zero items - the shape an in-progress turn with nothing recorded
+   * yet has, not only a zero-turn thread. Such a window never creates the
+   * foreground start the resident-range check requires - only a published
+   * item moves that floor - so it has nothing to restore and nothing a local
+   * open could add: a successfully accepted window that expects no items is
+   * established. The window check already treats an empty expectation as
+   * missing nothing; this is its range-side complement.
    */
   expectsEmptyForegroundWindow(): boolean {
     if (this.#disposed || this.#invalidated) return false;
@@ -1384,7 +1386,7 @@ export class TranscriptRepository {
     if (!model) return false;
     const historyTurns = model.history?.turns;
     const expected = historyTurns !== undefined && historyTurns.length > 0 ? historyTurns : model.turns;
-    return expected.length === 0;
+    return expected.every((turn) => turn.items.length === 0);
   }
 
   attachReader(): TranscriptReader {
