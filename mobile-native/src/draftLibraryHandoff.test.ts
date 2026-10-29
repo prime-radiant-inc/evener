@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { DraftHandoffEdge, DraftHandoffEndpoint, DraftHandoffLedger } from "./draftHandoffLedger";
 import { DraftHandoffLedgerSQLite } from "./draftHandoffLedgerSQLite";
+import { MutationOutboxSQLite } from "./mutationOutboxStorage";
 import { DraftLibrary } from "./draftLibrary";
 import { terminalDestination } from "./draftHandoffGraph";
 import { type DraftDestination, DraftRepository } from "./draftRepository";
@@ -25,6 +26,12 @@ function setup(): {
 	databases.push(drafts.database);
 	const mutations = openSqliteSyncDouble();
 	databases.push(mutations.database);
+	// Production constructs the ledger over the mutation outbox's database,
+	// so row-ownership queries read real mutation tables.
+	new MutationOutboxSQLite(mutations.port, {
+		createMutationId: () => `mutation-${databases.length}`,
+		now: () => 1000,
+	});
 	let next = 0;
 	const ledger = new DraftHandoffLedgerSQLite(mutations.port, {
 		now: () => 1000,

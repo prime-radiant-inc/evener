@@ -23,8 +23,6 @@ import {
 	type HandoffOrdering,
 	orderHandoffGraph,
 	readOutstandingHandoffGraph,
-	readHandoffGraph,
-	terminalDestination,
 } from "./draftHandoffGraph";
 import type { DraftComposerMetadata, DraftDestination, DraftRecord, DraftRepository } from "./draftRepository";
 
@@ -300,10 +298,7 @@ export class DraftLibrary {
 		to: DraftDestination,
 	): DraftHandoffEdge[] | undefined {
 		try {
-			const between = ledger.edgesBetween?.(from, to);
-			if (between !== undefined) return between;
-			const load = readHandoffGraph(ledger);
-			return load.state === "ready" ? load.graph.edges : undefined;
+			return ledger.edgesBetween(from, to);
 		} catch {
 			return undefined;
 		}
@@ -375,16 +370,24 @@ export class DraftLibrary {
 		// inbound transfer would move a half-finished composition: defer until
 		// the predecessor lands, settles, or refuses. An occupied source is
 		// different: its inbound can never compose, only refuse, so the source's
-		// own work may move on.
+		// own work may move on. An inbound whose transfer durably committed
+		// has landed its composition even though the marker write failed -
+		// holding the wait for the marker deadlocks the pair when a cleared
+		// predecessor can no longer match the fingerprint that repairs it, so
+		// durable evidence releases the wait. Evidence that cannot be read is
+		// unknown: the wait keeps holding, fail-closed.
 		if (
 			!isOccupied(snapshot.record) &&
-			graph.edges.some(
-				(inbound) =>
-					inbound.edgeId !== edge.edgeId &&
-					inbound.state === "pending" &&
-					inbound.composedAt === null &&
-					sameDestination(inbound.to, edge.from),
-			)
+			graph.edges.some((inbound) => {
+				if (
+					inbound.edgeId === edge.edgeId ||
+					inbound.state !== "pending" ||
+					inbound.composedAt !== null ||
+					!sameDestination(inbound.to, edge.from)
+				)
+					return false;
+				return this.transferCommitted(inbound.edgeId) !== true;
+			})
 		)
 			return false;
 
@@ -438,15 +441,27 @@ export class DraftLibrary {
 			// identity too.
 			if (destinationNow === edge.deliveredHash) {
 				if (this.transferProven(ledger, edge, snapshot.record)) {
-					try {
-						// The transfer committed without its composed marker; repair
-						// it so the graph routes this chain to the identity that
-						// holds the composition.
-						ledger.recordComposed(edge.edgeId);
-					} catch {
-						// The marker stays missing; the next retry repairs it.
+					// A matching fingerprint alone still does not prove the
+					// transfer landed: an empty composition fingerprints exactly
+					// like a destination that never received anything, so a
+					// capture-only delivery whose transfer failed matches its
+					// own empty destination. Only durable transfer evidence can
+					// turn the match into proof; without it the current record
+					// moves instead of stranding newer source work behind an
+					// edge settled on an empty match.
+					const committed = this.transferCommitted(edge.edgeId);
+					if (committed === undefined) return false;
+					if (committed) {
+						try {
+							// The transfer committed without its composed marker; repair
+							// it so the graph routes this chain to the identity that
+							// holds the composition.
+							ledger.recordComposed(edge.edgeId);
+						} catch {
+							// The marker stays missing; the next retry repairs it.
+						}
+						return mayDecide;
 					}
-					return mayDecide;
 				}
 			}
 			// A committed continuation can have carried exactly this composition
@@ -571,7 +586,7 @@ export class DraftLibrary {
 	private transferProven(ledger: DraftHandoffLedger, edge: DraftHandoffEdge, source: DraftRecord): boolean {
 		let graph: DraftHandoffGraph;
 		try {
-			graph = ledger.readOutstandingGraph?.() ?? ledger.readGraph();
+			graph = ledger.readOutstandingGraph();
 		} catch {
 			return false;
 		}
@@ -766,7 +781,7 @@ export class DraftLibrary {
 		released: readonly string[],
 	): boolean {
 		if (!completed.length && !released.length) return true;
-		return this.writeDispositionsAtRowOwners(ledger, edge.to, edge.chainId, completed, released);
+		return this.writeDispositionsAtRowOwners(ledger, edge.to, completed, released);
 	}
 
 	/** The row-owner half of disposition forwarding, shared by settlement,
@@ -775,33 +790,26 @@ export class DraftLibrary {
 	private writeDispositionsAtRowOwners(
 		ledger: DraftHandoffLedger,
 		skip: DraftHandoffEndpoint,
-		chainId: string,
 		completed: readonly string[],
 		released: readonly string[],
 	): boolean {
 		// Durable row ownership first: the mutation tables name the identity
 		// each row currently targets, across refused handoffs and uncomposed
-		// edges alike. Ledgers without that query fall back to the graph's
-		// continuation trace from this edge's destination.
+		// edges alike.
 		let owners: DraftHandoffEndpoint[] | undefined;
 		try {
-			owners = ledger.recoveryRowOwners?.([...completed, ...released]);
+			owners = ledger.recoveryRowOwners([...completed, ...released]);
 		} catch {
 			// A failed ownership read is unknown, never absent: the
-			// dispositions defer - the obligation stays for the next pass
-			// instead of trusting the graph's older trace and acknowledging
-			// on it.
+			// dispositions defer - the obligation stays for the next pass.
 			return false;
 		}
+		// A ledger with no mutation tables names no owner at all: that
+		// ownership is unknown too, so the dispositions defer rather than
+		// forward somewhere the rows may never have been.
+		if (owners === undefined) return false;
 		const rowOwners: DraftHandoffEndpoint[] = [];
-		if (owners !== undefined) {
-			for (const owner of owners) if (!sameDestination(owner, skip)) rowOwners.push(owner);
-		} else {
-			const load = readOutstandingHandoffGraph(ledger);
-			if (load.state !== "ready") return false;
-			const traced = terminalDestination(load.graph.edges, skip, chainId);
-			if (!sameDestination(traced, skip)) rowOwners.push(traced);
-		}
+		for (const owner of owners) if (!sameDestination(owner, skip)) rowOwners.push(owner);
 		for (const rowOwner of rowOwners) {
 			const document = this.open(rowOwner);
 			let current = document.getSnapshot();
@@ -856,7 +864,7 @@ export class DraftLibrary {
 			});
 			if (
 				(completed.length !== 0 || released.length !== 0) &&
-				!this.writeDispositionsAtRowOwners(ledger, owner, obligation.chainId ?? "", completed, released)
+				!this.writeDispositionsAtRowOwners(ledger, owner, completed, released)
 			)
 				continue;
 			const outcome = this.applyCompletion(obligation, owner);
@@ -866,7 +874,7 @@ export class DraftLibrary {
 			// write retries on the next pass.
 			if (!readsFailed && (outcome === "delivered" || !tokenSeen)) {
 				try {
-					ledger.acknowledgeAppliedCompletion?.(obligation.obligationId);
+					ledger.acknowledgeAppliedCompletion(obligation.obligationId);
 				} catch {
 					// The next pass retries the acknowledgment.
 				}
@@ -890,7 +898,7 @@ export class DraftLibrary {
 		if (ledger === undefined) return undefined;
 		let graph;
 		try {
-			graph = ledger.readOutstandingGraph?.() ?? ledger.readGraph();
+			graph = ledger.readOutstandingGraph();
 		} catch {
 			return undefined;
 		}
@@ -942,7 +950,7 @@ export class DraftLibrary {
 		if (ledger === undefined) return;
 		let graph;
 		try {
-			graph = ledger.readOutstandingGraph?.() ?? ledger.readGraph();
+			graph = ledger.readOutstandingGraph();
 		} catch {
 			return;
 		}
@@ -1088,7 +1096,7 @@ export class DraftLibrary {
 			// survive: their dispositions can still be owed to identities in
 			// other hubs.
 			try {
-				this.availableHandoffLedger()?.removeHub?.(hubId);
+				this.availableHandoffLedger()?.removeHub(hubId);
 			} catch {
 				// A ledger that cannot clean up keeps inert rows; the inert
 				// document below still blocks every write into the hub.

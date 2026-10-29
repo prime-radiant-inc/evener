@@ -11,7 +11,6 @@ import type { DraftRecord } from "./draftRepository";
 export type HandoffGraphLoad = { state: "ready"; graph: DraftHandoffGraph } | { state: "incomplete" };
 
 export type HandoffBlockedReason = "obligation" | "dependency";
-export type HandoffInvalidReason = "cycle" | "missing-dependency";
 
 export type HandoffOrdering =
 	| {
@@ -21,7 +20,6 @@ export type HandoffOrdering =
 			/** Pending edges that are not eligible yet, in the same deterministic order. */
 			blocked: { edgeId: string; reason: HandoffBlockedReason }[];
 	  }
-	| { state: "invalid"; invalid: { edgeId: string; reason: HandoffInvalidReason }[] }
 	| { state: "incomplete" };
 
 /** Read the whole graph in one call. readGraph issues its queries synchronously
@@ -35,11 +33,10 @@ export function readHandoffGraph(ledger: { readGraph(): DraftHandoffGraph }): Ha
 	}
 }
 
-/** One bounded read of the graph's outstanding work. A ledger without the
- * bounded read falls back to the whole graph. */
+/** One bounded read of the graph's outstanding work. */
 export function readOutstandingHandoffGraph(ledger: DraftHandoffLedger): HandoffGraphLoad {
 	try {
-		return { state: "ready", graph: ledger.readOutstandingGraph?.() ?? ledger.readGraph() };
+		return { state: "ready", graph: ledger.readOutstandingGraph() };
 	} catch {
 		return { state: "incomplete" };
 	}
@@ -147,8 +144,11 @@ function endpointKey(endpoint: DraftHandoffEndpoint): string {
  * - An edge is planned after the edges it depends on, so a chain's downstream
  *   edge is attempted first. An open obligation blocks its edge and every edge
  *   that depends on it.
- * - A cycle or a dependency naming no edge makes the graph invalid; callers must
- *   transfer nothing rather than guess an order.
+ * - Dependencies name existing edges only - the ledger links an existing edge
+ *   to each edge it creates, so a cycle or dangling dependency cannot be
+ *   written; no validation machinery guards a state production cannot reach.
+ *   A hypothetical cycle member would simply never become ready in the sort
+ *   below and stay unplanned.
  * - Re-running over the same graph returns the same ids.
  */
 export function orderHandoffGraph(load: HandoffGraphLoad): HandoffOrdering {
@@ -161,46 +161,6 @@ export function orderHandoffGraph(load: HandoffGraphLoad): HandoffOrdering {
 		graph.obligations.filter((obligation) => obligation.state === "open").map((obligation) => obligation.obligationId),
 	);
 	const knownObligations = new Set(graph.obligations.map((obligation) => obligation.obligationId));
-	const invalid = new Map<string, HandoffInvalidReason>();
-
-	for (const edge of pending) {
-		for (const dependency of edge.dependencies) {
-			if (!byId.has(dependency)) invalid.set(edge.edgeId, "missing-dependency");
-		}
-	}
-	propagateInvalid(pending, invalid);
-
-	// Cycle detection over pending dependencies only: a settled dependency is
-	// satisfied and cannot participate in a live cycle.
-	const colors = new Map<string, "visiting" | "done">();
-	const stack: string[] = [];
-	const visit = (edgeId: string): void => {
-		if (invalid.has(edgeId)) return;
-		const color = colors.get(edgeId);
-		if (color === "done") return;
-		if (color === "visiting") {
-			const start = stack.indexOf(edgeId);
-			for (const member of stack.slice(start)) invalid.set(member, "cycle");
-			return;
-		}
-		colors.set(edgeId, "visiting");
-		stack.push(edgeId);
-		for (const dependency of byId.get(edgeId)?.dependencies ?? []) if (pendingIds.has(dependency)) visit(dependency);
-		stack.pop();
-		colors.set(edgeId, "done");
-	};
-	for (const edge of pending) visit(edge.edgeId);
-	// A dependent of a cycle member is just as unordered as the cycle itself.
-	propagateInvalid(pending, invalid);
-
-	if (invalid.size > 0) {
-		const ordered = [...invalid.entries()]
-			.map(([edgeId, reason]) => ({ edge: byId.get(edgeId), reason }))
-			.filter((entry): entry is { edge: DraftHandoffEdge; reason: HandoffInvalidReason } => entry.edge !== undefined)
-			.sort((a, b) => compareEdges(a.edge, b.edge))
-			.map(({ edge, reason }) => ({ edgeId: edge.edgeId, reason }));
-		return { state: "invalid", invalid: ordered };
-	}
 
 	// Kahn's algorithm, choosing the smallest (createdAt, edgeId) ready node at
 	// each step so the order never depends on query or map insertion order.
@@ -255,23 +215,4 @@ export function orderHandoffGraph(load: HandoffGraphLoad): HandoffOrdering {
 export function compareEdges(a: DraftHandoffEdge, b: DraftHandoffEdge): number {
 	if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
 	return a.edgeId < b.edgeId ? -1 : a.edgeId > b.edgeId ? 1 : 0;
-}
-
-/** An edge inherits its dependency's invalidity, transitively. */
-function propagateInvalid(pending: readonly DraftHandoffEdge[], invalid: Map<string, HandoffInvalidReason>): void {
-	let propagated = true;
-	while (propagated) {
-		propagated = false;
-		for (const edge of pending) {
-			if (invalid.has(edge.edgeId)) continue;
-			for (const dependency of edge.dependencies) {
-				const reason = invalid.get(dependency);
-				if (reason !== undefined) {
-					invalid.set(edge.edgeId, reason);
-					propagated = true;
-					break;
-				}
-			}
-		}
-	}
 }

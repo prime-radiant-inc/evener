@@ -40,7 +40,6 @@ export interface DraftHandoffEdge {
 	composedAt: number | null;
 	/** The decision a settled/refused edge reached, retained through cleanup. */
 	resolvedAs: "settled" | "refused" | null;
-	supersededBy: string | null;
 	createdAt: number;
 	stateChangedAt: number;
 }
@@ -120,41 +119,36 @@ export interface DraftHandoffLedger extends DraftSubmissionLedger {
 	 * target, read from the durable outbox and recovery tables. Retargets move
 	 * rows with the identity regardless of whether the destination accepted
 	 * the draft, so this - not the handoff graph - is the durable row
-	 * ownership. Undefined only when the query itself is absent - the ledger
-	 * has no mutation tables, or does not implement the method - and the
-	 * caller then falls back to the graph's continuation trace. A read of
+	 * ownership. Undefined only when the ledger's database has no mutation
+	 * tables at all: ownership no ledger can name, and the caller defers
+	 * rather than trust a trace the rows may have moved past. A read of
 	 * tables that exist but cannot be read throws instead: that ownership is
-	 * unknown, never absent, and the caller defers its action rather than
-	 * trust the trace the rows may have moved past. */
-	recoveryRowOwners?(recoveryIds: readonly string[]): DraftHandoffEndpoint[] | undefined;
+	 * unknown, never absent, and the caller defers its action. */
+	recoveryRowOwners(recoveryIds: readonly string[]): DraftHandoffEndpoint[] | undefined;
 	settleEdge(edgeId: string, deliveries: readonly DraftHandoffDelivery[], deliveredHash: string): void;
 	refuseEdge(edgeId: string, deliveries: readonly DraftHandoffDelivery[]): void;
 	cleanEdge(edgeId: string): void;
 	/** A removed hub's drafts are gone, so its edges can never deliver, settle,
 	 * or refuse: drop them and their dependency and delivery rows. Obligations
 	 * survive - their dispositions can still be owed to identities in other
-	 * hubs. Optional: without the method the library's own guards still keep a
-	 * removed hub inert. */
-	removeHub?(hubId: string): void;
+	 * hubs. */
+	removeHub(hubId: string): void;
 	/** Durably acknowledge a resolved obligation whose completion has been
-	 * applied, so routine reconciliation stops revisiting it. Optional:
-	 * without the method the pass keeps re-checking every time. */
-	acknowledgeAppliedCompletion?(obligationId: string): void;
+	 * applied, so routine reconciliation stops revisiting it. */
+	acknowledgeAppliedCompletion(obligationId: string): void;
 	/** The graph's outstanding work, bounded: open and unacknowledged
 	 * obligations, edges pending or awaiting cleanup, and the edges reachable
 	 * from every outstanding obligation's origin - capture routing needs the
 	 * path a composition took even after its edges settled and cleaned. History
 	 * with nothing outstanding never loads, so routine composer reconciliation
 	 * stays bounded by unresolved work. Settled history's deliveries are not
-	 * included. Optional: without the method the caller falls back to
-	 * readGraph. */
-	readOutstandingGraph?(): DraftHandoffGraph;
+	 * included. */
+	readOutstandingGraph(): DraftHandoffGraph;
 
 	/** The edges one identity pair ever carried, in creation order. The
 	 * identity-change action is pair-scoped: this reads one pair's own
-	 * history instead of the whole graph. Optional: without the method the
-	 * caller falls back to readGraph. */
-	edgesBetween?(from: DraftHandoffEndpoint, to: DraftHandoffEndpoint): DraftHandoffEdge[];
+	 * history instead of the whole graph. */
+	edgesBetween(from: DraftHandoffEndpoint, to: DraftHandoffEndpoint): DraftHandoffEdge[];
 }
 
 /** The target key is the composite `[hubId, sessionRef]` encoding used by every

@@ -26,7 +26,6 @@ interface EdgeRow {
 	delivered_hash: string | null;
 	composed_at: number | null;
 	resolved_as: "settled" | "refused" | null;
-	superseded_by: string | null;
 	created_at: number;
 	state_changed_at: number;
 }
@@ -90,7 +89,6 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 			 delivered_hash TEXT,
 			 composed_at INTEGER,
 			 resolved_as TEXT,
-			 superseded_by TEXT,
 			 created_at INTEGER NOT NULL,
 			 state_changed_at INTEGER NOT NULL)`,
 		);
@@ -888,7 +886,6 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 			deliveredHash: row.delivered_hash,
 			composedAt: row.composed_at ?? null,
 			resolvedAs: row.resolved_as ?? null,
-			supersededBy: row.superseded_by,
 			createdAt: row.created_at,
 			stateChangedAt: row.state_changed_at,
 		};

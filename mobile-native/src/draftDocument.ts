@@ -986,7 +986,7 @@ export class DraftDocument {
 			// The send path prices in unresolved work only: the outstanding
 			// graph holds this capture's obligation and the routing closure
 			// from its origin, never the device's whole submission history.
-			graph = ledger.readOutstandingGraph?.() ?? ledger.readGraph();
+			graph = ledger.readOutstandingGraph();
 		} catch {
 			return false;
 		}

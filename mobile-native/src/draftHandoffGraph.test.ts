@@ -35,7 +35,6 @@ function edge(
 		deliveredHash: null,
 		composedAt: options.composed ? (options.createdAt ?? 0) : null,
 		resolvedAs: options.resolvedAs ?? null,
-		supersededBy: null,
 		createdAt: options.createdAt ?? 0,
 		stateChangedAt: options.createdAt ?? 0,
 	};
@@ -153,37 +152,6 @@ describe("handoff graph ordering", () => {
 			load([edge("xy", "x", "y", { obligations: ["o1"] })], [obligation("o1", "completed")]),
 		);
 		expect(ordering).toMatchObject({ state: "ready", order: [{ edgeId: "xy" }], blocked: [] });
-	});
-
-	test("reports a dependency naming no edge as invalid", () => {
-		const ordering = orderHandoffGraph(load([edge("ab", "a", "b", { dependencies: ["missing"] })]));
-		expect(ordering).toEqual({
-			state: "invalid",
-			invalid: [{ edgeId: "ab", reason: "missing-dependency" }],
-		});
-	});
-
-	test("reports a cycle as invalid instead of ordering it", () => {
-		const ordering = orderHandoffGraph(
-			load([edge("ab", "a", "b", { dependencies: ["bc"] }), edge("bc", "b", "c", { dependencies: ["ab"] })]),
-		);
-		expect(ordering.state).toBe("invalid");
-		if (ordering.state !== "invalid") return;
-		expect(ordering.invalid.map((entry) => entry.edgeId).sort()).toEqual(["ab", "bc"]);
-		expect(ordering.invalid.every((entry) => entry.reason === "cycle")).toBe(true);
-	});
-
-	test("marks edges behind a cycle invalid too", () => {
-		const ordering = orderHandoffGraph(
-			load([
-				edge("ab", "a", "b", { dependencies: ["bc"] }),
-				edge("bc", "b", "c", { dependencies: ["cd"] }),
-				edge("cd", "c", "d", { dependencies: ["bc"] }),
-			]),
-		);
-		expect(ordering.state).toBe("invalid");
-		if (ordering.state !== "invalid") return;
-		expect(ordering.invalid.map((entry) => entry.edgeId).sort()).toEqual(["ab", "bc", "cd"]);
 	});
 
 	test("blocks an edge whose obligation was never recorded", () => {

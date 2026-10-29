@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { DraftHandoffLedgerSQLite } from "./draftHandoffLedgerSQLite";
+import { MutationOutboxSQLite } from "./mutationOutboxStorage";
 import { DraftLibrary } from "./draftLibrary";
 import { type DraftDestination, DraftRepository } from "./draftRepository";
 import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
@@ -14,6 +15,12 @@ function setup() {
 	const repository = new DraftRepository(port);
 	const { database: ledgerDb, port: ledgerPort } = openSqliteSyncDouble();
 	databases.push(ledgerDb);
+	// Production constructs the ledger over the mutation outbox's database,
+	// so row-ownership queries read real mutation tables.
+	new MutationOutboxSQLite(ledgerPort, {
+		createMutationId: () => `mutation-${databases.length}`,
+		now: () => 1000,
+	});
 	let next = 0;
 	const ledger = new DraftHandoffLedgerSQLite(ledgerPort, {
 		now: () => 1000,
@@ -279,6 +286,10 @@ describe("drafts across navigation", () => {
 		const repository = new DraftRepository(port);
 		const { database: ledgerDb, port: ledgerPort } = openSqliteSyncDouble();
 		databases.push(ledgerDb);
+		new MutationOutboxSQLite(ledgerPort, {
+			createMutationId: () => `mutation-${databases.length}`,
+			now: () => 1000,
+		});
 		let next = 0;
 		const ledger = new DraftHandoffLedgerSQLite(ledgerPort, {
 			now: () => 1000,

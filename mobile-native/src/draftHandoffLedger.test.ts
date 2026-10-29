@@ -299,7 +299,7 @@ describe("draft handoff ledger", () => {
 			edge_id TEXT PRIMARY KEY, chain_id TEXT NOT NULL,
 			from_hub_id TEXT NOT NULL, from_ref TEXT NOT NULL,
 			to_hub_id TEXT NOT NULL, to_ref TEXT NOT NULL,
-			state TEXT NOT NULL, claim_at INTEGER, delivered_hash TEXT, superseded_by TEXT,
+			state TEXT NOT NULL, claim_at INTEGER, delivered_hash TEXT,
 			created_at INTEGER NOT NULL, state_changed_at INTEGER NOT NULL)`);
 		database.exec(`CREATE TABLE draft_submission_obligations (
 			obligation_id TEXT PRIMARY KEY, chain_id TEXT,

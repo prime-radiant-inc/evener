@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "vitest";
 import type { DraftHandoffEdge, DraftHandoffLedger } from "./draftHandoffLedger";
 import { DraftHandoffLedgerSQLite } from "./draftHandoffLedgerSQLite";
+import { MutationOutboxSQLite } from "./mutationOutboxStorage";
 import { DraftLibrary } from "./draftLibrary";
 import { type DraftDestination, DraftRepository } from "./draftRepository";
 import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
@@ -41,6 +42,12 @@ function setup(failure: FailureMethod | "none"): Harness {
 	databases.push(drafts.database);
 	const mutations = openSqliteSyncDouble();
 	databases.push(mutations.database);
+	// Production constructs the ledger over the mutation outbox's database,
+	// so row-ownership queries read real mutation tables.
+	new MutationOutboxSQLite(mutations.port, {
+		createMutationId: () => `mutation-${databases.length}`,
+		now: () => 1000,
+	});
 	const ledger = new DraftHandoffLedgerSQLite(mutations.port, {
 		now: () => 1000,
 		createId: (() => {

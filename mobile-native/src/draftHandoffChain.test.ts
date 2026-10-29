@@ -86,6 +86,11 @@ function submissionLedger(
 		settleEdge: unused,
 		refuseEdge: unused,
 		cleanEdge: unused,
+		readOutstandingGraph: unused,
+		recoveryRowOwners: unused,
+		edgesBetween: unused,
+		removeHub: unused,
+		acknowledgeAppliedCompletion: unused,
 	};
 }
 
@@ -1497,6 +1502,94 @@ describe("handoff chain obligations", () => {
 				recoveryKind: "editing",
 			}),
 		).toBe("already-restored");
+	});
+
+	test("a failed capture-only delivery never settles from an empty-fingerprint match", async () => {
+		const { storage, storageLedger, repository } = setup();
+		// A capture-only composition: everything the user has sits in the
+		// command composer, so the composition's own fingerprint is the empty
+		// one.
+		repository.write(endpoint("a"), {
+			draft: "",
+			unconfirmed: null,
+			composer: { commandNames: ["compact"] },
+		});
+		// The drafts transfer fails on the live pass: nothing reached B, and
+		// the failed write returns before the composed marker records.
+		let transfers = 0;
+		const flakyRepository = new Proxy(repository, {
+			get(target, property) {
+				const value = Reflect.get(target, property, target);
+				if (property === "transfer" && typeof value === "function")
+					return (...args: unknown[]) => {
+						if (++transfers <= 2) throw new Error("transfer failed");
+						return (value as (...inner: unknown[]) => unknown).apply(target, args);
+					};
+				return typeof value === "function" ? (value as (...inner: unknown[]) => unknown).bind(target) : value;
+			},
+		}) as DraftRepository;
+		const library = new DraftLibrary(
+			() => flakyRepository,
+			undefined,
+			() => storageLedger,
+		);
+		const source = library.open(endpoint("a"));
+		let finish!: () => void;
+		const submitted = source.submitBuiltinCommand(
+			() =>
+				new Promise<boolean>((resolve) => {
+					finish = () => resolve(true);
+				}),
+		);
+		// The live pass records the empty delivery fingerprint and fails the
+		// transfer while the command still runs.
+		resume(storage, "a", "b");
+		library.retryPendingHandoffs();
+		expect(storageLedger.readGraph().edges[0]).toMatchObject({ state: "pending", composedAt: null });
+		expect(storageLedger.readGraph().edges[0]?.deliveredHash).not.toBeNull();
+		// Newer text composes at the source while the submission finishes;
+		// the command's completion then clears its capture.
+		source.edit("newer text");
+		finish();
+		await submitted;
+		// The retry must not mistake the still-empty destination's fingerprint
+		// for a committed delivery: the newer composition moves, and only then
+		// the edge settles.
+		library.retryPendingHandoffs();
+		library.retryPendingHandoffs();
+		expect(repository.read(endpoint("b"))).toMatchObject({ draft: "newer text" });
+		expect(repository.read(endpoint("a"))).toEqual({ draft: "", unconfirmed: null });
+		expect(storageLedger.readGraph().edges[0]?.resolvedAs).toBe("settled");
+	});
+
+	test("a committed uncomposed edge cannot deadlock its cleared continuation", () => {
+		const { storage, storageLedger, repository } = setup();
+		// A's work delivers to B; both the composed-marker and the settlement
+		// writes fail, so the edge keeps only durable transfer evidence.
+		repository.write(endpoint("a"), { draft: "a work", unconfirmed: null });
+		const failing = flaky(flaky(storageLedger, "recordComposed", 1), "settleEdge", 1);
+		const live = new DraftLibrary(
+			() => repository,
+			undefined,
+			() => failing,
+		);
+		expect(live.handoff(endpoint("a"), endpoint("b"))).toBe(false);
+		expect(storageLedger.readGraph().edges[0]).toMatchObject({ state: "pending", composedAt: null });
+		// B discards the delivered composition and the identity moves on to C:
+		// the new continuation makes its predecessor settle after it.
+		repository.write(endpoint("b"), { draft: "", unconfirmed: null });
+		resume(storage, "b", "c");
+		// Storage recovers; repeated retries must resolve both edges.
+		const restarted = new DraftLibrary(
+			() => repository,
+			undefined,
+			() => storageLedger,
+		);
+		for (let pass = 0; pass < 5; pass++) restarted.retryPendingHandoffs();
+		const edges = () => storageLedger.readGraph().edges;
+		expect(edges().every((edge) => edge.state !== "pending")).toBe(true);
+		expect(edges().find((edge) => edge.from.sessionRef === "b")?.resolvedAs).toBe("settled");
+		expect(edges().find((edge) => edge.from.sessionRef === "a")?.resolvedAs).toBe("settled");
 	});
 
 	test("a live source edited after a failed transfer moves its current record", () => {
