@@ -194,27 +194,28 @@ func (m *hubHostManager) compensationChange(plan *hostCommitPlan) hostPersistCha
 	if marker, staged := m.cfg.store.stagedSnapshot()[plan.Name]; staged {
 		// The staged re-add spent the generation and presence epoch its entry
 		// carries, whatever the store's marks say now.
-		change.restore = m.consumedRestore(marker, plan.Name, HostGeneration{Generation: plan.Entry.Generation, PresenceEpoch: plan.Entry.PresenceEpoch})
+		change.restore, change.restoreSpent = m.consumedRestore(marker, plan.Name, HostGeneration{Generation: plan.Entry.Generation, PresenceEpoch: plan.Entry.PresenceEpoch})
 	}
 	return change
 }
 
 // consumedRestore is what rolling back a staged re-add puts back: the history
-// the staging write purged to make room for it. The removal still stands, so the
-// generation and presence epoch the re-add spent stay spent.
-func (m *hubHostManager) consumedRestore(marker HostStagedReceipt, name string, spent HostGeneration) *HostConsumedRecords {
+// the staging write purged to make room for it, with the removal's identity
+// untouched (the removed host's operation records are marked by it). The
+// generation and presence epoch the re-add spent stay spent: they are returned
+// separately, for the name's high-water mark.
+func (m *hubHostManager) consumedRestore(marker HostStagedReceipt, name string, spent HostGeneration) (*HostConsumedRecords, HostGeneration) {
 	consumed := marker.Consumed
 	if consumed == nil {
-		return nil
+		return nil, HostGeneration{}
 	}
 	restore := *consumed
 	if held, ok := m.cfg.store.highWaterSnapshot()[name]; ok {
 		spent.Generation = max(spent.Generation, held.Generation)
 		spent.PresenceEpoch = max(spent.PresenceEpoch, held.PresenceEpoch)
 	}
-	restore.Tombstone.Generation = max(restore.Tombstone.Generation, marker.Provisional.Generation, spent.Generation)
-	restore.Tombstone.PresenceEpoch = max(restore.Tombstone.PresenceEpoch, spent.PresenceEpoch)
-	return &restore
+	spent.Generation = max(spent.Generation, marker.Provisional.Generation)
+	return &restore, spent
 }
 
 // flipRuntimeSwapped runs spec §5's step (3)'s second half: the runtime phase

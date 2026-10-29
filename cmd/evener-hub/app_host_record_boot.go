@@ -143,7 +143,7 @@ func (m *hubHostManager) mirrorCountersAbove(ops *hostops.Store, entries []hostr
 		}
 		if boundary.Generation > mark.Generation || boundary.PresenceEpoch > mark.PresenceEpoch {
 			// Each counter rises on its own; a mark that is a tombstone's twin
-			// keeps its incarnation, and the derivation raises the twin with it.
+			// keeps its incarnation.
 			mark.Generation = max(mark.Generation, boundary.Generation)
 			mark.PresenceEpoch = max(mark.PresenceEpoch, boundary.PresenceEpoch)
 			raises[name] = mark
@@ -416,7 +416,10 @@ func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
 	// A finalizer's write can expire a tombstone whose retention has passed, and
 	// the pass that marks the removed host's records reads the tombstone: what a
 	// landed removal left behind is marked first.
-	m.reconcileHostRemovedPass(records)
+	if err := m.reconcileHostRemovedPass(records); err != nil {
+		m.refuseMutations(fmt.Sprintf("the removed hosts' operation records were not marked, so staged commits are settled once they are: %v", err))
+		return
+	}
 	// The sections go only now: every check above compares hub.toml with the
 	// file the staged commits saw, and the strip rewrites it.
 	m.stripLegacySections(true)
@@ -478,7 +481,7 @@ func (m *hubHostManager) rollBackUnlandedCommits(doc hostRecordDocument) map[str
 			// The host was never removed: its tombstone goes with the rollback.
 			change.dropTombstone = name
 		}
-		change.restore = m.consumedRestore(marker, name, HostGeneration{})
+		change.restore, change.restoreSpent = m.consumedRestore(marker, name, HostGeneration{})
 		// A name that still holds a removal tombstone is the collision rule's to
 		// settle; keeping it out of this write keeps its tombstone beside no
 		// live entry, which the records refuse.
@@ -557,7 +560,7 @@ func (m *hubHostManager) recoverInterrupted(ops *hostops.Store) {
 // and dropped, and the boundary mirror is rebuilt from the records.
 func (m *hubHostManager) reconcileStoreBoot() {
 	if doc, ok := m.recordStore().load(); ok {
-		m.reconcileHostRemovedPass(doc.Records)
+		_ = m.reconcileHostRemovedPass(doc.Records) // logged inside; the next boot retries
 	}
 	m.reconcileTokenRows()
 	if store, ok := m.recordStore().(hostOpsRecordStore); ok {

@@ -74,6 +74,9 @@ type hostPersistChange struct {
 	// restore puts back the history a re-add's staging write purged, when the
 	// re-add is rolled back.
 	restore *HostConsumedRecords
+	// restoreSpent is the generation and presence epoch the rolled-back re-add
+	// spent; the name's high-water mark keeps them above the restored tombstone.
+	restoreSpent HostGeneration
 	// storeSync, when set, is the cross-file commit intent this write carries
 	// (deploy-pipeline 08b §9): a removal's staged write stages the exact store
 	// rows it is about to purge. dropStoreSync names a host whose intent this
@@ -84,8 +87,9 @@ type hostPersistChange struct {
 	// highWaterRaises carries the boot mirror pass's raised marks: the
 	// discarded generations §4 preserves as the names' high-water marks. The
 	// derivation merges them after the tombstone stage so a raise wins over the
-	// file's older mark, and a tombstoned name's tombstone is raised with its
-	// [generations] twin (validateHostTombstones requires the pair to agree).
+	// file's older mark; a tombstoned name's tombstone keeps the identity of its
+	// removal (validateHostTombstones asks only that the mark is the same
+	// incarnation at or above it).
 	highWaterRaises map[string]HostGeneration
 }
 

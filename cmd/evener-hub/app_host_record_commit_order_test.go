@@ -360,8 +360,8 @@ func TestBootRollbackOfAnUnlandedReAddKeepsTheRemovalItConsumed(t *testing.T) {
 	if !kept {
 		t.Fatal("the rolled-back re-add erased the removal tombstone")
 	}
-	if tombstone.IncarnationID != removed.IncarnationID || tombstone.Generation < spent {
-		t.Fatalf("restored tombstone = %+v, want incarnation %q and a generation of at least the spent %d", tombstone, removed.IncarnationID, spent)
+	if tombstone.IncarnationID != removed.IncarnationID || tombstone.Generation != removed.Generation {
+		t.Fatalf("restored tombstone = %+v, want the removal's own identity %q at generation %d", tombstone, removed.IncarnationID, removed.Generation)
 	}
 	if kept := receiptKeysFor(records, earlier); len(kept) != len(heldBefore) {
 		t.Fatalf("the rolled-back re-add left receipts %v for the earlier edit, want the %v it held", kept, heldBefore)
@@ -1536,6 +1536,10 @@ func TestAReAddRefusedAfterStagingKeepsTheRemovedHostsHistory(t *testing.T) {
 	if !tombstoned {
 		t.Fatal("the refused re-add took the removed host's tombstone with it")
 	}
+	if got, want := after.Tombstones["side"], before.Tombstones["side"]; got.Generation != want.Generation || got.PresenceEpoch != want.PresenceEpoch || got.IncarnationID != want.IncarnationID {
+		t.Fatalf("the refused re-add changed the removal's identity: %d/%q/%d, was %d/%q/%d (operation records are marked by it)",
+			got.Generation, got.IncarnationID, got.PresenceEpoch, want.Generation, want.IncarnationID, want.PresenceEpoch)
+	}
 	if len(after.MutationReceipts) < len(before.MutationReceipts) {
 		t.Fatalf("the refused re-add lost receipts: %d before, %d after", len(before.MutationReceipts), len(after.MutationReceipts))
 	}
@@ -1615,5 +1619,51 @@ func TestALandedRemovalRecoveredAfterItsRetentionStillMarksTheRemovedHost(t *tes
 
 	if _, ok := reopened.OutstandingToken("side"); ok {
 		t.Fatal("the removed host's token row survived a recovery past its retention window")
+	}
+}
+
+// TestBootDoesNotFinalizeALandedRemovalWhoseRemovedHostPassDidNotSettle pins that
+// a removed-host pass that cannot be confirmed stops the settlement: the
+// finalizer's write could otherwise expire the tombstone that is the only
+// evidence of which host the unmarked records belong to.
+func TestBootDoesNotFinalizeALandedRemovalWhoseRemovedHostPassDidNotSettle(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, store := hub.boot(t, false)
+	side, _ := m.cfg.hosts.Get("side")
+	mintHostToken(t, store, side)
+	params := removeRequest(t, m, "side")
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
+
+	boot := func(syncFails bool) (*hubHostManager, *hostops.Store) {
+		hub.restartStateRoot(t)
+		storePath := hostops.StorePath(hub.stateRoot)
+		dir := flakyDirSync{storeDir: filepath.Dir(storePath)}
+		dir.failing.Store(syncFails)
+		reopened, err := hostops.OpenWithDirSync(storePath, dir.sync)
+		if err != nil {
+			t.Fatalf("OpenWithDirSync: %v", err)
+		}
+		doc := hostBootDocument(mustLoadConfig(t, hub.configPath), reopened)
+		hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
+		if err != nil {
+			t.Fatalf("hostreg.NewSeeded: %v", err)
+		}
+		return newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+			RemoteHostRegistry: hosts, RemoteHostOpsStore: reopened, RemoteHostConfigPath: hub.configPath,
+		}, hub.configPath, hosts, t.Logf), reopened
+	}
+
+	waiting, reopened := boot(true)
+	if _, held := mustRecords(t, reopened).StagedReceipts["side"]; !held {
+		t.Fatal("the boot finalized a landed removal although its removed-host pass was not confirmed")
+	}
+	if waiting.mutationRefusal() == nil {
+		t.Fatal("host changes are taken while the staged commit is unsettled")
+	}
+
+	_, settled := boot(false)
+	if _, held := mustRecords(t, settled).StagedReceipts["side"]; held {
+		t.Fatal("the landed removal stayed unfinalized once the pass could be confirmed")
 	}
 }

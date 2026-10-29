@@ -162,7 +162,8 @@ type hostTOMLRecords struct {
 	// pass's discarded generations). The writer's preservation rule re-emits a
 	// generation record for a name the write does not own, so without this set
 	// the file's older record would ride back over the raise — and for a
-	// tombstoned name the twin pair would then disagree and refuse the write.
+	// tombstoned name the mark would then sit below its tombstone and refuse the
+	// write.
 	raisedHighWater map[string]struct{}
 }
 
@@ -376,8 +377,8 @@ func validateHostTombstones(tombstones map[string]HostTombstone, generations map
 			// loudly, the reserved-namespace posture.
 			return fmt.Errorf("tombstones[%q] carries no generations[%q] %w; refusing the unresolvable record", name, name, errTombstoneTwinMissing)
 		}
-		if mark.Generation != tombstone.Generation || mark.IncarnationID != tombstone.IncarnationID || mark.PresenceEpoch != tombstone.PresenceEpoch {
-			return fmt.Errorf("tombstones[%q] carries the triple (%d, %q, %d) while generations carries (%d, %q, %d); the two must agree",
+		if mark.Generation < tombstone.Generation || mark.IncarnationID != tombstone.IncarnationID || mark.PresenceEpoch < tombstone.PresenceEpoch {
+			return fmt.Errorf("tombstones[%q] carries the triple (%d, %q, %d) while generations carries (%d, %q, %d); the mark must be the same incarnation at or above it",
 				name, tombstone.Generation, tombstone.IncarnationID, tombstone.PresenceEpoch,
 				mark.Generation, mark.IncarnationID, mark.PresenceEpoch)
 		}

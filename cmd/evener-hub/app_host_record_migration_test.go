@@ -842,8 +842,8 @@ func TestMigrationKeepsTheCountersOfANameOnlyTheMirrorRemembers(t *testing.T) {
 // TestMigrationRaisesAGenerationBelowTheMirrorsForARemovedName covers the other
 // way the family can fall behind the mirror: the legacy records carry a mark for
 // a removed name that is lower than the one the mirror holds (a high-water write
-// that never landed), and the import must keep the higher generation, tombstone
-// twin included.
+// that never landed), and the import must keep the higher generation in the mark
+// while the tombstone keeps the identity of its removal.
 func TestMigrationRaisesAGenerationBelowTheMirrorsForARemovedName(t *testing.T) {
 	configPath, records := legacyHub(t)
 	removed := firstKey(records.Tombstones)
@@ -875,14 +875,14 @@ func TestMigrationRaisesAGenerationBelowTheMirrorsForARemovedName(t *testing.T) 
 	legacy.migrateLegacyRecords(store)
 
 	family := mustRecords(t, store)
-	if family.Generations[removed].Generation != spent || family.Tombstones[removed].Generation != spent {
-		t.Fatalf("the family holds mark %+v and tombstone generation %d for %q, want the mirror's %d", family.Generations[removed], family.Tombstones[removed].Generation, removed, spent)
+	if family.Generations[removed].Generation != spent || family.Tombstones[removed].Generation != held.Generation {
+		t.Fatalf("the family holds mark %+v and tombstone generation %d for %q, want the mirror's %d and the removal's own %d", family.Generations[removed], family.Tombstones[removed].Generation, removed, spent, held.Generation)
 	}
 }
 
 // TestMigrationRaisesAPresenceEpochTheMirrorHoldsEvenAtTheSameGeneration is the
 // epoch half of the mirror rule: the two counters rise on their own, and the
-// tombstone twin follows the mark so the family still validates.
+// tombstone keeps the identity of its removal.
 func TestMigrationRaisesAPresenceEpochTheMirrorHoldsEvenAtTheSameGeneration(t *testing.T) {
 	configPath, records := legacyHub(t)
 	removed := firstKey(records.Tombstones)
@@ -911,8 +911,8 @@ func TestMigrationRaisesAPresenceEpochTheMirrorHoldsEvenAtTheSameGeneration(t *t
 	legacy.migrateLegacyRecords(store)
 
 	family := mustRecords(t, store)
-	if family.Generations[removed].PresenceEpoch != spentEpoch || family.Tombstones[removed].PresenceEpoch != spentEpoch {
-		t.Fatalf("the family holds mark %+v and tombstone epoch %d for %q, want the mirror's epoch %d", family.Generations[removed], family.Tombstones[removed].PresenceEpoch, removed, spentEpoch)
+	if family.Generations[removed].PresenceEpoch != spentEpoch || family.Tombstones[removed].PresenceEpoch != held.PresenceEpoch {
+		t.Fatalf("the family holds mark %+v and tombstone epoch %d for %q, want the mirror's epoch %d and the removal's own %d", family.Generations[removed], family.Tombstones[removed].PresenceEpoch, removed, spentEpoch, held.PresenceEpoch)
 	}
 }
 

@@ -288,9 +288,9 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 		name := restore.Tombstone.Name
 		records.tombstones[name] = restore.Tombstone
 		records.highWater[name] = HostGeneration{
-			Generation:    restore.Tombstone.Generation,
+			Generation:    max(restore.Tombstone.Generation, change.restoreSpent.Generation),
 			IncarnationID: restore.Tombstone.IncarnationID,
-			PresenceEpoch: restore.Tombstone.PresenceEpoch,
+			PresenceEpoch: max(restore.Tombstone.PresenceEpoch, change.restoreSpent.PresenceEpoch),
 		}
 		for key, receipt := range restore.Receipts {
 			if _, held := records.receipts[key]; !held {
@@ -316,16 +316,11 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 		records.storeSync[change.storeSync.Name] = change.storeSync.Intent
 	}
 	// The boot mirror pass's raises land after the tombstone stage: a raise is
-	// the file's new mark, and a tombstoned name's tombstone twin must carry the
-	// same generation (validateHostTombstones ties the pair).
+	// the file's new mark, and the tombstone keeps the identity of the removal
+	// its operation records are marked by.
 	for name, raised := range change.highWaterRaises {
 		records.highWater[name] = raised
 		records.raisedHighWater[name] = struct{}{}
-		if tombstone, ok := records.tombstones[name]; ok {
-			tombstone.Generation = raised.Generation
-			tombstone.PresenceEpoch = max(tombstone.PresenceEpoch, raised.PresenceEpoch)
-			records.tombstones[name] = tombstone
-		}
 	}
 	if change.marker != nil {
 		records.stagedReceipts[change.marker.Name] = change.marker.Marker

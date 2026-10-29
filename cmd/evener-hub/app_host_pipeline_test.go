@@ -1035,11 +1035,11 @@ func TestRemovePrunesTheStashWhenTheStagedWriteFails(t *testing.T) {
 	}
 }
 
-// TestMirrorHighWaterRaiseRaisesATombstonedNamesTwin pins the raise for a
-// removed name: the [generations] high-water and the tombstone are one record
-// pair (S11's validation ties them), so the boot rollback raises both to the
-// discarded number and the file still validates.
-func TestMirrorHighWaterRaiseRaisesATombstonedNamesTwin(t *testing.T) {
+// TestMirrorHighWaterRaiseKeepsATombstonedNamesRemovalIdentity pins the raise
+// for a removed name: the [generations] high-water rises to the discarded number
+// while the tombstone keeps the identity of its removal, which the removed host's
+// operation records are marked by, and the file still validates.
+func TestMirrorHighWaterRaiseKeepsATombstonedNamesRemovalIdentity(t *testing.T) {
 	entry := pipelineEntry("m4", 2)
 	fixture := newPipelineFixture(t, []hostreg.Host{entry}, nil)
 	m := fixture.legacyManager(t)
@@ -1053,9 +1053,8 @@ func TestMirrorHighWaterRaiseRaisesATombstonedNamesTwin(t *testing.T) {
 	}, nil); err != nil {
 		t.Fatalf("MirrorBoundaries: %v", err)
 	}
-	// The boot rolls the mirror back and must raise the tombstoned name's
-	// [generations] twin together with the tombstone (S11 ties the pair), then
-	// carries the pair into the store.
+	// The boot rolls the mirror back and raises the tombstoned name's
+	// [generations] mark, then carries it into the store.
 	fixture.restart(t)
 	cfg, _ := readPipelineConfig(t, fixture.configPath)
 	mark, carried := cfg.Generations["m4"]
@@ -1063,11 +1062,11 @@ func TestMirrorHighWaterRaiseRaisesATombstonedNamesTwin(t *testing.T) {
 		t.Fatalf("generations high-water = %+v/%v, want the discarded generation 9", mark, carried)
 	}
 	tombstone, carried := cfg.Tombstones["m4"]
-	if !carried || tombstone.Generation != 9 {
-		t.Fatalf("tombstone = %+v/%v, want the raised generation 9", tombstone, carried)
+	if !carried || tombstone.Generation != entry.Generation {
+		t.Fatalf("tombstone = %+v/%v, want the removal's own generation %d", tombstone, carried, entry.Generation)
 	}
-	if tombstone.IncarnationID != mark.IncarnationID || tombstone.PresenceEpoch != mark.PresenceEpoch {
-		t.Fatalf("the tombstone/twin pair disagrees: %+v vs %+v", tombstone, mark)
+	if tombstone.IncarnationID != mark.IncarnationID || tombstone.PresenceEpoch > mark.PresenceEpoch {
+		t.Fatalf("the mark and the tombstone disagree: %+v vs %+v", tombstone, mark)
 	}
 	// A follow-up boot finds the pair converged and writes nothing.
 	before, err := os.ReadFile(hostops.StorePath(fixture.dir))

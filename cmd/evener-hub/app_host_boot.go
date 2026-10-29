@@ -213,7 +213,7 @@ func (m *hubHostManager) reconcilePipelineBoot() {
 	} else if moved > 0 {
 		m.logf("boot moved %d in-flight operation(s) to interrupted", moved)
 	}
-	m.reconcileHostRemovedPass(doc.Records)
+	_ = m.reconcileHostRemovedPass(doc.Records) // retried by the next pass; logged inside
 	m.reconcileGenerationMirror(doc)
 	m.reconcileCompensations()
 	m.reconcileStoreSyncIntents()
@@ -290,9 +290,9 @@ func nonNilMap[K comparable, V any](m map[K]V) map[K]V {
 // a remove's hub.toml commit and its live mark recovers exactly here, and a
 // tombstone colliding with a live re-add's different incarnation id matches
 // nothing.
-func (m *hubHostManager) reconcileHostRemovedPass(records hostRecordSet) {
+func (m *hubHostManager) reconcileHostRemovedPass(records hostRecordSet) error {
 	if len(records.Tombstones) == 0 {
-		return
+		return nil
 	}
 	marks := make(map[string]hostops.HostRemovedMark, len(records.Tombstones))
 	for name, tombstone := range records.Tombstones {
@@ -301,11 +301,12 @@ func (m *hubHostManager) reconcileHostRemovedPass(records hostRecordSet) {
 	marked, dropped, err := m.opsStore().ApplyHostRemovedPass(marks)
 	if err != nil {
 		m.logf("boot host-removed pass not applied: %v", err)
-		return
+		return err
 	}
 	if marked > 0 || dropped > 0 {
 		m.logf("boot host-removed pass marked %d operation record(s) and dropped %d token row(s)", marked, dropped)
 	}
+	return nil
 }
 
 // reconcileGenerationMirror runs §4/§7's bidirectional generation-mirror
