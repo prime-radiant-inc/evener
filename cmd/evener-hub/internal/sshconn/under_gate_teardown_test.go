@@ -331,3 +331,38 @@ func TestUpdateHostUnderGateRebindsUnderTheHold(t *testing.T) {
 	}
 	free()
 }
+
+// TestRetireHostUnderGateTearsTheConnectionDownAndLeavesTheEntry pins the
+// retirement entry: under the caller's hold the channel is unmapped and the host
+// is no longer attached, while the registry entry keeps its generation and
+// incarnation; without the caller's hold nothing moves.
+func TestRetireHostUnderGateTearsTheConnectionDownAndLeavesTheEntry(t *testing.T) {
+	m, _ := underGateFixture(t)
+	holder := underGateHolder("retire")
+	before, _ := m.reg.Get("alpha")
+
+	if err := m.RetireHostUnderGate("alpha", holder); !errors.Is(err, hostops.ErrGateNotHeld) {
+		t.Fatalf("RetireHostUnderGate with a free gate = %v, want ErrGateNotHeld", err)
+	}
+	if !m.Attached("alpha") {
+		t.Fatal("the refusal tore the connection down")
+	}
+
+	release, err := m.TryAcquire("alpha", holder)
+	if err != nil {
+		t.Fatalf("TryAcquire: %v", err)
+	}
+	defer release()
+	if err := m.RetireHostUnderGate("alpha", holder); err != nil {
+		t.Fatalf("RetireHostUnderGate: %v", err)
+	}
+
+	if m.Attached("alpha") {
+		t.Fatal("the host is still attached after its retirement")
+	}
+	after, ok := m.reg.Get("alpha")
+	if !ok || after.Generation != before.Generation || after.IncarnationID != before.IncarnationID {
+		t.Fatalf("the registry entry moved: %+v became %+v (ok=%v)", before, after, ok)
+	}
+	underGateAssertRefuses(t, m, "alpha", holder)
+}

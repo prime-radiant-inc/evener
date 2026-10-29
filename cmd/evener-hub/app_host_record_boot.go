@@ -127,7 +127,8 @@ func (m *hubHostManager) bootRecords() {
 }
 
 // holdLiveHosts takes the gate of every live host and tears down the
-// connection of each that holds one, through the SSH manager, so the steps that
+// connection of each that holds one, through the SSH manager (the registry
+// entries stay as they are), so the steps that
 // follow can change registrations (stored incarnations, raised counters, the
 // collision rule's rebases) without any channel or supervisor staying attached
 // to a registration that moved. The gates stay held until the returned release
@@ -155,7 +156,7 @@ func (m *hubHostManager) holdLiveHosts() (func(), error) {
 		if !m.cfg.manager.Attached(entry.Name) {
 			continue
 		}
-		if err := m.cfg.manager.UpdateHostUnderGate(entry, holder, func(hostreg.Host) {}); err != nil {
+		if err := m.cfg.manager.RetireHostUnderGate(entry.Name, holder); err != nil {
 			releaseAll()
 			return nil, fmt.Errorf("host %q: %w", entry.Name, err)
 		}
@@ -504,7 +505,15 @@ func (m *hubHostManager) rollBackUnlandedCommits(doc hostRecordDocument) map[str
 			}
 			change.restore = &restore
 		}
-		if err := m.persistHosts(entries, entries, change); err != nil {
+		// A name that still holds a removal tombstone is the collision rule's to
+		// settle; keeping it out of this write keeps its tombstone beside no
+		// live entry, which the records refuse.
+		tombstoned := m.cfg.store.tombstoneSnapshot()
+		writable := slices.DeleteFunc(slices.Clone(entries), func(entry hostreg.Host) bool {
+			_, held := tombstoned[entry.Name]
+			return held && entry.Name != change.dropTombstone
+		})
+		if err := m.persistHosts(writable, writable, change); err != nil {
 			m.logf("boot rollback of the staged commit for %q not written: %v", name, err)
 			failed[name] = struct{}{}
 			continue

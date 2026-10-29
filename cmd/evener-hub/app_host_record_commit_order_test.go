@@ -1015,3 +1015,79 @@ func TestRollbackAfterAPausedSettlementKeepsWhatTheOperatorChangedInHubTOML(t *t
 		t.Fatalf("the rollback brought back the host the operator removed: %v", got)
 	}
 }
+
+// TestRollbackLeavesAnotherHostsTombstoneForTheCollisionRule pins what the
+// rollback's write may touch: a removed name hub.toml carries again, with an
+// open teardown remnant, is the collision rule's to handle (it is excluded until
+// the remnant resolves), so settling an unrelated staged commit first must not
+// consume its tombstone or publish the new identity, which would strand the
+// remnant's cleanup handle.
+func TestRollbackLeavesAnotherHostsTombstoneForTheCollisionRule(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}, {Name: "gone", SSH: "gone.example"}})
+	m, _ := hub.boot(t, false)
+	m.testOnlyTeardown = func(context.Context, string) error { return errors.New("injected teardown failure") }
+	removal, err := m.RemoveResult(context.Background(), removeRequest(t, m, "gone"))
+	if err != nil || removal.HostMutationTeardownFailureRemoved == nil {
+		t.Fatalf("Remove(gone) = (%+v, %v), want the teardown-failure arm", removal, err)
+	}
+	remnantID := removal.HostMutationTeardownFailureRemoved.RemnantID
+	m.testOnlyTeardown = nil
+	beforeBytes := fileBytes(t, hub.configPath)
+	params := updateRequest(t, m, "side", appwire.HostEntry{Address: "edited.example"})
+	params.MutationID = "staged-mutation"
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() { _, _ = m.UpdateResult(context.Background(), params) })
+	if err := os.WriteFile(hub.configPath, append(beforeBytes, []byte("\n[[hosts]]\nname = \"gone\"\nssh = \"gone-again.example\"\n")...), 0o600); err != nil {
+		t.Fatalf("add gone again by hand: %v", err)
+	}
+
+	recovered, store := hub.boot(t, true)
+
+	if _, tombstoned := mustRecords(t, store).Tombstones["gone"]; !tombstoned {
+		t.Fatal("the unrelated rollback consumed the removed host's tombstone")
+	}
+	if _, err := recovered.TeardownRetry(context.Background(), appwire.HostTeardownRetryParams{RemnantID: remnantID}); err != nil {
+		t.Fatalf("TeardownRetry after the recovery: %v", err)
+	}
+}
+
+// TestLateAttachOfALegacyHostKeepsTheMirrorsHigherGeneration pins the order of
+// the legacy boot's writes under an attach: retiring a connected host re-mints
+// its generation, and the identity write that follows must not record that value
+// over a higher generation the store's mirror already holds, or the spent
+// generations between them could be minted again.
+func TestLateAttachOfALegacyHostKeepsTheMirrorsHigherGeneration(t *testing.T) {
+	configPath, records := legacyHub(t)
+	keep := records.HostRecords["keep"]
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	spent := records.Generations["keep"].Generation + 40
+	if err := store.MirrorHostState(hostops.HostMirror{Boundaries: map[string]hostops.Boundary{
+		"keep": {Generation: spent, IncarnationID: keep.IncarnationID, PresenceEpoch: keep.PresenceEpoch},
+	}, Live: []string{"keep"}}); err != nil {
+		t.Fatalf("MirrorHostState: %v", err)
+	}
+	cfg := mustLoadConfig(t, configPath)
+	boot := hostBootDocument(cfg, configPath, nil)
+	hosts, err := hostreg.NewSeeded(boot.Hosts, boot.Records.highWaterMarks())
+	if err != nil {
+		t.Fatalf("hostreg.NewSeeded: %v", err)
+	}
+	manager := sshconn.New(hosts, sshconn.Options{Runner: &attachedUpdateRunner{}})
+	t.Cleanup(func() { _ = manager.Close() })
+	late := newHubHostManager(appsource.NewRegistry(), manager, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostConfigPath: configPath, RemoteHostOpsUnavailable: true,
+	}, configPath, hosts, t.Logf)
+	if _, err := manager.Ensure(context.Background(), "keep"); err != nil {
+		t.Fatalf("Ensure while the store is unavailable: %v", err)
+	}
+
+	late.attachOps(store)
+
+	if mark := mustRecords(t, store).Generations["keep"]; mark.Generation < spent {
+		t.Fatalf("the family holds generation %d for keep, below the mirror's %d", mark.Generation, spent)
+	}
+	requireReconnected(t, manager, hosts, "keep")
+}
