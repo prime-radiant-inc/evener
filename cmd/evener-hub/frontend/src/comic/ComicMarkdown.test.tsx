@@ -1,9 +1,57 @@
+import { makeTranscriptDisplayConfig, threadModelFromCache } from "@evener/appwire-client";
 import { render } from "@testing-library/react";
 import { Component, type ReactNode } from "react";
 import { expect, test, vi } from "vitest";
+import { TranscriptRenderProvider } from "../transcriptDisplay/renderContext";
 import { ComicMarkdown, comicMarkdownPoint } from "./ComicMarkdown";
 import { composeComicRows } from "./layout";
 import { projectComicMarkdown } from "./markdown";
+
+test("cached child Markdown acquires source-owned file links when live cwd arrives", () => {
+  const ref = "local:child";
+  const cached = threadModelFromCache(
+    {
+      ref,
+      threadId: "child",
+      name: "child",
+      modelProvider: "test",
+      model: "test",
+      savedAt: 1,
+      history: {
+        bootGeneration: "boot",
+        epoch: 1,
+        incarnation: "inc",
+        length: 0,
+        appliedGeneration: 1,
+        issuedGeneration: 1,
+        turns: [],
+      },
+    },
+    1,
+  );
+  expect(cached.cwd).toBe("");
+  const config = makeTranscriptDisplayConfig({ kind: "preset", level: "activity" });
+  const source = "[COMIC_DOCUMENT_CHILD](comic-document-child.md)";
+  const view = (thread: typeof cached) => (
+    <TranscriptRenderProvider config={config} thread={thread} sourcePaneId="root-pane">
+      {formatted(source)}
+    </TranscriptRenderProvider>
+  );
+  const rendered = render(view(cached));
+  const anchor = rendered.getByRole("link", { name: "COMIC_DOCUMENT_CHILD" });
+  if (!(anchor instanceof HTMLAnchorElement)) throw new Error("expected document anchor");
+  expect(anchor.getAttribute("href")).toBe("comic-document-child.md");
+  expect(new URL(anchor.href).pathname).not.toBe("/doc/file");
+
+  rendered.rerender(view({ ...cached, cwd: "/actual/child" }));
+  expect(rendered.getByRole("link", { name: "COMIC_DOCUMENT_CHILD" })).toBe(anchor);
+  const url = new URL(anchor.href);
+  expect(url.pathname).toBe("/doc/file");
+  expect(url.searchParams.get("session")).toBe(ref);
+  expect(url.searchParams.get("path")).toBe("/actual/child/comic-document-child.md");
+  expect(anchor.textContent).toBe("COMIC_DOCUMENT_CHILD");
+  rendered.unmount();
+});
 
 function formatted(source: string, live = false) {
   const document = projectComicMarkdown(source, live);

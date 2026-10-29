@@ -22,6 +22,12 @@ import {
   requestBrowserClose,
 } from "../browserGuardProcess.mjs";
 
+export function servedDocumentAnchorReady(href) {
+  // Cached text can paint before its live cwd arrives. A visible relative
+  // anchor is not served yet; source/session checks remain separate below.
+  return Boolean(href) && new URL(href).pathname === "/doc/file";
+}
+
 export function comicScenario(scenario) {
   if (scenario === undefined || scenario === "") return { focused: false, rosterCount: 102 };
   if (scenario === "remote-navigation") return { focused: true, rosterCount: 101 };
@@ -4511,10 +4517,14 @@ async function childJourney(page, fixture, { command, incoming, outgoing, screen
     const label = `COMIC_DOCUMENT_${level}`;
     const expectedRef = level === "ROOT" ? fixture.refs.live : header.ref;
     const linkExpression = `[...window.__comicRoot().querySelectorAll('a')].find(node=>node.textContent===${JSON.stringify(label)})`;
-    const href = await until(`${label} served anchor mounted`, async () => {
-      await reveal("[data-comic-entry]", label, 1);
-      return evaluateHere(`${linkExpression}?.href`);
-    });
+    const href = await until(
+      `${label} served anchor mounted`,
+      async () => {
+        await reveal("[data-comic-entry]", label, 1);
+        return evaluateHere(`${linkExpression}?.href`);
+      },
+      servedDocumentAnchorReady,
+    );
     const before = await paneSnapshot(page);
     const url = new URL(href);
     const settled = repliesSince(
@@ -4554,6 +4564,11 @@ async function childJourney(page, fixture, { command, incoming, outgoing, screen
         if (!document.body.textContent.includes(${JSON.stringify(`COMIC_DOCUMENT_BODY_${level}`)})) {
           const response = await fetch(${JSON.stringify(href)}, {credentials:'same-origin'});
           readFailure = {status:response.status, body:(await response.text()).slice(0,1000)};
+          const node=window.__comicDocLink, current=window.__comicRoot()&&${linkExpression};
+          const port=window.__comicRoot()?.querySelector('[data-comic-scroll]')?.firstElementChild;
+          const r=node.getBoundingClientRect(),p=port?.getBoundingClientRect();
+          const hit=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);
+          readFailure.geometry={same:node===current,connected:node.isConnected,target:r.toJSON(),port:p?.toJSON(),scrollTop:port?.scrollTop,scrollHeight:port?.scrollHeight,hit:hit?.tagName,hitTarget:!!hit&&node.contains(hit)};
         }
         return {events:window.__comicDocEvents, originalConnected:window.__comicDocLink.isConnected, body:document.body.innerText, url:location.href, readFailure};
       })()`);
