@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"io"
@@ -37,7 +38,7 @@ func TestSampleKeepsOnlyListedProviders(t *testing.T) {
 	// the call is repeat-safe and leaves the process's set alone.
 	flag.CommandLine = flag.NewFlagSet("modelsdevsample", flag.ExitOnError)
 	// stdout only carries the one-line summary; keep it out of the test log.
-	_, outW, err := os.Pipe()
+	outR, outW, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,17 +46,33 @@ func TestSampleKeepsOnlyListedProviders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Every pipe endpoint closes during cleanup, whatever path the test takes.
+	t.Cleanup(func() {
+		_ = outR.Close()
+		_ = outW.Close()
+		_ = errR.Close()
+		_ = errW.Close()
+	})
+	// main writes its missing-provider warnings synchronously, and each one
+	// carries the input path, so the stderr pipe must drain while main runs:
+	// a reader parked on errR before the call keeps main from blocking on a
+	// full pipe when TMPDIR makes the warnings long.
+	var stderrBuf bytes.Buffer
+	stderrDone := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(&stderrBuf, errR)
+		close(stderrDone)
+	}()
 	os.Args = []string{"modelsdevsample", "-in", in, "-out", out}
 	os.Stdout, os.Stderr = outW, errW
 	main()
 	_ = outW.Close()
 	_ = errW.Close()
+	<-stderrDone
+	_ = errR.Close()
 	os.Args, flag.CommandLine = oldArgs, oldFlags
 	os.Stdout, os.Stderr = oldStdout, oldStderr
-	stderr, err := io.ReadAll(errR)
-	if err != nil {
-		t.Fatal(err)
-	}
+	stderr := stderrBuf.Bytes()
 
 	data, err := os.ReadFile(out)
 	if err != nil {

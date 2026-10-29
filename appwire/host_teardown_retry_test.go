@@ -7,6 +7,7 @@ package appwire
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 )
 
@@ -79,12 +80,19 @@ func TestHostTeardownRetryResultArmsRoundTrip(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: remarshal: %v", tc.name, err)
 		}
-		var again map[string]json.RawMessage
+		// The round trip must carry the arm's whole payload: decode both the
+		// remarshaled body and the original, and compare them as values, so a
+		// decode failure or a dropped field cannot pass as a round trip —
+		// the same idiom the host-mutation round-trip test uses.
+		var again, original any
 		if err := json.Unmarshal(remarshaled, &again); err != nil {
-			t.Fatalf("%s: remarshaled %s is not an object: %v", tc.name, remarshaled, err)
+			t.Fatalf("%s: decode remarshal %s: %v", tc.name, remarshaled, err)
 		}
-		if _, ok := again["outcome"]; !ok {
-			t.Fatalf("%s: remarshaled %s carries no outcome", tc.name, remarshaled)
+		if err := json.Unmarshal(raw, &original); err != nil {
+			t.Fatalf("%s: decode original %s: %v", tc.name, raw, err)
+		}
+		if !reflect.DeepEqual(again, original) {
+			t.Fatalf("%s: remarshal %s did not round-trip the arm's payload %s", tc.name, remarshaled, raw)
 		}
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The corrupt-store arms the custody snapshot refuses: a corrupt file whose
@@ -145,15 +146,29 @@ func TestCustodySnapshotRefusesUnprovableCorruptStores(t *testing.T) {
 
 // TestStoreLoadNormalizesRemovalMarkers pins the loader's timestamp
 // normalization for removal markers: a stored offset form survives the load
-// only as its UTC form.
+// only as its UTC form, with its instant preserved. The store is a valid one —
+// the terminal record's sequence is covered — so the marker loads through the
+// normal path instead of behind a quarantine.
 func TestStoreLoadNormalizesRemovalMarkers(t *testing.T) {
 	t.Parallel()
 	path := StorePath(t.TempDir())
-	body := custodyArmStore(2, custodyArmRec1+`,`+custodyArmRec2,
-		`"removedHosts":{"hX":{"removedAt":"2026-09-26T02:00:00+02:00","generation":3,"incarnationId":"inc-x"}}`)
+	body := strings.Replace(validArmStoreJSON, `"sequence":2}]}`,
+		`"sequence":2}],"removedHosts":{"hX":{"removedAt":"2026-09-26T02:00:00+02:00","generation":3,"incarnationId":"inc-x"}}}`, 1)
 	writeRawStore(t, path, 0o600, body)
-	if _, err := Open(path); err != nil {
+	store, err := Open(path)
+	if err != nil {
 		t.Fatalf("Open refused a valid store carrying a removal marker: %v", err)
+	}
+	marker, ok := store.RemovedHosts()["hX"]
+	if !ok {
+		t.Fatalf("the loaded store carries no removal marker for hX: %v", store.RemovedHosts())
+	}
+	want := time.Date(2026, time.September, 26, 0, 0, 0, 0, time.UTC)
+	if !marker.RemovedAt.Equal(want) {
+		t.Fatalf("removedAt = %v, want the stored instant %v preserved", marker.RemovedAt, want)
+	}
+	if marker.RemovedAt.Location() != time.UTC {
+		t.Fatalf("removedAt = %v, want the stored offset form loaded as its UTC representation", marker.RemovedAt)
 	}
 }
 
