@@ -34,8 +34,8 @@ func (m *hubHostManager) reconcileCompensations() {
 // absent means the purge landed before the crash, so the record advances and
 // the hubtoml arm follows.
 func (m *hubHostManager) resumeArmedCompensation(record hostops.Compensation) {
-	fileCfg, hasFile := m.hostFileRecords()
-	intent, intentLive := fileCfg.PendingStoreSync[record.Host]
+	doc, hasFile := m.cfg.records.load()
+	intent, intentLive := doc.Records.PendingStoreSync[record.Host]
 	rowsPresent := false
 	if row, ok := m.cfg.ops.OutstandingToken(record.Host); ok {
 		for _, preimage := range record.Rows {
@@ -64,7 +64,7 @@ func (m *hubHostManager) resumeArmedCompensation(record hostops.Compensation) {
 			return
 		}
 		// The restored bytes are the authority for the machine records too.
-		if restored, ok := m.hostFileRecords(); ok {
+		if restored, ok := m.cfg.records.load(); ok {
 			m.installRestoredRecords(restored)
 		}
 		// The purge never landed and the rows are untouched, but the swap
@@ -109,7 +109,7 @@ func (m *hubHostManager) resumeCompensation(record hostops.Compensation) {
 	switch record.Phase {
 	case hostops.CompensationHubTOML:
 		// §9's commit-point check, the same one the armed arm makes.
-		fileCfg, hasFile := m.hostFileRecords()
+		doc, hasFile := m.cfg.records.load()
 		if !hasFile {
 			// No file to converge with: the boot pipeline enters here only for a
 			// genuinely absent or empty document (hostFileAbsentOrEmpty gates it),
@@ -118,7 +118,7 @@ func (m *hubHostManager) resumeCompensation(record hostops.Compensation) {
 			m.clearCompensation(record, "no hub.toml to converge with")
 			return
 		}
-		if _, intentLive := fileCfg.PendingStoreSync[record.Host]; intentLive {
+		if _, intentLive := doc.Records.PendingStoreSync[record.Host]; intentLive {
 			// The commit path had not passed its commit point: restore and
 			// follow the arms.
 			if err := m.restoreHubTOMLFromStash(record.Stash); err != nil {
@@ -129,7 +129,7 @@ func (m *hubHostManager) resumeCompensation(record hostops.Compensation) {
 			// carry: the store's model converges to them here, so the rest of this
 			// boot and every later write derive from the restored file rather than
 			// re-emitting the compensated commit's records.
-			if restored, ok := m.hostFileRecords(); ok {
+			if restored, ok := m.cfg.records.load(); ok {
 				m.installRestoredRecords(restored)
 			}
 			if !m.advanceCompensationTo(record, hostops.CompensationRows, "advance-rows") {
@@ -181,7 +181,7 @@ func (m *hubHostManager) resumeCompensation(record hostops.Compensation) {
 // the restored hub.toml's generation revalidates come back, the restored runtime
 // set is re-applied to the live handles, and only then does the record clear.
 func (m *hubHostManager) resumeFromRows(record hostops.Compensation) {
-	restored, ok := m.hostFileRecords()
+	restored, ok := m.cfg.records.load()
 	generation, incarnation, live := uint64(0), "", false
 	if ok {
 		generation, incarnation, live = m.restoredIdentity(restored, record.Host)
