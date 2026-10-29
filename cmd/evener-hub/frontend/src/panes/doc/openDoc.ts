@@ -49,7 +49,8 @@ function paneOwnsSession(pane: OpenPaneRecord, session: string): boolean {
   // An embedded cascade column has no pane of its own: the zoom pane
   // hosting the conversation owns the request when its cascade covers the
   // session.
-  if (pane.type === "sessionZoom") return zoomPaneCoversConversation(pane, session);
+  if (pane.type === "sessionZoom")
+    return zoomPaneCoversConversation(pane, session) || comicPaneCoversConversation(pane, session);
   if (pane.type !== "session" && pane.type !== "transcript") return false;
   return sourcePaneSessionRef(pane) === session || comicPaneCoversConversation(pane, session);
 }

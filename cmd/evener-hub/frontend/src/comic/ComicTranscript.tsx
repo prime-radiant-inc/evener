@@ -150,12 +150,14 @@ export function ComicTranscript({
   const lastPage = useRef<string | undefined>(undefined);
   const snapshots = useMemo(() => new Map([[comicPathKey([]), root], ...subchats.readers]), [root, subchats.readers]);
   const sourcePane = useWorkspaceStore((state) => state.panes.find((pane) => pane.id === sourcePaneId));
+  const coverageOwner = useRef({});
   useLayoutEffect(() => {
     if (sourcePane)
       return publishComicPaneCoverage(
         sourcePane,
         sessionRef,
         [...snapshots.values()].map((snapshot) => snapshot.ref),
+        coverageOwner.current,
       );
   }, [sourcePane, sessionRef, snapshots]);
   const entriesByPath = useMemo(

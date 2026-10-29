@@ -52,6 +52,9 @@ file URL. A separately open child pane does not take ownership. Phone Back retur
 to the containing pane after document navigation unmounts its reader. This opening
 proof belongs only to that document and the exact living pane, is not persisted,
 and cannot authorize another child-file open after collapse or unmount.
+In cascade columns, the containing inspector owns navigation and keeps its
+secondary placement. Each mounted column publishes and retires its own inline
+reader coverage without replacing another column's proof.
 Live file reads use the owning session's actual installed directory, not its
 parent's directory or cached launch metadata. Session start seeds that directory
 for shared and isolated children; supported environment changes update only the

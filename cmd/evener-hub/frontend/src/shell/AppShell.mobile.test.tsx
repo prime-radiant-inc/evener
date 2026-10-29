@@ -11,25 +11,38 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import userEvent from "@testing-library/user-event";
 
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
-import { publishComicPaneCoverage } from "../comic/comicPaneCoverage";
+import { comicPaneCoversConversation, publishComicPaneCoverage } from "../comic/comicPaneCoverage";
 import { initNotifications, resetNotificationsForTests } from "../notifications";
 import { openDocBeside } from "../panes/doc/openDoc";
 import { OpenTranscriptButton } from "../panes/session/transcript/openTranscript";
+import { enterAgentCascade } from "../panes/zoom/actions";
 import { StubResizeObserver } from "../resizeObserverTestUtils";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { resetAuthStatusesStoreForTests } from "../stores/authStatuses";
 import { connectionStore } from "../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
 import { resetPrefsStoreForTests } from "../stores/prefs";
-import { activityDetailsThread, answerActivityRead } from "../stores/sessionActivityTestUtils";
+import {
+  activityContext,
+  activityDelegate,
+  activityDetailsThread,
+  activitySummary,
+  activityThread,
+  answerActivityRead,
+} from "../stores/sessionActivityTestUtils";
 import { resetSettingsHostForTests } from "../stores/settingsHost";
 import { resetSettingsOverviewStoreForTests } from "../stores/settingsOverview";
+import {
+  initTranscriptDisplay,
+  resetTranscriptDisplayStoreForTests,
+  transcriptDisplayStore,
+} from "../stores/transcriptDisplay";
 import { readModuleCss } from "../styles/cssBlock";
 import { AppShell } from "./AppShell";
 import { installMobileViewport, installSwitchableViewport, threadStartResponse } from "./appShellTestUtils";
 import { paletteStore } from "./palette/paletteController";
 import { navigate } from "./routing";
-import { getDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
+import { documentPaneState, getDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
 
 const TREE_SESSION = {
   row_id: "project:proj1:local:s1",
@@ -457,6 +470,155 @@ test("Comic child document keeps phone focus after reader unmount and Back retur
   expect(workspaceStore.getState().focusedPaneId).toBe(doc.id);
   await userEvent.click(await screen.findByRole("button", { name: "Back" }));
   expect(workspaceStore.getState().focusedPaneId).toBe(source.id);
+});
+
+test("real Comic cascade inline files keep phone inspector ownership through settled focus and Back", async () => {
+  vi.stubGlobal("innerWidth", 390);
+  const height = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(500);
+  installMobileViewport();
+  installLocationForRoute("local:origin");
+  window.history.pushState({}, "", "/s/local%3Aorigin");
+  const client = navClient();
+  const refs = ["local:origin", "local:column", "local:inline"];
+  const context = (ref: string) => ({
+    ...activityContext(ref),
+    sessionId: ref,
+    rootRef: refs[0]!,
+    ...(ref === refs[0] ? {} : { parentRef: refs[refs.indexOf(ref) - 1], delegateId: `${ref}-delegate` }),
+    ancestors: refs
+      .slice(0, refs.indexOf(ref))
+      .map((ancestor) => ({ ref: ancestor, sessionId: ancestor, title: ancestor })),
+  });
+  client.on("thread/read", ({ ref, requestGeneration, includeTurns }) => {
+    if (!ref) throw new Error("thread/read requires ref");
+    const thread = activityThread(ref).thread;
+    return {
+      requestGeneration,
+      thread: {
+        ...thread,
+        id: ref,
+        sessionId: ref,
+        cwd: `/work/${ref}`,
+        evener: { ...thread.evener, artifactsDir: `/artifacts/${ref}` },
+        turns:
+          includeTurns === false
+            ? []
+            : [
+                {
+                  id: `${ref}-turn`,
+                  status: "completed",
+                  itemsView: "full",
+                  items: [
+                    {
+                      id: `${ref}-file`,
+                      type: "agentMessage",
+                      text: `[FILE](docs/report.md) [ARTIFACT](file:///artifacts/${ref}/result.md)`,
+                    },
+                  ],
+                },
+              ],
+      },
+    };
+  });
+  client.on("thread/unsubscribe", () => ({}));
+  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref, scope),
+    context: context(ref),
+  }));
+  client.on("evener/thread/delegates/list", ({ ref, scope }) => ({
+    context: context(ref),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates:
+      ref === "local:column"
+        ? [
+            activityDelegate({
+              ownerRef: ref,
+              rootRef: "local:origin",
+              childRef: "local:inline",
+              delegateId: "local:inline-delegate",
+            }),
+          ]
+        : [],
+  }));
+  const requests: URL[] = [];
+  vi.stubGlobal("fetch", async (input: string) => {
+    requests.push(new URL(input, window.location.origin));
+    return new Response("FILE_BYTES", { headers: { "Content-Type": "text/plain" } });
+  });
+  resetTranscriptDisplayStoreForTests();
+  initTranscriptDisplay();
+  transcriptDisplayStore.getState().setPresentation("mobile", "comic");
+  const mounted = render(<AppShell client={client} />);
+  try {
+    await waitFor(() => expect(workspaceStore.getState().mainPane()?.type).toBe("session"));
+    const source = workspaceStore.getState().mainPane()!;
+    let inspectorId = "";
+    await act(async () => {
+      workspaceStore.getState().openPane("session", { ref: "local:inline" });
+      inspectorId = enterAgentCascade(
+        activityDelegate({ ownerRef: "local:origin", childRef: "local:column", delegateId: "column-edge" }),
+        source.id,
+      );
+      workspaceStore.getState().focusPane(inspectorId);
+    });
+    const inspector = workspaceStore.getState().panes.find((pane) => pane.id === inspectorId)!;
+    expect(transcriptDisplayStore.getState().viewport).toBe("mobile");
+    expect(transcriptDisplayStore.getState().presentation.mobile).toBe("comic");
+    for (const name of ["FILE", "ARTIFACT"]) {
+      const toggle = await waitFor(() => {
+        const button = document.querySelector<HTMLButtonElement>(
+          '[data-comic-child-ref="local:inline"] button[aria-expanded]',
+        );
+        expect(button).not.toBeNull();
+        return button!;
+      });
+      if (toggle.getAttribute("aria-expanded") === "false") await userEvent.click(toggle);
+      const link = await waitFor(() => {
+        const anchors = document.querySelectorAll<HTMLAnchorElement>('[data-comic-session="local:inline"] a');
+        const anchor = [...anchors].find((item) => item.textContent === name);
+        expect(anchor).toBeDefined();
+        return anchor!;
+      });
+      expect(comicPaneCoversConversation(inspector, "local:inline")).toBe(true);
+      await userEvent.click(link);
+      const doc = workspaceStore.getState().panes.find((pane) => pane.id === workspaceStore.getState().focusedPaneId)!;
+      const artifact = name === "ARTIFACT";
+      const target = artifact ? "/artifacts/local:inline/result.md" : "/work/local:inline/docs/report.md";
+      expect(doc.type).toBe("doc");
+      expect(doc.params).toEqual({
+        session: "local:inline",
+        path: artifact ? "result.md" : "docs/report.md",
+        kind: "file",
+        ...(artifact ? { root: "artifacts", artifactTarget: target } : {}),
+      });
+      expect(documentPaneState(doc)?.origin).toBe(inspector);
+      expect(documentPaneState(doc)?.reference.readTarget).toBe(target);
+      expect(workspaceStore.getState().mainPane()).toBe(source);
+      expect(inspector.slot).toBe("secondary");
+      expect(document.querySelector('[data-testid="cascade-column"]')).toBeNull();
+      expect(comicPaneCoversConversation(inspector, "local:inline")).toBe(false);
+      await waitFor(() =>
+        expect(
+          requests.some(
+            (url) =>
+              url.pathname === "/doc/file" &&
+              url.searchParams.get("session") === "local:inline" &&
+              url.searchParams.get("path") === target,
+          ),
+        ).toBe(true),
+      );
+      await act(async () => installLocationForRoute("local:origin"));
+      expect(workspaceStore.getState().focusedPaneId).toBe(doc.id);
+      await userEvent.click(await screen.findByRole("button", { name: "Back" }));
+      expect(workspaceStore.getState().focusedPaneId).toBe(inspectorId);
+      expect(workspaceStore.getState().mainPane()).toBe(source);
+    }
+  } finally {
+    mounted.unmount();
+    height.mockRestore();
+    resetTranscriptDisplayStoreForTests();
+  }
 });
 
 test("ordinary mobile toolbar Back publishes only the Welcome transition", async () => {
