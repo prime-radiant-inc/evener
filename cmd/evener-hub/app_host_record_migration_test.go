@@ -1019,3 +1019,44 @@ func TestMigrationKeepsTheCountersOfANameOnlyTheMirrorRemembers(t *testing.T) {
 		t.Fatalf("the re-add of ghost minted %+v, want generation and presence epoch above %+v", readded, boundary)
 	}
 }
+
+// TestMigrationRaisesAGenerationBelowTheMirrorsForARemovedName covers the other
+// way the family can fall behind the mirror: the legacy records carry a mark for
+// a removed name that is lower than the one the mirror holds (a high-water write
+// that never landed), and the import must keep the higher generation, tombstone
+// twin included.
+func TestMigrationRaisesAGenerationBelowTheMirrorsForARemovedName(t *testing.T) {
+	configPath, records := legacyHub(t)
+	removed := firstKey(records.Tombstones)
+	if removed == "" {
+		t.Fatal("the legacy fixture left no tombstone")
+	}
+	held := records.Tombstones[removed]
+	cfg := mustLoadConfig(t, configPath)
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	spent := held.Generation + 4
+	if err := store.MirrorHostState(hostops.HostMirror{Boundaries: map[string]hostops.Boundary{
+		removed: {Generation: spent, IncarnationID: held.IncarnationID, PresenceEpoch: held.PresenceEpoch},
+	}}); err != nil {
+		t.Fatalf("MirrorHostState: %v", err)
+	}
+	doc := hostBootDocument(cfg, configPath, store)
+	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
+	if err != nil {
+		t.Fatalf("hostreg.NewSeeded: %v", err)
+	}
+	legacy := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostConfigPath: configPath,
+	}, configPath, hosts, t.Logf)
+	legacy.cfg.ops.Store(store)
+
+	legacy.migrateLegacyRecords(store)
+
+	family := mustRecords(t, store)
+	if family.Generations[removed].Generation != spent || family.Tombstones[removed].Generation != spent {
+		t.Fatalf("the family holds mark %+v and tombstone generation %d for %q, want the mirror's %d", family.Generations[removed], family.Tombstones[removed].Generation, removed, spent)
+	}
+}

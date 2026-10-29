@@ -78,6 +78,10 @@ type hostManagerConfig struct {
 	// in flight has been attempted over the attached store; later boots of the same store
 	// (settlement retries) must not interrupt operations that are running now.
 	interruptedHandled atomic.Bool
+	// attaching is set while attachOps settles the records of a hub that is
+	// already serving: hosts may hold connections then, so every step that
+	// changes a live host's registration holds the host gates first.
+	attaching atomic.Bool
 	// sources is the component-05 registry; a remote host's source is where
 	// attachment state (Online) and the per-host client live.
 	sources *appsource.Registry

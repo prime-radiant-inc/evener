@@ -125,14 +125,16 @@ func (m *hubHostManager) bootRecords() {
 	m.migrateLegacyRecords(ops)
 }
 
-// retireCollidingConnections takes the gate of every live host whose name a
-// removed host's tombstone still holds and tears its connections down through
-// the SSH manager, before the collision rule rebases or excludes it directly in
-// the registry. The gates stay held until the returned release runs. A busy
-// host is not touched: every gate taken is released and the error says which,
-// so the settlement stays pending.
-func (m *hubHostManager) retireCollidingConnections(records hostRecordSet) (func(), error) {
-	if m.cfg.manager == nil {
+// holdLiveHosts takes the gate of every live host and tears down the
+// connection of each that holds one, through the SSH manager, so the steps that
+// follow can change registrations (stored incarnations, raised counters, the
+// collision rule's rebases) without any channel or supervisor staying attached
+// to a registration that moved. The gates stay held until the returned release
+// runs; a busy host is not touched: every gate taken is released and the error
+// says which, so the settlement stays pending. Outside an attach, or with no
+// SSH manager, no host can hold a connection and nothing is held.
+func (m *hubHostManager) holdLiveHosts() (func(), error) {
+	if m.cfg.manager == nil || !m.cfg.attaching.Load() {
 		return func() {}, nil
 	}
 	var releases []func()
@@ -141,54 +143,23 @@ func (m *hubHostManager) retireCollidingConnections(records hostRecordSet) (func
 			release()
 		}
 	})
-	holder := hostops.Holder{Kind: hostops.HolderManager, Activity: "boot-collision"}
+	holder := hostops.Holder{Kind: hostops.HolderManager, Activity: "settle-records"}
 	for _, entry := range m.cfg.hosts.All() {
-		if _, collides := records.Tombstones[entry.Name]; !collides {
-			continue
-		}
-		if _, unlanded := unlandedRemovalIdentity(records, entry.Name, m.cfg.configPath); unlanded {
-			// The removal never happened: the host is rolled back to, not rebased.
-			continue
-		}
 		release, err := m.acquireHostGate(entry.Name, holder)
 		if err != nil {
 			releaseAll()
 			return nil, fmt.Errorf("host %q: %w", entry.Name, err)
 		}
 		releases = append(releases, release)
+		if !m.cfg.manager.Attached(entry.Name) {
+			continue
+		}
 		if err := m.cfg.manager.UpdateHostUnderGate(entry, holder, func(hostreg.Host) {}); err != nil {
 			releaseAll()
 			return nil, fmt.Errorf("host %q: %w", entry.Name, err)
 		}
 	}
 	return releaseAll, nil
-}
-
-// adoptStoredIncarnation gives a live host the incarnation its stored records
-// name, and raises it to the stored marks. With an SSH manager the whole change
-// happens under one reservation of the host's gate, through the manager: the
-// channel and supervisor that captured the minted registration are torn down
-// with it, no attach can capture the half-restored entry, and the host
-// reconnects on demand. A host whose gate is busy is reported: the settlement
-// stays pending and runs again, because recording the minted identity over the
-// stored one would orphan what is bound to it.
-func (m *hubHostManager) adoptStoredIncarnation(entry hostreg.Host, incarnationID string, mark hostreg.HighWater) error {
-	if m.cfg.manager != nil {
-		holder := hostops.Holder{Kind: hostops.HolderManager, Activity: "restore-identity"}
-		release, err := m.acquireHostGate(entry.Name, holder)
-		if err != nil {
-			return err
-		}
-		defer release()
-		if err := m.cfg.manager.UpdateHostUnderGate(entry, holder, func(hostreg.Host) {}); err != nil {
-			return err
-		}
-	}
-	if err := m.cfg.hosts.RestoreIncarnation(entry.Name, incarnationID); err != nil {
-		return err
-	}
-	m.cfg.hosts.SeedHighWater(map[string]hostreg.HighWater{entry.Name: mark})
-	return nil
 }
 
 // attachOps brings the records to the state a boot would have, after the hub
@@ -198,6 +169,8 @@ func (m *hubHostManager) adoptStoredIncarnation(entry hostreg.Host, incarnationI
 func (m *hubHostManager) attachOps(store *hostops.Store) {
 	attaching := &hostRefusal{reason: "the operation store is attaching"}
 	m.cfg.refusal.Store(attaching)
+	m.cfg.attaching.Store(true)
+	defer m.cfg.attaching.Store(false)
 	if store != nil && m.opsStore() == nil {
 		// Operations a crash left in flight are interrupted before the store is
 		// published, while nothing of this process can be running on it.
@@ -218,6 +191,34 @@ func (m *hubHostManager) attachOps(store *hostops.Store) {
 	m.cfg.refusal.CompareAndSwap(attaching, nil)
 }
 
+// mirrorCountersAbove returns the counters the store's mirror holds for names
+// that are not live and that the legacy records either lack or carry a lower
+// generation for. The
+// import replaces the mirror with what the family says, so a generation or
+// presence epoch left out would be forgotten and could be minted again.
+func (m *hubHostManager) mirrorCountersAbove(ops *hostops.Store, entries []hostreg.Host) map[string]HostGeneration {
+	live := hostNameSet(entries)
+	held := m.cfg.store.highWaterSnapshot()
+	raises := map[string]HostGeneration{}
+	for name, boundary := range ops.Boundaries() {
+		if _, isLive := live[name]; isLive {
+			continue
+		}
+		mark, ok := held[name]
+		if !ok {
+			raises[name] = HostGeneration{Generation: boundary.Generation, IncarnationID: boundary.IncarnationID, PresenceEpoch: boundary.PresenceEpoch}
+			continue
+		}
+		if boundary.Generation > mark.Generation {
+			// A mark that is a tombstone's twin keeps the incarnation and epoch
+			// the pair agrees on; only the spent generation moves up.
+			mark.Generation = boundary.Generation
+			raises[name] = mark
+		}
+	}
+	return raises
+}
+
 // migrateLegacyRecords moves the records the legacy boot just settled from
 // hub.toml into the operation store.
 func (m *hubHostManager) migrateLegacyRecords(ops *hostops.Store) {
@@ -226,29 +227,13 @@ func (m *hubHostManager) migrateLegacyRecords(ops *hostops.Store) {
 		return
 	}
 	entries := m.cfg.store.snapshot()
-	records, err := m.deriveHostTOMLRecords(entries, entries, hostPersistChange{})
+	records, err := m.deriveHostTOMLRecords(entries, entries, hostPersistChange{highWaterRaises: m.mirrorCountersAbove(ops, entries)})
 	if err != nil {
 		m.refuseMutations(fmt.Sprintf("the existing records could not be prepared for the move: %v", err))
 		return
 	}
 	set := recordSetFor(entries, records)
-	live := hostNameSet(entries)
-	for name, boundary := range ops.Boundaries() {
-		// A name only the store's mirror still remembers keeps its generation and
-		// presence counters in the family: the import replaces the mirror with
-		// what the family says, so a counter left out would be forgotten.
-		if _, held := set.Generations[name]; held {
-			continue
-		}
-		if _, isLive := live[name]; isLive {
-			continue
-		}
-		mark := HostGeneration{Generation: boundary.Generation, IncarnationID: boundary.IncarnationID, PresenceEpoch: boundary.PresenceEpoch}
-		set.Generations[name] = mark
-		if records.highWater == nil {
-			records.highWater = map[string]HostGeneration{}
-		}
-		records.highWater[name] = mark
+	for name, mark := range records.highWater {
 		m.cfg.hosts.SeedHighWater(map[string]hostreg.HighWater{name: {Generation: mark.Generation, PresenceEpoch: mark.PresenceEpoch}})
 	}
 	family, err := encodeHostRecords(set)
@@ -377,7 +362,13 @@ func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
 	// The legacy sections go first: the unlanded-removal check below reads
 	// hub.toml as the commit saw it.
 	m.stripLegacySections(true)
-	var unadopted []string
+	releaseHosts, err := m.holdLiveHosts()
+	if err != nil {
+		m.cfg.store.set(m.cfg.hosts.All())
+		m.refuseMutations(fmt.Sprintf("a host is busy; the settlement of its stored identity is retried: %v", err))
+		return
+	}
+	defer releaseHosts()
 	for _, entry := range m.cfg.hosts.All() {
 		// A hub that started before its records were readable minted ids of its
 		// own; operations and cleanup handles are bound to the stored ones.
@@ -386,28 +377,11 @@ func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
 			stored, _ = unlandedRemovalIdentity(records, entry.Name, m.cfg.configPath)
 		}
 		if validIncarnationID(stored.IncarnationID) && stored.IncarnationID != entry.IncarnationID {
-			mark := records.Generations[entry.Name]
-			if err := m.adoptStoredIncarnation(entry, stored.IncarnationID, hostreg.HighWater{Generation: mark.Generation, PresenceEpoch: mark.PresenceEpoch}); err != nil {
-				m.logf("host %q could not take its stored identity: %v", entry.Name, err)
-				unadopted = append(unadopted, entry.Name)
+			if err := m.cfg.hosts.RestoreIncarnation(entry.Name, stored.IncarnationID); err != nil {
+				m.logf("host %q keeps the incarnation minted at start: %v", entry.Name, err)
 			}
 		}
 	}
-	if len(unadopted) != 0 {
-		m.cfg.store.set(m.cfg.hosts.All())
-		m.refuseMutations(fmt.Sprintf("%d host(s) could not take their stored identity yet; the next attempt retries", len(unadopted)))
-		return
-	}
-	// Installing the records seeds the registry's counters, which can raise a live
-	// host's generation; hosts the collision rule will rebase are retired under
-	// their gates first and stay held until the rule has run.
-	releaseCollisions, err := m.retireCollidingConnections(records)
-	if err != nil {
-		m.cfg.store.set(m.cfg.hosts.All())
-		m.refuseMutations(fmt.Sprintf("a host that collides with a removed name is busy; the next attempt retries: %v", err))
-		return
-	}
-	defer releaseCollisions()
 	m.installRestoredRecords(hostRecordDocument{Hosts: m.cfg.hosts.All(), Records: records})
 	// Seeding the stored marks raised the registry's counters past the entries
 	// just copied; the manager's view follows what the registry serves.
@@ -443,7 +417,7 @@ func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
 		return
 	}
 	collided := m.breakBootTombstoneCollision(records)
-	releaseCollisions()
+	releaseHosts()
 	for _, name := range sortedStagedMarkerNames(m.cfg.store.stagedSnapshot()) {
 		if _, err := m.finalizeOrphanMarkerIfAny(context.Background(), name, true); err != nil {
 			m.logf("boot finalization of the staged receipt marker for %q refused: %v", name, err)
@@ -599,6 +573,16 @@ func (m *hubHostManager) bootLegacyRecords(settle bool) bool {
 	loaded, hasFile := m.recordStore().load()
 	readable := hasFile || strings.TrimSpace(m.cfg.configPath) == "" || m.hostFileAbsentOrEmpty()
 	fileRecords := loaded.Records
+	releaseHosts := func() {}
+	if settle {
+		// Seeding and the collision rule below change live registrations.
+		var err error
+		if releaseHosts, err = m.holdLiveHosts(); err != nil {
+			m.refuseMutations(fmt.Sprintf("a host is busy; the settlement of its records is retried: %v", err))
+			return false
+		}
+		defer releaseHosts()
+	}
 	if hasFile {
 		m.seedHighWater(fileRecords)
 	}
@@ -630,6 +614,7 @@ func (m *hubHostManager) bootLegacyRecords(settle bool) bool {
 	if hasFile {
 		collided = m.breakBootTombstoneCollision(fileRecords)
 	}
+	releaseHosts()
 	// Boot finalizes each staged-receipt marker by the persisted phase and flags
 	// (spec §5: "Boot finalizes each host entry by the persisted phase and flags
 	// ... and the receipt records `bootRecovered: true`"). A marker is the

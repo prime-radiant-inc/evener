@@ -891,3 +891,73 @@ func TestLateAttachWaitsForABusyHostBeforeRebasingACollision(t *testing.T) {
 		t.Fatal("the collision was never rebased after the gate freed")
 	}
 }
+
+// TestLateAttachRetiresAConnectionBeforeCountersRaiseItsGeneration covers a
+// registration change that is neither an adopted incarnation nor a collision: a
+// returning store that kept only a generation mark for the name (its tombstone
+// expired) raises the live host's generation when the counters are seeded, and
+// the channel the host held must not be left attached to the old registration.
+func TestLateAttachRetiresAConnectionBeforeCountersRaiseItsGeneration(t *testing.T) {
+	late, manager, reopened, hosts := lateAttachOverAReAddedName(t)
+	family, _, _ := reopened.HostRecords()
+	delete(family.Tombstones, "side")
+	if err := reopened.CommitHostRecords(family, hostops.HostMirror{}); err != nil {
+		t.Fatalf("expire the tombstone: %v", err)
+	}
+	before, _ := hosts.Get("side")
+
+	late.attachOps(reopened)
+
+	entry, _ := hosts.Get("side")
+	if entry.Generation <= before.Generation {
+		t.Fatalf("side kept generation %d; the fixture's stored mark did not raise it", entry.Generation)
+	}
+	if ch, attached := manager.ChannelIfAttached("side"); attached && !ch.MatchesRegistration(entry) {
+		t.Fatal("the channel from before the attach is still attached to the registration the counters replaced")
+	}
+}
+
+// TestLateAttachOfAStoreNotYetImportedRetiresCollidingConnections is the same
+// rule on the other attach path: the store has not imported the records, which
+// still sit in hub.toml, and the legacy collision rule rebases a host a removed
+// name's tombstone collides with while the host holds a connection.
+func TestLateAttachOfAStoreNotYetImportedRetiresCollidingConnections(t *testing.T) {
+	configPath, records := legacyHub(t)
+	var removed string
+	for name := range records.Tombstones {
+		removed = name
+		break
+	}
+	body := fileBytes(t, configPath)
+	if err := os.WriteFile(configPath, append(body, []byte("\n[[hosts]]\nname = \""+removed+"\"\nssh = \"again.example\"\n")...), 0o600); err != nil {
+		t.Fatalf("add %s again by hand: %v", removed, err)
+	}
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	hosts, err := hostreg.New(hostRegistryEntries(mustLoadConfig(t, configPath)))
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	manager := sshconn.New(hosts, sshconn.Options{Runner: &attachedUpdateRunner{}})
+	t.Cleanup(func() { _ = manager.Close() })
+	late := newHubHostManager(appsource.NewRegistry(), manager, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostConfigPath: configPath, RemoteHostOpsUnavailable: true,
+	}, configPath, hosts, t.Logf)
+	if _, err := manager.Ensure(context.Background(), removed); err != nil {
+		t.Fatalf("Ensure while the store is unavailable: %v", err)
+	}
+
+	before, _ := hosts.Get(removed)
+
+	late.attachOps(store)
+
+	entry, _ := hosts.Get(removed)
+	if entry.IncarnationID == before.IncarnationID {
+		t.Fatalf("the fixture did not make %s collide with its tombstone: still %+v", removed, entry)
+	}
+	if ch, attached := manager.ChannelIfAttached(removed); attached && !ch.MatchesRegistration(entry) {
+		t.Fatal("the channel from before the attach is still attached to the registration the collision replaced")
+	}
+}
