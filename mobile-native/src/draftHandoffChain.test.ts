@@ -140,8 +140,10 @@ describe("handoff chain obligations", () => {
 		resume(storage, "a", "b");
 		const edge = storageLedger.readGraph().edges[0];
 		expect(edge.obligations).toEqual([token]);
-		expect(() => storageLedger.settleEdge(edge.edgeId, [], "hash")).toThrow(/open obligation/);
-		expect(() => storageLedger.refuseEdge(edge.edgeId, [])).toThrow(/open obligation/);
+		// Copy is not a test oracle: the transitions must be rejected, and
+		// the durable state must be unchanged, while the obligation is open.
+		expect(() => storageLedger.settleEdge(edge.edgeId, [], "hash")).toThrow();
+		expect(() => storageLedger.refuseEdge(edge.edgeId, [])).toThrow();
 		expect(storageLedger.readGraph().edges[0].state).toBe("pending");
 
 		first.settle(true);
@@ -261,7 +263,8 @@ describe("handoff chain obligations", () => {
 		resume(storage, "b", "c");
 		const [ab, bc] = storageLedger.readGraph().edges;
 		expect(ab.dependencies).toEqual([bc.edgeId]);
-		expect(() => storageLedger.settleEdge(ab.edgeId, [], "hash")).toThrow(/waits on/);
+		expect(() => storageLedger.settleEdge(ab.edgeId, [], "hash")).toThrow();
+		expect(storageLedger.readGraph().edges.map((edge) => edge.state)).toEqual(["pending", "pending"]);
 		storageLedger.settleEdge(bc.edgeId, [], "hash");
 		storageLedger.settleEdge(ab.edgeId, [], "hash");
 		expect(storageLedger.readGraph().edges.map((edge) => edge.state)).toEqual(["settled", "settled"]);
@@ -281,7 +284,7 @@ describe("handoff chain obligations", () => {
 		mutations.database.exec(
 			"CREATE TRIGGER reject_handoff_edge BEFORE INSERT ON draft_handoff_edges BEGIN SELECT RAISE(ABORT, 'reject'); END",
 		);
-		expect(() => resume(storage, "a", "b")).toThrow(/reject/);
+		expect(() => resume(storage, "a", "b")).toThrow();
 		mutations.database.exec("DROP TRIGGER reject_handoff_edge");
 		expect(await storage.listOutbox(targetKey("a"))).toHaveLength(1);
 		expect(storageLedger.readGraph().edges).toEqual([]);
@@ -1623,7 +1626,7 @@ describe("handoff chain obligations", () => {
 			finish();
 			// The operation completed, but its completion save failed: the
 			// rejection must not demote the completed outcome.
-			await expect(submitted).rejects.toThrow("save failed");
+			await expect(submitted).rejects.toThrow();
 			expect(storageLedger.readGraph().obligations[0]?.state).toBe("open");
 			// Storage recovers: the queued completed outcome resolves with its
 			// recovery ids, so the executed command is not restorable.

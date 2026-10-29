@@ -137,7 +137,7 @@ describe("durable handoff library", () => {
 			 VALUES ('hub', 'b', 'theirs', NULL,
 			 '[{"id":"park","text":"parked","images":[{"id":"missing","marker":1,"mediaType":"image/png"}]}]')`,
 		);
-		expect(() => repository.read(destination("b"))).toThrow(/Saved image is unavailable/);
+		expect(() => repository.read(destination("b"))).toThrow();
 
 		const draftLibrary = library();
 		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(false);
@@ -323,6 +323,41 @@ describe("durable handoff library", () => {
 		expect(live.getSnapshot().record).toMatchObject({ draft: "a's work", releasedRecoveryIds: ["rel-1"] });
 		live.edit("more work");
 		expect(repository.read(destination("b"))).toMatchObject({ draft: "more work", releasedRecoveryIds: ["rel-1"] });
+	});
+
+	test("a failed pair-history read defers the identity change", () => {
+		const { ledger, repository, draftDatabase, library } = setup();
+		repository.write(destination("a"), { draft: "a's work", unconfirmed: null });
+		draftDatabase.exec(
+			"CREATE TRIGGER reject_b BEFORE INSERT ON drafts WHEN NEW.session_ref = 'b' BEGIN SELECT RAISE(ABORT, 'full'); END",
+		);
+		const draftLibrary = library();
+		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(false);
+		draftDatabase.exec("DROP TRIGGER reject_b");
+		expect(edgeFor(ledger, "a", "b")?.state).toBe("pending");
+
+		// The pair history becomes unreadable: the identity-change action must
+		// defer its decision instead of throwing through the resume flow,
+		// leaving the durable edge for a later retry.
+		const unreadable = new Proxy(ledger, {
+			get(target, property) {
+				const value = Reflect.get(target, property, target);
+				if (property === "edgesBetween" && typeof value === "function")
+					return (...args: unknown[]) => {
+						void args;
+						throw new Error("history unreadable");
+					};
+				return typeof value === "function" ? (value as (...inner: unknown[]) => unknown).bind(target) : value;
+			},
+		}) as DraftHandoffLedger;
+		const deferred = library(() => unreadable);
+		expect(deferred.handoff(destination("a"), destination("b"))).toBe(false);
+		expect(edgeFor(ledger, "a", "b")?.state).toBe("pending");
+
+		// Once the history reads again, the same action completes the
+		// identity change.
+		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(true);
+		expect(repository.read(destination("b"))).toMatchObject({ draft: "a's work" });
 	});
 
 	test("an uncomposed edge whose transfer landed settles from durable capture proof", () => {

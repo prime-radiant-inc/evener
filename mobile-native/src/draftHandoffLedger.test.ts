@@ -243,8 +243,10 @@ describe("draft handoff ledger", () => {
 
 		ledger.beginSubmission("obligation-1", a);
 		const edge = ledger.createEdge({ chainId: "chain", from: a, to: b, obligations: ["obligation-1"] });
-		expect(() => ledger.settleEdge(edge.edgeId, [], "hash")).toThrow(/open obligation/);
-		expect(() => ledger.refuseEdge(edge.edgeId, [])).toThrow(/open obligation/);
+		// Copy is not a test oracle: the transitions must be rejected with
+		// the durable state unchanged while the obligation is open.
+		expect(() => ledger.settleEdge(edge.edgeId, [], "hash")).toThrow();
+		expect(() => ledger.refuseEdge(edge.edgeId, [])).toThrow();
 		expect(ledger.readGraph().edges[0]).toMatchObject({ state: "pending", deliveredHash: null });
 
 		ledger.resolveSubmission("obligation-1", "completed", ["recovered-1"]);
@@ -256,7 +258,8 @@ describe("draft handoff ledger", () => {
 				{ chainId: "chain", destination: b, recoveryId: "recovered-1", disposition: "completed", edgeId: edge.edgeId },
 			],
 		});
-		expect(() => ledger.settleEdge(edge.edgeId, [], "again")).toThrow(/settled/);
+		expect(() => ledger.settleEdge(edge.edgeId, [], "again")).toThrow();
+		expect(ledger.readGraph().edges[0]).toMatchObject({ state: "settled", deliveredHash: "hash" });
 	});
 
 	test("rolls a settlement back when a delivery write fails", () => {
@@ -326,8 +329,9 @@ describe("draft handoff ledger", () => {
 		const { ledger } = setup();
 		const downstream = ledger.createEdge({ chainId: "chain", from: b, to: c });
 		const upstream = ledger.createEdge({ chainId: "chain", from: a, to: b, dependencies: [downstream.edgeId] });
-		expect(() => ledger.settleEdge(upstream.edgeId, [], "hash")).toThrow(/waits on/);
-		expect(() => ledger.refuseEdge(upstream.edgeId, [])).toThrow(/waits on/);
+		expect(() => ledger.settleEdge(upstream.edgeId, [], "hash")).toThrow();
+		expect(() => ledger.refuseEdge(upstream.edgeId, [])).toThrow();
+		expect(ledger.readGraph().edges.map((edge) => edge.state)).toEqual(["pending", "pending"]);
 		ledger.settleEdge(downstream.edgeId, [], "hash");
 		ledger.settleEdge(upstream.edgeId, [], "hash");
 		expect(ledger.readGraph().edges.map((edge) => edge.state)).toEqual(["settled", "settled"]);
@@ -337,9 +341,11 @@ describe("draft handoff ledger", () => {
 		const { ledger } = setup();
 		const downstream = ledger.createEdge({ chainId: "chain", from: b, to: c });
 		const upstream = ledger.createEdge({ chainId: "chain", from: a, to: b, dependencies: [downstream.edgeId] });
-		expect(() => ledger.cleanEdge(upstream.edgeId)).toThrow(/pending/);
+		expect(() => ledger.cleanEdge(upstream.edgeId)).toThrow();
+		expect(ledger.readGraph().edges.map((edge) => edge.state)).toEqual(["pending", "pending"]);
 		ledger.settleEdge(downstream.edgeId, [], "hash");
-		expect(() => ledger.cleanEdge(downstream.edgeId)).toThrow(/pending dependent/);
+		expect(() => ledger.cleanEdge(downstream.edgeId)).toThrow();
+		expect(ledger.readGraph().edges.map((edge) => edge.state)).toEqual(["settled", "pending"]);
 		ledger.settleEdge(upstream.edgeId, [], "hash");
 		ledger.cleanEdge(downstream.edgeId);
 		ledger.cleanEdge(downstream.edgeId);
@@ -433,6 +439,7 @@ describe("draft handoff ledger", () => {
 		const { ledger } = setup();
 		const edge = ledger.createEdge({ chainId: "chain", from: a, to: b });
 		ledger.settleEdge(edge.edgeId, [], "hash");
-		expect(() => ledger.createEdge({ chainId: "chain", from: a, to: b })).toThrow(/already settled/);
+		expect(() => ledger.createEdge({ chainId: "chain", from: a, to: b })).toThrow();
+		expect(ledger.readGraph().edges).toHaveLength(1);
 	});
 });

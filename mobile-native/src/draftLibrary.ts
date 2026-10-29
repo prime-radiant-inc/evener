@@ -140,13 +140,13 @@ export class DraftLibrary {
 		// fresh work hands that work over instead.
 		if (this.sourceRetiredIdle(from)) return false;
 		const history = this.pairHistory(ledger, from, to);
-		if (history !== undefined) {
-			if (history.some((entry) => samePair(entry, from, to) && entry.state === "settled")) return true;
-			if (
-				history.some((entry) => samePair(entry, from, to) && (entry.state === "refused" || entry.state === "cleaned"))
-			)
-				return false;
-		}
+		// A read that fails is incomplete, never empty: the identity-change
+		// action defers its decision instead of throwing through the resume
+		// flow, and a durable edge stays for a later retry.
+		if (history === undefined) return false;
+		if (history.some((entry) => samePair(entry, from, to) && entry.state === "settled")) return true;
+		if (history.some((entry) => samePair(entry, from, to) && (entry.state === "refused" || entry.state === "cleaned")))
+			return false;
 		const edge = this.createEdge(ledger, from, to);
 		if (edge === undefined) {
 			return false;
@@ -286,10 +286,14 @@ export class DraftLibrary {
 		from: DraftDestination,
 		to: DraftDestination,
 	): DraftHandoffEdge[] | undefined {
-		const between = ledger.edgesBetween?.(from, to);
-		if (between !== undefined) return between;
-		const load = readHandoffGraph(ledger);
-		return load.state === "ready" ? load.graph.edges : undefined;
+		try {
+			const between = ledger.edgesBetween?.(from, to);
+			if (between !== undefined) return between;
+			const load = readHandoffGraph(ledger);
+			return load.state === "ready" ? load.graph.edges : undefined;
+		} catch {
+			return undefined;
+		}
 	}
 
 	/** A handoff without a recorded retarget (tests, or a resume path that did
