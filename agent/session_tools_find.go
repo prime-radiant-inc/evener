@@ -454,6 +454,11 @@ func execFindAcrossSessions(ctx context.Context, deps *toolDeps, query, scope st
 				records = append(records, buildSessionRecord(c, snips, currentID, deps.currentMeta))
 			}
 		}
+		// A cancellation inside the last candidate's read is swallowed as a
+		// non-match, so the partial result must not be returned as complete.
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		scanned = &n
 		scanTruncated = &trunc
 	}

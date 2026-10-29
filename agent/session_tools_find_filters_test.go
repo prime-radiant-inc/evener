@@ -309,3 +309,33 @@ func TestFindSessionTranscriptsToolHonorsCancelledContext(t *testing.T) {
 		t.Fatalf("Exec error = %v, want context.Canceled", err)
 	}
 }
+
+// cancelAfterErrChecks is a context that reports cancellation from its nth
+// Err call on, so a test can cancel at a precise point inside a call.
+type cancelAfterErrChecks struct {
+	context.Context
+	remaining int
+}
+
+func (c *cancelAfterErrChecks) Err() error {
+	if c.remaining > 0 {
+		c.remaining--
+		return nil
+	}
+	return context.Canceled
+}
+
+// A cancellation that lands while the only candidate's transcript is being
+// read fails the call instead of returning the empty result as complete.
+func TestFindSessionTranscriptsCancelDuringLastCandidateRead(t *testing.T) {
+	dir := newBucket(t)
+	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
+	writeFindSession(t, dir, findMetaSpec{id: sessionID}, "semantic turn")
+	deps := &toolDeps{stateDir: dir, sessionID: sessionID}
+
+	// The scan loop's own check passes; the transcript read then sees the cancel.
+	ctx := &cancelAfterErrChecks{Context: t.Context(), remaining: 1}
+	if _, err := execFindSessionTranscripts(ctx, deps, map[string]any{"query": "semantic"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("find error = %v, want context.Canceled", err)
+	}
+}
