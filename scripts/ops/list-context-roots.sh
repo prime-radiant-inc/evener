@@ -17,9 +17,10 @@
 #   scripts/ops/list-context-roots.sh --help
 #
 # Output columns: marker, file:line, enclosing func, source line.
-# INHERIT? means the enclosing top-level func's signature mentions a
-# context.Context parameter (a func literal inside it is covered too). It is
-# a heuristic: a method that reads a ctx from its receiver is not detected.
+# INHERIT? means the enclosing top-level func takes a context.Context
+# parameter (receiver and result types do not count; a func literal inside it
+# is covered too). It is a heuristic: a method that reads a ctx from its
+# receiver or a one-line func literal parameter is not detected.
 set -uo pipefail
 
 mode=all
@@ -34,20 +35,49 @@ esac
 root=$(git rev-parse --show-toplevel) || { echo "run inside the evener checkout" >&2; exit 1; }
 cd "$root" || exit 1
 
+# paramList returns the parenthesized parameter list of a Go func signature:
+# it skips a method receiver group, then the name, then reads one balanced
+# group, so a context.Context in the receiver or the result types does not
+# count.
 git ls-files -z -- '*.go' ':!:*_test.go' ':!:**/testdata/**' \
   | xargs -0 awk '
-    FNR == 1 { fn = ""; hasctx = 0 }
-    /^func / { fn = $0; hasctx = (fn ~ /context\.Context/) }
+    function paramList(sig,    i, depth, start, c, skipped) {
+      i = 6                                  # past "func "
+      skipped = 0
+      while (i <= length(sig)) {
+        c = substr(sig, i, 1)
+        if (c == "(") {
+          start = i; depth = 0
+          for (; i <= length(sig); i++) {
+            c = substr(sig, i, 1)
+            if (c == "(") depth++
+            else if (c == ")" && --depth == 0) break
+          }
+          if (skipped || substr(sig, 6, 1) != "(") return substr(sig, start, i - start + 1)
+          skipped = 1                        # that group was the receiver
+        }
+        i++
+      }
+      return ""
+    }
+    FNR == 1 { fn = ""; hasctx = 0; insig = 0 }
+    /^func / { sig = ""; insig = 1; fn = "" }
+    insig {
+      sig = sig (sig == "" ? "" : " ") $0
+      if ($0 ~ /\{/ && $0 !~ /^\t/ && ($0 ~ /\{[ \t]*$/ || $0 ~ /\}[ \t]*$/)) {
+        insig = 0
+        hasctx = (paramList(sig) ~ /context\.Context/)
+        fn = sig; sub(/^func /, "", fn); sub(/[ \t]*\{.*$/, "", fn)
+      }
+    }
     /context\.(Background|TODO)\(\)/ && $0 !~ /^[ \t]*\/\// {
-      name = fn; sub(/^func /, "", name); sub(/\{[ \t]*$/, "", name)
       line = $0; gsub(/^[ \t]+/, "", line)
-      printf "%s\t%s:%d\t%s\t%s\n", (hasctx ? "INHERIT?" : "root?"), FILENAME, FNR, name, line
+      printf "%s\t%s:%d\t%s\t%s\n", (hasctx ? "INHERIT?" : "root?"), FILENAME, FNR, fn, line
     }' \
-  | sort -t$'\t' -k2,2V \
   | {
     case $mode in
       all) cat ;;
-      inherit) grep -P '^INHERIT\?\t' ;;
+      inherit) awk -F '\t' '$1 == "INHERIT?"' ;;
       count) cut -f1 | sort | uniq -c ;;
     esac
   }
