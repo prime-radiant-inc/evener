@@ -138,6 +138,38 @@ test("a short image-bearing dialogue never becomes a spotlight", () => {
   expect(composeComicRows([mixed], 1200, () => true)[0]?.panels[0]?.composition).toBe("wide");
 });
 
+test("single-prose eligibility gates compact fit calls without limiting pair length", () => {
+  for (const value of [
+    entry("empty", "dialogue", ""),
+    entry("thought", "thought", "x"),
+    { ...entry("stream", "dialogue", "x"), streaming: true },
+    { ...entry("image", "dialogue", "x"), images: [{ src: "fixture.png", name: "fixture.png" }] },
+    entry("insert", "dialogue", "```txt\nx\n```"),
+    entry("mixed", "dialogue", "x\n\n```txt\ny\n```"),
+    entry("long", "dialogue", "x".repeat(81)),
+  ]) {
+    const calls: string[] = [];
+    composeComicRows([value], 1200, (_document, _part, composition) => {
+      calls.push(composition);
+      return true;
+    });
+    expect(calls.filter((composition) => composition === "paired" || composition === "spotlight")).toEqual([]);
+  }
+  const calls: string[] = [];
+  const fit = (_document: unknown, _part: unknown, composition: string) => {
+    calls.push(composition);
+    return true;
+  };
+  expect(composeComicRows([entry("limit", "dialogue", "x".repeat(80))], 1200, fit)[0]?.panels[0]?.composition).toBe(
+    "spotlight",
+  );
+  expect(calls.every((composition) => composition === "spotlight")).toBe(true);
+  calls.length = 0;
+  const rows = composeComicRows([entry("long", "dialogue", "x".repeat(81)), entry("next", "dialogue", "y")], 1200, fit);
+  expect(rows.map((row) => row.panels.length)).toEqual([2]);
+  expect(calls).toEqual(["paired", "paired"]);
+});
+
 test("formatted continuations break between blocks, not inside emphasis or references", () => {
   const source = "# Heading\n\n**A long intact emphasis**\n\n[link][ref]\n\n[ref]: https://example.com";
   const rows = composeComicRows(

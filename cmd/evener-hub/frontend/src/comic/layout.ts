@@ -21,6 +21,18 @@ export type ComicRow = {
 
 type Offset = { start: number; end: number };
 
+function singleProseDialogue(entry: ComicEntry, document: ComicMarkdownDocument): ComicMarkdownPart | undefined {
+  const part = document.parts[0];
+  return entry.kind === "dialogue" &&
+    !entry.streaming &&
+    !entry.images?.length &&
+    entry.text &&
+    document.parts.length === 1 &&
+    part?.kind === "prose"
+    ? part
+    : undefined;
+}
+
 /** Preserve each source code unit. Intl boundaries prevent slicing inside a visible character. */
 export function splitComicText(text: string, fits: (candidate: string) => boolean): readonly Offset[] {
   if (!text) return [{ start: 0, end: 0 }];
@@ -68,14 +80,10 @@ export function composeComicRows(
     if (!current || !document) continue;
     const next = entries[index + 1];
     const nextDocument = documents[index + 1];
-    const pairable = (value: ComicEntry, doc: ComicMarkdownDocument) =>
-      value.kind === "dialogue" &&
-      !value.streaming &&
-      !value.images?.length &&
-      !!value.text &&
-      doc.parts.length === 1 &&
-      doc.parts[0]?.kind === "prose" &&
-      fits(doc, doc.parts[0], "paired", value.kind);
+    const pairable = (value: ComicEntry, doc: ComicMarkdownDocument) => {
+      const part = singleProseDialogue(value, doc);
+      return !!part && fits(doc, part, "paired", value.kind);
+    };
     if (viewportWidth > 760 && next && nextDocument && pairable(current, document) && pairable(next, nextDocument)) {
       rows.push({
         id: `${current.id}:${next.id}`,
@@ -92,15 +100,8 @@ export function composeComicRows(
       index += 1;
       continue;
     }
-    const spotlight =
-      current.kind === "dialogue" &&
-      !current.streaming &&
-      !current.images?.length &&
-      current.text.length > 0 &&
-      current.text.length <= 80 &&
-      document.parts.length === 1 &&
-      document.parts[0]?.kind === "prose" &&
-      fits(document, document.parts[0], "spotlight", current.kind);
+    const single = singleProseDialogue(current, document);
+    const spotlight = single && current.text.length <= 80 && fits(document, single, "spotlight", current.kind);
     const composition: ComicComposition = spotlight ? "spotlight" : "wide";
     for (const part of document.parts) {
       const candidate = (start: number, end: number): ComicMarkdownPart => ({
@@ -120,7 +121,7 @@ export function composeComicRows(
       if (!part.plain && part.kind === "prose" && part.blocks?.length) {
         parts = [];
         let pending: ComicMarkdownPart | undefined;
-        const withReferences = (input: string) => (document.references ? `${input}\n\n${document.references}` : input);
+        const withReferences = (input: string) => (document.references ? `${document.references}\n\n${input}` : input);
         let input = "";
         for (const block of part.blocks) {
           const joined = input ? `${input}\n\n${block.input}` : block.input;

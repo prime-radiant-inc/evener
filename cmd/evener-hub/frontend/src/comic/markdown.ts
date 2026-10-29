@@ -1,4 +1,4 @@
-import type { Token, Tokens } from "marked";
+import { type Token, Tokenizer, type Tokens } from "marked";
 import { markdownLexer } from "../widgets/markdown/lexer";
 
 // Every index is an original UTF-16 code-unit offset, never a rendered offset.
@@ -205,9 +205,11 @@ function tableRuns(token: Tokens.Table, raw: MappedText): VisibleRun[] {
     const result: MappedText[] = [];
     let start = 0;
     let escaped = false;
+    let lastDelimiter = -1;
     for (let i = 0; i <= line.text.length; i++) {
       const c = line.text[i];
       if ((c === "|" && !escaped) || i === line.text.length) {
+        if (c === "|") lastDelimiter = i;
         const value = cut(line, start, i);
         const left = value.text.length - value.text.trimStart().length;
         const right = value.text.trimEnd().length;
@@ -217,7 +219,7 @@ function tableRuns(token: Tokens.Table, raw: MappedText): VisibleRun[] {
       escaped = c === "\\" && !escaped;
     }
     if (/^\s*\|/.test(line.text)) result.shift();
-    if (/\|\s*$/.test(line.text)) result.pop();
+    if (lastDelimiter >= 0 && !line.text.slice(lastDelimiter + 1).trim()) result.pop();
     return result.map((cell) => {
       const offsets: number[] = [];
       let text = "";
@@ -304,12 +306,33 @@ function isPlain(token: Token): boolean {
 /** Parse before pagination. Raw ranges partition the original, derived inputs carry reference context. */
 export function projectComicMarkdown(source: string, live: boolean): ComicMarkdownDocument {
   const original = normalized(source);
-  const tokens = markdownLexer.lexer(original.text);
-  const definitions: string[] = [];
-  markdownLexer.walkTokens(tokens, (token) => {
-    if (token.type === "def") definitions.push(token.raw);
+  const tokenizer = new Tokenizer();
+  const tokens = markdownLexer.lexer(original.text, {
+    ...markdownLexer.defaults,
+    tokenizer,
+    extensions: {
+      renderers: {},
+      childTokens: {},
+      ...markdownLexer.defaults.extensions,
+      block: [
+        ...(markdownLexer.defaults.extensions?.block ?? []),
+        function (source, tokens) {
+          const previous = tokens.at(-1);
+          // Definitions continuing a paragraph are literal text. Otherwise
+          // Marked consumes duplicates without returning their raw spans.
+          // Retain those tokens without replacing the first link destination.
+          if (previous?.type === "paragraph" || previous?.type === "text") return;
+          const definition = tokenizer.def(source);
+          if (definition && this.lexer.tokens.links[definition.tag]) return definition;
+        },
+      ],
+    },
   });
-  const references = definitions.join("\n");
+  const definitions = new Map<string, string>();
+  markdownLexer.walkTokens(tokens, (token) => {
+    if (token.type === "def" && !definitions.has(token.tag)) definitions.set(token.tag, token.raw);
+  });
+  const references = [...definitions.values()].join("\n");
   const append = (parts: ComicMarkdownPart[], part: ComicMarkdownPart) => {
     const prior = parts.at(-1);
     if (part.kind === "prose" && prior?.kind === "prose") {
@@ -429,7 +452,7 @@ export function projectComicMarkdown(source: string, live: boolean): ComicMarkdo
       part.visible = [
         { text: part.input, offsets: Array.from({ length: part.input.length }, (_, i) => part.start + i) },
       ];
-    } else if (part.kind !== "code" && references) part.input += `\n\n${references}`;
+    } else if (part.kind !== "code" && references) part.input = `${references}\n\n${part.input}`;
   });
   return { source, live, references, parts };
 }

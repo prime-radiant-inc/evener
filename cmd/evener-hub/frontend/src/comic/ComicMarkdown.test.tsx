@@ -1,12 +1,200 @@
 import { render } from "@testing-library/react";
+import { Component, type ReactNode } from "react";
 import { expect, test, vi } from "vitest";
 import { ComicMarkdown, comicMarkdownPoint } from "./ComicMarkdown";
+import { composeComicRows } from "./layout";
 import { projectComicMarkdown } from "./markdown";
 
 function formatted(source: string, live = false) {
   const document = projectComicMarkdown(source, live);
   return document.parts.map((part) => <ComicMarkdown key={part.start} document={document} part={part} />);
 }
+
+class RenderErrors extends Component<{ errors: unknown[]; children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  componentDidCatch(error: unknown) {
+    this.props.errors.push(error);
+  }
+  render() {
+    return this.state.failed ? null : this.props.children;
+  }
+}
+
+function composed(source: string, live: boolean, errors: unknown[], split = false) {
+  const rows = composeComicRows(
+    [
+      {
+        id: "fixture",
+        sourceItemId: "fixture",
+        sourceIndex: 0,
+        kind: "dialogue",
+        speaker: "human",
+        sourceLabel: "fixture",
+        text: source,
+        streaming: live,
+      },
+    ],
+    760,
+    () => !split,
+  );
+  expect(rows.flatMap((row) => row.panels.map(({ slice }) => source.slice(slice.start, slice.end))).join("")).toBe(
+    source,
+  );
+  return (
+    <RenderErrors errors={errors}>
+      {rows.flatMap((row) =>
+        row.panels.map(({ document, part }) => <ComicMarkdown key={part.start} document={document} part={part} />),
+      )}
+    </RenderErrors>
+  );
+}
+
+function glyph(container: HTMLElement, offset: number, element: Element, local: number, value: string) {
+  const root = element.closest<HTMLElement>("[data-comic-markdown]");
+  if (!root) throw new Error("missing glyph root");
+  const probe = ranges(container.ownerDocument);
+  try {
+    comicMarkdownPoint(root, offset);
+    expect(probe.last?.startContainer).toBe(element.firstChild);
+    expect(probe.last?.startOffset).toBe(local);
+    expect(probe.last?.toString()).toBe(value);
+    expect(probe.last?.startContainer.isConnected).toBe(true);
+  } finally {
+    probe.spy.mockRestore();
+  }
+}
+
+test.each([
+  "[r]: /first\n\n[r]",
+  "[r]: /first\n\n[r]: /second\n\n[r]",
+  "[r]: /first\n[r]: /second\n[r]",
+  "> [r]: /first\n>\n> [r]: /second\n>\n> [r]",
+  "- [r]: /first\n\n  [r]: /second\n\n  [r]",
+  "[r]: /first\n\n> [r]: /second\n>\n> [r]",
+  "[r]: /first\n\n- [r]: /second\n\n  [r]",
+  "> [r]: /first\n>\n> [r]: /second\n>\n> ```txt\n> code\n> ```\n>\n> [r]",
+  "- [r]: /first\n\n  [r]: /second\n\n  ```txt\n  code\n  ```\n\n  [r]",
+])("reference spans mount through rows and streaming: %s", (source) => {
+  const errors: unknown[] = [];
+  const rendered = render(composed(source, false, errors), { onCaughtError: () => {} });
+  const check = () => {
+    expect(errors).toEqual([]);
+    expect(
+      projectComicMarkdown(source, false)
+        .parts.flatMap((part) => part.visible)
+        .filter((run) => run.text === "r")
+        .flatMap((run) => run.offsets),
+    ).toEqual([source.lastIndexOf("[r]") + 1]);
+    const link = rendered.container.querySelector("a");
+    expect(link?.getAttribute("href")).toBe("/first");
+    if (!link) throw new Error("missing link");
+    glyph(rendered.container, source.lastIndexOf("[r]") + 1, link, 0, "r");
+  };
+  check();
+  for (let end = 1; end <= source.length; end++) {
+    rendered.rerender(composed(source.slice(0, end), true, errors));
+    expect(errors).toEqual([]);
+    expect(rendered.container.querySelector("[data-comic-markdown]")).not.toBeNull();
+  }
+  rendered.rerender(composed(source, false, errors));
+  check();
+});
+
+test.each(
+  ["", "| "].flatMap((prefix) =>
+    ["", "  "].flatMap((spaces) =>
+      [1, 2, 3, 4].flatMap((slashes) => [false, true].map((outer) => ({ prefix, spaces, slashes, outer }))),
+    ),
+  ),
+)(
+  "terminal table pipe binds parity $slashes, outer $outer, prefix '$prefix', spaces '$spaces'",
+  ({ prefix, spaces, slashes, outer }) => {
+    const source = `${prefix}a | b${prefix ? " |" : ""}\n${prefix}- | -${prefix ? " |" : ""}\n${prefix}x | y${"\\".repeat(slashes)}|${outer ? " |" : ""}${spaces}`;
+    const errors: unknown[] = [];
+    const rendered = render(composed(source, false, errors), { onCaughtError: () => {} });
+    const check = () => {
+      expect(errors).toEqual([]);
+      const cell = rendered.container.querySelector("td:last-child");
+      expect(cell?.textContent).toBe(`y${"\\".repeat(Math.floor(slashes / 2))}${slashes % 2 ? "|" : ""}`);
+      if (!cell) throw new Error("missing cell");
+      glyph(rendered.container, source.indexOf("y"), cell, 0, "y");
+      if (slashes % 2)
+        glyph(rendered.container, source.indexOf("y") + slashes + 1, cell, 1 + Math.floor(slashes / 2), "|");
+    };
+    check();
+    for (let end = source.indexOf("x"); end <= source.length; end++) {
+      rendered.rerender(composed(source.slice(0, end), true, errors));
+      expect(errors).toEqual([]);
+      expect(rendered.container.querySelector("table")).not.toBeNull();
+    }
+    rendered.rerender(composed(source, false, errors));
+    check();
+  },
+);
+
+test.each([
+  "<div>\nword\n</div>",
+  "<div>\n  word\t \n</div>",
+  "<div>\n\n**word**\n\n</div>",
+  "a\n\n<!--x-->\n\nb",
+  "> a\n>\n> <!--x-->\n>\n> b",
+  "> <div>\n>\n> **word**\n>\n> </div>",
+  "a\n\n<!-- x\n  y -->\n\nb",
+  "a\n\n<!--x-->\n\n```txt\n  code\n```\n\n<div>\n\n**word**\n\n</div>\n\na | b\n- | -\nx | y\n\n<!--end-->",
+])("escaped HTML separators mount with exact authored glyphs: %s", (source) => {
+  for (const split of [false, true]) {
+    const errors: unknown[] = [];
+    const rendered = render(composed(source, false, errors, split), { onCaughtError: () => {} });
+    expect(errors).toEqual([]);
+    expect(
+      rendered.container.querySelectorAll("script, [onerror], [data-comic-markdown] div:not([class])"),
+    ).toHaveLength(0);
+    const probe = ranges(rendered.container.ownerDocument);
+    try {
+      // Independently enumerate every literal HTML character, including authored whitespace.
+      for (const match of source.matchAll(/<!--[\s\S]*?-->|<\/?div>/g)) {
+        const root = [...rendered.container.querySelectorAll<HTMLElement>("[data-comic-markdown]")].find((root) =>
+          root.textContent.includes(match[0]),
+        );
+        expect(root).toBeTruthy();
+        if (!root) throw new Error("missing literal HTML");
+        const walker = root.ownerDocument.createTreeWalker(root, 4);
+        let literal: Text | undefined;
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          if ((node as Text).data.includes(match[0])) {
+            literal = node as Text;
+            break;
+          }
+        }
+        expect(literal).toBeTruthy();
+        const local = literal?.data.indexOf(match[0]) ?? -1;
+        for (let i = 0; i < match[0].length; i++) {
+          comicMarkdownPoint(root, match.index + i);
+          expect(probe.last?.startContainer).toBe(literal);
+          expect(probe.last?.startOffset).toBe(local + i);
+          expect(probe.last?.toString()).toBe(match[0][i]);
+          expect(probe.last?.startContainer.isConnected).toBe(true);
+        }
+      }
+    } finally {
+      probe.spy.mockRestore();
+    }
+    const strong = rendered.container.querySelector("strong");
+    if (source.includes("**word**")) {
+      expect(strong).not.toBeNull();
+      if (strong) glyph(rendered.container, source.indexOf("word"), strong, 0, "w");
+    }
+    if (source.endsWith("b")) {
+      const last = [...rendered.container.querySelectorAll("p")].at(-1);
+      if (!last) throw new Error("missing following paragraph");
+      glyph(rendered.container, source.length - 1, last, 0, "b");
+    }
+    rendered.unmount();
+  }
+});
 
 // jsdom has no glyph geometry. Record the REAL Range endpoints at the platform boundary.
 function ranges(doc: Document) {
@@ -243,6 +431,23 @@ test.each(["xbc", "ab", "abcd"])("inconsistent visible map %s cannot bind anothe
   const inconsistent = { ...part, visible: [{ text, offsets: [2, 3, 4, 5] }] };
   expect(() => render(<ComicMarkdown document={document} part={inconsistent} />)).toThrow(TypeError);
 });
+
+test.each(["a\n\n<!-- x\n  y -->\n\nb", "`a  b`", "```txt\n \n```"])(
+  "authored whitespace cannot be discarded as a generated separator: %s",
+  (source) => {
+    const document = projectComicMarkdown(source, false);
+    const part = document.parts[0];
+    if (!part) throw new Error("missing part");
+    const inconsistent = {
+      ...part,
+      visible: part.visible.map((run) => ({
+        text: run.text.replace(/\s/g, ""),
+        offsets: run.offsets.filter((_, i) => !/\s/.test(run.text[i] ?? "")),
+      })),
+    };
+    expect(() => render(<ComicMarkdown document={document} part={inconsistent} />)).toThrow(TypeError);
+  },
+);
 
 test("whole-document references resolve on both sides of a code insert without rendering definitions", () => {
   const source = "[same][r]\n\n```txt\nsame\n```\n\n[same][r]\n\n[r]: https://example.com\n";

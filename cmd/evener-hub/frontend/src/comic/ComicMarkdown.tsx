@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef } from "react";
+import { type ReactNode, useLayoutEffect, useRef } from "react";
 import { CodeBlock, Markdown } from "../widgets";
 import styles from "./comic.module.css";
 import type { ComicMarkdownDocument, ComicMarkdownPart } from "./markdown";
@@ -6,7 +6,30 @@ import type { ComicMarkdownDocument, ComicMarkdownPart } from "./markdown";
 type Glyph = { node: Text; index: number; source: number };
 const glyphs = new WeakMap<HTMLElement, Glyph[]>();
 
-/** Bind lexer-authored visible runs to DOM text, ignoring only markup's inter-element whitespace. */
+// Marked emits one newline after these block/cell elements and after the
+// opening tags below. Escaped HTML can share that newline's Text node.
+const separatorAfter = new Set([
+  "P",
+  "H1",
+  "H2",
+  "H3",
+  "H4",
+  "H5",
+  "H6",
+  "HR",
+  "BLOCKQUOTE",
+  "UL",
+  "OL",
+  "LI",
+  "TABLE",
+  "THEAD",
+  "TR",
+  "TH",
+  "TD",
+]);
+const separatorInside = new Set(["BLOCKQUOTE", "UL", "OL", "TABLE", "THEAD", "TR"]);
+
+/** Bind authored glyphs strictly, accounting for each structural separator first. */
 function bind(root: HTMLElement, part: ComicMarkdownPart): void {
   const expected = part.visible.flatMap((run) =>
     Array.from({ length: run.text.length }, (_, i) => ({
@@ -21,12 +44,15 @@ function bind(root: HTMLElement, part: ComicMarkdownPart): void {
   let cursor = 0;
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {
     const text = node as Text;
-    for (let index = 0; index < text.length; index++) {
+    const generated =
+      !part.plain &&
+      part.kind !== "code" &&
+      (separatorAfter.has(text.previousSibling?.nodeName ?? "") ||
+        (!text.previousSibling && separatorInside.has(text.parentElement?.tagName ?? "")));
+    if (generated && text.data[0] !== "\n") throw new TypeError("Comic Markdown block separator is missing");
+    for (let index = generated ? 1 : 0; index < text.length; index++) {
       const next = expected[cursor];
-      // Only whitespace-only markup nodes may be skipped, never authored text
-      // within a node or any literal code whitespace.
       if (!next || text.data[index] !== next.char) {
-        if (!part.plain && part.kind !== "code" && !text.data.trim()) continue;
         throw new TypeError("Comic Markdown glyph does not match its source map");
       }
       result.push({ node: text, index, source: next.source });
@@ -71,6 +97,29 @@ export function ComicMarkdown({ document, part }: { document: ComicMarkdownDocum
     // Markdown may replace innerHTML even when its input and this part are unchanged.
     if (root.current) bind(root.current, part);
   });
+  let content: ReactNode;
+  if (part.plain) {
+    content = part.input;
+  } else if (part.kind === "code") {
+    content = (
+      <div className={styles.technicalContent}>
+        <CodeBlock
+          text={part.code ?? ""}
+          language={part.language}
+          fold={false}
+          renderLine={(line) => <span className={styles.codeLine}>{line}</span>}
+        />
+      </div>
+    );
+  } else if (part.kind === "table") {
+    content = (
+      <div className={styles.technicalContent}>
+        <Markdown source={part.input} />
+      </div>
+    );
+  } else {
+    content = <Markdown source={part.input} />;
+  }
   return (
     <div
       ref={root}
@@ -83,24 +132,7 @@ export function ComicMarkdown({ document, part }: { document: ComicMarkdownDocum
           : styles.technicalScroll
       }
     >
-      {part.plain ? (
-        part.input
-      ) : part.kind === "code" ? (
-        <div className={styles.technicalContent}>
-          <CodeBlock
-            text={part.code ?? ""}
-            language={part.language}
-            fold={false}
-            renderLine={(line) => <span className={styles.codeLine}>{line}</span>}
-          />
-        </div>
-      ) : part.kind === "table" ? (
-        <div className={styles.technicalContent}>
-          <Markdown source={part.input} />
-        </div>
-      ) : (
-        <Markdown source={part.input} />
-      )}
+      {content}
     </div>
   );
 }

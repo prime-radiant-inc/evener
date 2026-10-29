@@ -384,14 +384,13 @@ test("stage pose is stable for an entry and presentation never infers a result",
   const pose = rendered.container.querySelector("[data-comic-scene] img")?.getAttribute("src");
   rendered.rerender(panel({ ...value, text: "Everything failed." }));
   expect(rendered.container.querySelector("[data-comic-scene] img")?.getAttribute("src")).toBe(pose);
+  const document = projectComicMarkdown(value.text, false);
+  const part = document.parts[0];
+  if (!part) throw new Error("missing first part");
   rendered.rerender(
     <ComicPanel
-      document={projectComicMarkdown(value.text, false)}
-      part={
-        projectComicMarkdown(value.text, false).parts[0] as NonNullable<
-          ReturnType<typeof projectComicMarkdown>["parts"][0]
-        >
-      }
+      document={document}
+      part={part}
       entry={value}
       slice={{ entryId: value.id, start: 0, end: value.text.length }}
       composition="wide"

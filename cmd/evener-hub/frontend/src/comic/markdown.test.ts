@@ -4,6 +4,32 @@ import { projectComicMarkdown } from "./markdown";
 const source = "**before**\n\n```ts\n  a\n\tb\n```\n\n| A | B |\n| - | - |\n| 1 | 2 |\n\nafter";
 
 test.each([
+  "[r]: /first\n\n[r]: /second\n\n[r]",
+  "[r]: /first\n[r]: /second\n[r]",
+  "> [r]: /first\n>\n> [r]: /second\n>\n> [r]",
+  "- [r]: /first\n\n  [r]: /second\n\n  [r]",
+  "[r]: /first\n\n> [r]: /second\n>\n> [r]",
+  "[r]: /first\n\n- [r]: /second\n\n  [r]",
+])("duplicate definition spans preserve original reference coordinates: %s", (raw) => {
+  for (const live of [true, false]) {
+    const doc = projectComicMarkdown(raw, live);
+    const runs = doc.parts.flatMap((part) => part.visible);
+    expect(runs.map((run) => run.text).join("")).toBe("r");
+    expect(runs.flatMap((run) => run.offsets)).toEqual([raw.lastIndexOf("[r]") + 1]);
+    expect(doc.parts.map((part) => raw.slice(part.start, part.end)).join("")).toBe(raw);
+  }
+});
+
+test.each(["", "  ", " |", " |  "])(
+  "escaped final table pipe retains literal coordinates with suffix '%s'",
+  (suffix) => {
+    const runs = projectComicMarkdown(`a | b\n- | -\nx | y\\|${suffix}`, false).parts.flatMap((part) => part.visible);
+    expect(runs.map((run) => run.text).join("")).toBe("abxy|");
+    expect(runs.flatMap((run) => run.offsets)).toEqual([0, 4, 12, 16, 18]);
+  },
+);
+
+test.each([
   ["  abc\n  ===", "abc", [2, 3, 4]],
   ["[x\\]](/url) after", "x] after", [1, 3, 11, 12, 13, 14, 15, 16]],
   ["- a\n\t\tb", "a\n  b", [2, 3, 5, 5, 6]],
