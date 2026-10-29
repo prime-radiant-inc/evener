@@ -2546,6 +2546,24 @@ async function drainSettleSteps(): Promise<void> {
   for (let step = 0; step < 30; step += 1) await Promise.resolve();
 }
 
+// The daemon answers thread/read with the latest item window — the client
+// requests 40 items (threads.ts's TRANSCRIPT_ITEM_PAGE_SIZE) — plus an opaque
+// server cursor for older history, never the thread's whole body set. A
+// foreground fixture that returned every row would let the wire alone
+// complete the display, leaving the recorded restore nothing to converge and
+// the test nothing to prove; the windowed shape keeps the local cache the
+// only source of the display's older bodies.
+function latestWindowRead(ref: string, total: number): ThreadReadResponse {
+  const window = 40;
+  const read = response(
+    ref,
+    Array.from({ length: window }, (_, index) => turn(`row-${total - window + index + 1}`, total - window + index + 1)),
+  );
+  read.snapshot = { incarnation: "inc-a", length: total };
+  read.olderCursor = "opaque-server-before-row-1";
+  return read;
+}
+
 it("a foreground opening whose storage read fails transiently still converges the recorded display", async () => {
   const storage = cache();
   const realGetLatestWindow = storage.getLatestWindow.bind(storage);
@@ -2557,10 +2575,22 @@ it("a foreground opening whose storage read fails transiently still converges th
   );
   read.snapshot = { incarnation: "inc-a", length: 225 };
   const client = connect(read);
+  // Every foreground read must be ACCEPTED, not merely issued, and SHAPED
+  // like the daemon's real answer: echo each request's own generation (a
+  // static reply with the fixture's first generation is discarded by
+  // readDisposition), and answer with the latest item window plus the server
+  // cursor (see latestWindowRead), each carrying a source update past the
+  // seeded rows — so the assertions prove the ACCEPTED updates (their newest
+  // rows are not on disk) survived the recovery that converges the display
+  // from the cache.
+  let foregroundReads = 0;
   const wireReads: string[] = [];
-  client.on("thread/read", () => {
-    wireReads.push(`r${wireReads.length + 1}`);
-    return read;
+  client.on("thread/read", (params) => {
+    foregroundReads += 1;
+    wireReads.push(`r${wireReads.length + 1}@gen${params.requestGeneration ?? "-"}`);
+    return foregroundReads === 1
+      ? read
+      : { ...latestWindowRead(ref, 224 + foregroundReads), requestGeneration: params.requestGeneration };
   });
   const lease = acquireBackgroundThread(ref);
   await lease.ready;
@@ -2576,33 +2606,32 @@ it("a foreground opening whose storage read fails transiently still converges th
       .filter(Boolean);
   expect(bodies()).toEqual([]);
 
-  // Two withheld reads arm the recovery chain (the twice-miss strand); the
-  // chain's next attempt then fails outright instead of missing the deadline.
-  // A transient storage error answers a fast recovery-needed through
-  // openLocal's catch, leaving the chain's own marker unset, so the chain's
-  // refusal exit is the only thing standing between the pane and convergence
-  // once every later read runs the healthy storage again.
-  let withheldWindowReads = 0;
-  let failingWindowReads = 0;
+  // The acquisition's remount open never gets its window read back (one
+  // withheld read misses the lookup deadline), and the promotion open's read
+  // then fails transiently: a storage error answers a fast recovery-needed
+  // through openLocal's catch, so the open refuses without ever setting the
+  // per-open miss marker — and its own start has already reset the marker
+  // the remount miss set. Only the route's owed miss still entitles the pane
+  // to recovery. The chain's first attempt then fails the same way, leaving
+  // the chain's own marker unset, so the chain's refusal exit hands to source
+  // recovery once, and the re-open behind that hand-off restores the recorded
+  // window with the accepted update intact.
   const gatedReads: string[] = [];
   (storage as unknown as { getLatestWindow: unknown }).getLatestWindow = (...args: unknown[]) => {
-    gatedReads.push(
-      `w${gatedReads.length + 1}${withheldWindowReads > 0 ? "-withheld" : failingWindowReads > 0 ? "-failing" : "-healthy"}`,
-    );
-    if (withheldWindowReads > 0) {
-      withheldWindowReads -= 1;
+    const index = gatedReads.length + 1;
+    if (index === 1) {
+      gatedReads.push("w1-withheld");
       return new Promise(() => {}) as ReturnType<typeof realGetLatestWindow>;
     }
-    if (failingWindowReads > 0) {
-      failingWindowReads -= 1;
+    if (index <= 3) {
+      gatedReads.push(`w${index}-failing`);
       return Promise.reject(new Error("storage transiently failed")) as ReturnType<typeof realGetLatestWindow>;
     }
+    gatedReads.push(`w${index}-healthy`);
     return realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>)) as ReturnType<
       typeof realGetLatestWindow
     >;
   };
-  withheldWindowReads = 2;
-  failingWindowReads = 1;
   // Fake timers own every production deadline in the gated phase, so no
   // wall-clock race can shift which read each counter lands on: the test
   // decides when each bounded window expires, and the healthy and failing
@@ -2623,30 +2652,40 @@ it("a foreground opening whose storage read fails transiently still converges th
       .finally(() => {
         opened = true;
       });
-    // Advance the frozen clock until the acquisition settles: each advance
-    // fires the next bounded deadline — the remount open's lookup deadline,
-    // the promotion open's, and the transaction steps fake-indexeddb paces
-    // through timers under the frozen clock. The loop ceiling is a tripwire
-    // for an acquisition that never settles, never the mechanism, and machine
-    // load cannot shift which read each counter lands on.
-    for (let step = 0; step < 24 && !opened; step += 1) {
-      await vi.advanceTimersByTimeAsync(SESSION_CACHE_LOOKUP_DEADLINE_MS + 1);
+    // Advance the frozen clock until the acquisition settles: the steps stay
+    // far below the lookup deadline, so no bounded window can fire early —
+    // each advance fires only the next pending timer, the remount open's
+    // 250ms lookup deadline first, then the transaction steps the durable
+    // phase paces through timers under the frozen clock. The loop ceiling is
+    // a tripwire for an acquisition that never settles, never the mechanism,
+    // and machine load cannot shift which read each boundary lands on.
+    for (let step = 0; step < 240 && !opened; step += 1) {
+      await vi.advanceTimersByTimeAsync(25);
     }
     await opening;
-    // The refusal must not end recovery for good: the pane is still
-    // body-suppressed with healthy storage just one read away, so the chain
-    // hands to source recovery and the recorded display converges exactly as
-    // the twice-miss strand does — all microtask work the frozen clock cannot
-    // starve, so settle joins the chain's whole span with no wall-clock bound.
+    // The refusals must not end recovery for good: the pane still holds only
+    // the accepted wire window, far short of the recorded range, with healthy
+    // storage just one read away, so the chain hands to source recovery and
+    // the recorded display converges — all microtask work the frozen clock
+    // cannot starve, so settle joins the chain's whole span with no
+    // wall-clock bound.
     await settleEntryTranscriptForTests(ref);
-    // The pinned sequence proves the intended mechanism ran — two deadline
-    // misses arm the chain, the transient failure takes the chain's refusal
-    // exit (the third wire read is that hand-off's source read), and the
-    // re-open behind it restores the recorded window — deterministically,
-    // where the real-timer shape could only assert the outcome.
-    expect(gatedReads).toEqual(["w1-withheld", "w2-withheld", "w3-failing", "w4-healthy"]);
-    expect(wireReads).toEqual(["r1", "r2", "r3"]);
-    expect(bodies()).toEqual(Array.from({ length: 200 }, (_, index) => `row-${index + 26}`));
+    // The pinned sequence proves the intended mechanism ran. w1 is the remount
+    // open's withheld read (the deadline miss whose convergence the refusals
+    // must not erase); w2 is the promotion open's transiently failing read,
+    // refused fast without setting any marker; w3 is the chain attempt that
+    // fails the same way and takes the chain's refusal exit to source
+    // recovery — the third wire read is that hand-off's ACCEPTED source
+    // update, distinguishable because its newest row is not on disk; w4 and
+    // w5 are ONE open, the re-open behind the hand-off, whose boundary read
+    // finds its captured committed bookkeeping already superseded (the
+    // accepted read's durable commit landed mid-open), so it re-reads
+    // unbounded and the newer read's certificate makes the window current.
+    // The generation labels prove no foreground response was discardable.
+    expect(gatedReads).toEqual(["w1-withheld", "w2-failing", "w3-failing", "w4-healthy", "w5-healthy"]);
+    expect(wireReads).toEqual(["r1@gen-", "r2@gen2", "r3@gen3"]);
+    expect(bodies()).toContain("row-227");
+    expect(bodies()).toEqual(Array.from({ length: 200 }, (_, index) => `row-${index + 28}`));
     expect(threadsStore.getState().threads.get(ref)?.olderCursor).toBeDefined();
   } finally {
     vi.useRealTimers();
@@ -2665,6 +2704,29 @@ it("a foreground opening whose first window read outlasts the lookup deadline st
   );
   read.snapshot = { incarnation: "inc-a", length: 225 };
   const client = connect(read);
+  // Every foreground read must be ACCEPTED, not merely issued, and SHAPED
+  // like the daemon's real answer. Two fidelity rules, both load-bearing:
+  // the acquisition requests a newer generation than the seeded model
+  // carries, so a static reply with the fixture's first generation is
+  // discarded by readDisposition and the test could pass by restoring cached
+  // rows without the source hydration ever publishing — so echo each
+  // request's own generation. And the daemon answers thread/read with the
+  // latest item window (see latestWindowRead) plus an opaque server cursor,
+  // never the thread's whole body set — a full-history reply would complete
+  // the display from the wire alone and leave the recorded restore nothing
+  // to converge. The windowed reply also carries a source update past the
+  // seeded rows, so the assertions prove the ACCEPTED update (its newest row
+  // is not on disk) survived the recovery that converges the display from
+  // the cache.
+  let foregroundReads = 0;
+  const wireReads: string[] = [];
+  client.on("thread/read", (params) => {
+    foregroundReads += 1;
+    wireReads.push(`r${wireReads.length + 1}@gen${params.requestGeneration ?? "-"}`);
+    return foregroundReads === 1
+      ? read
+      : { ...latestWindowRead(ref, 226), requestGeneration: params.requestGeneration };
+  });
   const lease = acquireBackgroundThread(ref);
   await lease.ready;
   await settleEntryTranscriptForTests(ref);
@@ -2679,38 +2741,71 @@ it("a foreground opening whose first window read outlasts the lookup deadline st
       .filter(Boolean);
   expect(bodies()).toEqual([]);
 
+  const realGetLatestWindow = storage.getLatestWindow.bind(storage);
   // The acquisition's very first window read answers 50ms past its bounded
   // lookup deadline — one CI-shaped stall. The miss retires the remount open,
-  // and the post-hydration promotion open refuses while the hydration's
-  // durable phase is still settling (its read answers after the window's
-  // authority moved, so it discards a complete window and returns a
-  // body-suppressed model). The miss's convergence must stay owed across that
+  // and the post-hydration promotion open then refuses: the test holds that
+  // open's window read until the accepted source read's durable phase has
+  // settled, so the read answers only after the window's authority moved and
+  // the refusal is controlled by the storage boundary, not by racing the
+  // durable phase. The miss's convergence must stay owed across that
   // refusal: the tracked recovery arms, restores the recorded window from the
-  // now-healthy storage, and the display converges with no extra source read
-  // — the pre-fix behavior this red-first case pins stranded the pane at []
-  // forever, the exact whole-suite CI signature (run 40800595769).
-  const realGetLatestWindow = storage.getLatestWindow.bind(storage);
+  // now-healthy storage, and the display converges with the accepted source
+  // update intact and no extra source read — the pre-fix behavior this
+  // red-first case pins left the pane stranded on the 40-row wire window
+  // forever, never converging the recorded display (run 40800595769's
+  // whole-suite CI signature, where the discarded-response fixtures of the
+  // era stranded it at [] outright).
   let windowReads = 0;
+  const windowReadLog: string[] = [];
+  const promotionReadEntered = deferred<void>();
+  let releasePromotionRead: (() => void) | undefined;
   (storage as unknown as { getLatestWindow: unknown }).getLatestWindow = (...args: unknown[]) => {
     windowReads += 1;
+    windowReadLog.push(`w${windowReads}`);
     const base = () =>
       realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>)) as ReturnType<
         typeof realGetLatestWindow
       >;
-    if (windowReads === 1)
+    if (windowReads === 1) {
+      windowReadLog.push("-delayed");
       return new Promise<void>((resolve) => {
         setTimeout(resolve, SESSION_CACHE_LOOKUP_DEADLINE_MS + 50);
       }).then(base) as ReturnType<typeof realGetLatestWindow>;
+    }
+    if (windowReads === 2) {
+      windowReadLog.push("-held");
+      promotionReadEntered.resolve();
+      return new Promise<void>((resolve) => {
+        releasePromotionRead = resolve;
+      }).then(base) as ReturnType<typeof realGetLatestWindow>;
+    }
     return base();
   };
   const readsBeforeAcquisition = client.calls.filter((call) => call.method === "thread/read").length;
   try {
-    await threadsStore.getState().ensureThread(ref);
+    const opening = threadsStore.getState().ensureThread(ref);
+    await promotionReadEntered.promise;
+    // Let the accepted source read's durable phase settle behind the held
+    // window read before answering it: the promotion open's authority check
+    // then refuses a complete certified window deterministically.
+    await drainSettleSteps();
+    releasePromotionRead?.();
+    await opening;
     await settleEntryTranscriptForTests(ref);
-    expect(bodies()).toEqual(Array.from({ length: 200 }, (_, index) => `row-${index + 26}`));
+    // The pinned sequences prove the mechanism ran end to end: one delayed
+    // window read missed the deadline, the promotion open's held read was
+    // answered past the moved authority and refused, and the recovery's own
+    // open restored the recorded window — with the accepted wire update's
+    // newest row (absent from disk) merged in, and no extra source read.
+    expect(windowReadLog).toEqual(["w1", "-delayed", "w2", "-held", "w3"]);
+    expect(wireReads).toEqual(["r1@gen-", "r2@gen2"]);
+    expect(bodies()).toContain("row-226");
+    expect(bodies()).toEqual(Array.from({ length: 200 }, (_, index) => `row-${index + 27}`));
     expect(threadsStore.getState().threads.get(ref)?.olderCursor).toBeDefined();
     expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(readsBeforeAcquisition + 1);
   } finally {
+    releasePromotionRead?.();
     threadsStore.getState().releaseThread(ref);
     await lease.release();
   }

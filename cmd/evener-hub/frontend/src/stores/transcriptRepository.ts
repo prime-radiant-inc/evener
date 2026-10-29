@@ -393,6 +393,14 @@ export class TranscriptRepository {
   // Identity-only range ownership survives foreground reader replacement, not
   // source reconciliation. Background payload reclamation remains unchanged.
   #foregroundStart: ThreadItemPosition | undefined;
+  // True while the current model's identities came from a plain windowed
+  // read — one whose response carried an older cursor and was not an
+  // authoritative reconciliation. Such a replace presents only the wire
+  // window, so the recorded range below it is still owed from the durable
+  // record; every other model shape (an authoritative window, a retained or
+  // paged range) presents exactly what the repository kept, and no recorded
+  // window is owed beyond it.
+  #windowedReplaceBaseline = false;
   #localOlder: { before: ThreadItemPosition; floor: ThreadItemPosition; sourceRevision: number } | undefined;
   #replacementRevision = 0;
   #uncommittedReplacementFrom: ThreadItemPosition | undefined;
@@ -802,11 +810,23 @@ export class TranscriptRepository {
     let turns = this.#readTurns(response, candidate);
     const coverageRows = this.#rowsFromWindow(response);
     const replacesHistory = before?.history && readDisposition(before.history, response) === "replace";
+    this.#windowedReplaceBaseline = !!replacesHistory && !response.authoritative && response.olderCursor !== undefined;
     const replacement =
       replacesHistory || response.authoritative
         ? {
             from: replacesHistory
-              ? { entry: 0, item: 0 }
+              ? // A fresh-baseline replace of a WINDOWED answer must stop at
+                // the window: the response carries an older cursor for
+                // exactly the history it omits, so it never claims those
+                // rows are gone, and deleting them would leave the durable
+                // record unable to converge a reopened pane that the same
+                // read left only a window. A replace without a cursor is
+                // the whole history from position zero.
+                response.olderCursor === undefined
+                ? { entry: 0, item: 0 }
+                : ((response.thread.turns ?? [])
+                    .flatMap((turn) => (turn.items ?? []).flatMap((item) => (item.position ? [item.position] : [])))
+                    .sort(comparePosition)[0] ?? { entry: 0, item: 0 })
               : ((response.thread.turns ?? [])
                   .flatMap((turn) => (turn.items ?? []).flatMap((item) => (item.position ? [item.position] : [])))
                   .sort(comparePosition)[0] ?? { entry: 0, item: 0 }),
@@ -1345,6 +1365,16 @@ export class TranscriptRepository {
     });
   }
 
+  /**
+   * True while the current model's identities came from a plain windowed
+   * read (see `#windowedReplaceBaseline`): the recorded range below the wire
+   * window is still owed, so a completeness verdict must demand it. Every
+   * other model shape presents the range the repository itself kept.
+   */
+  windowedReplaceBaseline(): boolean {
+    return this.#windowedReplaceBaseline;
+  }
+
   attachReader(): TranscriptReader {
     let active = true;
     this.#readerCount++;
@@ -1461,12 +1491,23 @@ export class TranscriptRepository {
           // at the opening cut, without treating arbitrary disk rows as current.
           const loadedStart = cut.model && this.#oldestPosition(cut.model);
           const latestStart = window.rows[0]?.position;
+          const loadedBelowWindow = !!(loadedStart && latestStart && comparePosition(loadedStart, latestStart) < 0);
+          // An accepted daemon read answers with the latest item window plus a
+          // server cursor, so a fresh-baseline replace can drop the model's
+          // older identities entirely while the recorded length still says
+          // they exist. The durable cache, not the wire, holds those bodies,
+          // and the promotion window still owes them: run the same merge
+          // without the loaded-identity floor, bounded by the durable pull's
+          // own limit and by the promotion's slice below.
+          const recordedLength = cut.model?.history?.length ?? 0;
+          const presentedItems = (cut.model?.history?.turns ?? cut.model?.turns ?? []).flatMap(
+            (turn) => turn.items,
+          ).length;
+          const droppedRecordedIdentities = recordedLength > presentedItems;
           if (
-            window.complete &&
-            loadedStart &&
             latestStart &&
-            comparePosition(loadedStart, latestStart) < 0 &&
-            window.rows.length < limit
+            window.rows.length < limit &&
+            (loadedBelowWindow || (this.#windowedReplaceBaseline && window.complete && droppedRecordedIdentities))
           ) {
             // Durable rows below the certified window that the opening cut had
             // loaded. The certified older query is scoped to connected
@@ -1491,16 +1532,22 @@ export class TranscriptRepository {
               );
               if (!older.stale) olderRows = older.rows;
             }
-            const durableOlder = await this.#cache.getLatest(this.#binding.historyKey, limit);
+            // The bounded durable pull belongs only to a windowed replace's
+            // debt: a retained or paged range merges certified older rows
+            // alone, so a damaged record still refuses instead of being
+            // papered over by raw rows.
+            const durableOlder = this.#windowedReplaceBaseline
+              ? await this.#cache.getLatest(this.#binding.historyKey, limit)
+              : [];
             const olderByKey = new Map<string, TranscriptItemRow<unknown>>();
             for (const row of [...olderRows, ...durableOlder]) {
               const held = olderByKey.get(row.transcriptKey);
               if (!held || held.version <= row.version) olderByKey.set(row.transcriptKey, row);
             }
-            const boundedOlder = [...olderByKey.values()].filter(
-              (row) =>
-                comparePosition(row.position, latestStart) < 0 && comparePosition(row.position, loadedStart) >= 0,
-            );
+            const boundedOlder = [...olderByKey.values()].filter((row) => {
+              if (comparePosition(row.position, latestStart) >= 0) return false;
+              return !loadedBelowWindow || comparePosition(row.position, loadedStart) >= 0;
+            });
             if (boundedOlder.length > 0) {
               boundedOlder.sort((left, right) => comparePosition(left.position, right.position));
               window = { ...window, rows: [...boundedOlder, ...window.rows] };
@@ -1598,11 +1645,32 @@ export class TranscriptRepository {
             !this.#seedAuthorityInvalid &&
             !this.#cacheContinuityLost &&
             !this.#recoveryNeeded;
+          // The hand-off re-open behind an accepted read can capture its cut
+          // before that read's durable commit lands: the committed-coverage
+          // fields the cut froze name the previous read, while the window the
+          // open just read is certified by the newer one. The newer read is
+          // this repository's own latest accepted read — the same authority
+          // the stale cut wanted to be current with, on the same baseline
+          // (openingCurrent above fenced any source-revision change) — so its
+          // certificate satisfies the cut's coverage requirement instead of
+          // refusing a complete window over pure bookkeeping lag.
+          const coveredByFreshRead =
+            cut.readId !== undefined &&
+            this.#coverageReadId !== undefined &&
+            this.#coverageReadId !== cut.readId &&
+            cut.committedSnapshot !== undefined &&
+            window.coverage.some(
+              (row) =>
+                row.kind === "read" &&
+                row.readId === this.#coverageReadId &&
+                row.representedSnapshot >= cut.committedSnapshot,
+            );
           const status =
             window.complete &&
             !window.stale &&
             ((cut.readId === undefined && this.#seedSnapshot !== undefined) ||
-              this.#coversOpeningCut(window.coverage, cut.readId, cut.continuityId, cut.committedSnapshot)) &&
+              this.#coversOpeningCut(window.coverage, cut.readId, cut.continuityId, cut.committedSnapshot) ||
+              coveredByFreshRead) &&
             seedCovered &&
             pendingCutCovered &&
             cut.authorityValid &&

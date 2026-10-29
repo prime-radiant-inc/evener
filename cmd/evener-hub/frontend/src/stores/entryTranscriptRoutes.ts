@@ -355,16 +355,40 @@ export function publishEntryTranscriptModel(ref: string): void {
 
 // The complete-requested-window standard a local open tolerates without a
 // cache certificate: every foreground item the model expects is present with
-// at least its version and a real body.
-function holdsCompleteForegroundWindow(model: ThreadModel | undefined): boolean {
+// at least its version and a real body — and the model actually presents the
+// window the recorded length owes. The daemon answers thread/read with the
+// latest item window (the client requests 40 items) plus a server cursor, so
+// an accepted fresh-baseline read leaves the model holding only that wire
+// window, and the recorded cache — not the wire — is the display's source for
+// the older bodies of the 200-row promotion. A model presenting fewer items
+// than the recorded length's own window is incomplete however bodied its
+// presented rows are: the wire window alone cannot vouch for the recorded
+// range, the same standard holdsResidentForegroundRange states for a settled
+// stall. Without the coverage clause every disarm point below would treat a
+// one-blip open's degraded wire window as converged and never restore the
+// recorded rows.
+function holdsCompleteForegroundWindow(
+  model: ThreadModel | undefined,
+  repository?: { windowedReplaceBaseline(): boolean },
+): boolean {
   const displayed = new Map(
     model?.turns.flatMap((turn) => turn.items.map((item) => [item.transcriptKey ?? item.id, item] as const)),
   );
   // Legacy reads keep their recorded bodies in turns, without versioned
   // history. Do not mistake that nonempty accepted window for an empty one.
   const requested = (model?.history?.turns ?? model?.turns)?.flatMap((turn) => turn.items).slice(-200) ?? [];
+  // The recorded window's coverage demand applies only to a plain windowed
+  // read's replace: that presentation dropped the recorded identities its
+  // own snapshot length still advertises, and the durable cache — not the
+  // wire — is the display's only source for them. An authoritative window
+  // is the source's own reconciliation truth, and a retained or paged model
+  // presents exactly the range the repository kept, so no recorded window is
+  // owed beyond what they show.
+  const recordedWindow =
+    repository?.windowedReplaceBaseline() && model?.history ? Math.min(model.history.length, 200) : 0;
   return (
     requested.length > 0 &&
+    requested.length >= recordedWindow &&
     requested.every((item) => {
       const restored = displayed.get(item.transcriptKey ?? item.id);
       return (
@@ -471,7 +495,7 @@ export async function openEntryTranscript(ref: string, recovery = false): Promis
             fixture.lastLocalOpenStatus = settled.status;
             const usable =
               settled.retainedRangeComplete !== false &&
-              (settled.status !== "recovery-needed" || holdsCompleteForegroundWindow(settled.model));
+              (settled.status !== "recovery-needed" || holdsCompleteForegroundWindow(settled.model, repository));
             if (usable) {
               fixture.lastLocalOpenUsable = true;
               fixture.unresolvedOpenMiss = false;
@@ -527,7 +551,7 @@ export async function openEntryTranscript(ref: string, recovery = false): Promis
     // latest read.
     const usable =
       result.retainedRangeComplete !== false &&
-      (result.status !== "recovery-needed" || holdsCompleteForegroundWindow(result.model));
+      (result.status !== "recovery-needed" || holdsCompleteForegroundWindow(result.model, repository));
     if (openingOwned()) {
       fixture.lastLocalOpenUsable = usable;
       if (usable) fixture.unresolvedOpenMiss = false;
@@ -727,7 +751,7 @@ export function scheduleEntryOpeningRecovery(ref: string): void {
   // body-suppressed; a display another path (main's source recovery, a newer
   // open) already healed needs no re-open churn against storage that may
   // never answer.
-  if (holdsCompleteForegroundWindow(store().getState().threads.get(ref))) return;
+  if (holdsCompleteForegroundWindow(store().getState().threads.get(ref), route.repository)) return;
   pendingOpeningRecoveries.set(ref, route);
   const recovery = (async () => {
     let stalledAttempts = 0;
@@ -743,7 +767,7 @@ export function scheduleEntryOpeningRecovery(ref: string): void {
       // the next publication would prune. Require the resident range too, and
       // a reclaimed repository re-opens instead of ending recovery on it.
       if (
-        holdsCompleteForegroundWindow(store().getState().threads.get(ref)) &&
+        holdsCompleteForegroundWindow(store().getState().threads.get(ref), route.repository) &&
         route.repository?.holdsResidentForegroundRange()
       )
         return;
@@ -792,7 +816,7 @@ export function scheduleEntryOpeningRecovery(ref: string): void {
       // the view is followed by the local re-open that promotes its
       // restored bodies into the display. A source response that already
       // healed the display needs no further cache read to converge.
-      if (!holdsCompleteForegroundWindow(store().getState().threads.get(ref))) {
+      if (!holdsCompleteForegroundWindow(store().getState().threads.get(ref), route.repository)) {
         await openEntryTranscript(ref, true);
       }
       return;
