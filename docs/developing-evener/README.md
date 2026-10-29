@@ -51,8 +51,9 @@ Keep those references current when changing the behavior they describe.
   public guide: the publication manifest, link and export rules, and the
   GitHub Pages workflow. Edit chapters in `docs/`, never in `.generated/`.
 - **[conventions/](conventions/)** — naming conventions for serialized
-  identifiers, working in the `go.work` multi-module workspace, and running
-  a fleet of agents against this repo without them stepping on each other.
+  identifiers, working in the `go.work` multi-module workspace, running
+  a fleet of agents against this repo without them stepping on each other, and
+  where a fresh `context.Background()` is allowed.
 
 ## Documentation
 
