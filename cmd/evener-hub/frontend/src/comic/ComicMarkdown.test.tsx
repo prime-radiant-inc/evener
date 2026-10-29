@@ -68,6 +68,79 @@ function glyph(container: HTMLElement, offset: number, element: Element, local: 
 }
 
 test.each([
+  "\t",
+  "\v",
+  "\f",
+  "\u00a0",
+  "\u1680",
+  "\u2000",
+  "\u2001",
+  "\u2002",
+  "\u2003",
+  "\u2004",
+  "\u2005",
+  "\u2006",
+  "\u2007",
+  "\u2008",
+  "\u2009",
+  "\u200a",
+  "\u202f",
+  "\u205f",
+  "\u3000",
+  "\ufeff",
+])("heading whitespace binds original glyphs: %j", (space) => {
+  for (const [source, offset, selector] of [
+    [`# ${space}Title${space}`, 3, "h1"],
+    [`#${space}Title${space}`, 2, "h1"],
+  ] as const) {
+    const errors: unknown[] = [];
+    const rendered = render(composed(source, false, errors), { onCaughtError: () => {} });
+    expect(errors).toEqual([]);
+    const heading = rendered.container.querySelector(selector);
+    expect(heading?.textContent).toBe("Title");
+    if (!heading) throw new Error("missing heading");
+    glyph(rendered.container, offset, heading, 0, "T");
+    glyph(rendered.container, offset + 4, heading, 4, "e");
+    rendered.unmount();
+  }
+});
+
+test.each([
+  { source: "# \u00a0Title", selector: "h1", offsets: [3, 4, 5, 6, 7] },
+  { source: "  ### \u00a0\u2003**😀é**\u00a0 ###\u2003", selector: "h3 strong", offsets: [10, 11, 12] },
+  { source: "\u00a0**😀é**\u2003\n===", selector: "h1 strong", offsets: [3, 4, 5] },
+  { source: "  **😀é**\u00a0\n---", selector: "h2 strong", offsets: [4, 5, 6] },
+  { source: "# a\u00a0###", selector: "h1", offsets: [2, 3, 4, 5, 6] },
+  { source: "# a \t###", selector: "h1", offsets: [2, 3, 4, 5, 6, 7] },
+  { source: "# a\u00a0 ###\u2003", selector: "h1", offsets: [2] },
+  { source: "# **😀é**\r\n", selector: "h1 strong", offsets: [4, 5, 6] },
+] as const)("heading formatting keeps UTF16 endpoints through settlement: $source", ({ source, selector, offsets }) => {
+  const errors: unknown[] = [];
+  const rendered = render(composed(source, false, errors), { onCaughtError: () => {} });
+  const check = () => {
+    expect(errors).toEqual([]);
+    const element = rendered.container.querySelector(selector);
+    if (!element) throw new Error("missing heading content");
+    expect(element.textContent).toBe(offsets.map((offset) => source[offset]).join(""));
+    if (selector !== "h1") {
+      glyph(rendered.container, offsets[0], element, 0, "😀");
+      glyph(rendered.container, offsets[1], element, 0, "😀");
+      glyph(rendered.container, offsets[2], element, 2, "é");
+    } else {
+      for (const [local, offset] of offsets.entries())
+        glyph(rendered.container, offset, element, local, source.charAt(offset));
+    }
+  };
+  check();
+  for (let end = 1; end <= source.length; end++) {
+    rendered.rerender(composed(source.slice(0, end), true, errors));
+    expect(errors).toEqual([]);
+  }
+  rendered.rerender(composed(source, false, errors));
+  check();
+});
+
+test.each([
   "[r]: /first\n\n[r]",
   "[r]: /first\n\n[r]: /second\n\n[r]",
   "[r]: /first\n[r]: /second\n[r]",

@@ -43,6 +43,19 @@ function panel(value: ComicEntry, start = 0, end = value.text.length) {
   );
 }
 
+test("Unicode heading whitespace survives a real panel stream and settlement", () => {
+  const source = "# \u00a0**😀é**\u2003 ###\u00a0";
+  const rendered = render(panel(entry({ text: source, streaming: true })));
+  const check = () => {
+    expect(rendered.container.querySelectorAll("h1 strong")).toHaveLength(1);
+    expect(rendered.container.querySelector("h1")?.textContent).toBe("😀é");
+    expect(rendered.container.querySelectorAll("[data-comic-markdown]")).toHaveLength(1);
+  };
+  check();
+  rendered.rerender(panel(entry({ text: source, streaming: false })));
+  check();
+});
+
 test("formatted dialogue and technical inserts preserve semantic source order", () => {
   const codeFixture = "  let x = 1;\n\treturn x;";
   const value = entry({

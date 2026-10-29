@@ -262,8 +262,8 @@ function visible(token: Token, raw: MappedText): VisibleRun[] {
       return tableRuns(token as Tokens.Table, raw);
     case "heading": {
       const t = token as Tokens.Heading;
-      const prefix =
-        token.raw.match(/^ {0,3}#{1,6}[ \t]+/)?.[0].length ?? token.raw.length - token.raw.trimStart().length;
+      // Marked accepts Unicode ATX separators and trims the heading body with trim().
+      const prefix = token.raw.match(/^ {0,3}#{1,6}\s+/)?.[0].length ?? token.raw.length - token.raw.trimStart().length;
       return inline(t.tokens, cut(raw, prefix, prefix + t.text.length));
     }
     case "paragraph":
