@@ -173,7 +173,7 @@ func (m *hubHostManager) migrateLegacyRecords(ops *hostops.Store) {
 	entries := m.cfg.store.snapshot()
 	for i, entry := range entries {
 		live, registered := m.cfg.hosts.Get(entry.Name)
-		if registered && !(sameEffectiveHostEntryFields(live, entry) && (entry.IncarnationID == "" || live.IncarnationID == entry.IncarnationID)) {
+		if registered && !servesRestoredEntry(live, entry) {
 			// The file keeps the entry it restored, so a registry that serves
 			// another one cannot be what the records are taken from. A start
 			// builds the registry from the restored file.
@@ -224,6 +224,14 @@ func (m *hubHostManager) migrateLegacyRecords(ops *hostops.Store) {
 	m.useRecordStore(hostOpsRecordStore{path: m.cfg.configPath, ops: ops, logf: m.cfg.logf})
 	m.logf("moved %d host record(s) from %s into the operation store", len(set.HostRecords), m.cfg.configPath)
 	m.stripLegacySections(false)
+}
+
+// servesRestoredEntry reports whether live is the entry the restored hub.toml
+// declares: the same configuration and, when the file records one, the same
+// incarnation. Counters are left out; the mirror raises them.
+func servesRestoredEntry(live, restored hostreg.Host) bool {
+	return sameEffectiveHostEntryFields(live, restored) &&
+		(restored.IncarnationID == "" || live.IncarnationID == restored.IncarnationID)
 }
 
 // keepPreRecordsCopy keeps the hub.toml an upgrade found, before the legacy boot
