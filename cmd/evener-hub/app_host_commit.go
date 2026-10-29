@@ -192,7 +192,9 @@ func (m *hubHostManager) compensationChange(plan *hostCommitPlan) hostPersistCha
 		hostFileFirst: true,
 	}
 	if marker, staged := m.cfg.store.stagedSnapshot()[plan.Name]; staged {
-		change.restore = m.consumedRestore(marker, plan.Name)
+		// The staged re-add spent the generation and presence epoch its entry
+		// carries, whatever the store's marks say now.
+		change.restore = m.consumedRestore(marker, plan.Name, HostGeneration{Generation: plan.Entry.Generation, PresenceEpoch: plan.Entry.PresenceEpoch})
 	}
 	return change
 }
@@ -200,17 +202,18 @@ func (m *hubHostManager) compensationChange(plan *hostCommitPlan) hostPersistCha
 // consumedRestore is what rolling back a staged re-add puts back: the history
 // the staging write purged to make room for it. The removal still stands, so the
 // generation and presence epoch the re-add spent stay spent.
-func (m *hubHostManager) consumedRestore(marker HostStagedReceipt, name string) *HostConsumedRecords {
+func (m *hubHostManager) consumedRestore(marker HostStagedReceipt, name string, spent HostGeneration) *HostConsumedRecords {
 	consumed := marker.Consumed
 	if consumed == nil {
 		return nil
 	}
 	restore := *consumed
-	restore.Tombstone.Generation = max(restore.Tombstone.Generation, marker.Provisional.Generation)
-	if spent, held := m.cfg.store.highWaterSnapshot()[name]; held {
-		restore.Tombstone.Generation = max(restore.Tombstone.Generation, spent.Generation)
-		restore.Tombstone.PresenceEpoch = max(restore.Tombstone.PresenceEpoch, spent.PresenceEpoch)
+	if held, ok := m.cfg.store.highWaterSnapshot()[name]; ok {
+		spent.Generation = max(spent.Generation, held.Generation)
+		spent.PresenceEpoch = max(spent.PresenceEpoch, held.PresenceEpoch)
 	}
+	restore.Tombstone.Generation = max(restore.Tombstone.Generation, marker.Provisional.Generation, spent.Generation)
+	restore.Tombstone.PresenceEpoch = max(restore.Tombstone.PresenceEpoch, spent.PresenceEpoch)
 	return &restore
 }
 

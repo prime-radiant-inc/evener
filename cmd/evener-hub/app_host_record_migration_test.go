@@ -1020,3 +1020,29 @@ func TestMigrationWaitsWhenARestoredHostDiffersFromTheOneTheRegistryServes(t *te
 		t.Fatal("host changes are taken while the move waits for a registry that matches the file")
 	}
 }
+
+// TestMigrationWaitsWhenTheRegistryServesAHostTheRestoredFileLacks is the other
+// direction of the restored-host rule: a compensation restored a stash that
+// predates a sibling the startup registry still serves, so the file the strip
+// leaves behind does not declare it. The move waits for a start whose registry
+// is built from the restored file.
+func TestMigrationWaitsWhenTheRegistryServesAHostTheRestoredFileLacks(t *testing.T) {
+	fixture := newPipelineFixture(t, []hostreg.Host{pipelineEntry("keep", 3), pipelineEntry("extra", 3)}, nil)
+	m := fixture.legacyManager(t)
+	var restored []hostreg.Host
+	for _, entry := range m.cfg.store.snapshot() {
+		if entry.Name == "keep" {
+			restored = append(restored, entry)
+		}
+	}
+	m.cfg.store.set(restored)
+
+	m.migrateLegacyRecords(fixture.store)
+
+	if _, _, imported := fixture.store.HostRecords(); imported {
+		t.Fatal("the records moved although the registry serves a host the restored file does not declare")
+	}
+	if m.mutationRefusal() == nil {
+		t.Fatal("host changes are taken while the move waits for a registry that matches the file")
+	}
+}

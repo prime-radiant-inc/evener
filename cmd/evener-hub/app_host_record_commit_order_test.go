@@ -1512,8 +1512,10 @@ func TestAReAddRefusedAfterStagingKeepsTheRemovedHostsHistory(t *testing.T) {
 		t.Fatal("the removal left no tombstone")
 	}
 	staged := false
+	var spent HostGeneration
 	m.testOnlyAfterStage = func(name string) {
 		staged = true
+		spent = mustRecords(t, store).Generations[name]
 		if err := m.cfg.hosts.Add(hostreg.Host{Name: name, SSH: "raced.example"}); err != nil {
 			t.Errorf("race the registry: %v", err)
 		}
@@ -1529,14 +1531,54 @@ func TestAReAddRefusedAfterStagingKeepsTheRemovedHostsHistory(t *testing.T) {
 		t.Fatal("the re-add refused before it staged")
 	}
 	after := mustRecords(t, store)
-	tombstone, tombstoned := after.Tombstones["side"]
+	_, tombstoned := after.Tombstones["side"]
 	if !tombstoned {
 		t.Fatal("the refused re-add took the removed host's tombstone with it")
 	}
 	if len(after.MutationReceipts) < len(before.MutationReceipts) {
 		t.Fatalf("the refused re-add lost receipts: %d before, %d after", len(before.MutationReceipts), len(after.MutationReceipts))
 	}
-	if after.Generations["side"].Generation < tombstone.Generation || after.Generations["side"].PresenceEpoch < before.Generations["side"].PresenceEpoch {
-		t.Fatalf("the refused re-add lowered the spent counters: %+v, was %+v", after.Generations["side"], before.Generations["side"])
+	if after.Generations["side"].Generation < spent.Generation || after.Generations["side"].PresenceEpoch < spent.PresenceEpoch || spent.PresenceEpoch <= before.Generations["side"].PresenceEpoch {
+		t.Fatalf("the refused re-add forgot the counters it spent: %+v, it spent %+v after %+v", after.Generations["side"], spent, before.Generations["side"])
+	}
+}
+
+// TestBootFinalizationWaitsUntilTheHostFileDirectoryIsDurable is the landed half
+// of the rule the rollback follows: a commit whose host change is in hub.toml is
+// not finalized, and its staged marker not cleared, until the file's directory is
+// proven durable.
+func TestBootFinalizationWaitsUntilTheHostFileDirectoryIsDurable(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, _ := hub.boot(t, false)
+	params := removeRequest(t, m, "side")
+	armCut(m, cutFlipped)
+	runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
+
+	syncFails := true
+	flakyHubTOMLDirSync(t, func(int) bool { return syncFails })
+	hub.restartStateRoot(t)
+	store, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	waiting := restartOver(t, hub.configPath, store)
+
+	if _, held := mustRecords(t, store).StagedReceipts["side"]; !held {
+		t.Fatal("the boot finalized a landed commit before the host file's directory was durable")
+	}
+	if waiting.mutationRefusal() == nil {
+		t.Fatal("host changes are taken while the staged commit is unsettled")
+	}
+
+	syncFails = false
+	hub.restartStateRoot(t)
+	store, err = hostops.Open(hostops.StorePath(hub.stateRoot))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	restartOver(t, hub.configPath, store)
+
+	if _, held := mustRecords(t, store).StagedReceipts["side"]; held {
+		t.Fatal("the landed commit stayed unfinalized once the directory was durable")
 	}
 }

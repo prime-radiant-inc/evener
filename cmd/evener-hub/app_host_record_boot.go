@@ -172,6 +172,16 @@ func (m *hubHostManager) migrateLegacyRecords(ops *hostops.Store) {
 	// the mirror's counters by hand, so the import cannot replace them with its
 	// own, and is registered, so this process serves what the file declares.
 	entries := m.cfg.store.snapshot()
+	declared := hostNameSet(entries)
+	for _, served := range m.cfg.hosts.All() {
+		if _, ok := declared[served.Name]; !ok {
+			// The file keeps what it declares, so a registry that serves a host
+			// it does not is not what the records are taken from. A start builds
+			// the registry from the restored file.
+			m.refuseMutations(fmt.Sprintf("host %q is served but not declared by the restored hub.toml; the records move on the next start", served.Name))
+			return
+		}
+	}
 	for i, entry := range entries {
 		live, registered := m.cfg.hosts.Get(entry.Name)
 		if registered && !servesRestoredEntry(live, entry) {
@@ -375,6 +385,16 @@ func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
 		// store and crashed before creating the file never landed.
 		doc, settle = hostRecordDocument{Records: records}, true
 	}
+	if settle && len(m.cfg.store.stagedSnapshot()) != 0 {
+		// A staged marker is judged by the host file as it stands, and the file may
+		// be a rename whose directory sync never succeeded. Rolling back or
+		// finalizing on it would clear the store's evidence before the file is
+		// proven to survive a crash.
+		if err := hubTOMLSyncDir(filepath.Dir(m.cfg.configPath)); err != nil {
+			m.refuseMutations(fmt.Sprintf("%s is not proven durable, so staged commits are settled once it is: %v", m.cfg.configPath, err))
+			return
+		}
+	}
 	if settle {
 		if unrolled := m.rollBackUnlandedCommits(doc); len(unrolled) != 0 {
 			// Every later step reads a staged commit as one hub.toml holds: a
@@ -430,7 +450,6 @@ func (m *hubHostManager) rollBackUnlandedCommits(doc hostRecordDocument) map[str
 		}
 		return failed
 	}
-	hostFileDurable := false
 	entries := m.cfg.store.snapshot()
 	for _, name := range staged {
 		marker := m.cfg.store.stagedSnapshot()[name]
@@ -442,16 +461,6 @@ func (m *hubHostManager) rollBackUnlandedCommits(doc hostRecordDocument) map[str
 			// staged against it: the removal landed and the name was added
 			// again.
 			continue
-		}
-		if !hostFileDurable {
-			// The file may be a restore whose directory sync never succeeded; the
-			// staged records are the evidence a crash needs until it has.
-			if err := hubTOMLSyncDir(filepath.Dir(m.cfg.configPath)); err != nil {
-				m.logf("boot rollback of the staged commit for %q deferred: hub.toml's directory is not durable: %v", name, err)
-				failed[name] = struct{}{}
-				continue
-			}
-			hostFileDurable = true
 		}
 		if bootRollbackFault != nil {
 			if err := bootRollbackFault(name); err != nil {
@@ -465,7 +474,7 @@ func (m *hubHostManager) rollBackUnlandedCommits(doc hostRecordDocument) map[str
 			// The host was never removed: its tombstone goes with the rollback.
 			change.dropTombstone = name
 		}
-		change.restore = m.consumedRestore(marker, name)
+		change.restore = m.consumedRestore(marker, name, HostGeneration{})
 		// A name that still holds a removal tombstone is the collision rule's to
 		// settle; keeping it out of this write keeps its tombstone beside no
 		// live entry, which the records refuse.
