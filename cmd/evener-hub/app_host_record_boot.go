@@ -173,6 +173,13 @@ func (m *hubHostManager) migrateLegacyRecords(ops *hostops.Store) {
 	entries := m.cfg.store.snapshot()
 	for i, entry := range entries {
 		live, registered := m.cfg.hosts.Get(entry.Name)
+		if registered && !(sameEffectiveHostEntryFields(live, entry) && (entry.IncarnationID == "" || live.IncarnationID == entry.IncarnationID)) {
+			// The file keeps the entry it restored, so a registry that serves
+			// another one cannot be what the records are taken from. A start
+			// builds the registry from the restored file.
+			m.refuseMutations(fmt.Sprintf("host %q differs between the restored hub.toml and the registry; the records move on the next start", entry.Name))
+			return
+		}
 		if !registered {
 			if mark, ok := marks[entry.Name]; ok {
 				entry.Generation = max(entry.Generation, mark.Generation)

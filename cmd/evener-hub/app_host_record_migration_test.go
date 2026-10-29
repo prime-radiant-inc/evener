@@ -994,3 +994,29 @@ func TestMigrationWaitsWhenTheOriginalCannotBeInspectedForTheCopy(t *testing.T) 
 		t.Fatalf("host changes are still refused after the move: %v", err)
 	}
 }
+
+// TestMigrationWaitsWhenARestoredHostDiffersFromTheOneTheRegistryServes covers a
+// compensation that restored a sibling's older entry over one the startup
+// registry already serves: the file the strip leaves behind keeps the restored
+// entry, so importing the registry's identity would split the two. The move
+// waits for a start whose registry is built from the restored file.
+func TestMigrationWaitsWhenARestoredHostDiffersFromTheOneTheRegistryServes(t *testing.T) {
+	fixture := newPipelineFixture(t, []hostreg.Host{pipelineEntry("keep", 3)}, nil)
+	m := fixture.legacyManager(t)
+	entries := m.cfg.store.snapshot()
+	for i := range entries {
+		if entries[i].Name == "keep" {
+			entries[i].SSH = "restored.example"
+		}
+	}
+	m.cfg.store.set(entries)
+
+	m.migrateLegacyRecords(fixture.store)
+
+	if _, _, imported := fixture.store.HostRecords(); imported {
+		t.Fatal("the registry's identity was imported over a restored entry it does not match")
+	}
+	if m.mutationRefusal() == nil {
+		t.Fatal("host changes are taken while the move waits for a registry that matches the file")
+	}
+}

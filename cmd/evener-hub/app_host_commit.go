@@ -563,7 +563,7 @@ func (m *hubHostManager) finalizeOrphanMarkerIfAny(ctx context.Context, name str
 	// carries — the marker would drop while its finalized outcome, remnant, or
 	// `bootRecovered` marker never rendered.
 	known := ownedEntrySet(entries, name)
-	if err := m.persistHosts(entries, known, hostPersistChange{marker: &pendingHostMarker{Name: name, Marker: claimed}}); err != nil {
+	if err := m.persistHosts(entries, known, hostPersistChange{marker: &pendingHostMarker{Name: name, Marker: claimed}, recordsOnly: m.recordsInStore()}); err != nil {
 		m.cfg.mu.Unlock()
 		return nil, err
 	}
@@ -621,6 +621,9 @@ func (m *hubHostManager) finalizeOrphanMarkerIfAny(ctx context.Context, name str
 	change := hostPersistChange{
 		receipt:    &pendingHostReceipt{Key: marker.Key, Receipt: receipt},
 		dropMarker: name,
+		// A landed commit's host change is already in hub.toml; settling its
+		// records never rewrites the host list.
+		recordsOnly: m.recordsInStore(),
 	}
 	if runErr != nil {
 		seam := remnant.Seam

@@ -1207,3 +1207,42 @@ func TestNoSingleReadFailureWhileStagingARemovalLetsItFinalizeAsLanded(t *testin
 		}
 	}
 }
+
+// TestBootFinalizationNeverRewritesTheHostList pins that settling a landed
+// commit's marker at boot writes records alone: a host edited in hub.toml after
+// the registry was built is the operator's to keep, not the registry's to put
+// back.
+func TestBootFinalizationNeverRewritesTheHostList(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, _ := hub.boot(t, false)
+	params := removeRequest(t, m, "side")
+	armCut(m, cutFlipped)
+	runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
+
+	hub.restartStateRoot(t)
+	store, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	doc := hostBootDocument(mustLoadConfig(t, hub.configPath), store)
+	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
+	if err != nil {
+		t.Fatalf("hostreg.NewSeeded: %v", err)
+	}
+	if err := writeHubTOMLHosts(hub.configPath, []hostreg.Host{{Name: "keep", SSH: "edited-by-hand.example"}}); err != nil {
+		t.Fatalf("edit hub.toml by hand: %v", err)
+	}
+	newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: hub.configPath,
+	}, hub.configPath, hosts, t.Logf)
+
+	var ssh string
+	for _, host := range mustLoadConfig(t, hub.configPath).Hosts {
+		if host.Name == "keep" {
+			ssh = host.SSH
+		}
+	}
+	if ssh != "edited-by-hand.example" {
+		t.Fatalf("boot finalization put the registry's host list over the operator's edit: keep.ssh = %q", ssh)
+	}
+}
