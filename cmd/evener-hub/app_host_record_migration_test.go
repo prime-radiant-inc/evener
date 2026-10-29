@@ -769,7 +769,8 @@ func TestAnUnreadableRecordDoesNotHideAnOpenTeardownRemnant(t *testing.T) {
 		family.Receipts[key] = json.RawMessage(`{"from_a_newer_build":true}`)
 		break
 	}
-	// An attempt this build cannot read must not hide the remnants either.
+	// Nor may a remnant or an attempt this build cannot read.
+	family.Remnants["remnant-from-a-newer-build"] = json.RawMessage(`{"from_a_newer_build":true}`)
 	family.Attempts = map[string]json.RawMessage{"attempt-from-a-newer-build": json.RawMessage(`{"from_a_newer_build":true}`)}
 	if err := store.CommitHostRecords(family, hostops.HostMirror{}); err != nil {
 		t.Fatalf("tamper with a receipt: %v", err)

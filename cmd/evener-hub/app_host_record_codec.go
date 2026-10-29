@@ -154,14 +154,22 @@ func decodeHostRecords(family hostops.HostRecords) (hostRecordSet, error) {
 	return set, nil
 }
 
-// decodeTeardownRemnants reads only the teardown remnants of the family. They
-// fence lifecycle actions on their own, so a record elsewhere in the family that
-// this build cannot read, a teardown attempt included, must not hide them.
-func decodeTeardownRemnants(family hostops.HostRecords) (map[string]HostTeardownRemnant, error) {
-	return decodeRecordMap[HostTeardownRemnant]("teardown remnant", family.Remnants)
+// decodeReadableRecords reads each stored record on its own and keeps the ones
+// this build can read; the rest stay in the store untouched.
+func decodeReadableRecords[V any](encoded map[string]json.RawMessage) map[string]V {
+	readable := make(map[string]V, len(encoded))
+	for key, raw := range encoded {
+		if records, err := decodeRecordMap[V]("record", map[string]json.RawMessage{key: raw}); err == nil {
+			readable[key] = records[key]
+		}
+	}
+	return readable
 }
 
-// decodeTeardownAttempts reads only the teardown attempts of the family.
-func decodeTeardownAttempts(family hostops.HostRecords) (map[string]HostTeardownAttempt, error) {
-	return decodeRecordMap[HostTeardownAttempt]("teardown attempt", family.Attempts)
+// decodeTeardownFences reads the teardown remnants and attempts of the family
+// that this build can read. They fence lifecycle actions on their own, so a
+// record elsewhere in the family that cannot be read, another remnant or an
+// attempt included, must not hide them.
+func decodeTeardownFences(family hostops.HostRecords) (map[string]HostTeardownRemnant, map[string]HostTeardownAttempt) {
+	return decodeReadableRecords[HostTeardownRemnant](family.Remnants), decodeReadableRecords[HostTeardownAttempt](family.Attempts)
 }

@@ -127,13 +127,8 @@ func (m *hubHostManager) attachOps(store *hostops.Store) {
 		// Operations admitted from the moment the store is published read the
 		// teardown fences, so the fences it holds are installed first.
 		if family, _, imported := store.HostRecords(); imported {
-			if remnants, err := decodeTeardownRemnants(family); err == nil {
-				attempts, attemptErr := decodeTeardownAttempts(family)
-				if attemptErr != nil {
-					attempts = map[string]HostTeardownAttempt{}
-				}
-				m.cfg.store.setRemnantMaps(m.cfg.store.stagedSnapshot(), remnants, attempts)
-			}
+			remnants, attempts := decodeTeardownFences(family)
+			m.cfg.store.setRemnantMaps(m.cfg.store.stagedSnapshot(), remnants, attempts)
 		}
 		m.cfg.ops.Store(store)
 		if m.testOnlyAfterPublish != nil {
@@ -265,13 +260,8 @@ func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
 		// and the unreadable records stay in the store untouched.
 		m.cfg.store.set(m.cfg.hosts.All())
 		family, _, _ := ops.HostRecords()
-		if remnants, remnantErr := decodeTeardownRemnants(family); remnantErr == nil {
-			attempts, attemptErr := decodeTeardownAttempts(family)
-			if attemptErr != nil {
-				attempts = map[string]HostTeardownAttempt{}
-			}
-			m.cfg.store.setRemnantMaps(map[string]HostStagedReceipt{}, remnants, attempts)
-		}
+		remnants, attempts := decodeTeardownFences(family)
+		m.cfg.store.setRemnantMaps(map[string]HostStagedReceipt{}, remnants, attempts)
 		m.refuseMutations(fmt.Sprintf("the host records in the operation store cannot be read: %v", err))
 		return
 	}
