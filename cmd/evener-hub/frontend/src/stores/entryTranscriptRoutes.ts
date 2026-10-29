@@ -46,6 +46,17 @@ export interface EntryRouteStore {
 export interface EntryRouteHost {
   store: EntryRouteStore;
   trackedHydrationCompletions: Map<string, Promise<void>>;
+  /** Parks until the next tracked hydration for `ref` settles either way,
+   * excepting the one registration whose settlement the caller owns. */
+  nextTrackedHydrationSettlement(ref: string, except?: unknown): { settled: Promise<void>; cancel: () => void };
+  /** Registers a completion in trackedHydrationCompletions and settles the
+   * waiters parked on it when it settles. */
+  registerHydrationCompletion(ref: string, completion: Promise<void>): void;
+  /** Wakes every parked opening waiter for `ref`: a quiet certification just
+   * established the display over an older published opening, whose parked
+   * wait can no longer count on the settlement it armed - the registration it
+   * observed was displaced by a pending refresh that has not settled. */
+  notifyOpeningEstablishedOverSuperseded(ref: string): void;
   putThreadModel(ref: string, model: ThreadModel): void;
   dropUnpinnedModel(ref: string, flush?: boolean): void;
   syncThreadSubscription(ref: string): unknown;
@@ -167,6 +178,7 @@ export function productionEntryTranscriptForTests(ref: string) {
     reader: route?.reader,
     lastLocalOpenStatus: route?.lastLocalOpenStatus,
     lastLocalOpenUsable: route?.lastLocalOpenUsable,
+    localOpenDeadlineMissed: route?.localOpenDeadlineMissed,
   };
 }
 
@@ -209,7 +221,7 @@ export interface EntryTranscriptRoute {
   // disk recertification against the lookup deadline.
   lastLocalOpenUsable?: boolean;
   // True when the most recent open's bounded lookup expired before the local
-  // read answered (openEntryTranscript's deadline branch): the recorded window
+  // read answered (openEntryTranscript's backstop branch): the recorded window
   // was never served nor refused, so a held pane's display can still be
   // body-suppressed with no demand cursor. Distinguishes that strand from the
   // fast recovery-needed answers a repository without a usable record returns.
@@ -261,6 +273,24 @@ export function setSessionCacheStalledOpenForTests(ms: number): void {
   sessionCacheStalledOpenMs = ms;
 }
 
+// The ordinary open's storage-read backstop. The open's primary bound is
+// deterministic — the next tracked hydration for the ref settling, or an
+// ownership change — and this long clock exists only for the wedge where
+// nothing else can fire: a remount whose storage read never answers and no
+// hydration is in flight. It must stay far above any real IndexedDB latency
+// so a slow-but-answering cache is never mistaken for a wedged one.
+let sessionCacheOpenBackstopMs = 10000;
+
+/** @internal Lets tests shorten the open backstop without waiting real seconds. */
+export function setSessionCacheOpenBackstopForTests(ms: number): void {
+  sessionCacheOpenBackstopMs = ms;
+}
+
+// The open-race sentinel for "a tracked hydration settled first": the source
+// owns the display's convergence from that settlement, so the open ends
+// superseded, not missed.
+const OPEN_SUPERSEDED_BY_SOURCE = { supersededBySource: true } as const;
+
 /** True while the entry fixture's reader is still restoring `ref` from disk. */
 export function isEntryTranscriptLocalOpening(ref: string): boolean {
   return store().getState().localOpenings.has(ref);
@@ -271,13 +301,29 @@ export function isEntryTranscriptLocalOpening(ref: string): boolean {
 // that newer opening finished.
 const entryTranscriptLatestOpening = new Map<string, number>();
 
+// A quiet opening's ownership token: present while the open runs, invisible
+// to the consumer gate. The certification open a claim runs over a display
+// its own publication already completed, and whose older frontier is still
+// outstanding, has no pruned publication for the gate to protect, while
+// consumers hold live paging demand the gate would strand exactly between
+// the claim and the open's settle (the Comic restore's next accepted page is
+// the observed strand) — so it does not hold them, while still recording its
+// verdict like any open, including arming the recovery chain on a miss.
+const entryTranscriptQuietOpenings = new Map<string, number>();
+
 // Mark the opening pending BEFORE its first (pruned) publication, and publish
 // the change through the store so subscribed consumers re-render. Returns the
-// token the matching settle must present.
-export function beginEntryTranscriptLocalOpening(ref: string): number {
+// token the matching settle must present. A quiet opening registers its token
+// without the store publication: consumers never wait on it, and ownership
+// (the registries' tokens) behaves exactly as for a published one.
+export function beginEntryTranscriptLocalOpening(ref: string, quiet = false): number {
   entryTranscriptOpeningSequence += 1;
   const token = entryTranscriptOpeningSequence;
   entryTranscriptLatestOpening.set(ref, token);
+  if (quiet) {
+    entryTranscriptQuietOpenings.set(ref, token);
+    return token;
+  }
   store().setState((state) => {
     const localOpenings = new Map(state.localOpenings);
     localOpenings.set(ref, token);
@@ -290,6 +336,7 @@ export function beginEntryTranscriptLocalOpening(ref: string): number {
 // the ref) is a no-op, so it can never clear the newer hold or, by
 // publishing, strand a port. Called on success, failure and no-model alike.
 export function settleEntryTranscriptLocalOpening(ref: string, token: number): void {
+  if (entryTranscriptQuietOpenings.get(ref) === token) entryTranscriptQuietOpenings.delete(ref);
   store().setState((state) => {
     if (state.localOpenings.get(ref) !== token) return {};
     const localOpenings = new Map(state.localOpenings);
@@ -298,10 +345,30 @@ export function settleEntryTranscriptLocalOpening(ref: string, token: number): v
   });
 }
 
+// Exclusive ownership between quiet and published openings: a quiet
+// certification that establishes the display retires the older published
+// token's consumer hold - consumers wait on that token, and the display it
+// was held for now stands established. A newer published opening is never
+// touched (the monotonic token comparison), and a route with no older
+// published opening keeps nothing to retire. Returns whether a superseded
+// hold was retired.
+function retireSupersededPublishedOpening(ref: string, token: number): boolean {
+  const superseded = store().getState().localOpenings.get(ref);
+  if (superseded === undefined || superseded >= token) return false;
+  store().setState((state) => {
+    if (state.localOpenings.get(ref) !== superseded) return {};
+    const localOpenings = new Map(state.localOpenings);
+    localOpenings.delete(ref);
+    return { localOpenings };
+  });
+  return true;
+}
+
 // Drop any hold for a ref whose fixture route is gone (disposal): publish the
 // change so a consumer showing the port resumes ordinarily rather than waiting
 // for a frame that will never arrive.
 export function clearEntryTranscriptLocalOpening(ref: string): void {
+  entryTranscriptQuietOpenings.delete(ref);
   store().setState((state) => {
     if (!state.localOpenings.has(ref)) return {};
     const localOpenings = new Map(state.localOpenings);
@@ -345,7 +412,7 @@ export function publishEntryTranscriptModel(ref: string): void {
 // The complete-requested-window standard a local open tolerates without a
 // cache certificate: every foreground item the model expects is present with
 // at least its version and a real body.
-function holdsCompleteForegroundWindow(model: ThreadModel | undefined): boolean {
+export function holdsCompleteForegroundWindow(model: ThreadModel | undefined): boolean {
   const displayed = new Map(
     model?.turns.flatMap((turn) => turn.items.map((item) => [item.transcriptKey ?? item.id, item] as const)),
   );
@@ -365,14 +432,54 @@ function holdsCompleteForegroundWindow(model: ThreadModel | undefined): boolean 
   );
 }
 
-export async function openEntryTranscript(ref: string, recovery = false): Promise<boolean> {
+// A waiter handle from the host's settlement wait: `settled` resolves when the
+// next tracked hydration for the ref settles either way; `cancel` unparks a
+// waiter whose open ended without the settlement firing.
+type HydrationSettlementWait = {
+  settled: Promise<void>;
+  cancel: () => void;
+};
+
+export async function openEntryTranscript(
+  ref: string,
+  recovery = false,
+  // The registration of the publication this open certifies, passed by a
+  // caller that just awaited that publication (the claim's post-hydration
+  // certification). The open's settlement wait excludes exactly that
+  // registration — the claim's own hydration settling would otherwise
+  // certify this re-open before its local promotion ran — while every later,
+  // foreign settlement still supersedes. The identity is the awaited
+  // hydration's own registration, never the map's current entry: a
+  // replacement registered mid-publication displaces the claim's
+  // registration there, and its settlement is foreign to this open.
+  exceptRegistration?: Promise<void>,
+  // Run the open without the consumer gate: the caller's own publication
+  // already completed the display AND its older frontier is still outstanding
+  // (the claim's post-hydration certification over a complete window with
+  // live paging demand), so no pruned publication needs the gate's
+  // protection and the consumers holding that demand must not be held while
+  // the local read runs.
+  quiet = false,
+): Promise<boolean> {
   const fixture = entryTranscriptRoute(ref);
   if (!fixture || fixture.ref !== ref || !fixture.repository) return true;
   const repository = fixture.repository;
-  const openingToken = beginEntryTranscriptLocalOpening(ref);
+  const openingToken = beginEntryTranscriptLocalOpening(ref, quiet);
   fixture.localOpenDeadlineMissed = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let settlement: HydrationSettlementWait | undefined;
   try {
+    // A fenced baseline retires the attached reader's captured opening state:
+    // its openLocal answers the stale refusal without reading storage, so a
+    // recovery re-open reads through a fresh reader. Attach the replacement
+    // before disposing the fenced one — a sole-reader disposal synchronously
+    // reclaims the recorded bodies behind a display that may still hold a
+    // usable live tail — mirroring the backstop's held-pane swap ordering.
+    if (recovery && fixture.reader) {
+      const fenced = fixture.reader;
+      fixture.reader = heldCountsAtStore(ref) ? fixture.repository.attachReader() : undefined;
+      fenced.dispose();
+    }
     fixture.reader ??= fixture.repository.attachReader();
     // Ongoing repository publication: every accepted recorded update republishes
     // the repository model, so continued UI changes are repository-owned rather
@@ -392,15 +499,50 @@ export async function openEntryTranscript(ref: string, recovery = false): Promis
     // and only a genuinely stalled storage read settles the opening early.
     // Only the opening that still owns the route may record its verdict: a
     // superseded one (its pane released, its repository replaced, or a newer
-    // open already begun) must not overwrite what a newer open established.
+    // open already begun - quiet or published) must not overwrite what a
+    // newer open established.
     const openingOwned = () =>
       entryTranscriptRoute(ref) === fixture &&
       fixture.repository === repository &&
-      store().getState().localOpenings.get(ref) === openingToken;
+      entryTranscriptLatestOpening.get(ref) === openingToken &&
+      (store().getState().localOpenings.get(ref) === openingToken ||
+        entryTranscriptQuietOpenings.get(ref) === openingToken);
     const established = fixture.lastLocalOpenUsable && repository.holdsEstablishedView();
     let stalled = false;
-    const restore = established ? reader.openLocal(200) : undefined;
-    const result = established
+    const localRead = reader.openLocal(200);
+    const restore = established ? localRead : undefined;
+    // Only the ordinary open arms the storage backstop: an established
+    // restore races the stalled-open window alone, and one clearable timer
+    // handle must not leak a second, un-cleared clock behind it.
+    const openBound = established
+      ? undefined
+      : new Promise<undefined>((resolve) => {
+          timer = setTimeout(
+            () => {
+              // A held pane keeps a reader through the swap: the repository
+              // reclaims the bodies behind a displayed window the moment it
+              // has none, and the next publication would then replace that
+              // display with the body-suppressed model.
+              if (fixture.reader === reader) {
+                fixture.reader = heldCountsAtStore(ref) ? repository.attachReader() : undefined;
+              }
+              reader.dispose();
+              resolve(undefined);
+              // The backstop is the clock of last resort: the primary bound
+              // is the source-settlement competitor above, and this timer
+              // exists for the wedge where nothing else can fire — storage
+              // that never answers and no hydration in flight. A recovery
+              // attempt keeps the longer stalled-open window on purpose: a
+              // read that answers slower than the window but successfully
+              // must be allowed to finish, or a consistently slow cache
+              // strands the pane behind a race it can only keep losing.
+            },
+            recovery ? sessionCacheStalledOpenMs : sessionCacheOpenBackstopMs,
+          );
+        });
+    settlement =
+      established || recovery ? undefined : routeHost().nextTrackedHydrationSettlement(ref, exceptRegistration);
+    let result = established
       ? await Promise.race([
           restore,
           new Promise<undefined>((resolve) => {
@@ -411,28 +553,92 @@ export async function openEntryTranscript(ref: string, recovery = false): Promis
           }),
         ])
       : await Promise.race([
-          reader.openLocal(200),
-          new Promise<undefined>((resolve) => {
-            timer = setTimeout(
-              () => {
-                // A held pane keeps a reader through the swap: the repository
-                // reclaims the bodies behind a displayed window the moment it
-                // has none, and the next publication would then replace that
-                // display with the body-suppressed model.
-                if (fixture.reader === reader) {
-                  fixture.reader = heldCountsAtStore(ref) ? repository.attachReader() : undefined;
-                }
-                reader.dispose();
-                resolve(undefined);
-                // A recovery attempt outlasts the lookup deadline on purpose:
-                // a read that answers slower than the deadline but successfully
-                // must be allowed to finish, or a consistently slow cache
-                // strands the pane behind a race it can only keep losing.
-              },
-              recovery ? sessionCacheStalledOpenMs : SESSION_CACHE_LOOKUP_DEADLINE_MS,
-            );
-          }),
+          localRead,
+          // The open's primary deterministic bound, ordinary opens only: a
+          // recovery attempt is the source machinery itself and must not
+          // supersede its own re-open, and a foreign heal settling while a
+          // recovery re-open waits converges through the recovery's own
+          // compose registration rather than by superseding the re-open.
+          // When the next tracked hydration for this ref settles — published
+          // or failed, owned by the hydration lifecycle either way — the
+          // local wait is over: the source owns the display from there.
+          ...(settlement ? [settlement.settled.then(() => OPEN_SUPERSEDED_BY_SOURCE)] : []),
+          openBound,
         ]);
+    while (result && "supersededBySource" in result) {
+      // A tracked hydration settled while this open's local read was still
+      // pending. When the repository still holds the foreground range, the
+      // source lifecycle owns the display's convergence: nothing is
+      // stranded, no recovery strand is armed, and the reader stays
+      // attached — a held pane keeps its reader so the repository cannot
+      // reclaim the bodies behind the healed display. The still-running
+      // local read publishes late under the route's existing publication
+      // fences. A repository that moved past the pane's demand — its range
+      // reclaimed behind a reconciliation boundary — can serve neither the
+      // display nor a late publish, and the settling read itself recovered
+      // nothing, so no hydration or failure retry owns what is missing.
+      // The resident range alone is not enough: a live update can publish a
+      // tail item over reclaimed identities and establish a resident range
+      // that certifies only that tail, while the bodies the pane came to
+      // restore stay missing — so the expected window must hold real bodies
+      // alongside the range.
+      // A re-open the caller's own machinery published the model for — the
+      // claim's post-hydration certification — is source-owned only with the
+      // same body-completeness proof every other superseded open shows: the
+      // claim resolves for any non-null model, including a body-suppressed
+      // shell a rejected response left behind, so a settling confirmation
+      // that recovered nothing must not certify the still-missing window.
+      // The verdict belongs to an open that still owns the route: a hydration
+      // that changed incarnation, thread identity or durable authority has
+      // already replaced and disposed this repository, and the replacement's
+      // own lifecycle owns the pane from there. Judging the disposed
+      // repository would report a miss that fences the healthy replacement,
+      // so a superseded open hands the pane to whatever replaced it.
+      if (!openingOwned()) {
+        fixture.lastLocalOpenStatus = "superseded-by-source";
+        return true;
+      }
+      // An accepted empty source window is established too: an empty
+      // transcript never creates the foreground start the resident-range
+      // check requires, but it expects nothing, so it is missing nothing -
+      // the same empty-expectation semantics the window check carries. The
+      // non-empty verdict is unchanged: a window that expects items still
+      // needs the resident range AND the bodied window together.
+      if (
+        repository.holdsBodiedForegroundWindow() &&
+        (repository.holdsResidentForegroundRange() || repository.expectsEmptyForegroundWindow())
+      ) {
+        fixture.lastLocalOpenStatus = "superseded-by-source";
+        return true;
+      }
+      // The settling registration may itself be composed with a recovery span
+      // that is still pending: the hydration settled, the chain composed
+      // behind it has not, and this wake is early - a verdict here would judge
+      // an unfinished recovery's display. An open that still owns the route
+      // re-arms the wait for the next settlement and keeps racing the
+      // still-pending local read under the same backstop instead of falling
+      // through: the recovery-needed strand belongs to the chain still
+      // running, and the next wake (or the recovery's own span settling)
+      // re-runs this verdict with the display as it actually stands.
+      if (openingRecoveryCompletion(ref) !== undefined && openingOwned()) {
+        settlement?.cancel();
+        settlement = routeHost().nextTrackedHydrationSettlement(ref, exceptRegistration);
+        result = await Promise.race([localRead, settlement.settled.then(() => OPEN_SUPERSEDED_BY_SOURCE), openBound]);
+        continue;
+      }
+      // A settlement that recovered nothing — a failed read, or a successful
+      // response the repository rejected behind a newer recorded update —
+      // owns no convergence, and a success verdict here would strand what
+      // the retired deadline used to hand to the paced recovery. Report the
+      // miss verdict instead: the stranding marker and the false return arm
+      // the same one-owner chain the deadline miss arms, while the
+      // still-running local read keeps publishing under the existing
+      // late-result fences.
+      fixture.lastLocalOpenStatus = "recovery-needed";
+      fixture.localOpenDeadlineMissed = true;
+      if (openingOwned()) fixture.lastLocalOpenUsable = false;
+      return false;
+    }
     if (!result) {
       // A stalled restore keeps the established view standing only while that
       // view still holds its required bodies: a foreground release already
@@ -514,8 +720,20 @@ export async function openEntryTranscript(ref: string, recovery = false): Promis
       result.retainedRangeComplete !== false &&
       (result.status !== "recovery-needed" || holdsCompleteForegroundWindow(result.model));
     if (openingOwned()) fixture.lastLocalOpenUsable = usable;
+    // A quiet certification that establishes the display takes exclusive
+    // ownership of the route's opening: the older published opening it
+    // superseded keeps the consumer gate held until its own read answers or
+    // the backstop fires - and the settlement it parked on can go silent when
+    // a pending refresh displaced the registration it observed. Retire that
+    // superseded hold so paging and placement resume on the established
+    // display, and wake the parked open so it ends through the superseded
+    // path and clears its backstop timer instead of lingering toward it.
+    if (quiet && usable && retireSupersededPublishedOpening(ref, openingToken)) {
+      routeHost().notifyOpeningEstablishedOverSuperseded(ref);
+    }
     return usable;
   } finally {
+    settlement?.cancel();
     if (timer !== undefined) clearTimeout(timer);
     settleEntryTranscriptLocalOpening(ref, openingToken);
   }
@@ -724,6 +942,19 @@ export function scheduleEntryOpeningRecovery(ref: string): void {
       // never answer: hand to source recovery once, the same sequence a
       // stalled restore hands to (#4954), and let the ordinary owner-scoped
       // paths own the rest.
+      // A structured history failure is the one refusal that must not take
+      // that handoff: the read's own handling already recorded the single
+      // visible diagnostic (readThreadHydration's applyHistoryReadFailure)
+      // and schedules no retry - the next read comes from the next event, a
+      // resync, a reconnect or the user, never from us. The local attempts
+      // above remain this chain's contribution: storage that heals can still
+      // restore the display. But while the diagnostic stands, the automatic
+      // source handoff would be exactly the retry loop that contract
+      // forbids, so the chain stops here and the pane keeps its diagnostic.
+      // A transport failure never sets it, and a later successful read
+      // discards the failed history wholesale, so the gate cannot outlive
+      // the state it describes.
+      if (store().getState().threads.get(ref)?.history?.failed !== undefined) return;
       route.repository?.beginFreshBaseline();
       publishEntryTranscriptModel(ref);
       let sourceReadFailed = false;
@@ -769,12 +1000,10 @@ export function scheduleEntryOpeningRecovery(ref: string): void {
   // ref's convergence — but the recovery chain's span is not a hydration and
   // must survive every one.
   openingRecoveryCompletions.set(ref, recovery);
-  routeHost().trackedHydrationCompletions.set(ref, recovery);
+  routeHost().registerHydrationCompletion(ref, recovery);
   void recovery.then(() => {
     if (pendingOpeningRecoveries.get(ref) === route) pendingOpeningRecoveries.delete(ref);
     if (openingRecoveryCompletions.get(ref) === recovery) openingRecoveryCompletions.delete(ref);
-    if (routeHost().trackedHydrationCompletions.get(ref) === recovery)
-      routeHost().trackedHydrationCompletions.delete(ref);
   });
 }
 
