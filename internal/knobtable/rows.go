@@ -98,6 +98,7 @@ func envRows(root string, sources []goSource) ([]envRow, error) {
 		return nil, err
 	}
 	byIdent := map[string]map[string]bool{}
+	byGetenv := map[string]map[string]bool{} // literal os.Getenv / os.LookupEnv names
 	for _, src := range sources {
 		refs, err := scanRefs(src)
 		if err != nil {
@@ -107,6 +108,9 @@ func envRows(root string, sources []goSource) ([]envRow, error) {
 			for ident := range refs.registry {
 				addTo(byIdent, ident, src.dir())
 			}
+		}
+		for _, name := range refs.getenvs {
+			addTo(byGetenv, name, src.dir())
 		}
 	}
 	catalog, err := registryNames(root)
@@ -123,11 +127,13 @@ func envRows(root string, sources []goSource) ([]envRow, error) {
 			continue
 		}
 		dirs := map[string]bool{}
-		for d := range byIdent[e.ident] {
-			// A test-support package that clears a variable to isolate a
-			// test refers to it without reading it.
-			if !isTestSupport(d) {
-				dirs[d] = true
+		for _, index := range []map[string]bool{byIdent[e.ident], byGetenv[e.name]} {
+			for d := range index {
+				// A test-support package that clears a variable to isolate a
+				// test refers to it without reading it.
+				if !isTestSupport(d) {
+					dirs[d] = true
+				}
 			}
 		}
 		if internalReads[e.ident] {

@@ -51,6 +51,8 @@ var (
 	InMap    = Var{Name: "EVENER_IN_MAP", Visibility: Public}
 	Written  = Var{Name: "EVENER_WRITTEN", Visibility: Public}
 	Unset    = Var{Name: "EVENER_UNSET_ONLY", Visibility: Public}
+	Literal  = Var{Name: "EVENER_LITERAL_READ", Visibility: Public}
+	Lookup   = Var{Name: "EVENER_LITERAL_LOOKUP", Visibility: Public}
 	Unread   = Var{Name: "EVENER_UNREAD", Summary: "Unread is only named here", Visibility: Public}
 )
 
@@ -95,7 +97,7 @@ func fixtureRoot(t *testing.T) string {
 		"cmd/evener-hub/config.go":              fixtureHubConfig,
 		"cmd/evener-hub/use.go":                 "package main\ntype other struct{ Dead, Addr int }\nfunc f(c Config, p *Config, o other) { _ = c.Addr; _ = p.Timeout; _ = o.Dead; c.Dead = 1 }\n",
 		"cmd/evener-hub/other_test.go":          "package main\nvar _ = cfg.Dead\n",
-		"cmd/dev/direct.go":                     "package main\nvar _ = os.Getenv(\"SHARD_DIR\")\nvar _ = \"EVENER_READ\"\nconst rig = \"EVENER_RIG\"\nvar cleared = []string{\"EVENER_ONLY_CLEARED_LIST\"}\n",
+		"cmd/dev/direct.go":                     "package main\nvar _ = os.Getenv(\"SHARD_DIR\")\nvar _ = \"EVENER_READ\"\nconst rig = \"EVENER_RIG\"\nvar _ = os.Getenv(\"EVENER_LITERAL_READ\")\nvar _, _ = os.LookupEnv(\"EVENER_LITERAL_LOOKUP\")\nvar cleared = []string{\"EVENER_ONLY_CLEARED_LIST\"}\n",
 		"docs/developing-evener/environment.md": "| `EVENER_READ` | doc |\n",
 		"docs/evener-hub.md":                    "`addr` and\ntimeout = \"5s\"\n",
 		"docs/superpowers/plans/dated.md":       "`EVENER_ORPHAN` `dead`\n",
@@ -127,6 +129,11 @@ func TestEnvRowsReportConsumersAndDocRows(t *testing.T) {
 	}
 	if got := byName["ACME_ORG_ID"]; !slices.Equal(got.Consumers, []string{"llm/registry"}) {
 		t.Errorf("expanded variable consumers = %v, want the registry that expands it", got.Consumers)
+	}
+	for _, name := range []string{"EVENER_LITERAL_READ", "EVENER_LITERAL_LOOKUP"} {
+		if got := byName[name]; !slices.Equal(got.Consumers, []string{"cmd/dev"}) {
+			t.Errorf("%s consumers = %v, want the package that reads it through a literal os call", name, got.Consumers)
+		}
 	}
 	for _, name := range []string{"ACME_API_KEY", "GHOST_API_KEY", "EVENER_ONLY_CLEARED", "EVENER_BY_NAME", "EVENER_UNREAD", "EVENER_SET_ONLY", "EVENER_MENTIONED", "EVENER_WRITTEN", "EVENER_IN_MAP", "EVENER_UNSET_ONLY"} {
 		if got := byName[name]; len(got.Consumers) != 0 {
