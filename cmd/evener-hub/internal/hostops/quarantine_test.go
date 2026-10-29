@@ -935,3 +935,26 @@ func TestSetAsideUnprovableKeepsOldOperationIDsFromBeingReused(t *testing.T) {
 		t.Fatalf("quarantine epoch after the set-aside = %d, %v; want it advanced", epoch, err)
 	}
 }
+
+func TestAStoreBesideAnUnprovableAsideStartsAboveItsIDsEvenInAGlobNamedDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "[prod]")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "operations.json")
+	if err := os.WriteFile(path+unprovableAsideInfix+"20260101T000000Z", []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	record, err := store.Create(NewRecord{ClientOperationID: "op-after", Host: "h1", Kind: KindDeploy, Generation: 1, IncarnationID: "inc-h1"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if id, err := parseAllocatorID(record.ID); err != nil || id <= 1<<40 {
+		t.Fatalf("the store beside an aside handed out id %q, which the old file's ids could reach", record.ID)
+	}
+}

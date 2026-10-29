@@ -871,7 +871,7 @@ func loadFS(fs afero.Fs, path string) (snapshot, error) {
 // custody snapshot, because a region of it was left unparsed or discarded.
 func readStoreFS(fs afero.Fs, path string) (snapshot, error) {
 	empty := snapshot{Version: storeVersion}
-	if asides, _ := afero.Glob(fs, path+unprovableAsideInfix+"*"); len(asides) > 0 {
+	if hasUnprovableAside(fs, path) {
 		// A store file set aside as unprovable left no readable ids behind, so a
 		// store that starts over beside it allocates above any id the old file
 		// could have handed out one at a time (the clock in nanoseconds).
@@ -1857,4 +1857,21 @@ func (s *Store) now() time.Time {
 		return s.clock().UTC()
 	}
 	return nowUTC()
+}
+
+// hasUnprovableAside reports whether a store file set aside as unprovable sits
+// beside path. The directory is read and the file names matched literally, so a
+// state root with glob characters in its name is found like any other.
+func hasUnprovableAside(fs afero.Fs, path string) bool {
+	entries, err := afero.ReadDir(fs, filepath.Dir(path))
+	if err != nil {
+		return false
+	}
+	prefix := filepath.Base(path) + unprovableAsideInfix
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), prefix) {
+			return true
+		}
+	}
+	return false
 }
