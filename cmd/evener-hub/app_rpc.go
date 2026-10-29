@@ -21,6 +21,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/envvars/userdirs"
+	"primeradiant.com/evener/execsupport/componentlog"
 	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/plugins"
@@ -954,9 +955,9 @@ func hubLogfFor(cfg hubcore.WebConfig) func(format string, args ...any) {
 	// os.Stderr global from it races any test that redirects os.Stderr
 	// (captureHubStderr, issue #2783). The startup path sets the sink before
 	// any server runs, so this captures the same destination it always wanted.
-	stderr := os.Stderr
+	log := componentlog.New("hub")
 	return func(format string, args ...any) {
-		_, _ = fmt.Fprintf(stderr, "[hub] "+format+"\n", args...)
+		log.Info(fmt.Sprintf(format, args...))
 	}
 }
 
