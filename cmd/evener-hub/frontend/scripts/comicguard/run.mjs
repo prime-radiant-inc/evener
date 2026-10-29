@@ -72,7 +72,7 @@ async function snapshotFailedPage(page, evidenceDir) {
     const state = await evaluate(page.send, `(async () => {
       const lagStart = performance.now();
       await new Promise(resolve => setTimeout(resolve, 0));
-      const scroll = window.__comicRoot?.()?.querySelector('[data-comic-scroll]');
+      const scroll = window.__comicRoot?.()?.querySelector('[data-comic-scroll]')?.firstElementChild;
       return {
         href: location.href,
         timerLagMs: performance.now() - lagStart,
