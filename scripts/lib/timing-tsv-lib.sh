@@ -15,7 +15,8 @@
 # from the tests the gate already runs — issue #144).
 #
 # Sourcing defines functions only; it touches no file and launches nothing.
-# Callers must have set $repo_root (both scripts do).
+# $repo_root, when a caller has set it, names the checkout; otherwise the lib
+# resolves it from its own location, so a CI step can source it directly.
 
 # timing_parse ARGS... — `evener-dev timing-parse`, the one parser for both
 # producers' output, unit-tested in Go against JSON strings rather than through
@@ -27,10 +28,11 @@
 # run-module-tests.sh builds it once instead of paying a `go run` compile per
 # module. Unset falls back to `go run`, the ratchet's own idiom.
 timing_parse() {
+	local root="${repo_root:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 	if [ -n "${EVENER_DEV_BIN:-}" ]; then
-		( cd "$repo_root" && GOFLAGS= "$EVENER_DEV_BIN" dev timing-parse "$@" )
+		( cd "$root" && GOFLAGS= "$EVENER_DEV_BIN" dev timing-parse "$@" )
 	else
-		( cd "$repo_root" && GOFLAGS= go run ./cmd/evener-dev/bin dev timing-parse "$@" )
+		( cd "$root" && GOFLAGS= go run ./cmd/evener-dev/bin dev timing-parse "$@" )
 	fi
 }
 
