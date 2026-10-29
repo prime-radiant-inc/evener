@@ -1119,3 +1119,15 @@ func TestTimingBudgetScalesClassCeilingsBySlowdownOnly(t *testing.T) {
 		t.Fatalf("a class breach beyond the scaled ceiling passed: %v\n%s", err, out)
 	}
 }
+
+// Package ratios against a markerless (stale-unit) budget say nothing about the
+// runner, so they must not stretch a blessed class ceiling.
+func TestTimingBudgetIgnoresStaleUnitRatiosWhenScalingCeilings(t *testing.T) {
+	budget := strings.Replace(slowRunnerBudget, `"metric":"package-wall-seconds",`, "", 1)
+	measured := "SUM\ta\t20.00\nSUM\tb\t20.00\nSUM\tc\t20.00\nSUM\td\t20.00\nSUM\te\t30.00\n" +
+		"TEST\ta\tTestClassed\t25.00\n"
+	out, err := runTimingBudgetCompare(t, measured, budget)
+	if err == nil || !strings.Contains(out, "TestClassed") {
+		t.Fatalf("a class breach passed because stale package ratios scaled its ceiling: %v\n%s", err, out)
+	}
+}

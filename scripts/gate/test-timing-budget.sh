@@ -554,6 +554,8 @@ elif stale_units:
 		f"(a rebaseline records \"metric\": \"{WALL_METRIC}\").")
 
 def runner_slowdown():
+	if stale_units:
+		return 1.0  # Stale-unit ratios are not comparable measurements of the runner.
 	ratios = sorted(sums[pkg] / b for pkg, b in packages.items()
 		if pkg in sums and b >= SLOWDOWN_MIN_BUDGET)
 	if len(ratios) < SLOWDOWN_MIN_PACKAGES:
