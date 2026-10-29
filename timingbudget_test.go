@@ -1064,18 +1064,15 @@ func TestCheckedInTimingBudgetAcceptsHealthyWebMeasurement(t *testing.T) {
 }
 
 // TestTimingTSVLibParsesFromAnyDirectoryWithoutRepoRoot pins the way CI's
-// web-unit lane uses the lib: sourced in a bare step, from the checkout root,
-// with no repo_root set and nothing but the report path. The lib must find its
-// own checkout rather than cd into an empty variable.
+// web-unit lane uses the lib: sourced in a bare step by a relative path, with
+// no repo_root set and a report path relative to the caller's directory, after
+// the caller has changed directory. The lib must find its own checkout and read
+// the report where the caller meant it.
 func TestTimingTSVLibParsesFromAnyDirectoryWithoutRepoRoot(t *testing.T) {
-	lib, err := filepath.Abs("scripts/lib/timing-tsv-lib.sh")
-	if err != nil {
-		t.Fatal(err)
-	}
-	report := filepath.Join(t.TempDir(), "vitest.json")
-	writeAuditScriptFixture(t, report, `{"testResults":[{"assertionResults":[{"fullName":"a b","duration":1500}]}]}`)
-	cmd := exec.Command("bash", "-c", `. "$LIB" && cd "$WORK" && vitest_json_to_tsv "$REPORT"`)
-	cmd.Env = append(os.Environ(), "LIB="+lib, "WORK="+t.TempDir(), "REPORT="+report, "repo_root=")
+	work := t.TempDir()
+	writeAuditScriptFixture(t, filepath.Join(work, "vitest.json"), `{"testResults":[{"assertionResults":[{"fullName":"a b","duration":1500}]}]}`)
+	cmd := exec.Command("bash", "-c", `. scripts/lib/timing-tsv-lib.sh && cd "$WORK" && vitest_json_to_tsv vitest.json`)
+	cmd.Env = append(os.Environ(), "WORK="+work, "repo_root=")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("vitest_json_to_tsv without repo_root: %v\n%s", err, out)
