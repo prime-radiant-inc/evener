@@ -11,6 +11,7 @@ package hub
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 	"sort"
 	"strings"
@@ -283,6 +284,25 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 		records.droppedTombstones[change.dropTombstone] = struct{}{}
 		delete(records.highWater, change.dropTombstone)
 	}
+	if restore := change.restore; restore != nil {
+		name := restore.Tombstone.Name
+		records.tombstones[name] = restore.Tombstone
+		records.highWater[name] = HostGeneration{
+			Generation:    restore.Tombstone.Generation,
+			IncarnationID: restore.Tombstone.IncarnationID,
+			PresenceEpoch: restore.Tombstone.PresenceEpoch,
+		}
+		for key, receipt := range restore.Receipts {
+			if _, held := records.receipts[key]; !held {
+				records.receipts[key] = receipt
+			}
+		}
+		for id, remnant := range restore.Remnants {
+			if _, held := records.remnants[id]; !held {
+				records.remnants[id] = remnant
+			}
+		}
+	}
 	if change.dropStoreSync != "" {
 		// The follow-up write that clears a converged intent, and the
 		// compensation that drops the intent with its hub.toml restore: the
@@ -361,11 +381,8 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 		if _, ok := live[name]; !ok {
 			continue
 		}
-		if marker, staging := records.stagedReceipts[name]; staging && name == protectedMarker {
-			consumed := records.tombstones[name]
-			marker.ConsumedTombstone = &consumed
-			records.stagedReceipts[name] = marker
-		}
+		consumed := &HostConsumedRecords{Tombstone: records.tombstones[name]}
+		beforeReceipts, beforeRemnants := maps.Clone(records.receipts), maps.Clone(records.remnants)
 		delete(records.tombstones, name)
 		records.droppedTombstones[name] = struct{}{}
 		delete(records.highWater, name)
@@ -377,6 +394,15 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 		// practice only resolved records are here; an open one is kept either
 		// way, because dropping it would strand a live teardown handle.
 		m.purgeNameTeardownRecords(records, name, protectedMarker)
+		if marker, staging := records.stagedReceipts[name]; staging && name == protectedMarker {
+			// The write also stages this re-add: the marker keeps what the purge
+			// took, so a re-add that never reaches hub.toml can be rolled back
+			// without losing the removed incarnation's history.
+			consumed.Receipts = removedEntries(beforeReceipts, records.receipts)
+			consumed.Remnants = removedEntries(beforeRemnants, records.remnants)
+			marker.Consumed = consumed
+			records.stagedReceipts[name] = marker
+		}
 	}
 
 	// Expiry prune: past the retention period the tombstone is dropped in this
@@ -961,4 +987,18 @@ func tombstoneCapacityRefusal(err error) error {
 	return appwire.TombstoneCapacity(capacity.bound, capacity.blockingNames,
 		fmt.Sprintf("hub.toml's tombstones would exceed the global %s bound; resolve the open teardown remnants of %s first, then retry",
 			capacity.bound, strings.Join(capacity.blockingNames, ", ")))
+}
+
+// removedEntries returns the entries of before that after no longer holds.
+func removedEntries[V any](before, after map[string]V) map[string]V {
+	removed := map[string]V{}
+	for key, value := range before {
+		if _, kept := after[key]; !kept {
+			removed[key] = value
+		}
+	}
+	if len(removed) == 0 {
+		return nil
+	}
+	return removed
 }

@@ -348,13 +348,13 @@ func (m *hubHostManager) rollBackUnlandedCommits(doc hostRecordDocument) map[str
 			// The host was never removed: its tombstone goes with the rollback.
 			change.dropTombstone = name
 		}
-		if consumed := marker.ConsumedTombstone; consumed != nil {
-			// The re-add's staging write consumed the name's removal tombstone;
-			// the host change never landed, so the removal stands, and the
-			// generation the re-add spent stays spent.
-			restored := *consumed
-			restored.Generation = max(restored.Generation, marker.Provisional.Generation)
-			change.tombstone = &hostTombstoneStage{Tombstone: restored}
+		if consumed := marker.Consumed; consumed != nil {
+			// The re-add's staging write purged the removed incarnation's
+			// history; the host change never landed, so the removal stands, and
+			// the generation the re-add spent stays spent.
+			restore := *consumed
+			restore.Tombstone.Generation = max(restore.Tombstone.Generation, marker.Provisional.Generation)
+			change.restore = &restore
 		}
 		if err := m.persistHosts(entries, entries, change); err != nil {
 			m.logf("boot rollback of the staged commit for %q not written: %v", name, err)

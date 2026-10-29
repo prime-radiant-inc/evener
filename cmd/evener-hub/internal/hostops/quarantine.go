@@ -929,15 +929,32 @@ var ErrStoreLoads = errors.New("hostops: the store file loads")
 // names it would carry; a caller that must keep serving anyway sets the file
 // aside and rebuilds what it can from elsewhere. A file that loads is never
 // moved (ErrStoreLoads): the refusal then comes from the quarantine bookkeeping
-// beside it, and moving a good store would lose it without clearing that. It
-// returns the path the file was kept at.
+// beside it, and moving a good store would lose it without clearing that. The
+// replacement store it leaves allocates operation ids above any the old file
+// could have held. It returns the path the file was kept at.
 func SetAsideUnprovable(path string) (string, error) {
 	fs := afero.NewOsFs()
 	if _, err := loadFS(fs, path); err == nil {
 		return "", ErrStoreLoads
 	}
-	aside := path + unprovableAsideInfix + quarantineStamp(nowUTC())
+	now := nowUTC()
+	aside := path + unprovableAsideInfix + quarantineStamp(now)
 	if err := renameStoreAside(fs, path, aside, storeFaults{}); err != nil && !RenameLanded(err) {
+		return "", err
+	}
+	// The old ids cannot be read back, so the replacement allocates above any id
+	// a store could have handed out one at a time (the clock in nanoseconds), and
+	// the quarantine epoch moves forward: a reference to an operation of the file
+	// set aside never resolves to an unrelated new one.
+	state, err := replacementState(custodyFile{}, uint64(now.UnixNano()))
+	if err != nil {
+		return "", err
+	}
+	if err := writeReplacement(fs, path, state, storeFaults{}); err != nil {
+		return "", err
+	}
+	prior, _ := readQuarantineEpochSidecar(fs, path)
+	if err := writeQuarantineEpoch(fs, path, prior+1, storeFaults{}); err != nil {
 		return "", err
 	}
 	return aside, nil

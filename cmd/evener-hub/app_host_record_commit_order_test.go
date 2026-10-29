@@ -288,15 +288,37 @@ func TestBootKeepsAnUnrolledRemovalStagedUntilItCanBeRolledBack(t *testing.T) {
 	}
 }
 
+// receiptKeysFor lists the receipt keys the records hold for mutationID.
+func receiptKeysFor(records hostRecordSet, mutationID string) []string {
+	var keys []string
+	for key := range records.MutationReceipts {
+		if scope, ok := parseHostReceiptScopedKey(key); ok && scope.MutationID == mutationID {
+			keys = append(keys, key)
+		}
+	}
+	return keys
+}
+
 // TestBootRollbackOfAnUnlandedReAddKeepsTheRemovalItConsumed pins the rollback's
 // preservation: a re-add's first store write consumes the name's removal
 // tombstone, so rolling the re-add back must put the tombstone back, with the
 // generation the re-add spent, or a crash in that window would erase the
-// removed host's retained record.
+// removed host's retained record. The purge also takes the name's superseded
+// receipts, which come back with it.
 func TestBootRollbackOfAnUnlandedReAddKeepsTheRemovalItConsumed(t *testing.T) {
 	const staged = "staged-re-add"
 	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
 	m, _ := hub.boot(t, false)
+	const earlier = "earlier-edit"
+	edit := updateRequest(t, m, "side", appwire.HostEntry{Address: "earlier.example"})
+	edit.MutationID = earlier
+	if _, err := m.UpdateResult(context.Background(), edit); err != nil {
+		t.Fatalf("Update(side): %v", err)
+	}
+	heldBefore := receiptKeysFor(mustRecords(t, hub.store), earlier)
+	if len(heldBefore) == 0 {
+		t.Fatal("the earlier edit left no receipt")
+	}
 	if _, err := m.RemoveResult(context.Background(), removeRequest(t, m, "side")); err != nil {
 		t.Fatalf("Remove(side): %v", err)
 	}
@@ -332,6 +354,9 @@ func TestBootRollbackOfAnUnlandedReAddKeepsTheRemovalItConsumed(t *testing.T) {
 	}
 	if tombstone.IncarnationID != removed.IncarnationID || tombstone.Generation < spent {
 		t.Fatalf("restored tombstone = %+v, want incarnation %q and a generation of at least the spent %d", tombstone, removed.IncarnationID, spent)
+	}
+	if kept := receiptKeysFor(records, earlier); len(kept) != len(heldBefore) {
+		t.Fatalf("the rolled-back re-add left receipts %v for the earlier edit, want the %v it held", kept, heldBefore)
 	}
 	if row := hostRows(t, recovered)["side"]; !row.Removed {
 		t.Fatalf("side serves %+v after the rollback, want it removed", row)

@@ -910,3 +910,28 @@ func TestSetAsideUnprovableLeavesAStoreThatLoads(t *testing.T) {
 		t.Fatalf("the loadable store was disturbed: %v", err)
 	}
 }
+
+func TestSetAsideUnprovableKeepsOldOperationIDsFromBeingReused(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "operations.json")
+	if err := os.WriteFile(path, []byte(`{"version":1,"records":[{"id":"00000000000000000007"`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SetAsideUnprovable(path); err != nil {
+		t.Fatalf("SetAsideUnprovable: %v", err)
+	}
+
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open after the set-aside: %v", err)
+	}
+	record, err := store.Create(NewRecord{ClientOperationID: "op-after", Host: "h1", Kind: KindDeploy, Generation: 1, IncarnationID: "inc-h1"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if id, err := parseAllocatorID(record.ID); err != nil || id <= 7 {
+		t.Fatalf("the replacement handed out id %q, which the old file's ids could reach", record.ID)
+	}
+	if epoch, err := readQuarantineEpochSidecar(afero.NewOsFs(), path); err != nil || epoch == 0 {
+		t.Fatalf("quarantine epoch after the set-aside = %d, %v; want it advanced", epoch, err)
+	}
+}

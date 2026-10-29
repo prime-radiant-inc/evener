@@ -57,6 +57,9 @@ type hostPersistChange struct {
 	// the rollback of a removal that never reached hub.toml, which leaves the
 	// host live.
 	dropTombstone string
+	// restore puts back the history a re-add's staging write purged, when the
+	// re-add is rolled back.
+	restore *HostConsumedRecords
 	// storeSync, when set, is the cross-file commit intent this write carries
 	// (deploy-pipeline 08b §9): a removal's staged write stages the exact store
 	// rows it is about to purge. dropStoreSync names a host whose intent this
