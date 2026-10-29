@@ -4650,6 +4650,95 @@ it("a structured history failure after a missed open records its diagnostic with
   }
 });
 
+it("an unverified empty cache shell cannot certify a pending open when the hydration fails", async () => {
+  const storage = await seedDiskOnlyOpening();
+  setProductionEntryCacheForTests(storage);
+  const ref = "local:a";
+  const realGetLatest = storage.getLatest.bind(storage);
+  const realGetLatestWindow = storage.getLatestWindow.bind(storage);
+  const client = connect();
+  const claimEntered = deferred<void>();
+  const claimReleased = deferred<void>();
+  let wireReads = 0;
+  client.on("thread/read", () => {
+    wireReads += 1;
+    if (wireReads === 1) {
+      claimEntered.resolve();
+      return claimReleased.promise.then(() => {
+        throw new Error("connection reset by peer");
+      });
+    }
+    throw new Error("connection reset by peer");
+  });
+  // The cached rows disappeared between the metadata lookup and the
+  // restoration: the pane's first lookup restores an empty window, seeding
+  // and publishing the shell with nothing to show. Every later local read
+  // parks, so a reopened pane's open has a backstop to keep.
+  (storage as unknown as { getLatest: unknown }).getLatest = (..._args: unknown[]) =>
+    Promise.resolve([]) as ReturnType<typeof realGetLatest>;
+  let emptyAnswers = 1;
+  let holding = false;
+  const localReadEntered = deferred<void>();
+  const localReadReleased = deferred<void>();
+  (storage as unknown as { getLatestWindow: unknown }).getLatestWindow = (...args: unknown[]) => {
+    if (emptyAnswers > 0) {
+      emptyAnswers -= 1;
+      return Promise.resolve({
+        rows: [],
+        coverage: [],
+        complete: true,
+        stale: false,
+      }) as ReturnType<typeof realGetLatestWindow>;
+    }
+    if (holding) {
+      holding = false;
+      localReadEntered.resolve();
+      return localReadReleased.promise.then(() =>
+        realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>)),
+      ) as ReturnType<typeof realGetLatestWindow>;
+    }
+    return new Promise(() => {}) as ReturnType<typeof realGetLatestWindow>;
+  };
+  try {
+    // The first pane's lookup seeds the shell from the surviving metadata and
+    // its claim parks on the failing source read.
+    const openedByFirstPane = threadsStore.getState().ensureThread(ref);
+    await claimEntered.promise;
+    await vi.waitFor(() => {
+      expect(threadsStore.getState().threads.get(ref)?.turns).toHaveLength(0);
+    });
+    const route = productionEntryTranscriptForTests(ref);
+    // The shell is an unverified seed: no source read has adopted it.
+    expect(route?.repository?.getRecoveryStateForTesting().seedAuthorityInvalid).toBe(true);
+    // The pane closes and reopens: the reopened pane's open parks on the
+    // withheld local read under the real backstop.
+    threadsStore.getState().releaseThread(ref);
+    setSessionCacheOpenBackstopForTests(10000);
+    holding = true;
+    const openedBySecondPane = threadsStore.getState().ensureThread(ref);
+    await localReadEntered.promise;
+    // The claim fails in transport. Its settlement wakes the reopened pane's
+    // parked open, and the verdict must refuse the unverified shell instead
+    // of superseding the open as successful onto a blank transcript.
+    claimReleased.resolve();
+    await drainSettleSteps();
+    expect(productionEntryTranscriptForTests(ref).lastLocalOpenStatus).toBe("recovery-needed");
+    // No accepted source read established this emptiness: the shell's blank
+    // window must not count as established - rows that disappeared are
+    // indistinguishable from a genuinely empty transcript.
+    expect(route?.repository?.expectsEmptyForegroundWindow()).toBe(false);
+    localReadReleased.resolve();
+    await openedBySecondPane.catch(() => {});
+    await openedByFirstPane.catch(() => {});
+  } finally {
+    setSessionCacheOpenBackstopForTests(10000);
+    setSessionCacheStalledOpenForTests(5000);
+    claimReleased.resolve();
+    localReadReleased.resolve();
+    threadsStore.getState().releaseThread(ref);
+  }
+});
+
 it("ordinary browser routes reads notifications paging reopen reconnect and final release through entries", async () => {
   const storage = cache();
   const ref = "local:a";

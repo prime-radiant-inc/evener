@@ -1376,9 +1376,15 @@ export class TranscriptRepository {
    * yet has, not only a zero-turn thread. Such a window never creates the
    * foreground start the resident-range check requires - only a published
    * item moves that floor - so it has nothing to restore and nothing a local
-   * open could add: a successfully accepted window that expects no items is
-   * established. The window check already treats an empty expectation as
-   * missing nothing; this is its range-side complement.
+   * open could add. But emptiness alone is not evidence: an unverified cache
+   * shell seeds empty turns from metadata before any source read succeeds,
+   * and rows that disappeared between the metadata lookup and the
+   * restoration are indistinguishable from a genuinely empty transcript. So
+   * only an accepted source read that named an empty window establishes it -
+   * the same provenance openLocal's provenEmptySourceWindow requires
+   * (#coverageReadId set, and a read whose coverage named no rows). The
+   * window check already treats an empty expectation as missing nothing;
+   * this is its range-side complement.
    */
   expectsEmptyForegroundWindow(): boolean {
     if (this.#disposed || this.#invalidated) return false;
@@ -1386,7 +1392,12 @@ export class TranscriptRepository {
     if (!model) return false;
     const historyTurns = model.history?.turns;
     const expected = historyTurns !== undefined && historyTurns.length > 0 ? historyTurns : model.turns;
-    return expected.every((turn) => turn.items.length === 0);
+    return (
+      expected.every((turn) => turn.items.length === 0) &&
+      this.#coverageReadId !== undefined &&
+      this.#coverageStart === null &&
+      this.#coverageEnd === null
+    );
   }
 
   attachReader(): TranscriptReader {
