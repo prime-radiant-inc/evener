@@ -199,7 +199,7 @@ func (m *hubHostManager) reconcilePipelineBoot() {
 	// load, interrupted, host-removed, mirror, intents). The store-open pass
 	// already ran it as an interim; the pass is idempotent — with nothing left
 	// pending/running it moves nothing and writes nothing.
-	m.recoverInterruptedOnce()
+	m.recoverInterruptedOnce(m.opsStore())
 	m.reconcileHostRemovedPass(doc.Records)
 	m.reconcileGenerationMirror(doc)
 	m.reconcileCompensations()

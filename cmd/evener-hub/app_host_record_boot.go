@@ -119,9 +119,9 @@ func (m *hubHostManager) attachOps(store *hostops.Store) {
 	attaching := &hostRefusal{reason: "the operation store is attaching"}
 	m.cfg.refusal.Store(attaching)
 	if store != nil && m.opsStore() == nil {
-		// The opener moved the crash's in-flight operations to interrupted
-		// before handing the store over; anything running now is live.
-		m.cfg.interruptedHandled.Store(true)
+		// Operations a crash left in flight are interrupted before the store is
+		// published, while nothing of this process can be running on it.
+		m.recoverInterruptedOnce(store)
 		m.cfg.ops.Store(store)
 	}
 	m.bootRecords()
@@ -248,6 +248,10 @@ func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
 		// The registry came up from entries minted at load; they keep serving,
 		// and the unreadable records stay in the store untouched.
 		m.cfg.store.set(m.cfg.hosts.All())
+		family, _, _ := ops.HostRecords()
+		if remnants, attempts, fenceErr := decodeTeardownFences(family); fenceErr == nil {
+			m.cfg.store.setRemnantMaps(map[string]HostStagedReceipt{}, remnants, attempts)
+		}
 		m.refuseMutations(fmt.Sprintf("the host records in the operation store cannot be read: %v", err))
 		return
 	}
@@ -366,11 +370,11 @@ func hostFromReceiptRow(row HostMutationReceiptRow) hostreg.Host {
 // interrupted, the first time it runs over the attached store. A settlement
 // retry runs the boot again over a store that is serving, where a running
 // operation is live and must stay so.
-func (m *hubHostManager) recoverInterruptedOnce() {
+func (m *hubHostManager) recoverInterruptedOnce(ops *hostops.Store) {
 	if !m.cfg.interruptedHandled.CompareAndSwap(false, true) {
 		return
 	}
-	if moved, err := m.opsStore().RecoverInterrupted(); err != nil {
+	if moved, err := ops.RecoverInterrupted(); err != nil {
 		m.cfg.interruptedHandled.Store(false)
 		m.logf("boot interrupted transition not completed: %v", err)
 	} else if moved > 0 {
@@ -383,7 +387,7 @@ func (m *hubHostManager) recoverInterruptedOnce() {
 // interrupted, removed hosts' operation records and token rows are marked
 // and dropped, and the boundary mirror is rebuilt from the records.
 func (m *hubHostManager) reconcileStoreBoot() {
-	m.recoverInterruptedOnce()
+	m.recoverInterruptedOnce(m.opsStore())
 	if doc, ok := m.recordStore().load(); ok {
 		m.reconcileHostRemovedPass(doc.Records)
 	}

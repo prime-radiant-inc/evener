@@ -755,3 +755,68 @@ func TestSettlementRetryLeavesALiveOperationRunning(t *testing.T) {
 		t.Fatalf("the retry moved the live operation from %q to %+v", live.State, after)
 	}
 }
+
+// TestAnUnreadableRecordDoesNotHideAnOpenTeardownRemnant pins the fence's
+// independence: a record this build cannot read pauses host changes, but an
+// open teardown remnant in the same family still fences its host, so attach,
+// deploy and restart see unresolved cleanup the same as on any other boot.
+func TestAnUnreadableRecordDoesNotHideAnOpenTeardownRemnant(t *testing.T) {
+	configPath, records := legacyHub(t)
+	stateRoot := t.TempDir()
+	_, store := bootOverStore(t, configPath, stateRoot)
+	family, _, _ := store.HostRecords()
+	for key := range family.Receipts {
+		family.Receipts[key] = json.RawMessage(`{"from_a_newer_build":true}`)
+		break
+	}
+	if err := store.CommitHostRecords(family, hostops.HostMirror{}); err != nil {
+		t.Fatalf("tamper with a receipt: %v", err)
+	}
+	fenced := ""
+	for _, remnant := range records.TeardownRemnants {
+		if remnant.Resolved == nil {
+			fenced = remnant.Host
+		}
+	}
+	if fenced == "" {
+		t.Fatal("the legacy fixture left no open remnant")
+	}
+
+	m, _ := bootOverStore(t, configPath, stateRoot)
+
+	if m.mutationRefusal() == nil {
+		t.Fatal("host changes are taken while a record is unreadable")
+	}
+	if _, open := m.openRemnantID(fenced); !open {
+		t.Fatalf("the open remnant for %q is hidden by an unrelated unreadable record", fenced)
+	}
+}
+
+// TestLateAttachInterruptsWhatACrashLeftInFlight pins the recovery a store gets
+// when it attaches after the hub started serving: an operation a crash left
+// pending is a terminal unknown outcome before anything uses the store.
+func TestLateAttachInterruptsWhatACrashLeftInFlight(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "hub.toml")
+	if err := writeHubTOMLHosts(configPath, []hostreg.Host{{Name: "keep", SSH: "keep.example"}}); err != nil {
+		t.Fatalf("seed hub.toml: %v", err)
+	}
+	hosts, err := hostreg.New(hostRegistryEntries(mustLoadConfig(t, configPath)))
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostConfigPath: configPath, RemoteHostOpsUnavailable: true,
+	}, configPath, hosts, t.Logf)
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	served := hosts.All()[0]
+	left := seedOperationRecord(t, store, "keep", "left-in-flight", served.Generation, served.IncarnationID)
+
+	m.attachOps(store)
+
+	if after, ok := store.Record(left.ID); !ok || after.State != hostops.StateInterrupted {
+		t.Fatalf("the operation the crash left in flight is %+v after the attach, want interrupted", after)
+	}
+}
