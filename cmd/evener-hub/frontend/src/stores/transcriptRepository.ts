@@ -1505,9 +1505,10 @@ export class TranscriptRepository {
           ).length;
           const droppedRecordedIdentities = recordedLength > presentedItems;
           if (
+            window.complete &&
             latestStart &&
             window.rows.length < limit &&
-            (loadedBelowWindow || (this.#windowedReplaceBaseline && window.complete && droppedRecordedIdentities))
+            (loadedBelowWindow || (this.#windowedReplaceBaseline && droppedRecordedIdentities))
           ) {
             // Durable rows below the certified window that the opening cut had
             // loaded. The certified older query is scoped to connected
@@ -1532,13 +1533,7 @@ export class TranscriptRepository {
               );
               if (!older.stale) olderRows = older.rows;
             }
-            // The bounded durable pull belongs only to a windowed replace's
-            // debt: a retained or paged range merges certified older rows
-            // alone, so a damaged record still refuses instead of being
-            // papered over by raw rows.
-            const durableOlder = this.#windowedReplaceBaseline
-              ? await this.#cache.getLatest(this.#binding.historyKey, limit)
-              : [];
+            const durableOlder = await this.#cache.getLatest(this.#binding.historyKey, limit);
             const olderByKey = new Map<string, TranscriptItemRow<unknown>>();
             for (const row of [...olderRows, ...durableOlder]) {
               const held = olderByKey.get(row.transcriptKey);
@@ -1546,7 +1541,7 @@ export class TranscriptRepository {
             }
             const boundedOlder = [...olderByKey.values()].filter((row) => {
               if (comparePosition(row.position, latestStart) >= 0) return false;
-              return !loadedBelowWindow || comparePosition(row.position, loadedStart) >= 0;
+              return loadedBelowWindow ? comparePosition(row.position, loadedStart) >= 0 : true;
             });
             if (boundedOlder.length > 0) {
               boundedOlder.sort((left, right) => comparePosition(left.position, right.position));
