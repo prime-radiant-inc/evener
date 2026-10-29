@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
+	clockpkg "primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
@@ -849,28 +850,62 @@ func reopenProducerSource(t *testing.T, jm *jobManager) {
 	jm.store, jm.appendEvent, jm.appendEvents = reopened, reopened.Append, reopened.AppendBatch
 }
 
+// A ticker receipt identifies the actual timer owner. FakeClock.Drain only
+// joins AfterFunc callbacks, not the progress goroutine's deferred Stop.
+type notificationTickerClock struct {
+	*agenttest.FakeClock
+	started chan *notificationTicker
+}
+
+type notificationTicker struct {
+	clockpkg.Ticker
+	stopped chan struct{}
+}
+
+func (c *notificationTickerClock) NewTicker(d time.Duration) clockpkg.Ticker {
+	ticker := &notificationTicker{Ticker: c.FakeClock.NewTicker(d), stopped: make(chan struct{})}
+	c.started <- ticker
+	return ticker
+}
+
+func (ticker *notificationTicker) Stop() {
+	ticker.Ticker.Stop()
+	close(ticker.stopped)
+}
+
 func testNotificationWatchRestartCut(t *testing.T, cut string) {
 	a := newMessagingAdapter()
-	clock := agenttest.NewFakeClock()
+	clock := &notificationTickerClock{FakeClock: agenttest.NewFakeClock(), started: make(chan *notificationTicker, 1)}
 	a.script("root", func(llm.Request) llm.Response {
 		return toolCallResponse(llm.ToolCallData{ID: "restart-timer-11", Name: "job_watch", Type: "function",
 			Arguments: json.RawMessage(`{"operation":"create","source":"self","after_seconds":60,"note":"timer-c03a71b9"}`)})
 	}, func(llm.Request) llm.Response { return finalResponse("timer-installed-11") })
 	root := newMessagingRoot(t, a, func(cfg *SessionConfig) { cfg.clock = clock })
+	var ticker *notificationTicker
+	defer func() {
+		root.Close()
+		if ticker != nil {
+			waitForTestSignal(t, ticker.stopped, "one-shot timer cleanup")
+		}
+	}()
 	if _, err := root.ProcessInput(context.Background(), "timer-start-11", nil); err != nil {
 		t.Fatal(err)
 	}
-	clock.BlockUntil(1)
+	ticker = <-clock.started
 	clock.Advance(time.Minute)
-	waitForCondition(t, 3*time.Second, "one-shot produced, ended and accepted", func() bool {
-		return len(producerSourceEvents(t, root.jobManager, jobstore.EventWatchCleared)) == 1 && len(producerSourceEvents(t, root.jobManager, jobstore.EventWatchSendDelivered)) == 1
-	})
+	waitForTestSignal(t, ticker.stopped, "one-shot production, end and dispatch return")
 	produced := producerSourceEvents(t, root.jobManager, jobstore.EventWatchSendPending)
 	if len(produced) != 1 || produced[0].WatchSend == nil {
 		t.Fatalf("real timer source=%+v", produced)
 	}
 	state := *produced[0].WatchSend
 	id := fmt.Sprintf("watch:%s:%d", state.DeliveryID, state.UpdateSeq)
+	ended := producerSourceEvents(t, root.jobManager, jobstore.EventWatchCleared)
+	acksBefore := producerSourceEvents(t, root.jobManager, jobstore.EventWatchSendDelivered)
+	if len(ended) != 1 || ended[0].WatchID != state.Key.WatchID || len(acksBefore) != 1 || acksBefore[0].WatchSend == nil || stableWatchAttentionID(*acksBefore[0].WatchSend) != id {
+		t.Fatalf("one-shot end=%+v custody=%+v source=%+v", ended, acksBefore, state)
+	}
+	incidentPendingFacts(t, root.stateDir, root.ID(), id)
 	copied := copyWaitingState(t, root.stateDir)
 	sourcePath := filepath.Join(jobsDir(copied, root.ID()), "jobs.jsonl")
 	if cut == "watch production before durable end" {
@@ -896,7 +931,7 @@ func testNotificationWatchRestartCut(t *testing.T, cut string) {
 	restored := restoreWaitingCopy(t, root, copied)
 	wake, hint := newDrainWake()
 	restored.SetNotifyFunc(hint)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if _, err := restored.DrainJobTree(ctx, wake); err != nil {
 		t.Fatal(err)
