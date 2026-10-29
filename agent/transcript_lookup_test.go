@@ -795,7 +795,7 @@ func TestFind_LegacyBucketTextFormatShowsBareIDAddressing(t *testing.T) {
 	}, "legacy content")
 
 	deps := &toolDeps{stateDir: current, sessionID: "02wMz5TxvEMoJEDTDGOTil"}
-	v, err := execFindSessionTranscripts(deps, map[string]any{"scope": scopeAllProjects})
+	v, err := execFindSessionTranscripts(context.Background(), deps, map[string]any{"scope": scopeAllProjects})
 	if err != nil {
 		t.Fatalf("execFindSessionTranscripts: %v", err)
 	}
@@ -1361,7 +1361,7 @@ func TestFind_SymlinkedEvenerAncestorOmitsSymlinkedBucketSession(t *testing.T) {
 	deps := &toolDeps{stateDir: linkedCurrent, sessionID: "02wMz5TxvEMoJEDTDGOTil"}
 	// find with scope=all_projects must surface the symlinked prefix refusal
 	// as an error, not silently return an empty result.
-	_, err := execFindSessionTranscripts(deps, map[string]any{"scope": scopeAllProjects})
+	_, err := execFindSessionTranscripts(context.Background(), deps, map[string]any{"scope": scopeAllProjects})
 	if err == nil {
 		t.Fatal("find with scope=all_projects returned no error when the evener/ " +
 			"ancestor is a symlink; the security refusal must be surfaced")
@@ -1802,7 +1802,7 @@ func TestFind_SymlinkedEvenerPrefixSurfacesRefusal(t *testing.T) {
 	deps := &toolDeps{stateDir: linkedCurrent, sessionID: "02wMz5TxvEMoJEDTDGOTil"}
 	// find with scope=all_projects must surface the refusal as an error,
 	// not silently return an empty result.
-	_, err := execFindSessionTranscripts(deps, map[string]any{"scope": scopeAllProjects})
+	_, err := execFindSessionTranscripts(context.Background(), deps, map[string]any{"scope": scopeAllProjects})
 	if err == nil {
 		t.Fatal("find with scope=all_projects returned no error when the evener/ " +
 			"prefix is a symlink; the security refusal must be surfaced, not hidden " +

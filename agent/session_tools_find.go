@@ -119,8 +119,7 @@ func findSessionTranscriptsTool(deps *toolDeps) tool.RegisteredTool {
 	return tool.RegisteredTool{
 		Definition: tool.DefFindSessionTranscripts(), ReadOnly: true,
 		Exec: func(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-			_ = ctx
-			v, err := execFindSessionTranscripts(deps, args)
+			v, err := execFindSessionTranscripts(ctx, deps, args)
 			if err != nil {
 				return nil, err
 			}
@@ -191,7 +190,7 @@ func formatSessionFindings(env findSessionsEnvelope) string {
 
 // execFindSessionTranscripts dispatches to execFindChildren when children_of is
 // set (it takes precedence over query per spec), otherwise to execFindAcrossSessions.
-func execFindSessionTranscripts(deps *toolDeps, args map[string]any) (any, error) {
+func execFindSessionTranscripts(ctx context.Context, deps *toolDeps, args map[string]any) (any, error) {
 	query := strings.TrimSpace(stringArg(args, "query"))
 	childrenOf := strings.TrimSpace(stringArg(args, "children_of"))
 	limit := clampFindLimit(optionalIntArg(args, "limit"))
@@ -208,7 +207,7 @@ func execFindSessionTranscripts(deps *toolDeps, args map[string]any) (any, error
 	if scope == "" {
 		scope = scopeCurrentProject
 	}
-	return execFindAcrossSessions(deps, query, scope, limit, filters)
+	return execFindAcrossSessions(ctx, deps, query, scope, limit, filters)
 }
 
 // findFilters holds the optional metadata-only narrowing arguments to
@@ -416,7 +415,7 @@ func recordsUpTo(candidates []findCandidate, snipsFor func(c findCandidate) []sn
 // present) over all buckets in scope. With no query: metadata-only, newest-first,
 // current last, no scan metrics. With a query: metadata match first (cheap, no
 // file open); on miss, bounded raw content scan tracking scanned/scanTruncated.
-func execFindAcrossSessions(deps *toolDeps, query, scope string, limit int, filters findFilters) (any, error) {
+func execFindAcrossSessions(ctx context.Context, deps *toolDeps, query, scope string, limit int, filters findFilters) (any, error) {
 	buckets, scopeApplied, err := findBuckets(deps.stateDir, scope)
 	if err != nil {
 		return nil, err
@@ -442,13 +441,16 @@ func execFindAcrossSessions(deps *toolDeps, query, scope string, limit int, filt
 		trunc := false
 		needle := strings.ToLower(query)
 		for _, c := range candidates {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			if len(records) >= limit {
 				break
 			}
 			if !transcriptExists(c.bucketDir, c.meta.ID) {
 				continue
 			}
-			if snips, matched := matchCandidate(c, query, needle, &n, &trunc); matched {
+			if snips, matched := matchCandidate(ctx, c, query, needle, &n, &trunc); matched {
 				records = append(records, buildSessionRecord(c, snips, currentID, deps.currentMeta))
 			}
 		}
@@ -613,7 +615,7 @@ func collectCandidates(buckets []string, currentStateDir string) []findCandidate
 // content scan; scanned/scanTruncated track that coverage. scanned counts only
 // transcripts actually OPENED — a metadata-miss candidate whose transcript file
 // is absent does not consume the budget.
-func matchCandidate(c findCandidate, query, needle string, scanned *int, scanTruncated *bool) ([]snippet, bool) {
+func matchCandidate(ctx context.Context, c findCandidate, query, needle string, scanned *int, scanTruncated *bool) ([]snippet, bool) {
 	if metaMatches(c.meta, needle) {
 		return metadataSnippets(c.meta, query, needle), true
 	}
@@ -623,7 +625,7 @@ func matchCandidate(c findCandidate, query, needle string, scanned *int, scanTru
 		*scanTruncated = true
 		return nil, false
 	}
-	snips, opened := contentSnippets(c.bucketDir, c.meta.ID, query, needle)
+	snips, opened := contentSnippets(ctx, c.bucketDir, c.meta.ID, query, needle)
 	if opened {
 		*scanned++
 	}
@@ -683,7 +685,7 @@ func metaMatches(m schema.SessionMeta, needle string) bool {
 // text and renders snippets for the matching turns. It opens and parses the
 // transcript only when reached; the second return reports whether the file was
 // actually opened, so the caller counts only real opens toward the scan budget.
-func contentSnippets(bucketDir, sessionID, query, needle string) (snips []snippet, opened bool) {
+func contentSnippets(ctx context.Context, bucketDir, sessionID, query, needle string) (snips []snippet, opened bool) {
 	// Validate the layout prefix for in-layout buckets: symlinkErrorDeep
 	// below is rooted at bucketDir, so ancestors above it are not checked.
 	// For sibling buckets from enumerateBuckets, the prefix was already
@@ -697,7 +699,7 @@ func contentSnippets(bucketDir, sessionID, query, needle string) (snips []snippe
 	if err := symlinkErrorDeep(path, bucketDir); err != nil {
 		return nil, false
 	}
-	_, entries, _, err := readTranscript(context.Background(), path, bucketDir)
+	_, entries, _, err := readTranscript(ctx, path, bucketDir)
 	if err != nil {
 		return nil, false
 	}

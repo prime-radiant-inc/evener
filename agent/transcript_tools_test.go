@@ -313,7 +313,7 @@ func writeFindSession(t *testing.T, bucketDir string, spec findMetaSpec, turnTex
 // wire bytes (the exact shape the model sees).
 func marshalFind(t *testing.T, deps *toolDeps, args map[string]any) []byte {
 	t.Helper()
-	v, err := execFindSessionTranscripts(deps, args)
+	v, err := execFindSessionTranscripts(context.Background(), deps, args)
 	if err != nil {
 		t.Fatalf("execFindSessionTranscripts: %v", err)
 	}

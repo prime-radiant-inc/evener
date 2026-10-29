@@ -1429,14 +1429,14 @@ func TestDelegateAttention_PublicTranscriptReadsExcludePrivateResolutionMetadata
 		t.Fatalf("provider history dropped delegate packet content: %s", providerJSON)
 	}
 
-	privateSnippets, opened := contentSnippets(stateDir, sessionID, "Attention resolved.", "attention resolved.")
+	privateSnippets, opened := contentSnippets(context.Background(), stateDir, sessionID, "Attention resolved.", "attention resolved.")
 	if !opened {
 		t.Fatal("find_session_transcripts content scan did not open the real transcript")
 	}
 	if len(privateSnippets) != 0 {
 		t.Fatalf("find_session_transcripts exposed the private resolution marker: %#v", privateSnippets)
 	}
-	visibleSnippets, opened := contentSnippets(stateDir, sessionID, "visible result", "visible result")
+	visibleSnippets, opened := contentSnippets(context.Background(), stateDir, sessionID, "visible result", "visible result")
 	if !opened || len(visibleSnippets) != 1 || visibleSnippets[0].Seq != 1 {
 		t.Fatalf("find_session_transcripts visible tool-result query = opened %v, snippets %#v", opened, visibleSnippets)
 	}
@@ -1499,7 +1499,7 @@ func TestDelegateAttention_PublicTranscriptReadsExcludePrivateResolutionMetadata
 	if err := findWriter.Close(); err != nil {
 		t.Fatalf("close searchable transcript: %v", err)
 	}
-	findSnippets, opened := contentSnippets(stateDir, findSessionID, "later public match", "later public match")
+	findSnippets, opened := contentSnippets(context.Background(), stateDir, findSessionID, "later public match", "later public match")
 	if !opened || len(findSnippets) != 1 || findSnippets[0].Seq != 1 {
 		t.Fatalf("public find sequence = opened %v snippets %#v, want public seq 1", opened, findSnippets)
 	}
