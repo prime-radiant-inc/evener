@@ -26,9 +26,15 @@ settlement beside the reads it composes with. Each registration:
   it. Waiters are notified early, when the current hydration itself settles —
   published or failed — and equally when the composed recovery span settles
   first, whichever comes sooner; the composed completion itself stays
-  pending for the recovery consumers that captured it. A wake that fails
-  certification re-arms the wait rather than falling through to the
-  backstop.
+  pending for the recovery consumers that captured it. The two notifications
+  differ in identity: the hydration-side wake travels under the composed
+  registration itself, which a claim's own certification open excludes —
+  its publication must not end its own certify — while the span-side wake
+  travels under a distinct wake identity, so excluding the claim's own
+  settlement still permits the recovery to wake that certification; the
+  current-registration guard applies to both, and a displaced registration's
+  arms stay silent. A wake that fails certification re-arms the wait rather
+  than falling through to the backstop.
 - is **superseded** by a quiet certification: a claim's post-hydration
   certification whose own publication completed the display, with an older
   frontier still outstanding, runs without the consumer hold, and when it

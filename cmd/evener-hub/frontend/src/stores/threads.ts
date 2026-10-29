@@ -1005,6 +1005,14 @@ const OPENING_ESTABLISHMENT_NOTIFICATION = Symbol("openingEstablishment");
 // opening waiter must re-run its verdict now.
 const OPENING_LIFETIME_RETIREMENT_NOTIFICATION = Symbol("openingLifetimeRetirement");
 
+// The wake identity for a composed recovery span's settlement: the span is
+// not the claim's own publication, so a certification open that excludes its
+// claim's composed registration must still hear the span finishing - the
+// identity is distinct from every registration completion a waiter could
+// except. The current-registration guard still applies at the notify, so a
+// displaced registration's span arm stays silent.
+const OPENING_RECOVERY_SPAN_NOTIFICATION = Symbol("openingRecoverySpan");
+
 // A parked waiter plus the one registration whose settlement it must NOT
 // observe: an open the caller's own machinery just published for must not be
 // ended by that very publication's settlement (the claim's own hydration
@@ -1102,11 +1110,14 @@ function registerHydrationSettlement(ref: string, hydration: Promise<unknown>): 
     // healed. The span's own registration settle cannot do this: the
     // composed entry displaced it, so its identity check ignores the map -
     // this notify is the span side's only wake. It wakes without settling
-    // or displacing the composed entry, and the identity guard still keeps a
-    // displaced registration silent.
+    // or displacing the composed entry, under a wake identity distinct from
+    // the composed registration itself - excluding the claim's own
+    // settlement must not exclude the span it composed with - and the
+    // current-registration guard still keeps a displaced registration
+    // silent.
     void outstandingRecovery.then(
-      () => notifyHydrationSettlementWaiters(ref, completion),
-      () => notifyHydrationSettlementWaiters(ref, completion),
+      () => notifyHydrationSettlementWaiters(ref, completion, OPENING_RECOVERY_SPAN_NOTIFICATION),
+      () => notifyHydrationSettlementWaiters(ref, completion, OPENING_RECOVERY_SPAN_NOTIFICATION),
     );
   }
   return completion;
@@ -1116,9 +1127,9 @@ function registerHydrationSettlement(ref: string, hydration: Promise<unknown>): 
 // while the recovery span composed behind it is still pending. Wake the
 // parked opening waiters without settling or displacing the map's composed
 // entry - recovery consumers must keep spanning the chain behind it.
-function notifyHydrationSettlementWaiters(ref: string, completion: Promise<void>): void {
+function notifyHydrationSettlementWaiters(ref: string, completion: Promise<void>, wake: unknown = completion): void {
   if (trackedHydrationCompletions.get(ref) !== completion) return;
-  wakeHydrationSettlementWaiters(ref, completion);
+  wakeHydrationSettlementWaiters(ref, wake);
 }
 
 // The map holds only pending registrations: an entry leaves through this

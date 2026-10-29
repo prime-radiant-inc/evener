@@ -5033,6 +5033,154 @@ it("a composed registration's recovery span settling first still wakes the reope
   }
 });
 
+it("a recovery span finishing wakes the reopened claim's parked certification despite its composed exclusion", async () => {
+  const storage = cache();
+  const realGetLatestWindow = storage.getLatestWindow.bind(storage);
+  setProductionEntryCacheForTests(storage);
+  const ref = "local:a";
+  const read = response(ref, [turn("row-1", 1), turn("row-2", 2), turn("row-3", 3)]);
+  read.snapshot = { incarnation: "inc-a", length: 3 };
+  const client = connect(read);
+  const lease = acquireBackgroundThread(ref);
+  await lease.ready;
+  await settleEntryTranscriptForTests(ref);
+  const bodies = () =>
+    threadsStore
+      .getState()
+      .threads.get(ref)
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.text)
+      .filter(Boolean);
+  expect(bodies()).toEqual([]);
+  // Wire reads after the prologue: the first pane's claim, which fails in
+  // transport and arms the opening recovery chain, and the reopened pane's
+  // own claim, which answers the complete window - no older frontier - while
+  // that chain is still pending, so its registration composes with the
+  // chain's span.
+  let wireReads = 0;
+  const claimRead = deferred<void>();
+  client.on("thread/read", (params) => {
+    wireReads += 1;
+    if (wireReads === 1) {
+      return claimRead.promise.then((): ThreadReadResponse => {
+        throw new Error("connection reset by peer");
+      });
+    }
+    return { ...read, requestGeneration: params.requestGeneration };
+  });
+  // Local window reads, scripted in call order: the first pane's open
+  // (missed at the pinned backstop), the chain's stalled first attempt, the
+  // reopened pane's open (missed the same way, which arms its own claim),
+  // that claim's certification lookup (held for the whole race), then the
+  // chain's restoring second attempt.
+  let certificationParked = false;
+  const certificationEntered = deferred<void>();
+  const certificationReleased = deferred<void>();
+  const behaviors: Array<(...args: unknown[]) => ReturnType<typeof realGetLatestWindow>> = [
+    () => new Promise(() => {}) as ReturnType<typeof realGetLatestWindow>,
+    () => new Promise(() => {}) as ReturnType<typeof realGetLatestWindow>,
+    () => new Promise(() => {}) as ReturnType<typeof realGetLatestWindow>,
+    () => {
+      certificationParked = true;
+      certificationEntered.resolve();
+      return certificationReleased.promise.then(() => undefined) as ReturnType<typeof realGetLatestWindow>;
+    },
+    (...args: unknown[]) =>
+      certificationEntered.promise.then(() =>
+        realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>)),
+      ) as ReturnType<typeof realGetLatestWindow>,
+  ];
+  (storage as unknown as { getLatestWindow: unknown }).getLatestWindow = (...args: unknown[]) => {
+    const behavior = behaviors.shift();
+    return (
+      behavior ? behavior(...args) : realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>))
+    ) as ReturnType<typeof realGetLatestWindow>;
+  };
+  const restoreRetryScheduler = installHydrationRetrySchedulerForTests((_attempt, retry) => {
+    const timer = setTimeout(retry, 5000);
+    return () => clearTimeout(timer);
+  });
+  // The clock is fake from here (the round-16 discipline): every deadline
+  // expires only when the test advances it, and each phase is gated on the
+  // signal that it has parked, never on a wall-clock observation.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  setSessionCacheOpenBackstopForTests(40);
+  setSessionCacheStalledOpenForTests(60);
+  try {
+    const openedByFirstPane = threadsStore.getState().ensureThread(ref);
+    // Advance until the first pane's open misses and its claim's read is
+    // issued; the read parks on the deferred.
+    for (let step = 0; step < 100 && wireReads < 1; step += 1) {
+      await vi.advanceTimersByTimeAsync(5);
+    }
+    expect(wireReads).toBe(1);
+    // Releasing the claim's read fails it in transport and arms the opening
+    // recovery chain, whose whole-span registration stays pending while its
+    // first attempt stalls.
+    claimRead.resolve();
+    await vi.advanceTimersByTimeAsync(10);
+    threadsStore.getState().releaseThread(ref);
+    // The pane reopens: its open parks and misses at the same pinned
+    // backstop, so its own claim starts while the chain is still pending and
+    // its registration composes with the span.
+    const openedBySecondPane = threadsStore.getState().ensureThread(ref);
+    for (let step = 0; step < 100 && wireReads < 2; step += 1) {
+      await vi.advanceTimersByTimeAsync(5);
+    }
+    expect(wireReads).toBe(2);
+    // The claim's publication settles and its certification open parks on
+    // the held storage read under its own composed registration's
+    // exclusion - the durable authorities read needs only event-loop turns,
+    // which zero-millisecond advances deliver without moving the clock.
+    for (let step = 0; step < 200 && !certificationParked; step += 1) {
+      await vi.advanceTimersByTimeAsync(0);
+    }
+    expect(certificationParked).toBe(true);
+    // Only now is the parked certification's deadline harmless to raise:
+    // the fake clock never advances past it before the settlement cancels it.
+    const baselineBefore = productionEntryTranscriptForTests(ref).baseline;
+    // The chain's span settles - its paced attempt finds the display the
+    // claim's own publication already healed. The parked certification
+    // excludes its claim's own settlement - but the span's finishing is not
+    // that publication, and its wake must reach the certification anyway, or
+    // the pane's opening hold rides the backstop over a display recovery
+    // already healed.
+    for (
+      let step = 0;
+      step < 20 && productionEntryTranscriptForTests(ref).lastLocalOpenStatus !== "superseded-by-source";
+      step += 1
+    ) {
+      await vi.advanceTimersByTimeAsync(5);
+    }
+    for (
+      let step = 0;
+      step < 100 && productionEntryTranscriptForTests(ref).lastLocalOpenStatus !== "superseded-by-source";
+      step += 1
+    ) {
+      await vi.advanceTimersByTimeAsync(0);
+    }
+    expect(productionEntryTranscriptForTests(ref).lastLocalOpenStatus).toBe("superseded-by-source");
+    expect(productionEntryTranscriptForTests(ref).baseline).toBe(baselineBefore);
+    expect(bodies()).toContain("row-1");
+    expect(wireReads).toBe(2);
+    await vi.advanceTimersByTimeAsync(50);
+    await openedByFirstPane.catch(() => {});
+    await openedBySecondPane;
+  } finally {
+    vi.useRealTimers();
+    setSessionCacheOpenBackstopForTests(10000);
+    setSessionCacheStalledOpenForTests(5000);
+    restoreRetryScheduler();
+    claimRead.resolve();
+    certificationReleased.resolve();
+    threadsStore.getState().releaseThread(ref);
+    // The certification's storage read is deliberately held for the whole
+    // race, so the lease's own settle cannot complete: release must not wait
+    // it out.
+    await Promise.race([lease.release(), new Promise((resolve) => setTimeout(resolve, 1000))]);
+  }
+});
+
 it("ordinary browser routes reads notifications paging reopen reconnect and final release through entries", async () => {
   const storage = cache();
   const ref = "local:a";
