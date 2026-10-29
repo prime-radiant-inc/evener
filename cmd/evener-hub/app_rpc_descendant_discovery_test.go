@@ -80,7 +80,7 @@ func TestHubChildDiscoveryRecoveryBoundaries(t *testing.T) {
 // own projection goroutine, so a fallback read can meet that writer mid-extension.
 // Each attempt starts with fresh counters, so the final read still has to
 // match its scenario exactly.
-func readChildRetryingIndexContention(t *testing.T, ctx context.Context, client *appwire.Client, params appwire.ThreadReadParams, resetCounters func()) (appwire.ThreadReadResponse, error) {
+func readChildRetryingIndexContention(ctx context.Context, t *testing.T, client *appwire.Client, params appwire.ThreadReadParams, resetCounters func()) (appwire.ThreadReadResponse, error) {
 	t.Helper()
 	for {
 		resetCounters()
@@ -231,7 +231,7 @@ func testHubChildDiscovery(t *testing.T, scenario string) {
 		if scenario == "remote" {
 			params.Ref = "unattached:" + childID
 		}
-		read, err = readChildRetryingIndexContention(t, readCtx, client, params, func() { refreshes.Store(0); reads.Store(0) })
+		read, err = readChildRetryingIndexContention(readCtx, t, client, params, func() { refreshes.Store(0); reads.Store(0) })
 	}
 	if scenario == "remote" {
 		if err == nil || refreshes.Load() != 0 || reads.Load() != 0 {
