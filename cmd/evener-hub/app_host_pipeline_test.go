@@ -1418,7 +1418,7 @@ func TestBootFinalizesTheMarkerWhenTheCompensationClearsWithoutRestoring(t *test
 func TestBootCompensationOwnsTheStagedMarker(t *testing.T) {
 	entry := pipelineEntry("keep", 2)
 	fixture, _, preRemove := newPipelineRemovalFixture(t, entry, true)
-	m := fixture.manager(t)
+	m := fixture.legacyManager(t)
 	var staged HostStagedReceipt
 	m.testOnlyAfterStage = func(name string) {
 		if marker, ok := m.cfg.store.stagedSnapshot()[name]; ok {

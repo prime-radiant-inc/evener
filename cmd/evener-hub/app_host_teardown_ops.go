@@ -550,18 +550,19 @@ func (m *hubHostManager) runPinnedTeardown(ctx context.Context, remnantID string
 	if !remnant.CleanupHandle.resolvable() {
 		return teardownRunResult{Seam: remnant.Seam}, teardownUnknownKeyRefusal(remnantID)
 	}
-	if err := m.resolveCleanupHandle(remnantID, remnant); err != nil {
-		return teardownRunResult{Seam: remnant.Seam}, err
-	}
 	// The pinned incarnation is the only one this run may touch. A live entry
 	// that is a *different* incarnation means the pinned handles are already
 	// gone — the registry moved on — and re-running the rebind step against the
 	// new incarnation would tear down state the remnant does not own, so the run
 	// is a no-op that still succeeds: there is nothing of the pinned
-	// incarnation left to destroy.
+	// incarnation left to destroy. Its cleanup boundary went with it, so this is
+	// settled before the boundary is required.
 	host, live := m.cfg.hosts.Get(remnant.Host)
 	if live && host.IncarnationID != remnant.IncarnationID {
 		return teardownRunResult{}, nil
+	}
+	if err := m.resolveCleanupHandle(remnantID, remnant); err != nil {
+		return teardownRunResult{Seam: remnant.Seam}, err
 	}
 	if !live {
 		// Nothing live carries the pinned pair (a post-remove remnant, or a

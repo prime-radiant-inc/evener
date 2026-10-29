@@ -364,7 +364,7 @@ func (m *hubHostManager) persistHosts(entries, known []hostreg.Host, change host
 	if store, ok := m.recordStore().(hostOpsRecordStore); ok && change.recordsOnly {
 		err = store.commitRecords(entries, records)
 	} else if ok && change.hostFileFirst {
-		err = store.commitHostFileFirst(entries, known, records)
+		err = store.commitHostFileFirst(entries, known, records, change.dropMarker)
 	} else {
 		err = m.recordStore().commit(entries, known, records)
 	}

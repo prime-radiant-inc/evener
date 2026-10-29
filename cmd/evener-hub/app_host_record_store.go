@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -313,17 +314,63 @@ func (s hostOpsRecordStore) writeFamily(entries []hostreg.Host, records hostTOML
 		return hostops.HostRecords{}, err
 	}
 	prior, _, _ := s.ops.HostRecords()
-	if err := s.ops.CommitHostRecords(family, hostMirrorFor(set, s.ops.Boundaries())); err != nil {
-		if !hostops.RenameLanded(err) {
-			return hostops.HostRecords{}, err
+	if err := s.publishFamily(family, hostMirrorFor(set, s.ops.Boundaries())); err != nil {
+		if errors.Is(err, errRecordsNotDurable) {
+			return prior, err
 		}
-		// The state is published but its rename is not proven durable; the host
-		// file does not move on until it is.
-		if syncErr := s.ops.SyncDir(); syncErr != nil {
-			return prior, fmt.Errorf("%w: %w", errRecordsNotDurable, syncErr)
-		}
+		return hostops.HostRecords{}, err
 	}
 	return prior, nil
+}
+
+// publishFamily commits a family and its mirror in one store write. A write
+// that is published but not proven durable is reported as errRecordsNotDurable:
+// the host file does not move on until it is.
+func (s hostOpsRecordStore) publishFamily(family hostops.HostRecords, mirror hostops.HostMirror) error {
+	if err := s.ops.CommitHostRecords(family, mirror); err != nil {
+		if !hostops.RenameLanded(err) {
+			return err
+		}
+		if syncErr := s.ops.SyncDir(); syncErr != nil {
+			return fmt.Errorf("%w: %w", errRecordsNotDurable, syncErr)
+		}
+	}
+	return nil
+}
+
+// takeBackFlip returns name's staged marker to its pre-flip phase. A commit's
+// runtime swap starts only after its host change is in hub.toml, so a marker past
+// its flip tells recovery the file holds the change; a compensation that is about
+// to take the change out of the file takes the flip back first, and one that
+// cannot leaves the file alone, still consistent with the marker.
+func (s hostOpsRecordStore) takeBackFlip(name string) error {
+	family, _, _ := s.ops.HostRecords()
+	raw, staged := family.StagedReceipts[name]
+	if !staged {
+		return nil
+	}
+	markers, err := decodeRecordMap[HostStagedReceipt]("staged receipt", map[string]json.RawMessage{name: raw})
+	if err != nil {
+		return err
+	}
+	marker := markers[name]
+	if !markerPastFlip(marker) {
+		return nil
+	}
+	marker.SwapStarted = false
+	marker.TeardownStarted = false
+	marker.Phase = hostStagedPhaseStaged
+	encoded, err := encodeRecordMap(map[string]HostStagedReceipt{name: marker})
+	if err != nil {
+		return err
+	}
+	family.StagedReceipts = maps.Clone(family.StagedReceipts)
+	family.StagedReceipts[name] = encoded[name]
+	set, err := decodeHostRecords(family)
+	if err != nil {
+		return err
+	}
+	return s.publishFamily(family, hostMirrorFor(set, s.ops.Boundaries()))
 }
 
 // hostFileFirstSeam, when set, is called between commitHostFileFirst's two
@@ -332,7 +379,12 @@ var hostFileFirstSeam func() error
 
 // commitHostFileFirst is commit with the order reversed, for the compensation of
 // a commit that already reached hub.toml (see hostPersistChange.hostFileFirst).
-func (s hostOpsRecordStore) commitHostFileFirst(entries, known []hostreg.Host, records hostTOMLRecords) error {
+func (s hostOpsRecordStore) commitHostFileFirst(entries, known []hostreg.Host, records hostTOMLRecords, markerName string) error {
+	if markerName != "" {
+		if err := s.takeBackFlip(markerName); err != nil {
+			return fmt.Errorf("take back the flip of %q before its host file: %w", markerName, err)
+		}
+	}
 	if hostFileErr := writeHubTOMLHostsOnly(s.path, entries, known); hostFileErr != nil {
 		// A restore that landed but is not proven durable leaves the staged
 		// records in the store: dropping them first would strand a change a

@@ -317,9 +317,9 @@ type HostStagedReceipt struct {
 	// the armed intent with it.
 	ReconcileFingerprint string `toml:"reconcile_fingerprint,omitempty" json:"reconcile_fingerprint,omitempty"`
 	// HostFingerprint is the digest of the entry hub.toml held for the marker's
-	// host when an edit or a removal staged against it. It is the evidence that
-	// the change never reached the file, or was taken back: that entry is
-	// unchanged since, whatever else the file holds now.
+	// host when a removal staged against it. It is the evidence that a staged
+	// removal never reached the file: that entry is unchanged since, whatever
+	// else the file holds now.
 	HostFingerprint string `toml:"-" json:"host_fingerprint,omitempty"`
 	// FinalizingToken is the server-generated opaque attempt token of a
 	// finalizing claim: non-empty exactly while a finder owns the marker's

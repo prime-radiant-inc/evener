@@ -717,12 +717,6 @@ func (m *hubHostManager) UpdateResult(ctx context.Context, params appwire.HostUp
 		pinned = HostPendingTeardown{Name: before.Name, Kind: hostTeardownKindUpdate,
 			Generation: before.Generation, IncarnationID: before.IncarnationID}
 	}
-	// An edit is judged at recovery by the entry hub.toml held for the host
-	// when it staged; a file that cannot be read gives no such evidence.
-	hostFingerprint, err := hubTOMLHostFingerprint(m.cfg.configPath, name)
-	if err != nil {
-		return appwire.HostMutationResult{}, err
-	}
 	prev := m.cfg.store.snapshot()
 	plan := &hostCommitPlan{
 		Kind:    hostMutationUpdate,
@@ -735,7 +729,6 @@ func (m *hubHostManager) UpdateResult(ctx context.Context, params appwire.HostUp
 		Entry:   entry,
 	}
 	plan.reconcileFingerprint, _ = hubTOMLFingerprintAt(m.cfg.configPath)
-	plan.hostFingerprint = hostFingerprint
 	if err := m.stageCommit(plan, m.nowTime()); err != nil {
 		err = m.compensateStagedWrite(plan, prev, err)
 		return appwire.HostMutationResult{}, err

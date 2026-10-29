@@ -434,7 +434,7 @@ func (m *hubHostManager) rollBackUnlandedCommits(doc hostRecordDocument) map[str
 	entries := m.cfg.store.snapshot()
 	for _, name := range staged {
 		marker := m.cfg.store.stagedSnapshot()[name]
-		if markerLanded(marker, doc.Hosts, file.Hosts) {
+		if markerLanded(marker, doc.Hosts) {
 			continue
 		}
 		if scope, ok := parseHostReceiptScopedKey(marker.Key); ok && scope.Kind == hostMutationRemove && !stagedRemovalNeverLanded(marker, file.Hosts) {
@@ -502,15 +502,17 @@ func (m *hubHostManager) rollBackUnlandedCommits(doc hostRecordDocument) map[str
 
 // markerLanded reports whether hub.toml holds the host change a staged marker's
 // commit made: the host present as the commit staged it for an add or an edit,
-// absent for a removal. A marker whose runtime swap already started is landed
-// unless the file shows the change was taken back (postSwapLanded).
-func markerLanded(marker HostStagedReceipt, hosts []hostreg.Host, configured []HostConfig) bool {
+// absent for a removal, or a marker whose runtime swap already started. The swap
+// starts only after the host change is in hub.toml, and a compensation takes the
+// flip back before it takes the change out (takeBackFlip), so a later edit of the
+// file does not un-land the commit.
+func markerLanded(marker HostStagedReceipt, hosts []hostreg.Host) bool {
 	scope, ok := parseHostReceiptScopedKey(marker.Key)
 	if !ok {
 		return true
 	}
 	if markerPastFlip(marker) {
-		return postSwapLanded(marker, scope, configured)
+		return true
 	}
 	entry, present := hostEntryNamed(hosts, scope.Name)
 	if scope.Kind == hostMutationRemove {
@@ -519,29 +521,9 @@ func markerLanded(marker HostStagedReceipt, hosts []hostreg.Host, configured []H
 	return present && sameEffectiveHostEntryFields(entry, hostFromReceiptRow(marker.Provisional.Row))
 }
 
-// markerPastFlip reports whether the commit's runtime swap started, which it
-// does only after the host change is in hub.toml.
+// markerPastFlip reports whether the commit's runtime swap started.
 func markerPastFlip(marker HostStagedReceipt) bool {
 	return marker.SwapStarted || marker.TeardownStarted || marker.Phase == hostStagedPhaseRuntimeSwapped
-}
-
-// postSwapLanded judges a marker past its flip. A later hand edit of the file
-// does not un-land the commit, and neither does a host the operator recreated
-// after a removal: the file cannot tell it from a restored one, and it is a new
-// host. The one thing that does un-land an edit is a compensation that put the
-// host file back and whose record write never landed: the file then holds the
-// host exactly as the edit staged against it, and an edit that changed the entry
-// cannot be there. An edit that changed nothing the file records, an add and a
-// removal leave nothing to tell the two apart, and read as landed.
-func postSwapLanded(marker HostStagedReceipt, scope hostReceiptScope, configured []HostConfig) bool {
-	if scope.Kind != hostMutationUpdate || marker.HostFingerprint == "" {
-		return true
-	}
-	after := hubTOMLHostTables([]hostreg.Host{hostFromReceiptRow(marker.Provisional.Row)})
-	if hostConfigFingerprint(after, scope.Name) == marker.HostFingerprint {
-		return true
-	}
-	return hostConfigFingerprint(configured, scope.Name) != marker.HostFingerprint
 }
 
 // hostFromReceiptRow is the effective entry a receipt row records.
