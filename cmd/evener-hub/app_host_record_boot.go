@@ -265,6 +265,15 @@ func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
 		m.refuseMutations(fmt.Sprintf("the host records in the operation store cannot be read: %v", err))
 		return
 	}
+	for _, entry := range m.cfg.hosts.All() {
+		// A hub that started before its records were readable minted ids of its
+		// own; operations and cleanup handles are bound to the stored ones.
+		if stored := records.HostRecords[entry.Name]; validIncarnationID(stored.IncarnationID) && stored.IncarnationID != entry.IncarnationID {
+			if err := m.cfg.hosts.RestoreIncarnation(entry.Name, stored.IncarnationID); err != nil {
+				m.logf("host %q keeps the incarnation minted at start: %v", entry.Name, err)
+			}
+		}
+	}
 	m.installRestoredRecords(hostRecordDocument{Hosts: m.cfg.hosts.All(), Records: records})
 	// Seeding the stored marks raised the registry's counters past the entries
 	// just copied; the manager's view follows what the registry serves.
@@ -326,6 +335,11 @@ func (m *hubHostManager) rollBackUnlandedCommits(doc hostRecordDocument) map[str
 	for _, name := range sortedStagedMarkerNames(m.cfg.store.stagedSnapshot()) {
 		marker := m.cfg.store.stagedSnapshot()[name]
 		if markerLanded(marker, doc.Hosts) {
+			continue
+		}
+		if scope, ok := parseHostReceiptScopedKey(marker.Key); ok && scope.Kind == hostMutationRemove && !stagedRemovalNeverLanded(marker, m.cfg.configPath) {
+			// The host is configured, but hub.toml changed since the removal
+			// staged against it: the removal landed and the name was added again.
 			continue
 		}
 		if bootRollbackFault != nil {

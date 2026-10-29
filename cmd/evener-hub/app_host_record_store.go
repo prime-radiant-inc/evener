@@ -403,17 +403,15 @@ func (s hostOpsRecordStore) syncMirror() error {
 
 // restoreUnlandedRemovalIdentities gives a host the identity it had when its
 // staged removal never reached hub.toml: the removal's write dropped the host's
-// live record, but the host is still configured and the boot rolls the removal
-// back, so it comes up as the incarnation the tombstone names instead of a new
-// one.
-func restoreUnlandedRemovalIdentities(configured []HostConfig, set hostRecordSet) hostRecordSet {
+// live record, but hub.toml is byte for byte what the commit staged against, so
+// the boot rolls the removal back and the host comes up as the incarnation the
+// tombstone names instead of a new one. A hub.toml that changed since may have
+// lost the host and had it added again by hand, which is a new incarnation.
+func restoreUnlandedRemovalIdentities(configured []HostConfig, configPath string, set hostRecordSet) hostRecordSet {
 	for _, h := range configured {
 		marker, staged := set.StagedReceipts[h.Name]
 		tombstone, removed := set.Tombstones[h.Name]
-		if !staged || !removed {
-			continue
-		}
-		if scope, ok := parseHostReceiptScopedKey(marker.Key); !ok || scope.Kind != hostMutationRemove {
+		if !staged || !removed || !stagedRemovalNeverLanded(marker, configPath) {
 			continue
 		}
 		set.HostRecords[h.Name] = HostRecord{IncarnationID: tombstone.IncarnationID, PresenceEpoch: tombstone.PresenceEpoch}
@@ -421,19 +419,31 @@ func restoreUnlandedRemovalIdentities(configured []HostConfig, set hostRecordSet
 	return set
 }
 
+// stagedRemovalNeverLanded reports whether marker stages a removal whose host
+// change cannot have reached hub.toml: the file is unchanged since the commit
+// validated against it.
+func stagedRemovalNeverLanded(marker HostStagedReceipt, configPath string) bool {
+	scope, ok := parseHostReceiptScopedKey(marker.Key)
+	if !ok || scope.Kind != hostMutationRemove || marker.ReconcileFingerprint == "" {
+		return false
+	}
+	fingerprint, readable := hubTOMLFingerprintAt(configPath)
+	return readable && fingerprint == marker.ReconcileFingerprint
+}
+
 // hostBootDocument is the host set and the records startup builds the host
 // registry from. A store that holds the records is their home; otherwise the
 // records are the ones hub.toml still carries. Records the store holds but this
 // build cannot read are not guessed at: the hosts come up with identities
 // minted at load, and the manager keeps host changes paused (bootStoreRecords).
-func hostBootDocument(cfg Config, ops *hostops.Store) hostRecordDocument {
+func hostBootDocument(cfg Config, configPath string, ops *hostops.Store) hostRecordDocument {
 	if ops != nil {
 		if _, _, imported := ops.HostRecords(); imported {
 			set, err := hostOpsRecordStore{ops: ops}.records()
 			if err != nil {
 				return hostRecordDocument{Hosts: hostEntriesWithIdentity(cfg.Hosts, hostRecordSet{})}
 			}
-			set = restoreUnlandedRemovalIdentities(cfg.Hosts, set)
+			set = restoreUnlandedRemovalIdentities(cfg.Hosts, configPath, set)
 			return hostRecordDocument{Hosts: hostEntriesWithIdentity(cfg.Hosts, set), Records: set}
 		}
 	}

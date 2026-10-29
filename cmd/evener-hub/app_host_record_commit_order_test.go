@@ -437,7 +437,7 @@ func TestBootLeavesStagedCommitsAloneWhileHubTOMLCannotBeRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
-	doc := hostBootDocument(cfg, store)
+	doc := hostBootDocument(cfg, hub.configPath, store)
 	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
 	if err != nil {
 		t.Fatalf("hostreg.NewSeeded: %v", err)
@@ -543,5 +543,84 @@ func TestRetryAfterAFailedInitialSettlementLeavesLiveOperationsRunning(t *testin
 	}
 	if after, ok := restarted.Record(live.ID); !ok || after.State != live.State {
 		t.Fatalf("the retry moved the live operation from %q to %+v", live.State, after)
+	}
+}
+
+// TestBootKeepsALandedRemovalWhenTheNameWasAddedAgainByHand pins the other
+// reading of a staged removal beside a configured host: the removal landed
+// (hub.toml lost the host) and an operator added the name again before the next
+// boot. The replacement is a new incarnation, the removal's receipt stands, and
+// a client retrying the removal does not take the replacement out.
+func TestBootKeepsALandedRemovalWhenTheNameWasAddedAgainByHand(t *testing.T) {
+	const staged = "staged-removal"
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, _ := hub.boot(t, false)
+	generation, incarnation := testMutationIdentity(t, m, "side")
+	params := removeRequest(t, m, "side")
+	params.MutationID = staged
+	armCut(m, cutFlipped)
+	runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
+	if err := writeHubTOMLHosts(hub.configPath, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side-again.example"}}); err != nil {
+		t.Fatalf("add side again by hand: %v", err)
+	}
+
+	recovered, _ := hub.boot(t, true)
+
+	gotGeneration, gotIncarnation := testMutationIdentity(t, recovered, "side")
+	if gotIncarnation == incarnation || gotGeneration <= generation {
+		t.Fatalf("the replacement serves (%d, %q), want a new incarnation above (%d, %q)", gotGeneration, gotIncarnation, generation, incarnation)
+	}
+	if len(receiptKeysFor(mustRecords(t, hub.store), staged)) == 0 {
+		t.Fatal("the landed removal lost its receipt")
+	}
+	_, _ = recovered.RemoveResult(context.Background(), params)
+	if row := hostRows(t, recovered)["side"]; row.Removed || row.Address != "side-again.example" {
+		t.Fatalf("retrying the removal left the replacement as %+v", row)
+	}
+}
+
+// TestLateAttachKeepsTheIdentityAnOpenTeardownRemnantPins pins which side wins
+// when a store attaches after the hub minted identities of its own: the records
+// are the durable truth, operations and teardown handles are bound to them, so
+// the live host comes up as the incarnation they name and an open remnant can
+// still be retried to completion.
+func TestLateAttachKeepsTheIdentityAnOpenTeardownRemnantPins(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, _ := hub.boot(t, false)
+	generation, incarnation := testMutationIdentity(t, m, "side")
+	m.testOnlyTeardown = func(context.Context, string) error { return errors.New("injected teardown failure") }
+	result, err := m.UpdateResult(context.Background(), updateRequest(t, m, "side", appwire.HostEntry{Address: "edited.example"}))
+	if err != nil || result.HostMutationTeardownFailure == nil {
+		t.Fatalf("Update = (%+v, %v), want the teardown-failure arm", result, err)
+	}
+	remnantID := result.HostMutationTeardownFailure.RemnantID
+	stored := mustRecords(t, hub.store).Generations["side"]
+	if stored.IncarnationID != incarnation || stored.Generation < generation {
+		t.Fatalf("the stored mark for side is %+v after the edit from (%d, %q)", stored, generation, incarnation)
+	}
+
+	hub.restartStateRoot(t)
+	reopened, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	hosts, err := hostreg.New(hostRegistryEntries(mustLoadConfig(t, hub.configPath)))
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	late := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostConfigPath: hub.configPath, RemoteHostOpsUnavailable: true,
+	}, hub.configPath, hosts, t.Logf)
+	late.attachOps(reopened)
+
+	if lateGeneration, lateIncarnation := testMutationIdentity(t, late, "side"); lateIncarnation != stored.IncarnationID || lateGeneration != stored.Generation {
+		t.Fatalf("side serves (%d, %q) after the late attach, want the stored (%d, %q)", lateGeneration, lateIncarnation, stored.Generation, stored.IncarnationID)
+	}
+	retry, err := late.TeardownRetry(context.Background(), appwire.HostTeardownRetryParams{RemnantID: remnantID})
+	if err != nil {
+		t.Fatalf("TeardownRetry after the late attach: %v", err)
+	}
+	if retry.HostTeardownRetryCompleteLive == nil {
+		t.Fatalf("retry = %+v, want the teardown-complete live arm", retry)
 	}
 }

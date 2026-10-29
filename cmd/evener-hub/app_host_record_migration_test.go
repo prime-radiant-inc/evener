@@ -38,7 +38,7 @@ func bootOverStore(t *testing.T, configPath, stateRoot string) (*hubHostManager,
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	doc := hostBootDocument(cfg, store)
+	doc := hostBootDocument(cfg, configPath, store)
 	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
 	if err != nil {
 		t.Fatalf("hostreg.NewSeeded: %v", err)
@@ -642,7 +642,7 @@ func TestUnreadableHubTOMLAtBootDoesNotMoveEmptyRecordsIntoTheStore(t *testing.T
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
-	doc := hostBootDocument(cfg, store)
+	doc := hostBootDocument(cfg, configPath, store)
 	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
 	if err != nil {
 		t.Fatalf("hostreg.NewSeeded: %v", err)
@@ -897,7 +897,7 @@ func TestAReadFailureAfterTheLegacyBootStartedStillKeepsTheRecordsInHubTOML(t *t
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
-	doc := hostBootDocument(cfg, store)
+	doc := hostBootDocument(cfg, configPath, store)
 	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
 	if err != nil {
 		t.Fatalf("hostreg.NewSeeded: %v", err)

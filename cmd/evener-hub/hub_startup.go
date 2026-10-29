@@ -470,10 +470,10 @@ func (r *hubRuntime) connectHosts() (func(), error) {
 	// the hub. The hosts in hub.toml keep serving with the identities minted at
 	// load, host changes refuse until the store opens, and the open is retried
 	// in the background. A corrupt store file takes the custody-first quarantine
-	// when its custody can be shown whole; one whose custody cannot is kept
-	// aside whole and a fresh store opens (openHostOpsStore).
+	// when its custody can be shown whole; one whose custody cannot is left as it
+	// is until it is repaired (openHostOpsStore).
 	r.openOpsStore()
-	boot := hostBootDocument(cfg, r.opsStore)
+	boot := hostBootDocument(cfg, r.opts.configPath, r.opsStore)
 	r.hostEntries = boot.Hosts
 	// Config loading already validated these through hostreg.New; build the
 	// real registry used by the SSH manager and handle the (impossible) error

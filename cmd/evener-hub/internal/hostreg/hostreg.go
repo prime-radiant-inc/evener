@@ -704,6 +704,27 @@ func (r *Registry) SeedHighWater(marks map[string]HighWater) {
 	}
 }
 
+// RestoreIncarnation puts back the incarnation id a durable record carries for
+// a name that is already live. A hub that started before its records could be
+// read minted ids of its own; the records are the truth operations and cleanup
+// handles are bound to, so the live entry takes theirs. An unknown name is
+// ErrUnknownHost and an empty id is refused.
+func (r *Registry) RestoreIncarnation(name, incarnationID string) error {
+	if incarnationID == "" {
+		return errors.New("hostreg: restore an empty incarnation id")
+	}
+	name = strings.TrimSpace(name)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	host, ok := r.hosts[name]
+	if !ok {
+		return fmt.Errorf("%w: %q", ErrUnknownHost, name)
+	}
+	host.IncarnationID = incarnationID
+	r.hosts[name] = host
+	return nil
+}
+
 // NextPresenceEpoch returns the presence epoch name's next presence event
 // carries: one above the name's highest recorded value, exactly the rule the
 // registry's own add and remove paths apply. It is exported for the
