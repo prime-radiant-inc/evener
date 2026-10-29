@@ -282,7 +282,7 @@ func (m *hubHostManager) redial(registration hostreg.Host, retryInitial, retryMa
 			return
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), hostReconnectTimeout)
-		_, err := m.cfg.manager.EnsureRegistration(ctx, registration)
+		_, err := m.cfg.manager.ReconnectRegistration(ctx, registration)
 		cancel()
 		switch {
 		case err == nil, errors.Is(err, sshconn.ErrManagerClosed), errors.Is(err, sshconn.ErrHostNotFound):

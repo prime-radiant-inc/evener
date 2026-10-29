@@ -105,3 +105,38 @@ func TestEnsureRetainedStoppedAdhocStart(t *testing.T) {
 		})
 	}
 }
+
+// TestReconnectRegistrationDoesNotStartAStoppedHub pins the background arm of
+// the registration-bound attach: it restores a lost connection to a hub that is
+// running, and never launches one the host has stopped (only an explicit Ensure
+// starts a hub).
+func TestReconnectRegistrationDoesNotStartAStoppedHub(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "fixture.invalid", EvenerPath: "/opt/evener/bin/evener"}
+	launches, attaches := 0, 0
+	attachBoundary := errors.New("fixture attach boundary")
+	launch := "CDPATH='' cd -P -- /home/dev || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; export HOME=/home/dev; nohup /opt/evener/bin/evener hub </dev/null >/dev/null 2>&1 &"
+	base := cannedRun(nil)
+	fr := &fakeRunner{runFn: func(ctx context.Context, argv []string, in io.Reader) ([]byte, error) {
+		if strings.Join(argv[12:], " ") == launch {
+			launches++
+			return nil, errReplacementFixture
+		}
+		return base(ctx, argv, in)
+	}, startFn: func(context.Context, []string, io.Writer) (Stdio, error) {
+		attaches++
+		return nil, attachBoundary
+	}}
+	f := modelSelectedProcess(t, fr, host.EvenerPath, "dev", "dev")
+	f.stopped, f.adhoc = true, true
+	m := newTestManager(t, testRegistry(t, host), fr, Options{sleep: func(context.Context, time.Duration) error { return nil }})
+	registered, _ := m.reg.Get(host.Name)
+
+	_, err := m.ReconnectRegistration(t.Context(), registered)
+
+	if launches != 0 {
+		t.Fatalf("the reconnect launched a stopped hub %d time(s): %v", launches, err)
+	}
+	if err == nil {
+		t.Fatal("the reconnect of a stopped hub reported success")
+	}
+}

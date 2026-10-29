@@ -414,11 +414,11 @@ func TestRetireHostUnderGateReachesAReconnectLoopWithNoChannel(t *testing.T) {
 	}
 }
 
-// TestEnsureRegistrationRefusesAReplacedHost pins the registration-bound attach:
+// TestReconnectRegistrationRefusesAReplacedHost pins the registration-bound attach:
 // a name removed and added again after the caller captured it resolves to a
 // different registration, and the attach is refused instead of dialing the
 // replacement the caller never meant to connect.
-func TestEnsureRegistrationRefusesAReplacedHost(t *testing.T) {
+func TestReconnectRegistrationRefusesAReplacedHost(t *testing.T) {
 	runner := &reapRecordingRunner{}
 	m := newTestManager(t, testRegistry(t, hostreg.Host{Name: "alpha", SSH: "alpha.example"}), &fakeRunner{
 		runFn:   runner.Run,
@@ -432,16 +432,16 @@ func TestEnsureRegistrationRefusesAReplacedHost(t *testing.T) {
 		t.Fatalf("AddHost: %v", err)
 	}
 
-	if _, err := m.EnsureRegistration(context.Background(), captured); !errors.Is(err, ErrHostNotFound) {
-		t.Fatalf("EnsureRegistration of a replaced host = %v, want ErrHostNotFound", err)
+	if _, err := m.ReconnectRegistration(context.Background(), captured); !errors.Is(err, ErrHostNotFound) {
+		t.Fatalf("ReconnectRegistration of a replaced host = %v, want ErrHostNotFound", err)
 	}
 	if m.Attached("alpha") {
 		t.Fatal("the refused attach connected the replacement")
 	}
 
 	current, _ := m.reg.Get("alpha")
-	if _, err := m.EnsureRegistration(context.Background(), current); err != nil {
-		t.Fatalf("EnsureRegistration of the current registration: %v", err)
+	if _, err := m.ReconnectRegistration(context.Background(), current); err != nil {
+		t.Fatalf("ReconnectRegistration of the current registration: %v", err)
 	}
 	if !m.Attached("alpha") {
 		t.Fatal("the current registration did not attach")
