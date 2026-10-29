@@ -172,6 +172,13 @@ func (m *hubHostManager) migrateLegacyRecords(ops *hostops.Store) {
 	for i, entry := range entries {
 		if live, ok := m.cfg.hosts.Get(entry.Name); ok {
 			entries[i] = live
+			continue
+		}
+		// A restored host the registry never held is raised by hand, so the
+		// import cannot replace the mirror's higher counters with its own.
+		if mark, ok := marks[entry.Name]; ok {
+			entries[i].Generation = max(entry.Generation, mark.Generation)
+			entries[i].PresenceEpoch = max(entry.PresenceEpoch, mark.PresenceEpoch)
 		}
 	}
 	m.cfg.store.set(entries)
@@ -214,22 +221,26 @@ func (m *hubHostManager) keepPreRecordsCopy() error {
 	if path == "" {
 		return nil
 	}
-	raw, holdsRecords := originalHoldingRecordSections(path)
+	raw, holdsRecords, err := originalHoldingRecordSections(path)
+	if err != nil {
+		return err
+	}
 	if !holdsRecords {
 		return nil
 	}
 	return keepPreRecordsCopy(path, raw)
 }
 
-// originalHoldingRecordSections returns hub.toml's bytes when the file reads and
-// carries record sections, the only original worth keeping. An unreadable file
-// is not one: the legacy boot's own readability check stops the move.
-func originalHoldingRecordSections(path string) ([]byte, bool) {
+// originalHoldingRecordSections returns hub.toml's bytes and whether they carry
+// record sections, the only original worth keeping. A file that cannot be read
+// or parsed is an error rather than an absence: it may hold the records, so the
+// move waits until it can be inspected.
+func originalHoldingRecordSections(path string) ([]byte, bool, error) {
 	doc, raw, err := readHubTOMLDocument(path)
 	if err != nil {
-		return nil, false
+		return nil, false, err
 	}
-	return raw, len(legacyRecordSections(doc)) != 0
+	return raw, len(legacyRecordSections(doc)) != 0, nil
 }
 
 // stripLegacySections drops the reserved record sections from hub.toml once

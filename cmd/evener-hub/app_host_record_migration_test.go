@@ -915,3 +915,82 @@ func TestMigrationRaisesAPresenceEpochTheMirrorHoldsEvenAtTheSameGeneration(t *t
 		t.Fatalf("the family holds mark %+v and tombstone epoch %d for %q, want the mirror's epoch %d", family.Generations[removed], family.Tombstones[removed].PresenceEpoch, removed, spentEpoch)
 	}
 }
+
+// TestMigrationRaisesARestoredHostTheRegistryNeverHeldToTheMirrorsCounters
+// covers a host only the restored hub.toml declares: the registry never held
+// it, so seeding cannot raise it, and the import must not replace the mirror's
+// higher counters with the entry's own.
+func TestMigrationRaisesARestoredHostTheRegistryNeverHeldToTheMirrorsCounters(t *testing.T) {
+	fixture := newPipelineFixture(t, []hostreg.Host{pipelineEntry("keep", 3)}, nil)
+	m := fixture.legacyManager(t)
+	sibling := hostreg.Host{Name: "sibling", SSH: "sibling.example", Generation: 2, IncarnationID: "inc-sibling", PresenceEpoch: 1}
+	m.cfg.store.set(append(m.cfg.store.snapshot(), sibling))
+	boundary := hostops.Boundary{Generation: 6, IncarnationID: sibling.IncarnationID, PresenceEpoch: 4}
+	if err := fixture.store.MirrorHostState(hostops.HostMirror{Boundaries: map[string]hostops.Boundary{"sibling": boundary}}); err != nil {
+		t.Fatalf("MirrorHostState: %v", err)
+	}
+
+	m.migrateLegacyRecords(fixture.store)
+
+	mark := mustRecords(t, fixture.store).Generations["sibling"]
+	if mark.Generation < boundary.Generation || mark.PresenceEpoch < boundary.PresenceEpoch {
+		t.Fatalf("the family holds %+v for the restored host, want counters at or above the mirror's %+v", mark, boundary)
+	}
+	if got := fixture.store.Boundaries()["sibling"]; got.Generation < boundary.Generation || got.PresenceEpoch < boundary.PresenceEpoch {
+		t.Fatalf("the mirror holds %+v after the import, want at or above %+v", got, boundary)
+	}
+}
+
+// TestMigrationWaitsWhenTheOriginalCannotBeInspectedForTheCopy pins that a read
+// failure while deciding whether the original is worth keeping is not taken for
+// a file without records: the move waits, and no copy-less rewrite happens.
+func TestMigrationWaitsWhenTheOriginalCannotBeInspectedForTheCopy(t *testing.T) {
+	configPath, records := legacyHub(t)
+	original := fileBytes(t, configPath)
+	cfg := mustLoadConfig(t, configPath)
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	doc := hostBootDocument(cfg, configPath, store)
+	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
+	if err != nil {
+		t.Fatalf("hostreg.NewSeeded: %v", err)
+	}
+	previous := configReadFile
+	reads := 0
+	configReadFile = func(path string) ([]byte, error) {
+		reads++
+		if reads == 1 {
+			return nil, errors.New("injected read failure")
+		}
+		return previous(path)
+	}
+	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: configPath,
+	}, configPath, hosts, t.Logf)
+	configReadFile = previous
+
+	if _, _, imported := store.HostRecords(); imported {
+		t.Fatal("the records moved although the original could not be inspected")
+	}
+	if !bytes.Equal(fileBytes(t, configPath), original) {
+		t.Fatal("hub.toml changed although the original could not be inspected")
+	}
+	if _, err := os.Stat(configPath + hostPreRecordsSuffix); err == nil {
+		t.Fatal("a copy was kept of a file that was never read")
+	}
+	if m.mutationRefusal() == nil {
+		t.Fatal("host changes are taken while the move waits")
+	}
+
+	m = restartOver(t, configPath, store)
+
+	requireFamilyEquals(t, store, records)
+	if !bytes.Equal(fileBytes(t, configPath+hostPreRecordsSuffix), original) {
+		t.Fatal("the kept copy is not the original hub.toml")
+	}
+	if err := m.mutationRefusal(); err != nil {
+		t.Fatalf("host changes are still refused after the move: %v", err)
+	}
+}

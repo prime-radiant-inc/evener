@@ -333,8 +333,12 @@ var hostFileFirstSeam func() error
 // commitHostFileFirst is commit with the order reversed, for the compensation of
 // a commit that already reached hub.toml (see hostPersistChange.hostFileFirst).
 func (s hostOpsRecordStore) commitHostFileFirst(entries, known []hostreg.Host, records hostTOMLRecords) error {
-	hostFileErr := writeHubTOMLHostsOnly(s.path, entries, known)
-	if hostFileErr != nil && !hubTOMLRenameCommitted(hostFileErr) {
+	if hostFileErr := writeHubTOMLHostsOnly(s.path, entries, known); hostFileErr != nil {
+		// A restore that landed but is not proven durable leaves the staged
+		// records in the store: dropping them first would strand a change a
+		// crash can bring back into the file with nothing to roll it back. The
+		// manager still settles (persistHosts), and the next successful write or
+		// a boot replaces them.
 		return hostFileErr
 	}
 	var err error
@@ -352,7 +356,7 @@ func (s hostOpsRecordStore) commitHostFileFirst(entries, known []hostreg.Host, r
 		// still holds the change it no longer does.
 		s.log("the staged records were not dropped after the host file was restored: %v", err)
 	}
-	return hostFileErr
+	return nil
 }
 
 func (s hostOpsRecordStore) commit(entries, known []hostreg.Host, records hostTOMLRecords) error {

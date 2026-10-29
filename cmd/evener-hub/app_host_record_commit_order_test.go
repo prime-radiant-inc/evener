@@ -1030,8 +1030,10 @@ func TestACompensationWhoseDirectorySyncFailsStillSettlesTheManagersRecords(t *t
 	if _, staged := m.cfg.store.stagedSnapshot()["new"]; staged {
 		t.Fatal("the manager still holds the failed commit's staged marker")
 	}
-	if staged := mustRecords(t, store).StagedReceipts; len(staged) != 0 {
-		t.Fatalf("the store still holds staged markers: %+v", staged)
+	// The restored file is not proven durable, so the store keeps the marker a
+	// boot rolls back until it is.
+	if _, held := mustRecords(t, store).StagedReceipts["new"]; !held {
+		t.Fatal("the store dropped the staged marker before the restored host file was durable")
 	}
 	m.testOnlyAfterStage = nil
 	result, err := m.AddResult(context.Background(), params)
