@@ -1246,3 +1246,51 @@ func TestBootFinalizationNeverRewritesTheHostList(t *testing.T) {
 		t.Fatalf("boot finalization put the registry's host list over the operator's edit: keep.ssh = %q", ssh)
 	}
 }
+
+// TestBootRollbackWaitsUntilTheHostFileDirectoryIsDurable pins that a boot does
+// not clear a staged commit's records on the strength of a hub.toml whose
+// directory sync has not been proven: the file may be the restored one a
+// compensation left unsynced, and the records are the evidence a crash needs.
+func TestBootRollbackWaitsUntilTheHostFileDirectoryIsDurable(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, _ := hub.boot(t, false)
+	_, incarnation := testMutationIdentity(t, m, "side")
+	params := removeRequest(t, m, "side")
+	unlanded := fileBytes(t, hub.configPath)
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
+	if err := os.WriteFile(hub.configPath, unlanded, 0o600); err != nil {
+		t.Fatalf("restore the file the crash left behind: %v", err)
+	}
+
+	syncFails := true
+	flakyHubTOMLDirSync(t, func(int) bool { return syncFails })
+	hub.restartStateRoot(t)
+	store, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	waiting := restartOver(t, hub.configPath, store)
+
+	if _, held := mustRecords(t, store).StagedReceipts["side"]; !held {
+		t.Fatal("the boot cleared the staged records before the host file's directory was durable")
+	}
+	if waiting.mutationRefusal() == nil {
+		t.Fatal("host changes are taken while the staged commit is unsettled")
+	}
+
+	syncFails = false
+	hub.restartStateRoot(t)
+	store, err = hostops.Open(hostops.StorePath(hub.stateRoot))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	recovered := restartOver(t, hub.configPath, store)
+
+	if _, held := mustRecords(t, store).StagedReceipts["side"]; held {
+		t.Fatal("the staged records outlived a durable host file")
+	}
+	if _, got := testMutationIdentity(t, recovered, "side"); got != incarnation {
+		t.Fatalf("side serves incarnation %q after the rollback, want %q", got, incarnation)
+	}
+}

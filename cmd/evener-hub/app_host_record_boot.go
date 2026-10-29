@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -418,6 +419,7 @@ func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
 // of forward finalization, which would commit a change hub.toml does not hold.
 func (m *hubHostManager) rollBackUnlandedCommits(doc hostRecordDocument) map[string]struct{} {
 	failed := map[string]struct{}{}
+	hostFileDurable := false
 	entries := m.cfg.store.snapshot()
 	for _, name := range sortedStagedMarkerNames(m.cfg.store.stagedSnapshot()) {
 		marker := m.cfg.store.stagedSnapshot()[name]
@@ -439,6 +441,16 @@ func (m *hubHostManager) rollBackUnlandedCommits(doc hostRecordDocument) map[str
 				// again.
 				continue
 			}
+		}
+		if !hostFileDurable {
+			// The file may be a restore whose directory sync never succeeded; the
+			// staged records are the evidence a crash needs until it has.
+			if err := hubTOMLSyncDir(filepath.Dir(m.cfg.configPath)); err != nil {
+				m.logf("boot rollback of the staged commit for %q deferred: hub.toml's directory is not durable: %v", name, err)
+				failed[name] = struct{}{}
+				continue
+			}
+			hostFileDurable = true
 		}
 		if bootRollbackFault != nil {
 			if err := bootRollbackFault(name); err != nil {
