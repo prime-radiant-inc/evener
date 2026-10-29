@@ -205,6 +205,7 @@ test.each([
   for (const fragment of prose) {
     expect(fragment.querySelectorAll(selector)).toHaveLength(1);
     expect(fragment.querySelector(selector)?.querySelectorAll(":scope > p")).toHaveLength(2);
+    if (ordered) expect(fragment.querySelector("ol")?.start).toBe(7);
   }
   expect(container.querySelector("pre code")?.textContent).toBe("code");
 });
@@ -221,6 +222,7 @@ test("nested ordered and unordered item identity survives an insert inside a quo
   for (const fragment of prose) {
     expect(fragment.querySelectorAll("blockquote, ol, ul")).toHaveLength(3);
     expect(fragment.querySelectorAll("li")).toHaveLength(2);
+    expect(fragment.querySelector("ol")?.start).toBe(3);
     expect(fragment.querySelectorAll("ol > li > p")).toHaveLength(1);
     expect(fragment.querySelectorAll("ul > li > p")).toHaveLength(2);
   }
