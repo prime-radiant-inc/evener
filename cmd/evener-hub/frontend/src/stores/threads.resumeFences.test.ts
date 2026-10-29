@@ -1,3 +1,4 @@
+import { connectFakeClient } from "../testing/connectionTestUtils";
 import { ALL_CAPABILITIES as CAPABILITIES, testThread } from "../threadTestUtils";
 import "fake-indexeddb/auto";
 import { hydrateThread, RequestTimeoutError, type ThreadReadResponse, WireError } from "@evener/appwire-client";
@@ -35,7 +36,6 @@ import {
 } from "./threads";
 import {
   clearResponse,
-  connectFakeClient,
   connectMutationClient,
   deferred,
   flushIndexedDBUntil,

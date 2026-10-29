@@ -1,4 +1,5 @@
 import { appliedReceipt } from "../mutationReceiptTestUtils";
+import { connectFakeClient } from "../testing/connectionTestUtils";
 import { ALL_CAPABILITIES as CAPABILITIES, testThread } from "../threadTestUtils";
 import "fake-indexeddb/auto";
 import {
@@ -33,7 +34,6 @@ import {
 import { ConflictError } from "./threadsErrors";
 import {
   clearResponse,
-  connectFakeClient,
   connectMutationClient,
   deferred,
   ensureActiveMutationTarget,

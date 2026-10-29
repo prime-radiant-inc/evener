@@ -1,11 +1,11 @@
 import { appliedReceipt } from "../mutationReceiptTestUtils";
+import { connectFakeClient } from "../testing/connectionTestUtils";
 import { ALL_CAPABILITIES as CAPABILITIES, type TestThreadOverrides, testThread } from "../threadTestUtils";
 import { acquireSessionActivity } from "./sessionActivity";
 import { activitySummary } from "./sessionActivityTestUtils";
 import "fake-indexeddb/auto";
 import type {
   AnyNotification,
-  ConnectionState,
   MethodName,
   MethodTypes,
   ThreadReadResponse,
@@ -150,15 +150,6 @@ function _sameEpochReconnectFixture() {
     },
   } as AnyNotification;
   return { authoritativeSnapshot, completion, turnCompleted };
-}
-
-// connectFakeClient wires a fresh FakeClient through useConnectionStore's
-// locked connect(client) entry point — the same path threads.ts's
-// requireClient() rides to reach the client (see connection.ts).
-function connectFakeClient(state: ConnectionState = "ready"): FakeClient {
-  const fake = new FakeClient(state);
-  connectionStore.getState().connect(fake);
-  return fake;
 }
 
 function connectMutationClient(): FakeClient {

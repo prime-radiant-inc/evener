@@ -1,12 +1,6 @@
+import { connectFakeClient } from "../testing/connectionTestUtils";
 import "fake-indexeddb/auto";
-import {
-  ClientNotReadyError,
-  type ConnectionState,
-  errorKind,
-  type ModelListResponse,
-  type Task,
-  WireError,
-} from "@evener/appwire-client";
+import { ClientNotReadyError, errorKind, type ModelListResponse, type Task, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
@@ -35,11 +29,6 @@ afterEach(() => {
   cache.close();
   vi.restoreAllMocks();
 });
-function connectFakeClient(state: ConnectionState = "ready"): FakeClient {
-  const fake = new FakeClient(state);
-  connectionStore.getState().connect(fake);
-  return fake;
-}
 async function flushUntil(done: () => boolean, maxTurns = 20): Promise<void> {
   for (let i = 0; i < maxTurns && !done(); i += 1) await Promise.resolve();
 }

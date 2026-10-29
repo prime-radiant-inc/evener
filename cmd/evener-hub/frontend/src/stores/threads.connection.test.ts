@@ -3,6 +3,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { connectFakeClient } from "../testing/connectionTestUtils";
 import { type TestThreadOverrides, testThread } from "../threadTestUtils";
 import { connectionStore, useConnectionStore } from "./connection";
 import { setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
@@ -29,15 +30,6 @@ afterEach(() => {
 
 function readResponse(ref: string, overrides: TestThreadOverrides = {}): ThreadReadResponse {
   return { thread: testThread(ref, overrides) };
-}
-
-// connectFakeClient wires a fresh FakeClient through useConnectionStore's
-// locked connect(client) entry point — the same path threads.ts's
-// requireClient() rides to reach the client (see connection.ts).
-function connectFakeClient(state: ConnectionState = "ready"): FakeClient {
-  const fake = new FakeClient(state);
-  connectionStore.getState().connect(fake);
-  return fake;
 }
 
 describe("FakeClient", () => {
