@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/appwire"
@@ -121,6 +122,41 @@ func (m *hubHostManager) bootRecords() {
 		return
 	}
 	m.migrateLegacyRecords(ops)
+}
+
+// retireCollidingConnections takes the gate of every live host whose name a
+// removed host's tombstone still holds and tears its connections down through
+// the SSH manager, before the collision rule rebases or excludes it directly in
+// the registry. The gates stay held until the returned release runs. A busy
+// host is not touched: every gate taken is released and the error says which,
+// so the settlement stays pending.
+func (m *hubHostManager) retireCollidingConnections(records hostRecordSet) (func(), error) {
+	if m.cfg.manager == nil {
+		return func() {}, nil
+	}
+	var releases []func()
+	releaseAll := func() {
+		for _, release := range slices.Backward(releases) {
+			release()
+		}
+	}
+	holder := hostops.Holder{Kind: hostops.HolderManager, Activity: "boot-collision"}
+	for _, entry := range m.cfg.hosts.All() {
+		if _, collides := records.Tombstones[entry.Name]; !collides {
+			continue
+		}
+		release, err := m.acquireHostGate(entry.Name, holder)
+		if err != nil {
+			releaseAll()
+			return nil, fmt.Errorf("host %q: %w", entry.Name, err)
+		}
+		releases = append(releases, release)
+		if err := m.cfg.manager.UpdateHostUnderGate(entry, holder, func(hostreg.Host) {}); err != nil {
+			releaseAll()
+			return nil, fmt.Errorf("host %q: %w", entry.Name, err)
+		}
+	}
+	return releaseAll, nil
 }
 
 // adoptStoredIncarnation gives a live host the incarnation its stored records
@@ -391,7 +427,13 @@ func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
 		m.refuseMutations(fmt.Sprintf("the host records in the operation store cannot be read: %v", err))
 		return
 	}
+	releaseCollisions, err := m.retireCollidingConnections(records)
+	if err != nil {
+		m.refuseMutations(fmt.Sprintf("a host that collides with a removed name is busy; the next attempt retries: %v", err))
+		return
+	}
 	collided := m.breakBootTombstoneCollision(records)
+	releaseCollisions()
 	for _, name := range sortedStagedMarkerNames(m.cfg.store.stagedSnapshot()) {
 		if _, err := m.finalizeOrphanMarkerIfAny(context.Background(), name, true); err != nil {
 			m.logf("boot finalization of the staged receipt marker for %q refused: %v", name, err)

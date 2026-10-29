@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"sync"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -772,10 +773,12 @@ func TestLateAttachWaitsForABusyHostBeforeTakingItsStoredIdentity(t *testing.T) 
 	late := newHubHostManager(appsource.NewRegistry(), manager, hubcore.WebConfig{
 		RemoteHostRegistry: hosts, RemoteHostConfigPath: hub.configPath, RemoteHostOpsUnavailable: true,
 	}, hub.configPath, hosts, t.Logf)
-	release, err := late.acquireHostGate("side", hostops.Holder{Kind: hostops.HolderOperation, OperationID: "busy"})
+	acquired, err := late.acquireHostGate("side", hostops.Holder{Kind: hostops.HolderOperation, OperationID: "busy"})
 	if err != nil {
 		t.Fatalf("hold the gate: %v", err)
 	}
+	release := sync.OnceFunc(acquired)
+	t.Cleanup(release)
 
 	late.attachOps(reopened)
 
@@ -794,5 +797,89 @@ func TestLateAttachWaitsForABusyHostBeforeTakingItsStoredIdentity(t *testing.T) 
 	}
 	if _, got := testMutationIdentity(t, late, "side"); got != incarnation {
 		t.Fatalf("side serves incarnation %q after the retry, want the stored %q", got, incarnation)
+	}
+}
+
+// lateAttachOverAReAddedName builds a hub that started without its store over a
+// hub.toml in which the removed name "side" was added again by hand, and
+// connects side through a real SSH manager before the store attaches.
+func lateAttachOverAReAddedName(t *testing.T) (*hubHostManager, *sshconn.Manager, *hostops.Store, *hostreg.Registry) {
+	t.Helper()
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	first, _ := hub.boot(t, false)
+	if _, err := first.RemoveResult(context.Background(), removeRequest(t, first, "side")); err != nil {
+		t.Fatalf("Remove(side): %v", err)
+	}
+	if err := writeHubTOMLHosts(hub.configPath, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side-again.example"}}); err != nil {
+		t.Fatalf("add side again by hand: %v", err)
+	}
+	hub.restartStateRoot(t)
+	reopened, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	hosts, err := hostreg.New(hostRegistryEntries(mustLoadConfig(t, hub.configPath)))
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	manager := sshconn.New(hosts, sshconn.Options{Runner: &attachedUpdateRunner{}})
+	t.Cleanup(func() { _ = manager.Close() })
+	late := newHubHostManager(appsource.NewRegistry(), manager, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostConfigPath: hub.configPath, RemoteHostOpsUnavailable: true,
+	}, hub.configPath, hosts, t.Logf)
+	if _, err := manager.Ensure(context.Background(), "side"); err != nil {
+		t.Fatalf("Ensure while the store is unavailable: %v", err)
+	}
+	return late, manager, reopened, hosts
+}
+
+// TestLateAttachRetiresTheConnectionOfAHostItRebasesAsACollision pins the boot
+// collision rule under a running hub: a removed name that hub.toml carries again
+// is rebased as a new incarnation, and the channel the host held under the old
+// identity is torn down under the gate rather than left attached to it.
+func TestLateAttachRetiresTheConnectionOfAHostItRebasesAsACollision(t *testing.T) {
+	late, manager, reopened, hosts := lateAttachOverAReAddedName(t)
+
+	late.attachOps(reopened)
+
+	entry, _ := hosts.Get("side")
+	if ch, attached := manager.ChannelIfAttached("side"); attached && !ch.MatchesRegistration(entry) {
+		t.Fatal("the channel from before the attach is still attached to an identity the collision replaced")
+	}
+	if err := late.mutationRefusal(); err != nil {
+		t.Fatalf("host changes are still paused: %v", err)
+	}
+}
+
+// TestLateAttachWaitsForABusyHostBeforeRebasingACollision is the busy half: a
+// host whose gate is held is not rebased under its running work; the settlement
+// stays pending and finishes once the gate frees.
+func TestLateAttachWaitsForABusyHostBeforeRebasingACollision(t *testing.T) {
+	late, _, reopened, hosts := lateAttachOverAReAddedName(t)
+	before, _ := hosts.Get("side")
+	acquired, err := late.acquireHostGate("side", hostops.Holder{Kind: hostops.HolderOperation, OperationID: "busy"})
+	if err != nil {
+		t.Fatalf("hold the gate: %v", err)
+	}
+	release := sync.OnceFunc(acquired)
+	t.Cleanup(release)
+
+	late.attachOps(reopened)
+
+	if late.mutationRefusal() == nil {
+		t.Fatal("host changes resumed although side was busy")
+	}
+	if during, _ := hosts.Get("side"); during.IncarnationID != before.IncarnationID || during.Generation != before.Generation {
+		t.Fatalf("a busy host was rebased: %+v became %+v", before, during)
+	}
+
+	release()
+	late.attachOps(nil)
+
+	if err := late.mutationRefusal(); err != nil {
+		t.Fatalf("host changes are still paused after the gate freed: %v", err)
+	}
+	if after, _ := hosts.Get("side"); after.IncarnationID == before.IncarnationID {
+		t.Fatal("the collision was never rebased after the gate freed")
 	}
 }
