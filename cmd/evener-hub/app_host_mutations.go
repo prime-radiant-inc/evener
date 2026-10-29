@@ -403,7 +403,7 @@ func (m *hubHostManager) AddResult(ctx context.Context, params appwire.HostAddPa
 	// target is the no-op §5 defines.
 	if err := m.addHostToRegistry(entry); err != nil {
 		m.cfg.state.restore(entry.Name, priorState)
-		err = m.rollbackHubTOML(prev, unionHosts(prev, append([]hostreg.Host(nil), entry)), err, compensationChange(plan))
+		err = m.rollbackHubTOML(prev, unionHosts(prev, append([]hostreg.Host(nil), entry)), err, m.compensationChange(plan))
 		return appwire.HostMutationResult{}, err
 	}
 	if stored, ok := m.cfg.hosts.Get(entry.Name); ok {
@@ -451,7 +451,7 @@ func (m *hubHostManager) compensateStagedWrite(plan *hostCommitPlan, previous []
 	adopted := m.adoptedPreimage(plan, previous)
 	// The staged records go with the write that failed: the compensation drops
 	// the marker and the provisional receipt the staged write installed.
-	return m.rollbackHubTOML(adopted, unionHosts(adopted, plan.Entries), cause, compensationChange(plan))
+	return m.rollbackHubTOML(adopted, unionHosts(adopted, plan.Entries), cause, m.compensationChange(plan))
 }
 
 // compensateStagedCommit is the pre-commit compensation for a staged commit
@@ -461,7 +461,7 @@ func (m *hubHostManager) compensateStagedWrite(plan *hostCommitPlan, previous []
 // and the typed refusal is returned.
 func (m *hubHostManager) compensateStagedCommit(plan *hostCommitPlan, previous []hostreg.Host, priorState *hostAttachRecord, cause error) (appwire.HostMutationResult, error) {
 	adopted := m.adoptedPreimage(plan, previous)
-	err := m.rollbackHubTOML(adopted, unionHosts(adopted, plan.Entries), cause, compensationChange(plan))
+	err := m.rollbackHubTOML(adopted, unionHosts(adopted, plan.Entries), cause, m.compensationChange(plan))
 	m.cfg.state.restore(plan.Name, priorState)
 	return appwire.HostMutationResult{}, err
 }
@@ -479,7 +479,7 @@ func (m *hubHostManager) compensateStagedCommit(plan *hostCommitPlan, previous [
 // The caller holds the mutation lock throughout.
 func (m *hubHostManager) compensateStagedCrossFile(plan *hostCommitPlan, previous []hostreg.Host, cause error, stash string) (appwire.HostMutationResult, error) {
 	adopted := m.adoptedPreimage(plan, previous)
-	err := m.rollbackHubTOML(adopted, unionHosts(adopted, plan.Entries), cause, compensationChange(plan))
+	err := m.rollbackHubTOML(adopted, unionHosts(adopted, plan.Entries), cause, m.compensationChange(plan))
 	rollbackConverged := !errors.Is(err, errHubTOMLRollbackFailed)
 	if rollbackConverged {
 		// The live set the rollback restored: the pre-mutation entries (with any

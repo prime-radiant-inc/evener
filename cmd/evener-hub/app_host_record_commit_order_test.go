@@ -1496,3 +1496,47 @@ func TestACompensationDoesNotRelyOnAnUnprovenPreFlipMarker(t *testing.T) {
 		t.Fatalf("takeBackFlip with a durable store: %v", err)
 	}
 }
+
+// TestAReAddRefusedAfterStagingKeepsTheRemovedHostsHistory pins that the live
+// compensation of a re-add puts back what the staging write purged to make room
+// for it: the tombstone, its receipts and the spent counters stay, because the
+// removal still stands.
+func TestAReAddRefusedAfterStagingKeepsTheRemovedHostsHistory(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, store := hub.boot(t, false)
+	if _, err := m.RemoveResult(context.Background(), removeRequest(t, m, "side")); err != nil {
+		t.Fatalf("remove side: %v", err)
+	}
+	before := mustRecords(t, store)
+	if _, tombstoned := before.Tombstones["side"]; !tombstoned {
+		t.Fatal("the removal left no tombstone")
+	}
+	staged := false
+	m.testOnlyAfterStage = func(name string) {
+		staged = true
+		if err := m.cfg.hosts.Add(hostreg.Host{Name: name, SSH: "raced.example"}); err != nil {
+			t.Errorf("race the registry: %v", err)
+		}
+	}
+
+	if _, err := m.AddResult(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "side", Address: "again.example"}, MutationID: "re-add-side",
+	}); err == nil {
+		t.Fatal("the re-add succeeded although its registration failed")
+	}
+
+	if !staged {
+		t.Fatal("the re-add refused before it staged")
+	}
+	after := mustRecords(t, store)
+	tombstone, tombstoned := after.Tombstones["side"]
+	if !tombstoned {
+		t.Fatal("the refused re-add took the removed host's tombstone with it")
+	}
+	if len(after.MutationReceipts) < len(before.MutationReceipts) {
+		t.Fatalf("the refused re-add lost receipts: %d before, %d after", len(before.MutationReceipts), len(after.MutationReceipts))
+	}
+	if after.Generations["side"].Generation < tombstone.Generation || after.Generations["side"].PresenceEpoch < before.Generations["side"].PresenceEpoch {
+		t.Fatalf("the refused re-add lowered the spent counters: %+v, was %+v", after.Generations["side"], before.Generations["side"])
+	}
+}

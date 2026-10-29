@@ -186,11 +186,32 @@ func (m *hubHostManager) stageCommit(plan *hostCommitPlan, now time.Time) error 
 // installed into — so without both drops the rollback write re-emits them, the
 // marker survives to be finalized (fabricating a `committed` receipt for a
 // refused mutation) and the provisional receipt survives as a dedup hit.
-func compensationChange(plan *hostCommitPlan) hostPersistChange {
-	return hostPersistChange{
+func (m *hubHostManager) compensationChange(plan *hostCommitPlan) hostPersistChange {
+	change := hostPersistChange{
 		dropMarker: plan.Name, dropReceipt: plan.Key, dropStoreSync: plan.Name,
 		hostFileFirst: true,
 	}
+	if marker, staged := m.cfg.store.stagedSnapshot()[plan.Name]; staged {
+		change.restore = m.consumedRestore(marker, plan.Name)
+	}
+	return change
+}
+
+// consumedRestore is what rolling back a staged re-add puts back: the history
+// the staging write purged to make room for it. The removal still stands, so the
+// generation and presence epoch the re-add spent stay spent.
+func (m *hubHostManager) consumedRestore(marker HostStagedReceipt, name string) *HostConsumedRecords {
+	consumed := marker.Consumed
+	if consumed == nil {
+		return nil
+	}
+	restore := *consumed
+	restore.Tombstone.Generation = max(restore.Tombstone.Generation, marker.Provisional.Generation)
+	if spent, held := m.cfg.store.highWaterSnapshot()[name]; held {
+		restore.Tombstone.Generation = max(restore.Tombstone.Generation, spent.Generation)
+		restore.Tombstone.PresenceEpoch = max(restore.Tombstone.PresenceEpoch, spent.PresenceEpoch)
+	}
+	return &restore
 }
 
 // flipRuntimeSwapped runs spec §5's step (3)'s second half: the runtime phase

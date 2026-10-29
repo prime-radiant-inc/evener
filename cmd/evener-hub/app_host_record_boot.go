@@ -465,19 +465,7 @@ func (m *hubHostManager) rollBackUnlandedCommits(doc hostRecordDocument) map[str
 			// The host was never removed: its tombstone goes with the rollback.
 			change.dropTombstone = name
 		}
-		if consumed := marker.Consumed; consumed != nil {
-			// The re-add's staging write purged the removed incarnation's
-			// history; the host change never landed, so the removal stands, and
-			// the generation the re-add spent stays spent.
-			restore := *consumed
-			restore.Tombstone.Generation = max(restore.Tombstone.Generation, marker.Provisional.Generation)
-			if spent, held := m.cfg.store.highWaterSnapshot()[name]; held {
-				// The staged re-add minted a presence epoch too; it stays spent.
-				restore.Tombstone.Generation = max(restore.Tombstone.Generation, spent.Generation)
-				restore.Tombstone.PresenceEpoch = max(restore.Tombstone.PresenceEpoch, spent.PresenceEpoch)
-			}
-			change.restore = &restore
-		}
+		change.restore = m.consumedRestore(marker, name)
 		// A name that still holds a removal tombstone is the collision rule's to
 		// settle; keeping it out of this write keeps its tombstone beside no
 		// live entry, which the records refuse.
