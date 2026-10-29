@@ -10,6 +10,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -590,6 +591,10 @@ func (c *expiredDrainTimerClock) NewTimer(d time.Duration) clock.Timer {
 func TestDrainColdYieldedDelegateDoesNotArmUnownedGraceDeadline(t *testing.T) {
 	const prompt = "COLD-DRAIN-DEADLINE-731a"
 	adapter := newMessagingAdapter(prompt)
+	returns := newActivationReturns()
+	yieldGate := make(chan struct{})
+	releaseYield := sync.OnceFunc(func() { close(yieldGate) })
+	defer releaseYield()
 	fifo, releaseOriginal := waitProducerFIFO(t)
 	defer releaseOriginal()
 	adapter.script("root",
@@ -600,20 +605,35 @@ func TestDrainColdYieldedDelegateDoesNotArmUnownedGraceDeadline(t *testing.T) {
 		args, _ := json.Marshal(map[string]any{"command": fmt.Sprintf("read value < %q", fifo), "mode": "background"})
 		return toolCallResponse(llm.ToolCallData{ID: "cold-drain-shell", Name: "shell", Type: "function", Arguments: args})
 	}, func(req llm.Request) llm.Response {
+		awaitSignal(t, yieldGate, "cold source yield release")
 		return waitResponseFor("cold-drain-wait", regexp.MustCompile(`job_[A-Za-z0-9_]{10,}`).FindString(lastToolResultText(req.Messages)))
 	}, func(llm.Request) llm.Response { return finalResponse("original-runtime-only") })
-	original := newMessagingRoot(t, adapter, func(cfg *SessionConfig) { cfg.TurnEndsProcess = true })
+	original := newMessagingRoot(t, adapter, func(cfg *SessionConfig) {
+		cfg.TurnEndsProcess = true
+		returns.configure(cfg)
+	})
+	t.Cleanup(func() { returns.close(t, original) })
 	if _, err := original.ProcessInput(context.Background(), "create yielded child", nil); err != nil {
 		t.Fatal(err)
 	}
 	child := original.subagents.sessions()[0]
 	sub := original.getSub(child.ID())
-	adapter.waitForRequests(t, prompt, 2)
-	waitForCondition(t, 3*time.Second, "cold drain child yielded", func() bool {
-		sub.mu.Lock()
-		defer sub.mu.Unlock()
-		return !sub.running
-	})
+	requests := adapter.waitForRequests(t, prompt, 2)
+	activation := returns.take(t, child.ID())
+	target := regexp.MustCompile(`job_[A-Za-z0-9_]{10,}`).FindString(lastToolResultText(requests[1].Messages))
+	releaseYield()
+	waitForTestSignal(t, activation.returned, "cold source yielded activation")
+	checkpoint, err := readWaitCheckpoint(child.TranscriptPath(), child.ID())
+	if err != nil || checkpoint == nil || checkpoint.ExecutionTurnID == "" || checkpoint.CommunicateCallID != "cold-drain-wait" || checkpoint.WaitingOn != target || checkpoint.ResumedByTurnID != "" || checkpoint.Generation != 1 || activation.lease != (delegateLease{delegateID: child.owningDelegateID, generation: 1}) {
+		t.Fatalf("cold source checkpoint=%+v activation=%+v err=%v", checkpoint, activation, err)
+	}
+	sub.mu.Lock()
+	running, done := sub.running, sub.done
+	sub.mu.Unlock()
+	if running || done != activation.generationDone {
+		t.Fatal("cold source changed generation or retained executor")
+	}
+	activationStillOpen(t, activation.generationDone)
 	if _, err := original.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 		t.Fatal(err)
 	}
@@ -624,7 +644,7 @@ func TestDrainColdYieldedDelegateDoesNotArmUnownedGraceDeadline(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Isolate the copied open generation from every original producer callback.
-	original.Close()
+	returns.close(t, original)
 	releaseOriginal()
 	beforeRequests := len(adapter.requestsFor(prompt))
 	clockStart := time.Now()

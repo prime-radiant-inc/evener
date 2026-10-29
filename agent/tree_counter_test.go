@@ -171,7 +171,7 @@ func TestDriveAtCapacityDoesNotLaunchOrSettle(t *testing.T) {
 	c.mu.Unlock()
 	c.recheckNotificationReceivers()
 	a.waitForRequests(t, "CAPACITY-85", 2)
-	waitForLeasedDriveCount(t, c, 1)
+	assertLeasedDriveCount(t, c, 1)
 	assertNotificationPending(t, receiver, []string{id})
 	fold = rootAttentionFold(t, receiver)
 	if len(fold.observed) != 0 {
@@ -380,15 +380,19 @@ func TestDriveBudgetIndependentOfSpawnBudget(t *testing.T) {
 // and releases it at turn end.
 func TestDriveTurnReservesFromDriveCounter(t *testing.T) {
 	t.Parallel()
-	release := make(chan struct{})
-	var releaseOnce sync.Once
+	entered, gate := make(chan struct{}), make(chan struct{})
+	release := sync.OnceFunc(func() { close(gate) })
+	defer release()
+	returns := newActivationReturns()
 	fixture := newColdStableDelegateFixture(t, "")
 	fixture.adapter.steps = []func(llm.Request) llm.Response{func(llm.Request) llm.Response {
-		<-release
+		close(entered)
+		<-gate
 		return finalResponse("drive-result-71af")
 	}}
 	root := restoreSupervisionRoot(t, fixture, nil)
-	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+	returns.configure(&root.cfg)
+	t.Cleanup(func() { returns.close(t, root) })
 	root.delegateController.mu.Lock()
 	root.delegateController.turnLimit = 1
 	if !root.delegateController.reserveCapacityLocked(delegateTurnCapacity) {
@@ -398,15 +402,19 @@ func TestDriveTurnReservesFromDriveCounter(t *testing.T) {
 	if err := root.delegateController.enqueueNotification(fixture.childID, notification{ID: "drive-budget-71af", Message: llm.User("drive-budget-body-71af")}); err != nil {
 		t.Fatal(err)
 	}
-	waitForLeasedDriveCount(t, root.delegateController, 1)
+	waitForTestSignal(t, entered, "drive provider entry with return held")
+	activation := returns.take(t, fixture.childID)
+	assertLeasedDriveCount(t, root.delegateController, 1)
 	root.delegateController.mu.Lock()
 	got := root.delegateController.turnsInUse
 	root.delegateController.mu.Unlock()
 	if got != 1 {
 		t.Fatalf("spawn budget moved to %d during notification, want pinned 1", got)
 	}
-	releaseOnce.Do(func() { close(release) })
-	waitForLeasedDriveCount(t, root.delegateController, 0)
+	release()
+	waitForTestSignal(t, activation.generationDone, "drive terminal generation")
+	waitForTestSignal(t, activation.returned, "drive executor tail")
+	assertLeasedDriveCount(t, root.delegateController, 0)
 }
 
 // firstCompleteThenBlockAdapter completes the first request (the coordinator's
@@ -414,8 +422,13 @@ func TestDriveTurnReservesFromDriveCounter(t *testing.T) {
 // context is done, modeling a hung provider call that only a context cancel
 // can interrupt.
 type firstCompleteThenBlockAdapter struct {
-	mu sync.Mutex
-	i  int
+	mu                  sync.Mutex
+	i                   int
+	entered, returnGate chan struct{}
+	result              struct {
+		err  error
+		done chan struct{}
+	}
 }
 
 func (a *firstCompleteThenBlockAdapter) Name() string { return "openai" }
@@ -430,8 +443,13 @@ func (a *firstCompleteThenBlockAdapter) Complete(ctx context.Context, req llm.Re
 		resp.Model = req.Model
 		return resp, nil
 	}
+	close(a.entered)
+	// Keep the reservation observable even if the real deadline has expired.
+	<-a.returnGate
 	<-ctx.Done()
-	return llm.Response{}, ctx.Err()
+	a.result.err = ctx.Err()
+	close(a.result.done)
+	return llm.Response{}, a.result.err
 }
 func (a *firstCompleteThenBlockAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
 	return nil, llm.ErrStreamUnsupported
@@ -445,16 +463,36 @@ func TestDriveTurnTimeoutFreesSlot(t *testing.T) {
 	driveTurnTimeout = 100 * time.Millisecond
 	t.Cleanup(func() { driveTurnTimeout = old })
 	fixture := newColdStableDelegateFixture(t, "")
-	adapter := &firstCompleteThenBlockAdapter{}
+	adapter := &firstCompleteThenBlockAdapter{entered: make(chan struct{}), returnGate: make(chan struct{})}
+	adapter.result.done = make(chan struct{})
+	release := sync.OnceFunc(func() { close(adapter.returnGate) })
+	defer release()
 	fixture.client.Register(adapter)
 	root := restoreSupervisionRoot(t, fixture, nil)
+	returns := newActivationReturns()
+	returns.configure(&root.cfg)
+	t.Cleanup(func() { returns.close(t, root) })
 	warmStableSupervisionDelegate(t, root, fixture)
-	waitForStableSupervisionRun(t, root, fixture.childID)
+	warm := returns.take(t, fixture.childID)
+	waitForTestSignal(t, warm.generationDone, "warm generation")
+	waitForTestSignal(t, warm.returned, "warm executor tail")
 	if err := root.delegateController.enqueueNotification(fixture.childID, notification{ID: "drive-deadline-71af", Message: llm.User("drive-deadline-body-71af")}); err != nil {
 		t.Fatal(err)
 	}
-	waitForLeasedDriveCount(t, root.delegateController, 1)
-	waitForLeasedDriveCount(t, root.delegateController, 0)
+	waitForTestSignal(t, adapter.entered, "deadline drive provider entry")
+	activation := returns.take(t, fixture.childID)
+	if activation.lease != (delegateLease{delegateID: fixture.delegateID, generation: warm.lease.generation + 1}) || activation.generationDone == warm.generationDone {
+		t.Fatalf("deadline activation=%+v warm=%+v", activation, warm)
+	}
+	assertLeasedDriveCount(t, root.delegateController, 1)
+	release()
+	waitForTestSignal(t, adapter.result.done, "actual drive context expiry")
+	if !errors.Is(adapter.result.err, context.DeadlineExceeded) {
+		t.Fatalf("drive provider error=%v, want real deadline expiry", adapter.result.err)
+	}
+	waitForTestSignal(t, activation.generationDone, "deadline drive terminal generation")
+	waitForTestSignal(t, activation.returned, "deadline drive executor tail")
+	assertLeasedDriveCount(t, root.delegateController, 0)
 }
 
 // The removed unleased redrive's pacing guarantee belongs to common readiness.
@@ -484,12 +522,13 @@ func TestNotificationRetryPacesCommonDispatch(t *testing.T) {
 	}
 }
 
-// waitForLeasedDriveCount samples the capacity owner used by ReserveAttention.
-func waitForLeasedDriveCount(t *testing.T, c *delegateTreeController, want int) {
+// assertLeasedDriveCount follows held provider entry or exact executor return.
+func assertLeasedDriveCount(t *testing.T, c *delegateTreeController, want int) {
 	t.Helper()
-	waitForCondition(t, 5*time.Second, "leased notification capacity", func() bool {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		return c.drivesInUse == want
-	})
+	c.mu.Lock()
+	got := c.drivesInUse
+	c.mu.Unlock()
+	if got != want {
+		t.Fatalf("leased notification capacity=%d, want %d", got, want)
+	}
 }

@@ -15,6 +15,7 @@ import (
 
 	"github.com/spf13/afero"
 
+	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	toolpkg "primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
@@ -30,43 +31,38 @@ func isDelegateUpdateAttentionID(attentionID string) bool {
 	return ok && delegatestore.IsUpdateDeliveryID(deliveryID)
 }
 
-func waitForDelegateTestCustody(t *testing.T, s *Session, payload string) string {
+// Call only after the sender's tool result or exact terminal executor return.
+func assertDelegateTestCustody(t *testing.T, s *Session, payload string) string {
 	t.Helper()
 	var id string
-	waitForCondition(t, 30*time.Second, "exact canonical custody of "+payload, func() bool {
-		data, err := readTranscriptFull(s.TranscriptPath(), "")
-		if err != nil {
-			t.Fatal(err)
+	data, err := readTranscriptFull(s.TranscriptPath(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted := 0
+	for _, entry := range data.Entries {
+		if entry.Turn.AttentionID != "" && strings.Contains(entry.Turn.Message.Text(), payload) {
+			id = entry.Turn.AttentionID
+			accepted++
 		}
-		accepted := 0
-		for _, entry := range data.Entries {
-			if entry.Turn.AttentionID != "" && strings.Contains(entry.Turn.Message.Text(), payload) {
-				id = entry.Turn.AttentionID
-				accepted++
-			}
+	}
+	if accepted != 1 {
+		t.Fatalf("payload %s accepted %d times", payload, accepted)
+	}
+	for _, entry := range data.Entries {
+		if slices.Contains(entry.Turn.ObservedNotificationIDs, id) || (entry.Turn.AttentionResolution != nil && entry.Turn.AttentionResolution.AttentionID == id) {
+			t.Fatalf("notification %s observed before designated successful response", id)
 		}
-		if accepted == 0 {
-			return false
-		}
-		if accepted != 1 {
-			t.Fatalf("payload %s accepted %d times", payload, accepted)
-		}
-		for _, entry := range data.Entries {
-			if slices.Contains(entry.Turn.ObservedNotificationIDs, id) || (entry.Turn.AttentionResolution != nil && entry.Turn.AttentionResolution.AttentionID == id) {
-				t.Fatalf("notification %s observed before designated successful response", id)
-			}
-		}
-		return true
-	})
+	}
 	return id
 }
 
 func assertDelegateTestObservation(t *testing.T, receiver, source *Session, id string) {
 	t.Helper()
-	waitForCondition(t, 30*time.Second, "one consumed transition for "+id, func() bool {
-		fold, err := readDelegateAttentionFold(receiver.TranscriptPath(), receiver.ID())
-		return err == nil && fold.resolutions[id] == delegateAttentionConsumed
-	})
+	fold, err := readDelegateAttentionFold(receiver.TranscriptPath(), receiver.ID())
+	if err != nil || fold.resolutions[id] != delegateAttentionConsumed {
+		t.Fatalf("input=%s consumed disposition=%v err=%v", id, fold.resolutions[id], err)
+	}
 	incidentNotificationFacts(t, receiver.stateDir, receiver.ID(), id)
 	data, err := readTranscriptFull(receiver.TranscriptPath(), "")
 	if err != nil {
@@ -260,38 +256,47 @@ func finishUpdateRoot(ctx context.Context, t *testing.T, root *Session, a *messa
 
 // Wait for the completed activation, not provider arrival or SessionIdle alone.
 // The real yielded binding releases capacity while retaining generation one.
-func awaitUpdateYield(t *testing.T, root, owner *Session, call, child string) {
+func assertUpdateResume(t *testing.T, previous, resumed *activationReturn) {
 	t.Helper()
+	if previous == resumed || previous.sessionID != resumed.sessionID || previous.delegateID != resumed.delegateID || previous.lease != resumed.lease || previous.generationDone != resumed.generationDone {
+		t.Fatalf("update resume changed generation or reused activation: previous=%+v resumed=%+v", previous, resumed)
+	}
+}
+
+func awaitUpdateYield(t *testing.T, root, owner *Session, activation *activationReturn, call, child string) {
+	t.Helper()
+	waitForTestSignal(t, activation.returned, "yielded update activation "+call)
 	sub, c := root.getSub(owner.ID()), root.delegateController
-	waitForCondition(t, 30*time.Second, "safe yielded activation "+call, func() bool {
-		checkpoint, err := readWaitCheckpoint(owner.TranscriptPath(), owner.ID())
-		if err != nil || checkpoint == nil || checkpoint.CommunicateCallID != call || checkpoint.WaitingOn != child || checkpoint.ResumedByTurnID != "" || checkpoint.Generation != 1 {
-			return false
-		}
-		sub.mu.Lock()
-		released := !sub.running && !sub.driving && !sub.finalizing
-		sub.mu.Unlock()
-		c.mu.Lock()
-		run, live := c.durable[owner.owningDelegateID], c.live[owner.owningDelegateID]
-		yielded := run != nil && run.CurrentRunOpen && run.Generation == 1 && live != nil && live.binding != nil && live.binding.yielded
-		worker := c.durable[child]
-		stillLive := worker != nil && worker.CurrentRunOpen
-		c.mu.Unlock()
-		state := owner.notificationExecutionState()
-		owner.attentionMu.Lock()
-		callbacksDone := owner.attentionCallbacks == 0
-		owner.attentionMu.Unlock()
-		writerHealthy := owner.attachedTranscript().WhileHealthy(func() {}) == nil
-		return released && yielded && stillLive && !state.running && !state.recovering && callbacksDone && writerHealthy
-	})
+	checkpoint, err := readWaitCheckpoint(owner.TranscriptPath(), owner.ID())
+	if err != nil || checkpoint == nil || checkpoint.ExecutionTurnID == "" || checkpoint.CommunicateCallID != call || checkpoint.WaitingOn != child || checkpoint.ResumedByTurnID != "" || checkpoint.Generation != 1 || checkpoint.SessionID != owner.ID() || checkpoint.DelegateID != owner.owningDelegateID {
+		t.Fatalf("yield checkpoint=%+v err=%v", checkpoint, err)
+	}
+	if activation.sessionID != owner.ID() || activation.delegateID != owner.owningDelegateID || activation.lease != (delegateLease{delegateID: owner.owningDelegateID, generation: 1}) {
+		t.Fatalf("wrong yielded activation=%+v", activation)
+	}
+	sub.mu.Lock()
+	released := !sub.running && !sub.driving && !sub.finalizing
+	sameDone := sub.done == activation.generationDone
+	sub.mu.Unlock()
+	activationStillOpen(t, activation.generationDone)
+	c.mu.Lock()
+	run, live := c.durable[owner.owningDelegateID], c.live[owner.owningDelegateID]
+	yielded := run != nil && run.CurrentRunOpen && run.Generation == 1 && live != nil && live.binding != nil && live.binding.yielded && live.binding.lease == activation.lease
+	worker := c.durable[child]
+	stillLive := worker != nil && worker.CurrentRunOpen
+	c.mu.Unlock()
+	state := owner.notificationExecutionState()
+	owner.attentionMu.Lock()
+	callbacksDone := owner.attentionCallbacks == 0
+	owner.attentionMu.Unlock()
+	writerHealthy := owner.attachedTranscript().WhileHealthy(func() {}) == nil
+	if !released || !sameDone || !yielded || !stillLive || state.running || state.recovering || !callbacksDone || !writerHealthy {
+		t.Fatalf("unsafe yield %s: released=%t sameDone=%t yielded=%t childLive=%t execution=%+v callbacksDone=%t writerHealthy=%t", call, released, sameDone, yielded, stillLive, state, callbacksDone, writerHealthy)
+	}
 	for _, event := range publicationEvents(t, root) {
 		if event.DelegateID == owner.owningDelegateID && event.RunFinished != nil {
 			t.Fatal("coordinator published terminal report with gated child live")
 		}
-	}
-	checkpoint, err := readWaitCheckpoint(owner.TranscriptPath(), owner.ID())
-	if err != nil {
-		t.Fatal(err)
 	}
 	data, err := readTranscriptFull(owner.TranscriptPath(), "")
 	if err != nil {
@@ -358,13 +363,139 @@ type updateSyncRecord struct {
 	Failed       bool
 }
 
+type updateSyncFailure struct {
+	record updateSyncRecord
+	done   chan struct{}
+}
+
+// Retain the real fault fixture's scheduled callbacks, not just the earlier
+// executor return. AfterFunc keeps its original clock, delay and callback.
+type updateSyncRetryClock struct {
+	clock.Clock
+	mu        sync.Mutex
+	owner     *Session
+	idleArmed chan struct{}
+	callbacks []*updateSyncRetryTimer
+}
+
+// These AfterFunc handles are never Reset by the retry or idle-release paths.
+// A successful Stop prevents execution, while false also means already stopped.
+type updateSyncRetryTimer struct {
+	clock.Timer
+	delay   time.Duration
+	done    chan struct{}
+	stopped bool // Written only by the successful Stop, read after done.
+}
+
+func (timer *updateSyncRetryTimer) Stop() bool {
+	stopped := timer.Timer.Stop()
+	if stopped {
+		timer.stopped = true
+		close(timer.done)
+	}
+	return stopped
+}
+
+func (c *updateSyncRetryClock) AfterFunc(delay time.Duration, f func()) clock.Timer {
+	timer := &updateSyncRetryTimer{delay: delay, done: make(chan struct{})}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	timer.Timer = c.Clock.AfterFunc(delay, func() {
+		defer close(timer.done)
+		f()
+	})
+	c.callbacks = append(c.callbacks, timer)
+	if delay == delegateIdleReleaseDelayDefault && c.idleArmed != nil {
+		close(c.idleArmed)
+		c.idleArmed = nil
+	}
+	return timer
+}
+
+// The executor is joined first. Each callback can schedule its own successor
+// before it returns, so joining the captured callback also admits that next join.
+func (c *updateSyncRetryClock) join(t *testing.T, stop bool) {
+	t.Helper()
+	for i := 0; ; i++ {
+		c.mu.Lock()
+		if i == len(c.callbacks) {
+			c.mu.Unlock()
+			return
+		}
+		callback := c.callbacks[i]
+		c.mu.Unlock()
+		if stop {
+			callback.Stop()
+		}
+		waitForTestSignal(t, callback.done, "actual marker callback return or successful timer Stop")
+	}
+}
+
+// Normal callers hold the yielded coordinator and report providers. Cleanup
+// callers first close/join the root and activation tails, stopping admission.
+// In both cases all callbacks, including their successors, precede restoration.
+func (c *updateSyncRetryClock) restore(t *testing.T, stop bool) {
+	t.Helper()
+	c.join(t, stop)
+	if c.owner != nil {
+		c.owner.clock = c.Clock
+	}
+}
+
+func TestUpdateSyncRetryClockTracksExecutingCallback(t *testing.T) {
+	t.Parallel()
+	c := &updateSyncRetryClock{Clock: clock.Real()}
+	entered, gate, successor := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	release := sync.OnceFunc(func() { close(gate) })
+	t.Cleanup(func() {
+		release()
+		c.join(t, true)
+	})
+	timer := c.AfterFunc(0, func() {
+		close(entered)
+		<-gate
+		c.AfterFunc(0, func() { close(successor) })
+	}).(*updateSyncRetryTimer)
+	waitForTestSignal(t, entered, "actual real-clock callback entry")
+	if timer.Stop() {
+		t.Fatal("Stop prevented a callback that already entered")
+	}
+	select {
+	case <-timer.done:
+		t.Fatal("false Stop claimed that the held executing callback completed")
+	default:
+	}
+	release()
+	c.join(t, false)
+	if len(c.callbacks) != 2 {
+		t.Fatalf("actual callback chain has %d timers, want two", len(c.callbacks))
+	}
+	for _, callback := range c.callbacks {
+		select {
+		case <-callback.done:
+			if callback.stopped {
+				t.Error("executed callback was recorded as successfully stopped")
+			}
+		default:
+			t.Error("actual callback or successor return was not joined")
+		}
+	}
+	select {
+	case <-successor:
+	default:
+		t.Fatal("actual callback successor did not execute")
+	}
+}
+
 // Audit the actual file boundary around the existing resolution-only fault.
 // No session/controller path is replaced. A readable receipt alone is not
 // evidence that its sync succeeded, so keep both writes and sync outcomes.
 type updateSyncFS struct {
 	*rootAttentionResolutionFailFS
-	traceMu sync.Mutex
-	records []updateSyncRecord
+	traceMu  sync.Mutex
+	records  []updateSyncRecord
+	failures []*updateSyncFailure
+	failed   int
 }
 
 type updateSyncFile struct {
@@ -400,15 +531,28 @@ func (f *updateSyncFile) Sync() error {
 	for _, record := range f.pending {
 		record.Failed = err != nil
 		f.fs.records = append(f.fs.records, record)
+		if record.Failed && record.ResolutionID != "" {
+			failure := f.fs.failures[f.fs.failed]
+			f.fs.failed++
+			failure.record = record
+			close(failure.done)
+		}
 	}
 	f.fs.traceMu.Unlock()
 	f.pending = nil
 	return err
 }
 
-func installUpdateSyncFault(t *testing.T, s *Session, failures int) *updateSyncFS {
+func installUpdateSyncFault(t *testing.T, s *Session, failures int, retries *updateSyncRetryClock) *updateSyncFS {
 	t.Helper()
+	// Called only after the initial exact yielded activation, before the update.
+	retries.Clock = s.sclock()
+	retries.owner = s
+	s.clock = retries
 	fs := &updateSyncFS{rootAttentionResolutionFailFS: &rootAttentionResolutionFailFS{Fs: afero.NewOsFs(), failures: failures}}
+	for range failures {
+		fs.failures = append(fs.failures, &updateSyncFailure{done: make(chan struct{})})
+	}
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
 	old := s.attachedTranscript()
@@ -433,6 +577,16 @@ func installUpdateSyncFault(t *testing.T, s *Session, failures int) *updateSyncF
 		}
 	})
 	return fs
+}
+
+func awaitUpdateSyncFailures(t *testing.T, fs *updateSyncFS, id string) {
+	t.Helper()
+	for i, failure := range fs.failures {
+		waitForTestSignal(t, failure.done, fmt.Sprintf("actual failed resolution Sync %d", i+1))
+		if !failure.record.Failed || failure.record.ResolutionID != id || failure.record.ResponseID != "" {
+			t.Fatalf("failed Sync %d=%+v, want resolution %s", i+1, failure.record, id)
+		}
+	}
 }
 
 func assertUpdateSyncFault(t *testing.T, fs *updateSyncFS, id, responseID string, failures int, expected ...string) {
@@ -818,25 +972,41 @@ func TestDelegateUpdateReachesARunningRootAtItsNextModelBoundary(t *testing.T) {
 		updateGate(update, updateReply(updateResponse("upd", "RUNNING_UPDATE"))),
 		updateGate(report, updateReply(finalResponse("WORKER_REPORT"))),
 	)
-	root := newMessagingRoot(t, a, nil)
+	returns := newActivationReturns()
+	root := newMessagingRoot(t, a, returns.configure)
+	t.Cleanup(func() { returns.close(t, root) })
 	traceUpdateFixture(t, root, a)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	finished := make(chan error, 1)
-	go func() { _, err := root.ProcessInput(ctx, "start", nil); finished <- err }()
+	result := struct {
+		response string
+		err      error
+		done     chan struct{}
+	}{done: make(chan struct{})}
+	t.Cleanup(func() {
+		cancel()
+		waitForTestSignal(t, result.done, "running root input cleanup")
+	})
+	go func() {
+		result.response, result.err = root.ProcessInput(ctx, "start", nil)
+		close(result.done)
+	}()
 	a.waitForRequests(t, "root", 2)
 	releaseUpdate()
-	id := waitForDelegateTestCustody(t, root, "RUNNING_UPDATE")
+	workerRequests := a.waitForRequests(t, "WORKER-BRIEF", 2)
+	workerActivation := returns.take(t, workerRequests[1].SessionID)
+	id := assertDelegateTestCustody(t, root, "RUNNING_UPDATE")
 	releaseBoundary()
-	if err := <-finished; err != nil {
-		t.Fatal(err)
+	waitForTestSignal(t, result.done, "designated root response")
+	if result.err != nil {
+		t.Fatal(result.err)
 	}
 	assertDelegateTestObservation(t, root, root, id)
 	releaseReport()
 	child := root.subagents.sessions()[0]
 	assertUpdateSource(t, root, child.owningDelegateID, "RUNNING_UPDATE", id)
-	waitForStableSupervisionRun(t, root, child.ID())
-	waitForRootAttention(t, root, 1)
+	waitForTestSignal(t, workerActivation.generationDone, "worker report generation")
+	waitForTestSignal(t, workerActivation.returned, "worker report executor tail")
 	if _, err := root.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
 		t.Fatal(err)
 	}
@@ -852,6 +1022,12 @@ func TestDelegateSendWaitCarriesAnUpdateAheadOfTheReport(t *testing.T) {
 	t.Parallel()
 	adapter := newMessagingAdapter("WORKER-BRIEF")
 	releaseFirst := make(chan struct{})
+	firstSettled := make(chan struct{})
+	releaseWorker := sync.OnceFunc(func() { close(releaseFirst) })
+	releaseSender := sync.OnceFunc(func() { close(firstSettled) })
+	defer releaseWorker()
+	defer releaseSender()
+	returns := newActivationReturns()
 	sendReply, nextRequest, updateResult := make(chan string, 1), make(chan string, 1), make(chan string, 1)
 	var (
 		mu         sync.Mutex
@@ -863,16 +1039,8 @@ func TestDelegateSendWaitCarriesAnUpdateAheadOfTheReport(t *testing.T) {
 			return delegateToolResponse("create", "WORKER-BRIEF: answer when asked.")
 		},
 		func(req llm.Request) llm.Response {
-			close(releaseFirst)
 			id := deferredHeadDelegateID.FindString(deferredHeadToolResults(req.Messages))
-			waitForCondition(t, 30*time.Second, "first generation canonical custody and source settlement", func() bool {
-				c := root.delegateController
-				c.mu.Lock()
-				a := c.durable[id]
-				settled := a != nil && !a.CurrentRunOpen && len(a.PendingDeliveries) == 0 && c.finalizingLocked(id) == nil
-				c.mu.Unlock()
-				return settled && slices.Contains(rootAttentionFold(t, root).order, delegateAttentionID(delegateDeliveryID(id, 1)))
-			})
+			awaitSignal(t, firstSettled, "first generation exact terminal return and custody")
 			mu.Lock()
 			delegateID = id
 			mu.Unlock()
@@ -903,12 +1071,45 @@ func TestDelegateSendWaitCarriesAnUpdateAheadOfTheReport(t *testing.T) {
 			return finalResponse("GEN2_REPORT")
 		},
 	)
-	root = newMessagingRoot(t, adapter, nil)
+	root = newMessagingRoot(t, adapter, returns.configure)
+	t.Cleanup(func() { returns.close(t, root) })
 	// TRIPWIRE: half the send's wait; a send that sits out its wait fails here.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if _, err := root.ProcessInput(ctx, "start", nil); err != nil {
-		t.Fatalf("ProcessInput: %v", err)
+	result := struct {
+		err  error
+		done chan struct{}
+	}{done: make(chan struct{})}
+	t.Cleanup(func() {
+		cancel()
+		waitForTestSignal(t, result.done, "send-wait root input cleanup")
+	})
+	go func() {
+		_, result.err = root.ProcessInput(ctx, "start", nil)
+		close(result.done)
+	}()
+	requests := adapter.waitForRequests(t, "root", 2)
+	firstID := deferredHeadDelegateID.FindString(deferredHeadToolResults(requests[1].Messages))
+	workerRequests := adapter.waitForRequests(t, "WORKER-BRIEF", 1)
+	firstActivation := returns.take(t, workerRequests[0].SessionID)
+	if firstActivation.lease != (delegateLease{delegateID: firstID, generation: 1}) {
+		t.Fatalf("first send-wait activation=%+v, want %s generation1", firstActivation, firstID)
+	}
+	releaseWorker()
+	waitForTestSignal(t, firstActivation.generationDone, "send-wait first terminal generation")
+	waitForTestSignal(t, firstActivation.returned, "send-wait first terminal executor tail")
+	c := root.delegateController
+	c.mu.Lock()
+	firstRun := c.durable[firstID]
+	settled := firstRun != nil && !firstRun.CurrentRunOpen && len(firstRun.PendingDeliveries) == 0 && c.finalizingLocked(firstID) == nil
+	c.mu.Unlock()
+	if !settled || assertDelegateTestCustody(t, root, "GEN1_READY") != delegateAttentionID(delegateDeliveryID(firstID, 1)) {
+		t.Fatal("first generation did not settle with exact canonical custody")
+	}
+	releaseSender()
+	waitForTestSignal(t, result.done, "send-wait root input response")
+	if result.err != nil {
+		t.Fatalf("ProcessInput: %v", result.err)
 	}
 	reply := <-sendReply
 	first, update, report := strings.Index(reply, "GEN1_READY"), strings.Index(reply, "UPDATE_ONE"), strings.Index(reply, "GEN2_REPORT")
@@ -1134,10 +1335,12 @@ func singleCoordinatorUpdate(t *testing.T, mode string) {
 	}
 	a.finiteScript("COORD-BRIEF", updateGate(finish, updateReply(finalResponse("COORD_FINAL"))))
 	a.finiteScript("WORKER-BRIEF", updateGate(update, updateReply(updateResponse("upd", "PARENT_UPDATE"))), updateGate(report, updateReply(finalResponse("WORKER_REPORT"))))
-	root := newMessagingRoot(t, a, nil)
+	returns := newActivationReturns()
+	root := newMessagingRoot(t, a, returns.configure)
+	t.Cleanup(func() { returns.close(t, root) })
 	traceUpdateFixture(t, root, a)
 	serveSupervisionRootWakes(t, root)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if _, err := root.ProcessInput(ctx, "start", nil); err != nil {
 		t.Fatal(err)
@@ -1146,22 +1349,30 @@ func singleCoordinatorUpdate(t *testing.T, mode string) {
 	reqs := a.waitForRequests(t, "COORD-BRIEF", 2)
 	coord := root.getSub(reqs[1].SessionID).sess
 	target := updateChildID(reqs[1])
+	initial := returns.take(t, coord.ID())
+	observed := initial
 	if mode != "running" {
 		releaseBoundary()
-		awaitUpdateYield(t, root, coord, "wait-initial", target)
+		awaitUpdateYield(t, root, coord, initial, "wait-initial", target)
 	}
 	releaseUpdate()
+	workerRequests := a.waitForRequests(t, "WORKER-BRIEF", 2)
+	workerActivation := returns.take(t, workerRequests[1].SessionID)
 	// Running mode holds request two, idle mode holds request three. Both prove
 	// custody without any earlier successful response crediting U.
-	id := waitForDelegateTestCustody(t, coord, "PARENT_UPDATE")
+	id := assertDelegateTestCustody(t, coord, "PARENT_UPDATE")
 	assertUpdateSource(t, root, target, "PARENT_UPDATE", id)
 	releaseBoundary()
 	a.waitForRequests(t, "COORD-BRIEF", 3)
+	if mode != "running" {
+		observed = returns.take(t, coord.ID())
+		assertUpdateResume(t, initial, observed)
+	}
 	releaseObservation()
 	var relayID string
 	if mode == "relay" {
 		a.waitForRequests(t, "COORD-BRIEF", 4)
-		relayID = waitForDelegateTestCustody(t, root, "COORD_RELAY")
+		relayID = assertDelegateTestCustody(t, root, "COORD_RELAY")
 		assertUpdateSource(t, root, coord.owningDelegateID, "COORD_RELAY", relayID)
 		req := a.requestsFor("COORD-BRIEF")[3]
 		var result struct {
@@ -1173,7 +1384,7 @@ func singleCoordinatorUpdate(t *testing.T, mode string) {
 		}
 		releaseRelay()
 	}
-	awaitUpdateYield(t, root, coord, "wait-observed", target)
+	awaitUpdateYield(t, root, coord, observed, "wait-observed", target)
 	assertDelegateTestObservation(t, coord, root, id)
 	assertUpdateEmptyWakes(t, coord)
 	sets := [][]string{nil, nil, {"PARENT_UPDATE"}}
@@ -1183,10 +1394,14 @@ func singleCoordinatorUpdate(t *testing.T, mode string) {
 	assertUpdateRequests(t, a, "COORD-BRIEF", coord, sets...)
 	releaseReport()
 	worker := coord.subagents.sessions()[0]
-	waitForStableSupervisionRun(t, coord, worker.ID())
+	waitForTestSignal(t, workerActivation.generationDone, "worker report generation")
+	waitForTestSignal(t, workerActivation.returned, "worker report executor tail")
 	a.waitForRequests(t, "COORD-BRIEF", len(sets)+1)
+	terminal := returns.take(t, coord.ID())
+	assertUpdateResume(t, observed, terminal)
 	releaseFinish()
-	waitForStableSupervisionRun(t, root, coord.ID())
+	waitForTestSignal(t, terminal.generationDone, "coordinator terminal generation")
+	waitForTestSignal(t, terminal.returned, "coordinator terminal executor tail")
 	sets = append(sets, []string{"PARENT_UPDATE", "WORKER_REPORT"})
 	assertUpdateRequests(t, a, "COORD-BRIEF", coord, sets...)
 	assertUpdateRequests(t, a, "WORKER-BRIEF", worker, nil, nil)
@@ -1234,19 +1449,53 @@ func TestNotificationReportWakesDrainingParent(t *testing.T) {
 // already saw.
 func TestDelegateUpdateConsumedMarkerFailureDoesNotRerunTheTurn(t *testing.T) {
 	t.Parallel()
-	drainingCoordinatorWithObservedReport(t, 1)
+	drainingCoordinatorWithObservedReport(t, 1, nil)
 }
 
 // A failed marker retry leaves repair work, not unobserved model input. The
 // coordinator keeps its healthy worker and never reruns the observed update.
 func TestDelegateUpdateConsumedMarkerRetryFailureKeepsTheCoordinatorRunning(t *testing.T) {
 	t.Parallel()
-	drainingCoordinatorWithObservedReport(t, 2)
+	drainingCoordinatorWithObservedReport(t, 2, nil)
+}
+
+// Return from the actual fault window without its normal-path restoration.
+// Subtest cleanup must stop/join the real runtime before restoring its clock.
+func TestDelegateUpdateMarkerFaultEarlyExitCleanup(t *testing.T) {
+	t.Parallel()
+	early := &updateSyncEarlyExit{idleArmed: make(chan struct{})}
+	t.Run("after-observed-executor", func(t *testing.T) {
+		drainingCoordinatorWithObservedReport(t, 1, early)
+		waitForTestSignal(t, early.idleArmed, "actual terminal idle timer arm after early fixture return")
+	})
+	if early.coordinator.clock != early.retries.Clock {
+		t.Error("early-exit cleanup did not restore the original clock")
+	}
+	stoppedIdleTimers := 0
+	for _, callback := range early.retries.callbacks {
+		select {
+		case <-callback.done:
+			if callback.delay == delegateIdleReleaseDelayDefault && callback.stopped {
+				stoppedIdleTimers++
+			}
+		default:
+			t.Error("early-exit cleanup left a stopped or executing callback unjoined")
+		}
+	}
+	if stoppedIdleTimers == 0 {
+		t.Fatal("early-exit control did not exercise an actual stopped terminal idle timer")
+	}
+}
+
+type updateSyncEarlyExit struct {
+	idleArmed   chan struct{}
+	coordinator *Session
+	retries     *updateSyncRetryClock
 }
 
 // A's report is observed before yielding on B. B's update resumes the same
 // generation, with A retained in history. Only its derived marker syncs fail.
-func drainingCoordinatorWithObservedReport(t *testing.T, failedMarkerWrites int) {
+func drainingCoordinatorWithObservedReport(t *testing.T, failedMarkerWrites int, early *updateSyncEarlyExit) {
 	t.Helper()
 	a := finiteUpdateAdapter(t, "COORD-BRIEF", "WORKER-A", "WORKER-B")
 	rootReady := make(chan struct{})
@@ -1276,10 +1525,19 @@ func drainingCoordinatorWithObservedReport(t *testing.T, failedMarkerWrites int)
 	)
 	a.finiteScript("WORKER-A", updateGate(first, updateReply(finalResponse("SIBLING_REPORT"))))
 	a.finiteScript("WORKER-B", updateGate(update, updateReply(updateResponse("upd", "SIBLING_UPDATE"))), updateGate(report, updateReply(finalResponse("B_REPORT"))))
-	root := newMessagingRoot(t, a, nil)
+	returns := newActivationReturns()
+	retries := &updateSyncRetryClock{}
+	if early != nil {
+		retries.idleArmed = early.idleArmed
+	}
+	root := newMessagingRoot(t, a, returns.configure)
+	t.Cleanup(func() {
+		returns.close(t, root)
+		retries.restore(t, true)
+	})
 	traceUpdateFixture(t, root, a)
 	serveSupervisionRootWakes(t, root)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if _, err := root.ProcessInput(ctx, "start", nil); err != nil {
 		t.Fatal(err)
@@ -1287,36 +1545,51 @@ func drainingCoordinatorWithObservedReport(t *testing.T, failedMarkerWrites int)
 	releaseRoot()
 	reqs := a.waitForRequests(t, "COORD-BRIEF", 2)
 	coord := root.getSub(reqs[1].SessionID).sess
+	initial := returns.take(t, coord.ID())
+	workerARequests := a.waitForRequests(t, "WORKER-A", 1)
+	workerAActivation := returns.take(t, workerARequests[0].SessionID)
 	releaseFirst()
-	firstID := waitForDelegateTestCustody(t, coord, "SIBLING_REPORT")
+	waitForTestSignal(t, workerAActivation.generationDone, "first sibling terminal generation")
+	waitForTestSignal(t, workerAActivation.returned, "first sibling terminal executor tail")
+	firstID := assertDelegateTestCustody(t, coord, "SIBLING_REPORT")
 	releaseBoundary()
 	a.waitForRequests(t, "COORD-BRIEF", 3)
 	target := updateChildID(a.requestsFor("COORD-BRIEF")[2])
-	awaitUpdateYield(t, root, coord, "wait-initial", target)
+	awaitUpdateYield(t, root, coord, initial, "wait-initial", target)
 	assertDelegateTestObservation(t, coord, root, firstID)
-	faults := installUpdateSyncFault(t, coord, failedMarkerWrites)
+	faults := installUpdateSyncFault(t, coord, failedMarkerWrites, retries)
 	releaseUpdate()
 	a.waitForRequests(t, "COORD-BRIEF", 4)
-	updateID := waitForDelegateTestCustody(t, coord, "SIBLING_UPDATE")
+	observed := returns.take(t, coord.ID())
+	assertUpdateResume(t, initial, observed)
+	workerRequests := a.waitForRequests(t, "WORKER-B", 2)
+	workerActivation := returns.take(t, workerRequests[1].SessionID)
+	updateID := assertDelegateTestCustody(t, coord, "SIBLING_UPDATE")
 	assertUpdateSource(t, root, target, "SIBLING_UPDATE", updateID)
 	releaseObservation()
-	waitForCondition(t, 30*time.Second, "intended update marker sync faults", func() bool { return faults.injectedFailures() == failedMarkerWrites })
-	awaitUpdateYield(t, root, coord, "wait-observed", workerB)
+	awaitUpdateSyncFailures(t, faults, updateID)
+	waitForTestSignal(t, observed.returned, "observed update executor return before retry join")
+	if early != nil {
+		early.coordinator, early.retries = coord, retries
+		return
+	}
+	// No executor or retry callback remains. Later terminal idle timers retain
+	// their original clock and are not part of this marker-repair join.
+	retries.restore(t, false)
+	awaitUpdateYield(t, root, coord, observed, "wait-observed", workerB)
 	assertUpdateSyncFault(t, faults, updateID, updateResponseID(a, "COORD-BRIEF", 4), failedMarkerWrites, firstID, updateID)
 	assertDelegateTestObservation(t, coord, root, updateID)
 	assertUpdateEmptyWakes(t, coord)
 	assertUpdateRequests(t, a, "COORD-BRIEF", coord, nil, nil, []string{"SIBLING_REPORT"}, []string{"SIBLING_REPORT", "SIBLING_UPDATE"})
 	releaseReport()
-	worker := coord.subagents.sessions()[1]
-	for _, child := range coord.subagents.sessions() {
-		if child.owningDelegateID == workerB {
-			worker = child
-		}
-	}
-	waitForStableSupervisionRun(t, coord, worker.ID())
+	waitForTestSignal(t, workerActivation.generationDone, "second sibling terminal generation")
+	waitForTestSignal(t, workerActivation.returned, "second sibling terminal executor tail")
 	a.waitForRequests(t, "COORD-BRIEF", 5)
+	terminal := returns.take(t, coord.ID())
+	assertUpdateResume(t, observed, terminal)
 	releaseFinish()
-	waitForStableSupervisionRun(t, root, coord.ID())
+	waitForTestSignal(t, terminal.generationDone, "coordinator terminal generation")
+	waitForTestSignal(t, terminal.returned, "coordinator terminal executor tail")
 	assertUpdateRequests(t, a, "COORD-BRIEF", coord, nil, nil, []string{"SIBLING_REPORT"}, []string{"SIBLING_REPORT", "SIBLING_UPDATE"}, []string{"SIBLING_REPORT", "SIBLING_UPDATE", "B_REPORT"})
 	for _, child := range coord.subagents.sessions() {
 		key := "WORKER-A"
@@ -1372,10 +1645,16 @@ func TestDelegateUpdateArrivingMidTurnIsNotRerunWhenTheMarkerCannotBeWritten(t *
 	)
 	a.finiteScript("WORKER-A", updateGate(first, updateReply(updateResponse("first", "FIRST_UPDATE"))), updateGate(reportA, updateReply(finalResponse("A_REPORT"))))
 	a.finiteScript("WORKER-B", updateGate(second, updateReply(updateResponse("second", "SECOND_UPDATE"))), updateGate(reportB, updateReply(finalResponse("B_REPORT"))))
-	root := newMessagingRoot(t, a, nil)
+	returns := newActivationReturns()
+	retries := &updateSyncRetryClock{}
+	root := newMessagingRoot(t, a, returns.configure)
+	t.Cleanup(func() {
+		returns.close(t, root)
+		retries.restore(t, true)
+	})
 	traceUpdateFixture(t, root, a)
 	serveSupervisionRootWakes(t, root)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if _, err := root.ProcessInput(ctx, "start", nil); err != nil {
 		t.Fatal(err)
@@ -1385,20 +1664,31 @@ func TestDelegateUpdateArrivingMidTurnIsNotRerunWhenTheMarkerCannotBeWritten(t *
 	coord := root.getSub(reqs[2].SessionID).sess
 	target := updateChildID(reqs[2])
 	workerA := updateChildID(reqs[1])
-	awaitUpdateYield(t, root, coord, "wait-initial", target)
-	faults := installUpdateSyncFault(t, coord, 2)
+	initial := returns.take(t, coord.ID())
+	awaitUpdateYield(t, root, coord, initial, "wait-initial", target)
+	faults := installUpdateSyncFault(t, coord, 2, retries)
 	releaseFirst()
 	a.waitForRequests(t, "COORD-BRIEF", 4)
-	firstID := waitForDelegateTestCustody(t, coord, "FIRST_UPDATE")
+	observedActivation := returns.take(t, coord.ID())
+	assertUpdateResume(t, initial, observedActivation)
+	workerARequests := a.waitForRequests(t, "WORKER-A", 2)
+	workerAActivation := returns.take(t, workerARequests[1].SessionID)
+	firstID := assertDelegateTestCustody(t, coord, "FIRST_UPDATE")
 	assertUpdateSource(t, root, workerA, "FIRST_UPDATE", firstID)
 	releaseSecond()
-	secondID := waitForDelegateTestCustody(t, coord, "SECOND_UPDATE")
+	workerBRequests := a.waitForRequests(t, "WORKER-B", 2)
+	workerBActivation := returns.take(t, workerBRequests[1].SessionID)
+	secondID := assertDelegateTestCustody(t, coord, "SECOND_UPDATE")
 	assertUpdateSource(t, root, target, "SECOND_UPDATE", secondID)
 	releaseBoundary()
 	a.waitForRequests(t, "COORD-BRIEF", 5)
 	releaseObserved()
-	waitForCondition(t, 30*time.Second, "mid-turn marker failures", func() bool { return faults.injectedFailures() == 2 })
-	awaitUpdateYield(t, root, coord, "wait-updates", target)
+	awaitUpdateSyncFailures(t, faults, firstID)
+	waitForTestSignal(t, observedActivation.returned, "observed update executor return before retry join")
+	// No executor or retry callback remains. Later terminal idle timers retain
+	// their original clock and are not part of this marker-repair join.
+	retries.restore(t, false)
+	awaitUpdateYield(t, root, coord, observedActivation, "wait-updates", target)
 	assertUpdateSyncFault(t, faults, firstID, updateResponseID(a, "COORD-BRIEF", 5), 2, firstID, secondID)
 	assertDelegateTestObservation(t, coord, root, firstID)
 	assertDelegateTestObservation(t, coord, root, secondID)
@@ -1406,17 +1696,23 @@ func TestDelegateUpdateArrivingMidTurnIsNotRerunWhenTheMarkerCannotBeWritten(t *
 	sets := [][]string{nil, nil, nil, {"FIRST_UPDATE"}, {"FIRST_UPDATE", "SECOND_UPDATE"}}
 	assertUpdateRequests(t, a, "COORD-BRIEF", coord, sets...)
 	releaseA()
+	waitForTestSignal(t, workerAActivation.generationDone, "worker A report generation")
+	waitForTestSignal(t, workerAActivation.returned, "worker A report executor tail")
 	a.waitForRequests(t, "COORD-BRIEF", 6)
-	awaitUpdateYield(t, root, coord, "wait-report-a", target)
+	reportActivation := returns.take(t, coord.ID())
+	assertUpdateResume(t, observedActivation, reportActivation)
+	awaitUpdateYield(t, root, coord, reportActivation, "wait-report-a", target)
 	sets = append(sets, []string{"FIRST_UPDATE", "SECOND_UPDATE", "A_REPORT"})
 	assertUpdateRequests(t, a, "COORD-BRIEF", coord, sets...)
 	releaseB()
-	for _, child := range coord.subagents.sessions() {
-		waitForStableSupervisionRun(t, coord, child.ID())
-	}
+	waitForTestSignal(t, workerBActivation.generationDone, "worker B report generation")
+	waitForTestSignal(t, workerBActivation.returned, "worker B report executor tail")
 	a.waitForRequests(t, "COORD-BRIEF", 7)
+	terminal := returns.take(t, coord.ID())
+	assertUpdateResume(t, reportActivation, terminal)
 	releaseFinish()
-	waitForStableSupervisionRun(t, root, coord.ID())
+	waitForTestSignal(t, terminal.generationDone, "coordinator terminal generation")
+	waitForTestSignal(t, terminal.returned, "coordinator terminal executor tail")
 	sets = append(sets, []string{"FIRST_UPDATE", "SECOND_UPDATE", "A_REPORT", "B_REPORT"})
 	assertUpdateRequests(t, a, "COORD-BRIEF", coord, sets...)
 	for _, child := range coord.subagents.sessions() {
@@ -1601,21 +1897,21 @@ func TestDelegateUpdateCommonWakeFiniteProvider(t *testing.T) {
 			response llm.Response
 			err      error
 		}
-		done := make(chan result, 1)
+		var got result
+		done := make(chan struct{})
+		t.Cleanup(func() {
+			cancel()
+			waitForTestSignal(t, done, "canceled finite provider cleanup")
+		})
 		go func() {
-			response, err := fixture.client.Complete(ctx, req)
-			done <- result{response: response, err: err}
+			got.response, got.err = fixture.client.Complete(ctx, req)
+			close(done)
 		}()
 		awaitSignal(t, entered, "common-wake provider cancellation gate")
 		cancel()
-		// TRIPWIRE: cancellation must release the provider without opening gate.
-		select {
-		case got := <-done:
-			if !errors.Is(got.err, context.Canceled) || got.response.ID != "" || len(got.response.Message.Content) != 0 {
-				t.Fatalf("canceled gated response=%+v err=%v", got.response, got.err)
-			}
-		case <-time.After(30 * time.Second):
-			t.Fatal("common-wake provider ignored cancellation")
+		waitForTestSignal(t, done, "actual canceled finite provider result")
+		if !errors.Is(got.err, context.Canceled) || got.response.ID != "" || len(got.response.Message.Content) != 0 {
+			t.Fatalf("canceled gated response=%+v err=%v", got.response, got.err)
 		}
 	})
 	if len(unexpected) != 2 || len(a.requestsFor("common-wake")) != 3 || len(a.answered["common-wake"]) != 0 {
@@ -1639,12 +1935,21 @@ func TestDelegateUpdateCommonWakeObservesOnce(t *testing.T) {
 		},
 	)
 	root := restoreSupervisionRoot(t, fixture, nil)
+	returns := newActivationReturns()
+	returns.configure(&root.cfg)
+	t.Cleanup(func() { returns.close(t, root) })
 	traceUpdateFixture(t, root, a)
 	sub := warmStableDelegateUnservedRoot(t, root, fixture)
-	waitForStableSupervisionRun(t, root, fixture.childID)
+	warm := returns.take(t, fixture.childID)
+	waitForTestSignal(t, warm.generationDone, "common-wake warm generation")
+	waitForTestSignal(t, warm.returned, "common-wake warm executor tail")
 	updateID := delegateAttentionID(delegatestore.UpdateDeliveryID(fixture.delegateID, 1))
 	armStableSupervisionAttention(t, sub, updateID, "ADMISSION_UPDATE: which table?")
 	awaitSignal(t, entered, "addressed delegate provider request")
+	activation := returns.take(t, fixture.childID)
+	if activation.lease != (delegateLease{delegateID: fixture.delegateID, generation: warm.lease.generation + 1}) || activation.generationDone == warm.generationDone {
+		t.Fatalf("common-wake activation=%+v warm=%+v", activation, warm)
+	}
 	if appended, err := sub.sess.appendDelegateNotificationDurably(updateID, "ADMISSION_UPDATE: which table?"); err != nil || appended {
 		t.Fatalf("duplicate custody appended=%v err=%v", appended, err)
 	}
@@ -1661,7 +1966,8 @@ func TestDelegateUpdateCommonWakeObservesOnce(t *testing.T) {
 		t.Fatalf("in-flight request granted observation: %+v", fold)
 	}
 	release()
-	waitForStableSupervisionRun(t, root, fixture.childID)
+	waitForTestSignal(t, activation.generationDone, "common-wake observed generation")
+	waitForTestSignal(t, activation.returned, "common-wake observed executor tail")
 	assertDelegateTestObservation(t, sub.sess, nil, updateID)
 	for range 2 {
 		if err := sub.sess.requestNotificationWake(); err != nil {
@@ -1671,15 +1977,13 @@ func TestDelegateUpdateCommonWakeObservesOnce(t *testing.T) {
 	// Wakes call admission synchronously, but accepted runs execute in goroutines.
 	// Join their completed generations, recovery and callback opportunities before
 	// sampling the finite provider. No quiet delay or shutdown hides a late call.
-	waitForStableSupervisionRun(t, root, fixture.childID)
-	waitForCondition(t, 30*time.Second, "common-wake execution and recovery released", func() bool {
-		state := sub.sess.notificationExecutionState()
-		sub.sess.attentionMu.Lock()
-		callbacksDone := sub.sess.attentionCallbacks == 0
-		sub.sess.attentionMu.Unlock()
-		return !state.running && !state.recovering && callbacksDone
-	})
-	root.sendersWG.Wait()
+	state := sub.sess.notificationExecutionState()
+	sub.sess.attentionMu.Lock()
+	callbacksDone := sub.sess.attentionCallbacks == 0
+	sub.sess.attentionMu.Unlock()
+	if state.running || state.recovering || !callbacksDone {
+		t.Fatalf("empty wakes retained execution or callbacks: state=%+v callbacksDone=%t", state, callbacksDone)
+	}
 	assertUpdateRequests(t, a, "common-wake", sub.sess, nil, []string{"ADMISSION_UPDATE: which table?"})
 }
 
@@ -1781,7 +2085,7 @@ func drainingCoordinatorReport(t *testing.T, undisposedJob bool, drainTurns ...f
 			awaitSignal(t, done, "the worker's actual terminal generation")
 			// Join the enclosing runner, not the earlier before-release hook.
 			coordinator.sendersWG.Wait()
-			notificationID = waitForDelegateTestCustody(t, coordinator, workerPayload)
+			notificationID = assertDelegateTestCustody(t, coordinator, workerPayload)
 			if want := delegateAttentionID(workerID + "/delivery/1"); notificationID != want {
 				t.Errorf("worker notification=%s want exact generation identity=%s", notificationID, want)
 			}
