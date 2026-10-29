@@ -97,14 +97,12 @@ func (m *hubHostManager) reconcileBootRecords(hasFile bool, collided bool, write
 }
 
 // bootWrite is where the boot's record maintenance writes land: with the host
-// list in hub.toml (the legacy boot), as records alone (records in the store),
-// or nowhere yet (a late attach whose records are about to move into the store).
+// list in hub.toml (the legacy boot) or as records alone (records in the store).
 type bootWrite int
 
 const (
 	bootWriteHostFile bootWrite = iota
 	bootWriteRecordsOnly
-	bootWriteMemory
 )
 
 // bootMaintenanceFault, when set, fails the boot's record-maintenance writes
@@ -118,7 +116,7 @@ func (m *hubHostManager) persistBootRecords(entries []hostreg.Host, write bootWr
 			return err
 		}
 	}
-	return m.persistHosts(entries, entries, hostPersistChange{recordsOnly: write == bootWriteRecordsOnly, inMemory: write == bootWriteMemory})
+	return m.persistHosts(entries, entries, hostPersistChange{recordsOnly: write == bootWriteRecordsOnly})
 }
 
 // seedHighWater seeds the store's retained high-water records plus the

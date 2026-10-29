@@ -1085,11 +1085,24 @@ func TestLateAttachOfALegacyHostKeepsTheMirrorsHigherGeneration(t *testing.T) {
 	if _, err := manager.Ensure(context.Background(), "keep"); err != nil {
 		t.Fatalf("Ensure while the store is unavailable: %v", err)
 	}
+	// The operator edits a sibling host while the store is unavailable.
+	edited := bytes.Replace(fileBytes(t, configPath), []byte("epsilon.example"), []byte("epsilon-by-hand.example"), 1)
+	if bytes.Equal(edited, fileBytes(t, configPath)) {
+		t.Fatal("the fixture's hub.toml does not carry epsilon.example")
+	}
+	if err := os.WriteFile(configPath, edited, 0o600); err != nil {
+		t.Fatalf("edit epsilon by hand: %v", err)
+	}
 
 	late.attachOps(store)
 
 	if mark := mustRecords(t, store).Generations["keep"]; mark.Generation < spent {
 		t.Fatalf("the family holds generation %d for keep, below the mirror's %d", mark.Generation, spent)
+	}
+	for _, h := range mustLoadConfig(t, configPath).Hosts {
+		if h.Name == "epsilon" && h.SSH != "epsilon-by-hand.example" {
+			t.Fatalf("the mirror reconciliation undid the operator's edit: epsilon is %q", h.SSH)
+		}
 	}
 	requireReconnected(t, manager, hosts, "keep")
 }
@@ -1571,5 +1584,80 @@ func TestUnreadableHubTOMLDoesNotCostAnAttachItsConnections(t *testing.T) {
 	}
 	if !manager.Attached("keep") {
 		t.Fatal("an attempt that could not proceed interrupted a healthy connection")
+	}
+}
+
+// TestUnreadableHubTOMLAtStartupStillFencesAnOpenRemnantHost pins the fences'
+// place in the attempt: the store's readable teardown remnants fence their hosts
+// before the settlement can stop on an unreadable host file, so a host with an
+// unresolved cleanup is not dialed in the meantime.
+func TestUnreadableHubTOMLAtStartupStillFencesAnOpenRemnantHost(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, _ := hub.boot(t, false)
+	m.testOnlyTeardown = func(context.Context, string) error { return errors.New("injected teardown failure") }
+	if result, err := m.UpdateResult(context.Background(), updateRequest(t, m, "side", appwire.HostEntry{Address: "edited.example"})); err != nil || result.HostMutationTeardownFailure == nil {
+		t.Fatalf("Update = (%+v, %v), want the teardown-failure arm", result, err)
+	}
+	hub.restartStateRoot(t)
+	reopened, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	boot := hostBootDocument(mustLoadConfig(t, hub.configPath), hub.configPath, reopened)
+	hosts, err := hostreg.NewSeeded(boot.Hosts, boot.Records.highWaterMarks())
+	if err != nil {
+		t.Fatalf("hostreg.NewSeeded: %v", err)
+	}
+	previous := configReadFile
+	configReadFile = func(string) ([]byte, error) { return nil, errors.New("injected read failure") }
+	recovered := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostOpsStore: reopened, RemoteHostConfigPath: hub.configPath,
+	}, hub.configPath, hosts, t.Logf)
+	configReadFile = previous
+
+	if recovered.mutationRefusal() == nil {
+		t.Fatal("the settlement went ahead although hub.toml could not be read")
+	}
+	if _, fenced := recovered.openRemnantID("side"); !fenced {
+		t.Fatal("the open remnant did not fence its host while the settlement was stopped")
+	}
+}
+
+// TestLateAttachFinalizesAStagedLegacyCommitWithoutRewritingTheHostList pins the
+// legacy marker finalization under an attach: a landed commit's marker is
+// finalized in the manager and carried into the store, and the host list in
+// hub.toml stays what the operator left, whatever the registry started with.
+func TestLateAttachFinalizesAStagedLegacyCommitWithoutRewritingTheHostList(t *testing.T) {
+	fixture := newPipelineFixture(t, []hostreg.Host{pipelineEntry("m4", 2), pipelineEntry("keep", 3)}, nil)
+	m := fixture.legacyManager(t)
+	params := updateRequest(t, m, "keep", appwire.HostEntry{Address: "keep-edited.example"})
+	params.MutationID = "landed-mutation"
+	armCut(m, cutFlipped)
+	runUntilCrash(t, func() { _, _ = m.UpdateResult(context.Background(), params) })
+	boot := hostBootDocument(mustLoadConfig(t, fixture.configPath), fixture.configPath, nil)
+	hosts, err := hostreg.NewSeeded(boot.Hosts, boot.Records.highWaterMarks())
+	if err != nil {
+		t.Fatalf("hostreg.NewSeeded: %v", err)
+	}
+	late := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostConfigPath: fixture.configPath, RemoteHostOpsUnavailable: true,
+	}, fixture.configPath, hosts, t.Logf)
+	edited := bytes.Replace(fileBytes(t, fixture.configPath), []byte("m4.example"), []byte("m4-by-hand.example"), 1)
+	if bytes.Equal(edited, fileBytes(t, fixture.configPath)) {
+		t.Fatal("the fixture's hub.toml does not carry m4.example")
+	}
+	if err := os.WriteFile(fixture.configPath, edited, 0o600); err != nil {
+		t.Fatalf("edit m4 by hand: %v", err)
+	}
+
+	late.attachOps(fixture.store)
+
+	if len(receiptKeysFor(mustRecords(t, fixture.store), "landed-mutation")) == 0 {
+		t.Fatal("the landed commit was not finalized into the store")
+	}
+	for _, h := range mustLoadConfig(t, fixture.configPath).Hosts {
+		if h.Name == "m4" && h.SSH != "m4-by-hand.example" {
+			t.Fatalf("finalizing the marker undid the operator's edit: m4 is %q", h.SSH)
+		}
 	}
 }

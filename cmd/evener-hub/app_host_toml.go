@@ -355,7 +355,11 @@ func (m *hubHostManager) persistHosts(entries, known []hostreg.Host, change host
 	if err != nil {
 		return tombstoneCapacityRefusal(err)
 	}
-	if change.inMemory {
+	if m.cfg.persistInMemory.Load() {
+		// The settlement of a late attach over records that are about to move
+		// into the store: the derived records are installed in the manager and
+		// nothing is written, so the registry's startup host list never goes over
+		// what the operator has since changed in hub.toml.
 		m.cfg.store.installRecords(records)
 		return nil
 	}

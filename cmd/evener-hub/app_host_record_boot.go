@@ -119,7 +119,15 @@ func (m *hubHostManager) bootRecords() {
 		m.refuseMutations(fmt.Sprintf("the original hub.toml could not be kept before its records move: %v", err))
 		return
 	}
-	switch err := m.bootLegacyRecords(true); {
+	if m.cfg.attaching.Load() {
+		// The move into the store follows, so the settlement writes no file: the
+		// host list in hub.toml is the operator's by now, not the registry's
+		// startup copy, and the import carries what the settlement derived.
+		m.cfg.persistInMemory.Store(true)
+	}
+	err := m.bootLegacyRecords(true)
+	m.cfg.persistInMemory.Store(false)
+	switch {
 	case errors.Is(err, errLegacyRecordsUnreadable):
 		// The records to move could not be read, so what the legacy boot saw is
 		// empty. Importing that would make the store their home and strand the
@@ -457,6 +465,9 @@ func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
 		m.refuseMutations(fmt.Sprintf("the host records in the operation store are in a shape this build cannot read, so a build that can read them has to run: %v", err))
 		return
 	}
+	// The teardown fences are the store's whatever else this attempt can do:
+	// installed before anything that may stop it, with no registration touched.
+	m.cfg.store.setRemnantMaps(m.cfg.store.stagedSnapshot(), records.TeardownRemnants, records.TeardownAttempts)
 	if _, hasFile := store.load(); !hasFile && strings.TrimSpace(m.cfg.configPath) != "" && !m.hostFileAbsentOrEmpty() {
 		// A file that cannot be read says nothing about which commits landed,
 		// and no connection is interrupted for an attempt that cannot proceed.
@@ -786,15 +797,9 @@ func (m *hubHostManager) bootLegacyRecords(settle bool) error {
 	// nothing to prune writes nothing, so an untouched file stays
 	// byte-identical. A boot without that write may still owe the initial
 	// identity records.
-	write := bootWriteHostFile
-	if m.cfg.attaching.Load() {
-		// The move into the store follows; the host list in hub.toml is the
-		// operator's by now, not the registry's startup copy.
-		write = bootWriteMemory
-	}
-	attempted, writeErr := m.reconcileBootRecords(hasFile, collided, write)
+	attempted, writeErr := m.reconcileBootRecords(hasFile, collided, bootWriteHostFile)
 	if !attempted {
-		writeErr = m.materializeHostRecords(fileRecords, hasFile, write)
+		writeErr = m.materializeHostRecords(fileRecords, hasFile, bootWriteHostFile)
 	}
 	// The generation-mirror reconciliation below can raise live registrations,
 	// so the gates are held again, retiring any connection made since the first

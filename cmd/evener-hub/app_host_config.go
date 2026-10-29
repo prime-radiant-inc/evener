@@ -82,6 +82,9 @@ type hostManagerConfig struct {
 	// already serving: hosts may hold connections then, so every step that
 	// changes a live host's registration holds the host gates first.
 	attaching atomic.Bool
+	// persistInMemory makes persistHosts install what it derives without writing
+	// a file; the legacy settlement of a late attach sets it (see persistHosts).
+	persistInMemory atomic.Bool
 	// reconnect names the hosts whose connections an attach retired so a
 	// registration could change; attachOps dials them again afterward.
 	reconnectMu sync.Mutex
