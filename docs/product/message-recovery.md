@@ -66,9 +66,10 @@ refused save preserves the complete local composition as a fresh recovery row
 before retiring the stale lease. The new row carries the local text, skill and
 command selections, payload input and attachment bytes, and the peer's row is
 left untouched. If the stale row still holds the identical composition, no
-duplicate row is created. The pane then owns the fresh row, so later edits
-update it, Send consumes it, and a reload restores the local composition
-including its images.
+duplicate row is created. The fresh row is durable insurance, not an adopted
+owner: the live composer keeps the typed composition, and the fresh row stays
+reachable through its explicit Edit, Retry and Send-now actions. A reload does
+not restore it automatically.
 
 ### Browser seat and selection ownership
 
@@ -81,8 +82,7 @@ carried at an identity rewrite, and no pane-to-seat or ref mapping needs to
 stay consistent for a selection to survive. Another tab can never read or
 overwrite this tab's picks. Restoring resolves the registry at read time: among
 the picks whose row currently targets the pane's conversation, the newest
-`pickedAt` wins, with explicit user picks outranking automatic background
-appends regardless of age. Pick stamps are strictly increasing per tab - a
+`pickedAt` wins. Pick stamps are strictly increasing per tab - a
 persisted last-stamp outranks the raw clock, so a tie inside one clock tick
 or a backward clock adjustment cannot make a stale pick win.
 
@@ -97,33 +97,34 @@ across the whole restored layout before any pane falls back to the ref
 mapping or a fresh seat. Seats no longer scope selections; they only keep
 pane identity stable across reloads.
 
-Restoring a composer prefers the recovery row this tab explicitly picked,
-restoring it by row id without any kind filter; the rejected-only discovery
-predicate survives only as the no-pick fallback, which prefers the newest
-restorable rejected row. This keeps preserved local work selected after reload
-even when an older rejected peer row exists, and it needs no ancestry: when
-authoritative ancestry later reveals an ancestor column, that column's
-composer simply resolves its own picks - nothing has to migrate before the
-ancestry arrives. Resolution also lazily releases registry entries whose row
-no longer exists, so the registry cannot accumulate picks for dead rows. The
-resolution is an IndexedDB read that can outlast a user edit: the restore is
-fenced if the composer's edit or replacement generation moved during the
-lookup, so a composition the user typed and cleared while it was pending is
-never replaced by the old row's content.
+Restoring a composer reads the recovery row this tab explicitly picked and
+restores it by row id without any kind filter. There is no fallback
+discovery: with no recorded pick, an empty composer stays empty and every
+recovery row is reachable only through its explicit actions. Resolution needs
+no ancestry: when authoritative ancestry later reveals an ancestor column,
+that column's composer simply resolves its own picks - nothing has to migrate
+before the ancestry arrives. Resolution also lazily releases registry entries
+whose row no longer exists, so the registry cannot accumulate picks for dead
+rows. The resolution is an IndexedDB read that can outlast a user edit: the
+restore is fenced if the composer's edit or replacement generation moved
+during the lookup, so a composition the user typed and cleared while it was
+pending is never replaced by the old row's content.
 
-An automatic or background activation appends a pick flagged background:
-it can never outrank an explicit pick at resolve time, and it never demotes or
-refreshes an explicit pick of the same row; only the focused pane's automatic
-activation ranks as the user's own. A background settle that displaces a row
-succeeds the displaced row's pick - the fresh row inherits the displaced
-pick's timestamp and rank, so only the user's own later acts outrank it, and
-the displaced row's entry is released. A refused write's preservation records
-its fresh row under exactly that rule, even when the pane closed before the
-write settled, because the durable row outlives the source; the rank travels
-with the lease, so a concurrent resolution that releases the displaced row's
-dangling entry mid-write cannot demote the succession. Retiring a lease
+Restoration is synchronous and user-owned only. A composer's content is
+restored at exactly three points: the mount-time restore of this tab's
+recorded pick into an empty composer; an explicit user action on a recovery
+row (Edit, Retry, Send now); and the same-tick failure path of the user's own
+send, which keeps the pressed composition in the live composer. Nothing else
+restores or mutates picks or composer content - a preservation settle, a
+projection update, an effect restart or any other asynchronous event never
+adopts a row, never writes or clears a pick, and never replaces typed text.
+A refused write's preservation therefore creates its fresh row without
+recording any pick for it, even when the pane closed before the write
+settled, because the durable row outlives the source. Retiring a lease
 releases the retiring row's own pick entry only; picks this tab holds for
-other rows survive it.
+other rows survive it. Automatic background restoration - resolving a
+recovered composition for the user without a recorded pick or a press - is
+explicitly deferred to issue #5317.
 
 Sending recovery consumes its durable source and creates one fresh outbox
 identity atomically. It never falls back to an ordinary enqueue when the source

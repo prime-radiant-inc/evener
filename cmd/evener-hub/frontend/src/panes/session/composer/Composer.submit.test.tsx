@@ -49,7 +49,7 @@ import {
   textarea,
 } from "./composerTestUtils";
 import { steerTooltipLabel, submitTooltipLabel } from "./controlTooltips";
-import { readComposerDraft, writeComposerDraft } from "./draft";
+import { readComposerDraft, writeComposerDraft, writeRecoveryPick } from "./draft";
 import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./queue/testing/flushPendingTurnsProjection";
 import { resetQuoteInsertStoreForTests } from "./quoteInsert";
@@ -1304,7 +1304,9 @@ test("an indefinitely pending steer never emits a timeout warning or reload inst
   expect(screen.queryByText(/reload/i)).toBeNull();
 });
 
-test("an explicit rejection returns to the sole Composer textarea", async () => {
+test("an explicit rejection restores only through the row's explicit Edit action", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "idle" },
@@ -1320,11 +1322,24 @@ test("an explicit rejection returns to the sole Composer textarea", async () => 
   const editor = textarea();
   await user.type(editor, "rd");
   await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
 
+  // The dispatch is fire-and-forget off the durable enqueue, so the rejection
+  // lands as a projection update - an asynchronous event. Under the
+  // sync-only restoration contract nothing restores content from it: the
+  // composer stays empty and the rejected row is reachable only through its
+  // explicit Edit action.
+  await waitFor(() => expect(editor.textContent).toBe(""));
+  const [rejected] = await storage.listRecovery("ref_a");
+  expect(rejected).toMatchObject({ recoveryKind: "rejected" });
+  expect(rejected?.payload.input).toEqual([{ type: "text", text: "rd" }]);
+
+  const row = screen.getByText("rd").closest("li");
+  if (!row) throw new Error("missing rejected queue row");
+  await user.click(within(row).getByRole("button", { name: "Edit message" }));
+  await flushPendingTurnsProjectionForTests();
   await waitFor(() => expect(editor.textContent).toBe("rd"));
   expect(screen.getAllByRole("textbox")).toEqual([editor]);
-  expect(screen.queryByText("Recovery drafts")).toBeNull();
-  expect(screen.queryByRole("textbox", { name: "Recovered message" })).toBeNull();
 });
 
 test.each(["", "  ", "occupied draft"])(
@@ -1479,6 +1494,8 @@ test("sending recovered text uses current Composer routing and consumes the reco
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
   const recovered = await seedRejectedRecovery(storage, "ref_a", "retry me");
+  // The user's recorded pick: mount-restore reads the pick only.
+  writeRecoveryPick(recovered.clientMutationId);
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },

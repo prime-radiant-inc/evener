@@ -14,11 +14,9 @@ import {
   readRecoveryPick,
   recoveryPickEntries,
   resolveRecoveryPick,
-  succeedRecoveryPick,
   writeComposerDraft,
   writeDraft,
   writeRecoveryPick,
-  writeRecoveryPickAutomatically,
 } from "./draft";
 import { parseSkillDocument, serializeSkillDocument } from "./skillDocument";
 
@@ -436,43 +434,6 @@ test("writeComposerDraft never throws when localStorage throws", () => {
   expect(() => writeComposerDraft("local:01AAA", { text: "some text", skillNames: ["pkg:probe"] })).not.toThrow();
 });
 
-test("a background append cannot outrank an explicit pick", async () => {
-  localStorage.clear();
-  writeRecoveryPick("user-row");
-  writeRecoveryPickAutomatically("background-row", false);
-  const rows = new Map([
-    ["user-row", { targetRef: "local:guard" }],
-    ["background-row", { targetRef: "local:guard" }],
-  ]);
-  const resolved = await resolveRecoveryPick("local:guard", async (rowId) => rows.get(rowId));
-  expect(resolved?.entry.rowId).toBe("user-row");
-});
-
-test("a background pick wins only when no explicit pick passes membership", async () => {
-  localStorage.clear();
-  writeRecoveryPick("user-row");
-  writeRecoveryPickAutomatically("background-row", false);
-  const rows = new Map([
-    ["user-row", { targetRef: "local:elsewhere" }],
-    ["background-row", { targetRef: "local:guard" }],
-  ]);
-  const resolved = await resolveRecoveryPick("local:guard", async (rowId) => rows.get(rowId));
-  expect(resolved?.entry.rowId).toBe("background-row");
-});
-
-test("a same-row background write never demotes or refreshes an explicit pick", () => {
-  localStorage.clear();
-  writeRecoveryPick("user-row");
-  const before = readRecoveryPick("user-row");
-  writeRecoveryPickAutomatically("user-row", false);
-  const after = readRecoveryPick("user-row");
-  expect(after?.background).toBe(false);
-  expect(after?.pickedAt).toBe(before?.pickedAt);
-  // The focused pane's activation ranks as the user's own.
-  writeRecoveryPickAutomatically("background-row", true);
-  expect(readRecoveryPick("background-row")).toMatchObject({ background: false });
-});
-
 test("pick stamps order strictly when the clock ties or steps backward", async () => {
   localStorage.clear();
   // Two explicit picks inside one frozen clock tick must not tie: the later
@@ -500,22 +461,6 @@ test("pick stamps order strictly when the clock ties or steps backward", async (
   }
   rows.set("third-row", { targetRef: "local:order" });
   expect((await resolve())?.entry.rowId).toBe("third-row");
-});
-
-test("a settle succeeds the displaced row's pick and preserves its rank", () => {
-  localStorage.clear();
-  writeRecoveryPick("stale-row");
-  const inheritedAt = readRecoveryPick("stale-row")?.pickedAt;
-  succeedRecoveryPick("stale-row", "preserved-row");
-  expect(readRecoveryPick("preserved-row")).toMatchObject({ background: false, pickedAt: inheritedAt });
-  expect(readRecoveryPick("stale-row")).toBeUndefined();
-  // Succession is idempotent: repeating it must not demote the inherited
-  // pick to background rank.
-  succeedRecoveryPick("stale-row", "preserved-row");
-  expect(readRecoveryPick("preserved-row")?.background).toBe(false);
-  // A settle displacing an unpicked row appends at background rank only.
-  succeedRecoveryPick("never-picked", "unranked-settle");
-  expect(readRecoveryPick("unranked-settle")).toMatchObject({ background: true });
 });
 
 test("resolution cleans dangling registry entries lazily", async () => {

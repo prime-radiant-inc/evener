@@ -42,7 +42,7 @@ import { installControlledImageEncoding } from "../testing/imageEncoding";
 import { askDockStore, resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { ackAskUserCall } from "./askDock/askDockTestUtils";
 import { Composer as ComposerView } from "./Composer";
-import { readComposerDraft, readDraft, writeComposerDraft } from "./draft";
+import { readComposerDraft, readDraft, writeComposerDraft, writeRecoveryPick } from "./draft";
 import { usePendingTurnEntries } from "./queue";
 import { resetPendingTurnsStoreForTests, subscribeComposerSubmissionCommitted } from "./queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./queue/testing/flushPendingTurnsProjection";
@@ -462,6 +462,7 @@ test.each([
       : null;
     if (original) {
       await storage.transferToRecovery(original.clientMutationId, "rejected");
+      writeRecoveryPick(original.clientMutationId);
       // Automatic restoration must adopt an already-advanced durable revision,
       // not assume zero: Send below persists through that lease.
       const bumped = await storage.updateRecoveryInput(
@@ -562,6 +563,7 @@ test.each([
     optimisticDisplay: { method: "turn/start", input },
   });
   await storage.transferToRecovery(original.clientMutationId, "rejected");
+  writeRecoveryPick(original.clientMutationId);
   const pane: OpenPaneRecord = { id: "session-1", type: "session", params: { ref: "root" }, slot: "main" };
   workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
   const lifetime = conversationPaneLifetime(pane);
@@ -820,6 +822,7 @@ test.each(["success", "failure"] as const)(
       optimisticDisplay: { method: "turn/start", input },
     });
     await storage.transferToRecovery(original.clientMutationId, "rejected");
+    writeRecoveryPick(original.clientMutationId);
     const source = createTestComposerSource("root");
     const fake = await mountComposer("root", skillFocusThread("root"), source);
     await settleActivityDiscovery("root");
@@ -1390,6 +1393,7 @@ test("the composer resends recovered text while recovery projection callbacks ar
     optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "recover me" }] },
   });
   await storage.transferToRecovery(original.clientMutationId, "rejected");
+  writeRecoveryPick(original.clientMutationId);
   const fake = await mountComposer("ref_a");
   // The steer is awaited where it arrives: the recovery reads held below keep
   // the projection work open, so a flush could not settle until they are
@@ -1443,6 +1447,7 @@ test("rejected inline skill input restores its atoms and resends edited prose wi
     optimisticDisplay: { method: "turn/start", input },
   });
   await storage.transferToRecovery(original.clientMutationId, "rejected");
+  writeRecoveryPick(original.clientMutationId);
   const fake = await mountComposer("ref_a", {
     evener: {
       ref: "ref_a",

@@ -17,12 +17,7 @@ import { createAttachmentOperations, useAttachments } from "./attachments/useAtt
 import { STEER_RECOVERY_FENCED_REASON } from "./controlTooltips";
 import { clearDraft, clearPersistedDraft, readDraftRevision, resolveRecoveryPick } from "./draft";
 import { pendingTurnEntries, type QueueStripProps, submitWithPendingTracking, usePendingTurnEntries } from "./queue";
-import {
-  resendRecoveryPendingTurn,
-  useBlockedMutationEntries,
-  useComposerSubmitting,
-  useRecoveryEntries,
-} from "./queue/pendingTurnsStore";
+import { resendRecoveryPendingTurn, useBlockedMutationEntries, useComposerSubmitting } from "./queue/pendingTurnsStore";
 import { mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recovery/recoveryDraft";
 import {
   materializeSelectionReferences,
@@ -44,7 +39,7 @@ import { pushRecoveryRefusal, pushSelectionRefusal, selectionRefusal, submitDraf
 type BusyAction = "submit" | "steer" | "interrupt" | "drain" | null;
 
 /** Shared actions retain source ownership and the thread store's mutation policy. */
-export function useComposerActions(source: ComposerSourceState, externalBusy = false, focused = false) {
+export function useComposerActions(source: ComposerSourceState, externalBusy = false) {
   const ref = source.ref;
   const model = useThreadsStore((s) => s.threads.get(ref));
   const recoveryRequired = useThreadsStore((s) => s.restartBlockingObligations.has(ref));
@@ -100,7 +95,6 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
   } = source;
   const observedAttachments = useAttachments(source.editor, source.attachments);
   const attachments = useMemo(() => createAttachmentOperations(source.editor, source.attachments), [source]);
-  const recoveryEntries = useRecoveryEntries(ref);
   const selectionMeta = useMemo(() => ({ commandNames, mentions }), [commandNames, mentions]);
   const [busyAction, updateBusyAction] = useState<BusyAction>(null);
   const busyActionRef = useRef<BusyAction>(null);
@@ -109,6 +103,7 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
   const submittingRef = useRef(submitting);
   submittingRef.current = submitting;
   const mountedRef = useRef(false);
+  const restoreAttemptedRef = useRef(false);
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -199,6 +194,7 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
   useEffect(() => {
     if (
       freshRecoveryRef !== ref ||
+      restoreAttemptedRef.current ||
       activeRecoveryId !== null ||
       textRef.current.trim() !== "" ||
       attachments.items.length > 0 ||
@@ -207,14 +203,10 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     ) {
       return;
     }
-    // An interrupt is not a draft. It carries no input, so activating one
-    // loads an empty composer and then resends the user's next keystrokes as a
-    // turn/start -- a Stop becoming a message. QueueStrip renders it as a
-    // failure with its reason instead. That rejected-only rule is the
-    // FALLBACK predicate: an explicit pick restores by row id, whatever its
-    // kind.
-    const restorable = (entry: MutationRecoveryRecord) =>
-      entry.recoveryKind === "rejected" && entry.method !== "turn/interrupt" && !entry.preserveComposer;
+    // Mount-time restore only, attempted at most once per mount: neither an
+    // effect restart (a focus change, a recovery projection update) nor any
+    // later asynchronous event may re-arm a restore.
+    restoreAttemptedRef.current = true;
     let cancelled = false;
     // The IndexedDB lookup can outlast a user edit: capture the edit and
     // replacement generations and fence the restore if either moved, so a
@@ -242,17 +234,18 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
       ) {
         return;
       }
-      // With no pick passing membership, the fallback restores the NEWEST
-      // restorable rejected row.
-      const record = resolved?.row ?? [...recoveryEntries].reverse().find(restorable);
+      // Restoration reads the user's recorded pick only - there is no
+      // fallback discovery, so nothing can adopt a row the durable lookup
+      // cannot find.
+      const record = resolved?.row;
       if (!record) return;
       const recovered = recoveryComposerDraft(record);
       const visible = materializeSelectionReferences({ ...recovered, skillNames: restoredSkillNames(recovered) });
       Object.assign(recovered, visible);
       recoveryOwnsLocalDraftRef.current = false;
-      // A mount-restore is a background activation: it appends a pick that
-      // cannot outrank an explicit one, unless this pane is focused.
-      setActiveRecoveryId(record, { automatic: true, focused });
+      // A mount-restore touches content only: the registry is never written
+      // or cleared here.
+      setActiveRecoveryId(record, { restore: true });
       // Restoration replaces this mount's local owner without editing the
       // shared recovery draft that an earlier mount may still be submitting.
       draftEditRevisionRef.current += 1;
@@ -272,7 +265,6 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     draftEditRevisionRef,
     freshRecoveryRef,
     markRestore,
-    recoveryEntries,
     recoveryOwnsLocalDraftRef,
     recoveryReplacementEpochRef,
     source.getSnapshot,
@@ -285,7 +277,6 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     updateSkillNames,
     updateSelectionMeta,
     attachments.items.length,
-    focused,
   ]);
   // QueueStrip captures this mount's payload and edit revision through
   // getComposerText before it starts the drain's durable write.

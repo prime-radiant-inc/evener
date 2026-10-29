@@ -179,40 +179,6 @@ export function recoveryPickEntries(): RecoveryPickEntry[] {
   return entries;
 }
 
-// An automatic or background activation appends a pick that cannot outrank
-// an explicit pick: the background flag demotes it at resolve time, and an
-// explicit pick of the same row is never demoted or refreshed by it. The
-// focused pane's activation ranks as the user's own.
-export function writeRecoveryPickAutomatically(rowId: string, focused: boolean): void {
-  const stored = readRecoveryPick(rowId);
-  if (stored !== undefined) {
-    if (!stored.background) return;
-    if (!focused) return;
-  }
-  storeRecoveryPick({ rowId, pickedAt: nextPickStamp(), background: !focused });
-}
-
-// A background settle that displaces a row succeeds the pick: the fresh row
-// inherits the displaced row's pick and its rank - succession preserves rank,
-// so only the user's own later acts outrank it - and the displaced row's
-// entry is released. The registry entry is preferred; a concurrent
-// resolution may already have released it as dangling (the row was consumed
-// elsewhere while the write was pending), so the caller's lease-captured
-// rank carries the succession then. With neither naming the displaced row,
-// the settle appends at background rank.
-export function succeedRecoveryPick(displacedRowId: string, rowId: string, captured?: RecoveryPick): void {
-  if (displacedRowId === rowId) return;
-  const inherited = readRecoveryPick(displacedRowId) ?? captured;
-  if (inherited === undefined) {
-    if (readRecoveryPick(rowId) === undefined) {
-      storeRecoveryPick({ rowId, pickedAt: nextPickStamp(), background: true });
-    }
-    return;
-  }
-  storeRecoveryPick({ rowId, pickedAt: inherited.pickedAt, background: inherited.background });
-  clearRecoveryPick(displacedRowId);
-}
-
 const outranks = (candidate: RecoveryPickEntry, incumbent: RecoveryPickEntry): boolean => {
   if (candidate.background !== incumbent.background) return !candidate.background;
   return candidate.pickedAt > incumbent.pickedAt;

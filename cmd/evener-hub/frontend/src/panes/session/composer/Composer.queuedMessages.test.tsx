@@ -29,6 +29,7 @@ import { Composer } from "./Composer";
 import {
   readComposerDraftRevisionId,
   readDraft,
+  readRecoveryPick,
   resolveRecoveryPick,
   writeComposerDraft,
   writeRecoveryPick,
@@ -898,7 +899,7 @@ test("reload restores the selected preserved row over an older rejected peer row
     storage.close();
   }
 });
-test("a same-ref conflict preserves the local work across reload", async () => {
+test("a same-ref conflict keeps the picked row's durable content across reload", async () => {
   // The held preservation publishes its projection between assertions; expect
   // only React's act warnings for those updates.
   const actWarnings = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -925,6 +926,9 @@ test("a same-ref conflict preserves the local work across reload", async () => {
     optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "old composition" }] },
   });
   await storage.transferToRecovery(original.clientMutationId, "rejected");
+  // The user's own recorded pick names the original row; under the
+  // sync-only restoration contract it is the only thing mount-restore reads.
+  writeRecoveryPick(original.clientMutationId);
   const source = createTestComposerSource("root");
   const peer = new MutationOutboxIndexedDB();
   let reloaded: ReturnType<typeof createTestComposerSource> | undefined;
@@ -968,11 +972,11 @@ test("a same-ref conflict preserves the local work across reload", async () => {
     const preserved = (await storage.listRecovery("root")).find(
       (record) => record.clientMutationId !== original.clientMutationId,
     );
-    await waitFor(async () =>
-      expect((await resolveRecoveryPick("root", (rowId) => storage.getRecovery(rowId)))?.row.clientMutationId).toBe(
-        preserved?.clientMutationId,
-      ),
-    );
+    // The settle preserves the work durably but adopts nothing: the user's
+    // pick keeps naming the row they picked, no pick exists for the
+    // preserved row, and the typed composition stays in the live composer.
+    expect(readRecoveryPick(original.clientMutationId)).toBeDefined();
+    expect(readRecoveryPick(preserved?.clientMutationId ?? "")).toBeUndefined();
     await waitFor(() =>
       expect((screen.getByRole("textbox", { name: "Message" }) as HTMLElement).textContent).toBe(localText),
     );
@@ -985,9 +989,15 @@ test("a same-ref conflict preserves the local work across reload", async () => {
     });
     await flushPendingTurnsProjectionForTests();
     await waitFor(() => expect(reloaded?.getSnapshot().freshRecoveryRef).toBe("root"));
+    // The pick still names the original row, whose durable content the peer
+    // replaced; the preserved row is reachable only by an explicit action.
+    await waitFor(() => expect(reloaded?.getSnapshot().activeRecoveryId).toBe(original.clientMutationId));
     await waitFor(() =>
-      expect((screen.getByRole("textbox", { name: "Message" }) as HTMLElement).textContent).toBe(localText),
+      expect((screen.getByRole("textbox", { name: "Message" }) as HTMLElement).textContent).toBe("peer composition"),
     );
+    expect(
+      (await storage.listRecovery("root")).find((record) => record.clientMutationId === preserved?.clientMutationId),
+    ).toMatchObject({ composerText: localText });
   } finally {
     storage.release.resolve();
     act(() => cleanup());
@@ -1426,7 +1436,9 @@ test("stale recovery persistence refusal preserves the unsent composition under 
       (record) => record.clientMutationId !== queuedRecord.clientMutationId,
     );
     expect(preserved).toBeDefined();
-    expect(source.getSnapshot().activeRecoveryId).toBe(preserved?.clientMutationId);
+    // The refusal settle preserves the work durably but adopts nothing: the
+    // composer keeps no active recovery row after the failed send.
+    expect(source.getSnapshot().activeRecoveryId).toBe(null);
     // The fresh recovery row owns the composition; no draft carries its markers.
     expect(readDraft("root") ?? "").toBe("");
     // Enabled Send does not mean the recovery projection has finished publishing.
@@ -1447,17 +1459,19 @@ test("stale recovery persistence refusal preserves the unsent composition under 
       attachments: [expect.objectContaining({ name: "recovered.png" })],
     });
     act(() => cleanup());
-    // Reload: a fresh composer restores the preserved images from its own row.
+    // Reload: the explicit Edit pick still names the queued row, whose
+    // durable content the peer replaced; the preserved row is reachable
+    // only by an explicit action.
     source.dispose();
     const replacement = createTestComposerSource("root");
     try {
       mount(fake, replacement);
       await waitFor(() => expect(replacement.getSnapshot().freshRecoveryRef).toBe("root"));
-      await waitFor(() => expect(replacement.getSnapshot().activeRecoveryId).toBe(preserved?.clientMutationId));
-      expect(replacement.getSnapshot().text).toBe(submittedText);
-      expect(replacement.attachments.getState().items).toEqual([
-        expect.objectContaining({ marker: 1, name: "recovered.png", mediaType: "image/png", data: "AQID" }),
-      ]);
+      await waitFor(() => expect(replacement.getSnapshot().activeRecoveryId).toBe(queuedRecord.clientMutationId));
+      expect(replacement.getSnapshot().text).toBe("newer composition in another tab");
+      // The peer's newer composition is text-only, so no image restores; the
+      // image survives in the preserved row, reachable by explicit action.
+      expect(replacement.attachments.getState().items).toEqual([]);
     } finally {
       act(() => replacement.dispose());
     }
@@ -2008,7 +2022,7 @@ test("reload restores an explicitly picked editing row over an older rejected pe
   }
 });
 
-test("a preservation settling before a resume restores the preserved work on the resumed ref", async () => {
+test("a preservation settling before a resume never restores the preserved work automatically", async () => {
   // The held preservation publishes its projection between assertions; expect
   // only React's act warnings for those updates.
   const actWarnings = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -2035,6 +2049,9 @@ test("a preservation settling before a resume restores the preserved work on the
     optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "old composition" }] },
   });
   await storage.transferToRecovery(original.clientMutationId, "rejected");
+  // The user's own recorded pick names the original row; under the
+  // sync-only restoration contract it is the only thing mount-restore reads.
+  writeRecoveryPick(original.clientMutationId);
   const source = createTestComposerSource("root");
   const peer = new MutationOutboxIndexedDB();
   let reloaded: ReturnType<typeof createTestComposerSource> | undefined;
@@ -2075,6 +2092,13 @@ test("a preservation settling before a resume restores the preserved work on the
         (await storage.listRecovery("root")).find((record) => record.clientMutationId !== original.clientMutationId),
       ).toBeDefined();
     });
+    const preserved = (await storage.listRecovery("root")).find(
+      (record) => record.clientMutationId !== original.clientMutationId,
+    );
+    // The settle preserved the work durably but adopted nothing: the
+    // user's pick keeps naming the original row, not the preserved row.
+    expect(readRecoveryPick(original.clientMutationId)).toBeDefined();
+    expect(readRecoveryPick(preserved?.clientMutationId ?? "")).toBeUndefined();
     // The conversation resumes: the drain moves the preserved row and the
     // advanced peer row to the new identity, id-preserving.
     await peer.retargetOutbox("root", "resumed", { threadId: "thread-new", instanceId: "instance-new" });
@@ -2087,9 +2111,16 @@ test("a preservation settling before a resume restores the preserved work on the
     });
     await flushPendingTurnsProjectionForTests();
     await waitFor(() => expect(reloaded?.getSnapshot().freshRecoveryRef).toBe("resumed"));
+    // The pick still names the original row, whose id survived the retarget;
+    // mount-restore shows that row's durable content. The preserved work is
+    // never restored automatically — only an explicit action reaches it.
+    await waitFor(() => expect(reloaded?.getSnapshot().activeRecoveryId).toBe(original.clientMutationId));
     await waitFor(() =>
-      expect((screen.getByRole("textbox", { name: "Message" }) as HTMLElement).textContent).toBe(localText),
+      expect((screen.getByRole("textbox", { name: "Message" }) as HTMLElement).textContent).toBe("peer composition"),
     );
+    expect(
+      (await storage.listRecovery("resumed")).find((record) => record.clientMutationId === preserved?.clientMutationId),
+    ).toMatchObject({ composerText: localText });
   } finally {
     storage.release.resolve();
     act(() => cleanup());

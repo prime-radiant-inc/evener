@@ -17,7 +17,7 @@ import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../
 import { resetAskDockStoreForTests } from "./composer/askDock/askDockStore";
 import { ackAskUserCall } from "./composer/askDock/askDockTestUtils";
 import { requestComposerFocus, resetComposerFocusStoreForTests } from "./composer/composerFocus";
-import { readComposerDraft, writeComposerDraft } from "./composer/draft";
+import { readComposerDraft, writeComposerDraft, writeRecoveryPick } from "./composer/draft";
 import { resetPendingTurnsStoreForTests } from "./composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./composer/queue/testing/flushPendingTurnsProjection";
 import { requestQuoteInsert, resetQuoteInsertStoreForTests, useQuoteInsertRequest } from "./composer/quoteInsert";
@@ -752,7 +752,10 @@ test("a selected recovery owner and its structured attachment survive both modes
     ],
     optimisticDisplay: { method: "turn/start", input },
   });
-  await storage.transferToRecovery(row.clientMutationId, "rejected");
+  const recovered = await storage.transferToRecovery(row.clientMutationId, "rejected");
+  if (!recovered) throw Error("missing recovery fixture");
+  // The user's recorded pick: mount-restore reads the pick only.
+  writeRecoveryPick(recovered.clientMutationId);
   const fake = await setup();
   let view = await mount(fake);
   await waitFor(() => expect(lifetime().composer?.getSnapshot().activeRecoveryId).toBe(row.clientMutationId));

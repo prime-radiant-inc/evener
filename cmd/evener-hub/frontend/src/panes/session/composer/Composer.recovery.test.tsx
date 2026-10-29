@@ -39,7 +39,7 @@ import {
   submitButton,
   textarea,
 } from "./composerTestUtils";
-import { readDraft, writeComposerDraft } from "./draft";
+import { readDraft, writeComposerDraft, writeRecoveryPick } from "./draft";
 import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./queue/testing/flushPendingTurnsProjection";
 import { resetQuoteInsertStoreForTests } from "./quoteInsert";
@@ -158,7 +158,7 @@ afterEach(() => {
   delete (globalThis as { ResizeObserver?: typeof ResizeObserver }).ResizeObserver;
 });
 
-test.each(["automatic", "Edit message"] as const)(
+test.each(["Edit message"] as const)(
   "restored selections: recovery via %s preserves only visible selections with prose and attachments",
   async (activation) => {
     // fake-indexeddb uses native structuredClone, which cannot preserve jsdom
@@ -213,10 +213,7 @@ test.each(["automatic", "Edit message"] as const)(
         await user.click(screen.getByRole("button", { name: "Edit message" }));
         await flushPendingTurnsProjectionForTests();
       }
-      const expectedComposerText =
-        activation === "automatic"
-          ? "Use /plugin:visible, then /plugin:visible; /unselected [image 1]"
-          : "Current work\n\nUse /plugin:visible, then /plugin:visible; /unselected [image 1]";
+      const expectedComposerText = "Current work\n\nUse /plugin:visible, then /plugin:visible; /unselected [image 1]";
       expect(textarea().textContent).toBe(expectedComposerText);
       expect(
         within(textarea())
@@ -234,10 +231,7 @@ test.each(["automatic", "Edit message"] as const)(
       const expectedSubmittedInput = [
         {
           type: "text",
-          text:
-            activation === "automatic"
-              ? "Use /plugin:visible, then /plugin:visible; /unselected (attached image 1: proof.png)"
-              : "Current work\n\nUse /plugin:visible, then /plugin:visible; /unselected (attached image 1: proof.png)",
+          text: "Current work\n\nUse /plugin:visible, then /plugin:visible; /unselected (attached image 1: proof.png)",
         },
         { type: "image", mediaType: "image/png", data: "AQID", name: "proof.png" },
         { type: "skill", name: "plugin:visible" },
@@ -268,6 +262,9 @@ test("background recovery ownership rollover preserves the editor selection", as
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
   const recovered = await seedRejectedRecoveryWithAttachment(storage, "ref_a");
+  // The user's recorded pick names this row: mount-restore reads the pick
+  // only, never a fallback discovery.
+  writeRecoveryPick(recovered.clientMutationId);
   const source = createTestComposerSource("ref_a");
   await mountComposerWithHandle(
     "ref_a",
@@ -320,18 +317,20 @@ test("background recovery ownership rollover preserves the editor selection", as
       await source.flushRecoveryWrites();
     });
 
-    const preservedId = source.getSnapshot().activeRecoveryId;
-    expect(preservedId).not.toBeNull();
-    expect(preservedId).not.toBe(recovered.clientMutationId);
-    if (preservedId === null) throw new Error("preservation did not establish a recovery owner");
-    const preserved = await storage.getRecovery(preservedId);
+    // The settle preserves the edited work durably but adopts nothing: the
+    // composer keeps no active recovery row, and the typed composition and
+    // selection stay in the live composer.
+    expect(source.getSnapshot().activeRecoveryId).toBeNull();
+    const preserved = (await storage.listRecovery("ref_a")).find(
+      (record) => record.clientMutationId !== recovered.clientMutationId,
+    );
     expect(preserved).toMatchObject({ composerText: editedText, recoveryKind: "rejected" });
     expect(preserved?.attachments).toHaveLength(1);
     expect(preserved?.attachments[0]).toMatchObject({ marker: 1, name: "proof.png", mediaType: "image/png" });
     expect(source.attachments.getState().items).toMatchObject([
       { marker: 1, name: "proof.png", mediaType: "image/png", data: "AQID" },
     ]);
-    expect(await storage.getOutbox(preservedId)).toBeUndefined();
+    expect(await storage.getOutbox(preserved?.clientMutationId ?? "")).toBeUndefined();
     expect(source.getSnapshot().text).toBe(editedText);
     expect(editor.textContent).toBe(editedText);
     expect(screen.getByRole("button", { name: "Remove proof.png" })).toBeTruthy();
@@ -346,6 +345,9 @@ test("a losing cross-tab recovered send does not issue a second request", async 
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
   const recovered = await seedRejectedRecoveryWithAttachment(storage, "ref_a");
+  // The user's recorded pick names this row: mount-restore reads the pick
+  // only, never a fallback discovery.
+  writeRecoveryPick(recovered.clientMutationId);
   const seeded = await storage.getRecovery(recovered.clientMutationId);
   if (!seeded) throw new Error("recovery fixture missing");
   const selected = await storage.updateRecoveryInput(
@@ -401,21 +403,20 @@ test("a losing cross-tab recovered send does not issue a second request", async 
   await user.click(submitButton());
   await flushPendingTurnsProjectionForTests();
 
-  // The local composition is preserved under a fresh recovery owner rather
-  // than dropped into a draft that cannot carry the image bytes.
-  await waitFor(() => {
-    expect(source.getSnapshot().activeRecoveryId).not.toBeNull();
-    expect(source.getSnapshot().activeRecoveryId).not.toBe(recovered.clientMutationId);
-  });
-  const preservedId = source.getSnapshot().activeRecoveryId;
-  expect(preservedId).not.toBe(recovered.clientMutationId);
-  expect(await storage.getRecovery(preservedId ?? "")).toMatchObject({
+  // The same-tick failure path of the user's own send preserves the local
+  // composition durably - never dropped into a draft that cannot carry the
+  // image bytes - while adopting no fresh owner.
+  expect(source.getSnapshot().activeRecoveryId).toBeNull();
+  const preserved = (await storage.listRecovery("ref_a")).find(
+    (record) => record.clientMutationId !== recovered.clientMutationId,
+  );
+  expect(preserved).toMatchObject({
     composerText: "edit me [image 1]",
     recoveryKind: "rejected",
   });
   // The fresh owner is a recovery row, not an outbox mutation replaying the
   // peer's already-accepted send.
-  expect(await storage.getOutbox(preservedId ?? "")).toBeUndefined();
+  expect(await storage.getOutbox(preserved?.clientMutationId ?? "")).toBeUndefined();
   expect(editor.textContent).toBe("edit me [image 1]");
   expect(readDraft("ref_a") ?? "").toBe("");
   expect(screen.getByRole("button", { name: "Remove proof.png" })).toBeTruthy();
@@ -440,7 +441,11 @@ test("a losing cross-tab recovered send does not issue a second request", async 
     { type: "text", text: "edit me (attached image 1: proof.png)" },
     { type: "image", mediaType: "image/png", data: "AQID", name: "proof.png" },
   ]);
-  expect(await storage.listRecovery("ref_a")).toHaveLength(0);
+  // The preserved row stays as durable insurance, reachable only
+  // through an explicit action.
+  expect((await storage.listRecovery("ref_a")).map((record) => record.clientMutationId)).toEqual([
+    preserved?.clientMutationId,
+  ]);
   otherTab.close();
 });
 
@@ -448,6 +453,9 @@ test("a recovery Send refused after a peer revision keeps the composer and sourc
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
   const recovered = await seedRejectedRecoveryWithAttachment(storage, "ref_a");
+  // The user's recorded pick names this row: mount-restore reads the pick
+  // only, never a fallback discovery.
+  writeRecoveryPick(recovered.clientMutationId);
   const seeded = await storage.getRecovery(recovered.clientMutationId);
   if (!seeded) throw new Error("recovery fixture missing");
   const selectedInput = [...(seeded.payload.input as InputItem[])];
@@ -532,7 +540,8 @@ test("a recovery Send refused after a peer revision keeps the composer and sourc
 test("a recovered draft nobody is touching stops writing itself back to IndexedDB", async () => {
   const storage = new CountingRecoveryStorage();
   setMutationStorageForTests(storage);
-  await seedRejectedRecovery(storage, "ref_a", "sitting still");
+  const recovered = await seedRejectedRecovery(storage, "ref_a", "sitting still");
+  writeRecoveryPick(recovered.clientMutationId);
   await mountComposer("ref_a", { status: { type: "idle" } });
   await flushPendingTurnsProjectionForTests();
   expect(textarea().textContent).toBe("sitting still");
@@ -551,7 +560,8 @@ test("a recovered draft nobody is touching stops writing itself back to IndexedD
 test("a slow recovery read still activates before the mount's projection work is awaited out", async () => {
   const storage = new SlowRecoveryStorage();
   setMutationStorageForTests(storage);
-  await seedRejectedRecovery(storage, "ref_a", "slow to arrive");
+  const recovered = await seedRejectedRecovery(storage, "ref_a", "slow to arrive");
+  writeRecoveryPick(recovered.clientMutationId);
   await mountComposer("ref_a", { status: { type: "idle" } }, { holdMountProjection: true });
   const editor = textarea();
   expect(editor.textContent).toBe("");
@@ -566,7 +576,8 @@ test("the mount helper returns only after the mount's projection refresh has set
   // this slow read is already applied. Its opt-out sibling shows the other side.
   const storage = new SlowRecoveryStorage();
   setMutationStorageForTests(storage);
-  await seedRejectedRecovery(storage, "ref_a", "slow to arrive");
+  const recovered = await seedRejectedRecovery(storage, "ref_a", "slow to arrive");
+  writeRecoveryPick(recovered.clientMutationId);
   await mountComposer("ref_a", { status: { type: "idle" } });
 
   expect(textarea().textContent).toBe("slow to arrive");
@@ -576,6 +587,7 @@ test("a slow recovery write is durable before the edit's projection work is awai
   const storage = new SlowRecoveryStorage();
   setMutationStorageForTests(storage);
   const recovered = await seedRejectedRecovery(storage, "ref_a", "before");
+  writeRecoveryPick(recovered.clientMutationId);
   const user = userEvent.setup();
   await mountComposer("ref_a", { status: { type: "idle" } });
   await flushPendingTurnsProjectionForTests();
@@ -593,6 +605,9 @@ test("recovered edits and attachment removal survive Composer remount", async ()
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
   const recovered = await seedRejectedRecoveryWithAttachment(storage, "ref_a");
+  // The user's recorded pick names this row: mount-restore reads the pick
+  // only, never a fallback discovery.
+  writeRecoveryPick(recovered.clientMutationId);
   const user = userEvent.setup();
   const first = await mountComposerWithHandle("ref_a", { status: { type: "idle" } });
   await flushPendingTurnsProjectionForTests();
@@ -631,6 +646,7 @@ test.each([
   const recovered = image
     ? await seedRejectedRecoveryWithAttachment(storage, "ref_a")
     : await seedRejectedRecovery(storage, "ref_a", "retry me");
+  writeRecoveryPick(recovered.clientMutationId);
   const fake = await mountComposer("ref_a");
   fake.on("turn/start", () => new Promise<never>(() => undefined));
   await flushPendingTurnsProjectionForTests();
@@ -681,6 +697,7 @@ test("a /queue typed over a recovered edit resends its body atomically", async (
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
   const recovered = await seedRejectedRecovery(storage, "ref_a", "retry me");
+  writeRecoveryPick(recovered.clientMutationId);
   await mountComposer("ref_a", {
     status: { type: "active" },
     evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
@@ -702,6 +719,7 @@ test("a failed /queue resend keeps the invocation as the recovery composer text"
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
   const recovered = await seedRejectedRecovery(storage, "ref_a", "retry me");
+  writeRecoveryPick(recovered.clientMutationId);
   await mountComposer("ref_a", {
     status: { type: "active" },
     evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
@@ -721,6 +739,7 @@ test("blanking an attachment-free recovered draft discards it durably", async ()
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
   const recovered = await seedRejectedRecovery(storage, "ref_a", "discard me");
+  writeRecoveryPick(recovered.clientMutationId);
   const user = userEvent.setup();
   const first = await mountComposerWithHandle("ref_a", { status: { type: "idle" } });
   await flushPendingTurnsProjectionForTests();
@@ -740,6 +759,7 @@ test("draining an active recovery consumes its owner before the next submission"
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
   const recovery = await seedRejectedRecovery(storage, "ref_a", "retry me");
+  writeRecoveryPick(recovery.clientMutationId);
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
     evener: {

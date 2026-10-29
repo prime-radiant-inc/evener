@@ -17,16 +17,12 @@ import {
   clearPersistedDraftIfRevisionMatches,
   clearRecoveryPick,
   markDraftEdited,
-  type RecoveryPick,
   readComposerDraft,
   readComposerDraftRevisionId,
   readComposerDraftSnapshot,
   readDraftRevision,
-  readRecoveryPick,
-  succeedRecoveryPick,
   writeComposerDraft,
   writeRecoveryPick,
-  writeRecoveryPickAutomatically,
 } from "./draft";
 import {
   discardRecoveryPendingTurn,
@@ -46,12 +42,7 @@ import {
 import { pushRecoveryRefusal } from "./submitProtocol";
 
 type RevisionRef<T> = { current: T };
-export type RecoveryOwnerLease = {
-  clientMutationId: string;
-  compositionRevision: number;
-  /** The row's pick rank at activation; settles inherit it when the registry entry is gone. */
-  pick?: RecoveryPick;
-};
+export type RecoveryOwnerLease = { clientMutationId: string; compositionRevision: number };
 type RecoveryComposition = {
   text: string;
   attachments: readonly InputAttachment[];
@@ -118,10 +109,7 @@ export interface ComposerSourceState {
   updateSkillNames(names: string[]): void;
   editSkillNames(names: string[]): void;
   updateSelectionMeta(value: SkillEditorValue): void;
-  setActiveRecoveryId(
-    record: MutationRecoveryRecord | null,
-    options?: { automatic?: boolean; focused?: boolean; replaces?: string },
-  ): void;
+  setActiveRecoveryId(record: MutationRecoveryRecord | null, options?: { restore?: boolean }): void;
   markRestore(): void;
   persistDraft(text: string): void;
   writeDraft(text: string, mayPersist: boolean, source?: TextEditSource): void;
@@ -330,10 +318,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     markEdited();
     updateSkillNames(names);
   }
-  function setActiveRecoveryId(
-    record: MutationRecoveryRecord | null,
-    options?: { automatic?: boolean; focused?: boolean; replaces?: string },
-  ): void {
+  function setActiveRecoveryId(record: MutationRecoveryRecord | null, options?: { restore?: boolean }): void {
     if (disposed) return;
     const activeRecoveryId = record?.clientMutationId ?? null;
     const previousRecoveryId = currentRecoveryId();
@@ -345,31 +330,26 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     if (record === null) {
       // Retirement releases the retiring row's own pick entry: the pick is
       // keyed by that row, and the send consumed it. Picks this tab holds
-      // for other rows are separate entries and survive untouched.
-      if (previousRecoveryId !== null) clearRecoveryPick(previousRecoveryId);
+      // for other rows are separate entries and survive untouched. A
+      // restore-path retirement ({ restore: true }) never touches the
+      // registry - an asynchronous event must not mutate picks.
+      if (previousRecoveryId !== null && options?.restore !== true) clearRecoveryPick(previousRecoveryId);
       recoveryOwnerLeaseRef.current = null;
-    } else {
-      if (options?.automatic === true && options.replaces !== undefined) {
-        // A background settle that displaces a row succeeds the pick: the
-        // fresh row inherits the displaced row's rank, so only the user's own
-        // later acts outrank it.
-        succeedRecoveryPick(options.replaces, record.clientMutationId);
-      } else if (options?.automatic === true) {
-        // A background activation appends a pick that cannot outrank an
-        // explicit one; only the focused pane's activation ranks as its own.
-        writeRecoveryPickAutomatically(record.clientMutationId, options?.focused === true);
-      } else {
-        // A user pick is the newest choice by definition: it always wins.
-        writeRecoveryPick(record.clientMutationId);
-      }
+    } else if (options?.restore === true) {
+      // Mount-time restore of the user's recorded pick: content only. The
+      // registry is never written or cleared here - an asynchronous event
+      // must not mutate picks, and the pick that named this row already
+      // carries the rank the user gave it.
       recoveryOwnerLeaseRef.current = {
         clientMutationId: record.clientMutationId,
         compositionRevision: recoveryCompositionRevision(record),
-        // Retain the row's pick rank with the lease: a settle completing
-        // after another tab consumed the row cannot re-read the registry
-        // entry - a concurrent resolution may have released it as dangling -
-        // so succession inherits from this captured rank.
-        pick: readRecoveryPick(record.clientMutationId),
+      };
+    } else {
+      // A user pick is the newest choice by definition: it always wins.
+      writeRecoveryPick(record.clientMutationId);
+      recoveryOwnerLeaseRef.current = {
+        clientMutationId: record.clientMutationId,
+        compositionRevision: recoveryCompositionRevision(record),
       };
     }
     state.setState({ activeRecoveryId });
@@ -486,7 +466,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
             hasEmptyComposition()
           ) {
             recoveryOwnsLocalDraftRef.current = false;
-            setActiveRecoveryId(null);
+            setActiveRecoveryId(null, { restore: true });
             if (localDraftRevisionId) clearPersistedDraftIfRevisionMatches(ref, localDraftRevisionId);
           }
           return true;
@@ -516,30 +496,20 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
             // bytes, so preserve the complete local composition under a fresh
             // recovery owner before retiring the lease.
             const preserved = await preserveStaleRecovery(clientMutationId, localDraftRevisionId);
-            if (preserved) {
-              // The preservation committed, so the fresh row succeeds the displaced
-              // row's pick even when the pane closed while it settled: a reopen
-              // restores the local work by row id wherever the durable target now
-              // lives, and the user's later picks still outrank it.
-              succeedRecoveryPick(clientMutationId, preserved.clientMutationId, lease.pick);
-            }
             if (
               !disposed &&
               currentRecoveryId() === clientMutationId &&
               recoveryReplacementEpochRef.current === replacementEpoch
             ) {
-              if (preserved) {
-                // Own the returned row, including the identical-composition
-                // fast path and its current revision: later edits update it,
-                // Send consumes it, and a reload restores its attachment
-                // bytes.
-                setActiveRecoveryId(preserved, { automatic: true, replaces: clientMutationId });
-              } else {
-                // Preservation failed, so nothing durable carries the images.
-                // Fall back to the ordinary draft and retire the lease.
-                persistDraft(textRef.current);
-                setActiveRecoveryId(null);
-              }
+              // Automatic background restoration is cut from this PR: the
+              // settle adopts neither the fresh row nor the composer and
+              // never touches the pick registry. The local composition stays
+              // exactly as the user left it - the preserved row (when the
+              // preservation committed) carries it durably, and an explicit
+              // action reaches that row. Only a failed preservation falls
+              // back to the ordinary draft as the carrier.
+              if (!preserved) persistDraft(textRef.current);
+              setActiveRecoveryId(null, { restore: true });
             }
           }
           if (!disposed) {
@@ -554,11 +524,9 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
           currentRecoveryId() === clientMutationId &&
           recoveryReplacementEpochRef.current === replacementEpoch
         ) {
-          const refreshedLease = recoveryOwnerLeaseRef.current;
           recoveryOwnerLeaseRef.current = {
             clientMutationId,
             compositionRevision: recoveryCompositionRevision(updated),
-            pick: refreshedLease?.clientMutationId === clientMutationId ? refreshedLease.pick : undefined,
           };
           recoveryBaseRecord = updated;
           committedRecoveryComposition = recoveryCompositionFingerprint({
@@ -693,11 +661,9 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
             compositionOwnerId,
           );
           if (!updated || disposed || recoveryReplacementEpochRef.current !== replacementEpoch) return false;
-          const refreshedLease = recoveryOwnerLeaseRef.current;
           recoveryOwnerLeaseRef.current = {
             clientMutationId: ownerId,
             compositionRevision: recoveryCompositionRevision(updated),
-            pick: refreshedLease?.clientMutationId === ownerId ? refreshedLease.pick : undefined,
           };
           if (incorporatedSnapshotIsCurrent() && incorporatedRevisionId !== undefined) {
             incorporatedSnapshotCleared = clearPersistedDraftIfRevisionMatches(ref, incorporatedRevisionId);
