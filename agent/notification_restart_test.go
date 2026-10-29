@@ -62,6 +62,10 @@ func incidentPendingFacts(t *testing.T, stateDir, sessionID, id string) {
 
 func TestNotificationOwnerHeldObserverEligible(t *testing.T) {
 	a := newMessagingAdapter("HELD-OBSERVER-11")
+	returns := newActivationReturns()
+	yieldGate := make(chan struct{})
+	releaseYield := sync.OnceFunc(func() { close(yieldGate) })
+	defer releaseYield()
 	a.script("root", func(llm.Request) llm.Response {
 		return delegateToolCall("held-observer-11", map[string]any{"prompt": "HELD-OBSERVER-11", "watch_parent": true})
 	}, func(llm.Request) llm.Response { return finalResponse("held-owner-initial-11") })
@@ -72,17 +76,21 @@ func TestNotificationOwnerHeldObserverEligible(t *testing.T) {
 		if watchID == "" {
 			t.Errorf("watch tool result omitted identity: %s", lastToolResultText(req.Messages))
 		}
+		awaitSignal(t, yieldGate, "observer activation capture")
 		return waitResponseFor("observer-wait-11", "watch:"+watchID)
 	}, func(req llm.Request) llm.Response {
 		return finalResponse("observer-report-9a087bc1")
 	})
-	root := newMessagingRoot(t, a, nil)
+	root := newMessagingRoot(t, a, returns.configure)
+	t.Cleanup(func() { returns.close(t, root) })
 	if _, err := root.ProcessInput(context.Background(), "held-observer-start-11", nil); err != nil {
 		t.Fatal(err)
 	}
 	observer := root.subagents.sessions()[0]
 	a.waitForRequests(t, "HELD-OBSERVER-11", 2)
-	incidentYielded(t, root, observer.ID())
+	initial := returns.take(t, observer.ID())
+	releaseYield()
+	incidentYielded(t, root, observer.ID(), initial)
 	a.script("root", func(llm.Request) llm.Response {
 		return toolCallResponse(askUserCall("held-question-11", askUserArgsValid()))
 	})

@@ -506,10 +506,19 @@ func (a *subagent) cancelYieldedActivation(lease delegateLease) {
 	}
 	c.mu.Unlock()
 	a.mu.Unlock()
+	var returned func()
+	if finish {
+		if factory := a.sess.cfg.testOnly.subagentActivationReturn; factory != nil {
+			returned = factory(a, lease)
+		}
+	}
 	if cancel != nil {
 		cancel()
 	}
 	if finish {
+		if returned != nil {
+			defer returned()
+		}
 		// Reuse only the existing canceled-run finalization tail. This cannot
 		// enter a model or tool call and owns no execution capacity.
 		ctx, cancel := context.WithCancel(a.sess.sessionContext())

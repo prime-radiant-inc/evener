@@ -984,6 +984,12 @@ func TestMissingWaitProducerNotifiesOnce(t *testing.T) {
 
 func TestNotificationBatchCapacityRelease(t *testing.T) {
 	a := newMessagingAdapter("REAL-CAP-WAIT-11", "REAL-CAP-BUSY-11")
+	returns := newActivationReturns()
+	yieldGate, terminalGate := make(chan struct{}), make(chan struct{})
+	releaseYield := sync.OnceFunc(func() { close(yieldGate) })
+	releaseTerminal := sync.OnceFunc(func() { close(terminalGate) })
+	defer releaseYield()
+	defer releaseTerminal()
 	fifo, releaseShell := waitProducerFIFO(t)
 	defer releaseShell()
 	gate := make(chan struct{})
@@ -994,24 +1000,31 @@ func TestNotificationBatchCapacityRelease(t *testing.T) {
 	resumed := make(chan struct{}, 1)
 	a.script("REAL-CAP-WAIT-11", func(llm.Request) llm.Response { return incidentShellResponse("real-cap-shell-11", fifo) }, func(req llm.Request) llm.Response {
 		jobID = regexp.MustCompile(`job_[A-Za-z0-9_]{10,}`).FindString(lastToolResultText(req.Messages))
+		awaitSignal(t, yieldGate, "capacity yield activation capture")
 		return waitResponseFor("real-cap-wait-11", jobID)
 	}, func(req llm.Request) llm.Response {
 		if err := incidentJobPayload(req, jobID, "completed", "exit_zero"); err != nil {
 			t.Error(err)
 		}
 		resumed <- struct{}{}
+		awaitSignal(t, terminalGate, "capacity terminal activation capture")
 		return finalResponse("real-cap-observed-11")
 	})
 	a.script("REAL-CAP-BUSY-11", func(llm.Request) llm.Response { <-gate; return finalResponse("real-cap-busy-result-11") })
 	root := newMessagingRoot(t, a, func(cfg *SessionConfig) {
+		returns.configure(cfg)
 		cfg.MaxConcurrentDelegateTurns = 1
 		cfg.clock = agenttest.NewFakeClock() // Capacity release, not a timer, must wake the receiver.
 	})
+	t.Cleanup(func() { returns.close(t, root) })
 	if _, err := root.ProcessInput(context.Background(), "real-cap-start-11", nil); err != nil {
 		t.Fatal(err)
 	}
 	owner := root.subagents.sessions()[0]
-	incidentYielded(t, root, owner.ID())
+	a.waitForRequests(t, "REAL-CAP-WAIT-11", 2)
+	initial := returns.take(t, owner.ID())
+	releaseYield()
+	incidentYielded(t, root, owner.ID(), initial)
 	a.script("root", func(llm.Request) llm.Response { return delegateToolResponse("real-cap-busy-11", "REAL-CAP-BUSY-11") }, func(llm.Request) llm.Response { return finalResponse("real-cap-busy-root-11") })
 	if _, err := root.ProcessInput(context.Background(), "real-cap-busy-start-11", nil); err != nil {
 		t.Fatal(err)
@@ -1032,7 +1045,12 @@ func TestNotificationBatchCapacityRelease(t *testing.T) {
 	}
 	releaseBusy()
 	awaitSignal(t, resumed, "real capacity release notification")
-	incidentYielded(t, root, owner.ID())
+	terminal := returns.take(t, owner.ID())
+	if terminal.lease != initial.lease || terminal.generationDone != initial.generationDone {
+		t.Fatalf("capacity release replaced the yielded generation: %+v -> %+v", initial, terminal)
+	}
+	releaseTerminal()
+	incidentSettled(t, root, owner.ID(), terminal)
 	incidentNotificationFacts(t, root.stateDir, owner.ID(), id)
 	incidentCoverage(t, root.stateDir, owner.ID(), map[string][]string{"real-cap-observed-11": {id}})
 	if len(a.requestsFor("REAL-CAP-WAIT-11")) != 3 {

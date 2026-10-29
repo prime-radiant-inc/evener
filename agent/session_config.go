@@ -456,6 +456,9 @@ type testConfig struct {
 	// subagentRunIteration observes each production subagent input iteration.
 	// Tests use it only as a deterministic barrier around continuation decisions.
 	subagentRunIteration func(*subagent, int)
+	// subagentActivationReturn observes one executor's return after owner cleanup.
+	// Installed before launch, nil in production. Neither callback may block.
+	subagentActivationReturn func(*subagent, delegateLease) func()
 	// subagentBeforeSettlement observes the final unlocked boundary before a
 	// stable generation enters controller settlement.
 	subagentBeforeSettlement func(*subagent)

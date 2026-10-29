@@ -1567,8 +1567,16 @@ func resetSubagentForRunLocked(sub *subagent, cancel context.CancelFunc, started
 }
 
 func (s *Session) launchSubagentRun(runCtx context.Context, sub *subagent, runCancel context.CancelFunc, input string, inputProvenance *provenance.Causal) {
+	var returned func()
+	if factory := sub.sess.cfg.testOnly.subagentActivationReturn; factory != nil {
+		lease, _ := runCtx.Value(delegateRunLeaseContextKey{}).(delegateLease)
+		returned = factory(sub, lease)
+	}
 	// Resume runs should also be independent of the caller's wait context.
 	go func() {
+		if returned != nil {
+			defer returned()
+		}
 		defer s.sendersWG.Done()
 		defer runCancel()
 		sub.run(runCtx, input, inputProvenance)
