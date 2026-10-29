@@ -24,7 +24,7 @@ packages do not count.
 | `EVENER_ALLOWED_DECISIONS` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener`, `tools/tool-fluency/cmd/evener-fluency` |
 | `EVENER_FLUENCY_MODEL` | tooling | [developing-evener/environment.md](../developing-evener/environment.md) | `tools/tool-fluency/cmd/evener-fluency` |
 | `EVENER_HOST_TEMP_BASES` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/sandbox` |
-| `EVENER_HUB_LISTEN_ADDR` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener-hub`, `cmd/evener-hub/internal/sshconn` |
+| `EVENER_HUB_LISTEN_ADDR` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener-hub` |
 | `EVENER_HUB_SPAWNED` | internal | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener` |
 | `EVENER_HUB_TOKEN` | internal | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener` |
 | `EVENER_HUB_URL` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener-hub` |

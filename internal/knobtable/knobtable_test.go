@@ -112,11 +112,8 @@ func TestEnvRowsReportConsumersAndDocRows(t *testing.T) {
 	if _, ok := byName["EVENER_RETIRED"]; ok {
 		t.Error("a variable with no visibility is retired and must not be listed")
 	}
-	if got := byName["EVENER_READ"]; !slices.Equal(got.Consumers, []string{"cmd/dev", "cmd/tool", "envvars/userdirs"}) || got.DocRow != "developing-evener/environment.md" {
-		t.Errorf("EVENER_READ row = %+v, want consumers from the identifier and the name, and its doc row", got)
-	}
-	if got := byName["EVENER_BY_NAME"]; !slices.Equal(got.Consumers, []string{"cmd/tool"}) {
-		t.Errorf("EVENER_BY_NAME consumers = %v, want the directory that spells the name", got.Consumers)
+	if got := byName["EVENER_READ"]; !slices.Equal(got.Consumers, []string{"cmd/tool", "envvars/userdirs"}) || got.DocRow != "developing-evener/environment.md" {
+		t.Errorf("EVENER_READ row = %+v, want the packages that use its identifier (a subpackage of envvars included, a literal spelling of the name excluded) and its doc row", got)
 	}
 	if got := byName["EVENER_ORPHAN"]; len(got.Consumers) != 0 || got.DocRow != "" {
 		t.Errorf("EVENER_ORPHAN row = %+v, want no consumer (a test is not one) and no doc row (a dated plan is not one)", got)
@@ -124,9 +121,9 @@ func TestEnvRowsReportConsumersAndDocRows(t *testing.T) {
 	if got := byName["ACME_ORG_ID"]; !slices.Equal(got.Consumers, []string{"llm/registry"}) {
 		t.Errorf("expanded variable consumers = %v, want the registry that expands it", got.Consumers)
 	}
-	for _, name := range []string{"ACME_API_KEY", "GHOST_API_KEY", "EVENER_ONLY_CLEARED", "EVENER_UNREAD", "EVENER_SET_ONLY", "EVENER_MENTIONED", "EVENER_WRITTEN", "EVENER_UNSET_ONLY"} {
+	for _, name := range []string{"ACME_API_KEY", "GHOST_API_KEY", "EVENER_ONLY_CLEARED", "EVENER_BY_NAME", "EVENER_UNREAD", "EVENER_SET_ONLY", "EVENER_MENTIONED", "EVENER_WRITTEN", "EVENER_UNSET_ONLY"} {
 		if got := byName[name]; len(got.Consumers) != 0 {
-			t.Errorf("%s consumers = %v, want none: no reader names it (a catalog entry, a function body in the registry package, or a non-test-support package that gets the value rather than sets it)", name, got.Consumers)
+			t.Errorf("%s consumers = %v, want none: no reader names it (a catalog entry, a function body in the registry package, or a non-test-support package that uses its envvars identifier other than to set it; a literal spelling of the name proves nothing)", name, got.Consumers)
 		}
 	}
 	if got := byName["EVENER_USED_INSIDE"]; !slices.Equal(got.Consumers, []string{"envvars"}) {

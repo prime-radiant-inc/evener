@@ -89,14 +89,14 @@ func parseRegistry(root string) ([]registryEntry, error) {
 
 // envRows lists the supported variables (those with a Visibility; the one
 // retained only to diagnose a removed name has none) with their doc row and
-// the directories that read them, by registry identifier or by name.
+// the directories that read them: through the envvars identifier, from the
+// registry's own functions, or by name in the provider catalog.
 func envRows(root string, sources []goSource) ([]envRow, error) {
 	registry, err := parseRegistry(root)
 	if err != nil {
 		return nil, err
 	}
 	byIdent := map[string]map[string]bool{}
-	byName := map[string]map[string]bool{}
 	for _, src := range sources {
 		refs, err := scanRefs(src)
 		if err != nil {
@@ -105,14 +105,6 @@ func envRows(root string, sources []goSource) ([]envRow, error) {
 		if src.dir() != "envvars" {
 			for ident := range refs.registry {
 				addTo(byIdent, ident, src.dir())
-			}
-		}
-		if src.path == "envvars/envvars.go" {
-			continue
-		}
-		for _, lit := range refs.literals {
-			if evenerName.MatchString(lit) {
-				addTo(byName, lit, src.dir())
 			}
 		}
 	}
@@ -130,13 +122,11 @@ func envRows(root string, sources []goSource) ([]envRow, error) {
 			continue
 		}
 		dirs := map[string]bool{}
-		for _, index := range []map[string]bool{byIdent[e.ident], byName[e.name]} {
-			for d := range index {
-				// A test-support package that clears a variable to isolate a
-				// test refers to it without reading it.
-				if !isTestSupport(d) {
-					dirs[d] = true
-				}
+		for d := range byIdent[e.ident] {
+			// A test-support package that clears a variable to isolate a
+			// test refers to it without reading it.
+			if !isTestSupport(d) {
+				dirs[d] = true
 			}
 		}
 		if internalReads[e.ident] {
