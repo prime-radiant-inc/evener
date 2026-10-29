@@ -413,6 +413,10 @@ func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
 		return
 	}
 	collided := m.breakBootTombstoneCollision(records)
+	// A finalizer's write can expire a tombstone whose retention has passed, and
+	// the pass that marks the removed host's records reads the tombstone: what a
+	// landed removal left behind is marked first.
+	m.reconcileHostRemovedPass(records)
 	// The sections go only now: every check above compares hub.toml with the
 	// file the staged commits saw, and the strip rewrites it.
 	m.stripLegacySections(true)

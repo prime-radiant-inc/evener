@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
@@ -1580,5 +1581,39 @@ func TestBootFinalizationWaitsUntilTheHostFileDirectoryIsDurable(t *testing.T) {
 
 	if _, held := mustRecords(t, store).StagedReceipts["side"]; held {
 		t.Fatal("the landed commit stayed unfinalized once the directory was durable")
+	}
+}
+
+// TestALandedRemovalRecoveredAfterItsRetentionStillMarksTheRemovedHost pins the
+// order of boot's passes: the removed host's operation records and token rows are
+// marked before the finalizer's write can expire the tombstone that says which
+// host was removed, so a removal recovered after its retention window leaves no
+// live-looking rows behind.
+func TestALandedRemovalRecoveredAfterItsRetentionStillMarksTheRemovedHost(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, store := hub.boot(t, false)
+	side, _ := m.cfg.hosts.Get("side")
+	mintHostToken(t, store, side)
+	params := removeRequest(t, m, "side")
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
+
+	hub.restartStateRoot(t)
+	reopened, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	doc := hostBootDocument(mustLoadConfig(t, hub.configPath), reopened)
+	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
+	if err != nil {
+		t.Fatalf("hostreg.NewSeeded: %v", err)
+	}
+	newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostOpsStore: reopened, RemoteHostConfigPath: hub.configPath,
+		HostTombstoneRetention: time.Nanosecond,
+	}, hub.configPath, hosts, t.Logf)
+
+	if _, ok := reopened.OutstandingToken("side"); ok {
+		t.Fatal("the removed host's token row survived a recovery past its retention window")
 	}
 }
