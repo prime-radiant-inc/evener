@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/gittest"
 )
 
 // scripts/ops/tracked-file-size-check.sh keeps large blobs out of history. Its
@@ -19,9 +21,7 @@ func runTrackedFileSizeCheck(t *testing.T, files map[string]int) (bool, string) 
 		t.Skip("scripts/ops/tracked-file-size-check.sh gate runs on Unix CI")
 	}
 	root := t.TempDir()
-	if out, err := exec.Command("git", "-C", root, "init", "-q").CombinedOutput(); err != nil {
-		t.Fatalf("git init: %v\n%s", err, out)
-	}
+	gittest.Run(t, root, "init", "-q")
 	for path, size := range files {
 		full := filepath.Join(root, filepath.FromSlash(path))
 		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
@@ -31,15 +31,15 @@ func runTrackedFileSizeCheck(t *testing.T, files map[string]int) (bool, string) 
 			t.Fatalf("write %s: %v", path, err)
 		}
 	}
-	if out, err := exec.Command("git", "-C", root, "add", ".").CombinedOutput(); err != nil {
-		t.Fatalf("git add: %v\n%s", err, out)
-	}
+	gittest.Run(t, root, "add", "--force", ".")
 	wd, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
 	}
 	script := filepath.Join(wd, "scripts", "ops", "tracked-file-size-check.sh")
-	output, err := exec.Command(script, "--root", root).CombinedOutput()
+	cmd := exec.Command(script, "--root", root)
+	cmd.Env = gittest.Env()
+	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if _, ok := err.(*exec.ExitError); !ok {
 			t.Fatalf("running %s: %v", script, err)
@@ -69,6 +69,13 @@ func TestTrackedFileSizeRejectsOversizedFile(t *testing.T) {
 	}
 }
 
+func TestTrackedFileSizeRejectsOversizedFileWithNewlineInName(t *testing.T) {
+	passed, output := runTrackedFileSizeCheck(t, map[string]int{"assets/huge\n.bin": 1<<20 + 1})
+	if passed {
+		t.Fatalf("the gate passed an oversized file whose name has a newline:\n%s", output)
+	}
+}
+
 func TestTrackedFileSizeAllowsListedFile(t *testing.T) {
 	passed, output := runTrackedFileSizeCheck(t, map[string]int{"mobile-native/src/generated/mermaidPage.ts": 2 << 20})
 	if !passed {
@@ -86,7 +93,7 @@ func TestTrackedFileSizeFailsWhenRootIsNotARepository(t *testing.T) {
 	}
 	script := filepath.Join(wd, "scripts", "ops", "tracked-file-size-check.sh")
 	cmd := exec.Command(script, "--root", t.TempDir())
-	cmd.Env = append(os.Environ(), "GIT_CEILING_DIRECTORIES="+filepath.Dir(t.TempDir()))
+	cmd.Env = append(gittest.Env(), "GIT_CEILING_DIRECTORIES="+filepath.Dir(t.TempDir()))
 	if err := cmd.Run(); err == nil {
 		t.Fatal("the gate passed a root with no git repository, so it checked nothing")
 	}
