@@ -168,6 +168,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 		exit = 1
 	}
 
+	for _, err := range emit.roomErrs {
+		fmt.Fprintf(stderr, "FAIL: %v\n", err) //nolint:errcheck
+		exit = 1
+	}
+
 	if !*dryRun && !*noGitleaks {
 		switch clean, available := harvestGitleaksScan(r.dir("."), stderr); {
 		case !available:

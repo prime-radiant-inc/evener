@@ -233,3 +233,25 @@ func TestEmitterPrunesFullDirectoryAndDoesNotReadmitPrunedSeeds(t *testing.T) {
 		t.Fatalf("corpus = %v, want only the seed that arrived after the prune", names)
 	}
 }
+
+func TestEmitterTriesToFreeAFullDirectoryOnceAndReportsFailure(t *testing.T) {
+	dir := t.TempDir()
+	e := NewEmitter(false, 32768)
+	e.maxPerTarget = 1
+	attempts := 0
+	e.makeRoom = func(string) error {
+		attempts++
+		return os.ErrInvalid
+	}
+	for _, seed := range []string{"one", "two", "three"} {
+		if _, err := e.emitBytes(dir, []byte(seed)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if attempts != 1 {
+		t.Fatalf("makeRoom ran %d times for an unchanged directory, want 1", attempts)
+	}
+	if e.capped != 2 || len(e.roomErrs) != 1 {
+		t.Fatalf("capped=%d roomErrs=%d, want 2 and 1", e.capped, len(e.roomErrs))
+	}
+}

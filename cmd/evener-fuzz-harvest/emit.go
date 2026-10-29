@@ -3,6 +3,7 @@ package fuzzharvest
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -21,6 +22,8 @@ type Emitter struct {
 	// later seeds that add coverage.
 	maxPerTarget int
 	makeRoom     func(dir string) error
+	roomTried    map[string]bool // directories makeRoom already ran for and that are still full
+	roomErrs     []error
 	seen         map[string]bool
 	dirCount     map[string]int
 
@@ -35,7 +38,7 @@ type Emitter struct {
 func NewEmitter(dryRun bool, maxSeedBytes int) *Emitter {
 	return &Emitter{
 		dryRun: dryRun, maxSeedBytes: maxSeedBytes, maxPerTarget: defaultMaxPerTarget,
-		seen: map[string]bool{}, dirCount: map[string]int{},
+		seen: map[string]bool{}, dirCount: map[string]int{}, roomTried: map[string]bool{},
 	}
 }
 
@@ -82,11 +85,15 @@ func (e *Emitter) write(dir string, encoded []byte, seedLen int) (emitStatus, er
 		e.deduped++ // already committed; re-run produces no diff
 		return statusDeduped, nil
 	}
-	if e.filesIn(dir) >= e.maxPerTarget && e.makeRoom != nil && !e.dryRun {
+	if e.filesIn(dir) >= e.maxPerTarget && e.makeRoom != nil && !e.dryRun && !e.roomTried[dir] {
 		if err := e.makeRoom(dir); err != nil {
-			return statusCapped, err
+			e.roomErrs = append(e.roomErrs, fmt.Errorf("prune %s: %w", dir, err))
 		}
+		e.roomTried[dir] = true // a prune that freed nothing would only repeat on the same files
 		delete(e.dirCount, dir)
+		if e.filesIn(dir) < e.maxPerTarget {
+			delete(e.roomTried, dir)
+		}
 	}
 	if e.filesIn(dir) >= e.maxPerTarget {
 		e.capped++
