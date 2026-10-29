@@ -19,25 +19,40 @@ type goSource struct {
 
 func (s goSource) dir() string { return filepath.ToSlash(filepath.Dir(s.path)) }
 
-// scanGoSources reads every non-test Go file the repository tracks or would
-// track (untracked, not ignored). Asking git keeps ignored trees (reference
-// copies, review caches, nested checkouts) out of the inventory, so it does not
-// depend on what a particular checkout happens to hold.
-func scanGoSources(root string) ([]goSource, error) {
-	cmd := exec.Command("git", "-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "*.go")
-	listing, err := cmd.Output()
+// repoFiles lists the files git tracks or would track (untracked, not
+// ignored) under the given pathspecs, as slash paths relative to root. Asking
+// git keeps ignored trees (reference copies, review caches, nested checkouts)
+// out of the inventory, so it does not depend on what a particular checkout
+// happens to hold. Test files, testdata and files deleted from this checkout
+// are left out.
+func repoFiles(root string, pathspecs ...string) ([]string, error) {
+	args := append([]string{"-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--"}, pathspecs...)
+	listing, err := exec.Command("git", args...).Output()
 	if err != nil {
-		return nil, fmt.Errorf("listing Go files in %s: %w", root, err)
+		return nil, fmt.Errorf("listing %v in %s: %w", pathspecs, root, err)
 	}
-	var out []goSource
+	var out []string
 	for _, rel := range strings.Split(string(listing), "\x00") {
 		if rel == "" || strings.HasSuffix(rel, "_test.go") || underTestdata(rel) {
 			continue
 		}
-		text, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
-		if errors.Is(err, fs.ErrNotExist) {
-			continue // tracked but deleted in this checkout
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel))); errors.Is(err, fs.ErrNotExist) {
+			continue
 		}
+		out = append(out, rel)
+	}
+	return out, nil
+}
+
+// scanGoSources reads every non-test Go file in the repository.
+func scanGoSources(root string) ([]goSource, error) {
+	paths, err := repoFiles(root, "*.go")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]goSource, 0, len(paths))
+	for _, rel := range paths {
+		text, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
 		if err != nil {
 			return nil, err
 		}

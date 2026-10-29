@@ -254,8 +254,10 @@ func TestIgnoredTreesDoNotChangeTheInventory(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	write(".gitignore", "inspo/\n")
+	write(".gitignore", "inspo/\nllm/registry/inspo/\n")
 	write("inspo/copy.go", "package inspo\nvar _ = envvars.Orphan\n")
+	write("llm/registry/inspo/copy.go", "package inspo\nvar _ = \"EVENER_ORPHAN\"\n")
+	write("llm/registry/inspo/broken.toml", "not = [valid\n")
 	sources, err := scanGoSources(root)
 	if err != nil {
 		t.Fatal(err)
@@ -265,8 +267,8 @@ func TestIgnoredTreesDoNotChangeTheInventory(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, r := range rows {
-		if r.Name == "EVENER_ORPHAN" && len(r.Consumers) != 0 {
-			t.Errorf("EVENER_ORPHAN consumers = %v, want none from an ignored tree", r.Consumers)
+		if (r.Name == "EVENER_ORPHAN" || r.Name == "GHOST_API_KEY") && len(r.Consumers) != 0 {
+			t.Errorf("%s consumers = %v, want none from an ignored tree", r.Name, r.Consumers)
 		}
 	}
 }

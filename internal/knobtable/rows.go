@@ -9,7 +9,6 @@ import (
 	"go/token"
 	"go/types"
 	"io"
-	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -174,33 +173,21 @@ func registryNames(root string) (map[string]bool, error) {
 			names[string(m[1])] = true
 		}
 	}
-	dir := filepath.Join(root, "llm", "registry")
-	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+	paths, err := repoFiles(root, "llm/registry")
+	if err != nil {
+		return nil, err
+	}
+	for _, rel := range paths {
+		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
 		if err != nil {
-			if os.IsNotExist(err) {
-				return nil
-			}
-			return err
-		}
-		if d.IsDir() {
-			if d.Name() == "testdata" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if strings.HasSuffix(p, "_test.go") {
-			return nil
-		}
-		data, err := os.ReadFile(p)
-		if err != nil {
-			return err
+			return nil, err
 		}
 		switch {
-		case strings.HasSuffix(p, ".go"):
+		case strings.HasSuffix(rel, ".go"):
 			// String literals only: a comment naming a variable reads nothing.
-			file, err := parser.ParseFile(token.NewFileSet(), p, data, 0)
+			file, err := parser.ParseFile(token.NewFileSet(), rel, data, 0)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			ast.Inspect(file, func(n ast.Node) bool {
 				if lit, ok := n.(*ast.BasicLit); ok && lit.Kind == token.STRING {
@@ -208,25 +195,24 @@ func registryNames(root string) (map[string]bool, error) {
 				}
 				return true
 			})
-		case strings.HasSuffix(p, ".gz"):
+		case strings.HasSuffix(rel, ".gz"):
 			zr, err := gzip.NewReader(bytes.NewReader(data))
 			if err != nil {
-				return fmt.Errorf("%s: %w", p, err)
+				return nil, fmt.Errorf("%s: %w", rel, err)
 			}
 			if data, err = io.ReadAll(zr); err != nil {
-				return fmt.Errorf("%s: %w", p, err)
+				return nil, fmt.Errorf("%s: %w", rel, err)
 			}
 			addQuoted(data)
-		case strings.HasSuffix(p, ".toml"):
+		case strings.HasSuffix(rel, ".toml"):
 			var doc map[string]any
 			if _, err := toml.Decode(string(data), &doc); err != nil {
-				return fmt.Errorf("%s: %w", p, err)
+				return nil, fmt.Errorf("%s: %w", rel, err)
 			}
 			addTomlNames(doc, names)
 		}
-		return nil
-	})
-	return names, err
+	}
+	return names, nil
 }
 
 // addTomlNames adds every variable name a decoded TOML value holds: a string
