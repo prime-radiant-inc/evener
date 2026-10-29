@@ -341,7 +341,7 @@ func TestRetireHostUnderGateTearsTheConnectionDownAndLeavesTheEntry(t *testing.T
 	holder := underGateHolder("retire")
 	before, _ := m.reg.Get("alpha")
 
-	if err := m.RetireHostUnderGate("alpha", holder); !errors.Is(err, hostops.ErrGateNotHeld) {
+	if _, err := m.RetireHostUnderGate("alpha", holder); !errors.Is(err, hostops.ErrGateNotHeld) {
 		t.Fatalf("RetireHostUnderGate with a free gate = %v, want ErrGateNotHeld", err)
 	}
 	if !m.Attached("alpha") {
@@ -353,8 +353,9 @@ func TestRetireHostUnderGateTearsTheConnectionDownAndLeavesTheEntry(t *testing.T
 		t.Fatalf("TryAcquire: %v", err)
 	}
 	defer release()
-	if err := m.RetireHostUnderGate("alpha", holder); err != nil {
-		t.Fatalf("RetireHostUnderGate: %v", err)
+	retired, err := m.RetireHostUnderGate("alpha", holder)
+	if err != nil || !retired {
+		t.Fatalf("RetireHostUnderGate = (%v, %v), want the attached connection retired", retired, err)
 	}
 
 	if m.Attached("alpha") {
@@ -365,4 +366,41 @@ func TestRetireHostUnderGateTearsTheConnectionDownAndLeavesTheEntry(t *testing.T
 		t.Fatalf("the registry entry moved: %+v became %+v (ok=%v)", before, after, ok)
 	}
 	underGateAssertRefuses(t, m, "alpha", holder)
+}
+
+// TestRetireHostUnderGateReachesAReconnectLoopWithNoChannel pins the retirement
+// of a host whose link was lost: no channel is mapped (so the host is not
+// attached) but its supervisor is still alive, backing off before a redial.
+// That loop would reject a registration that changed under it and give up, so
+// retirement must stop it and report that a connection was retired.
+func TestRetireHostUnderGateReachesAReconnectLoopWithNoChannel(t *testing.T) {
+	m, _ := underGateFixture(t)
+	holder := underGateHolder("retire")
+	m.mu.Lock()
+	delete(m.chans, "alpha")
+	loops := len(m.supervisors["alpha"])
+	m.mu.Unlock()
+	if loops == 0 {
+		t.Fatal("the fixture's host has no reconnect loop to retire")
+	}
+	if m.Attached("alpha") {
+		t.Fatal("the host is attached with its channel unmapped")
+	}
+	release, err := m.TryAcquire("alpha", holder)
+	if err != nil {
+		t.Fatalf("TryAcquire: %v", err)
+	}
+	defer release()
+
+	retired, err := m.RetireHostUnderGate("alpha", holder)
+
+	if err != nil || !retired {
+		t.Fatalf("RetireHostUnderGate = (%v, %v), want the reconnect loop retired", retired, err)
+	}
+	m.mu.Lock()
+	remaining := len(m.supervisors["alpha"])
+	m.mu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("%d reconnect loop(s) survived the retirement", remaining)
+	}
 }

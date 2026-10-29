@@ -61,6 +61,11 @@ type hubHostManager struct {
 	// store is published and before the rest of the attach boot runs, the window
 	// in which operations can already be admitted.
 	testOnlyAfterPublish func()
+	// testOnlyBeforePipelineHold, when non-nil, is called in the legacy boot
+	// between releasing the first hold of the host gates and taking the second,
+	// the window in which a host can connect before the mirror reconciliation
+	// raises registrations.
+	testOnlyBeforePipelineHold func()
 	// testOnlyTeardown, when non-nil, replaces the post-commit teardown the
 	// mutation handlers run (the manager's RemoveHost/UpdateHost, or the
 	// registry's own Remove/Update with no manager wired). It exists so a test

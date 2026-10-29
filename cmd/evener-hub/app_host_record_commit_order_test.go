@@ -1091,3 +1091,80 @@ func TestLateAttachOfALegacyHostKeepsTheMirrorsHigherGeneration(t *testing.T) {
 	}
 	requireReconnected(t, manager, hosts, "keep")
 }
+
+// TestLegacyAttachHoldsTheGatesAgainForTheMirrorReconciliation pins the second
+// hold: a host that connects after the first hold is released and before the
+// mirror reconciliation raises live registrations is retired too, so no channel
+// is left on a registration the raise replaced.
+func TestLegacyAttachHoldsTheGatesAgainForTheMirrorReconciliation(t *testing.T) {
+	configPath, records := legacyHub(t)
+	keep := records.HostRecords["keep"]
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	spent := records.Generations["keep"].Generation + 40
+	if err := store.MirrorHostState(hostops.HostMirror{Boundaries: map[string]hostops.Boundary{
+		"keep": {Generation: spent, IncarnationID: keep.IncarnationID, PresenceEpoch: keep.PresenceEpoch},
+	}, Live: []string{"keep"}}); err != nil {
+		t.Fatalf("MirrorHostState: %v", err)
+	}
+	boot := hostBootDocument(mustLoadConfig(t, configPath), configPath, nil)
+	hosts, err := hostreg.NewSeeded(boot.Hosts, boot.Records.highWaterMarks())
+	if err != nil {
+		t.Fatalf("hostreg.NewSeeded: %v", err)
+	}
+	manager := sshconn.New(hosts, sshconn.Options{Runner: &attachedUpdateRunner{}})
+	t.Cleanup(func() { _ = manager.Close() })
+	late := newHubHostManager(appsource.NewRegistry(), manager, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostConfigPath: configPath, RemoteHostOpsUnavailable: true,
+	}, configPath, hosts, t.Logf)
+	late.testOnlyBeforePipelineHold = func() {
+		if _, err := manager.Ensure(context.Background(), "keep"); err != nil {
+			t.Errorf("Ensure between the holds: %v", err)
+		}
+	}
+
+	late.attachOps(store)
+
+	requireReconnected(t, manager, hosts, "keep")
+}
+
+// TestAttachDoesNotReconnectAHostAnOpenRemnantFences pins the redial's fence: a
+// connected host with an open teardown remnant is retired by the attach and
+// stays detached until the remnant resolves, as an explicit attach would be
+// refused.
+func TestAttachDoesNotReconnectAHostAnOpenRemnantFences(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, _ := hub.boot(t, false)
+	m.testOnlyTeardown = func(context.Context, string) error { return errors.New("injected teardown failure") }
+	result, err := m.UpdateResult(context.Background(), updateRequest(t, m, "side", appwire.HostEntry{Address: "edited.example"}))
+	if err != nil || result.HostMutationTeardownFailure == nil {
+		t.Fatalf("Update = (%+v, %v), want the teardown-failure arm", result, err)
+	}
+
+	hub.restartStateRoot(t)
+	reopened, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	hosts, err := hostreg.New(hostRegistryEntries(mustLoadConfig(t, hub.configPath)))
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	manager := sshconn.New(hosts, sshconn.Options{Runner: &attachedUpdateRunner{}})
+	t.Cleanup(func() { _ = manager.Close() })
+	late := newHubHostManager(appsource.NewRegistry(), manager, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostConfigPath: hub.configPath, RemoteHostOpsUnavailable: true,
+	}, hub.configPath, hosts, t.Logf)
+	if _, err := manager.Ensure(context.Background(), "side"); err != nil {
+		t.Fatalf("Ensure while the store is unavailable: %v", err)
+	}
+
+	late.attachOps(reopened)
+
+	time.Sleep(500 * time.Millisecond)
+	if manager.Attached("side") {
+		t.Fatal("the attach reconnected a host an open remnant fences")
+	}
+}

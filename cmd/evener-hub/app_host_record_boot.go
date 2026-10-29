@@ -95,7 +95,9 @@ func (m *hubHostManager) bootRecords() {
 		// the hosts serve with what was read, and every settlement or minting
 		// write waits for the store, so nothing is normalized before the staged
 		// commits there can be compared with the file as they saw it.
-		m.bootLegacyRecords(!m.cfg.opsUnavailable)
+		// Nothing here can wait on a gate (no attach is running) and an
+		// unreadable file only leaves the manager serving what it has.
+		_ = m.bootLegacyRecords(!m.cfg.opsUnavailable)
 		if m.cfg.opsUnavailable {
 			m.refuseMutations("the operation store is unavailable")
 		}
@@ -112,15 +114,19 @@ func (m *hubHostManager) bootRecords() {
 	if err := m.keepPreRecordsCopy(); err != nil {
 		// Everything that follows rewrites hub.toml; none of it starts without
 		// the original kept.
-		m.bootLegacyRecords(false)
+		_ = m.bootLegacyRecords(false) // load only; the refusal below is the outcome
 		m.refuseMutations(fmt.Sprintf("the original hub.toml could not be kept before its records move: %v", err))
 		return
 	}
-	if !m.bootLegacyRecords(true) {
+	switch err := m.bootLegacyRecords(true); {
+	case errors.Is(err, errLegacyRecordsUnreadable):
 		// The records to move could not be read, so what the legacy boot saw is
 		// empty. Importing that would make the store their home and strand the
 		// real ones in hub.toml; hosts keep serving and the move is retried.
 		m.refuseMutations("hub.toml could not be read; its records move into the operation store once it can")
+		return
+	case err != nil:
+		m.refuseMutations(fmt.Sprintf("a host is busy; the move of its records is retried: %v", err))
 		return
 	}
 	m.migrateLegacyRecords(ops)
@@ -153,16 +159,16 @@ func (m *hubHostManager) holdLiveHosts() (func(), error) {
 			return nil, fmt.Errorf("host %q: %w", entry.Name, err)
 		}
 		releases = append(releases, release)
-		if !m.cfg.manager.Attached(entry.Name) {
-			continue
-		}
-		if err := m.cfg.manager.RetireHostUnderGate(entry.Name, holder); err != nil {
+		retired, err := m.cfg.manager.RetireHostUnderGate(entry.Name, holder)
+		if err != nil {
 			releaseAll()
 			return nil, fmt.Errorf("host %q: %w", entry.Name, err)
 		}
-		m.cfg.reconnectMu.Lock()
-		m.cfg.reconnect = append(m.cfg.reconnect, entry.Name)
-		m.cfg.reconnectMu.Unlock()
+		if retired {
+			m.cfg.reconnectMu.Lock()
+			m.cfg.reconnect = append(m.cfg.reconnect, entry.Name)
+			m.cfg.reconnectMu.Unlock()
+		}
 	}
 	return releaseAll, nil
 }
@@ -210,7 +216,13 @@ func (m *hubHostManager) reconnectRetiredHosts() {
 	names := m.cfg.reconnect
 	m.cfg.reconnect = nil
 	m.cfg.reconnectMu.Unlock()
-	for _, name := range names {
+	for _, name := range slices.Compact(slices.Sorted(slices.Values(names))) {
+		if remnantID, fenced := m.openRemnantID(name); fenced {
+			// An open teardown remnant keeps its host detached until it
+			// resolves, exactly as an explicit attach is refused.
+			m.logf("host %q stays disconnected: open remnant %s fences it", name, remnantID)
+			continue
+		}
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), hostReconnectTimeout)
 			defer cancel()
@@ -596,10 +608,12 @@ func (m *hubHostManager) reconcileStoreBoot() {
 // prune and identity mint land in hub.toml.
 //
 // With settle false it only loads what the file holds into the manager and
-// writes nothing. It reports whether the records were actually read: a file that is absent or
-// empty holds none, and one that cannot be read leaves the boot looking at an
-// empty set that nothing may be built from.
-func (m *hubHostManager) bootLegacyRecords(settle bool) bool {
+// writes nothing. It returns errLegacyRecordsUnreadable when the records were
+// not actually read (a file that is absent or empty holds none, but one that
+// cannot be read leaves the boot looking at an empty set that nothing may be
+// built from), or the error of a host that was busy when the settlement needed
+// its gate.
+func (m *hubHostManager) bootLegacyRecords(settle bool) error {
 	hosts := m.cfg.hosts
 	// The file's records are read once, before anything else can mint: its
 	// retained marks seed the counters, so a host folded in below mints above
@@ -616,8 +630,7 @@ func (m *hubHostManager) bootLegacyRecords(settle bool) bool {
 		// Seeding and the collision rule below change live registrations.
 		var err error
 		if releaseHosts, err = m.holdLiveHosts(); err != nil {
-			m.refuseMutations(fmt.Sprintf("a host is busy; the settlement of its records is retried: %v", err))
-			return false
+			return err
 		}
 		defer releaseHosts()
 	}
@@ -645,8 +658,14 @@ func (m *hubHostManager) bootLegacyRecords(settle bool) bool {
 	// decodeConfig already validated each shape, so they are restored as-is (the
 	// same hard startup-error posture a corrupt host entry takes).
 	m.cfg.store.setRemnantMaps(fileRecords.StagedReceipts, fileRecords.TeardownRemnants, fileRecords.TeardownAttempts)
+	unreadable := func() error {
+		if readable {
+			return nil
+		}
+		return errLegacyRecordsUnreadable
+	}
 	if !settle {
-		return readable
+		return unreadable()
 	}
 	collided := false
 	if hasFile {
@@ -695,10 +714,25 @@ func (m *hubHostManager) bootLegacyRecords(settle bool) bool {
 	if attempted := m.reconcileBootRecords(hasFile, collided); !attempted {
 		m.materializeHostRecords(fileRecords, hasFile)
 	}
+	// The generation-mirror reconciliation below can raise live registrations,
+	// so the gates are held again, retiring any connection made since the first
+	// hold, until the pipeline is done.
+	if m.testOnlyBeforePipelineHold != nil {
+		m.testOnlyBeforePipelineHold()
+	}
+	releasePipeline, err := m.holdLiveHosts()
+	if err != nil {
+		return err
+	}
+	defer releasePipeline()
 	// Spec 08b §7's boot passes, in their fixed order, before the
 	// manager serves: the tombstone-derived host-removed pass, the bidirectional
 	// generation-mirror reconciliation, and the cross-file intent
 	// reconciliation (§9).
 	m.reconcilePipelineBoot()
-	return readable
+	return unreadable()
 }
+
+// errLegacyRecordsUnreadable reports a hub.toml whose record sections could not
+// be read by the legacy boot.
+var errLegacyRecordsUnreadable = errors.New("hub.toml could not be read")
