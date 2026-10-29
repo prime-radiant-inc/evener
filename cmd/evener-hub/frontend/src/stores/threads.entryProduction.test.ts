@@ -2786,10 +2786,20 @@ it("a foreground opening whose first window read outlasts the lookup deadline st
   try {
     const opening = threadsStore.getState().ensureThread(ref);
     await promotionReadEntered.promise;
-    // Let the accepted source read's durable phase settle behind the held
-    // window read before answering it: the promotion open's authority check
-    // then refuses a complete certified window deterministically.
+    // Let the accepted source read land behind the held window read — its
+    // authority move first, then its durable commit (the accepted update's
+    // newest row is the commit's own marker) — before answering it: the
+    // promotion open's authority check then refuses a complete certified
+    // window deterministically, and the recovery chain's open that follows
+    // captures its cut after the commit, so its boundary read needs no
+    // unbounded re-read. Both boundaries are controlled here, never raced.
     await drainSettleSteps();
+    let committed = false;
+    for (let round = 0; round < 50 && !committed; round += 1) {
+      committed = (await storage.getLatest(key, 300)).some((row) => row.transcriptKey === "row-226");
+      if (!committed) await new Promise<void>((resolve) => setTimeout(resolve, 1));
+    }
+    expect(committed).toBe(true);
     releasePromotionRead?.();
     await opening;
     await settleEntryTranscriptForTests(ref);
