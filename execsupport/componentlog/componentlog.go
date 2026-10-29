@@ -102,7 +102,7 @@ func writeAttr(b *strings.Builder, prefix string, a slog.Attr) {
 		}
 		return
 	}
-	fmt.Fprintf(b, " %s=%s", printable(prefix+a.Key), printable(fmt.Sprint(v.Any())))
+	fmt.Fprintf(b, " %s=%s", field(prefix+a.Key), field(fmt.Sprint(v.Any())))
 }
 
 // printable quotes s when it holds a control character, so no message or value
@@ -114,4 +114,13 @@ func printable(s string) string {
 		}
 	}
 	return s
+}
+
+// field quotes a key or value that holds a control character, space, quote or
+// equals sign, so field boundaries stay unambiguous.
+func field(s string) string {
+	if s == "" || strings.ContainsAny(s, " \"=") {
+		return strconv.Quote(s)
+	}
+	return printable(s)
 }

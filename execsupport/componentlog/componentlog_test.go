@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -92,5 +93,18 @@ func TestUnnamedAndEmptyBoundAttrsInsideGroup(t *testing.T) {
 	got := strings.Fields(buf.String())[2:]
 	if len(got) != 1 || got[0] != "child.id=kid" {
 		t.Fatalf("attrs = %v", got)
+	}
+}
+
+func TestDelimitersInValuesCannotForgeFields(t *testing.T) {
+	const value = "/tmp/a reason=other"
+	var buf bytes.Buffer
+	NewWriter("hub", &buf).Info("m", "path", value)
+	_, quoted, ok := strings.Cut(strings.TrimSuffix(buf.String(), "\n"), " path=")
+	if !ok {
+		t.Fatalf("no path field in %q", buf.String())
+	}
+	if got, err := strconv.Unquote(quoted); err != nil || got != value {
+		t.Fatalf("value = %q, %v; want %q as one quoted field", got, err, value)
 	}
 }
