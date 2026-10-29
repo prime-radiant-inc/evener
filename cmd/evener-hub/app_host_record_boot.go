@@ -237,20 +237,25 @@ func (m *hubHostManager) reconnectRetiredHosts() {
 	m.cfg.reconnect = nil
 	m.cfg.reconnectMu.Unlock()
 	for _, name := range slices.Compact(slices.Sorted(slices.Values(names))) {
-		go m.redial(name)
+		if registration, registered := m.cfg.hosts.Get(name); registered {
+			go m.redial(registration)
+		}
 	}
 }
 
 // redial connects name again, retrying a failed dial under backoff until the
-// host is connected, removed, fenced by an open teardown remnant (an explicit
+// host is connected, removed or replaced, fenced by an open teardown remnant (an explicit
 // attach is refused then too), or the manager is closed. The supervisor that
 // would otherwise bring a lost link back was stopped by the retirement and a
 // failed dial starts none, so this loop is what keeps the host from staying
 // disconnected after a network blip.
-func (m *hubHostManager) redial(name string) {
+func (m *hubHostManager) redial(registration hostreg.Host) {
+	name := registration.Name
 	delay := hostReconnectRetryInitial
 	for first := true; ; first = false {
-		if _, registered := m.cfg.hosts.Get(name); !registered {
+		if !m.cfg.hosts.SameRegistration(name, registration) {
+			// Removed, or removed and added again: the connection the user lost
+			// is not this one's to restore.
 			return
 		}
 		if remnantID, fenced := m.openRemnantID(name); fenced {
@@ -452,6 +457,12 @@ func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
 		m.refuseMutations(fmt.Sprintf("the host records in the operation store are in a shape this build cannot read, so a build that can read them has to run: %v", err))
 		return
 	}
+	if _, hasFile := store.load(); !hasFile && strings.TrimSpace(m.cfg.configPath) != "" && !m.hostFileAbsentOrEmpty() {
+		// A file that cannot be read says nothing about which commits landed,
+		// and no connection is interrupted for an attempt that cannot proceed.
+		m.refuseMutations(m.cfg.configPath + " could not be read; staged commits are settled once it can")
+		return
+	}
 	releaseHosts, err := m.holdLiveHosts()
 	if err != nil {
 		m.cfg.store.set(m.cfg.hosts.All())
@@ -518,9 +529,9 @@ func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
 	}
 	// hub.toml holds only the hosts in this mode, so the maintenance writes carry
 	// records alone and never put the registry's host list over the file's.
-	attempted, writeErr := m.reconcileBootRecords(hasFile, collided, true)
+	attempted, writeErr := m.reconcileBootRecords(hasFile, collided, bootWriteRecordsOnly)
 	if !attempted {
-		writeErr = m.materializeHostRecords(records, hasFile, true)
+		writeErr = m.materializeHostRecords(records, hasFile, bootWriteRecordsOnly)
 	}
 	m.reconcileStoreBoot()
 	if writeErr != nil && m.cfg.attaching.Load() {
@@ -684,6 +695,11 @@ func (m *hubHostManager) bootLegacyRecords(settle bool) error {
 	loaded, hasFile := m.recordStore().load()
 	readable := hasFile || strings.TrimSpace(m.cfg.configPath) == "" || m.hostFileAbsentOrEmpty()
 	fileRecords := loaded.Records
+	if settle && !readable {
+		// Nothing is built from a file that did not read, so no connection is
+		// interrupted for an attempt that cannot proceed.
+		return errLegacyRecordsUnreadable
+	}
 	releaseHosts := func() {}
 	if settle {
 		// Seeding and the collision rule below change live registrations.
@@ -770,9 +786,15 @@ func (m *hubHostManager) bootLegacyRecords(settle bool) error {
 	// nothing to prune writes nothing, so an untouched file stays
 	// byte-identical. A boot without that write may still owe the initial
 	// identity records.
-	attempted, writeErr := m.reconcileBootRecords(hasFile, collided, false)
+	write := bootWriteHostFile
+	if m.cfg.attaching.Load() {
+		// The move into the store follows; the host list in hub.toml is the
+		// operator's by now, not the registry's startup copy.
+		write = bootWriteMemory
+	}
+	attempted, writeErr := m.reconcileBootRecords(hasFile, collided, write)
 	if !attempted {
-		writeErr = m.materializeHostRecords(fileRecords, hasFile, false)
+		writeErr = m.materializeHostRecords(fileRecords, hasFile, write)
 	}
 	// The generation-mirror reconciliation below can raise live registrations,
 	// so the gates are held again, retiring any connection made since the first

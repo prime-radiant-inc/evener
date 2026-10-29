@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -1444,5 +1445,131 @@ func TestAttachRetriesRecordMaintenanceThatFailedToWrite(t *testing.T) {
 	}
 	if got := mustRecords(t, reopened).HostRecords["keep"].IncarnationID; got == "" {
 		t.Fatal("the retry did not materialize the record the store lacked")
+	}
+}
+
+// TestLateAttachToAnUnimportedStoreKeepsTheOperatorsHostList pins the legacy
+// path's writes under an attach: the records are about to move into the store,
+// so settling them writes no host list; edits an operator made to hub.toml while
+// the store was unavailable survive the move.
+func TestLateAttachToAnUnimportedStoreKeepsTheOperatorsHostList(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "hub.toml")
+	if err := writeHubTOMLHosts(configPath, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}}); err != nil {
+		t.Fatalf("seed hub.toml: %v", err)
+	}
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	hosts, err := hostreg.New(hostRegistryEntries(mustLoadConfig(t, configPath)))
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	late := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostConfigPath: configPath, RemoteHostOpsUnavailable: true,
+	}, configPath, hosts, t.Logf)
+	if err := writeHubTOMLHosts(configPath, []hostreg.Host{{Name: "keep", SSH: "keep-by-hand.example"}}); err != nil {
+		t.Fatalf("edit hub.toml by hand: %v", err)
+	}
+
+	late.attachOps(store)
+
+	got := map[string]string{}
+	for _, h := range mustLoadConfig(t, configPath).Hosts {
+		got[h.Name] = h.SSH
+	}
+	if got["keep"] != "keep-by-hand.example" {
+		t.Fatalf("the move undid the operator's edit of keep: %v", got)
+	}
+	if _, resurrected := got["side"]; resurrected {
+		t.Fatalf("the move brought back the host the operator removed: %v", got)
+	}
+	if mustRecords(t, store).HostRecords["keep"].IncarnationID == "" {
+		t.Fatal("the move did not record keep's identity")
+	}
+}
+
+// TestRedialStopsWhenTheHostIsReplacedDuringBackoff pins the registration a redial
+// is bound to: a host removed and added again while the dial backs off is a new
+// registration, and the connection lost under the old one is not restored to it.
+func TestRedialStopsWhenTheHostIsReplacedDuringBackoff(t *testing.T) {
+	previousInitial, previousMax := hostReconnectRetryInitial, hostReconnectRetryMax
+	hostReconnectRetryInitial, hostReconnectRetryMax = 200*time.Millisecond, 200*time.Millisecond
+	t.Cleanup(func() { hostReconnectRetryInitial, hostReconnectRetryMax = previousInitial, previousMax })
+
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	hub.boot(t, false)
+	hub.restartStateRoot(t)
+	reopened, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	hosts, err := hostreg.New(hostRegistryEntries(mustLoadConfig(t, hub.configPath)))
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	runner := &flakyDialRunner{}
+	manager := sshconn.New(hosts, sshconn.Options{Runner: runner})
+	t.Cleanup(func() { _ = manager.Close() })
+	late := newHubHostManager(appsource.NewRegistry(), manager, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostConfigPath: hub.configPath, RemoteHostOpsUnavailable: true,
+	}, hub.configPath, hosts, t.Logf)
+	if _, err := manager.Ensure(context.Background(), "side"); err != nil {
+		t.Fatalf("Ensure while the store is unavailable: %v", err)
+	}
+	runner.mu.Lock()
+	runner.failures = 1
+	runner.mu.Unlock()
+
+	late.attachOps(reopened)
+	time.Sleep(50 * time.Millisecond) // the first dial has failed and the loop is backing off
+	if err := manager.RemoveHost("side"); err != nil {
+		t.Fatalf("remove side: %v", err)
+	}
+	if err := hosts.Add(hostreg.Host{Name: "side", SSH: "side-again.example"}); err != nil {
+		t.Fatalf("add side again: %v", err)
+	}
+
+	time.Sleep(500 * time.Millisecond)
+	if manager.Attached("side") {
+		t.Fatal("the redial connected the replacement the user never asked to connect")
+	}
+}
+
+// TestUnreadableHubTOMLDoesNotCostAnAttachItsConnections pins the order of the
+// attempt: a file that cannot be read stops it before any connection is retired,
+// so a persistent configuration problem does not interrupt healthy hosts on every
+// retry.
+func TestUnreadableHubTOMLDoesNotCostAnAttachItsConnections(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	hub.boot(t, false)
+	hub.restartStateRoot(t)
+	reopened, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	hosts, err := hostreg.New(hostRegistryEntries(mustLoadConfig(t, hub.configPath)))
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	manager := sshconn.New(hosts, sshconn.Options{Runner: &attachedUpdateRunner{}})
+	t.Cleanup(func() { _ = manager.Close() })
+	late := newHubHostManager(appsource.NewRegistry(), manager, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostConfigPath: hub.configPath, RemoteHostOpsUnavailable: true,
+	}, hub.configPath, hosts, t.Logf)
+	if _, err := manager.Ensure(context.Background(), "keep"); err != nil {
+		t.Fatalf("Ensure while the store is unavailable: %v", err)
+	}
+	previous := configReadFile
+	configReadFile = func(string) ([]byte, error) { return nil, errors.New("injected read failure") }
+	t.Cleanup(func() { configReadFile = previous })
+
+	late.attachOps(reopened)
+
+	if late.mutationRefusal() == nil {
+		t.Fatal("the attach finished although hub.toml could not be read")
+	}
+	if !manager.Attached("keep") {
+		t.Fatal("an attempt that could not proceed interrupted a healthy connection")
 	}
 }

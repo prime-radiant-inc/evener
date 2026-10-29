@@ -355,6 +355,10 @@ func (m *hubHostManager) persistHosts(entries, known []hostreg.Host, change host
 	if err != nil {
 		return tombstoneCapacityRefusal(err)
 	}
+	if change.inMemory {
+		m.cfg.store.installRecords(records)
+		return nil
+	}
 	if store, ok := m.recordStore().(hostOpsRecordStore); ok && change.recordsOnly {
 		err = store.commitRecords(entries, records)
 	} else {

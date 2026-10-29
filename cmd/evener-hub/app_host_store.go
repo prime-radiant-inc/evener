@@ -61,6 +61,11 @@ type hostPersistChange struct {
 	// hub.toml: boot recovery that settles records must not write the registry's
 	// idea of the hosts over what the file holds now.
 	recordsOnly bool
+	// inMemory installs the derived records in the manager without writing any
+	// file: the settlement of a late attach over records that are about to move
+	// into the store, where a write of the host list would only put the
+	// registry's startup list over what the operator has since changed.
+	inMemory bool
 	// leaveReturningNames keeps the tombstone of a removed name that is live
 	// again, with its history, for the boot collision rule to settle; the
 	// re-add purge that would consume it is skipped.
