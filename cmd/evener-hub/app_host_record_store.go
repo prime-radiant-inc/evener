@@ -333,8 +333,9 @@ var hostFileFirstSeam func() error
 // commitHostFileFirst is commit with the order reversed, for the compensation of
 // a commit that already reached hub.toml (see hostPersistChange.hostFileFirst).
 func (s hostOpsRecordStore) commitHostFileFirst(entries, known []hostreg.Host, records hostTOMLRecords) error {
-	if err := writeHubTOMLHostsOnly(s.path, entries, known); err != nil {
-		return err
+	hostFileErr := writeHubTOMLHostsOnly(s.path, entries, known)
+	if hostFileErr != nil && !hubTOMLRenameCommitted(hostFileErr) {
+		return hostFileErr
 	}
 	var err error
 	if hostFileFirstSeam != nil {
@@ -351,7 +352,7 @@ func (s hostOpsRecordStore) commitHostFileFirst(entries, known []hostreg.Host, r
 		// still holds the change it no longer does.
 		s.log("the staged records were not dropped after the host file was restored: %v", err)
 	}
-	return nil
+	return hostFileErr
 }
 
 func (s hostOpsRecordStore) commit(entries, known []hostreg.Host, records hostTOMLRecords) error {
@@ -493,29 +494,35 @@ func unlandedRemovalIdentity(set hostRecordSet, name, configPath string) (HostRe
 }
 
 // stagedRemovalNeverLanded reports whether marker stages a removal whose host
-// change cannot have reached hub.toml: the host list in the file is the one the
-// commit staged against.
+// change cannot have reached hub.toml: the entry the file holds for the host is
+// the one the commit staged against.
 func stagedRemovalNeverLanded(marker HostStagedReceipt, configPath string) bool {
 	scope, ok := parseHostReceiptScopedKey(marker.Key)
-	if !ok || scope.Kind != hostMutationRemove || marker.HostsFingerprint == "" {
+	if !ok || scope.Kind != hostMutationRemove || marker.HostFingerprint == "" {
 		return false
 	}
-	return hubTOMLHostsFingerprint(configPath) == marker.HostsFingerprint
+	return hubTOMLHostFingerprint(configPath, scope.Name) == marker.HostFingerprint
 }
 
-// hubTOMLHostsFingerprint digests the host list hub.toml holds; empty when the
-// file cannot be read. Settings other than the hosts do not move it.
-func hubTOMLHostsFingerprint(path string) string {
+// hubTOMLHostFingerprint digests the entry hub.toml holds for name; empty when
+// the file cannot be read or holds none. Other hosts and settings do not move it.
+func hubTOMLHostFingerprint(path, name string) string {
 	cfg, state := readHubTOMLConfig(path)
 	if state == hostFileUnreadable {
 		return ""
 	}
-	encoded, err := json.Marshal(cfg.Hosts)
-	if err != nil {
-		return ""
+	for _, h := range cfg.Hosts {
+		if h.Name != name {
+			continue
+		}
+		encoded, err := json.Marshal(h)
+		if err != nil {
+			return ""
+		}
+		sum := sha256.Sum256(encoded)
+		return hex.EncodeToString(sum[:])
 	}
-	sum := sha256.Sum256(encoded)
-	return hex.EncodeToString(sum[:])
+	return ""
 }
 
 // hostBootDocument is the host set and the records startup builds the host

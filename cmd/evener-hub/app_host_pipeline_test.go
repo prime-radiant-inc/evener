@@ -1318,6 +1318,13 @@ func TestPerCommitStashIsNotClobberedByALaterRemoval(t *testing.T) {
 	if !slices.Equal(declared, []string{"alpha", "beta"}) {
 		t.Fatalf("hub.toml declares %v after the boot, want the record's own alpha and beta", declared)
 	}
+	// The identities of every host the restore declared moved into the store with
+	// the file's sections, the one the startup registry lacked included.
+	for _, name := range declared {
+		if mustRecords(t, fixture.store).HostRecords[name].IncarnationID == "" {
+			t.Errorf("the move left %q without its identity record", name)
+		}
+	}
 }
 
 // TestBootFinalizesTheMarkerWhenTheCompensationClearsWithoutRestoring pins the

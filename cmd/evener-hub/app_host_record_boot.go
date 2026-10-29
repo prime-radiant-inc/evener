@@ -166,8 +166,15 @@ func (m *hubHostManager) migrateLegacyRecords(ops *hostops.Store) {
 		marks[name] = hostreg.HighWater{Generation: boundary.Generation, PresenceEpoch: boundary.PresenceEpoch}
 	}
 	m.cfg.hosts.SeedHighWater(marks)
-	m.cfg.store.set(m.cfg.hosts.All())
+	// The registry's entries (raised by the seeding) replace their copies; hosts
+	// only the restored file declares, which the registry never held, stay.
 	entries := m.cfg.store.snapshot()
+	for i, entry := range entries {
+		if live, ok := m.cfg.hosts.Get(entry.Name); ok {
+			entries[i] = live
+		}
+	}
+	m.cfg.store.set(entries)
 	records, err := m.deriveHostTOMLRecords(entries, entries, hostPersistChange{highWaterRaises: m.mirrorCountersAbove(ops, entries)})
 	if err != nil {
 		m.refuseMutations(fmt.Sprintf("the existing records could not be prepared for the move: %v", err))

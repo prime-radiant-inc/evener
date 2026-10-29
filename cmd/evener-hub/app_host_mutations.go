@@ -389,7 +389,7 @@ func (m *hubHostManager) AddResult(ctx context.Context, params appwire.HostAddPa
 		Entry:   entry,
 	}
 	plan.reconcileFingerprint, _ = hubTOMLFingerprintAt(m.cfg.configPath)
-	plan.hostsFingerprint = hubTOMLHostsFingerprint(m.cfg.configPath)
+	plan.hostFingerprint = hubTOMLHostFingerprint(m.cfg.configPath, plan.Name)
 	if err := m.stageCommit(plan, m.nowTime()); err != nil {
 		err = m.compensateStagedWrite(plan, prev, err)
 		m.cfg.state.restore(entry.Name, priorState)
@@ -730,7 +730,7 @@ func (m *hubHostManager) UpdateResult(ctx context.Context, params appwire.HostUp
 		Entry:   entry,
 	}
 	plan.reconcileFingerprint, _ = hubTOMLFingerprintAt(m.cfg.configPath)
-	plan.hostsFingerprint = hubTOMLHostsFingerprint(m.cfg.configPath)
+	plan.hostFingerprint = hubTOMLHostFingerprint(m.cfg.configPath, plan.Name)
 	if err := m.stageCommit(plan, m.nowTime()); err != nil {
 		err = m.compensateStagedWrite(plan, prev, err)
 		return appwire.HostMutationResult{}, err
@@ -961,7 +961,7 @@ func (m *hubHostManager) RemoveResult(ctx context.Context, params appwire.HostRe
 		}
 	}
 	plan.reconcileFingerprint, _ = hubTOMLFingerprintAt(m.cfg.configPath)
-	plan.hostsFingerprint = hubTOMLHostsFingerprint(m.cfg.configPath)
+	plan.hostFingerprint = hubTOMLHostFingerprint(m.cfg.configPath, plan.Name)
 	if err := m.stageCommit(plan, m.nowTime()); err != nil {
 		err = m.compensateStagedWrite(plan, prev, err)
 		// The cross-file commit never armed: the staged write's compensation

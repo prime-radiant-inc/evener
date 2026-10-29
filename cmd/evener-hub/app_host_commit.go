@@ -117,8 +117,9 @@ type hostCommitPlan struct {
 	// reconcileFingerprint is the fingerprint the commit staged against (the
 	// validation read's).
 	reconcileFingerprint string
-	// hostsFingerprint digests the host list the commit staged against.
-	hostsFingerprint string
+	// hostFingerprint digests the entry hub.toml held for the host when the
+	// commit staged against it.
+	hostFingerprint string
 }
 
 // stagedMarker builds the marker one commit's step-(2) write carries.
@@ -130,7 +131,7 @@ func (m *hubHostManager) stagedMarker(plan *hostCommitPlan, now time.Time) HostS
 		TeardownStarted:      false,
 		Phase:                hostStagedPhaseStaged,
 		ReconcileFingerprint: plan.reconcileFingerprint,
-		HostsFingerprint:     plan.hostsFingerprint,
+		HostFingerprint:      plan.hostFingerprint,
 		Provisional:          plan.Receipt,
 		PendingTeardown:      plan.Pinned,
 	}

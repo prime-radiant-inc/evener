@@ -363,6 +363,12 @@ func (m *hubHostManager) persistHosts(entries, known []hostreg.Host, change host
 		err = m.recordStore().commit(entries, known, records)
 	}
 	if err != nil {
+		if change.hostFileFirst && hubTOMLRenameCommitted(err) {
+			// The compensation's rename landed: the file holds the restored
+			// hosts and only its durability is uncertain, so the manager settles
+			// the failed commit's records all the same.
+			m.cfg.store.installRecords(records)
+		}
 		return err
 	}
 	m.cfg.store.installRecords(records)

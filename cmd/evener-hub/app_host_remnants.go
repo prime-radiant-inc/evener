@@ -316,10 +316,11 @@ type HostStagedReceipt struct {
 	// post-commit write replaces the marker with the finalized receipt, clearing
 	// the armed intent with it.
 	ReconcileFingerprint string `toml:"reconcile_fingerprint,omitempty" json:"reconcile_fingerprint,omitempty"`
-	// HostsFingerprint is the digest of the host list in hub.toml the commit
-	// staged against. It is the evidence that a staged removal never reached the
-	// file: the host list is unchanged since, whatever else the file holds now.
-	HostsFingerprint string `toml:"-" json:"hosts_fingerprint,omitempty"`
+	// HostFingerprint is the digest of the entry hub.toml held for the marker's
+	// host when the commit staged against it. It is the evidence that a staged
+	// removal never reached the file: that entry is unchanged since, whatever
+	// else the file holds now.
+	HostFingerprint string `toml:"-" json:"host_fingerprint,omitempty"`
 	// FinalizingToken is the server-generated opaque attempt token of a
 	// finalizing claim: non-empty exactly while a finder owns the marker's
 	// finalization. "Any other path finding a finalizing claim waits for or

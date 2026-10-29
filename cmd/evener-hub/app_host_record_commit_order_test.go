@@ -981,3 +981,61 @@ func TestAnUnlandedRemovalIsStillUnlandedAfterAnUnrelatedSettingsEdit(t *testing
 		t.Fatal("the rolled-back removal left its tombstone")
 	}
 }
+
+// TestAnUnlandedRemovalIsJudgedByItsOwnHostNotItsSiblings pins the evidence's
+// scope: editing or reordering other hosts between the crash and the restart does
+// not change whether this host's removal reached hub.toml.
+func TestAnUnlandedRemovalIsJudgedByItsOwnHostNotItsSiblings(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}, {Name: "other", SSH: "other.example"}})
+	m, _ := hub.boot(t, false)
+	_, incarnation := testMutationIdentity(t, m, "side")
+	params := removeRequest(t, m, "side")
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
+	// The siblings are edited and reordered; side's own entry is as it was.
+	if err := writeHubTOMLHosts(hub.configPath, []hostreg.Host{{Name: "other", SSH: "other-by-hand.example"}, {Name: "side", SSH: "side.example"}, {Name: "keep", SSH: "keep.example"}}); err != nil {
+		t.Fatalf("edit the siblings by hand: %v", err)
+	}
+
+	recovered, store := hub.boot(t, true)
+
+	if _, got := testMutationIdentity(t, recovered, "side"); got != incarnation {
+		t.Fatalf("side serves incarnation %q, want the one it had, %q", got, incarnation)
+	}
+	if _, tombstoned := mustRecords(t, store).Tombstones["side"]; tombstoned {
+		t.Fatal("the rolled-back removal left its tombstone")
+	}
+}
+
+// TestACompensationWhoseDirectorySyncFailsStillSettlesTheManagersRecords pins the
+// landed-restore case: the compensation's rename put the host file back and only
+// its directory sync failed, so the failed commit's staged marker and provisional
+// receipt are settled all the same and a retry of the same request is not
+// answered with a committed outcome.
+func TestACompensationWhoseDirectorySyncFailsStillSettlesTheManagersRecords(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}})
+	m, store := hub.boot(t, false)
+	m.testOnlyAfterStage = func(name string) {
+		if err := m.cfg.hosts.Add(hostreg.Host{Name: name, SSH: "raced.example"}); err != nil {
+			t.Errorf("race the registry: %v", err)
+		}
+	}
+	flakyHubTOMLDirSync(t, func(call int) bool { return call == 2 })
+	params := appwire.HostAddParams{Entry: appwire.HostEntry{Name: "new", Address: "new.example"}, MutationID: "failed-add"}
+
+	if _, err := m.AddResult(context.Background(), params); err == nil {
+		t.Fatal("the add succeeded although its registration failed")
+	}
+
+	if _, staged := m.cfg.store.stagedSnapshot()["new"]; staged {
+		t.Fatal("the manager still holds the failed commit's staged marker")
+	}
+	if staged := mustRecords(t, store).StagedReceipts; len(staged) != 0 {
+		t.Fatalf("the store still holds staged markers: %+v", staged)
+	}
+	m.testOnlyAfterStage = nil
+	result, err := m.AddResult(context.Background(), params)
+	if err == nil && result.HostMutationCommitted != nil {
+		t.Fatalf("the retry replayed the failed commit as a committed add: %+v", result.HostMutationCommitted)
+	}
+}
