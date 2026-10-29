@@ -234,12 +234,7 @@ func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
 		m.refuseMutations(fmt.Sprintf("the host records in the operation store cannot be read: %v", err))
 		return
 	}
-	m.seedHighWater(records)
-	m.cfg.store.setReceipts(records.MutationReceipts)
-	m.cfg.store.set(m.cfg.hosts.All())
-	m.cfg.store.setRecordMaps(records.Tombstones, records.PrunedReceipts)
-	m.cfg.store.setStoreSync(nil)
-	m.cfg.store.setRemnantMaps(records.StagedReceipts, records.TeardownRemnants, records.TeardownAttempts)
+	m.installRestoredRecords(hostRecordDocument{Hosts: m.cfg.hosts.All(), Records: records})
 	m.stripLegacySections(true)
 	doc, hasFile := store.load()
 	if hasFile {
