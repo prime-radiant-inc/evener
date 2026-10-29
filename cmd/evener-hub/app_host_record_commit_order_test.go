@@ -1463,3 +1463,36 @@ func TestTakingBackARemovalsFlipClearsItsRemovedMark(t *testing.T) {
 		t.Fatal("the store still counts a host as removed after its removal was taken back to before its flip")
 	}
 }
+
+// TestACompensationDoesNotRelyOnAnUnprovenPreFlipMarker pins that taking a flip
+// back accepts a marker already before its flip only once the store's directory
+// is durable: a restore that published without syncing may be lost, bringing the
+// older flipped marker back beside a host file the compensation already
+// restored.
+func TestACompensationDoesNotRelyOnAnUnprovenPreFlipMarker(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "hub.toml")
+	if err := writeHubTOMLHosts(configPath, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}}); err != nil {
+		t.Fatalf("seed hub.toml: %v", err)
+	}
+	storePath := hostops.StorePath(t.TempDir())
+	dir := flakyDirSync{storeDir: filepath.Dir(storePath)}
+	store, err := hostops.OpenWithDirSync(storePath, dir.sync)
+	if err != nil {
+		t.Fatalf("OpenWithDirSync: %v", err)
+	}
+	m := restartOver(t, configPath, store)
+	params := removeRequest(t, m, "side")
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
+	record := hostOpsRecordStore{path: configPath, ops: store, logf: t.Logf}
+
+	dir.failing.Store(true)
+	if err := record.takeBackFlip("side"); err == nil {
+		t.Fatal("a pre-flip marker was accepted although the store's directory is not durable")
+	}
+
+	dir.failing.Store(false)
+	if err := record.takeBackFlip("side"); err != nil {
+		t.Fatalf("takeBackFlip with a durable store: %v", err)
+	}
+}

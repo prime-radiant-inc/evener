@@ -331,9 +331,16 @@ func (s hostOpsRecordStore) publishFamily(family hostops.HostRecords, mirror hos
 		if !hostops.RenameLanded(err) {
 			return err
 		}
-		if syncErr := s.ops.SyncDir(); syncErr != nil {
-			return fmt.Errorf("%w: %w", errRecordsNotDurable, syncErr)
-		}
+		return s.requireDurable()
+	}
+	return nil
+}
+
+// requireDurable reports errRecordsNotDurable unless the store's directory entry
+// is proven durable.
+func (s hostOpsRecordStore) requireDurable() error {
+	if err := s.ops.SyncDir(); err != nil {
+		return fmt.Errorf("%w: %w", errRecordsNotDurable, err)
 	}
 	return nil
 }
@@ -347,7 +354,7 @@ func (s hostOpsRecordStore) takeBackFlip(name string) error {
 	family, _, _ := s.ops.HostRecords()
 	raw, staged := family.StagedReceipts[name]
 	if !staged {
-		return nil
+		return s.requireDurable()
 	}
 	markers, err := decodeRecordMap[HostStagedReceipt]("staged receipt", map[string]json.RawMessage{name: raw})
 	if err != nil {
@@ -355,7 +362,9 @@ func (s hostOpsRecordStore) takeBackFlip(name string) error {
 	}
 	marker := markers[name]
 	if !markerPastFlip(marker) {
-		return nil
+		// The marker may be a restore that published and was never synced; the
+		// host file waits until it is proven to survive a crash.
+		return s.requireDurable()
 	}
 	marker.SwapStarted = false
 	marker.TeardownStarted = false
