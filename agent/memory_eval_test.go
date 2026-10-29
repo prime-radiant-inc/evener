@@ -782,7 +782,9 @@ func TestMemoryEvalIsolation(t *testing.T) {
 					if strings.Contains(d.Output, "fixture auth decoy 611") || strings.Contains(d.Output, "fixture verifier decoy 612") {
 						t.Fatal("shell leaked decoy")
 					}
-					if !strings.Contains(d.Output, "exit 1") && !strings.Contains(d.Output, "exit_code") && d.Error == "" {
+					// Any nonzero status counts: the missing-file code differs
+					// between GNU coreutils (1) and uutils coreutils (2).
+					if !strings.Contains(d.Output, "[exit ") && !strings.Contains(d.Output, "exit_code") && d.Error == "" {
 						t.Errorf("shell refusal not recorded: %+v", d)
 					}
 					denied++
