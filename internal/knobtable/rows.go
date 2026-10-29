@@ -7,6 +7,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"io"
 	"io/fs"
 	"os"
@@ -283,7 +284,7 @@ func scanRefs(src goSource) (fileRefs, error) {
 				refs.registry[v.Sel.Name] = true
 			}
 		case *ast.BasicLit:
-			if v.Kind == token.STRING {
+			if v.Kind == token.STRING && !writes[v] {
 				if lit, err := strconv.Unquote(v.Value); err == nil {
 					refs.literals = append(refs.literals, lit)
 				}
@@ -463,21 +464,38 @@ func hubRows(root string, sources []goSource) ([]hubRow, []string, error) {
 }
 
 // configReads maps each Config field name to the hub files that read it. Config
-// is the hub's own type, so only package main's files can; a read is a selector
-// on the configuration the hub passes around (cfg, config, or a cfg/Cfg field),
-// which keeps a same-named field of another struct from counting.
+// is the hub's own type, so only package main's files can. The package is
+// type-checked without resolving its imports: every selector on a value of the
+// local Config type resolves, and one on an imported type (hubcore.WebConfig,
+// whose fields share names with Config's) stays unresolved and does not count.
+// A plain assignment to a field is a write, not a read.
 func configReads(sources []goSource) (map[string]map[string]bool, error) {
-	reads := map[string]map[string]bool{}
 	fset := token.NewFileSet()
+	var files []*ast.File
 	for _, src := range sources {
-		if src.dir() != "cmd/evener-hub" || src.path == "cmd/evener-hub/config.go" {
+		if src.dir() != "cmd/evener-hub" {
 			continue
 		}
 		file, err := parser.ParseFile(fset, src.path, src.text, 0)
 		if err != nil {
 			return nil, err
 		}
-		assigned := map[ast.Node]bool{} // plain assignment destinations: written, not read
+		files = append(files, file)
+	}
+	info := &types.Info{Selections: map[*ast.SelectorExpr]*types.Selection{}}
+	conf := types.Config{
+		Importer: unresolvedImporter{},
+		Error:    func(error) {}, // unresolved imports are expected; checking continues past them
+	}
+	pkg, _ := conf.Check("main", fset, files, info)
+
+	reads := map[string]map[string]bool{}
+	for _, file := range files {
+		name := fset.Position(file.Pos()).Filename
+		if name == "cmd/evener-hub/config.go" {
+			continue
+		}
+		assigned := map[ast.Node]bool{}
 		ast.Inspect(file, func(n ast.Node) bool {
 			switch v := n.(type) {
 			case *ast.AssignStmt:
@@ -487,8 +505,8 @@ func configReads(sources []goSource) (map[string]map[string]bool, error) {
 					}
 				}
 			case *ast.SelectorExpr:
-				if isConfigExpr(v.X) && !assigned[v] {
-					addTo(reads, v.Sel.Name, src.path)
+				if sel := info.Selections[v]; sel != nil && sel.Kind() == types.FieldVal && isLocalConfig(sel.Recv(), pkg) && !assigned[v] {
+					addTo(reads, v.Sel.Name, name)
 				}
 			}
 			return true
@@ -497,14 +515,21 @@ func configReads(sources []goSource) (map[string]map[string]bool, error) {
 	return reads, nil
 }
 
-func isConfigExpr(e ast.Expr) bool {
-	switch v := e.(type) {
-	case *ast.Ident:
-		return v.Name == "cfg" || v.Name == "config"
-	case *ast.SelectorExpr:
-		return v.Sel.Name == "cfg" || v.Sel.Name == "Cfg"
+// isLocalConfig reports whether t is the hub's Config (or a pointer to it).
+func isLocalConfig(t types.Type, pkg *types.Package) bool {
+	if ptr, ok := t.(*types.Pointer); ok {
+		t = ptr.Elem()
 	}
-	return false
+	named, ok := t.(*types.Named)
+	return ok && named.Obj().Pkg() == pkg && named.Obj().Name() == "Config"
+}
+
+// unresolvedImporter declines every import, so type-checking sees only the
+// package's own declarations.
+type unresolvedImporter struct{}
+
+func (unresolvedImporter) Import(path string) (*types.Package, error) {
+	return nil, fmt.Errorf("import %s is not loaded", path)
 }
 
 var tomlTag = regexp.MustCompile(`toml:"([^",]*)`)

@@ -44,6 +44,7 @@ var (
 	SetOnly  = Var{Name: "EVENER_SET_ONLY", Visibility: Public}
 	Mentioned = Var{Name: "EVENER_MENTIONED", Visibility: Public}
 	Written  = Var{Name: "EVENER_WRITTEN", Visibility: Public}
+	Unset    = Var{Name: "EVENER_UNSET_ONLY", Visibility: Public}
 	Unread   = Var{Name: "EVENER_UNREAD", Summary: "Unread is only named here", Visibility: Public}
 )
 
@@ -79,13 +80,13 @@ func fixtureRoot(t *testing.T) string {
 	return writeTree(t, map[string]string{
 		"envvars/envvars.go":                    fixtureRegistry,
 		"envvars/userdirs/u.go":                 "package userdirs\nvar _ = envvars.Read.Getenv()\n",
-		"cmd/setter/main.go":                    "package main\n// envvars.Mentioned and \"EVENER_MENTIONED\" appear only in this comment.\nvar _ = envvars.SetOnly.Setenv(\"1\")\nfunc f() { overlay[envvars.Written.Name] = \"1\"; setEnv(out, envvars.Written.Name, \"1\") }\n",
+		"cmd/setter/main.go":                    "package main\n// envvars.Mentioned and \"EVENER_MENTIONED\" appear only in this comment.\nvar _ = envvars.SetOnly.Setenv(\"1\")\nfunc g() { os.Unsetenv(\"EVENER_UNSET_ONLY\") }\nfunc f() { overlay[envvars.Written.Name] = \"1\"; setEnv(out, envvars.Written.Name, \"1\") }\n",
 		"auth/acmetest/isolate.go":              "package acmetest\nvar _ = envvars.Isolated\n",
 		"llm/registry/data/overlay.toml":        "headers = { \"Org\" = \"$ACME_ORG_ID\" }\n",
 		"cmd/tool/main.go":                      "package main\nvar _ = envvars.Read\nvar _ = \"EVENER_BY_NAME\"\n",
 		"cmd/tool/main_test.go":                 "package main\nvar _ = envvars.Orphan\n",
 		"cmd/evener-hub/config.go":              fixtureHubConfig,
-		"cmd/evener-hub/use.go":                 "package main\nvar _ = cfg.Addr\nvar _ = cfg.Timeout\nvar _ = other.Dead\nfunc f() { cfg.Dead = 1 }\n",
+		"cmd/evener-hub/use.go":                 "package main\ntype other struct{ Dead, Addr int }\nfunc f(c Config, p *Config, o other) { _ = c.Addr; _ = p.Timeout; _ = o.Dead; c.Dead = 1 }\n",
 		"cmd/evener-hub/other_test.go":          "package main\nvar _ = cfg.Dead\n",
 		"cmd/dev/direct.go":                     "package main\nvar _ = os.Getenv(\"SHARD_DIR\")\nvar _ = \"EVENER_READ\"\n",
 		"docs/developing-evener/environment.md": "| `EVENER_READ` | doc |\n",
@@ -123,7 +124,7 @@ func TestEnvRowsReportConsumersAndDocRows(t *testing.T) {
 	if got := byName["ACME_ORG_ID"]; !slices.Equal(got.Consumers, []string{"llm/registry"}) {
 		t.Errorf("expanded variable consumers = %v, want the registry that expands it", got.Consumers)
 	}
-	for _, name := range []string{"ACME_API_KEY", "GHOST_API_KEY", "EVENER_ONLY_CLEARED", "EVENER_UNREAD", "EVENER_SET_ONLY", "EVENER_MENTIONED", "EVENER_WRITTEN"} {
+	for _, name := range []string{"ACME_API_KEY", "GHOST_API_KEY", "EVENER_ONLY_CLEARED", "EVENER_UNREAD", "EVENER_SET_ONLY", "EVENER_MENTIONED", "EVENER_WRITTEN", "EVENER_UNSET_ONLY"} {
 		if got := byName[name]; len(got.Consumers) != 0 {
 			t.Errorf("%s consumers = %v, want none: no reader names it (a catalog entry, a function body in the registry package, or a non-test-support package that gets the value rather than sets it)", name, got.Consumers)
 		}

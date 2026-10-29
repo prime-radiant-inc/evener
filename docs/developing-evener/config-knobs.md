@@ -155,22 +155,22 @@ machine-managed host records are described in [the hub guide](../evener-hub.md).
 | Key | Default | Doc row | Consumer |
 |---|---|---|---|
 | `addr` | `"127.0.0.1:9180"` | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener-hub/endpoint_config.go`, `cmd/evener-hub/hub_startup.go` |
-| `public_url` | unset | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener-hub/device_pairing.go`, `cmd/evener-hub/endpoint_config.go`, `cmd/evener-hub/hub_startup.go` and 1 more |
-| `hub_state_root` | computed at startup | [evener-hub.md](../evener-hub.md) | `cmd/evener-hub/app_host_running.go`, `cmd/evener-hub/app_rpc_settings_overview.go`, `cmd/evener-hub/endpoint.go` and 3 more |
+| `public_url` | unset | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener-hub/endpoint_config.go`, `cmd/evener-hub/hub_startup.go` |
+| `hub_state_root` | computed at startup | [evener-hub.md](../evener-hub.md) | `cmd/evener-hub/endpoint.go`, `cmd/evener-hub/endpoint_config.go`, `cmd/evener-hub/hub_startup.go` |
 | `state_glob` | unset | [evener-hub.md](../evener-hub.md) | `cmd/evener-hub/hub_startup.go` |
-| `run_dir` | unset | [evener-hub.md](../evener-hub.md) | `cmd/evener-hub/app_daemons.go`, `cmd/evener-hub/app_force_stop.go`, `cmd/evener-hub/app_rpc_settings_overview.go` and 4 more |
+| `run_dir` | unset | [evener-hub.md](../evener-hub.md) | `cmd/evener-hub/hub_startup.go` |
 | `past_index_db` | unset | [evener-hub.md](../evener-hub.md) | `cmd/evener-hub/hub_startup.go` |
 | `past_index_rebuild_interval` | `60 * time.Second` | [evener-hub.md](../evener-hub.md) | `cmd/evener-hub/hub_startup.go` |
-| `spawn_timeout` | `30 * time.Second` | [evener-hub.md](../evener-hub.md) | `cmd/evener-hub/app_rpc_settings_overview.go`, `cmd/evener-hub/hub_startup.go`, `cmd/evener-hub/spawn.go` |
+| `spawn_timeout` | `30 * time.Second` | [evener-hub.md](../evener-hub.md) | `cmd/evener-hub/hub_startup.go`, `cmd/evener-hub/spawn.go` |
 | `past_results_per_page` | `50` | [evener-hub.md](../evener-hub.md) | `cmd/evener-hub/hub_startup.go` |
 | `roots` | unset | [appwire-protocol.md](../appwire-protocol.md) | `cmd/evener-hub/hub_startup.go` |
 | `plugin_auto_upgrade` | `true` | [evener-hub.md](../evener-hub.md) | `cmd/evener-hub/main_background.go` |
 | `plugin_auto_upgrade_interval` | `12 * time.Hour` | [evener-hub.md](../evener-hub.md) | `cmd/evener-hub/main_background.go` |
-| `daemon_idle_timeout` | `time.Hour` | [evener-hub.md](../evener-hub.md) | `cmd/evener-hub/app_archive.go`, `cmd/evener-hub/app_daemons.go`, `cmd/evener-hub/app_rpc_settings_overview.go` and 2 more |
+| `daemon_idle_timeout` | `time.Hour` | [evener-hub.md](../evener-hub.md) | `cmd/evener-hub/hub_startup.go`, `cmd/evener-hub/spawn.go` |
 | `api_log` | unset | [configuration.md](../configuration.md) | `cmd/evener-hub/hub_startup.go`, `cmd/evener-hub/spawn.go` |
-| `host_probe_timeout` | `10 * time.Second` | [evener-hub.md](../evener-hub.md) | `cmd/evener-hub/app_host_config.go`, `cmd/evener-hub/hub_startup.go` |
-| `host_min_free_space_bytes` | `512 << 20` | [evener-hub.md](../evener-hub.md) | `cmd/evener-hub/app_host_running.go`, `cmd/evener-hub/hub_startup.go` |
-| `host_tombstone_retention` | `7 * 24 * time.Hour` | [evener-hub.md](../evener-hub.md) | `cmd/evener-hub/app_host_record_pruning.go`, `cmd/evener-hub/hub_startup.go`, `cmd/evener-hub/main.go` |
+| `host_probe_timeout` | `10 * time.Second` | [evener-hub.md](../evener-hub.md) | `cmd/evener-hub/hub_startup.go` |
+| `host_min_free_space_bytes` | `512 << 20` | [evener-hub.md](../evener-hub.md) | `cmd/evener-hub/hub_startup.go` |
+| `host_tombstone_retention` | `7 * 24 * time.Hour` | [evener-hub.md](../evener-hub.md) | `cmd/evener-hub/hub_startup.go`, `cmd/evener-hub/main.go` |
 
 ## Removed hub.toml keys
 
