@@ -705,9 +705,7 @@ const marketplaces: MarketplacesStore = createMarketplacesStore(marketplacesClie
 const entry: MarketplaceCatalogEntry = { status: "loading" }; void marketplaces; void entry;
 const pluginsClient: PluginsClient = marketplacesClient;
 const plugins: PluginsStore = createPluginsStore(pluginsClient, createHubWriteGate());
-const revision: ListRevision = createListRevision(); void plugins; void revision;
-const keyed: KeyedRevision = createKeyedRevision(); void keyed.issue("acme");
-const lifecycle: StoreLifecycle<PluginsState> = createStoreLifecycle(pluginsClient, { method: "evener/plugin/updated", debounceMs: 250, store: () => plugins, refetch: (state) => state.fetchPlugins(), wantsList: (state) => state.plugins !== null }); void lifecycle;
+void plugins;
 const layerClient: LaunchLayerClient = marketplacesClient;
 const layer: LaunchLayerStore = createLaunchLayerStore(layerClient); void layer;`,
       cjsTypeUses: `const marketplacesState: client.MarketplacesState = client.createMarketplacesStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }, client.createHubWriteGate()).getState(); void marketplacesState;
@@ -725,20 +723,8 @@ assert.equal(client.REFETCH_DEBOUNCE_MS, 250);
 const pluginsStore = client.createPluginsStore(offline, client.createHubWriteGate());
 assert.equal(pluginsStore.getState().pluginRevision, 0);
 pluginsStore.connectionChanged(offline, "ready");
-const keyed = client.createKeyedRevision();
-const keyedRevision = keyed.issue("acme");
-keyed.retire("acme");
-assert.equal(keyed.current("acme", keyedRevision), false);
 const layerStore = client.createLaunchLayerStore(offline);
 assert.equal(layerStore.getState().launchLayer, null);
-const listRevision = client.createListRevision();
-const first = listRevision.next();
-listRevision.fence();
-let fencedAnswerPublished = false;
-listRevision.publish(first, () => {
-  fencedAnswerPublished = true;
-});
-assert.equal(fencedAnswerPublished, false);
 marketplacesStore
   .getState()
   .fetchMarketplaces()
@@ -1029,8 +1015,24 @@ memoryOutbox
   // it (declaration-reachability.mjs). A module no published specifier reaches
   // fails right here.
   const reachable = reachableModules(entryDeclarations, installedDist);
+  // The state stores are built over these modules, so tsc must ship them, but
+  // they are not part of any published surface. Listing one here is the
+  // decision that it stays internal; an entry a specifier starts to re-export,
+  // or one the build stops shipping, fails below so the list cannot go stale.
+  const internalModules = [
+    "state/extensions/keyedRevision",
+    "state/extensions/listRevision",
+    "state/extensions/storeLifecycle",
+  ];
+  for (const module of internalModules) {
+    assert(shippedModules.includes(module), `internal module is not shipped: ${module}`);
+    assert(!reachable.has(module), `internal module is re-exported by a published specifier: ${module}`);
+  }
   for (const module of shippedModules)
-    assert(reachable.has(module), `shipped module unreachable from every published specifier: ${module}`);
+    assert(
+      reachable.has(module) || internalModules.includes(module),
+      `shipped module unreachable from every published specifier: ${module}`,
+    );
   // One ESM declaration consumer, one CommonJS declaration consumer and one
   // runtime presence check in each module form, per published specifier. Each
   // type is named only as an `import type` specifier, the one position that
