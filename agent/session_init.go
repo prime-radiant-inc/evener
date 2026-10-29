@@ -1405,7 +1405,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// one turn behind the file. Both refresh triggers share it so there is
 	// one refresh, not two mechanisms.
 	refreshFromDisk := func(reason string) error {
-		refreshed, err := readTranscriptFull(transcriptPath(s.stateDir, s.id), s.stateDir)
+		refreshed, err := readTranscriptFull(context.Background(), transcriptPath(s.stateDir, s.id), s.stateDir)
 		if err != nil {
 			return fmt.Errorf("refresh transcript after %s: %w", reason, err)
 		}

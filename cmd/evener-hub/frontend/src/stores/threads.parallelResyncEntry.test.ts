@@ -19,14 +19,14 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { resetPendingTurnsStoreForTests } from "../panes/session/composer/queue/pendingTurnsStore";
 import { resetWorkspaceStoreForTests } from "../shell/workspace";
 import { connectReadyFakeClient } from "../testing/connectionTestUtils";
-import { connectionStore } from "./connection";
+import { resetConnectionStoreForTests } from "./connection";
 import { productionEntryTranscriptForTests, setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { SessionEntryCache } from "./sessionEntryCache";
 import { pendingThreadHydrationUpdatesForTests, resetThreadsStoreForTests, threadsStore } from "./threads";
 
 let cache: SessionEntryCache;
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetPendingTurnsStoreForTests();
   resetWorkspaceStoreForTests();
@@ -43,7 +43,7 @@ beforeEach(() => {
 afterEach(() => {
   for (const lease of establishedMemberships.splice(0)) lease.release();
   resetThreadsStoreForTests();
-  connectionStore.setState({ state: "idle", client: null });
+  resetConnectionStoreForTests();
   cache.close();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -163,7 +164,7 @@ func TestSessionStartDispatchAfterEmptyRestoreIsNotFlaggedAsReinjection(t *testi
 	if _, err := sess.ProcessInput(t.Context(), "first user task", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
-	data, err := readTranscriptFull(sess.TranscriptPath(), "")
+	data, err := readTranscriptFull(context.Background(), sess.TranscriptPath(), "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}

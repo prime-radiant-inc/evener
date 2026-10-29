@@ -156,11 +156,72 @@ func FuzzAnthropicStreamMetamorphic(f *testing.F) {
 		"event: message_stop\n" +
 		`data: {"type":"message_stop"}` + "\n\n"
 
+	// A redacted-thinking block assembled at message_stop.
+	redactedStream := "event: message_start\n" +
+		`data: {"type":"message_start","message":{"id":"msg_r","model":"claude-test"}}` + "\n\n" +
+		"event: content_block_start\n" +
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"redacted_thinking","data":"secret"}}` + "\n\n" +
+		"event: content_block_stop\n" +
+		`data: {"type":"content_block_stop","index":0}` + "\n\n" +
+		"event: message_delta\n" +
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}` + "\n\n" +
+		"event: message_stop\n" +
+		`data: {"type":"message_stop"}` + "\n\n"
+
+	// A second content_block_stop for a tool_use block whose start already
+	// ended: the block re-opens its tool-call start event before ending again.
+	lateToolRestartStream := "event: message_start\n" +
+		`data: {"type":"message_start","message":{"id":"msg_5","model":"claude-test"}}` + "\n\n" +
+		"event: content_block_start\n" +
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_9","name":"shell","input":{}}}` + "\n\n" +
+		"event: content_block_stop\n" +
+		`data: {"type":"content_block_stop","index":0}` + "\n\n" +
+		"event: content_block_stop\n" +
+		`data: {"type":"content_block_stop","index":0}` + "\n\n" +
+		"event: message_delta\n" +
+		`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}` + "\n\n" +
+		"event: message_stop\n" +
+		`data: {"type":"message_stop"}` + "\n\n"
+
+	// An input_json_delta arriving after the block already stopped: the delta
+	// must re-open the tool-call start event and still deliver its fragment.
+	lateDeltaToolStartStream := "event: message_start\n" +
+		`data: {"type":"message_start","message":{"id":"msg_6","model":"claude-test"}}` + "\n\n" +
+		"event: content_block_start\n" +
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_9","name":"shell","input":{}}}` + "\n\n" +
+		"event: content_block_stop\n" +
+		`data: {"type":"content_block_stop","index":0}` + "\n\n" +
+		"event: content_block_delta\n" +
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{}"}}` + "\n\n" +
+		"event: message_delta\n" +
+		`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}` + "\n\n" +
+		"event: message_stop\n" +
+		`data: {"type":"message_stop"}` + "\n\n"
+
+	// A thinking_delta that carries its text on the "text" key: the "thinking"
+	// key is empty, so the decoder must read the fallback field.
+	thinkingTextFallbackStream := "event: message_start\n" +
+		`data: {"type":"message_start","message":{"id":"msg_7","model":"claude-test"}}` + "\n\n" +
+		"event: content_block_start\n" +
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}` + "\n\n" +
+		"event: content_block_delta\n" +
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","text":"hmm"}}` + "\n\n" +
+		"event: content_block_stop\n" +
+		`data: {"type":"content_block_stop","index":0}` + "\n\n" +
+		"event: message_delta\n" +
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}` + "\n\n" +
+		"event: message_stop\n" +
+		`data: {"type":"message_stop"}` + "\n\n"
+
 	seeds := []string{
 		textStream,
 		toolStream,
 		thinkingStream,
 		refusalStream,
+		redactedStream,
+		lateToolRestartStream,
+		lateDeltaToolStartStream,
+		thinkingTextFallbackStream,
 		"event: message_stop\ndata: not-json\n\n",
 		": just a comment\n\n",
 		"\n\n\n",

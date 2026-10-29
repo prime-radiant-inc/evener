@@ -188,17 +188,19 @@ lint-gofmt:
 # every expected output to remain tracked. Otherwise deleting an output from
 # HEAD and letting the generator recreate it would make the gate pass. The
 # output list is bound once so the trackedness and content checks cannot drift.
-## Fail if any committed generated output is stale: the two AppWire outputs
-## and the six docs/developing-evener/ target tables.
+## Fail if any committed generated output is stale: the two AppWire outputs,
+## the six docs/developing-evener/ target tables and the configuration knob
+## table.
 ## proves: docs/appwire-protocol.md, the generated TypeScript protocol
-##   types, and the marked target-table regions in docs/developing-evener/'s
-##   six family docs all match what `make generate` produces right now.
+##   types, the marked target-table regions in docs/developing-evener/'s
+##   six family docs, and docs/developing-evener/config-knobs.md all match
+##   what `make generate` produces right now.
 ## trigger: Required CI (via make lint); local pre-merge.
 ## requires: None beyond the Go toolchain.
 ## fails-when: `make generate` exits nonzero, an expected output is no longer
 ##   tracked, or regenerated output differs from what is committed.
 lint-generated:
-	$(call run_quiet_lint,$(MAKE) generate && { outputs='docs/appwire-protocol.md appwire-client/typescript/types.gen.ts docs/developing-evener/README.md docs/developing-evener/building.md docs/developing-evener/testing.md docs/developing-evener/linting.md docs/developing-evener/fuzzing.md docs/developing-evener/coverage.md'; git ls-files --error-unmatch -- $$outputs >/dev/null && git diff --exit-code HEAD -- $$outputs || { echo "the paths above are untracked or differ from HEAD. make generate has already run; the fix is to commit that diff - it is either a regenerated table or a hand-written edit inside one of these files."; exit 1; }; })
+	$(call run_quiet_lint,$(MAKE) generate && { outputs='docs/appwire-protocol.md appwire-client/typescript/types.gen.ts docs/developing-evener/README.md docs/developing-evener/building.md docs/developing-evener/testing.md docs/developing-evener/linting.md docs/developing-evener/fuzzing.md docs/developing-evener/coverage.md docs/developing-evener/config-knobs.md'; git ls-files --error-unmatch -- $$outputs >/dev/null && git diff --exit-code HEAD -- $$outputs || { echo "the paths above are untracked or differ from HEAD. make generate has already run; the fix is to commit that diff - it is either a regenerated table or a hand-written edit inside one of these files."; exit 1; }; })
 
 # lint-fuzz-registry wraps the SAME check as `make fuzz-registry-check`
 # (scripts/fuzz/fuzz-registry-check.sh) so a native/Rapid fuzz target that

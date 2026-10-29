@@ -22,7 +22,7 @@ import { IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readComposerDraft, writeComposerDraft } from "../panes/session/composer/draft";
 import { setCacheChannelFactoryForTests } from "./cacheLifetime";
-import { connectionStore } from "./connection";
+import { resetConnectionStoreForTests } from "./connection";
 import {
   isEntryTranscriptLocalOpening,
   productionEntryTranscriptForTests,
@@ -251,7 +251,7 @@ let scheduledHydrationRetries: ScheduledHydrationRetry[] = [];
 let restoreHydrationRetryScheduler: (() => void) | null = null;
 
 beforeEach(async () => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   connectedFakeClient = undefined;
   _pendingReadRef = undefined;

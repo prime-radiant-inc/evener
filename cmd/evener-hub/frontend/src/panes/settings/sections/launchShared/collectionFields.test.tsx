@@ -3,7 +3,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { connectionStore } from "../../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../../stores/connection";
 import { resetExtensionsStoreForTests } from "../../../../stores/extensions";
 import * as catalogClientModule from "../../../../widgets/modelCatalog/catalogClient";
 import {
@@ -20,7 +20,7 @@ import {
 // vi.restoreAllMocks removes it. No test in this file overrides the resolved
 // value afterward, so no reference to it is kept.
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetExtensionsStoreForTests();
   vi.spyOn(catalogClientModule, "fetchModelCatalog").mockResolvedValue({
     models: [

@@ -3,7 +3,7 @@ import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { connectionStore } from "../../../stores/connection";
+import { resetConnectionStoreForTests } from "../../../stores/connection";
 import { resetExtensionsStoreForTests } from "../../../stores/extensions";
 import { hostsStore } from "../../../stores/hosts";
 import { resetSettingsHostForTests, setSettingsHost } from "../../../stores/settingsHost";
@@ -51,7 +51,7 @@ function controllerLayerCalls(fake: FakeClient): string[] {
 }
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetExtensionsStoreForTests();
   resetToastStoreForTests();
   hostsStore.getState().resetForTests();
@@ -62,7 +62,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   window.history.pushState({}, "", "/");
 });
 

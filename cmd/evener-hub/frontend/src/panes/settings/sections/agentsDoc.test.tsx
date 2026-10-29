@@ -10,7 +10,7 @@ import {
   resetAgentsDocHostInstancesForTests,
   resetAgentsDocStoreForTests,
 } from "../../../stores/agentsDoc";
-import { connectionStore } from "../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
 import { Toast } from "../../../widgets";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
 import { AgentsDocSection } from "./agentsDoc";
@@ -55,7 +55,7 @@ function saveButton(): HTMLButtonElement {
 }
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetAgentsDocStoreForTests();
   resetAgentsDocHostInstancesForTests();
   resetToastStoreForTests();

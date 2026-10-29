@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/llm/registry"
 )
 
 func TestParseRetryAfter_Seconds(t *testing.T) {
@@ -13,6 +15,32 @@ func TestParseRetryAfter_Seconds(t *testing.T) {
 	d := ParseRetryAfter("12", now)
 	if d == nil || *d != 12*time.Second {
 		t.Fatalf("got %v want 12s", d)
+	}
+}
+
+// TestContextBudgetErrorRendersItsStructuredFacts pins that the local
+// admission failure carries the facts a reader needs to act -- the instance,
+// the model, the limit it tripped, and the numbers -- without asserting the
+// sentence around them.
+func TestContextBudgetErrorRendersItsStructuredFacts(t *testing.T) {
+	req := Request{Provider: "groq", Model: "glm-5", InputTokensEstimate: 5_000}
+	res := registry.Resolved{Instance: "groq", ModelID: "glm-5", Caps: registry.Caps{MaxInputTokens: new(4_000)}}
+	_, _, err := ApplyTokenBudget(req, res)
+	if err == nil {
+		t.Fatal("ApplyTokenBudget admitted a request over the row's max_input cap")
+	}
+	var budget *ContextBudgetError
+	if !errors.As(err, &budget) {
+		t.Fatalf("want *ContextBudgetError, got %T", err)
+	}
+	if budget.Provider != "groq" || budget.Model != "glm-5" || budget.Limit != "max_input" || budget.Maximum != 4_000 {
+		t.Fatalf("structured facts = %+v", budget)
+	}
+	msg := err.Error()
+	for _, fact := range []string{"groq", "glm-5", "max_input", "4000"} {
+		if !strings.Contains(msg, fact) {
+			t.Errorf("message omits the structured fact %q: %q", fact, msg)
+		}
 	}
 }
 

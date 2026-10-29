@@ -14,7 +14,7 @@ import "../../panes/transcript";
 import { cascadeClient, cascadeContext } from "../../panes/zoom/cascadeTestUtils";
 import type { SessionZoomParams } from "../../panes/zoom/intent";
 import "../../panes/zoom";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import {
   activityClient,
   activityContext,
@@ -289,7 +289,7 @@ async function warmPane(open: () => void, findLandmark: (timeout: number) => Pro
 beforeEach(() => {
   resetWorkspaceStoreForTests();
   resetActivitySidebarStoreForTests();
-  connectionStore.setState({ client: null, state: "idle" });
+  resetConnectionStoreForTests();
   resetChromeStoreForTests();
   setLastPopstateWasTrustedForTests(false);
 });
@@ -462,7 +462,7 @@ test("at the mobile boundary an ordinary Agents row retains the existing convers
   } finally {
     cleanup();
     restoreViewport();
-    connectionStore.setState({ client: null, state: "idle" });
+    resetConnectionStoreForTests();
   }
 });
 
@@ -566,7 +566,7 @@ test("a restored cascade renders only its selected reader on mobile and restores
     else Reflect.deleteProperty(HTMLElement.prototype, "offsetHeight");
     if (original) window.matchMedia = original;
     else Reflect.deleteProperty(window, "matchMedia");
-    connectionStore.setState({ client: null, state: "idle" });
+    resetConnectionStoreForTests();
   }
 });
 

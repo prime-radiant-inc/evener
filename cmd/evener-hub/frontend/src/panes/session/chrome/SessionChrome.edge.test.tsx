@@ -15,7 +15,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { ClientProvider } from "../../../shell/clientContext";
 import { resetWorkspaceStoreForTests } from "../../../shell/workspace";
 import { setCacheChannelFactoryForTests } from "../../../stores/cacheLifetime";
-import { connectionStore } from "../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
 import * as navigationModule from "../../../stores/navigation/store";
 import { navigationStore, resetNavigationStoreForTests } from "../../../stores/navigation/store";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
@@ -127,7 +127,7 @@ function renderWithToast(ui: React.ReactElement) {
 
 beforeEach(() => {
   chromeClient = new FakeClient("ready");
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
   resetNavigationStoreForTests();

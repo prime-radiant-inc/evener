@@ -3,7 +3,7 @@ import { currentRead } from "@evener/appwire-client/testing/currentTranscript";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { connectionStore } from "./connection";
+import { connectionStore, resetConnectionStoreForTests } from "./connection";
 import { productionEntryTranscriptForTests } from "./entryTranscriptRoutes";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { acquireSessionActivity } from "./sessionActivity";
@@ -17,7 +17,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   resetThreadsStoreForTests();
-  connectionStore.setState({ client: null, state: "idle" });
+  resetConnectionStoreForTests();
   vi.unstubAllGlobals();
 });
 

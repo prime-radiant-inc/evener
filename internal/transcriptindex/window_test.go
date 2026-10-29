@@ -256,3 +256,21 @@ func TestInheritedCommunicateIndexedWindow(t *testing.T) {
 		t.Fatalf("result identity/author: candidate=%+v item=%+v", c, c.Item)
 	}
 }
+
+// A limit beyond the public page maximum is refused before any read runs,
+// on every item-window entry point.
+func TestWindowReadsRefuseLimitsBeyondThePageMaximum(t *testing.T) {
+	t.Parallel()
+	fx := fixture{name: "limits", header: everything().header, lines: []fixtureLine{entryLine(user("hello"))}}
+	x := openIndex(t, writeFixture(t, fx), t.TempDir())
+	over := appwire.TranscriptItemPageLimit + 1
+	if _, err := x.Latest(over); err == nil {
+		t.Fatal("Latest accepted a limit beyond the page maximum")
+	}
+	if _, _, err := x.LatestSince(over, appwire.SnapshotIdentity{}); err == nil {
+		t.Fatal("LatestSince accepted a limit beyond the page maximum")
+	}
+	if _, err := x.Before(appwire.ThreadItemPosition{}, over); err == nil {
+		t.Fatal("Before accepted a limit beyond the page maximum")
+	}
+}

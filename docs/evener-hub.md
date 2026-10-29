@@ -290,7 +290,6 @@ field is absent.
 | `host_probe_timeout` | `"10s"` | Deadline for one remote-host health probe; also bounds how long a hung remote holds a deploy gate. |
 | `host_min_free_space_bytes` | 512 MiB | Free space each state root needs before the hub reports itself healthy. |
 | `host_tombstone_retention` | `"168h"` | How long a removed host's tombstone is retained before pruning. |
-| `status_poll_interval` | `"2s"` | How often the hub polls session state. |
 | `public_url` | unset | HTTP(S) origin advertised for pairing and browser login; otherwise use the observed browser origin for pairing and the bound listener for startup login. |
 
 Write every duration as a TOML string, such as `"30s"` or `"1h"`. A bare integer
@@ -304,9 +303,9 @@ value rather than trusting a silent load.
 
 Every other host-record bound (tombstone and receipt counts, sizes and ages,
 operation-store limits, teardown-repair timing) is a built-in default and is not
-configurable. A `hub.toml` that still sets one of the retired `host_*` retention
-or pruning keys starts normally, ignores the value, and logs a warning naming
-the key on every boot while it is present.
+configurable. A `hub.toml` that still sets a retired key (one of the `host_*`
+retention or pruning keys, or `status_poll_interval`) starts normally, ignores
+the value, and logs a warning naming the key on every boot while it is present.
 
 ## Launch configuration
 

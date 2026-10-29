@@ -8,7 +8,7 @@ import {
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests, resetHostInstancesForTests } from "../../stores/credentials";
 import { hostsStore } from "../../stores/hosts";
 import { useProviderSetup } from "./useProviderSetup";
@@ -26,14 +26,14 @@ const provider: InstanceEntry = {
 };
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", client: null });
+  resetConnectionStoreForTests();
   resetCredentialsStoreForTests();
   resetHostInstancesForTests();
   hostsStore.getState().resetForTests();
 });
 afterEach(() => {
   cleanup();
-  connectionStore.setState({ state: "idle", client: null });
+  resetConnectionStoreForTests();
 });
 
 function connect(instances: InstanceEntry[]) {

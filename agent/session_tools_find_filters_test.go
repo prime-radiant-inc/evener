@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,7 +19,7 @@ import (
 // test on error.
 func findOne(t *testing.T, deps *toolDeps, args map[string]any) findSessionsEnvelope {
 	t.Helper()
-	v, err := execFindSessionTranscripts(deps, args)
+	v, err := execFindSessionTranscripts(context.Background(), deps, args)
 	if err != nil {
 		t.Fatalf("find %v: %v", args, err)
 	}
@@ -170,7 +172,7 @@ func TestFind_ChildrenOfComposesWithFilters(t *testing.T) {
 	if got := findRefSet(t, deps, map[string]any{"children_of": rootRef, "min_turns": float64(20)}); len(got) != 1 || !got[refFor("", forkID)] {
 		t.Fatalf("children_of+min_turns refs = %v, want only fork", got)
 	}
-	if _, err := execFindSessionTranscripts(deps, map[string]any{"children_of": rootRef, "kind": "bogus"}); err == nil || !strings.Contains(err.Error(), "invalid_request") {
+	if _, err := execFindSessionTranscripts(context.Background(), deps, map[string]any{"children_of": rootRef, "kind": "bogus"}); err == nil || !strings.Contains(err.Error(), "invalid_request") {
 		t.Fatalf("children_of+bogus kind err = %v, want invalid_request", err)
 	}
 }
@@ -218,7 +220,7 @@ func TestFind_FilterValidation(t *testing.T) {
 		{"wrong-typed updated_after", map[string]any{"updated_after": float64(1)}},
 	}
 	for _, c := range cases {
-		if _, err := execFindSessionTranscripts(deps, c.args); err == nil || !strings.Contains(err.Error(), "invalid_request") {
+		if _, err := execFindSessionTranscripts(context.Background(), deps, c.args); err == nil || !strings.Contains(err.Error(), "invalid_request") {
 			t.Fatalf("%s: err = %v, want invalid_request", c.name, err)
 		}
 	}
@@ -286,5 +288,54 @@ func TestFind_ContentSnippetsRankedByRole(t *testing.T) {
 	}
 	if snips[0].Seq <= snips[1].Seq {
 		t.Fatalf("snippet order %v is still seq order, not role-ranked", snips)
+	}
+}
+
+// A find_session_transcripts call whose context is cancelled stops its content
+// scan instead of opening transcripts for the remaining candidates.
+func TestFindSessionTranscriptsToolHonorsCancelledContext(t *testing.T) {
+	dir := newBucket(t)
+	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
+	writeFindSession(t, dir, findMetaSpec{id: sessionID}, "semantic turn")
+	registered := findSessionTranscriptsTool(&toolDeps{stateDir: dir, sessionID: sessionID})
+	args := map[string]any{"query": "semantic"}
+
+	if _, err := registered.Exec(t.Context(), nil, args); err != nil {
+		t.Fatalf("uncancelled find: %v", err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := registered.Exec(ctx, nil, args); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Exec error = %v, want context.Canceled", err)
+	}
+}
+
+// cancelAfterErrChecks is a context that reports cancellation from its nth
+// Err call on, so a test can cancel at a precise point inside a call.
+type cancelAfterErrChecks struct {
+	context.Context
+	remaining int
+}
+
+func (c *cancelAfterErrChecks) Err() error {
+	if c.remaining > 0 {
+		c.remaining--
+		return nil
+	}
+	return context.Canceled
+}
+
+// A cancellation that lands while the only candidate's transcript is being
+// read fails the call instead of returning the empty result as complete.
+func TestFindSessionTranscriptsCancelDuringLastCandidateRead(t *testing.T) {
+	dir := newBucket(t)
+	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
+	writeFindSession(t, dir, findMetaSpec{id: sessionID}, "semantic turn")
+	deps := &toolDeps{stateDir: dir, sessionID: sessionID}
+
+	// The scan loop's own check passes; the transcript read then sees the cancel.
+	ctx := &cancelAfterErrChecks{Context: t.Context(), remaining: 1}
+	if _, err := execFindSessionTranscripts(ctx, deps, map[string]any{"query": "semantic"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("find error = %v, want context.Canceled", err)
 	}
 }

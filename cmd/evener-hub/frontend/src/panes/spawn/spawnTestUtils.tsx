@@ -17,7 +17,7 @@ import { afterEach, beforeAll, beforeEach, expect, vi } from "vitest";
 import { ClientProvider } from "../../shell/clientContext";
 import { navigate } from "../../shell/routing";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { resetCredentialsStoreForTests, resetHostInstancesForTests } from "../../stores/credentials";
 import { resetExtensionsStoreForTests } from "../../stores/extensions";
 import { hostsStore } from "../../stores/hosts";
@@ -505,7 +505,7 @@ export function installSpawnTestHooks(): void {
   afterEach(() => {
     cleanup();
     vi.useRealTimers();
-    connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+    resetConnectionStoreForTests();
     resetExtensionsStoreForTests();
     resetNavigationStoreForTests();
     resetThreadsStoreForTests();

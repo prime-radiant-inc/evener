@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -115,7 +116,7 @@ func TestAsideSession_CopiesFullTranscriptAtTip(t *testing.T) {
 	// Child transcript is the full parent transcript: 4 entries ending on the
 	// final ASSISTANT turn.
 	childTranscriptPath := schema.SessionTranscriptPath(stateDir, childID)
-	header, entries, _, err := readTranscript(childTranscriptPath, "")
+	header, entries, _, err := readTranscript(context.Background(), childTranscriptPath, "")
 	if err != nil {
 		t.Fatalf("readTranscript(child): %v", err)
 	}

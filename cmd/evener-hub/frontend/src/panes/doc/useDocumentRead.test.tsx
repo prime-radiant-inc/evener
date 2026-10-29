@@ -5,7 +5,7 @@ import { bindFilePath, type DocPort, type FileReference } from "@evener/appwire-
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { useDocumentRead } from "./useDocumentRead";
 
 // Local complete wire fixture, matching the transcript tests' hydration shape.
@@ -79,7 +79,7 @@ async function readSettled(count: number) {
   });
 }
 beforeEach(async () => {
-  connectionStore.setState({ client: null, state: "idle" });
+  resetConnectionStoreForTests();
   client = new FakeClient("ready");
   connectionStore.getState().connect(client);
   requests = [];
@@ -131,7 +131,7 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   cleanup();
-  connectionStore.setState({ client: null, state: "idle" });
+  resetConnectionStoreForTests();
   vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();

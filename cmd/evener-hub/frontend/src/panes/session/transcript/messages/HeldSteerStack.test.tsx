@@ -7,7 +7,7 @@ import { formatElapsed } from "@evener/appwire-client";
 import { render, renderHook, screen, within } from "@testing-library/react";
 import { IDBFactory } from "fake-indexeddb";
 import { beforeEach, expect, test } from "vitest";
-import { connectionStore } from "../../../../stores/connection";
+import { resetConnectionStoreForTests } from "../../../../stores/connection";
 import type { InputAttachment } from "../../../../stores/threads";
 import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
 import { connectFakeClient } from "../../../../testing/connectionTestUtils";
@@ -27,7 +27,7 @@ const NOW = 43_000;
 
 beforeEach(() => {
   globalThis.indexedDB = new IDBFactory();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetPendingTurnsStoreForTests();
 });

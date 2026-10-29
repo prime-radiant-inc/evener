@@ -34,7 +34,7 @@ func newIdentitySession(t *testing.T) *Session {
 
 func transcriptEntries(t *testing.T, s *Session) []transcript.Entry {
 	t.Helper()
-	_, entries, _, err := readTranscript(s.TranscriptPath(), "")
+	_, entries, _, err := readTranscript(context.Background(), s.TranscriptPath(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestColdAttentionIsADeliveryTurn(t *testing.T) {
 	if _, err := appendColdDelegateNotificationDurablyWithOpen(path, id, "delegate:cold", "a cold report", time.Now(), transcript.OpenWriterForSession); err != nil {
 		t.Fatal(err)
 	}
-	_, entries, _, err := readTranscript(path, "")
+	_, entries, _, err := readTranscript(context.Background(), path, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func TestForkCopiesKeepTheParentsIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, child, _, err := readTranscript(schema.SessionTranscriptPath(stateDir, childID), "")
+	_, child, _, err := readTranscript(context.Background(), schema.SessionTranscriptPath(stateDir, childID), "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -8,7 +8,7 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { resetPendingTurnsStoreForTests } from "../panes/session/composer/queue/pendingTurnsStore";
 import { connectReadyFakeClient } from "../testing/connectionTestUtils";
-import { connectionStore } from "./connection";
+import { resetConnectionStoreForTests } from "./connection";
 import { productionEntryTranscriptForTests } from "./entryTranscriptRoutes";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { isResumeOnly } from "./recoveryFence";
@@ -22,7 +22,7 @@ import {
 
 const cleanupStops: Array<() => Promise<void>> = [];
 beforeEach(() => {
-  connectionStore.setState({ client: null, state: "idle", serverInfo: undefined });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetPendingTurnsStoreForTests();
   vi.stubGlobal("indexedDB", new IDBFactory());
@@ -31,7 +31,7 @@ beforeEach(() => {
 afterEach(async () => {
   for (const finish of cleanupStops.splice(0)) await finish();
   resetThreadsStoreForTests();
-  connectionStore.setState({ client: null, state: "idle" });
+  resetConnectionStoreForTests();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });

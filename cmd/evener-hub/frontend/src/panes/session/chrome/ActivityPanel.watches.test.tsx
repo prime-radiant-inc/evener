@@ -2,7 +2,7 @@ import { hydrateThread, type SessionJobsResponse } from "@evener/appwire-client"
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
-import { connectionStore } from "../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
 import {
   activityClient,
   activityContext,
@@ -16,7 +16,7 @@ const ref = "remote:owner",
   model = () => hydrateThread(activityThread(ref), ref, 0);
 afterEach(() => {
   cleanup();
-  connectionStore.setState({ client: null, state: "idle" });
+  resetConnectionStoreForTests();
 });
 
 test("typed receiver watches remain visible while an independent job page is pending", async () => {

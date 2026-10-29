@@ -110,7 +110,7 @@ func TestTranscriptRangeSingleOversizedUser(t *testing.T) {
 	t.Parallel()
 	body := strings.Repeat("界", convBudgetChars)
 	path, root := writeRangeUserFixture(t, []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User(body))})
-	v, err := readMarkdownPage(path, root, "", schema.SessionMeta{}, "0-0", nil, 0, 0)
+	v, err := readMarkdownPage(context.Background(), path, root, "", schema.SessionMeta{}, "0-0", nil, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ func TestTranscriptRangeRefusesUnrepresentableUserAccounting(t *testing.T) {
 		turns[i] = schema.NewTurn(schema.TurnUserInput, llm.User(body))
 	}
 	path, root := writeRangeUserFixture(t, turns)
-	if _, err := readMarkdownPage(path, root, "", schema.SessionMeta{}, "0-599", nil, 0, 0); err == nil {
+	if _, err := readMarkdownPage(context.Background(), path, root, "", schema.SessionMeta{}, "0-599", nil, 0, 0); err == nil {
 		t.Fatal("range returned success without room for exact user omission accounting")
 	}
 }
@@ -178,7 +178,7 @@ func TestTranscriptRangeRecoversNamedUser(t *testing.T) {
 	t.Parallel()
 	body := strings.Repeat("u4362-6bd1-界", 5000)
 	path, root := writeRangeUserFixture(t, []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User(body))})
-	value, err := readMarkdownPage(path, root, "", schema.SessionMeta{}, "0-0", nil, 0, 0)
+	value, err := readMarkdownPage(context.Background(), path, root, "", schema.SessionMeta{}, "0-0", nil, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +188,7 @@ func TestTranscriptRangeRecoversNamedUser(t *testing.T) {
 	}
 	var recovered []byte
 	for offset := 0; ; {
-		value, err := readMarkdownPage(path, root, "", schema.SessionMeta{}, "", &addresses[0], offset, 0)
+		value, err := readMarkdownPage(context.Background(), path, root, "", schema.SessionMeta{}, "", &addresses[0], offset, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -251,7 +251,7 @@ func TestTranscriptRangeSparseOutput(t *testing.T) {
 		schema.NewTurn(schema.TurnAssistant, llm.Assistant(strings.Repeat("a", 2*convBudgetChars))),
 		schema.NewTurn(schema.TurnUserInput, llm.User("u2-8a47")),
 	})
-	value, err := readMarkdownPage(path, root, "", schema.SessionMeta{Name: "n-d87c"}, "0-2", nil, 0, 0)
+	value, err := readMarkdownPage(context.Background(), path, root, "", schema.SessionMeta{Name: "n-d87c"}, "0-2", nil, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +294,7 @@ func TestTranscriptRangeEncodedCapCannotHideUser(t *testing.T) {
 		schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("\x00", 21000))),
 	})
 	pin := 0
-	if _, err := readMarkdownPage(path, root, "", schema.SessionMeta{}, "0-1", &pin, 0, 0); err == nil {
+	if _, err := readMarkdownPage(context.Background(), path, root, "", schema.SessionMeta{}, "0-1", &pin, 0, 0); err == nil {
 		t.Fatal("escape-heavy envelope returned success after removing complete user evidence")
 	}
 }
@@ -308,7 +308,7 @@ func TestTranscriptRangeQuotedUserCannotMaskLoss(t *testing.T) {
 		schema.NewTurn(schema.TurnUserInput, llm.User(datum)),
 	})
 	pin := 0
-	value, err := readMarkdownPage(path, root, "", schema.SessionMeta{}, "last:3", &pin, 0, 0)
+	value, err := readMarkdownPage(context.Background(), path, root, "", schema.SessionMeta{}, "last:3", &pin, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -330,7 +330,7 @@ func TestTranscriptRangeQuotedUserCannotMaskEnvelopeLoss(t *testing.T) {
 		schema.NewTurn(schema.TurnAssistant, llm.Assistant(strings.Repeat("\x00", 30000))),
 	})
 	pin := 0
-	if _, err := readMarkdownPage(path, root, "", schema.SessionMeta{}, "last:3", &pin, 0, 0); err == nil {
+	if _, err := readMarkdownPage(context.Background(), path, root, "", schema.SessionMeta{}, "last:3", &pin, 0, 0); err == nil {
 		t.Fatal("a retained quotation masked user evidence removed by serialized-envelope clipping")
 	}
 }
@@ -386,7 +386,7 @@ func TestTranscriptRangeConservativelyRefusesLargeAccounting(t *testing.T) {
 				turns[seq] = schema.NewTurn(schema.TurnUserInput, llm.User(text))
 			}
 			path, root := writeRangeUserFixture(t, turns)
-			if _, err := readMarkdownPage(path, root, "", schema.SessionMeta{}, "0-599", nil, 0, 0); err == nil {
+			if _, err := readMarkdownPage(context.Background(), path, root, "", schema.SessionMeta{}, "0-599", nil, 0, 0); err == nil {
 				t.Fatal("one-pass policy searched around oversized mandatory omission accounting")
 			}
 		})
