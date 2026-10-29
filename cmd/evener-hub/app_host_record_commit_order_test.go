@@ -1146,3 +1146,64 @@ func TestAnUnsyncedCompensationKeepsTheStagedRecordsThroughLaterWrites(t *testin
 		t.Fatal("the staged marker outlived the proven restore")
 	}
 }
+
+// TestNoSingleReadFailureWhileStagingARemovalLetsItFinalizeAsLanded is the
+// staging half of the read-failure rule: whichever one hub.toml read fails while
+// a removal stages, the removal either refuses or stages with evidence a
+// recovery can judge, so a crash before it reaches the file never costs the host
+// its identity.
+func TestNoSingleReadFailureWhileStagingARemovalLetsItFinalizeAsLanded(t *testing.T) {
+	stageAndCrash := func(t *testing.T, failAt int) (*crashHub, string, int) {
+		hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+		m, _ := hub.boot(t, false)
+		_, incarnation := testMutationIdentity(t, m, "side")
+		params := removeRequest(t, m, "side")
+		unlanded := fileBytes(t, hub.configPath)
+		armCut(m, cutStaged)
+		previous := configReadFile
+		reads := 0
+		configReadFile = func(path string) ([]byte, error) {
+			reads++
+			if reads == failAt {
+				return nil, errors.New("injected read failure")
+			}
+			return previous(path)
+		}
+		func() {
+			defer func() {
+				configReadFile = previous
+				if recovered := recover(); recovered != nil {
+					if _, crashed := recovered.(crashCut); !crashed {
+						panic(recovered)
+					}
+				}
+			}()
+			_, _ = m.RemoveResult(context.Background(), params)
+		}()
+		// Whatever staged never reached hub.toml.
+		if err := os.WriteFile(hub.configPath, unlanded, 0o600); err != nil {
+			t.Fatalf("restore the file the crash left behind: %v", err)
+		}
+		return hub, incarnation, reads
+	}
+	_, _, total := stageAndCrash(t, 0)
+	if total == 0 {
+		t.Fatal("staging read hub.toml no times")
+	}
+	for failAt := 1; failAt <= total; failAt++ {
+		hub, incarnation, _ := stageAndCrash(t, failAt)
+		hub.restartStateRoot(t)
+		store, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+		if err != nil {
+			t.Fatalf("hostops.Open: %v", err)
+		}
+		recovered := restartOver(t, hub.configPath, store)
+
+		if _, got := testMutationIdentity(t, recovered, "side"); got != incarnation {
+			t.Fatalf("read %d failing while staging: side serves incarnation %q after the crash, want %q", failAt, got, incarnation)
+		}
+		if _, tombstoned := mustRecords(t, store).Tombstones["side"]; tombstoned {
+			t.Fatalf("read %d failing while staging: the never-landed removal left its tombstone", failAt)
+		}
+	}
+}

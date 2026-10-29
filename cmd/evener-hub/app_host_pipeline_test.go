@@ -1303,7 +1303,13 @@ func TestPerCommitStashIsNotClobberedByALaterRemoval(t *testing.T) {
 		RemoteHostOpsStore:   fixture.store,
 		RemoteHostConfigPath: fixture.configPath,
 	}, fixture.configPath, registry, t.Logf)
-	_ = second
+	// The host the restore declared is served by this process, not only after
+	// another restart.
+	for _, name := range []string{"alpha", "beta"} {
+		if _, served := second.cfg.hosts.Get(name); !served {
+			t.Errorf("the boot left %q declared in hub.toml but absent from the registry", name)
+		}
+	}
 	// The restore put the record's own bytes back, so beta is declared again
 	// although the later commit removed it; the move that follows rewrites the
 	// file without the record sections.

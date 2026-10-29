@@ -389,7 +389,6 @@ func (m *hubHostManager) AddResult(ctx context.Context, params appwire.HostAddPa
 		Entry:   entry,
 	}
 	plan.reconcileFingerprint, _ = hubTOMLFingerprintAt(m.cfg.configPath)
-	plan.hostFingerprint = hubTOMLHostFingerprint(m.cfg.configPath, plan.Name)
 	if err := m.stageCommit(plan, m.nowTime()); err != nil {
 		err = m.compensateStagedWrite(plan, prev, err)
 		m.cfg.state.restore(entry.Name, priorState)
@@ -730,7 +729,6 @@ func (m *hubHostManager) UpdateResult(ctx context.Context, params appwire.HostUp
 		Entry:   entry,
 	}
 	plan.reconcileFingerprint, _ = hubTOMLFingerprintAt(m.cfg.configPath)
-	plan.hostFingerprint = hubTOMLHostFingerprint(m.cfg.configPath, plan.Name)
 	if err := m.stageCommit(plan, m.nowTime()); err != nil {
 		err = m.compensateStagedWrite(plan, prev, err)
 		return appwire.HostMutationResult{}, err
@@ -932,6 +930,13 @@ func (m *hubHostManager) RemoveResult(ctx context.Context, params appwire.HostRe
 	// no bytes to restore), and that is exactly the same state as a hub with no
 	// config file — no counterpart to carry an intent, nothing a compensation
 	// could restore.
+	// A removal is judged at recovery by the entry hub.toml held for the host
+	// when it staged; a file that cannot be read gives no such evidence, so the
+	// removal waits for one that can.
+	hostFingerprint, err := hubTOMLHostFingerprint(m.cfg.configPath, host.Name)
+	if err != nil {
+		return appwire.HostMutationResult{}, err
+	}
 	stash := ""
 	if len(purgeValues) > 0 && !m.recordsInStore() {
 		stash, err = m.writeHubTOMLStash(receiptKey)
@@ -961,7 +966,7 @@ func (m *hubHostManager) RemoveResult(ctx context.Context, params appwire.HostRe
 		}
 	}
 	plan.reconcileFingerprint, _ = hubTOMLFingerprintAt(m.cfg.configPath)
-	plan.hostFingerprint = hubTOMLHostFingerprint(m.cfg.configPath, plan.Name)
+	plan.hostFingerprint = hostFingerprint
 	if err := m.stageCommit(plan, m.nowTime()); err != nil {
 		err = m.compensateStagedWrite(plan, prev, err)
 		// The cross-file commit never armed: the staged write's compensation

@@ -508,14 +508,14 @@ func stagedRemovalNeverLanded(marker HostStagedReceipt, configured []HostConfig)
 	return hostConfigFingerprint(configured, scope.Name) == marker.HostFingerprint
 }
 
-// hubTOMLHostFingerprint digests the entry hub.toml holds for name at staging;
-// empty when the file cannot be read or holds none.
-func hubTOMLHostFingerprint(path, name string) string {
+// hubTOMLHostFingerprint digests the entry hub.toml holds for name; empty when
+// the file holds none. A file that cannot be read is an error, not an absence.
+func hubTOMLHostFingerprint(path, name string) (string, error) {
 	cfg, state := readHubTOMLConfig(path)
 	if state == hostFileUnreadable {
-		return ""
+		return "", fmt.Errorf("%s could not be read", path)
 	}
-	return hostConfigFingerprint(cfg.Hosts, name)
+	return hostConfigFingerprint(cfg.Hosts, name), nil
 }
 
 // hostConfigFingerprint digests the entry configured holds for name; empty when

@@ -166,20 +166,27 @@ func (m *hubHostManager) migrateLegacyRecords(ops *hostops.Store) {
 		marks[name] = hostreg.HighWater{Generation: boundary.Generation, PresenceEpoch: boundary.PresenceEpoch}
 	}
 	m.cfg.hosts.SeedHighWater(marks)
-	// The registry's entries (raised by the seeding) replace their copies; hosts
-	// only the restored file declares, which the registry never held, stay.
+	// The registry's entries (raised by the seeding) replace their copies. A host
+	// only the restored file declares, which the registry never held, is raised to
+	// the mirror's counters by hand, so the import cannot replace them with its
+	// own, and is registered, so this process serves what the file declares.
 	entries := m.cfg.store.snapshot()
 	for i, entry := range entries {
-		if live, ok := m.cfg.hosts.Get(entry.Name); ok {
-			entries[i] = live
-			continue
+		live, registered := m.cfg.hosts.Get(entry.Name)
+		if !registered {
+			if mark, ok := marks[entry.Name]; ok {
+				entry.Generation = max(entry.Generation, mark.Generation)
+				entry.PresenceEpoch = max(entry.PresenceEpoch, mark.PresenceEpoch)
+			}
+			if err := m.cfg.hosts.AddRestored(entry); err != nil {
+				m.logf("restored host %q could not be registered: %v", entry.Name, err)
+				entries[i] = entry
+				continue
+			}
+			live, _ = m.cfg.hosts.Get(entry.Name)
+			m.registerSource(live)
 		}
-		// A restored host the registry never held is raised by hand, so the
-		// import cannot replace the mirror's higher counters with its own.
-		if mark, ok := marks[entry.Name]; ok {
-			entries[i].Generation = max(entry.Generation, mark.Generation)
-			entries[i].PresenceEpoch = max(entry.PresenceEpoch, mark.PresenceEpoch)
-		}
+		entries[i] = live
 	}
 	m.cfg.store.set(entries)
 	records, err := m.deriveHostTOMLRecords(entries, entries, hostPersistChange{highWaterRaises: m.mirrorCountersAbove(ops, entries)})

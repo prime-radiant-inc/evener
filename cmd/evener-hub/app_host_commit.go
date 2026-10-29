@@ -117,8 +117,8 @@ type hostCommitPlan struct {
 	// reconcileFingerprint is the fingerprint the commit staged against (the
 	// validation read's).
 	reconcileFingerprint string
-	// hostFingerprint digests the entry hub.toml held for the host when the
-	// commit staged against it.
+	// hostFingerprint digests the entry hub.toml held for the host when a
+	// removal staged against it.
 	hostFingerprint string
 }
 
