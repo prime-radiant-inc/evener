@@ -1354,13 +1354,15 @@ func (m *Manager) UpdateHostUnderGate(entry hostreg.Host, holder hostops.Holder,
 }
 
 // RetireHostUnderGate tears down the host's connection (supervisor, channel and
-// the caches tied to them) under the caller's already-held gate and leaves the
-// registry entry exactly as it is, so a registration can then change with
-// nothing attached to the old one. It reports whether there was a connection to
-// retire: a mapped channel or a reconnect loop, one parked in backoff included.
-// Like the other under-gate entries it never acquires the gate: a free gate, or
-// one held by a different holder, refuses with hostops.ErrGateNotHeld before
-// anything moves. An unknown name is a no-op.
+// the caches tied to them: the dial decisions and any pending restart, which
+// belong to the registration that is about to change) under the caller's
+// already-held gate and leaves the registry entry exactly as it is, so a
+// registration can then change with nothing attached to the old one. It reports
+// whether there was a connection to retire: a mapped channel or a reconnect
+// loop, one parked in backoff included. Like the other under-gate entries it
+// never acquires the gate: a free gate, or one held by a different holder,
+// refuses with hostops.ErrGateNotHeld before anything moves. An unknown name is
+// a no-op.
 func (m *Manager) RetireHostUnderGate(name string, holder hostops.Holder) (retired bool, err error) {
 	if m.reg == nil {
 		return false, errors.New("sshconn: RetireHostUnderGate with no registry")
@@ -1376,24 +1378,10 @@ func (m *Manager) RetireHostUnderGate(name string, holder hostops.Holder) (retir
 	m.mu.Lock()
 	retired = m.chans[host.Name] != nil || len(m.supervisors[host.Name]) > 0
 	m.mu.Unlock()
-	if !retired {
-		return false, nil
-	}
-	// The connection comes down; the per-host lifecycle state (a pending
-	// restart's recovery intent, the dial decisions) stays, because the
-	// registration it belongs to is not changing.
-	m.stopSupervisorsBefore(host.Name, func(uint64) bool { return false })
-	m.mu.Lock()
-	ch := m.chans[host.Name]
-	delete(m.chans, host.Name)
-	m.mu.Unlock()
-	if ch != nil && m.claimAnnounced(host.Name, ch) {
-		m.detachEvent(host.Name, StateDisconnected)
-	}
-	if ch != nil {
+	if ch := m.teardownHostChannel(host.Name, host, true); ch != nil {
 		_ = ch.Close()
 	}
-	return true, nil
+	return retired, nil
 }
 
 // clearHostCaches drops every per-host record that must not survive a detach or

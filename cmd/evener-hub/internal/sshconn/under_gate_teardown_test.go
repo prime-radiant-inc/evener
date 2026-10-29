@@ -363,8 +363,8 @@ func TestRetireHostUnderGateTearsTheConnectionDownAndLeavesTheEntry(t *testing.T
 	m.mu.Lock()
 	_, pending := m.pendingRestarts["alpha"]
 	m.mu.Unlock()
-	if !pending {
-		t.Fatal("the retirement cleared the host's pending restart, which the unchanged registration still owes")
+	if pending {
+		t.Fatal("the retirement kept a pending restart bound to the registration that is about to change")
 	}
 
 	if m.Attached("alpha") {

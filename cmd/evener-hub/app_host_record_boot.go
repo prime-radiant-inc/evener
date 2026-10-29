@@ -148,7 +148,7 @@ func (m *hubHostManager) bootRecords() {
 	}
 	// The import raises live registrations to the mirror's counters, so the
 	// gates are held for it as for the other registration changes.
-	release, err := m.holdLiveHosts(m.mirrorAboveLiveHosts(ops))
+	release, err := m.holdLiveHosts(m.mirrorMovedHosts(ops))
 	if err != nil {
 		m.refuseMutations(fmt.Sprintf("a host is busy; the move of its records is retried: %v", err))
 		return
@@ -157,62 +157,65 @@ func (m *hubHostManager) bootRecords() {
 	m.migrateLegacyRecords(ops)
 }
 
-// storeSettlementMovesRegistrations reports whether settling over the stored
-// records would change a live host's registration: a stored incarnation to
-// adopt, counters to raise to a stored mark, or a removed name that is live
-// again for the collision rule.
-func (m *hubHostManager) storeSettlementMovesRegistrations(records hostRecordSet) bool {
+// storeSettlementMovedHosts names the live hosts whose registration settling
+// over the stored records would change: a stored incarnation to adopt, counters
+// to raise to a stored mark, or a removed name that is live again for the
+// collision rule.
+func (m *hubHostManager) storeSettlementMovedHosts(records hostRecordSet) []string {
+	var moved []string
 	for _, entry := range m.cfg.hosts.All() {
 		stored, held := records.HostRecords[entry.Name]
 		if !held {
 			stored, _ = unlandedRemovalIdentity(records, entry.Name, m.cfg.configPath)
 		}
-		if validIncarnationID(stored.IncarnationID) && stored.IncarnationID != entry.IncarnationID {
-			return true
+		mark, marked := records.Generations[entry.Name]
+		_, tombstoned := records.Tombstones[entry.Name]
+		if tombstoned {
+			_, unlanded := unlandedRemovalIdentity(records, entry.Name, m.cfg.configPath)
+			tombstoned = !unlanded
 		}
-		if mark, ok := records.Generations[entry.Name]; ok && (mark.Generation > entry.Generation || mark.PresenceEpoch > entry.PresenceEpoch) {
-			return true
-		}
-		if _, tombstoned := records.Tombstones[entry.Name]; tombstoned {
-			if _, unlanded := unlandedRemovalIdentity(records, entry.Name, m.cfg.configPath); !unlanded {
-				return true
-			}
+		if (validIncarnationID(stored.IncarnationID) && stored.IncarnationID != entry.IncarnationID) ||
+			(marked && (mark.Generation > entry.Generation || mark.PresenceEpoch > entry.PresenceEpoch)) ||
+			tombstoned {
+			moved = append(moved, entry.Name)
 		}
 	}
-	return false
+	return moved
 }
 
-// legacySettlementMovesRegistrations is the same question for the records still
-// in hub.toml, whose marks and tombstones the legacy boot seeds and weighs, and
-// whose mirror may sit above the live hosts.
-func (m *hubHostManager) legacySettlementMovesRegistrations(file hostRecordSet) bool {
+// legacySettlementMovedHosts is the same for the records still in hub.toml,
+// whose marks and tombstones the legacy boot seeds and weighs, and whose mirror
+// may sit above the live hosts.
+func (m *hubHostManager) legacySettlementMovedHosts(file hostRecordSet) []string {
+	moved := m.mirrorMovedHosts(m.opsStore())
 	for _, entry := range m.cfg.hosts.All() {
-		if mark, ok := file.Generations[entry.Name]; ok && (mark.Generation > entry.Generation || mark.PresenceEpoch > entry.PresenceEpoch) {
-			return true
-		}
-		if _, tombstoned := file.Tombstones[entry.Name]; tombstoned {
-			return true
+		mark, marked := file.Generations[entry.Name]
+		_, tombstoned := file.Tombstones[entry.Name]
+		if (marked && (mark.Generation > entry.Generation || mark.PresenceEpoch > entry.PresenceEpoch)) || tombstoned {
+			moved = append(moved, entry.Name)
 		}
 	}
-	return m.mirrorAboveLiveHosts(m.opsStore())
+	return slices.Compact(slices.Sorted(slices.Values(moved)))
 }
 
-// mirrorAboveLiveHosts reports whether the store's mirror holds a counter above
-// a live host's, which the settlement raises the host to.
-func (m *hubHostManager) mirrorAboveLiveHosts(ops *hostops.Store) bool {
+// mirrorMovedHosts names the live hosts the store's mirror holds a counter above,
+// which the settlement raises them to.
+func (m *hubHostManager) mirrorMovedHosts(ops *hostops.Store) []string {
 	if ops == nil {
-		return false
+		return nil
 	}
+	var moved []string
 	boundaries := ops.Boundaries()
 	for _, entry := range m.cfg.hosts.All() {
 		if b, ok := boundaries[entry.Name]; ok && (b.Generation > entry.Generation || b.PresenceEpoch > entry.PresenceEpoch) {
-			return true
+			moved = append(moved, entry.Name)
 		}
 	}
-	return false
+	return moved
 }
 
-// holdLiveHosts takes the gate of every live host and tears down the
+// holdLiveHosts takes the gate of the named live hosts, the ones whose
+// registration the settlement is about to change, and tears down the
 // connection of each that holds one, through the SSH manager (the registry
 // entries stay as they are), so the steps that
 // follow can change registrations (stored incarnations, raised counters, the
@@ -221,10 +224,11 @@ func (m *hubHostManager) mirrorAboveLiveHosts(ops *hostops.Store) bool {
 // runs; a busy host is not touched: every gate taken is released and the error
 // says which, so the settlement stays pending. Outside an attach, or with no
 // SSH manager, no host can hold a connection and nothing is held; nor is
-// anything when the settlement would not change a registration (needed false),
-// so a retry that only has records to write leaves healthy connections alone.
-func (m *hubHostManager) holdLiveHosts(needed bool) (func(), error) {
-	if !needed || m.cfg.manager == nil || !m.cfg.attaching.Load() {
+// anything when the settlement would change no registration (no names), so a
+// retry that only has records to write leaves healthy connections alone, and a
+// host whose registration stays is never touched.
+func (m *hubHostManager) holdLiveHosts(names []string) (func(), error) {
+	if len(names) == 0 || m.cfg.manager == nil || !m.cfg.attaching.Load() {
 		return func() {}, nil
 	}
 	var releases []func()
@@ -236,24 +240,23 @@ func (m *hubHostManager) holdLiveHosts(needed bool) (func(), error) {
 	holder := hostops.Holder{Kind: hostops.HolderManager, Activity: "settle-records"}
 	// Every gate first: a busy host stops the attempt before any healthy
 	// connection is touched, so a retry never interrupts them again for nothing.
-	entries := m.cfg.hosts.All()
-	for _, entry := range entries {
-		release, err := m.acquireHostGate(entry.Name, holder)
+	for _, name := range names {
+		release, err := m.acquireHostGate(name, holder)
 		if err != nil {
 			releaseAll()
-			return nil, fmt.Errorf("host %q: %w", entry.Name, err)
+			return nil, fmt.Errorf("host %q: %w", name, err)
 		}
 		releases = append(releases, release)
 	}
-	for _, entry := range entries {
-		retired, err := m.cfg.manager.RetireHostUnderGate(entry.Name, holder)
+	for _, name := range names {
+		retired, err := m.cfg.manager.RetireHostUnderGate(name, holder)
 		if err != nil {
 			releaseAll()
-			return nil, fmt.Errorf("host %q: %w", entry.Name, err)
+			return nil, fmt.Errorf("host %q: %w", name, err)
 		}
 		if retired {
 			m.cfg.reconnectMu.Lock()
-			m.cfg.reconnect = append(m.cfg.reconnect, entry.Name)
+			m.cfg.reconnect = append(m.cfg.reconnect, name)
 			m.cfg.reconnectMu.Unlock()
 		}
 	}
@@ -558,7 +561,7 @@ func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
 		m.refuseMutations(m.cfg.configPath + " could not be read; staged commits are settled once it can")
 		return
 	}
-	releaseHosts, err := m.holdLiveHosts(m.storeSettlementMovesRegistrations(records))
+	releaseHosts, err := m.holdLiveHosts(m.storeSettlementMovedHosts(records))
 	if err != nil {
 		m.cfg.store.set(m.cfg.hosts.All())
 		m.refuseMutations(fmt.Sprintf("a host is busy; the settlement of its stored identity is retried: %v", err))
@@ -803,7 +806,7 @@ func (m *hubHostManager) bootLegacyRecords(settle bool) error {
 	if settle {
 		// Seeding and the collision rule below change live registrations.
 		var err error
-		if releaseHosts, err = m.holdLiveHosts(m.legacySettlementMovesRegistrations(fileRecords)); err != nil {
+		if releaseHosts, err = m.holdLiveHosts(m.legacySettlementMovedHosts(fileRecords)); err != nil {
 			return err
 		}
 		defer releaseHosts()
@@ -895,7 +898,7 @@ func (m *hubHostManager) bootLegacyRecords(settle bool) error {
 	if m.testOnlyBeforePipelineHold != nil {
 		m.testOnlyBeforePipelineHold()
 	}
-	releasePipeline, err := m.holdLiveHosts(m.mirrorAboveLiveHosts(m.opsStore()))
+	releasePipeline, err := m.holdLiveHosts(m.mirrorMovedHosts(m.opsStore()))
 	if err != nil {
 		return err
 	}
