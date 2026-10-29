@@ -146,6 +146,8 @@ func TestParseVitestJSONRefusesAMalformedReport(t *testing.T) {
 		"null assertion list":    `{"testResults":[{"assertionResults":null}]}`,
 		"null assertion":         `{"testResults":[{"assertionResults":[null]}]}`,
 		"suite list is a number": `{"testResults":3}`,
+		"trailing garbage":       `{"testResults":[]}{"testResults":[`,
+		"concatenated documents": `{"testResults":[]}{"testResults":[]}`,
 	} {
 		if _, err := parseVitestJSON(strings.NewReader(report)); err == nil {
 			t.Errorf("%s: a malformed report must fail, not measure as empty", name)

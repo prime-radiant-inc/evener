@@ -180,8 +180,14 @@ func decodeVitestList[T any](raw json.RawMessage, what string) ([]*T, error) {
 // a name is flattened so a tab or newline cannot split a row and make the
 // comparator read a truncated line.
 func parseVitestJSON(r io.Reader) ([]string, error) {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, fmt.Errorf("reading vitest report: %w", err)
+	}
+	// Unmarshal, not a stream decode: content after the first document is a
+	// malformed report, not a smaller one.
 	var report *vitestReport
-	if err := json.NewDecoder(r).Decode(&report); err != nil {
+	if err := json.Unmarshal(data, &report); err != nil {
 		return nil, fmt.Errorf("reading vitest report: %w", err)
 	}
 	if report == nil {
