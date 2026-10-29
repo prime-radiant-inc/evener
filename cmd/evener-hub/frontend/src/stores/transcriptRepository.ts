@@ -1649,16 +1649,17 @@ export class TranscriptRepository {
           // (openingCurrent above fenced any source-revision change) — so its
           // certificate satisfies the cut's coverage requirement instead of
           // refusing a complete window over pure bookkeeping lag.
+          const cutCommittedSnapshot = cut.committedSnapshot;
           const coveredByFreshRead =
             cut.readId !== undefined &&
             this.#coverageReadId !== undefined &&
             this.#coverageReadId !== cut.readId &&
-            cut.committedSnapshot !== undefined &&
+            cutCommittedSnapshot !== undefined &&
             window.coverage.some(
               (row) =>
                 row.kind === "read" &&
                 row.readId === this.#coverageReadId &&
-                row.representedSnapshot >= cut.committedSnapshot,
+                row.representedSnapshot >= cutCommittedSnapshot,
             );
           const status =
             window.complete &&
