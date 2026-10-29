@@ -784,7 +784,11 @@ func TestMemoryEvalIsolation(t *testing.T) {
 					}
 					// Any nonzero status counts: the missing-file code differs
 					// between GNU coreutils (1) and uutils coreutils (2).
-					if !strings.Contains(d.Output, "[exit ") && !strings.Contains(d.Output, "exit_code") && d.Error == "" {
+					var state struct {
+						ExitCode int `json:"exit_code"`
+					}
+					_ = json.Unmarshal(d.ToolState, &state)
+					if d.Error == "" && state.ExitCode == 0 {
 						t.Errorf("shell refusal not recorded: %+v", d)
 					}
 					denied++
