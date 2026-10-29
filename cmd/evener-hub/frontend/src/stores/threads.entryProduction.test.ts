@@ -1835,11 +1835,27 @@ it("a stalled restore merges a local older page instead of discarding it", async
   const background = acquireBackgroundThread("local:a");
   await background.ready;
   await settleEntryTranscriptForTests("local:a");
-  await threadsStore.getState().ensureThread("local:a");
-  // A lookup-deadline miss under load leaves the acquisition's convergence to
-  // the tracked recovery chain, which ensureThread deliberately does not
-  // await: await its registered whole span before judging the recorded
-  // display, exactly as the load-seam contract's settle does.
+  // The convergence phase runs under the frozen clock, so the lookup
+  // deadline cannot fire on a read that is merely slow: the 1ms steps give
+  // the local read hundreds of event-loop rounds to answer before the
+  // 250ms bound is even reachable, and machine load consumes no fake time.
+  // A lookup-deadline miss leaves the acquisition's convergence to the
+  // tracked recovery chain, which ensureThread deliberately does not await:
+  // await its registered whole span before judging the recorded display,
+  // exactly as the load-seam contract's settle does. The loop ceiling is a
+  // tripwire for an acquisition that never settles, never the mechanism.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  let converged = false;
+  const opening = threadsStore
+    .getState()
+    .ensureThread("local:a")
+    .finally(() => {
+      converged = true;
+    });
+  for (let step = 0; step < 600 && !converged; step += 1) {
+    await vi.advanceTimersByTimeAsync(1);
+  }
+  await opening;
   await settleEntryTranscriptForTests("local:a");
   const bodies = () =>
     (threadsStore.getState().threads.get("local:a")?.turns ?? [])
