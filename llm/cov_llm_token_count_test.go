@@ -147,3 +147,31 @@ func TestEstimateImageTokens_DefaultProviderFamily(t *testing.T) {
 		t.Fatalf("default-family Tokens = %d, want %d", got.Tokens, want)
 	}
 }
+
+// A local-path image that cannot be opened, and one that opens but is not a
+// decodable raster, both fall back to the undecoded estimate: the local file
+// promise alone must not invent dimensions.
+func TestEstimateImageTokens_LocalPathFallbacks(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "missing.png")
+	if err := os.WriteFile(filepath.Join(dir, "garbage.png"), []byte("definitely not a raster"), 0o600); err != nil {
+		t.Fatalf("write garbage: %v", err)
+	}
+	garbage := filepath.Join(dir, "garbage.png")
+
+	for name, path := range map[string]string{"missing": missing, "undecodable": garbage} {
+		t.Run(name, func(t *testing.T) {
+			req := Request{
+				Provider: "anthropic",
+				Model:    "claude-test",
+				Messages: []Message{{Role: RoleUser, Content: []ContentPart{
+					{Kind: ContentImage, Image: &ImageData{URL: path, MediaType: "image/png"}},
+				}}},
+			}
+			want := fallbackMediaTokens + len(path)/4 + len("image/png")/4
+			if got := EstimateInputTokens(req); got.Tokens != want {
+				t.Fatalf("local %s-path image Tokens = %d, want the undecoded fallback %d", name, got.Tokens, want)
+			}
+		})
+	}
+}

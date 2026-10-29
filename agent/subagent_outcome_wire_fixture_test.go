@@ -92,7 +92,7 @@ func TestSubagentOutcomeWireFixtures(t *testing.T) {
 	}
 	delegateWire = []byte(strings.ReplaceAll(string(delegateWire), s.ID(), "root"))
 
-	tree, err := s.JobActivityTree(appwire.JobsListParams{})
+	tree, err := s.JobActivityTree(t.Context(), appwire.JobsListParams{})
 	if err != nil {
 		t.Fatalf("JobActivityTree: %v", err)
 	}

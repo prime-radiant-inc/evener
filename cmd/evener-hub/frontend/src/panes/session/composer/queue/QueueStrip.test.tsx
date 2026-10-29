@@ -7,7 +7,7 @@ import { IDBFactory } from "fake-indexeddb";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, onTestFinished, test, vi } from "vitest";
 import { appliedReceipt } from "../../../../mutationReceiptTestUtils";
-import { connectionStore } from "../../../../stores/connection";
+import { resetConnectionStoreForTests } from "../../../../stores/connection";
 import type {
   MutationOutboxRecord,
   MutationRecoveryKind,
@@ -343,7 +343,7 @@ function DrainBusyHarness(overrides: Partial<Parameters<typeof QueueStrip>[0]> =
 
 beforeEach(() => {
   globalThis.indexedDB = new IDBFactory();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetPendingTurnsStoreForTests();
   resetToastStoreForTests();

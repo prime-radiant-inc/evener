@@ -9,7 +9,7 @@ import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { beforeEach, describe, expect, onTestFinished, test, vi } from "vitest";
 import { appliedReceipt } from "../../../../mutationReceiptTestUtils";
-import { connectionStore } from "../../../../stores/connection";
+import { resetConnectionStoreForTests } from "../../../../stores/connection";
 import {
   putThreadModel,
   readMutationPersistence,
@@ -106,7 +106,7 @@ async function hydrateWithOneAsk(fake: FakeClient, ref = "ref_a"): Promise<void>
 
 beforeEach(() => {
   globalThis.indexedDB = new IDBFactory();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetAskDockStoreForTests();
   resetComposerFocusStoreForTests();

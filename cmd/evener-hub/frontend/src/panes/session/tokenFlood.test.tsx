@@ -17,7 +17,7 @@ import { memo } from "react";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { ClientProvider } from "../../shell/clientContext";
 import { resetWorkspaceStoreForTests } from "../../shell/workspace";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { resetThreadsStoreForTests } from "../../stores/threads";
 import { ALL_CAPABILITIES as CAPABILITIES } from "../../threadTestUtils";
 import { flushPendingTurnsProjectionForTests } from "./composer/queue/testing/flushPendingTurnsProjection";
@@ -170,7 +170,7 @@ let offsetHeightDescriptor: PropertyDescriptor | undefined;
 
 describe("token-flood: multi-delta streaming fast path through a mounted Session", () => {
   beforeEach(() => {
-    connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+    resetConnectionStoreForTests();
     resetThreadsStoreForTests();
     offsetHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
     Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, value: CONTAINER_HEIGHT });

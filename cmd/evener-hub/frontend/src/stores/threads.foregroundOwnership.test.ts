@@ -19,7 +19,7 @@ import { projectComicDelegates } from "../comic/delegates";
 import { type ComicSubchatState, useComicSubchats } from "../comic/useComicSubchats";
 import { resetTranscriptPagingForTests } from "../panes/session/transcript/useTranscript";
 import { connectReadyFakeClient } from "../testing/connectionTestUtils";
-import { connectionStore } from "./connection";
+import { connectionStore, resetConnectionStoreForTests } from "./connection";
 import { setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { SessionEntryCache } from "./sessionEntryCache";
 import { installHydrationRetrySchedulerForTests, resetThreadsStoreForTests, threadsStore } from "./threads";
@@ -27,7 +27,7 @@ import { useThreadModel } from "./useThreadModel";
 
 let cache: SessionEntryCache;
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   cache = new SessionEntryCache({
     indexedDB: new IDBFactory(),

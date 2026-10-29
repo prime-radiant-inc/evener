@@ -425,7 +425,7 @@ func pifAssertPersistedMeta(
 
 func pifAssertInitialTranscript(t *testing.T, path, id, workspace string) {
 	t.Helper()
-	header, entries, skipped, err := readTranscript(path, "")
+	header, entries, skipped, err := readTranscript(context.Background(), path, "")
 	if err != nil {
 		t.Fatalf("read initial transcript: %v", err)
 	}

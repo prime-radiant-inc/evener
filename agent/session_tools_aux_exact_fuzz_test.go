@@ -330,17 +330,17 @@ func auxFindExact(t *testing.T) {
 	}
 	c := findCandidate{meta: schema.SessionMeta{ID: "session"}, bucketDir: good}
 	scanned, truncated := maxContentScan, false
-	_, _ = matchCandidate(c, "missing", "missing", &scanned, &truncated)
+	_, _ = matchCandidate(context.Background(), c, "missing", "missing", &scanned, &truncated)
 	scanned, truncated = 0, false
-	_, _ = matchCandidate(c, "needle", "needle", &scanned, &truncated)
+	_, _ = matchCandidate(context.Background(), c, "needle", "needle", &scanned, &truncated)
 	scanned, truncated = 0, false
-	_, _ = matchCandidate(c, "absent", "absent", &scanned, &truncated)
+	_, _ = matchCandidate(context.Background(), c, "absent", "absent", &scanned, &truncated)
 	scanned, truncated = 0, false
-	_, _ = matchCandidate(findCandidate{meta: schema.SessionMeta{ID: "needle"}}, "needle", "needle", &scanned, &truncated)
-	_, _ = contentSnippets(good, "session", "absent", "absent")
-	_, _ = contentSnippets(good, "missing", "x", "x")
-	_, _ = execFindAcrossSessions(&toolDeps{stateDir: good}, "query", scopeCurrentProject, 0, findFilters{})
-	_, _ = execFindAcrossSessions(&toolDeps{stateDir: good}, "query", scopeCurrentProject, 1, findFilters{})
+	_, _ = matchCandidate(context.Background(), findCandidate{meta: schema.SessionMeta{ID: "needle"}}, "needle", "needle", &scanned, &truncated)
+	_, _ = contentSnippets(context.Background(), good, "session", "absent", "absent")
+	_, _ = contentSnippets(context.Background(), good, "missing", "x", "x")
+	_, _ = execFindAcrossSessions(context.Background(), &toolDeps{stateDir: good}, "query", scopeCurrentProject, 0, findFilters{})
+	_, _ = execFindAcrossSessions(context.Background(), &toolDeps{stateDir: good}, "query", scopeCurrentProject, 1, findFilters{})
 
 	deps := &toolDeps{stateDir: good, sessionID: "session"}
 	registered := findSessionTranscriptsTool(deps)

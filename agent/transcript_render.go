@@ -3,6 +3,7 @@ package agent
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -318,7 +319,7 @@ func parseRangeErr(spec string, entryCount int) (startSeq, endSeq int, err error
 // the output builder is grown up front to the exact byte size, and cap
 // enforcement is a single linear prefix walk — never a re-decode or re-copy of
 // the accumulator per line.
-func rawLinesForRange(path, root string, startSeq, endSeq int) (content string, lines int, skipped int, truncated bool, err error) {
+func rawLinesForRange(ctx context.Context, path, root string, startSeq, endSeq int) (content string, lines int, skipped int, truncated bool, err error) {
 	f, err := openTranscriptFile(path, root)
 	if err != nil {
 		return "", 0, 0, false, fmt.Errorf("open transcript: %w", err)
@@ -380,6 +381,9 @@ func rawLinesForRange(path, root string, startSeq, endSeq int) (content string, 
 	entryPos := -1
 
 	for {
+		if err := ctx.Err(); err != nil {
+			return "", 0, skipped, false, err
+		}
 		line, complete, bytesRead, readErr := transcript.ReadLine(reader, transcript.DefaultMaxLineBytes)
 		if readErr != nil {
 			return "", 0, skipped, false, fmt.Errorf("reading transcript: %w", readErr)

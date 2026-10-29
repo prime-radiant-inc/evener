@@ -4,7 +4,7 @@ import { act, render, screen } from "@testing-library/react";
 import { beforeEach, expect, test } from "vitest";
 import { TasksPanel } from "../panes/session/chrome/TasksPanel";
 import { ALL_CAPABILITIES as CAPABILITIES } from "../threadTestUtils";
-import { connectionStore } from "./connection";
+import { connectionStore, resetConnectionStoreForTests } from "./connection";
 import { resetThreadsStoreForTests, threadsStore, useThreadsStore } from "./threads";
 
 function readResponse(ref: string, tasks: { total: number; done: number }): ThreadReadResponse {
@@ -35,7 +35,7 @@ async function flushUntil(done: () => boolean, maxTurns = 20): Promise<void> {
 }
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
 });
 

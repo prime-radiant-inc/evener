@@ -5,7 +5,7 @@ import {
 } from "@evener/appwire-client/testing/subagentWireFixtures";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
-import { connectionStore } from "../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
 import { sessionActivitySnapshot } from "../../../stores/sessionActivity";
 import { activityClient, activitySummary } from "../../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
@@ -22,7 +22,7 @@ function SelectedSnapshot({ model }: { model: ThreadModel }) {
 }
 afterEach(() => {
   cleanup();
-  connectionStore.setState({ client: null, state: "idle" });
+  resetConnectionStoreForTests();
   resetSubagentModuleStoreForTests();
   resetThreadsStoreForTests();
   resetDisclosureStoreForTests();

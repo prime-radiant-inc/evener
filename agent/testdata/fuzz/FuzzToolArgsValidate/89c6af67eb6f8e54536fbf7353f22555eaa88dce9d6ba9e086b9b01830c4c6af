@@ -1,3 +1,0 @@
-go test fuzz v1
-int(14)
-[]byte("{\"format\":\"xxxxxxxx\",\"transcript_ref\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"}")

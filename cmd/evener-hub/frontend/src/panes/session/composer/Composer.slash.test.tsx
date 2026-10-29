@@ -11,7 +11,7 @@ import { resetWorkspaceStoreForTests } from "../../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import { resetActivityPanelStoreForTests } from "../../../stores/activityPanel";
 import { useCommandCatalog } from "../../../stores/commandCatalog";
-import { connectionStore } from "../../../stores/connection";
+import { resetConnectionStoreForTests } from "../../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import { resetPrefsStoreForTests } from "../../../stores/prefs";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../../stores/threads";
@@ -53,7 +53,7 @@ beforeEach(() => {
   globalThis.indexedDB = new IDBFactory();
   localStorage.clear();
   resetPrefsStoreForTests();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
   resetActivityPanelStoreForTests();

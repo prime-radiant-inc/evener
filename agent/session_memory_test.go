@@ -1016,7 +1016,7 @@ func TestMemoryContextForkInvalidation(t *testing.T) {
 			default:
 				t.Fatal("forked child did not reach the model request")
 			}
-			data, err := readTranscriptFull(transcriptPath(child.sess.stateDir, child.sess.id), "")
+			data, err := readTranscriptFull(context.Background(), transcriptPath(child.sess.stateDir, child.sess.id), "")
 			if err != nil {
 				t.Fatal(err)
 			}

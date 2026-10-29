@@ -84,6 +84,13 @@ func TestClassifyHTTPErrorTable(t *testing.T) {
 			res:  responsesRes, kind: KindInvalidRequest, code: "unknown_parameter", hint: "generic",
 		},
 		{
+			// A rejection code with neither a structured param nor a message
+			// shape that names one: the hint must still render, naming nothing.
+			name: "unknown parameter code that names no parameter", status: 400,
+			body: `{"error":{"message":"The request was rejected.","type":"invalid_request_error","param":null,"code":"unknown_parameter"}}`,
+			res:  responsesRes, kind: KindInvalidRequest, code: "unknown_parameter", hint: "generic",
+		},
+		{
 			name: "responses unknown parameter regex without a structured param", status: 400,
 			body: `{"error":{"message":"Unknown parameter: 'metadata'.","type":"invalid_request_error","param":null,"code":null}}`,
 			res:  responsesRes, kind: KindInvalidRequest, code: "invalid_request_error",

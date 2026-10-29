@@ -35,6 +35,17 @@ func FuzzGoogleComplete(f *testing.F) {
 	}
 	f.Add(byte(29), []byte(`{"error":{"message":"quota"}}`)) // 429
 	f.Add(byte(0), []byte(`{"promptFeedback":{"blockReason":"SAFETY"}}`))
+	// Ambiguous-400 gRPC remap arms beyond RESOURCE_EXHAUSTED (timeout, server
+	// error, and an unmapped status that must keep the provider's own 400).
+	f.Add(byte(200), []byte(`{"error":{"code":400,"message":"deadline","status":"DEADLINE_EXCEEDED"}}`))
+	f.Add(byte(200), []byte(`{"error":{"code":400,"message":"unavailable","status":"UNAVAILABLE"}}`))
+	f.Add(byte(200), []byte(`{"error":{"code":400,"message":"bad","status":"INVALID_ARGUMENT"}}`))
+	// 2xx decoder arms: thought-signature fallback keys, a non-object candidate
+	// part (skipped), and a groundingMetadata web-search projection.
+	f.Add(byte(0), []byte(`{"candidates":[{"content":{"parts":[{"functionCall":{"name":"t","args":{},"thoughtSignature":"fsig"}}]}}]}`))
+	f.Add(byte(0), []byte(`{"candidates":[{"content":{"parts":[{"thought_signature":"psnake","functionCall":{"name":"t","args":{},"thought_signature":"fsnake"}}]}}]}`))
+	f.Add(byte(0), []byte(`{"candidates":[{"content":{"parts":["nope",{"text":"hi"}]},"finishReason":"STOP"}]}`))
+	f.Add(byte(0), []byte(`{"candidates":[{"groundingMetadata":{"webSearchQueries":["q1",42,"q2"]},"finishReason":"STOP"}]}`))
 
 	f.Fuzz(func(t *testing.T, statusSel byte, body []byte) {
 		status := http.StatusOK

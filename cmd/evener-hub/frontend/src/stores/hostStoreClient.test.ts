@@ -4,7 +4,7 @@ import type { AnyNotification, LaunchConfigClient, PathValidateResponse } from "
 import type { LaunchLayerClient, MarketplacesClient, PluginsClient } from "@evener/appwire-client/state/extensions";
 import { beforeEach, expect, expectTypeOf, test } from "vitest";
 import { connectReadyFakeClient } from "../testing/connectionTestUtils";
-import { connectionStore } from "./connection";
+import { resetConnectionStoreForTests } from "./connection";
 import { type HostStoreClient, remoteHostStoreClient } from "./hostStoreClient";
 
 function hostStoreTypeContract(client: HostStoreClient) {
@@ -38,7 +38,7 @@ void hostStoreTypeContract;
 // notifications are delivered (unwrapped). There is no controller fallback.
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
 });
 
 test("forwards every request through evener/host/request with the bound host", async () => {

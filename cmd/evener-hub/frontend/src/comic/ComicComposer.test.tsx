@@ -28,7 +28,7 @@ import { navigate, paneToURL } from "../shell/routing";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { useCommandCatalog } from "../stores/commandCatalog";
-import { connectionStore } from "../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../stores/connection";
 import { MutationOutboxIndexedDB } from "../stores/mutationOutboxIndexedDB";
 import { resetNavigationStoreForTests } from "../stores/navigation/store";
 import { prefsStore, resetPrefsStoreForTests } from "../stores/prefs";
@@ -63,7 +63,7 @@ beforeEach(() => {
   );
   installLocalStorage(new MemoryStorage());
   globalThis.indexedDB = new IDBFactory();
-  connectionStore.setState({ state: "idle", client: null, serverInfo: undefined });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetAskDockStoreForTests();
   resetPendingTurnsStoreForTests();

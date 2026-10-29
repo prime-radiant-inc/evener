@@ -258,6 +258,19 @@ func deployTestHub(t *testing.T, configPath string, entries []hostreg.Host, seam
 // fingerprint, with the running state the caller names.
 func mintDeployToken(t *testing.T, store *hostops.Store, m *hubHostManager, entry hostreg.Host, runningVersion string, healthy bool, controllerRevision string) hostops.Token {
 	t.Helper()
+	request := mintDeployTokenRequest(t, m, entry)
+	request.RunningVersion = runningVersion
+	request.RunningHealthy = healthy
+	request.ControllerRevision = controllerRevision
+	request.TargetPath = deployTestTarget(t, entry)
+	return mintTokenOrFatal(t, store, request)
+}
+
+// mintDeployTokenRequest resolves the live host entry and prefills the
+// token request fields every mint shares; the mint helpers pin only
+// the running state and target they differ in.
+func mintDeployTokenRequest(t *testing.T, m *hubHostManager, entry hostreg.Host) hostops.MintRequest {
+	t.Helper()
 	if live, ok := m.liveHost(entry.Name); ok {
 		entry = live
 	}
@@ -265,7 +278,7 @@ func mintDeployToken(t *testing.T, store *hostops.Store, m *hubHostManager, entr
 	if !ok {
 		t.Fatal("the test hub.toml does not fingerprint")
 	}
-	token, err := store.MintTokenIfQuiescent(hostops.MintRequest{
+	return hostops.MintRequest{
 		Host:               entry.Name,
 		Generation:         entry.Generation,
 		IncarnationID:      entry.IncarnationID,
@@ -273,13 +286,15 @@ func mintDeployToken(t *testing.T, store *hostops.Store, m *hubHostManager, entr
 		HubTOMLFingerprint: fingerprint,
 		FactsRevision:      testEntryFactDigest("facts"),
 		FactsCapturedAt:    time.Now().UTC(),
-		TargetPath:         deployTestTarget(t, entry),
-		ControllerRevision: controllerRevision,
-		RunningVersion:     runningVersion,
-		RunningHealthy:     healthy,
 		FreshnessBound:     hostops.DefaultFreshnessBound,
 		TTL:                hostops.DefaultTokenTTL,
-	}, store.Sequence())
+	}
+}
+
+// mintTokenOrFatal mints the request and fails the test on refusal.
+func mintTokenOrFatal(t *testing.T, store *hostops.Store, request hostops.MintRequest) hostops.Token {
+	t.Helper()
+	token, err := store.MintTokenIfQuiescent(request, store.Sequence())
 	if err != nil {
 		t.Fatalf("MintTokenIfQuiescent: %v", err)
 	}

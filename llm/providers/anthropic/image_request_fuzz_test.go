@@ -1,7 +1,10 @@
 package anthropic
 
 import (
+	"bytes"
 	"encoding/json"
+	"image"
+	"image/png"
 	"testing"
 
 	"primeradiant.com/evener/llm"
@@ -25,6 +28,14 @@ func FuzzAnthropicImageRequestBuild(f *testing.F) {
 	f.Add("claude-test", "look", []byte{1, 2, 3}, "image/jpeg", "", uint8(0))
 	f.Add("claude-opus-4-6", "", []byte{}, "", "pics/cat.png", uint8(1))
 	f.Add("m", "u", []byte("\xff\xfe"), "image/png", "", uint8(2))
+	// Inline bytes with no claimed media type (the normalize path decides), and
+	// an image part with neither bytes nor a URL (dropped from the request).
+	var onePx bytes.Buffer
+	if err := png.Encode(&onePx, image.NewRGBA(image.Rect(0, 0, 1, 1))); err != nil {
+		f.Fatalf("seed png encode: %v", err)
+	}
+	f.Add("claude-test", "u", onePx.Bytes(), "", "", uint8(3))
+	f.Add("claude-test", "u", []byte{}, "", "", uint8(4))
 
 	f.Fuzz(func(t *testing.T, model, user string, imgData []byte, imgMedia, imgURL string, sel uint8) {
 		img := &llm.ImageData{Data: imgData, MediaType: imgMedia, Detail: "high"}

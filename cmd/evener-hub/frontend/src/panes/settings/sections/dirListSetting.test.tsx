@@ -3,7 +3,7 @@ import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { connectionStore } from "../../../stores/connection";
+import { resetConnectionStoreForTests } from "../../../stores/connection";
 import { resetExtensionsStoreForTests } from "../../../stores/extensions";
 import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
@@ -17,7 +17,7 @@ function connectFakeClient(): FakeClient {
 }
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetExtensionsStoreForTests();
   resetToastStoreForTests();
 });

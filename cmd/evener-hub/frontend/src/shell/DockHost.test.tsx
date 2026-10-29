@@ -17,7 +17,7 @@ import { parseZoomParams, type SessionZoomParams } from "../panes/zoom/intent";
 import "../panes/zoom";
 import { StubResizeObserver } from "../resizeObserverTestUtils";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
-import { connectionStore } from "../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
 import {
   activityClient,
@@ -1259,7 +1259,7 @@ test("job tabs use their own hydrated titles without extra reads or cross-owner 
     expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(0);
   } finally {
     cleanup();
-    connectionStore.setState({ client: null, state: "idle" });
+    resetConnectionStoreForTests();
   }
 });
 
@@ -1405,7 +1405,7 @@ async function mountedSecondaryInspector() {
     mount,
     dispose() {
       cleanup();
-      connectionStore.setState({ client: null, state: "idle" });
+      resetConnectionStoreForTests();
     },
   };
 }
@@ -1839,7 +1839,7 @@ test("secondary inspector boot with failed real fromJSON preserves live records,
     expect(composer.getSnapshot().text).toBe("keep the live source draft");
   } finally {
     cleanup();
-    connectionStore.setState({ client: null, state: "idle" });
+    resetConnectionStoreForTests();
   }
 });
 
@@ -1935,7 +1935,7 @@ test.each([
       expect(screen.getByText(/doc pane: kept-secondary/)).toBeTruthy();
     } finally {
       cleanup();
-      connectionStore.setState({ client: null, state: "idle" });
+      resetConnectionStoreForTests();
     }
   },
 );
@@ -2513,7 +2513,7 @@ test.each([
     } finally {
       cleanup();
       resetActivitySidebarStoreForTests();
-      connectionStore.setState({ client: null, state: "idle" });
+      resetConnectionStoreForTests();
     }
   },
 );
@@ -2547,7 +2547,7 @@ test.each([false, true])(
       } else expect(await screen.findByText("No session open")).toBeTruthy();
     } finally {
       cleanup();
-      connectionStore.setState({ client: null, state: "idle" });
+      resetConnectionStoreForTests();
     }
   },
 );

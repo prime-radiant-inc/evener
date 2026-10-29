@@ -1,3 +1,0 @@
-go test fuzz v1
-int(7)
-[]byte("{\"case_insensitive\":true,\"glob_filter\":\"xxxxxxxx\",\"path\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\",\"pattern\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"}")

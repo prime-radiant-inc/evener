@@ -16,7 +16,7 @@ import (
 
 func readLocalJobTranscriptForTest(t *testing.T, stateDir, sessionID, jobID string) (readMarkdownEnvelope, error) {
 	t.Helper()
-	value, err := execReadTranscript(&toolDeps{
+	value, err := execReadTranscript(context.Background(), &toolDeps{
 		stateDir:  stateDir,
 		sessionID: sessionID,
 	}, map[string]any{"transcript_ref": "job:" + jobID})
@@ -125,7 +125,7 @@ func TestForeignTranscriptReadDoesNotBroadenJobTools(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("load foreign fixture: found=%t err=%v", found, err)
 	}
-	value, err := execReadTranscript(&toolDeps{
+	value, err := execReadTranscript(context.Background(), &toolDeps{
 		stateDir:  current,
 		sessionID: caller.ID(),
 	}, map[string]any{"transcript_ref": "job:" + foreignJobID})
@@ -366,7 +366,7 @@ func TestReadTranscriptJobContinuationOutrunByPruning(t *testing.T) {
 	continuation := first["continuation"].(map[string]any)["offset_bytes"]
 
 	appendLocalJobOutputForTranscriptTest(t, stateDir, owner, jobID, retention, strings.Repeat("b", int(retention)))
-	_, err := execReadTranscript(deps, map[string]any{"transcript_ref": "job:" + jobID, "offset_bytes": continuation})
+	_, err := execReadTranscript(context.Background(), deps, map[string]any{"transcript_ref": "job:" + jobID, "offset_bytes": continuation})
 	if err == nil || !strings.Contains(err.Error(), "output_unavailable") || !strings.Contains(err.Error(), "first available offset is 20480") {
 		t.Fatalf("pruned continuation error = %v", err)
 	}
@@ -480,7 +480,7 @@ func TestReadTranscriptJobPageAndSearchRetainedFailuresArePathFree(t *testing.T)
 
 	assertFailure := func(t *testing.T, args map[string]any, want string, forbidden string) {
 		t.Helper()
-		_, err := execReadTranscript(deps, args)
+		_, err := execReadTranscript(context.Background(), deps, args)
 		if err == nil {
 			t.Fatal("read succeeded, want retained-output failure")
 		}
@@ -559,7 +559,7 @@ func TestReadTranscriptJobPageAndSearchValidation(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := execReadTranscript(deps, tc.args)
+			_, err := execReadTranscript(context.Background(), deps, tc.args)
 			if err == nil {
 				t.Fatal("read succeeded, want error")
 			}
@@ -600,7 +600,7 @@ func TestReadTranscriptJobOffsetBeforeRetentionReportsFirstAvailable(t *testing.
 	const output = "DROP_ME:RETAINED"
 	seedLocalJobRecord(t, stateDir, owner, jobID, "/decoy", output, int64(len("RETAINED")), true, int64(len(output)), nil)
 	deps := &toolDeps{stateDir: stateDir, sessionID: owner}
-	_, err := execReadTranscript(deps, map[string]any{"transcript_ref": "job:" + jobID, "offset_bytes": float64(0)})
+	_, err := execReadTranscript(context.Background(), deps, map[string]any{"transcript_ref": "job:" + jobID, "offset_bytes": float64(0)})
 	if err == nil || !strings.Contains(err.Error(), "output_unavailable") || !strings.Contains(err.Error(), "first available offset is 8") {
 		t.Fatalf("before-retention error = %v", err)
 	}

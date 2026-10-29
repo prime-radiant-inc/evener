@@ -194,6 +194,7 @@
   "primeradiant.com/evener/docs/examples/extensions/mcp-server": 2.7,
   "primeradiant.com/evener/docs/examples/integrations": 2.0,
   "primeradiant.com/evener/envvars/userdirs": 2.0,
+  "primeradiant.com/evener/execsupport/componentlog": 2.0,
   "primeradiant.com/evener/execsupport/syncio": 2.0,
   "primeradiant.com/evener/internal/apphistory": 2.0,
   "primeradiant.com/evener/internal/appitempaging": 2.0,

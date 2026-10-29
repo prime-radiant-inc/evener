@@ -46,11 +46,11 @@ func (s *Session) worktreePrune(ctx context.Context) (WorktreePruneResult, error
 
 	sweep1Policy := prunePolicy()
 	sweep1Policy.lockFiles = files
-	removed1, skipped1, err := s.collectRegisteredLanes(context.Background(), run, managed, metaDir, sweep1Policy)
+	removed1, skipped1, err := s.collectRegisteredLanes(ctx, run, managed, metaDir, sweep1Policy)
 	if err != nil {
 		return WorktreePruneResult{}, err
 	}
-	removed2, skipped2, err := s.reconcileOrphanSidecars(context.Background(), run, managed, metaDir, prunePolicy())
+	removed2, skipped2, err := s.reconcileOrphanSidecars(ctx, run, managed, metaDir, prunePolicy())
 	if err != nil {
 		return WorktreePruneResult{}, err
 	}
@@ -165,8 +165,8 @@ func disposableOrMergeCheckFailure(run worktree.GitRunner, tip, baseSHA, mergeTa
 // Every entry that fails one of those tests is reported skipped with the reason;
 // any per-entry git query failure is treated as a soft skip. A mutation failure
 // aborts (prune) or is reported as a lost race and the sweep continues (P3),
-// per policy.abortOnError. The sweep stops early once ctx is cancelled (the P3
-// close pass's shared budget); prune passes a background ctx.
+// per policy.abortOnError. The sweep stops early once ctx is cancelled: the P3
+// close pass's shared budget, or the prune request.
 func (s *Session) collectRegisteredLanes(ctx context.Context, run worktree.GitRunner, managed []managedEntry, metaDir string, policy laneSweepPolicy) (removed, skipped []WorktreePruneEntry, err error) {
 	for _, e := range managed {
 		if ctxCancelled(ctx) {

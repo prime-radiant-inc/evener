@@ -216,7 +216,7 @@ func awaitDurableJobCompletion(t *testing.T, sess *agent.Session) {
 // managedJobsTerminal reports whether the session has at least one managed job
 // and every one of them is terminal.
 func managedJobsTerminal(sess *agent.Session) (bool, error) {
-	tree, err := sess.JobActivityTree(appwire.JobsListParams{})
+	tree, err := sess.JobActivityTree(context.Background(), appwire.JobsListParams{})
 	if err != nil {
 		return false, err
 	}

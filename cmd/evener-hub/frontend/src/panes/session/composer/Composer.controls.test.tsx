@@ -13,7 +13,7 @@ import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/work
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import { activityPanelStore, resetActivityPanelStoreForTests } from "../../../stores/activityPanel";
 import { useCommandCatalog } from "../../../stores/commandCatalog";
-import { connectionStore } from "../../../stores/connection";
+import { resetConnectionStoreForTests } from "../../../stores/connection";
 import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
 import { sessionActivitySnapshot } from "../../../stores/sessionActivity";
 import { answerActivityRead } from "../../../stores/sessionActivityTestUtils";
@@ -67,7 +67,7 @@ beforeEach(() => {
   globalThis.indexedDB = new IDBFactory();
   localStorage.clear();
   resetPrefsStoreForTests();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
   resetActivityPanelStoreForTests();

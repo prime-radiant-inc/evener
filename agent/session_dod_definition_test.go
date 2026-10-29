@@ -303,7 +303,7 @@ func TestSession_EventSystem_UserInputCarriesTurnIndex(t *testing.T) {
 	}
 
 	tpath := schema.SessionTranscriptPath(dir, sessID)
-	_, entries, _, err := readTranscript(tpath, "")
+	_, entries, _, err := readTranscript(context.Background(), tpath, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}

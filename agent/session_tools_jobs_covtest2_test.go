@@ -1353,7 +1353,7 @@ func TestCovAppendSteeringTurnDurably(t *testing.T) {
 		if len(s.history) != 1 || s.history[0].Kind != schema.TurnSteering || s.history[0].SteeringKind != events.SteeringKindNotification || s.history[0].Message.Text() != "durable steer" {
 			t.Fatalf("durable steering history = %+v", s.history)
 		}
-		loaded, err := readTranscriptFull(path, "")
+		loaded, err := readTranscriptFull(context.Background(), path, "")
 		if err != nil {
 			t.Fatalf("read persisted transcript: %v", err)
 		}

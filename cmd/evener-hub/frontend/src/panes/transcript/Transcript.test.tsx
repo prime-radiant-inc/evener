@@ -12,7 +12,7 @@ import {
   resetWorkspaceStoreForTests,
   workspaceStore,
 } from "../../shell/workspace";
-import { connectionStore } from "../../stores/connection";
+import { resetConnectionStoreForTests } from "../../stores/connection";
 import { answerActivityRead } from "../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests } from "../../stores/threads";
 import { connectReadyFakeClient } from "../../testing/connectionTestUtils";
@@ -70,7 +70,7 @@ function connectFakeClient(): FakeClient {
 let restoreGeometry: () => void;
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetTranscriptPagingForTests();
   resetSubagentModuleStoreForTests();

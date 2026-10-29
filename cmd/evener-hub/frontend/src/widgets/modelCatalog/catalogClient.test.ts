@@ -3,11 +3,11 @@
 import type { ModelListResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, describe, expect, test } from "vitest";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { fetchModelCatalog, modelListToCatalog } from "./catalogClient";
 
 afterEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
 });
 
 const RESPONSE: ModelListResponse = {

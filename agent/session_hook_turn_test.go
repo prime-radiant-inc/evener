@@ -57,7 +57,7 @@ func hookPluginDir(t *testing.T, command string) string {
 // transcriptHookTurns returns every HOOK_COMPLETED entry in a transcript.
 func transcriptHookTurns(t *testing.T, path string) []schema.Turn {
 	t.Helper()
-	data, err := readTranscriptFull(path, "")
+	data, err := readTranscriptFull(context.Background(), path, "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}
@@ -356,7 +356,7 @@ func TestPreToolUseHookDoesNotDuplicateResultInNextModelRequest(t *testing.T) {
 
 	transcriptPath := sess.TranscriptPath()
 	sess.Close()
-	data, err := readTranscriptFull(transcriptPath, "")
+	data, err := readTranscriptFull(context.Background(), transcriptPath, "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}

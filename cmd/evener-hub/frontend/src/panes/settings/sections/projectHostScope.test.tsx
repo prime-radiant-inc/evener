@@ -3,7 +3,7 @@ import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { connectionStore } from "../../../stores/connection";
+import { resetConnectionStoreForTests } from "../../../stores/connection";
 import { hostsStore } from "../../../stores/hosts";
 import { resetLaunchConfigHostStoresForTests, resetLaunchConfigStoreForTests } from "../../../stores/launchConfig";
 import { resetSettingsHostForTests, setSettingsHost } from "../../../stores/settingsHost";
@@ -74,7 +74,7 @@ function controllerLaunchCalls(fake: FakeClient): string[] {
 }
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetLaunchConfigStoreForTests();
   resetLaunchConfigHostStoresForTests();
   resetToastStoreForTests();
@@ -89,7 +89,7 @@ afterEach(() => {
   cleanup();
   resetLaunchConfigHostStoresForTests();
   setQueryCwd(null);
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   window.history.pushState({}, "", "/");
   vi.useRealTimers();
   vi.unstubAllGlobals();
