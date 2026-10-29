@@ -490,6 +490,19 @@ func hostMirrorFor(set hostRecordSet, existing map[string]hostops.Boundary) host
 			}
 		}
 	}
+	for name, tombstone := range set.Tombstones {
+		if _, live := set.HostRecords[name]; live {
+			continue
+		}
+		// A removed host's historical boundary is its removal's own, which the
+		// store's removed-host mark agrees with; the counters its name has spent
+		// beyond it live in the family's high-water mark.
+		mirror.Boundaries[name] = hostops.Boundary{
+			Generation:    tombstone.Generation,
+			IncarnationID: tombstone.IncarnationID,
+			PresenceEpoch: tombstone.PresenceEpoch,
+		}
+	}
 	for name := range existing {
 		if _, carried := mirror.Boundaries[name]; !carried {
 			mirror.Remove = append(mirror.Remove, name)

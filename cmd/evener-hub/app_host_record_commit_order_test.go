@@ -1540,6 +1540,10 @@ func TestAReAddRefusedAfterStagingKeepsTheRemovedHostsHistory(t *testing.T) {
 		t.Fatalf("the refused re-add changed the removal's identity: %d/%q/%d, was %d/%q/%d (operation records are marked by it)",
 			got.Generation, got.IncarnationID, got.PresenceEpoch, want.Generation, want.IncarnationID, want.PresenceEpoch)
 	}
+	boundary, _ := store.Boundary("side")
+	if marker := store.RemovedHosts()["side"]; marker.Generation != boundary.Generation || marker.IncarnationID != boundary.IncarnationID {
+		t.Fatalf("the operation store's boundary %+v and removed mark %+v disagree, so its removed-host retention would skip the host", boundary, marker)
+	}
 	if len(after.MutationReceipts) < len(before.MutationReceipts) {
 		t.Fatalf("the refused re-add lost receipts: %d before, %d after", len(before.MutationReceipts), len(after.MutationReceipts))
 	}
@@ -1665,5 +1669,33 @@ func TestBootDoesNotFinalizeALandedRemovalWhoseRemovedHostPassDidNotSettle(t *te
 	_, settled := boot(false)
 	if _, held := mustRecords(t, settled).StagedReceipts["side"]; held {
 		t.Fatal("the landed removal stayed unfinalized once the pass could be confirmed")
+	}
+}
+
+// TestAShortRetentionDoesNotExpireAStagedRemovalsTombstone pins that a tombstone
+// an unsettled staged removal needs is not expired by the write that stages it:
+// recovery reads it to tell a host that was never removed from one that was.
+func TestAShortRetentionDoesNotExpireAStagedRemovalsTombstone(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	storePath := hostops.StorePath(hub.stateRoot)
+	store, err := hostops.Open(storePath)
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	doc := hostBootDocument(mustLoadConfig(t, hub.configPath), store)
+	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
+	if err != nil {
+		t.Fatalf("hostreg.NewSeeded: %v", err)
+	}
+	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: hub.configPath,
+		HostTombstoneRetention: time.Nanosecond,
+	}, hub.configPath, hosts, t.Logf)
+	params := removeRequest(t, m, "side")
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
+
+	if _, held := mustRecords(t, store).Tombstones["side"]; !held {
+		t.Fatal("the write that staged the removal expired its tombstone, which recovery needs")
 	}
 }

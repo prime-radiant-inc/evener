@@ -409,6 +409,10 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 		if m.remnantGated(name) {
 			continue
 		}
+		if _, unsettled := records.stagedReceipts[name]; unsettled {
+			// Recovery reads this tombstone to classify the staged commit.
+			continue
+		}
 		if !tombstoneExpired(tombstone, now, policy.tombstoneRetention) {
 			continue
 		}
@@ -416,10 +420,13 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 		if err != nil {
 			return records, err
 		}
+		// The mark may already sit above the tombstone (a rolled-back re-add's
+		// spent counters); expiry never lowers it.
+		retained := records.highWater[name]
 		records.highWater[name] = HostGeneration{
-			Generation:    tombstone.Generation,
+			Generation:    max(tombstone.Generation, retained.Generation),
 			IncarnationID: tombstone.IncarnationID,
-			PresenceEpoch: advanced,
+			PresenceEpoch: max(advanced, retained.PresenceEpoch),
 		}
 		delete(records.tombstones, name)
 		records.droppedTombstones[name] = struct{}{}
