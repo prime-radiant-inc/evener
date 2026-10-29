@@ -265,10 +265,17 @@ func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
 		m.refuseMutations(fmt.Sprintf("the host records in the operation store cannot be read: %v", err))
 		return
 	}
+	// The legacy sections go first: the unlanded-removal check below reads
+	// hub.toml as the commit saw it.
+	m.stripLegacySections(true)
 	for _, entry := range m.cfg.hosts.All() {
 		// A hub that started before its records were readable minted ids of its
 		// own; operations and cleanup handles are bound to the stored ones.
-		if stored := records.HostRecords[entry.Name]; validIncarnationID(stored.IncarnationID) && stored.IncarnationID != entry.IncarnationID {
+		stored, held := records.HostRecords[entry.Name]
+		if !held {
+			stored, _ = unlandedRemovalIdentity(records, entry.Name, m.cfg.configPath)
+		}
+		if validIncarnationID(stored.IncarnationID) && stored.IncarnationID != entry.IncarnationID {
 			if err := m.cfg.hosts.RestoreIncarnation(entry.Name, stored.IncarnationID); err != nil {
 				m.logf("host %q keeps the incarnation minted at start: %v", entry.Name, err)
 			}
@@ -278,7 +285,6 @@ func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
 	// Seeding the stored marks raised the registry's counters past the entries
 	// just copied; the manager's view follows what the registry serves.
 	m.cfg.store.set(m.cfg.hosts.All())
-	m.stripLegacySections(true)
 	doc, hasFile := store.load()
 	settle := hasFile
 	if !hasFile && strings.TrimSpace(m.cfg.configPath) != "" {

@@ -624,3 +624,41 @@ func TestLateAttachKeepsTheIdentityAnOpenTeardownRemnantPins(t *testing.T) {
 		t.Fatalf("retry = %+v, want the teardown-complete live arm", retry)
 	}
 }
+
+// TestLateAttachRestoresTheIdentityOfAHostWhoseStagedRemovalNeverLanded is the
+// late-attach half of the unlanded-removal rule: a hub that started without its
+// store minted an incarnation for the host, and the attach gives back the one
+// the removal's tombstone names.
+func TestLateAttachRestoresTheIdentityOfAHostWhoseStagedRemovalNeverLanded(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, _ := hub.boot(t, false)
+	_, incarnation := testMutationIdentity(t, m, "side")
+	beforeBytes := fileBytes(t, hub.configPath)
+	params := removeRequest(t, m, "side")
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
+	if err := os.WriteFile(hub.configPath, beforeBytes, 0o600); err != nil {
+		t.Fatalf("put the pre-mutation hub.toml back: %v", err)
+	}
+
+	hub.restartStateRoot(t)
+	reopened, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	hosts, err := hostreg.New(hostRegistryEntries(mustLoadConfig(t, hub.configPath)))
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	late := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostConfigPath: hub.configPath, RemoteHostOpsUnavailable: true,
+	}, hub.configPath, hosts, t.Logf)
+	late.attachOps(reopened)
+
+	if _, got := testMutationIdentity(t, late, "side"); got != incarnation {
+		t.Fatalf("side serves incarnation %q after the late attach, want the one it had, %q", got, incarnation)
+	}
+	if _, tombstoned := mustRecords(t, reopened).Tombstones["side"]; tombstoned {
+		t.Fatal("the rolled-back removal left its tombstone")
+	}
+}

@@ -409,14 +409,22 @@ func (s hostOpsRecordStore) syncMirror() error {
 // lost the host and had it added again by hand, which is a new incarnation.
 func restoreUnlandedRemovalIdentities(configured []HostConfig, configPath string, set hostRecordSet) hostRecordSet {
 	for _, h := range configured {
-		marker, staged := set.StagedReceipts[h.Name]
-		tombstone, removed := set.Tombstones[h.Name]
-		if !staged || !removed || !stagedRemovalNeverLanded(marker, configPath) {
-			continue
+		if record, ok := unlandedRemovalIdentity(set, h.Name, configPath); ok {
+			set.HostRecords[h.Name] = record
 		}
-		set.HostRecords[h.Name] = HostRecord{IncarnationID: tombstone.IncarnationID, PresenceEpoch: tombstone.PresenceEpoch}
 	}
 	return set
+}
+
+// unlandedRemovalIdentity returns the live record name had before a staged
+// removal that never reached hub.toml dropped it.
+func unlandedRemovalIdentity(set hostRecordSet, name, configPath string) (HostRecord, bool) {
+	marker, staged := set.StagedReceipts[name]
+	tombstone, removed := set.Tombstones[name]
+	if !staged || !removed || !stagedRemovalNeverLanded(marker, configPath) {
+		return HostRecord{}, false
+	}
+	return HostRecord{IncarnationID: tombstone.IncarnationID, PresenceEpoch: tombstone.PresenceEpoch}, true
 }
 
 // stagedRemovalNeverLanded reports whether marker stages a removal whose host
