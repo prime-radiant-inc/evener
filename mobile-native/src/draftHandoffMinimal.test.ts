@@ -102,6 +102,37 @@ describe("durable minimal handoffs", () => {
 		expect(repository.read(b).draft).toBe("b work");
 	});
 
+	it("a handoff into a marker-only destination merges its history instead of refusing", () => {
+		const { repository, library } = setup();
+		const a = destination("a");
+		const b = destination("b");
+		// A composition consumed at B leaves only its settlement markers:
+		// the receipt reconciliation cleared the work, while the release and
+		// completion evidence stays durable.
+		repository.write(b, {
+			draft: "",
+			unconfirmed: null,
+			releasedRecoveryIds: ["released-b"],
+			completedCommandRecoveryIds: ["completed-b"],
+		});
+		repository.write(a, {
+			draft: "alias work",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		const live = library();
+		expect(live.handoff(a, b)).toBe(true);
+		// The alias composition lands at B with its history merged in, so the
+		// markers still suppress the content B's earlier commands consumed.
+		expect(repository.read(b)).toMatchObject({
+			draft: "alias work",
+			composer: { recoveryIds: ["recovered-a"] },
+			releasedRecoveryIds: expect.arrayContaining(["released-b", "recovered-a"]),
+			completedCommandRecoveryIds: ["completed-b"],
+		});
+		expect(repository.read(a)).toEqual({ draft: "", unconfirmed: null });
+	});
+
 	it("unknown recovery ownership defers instead of reading as empty", async () => {
 		const { repository, ledger, library } = setup();
 		const a = destination("a");

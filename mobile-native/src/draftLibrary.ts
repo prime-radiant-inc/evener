@@ -268,10 +268,16 @@ export class DraftLibrary {
 			current = destination.getSnapshot();
 		}
 		if (!current.loaded || current.error !== null || current.submitting) return false;
-		if (occupied(current.record)) {
+		if (destinationContent(current.record)) {
 			this.refuseHandoff(transfer, source, destination);
 			return false;
 		}
+		// A destination that consumed its composition keeps only its
+		// historical settlement markers. Markers are evidence about work
+		// already done, never work: they must not strand an incoming hop at
+		// a retired identity. The incoming record merges them in, so the
+		// destination still cannot restore what its own commands consumed.
+		const delivered = mergeDispositionMarkers(snapshot.record, current.record);
 		// The retry always moves the source's current record: work composed
 		// after the first attempt travels with the hop instead of being
 		// stranded at the old identity, and no stale snapshot is ever
@@ -297,7 +303,7 @@ export class DraftLibrary {
 			this.repository().transfer(
 				transfer.from,
 				transfer.to,
-				snapshot.record,
+				delivered,
 				additions,
 				{
 					transferId: transfer.transferId,
@@ -323,7 +329,7 @@ export class DraftLibrary {
 		const outgoing = this.pending.get(this.handoffKey(transfer.to));
 		if (outgoing !== undefined && sameDestination(outgoing.from, transfer.from))
 			this.pending.delete(this.handoffKey(transfer.to));
-		destination.adopt(snapshot.record);
+		destination.adopt(delivered);
 		if (destination !== source) {
 			source.retire();
 			this.rememberRetired(transfer.from.hubId, source);
@@ -727,8 +733,9 @@ function sameDestination(a: DraftDestination, b: DraftDestination): boolean {
 	return a.hubId === b.hubId && a.sessionRef === b.sessionRef;
 }
 
-/** Existing destination work is a permanent refusal, never a retry. */
-function occupied(record: DraftRecord): boolean {
+/** Content a user or a running submission still owns at the destination: a
+ * hop must never overwrite it, so its presence is a permanent refusal. */
+function destinationContent(record: DraftRecord): boolean {
 	return (
 		record.draft !== "" ||
 		(record.images?.length ?? 0) > 0 ||
@@ -740,11 +747,25 @@ function occupied(record: DraftRecord): boolean {
 		(record.composer?.skillNames?.length ?? 0) > 0 ||
 		(record.unconfirmedComposer?.skillNames?.length ?? 0) > 0 ||
 		(record.composer?.commandNames?.length ?? 0) > 0 ||
-		(record.unconfirmedComposer?.commandNames?.length ?? 0) > 0 ||
-		!!record.recoveryResendAcks?.length ||
-		!!record.completedCommandRecoveryIds?.length ||
-		!!record.releasedRecoveryIds?.length
+		(record.unconfirmedComposer?.commandNames?.length ?? 0) > 0
 	);
+}
+
+/** The incoming record with the resident markers merged in: the union keeps
+ * every disposition either side settled, so nothing either composition
+ * consumed can restore at the destination. */
+function mergeDispositionMarkers(incoming: DraftRecord, resident: DraftRecord): DraftRecord {
+	const union = (ids?: readonly string[], more?: readonly string[]): readonly string[] | undefined =>
+		ids?.length || more?.length ? [...new Set([...(ids ?? []), ...(more ?? [])])] : undefined;
+	const released = union(incoming.releasedRecoveryIds, resident.releasedRecoveryIds);
+	const completed = union(incoming.completedCommandRecoveryIds, resident.completedCommandRecoveryIds);
+	const acks = union(incoming.recoveryResendAcks, resident.recoveryResendAcks);
+	if (released === undefined && completed === undefined && acks === undefined) return incoming;
+	const merged: DraftRecord = { ...incoming };
+	if (released !== undefined) merged.releasedRecoveryIds = [...released];
+	if (completed !== undefined) merged.completedCommandRecoveryIds = [...completed];
+	if (acks !== undefined) merged.recoveryResendAcks = [...acks];
+	return merged;
 }
 
 /** The recovery ids a record's composition still cites, plus the ones prior

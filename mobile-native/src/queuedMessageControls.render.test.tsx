@@ -52,6 +52,7 @@ const harness = vi.hoisted(() => ({
 	handoffPendingnessReadFailFrom: 0,
 	handoffEdgesReadFailFrom: 0,
 	completionRoutingReadFailure: false,
+	completionWriteFailure: false,
 	rpcFailure: "" as string,
 	reopenKV: () => {},
 	manipulate: vi.fn(),
@@ -170,14 +171,27 @@ vi.mock("expo-sqlite", async () => {
 					harness.completionRoutingReadFailure &&
 					database === "evener-drafts.db" &&
 					String(sql).includes("carried_capture_token");
+				// Fails the drafts record write while the handoff ledger's own
+				// writes stay healthy: a completion that routed fine but cannot
+				// save, so the obligation stays undelivered and the destination
+				// document holds the save error. The record write is the
+				// upsert or, for a record the completion emptied, the delete.
+				const completionWriteFails = (sql: unknown) => {
+					if (!harness.completionWriteFailure || database !== "evener-drafts.db") return false;
+					const text = String(sql).trimStart();
+					if (!/^(INSERT|DELETE|REPLACE)\b/i.test(text)) return false;
+					return text.includes("INTO drafts") || text.includes("FROM drafts");
+				};
 				// A stable platform handle delegates to the reopened on-disk database.
 				port = {
 					execSync: (...args: Parameters<SqliteSync["execSync"]>) => {
 						if (handoffWriteFails(args[0])) throw new Error("handoff write failed");
+						if (completionWriteFails(args[0])) throw new Error("draft record write failed");
 						return opened.port.execSync(...args);
 					},
 					runSync: (...args: Parameters<SqliteSync["runSync"]>) => {
 						if (handoffWriteFails(args[0])) throw new Error("handoff write failed");
+						if (completionWriteFails(args[0])) throw new Error("draft record write failed");
 						return opened.port.runSync(...args);
 					},
 					getFirstSync: (...args: Parameters<SqliteSync["getFirstSync"]>) => {
@@ -305,6 +319,7 @@ afterEach(async () => {
 	harness.handoffPendingnessReads = 0;
 	harness.handoffPendingnessReadFailFrom = 0;
 	harness.completionRoutingReadFailure = false;
+	harness.completionWriteFailure = false;
 	harness.rpcFailure = "";
 	await getNativeMutationRuntime().stop();
 });
@@ -878,6 +893,69 @@ it("actual screen retries an undelivered completion without user action", async 
 	});
 	await settle();
 	expect(f.tree.root.findAllByProps({ accessibilityLabel: "Retry" })).toHaveLength(0);
+	expect(f.document.getSnapshot().record).toMatchObject({
+		unconfirmed: null,
+		unconfirmedCaptureToken: undefined,
+	});
+});
+
+it("actual screen recovers a failed completion write without user action", async () => {
+	const f = await mount();
+	await f.offline();
+	// A sibling identity holds a submitted message whose capture the handoff
+	// carries into this screen.
+	const sibling = `sibling-of-${f.ref}`;
+	nativeDrafts().write(
+		{ hubId: "hub-1", sessionRef: sibling },
+		{
+			draft: "handoff completion source",
+			unconfirmed: null,
+		},
+	);
+	const siblingDocument = drafts.open({ hubId: "hub-1", sessionRef: sibling });
+	let finish!: (sent: boolean) => void;
+	const submitted = siblingDocument.submit(
+		() =>
+			new Promise<boolean>((resolve) => {
+				finish = resolve;
+			}),
+	);
+	drafts.handoff({ hubId: "hub-1", sessionRef: sibling }, { hubId: "hub-1", sessionRef: f.ref });
+	await settle();
+	// The submission resolves while the destination's record write fails:
+	// the completion routed fine and the ledger recorded the resolution, but
+	// the adoption cannot save, so the destination document holds the error
+	// the composer skips while the capture stays held.
+	harness.completionWriteFailure = true;
+	await act(async () => {
+		finish(true);
+		await submitted;
+	});
+	// The retry pass gets a full timer cycle to attempt the delivery while
+	// the record write fails.
+	await act(async () => {
+		await new Promise((resolve) => setTimeout(resolve, 1500));
+	});
+	await settle();
+	expect(f.document.getSnapshot().error).not.toBe(null);
+	// The failed save left the durable record holding the capture the live
+	// document already consumed in memory.
+	expect(nativeDrafts().read({ hubId: "hub-1", sessionRef: f.ref })).toMatchObject({
+		unconfirmed: "handoff completion source",
+		unconfirmedCaptureToken: expect.any(String),
+	});
+	harness.completionWriteFailure = false;
+	// No Retry press, no remount: storage recovering alone must converge the
+	// held completion - the retry pass redelivers, the save succeeds, the
+	// error clears and the capture releases.
+	await act(async () => {
+		await new Promise((resolve) => setTimeout(resolve, 1500));
+	});
+	await settle();
+	expect(f.document.getSnapshot().error).toBe(null);
+	expect(nativeDrafts().read({ hubId: "hub-1", sessionRef: f.ref })).toMatchObject({
+		unconfirmed: null,
+	});
 	expect(f.document.getSnapshot().record).toMatchObject({
 		unconfirmed: null,
 		unconfirmedCaptureToken: undefined,
