@@ -727,6 +727,54 @@ func TestPluginInstall_RequiresConfirmation(t *testing.T) {
 	}
 }
 
+// installCapture records whether the install command reached the manager's
+// Install; the embedded interface supplies the methods this path never calls.
+type installCapture struct {
+	pluginManager
+	calls int
+}
+
+func (m *installCapture) SeedDefaultMarketplaces(context.Context) (bool, error) {
+	return false, nil
+}
+
+func (m *installCapture) Install(context.Context, string, string) (plugins.InstallEntry, error) {
+	m.calls++
+	return plugins.InstallEntry{Version: "1", InstallPath: "/tmp/plugin"}, nil
+}
+
+// TestPluginInstall_YesAfterSpecIsRejected pins the contract issue #5473 hit:
+// the flag parser stops at the first positional, so a --yes placed after the
+// <plugin>@<marketplace> spec is never read as a flag. The command used to
+// swallow it silently and then demand the confirmation the user had just
+// supplied on the same line. A trailing argument is now rejected with the
+// accepted form — the same contract marketplace add keeps
+// (TestPluginMarketplaceAdd_RefAfterSourceIsRejected) — and the --yes-first
+// form still satisfies the confirmation and reaches Install.
+func TestPluginInstall_YesAfterSpecIsRejected(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	m := &installCapture{}
+	oldManager := newPluginManager
+	newPluginManager = func() pluginManager { return m }
+	t.Cleanup(func() { newPluginManager = oldManager })
+
+	var out, errb bytes.Buffer
+	err := runPlugin([]string{"install", "widget@acme", "--yes"}, nil, &out, &errb)
+	if !errors.Is(err, errTrailingInstallArg) {
+		t.Fatalf("install <spec> --yes: err = %v\nstderr: %s", err, errb.String())
+	}
+	if m.calls != 0 {
+		t.Fatalf("Install called %d times with a trailing --yes, want 0", m.calls)
+	}
+
+	if err := runPlugin([]string{"install", "--yes", "widget@acme"}, nil, &out, &errb); err != nil {
+		t.Fatalf("install --yes <spec>: %v\nstderr: %s", err, errb.String())
+	}
+	if m.calls != 1 {
+		t.Fatalf("Install called %d times for the --yes-first form, want 1", m.calls)
+	}
+}
+
 func TestPluginDoctor_JSON(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	var out, errb bytes.Buffer

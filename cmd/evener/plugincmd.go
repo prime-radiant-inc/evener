@@ -403,6 +403,15 @@ func renderEffectivePluginList(w io.Writer, resolution plugins.LaunchPluginResol
 	return nil
 }
 
+// errTrailingInstallArg identifies a plugin install carrying arguments after
+// the <plugin>@<marketplace> spec. The flag parser stops at the first
+// positional, so those arguments are never read as flags: a --yes after the
+// spec was silently swallowed while the command still demanded the
+// confirmation the user had just supplied (#5473). The rejection names the
+// accepted form instead, matching marketplace add's contract
+// (TestPluginMarketplaceAdd_RefAfterSourceIsRejected).
+var errTrailingInstallArg = errors.New("unexpected argument")
+
 func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr io.Writer) error {
 	ctx := context.Background()
 	m := newPluginManager()
@@ -446,7 +455,10 @@ func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr 
 			return err
 		}
 		if fs.NArg() < 1 {
-			return errors.New("usage: evener plugin install <plugin>@<marketplace> [--yes]")
+			return errors.New("usage: evener plugin install [--yes] <plugin>@<marketplace>")
+		}
+		if fs.NArg() > 1 {
+			return fmt.Errorf("%w %q; put options before the plugin spec, e.g. plugin install --yes <plugin>@<marketplace>", errTrailingInstallArg, fs.Arg(1))
 		}
 		plugin, marketplace, err := splitPluginRef(fs.Arg(0))
 		if err != nil {

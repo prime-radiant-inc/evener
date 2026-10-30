@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 
 export default defineConfig({
 	test: {
@@ -7,6 +7,16 @@ export default defineConfig({
 		pool: "forks",
 		// Fakes for native modules every suite would otherwise mock alike.
 		setupFiles: [fileURLToPath(new URL("./src/vitestSetup.ts", import.meta.url))],
+		// Scope discovery to this checkout: vitest does not read .gitignore, and
+		// other sessions keep whole checkout copies in the gitignored
+		// `.worktrees/` and `.claude/worktrees/` lanes beside this one. A run
+		// rooted above mobile-native — the shape `npm run test:shared` used
+		// with `--root ..` — collected those lanes' suites too, and every lane
+		// without its own node_modules failed wholesale at transform: suite
+		// failures with zero test failures, all sourced from foreign lanes
+		// (issue #5469). Both patterns stay inert for the ordinary run rooted
+		// at mobile-native, which holds neither directory.
+		exclude: [...configDefaults.exclude, "**/.worktrees/**", "**/.claude/worktrees/**"],
 	},
 	resolve: {
 		// Match Metro's app-owned resolution for the shared headless sources.
