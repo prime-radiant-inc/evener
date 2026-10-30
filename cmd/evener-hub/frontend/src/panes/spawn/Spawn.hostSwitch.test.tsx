@@ -1,3 +1,4 @@
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import "../session/testing/editorGeometry";
 import type { HostForwardedResult, HostRequestParams, ThreadStartParams } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
@@ -11,7 +12,6 @@ import { CONNECT_ATTACH_TIMEOUT_MS } from "./Spawn";
 import { selectSpawnDirectory, setDraftField, spawnDraftsStore } from "./spawnDrafts";
 import {
   completionDraft,
-  deferred,
   expectModelReadsDefault,
   expectWorkingDir,
   fillPrompt,

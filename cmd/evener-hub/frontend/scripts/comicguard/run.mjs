@@ -109,7 +109,12 @@ export async function run(fixturePath) {
     page = await connectOnlyPage(endpoint);
     await page.send("Page.enable");
     await page.send("Runtime.enable");
-    await journey(page, fixture, endpoint);
+    try {
+      await journey(page, fixture, endpoint);
+    } catch (error) {
+      await snapshotFailedPage(page, fixture.evidenceDir);
+      throw error;
+    }
   } finally {
     await stop();
   }
@@ -125,6 +130,30 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       console.error(error);
       process.exitCode = 1;
     });
+}
+
+// snapshotFailedPage records what the page looked like when the journey threw,
+// including how late a timer fires: a starved browser shows a large timerLagMs
+// with a healthy wire, a stuck store shows neither. Evidence capture never
+// replaces the journey's own error.
+async function snapshotFailedPage(page, evidenceDir) {
+  try {
+    const state = await evaluate(page.send, `(async () => {
+      const lagStart = performance.now();
+      await new Promise(resolve => setTimeout(resolve, 0));
+      const scroll = window.__comicRoot?.()?.querySelector('[data-comic-scroll]')?.firstElementChild;
+      return {
+        href: location.href,
+        timerLagMs: performance.now() - lagStart,
+        scrollTop: scroll?.scrollTop, scrollHeight: scroll?.scrollHeight, clientHeight: scroll?.clientHeight,
+        scrollTextTail: scroll?.textContent.slice(-400),
+        bodyTextTail: document.body.innerText.slice(-600),
+      };
+    })()`);
+    writeFileSync(`${evidenceDir}/failed-page.json`, JSON.stringify(state, null, 2));
+    const shot = await page.send("Page.captureScreenshot", { format: "png" });
+    writeFileSync(`${evidenceDir}/failed-page.png`, Buffer.from(shot.result.data, "base64"));
+  } catch {}
 }
 
 async function until(label, read, accept = Boolean) {

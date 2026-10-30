@@ -1,4 +1,5 @@
 import type { Thread } from "@evener/appwire-client";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -25,7 +26,6 @@ import { pastePngInto, replaceEditorText } from "../testing/editor";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { resetComposerFocusStoreForTests } from "./composerFocus";
 import {
-  deferred,
   installCanvasStubs,
   installNarrowComposer,
   mountComposer,

@@ -1,5 +1,6 @@
 import type { InputItem, Thread, ThreadCapabilities } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -32,7 +33,6 @@ import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { resetComposerFocusStoreForTests } from "./composerFocus";
 import {
   Composer,
-  deferred,
   foldStatusFrame,
   installCanvasStubs,
   installNarrowComposer,

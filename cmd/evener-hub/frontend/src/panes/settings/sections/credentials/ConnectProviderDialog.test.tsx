@@ -1,4 +1,5 @@
 import type { InstanceEntry, InstanceListResponse, ProviderDescriptor } from "@evener/appwire-client";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -46,14 +47,6 @@ function provider(id: string, name: string, setup?: InstanceEntry): ProviderDesc
     authModes: setup?.authModes ?? ["apiKey"],
     ...(setup ? { setup } : {}),
   };
-}
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolvePromise) => {
-    resolve = resolvePromise;
-  });
-  return { promise, resolve };
 }
 
 /** The dialog as the app mounts it: `onClose` is what makes it go away, so the

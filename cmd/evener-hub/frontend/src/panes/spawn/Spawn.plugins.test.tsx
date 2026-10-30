@@ -1,3 +1,4 @@
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import "../session/testing/editorGeometry";
 import type {
   AnyNotification,
@@ -14,7 +15,6 @@ import { extensionsStore } from "../../stores/extensions";
 import {
   completionDraft,
   completionNavigate,
-  deferred,
   fillPrompt,
   installSpawnTestHooks,
   openDesktopPluginSelection,
