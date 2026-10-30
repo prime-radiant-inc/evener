@@ -107,6 +107,9 @@ asking Jesse first.
 
 Run `make hooks` once per clone: the pre-commit hook formats staged TypeScript
 with each tree's own Biome and re-stages it (`docs/developing-evener/README.md`).
+The hook skips formatting while a merge is in progress (it prints `merge in
+progress; not formatting`), so run Biome on the touched files yourself before
+committing a merge.
 
 Biome's enforced scope is `cmd/evener-hub/frontend/src` and
 `appwire-client/typescript` (the gate runs `biome ci src
@@ -271,9 +274,12 @@ loading them, since each opens a socket the moment its body runs.
   on top of main and the PRs ahead of it and merges it when the required
   checks pass there, so do not merge `origin/main` into the branch just to
   catch up. Pushing to a queued PR removes it from the queue. `MERGEQ
-  dropped` means a check failed on the queue's candidate: read it, fix the
-  cause (or, for an unrelated known flake, note it on the PR), and enqueue
-  again. Handle 'low' findings immediately in a fast-follow PR.
+  dropped` means a check failed on the queue's candidate, which is not
+  always your PR: a flaky shared check drops every PR in the group,
+  leaving nothing to read or fix on yours. Read your PR's checks first;
+  when nothing failed there, treat the drop as a bystander and enqueue
+  again rather than diagnosing your PR. Handle 'low' findings immediately
+  in a fast-follow PR.
 - **Refuted findings.** RoboRev never reads rebuttals, so a PR whose
   remaining medium-or-above findings you have conclusively refuted on the PR
   keeps its requested changes. That case alone is an admin merge: merge
