@@ -38,10 +38,6 @@ func hubObservationSelector(event string) bool {
 // caller names the Manager whose binding admitted the watch; the durable
 // identity keys on the target triple plus that caller, so two Managers
 // watching the same target keep distinct watches.
-func (jm *jobManager) configureHubWatch(ref, instance, generation, caller string, selectors []string, completion bool) (watchResult, error) {
-	return jm.configureHubWatchContext(context.Background(), ref, instance, generation, caller, selectors, completion)
-}
-
 func (jm *jobManager) configureHubWatchContext(ctx context.Context, ref, instance, generation, caller string, selectors []string, completion bool) (watchResult, error) {
 	if ref == "" || instance == "" || generation == "" || caller == "" {
 		return watchResult{}, errors.New("source_not_watchable: authoritative hub target generation and Manager caller are required")

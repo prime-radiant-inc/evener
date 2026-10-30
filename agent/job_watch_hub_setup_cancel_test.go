@@ -17,6 +17,10 @@ type managerSetupCancelClient struct {
 	blockSetup bool
 }
 
+func (jm *jobManager) configureHubWatch(ref, instance, generation, caller string, selectors []string, completion bool) (watchResult, error) {
+	return jm.configureHubWatchContext(context.Background(), ref, instance, generation, caller, selectors, completion)
+}
+
 func (c *managerSetupCancelClient) State(context.Context) (appwire.ManagerView, error) {
 	return c.view, nil
 }
