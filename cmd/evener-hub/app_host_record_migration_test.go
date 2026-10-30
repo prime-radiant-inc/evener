@@ -1129,3 +1129,26 @@ func TestNoSingleReadFailureAtALegacyBootLosesARecord(t *testing.T) {
 		}
 	}
 }
+
+// TestUpgradeFromAnInterruptedLegacyAddFinalizesWithoutAnOpenRemnant covers an
+// older build that crashed after staging an add in hub.toml and before it
+// mirrored the host's boundary: recovery finalizes the marker, and its teardown
+// handle needs that boundary, so the boundary is refreshed from the persisted
+// records first.
+func TestUpgradeFromAnInterruptedLegacyAddFinalizesWithoutAnOpenRemnant(t *testing.T) {
+	fixture := newPipelineFixture(t, []hostreg.Host{pipelineEntry("keep", 3)}, nil)
+	m := fixture.legacyManager(t)
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() {
+		_, _ = m.AddResult(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "side.example"}, MutationID: "add-side"})
+	})
+
+	restarted := fixture.restart(t)
+
+	if open := mustRecords(t, fixture.store).TeardownRemnants; len(open) != 0 {
+		t.Fatalf("the upgrade left %d open remnant(s) fencing the added host", len(open))
+	}
+	if _, err := restarted.UpdateResult(context.Background(), updateRequest(t, restarted, "side", appwire.HostEntry{Address: "side2.example"})); err != nil {
+		t.Fatalf("the added host cannot be edited after the upgrade: %v", err)
+	}
+}
