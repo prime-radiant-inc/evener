@@ -836,9 +836,9 @@ func TestOpenRefusesAnOversizedTombstone(t *testing.T) {
 		`","kind":"deploy","state":"complete","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"result":{"ok":true,"message":"done"},"compactedAt":"2026-09-26T00:00:00Z","compactedSeq":1}]}`
 	path := StorePath(t.TempDir())
 	writeRawStore(t, path, 0o600, body)
-	_, err := Open(path)
+	err := loadAt(path)
 	if !errors.Is(err, ErrStoreCorrupt) || !strings.Contains(err.Error(), "host name") {
-		t.Fatalf("Open(oversized tombstone) = %v, want ErrStoreCorrupt naming the host name", err)
+		t.Fatalf("load(oversized tombstone) = %v, want ErrStoreCorrupt naming the host name", err)
 	}
 }
 

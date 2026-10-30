@@ -471,10 +471,10 @@ func (r *hubRuntime) connectHosts() (func(), error) {
 	// The operation store opens first: it holds the machine records the
 	// registry's identities restore from. A store that cannot open does not stop
 	// the hub. The hosts in hub.toml keep serving with the identities minted at
-	// load, host changes refuse until the store opens, and the open is retried
-	// in the background. A corrupt store file takes the custody-first quarantine
-	// when its custody can be shown whole; one whose custody cannot is left as it
-	// is until it is repaired (openHostOpsStore).
+	// load, and host changes refuse until the hub is started with a store that
+	// opens; the open is retried only during startup. A corrupt store file is set
+	// aside by the custody-first quarantine, with an unproven custody when its
+	// names cannot be shown whole (openHostOpsStore).
 	r.openOpsStore()
 	legacy, err := readLegacyRecords(r.opts.configPath)
 	if err != nil {

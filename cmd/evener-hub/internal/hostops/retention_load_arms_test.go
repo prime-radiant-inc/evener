@@ -105,8 +105,8 @@ func TestStoreRefusesTombstonesOutsideTheSchema(t *testing.T) {
 			path := StorePath(t.TempDir())
 			body := retentionArmStore(`"compactSeq":1,"tombstones":[` + tc.tombstone + `]`)
 			writeRawStore(t, path, 0o600, body)
-			if _, err := Open(path); !errors.Is(err, ErrStoreCorrupt) {
-				t.Fatalf("Open error = %v, want errors.Is(ErrStoreCorrupt)", err)
+			if err := loadAt(path); !errors.Is(err, ErrStoreCorrupt) {
+				t.Fatalf("load error = %v, want errors.Is(ErrStoreCorrupt)", err)
 			}
 		})
 	}
@@ -198,8 +198,8 @@ func TestStoreRefusesRemovalMarkersOutsideTheSchema(t *testing.T) {
 			path := StorePath(t.TempDir())
 			body := retentionArmStore(`"removedHosts":{"hX":` + tc.marker + `}`)
 			writeRawStore(t, path, 0o600, body)
-			if _, err := Open(path); !errors.Is(err, ErrStoreCorrupt) {
-				t.Fatalf("Open error = %v, want errors.Is(ErrStoreCorrupt)", err)
+			if err := loadAt(path); !errors.Is(err, ErrStoreCorrupt) {
+				t.Fatalf("load error = %v, want errors.Is(ErrStoreCorrupt)", err)
 			}
 		})
 	}

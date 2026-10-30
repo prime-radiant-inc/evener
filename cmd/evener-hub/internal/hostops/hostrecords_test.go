@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
 	"testing"
 
@@ -386,12 +385,10 @@ func TestHostRecordsSurviveAQuarantine(t *testing.T) {
 	requireFamily(t, reopenFresh(t, path), next)
 }
 
-// TestHostRecordsQuarantineRefusesAnUnreadableFamily pins that custody is only
-// complete when the family can be carried whole: a family region the store
-// cannot read refuses the quarantine, so the corrupt file stays where it is and
-// the caller keeps serving without the store instead of losing identities. The
-// refusal happens before anything is written, so the directory is unchanged.
-func TestHostRecordsQuarantineRefusesAnUnreadableFamily(t *testing.T) {
+// TestHostRecordsQuarantineSetsAsideAnUnreadableFamily pins that a family
+// region the store cannot read leaves the custody unproven: the file is set
+// aside verbatim and the replacement serves empty, with a signal saying so.
+func TestHostRecordsQuarantineSetsAsideAnUnreadableFamily(t *testing.T) {
 	cases := map[string]func(raw string) string{
 		"a record that is not an object": func(raw string) string {
 			return strings.Replace(raw, `{"kind":"receipts","tag":"first"}`, `["not","an","object"]`, 1)
@@ -418,19 +415,22 @@ func TestHostRecordsQuarantineRefusesAnUnreadableFamily(t *testing.T) {
 				t.Fatalf("the fixture did not carry the expected text:\n%s", raw)
 			}
 			writeRawStore(t, path, 0o600, broken)
-			before := dirListing(t, filepath.Dir(path))
 			if err := forgetStore(path); err != nil {
 				t.Fatalf("forgetStore: %v", err)
 			}
-			_, err := Open(path)
-			if !errors.Is(err, ErrQuarantineIncomplete) || !errors.Is(err, ErrStoreCorrupt) {
-				t.Fatalf("Open = %v, want ErrQuarantineIncomplete beside ErrStoreCorrupt", err)
+			reopened, err := Open(path)
+			if err != nil {
+				t.Fatalf("Open = %v, want the unproven set-aside", err)
 			}
-			if got := mustReadFile(t, path); !bytes.Equal(got, []byte(broken)) {
-				t.Fatal("a refused quarantine touched the corrupt file")
+			_, aside := quarantineArtifact(t, filepath.Dir(path), ".quarantined-")
+			if !bytes.Equal(aside, []byte(broken)) {
+				t.Fatal("the set-aside file does not hold the unreadable family verbatim")
 			}
-			if after := dirListing(t, filepath.Dir(path)); !slices.Equal(before, after) {
-				t.Fatalf("a refused quarantine left artifacts: before %v after %v", before, after)
+			if signal := reopened.Quarantine(); signal == nil || !signal.Unproven {
+				t.Fatalf("Quarantine() = %+v, want an unproven signal", signal)
+			}
+			if family, _, imported := reopened.HostRecords(); imported || len(family.Hosts) != 0 {
+				t.Fatalf("the replacement carries host records: %+v", family)
 			}
 		})
 	}

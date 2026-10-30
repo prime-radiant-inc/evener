@@ -345,11 +345,11 @@ func TestQuarantineCustodySchema(t *testing.T) {
 	}
 }
 
-// TestQuarantineFailsStartupWhenCustodyIsIncomplete pins §4's all-or-nothing
+// TestQuarantineSetsAsideUnprovenWhenCustodyIsIncomplete pins §4's all-or-nothing
 // rule: any shortfall — an unparseable file, a record that fails validation, a
 // gap below the file's own allocator high-water mark, an invalid boundary
-// mirror — refuses startup without renaming or rewriting anything.
-func TestQuarantineFailsStartupWhenCustodyIsIncomplete(t *testing.T) {
+// mirror — is set aside unproven rather than refusing startup.
+func TestQuarantineSetsAsideUnprovenWhenCustodyIsIncomplete(t *testing.T) {
 	record := `{"id":"00000000000000000001","clientOperationId":"op-h1","host":"h1","kind":"deploy","state":"pending",` +
 		`"generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false}`
 	// Every fixture below is a store-level corruption — the strict decode
@@ -386,35 +386,11 @@ func TestQuarantineFailsStartupWhenCustodyIsIncomplete(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			path := StorePath(t.TempDir())
 			writeRawStore(t, path, 0o600, body)
-			before := mustReadFile(t, path)
 			store, err := Open(path)
-			if store != nil {
-				t.Fatalf("Open on an incomplete-custody store returned a handle: %v", store)
+			if err != nil {
+				t.Fatalf("Open on an incomplete-custody store: %v, want the unproven set-aside", err)
 			}
-			if !errors.Is(err, ErrStoreCorrupt) {
-				t.Fatalf("Open = %v, want an ErrStoreCorrupt refusal", err)
-			}
-			if !errors.Is(err, ErrQuarantineIncomplete) {
-				t.Fatalf("Open = %v, want the refusal to name ErrQuarantineIncomplete", err)
-			}
-			if got := mustReadFile(t, path); !bytes.Equal(got, before) {
-				t.Fatalf("a refused quarantine rewrote the store file:\n got %s\nwant %s", got, before)
-			}
-			dir := filepath.Dir(path)
-			for _, infix := range []string{".quarantined-", ".custody-"} {
-				entries, err := os.ReadDir(dir)
-				if err != nil {
-					t.Fatalf("ReadDir: %v", err)
-				}
-				for _, entry := range entries {
-					if strings.Contains(entry.Name(), infix) {
-						t.Fatalf("a refused quarantine wrote %s", entry.Name())
-					}
-				}
-			}
-			if _, err := os.Stat(quarantineIntentPath(path)); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("a refused quarantine wrote an intent (stat err = %v)", err)
-			}
+			requireUnprovenReplacement(t, store, path, []byte(body))
 		})
 	}
 }

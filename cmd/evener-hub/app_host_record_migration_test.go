@@ -16,6 +16,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,6 +32,13 @@ import (
 // under stateRoot: the registry is built the way startup builds it, then the
 // manager boots with the store attached.
 func bootOverStore(t *testing.T, configPath, stateRoot string) (*hubHostManager, *hostops.Store) {
+	t.Helper()
+	return bootOverStoreLogging(t, configPath, stateRoot, t.Logf)
+}
+
+// bootOverStoreLogging is bootOverStore with the manager's log routed to logf,
+// for a test that reads what the boot reports to the operator.
+func bootOverStoreLogging(t *testing.T, configPath, stateRoot string, logf func(string, ...any)) (*hubHostManager, *hostops.Store) {
 	t.Helper()
 	store, err := hostops.Open(hostops.StorePath(stateRoot))
 	if err != nil {
@@ -51,7 +60,7 @@ func bootOverStore(t *testing.T, configPath, stateRoot string) (*hubHostManager,
 		t.Fatalf("hostreg.NewSeeded: %v", err)
 	}
 	webCfg := hubcore.WebConfig{RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: configPath}
-	return newHubHostManager(appsource.NewRegistry(), nil, webCfg, configPath, hosts, t.Logf), store
+	return newHubHostManager(appsource.NewRegistry(), nil, webCfg, configPath, hosts, logf), store
 }
 
 // restartOver is a process start over configPath and a store that is already
@@ -589,12 +598,12 @@ func TestHostsKeepServingWhenTheStoreHoldsRecordsThisBuildCannotRead(t *testing.
 	}
 }
 
-// TestStartupKeepsServingWhenTheStoreCannotBeProvenAndResumesWhenItCan pins the
-// corrupt-store disposition end to end: a store file whose custody cannot be
-// proven is left untouched, startup serves the hosts in hub.toml with host
-// changes paused, and once the file is repaired the retry attaches the store,
+// TestStartupKeepsServingWhenTheStoreCannotOpenAndResumesWhenItCan pins the
+// unopenable-store disposition end to end: a store file the hub cannot open is
+// left untouched, startup serves the hosts in hub.toml with host changes
+// paused, and once the file is repaired the next start attaches the store,
 // moves the records into it and host changes work again.
-func TestStartupKeepsServingWhenTheStoreCannotBeProvenAndResumesWhenItCan(t *testing.T) {
+func TestStartupKeepsServingWhenTheStoreCannotOpenAndResumesWhenItCan(t *testing.T) {
 	previous := hostOpsOpenRetryDelays
 	hostOpsOpenRetryDelays = nil
 	t.Cleanup(func() { hostOpsOpenRetryDelays = previous })
@@ -608,8 +617,11 @@ func TestStartupKeepsServingWhenTheStoreCannotBeProvenAndResumesWhenItCan(t *tes
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	if err := os.WriteFile(path, []byte(`{"version":1,"sequence":0,"allocatorHighWaterMark":2,"records":[`), 0o600); err != nil {
-		t.Fatalf("write the corrupt store: %v", err)
+	if err := os.WriteFile(path, []byte(`{"version":1,"sequence":0,"allocatorHighWaterMark":0,"records":[]}`), 0o644); err != nil {
+		t.Fatalf("write the unopenable store: %v", err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatalf("Chmod: %v", err)
 	}
 	r := &hubRuntime{hubStateRoot: stateRoot, stderr: new(bytes.Buffer)}
 
@@ -632,7 +644,7 @@ func TestStartupKeepsServingWhenTheStoreCannotBeProvenAndResumesWhenItCan(t *tes
 	requireWireError(t, err, appwire.CodeUnavailable)
 
 	// The operator repairs the file and starts the hub again.
-	if err := os.WriteFile(path, []byte(`{"version":1,"sequence":0,"allocatorHighWaterMark":0,"records":[]}`), 0o600); err != nil {
+	if err := os.Chmod(path, 0o600); err != nil {
 		t.Fatalf("repair the store: %v", err)
 	}
 	m, repaired := bootOverStore(t, configPath, stateRoot)
@@ -645,6 +657,45 @@ func TestStartupKeepsServingWhenTheStoreCannotBeProvenAndResumesWhenItCan(t *tes
 	}
 	if _, err := m.AddResult(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "extra", Address: "extra.example"}}); err != nil {
 		t.Fatalf("Add after the repair: %v", err)
+	}
+}
+
+// TestStartupSetsAsideACorruptStoreWhoseCustodyCannotBeProvenAndResumes pins the
+// corrupt-store disposition end to end: a store file whose custody cannot be
+// proven is set aside, startup opens an empty replacement, the records move
+// into it and host changes work without a repair.
+func TestStartupSetsAsideACorruptStoreWhoseCustodyCannotBeProvenAndResumes(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "hub.toml")
+	if err := writeHubTOMLHosts(configPath, []hostreg.Host{{Name: "keep", SSH: "keep.example"}}); err != nil {
+		t.Fatalf("seed hub.toml: %v", err)
+	}
+	stateRoot := t.TempDir()
+	path := hostops.StorePath(stateRoot)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(`{"version":1,"sequence":0,"allocatorHighWaterMark":2,"records":[`), 0o600); err != nil {
+		t.Fatalf("write the corrupt store: %v", err)
+	}
+	r := &hubRuntime{hubStateRoot: stateRoot, stderr: new(bytes.Buffer)}
+
+	r.openOpsStore()
+
+	if r.opsStore == nil || r.opsUnavailable {
+		t.Fatalf("runtime = store %v unavailable %v, want the replacement store", r.opsStore, r.opsUnavailable)
+	}
+	if signal := r.opsStore.Quarantine(); signal == nil || !signal.Unproven {
+		t.Fatalf("Quarantine() = %+v, want the unproven signal", signal)
+	}
+	m, store := bootOverStore(t, configPath, stateRoot)
+	if err := m.mutationRefusal(); err != nil {
+		t.Fatalf("host changes are paused over the replacement store: %v", err)
+	}
+	if records := mustRecords(t, store); records.HostRecords["keep"].IncarnationID == "" {
+		t.Fatalf("the host records were not moved into the replacement store: %+v", records.HostRecords)
+	}
+	if _, err := m.AddResult(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "extra", Address: "extra.example"}}); err != nil {
+		t.Fatalf("Add over the replacement store: %v", err)
 	}
 }
 
@@ -735,6 +786,78 @@ func TestAnUnreadableRecordDoesNotHideAnOpenTeardownRemnant(t *testing.T) {
 	}
 	if _, open := m.openRemnantID("keep"); !open {
 		t.Fatal("an open remnant this build cannot read in full no longer fences its host")
+	}
+}
+
+// loggedLines collects what a manager reports to the operator.
+type loggedLines struct{ lines []string }
+
+func (l *loggedLines) logf(format string, args ...any) {
+	l.lines = append(l.lines, fmt.Sprintf(format, args...))
+}
+
+func (l *loggedLines) mention(token string) bool {
+	return slices.ContainsFunc(l.lines, func(line string) bool { return strings.Contains(line, token) })
+}
+
+// TestARemnantWithNoRecoverableHostIsReportedAndFencesNothing pins what the
+// boot does with a stored teardown remnant it cannot read at all: no host can
+// be fenced from it, and the operator is told which record it is so someone can
+// check it.
+func TestARemnantWithNoRecoverableHostIsReportedAndFencesNothing(t *testing.T) {
+	configPath, _ := legacyHub(t)
+	stateRoot := t.TempDir()
+	_, store := bootOverStore(t, configPath, stateRoot)
+	family, _, _ := store.HostRecords()
+	// Two, so each is named in its own right and not only as the first record
+	// the decode refuses.
+	unreadableKeys := []string{"remnant-with-no-host-8f3a", "remnant-with-no-host-9b1c"}
+	for _, key := range unreadableKeys {
+		family.Remnants[key] = json.RawMessage(`{"from_a_newer_build":true}`)
+	}
+	if err := store.CommitHostRecords(family, hostops.HostMirror{}); err != nil {
+		t.Fatalf("plant the unreadable remnant: %v", err)
+	}
+
+	var logged loggedLines
+	m, _ := bootOverStoreLogging(t, configPath, stateRoot, logged.logf)
+
+	for _, key := range unreadableKeys {
+		if !logged.mention(key) {
+			t.Fatalf("the unreadable remnant %q was not reported: %v", key, logged.lines)
+		}
+	}
+	if _, open := m.openRemnantID(""); open {
+		t.Fatal("an unreadable remnant fences a name")
+	}
+	for _, remnant := range m.cfg.store.remnantSnapshot() {
+		if remnant.Host == "" {
+			t.Fatalf("an unreadable remnant was given a fence stand-in: %+v", remnant)
+		}
+	}
+}
+
+// TestALegacyRemnantWithNoRecoverableHostIsReported is the same notice for the
+// teardown sections an earlier build left in hub.toml.
+func TestALegacyRemnantWithNoRecoverableHostIsReported(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "hub.toml")
+	body := "[[hosts]]\nname = \"delta\"\nssh = \"delta.example\"\n\n" +
+		"[teardown_remnants.nameless-8f3a]\nkind = \"remove\"\ngeneration = \"not a number\"\n\n" +
+		"[teardown_remnants.nameless-9b1c]\nkind = \"remove\"\ngeneration = \"not a number\"\n"
+	if err := os.WriteFile(configPath, []byte(body), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+
+	var logged loggedLines
+	m, _ := bootOverStoreLogging(t, configPath, t.TempDir(), logged.logf)
+
+	for _, key := range []string{"nameless-8f3a", "nameless-9b1c"} {
+		if !logged.mention(key) {
+			t.Fatalf("the unreadable remnant %q was not reported: %v", key, logged.lines)
+		}
+	}
+	if got := m.cfg.store.remnantSnapshot(); len(got) != 0 {
+		t.Fatalf("an unreadable remnant fenced something: %+v", got)
 	}
 }
 

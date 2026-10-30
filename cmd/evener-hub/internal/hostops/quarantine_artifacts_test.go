@@ -50,25 +50,12 @@ func TestQuarantineRefusesAnAbsurdAllocatorHighWaterMark(t *testing.T) {
 			}()
 			select {
 			case got := <-done:
-				if got.store != nil {
-					t.Fatalf("Open returned a handle for an absurd high-water mark")
+				if got.err != nil {
+					t.Fatalf("Open = %v, want the unproven set-aside", got.err)
 				}
-				if !errors.Is(got.err, ErrStoreCorrupt) || !errors.Is(got.err, ErrQuarantineIncomplete) {
-					t.Fatalf("Open = %v, want an ErrStoreCorrupt/ErrQuarantineIncomplete refusal", got.err)
-				}
+				requireUnprovenReplacement(t, got.store, path, []byte(body))
 			case <-time.After(20 * time.Second):
 				t.Fatalf("Open on a file claiming allocatorHighWaterMark %s did not return: the completeness check iterated the file-controlled value", hwm)
-			}
-			for _, infix := range []string{".quarantined-", ".custody-"} {
-				entries, err := os.ReadDir(filepath.Dir(path))
-				if err != nil {
-					t.Fatalf("ReadDir: %v", err)
-				}
-				for _, entry := range entries {
-					if strings.Contains(entry.Name(), infix) {
-						t.Fatalf("a refused quarantine wrote %s", entry.Name())
-					}
-				}
 			}
 		})
 	}
