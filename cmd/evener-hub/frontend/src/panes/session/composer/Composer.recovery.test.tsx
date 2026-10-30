@@ -643,6 +643,31 @@ test("mount restore never injects a row an explicit Edit claimed", async () => {
   expect(screen.getByText("under edit")).toBeDefined();
 });
 
+test("a refused recovery resend keeps the replacement row owned by this pane's seat", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const seat = "seat-a";
+  await seedRejectedRecovery(storage, "ref_a", "retry me", {}, seat);
+  const source = createTestComposerSource("ref_a", seat);
+  const { fake } = await mountComposerWithHandle("ref_a", { status: { type: "idle" } }, { source });
+  fake.on("turn/start", (params) => {
+    throw notAcceptedError(params.clientMutationId);
+  });
+  await flushPendingTurnsProjectionForTests();
+  expect(textarea().textContent).toBe("retry me");
+  const user = userEvent.setup();
+  await user.click(submitButton());
+  // The refusal bounces a REPLACEMENT recovery row. It must carry this
+  // pane's seat, or the pane that just resent its own work cannot restore
+  // it - not even on the same tick.
+  await waitFor(async () => {
+    const rows = await storage.listRecovery("ref_a");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.compositionOwnerId).toBe(seat);
+  });
+  await waitFor(() => expect(textarea().textContent).toBe("retry me"));
+});
+
 test("this pane's bounced send restores to its next mount under the same seat", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);

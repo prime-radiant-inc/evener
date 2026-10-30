@@ -73,6 +73,36 @@ beforeEach(() => {
   resetWorkspaceStoreForTests();
 });
 
+// A genuinely closed pane's seat mappings retire with it: reopening the same
+// conversation hands the new pane a fresh seat, so it never silently adopts
+// the closed pane's rejected work (the closed-pane isolation guarantee).
+test("reopening a conversation after its pane closes gets a fresh seat", () => {
+  const state = workspaceStore.getState();
+  const firstId = state.openPane("session", { ref: "local:reopen-a" });
+  const first = workspaceStore.getState().panes.find((pane) => pane.id === firstId);
+  if (!first?.composerSeatId) throw new Error("missing first pane seat");
+  const firstSeat = first.composerSeatId;
+  expect(readRefComposerSeat("local:reopen-a")).toBe(firstSeat);
+  state.closePane(firstId);
+  const secondId = state.openPane("session", { ref: "local:reopen-a" });
+  const second = workspaceStore.getState().panes.find((pane) => pane.id === secondId);
+  if (!second?.composerSeatId) throw new Error("missing reopened pane seat");
+  expect(second.composerSeatId).not.toBe(firstSeat);
+  expect(readRefComposerSeat("local:reopen-a")).toBe(second.composerSeatId);
+});
+
+// Retirement is scoped to the closed pane: a surviving pane keeps its own
+// conversation mapping, and a pane that merely parks keeps its seat.
+test("closing a pane retires only that pane's mappings", () => {
+  const state = workspaceStore.getState();
+  const aId = state.openPane("session", { ref: "local:keep-a" });
+  const bId = state.openPane("session", { ref: "local:keep-b" });
+  const b = workspaceStore.getState().panes.find((pane) => pane.id === bId);
+  if (!b?.composerSeatId) throw new Error("missing pane seat");
+  state.closePane(aId);
+  expect(readRefComposerSeat("local:keep-b")).toBe(b.composerSeatId);
+});
+
 test("attention reuses presented and parked targets in their proper seats", () => {
   const state = workspaceStore.getState();
   const a = state.openPane("session", { ref: "local:a" });

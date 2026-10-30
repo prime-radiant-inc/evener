@@ -116,6 +116,25 @@ export function writeRefComposerSeat(ref: string, seat: string): void {
   }
 }
 
+// Retirement is the mirror of writeRefComposerSeat: a genuinely closed pane
+// leaves no conversation mapping behind, so a reopened conversation gets a
+// fresh seat instead of silently adopting the closed pane's work.
+export function clearRefComposerSeat(ref: string): void {
+  try {
+    localStorage.removeItem(refSeatKey(ref));
+  } catch {
+    // Best-effort, like every other composer persistence.
+  }
+}
+
+export function clearPaneComposerSeat(paneId: string): void {
+  try {
+    localStorage.removeItem(paneSeatKey(paneId));
+  } catch {
+    // Best-effort, like every other composer persistence.
+  }
+}
+
 export function writePaneComposerSeat(paneId: string, ref: string, seat: string): void {
   try {
     localStorage.setItem(paneSeatKey(paneId), JSON.stringify({ ref, seat }));

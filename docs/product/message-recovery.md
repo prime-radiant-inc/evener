@@ -90,7 +90,10 @@ an empty composer at mount restores only the newest rejected row its own seat
 owns - the pane's own bounced work, one tap back. Every row stays reachable
 through QueueStrip's explicit Edit, Retry and Send now regardless of owner.
 A pane's own send carries its seat, so the row a refusal bounces from it
-restores to that pane's next mount under the same seat. Rows written before
+restores to that pane's next mount under the same seat. Closing a pane
+retires its seat mappings: reopening the conversation hands the new pane a
+fresh seat instead of the closed pane's, while panes that merely park or
+survive a reload keep theirs. Rows written before
 composition owners existed carry no seat and are never restored
 automatically; the explicit actions reach them. A fresh pane holds a fresh
 seat, so it never injects another (or a closed) pane's row at mount.

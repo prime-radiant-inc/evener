@@ -739,3 +739,81 @@ test("restore reconciles a shared conversation mapping from the focused pane", a
     setMutationClientIdentityForTests(undefined);
   }
 });
+
+// Layouts are shared across tabs, but seat keys are per tab. Two fresh tabs
+// restoring the same shared layout before either has persisted a seat must
+// not both fall back to the same pane id as their composer seat: the owner
+// comparison restore runs on would then let either tab adopt the other's
+// rejected row.
+test("two fresh tabs restoring one shared layout never share a composer seat", async () => {
+  installLocalStorage(new MemoryStorage());
+  try {
+    const layout = {
+      p1: {
+        id: "p1",
+        contentComponent: "default",
+        params: { paneType: "session", paneParams: { ref: "ref_shared" } },
+      },
+    };
+    setMutationClientIdentityForTests("tab-a");
+    resetWorkspaceStoreForTests();
+    restorePanels(layout);
+    const seatA = workspaceStore.getState().panes.find((record) => record.id === "p1")?.composerSeatId;
+
+    setMutationClientIdentityForTests("tab-b");
+    resetWorkspaceStoreForTests();
+    restorePanels(layout);
+    const seatB = workspaceStore.getState().panes.find((record) => record.id === "p1")?.composerSeatId;
+
+    expect(seatA).toBeDefined();
+    expect(seatB).toBeDefined();
+    expect(seatB).not.toBe(seatA);
+  } finally {
+    setMutationClientIdentityForTests(undefined);
+  }
+});
+
+// A collision-forced replacement seat must take the cascade's ancestor
+// column mappings with it: a phone reload reconstructing an ancestor
+// conversation reads the ref mapping to hand the returning pane its seat, so
+// a mapping left on the displaced seat restores nothing.
+test("a collision's replacement seat takes the cascade's ancestor mappings with it", async () => {
+  installLocalStorage(new MemoryStorage());
+  try {
+    setMutationClientIdentityForTests("tab-a");
+    // This tab held the cascade (p1) and a separate leaf pane (p2) on one
+    // shared seat; the layout restores p2 validated, forcing p1 onto a
+    // replacement seat. The cascade's ancestor column mapping must follow.
+    writeRefComposerSeat("ref_child", "seat-s");
+    writeRefComposerSeat("ref_owner", "seat-s");
+    writeComposerSeat("p2", "ref_child", "seat-s");
+
+    restorePanels({
+      p1: {
+        id: "p1",
+        contentComponent: "default",
+        params: {
+          paneType: "sessionZoom",
+          paneParams: {
+            ref: "ref_child",
+            source: { type: "session", params: { ref: "ref_owner" } },
+            edges: [{ ownerRef: "ref_owner", childRef: "ref_child", delegateId: "delegate-1" }],
+          },
+        },
+      },
+      p2: {
+        id: "p2",
+        contentComponent: "default",
+        params: { paneType: "session", paneParams: { ref: "ref_child" } },
+      },
+    });
+
+    const cascade = workspaceStore.getState().panes.find((record) => record.id === "p1");
+    const leaf = workspaceStore.getState().panes.find((record) => record.id === "p2");
+    expect(leaf?.composerSeatId).toBe("seat-s");
+    expect(cascade?.composerSeatId).not.toBe("seat-s");
+    expect(readRefComposerSeat("ref_owner")).toBe(cascade?.composerSeatId);
+  } finally {
+    setMutationClientIdentityForTests(undefined);
+  }
+});

@@ -3250,7 +3250,15 @@ export async function resendRecoveryMutation(
 ): Promise<MutationRecoveryResendResult> {
   const runtime = requireMutationRuntime();
   await runtime.start;
-  const intent = composerMutationIntent(targetRef, route, { text, attachments, skillNames, commandNames, mentions });
+  // The resend is this pane's own send: its intent carries the same seat, so
+  // a row a later refusal bounces from it restores into its authoring pane
+  // instead of landing ownerless.
+  const intent = composerMutationIntent(
+    targetRef,
+    route,
+    { text, attachments, skillNames, commandNames, mentions },
+    compositionOwnerId,
+  );
   const barrier = await barrierRead;
   // Registered around the write: the resent row is undelivered work, and a
   // fallback send must see it before the async refresh can.
