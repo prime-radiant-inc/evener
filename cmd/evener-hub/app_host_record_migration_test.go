@@ -815,6 +815,10 @@ func TestARemnantWithNoRecoverableHostIsReportedAndFencesNothing(t *testing.T) {
 	for _, key := range unreadableKeys {
 		family.Remnants[key] = json.RawMessage(`{"from_a_newer_build":true}`)
 	}
+	// A remnant that decodes but names no host is just as unable to fence.
+	const emptyKey = "remnant-empty-5d7e"
+	family.Remnants[emptyKey] = json.RawMessage(`{}`)
+	unreadableKeys = append(unreadableKeys, emptyKey)
 	if err := store.CommitHostRecords(family, hostops.HostMirror{}); err != nil {
 		t.Fatalf("plant the unreadable remnant: %v", err)
 	}
@@ -843,7 +847,8 @@ func TestALegacyRemnantWithNoRecoverableHostIsReported(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "hub.toml")
 	body := "[[hosts]]\nname = \"delta\"\nssh = \"delta.example\"\n\n" +
 		"[teardown_remnants.nameless-8f3a]\nkind = \"remove\"\ngeneration = \"not a number\"\n\n" +
-		"[teardown_remnants.nameless-9b1c]\nkind = \"remove\"\ngeneration = \"not a number\"\n"
+		"[teardown_remnants.nameless-9b1c]\nkind = \"remove\"\ngeneration = \"not a number\"\n\n" +
+		"[teardown_remnants.empty-5d7e]\nkind = \"remove\"\n"
 	if err := os.WriteFile(configPath, []byte(body), 0o600); err != nil {
 		t.Fatalf("write hub.toml: %v", err)
 	}
@@ -851,7 +856,7 @@ func TestALegacyRemnantWithNoRecoverableHostIsReported(t *testing.T) {
 	var logged loggedLines
 	m, _ := bootOverStoreLogging(t, configPath, t.TempDir(), logged.logf)
 
-	for _, key := range []string{"nameless-8f3a", "nameless-9b1c"} {
+	for _, key := range []string{"nameless-8f3a", "nameless-9b1c", "empty-5d7e"} {
 		if !logged.mention(key) {
 			t.Fatalf("the unreadable remnant %q was not reported: %v", key, logged.lines)
 		}

@@ -435,16 +435,3 @@ func TestHostRecordsQuarantineSetsAsideAnUnreadableFamily(t *testing.T) {
 		})
 	}
 }
-
-func dirListing(t *testing.T, dir string) []string {
-	t.Helper()
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("ReadDir(%s): %v", dir, err)
-	}
-	names := make([]string, len(entries))
-	for i, entry := range entries {
-		names[i] = entry.Name()
-	}
-	return names
-}

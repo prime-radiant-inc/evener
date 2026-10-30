@@ -180,7 +180,11 @@ func decodeTeardownFences(family hostops.HostRecords) (map[string]HostTeardownRe
 	var nameless []string
 	remnants := decodeReadableRecords[HostTeardownRemnant](family.Remnants)
 	for key, raw := range family.Remnants {
-		if _, readable := remnants[key]; readable {
+		if remnant, readable := remnants[key]; readable {
+			if strings.TrimSpace(remnant.Host) == "" {
+				delete(remnants, key)
+				nameless = append(nameless, key)
+			}
 			continue
 		}
 		var partial struct {

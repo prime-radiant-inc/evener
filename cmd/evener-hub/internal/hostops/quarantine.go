@@ -556,9 +556,12 @@ func resolveStoreFS(fs afero.Fs, path string, faults storeFaults) (snapshot, uin
 			QuarantinedFile: path,
 			CustodiedAt:     now,
 			RecordIDs:       []custodyRecordID{},
-			Fences:          []custodyFence{},
-			Ownership:       []custodyOwnership{},
-			Unproven:        true,
+			// The floor keeps the replacement from handing out an id the
+			// set-aside file already did.
+			AllocatorHighWaterMark: recoverAllocatorFloor(fs, path),
+			Fences:                 []custodyFence{},
+			Ownership:              []custodyOwnership{},
+			Unproven:               true,
 		})
 		if err != nil {
 			return snapshot{}, 0, nil, custodyIncomplete(err)
@@ -938,4 +941,26 @@ func custodyForCorruptStore(fs afero.Fs, path string, epoch uint64, now time.Tim
 		return custodyFile{}, err
 	}
 	return custodyFromStore(decoded, path, epoch, now, artifacts.allocatorFloor, artifacts.priorImports)
+}
+
+// maxPlausibleAllocatorFloor bounds the allocator high-water mark an unproven
+// set-aside trusts: a value near the top of uint64 is not a counter the store
+// reached, and carrying it would leave the replacement unable to allocate.
+const maxPlausibleAllocatorFloor = 1 << 62
+
+// recoverAllocatorFloor reads the allocator high-water mark from a corrupt
+// store file that is still a JSON object, ignoring every other region. It
+// returns zero when the file does not show a plausible value.
+func recoverAllocatorFloor(fs afero.Fs, path string) uint64 {
+	raw, err := afero.ReadFile(fs, path)
+	if err != nil {
+		return 0
+	}
+	var file struct {
+		AllocatorHighWaterMark *uint64 `json:"allocatorHighWaterMark"`
+	}
+	if json.Unmarshal(raw, &file) != nil || file.AllocatorHighWaterMark == nil || *file.AllocatorHighWaterMark > maxPlausibleAllocatorFloor {
+		return 0
+	}
+	return *file.AllocatorHighWaterMark
 }
