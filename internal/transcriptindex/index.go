@@ -668,11 +668,13 @@ func (x *Index) adopt(m meta) error {
 // load opens build name, which must describe the transcript at path.
 func (x *Index) load(name string) error {
 	x.build = name
-	if err := x.openFiles(false); err != nil {
-		return err
-	}
+	// The meta first: whether a newer build wrote this sidecar decides
+	// whether its tables are this binary's to open at all.
 	m, err := x.readMeta()
 	if err != nil {
+		return err
+	}
+	if err := x.openFiles(false); err != nil {
 		return err
 	}
 	info, err := x.transcript.Stat()

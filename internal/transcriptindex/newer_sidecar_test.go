@@ -138,3 +138,22 @@ func TestAnOlderOrSameVersionSidecarIsRebuilt(t *testing.T) {
 		})
 	}
 }
+
+// A newer layout may keep its tables under other names or sizes, so the
+// newer-build check comes before the tables are opened: an older binary that
+// finds them missing must not take that for a build to rebuild.
+func TestANewerLayoutWithTablesItCannotOpenIsNeverRebuilt(t *testing.T) {
+	path, dir := sidecarWithProjectionVersion(t, 0)
+	rewriteMetaField(t, dir, "format", strconv.Itoa(formatVersion+1))
+	build := liveBuild(t, dir)
+	for _, table := range []string{"items", "turns", "updates", "strings"} {
+		if err := os.Remove(filepath.Join(build, table)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := sidecarBytes(t, dir)
+	if _, err := Open(path, dir); !errors.Is(err, ErrNewerSidecar) {
+		t.Fatalf("Open = %v, want ErrNewerSidecar", err)
+	}
+	requireSidecarUntouched(t, dir, before)
+}
