@@ -393,7 +393,7 @@ func (m *hubHostManager) persistHosts(entries, known []hostreg.Host, change host
 	return nil
 }
 
-// adoptSpentCounters raises the manager's marks for removed names to what the
+// adoptSpentCounters raises the manager's marks for names with no live record to what the
 // store holds after a refused commit restored its prior family: the counters the
 // refused attempt spent stay spent in the store (keepSpentCounters), and the next
 // write must carry them rather than the lower ones the manager last installed.
@@ -403,8 +403,10 @@ func (m *hubHostManager) adoptSpentCounters(store hostOpsRecordStore) {
 		return
 	}
 	marks := m.cfg.store.highWaterSnapshot()
-	for name := range set.Tombstones {
-		stored := set.Generations[name]
+	for name, stored := range set.Generations {
+		if _, live := set.HostRecords[name]; live {
+			continue
+		}
 		held := marks[name]
 		if stored.Generation <= held.Generation && stored.PresenceEpoch <= held.PresenceEpoch {
 			continue

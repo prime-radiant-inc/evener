@@ -1917,3 +1917,110 @@ func TestBootRollbackOfAnUnlandedReAddGivesBackThePrunedMarkersItEvicted(t *test
 		}
 	}
 }
+
+// TestAReAddRefusedAfterItsFlipGivesBackThePrunedMarkersItEvicted is the live
+// half of the rollback above: the flip that follows the staging write must keep
+// what staging saved, so a registration that refuses still gives the evicted
+// replay guards back.
+func TestAReAddRefusedAfterItsFlipGivesBackThePrunedMarkersItEvicted(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, store := hub.boot(t, false)
+	if _, err := m.UpdateResult(context.Background(), updateRequest(t, m, "side", appwire.HostEntry{Address: "edited.example"})); err != nil {
+		t.Fatalf("edit side: %v", err)
+	}
+	if _, err := m.RemoveResult(context.Background(), removeRequest(t, m, "side")); err != nil {
+		t.Fatalf("remove side: %v", err)
+	}
+	set := mustRecords(t, store)
+	filled := map[string]struct{}{}
+	for i := range 64 {
+		key := hostMutationReceiptKey(fmt.Sprintf("old-add-%02d", i), "side", hostMutationAdd, hostMutationIdentity{Generation: 1, IncarnationID: "inc-old"})
+		set.PrunedReceipts[key] = PrunedReceiptMarker{PrunedAt: hostInstant(time.Now().Add(-time.Duration(i+1) * time.Minute))}
+		filled[key] = struct{}{}
+	}
+	family, err := encodeHostRecords(set)
+	if err != nil {
+		t.Fatalf("encode the filled family: %v", err)
+	}
+	if err := store.CommitHostRecords(family, hostMirrorFor(set, store.Boundaries())); err != nil {
+		t.Fatalf("commit the filled family: %v", err)
+	}
+	m, store = hub.boot(t, true)
+	m.testOnlyAfterStage = func(name string) {
+		if err := m.cfg.hosts.Add(hostreg.Host{Name: name, SSH: "raced.example"}); err != nil {
+			t.Errorf("race the registry: %v", err)
+		}
+	}
+
+	if _, err := m.AddResult(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "side", Address: "again.example"}, MutationID: "re-add-side",
+	}); err == nil {
+		t.Fatal("the re-add succeeded although its registration failed")
+	}
+
+	got := mustRecords(t, store).PrunedReceipts
+	for key := range filled {
+		if _, kept := got[key]; !kept {
+			t.Fatalf("the refused re-add left replay guard %q evicted", key)
+		}
+	}
+}
+
+// TestSpentCountersOfAnExpiredNameReachTheManagerAfterARefusal covers a removed
+// name whose tombstone has already expired: only its generation mark is left, and
+// the counters a refused re-add spent beyond it must reach the manager too.
+func TestSpentCountersOfAnExpiredNameReachTheManagerAfterARefusal(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	store, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	doc := hostBootDocument(mustLoadConfig(t, hub.configPath), store)
+	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
+	if err != nil {
+		t.Fatalf("hostreg.NewSeeded: %v", err)
+	}
+	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: hub.configPath,
+		HostTombstoneRetention: time.Nanosecond,
+	}, hub.configPath, hosts, t.Logf)
+	if _, err := m.RemoveResult(context.Background(), removeRequest(t, m, "side")); err != nil {
+		t.Fatalf("remove side: %v", err)
+	}
+	// An unrelated write after the removal expires the tombstone, leaving the mark.
+	if _, err := m.AddResult(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "first", Address: "first.example"}, MutationID: "add-first",
+	}); err != nil {
+		t.Fatalf("add first: %v", err)
+	}
+	before := mustRecords(t, store)
+	if _, tombstoned := before.Tombstones["side"]; tombstoned {
+		t.Fatal("the fixture's tombstone did not expire")
+	}
+	var spent HostGeneration
+	previous := configReadFile
+	configReadFile = func(path string) ([]byte, error) {
+		if mark := mustRecords(t, store).Generations["side"]; spent.Generation == 0 && mark.Generation > before.Generations["side"].Generation {
+			spent = mark
+			return nil, errors.New("injected read failure")
+		}
+		return previous(path)
+	}
+	t.Cleanup(func() { configReadFile = previous })
+	_, err = m.AddResult(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "side", Address: "again.example"}, MutationID: "re-add-side",
+	})
+	configReadFile = previous
+	if err == nil || spent.Generation == 0 {
+		t.Fatalf("the fixture's host file write did not fail after the records were durable (err %v)", err)
+	}
+
+	if _, err := m.AddResult(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "second", Address: "second.example"}, MutationID: "add-second",
+	}); err != nil {
+		t.Fatalf("add second: %v", err)
+	}
+	if mark := mustRecords(t, store).Generations["side"]; mark.Generation < spent.Generation || mark.PresenceEpoch < spent.PresenceEpoch {
+		t.Fatalf("an unrelated write lowered the spent counters: %+v, it spent %+v", mark, spent)
+	}
+}

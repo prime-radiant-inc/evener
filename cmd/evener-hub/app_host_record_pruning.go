@@ -483,7 +483,17 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 		// The re-add this write stages consumed receipts and may have pushed
 		// replay guards out of a full marker set doing it; rolling it back gives
 		// them all back.
-		marker.Consumed.Pruned = removedEntries(prunedBefore, records.prunedReceipts)
+		// What an earlier write of this staging already saved stays saved, and
+		// the marker's record is copied before it changes.
+		consumed := *marker.Consumed
+		consumed.Pruned = maps.Clone(consumed.Pruned)
+		if evicted := removedEntries(prunedBefore, records.prunedReceipts); len(evicted) != 0 {
+			if consumed.Pruned == nil {
+				consumed.Pruned = map[string]PrunedReceiptMarker{}
+			}
+			maps.Copy(consumed.Pruned, evicted)
+		}
+		marker.Consumed = &consumed
 		records.stagedReceipts[protectedMarker] = marker
 	}
 	// The teardown-repair records compact last for the same reason the markers
