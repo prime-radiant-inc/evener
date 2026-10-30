@@ -664,7 +664,6 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
           // Attach in place: object-keyed edges bind to this record.
           existing.composerSeatId = placeComposerSeat(params, state.panes);
         }
-        const focused = paramsChanged ? { ...existing, params } : existing;
         if (paramsChanged || focusChanged || seatAdded) {
           set({
             panes: paramsChanged
@@ -1020,7 +1019,7 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
         usedSeats.add(saved);
         reserved.add(pane);
       }
-      for (const { pane, ref } of conversations) {
+      for (const { pane } of conversations) {
         if (reserved.has(pane)) continue;
         // No pane-id fallback: pane ids restart at the same values in every
         // tab, so a pane id must never mint a seat two tabs could share.
