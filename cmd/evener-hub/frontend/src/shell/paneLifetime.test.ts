@@ -4,6 +4,7 @@ import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { createAttachmentOperations } from "../panes/session/composer/attachments/useAttachments";
 import { retainedTranscriptReadView } from "../panes/session/transcript/transcriptReadView";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
+import type { MutationRecoveryRecord } from "../stores/mutationOutbox";
 import { captureAttentionPlacement, presentAttentionTarget, restoreAttentionPlacement } from "./attentionPlacement";
 import { conversationPaneLifetime, disposeConversationPaneLifetime } from "./paneLifetime";
 import { registerPaneForTests } from "./paneRegistry";
@@ -28,6 +29,25 @@ afterEach(() => {
 
 function rootPane(): OpenPaneRecord {
   return { id: "session-1", type: "session", params: { ref: "root" }, slot: "main" };
+}
+
+function recoveryRow(id: string, text: string): MutationRecoveryRecord {
+  const input = [{ type: "text" as const, text }];
+  return {
+    version: 1,
+    clientMutationId: id,
+    intentSequence: 1,
+    createdAt: 1,
+    targetRef: "root",
+    method: "turn/start",
+    payload: { ref: "root", input },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input },
+    composerText: text,
+    recoveryKind: "rejected",
+    state: "submitting",
+    attempted: false,
+  } as MutationRecoveryRecord;
 }
 
 test("attention substitution retains the source lifetime", async () => {
@@ -208,4 +228,30 @@ test.each([false, true])("layout restore success %s disposes only committed repl
     expect(conversationPaneLifetime(restored).composer).toBe(composer);
     expect(composer?.getSnapshot().text).toBe("keep this draft");
   }
+});
+
+test("a resumed source keeps its seat for the live lifetime, and a mobile reload mints a fresh one", async () => {
+  const pane = rootPane();
+  workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
+  const lifetime = conversationPaneLifetime(pane);
+  const composer = lifetime.composer;
+  if (!composer) throw new Error("session lifetime lacks its source");
+  const preserved = recoveryRow("resumed-seat-row", "local resumed work");
+  composer.setActiveRecoveryId(preserved);
+  const seat = lifetime.composerSeatId;
+
+  // Resuming in place keeps the authoring lifetime, so the retained work
+  // stays restorable under the same durable seat.
+  lifetime.adoptResumedSource("local:mobile-resumed");
+  expect(conversationPaneLifetime(pane).composerSeatId).toBe(seat);
+
+  // A reload reconstructs the resumed route under a fresh pane id. The
+  // maintained mapping is gone by design: placement mints a fresh seat, so
+  // restoring the retained work takes one tap (Edit) on the recovery row
+  // instead of mounting automatically.
+  resetWorkspaceStoreForTests();
+  const reloadedId = workspaceStore.getState().openPane("session", { ref: "local:mobile-resumed" });
+  const reloaded = workspaceStore.getState().panes.find((record) => record.id === reloadedId);
+  if (!reloaded?.composerSeatId) throw new Error("reloaded conversation lacks its seat");
+  expect(reloaded.composerSeatId).not.toBe(seat);
 });

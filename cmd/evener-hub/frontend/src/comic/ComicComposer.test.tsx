@@ -13,6 +13,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { askDockStore, resetAskDockStoreForTests } from "../panes/session/composer/askDock/askDockStore";
 import { Composer } from "../panes/session/composer/Composer";
 import { resetComposerFocusStoreForTests } from "../panes/session/composer/composerFocus";
+import { stampRecoveryOwner } from "../panes/session/composer/composerTestUtils";
 import { readComposerDraft, writeComposerDraft } from "../panes/session/composer/draft";
 import { resetPendingTurnsStoreForTests } from "../panes/session/composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "../panes/session/composer/queue/testing/flushPendingTurnsProjection";
@@ -93,8 +94,8 @@ afterEach(async () => {
   vi.unstubAllGlobals();
   vi.useRealTimers();
 });
-function sourceFor(target = ref) {
-  const source = createComposerSourceState(target, `test-owner-${sources.length}`);
+function sourceFor(target = ref, ownerId?: string) {
+  const source = createComposerSourceState(target, ownerId ?? `test-owner-${sources.length}`);
   sources.push(source);
   return source;
 }
@@ -811,8 +812,12 @@ test("cross-client editing preserves structured recovery", async () => {
   });
   const recovered = await storage.transferToRecovery(row.clientMutationId, "rejected");
   if (!recovered) throw Error("missing recovery fixture");
+  // The remounts below model the SAME pane coming back: one durable seat,
+  // which owns its own bounced row across all of them.
+  const seat = "comic-cross-client-seat";
+  await stampRecoveryOwner(storage, recovered, seat);
   const fake = await setup();
-  let source = sourceFor();
+  let source = sourceFor(ref, seat);
   let view = render(
     <ClientProvider client={fake}>
       <Composer ref={ref} focused={false} source={source} />
@@ -830,7 +835,7 @@ test("cross-client editing preserves structured recovery", async () => {
   const recordBefore = await storage.getRecovery(row.clientMutationId);
   view.unmount();
   source.dispose();
-  source = sourceFor();
+  source = sourceFor(ref, seat);
   view = render(<ComicComposer source={source} />);
   await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(row.clientMutationId));
   await settle(source);
@@ -854,7 +859,7 @@ test("cross-client editing preserves structured recovery", async () => {
   expect(edited?.compositionOwnerId).toBe(source.compositionOwnerId);
   view.unmount();
   source.dispose();
-  source = sourceFor();
+  source = sourceFor(ref, seat);
   view = render(
     <ClientProvider client={fake}>
       <Composer ref={ref} focused={false} source={source} />
@@ -1015,6 +1020,7 @@ test("background recovery ownership rollover preserves Comic editor selection", 
   const recovery = await storage.transferToRecovery(row.clientMutationId, "rejected");
   if (!recovery) throw Error("missing recovery fixture");
   const source = sourceFor();
+  await stampRecoveryOwner(storage, recovery, source.compositionOwnerId);
   render(<ComicComposer source={source} />);
   await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(row.clientMutationId));
   await settle(source);
