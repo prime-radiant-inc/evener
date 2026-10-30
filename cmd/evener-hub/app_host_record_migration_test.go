@@ -39,7 +39,13 @@ func bootOverStore(t *testing.T, configPath, stateRoot string) (*hubHostManager,
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	doc := hostBootDocument(cfg, store)
+	// Startup serves the hosts with minted identities when the record sections
+	// cannot be read, and logs it.
+	legacy, err := readLegacyRecords(configPath)
+	if err != nil {
+		t.Logf("record sections unreadable: %v", err)
+	}
+	doc := hostBootDocument(cfg, legacy, store)
 	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
 	if err != nil {
 		t.Fatalf("hostreg.NewSeeded: %v", err)
@@ -53,7 +59,7 @@ func bootOverStore(t *testing.T, configPath, stateRoot string) (*hubHostManager,
 // manager boots.
 func restartOver(t *testing.T, configPath string, store *hostops.Store) *hubHostManager {
 	t.Helper()
-	doc := hostBootDocument(mustLoadConfig(t, configPath), store)
+	doc := hostBootDocument(mustLoadConfig(t, configPath).Config, legacyRecordsOf(t, configPath), store)
 	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
 	if err != nil {
 		t.Fatalf("hostreg.NewSeeded: %v", err)
@@ -99,11 +105,11 @@ func legacyHub(t *testing.T) (string, hostRecordSet) {
 	if result, err := m.RemoveResult(ctx, removeRequest(t, m, "delta")); err != nil || result.HostMutationTeardownFailureRemoved == nil {
 		t.Fatalf("Remove(delta) = (%+v, %v), want the teardown-failure arm", result, err)
 	}
-	cfg, err := LoadConfig(configPath)
+	cfg, err := loadWithRecords(configPath)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	records := cfg.recordSet()
+	records := cfg.hostRecordSet
 	for name, populated := range map[string]int{
 		"host_records": len(records.HostRecords), "generations": len(records.Generations),
 		"mutation_receipts": len(records.MutationReceipts), "tombstones": len(records.Tombstones),
@@ -206,9 +212,9 @@ func TestBootMovesEveryRecordSectionIntoTheStoreAndKeepsTheOriginal(t *testing.T
 	}
 }
 
-func mustLoadConfig(t *testing.T, path string) Config {
+func mustLoadConfig(t *testing.T, path string) loadedConfig {
 	t.Helper()
-	cfg, err := LoadConfig(path)
+	cfg, err := loadWithRecords(path)
 	if err != nil {
 		t.Fatalf("LoadConfig(%s): %v", path, err)
 	}
@@ -654,7 +660,7 @@ func TestUnreadableHubTOMLAtBootDoesNotMoveEmptyRecordsIntoTheStore(t *testing.T
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
-	doc := hostBootDocument(cfg, store)
+	doc := hostBootDocument(cfg.Config, legacyRecordsOf(t, configPath), store)
 	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
 	if err != nil {
 		t.Fatalf("hostreg.NewSeeded: %v", err)
@@ -744,7 +750,7 @@ func TestAReadFailureAfterTheLegacyBootStartedStillKeepsTheRecordsInHubTOML(t *t
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
-	doc := hostBootDocument(cfg, store)
+	doc := hostBootDocument(cfg.Config, legacyRecordsOf(t, configPath), store)
 	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
 	if err != nil {
 		t.Fatalf("hostreg.NewSeeded: %v", err)
@@ -789,7 +795,7 @@ func TestMigrationWaitsForADurableCopyOfTheOriginalHubTOML(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
-	doc := hostBootDocument(cfg, store)
+	doc := hostBootDocument(cfg.Config, legacyRecordsOf(t, configPath), store)
 	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
 	if err != nil {
 		t.Fatalf("hostreg.NewSeeded: %v", err)
@@ -884,7 +890,7 @@ func TestMigrationRaisesAGenerationBelowTheMirrorsForARemovedName(t *testing.T) 
 	}}); err != nil {
 		t.Fatalf("MirrorHostState: %v", err)
 	}
-	doc := hostBootDocument(cfg, store)
+	doc := hostBootDocument(cfg.Config, legacyRecordsOf(t, configPath), store)
 	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
 	if err != nil {
 		t.Fatalf("hostreg.NewSeeded: %v", err)
@@ -920,7 +926,7 @@ func TestMigrationRaisesAPresenceEpochTheMirrorHoldsEvenAtTheSameGeneration(t *t
 	}}); err != nil {
 		t.Fatalf("MirrorHostState: %v", err)
 	}
-	doc := hostBootDocument(cfg, nil)
+	doc := hostBootDocument(cfg.Config, legacyRecordsOf(t, configPath), nil)
 	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
 	if err != nil {
 		t.Fatalf("hostreg.NewSeeded: %v", err)
@@ -974,7 +980,7 @@ func TestMigrationWaitsWhenTheOriginalCannotBeInspectedForTheCopy(t *testing.T) 
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
-	doc := hostBootDocument(cfg, store)
+	doc := hostBootDocument(cfg.Config, legacyRecordsOf(t, configPath), store)
 	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
 	if err != nil {
 		t.Fatalf("hostreg.NewSeeded: %v", err)
@@ -1089,7 +1095,7 @@ func TestNoSingleReadFailureAtALegacyBootLosesARecord(t *testing.T) {
 			t.Fatalf("hostops.Open: %v", err)
 		}
 		cfg := mustLoadConfig(t, configPath)
-		doc := hostBootDocument(cfg, store)
+		doc := hostBootDocument(cfg.Config, legacyRecordsOf(t, configPath), store)
 		hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
 		if err != nil {
 			t.Fatalf("hostreg.NewSeeded: %v", err)
@@ -1150,5 +1156,137 @@ func TestUpgradeFromAnInterruptedLegacyAddFinalizesWithoutAnOpenRemnant(t *testi
 	}
 	if _, err := restarted.UpdateResult(context.Background(), updateRequest(t, restarted, "side", appwire.HostEntry{Address: "side2.example"})); err != nil {
 		t.Fatalf("the added host cannot be edited after the upgrade: %v", err)
+	}
+}
+
+// TestRecordSectionsThatCannotBeReadAreNeverMovedAndHostsKeepServing pins the
+// disposition for a hub.toml whose reserved record sections carry a field this
+// build does not decode: the operator's config still loads, the hosts keep
+// serving, the sections stay exactly where they are rather than being moved
+// without the field, and host changes pause until the file reads.
+func TestRecordSectionsThatCannotBeReadAreNeverMovedAndHostsKeepServing(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "hub.toml")
+	doc := "[[hosts]]\nname = \"alpha\"\nssh = \"alpha.example\"\n" +
+		"\n[host_records.alpha]\nincarnation_id = \"inc-alpha\"\npresence_epoch = 1\nnewer_field = \"from a newer build\"\n"
+	if err := os.WriteFile(configPath, []byte(doc), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	stateRoot := t.TempDir()
+
+	m, store := bootOverStore(t, configPath, stateRoot)
+
+	if rows := hostRows(t, m); rows["alpha"].Name != "alpha" || rows["alpha"].Removed {
+		t.Fatalf("the hosts in hub.toml are not served: %+v", rows)
+	}
+	if _, _, imported := store.HostRecords(); imported {
+		t.Fatal("records this build cannot read were moved into the store")
+	}
+	if !bytes.Equal([]byte(doc), fileBytes(t, configPath)) {
+		t.Fatal("the unreadable record sections were rewritten")
+	}
+	_, err := m.AddResult(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "extra", Address: "extra.example"}})
+	requireWireError(t, err, appwire.CodeUnavailable)
+}
+
+// legacyRecordsOf reads the reserved record sections the hub.toml at path still
+// carries, as startup does before it builds the registry.
+func legacyRecordsOf(t *testing.T, path string) hostRecordSet {
+	t.Helper()
+	legacy, err := readLegacyRecords(path)
+	if err != nil {
+		t.Fatalf("readLegacyRecords: %v", err)
+	}
+	return legacy
+}
+
+// TestAnUnreadableRecordSectionKeepsTheReadableTeardownFences covers a hub.toml
+// whose record sections carry a field this build does not decode: nothing moves
+// or is rewritten, but an open teardown remnant still fences its host.
+func TestAnUnreadableRecordSectionKeepsTheReadableTeardownFences(t *testing.T) {
+	configPath, records := legacyHub(t)
+	if len(records.TeardownRemnants) == 0 {
+		t.Fatal("the legacy fixture left no teardown remnant")
+	}
+	original := fileBytes(t, configPath)
+	unreadable := append(append([]byte(nil), original...), []byte("\n[pending_store_sync.keep]\nfield_from_a_newer_build = 1\n")...)
+	if err := os.WriteFile(configPath, unreadable, 0o600); err != nil {
+		t.Fatalf("write the unreadable section: %v", err)
+	}
+
+	m, store := bootOverStore(t, configPath, t.TempDir())
+
+	if _, _, imported := store.HostRecords(); imported {
+		t.Fatal("records moved although a section could not be read")
+	}
+	if !bytes.Equal(fileBytes(t, configPath), unreadable) {
+		t.Fatal("hub.toml was rewritten although a section could not be read")
+	}
+	if m.mutationRefusal() == nil {
+		t.Fatal("host changes are taken while the record sections cannot be read")
+	}
+	if got := m.cfg.store.remnantSnapshot(); len(got) != len(records.TeardownRemnants) {
+		t.Fatalf("the manager fences %d remnant(s), want the %d the file holds", len(got), len(records.TeardownRemnants))
+	}
+}
+
+// TestAStartupThatCouldNotReadTheRecordSectionsSettlesNothing pins that a
+// registry built without the persisted identities (the startup read failed) is
+// never what the records are settled or moved from, even when the manager's own
+// reads succeed.
+func TestAStartupThatCouldNotReadTheRecordSectionsSettlesNothing(t *testing.T) {
+	configPath, _ := legacyHub(t)
+	original := fileBytes(t, configPath)
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	doc := hostBootDocument(mustLoadConfig(t, configPath).Config, hostRecordSet{}, store)
+	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
+	if err != nil {
+		t.Fatalf("hostreg.NewSeeded: %v", err)
+	}
+
+	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: configPath,
+		RemoteHostRecordsUnreadable: true,
+	}, configPath, hosts, t.Logf)
+
+	if _, _, imported := store.HostRecords(); imported {
+		t.Fatal("records moved over a registry built without their identities")
+	}
+	if !bytes.Equal(fileBytes(t, configPath), original) {
+		t.Fatal("hub.toml was rewritten over a registry built without the persisted identities")
+	}
+	if m.mutationRefusal() == nil {
+		t.Fatal("host changes are taken over a registry built without the persisted identities")
+	}
+}
+
+// TestMalformedRecordSectionsCannotBypassTheAttachFence covers sections that are
+// wrong in ways that make the whole set unreadable: an attempts section of the
+// wrong type, and a remnant whose known field has the wrong type. The remnant is
+// still open and names its host, so the host stays fenced.
+func TestMalformedRecordSectionsCannotBypassTheAttachFence(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "hub.toml")
+	body := "teardown_attempts = 1\n\n[[hosts]]\nname = \"delta\"\nssh = \"delta.example\"\n\n" +
+		"[teardown_remnants.r1]\nhost = \"delta\"\nkind = \"remove\"\ngeneration = \"not a number\"\n"
+	if err := os.WriteFile(configPath, []byte(body), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+
+	m, _ := bootOverStore(t, configPath, t.TempDir())
+
+	fences := m.cfg.store.remnantSnapshot()
+	var fenced bool
+	for _, remnant := range fences {
+		if remnant.Host == "delta" {
+			fenced = true
+		}
+	}
+	if !fenced {
+		t.Fatalf("the open remnant of delta does not fence it: %+v", fences)
+	}
+	if m.mutationRefusal() == nil {
+		t.Fatal("host changes are taken while the record sections cannot be read")
 	}
 }

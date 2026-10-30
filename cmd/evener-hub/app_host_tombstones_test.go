@@ -166,7 +166,7 @@ func TestHostTombstoneRemovalWritesOneAtomicRecord(t *testing.T) {
 		t.Fatalf("tombstone rows = %d (truncated %v), want the 3 retained rows untruncated", len(tombstone.Rows), tombstone.RowsTruncated)
 	}
 	// The durable file carries the record: it is what a restart loads.
-	cfg, err := LoadConfig(f.configPath)
+	cfg, err := loadWithRecords(f.configPath)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestHostTombstoneRemovalWritesOneAtomicRecord(t *testing.T) {
 	if _, stillTombstoned := f.m.cfg.store.tombstoneSnapshot()["side"]; stillTombstoned {
 		t.Fatal("re-add left the tombstone behind")
 	}
-	cfg, err = LoadConfig(f.configPath)
+	cfg, err = loadWithRecords(f.configPath)
 	if err != nil {
 		t.Fatalf("LoadConfig after re-add: %v", err)
 	}
@@ -571,7 +571,7 @@ func TestHostTombstoneExpiryReadFilter(t *testing.T) {
 	if _, still := f.m.cfg.store.tombstoneSnapshot()["side"]; still {
 		t.Fatal("the mutation-path write did not prune the expired tombstone")
 	}
-	cfg, err := LoadConfig(f.configPath)
+	cfg, err := loadWithRecords(f.configPath)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
@@ -623,7 +623,7 @@ func TestHostTombstoneBootPrune(t *testing.T) {
 	if _, still := boot.cfg.store.tombstoneSnapshot()["gone"]; still {
 		t.Fatal("boot did not prune the expired tombstone")
 	}
-	cfg, err := LoadConfig(configPath)
+	cfg, err := loadWithRecords(configPath)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
@@ -729,7 +729,7 @@ func TestHostTombstoneBootCollisionRebasesLiveEntry(t *testing.T) {
 	}
 	// The tombstone is consumed by the live entry and the boot write persists
 	// the rebased pair.
-	cfg, err := LoadConfig(configPath)
+	cfg, err := loadWithRecords(configPath)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
@@ -779,7 +779,7 @@ ssh = "gone.example"
 	if err := os.WriteFile(configPath, []byte(raw), 0o600); err != nil {
 		t.Fatalf("write hub.toml: %v", err)
 	}
-	if _, err := LoadConfig(configPath); err == nil {
+	if _, err := loadWithRecords(configPath); err == nil {
 		t.Fatal("an incomplete tombstone record loaded, want the loud refusal")
 	} else if !strings.Contains(err.Error(), "tombstones") {
 		t.Fatalf("refusal = %v, want it to name the tombstones section", err)
@@ -789,7 +789,7 @@ ssh = "gone.example"
 	if err := os.WriteFile(configPath, []byte(raw2), 0o600); err != nil {
 		t.Fatalf("write hub.toml: %v", err)
 	}
-	if _, err := LoadConfig(configPath); err == nil {
+	if _, err := loadWithRecords(configPath); err == nil {
 		t.Fatal("a tombstone carrying a field this build does not decode loaded")
 	}
 }
@@ -918,7 +918,7 @@ ssh = "gone.example"
 	if err := os.WriteFile(configPath, []byte(raw), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	if _, err := LoadConfig(configPath); err == nil {
+	if _, err := loadWithRecords(configPath); err == nil {
 		t.Fatal("a twinless tombstone loaded, want the loud refusal")
 	} else if !errors.Is(err, errTombstoneTwinMissing) {
 		t.Fatalf("refusal = %v, want it to name the missing twin", err)
@@ -988,7 +988,7 @@ rows_truncated = false
 		if err := os.WriteFile(configPath, []byte(raw), 0o600); err != nil {
 			t.Fatalf("write hub.toml: %v", err)
 		}
-		if _, err := LoadConfig(configPath); err == nil {
+		if _, err := loadWithRecords(configPath); err == nil {
 			t.Fatalf("a tombstone whose entry.name is %q loaded, want the loud refusal", entryName)
 		} else if !errors.Is(err, errTombstoneEntryNameMismatch) {
 			t.Fatalf("refusal = %v, want it to name the disagreeing entry name", err)

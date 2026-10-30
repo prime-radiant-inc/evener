@@ -72,7 +72,7 @@ func TestHubTOMLKeepsARetainedMarkWhenTheRegistryWasSeededLate(t *testing.T) {
 	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
 		t.Fatalf("write hub.toml: %v", err)
 	}
-	cfg, err := LoadConfig(path)
+	cfg, err := loadWithRecords(path)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
@@ -109,11 +109,11 @@ func TestHubTOMLGenerationsMarkIsNotALiveIdentity(t *testing.T) {
 	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
 		t.Fatalf("write hub.toml: %v", err)
 	}
-	cfg, err := LoadConfig(path)
+	cfg, err := loadWithRecords(path)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	hosts, err := hostreg.NewSeeded(hostRegistryEntries(cfg), cfg.recordSet().highWaterMarks())
+	hosts, err := hostreg.NewSeeded(hostRegistryEntries(cfg), cfg.highWaterMarks())
 	if err != nil {
 		t.Fatalf("hostreg.NewSeeded: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestHubTOMLRefusesAnOverLongIncarnationID(t *testing.T) {
 	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
 		t.Fatalf("write hub.toml: %v", err)
 	}
-	_, err := LoadConfig(path)
+	_, err := loadWithRecords(path)
 	if err == nil {
 		t.Fatal("a hub.toml with a 129-byte incarnation id loaded, want the bound refusal")
 	}
@@ -214,11 +214,11 @@ func TestHostRegistryBootMintsAboveRetainedMarks(t *testing.T) {
 	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
 		t.Fatalf("write hub.toml: %v", err)
 	}
-	cfg, err := LoadConfig(path)
+	cfg, err := loadWithRecords(path)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	hosts, err := hostreg.NewSeeded(hostRegistryEntries(cfg), cfg.recordSet().highWaterMarks())
+	hosts, err := hostreg.NewSeeded(hostRegistryEntries(cfg), cfg.highWaterMarks())
 	if err != nil {
 		t.Fatalf("hostreg.NewSeeded: %v", err)
 	}
@@ -251,7 +251,7 @@ func TestHubTOMLRepairsAPartialRecordAtBoot(t *testing.T) {
 	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
 		t.Fatalf("write hub.toml: %v", err)
 	}
-	cfg, err := LoadConfig(path)
+	cfg, err := loadWithRecords(path)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
@@ -267,7 +267,7 @@ func TestHubTOMLRepairsAPartialRecordAtBoot(t *testing.T) {
 			mark, first.Generation, first.IncarnationID, first.PresenceEpoch)
 	}
 	// A second boot reads the repaired triple back unchanged.
-	cfg2, err := LoadConfig(path)
+	cfg2, err := loadWithRecords(path)
 	if err != nil {
 		t.Fatalf("second LoadConfig: %v", err)
 	}
@@ -293,7 +293,7 @@ func TestHubTOMLRecordRepairLogNamesTheHost(t *testing.T) {
 	if err := os.WriteFile(path, []byte("[[hosts]]\nname = \"alpha\"\nssh = \"alpha.example\"\n"), 0o600); err != nil {
 		t.Fatalf("write hub.toml: %v", err)
 	}
-	cfg, err := LoadConfig(path)
+	cfg, err := loadWithRecords(path)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
@@ -333,7 +333,7 @@ func TestHubTOMLHostRecordsMintAndSurviveReload(t *testing.T) {
 	if err := writeHubTOMLHosts(path, []hostreg.Host{{Name: "alpha", SSH: "alpha.example"}}); err != nil {
 		t.Fatalf("seed hub.toml: %v", err)
 	}
-	cfg, err := LoadConfig(path)
+	cfg, err := loadWithRecords(path)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
@@ -363,7 +363,7 @@ func TestHubTOMLHostRecordsMintAndSurviveReload(t *testing.T) {
 	// presence epoch, same generation — and no rewrite, because nothing is
 	// missing.
 	before := readHostFileBytes(t, path)
-	cfg2, err := LoadConfig(path)
+	cfg2, err := loadWithRecords(path)
 	if err != nil {
 		t.Fatalf("second LoadConfig: %v", err)
 	}
@@ -399,7 +399,7 @@ func TestHubTOMLWithoutRecordsLoadsWithTheAbsenceDefault(t *testing.T) {
 	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
 		t.Fatalf("write hub.toml: %v", err)
 	}
-	cfg, err := LoadConfig(path)
+	cfg, err := loadWithRecords(path)
 	if err != nil {
 		t.Fatalf("a hub.toml without machine records must still load: %v", err)
 	}
@@ -522,7 +522,7 @@ func TestHubTOMLPresenceEpochSurvivesReloadAcrossRemoval(t *testing.T) {
 	removed := highWaterFor(t, path, "alpha")
 
 	// A restart: the boot load reads the removed name's high-water record.
-	cfg, err := LoadConfig(path)
+	cfg, err := loadWithRecords(path)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}

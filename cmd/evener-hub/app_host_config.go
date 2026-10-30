@@ -70,6 +70,9 @@ type hostManagerConfig struct {
 	// not be opened: the hosts in hub.toml keep serving, host mutations refuse
 	// until a store attaches.
 	opsUnavailable bool
+	// recordsUnreadable marks a hub whose startup could not read the record
+	// sections an earlier build left in hub.toml (hubcore.WebConfig).
+	recordsUnreadable bool
 	// refusal, when set, is why host mutations are refused: the operation store
 	// is unavailable, or the records it holds could not be settled or read. It
 	// clears when a boot attach converges.
@@ -270,29 +273,30 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 		hosts, _ = hostreg.New(nil)
 	}
 	m := &hubHostManager{cfg: &hostManagerConfig{
-		hosts:            hosts,
-		store:            &hostStore{},
-		configPath:       strings.TrimSpace(configPath),
-		records:          hubTOMLRecordStore{path: strings.TrimSpace(configPath)},
-		opsUnavailable:   cfg.RemoteHostOpsUnavailable,
-		sources:          sources,
-		remoteCache:      cfg.RemoteThreadCache,
-		manager:          manager,
-		client:           cfg.RemoteHostClient,
-		online:           cfg.RemoteHostOnline,
-		clientIfAttached: cfg.RemoteHostClientIfAttached,
-		handshake:        cfg.RemoteHostHandshake,
-		facts:            cfg.RemoteHostFacts,
-		planFacts:        cfg.RemoteHostPlanFacts,
-		planProbe:        cfg.RemoteHostPlanProbe,
-		gate:             hostGateFor(manager),
-		bootID:           strings.TrimSpace(cfg.HubBootID),
-		probeTimeout:     hostProbeTimeoutFor(cfg.HostProbeTimeout),
-		running:          newHostRunningConfig(cfg),
-		state:            newHostAttachState(),
-		mutating:         map[string]struct{}{},
-		policy:           hostRecordPolicyFor(cfg),
-		logf:             logf,
+		hosts:             hosts,
+		store:             &hostStore{},
+		configPath:        strings.TrimSpace(configPath),
+		records:           hubTOMLRecordStore{path: strings.TrimSpace(configPath)},
+		opsUnavailable:    cfg.RemoteHostOpsUnavailable,
+		recordsUnreadable: cfg.RemoteHostRecordsUnreadable,
+		sources:           sources,
+		remoteCache:       cfg.RemoteThreadCache,
+		manager:           manager,
+		client:            cfg.RemoteHostClient,
+		online:            cfg.RemoteHostOnline,
+		clientIfAttached:  cfg.RemoteHostClientIfAttached,
+		handshake:         cfg.RemoteHostHandshake,
+		facts:             cfg.RemoteHostFacts,
+		planFacts:         cfg.RemoteHostPlanFacts,
+		planProbe:         cfg.RemoteHostPlanProbe,
+		gate:              hostGateFor(manager),
+		bootID:            strings.TrimSpace(cfg.HubBootID),
+		probeTimeout:      hostProbeTimeoutFor(cfg.HostProbeTimeout),
+		running:           newHostRunningConfig(cfg),
+		state:             newHostAttachState(),
+		mutating:          map[string]struct{}{},
+		policy:            hostRecordPolicyFor(cfg),
+		logf:              logf,
 	}}
 	m.cfg.ops.Store(cfg.RemoteHostOpsStore)
 	if m.cfg.planFacts == nil && manager != nil {

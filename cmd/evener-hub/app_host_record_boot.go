@@ -106,6 +106,13 @@ func (m *hubHostManager) bootRecords() {
 		m.bootStoreRecords(ops)
 		return
 	}
+	if m.cfg.recordsUnreadable {
+		// The registry was built without the persisted identities; settling or
+		// moving the records from it would overwrite them with minted ones.
+		_ = m.bootLegacyRecords(false) // load only; the refusal below is the outcome
+		m.refuseMutations("hub.toml's record sections could not be read at startup; the records move once a start reads them")
+		return
+	}
 	if err := m.keepPreRecordsCopy(); err != nil {
 		// Everything that follows rewrites hub.toml; none of it starts without
 		// the original kept.
@@ -616,6 +623,12 @@ func (m *hubHostManager) bootLegacyRecords(settle bool) bool {
 	// decodeConfig already validated each shape, so they are restored as-is (the
 	// same hard startup-error posture a corrupt host entry takes).
 	m.cfg.store.setRemnantMaps(fileRecords.StagedReceipts, fileRecords.TeardownRemnants, fileRecords.TeardownAttempts)
+	if !hasFile && strings.TrimSpace(m.cfg.configPath) != "" && !readable {
+		// Sections that cannot be read as a set still carry fences: the records
+		// that can be read keep their hosts from being dialled mid-teardown.
+		remnants, attempts := readLegacyTeardownFences(m.cfg.configPath)
+		m.cfg.store.setRemnantMaps(map[string]HostStagedReceipt{}, remnants, attempts)
+	}
 	if !settle || !readable {
 		// An unreadable file says nothing about which records it holds: settling
 		// over the empty maps above would write them back as the file's records.

@@ -66,8 +66,9 @@ func writeHubTOMLHostsRecords(path string, entries, known []hostreg.Host, record
 	// exact-write sentinel (no snapshot: preserve nothing); an empty known is a
 	// real empty snapshot, and preservation still applies.
 	var fileCfg Config
+	var fileRecords hostRecordSet
 	if known != nil || records.highWater != nil {
-		fileCfg, err = decodeHubTOMLForRewrite(path, raw)
+		fileCfg, fileRecords, err = decodeHubTOMLForRewrite(path, raw)
 		if err != nil {
 			return err
 		}
@@ -96,7 +97,7 @@ func writeHubTOMLHostsRecords(path string, entries, known []hostreg.Host, record
 		maps.Copy(preserved, records.droppedTombstones)
 		maps.Copy(preserved, records.raisedHighWater)
 	}
-	hostRecords, generations := hubTOMLRecordTables(fileCfg, entries, known, records.highWater, preserved)
+	hostRecords, generations := hubTOMLRecordTables(fileRecords, entries, known, records.highWater, preserved)
 	if len(hostRecords) == 0 {
 		delete(doc, "host_records")
 	} else {
@@ -107,49 +108,49 @@ func writeHubTOMLHostsRecords(path string, entries, known []hostreg.Host, record
 	} else {
 		doc["generations"] = generations
 	}
-	receiptTables := hubTOMLReceiptTables(fileCfg, entries, known, records.receipts, records.droppedReceipts)
+	receiptTables := hubTOMLReceiptTables(fileRecords, entries, known, records.receipts, records.droppedReceipts)
 	if len(receiptTables) == 0 {
 		delete(doc, "mutation_receipts")
 	} else {
 		doc["mutation_receipts"] = receiptTables
 	}
-	tombstoneTables := hubTOMLTombstoneTables(fileCfg, entries, known, records.tombstones, preserved)
+	tombstoneTables := hubTOMLTombstoneTables(fileRecords, entries, known, records.tombstones, preserved)
 	if len(tombstoneTables) == 0 {
 		delete(doc, "tombstones")
 	} else {
 		doc["tombstones"] = tombstoneTables
 	}
-	prunedTables := hubTOMLPrunedReceiptTables(fileCfg, entries, known, records.prunedReceipts, records.droppedMarkers)
+	prunedTables := hubTOMLPrunedReceiptTables(fileRecords, entries, known, records.prunedReceipts, records.droppedMarkers)
 	if len(prunedTables) == 0 {
 		delete(doc, "pruned_receipts")
 	} else {
 		doc["pruned_receipts"] = prunedTables
 	}
-	stagedTables := hubTOMLStagedReceiptTables(fileCfg, entries, known, records.stagedReceipts, records.droppedStaged)
+	stagedTables := hubTOMLStagedReceiptTables(fileRecords, entries, known, records.stagedReceipts, records.droppedStaged)
 	if len(stagedTables) == 0 {
 		delete(doc, "staged_receipts")
 	} else {
 		doc["staged_receipts"] = stagedTables
 	}
-	storeSyncTables := hubTOMLStoreSyncTables(fileCfg, entries, known, records.storeSync, records.droppedStoreSync)
+	storeSyncTables := hubTOMLStoreSyncTables(fileRecords, entries, known, records.storeSync, records.droppedStoreSync)
 	if len(storeSyncTables) == 0 {
 		delete(doc, "pending_store_sync")
 	} else {
 		doc["pending_store_sync"] = storeSyncTables
 	}
-	mirrorTables := hubTOMLMirrorCommitTables(fileCfg, entries, known, generations)
+	mirrorTables := hubTOMLMirrorCommitTables(fileRecords, entries, known, generations)
 	if len(mirrorTables) == 0 {
 		delete(doc, "mirror_commits")
 	} else {
 		doc["mirror_commits"] = mirrorTables
 	}
-	remnantTables := hubTOMLTeardownRemnantTables(fileCfg, entries, known, records.remnants, records.droppedRemnants)
+	remnantTables := hubTOMLTeardownRemnantTables(fileRecords, entries, known, records.remnants, records.droppedRemnants)
 	if len(remnantTables) == 0 {
 		delete(doc, "teardown_remnants")
 	} else {
 		doc["teardown_remnants"] = remnantTables
 	}
-	attemptTables := hubTOMLTeardownAttemptTables(fileCfg, entries, known, records.attempts, records.remnants, records.droppedAttempts)
+	attemptTables := hubTOMLTeardownAttemptTables(fileRecords, entries, known, records.attempts, records.remnants, records.droppedAttempts)
 	if len(attemptTables) == 0 {
 		delete(doc, "teardown_attempts")
 	} else {
@@ -198,7 +199,7 @@ func writeHubTOMLHostsOnly(path string, entries, known []hostreg.Host) error {
 	}
 	var extra []HostConfig
 	if known != nil {
-		fileCfg, err := decodeHubTOMLForRewrite(path, raw)
+		fileCfg, _, err := decodeHubTOMLForRewrite(path, raw)
 		if err != nil {
 			return err
 		}
@@ -224,9 +225,9 @@ func writeHubTOMLHostsOnly(path string, entries, known []hostreg.Host) error {
 }
 
 // renderHubTOMLDocument encodes doc with the machine-managed banner and runs
-// the bytes through the loader's own decode: a rewrite is only as good as its
-// round trip, so a file the hub would refuse at boot can never be written by a
-// mutation.
+// the bytes through the loader's own decode, record sections included: a
+// rewrite is only as good as its round trip, so a file the hub would refuse at
+// boot can never be written by a mutation.
 func renderHubTOMLDocument(path string, doc map[string]any) ([]byte, error) {
 	var buf bytes.Buffer
 	buf.WriteString(hostTOMLBanner)
@@ -235,6 +236,9 @@ func renderHubTOMLDocument(path string, doc map[string]any) ([]byte, error) {
 	}
 	data := buf.Bytes()
 	if _, err := decodeConfig(path, string(data)); err != nil {
+		return nil, fmt.Errorf("hub.toml rewrite refused: %w", err)
+	}
+	if _, err := decodeLegacyRecords(path, string(data)); err != nil {
 		return nil, fmt.Errorf("hub.toml rewrite refused: %w", err)
 	}
 	return data, nil
@@ -504,10 +508,10 @@ func validateHostMirrorCommits(commits map[string]HostMirrorCommit) error {
 // this write does not own, preserved verbatim — the same ownership rule the
 // other record tables apply, so an intent a mutation does not own is not
 // silently dropped by its rewrite. A nil known is the exact-write sentinel.
-func hubTOMLStoreSyncTables(cfg Config, entries, known []hostreg.Host, intents map[string]HostStoreSyncIntent, dropped map[string]struct{}) map[string]HostStoreSyncIntent {
-	out := make(map[string]HostStoreSyncIntent, len(intents)+len(cfg.PendingStoreSync))
+func hubTOMLStoreSyncTables(file hostRecordSet, entries, known []hostreg.Host, intents map[string]HostStoreSyncIntent, dropped map[string]struct{}) map[string]HostStoreSyncIntent {
+	out := make(map[string]HostStoreSyncIntent, len(intents)+len(file.PendingStoreSync))
 	maps.Copy(out, intents)
-	preserveUnowned(out, cfg.PendingStoreSync, ownedRecordNames(entries, known), keyIsHost, dropped)
+	preserveUnowned(out, file.PendingStoreSync, ownedRecordNames(entries, known), keyIsHost, dropped)
 	return out
 }
 
@@ -517,8 +521,8 @@ func hubTOMLStoreSyncTables(cfg Config, entries, known []hostreg.Host, intents m
 // follows this one is about to land — while every file marker for a name the
 // write does not own is preserved verbatim. A name with no generation record
 // (a purged name) gets none: the marker goes with the records it authorizes.
-func hubTOMLMirrorCommitTables(cfg Config, entries, known []hostreg.Host, generations map[string]HostGeneration) map[string]HostMirrorCommit {
-	out := make(map[string]HostMirrorCommit, len(generations)+len(cfg.MirrorCommits))
+func hubTOMLMirrorCommitTables(file hostRecordSet, entries, known []hostreg.Host, generations map[string]HostGeneration) map[string]HostMirrorCommit {
+	out := make(map[string]HostMirrorCommit, len(generations)+len(file.MirrorCommits))
 	owned := ownedRecordNames(entries, known)
 	for name, mark := range generations {
 		if owned != nil {
@@ -534,7 +538,7 @@ func hubTOMLMirrorCommitTables(cfg Config, entries, known []hostreg.Host, genera
 	if owned == nil {
 		return out
 	}
-	for name, commit := range cfg.MirrorCommits {
+	for name, commit := range file.MirrorCommits {
 		if _, carried := out[name]; carried {
 			continue
 		}
@@ -632,6 +636,9 @@ func (m *hubHostManager) restoreHubTOMLFromStash(stash string) error {
 		return fmt.Errorf("read hub.toml stash %s: %w", stash, err)
 	}
 	if _, err := decodeConfig(path, string(data)); err != nil {
+		return fmt.Errorf("hub.toml stash %s is not a readable document: %w", stash, err)
+	}
+	if _, err := decodeLegacyRecords(path, string(data)); err != nil {
 		return fmt.Errorf("hub.toml stash %s is not a readable document: %w", stash, err)
 	}
 	return hubTOMLReplaceWithBytes(path, data, hubTOMLSyncDir)
