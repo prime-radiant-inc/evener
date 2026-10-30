@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -1854,5 +1855,65 @@ func TestAReAddWhoseHostFileWriteFailsBeforeTheRenameKeepsItsSpentCounters(t *te
 	}
 	if mark := after.Generations["side"]; mark.Generation < spent.Generation || mark.PresenceEpoch < spent.PresenceEpoch {
 		t.Fatalf("the refused re-add forgot the counters it spent: %+v, it spent %+v", mark, spent)
+	}
+
+	// An unrelated write after the refusal carries the manager's view of the
+	// counters, which must be the restored ones.
+	if _, err := m.AddResult(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "other", Address: "other.example"}, MutationID: "add-other",
+	}); err != nil {
+		t.Fatalf("add other: %v", err)
+	}
+	if mark := mustRecords(t, store).Generations["side"]; mark.Generation < spent.Generation || mark.PresenceEpoch < spent.PresenceEpoch {
+		t.Fatalf("an unrelated write lowered the spent counters: %+v, it spent %+v", mark, spent)
+	}
+}
+
+// TestBootRollbackOfAnUnlandedReAddGivesBackThePrunedMarkersItEvicted pins that
+// the replay guards a re-add's staging write pushed out of a full marker set come
+// back with the rest of the history it consumed: a retry of an old add whose
+// guard disappeared would otherwise recreate the removed host.
+func TestBootRollbackOfAnUnlandedReAddGivesBackThePrunedMarkersItEvicted(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, store := hub.boot(t, false)
+	if _, err := m.UpdateResult(context.Background(), updateRequest(t, m, "side", appwire.HostEntry{Address: "edited.example"})); err != nil {
+		t.Fatalf("edit side: %v", err)
+	}
+	if _, err := m.RemoveResult(context.Background(), removeRequest(t, m, "side")); err != nil {
+		t.Fatalf("remove side: %v", err)
+	}
+	// Fill the name's pruned markers to the bound with recent guards.
+	set := mustRecords(t, store)
+	filled := map[string]struct{}{}
+	for i := range 64 {
+		key := hostMutationReceiptKey(fmt.Sprintf("old-add-%02d", i), "side", hostMutationAdd, hostMutationIdentity{Generation: 1, IncarnationID: "inc-old"})
+		set.PrunedReceipts[key] = PrunedReceiptMarker{PrunedAt: hostInstant(time.Now().Add(-time.Duration(i+1) * time.Minute))}
+		filled[key] = struct{}{}
+	}
+	family, err := encodeHostRecords(set)
+	if err != nil {
+		t.Fatalf("encode the filled family: %v", err)
+	}
+	if err := store.CommitHostRecords(family, hostMirrorFor(set, store.Boundaries())); err != nil {
+		t.Fatalf("commit the filled family: %v", err)
+	}
+	m, _ = hub.boot(t, true)
+
+	unlanded := fileBytes(t, hub.configPath)
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() {
+		_, _ = m.AddResult(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "again.example"}, MutationID: "re-add-side"})
+	})
+	if err := os.WriteFile(hub.configPath, unlanded, 0o600); err != nil {
+		t.Fatalf("put the pre-mutation hub.toml back: %v", err)
+	}
+
+	_, store = hub.boot(t, true)
+
+	got := mustRecords(t, store).PrunedReceipts
+	for key := range filled {
+		if _, kept := got[key]; !kept {
+			t.Fatalf("the rolled-back re-add left replay guard %q evicted", key)
+		}
 	}
 }

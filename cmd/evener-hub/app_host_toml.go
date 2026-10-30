@@ -376,6 +376,9 @@ func (m *hubHostManager) persistHosts(entries, known []hostreg.Host, change host
 			m.cfg.store.installRecords(records)
 			m.hostFileSyncOwed.Store(true)
 		}
+		if store, ok := m.recordStore().(hostOpsRecordStore); ok && !change.hostFileFirst && !change.recordsOnly {
+			m.adoptSpentCounters(store)
+		}
 		return err
 	}
 	m.cfg.store.installRecords(records)
@@ -388,6 +391,32 @@ func (m *hubHostManager) persistHosts(entries, known []hostreg.Host, change host
 		m.mirrorBoundaries(entries, known, records)
 	}
 	return nil
+}
+
+// adoptSpentCounters raises the manager's marks for removed names to what the
+// store holds after a refused commit restored its prior family: the counters the
+// refused attempt spent stay spent in the store (keepSpentCounters), and the next
+// write must carry them rather than the lower ones the manager last installed.
+func (m *hubHostManager) adoptSpentCounters(store hostOpsRecordStore) {
+	set, err := store.records()
+	if err != nil {
+		return
+	}
+	marks := m.cfg.store.highWaterSnapshot()
+	for name := range set.Tombstones {
+		stored := set.Generations[name]
+		held := marks[name]
+		if stored.Generation <= held.Generation && stored.PresenceEpoch <= held.PresenceEpoch {
+			continue
+		}
+		if held.IncarnationID == "" {
+			held.IncarnationID = stored.IncarnationID
+		}
+		held.Generation = max(held.Generation, stored.Generation)
+		held.PresenceEpoch = max(held.PresenceEpoch, stored.PresenceEpoch)
+		marks[name] = held
+	}
+	m.cfg.store.setHighWaterMap(marks)
 }
 
 // mirrorBoundaries records the triples the hub.toml write just committed in the

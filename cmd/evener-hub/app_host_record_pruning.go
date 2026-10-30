@@ -266,6 +266,7 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 	if records.droppedAttempts == nil {
 		records.droppedAttempts = map[string]struct{}{}
 	}
+	prunedBefore := maps.Clone(records.prunedReceipts)
 	for key, receipt := range change.carryReceipts {
 		if _, carried := records.receipts[key]; !carried {
 			records.receipts[key] = receipt
@@ -295,6 +296,18 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 		for key, receipt := range restore.Receipts {
 			if _, held := records.receipts[key]; !held {
 				records.receipts[key] = receipt
+			}
+			// The marker the purge left for a receipt is not needed once the
+			// receipt is back.
+			if _, marked := records.prunedReceipts[key]; marked {
+				delete(records.prunedReceipts, key)
+				records.droppedMarkers[key] = struct{}{}
+			}
+		}
+		for key, marker := range restore.Pruned {
+			if _, held := records.prunedReceipts[key]; !held {
+				records.prunedReceipts[key] = marker
+				delete(records.droppedMarkers, key)
 			}
 		}
 		for id, remnant := range restore.Remnants {
@@ -466,6 +479,13 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 	// same atomic write (§6: "every `hub.toml` mutation and every boot
 	// compacts markers past either bound in the same atomic write").
 	m.compactPrunedMarkers(records, now)
+	if marker, staging := records.stagedReceipts[protectedMarker]; staging && marker.Consumed != nil {
+		// The re-add this write stages consumed receipts and may have pushed
+		// replay guards out of a full marker set doing it; rolling it back gives
+		// them all back.
+		marker.Consumed.Pruned = removedEntries(prunedBefore, records.prunedReceipts)
+		records.stagedReceipts[protectedMarker] = marker
+	}
 	// The teardown-repair records compact last for the same reason the markers
 	// do: a purge above drops whole names' remnants, and those drops must meet
 	// their bounds in this same atomic write (§6: every `hub.toml` mutation and

@@ -341,12 +341,15 @@ type HostStagedReceipt struct {
 }
 
 // HostConsumedRecords is the removed incarnation's history a re-add's staging
-// write purged: its tombstone, its superseded receipts and its resolved
-// teardown remnants.
+// write purged: its tombstone, its superseded receipts, its resolved teardown
+// remnants and the replay guards its compaction evicted.
 type HostConsumedRecords struct {
 	Tombstone HostTombstone                  `json:"tombstone"`
 	Receipts  map[string]HostMutationReceipt `json:"receipts,omitempty"`
 	Remnants  map[string]HostTeardownRemnant `json:"remnants,omitempty"`
+	// Pruned holds the replay guards the same write evicted from a full marker
+	// set while it compacted the purged receipts.
+	Pruned map[string]PrunedReceiptMarker `json:"pruned,omitempty"`
 }
 
 // HostTeardownAttempt is one [teardown_attempts."<attemptId>"] record: the
