@@ -991,11 +991,20 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) steeringConsumptio
 	t.Actor = msg.Actor
 	t.StableTurnID = msg.StableTurnID
 	if steeringAnswersAsk(msg.Source, steeringOrigin{kind: msg.Kind}, "") {
-		t.AnswerToTurnIDs = s.pendingAskTurnIDs()
+		answerToTurnIDs := s.pendingAskTurnIDs()
 		if s.clientMutations != nil && msg.ClientMutationID != "" {
 			record := s.clientMutations.snapshot().Journal[msg.ClientMutationID]
-			t.AnswerToTurnIDs = appendAnswerTurnIDs(t.AnswerToTurnIDs, record.AnswerToTurnIDs...)
+			answerToTurnIDs = appendAnswerTurnIDs(answerToTurnIDs, record.AnswerToTurnIDs...)
 		}
+		// PlaceSession joins this steering entry to the current execution when
+		// one is active. That execution cannot be its own predecessor.
+		s.mu.Lock()
+		activeExecution := s.execution.turnID
+		s.mu.Unlock()
+		if activeExecution != "" {
+			answerToTurnIDs = slices.DeleteFunc(answerToTurnIDs, func(id string) bool { return id == activeExecution })
+		}
+		t.AnswerToTurnIDs = answerToTurnIDs
 	}
 	if len(msg.SkillNames) > 0 {
 		t.SkillState = &schema.SkillTurnState{Input: selectionRecord}
