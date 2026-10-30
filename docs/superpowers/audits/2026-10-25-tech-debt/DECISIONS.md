@@ -217,6 +217,19 @@ Bot rulings under Jesse's Wave 2 autonomy grant.
 - W2-08 questions 1 and 4: no `scratchState` type, and no folding of the `Ctx` and budgeted forms.
 - Docs PRs may land once CI is green.
 
+## Host operation store follow-ups (2026-10-30)
+
+Jesse's rulings on W2-13 Part B.
+
+### Store late attach
+A hub that started without its operation store needs a restart to pick it up. Startup retries the open first. No late-attach code.
+
+### Corrupt store with incomplete custody
+A corrupt store file whose custody snapshot is incomplete is set aside automatically instead of being left in place with host changes paused. The file is renamed aside with the existing quarantine naming, kept for diagnosis. An empty replacement opens and host changes resume. The existing quarantine health signal reports that the store was set aside without proven custody, so closed names may not be held. A crash between the rename and the replacement open is completed on the next boot, as for a proven quarantine.
+
+### Entirely unreadable teardown remnant
+A teardown remnant with no recoverable host name still fences nothing. The hub surfaces a health notice naming the unreadable record (its id, or its file for `hub.toml` sections) so someone can check it.
+
 ## Still open
 
 Nothing.
