@@ -668,14 +668,8 @@ func (s *WebServer) removeProjectDeletionArtifacts(stateDir, sessionID string) e
 	transcriptPath := schema.SessionTranscriptPath(stateDir, sessionID)
 	pastTranscriptIndexes.Forget(transcriptPath)
 	transcriptIndexRepairs.forget(transcriptPath)
-	sidecars, err := transcriptindex.SidecarDirs(transcriptPath)
-	if err != nil && !os.IsNotExist(err) {
+	if err := removeProjectSessionDir(transcriptindex.DirFor(transcriptPath)); err != nil && !os.IsNotExist(err) {
 		return err
-	}
-	for _, sidecar := range sidecars {
-		if err := removeProjectSessionDir(sidecar); err != nil && !os.IsNotExist(err) {
-			return err
-		}
 	}
 	for _, path := range []string{
 		filepath.Join(stateDir, "mutations", sessionID+".json"),

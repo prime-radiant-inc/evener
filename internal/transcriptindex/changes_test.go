@@ -153,10 +153,9 @@ func TestRebuildMintsANewIncarnation(t *testing.T) {
 	assertAllWindows(t, x, path)
 }
 
-func TestDirForNamesASidecarBesideTheTranscript(t *testing.T) {
-	const transcriptPath = "/a/b/session.transcript.jsonl"
-	if got := DirFor(transcriptPath); !strings.HasPrefix(got, transcriptPath+".index") {
-		t.Fatalf("DirFor = %q, want a name starting with the transcript path and .index", got)
+func TestDirForIsTheTranscriptPathWithIndexSuffix(t *testing.T) {
+	if got, want := DirFor("/a/b/session.transcript.jsonl"), "/a/b/session.transcript.jsonl.index"; got != want {
+		t.Fatalf("DirFor = %q, want %q", got, want)
 	}
 }
 
