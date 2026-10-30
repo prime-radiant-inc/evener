@@ -97,11 +97,11 @@ func TestProfileDocumentInputPredicate(t *testing.T) {
 		// A pdf-declaring row takes a user-message document when its protocol
 		// represents one: the Responses builder writes input_file and the
 		// Anthropic builder writes a document content block (#4209), while
-		// Google writes inlineData. Chat silently strips documents.
+		// Google writes inlineData and the Chat builder writes a file part.
 		{"anthropic/claude-mythos-preview", true},
 		{"respdoc/doc-1", true},
 		{"respdoc/vis-1", false},
-		{"chatdoc/doc-1", false},
+		{"chatdoc/doc-1", true},
 		{"anthdoc/doc-1", true},
 		{"googdoc/doc-1", true},
 		{"googdoc/vis-1", false},

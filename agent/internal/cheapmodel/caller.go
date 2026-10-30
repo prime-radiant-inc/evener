@@ -211,9 +211,9 @@ func (c *Caller) complete(ctx context.Context, profile *provider.Profile, cheap 
 // session model would hand it media it cannot see: an image part needs image
 // input on the row, and a document part needs document input — the row
 // declares pdf and its adapter represents a user-message document (the
-// Responses builder writes input_file and the Anthropic builder writes a
-// document content block; Google writes inlineData/fileData, while chat strips
-// documents, so a pdf row on chat stays blocked).
+// Responses builder writes input_file, the Anthropic builder writes a
+// document content block, Google writes inlineData/fileData, and the Chat
+// builder writes a file part).
 func sessionModelCannotTakeMedia(profile *provider.Profile, req llm.Request) bool {
 	images, documents := requestMediaKinds(req)
 	if documents && !profile.AcceptsDocumentInput() {

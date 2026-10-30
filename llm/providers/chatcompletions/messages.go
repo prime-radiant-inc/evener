@@ -66,7 +66,7 @@ func toChatMessages(messages []llm.Message, caps registry.Caps, useReasoningDeta
 				"content": textFromParts(content),
 			})
 		case llm.RoleUser:
-			if hasImageContent(content) {
+			if hasImageOrDocumentContent(content) {
 				out = append(out, map[string]any{
 					"role":    "user",
 					"content": buildMultimodalParts(content, caps),
@@ -276,11 +276,18 @@ func thinkingFromParts(parts []llm.ContentPart) string {
 	return b.String()
 }
 
-// hasImageContent returns true if any content part is an image.
-func hasImageContent(parts []llm.ContentPart) bool {
+// hasImageOrDocumentContent reports whether the multimodal content form is
+// needed: the plain-text builder silently drops every non-text part, so an
+// image, or a document carrying a payload (llm.DocumentFileData), must ride
+// the array form. An audio part would also be dropped, but no production
+// code sends one, so it never reaches this gate.
+func hasImageOrDocumentContent(parts []llm.ContentPart) bool {
 	for _, p := range parts {
-		if p.Kind == llm.ContentImage {
+		switch p.Kind {
+		case llm.ContentImage:
 			return true
+		case llm.ContentDocument:
+			return llm.DocumentFileData(p.Document) != ""
 		}
 	}
 	return false
@@ -315,6 +322,15 @@ func buildMultimodalParts(parts []llm.ContentPart, caps registry.Caps) []map[str
 				urlObj["detail"] = detail
 			}
 			out = append(out, map[string]any{"type": "image_url", "image_url": urlObj})
+		case llm.ContentDocument:
+			// A document rides the chat wire as a file part whose file_data
+			// carries the bytes as a data URI or the source URL, matching the
+			// Responses protocol's input_file and Anthropic's document block.
+			fileData := llm.DocumentFileData(p.Document)
+			if fileData == "" {
+				continue
+			}
+			out = append(out, map[string]any{"type": "file", "file": map[string]any{"file_data": fileData}})
 		}
 	}
 	return out

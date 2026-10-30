@@ -101,3 +101,29 @@ func TestNormalizeImageBlock(t *testing.T) {
 		}
 	}
 }
+
+// TestDocumentFileData pins the payload rule every document-capable builder
+// shares: bytes ride as an application/pdf data URI (the blank media type
+// defaults to pdf), a URL rides alone, and bytes win when both are set so a
+// caller that supplies both never silently switches sources.
+func TestDocumentFileData(t *testing.T) {
+	const pdfDataURI = "data:application/pdf;base64,JVBERi0xLjcgc3R1Yg=="
+	cases := []struct {
+		name string
+		doc  *DocumentData
+		want string
+	}{
+		{"nil document", nil, ""},
+		{"bytes", &DocumentData{Data: []byte("%PDF-1.7 stub"), MediaType: "application/pdf"}, pdfDataURI},
+		{"bytes with a blank media type default to pdf", &DocumentData{Data: []byte("%PDF-1.7 stub")}, pdfDataURI},
+		{"bytes with a padded media type", &DocumentData{Data: []byte("%PDF-1.7 stub"), MediaType: " application/pdf "}, pdfDataURI},
+		{"url", &DocumentData{URL: "https://example.com/doc.pdf"}, "https://example.com/doc.pdf"},
+		{"bytes win over a url", &DocumentData{Data: []byte("%PDF-1.7 stub"), MediaType: "application/pdf", URL: "https://example.com/doc.pdf"}, pdfDataURI},
+		{"neither payload", &DocumentData{MediaType: "application/pdf"}, ""},
+	}
+	for _, tc := range cases {
+		if got := DocumentFileData(tc.doc); got != tc.want {
+			t.Errorf("%s: DocumentFileData = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}

@@ -163,6 +163,79 @@ func TestToChatMessages_ImageDetailHonorsRowCap(t *testing.T) {
 	}
 }
 
+// TestToChatMessages_DocumentBecomesFilePart pins the wire form a document
+// takes on the chat protocol across payload sources: a user message bearing
+// a document part builds the multimodal content array with a file part
+// carrying the bytes as a data URI, or the source URL when no bytes are set,
+// and the bytes win when both are set, as in every other document-capable
+// builder. The plain-text form silently drops the document, and the model
+// answers the prompt with no document in hand (#5472).
+func TestToChatMessages_DocumentBecomesFilePart(t *testing.T) {
+	const pdfDataURI = "data:application/pdf;base64,JVBERi0xLjcgc3R1Yg=="
+	cases := []struct {
+		name     string
+		document llm.DocumentData
+		wantData string
+	}{
+		{"bytes", llm.DocumentData{Data: []byte("%PDF-1.7 stub"), MediaType: "application/pdf"}, pdfDataURI},
+		{"bytes with a blank media type", llm.DocumentData{Data: []byte("%PDF-1.7 stub")}, pdfDataURI},
+		{"url", llm.DocumentData{URL: "https://example.com/doc.pdf"}, "https://example.com/doc.pdf"},
+		{"bytes win over a url", llm.DocumentData{Data: []byte("%PDF-1.7 stub"), MediaType: "application/pdf", URL: "https://example.com/doc.pdf"}, pdfDataURI},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			msgs := []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
+				{Kind: llm.ContentDocument, Document: &tc.document},
+				{Kind: llm.ContentText, Text: "describe this"},
+			}}}
+			caps := registry.Caps{Fields: registry.Baseline(registry.ProtocolOpenAIChat)}
+			out, err := toChatMessages(msgs, caps, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			parts, ok := out[0]["content"].([]map[string]any)
+			if !ok {
+				t.Fatalf("a document-bearing user message must build the multimodal array, got %T", out[0]["content"])
+			}
+			if len(parts) != 2 {
+				t.Fatalf("content = %v, want the file part and the text part", parts)
+			}
+			if parts[0]["type"] != "file" {
+				t.Fatalf("parts[0] = %v, want the file part first", parts[0])
+			}
+			file, ok := parts[0]["file"].(map[string]any)
+			if !ok {
+				t.Fatalf("file part carries a file object, got %v", parts[0])
+			}
+			if file["file_data"] != tc.wantData {
+				t.Fatalf("file_data = %v, want %v", file["file_data"], tc.wantData)
+			}
+			if parts[1]["type"] != "text" || parts[1]["text"] != "describe this" {
+				t.Fatalf("parts[1] = %v, want the text part riding along", parts[1])
+			}
+		})
+	}
+}
+
+// TestToChatMessages_DocumentWithoutBytesStaysPlain pins the gate's negative:
+// a document part with no bytes and no URL cannot become a file part, so the
+// message keeps the plain-text form and the empty part is dropped rather than
+// emitting a file part with nothing to carry.
+func TestToChatMessages_DocumentWithoutBytesStaysPlain(t *testing.T) {
+	msgs := []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
+		{Kind: llm.ContentDocument, Document: &llm.DocumentData{MediaType: "application/pdf"}},
+		{Kind: llm.ContentText, Text: "hi"},
+	}}}
+	caps := registry.Caps{Fields: registry.Baseline(registry.ProtocolOpenAIChat)}
+	out, err := toChatMessages(msgs, caps, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out[0]["content"] != "hi" {
+		t.Fatalf("a document part with no payload must be dropped, got %v", out[0]["content"])
+	}
+}
+
 // TestToChatMessages_NeverEmitsAnInvalidImageDetail pins the #4489 invariant:
 // the chat wire accepts only auto|low|high, so no combination of row cap and
 // part detail may put any other value on it.

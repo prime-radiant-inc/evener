@@ -368,8 +368,8 @@ func (p *Profile) AcceptsImageInput() bool {
 // ("pdf") input and its adapter represents a user-message document on the
 // wire. Unlike an image — the one user-message shape every protocol vouches
 // for — a document needs the protocol check too: the Responses builder writes
-// input_file and the Anthropic builder writes a document content block, while
-// Google writes inlineData/fileData and chat strips it
+// input_file, the Anthropic builder writes a document content block, Google
+// writes inlineData/fileData, and the Chat builder writes a file part
 // (llm.DeliversUserMessageDocuments). Renamed profiles do not count, for the
 // same reason as AcceptsImageInput.
 func (p *Profile) AcceptsDocumentInput() bool {

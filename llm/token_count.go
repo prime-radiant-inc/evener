@@ -628,13 +628,14 @@ func DeliversToolResultMedia(res registry.Resolved, mediaType string) bool {
 // Responses builder writes input_file (responses/input.go) and the Anthropic
 // builder writes a document content block (anthropic/request.go; the Messages
 // API accepts base64 application/pdf user messages with no beta header, #4209).
-// Google writes inlineData/fileData; chat silently strips the kind. This is a
+// Google writes inlineData/fileData, and the Chat builder writes a file part
+// (chatcompletions/messages.go). This is a
 // different position from DeliversToolResultMedia: those document-capable
 // protocols still drop tool-result documents to avoid double delivery through
 // the side-channel.
 func DeliversUserMessageDocuments(res registry.Resolved) bool {
 	switch res.Protocol {
-	case registry.ProtocolAnthropic, registry.ProtocolOpenAIResponses, registry.ProtocolGoogle:
+	case registry.ProtocolAnthropic, registry.ProtocolOpenAIResponses, registry.ProtocolGoogle, registry.ProtocolOpenAIChat:
 		return true
 	default:
 		return false

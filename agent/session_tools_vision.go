@@ -360,8 +360,8 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 		// model can see the media (a raster image needs image input, the one
 		// user-message shape every protocol vouches for; a document needs the
 		// row's pdf input plus an adapter that represents a user-message
-		// document, which the Anthropic and Responses builders do): try the
-		// description once on it before declaring vision unavailable. The
+		// document, which llm.DeliversUserMessageDocuments vouches for): try
+		// the description once on it before declaring vision unavailable. The
 		// effort must fit the session model's ladder, not the failed route's.
 		// A model that cannot see the media never gets the doomed request:
 		// providers reject it, and the ones that do not answer with confident

@@ -369,8 +369,8 @@ func audioTurn() schema.Turn {
 	})
 }
 
-// Google carries user documents, but not assistant documents. Chat Completions
-// still cannot carry a user document. Both unsupported cases reject the switch.
+// Google and Chat Completions carry user documents, but not assistant
+// documents. Both unsupported cases reject the switch.
 func TestSetModel_DocumentInHistory_RejectedForUnsupportedTargetsAndRoles(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -378,7 +378,7 @@ func TestSetModel_DocumentInHistory_RejectedForUnsupportedTargetsAndRoles(t *tes
 		role   llm.Role
 	}{
 		{"google/gemini-3-pro", llm.RoleAssistant},
-		{"kimi/kimi-k3", llm.RoleUser},
+		{"kimi/kimi-k3", llm.RoleAssistant},
 	}
 	for _, tc := range cases {
 		t.Run(tc.target, func(t *testing.T) {
@@ -482,6 +482,28 @@ func TestSetModel_DocumentInHistory_AcceptedForAnthropicTarget(t *testing.T) {
 
 	if err := sess.SetModel("anthropic/claude-opus-4-6"); err != nil {
 		t.Fatalf("SetModel cross-provider (Anthropic) switch with document in history: %v", err)
+	}
+}
+
+// TestSetModel_DocumentInHistory_AcceptedForChatTarget verifies the
+// counterpart for the Chat Completions protocol: once the Chat builder writes
+// a file part (#5472), a document in history switches into an openai-compat
+// target instead of being refused.
+func TestSetModel_DocumentInHistory_AcceptedForChatTarget(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t,
+		withProfile(NewOpenAIProfile("gpt-5.4")),
+		withAdapter(&fakeAdapter{name: "openai"}),
+		withAdapter(&fakeAdapter{name: "kimi"}),
+		withConfig(SessionConfig{
+			ResolveProfile: testResolver,
+			testOnly:       testConfig{skipGitSnapshot: true},
+		}),
+	)
+	sess.appendTurn(schema.TurnUserInput, documentTurn().Message)
+
+	if err := sess.SetModel("kimi/kimi-k3"); err != nil {
+		t.Fatalf("SetModel openai-compat (Chat) switch with document in history: %v", err)
 	}
 }
 

@@ -10,7 +10,7 @@ import (
 // part in a user message. The Anthropic builder maps a ContentDocument to the
 // document content block (the Messages API accepts base64 application/pdf
 // user messages, no beta header), the Responses builder writes input_file,
-// and Google writes inlineData. Chat strips documents.
+// Google writes inlineData, and the Chat builder writes a file part.
 func TestDeliversUserMessageDocuments(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -20,7 +20,7 @@ func TestDeliversUserMessageDocuments(t *testing.T) {
 		{registry.ProtocolAnthropic, true},
 		{registry.ProtocolOpenAIResponses, true},
 		{registry.ProtocolGoogle, true},
-		{registry.ProtocolOpenAIChat, false},
+		{registry.ProtocolOpenAIChat, true},
 		{"some-future-protocol", false},
 	}
 	for _, tc := range cases {

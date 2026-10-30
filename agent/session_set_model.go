@@ -20,10 +20,10 @@ import (
 // restriction belongs to the request builder: a protocol misfiled here whose
 // builder hard-errors on the kind would brick every subsequent turn.
 //
-// Google rejects audio and non-user documents. OpenAI Chat silently drops
-// documents/audio, which counts as unrepresentable by policy. Anthropic and
-// OpenAI Responses carry documents but reject audio. User-document delivery
-// is checked separately below.
+// Google rejects audio and non-user documents. OpenAI Chat carries user
+// documents as a file part but silently drops audio and non-user documents.
+// Anthropic and OpenAI Responses carry documents but reject audio.
+// User-document delivery is checked separately below.
 func unrepresentableContentKinds(protocol string) map[llm.ContentKind]bool {
 	switch protocol {
 	case registry.ProtocolGoogle, registry.ProtocolOpenAIChat:

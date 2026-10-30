@@ -152,3 +152,23 @@ func DataURI(mimeType string, data []byte) string {
 	}
 	return fmt.Sprintf("data:%s;base64,%s", mimeType, base64.StdEncoding.EncodeToString(data))
 }
+
+// DocumentFileData returns the payload a document part rides the wire as:
+// the bytes as a data URI — a blank media type defaults to application/pdf,
+// as every document-capable builder does — or the source URL when no bytes
+// are set. Bytes win when both are set, matching the image helper and every
+// document-capable builder, so a caller that supplies both never silently
+// switches sources. A document with neither payload returns "".
+func DocumentFileData(doc *DocumentData) string {
+	if doc == nil {
+		return ""
+	}
+	if len(doc.Data) > 0 {
+		mimeType := strings.TrimSpace(doc.MediaType)
+		if mimeType == "" {
+			mimeType = "application/pdf"
+		}
+		return DataURI(mimeType, doc.Data)
+	}
+	return doc.URL
+}
