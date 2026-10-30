@@ -17,12 +17,13 @@ import (
 )
 
 // The #5472 host: a session model served behind an OpenAI-compatible gateway
-// (chat completions). The chat adapter has no user-message document part —
-// llm.DeliversUserMessageDocuments is false for the protocol — so a document
-// describe request sent there carries the text prompt only. The provider
-// never sees the PDF, answers "no document provided", and the round reports
-// the vision provider failed after a full round trip, which agents reading
-// the result took for an empty or scanned document.
+// (chat completions) whose row declares image input only. The chat file part
+// is a gateway extension, not a wire contract, so a row that does not declare
+// pdf input cannot vouch that the endpoint speaks it — a document describe
+// sent there carries the text prompt only, the provider never sees the PDF,
+// answers "no document provided", and the round reports the vision provider
+// failed after a full round trip, which agents reading the result took for an
+// empty or scanned document.
 //
 // The side-channel must not send that request at all: a document whose route
 // cannot represent it stays undelivered, with no wire round trip, and the
@@ -107,9 +108,120 @@ func chatRequestCarriesImage(body map[string]any) bool {
 	return false
 }
 
-// A PDF through the failing path never becomes a wire request: the chat
-// protocol cannot carry the document, so the side-channel reports the
-// undeliverable outcome without spending the round trip.
+// chatFileVisionSession mirrors chatVisionSession with the one difference
+// that matters for the composed world: the row declares pdf input, vouching
+// that this gateway speaks the chat file part. The server answers requests
+// carrying a file part as a populated vision request, and any request
+// without one with the document-less error — a gateway that implements the
+// file part but was handed nothing.
+func chatFileVisionSession(t *testing.T) (*Session, *[]map[string]any) {
+	t.Helper()
+	var mu sync.Mutex
+	var requests []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"vision-model","object":"model"}]}`))
+			return
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		requests = append(requests, body)
+		mu.Unlock()
+		if !chatRequestCarriesFile(body) {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"no document provided","type":"invalid_request_error"}}`))
+			return
+		}
+		if stream, _ := body["stream"].(bool); stream {
+			w.Header().Set("Content-Type", "text/event-stream")
+			chunk := map[string]any{"id": "describe", "object": "chat.completion.chunk", "model": "vision-model", "choices": []any{
+				map[string]any{"index": 0, "delta": map[string]any{"role": "assistant", "content": "file-result-5472"}, "finish_reason": "stop"},
+			}}
+			fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", mustJSON(t, chunk))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"describe","object":"chat.completion","model":"vision-model","choices":[{"index":0,"message":{"role":"assistant","content":"file-result-5472"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	t.Cleanup(srv.Close)
+	dir := t.TempDir()
+	client := registryClientAt(t, dir, map[string]registry.Provider{
+		"chatdocvision": {
+			Base: "openai-compatible", APIKey: "test", DefaultModel: "vision-model", InheritModels: new(false),
+			Transport: registry.Transport{BaseURL: srv.URL},
+			Models: map[string]registry.Model{"vision-model": {Caps: registry.Caps{
+				InputModalities: []string{"text", "image", "pdf"},
+			}}},
+		},
+	}, []string{"chatdocvision"})
+	sess := newSession(t, withClient(client),
+		withProfile(resolveClientProfile(t, client, "chatdocvision/vision-model")),
+		withConfig(SessionConfig{StateDir: dir}))
+	return sess, &requests
+}
+
+// chatRequestCarriesFile reports whether a chat-completions body's user
+// content holds any file part — the shape that proves document bytes reached
+// the provider on this protocol.
+func chatRequestCarriesFile(body map[string]any) bool {
+	messages, _ := body["messages"].([]any)
+	for _, m := range messages {
+		message, _ := m.(map[string]any)
+		if content, ok := message["content"].([]any); ok {
+			for _, part := range content {
+				entry, _ := part.(map[string]any)
+				if entry["type"] == "file" {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// The composed world the file part enables: a chat route whose row declares
+// pdf input vouches that the gateway speaks the chat file part, so a PDF
+// describe rides the wire as a file part carrying the bytes and the gateway
+// answers the description — the #5472 recovery, not a steering message.
+func TestDescribeImage_ChatRouteWithPdfInputCarriesFilePart(t *testing.T) {
+	t.Parallel()
+	sess, requests := chatFileVisionSession(t)
+
+	result := sess.describeImageCall(context.Background(), tool.ExecResult{
+		ImageData:      validPDFFixture(t),
+		ImageMediaType: "application/pdf",
+		ImagePrompt:    "describe the document",
+	})
+	if result.outcome != visionSideChannelSuccess || result.description != "file-result-5472" {
+		t.Fatalf("PDF describe result = %+v, want the scripted description", result)
+	}
+	if got := len(*requests); got != 1 {
+		t.Fatalf("provider requests = %d, want the one file-part describe: %v", got, *requests)
+	}
+	body := (*requests)[0]
+	messages, _ := body["messages"].([]any)
+	message, _ := messages[0].(map[string]any)
+	content, _ := message["content"].([]any)
+	if len(content) != 2 {
+		t.Fatalf("describe content = %#v, want a text part and a file part", message["content"])
+	}
+	file, _ := content[1].(map[string]any)
+	fileObj, _ := file["file"].(map[string]any)
+	fileData, _ := fileObj["file_data"].(string)
+	if file["type"] != "file" || !strings.HasPrefix(fileData, "data:application/pdf;base64,") {
+		t.Fatalf("file part = %#v, want the PDF bytes as a data URI", content[1])
+	}
+}
+
+// A PDF through the failing path never becomes a wire request: the image-only
+// row cannot vouch that this gateway speaks the chat file part, so the
+// side-channel reports the undeliverable outcome without spending the round
+// trip.
 func TestDescribeImage_ChatRoutePDFNeverReachesTheWire(t *testing.T) {
 	t.Parallel()
 	sess, requests := chatVisionSession(t)
