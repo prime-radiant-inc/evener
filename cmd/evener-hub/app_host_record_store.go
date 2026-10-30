@@ -483,8 +483,18 @@ func hostMirrorFor(set hostRecordSet, existing map[string]hostops.Boundary) host
 	mirror := hostops.HostMirror{Boundaries: make(map[string]hostops.Boundary, len(set.Generations))}
 	for name, mark := range set.Generations {
 		if mark.complete() {
+			generation := mark.Generation
+			if _, live := set.HostRecords[name]; !live {
+				// A removed host keeps the historical boundary its removal gave it
+				// when the mark has since risen with counters a rolled-back re-add
+				// spent: the store's removed mark agrees with that one, and the
+				// tombstone that said so may have expired.
+				if prior, held := existing[name]; held && prior.IncarnationID == mark.IncarnationID && prior.Generation < generation {
+					generation = prior.Generation
+				}
+			}
 			mirror.Boundaries[name] = hostops.Boundary{
-				Generation:    mark.Generation,
+				Generation:    generation,
 				IncarnationID: mark.IncarnationID,
 				PresenceEpoch: mark.PresenceEpoch,
 			}

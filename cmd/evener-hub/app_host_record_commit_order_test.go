@@ -1699,3 +1699,86 @@ func TestAShortRetentionDoesNotExpireAStagedRemovalsTombstone(t *testing.T) {
 		t.Fatal("the write that staged the removal expired its tombstone, which recovery needs")
 	}
 }
+
+// TestAReAddWhoseHostFileSyncFailsAtStagingKeepsItsSpentCounters covers the
+// staging write whose hub.toml rename landed and whose directory sync failed: the
+// manager never installed the staged marker, but the store recorded the re-add's
+// counters, and the compensation must not hand them out again.
+func TestAReAddWhoseHostFileSyncFailsAtStagingKeepsItsSpentCounters(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, store := hub.boot(t, false)
+	if _, err := m.RemoveResult(context.Background(), removeRequest(t, m, "side")); err != nil {
+		t.Fatalf("remove side: %v", err)
+	}
+	before := mustRecords(t, store)
+	flakyHubTOMLDirSync(t, func(call int) bool { return call == 1 })
+
+	if _, err := m.AddResult(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "side", Address: "again.example"}, MutationID: "re-add-side",
+	}); err == nil {
+		t.Fatal("the re-add succeeded although its host file sync failed")
+	}
+
+	after := mustRecords(t, store)
+	if _, tombstoned := after.Tombstones["side"]; !tombstoned {
+		t.Fatal("the refused re-add took the removed host's tombstone with it")
+	}
+	if after.Generations["side"].Generation <= before.Generations["side"].Generation || after.Generations["side"].PresenceEpoch <= before.Generations["side"].PresenceEpoch {
+		t.Fatalf("the refused re-add forgot the counters it spent: %+v, was %+v", after.Generations["side"], before.Generations["side"])
+	}
+}
+
+// TestARolledBackReAddsBoundaryOutlivesTheTombstoneExpiry pins that the
+// historical boundary of a removed host stays the removal's own after its
+// tombstone expires: the first write after the retention window must not swap
+// the spent counters in for it, or the store's removed-host mark stops agreeing
+// and its retention skips the host.
+func TestARolledBackReAddsBoundaryOutlivesTheTombstoneExpiry(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, store := hub.boot(t, false)
+	if _, err := m.RemoveResult(context.Background(), removeRequest(t, m, "side")); err != nil {
+		t.Fatalf("remove side: %v", err)
+	}
+	m.testOnlyAfterStage = func(name string) {
+		if err := m.cfg.hosts.Add(hostreg.Host{Name: name, SSH: "raced.example"}); err != nil {
+			t.Errorf("race the registry: %v", err)
+		}
+	}
+	if _, err := m.AddResult(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "side", Address: "again.example"}, MutationID: "re-add-side",
+	}); err == nil {
+		t.Fatal("the re-add succeeded although its registration failed")
+	}
+	m.testOnlyAfterStage = nil
+	if mark := mustRecords(t, store).Generations["side"]; mark.Generation <= mustRecords(t, store).Tombstones["side"].Generation {
+		t.Fatalf("the fixture's mark %+v does not sit above the tombstone", mark)
+	}
+
+	hub.restartStateRoot(t)
+	reopened, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	doc := hostBootDocument(mustLoadConfig(t, hub.configPath), reopened)
+	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
+	if err != nil {
+		t.Fatalf("hostreg.NewSeeded: %v", err)
+	}
+	expiring := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostOpsStore: reopened, RemoteHostConfigPath: hub.configPath,
+		HostTombstoneRetention: time.Nanosecond,
+	}, hub.configPath, hosts, t.Logf)
+	if _, err := expiring.AddResult(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "other", Address: "other.example"}, MutationID: "add-other",
+	}); err != nil {
+		t.Fatalf("add other: %v", err)
+	}
+
+	if _, kept := mustRecords(t, reopened).Tombstones["side"]; kept {
+		t.Fatal("the fixture's tombstone did not expire")
+	}
+	boundary, _ := reopened.Boundary("side")
+	if marker := reopened.RemovedHosts()["side"]; marker.Generation != boundary.Generation || marker.IncarnationID != boundary.IncarnationID {
+		t.Fatalf("after the expiry the boundary %+v and the removed mark %+v disagree", boundary, marker)
+	}
+}

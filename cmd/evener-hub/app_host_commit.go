@@ -191,7 +191,17 @@ func (m *hubHostManager) compensationChange(plan *hostCommitPlan) hostPersistCha
 		dropMarker: plan.Name, dropReceipt: plan.Key, dropStoreSync: plan.Name,
 		hostFileFirst: true,
 	}
-	if marker, staged := m.cfg.store.stagedSnapshot()[plan.Name]; staged {
+	marker, staged := m.cfg.store.stagedSnapshot()[plan.Name]
+	if !staged {
+		// A staging write that published but could not be confirmed returned
+		// before the manager installed its records; the store holds the marker.
+		if store, ok := m.recordStore().(hostOpsRecordStore); ok {
+			if set, err := store.records(); err == nil {
+				marker, staged = set.StagedReceipts[plan.Name]
+			}
+		}
+	}
+	if staged {
 		// The staged re-add spent the generation and presence epoch its entry
 		// carries, whatever the store's marks say now.
 		change.restore, change.restoreSpent = m.consumedRestore(marker, plan.Name, HostGeneration{Generation: plan.Entry.Generation, PresenceEpoch: plan.Entry.PresenceEpoch})
