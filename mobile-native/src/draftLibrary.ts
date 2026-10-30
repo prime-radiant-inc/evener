@@ -676,8 +676,19 @@ export class DraftLibrary {
 		record: DraftRecord,
 		deliveredHash: string,
 	): boolean {
-		const completed = [...(record.completedCommandRecoveryIds ?? [])];
-		const released = releasedSources(record);
+		// The record the caller read is not the only disposition carrier: a
+		// committed transfer's dispositions live in the transfer's own
+		// evidence, and the destination's live record can lose them - a
+		// cleanup whose exact-target delete matched none of the retargeted
+		// rows strips the markers while the composition, and its fingerprint,
+		// stay untouched. Union the evidence in so a matching-fingerprint
+		// settlement forwards everything the transfer durably carried;
+		// evidence that cannot be read is unknown, and unknown dispositions
+		// defer rather than settle from a possibly-stripped record.
+		const dispositions = this.deliveredDispositions(edge);
+		if (dispositions === undefined) return false;
+		const completed = [...new Set([...(record.completedCommandRecoveryIds ?? []), ...dispositions.completed])];
+		const released = [...new Set([...releasedSources(record), ...dispositions.released])];
 		// Resolved dispositions must reach the identity that owns the mutation
 		// rows, wherever the capture settled. Retargets move a chain's rows on
 		// with the identity while the composition - and its completion markers -
@@ -1136,6 +1147,13 @@ function deliveriesFor(
 	completed: readonly string[],
 	released: readonly string[],
 ): DraftHandoffDelivery[] {
+	// One durable row exists per (chain, destination, recovery id), so an id
+	// carried by both lists must not let its released row overwrite its
+	// completed row: a command that completed while its composition still
+	// cites the recovered input is completed first - the stronger
+	// disposition, and the one that keeps the executed command's input from
+	// restoring. The released marker still forwards to the row owners.
+	const settled = new Set(completed);
 	return [
 		...completed.map((recoveryId) => ({
 			chainId: edge.chainId,
@@ -1144,13 +1162,15 @@ function deliveriesFor(
 			disposition: "completed" as const,
 			edgeId: edge.edgeId,
 		})),
-		...released.map((recoveryId) => ({
-			chainId: edge.chainId,
-			destination: edge.to,
-			recoveryId,
-			disposition: "released" as const,
-			edgeId: edge.edgeId,
-		})),
+		...released
+			.filter((recoveryId) => !settled.has(recoveryId))
+			.map((recoveryId) => ({
+				chainId: edge.chainId,
+				destination: edge.to,
+				recoveryId,
+				disposition: "released" as const,
+				edgeId: edge.edgeId,
+			})),
 	];
 }
 
