@@ -301,6 +301,31 @@ function glyph(container: HTMLElement, offset: number, element: Element, local: 
 }
 
 test.each([
+  { name: "inline code", source: "`a\0b`", selector: "code", start: 1, text: "a\ufffdb" },
+  { name: "formatted prose", source: "**a\0b**", selector: "strong", start: 2, text: "a\ufffdb" },
+  { name: "table", source: "| a\0b |\n| - |\n| c |", selector: "th", start: 2, text: "a\ufffdb" },
+  { name: "code insert", source: "```txt\na\0b\n```", selector: "code span span", start: 7, text: "a\ufffdb" },
+  { name: "nested containers", source: "> - `a\0b`", selector: "li code", start: 5, text: "a\ufffdb" },
+  { name: "CRLF and astral prefix", source: "**😀**\r\n\r\n`a\0b`", selector: "code", start: 11, text: "a\ufffdb" },
+  { name: "plain", source: "a\0b", selector: "[data-comic-markdown]", start: 0, text: "a\0b" },
+])("literal NUL keeps connected source glyphs in $name", ({ source, selector, start, text }) => {
+  const errors: unknown[] = [];
+  const rendered = render(composed(source, true, errors), { onCaughtError: () => {} });
+  try {
+    for (const live of [true, false]) {
+      rendered.rerender(composed(source, live, errors));
+      expect(errors).toEqual([]);
+      const element = rendered.container.querySelector(selector);
+      expect(element?.textContent).toBe(text);
+      if (!element) throw new Error("missing mapped content");
+      for (let i = 0; i < text.length; i++) glyph(rendered.container, start + i, element, i, text.charAt(i));
+    }
+  } finally {
+    rendered.unmount();
+  }
+});
+
+test.each([
   "\t",
   "\v",
   "\f",

@@ -4,6 +4,29 @@ import { projectComicMarkdown } from "./markdown";
 const source = "**before**\n\n```ts\n  a\n\tb\n```\n\n| A | B |\n| - | - |\n| 1 | 2 |\n\nafter";
 
 test.each([
+  ["`a\0b`", "`a\ufffdb`", "a\ufffdb", [1, 2, 3], false],
+  ["**a\0b**", "**a\ufffdb**", "a\ufffdb", [2, 3, 4], false],
+  ["| a\0b |\n| - |\n| c |", "| a\ufffdb |\n| - |\n| c |", "a\ufffdbc", [2, 3, 4, 16], false],
+  ["```txt\na\0b\n```", "```txt\na\ufffdb\n```", "a\ufffdb", [7, 8, 9], false],
+  ["> - `a\0b`", "> - `a\ufffdb`", "a\ufffdb", [5, 6, 7], false],
+  ["**😀**\r\n\r\n`a\0b`", "**😀**\n\n`a\ufffdb`", "😀a\ufffdb", [2, 3, 11, 12, 13], false],
+  ["a\0b\r\nc", "a\0b\r\nc", "a\0b\r\nc", [0, 1, 2, 3, 4, 5], true],
+] as const)("literal NUL preserves original UTF-16 positions: %s", (raw, input, text, offsets, plain) => {
+  for (const live of [true, false]) {
+    const doc = projectComicMarkdown(raw, live);
+    expect(doc.source).toBe(raw);
+    expect(doc.parts.map((part) => raw.slice(part.start, part.end)).join("")).toBe(raw);
+    expect(doc.parts).toHaveLength(1);
+    const part = doc.parts[0];
+    expect(part?.plain).toBe(plain);
+    expect(part?.input).toBe(input);
+    expect(part?.visible.map((run) => run.text).join("")).toBe(text);
+    expect(part?.visible.flatMap((run) => run.offsets)).toEqual(offsets);
+    if (part?.kind === "code") expect(part.code).toBe(text);
+  }
+});
+
+test.each([
   "[r]: /first\n\n[r]: /second\n\n[r]",
   "[r]: /first\n[r]: /second\n[r]",
   "> [r]: /first\n>\n> [r]: /second\n>\n> [r]",

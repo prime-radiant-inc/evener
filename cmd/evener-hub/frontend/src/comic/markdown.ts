@@ -32,7 +32,9 @@ function normalized(source: string): MappedText {
   const offsets: number[] = [];
   for (let i = 0; i < source.length; i++) {
     offsets.push(i);
-    text += source[i] === "\r" ? "\n" : source[i];
+    // HTML parsing drops literal NUL. Replace it before lexing so derived
+    // inputs and visible glyphs agree without losing its original offset.
+    text += source[i] === "\r" ? "\n" : source[i] === "\0" ? "\ufffd" : source[i];
     if (source[i] === "\r" && source[i + 1] === "\n") i++;
   }
   return { text, offsets };
