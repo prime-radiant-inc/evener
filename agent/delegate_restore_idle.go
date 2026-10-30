@@ -24,8 +24,9 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	// Reviving an idle delegate is owner-visible lane work: it waits for the
 	// session's process livelock (review round 3, finding 1), so a resumed
 	// session cannot run a delegate in a lane while a prune holds the root's
-	// reclamation claim. The owner's context cancels with the session.
-	if err := s.waitLivelockAcquired(s.sessionContext()); err != nil {
+	// reclamation claim. The wait is bounded (review round 4, finding 0) and
+	// the owner's context cancels with the session.
+	if err := s.waitLivelockAcquired(s.sessionContext(), livelockGateWaitBudget); err != nil {
 		return nil, false, fmt.Errorf("delegate restore waits for the session's process livelock: %w", err)
 	}
 	release, err := s.beginRetirementMutation("delegate_restore")

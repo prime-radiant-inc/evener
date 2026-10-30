@@ -80,8 +80,10 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	// Delegate execution is owner-visible lane work: it waits for the
 	// session's process livelock (review round 3, finding 1), so a session
 	// whose acquisition is still contended cannot create a lane or run a
-	// delegate while a prune holds the root's reclamation claim.
-	if err := s.waitLivelockAcquired(ctx); err != nil {
+	// delegate while a prune holds the root's reclamation claim — and the
+	// wait is bounded (review round 4, finding 0), so a livelock that never
+	// resolves refuses this operation honestly instead of stalling it.
+	if err := s.waitLivelockAcquired(ctx, livelockGateWaitBudget); err != nil {
 		return delegateStartFailed(fmt.Errorf("delegate start waits for the session's process livelock: %w", err))
 	}
 	retirementRelease, retirementErr := s.beginRetirementMutation("delegate")

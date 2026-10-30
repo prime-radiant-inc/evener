@@ -279,120 +279,123 @@ func (s *Session) collectRegisteredLanes(ctx context.Context, run worktree.GitRu
 			}
 			deadOwnerLivelockRelease = claim
 		}
-		// Has a sidecar: provenance unknown otherwise, not ours to judge.
-		sc, scErr := worktree.ReadSidecar(metaDir, e.Name)
-		if scErr != nil {
-			skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: "sidecar-less"})
-			continue
+		removedOne, skippedOne, collectErr := s.collectAuthorizedLane(run, metaDir, e, policy, staleOwnMarker, deadOwnerMarker, deadOwnerLivelockRelease)
+		deadOwnerLivelockRelease = nil // the helper's deferred release owns it now
+		if collectErr != nil {
+			return nil, nil, collectErr
 		}
-
-		if policy.delegateOnly && sc.DelegateID == "" {
-			skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: "not a delegate lane"})
-			continue
-		}
-
-		ignoredIdleDelegateID := ""
-		if policy.prepareDispose != nil {
-			ignoredIdleDelegateID = sc.DelegateID
-		}
-		// No live work under it (belt and braces alongside the lock). P3 may
-		// omit only the exact idle descriptor whose lane it is preparing to
-		// close; ordinary prune and all other work remain strict blockers.
-		if live := s.liveWorkUnderExceptIdleDelegate(e.Path, ignoredIdleDelegateID); len(live) > 0 {
-			skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: "live work: " + strings.Join(live, ", ")})
-			continue
-		}
-		if policy.grace > 0 {
-			if age, ageErr := worktree.SidecarAge(metaDir, e.Name); ageErr == nil && age < policy.grace {
-				skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: "in-grace"})
-				continue
-			}
-		}
-
-		disposable, reasonTag, dErr := policy.disposableAt(run, e.Path, sc)
-		if dErr != nil {
-			skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: reasonTag})
-			continue
-		}
-		if !disposable {
-			skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: reasonTag})
-			continue
-		}
-
-		// Collect: remove the worktree, delete the branch (-D, the merge gate
-		// above already passed — spec §5 sweep 1's closing note, remove step 9's
-		// rationale for never trusting `-d`), delete the sidecar. The optional
-		// Disposed mark is appended after the remove and before the branch delete
-		// (spec §P3: own-store records only).
-		//
-		// A lane that only survived the eligibility gate because its lock is
-		// one this pass is authorized to release — this session's own stale
-		// marker (staleOwnMarker), or a dead owner's delegate marker
-		// (deadOwnerMarker) — is released here: at the one point where the pass
-		// has committed to collecting it, and after every skip rung that could
-		// have kept the lane (and needed its lock) has been passed.
-		//
-		// The verdict that got us here came from the ONE `worktree list` snapshot
-		// taken at the top of the pass, which every earlier lane's git calls have
-		// since aged, so the marker is claimed and read in a single atomic step
-		// (releaseStrandedMarker): a marker someone else released since the
-		// snapshot (a human running the documented `git worktree unlock`
-		// recovery, or a revived owner re-taking its lane) and another session
-		// then took is never unlocked, which would hand this lane's removal to
-		// prune while that session is rooted in it. A lane whose lock is no
-		// longer the one this pass authorized is skipped, not collected.
-		if staleOwnMarker || deadOwnerMarker != "" {
-			expected := worktree.FormatSessionMarker(s.id)
-			if deadOwnerMarker != "" {
-				expected = deadOwnerMarker
-			}
-			released, relErr := s.releaseStrandedMarker(policy.lockFiles, e.Path, expected)
-			if relErr != nil {
-				if deadOwnerLivelockRelease != nil {
-					deadOwnerLivelockRelease()
-				}
-				skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: "releasing stranded marker: " + relErr.Error()})
-				continue
-			}
-			if !released {
-				if deadOwnerLivelockRelease != nil {
-					deadOwnerLivelockRelease()
-				}
-				skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: "lock changed since listing"})
-				continue
-			}
-		}
-		if cErr := s.collectLane(run, metaDir, e.Name, sc.BranchOrName(), e.Path, true, policy); cErr != nil {
-			// The release was made for a removal that did not happen. Put the
-			// marker back so a lane this pass could not collect is exactly as
-			// protected as it was, rather than left open to another session's
-			// sweep (whose live-work view cannot see this session's work under it).
-			if staleOwnMarker {
-				s.restoreStrandedMarker(e.Path, worktree.FormatSessionMarker(s.id))
-			}
-			if deadOwnerMarker != "" {
-				s.restoreStrandedMarker(e.Path, deadOwnerMarker)
-			}
-			if deadOwnerLivelockRelease != nil {
-				deadOwnerLivelockRelease()
-			}
-			if policy.abortOnError {
-				return nil, nil, fmt.Errorf("manage_worktree prune: %w", cErr)
-			}
-			skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: "collect race: " + cErr.Error()})
-			continue
-		}
-		if deadOwnerLivelockRelease != nil {
-			deadOwnerLivelockRelease()
-		}
-		removed = append(removed, WorktreePruneEntry{
-			Name: e.Name, Path: e.Path,
-			WorktreeRemoved: true, BranchRemoved: true, SidecarRemoved: true,
-			Reason: reasonTag,
-		})
+		removed = append(removed, removedOne...)
+		skipped = append(skipped, skippedOne...)
 	}
 
 	return removed, skipped, nil
+}
+
+// collectAuthorizedLane evaluates and collects one lane whose stranded lock
+// this pass is authorized to release — this session's own stale marker, or a
+// dead owner's delegate marker whose root livelock the pass holds as its
+// reclamation claim. Every rung reads state under that claim (review round 3,
+// finding 2), and the claim's release is DEFERRED here so it covers every exit
+// (review round 4, finding 2): each eligibility skip that keeps the lane
+// (sidecar-less, not a delegate lane, live work, in-grace, the disposable
+// gate), a lock that changed since the listing, the aborting collect failure,
+// and the collection itself. A claim that outlives its lane would read as a
+// live root to every later probe of that tree and block a legitimate resume's
+// livelock acquisition for as long as this session lives.
+func (s *Session) collectAuthorizedLane(run worktree.GitRunner, metaDir string, e managedEntry, policy laneSweepPolicy, staleOwnMarker bool, deadOwnerMarker string, claimRelease func()) (removed, skipped []WorktreePruneEntry, err error) {
+	if claimRelease != nil {
+		defer claimRelease()
+	}
+	// Has a sidecar: provenance unknown otherwise, not ours to judge.
+	sc, scErr := worktree.ReadSidecar(metaDir, e.Name)
+	if scErr != nil {
+		return nil, []WorktreePruneEntry{{Name: e.Name, Path: e.Path, Reason: "sidecar-less"}}, nil
+	}
+
+	if policy.delegateOnly && sc.DelegateID == "" {
+		return nil, []WorktreePruneEntry{{Name: e.Name, Path: e.Path, Reason: "not a delegate lane"}}, nil
+	}
+
+	ignoredIdleDelegateID := ""
+	if policy.prepareDispose != nil {
+		ignoredIdleDelegateID = sc.DelegateID
+	}
+	// No live work under it (belt and braces alongside the lock). P3 may
+	// omit only the exact idle descriptor whose lane it is preparing to
+	// close; ordinary prune and all other work remain strict blockers.
+	if live := s.liveWorkUnderExceptIdleDelegate(e.Path, ignoredIdleDelegateID); len(live) > 0 {
+		return nil, []WorktreePruneEntry{{Name: e.Name, Path: e.Path, Reason: "live work: " + strings.Join(live, ", ")}}, nil
+	}
+	if policy.grace > 0 {
+		if age, ageErr := worktree.SidecarAge(metaDir, e.Name); ageErr == nil && age < policy.grace {
+			return nil, []WorktreePruneEntry{{Name: e.Name, Path: e.Path, Reason: "in-grace"}}, nil
+		}
+	}
+
+	disposable, reasonTag, dErr := policy.disposableAt(run, e.Path, sc)
+	if dErr != nil {
+		return nil, []WorktreePruneEntry{{Name: e.Name, Path: e.Path, Reason: reasonTag}}, nil
+	}
+	if !disposable {
+		return nil, []WorktreePruneEntry{{Name: e.Name, Path: e.Path, Reason: reasonTag}}, nil
+	}
+
+	// Collect: remove the worktree, delete the branch (-D, the merge gate
+	// above already passed — spec §5 sweep 1's closing note, remove step 9's
+	// rationale for never trusting `-d`), delete the sidecar. The optional
+	// Disposed mark is appended after the remove and before the branch delete
+	// (spec §P3: own-store records only).
+	//
+	// A lane that only survived the eligibility gate because its lock is
+	// one this pass is authorized to release — this session's own stale
+	// marker (staleOwnMarker), or a dead owner's delegate marker
+	// (deadOwnerMarker) — is released here: at the one point where the pass
+	// has committed to collecting it, and after every skip rung that could
+	// have kept the lane (and needed its lock) has been passed.
+	//
+	// The verdict that got us here came from the ONE `worktree list` snapshot
+	// taken at the top of the pass, which every earlier lane's git calls have
+	// since aged, so the marker is claimed and read in a single atomic step
+	// (releaseStrandedMarker): a marker someone else released since the
+	// snapshot (a human running the documented `git worktree unlock`
+	// recovery, or a revived owner re-taking its lane) and another session
+	// then took is never unlocked, which would hand this lane's removal to
+	// prune while that session is rooted in it. A lane whose lock is no
+	// longer the one this pass authorized is skipped, not collected.
+	if staleOwnMarker || deadOwnerMarker != "" {
+		expected := worktree.FormatSessionMarker(s.id)
+		if deadOwnerMarker != "" {
+			expected = deadOwnerMarker
+		}
+		released, relErr := s.releaseStrandedMarker(policy.lockFiles, e.Path, expected)
+		if relErr != nil {
+			return nil, []WorktreePruneEntry{{Name: e.Name, Path: e.Path, Reason: "releasing stranded marker: " + relErr.Error()}}, nil
+		}
+		if !released {
+			return nil, []WorktreePruneEntry{{Name: e.Name, Path: e.Path, Reason: "lock changed since listing"}}, nil
+		}
+	}
+	if cErr := s.collectLane(run, metaDir, e.Name, sc.BranchOrName(), e.Path, true, policy); cErr != nil {
+		// The release was made for a removal that did not happen. Put the
+		// marker back so a lane this pass could not collect is exactly as
+		// protected as it was, rather than left open to another session's
+		// sweep (whose live-work view cannot see this session's work under it).
+		if staleOwnMarker {
+			s.restoreStrandedMarker(e.Path, worktree.FormatSessionMarker(s.id))
+		}
+		if deadOwnerMarker != "" {
+			s.restoreStrandedMarker(e.Path, deadOwnerMarker)
+		}
+		if policy.abortOnError {
+			return nil, nil, fmt.Errorf("manage_worktree prune: %w", cErr)
+		}
+		return nil, []WorktreePruneEntry{{Name: e.Name, Path: e.Path, Reason: "collect race: " + cErr.Error()}}, nil
+	}
+	return []WorktreePruneEntry{{
+		Name: e.Name, Path: e.Path,
+		WorktreeRemoved: true, BranchRemoved: true, SidecarRemoved: true,
+		Reason: reasonTag,
+	}}, nil, nil
 }
 
 // releaseStrandedOwnMarker releases the lock on a lane iff it still carries this

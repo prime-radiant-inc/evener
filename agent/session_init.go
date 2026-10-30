@@ -1624,6 +1624,18 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	// owner's delegate lanes provably dead to a later prune. Root sessions
 	// only, and silent on failure — see acquireSessionLivelock.
 	s.acquireSessionLivelock()
+	// A construction that fails from here on must not leave the process
+	// holding a livelock for a session that never came to life, nor a retired
+	// root's park marker cleared by an acquisition whose construction then
+	// failed (review round 4, finding 3): the cleanup stops any pending
+	// acquisition retry, restores the park under the still-held flock, and
+	// releases — on every error and panic between the take and success.
+	initSettled := false
+	defer func() {
+		if !initSettled {
+			s.livelockConstructionFailureCleanup()
+		}
+	}()
 
 	// Load the core built-in agents first. Configured plugin agents are merged in
 	// during plugin initialization below.
@@ -1783,6 +1795,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		s.seedFrozenSkillPreloads()
 	}
 
+	initSettled = true
 	return s.promptSourceLog, nil
 }
 

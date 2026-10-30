@@ -430,8 +430,14 @@ type Session struct {
 	livelockAcquired                     chan struct{}
 	livelockGate                         chan struct{}
 	livelockGateClosed                   bool
-	testOnlyBeforeLivelockRetryAcquire   func()
-	worktreeRendezvousDir                string
+	// livelockParkedCleared records that this session's livelock acquisition
+	// removed a retired root's park marker, so a construction that fails
+	// after that point can put the marker back under the still-held flock
+	// (livelockConstructionFailureCleanup, review round 4, finding 3).
+	// Guarded by s.mu.
+	livelockParkedCleared              bool
+	testOnlyBeforeLivelockRetryAcquire func()
+	worktreeRendezvousDir              string
 
 	// responseSideEffectsMu serializes a response's user-visible side-effect
 	// bundle (emit + appendTurn + counter bump) against teardown.

@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"primeradiant.com/evener/execsupport/fsatomic"
 )
 
 // SessionLivelockSuffix names a root session's process-livelock file beside
@@ -34,13 +36,16 @@ func SessionLivelockParkedPath(dir, id string) string {
 // retirement: the timestamped marker supersedes every older crash signal —
 // a stale dead rendezvous entry (the roster retains crash entries) or the
 // now-free livelock flock — so a retired root answers unknown, never dead,
-// to a later probe. Write it before releasing the flock: the marker is the
-// commit point, and a crash before it leaves exactly a real crash's state.
+// to a later probe. The write is fsatomic's durable publication (temp file,
+// fsync, rename, directory sync), because a park that is only in the page
+// cache is a retirement the machine can forget (review round 4, finding 4):
+// write it before releasing the flock — the marker is the commit point, and
+// a crash before it leaves exactly a real crash's state.
 func MarkSessionLivelockParked(dir, id string, at time.Time) error {
 	if err := os.MkdirAll(SessionsDir(dir), 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(SessionLivelockParkedPath(dir, id), []byte(at.UTC().Format(time.RFC3339)+"\n"), 0o600)
+	return fsatomic.Write(SessionLivelockParkedPath(dir, id), []byte(at.UTC().Format(time.RFC3339)+"\n"), 0o600)
 }
 
 // SessionLivelockParked reports whether the root carries a committed park
@@ -63,20 +68,6 @@ func SessionLivelockParked(dir, id string) (bool, error) {
 // already clear: not an error.
 func ClearSessionLivelockParked(dir, id string) error {
 	err := os.Remove(SessionLivelockParkedPath(dir, id))
-	if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return nil
-}
-
-// RemoveSessionLivelock deletes the session's livelock file. A root that
-// failed its acquisition for a real (non-contention) reason removes the file
-// this way (issue #5471): a live session must never leave an existing-but-free
-// livelock behind — that is a dead owner's signature — so the session answers
-// unknown (absent) instead. Retirement does NOT remove the file: it parks via
-// the marker above. A missing file is already gone: not an error.
-func RemoveSessionLivelock(dir, id string) error {
-	err := os.Remove(SessionLivelockPath(dir, id))
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}

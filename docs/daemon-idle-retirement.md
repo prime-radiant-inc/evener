@@ -15,15 +15,20 @@ session reopens it. It is deleted when the hub archives or deletes the session.
 
 The same preservation extends to the session's process livelock: retirement
 PARKS it rather than releasing it in place. The retired root is
-parked-for-resume, not dead, so retirement durably writes a park marker
-(`<id>.livelock.parked`, the commit point of the retirement) beside the
-livelock file and only then releases the flock — the file itself stays. A
-liveness probe then answers *unknown* (parked), never *dead* — even over a
-stale dead rendezvous entry an earlier crash left — which keeps the delegate
-lanes retirement preserved locked against a foreign `prune` until the resume;
-the replacement process that restores the session takes the livelock again at
-init and clears the marker, so a later crash of the resumed process leaves
-honest residue.
+parked-for-resume, not dead, so retirement writes the park marker
+(`<id>.livelock.parked`, the commit point of the retirement) durably —
+fsynced file and directory — beside the livelock file BEFORE the retirement
+commits: a park that cannot be made durable ABORTS the retirement, and the
+daemon stays resident with its flock held rather than committing a park the
+machine can forget. Only once the marker is durable does the retirement
+release the flock — the file itself stays. A liveness probe then answers
+*unknown* (parked), never *dead* — even over a stale dead rendezvous entry an
+earlier crash left — which keeps the delegate lanes retirement preserved
+locked against a foreign `prune` until the resume; the replacement process
+that restores the session takes the livelock again at init and clears the
+marker — a resume whose construction then fails puts the marker back before
+it exits, so the failed replacement still leaves the root parked — and a
+later crash of a successfully resumed process leaves honest residue.
 
 ## Configuration
 

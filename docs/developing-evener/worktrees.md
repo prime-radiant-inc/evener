@@ -272,28 +272,40 @@ These are documented trade-offs, not bugs:
   existed has no record to consult — keeps its lock, and `prune` reports it
   `locked; owner liveness unverifiable` so the deliberate manual unlock stays a
   human decision there. A lane `prune` skips keeps its lock.
-  Three properties keep that reclamation safe against an owner that comes back:
+  These properties keep that reclamation safe against an owner that comes back:
   the dead verdict and the removal are serialized with the owner's startup —
   `prune` claims the root's process livelock BEFORE evaluating any eligibility
-  rung and holds it across the whole release-and-collect, so the
+  rung and holds it across that lane's whole release-and-collect, so the
   cleanliness/HEAD/merge checks read state no owner can change (a claim that
   fails means the owner resumed mid-pass, and the lane is skipped as `owner
   resumed since listing`; a claim that succeeds means no delegate of that tree
   can run, or commit, until the branch delete has finished), and the owner
   state is re-read under the claim, so a retirement that committed since the
   listing is skipped as `owner retired since listing`). A session's own
-  livelock acquisition is never abandoned on contention — a probe's momentary
-  hold or another prune's claim only delays it behind a background retry, so a
+  livelock acquisition is never abandoned and never unlinks a file another
+  process may hold — a probe's momentary hold, another prune's claim, or a
+  transient open failure only delays it behind a background retry, so a
   *running* session cannot end up reading as a free livelock, which is a dead
-  owner's signature — and the session's owner-visible lane work (the resume
-  re-lock, delegate creation, delegate revival) waits for that acquisition to
-  land, so a resumed owner cannot adopt a lane or run a delegate while a prune
-  holds the claim. Idle retirement is the deliberate exception on the other
+  owner's signature. The session's owner-visible lane work stays behind that
+  acquisition without being able to stall on it: delegate creation and
+  revival wait a short budget for the gate and then refuse honestly (a
+  retryable refusal), and the resume re-lock does not block the restore at
+  all — it defers the lane adoptions to a watcher that runs them once the
+  acquisition lands — so a resumed owner cannot adopt a lane or run a
+  delegate while a prune holds the claim, and an acquisition pathology
+  degrades to a slow session, never a hung one. The claim itself is scoped
+  to the lane it authorizes: a lane the eligibility rungs skip gives the
+  root's flock back at once, so a kept lane never leaves its dead root
+  reading live. Idle retirement is the deliberate exception on the other
   side: a retired root is parked-for-resume, not dead, so retirement durably
   writes a park marker (`<id>.livelock.parked`) beside the KEPT livelock file
-  before releasing it — parked answers unknown, never dead, and outranks the
-  stale dead rendezvous entries an earlier crash left — and a later resume
-  takes the livelock again and clears the marker (see
+  BEFORE the retirement commits — a park that cannot be made durable aborts
+  the retirement and keeps the root resident — and only then releases the
+  flock. Parked answers unknown, never dead, and outranks the stale dead
+  rendezvous entries an earlier crash left; a later resume takes the
+  livelock again and clears the marker, and a resume whose construction
+  then fails puts the marker back before it exits, so the failed
+  replacement still leaves the root parked (see
   `docs/daemon-idle-retirement.md`).
 - **A session whose working directory is deleted out from under it refuses honestly.**
   If the lane a session is standing in is removed from the main checkout while the

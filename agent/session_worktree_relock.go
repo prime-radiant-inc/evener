@@ -48,14 +48,6 @@ const (
 // open timer already scheduled for a top-level session) or explicitly (a
 // dedicated one-shot for a restored subagent coordinator with no P3 pass).
 func (s *Session) resumeReLockOwnLanes() {
-	// Owner-visible lane work waits for the process livelock (review round 3,
-	// finding 1): a resumed session that adopts its lanes before its
-	// acquisition lands races a prune holding the root's reclamation claim.
-	// The wait is cancellable — a closing session aborts the re-lock, and a
-	// blocked one simply re-locks the moment its acquisition lands.
-	if err := s.waitLivelockAcquired(s.sessionContext()); err != nil {
-		return
-	}
 	work, admitted := s.beginEnvWork("resume-lane-relock")
 	if !admitted {
 		return
@@ -67,6 +59,19 @@ func (s *Session) resumeReLockOwnLanes() {
 	}
 	lanes := s.undisposedOwnedLanes()
 	if len(lanes) == 0 {
+		return
+	}
+	if !s.livelockGateReady() {
+		// Lane adoption waits for the acquisition this gate tracks (review
+		// round 3, finding 1; round 4, finding 0) — but BLOCKING here would
+		// stall the whole restore on a livelock the session may never get
+		// (a same-id process holding it for its lifetime is the exact shape
+		// that hung the restore path). The re-locks are deferred instead:
+		// they run the moment the acquisition lands, and are dropped if the
+		// session closes first. Until then the lanes stay unlocked exactly
+		// as a failed re-lock leaves them — exposed to residue collection,
+		// but grace-protected, and never raced against a reclamation claim.
+		s.deferReLockUntilLivelockAcquired(lanes)
 		return
 	}
 	var pending []isolationLane
@@ -91,6 +96,44 @@ func (s *Session) resumeReLockOwnLanes() {
 	if s.isSubagentSession() {
 		s.armLaneReLockRetryTimer()
 	}
+}
+
+// deferReLockUntilLivelockAcquired queues the resume re-lock behind the
+// session's livelock acquisition and arms the watcher that runs it the moment
+// the acquisition lands (or drops it when the session closes first). The
+// watcher waits on the root's gate channel and the session's own context —
+// never on a wall-clock budget — because nothing agent-facing waits on IT:
+// the restore that spawned it has already returned (review round 4, finding 0).
+func (s *Session) deferReLockUntilLivelockAcquired(lanes []isolationLane) {
+	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		return
+	}
+	// Queue first: a P3 open-timer firing that beats the watcher to the gate
+	// finds the lanes queued and re-queues them rather than burning the retry.
+	s.pendingReLock = append(s.pendingReLock, lanes...)
+	s.mu.Unlock()
+	root := s
+	if s.isSubagentSession() {
+		if c := s.delegateController; c != nil && c.rootRuntime != nil {
+			root = c.rootRuntime
+		}
+	}
+	root.mu.Lock()
+	gate := root.livelockGate
+	root.mu.Unlock()
+	ctx := s.sessionContext()
+	go func() {
+		if gate != nil && !channelClosed(gate) {
+			select {
+			case <-gate:
+			case <-ctx.Done():
+				return // a closing session has no lanes to protect
+			}
+		}
+		s.retryPendingReLocks()
+	}()
 }
 
 // undisposedOwnedLanes returns the isolation lanes THIS session created that are
@@ -161,6 +204,16 @@ func (s *Session) retryPendingReLocks() {
 	s.pendingReLock = nil
 	s.mu.Unlock()
 	if len(pending) == 0 {
+		return
+	}
+	if !s.livelockGateReady() {
+		// The acquisition this gate tracks is still pending: put the lanes
+		// back rather than burning their single retry — the watcher armed at
+		// queue time (or the timer's next firing) drives them once the lock
+		// lands.
+		s.mu.Lock()
+		s.pendingReLock = append(s.pendingReLock, pending...)
+		s.mu.Unlock()
 		return
 	}
 	local, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)

@@ -296,8 +296,19 @@ func (s *Session) releaseForRetirement(ctx context.Context, options closeOptions
 	var releaseErr error
 	budgetCtx, cancelBudget := s.publishCloseBudget(ctx)
 	defer cancelBudget()
-	s.beginClosing(options.forceTerminal, false)
 
+	// The durable park comes FIRST (review round 4, finding 4): while the
+	// retirement can still be aborted — before beginClosing touches any state
+	// and before any resource goes away — so a persistence failure keeps the
+	// session exactly as it was: resident, its flock held, its lanes
+	// protected, instead of committing a retirement the machine can forget.
+	if err := s.commitLivelockPark(); err != nil {
+		s.emit(events.WarningData{Message: "retirement aborted: the session livelock park could not be made durable: " + err.Error()})
+		return err
+	}
+	defer s.finalizeLivelockPark()
+
+	s.beginClosing(options.forceTerminal, false)
 	s.cancelTurnContext()
 	s.stopLaneTimers()
 	s.joinInFlightDisposeAndEnvWork(budgetCtx)
@@ -339,11 +350,11 @@ func (s *Session) releaseForRetirement(ctx context.Context, options closeOptions
 	}
 	s.closeEventStream(budgetCtx)
 	// Retirement is non-terminal (docs/daemon-idle-retirement.md): the root
-	// stays resumable and its preserved delegate lanes stay locked, so its
-	// livelock is PARKED — the durable park marker beside the kept file reads
-	// as unknown liveness, never as a proven-dead owner, to a foreign prune
-	// (review round 2, finding 3; round 3, findings 3 and 4).
-	s.parkSessionLivelock()
+	// stays resumable and its preserved delegate lanes stay locked. The park
+	// was durably committed at the top of this release (commitLivelockPark);
+	// the deferred finalizeLivelockPark releases the flock as this function's
+	// last act, leaving the marker beside the kept file to answer unknown,
+	// never dead, to a foreign prune.
 	return releaseErr
 }
 

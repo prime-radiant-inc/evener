@@ -27,7 +27,6 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/worktree"
 	"primeradiant.com/evener/agent/schema"
@@ -47,9 +46,11 @@ func (r *scriptedLaneRepo) sessionAtWithID(t *testing.T, sid string) *scriptedLa
 	cfg.clock = r.s.cfg.clock
 	cfg.spawn.sessionID = sid
 	cfg.testOnly.environmentInfo = scriptedEnvironmentInfo
-	cfg.testOnly.worktreeGitRunner = func(context.Context, execenv.ExecutionEnvironment) worktree.GitRunner {
-		return r.git.run
-	}
+	// Chain through the original session's runner hook, not r.git.run
+	// directly: a wrap the test armed before building this session
+	// (serializeGitAccess — the mutex a poll racing a background pass
+	// needs) must cover the resumed session's boundary calls too.
+	cfg.testOnly.worktreeGitRunner = r.s.cfg.testOnly.worktreeGitRunner
 	s := newSession(t, withDir(r.mainRoot), withConfig(cfg))
 	s.stateDir = r.stateDir
 	s.mu.Lock()
@@ -167,6 +168,11 @@ func TestWorktreeResumeWaitsForLivelockBeforeAdoptingLanes(t *testing.T) {
 	}
 	_, path := r.seedColdResumableIsolationLane(t)
 	r.unlockLane(t, path) // the clean-close state a resume must re-lock
+	// Serialize the scripted registry before the resume: the watcher the
+	// deferred re-lock arms drives the boundary from a background goroutine,
+	// and this test polls the lock state while it does (serializeGitAccess's
+	// exact contract).
+	obs := r.serializeGitAccess()
 
 	// The owner's runtime retires non-terminally: process-local resources
 	// release, the lanes it owns stay for the resume.
@@ -187,23 +193,25 @@ func TestWorktreeResumeWaitsForLivelockBeforeAdoptingLanes(t *testing.T) {
 		t.Fatal("the resumed session's livelock acquisition was not pending under the claim")
 	}
 
-	// The resume's lane re-lock (the restore tail's post-init step) runs —
-	// and must not adopt anything while the claim is held.
-	go resumed.s.resumeReLockOwnLanes()
+	// The resume's lane re-lock (the restore tail's post-init step) runs and
+	// must not adopt anything while the claim is held: an acquisition denied
+	// by the claim's flock defers the re-lock instead of blocking the resume
+	// (review round 4, finding 0) and never adopts behind the claim's back.
+	resumed.s.resumeReLockOwnLanes()
 
-	// Negative wait: an ungated re-lock would have taken the lane by now (the
-	// scripted git boundary answers synchronously); a gated one cannot, since
-	// the acquisition this gate waits on is denied by the claim's flock.
-	time.Sleep(50 * time.Millisecond)
+	// The deferral is deterministic: nothing can adopt the lane while the
+	// claim's flock denies the acquisition the re-lock is queued behind — an
+	// ungated re-lock would already have taken it (the scripted git boundary
+	// answers synchronously).
 	if _, locked, _ := r.laneLocked(t, path); locked {
 		t.Fatal("resume adopted its lane while a prune held the root's livelock claim")
 	}
 
-	// The claim releases: the acquisition lands, the gate opens, the re-lock
-	// adopts the lane.
+	// The claim releases: the acquisition lands, the gate opens, and the
+	// watcher the deferred re-lock armed adopts the lane.
 	releaseClaim()
 	waitForCondition(t, livelockContentionWaitBudget, "the resume re-lock after the claim released", func() bool {
-		_, locked, _ := r.laneLocked(t, path)
+		_, locked, _ := obs.laneLocked(t, path)
 		return locked
 	})
 
