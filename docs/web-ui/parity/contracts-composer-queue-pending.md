@@ -99,7 +99,7 @@ except where a line says so itself.
   conversation under the same restarted id. A route placement does not write a
   pane-id mapping; those are written only when a layout is saved or restored.
   Validated pane seats are reserved across the layout before any ref fallback
-  or fresh seat. Seats no longer scope selections, so no selection ever
+  or fresh seat. Seats do not scope selections, so no selection ever
   migrates between seats.
 
 ### Atomic skill and command selections

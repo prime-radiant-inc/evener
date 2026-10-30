@@ -44,7 +44,7 @@ export interface OpenPaneRecord {
   id: string;
   type: PaneTypeId;
   params: unknown;
-  // Stable recovery-selection seat for this conversation pane. The pane id
+  // Stable composer seat (pane identity) for this conversation pane. The pane id
   // survives a desktop layout restore; a mobile reload reconstructs the route
   // with a new id, so the seat is also persisted per tab in composer storage
   // (draft.ts). It is deliberately not part of the saved layout geometry: a
@@ -310,9 +310,10 @@ function nextPaneId(type: PaneTypeId): string {
   return `pane_${type}_${nextPaneSeq}`;
 }
 
-// A conversation pane owns a recovery-selection seat. The seat, not the pane
-// id, is the scope: a mobile reload reconstructs the routed pane under a new
-// id, and this tab's stored mapping hands the same seat back.
+// A conversation pane owns a composer seat (pane identity). The seat, not
+// the pane id, is the durable identity: a mobile reload reconstructs the
+// routed pane under a new id, and this tab's stored mapping hands the same
+// seat back.
 function isConversationPaneType(type: PaneTypeId): boolean {
   return type === "session" || type === "sessionZoom";
 }
@@ -333,9 +334,7 @@ function liveComposerSeats(panes: readonly OpenPaneRecord[]): Set<string> {
 }
 
 // Give a placed pane this tab's stored seat for the conversation, allocated
-// fresh when the stored seat is still held by a living pane. Recovery
-// selections are keyed by conversation, not by seat, so placement moves no
-// selection: every pane restoring a conversation reads the same newest pick.
+// fresh when the stored seat is still held by a living pane.
 //
 // This is the route/open path, not layout restoration. Pane ids restart on a
 // reload, so a reconstructed route's id may equal a different conversation's

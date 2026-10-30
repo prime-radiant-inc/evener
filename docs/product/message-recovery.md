@@ -80,7 +80,7 @@ conversation mapping; pane-id mappings are written when a layout is saved or
 restored, and each records the conversation it belongs to, so a restarted id
 cannot lend another conversation's seat. Validated pane seats are reserved
 across the whole restored layout before any pane falls back to the ref
-mapping or a fresh seat. Seats no longer scope selections; they only keep
+mapping or a fresh seat. Seats do not scope selections; they only keep
 pane identity stable across reloads.
 
 Sending recovery consumes its durable source and creates one fresh outbox

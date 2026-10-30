@@ -101,11 +101,6 @@ export function readPaneComposerSeatEntry(paneId: string): { seat: string; ref: 
 // A pane-id seat is only meaningful for the conversation it was saved with.
 // Shared desktop layouts can reuse an id for another conversation (another tab
 // saved it), so the stored record carries the ref and must match.
-export function readPaneComposerSeat(paneId: string, ref: string): string | undefined {
-  const entry = readPaneComposerSeatEntry(paneId);
-  return entry !== undefined && entry.ref === ref ? entry.seat : undefined;
-}
-
 export function readRefComposerSeat(ref: string): string | undefined {
   return storedSeat(refSeatKey(ref));
 }
@@ -126,13 +121,6 @@ export function writePaneComposerSeat(paneId: string, ref: string, seat: string)
     localStorage.setItem(paneSeatKey(paneId), JSON.stringify({ ref, seat }));
   } catch {
     // Best-effort, like every other composer persistence.
-  }
-}
-
-export function writeComposerSeat(paneId: string, ref: string | null, seat: string): void {
-  if (ref !== null) {
-    writePaneComposerSeat(paneId, ref, seat);
-    writeRefComposerSeat(ref, seat);
   }
 }
 

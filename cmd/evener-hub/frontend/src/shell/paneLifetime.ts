@@ -72,8 +72,8 @@ export function conversationPaneLifetime(pane: OpenPaneRecord): PaneLifetime {
       // resume carried, and any state already created for the resumed ref
       // keeps its newer work.
       const retired = lifetime.composers.get(sourceRef);
-      // The pick is keyed by row id: it needs no carry across the resume -
-      // resolution follows the row's current target wherever it moved.
+      // The resumed ref's conversation mapping must name this lifetime's
+      // seat when nothing newer owns it.
       if (retired) {
         const established = readRefComposerSeat(resumedRef);
         if (established === undefined || established === lifetime.composerSeatId) {

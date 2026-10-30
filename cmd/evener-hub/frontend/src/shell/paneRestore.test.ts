@@ -30,10 +30,16 @@ import { bindFilePath } from "@evener/appwire-client/docContent";
 import type { DockviewApi } from "dockview-core";
 import { beforeEach, describe, expect, test } from "vitest";
 import { openDocBeside } from "../panes/doc/openDoc";
-import { readRefComposerSeat, writeComposerSeat, writeRefComposerSeat } from "../panes/session/composer/draft";
+import { readRefComposerSeat, writePaneComposerSeat, writeRefComposerSeat } from "../panes/session/composer/draft";
 
-// Row-keyed picks resolve against the rows' current targets, and these tests
-// hold no live outbox: each registers the rows it picks by id. Seeded picks
+// Seeds both mappings a saved pane writes: the pane-id mapping a desktop
+// restore validates and the conversation mapping a mobile route
+// reconstruction reads.
+const writeComposerSeat = (paneId: string, ref: string, seat: string): void => {
+  writePaneComposerSeat(paneId, ref, seat);
+  writeRefComposerSeat(ref, seat);
+};
+
 import { retainedConversationComposer } from "../panes/session/composer/retainedComposer";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { setMutationClientIdentityForTests } from "../stores/mutationClientIdentity";
@@ -475,8 +481,8 @@ test("a seat-collision restore keeps every cascade column a retained composer", 
   installLocalStorage(new MemoryStorage());
   try {
     setMutationClientIdentityForTests("tab-a");
-    // One cascade seat held the shared ancestor's and the leaf's selections;
-    // another pane saved on this tab claims that seat first.
+    // Both cascade conversations were saved under one seat; another pane
+    // saved on this tab claims that seat first.
     writeRefComposerSeat("ref_shared", "seat-s");
     writeRefComposerSeat("ref_leaf", "seat-s");
     writeComposerSeat("p1", "ref_parent", "seat-s");
@@ -508,8 +514,8 @@ test("a seat-collision restore keeps every cascade column a retained composer", 
     if (!cascade?.composerSeatId) throw new Error("cascade lacks its seat");
     expect(cascade.composerSeatId).not.toBe("seat-s");
 
-    // The non-leaf column restores its own selected work under the
-    // replacement seat, exactly like the leaf does.
+    // The non-leaf column keeps a retained composer on the replacement
+    // seat, exactly like the leaf does.
     const sharedColumn = retainedConversationComposer(conversationPaneLifetime(cascade), "ref_shared");
     if (!sharedColumn) throw new Error("shared column lacks a composer");
   } finally {
@@ -601,8 +607,8 @@ test("a route placement before restore keeps the saved pane seat", async () => {
   installLocalStorage(new MemoryStorage());
   try {
     setMutationClientIdentityForTests("tab-a");
-    // The previous page saved conversation A on pane_session_1, with its seat
-    // and selected recovery row.
+    // The previous page saved conversation A on pane_session_1 with its
+    // seat mapping.
     writeComposerSeat("pane_session_1", "local:a", "saved-a-seat");
 
     // Cold startup reconstructs route B first; pane ids restarted, so B lands
