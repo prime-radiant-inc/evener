@@ -293,6 +293,52 @@ func TestRetirementAdmissionNotificationStaysPending(t *testing.T) {
 	assertRetirementEvidenceEligible(t, c)
 }
 
+// retirementObstructReceiverTranscript refuses the real transport destination.
+// Callers register their finalizer/Close cleanup first, so restoration runs
+// before it even when the helper exits after rename but before replacement.
+func retirementObstructReceiverTranscript(t *testing.T, root *Session) ([]byte, func() error) {
+	t.Helper()
+	path := root.TranscriptPath()
+	backup := path + ".retirement-test-backup"
+	beforeFault, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved := false
+	repairTranscript := func() error {
+		if moved {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			if err := os.Rename(backup, path); err != nil {
+				return err
+			}
+			moved = false
+			restored, err := os.ReadFile(path)
+			if err != nil || !bytes.Equal(beforeFault, restored) {
+				return fmt.Errorf("receiver restoration changed original bytes: %w", err)
+			}
+		}
+		if _, err := os.Stat(backup); !os.IsNotExist(err) {
+			return fmt.Errorf("receiver backup remains: %w", err)
+		}
+		return nil
+	}
+	t.Cleanup(func() {
+		if err := repairTranscript(); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := os.Rename(path, backup); err != nil {
+		t.Fatal(err)
+	}
+	moved = true // Restoration is owed even if making the obstruction fails.
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return beforeFault, repairTranscript
+}
+
 // The owning source is a real terminal watch-send journal. Its normal
 // controller-addressed acceptance must preserve that source when preparing
 // refuses admission. Production firing leases prevent new source production
@@ -310,11 +356,41 @@ func TestRetirementAdmissionWatchSourcePreserved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, Source: rec.JobID, OutputMatch: "never-seen", Send: &watchSendArgs{To: "caller", Message: "opaque-retained-watch-notice"}}); err != nil {
+	registered, err := jm.configureWatch(watchArgs{Target: rec.JobID, Source: rec.JobID, OutputMatch: "never-seen", Send: &watchSendArgs{To: "caller", Message: "opaque-retained-watch-notice"}})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "fixture-settled", nil); err != nil {
+	jm.mu.Lock()
+	shellDone := jm.running[rec.JobID].done
+	jm.mu.Unlock()
+	t.Cleanup(func() {
+		// The claim worker's defer has unlocked/joined, and the later-registered
+		// obstruction cleanup has repaired transport before finalization.
+		if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "fixture-settled", nil); err != nil {
+			t.Error(err)
+		}
+		awaitSignal(t, shellDone, "terminal shell cleanup finalizer")
+		root.Close()
+		clk.Drain()
+	})
+	// Terminal production now dispatches synchronously. Refuse only its real
+	// filesystem destination, then repair it BEFORE the preparing interval.
+	beforeFault, repairTranscript := retirementObstructReceiverTranscript(t, root)
+	finalizeErr := jm.finalize(rec.JobID, jobstore.StatusCompleted, "fixture-settled", nil)
+	var pathErr *os.PathError
+	if !errors.As(finalizeErr, &pathErr) || pathErr.Path != root.TranscriptPath() {
+		t.Fatalf("terminal custody did not encounter the receiver filesystem fault: %v", finalizeErr)
+	}
+	if err := repairTranscript(); err != nil {
 		t.Fatal(err)
+	}
+	shells, err := jm.store.Load()
+	if err != nil || shells[rec.JobID] == nil {
+		t.Fatalf("original terminal shell missing: %+v err=%v", shells, err)
+	}
+	originalShell := *shells[rec.JobID]
+	if originalShell.Status != jobstore.StatusCompleted || originalShell.TerminalGen == "" || originalShell.NotifyState != jobstore.NotifyPending {
+		t.Fatalf("original terminal shell not retained for custody retry: %+v", originalShell)
 	}
 	originalSource, err := jm.store.LoadWatchSends()
 	if err != nil || len(originalSource.Pending) != 1 {
@@ -324,20 +400,66 @@ func TestRetirementAdmissionWatchSourcePreserved(t *testing.T) {
 	for _, pending := range originalSource.Pending {
 		source = *pending
 	}
+	if source.Key.WatchID != registered.WatchID || source.Key.WatchTarget != rec.JobID || source.Key.WatchGeneration == "" || source.DeliveryID == "" || source.ReceiverSessionID != root.ID() || !source.EndNotice {
+		t.Fatalf("terminal watch source identity changed: %+v", source)
+	}
+	id := fmt.Sprintf("watch:%s:%d", source.DeliveryID, source.UpdateSeq)
+	shellID := stableShellAttentionID(rec.JobID, originalShell.TerminalGen)
+	assertAttentionResponseReceipts(t, root, id, 0)
+	assertAttentionResponseReceipts(t, root, shellID, 0)
 	originalReceiver, err := os.ReadFile(root.TranscriptPath())
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || !bytes.Equal(beforeFault, originalReceiver) {
+		t.Fatalf("fault gave receiver custody or damaged original bytes: %v", err)
+	}
+	jm.mu.Lock()
+	transportRetryArmed := jm.watchTransportRetry.active
+	jm.mu.Unlock()
+	c.mu.Lock()
+	activeBeforeClaim := len(c.active)
+	c.mu.Unlock()
+	if !transportRetryArmed || activeBeforeClaim != 0 || len(adapter.Requests()) != 0 || !clk.Now().Equal(time.Unix(1_700_000_000, 0)) {
+		t.Fatalf("preparing precondition: transport retry=%t active leases=%d requests=%d clock=%v", transportRetryArmed, activeBeforeClaim, len(adapter.Requests()), clk.Now())
+	}
+	preparing := make(chan *RetirementClaim, 1)
+	c.preparingObserved = func(claim *RetirementClaim) {
+		select {
+		case preparing <- claim:
+		default:
+		}
 	}
 	jm.mu.Lock()
 	unlockJobs := sync.OnceFunc(jm.mu.Unlock)
-	defer unlockJobs()
 	type claimResult struct {
 		claim *RetirementClaim
 		err   error
 	}
 	done := make(chan claimResult, 1)
 	go func() { claim, _, err := c.TryClaim(true); done <- claimResult{claim, err} }()
-	waitForCondition(t, 5*time.Second, "watch source preparing refusal", func() bool { return c.Snapshot().Phase == "preparing" })
+	joinClaim := sync.OnceValue(func() claimResult {
+		unlockJobs()
+		select {
+		case result := <-done:
+			return result
+		// TRIPWIRE: releasing jm.mu lets real evidence collection return, only a hang reaches this guard.
+		case <-time.After(5 * time.Second):
+			t.Fatal("claim evidence worker did not return")
+			return claimResult{}
+		}
+	})
+	defer joinClaim()
+	var observed *RetirementClaim
+	select {
+	case observed = <-preparing:
+	// TRIPWIRE: TryClaim reports its actual published claim, only a hang reaches this guard.
+	case <-time.After(5 * time.Second):
+		t.Fatal("watch source preparing claim was not observed")
+	}
+	c.mu.Lock()
+	current := observed != nil && observed.controller == c && observed.root == root && observed.generation == c.generation && c.root == root && c.claim == observed && c.phase == "preparing"
+	c.mu.Unlock()
+	if !current {
+		t.Fatalf("observed claim is not the current preparing identity: %p", observed)
+	}
 	// This is the real transport acceptance function and its installed
 	// controller route, not a substituted enqueue callback or writer.
 	if err := jm.acceptWatchFrame(source); !errors.Is(err, ErrRetirementUnavailable) {
@@ -351,15 +473,30 @@ func TestRetirementAdmissionWatchSourcePreserved(t *testing.T) {
 	if err != nil || !bytes.Equal(originalReceiver, afterReceiver) {
 		t.Fatalf("refusal wrote receiver custody: %v", err)
 	}
-	unlockJobs()
-	result := <-done
+	result := joinClaim()
 	if result.err != nil || result.claim != nil {
 		t.Fatalf("pending source escaped claim evidence: claim=%v err=%v", result.claim, result.err)
 	}
+	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "fixture-settled", nil); err != nil {
+		t.Fatal(err)
+	}
+	awaitSignal(t, shellDone, "same terminal shell custody finalizer")
+	shells, err = jm.store.Load()
+	if err != nil || shells[rec.JobID] == nil {
+		t.Fatalf("retried terminal shell missing: %+v err=%v", shells, err)
+	}
+	shell := shells[rec.JobID]
+	if shell.TerminalGen != originalShell.TerminalGen || shell.Status != originalShell.Status || shell.Reason != originalShell.Reason || shell.NotifyState != jobstore.NotifyDelivered {
+		t.Fatalf("custody retry changed original terminal shell: before=%+v after=%+v", originalShell, shell)
+	}
+	finished := producerSourceEvents(t, jm, jobstore.EventJobFinished)
+	if len(finished) != 1 || finished[0].JobID != rec.JobID || finished[0].TerminalGen != originalShell.TerminalGen {
+		t.Fatalf("custody retry duplicated or replaced terminal production: %+v", finished)
+	}
+	retirementNotificationCustody(t, root, shellID, 0)
 	if err := jm.dispatchProducedWatchSendsFrom(jm.store.LoadWatchSends); err != nil {
 		t.Fatal(err)
 	}
-	id := fmt.Sprintf("watch:%s:%d", source.DeliveryID, source.UpdateSeq)
 	retirementNotificationCustody(t, root, id, 0)
 	settled, err := jm.store.LoadWatchSends()
 	if err != nil || len(settled.Pending) != 0 {
@@ -372,6 +509,32 @@ func TestRetirementAdmissionWatchSourcePreserved(t *testing.T) {
 		t.Fatal("original retained source never reached the provider")
 	}
 	retirementNotificationCustody(t, root, id, 1)
+	retirementNotificationCustody(t, root, shellID, 1)
+	requestsBeforeRetry := len(adapter.Requests())
+	// Let the actual fault-created retry inspect the repaired, settled source.
+	clk.Advance(jobNotificationRetryInitialDelay)
+	clk.Drain()
+	jm.mu.Lock()
+	retrying := jm.watchTransportRetry.active
+	jm.mu.Unlock()
+	c.mu.Lock()
+	activeAfterRetry := len(c.active)
+	c.mu.Unlock()
+	root.attentionMu.Lock()
+	callbacks := root.attentionCallbacks
+	root.attentionMu.Unlock()
+	if retrying || activeAfterRetry != 0 || callbacks != 0 || len(adapter.Requests()) != requestsBeforeRetry {
+		t.Fatalf("settled source retry left work: retry=%t leases=%d callbacks=%d requests=%d->%d", retrying, activeAfterRetry, callbacks, requestsBeforeRetry, len(adapter.Requests()))
+	}
+	retirementNotificationCustody(t, root, id, 1)
+	retirementNotificationCustody(t, root, shellID, 1)
+	afterRetry, err := jm.store.LoadWatchSends()
+	if err != nil || !reflect.DeepEqual(settled, afterRetry) {
+		t.Fatalf("settled retry changed watch source: %+v err=%v", afterRetry, err)
+	}
+	if pending, err := root.pendingNotificationIDs(); err != nil || len(pending) != 0 {
+		t.Fatalf("settled retry created receiver work: %v err=%v", pending, err)
+	}
 	assertRetirementEvidenceEligible(t, c)
 }
 

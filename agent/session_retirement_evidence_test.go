@@ -2044,10 +2044,11 @@ func TestRetirementWatchFiredOneShot(t *testing.T) {
 
 func TestRetirementWatchTerminalPendingSend(t *testing.T) {
 	t.Parallel()
+	clk := agenttest.NewFakeClockAt(time.Unix(1_700_000_000, 0))
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return finalResponse("terminal watch acknowledged") },
 	}}
-	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir()}), withAdapter(adapter))
+	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), clock: clk}), withAdapter(adapter))
 	c := retirementEvidenceController(t, root)
 	jm := root.jobManager
 	rec, err := jm.createShell(createShellOpts{Command: "original-watched-shell"})
@@ -2058,8 +2059,34 @@ func TestRetirementWatchTerminalPendingSend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "fixture-settled", nil); err != nil {
+	jm.mu.Lock()
+	shellDone := jm.running[rec.JobID].done
+	jm.mu.Unlock()
+	t.Cleanup(func() {
+		// The later-registered obstruction cleanup restores transport first.
+		if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "fixture-settled", nil); err != nil {
+			t.Error(err)
+		}
+		awaitSignal(t, shellDone, "pending-watch shell cleanup finalizer")
+		root.Close()
+		clk.Drain()
+	})
+	_, repairTranscript := retirementObstructReceiverTranscript(t, root)
+	finalizeErr := jm.finalize(rec.JobID, jobstore.StatusCompleted, "fixture-settled", nil)
+	var pathErr *os.PathError
+	if !errors.As(finalizeErr, &pathErr) || pathErr.Path != root.TranscriptPath() {
+		t.Fatalf("terminal custody did not encounter the receiver filesystem fault: %v", finalizeErr)
+	}
+	if err := repairTranscript(); err != nil {
 		t.Fatal(err)
+	}
+	shells, err := jm.store.Load()
+	if err != nil || shells[rec.JobID] == nil {
+		t.Fatalf("original terminal shell missing: %+v err=%v", shells, err)
+	}
+	originalShell := *shells[rec.JobID]
+	if originalShell.Status != jobstore.StatusCompleted || originalShell.TerminalGen == "" || originalShell.NotifyState != jobstore.NotifyPending {
+		t.Fatalf("original terminal shell not retained for custody retry: %+v", originalShell)
 	}
 	original, err := jm.store.LoadWatchSends()
 	if err != nil {
@@ -2075,12 +2102,43 @@ func TestRetirementWatchTerminalPendingSend(t *testing.T) {
 	if source.Key.WatchID != registered.WatchID || source.DeliveryID == "" || source.Key.WatchGeneration == "" {
 		t.Fatalf("missing source identity: %+v", source)
 	}
+	// Retry only this already-published shell. Its new lexical production is
+	// empty, so shell custody can finish without pumping the old watch source.
+	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "fixture-settled", nil); err != nil {
+		t.Fatal(err)
+	}
+	awaitSignal(t, shellDone, "pending-watch same terminal shell finalizer")
+	shells, err = jm.store.Load()
+	if err != nil || shells[rec.JobID] == nil {
+		t.Fatalf("retried terminal shell missing: %+v err=%v", shells, err)
+	}
+	shell := shells[rec.JobID]
+	if shell.TerminalGen != originalShell.TerminalGen || shell.Status != originalShell.Status || shell.Reason != originalShell.Reason || shell.NotifyState != jobstore.NotifyDelivered {
+		t.Fatalf("custody retry changed original terminal shell: before=%+v after=%+v", originalShell, shell)
+	}
+	finished := producerSourceEvents(t, jm, jobstore.EventJobFinished)
+	if len(finished) != 1 || finished[0].JobID != rec.JobID || finished[0].TerminalGen != originalShell.TerminalGen {
+		t.Fatalf("custody retry duplicated or replaced terminal production: %+v", finished)
+	}
+	beforeClaim, err := jm.store.LoadWatchSends()
+	if err != nil || !reflect.DeepEqual(original, beforeClaim) {
+		t.Fatalf("shell custody retry changed original watch source: %+v err=%v", beforeClaim, err)
+	}
 	jm.mu.Lock()
 	_, _, live := jm.watchConfigByIDLocked(registered.WatchID)
+	transportRetryArmed := jm.watchTransportRetry.active
 	jm.mu.Unlock()
 	if live {
 		t.Fatal("terminal watch still live")
 	}
+	c.mu.Lock()
+	activeBeforeClaim := len(c.active)
+	c.mu.Unlock()
+	if !transportRetryArmed || activeBeforeClaim != 0 || len(adapter.Requests()) != 0 || !clk.Now().Equal(time.Unix(1_700_000_000, 0)) {
+		t.Fatalf("watch evidence precondition: retry=%t active=%d requests=%d clock=%v", transportRetryArmed, activeBeforeClaim, len(adapter.Requests()), clk.Now())
+	}
+	shellID := stableShellAttentionID(rec.JobID, originalShell.TerminalGen)
+	retirementNotificationCustody(t, root, shellID, 0)
 	assertRetirementEvidenceBlocked(t, c, "watch")
 	after, err := jm.store.LoadWatchSends()
 	if err != nil {
@@ -2098,12 +2156,37 @@ func TestRetirementWatchTerminalPendingSend(t *testing.T) {
 	// DeliveryID is transport identity, deliberately stripped from model prose.
 	// The exact original ID must instead be in the canonical response receipt.
 	retirementNotificationCustody(t, root, fmt.Sprintf("watch:%s:%d", source.DeliveryID, source.UpdateSeq), 1)
+	retirementNotificationCustody(t, root, shellID, 1)
 	after, err = jm.store.LoadWatchSends()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(after.Pending) != 0 {
 		t.Fatalf("real turn left pending sends: %+v", after)
+	}
+	requestsBeforeRetry := len(adapter.Requests())
+	clk.Advance(jobNotificationRetryInitialDelay)
+	clk.Drain()
+	jm.mu.Lock()
+	retrying := jm.watchTransportRetry.active
+	jm.mu.Unlock()
+	c.mu.Lock()
+	activeAfterRetry := len(c.active)
+	c.mu.Unlock()
+	root.attentionMu.Lock()
+	callbacks := root.attentionCallbacks
+	root.attentionMu.Unlock()
+	if retrying || activeAfterRetry != 0 || callbacks != 0 || len(adapter.Requests()) != requestsBeforeRetry {
+		t.Fatalf("settled source retry left work: retry=%t leases=%d callbacks=%d requests=%d->%d", retrying, activeAfterRetry, callbacks, requestsBeforeRetry, len(adapter.Requests()))
+	}
+	retirementNotificationCustody(t, root, fmt.Sprintf("watch:%s:%d", source.DeliveryID, source.UpdateSeq), 1)
+	retirementNotificationCustody(t, root, shellID, 1)
+	afterRetry, err := jm.store.LoadWatchSends()
+	if err != nil || !reflect.DeepEqual(after, afterRetry) {
+		t.Fatalf("settled retry changed watch source: %+v err=%v", afterRetry, err)
+	}
+	if pending, err := root.pendingNotificationIDs(); err != nil || len(pending) != 0 {
+		t.Fatalf("settled retry created receiver work: %v err=%v", pending, err)
 	}
 	assertRetirementEvidenceEligible(t, c)
 }
@@ -2299,21 +2382,42 @@ func TestRetirementNotificationRetrySupersededDuringAdmission(t *testing.T) {
 	c.mu.Lock()
 	leaseBefore := c.nextLease
 	c.mu.Unlock()
+	// This controller has no Run consumer. Discard only the synchronous
+	// enqueue/scheduling edges before awaiting this callback's admission.
+drainChanges:
+	for {
+		select {
+		case <-c.changed:
+		default:
+			break drainChanges
+		}
+	}
 	// Park beginAttentionCallback after the retirement lease is acquired but
 	// before its local callback registration completes. The entry precheck has
 	// already passed, so only the second check can detect this supersession.
 	root.attentionMu.Lock()
 	unlockAttention := sync.OnceFunc(root.attentionMu.Unlock)
-	defer unlockAttention()
-	clk.Advance(jobNotificationRetryInitialDelay)
-	waitForCondition(t, 5*time.Second, "retry acquired retirement admission", func() bool {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		return c.nextLease == leaseBefore+1 && len(c.active) == 1
+	finishRetry := sync.OnceFunc(func() {
+		unlockAttention()
+		clk.Drain()
 	})
+	defer finishRetry()
+	clk.Advance(jobNotificationRetryInitialDelay)
+	select {
+	case <-c.changed:
+	// TRIPWIRE: the fake-clock callback publishes its real lease, only a hang reaches this guard.
+	case <-time.After(5 * time.Second):
+		t.Fatal("retry did not publish retirement admission")
+	}
+	c.mu.Lock()
+	lease, activeBeforeRelease := c.nextLease, len(c.active)
+	blocker, admitted := c.active[leaseBefore+1]
+	c.mu.Unlock()
+	if lease != leaseBefore+1 || activeBeforeRelease != 1 || !admitted || blocker.Category != "notification" || blocker.SessionID != root.ID() {
+		t.Fatalf("retry admission identity: lease=%d previous=%d active=%d admitted=%t blocker=%+v", lease, leaseBefore, activeBeforeRelease, admitted, blocker)
+	}
 	root.suspendNotificationWake()
-	unlockAttention()
-	clk.Drain()
+	finishRetry()
 	c.mu.Lock()
 	active := len(c.active)
 	c.mu.Unlock()
