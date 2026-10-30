@@ -126,16 +126,6 @@ export async function mountComposer(
   return (await mountComposerWithHandle(ref, overrides, options)).fake;
 }
 
-export function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, resolve, reject };
-}
-
 export function notAcceptedError(clientMutationId: string): WireError {
   return new WireError("validation failed", -32602, {
     clientMutationId,

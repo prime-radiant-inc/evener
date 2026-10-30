@@ -1,3 +1,4 @@
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { connectFakeClient } from "../testing/connectionTestUtils";
 import { ALL_CAPABILITIES as CAPABILITIES } from "../threadTestUtils";
 import "fake-indexeddb/auto";
@@ -28,7 +29,6 @@ import {
 } from "./threads";
 import {
   connectMutationClient,
-  deferred,
   flushIndexedDBUntil,
   mutationReceipt,
   nextHandledRequest,
