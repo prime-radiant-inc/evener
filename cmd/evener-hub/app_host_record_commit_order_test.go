@@ -1782,3 +1782,35 @@ func TestARolledBackReAddsBoundaryOutlivesTheTombstoneExpiry(t *testing.T) {
 		t.Fatalf("after the expiry the boundary %+v and the removed mark %+v disagree", boundary, marker)
 	}
 }
+
+// TestAnAddPastItsRegistrationIsNotRolledBackByALaterEditOfTheFile pins that an
+// add whose registration completed before a crash is judged by that, not by what
+// hub.toml holds after a hand edit: the marker is flipped before the registry
+// insert, so recovery finalizes the add and keeps its receipt.
+func TestAnAddPastItsRegistrationIsNotRolledBackByALaterEditOfTheFile(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, _ := hub.boot(t, false)
+	if _, err := m.RemoveResult(context.Background(), removeRequest(t, m, "side")); err != nil {
+		t.Fatalf("remove side: %v", err)
+	}
+	// A re-add forgets the removed host's cached rows right after it registers:
+	// the point between the registry insert and the finalizing write.
+	m.cfg.forgetLastGoodThreads = func(string) { panic(crashCut{}) }
+	params := appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "again.example"}, MutationID: "re-add-side"}
+	runUntilCrash(t, func() { _, _ = m.AddResult(context.Background(), params) })
+	if err := writeHubTOMLHosts(hub.configPath, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "edited-by-hand.example"}}); err != nil {
+		t.Fatalf("edit hub.toml by hand: %v", err)
+	}
+
+	_, store := hub.boot(t, true)
+
+	kept := false
+	for key := range mustRecords(t, store).MutationReceipts {
+		if scope, ok := parseHostReceiptScopedKey(key); ok && scope.Name == "side" && scope.Kind == hostMutationAdd {
+			kept = true
+		}
+	}
+	if !kept {
+		t.Fatal("recovery rolled back an add whose registration had completed")
+	}
+}

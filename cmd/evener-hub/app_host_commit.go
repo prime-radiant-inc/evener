@@ -238,15 +238,47 @@ func (m *hubHostManager) flipRuntimeSwapped(plan *hostCommitPlan) error {
 	if err := m.checkOwnFingerprint(plan); err != nil {
 		return err
 	}
+	return m.persistFlip(plan, false)
+}
+
+// flipAddRuntimeSwapped is the add's flip. The add's host change is already in
+// hub.toml and a foreign edit since is the finalizing write's collision to
+// judge, so the flip writes the records alone and never the host list.
+func (m *hubHostManager) flipAddRuntimeSwapped(plan *hostCommitPlan) error {
+	if !m.recordsInStore() {
+		// The records are hub.toml's own sections: the finalizing write carries
+		// the flip.
+		plan.Marker = m.stagedMarker(plan, m.nowTime())
+		plan.Marker.SwapStarted = true
+		plan.Marker.TeardownStarted = true
+		plan.Marker.Phase = hostStagedPhaseRuntimeSwapped
+		return nil
+	}
+	return m.persistFlip(plan, true)
+}
+
+func (m *hubHostManager) persistFlip(plan *hostCommitPlan, recordsOnly bool) error {
 	marker := plan.Marker
 	marker.SwapStarted = true
 	marker.TeardownStarted = true
 	marker.Phase = hostStagedPhaseRuntimeSwapped
-	if err := m.persistHosts(plan.Entries, plan.Known, stagedChange(plan, marker)); err != nil {
+	if staged, ok := m.cfg.store.stagedSnapshot()[plan.Name]; ok {
+		// What a re-add's staging write purged stays with the marker, for a
+		// compensation to give back.
+		marker.Consumed = staged.Consumed
+	}
+	change := stagedChange(plan, marker)
+	change.recordsOnly = recordsOnly
+	if err := m.persistHosts(plan.Entries, plan.Known, change); err != nil {
 		return err
 	}
 	plan.Marker = marker
-	plan.lastFingerprint, _ = hubTOMLFingerprintAt(m.cfg.configPath)
+	if !recordsOnly {
+		// The write above was this mutation's own to hub.toml; a records-only
+		// flip leaves the last fingerprint at the one the staging write made, so
+		// a foreign edit since still reads as a collision.
+		plan.lastFingerprint, _ = hubTOMLFingerprintAt(m.cfg.configPath)
+	}
 	return nil
 }
 

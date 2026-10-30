@@ -396,11 +396,17 @@ func (m *hubHostManager) AddResult(ctx context.Context, params appwire.HostAddPa
 	}
 	// The add's runtime transition is the registry insert below, and it has no
 	// planned teardown (its pinned target is empty), so its marker goes straight
-	// to the post-swap phase: the finalizing write carries `runtime-swapped` +
-	// `teardownStarted` and the observed committed outcome. A crash before that
-	// write leaves a `staged` marker whose boot recovery re-applies the staged
-	// runtime set and finalizes from the re-run, which for an empty pinned
-	// target is the no-op §5 defines.
+	// to the post-swap phase: the flip carries `runtime-swapped` +
+	// `teardownStarted`, and the finalizing write the observed committed outcome.
+	// A crash after the flip leaves a marker whose boot recovery finalizes from
+	// the re-run, which for an empty pinned target is the no-op §5 defines.
+	//
+	// The flip is persisted before the insert, so recovery knows the runtime
+	// transition began whatever hub.toml says by then; a registration that
+	// refuses takes it back with the host file (compensateStagedCommit).
+	if err := m.flipAddRuntimeSwapped(plan); err != nil {
+		return m.compensateStagedCommit(plan, prev, priorState, err)
+	}
 	if err := m.addHostToRegistry(entry); err != nil {
 		m.cfg.state.restore(entry.Name, priorState)
 		err = m.rollbackHubTOML(prev, unionHosts(prev, append([]hostreg.Host(nil), entry)), err, m.compensationChange(plan))
@@ -424,10 +430,6 @@ func (m *hubHostManager) AddResult(ctx context.Context, params appwire.HostAddPa
 	// registration above — there are no superseded handles to destroy — so its
 	// pinned target is empty and the re-run is a no-op (spec §5: "where the
 	// pinned target is empty the re-run is a no-op").
-	plan.Marker = m.stagedMarker(plan, m.nowTime())
-	plan.Marker.SwapStarted = true
-	plan.Marker.TeardownStarted = true
-	plan.Marker.Phase = hostStagedPhaseRuntimeSwapped
 	collision, err := m.finishMutation(plan, receipt)
 	if err != nil {
 		return appwire.HostMutationResult{}, err
