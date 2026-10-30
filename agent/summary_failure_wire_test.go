@@ -31,7 +31,7 @@ func TestSummaryFailureWireFixtures(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(&agenttest.ModelTrackingAdapter{Provider: "openai", Respond: func(req llm.Request) (llm.Response, error) {
 		if req.Model != "summary-model-8af1" {
-			return finalResponse("continued-41bc"), nil
+			return agenttest.FinalResponse("continued-41bc"), nil
 		}
 		if !recovered.Load() {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 429, "private-error-812f", map[string]any{"prompt": "private-prompt-235d"}, nil)

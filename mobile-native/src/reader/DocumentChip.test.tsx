@@ -24,7 +24,6 @@ vi.mock("react-native", async () => ({
 	AppState: { currentState: "active", addEventListener: () => ({ remove: () => {} }) },
 	useColorScheme: () => harness.scheme,
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("../ConnectionProvider", () => ({ useConnection: () => harness.connection }));
 vi.mock("./nativeDocumentMemory", () => ({ documentMemory: () => harness.memory }));
 vi.mock("../longPressMenu", () => ({

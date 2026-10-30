@@ -93,13 +93,24 @@ func (s *Session) failClosedUnlessRecorded(rec transcript.Record, err error, wha
 	return s.failClosed(fmt.Errorf("%s was not recorded: %w", what, err))
 }
 
-// failClosedOnUnhealthyTranscript fails a served session closed when its
-// transcript could not be created or its writer is poisoned. Callers hold no
-// session lock and no client-mutation store lock.
-func (s *Session) failClosedOnUnhealthyTranscript() {
+// failClosedOnTranscriptCreation fails a served session closed when its
+// transcript could not be created. It is the writer-independent half of
+// failClosedOnUnhealthyTranscript; the turn gate calls it before it samples the
+// writer, then latches the poison half only when the poisoned writer it decided
+// on is still attached.
+func (s *Session) failClosedOnTranscriptCreation() {
 	if s.transcriptCreateErr != nil {
 		_ = s.failClosed(fmt.Errorf("create transcript: %w", s.transcriptCreateErr))
 	}
+}
+
+// failClosedOnUnhealthyTranscript fails a served session closed when its
+// transcript could not be created or its writer is poisoned. Callers hold no
+// session lock and no client-mutation store lock. The turn gate does not call
+// this: it must revalidate a poison refusal against the attached writer before
+// latching (see refuseOnCurrentUnhealthyTranscript).
+func (s *Session) failClosedOnUnhealthyTranscript() {
+	s.failClosedOnTranscriptCreation()
 	if s.attachedTranscript().Poisoned() {
 		_ = s.failClosed(errTranscriptRefusesRecords())
 	}
@@ -120,14 +131,7 @@ const (
 // durabilityRetryBackoff is attempt's backoff delay: durabilityRetryDelay,
 // doubling each attempt, capped at durabilityRetryMaxDelay.
 func durabilityRetryBackoff(attempt int) time.Duration {
-	delay := durabilityRetryDelay
-	for range attempt {
-		delay *= 2
-		if delay >= durabilityRetryMaxDelay {
-			return durabilityRetryMaxDelay
-		}
-	}
-	return delay
+	return backoffDelay(attempt, durabilityRetryDelay, durabilityRetryMaxDelay)
 }
 
 // retainedUnsyncedError extracts a *transcript.RetainedUnsyncedError from a
@@ -193,7 +197,7 @@ func (s *Session) retryDurabilityUntilSettledOrExhausted(retained *transcript.Re
 		return // the session shut down while the last attempt was in flight
 	}
 	if !s.servedByDaemon() {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("%s could not be made durable after retrying: %v", what, lastErr)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("%s could not be made durable after retrying: %v", what, lastErr)})
 		return
 	}
 	if refusal := s.failClosed(fmt.Errorf("%s could not be made durable after retrying: %w", what, lastErr)); refusal != nil {
@@ -216,7 +220,7 @@ func (s *Session) announceFailClosed() {
 	if refusal == nil || !s.failedClosed.announced.CompareAndSwap(false, true) {
 		return
 	}
-	s.emit(events.EventError, events.ErrorData{
+	s.emit(events.ErrorData{
 		Error: refusal.Error(),
 		Title: "Session stopped",
 		Hint:  "Its transcript can no longer record new history. Restart the session to continue from what the transcript holds.",

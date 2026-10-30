@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -1369,6 +1370,119 @@ effort_values = ["low", "high"]
 	}
 	if len(res.Caps.EffortValues) != 0 {
 		t.Fatalf("EffortValues = %v, want the live row's empty ladder rather than the curated one", res.Caps.EffortValues)
+	}
+}
+
+// An alias seeds its facts from the target, and the gateway's no-effort verdict
+// must travel with them. Without it the alias inherits toggle-only controls and
+// an empty ladder but not the flag that suppresses the level, so an OpenRouter
+// alias transmits an effort its provider rejects.
+func TestResolve_AliasInheritsNoEffortVerdict(t *testing.T) {
+	r := fixtureLoad(t, nil, "", WithOverlay(overlayWith(`
+[providers.openrouter.models."target-model"]
+reasoning = true
+reasoning_controls = ["toggle"]
+effort_values = []
+effort_parameter_unsupported = true
+[providers.openrouter.models."alias-model"]
+alias_of = "target-model"
+`)))
+	res := mustResolve(t, r, "openrouter/alias-model")
+	if !BoolValue(res.Caps.EffortParameterUnsupported) {
+		t.Fatalf("EffortParameterUnsupported = %v, want the alias to inherit the target's verdict", res.Caps.EffortParameterUnsupported)
+	}
+}
+
+// A configured row stating the no-effort verdict must lose effort capability
+// the same way a live gateway row does. The flag alone leaves the inherited
+// ladder and the derived effort control in place, so every protocol but
+// OpenRouter would still spell an effort the row says is rejected.
+func TestResolve_ConfiguredNoEffortVerdictRemovesEffortCapability(t *testing.T) {
+	r := fixtureLoad(t, nil, "", WithOverlay(overlayWith(`
+[providers.openrouter.models."rejects-effort"]
+reasoning = true
+effort_values = ["low", "high"]
+effort_parameter_unsupported = true
+`)))
+	res := mustResolve(t, r, "openrouter/rejects-effort")
+	if res.Caps.EffortCapable() {
+		t.Fatalf("effort must be unavailable: controls=%v ladder=%v", res.Caps.ReasoningControls, res.Caps.EffortValues)
+	}
+	if len(res.Caps.EffortValues) != 0 {
+		t.Fatalf("EffortValues = %v, want the ladder cleared", res.Caps.EffortValues)
+	}
+	if !BoolValue(res.Caps.Reasoning) {
+		t.Fatalf("Reasoning = %v, want the row still reasoning", res.Caps.Reasoning)
+	}
+}
+
+// The verdict rejects named effort parameters, not numeric budgets. A
+// budget-shaped row keeps its budget_tokens control, so the provider's thinking
+// budget is still sized and derived rather than silently omitted.
+func TestResolve_NoEffortVerdictKeepsBudgetCapability(t *testing.T) {
+	r := fixtureLoad(t, nil, "", WithOverlay(overlayWith(`
+[providers.google.models."budget-model"]
+reasoning = true
+reasoning_controls = ["budget_tokens"]
+effort_parameter_unsupported = true
+`)))
+	res := mustResolve(t, r, "google/budget-model")
+	if !slices.Contains(res.Caps.ReasoningControls, "budget_tokens") {
+		t.Fatalf("ReasoningControls = %v, want budget_tokens preserved", res.Caps.ReasoningControls)
+	}
+	if slices.Contains(res.Caps.ReasoningControls, "effort") {
+		t.Fatalf("ReasoningControls = %v, want no effort control", res.Caps.ReasoningControls)
+	}
+	if res.Caps.ThinkingShape == nil || *res.Caps.ThinkingShape != "budget" {
+		t.Fatalf("ThinkingShape = %v, want budget derived", res.Caps.ThinkingShape)
+	}
+}
+
+// The live path must not clobber a budget control either. A gateway listing can
+// enrich a budget-shaped row (a Google-protocol Gemini over an OpenAI-shaped
+// listing); recording the no-effort verdict there leaves derivation free to
+// strip only the effort control and keep budget_tokens.
+func TestResolve_LiveNoEffortVerdictKeepsBudgetCapability(t *testing.T) {
+	r := fixtureLoad(t, nil, "", WithOverlay(overlayWith(`
+[providers.google.models."gemini-budget"]
+reasoning = true
+reasoning_controls = ["budget_tokens"]
+`)))
+	unsupported := true
+	r.ApplyLive("google", []Model{{
+		ID: "gemini-budget", Caps: Caps{Reasoning: new(true), EffortParameterUnsupported: &unsupported, EffortValues: []string{}},
+	}})
+	res := mustResolve(t, r, "google/gemini-budget")
+	if !slices.Contains(res.Caps.ReasoningControls, "budget_tokens") {
+		t.Fatalf("ReasoningControls = %v, want budget_tokens preserved through the live layer", res.Caps.ReasoningControls)
+	}
+	if slices.Contains(res.Caps.ReasoningControls, "effort") {
+		t.Fatalf("ReasoningControls = %v, want no effort control", res.Caps.ReasoningControls)
+	}
+	if res.Caps.ThinkingShape == nil || *res.Caps.ThinkingShape != "budget" {
+		t.Fatalf("ThinkingShape = %v, want budget derived", res.Caps.ThinkingShape)
+	}
+}
+
+// Rejecting an effort parameter says nothing about supporting budget thinking.
+// An effort-only Claude row must keep its adaptive shape, or the anthropic
+// builder sends type "enabled" with a budget_tokens object instead of the
+// adaptive body the model takes.
+func TestResolve_NoEffortVerdictKeepsAdaptiveShape(t *testing.T) {
+	r := fixtureLoad(t, nil, "", WithOverlay(overlayWith(`
+[providers.anthropic.models."claude-effort-only"]
+family = "claude-opus"
+reasoning = true
+reasoning_controls = ["effort"]
+effort_values = ["low", "high"]
+effort_parameter_unsupported = true
+`)))
+	res := mustResolve(t, r, "anthropic/claude-effort-only")
+	if res.Caps.ThinkingShape == nil || *res.Caps.ThinkingShape != "adaptive" {
+		t.Fatalf("ThinkingShape = %v, want adaptive preserved", res.Caps.ThinkingShape)
+	}
+	if res.Caps.EffortCapable() {
+		t.Fatal("EffortCapable must answer false on a row that rejects effort")
 	}
 }
 

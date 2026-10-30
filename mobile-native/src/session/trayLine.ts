@@ -6,25 +6,24 @@
 // hub's, taken as the Board's row takes it (spec 13.1), with the session's own
 // delegates as the last resort.
 import {
-	type ItemModel,
+	compactDuration,
+	formatTokenCount,
 	isActiveItem,
 	isInProgressStatus,
-	formatTokenCount,
-	type ModelRetryState,
-	type NavigationSessionSummary,
+	isStuck,
+	parseTimestampMs,
 	pendingTextJoined,
-	type SessionActivity,
-	type ThreadModel,
 	toolFamily,
 	toolStepProgress,
+	type ItemModel,
+	type ModelRetryState,
+	type NavigationSessionSummary,
+	type SessionActivity,
+	type ThreadModel,
 } from "@evener/appwire-client";
 import { runningSubagentCount } from "../subagents/subagentModel";
 import { AGENT_QUIET_AFTER_MS, quietOrWorking, waitingOnSubagents } from "../board/attention";
 import { PULSE_BARS } from "../board/pulse";
-import { compactDuration } from "./format";
-
-/** No frame for this long reads "May be stuck" (spec 13.1). */
-export const STUCK_AFTER_MS = 10 * 60_000;
 
 export interface TrayLine {
 	text: string;
@@ -66,32 +65,32 @@ export function trayLine(
 	const intent = latestToolIntent(session);
 	if (intent) return { text: intent, attention: false };
 	const silence = now - session.lastFrameAt;
-	// A retry the hub reported explains the silence (modelRetry deliberately
-	// leaves lastFrameAt alone, model.ts), so it wins, as on the web
-	// (liveness.ts's describeLiveness). Past ten minutes the line adds the
-	// silence and turns amber, as the web's stalled level does. A first
-	// attempt is gated behind the ordinary quiet threshold too (the web's
-	// retryKnownEarly = retry.attempt >= 2): a retry that resolves on its
-	// next try shouldn't flash across the tray, but from the second attempt
-	// on, the retry is known information and always wins.
-	if (session.modelRetry && (silence >= AGENT_QUIET_AFTER_MS || session.modelRetry.attempt >= 2)) {
-		const retry = retryText(session.modelRetry);
-		return silence >= STUCK_AFTER_MS
-			? { text: `${retry} · no updates for ${compactDuration(silence)}`, attention: true, timed: true }
-			: { text: retry, attention: false };
-	}
 	// The Board row's precedence (attention.ts's whyLine): the activity
 	// read's running-subagent count, else the row's tally (S3). The session's
 	// own delegates are the last resort (a subagent's screen, or a hub with
 	// neither). Every delegate is owned by the root, so a root lists its whole
 	// tree and a subagent lists none.
 	const running = activity?.runningSubagents ?? row?.subagents?.running ?? runningSubagents(session);
+	const stuck = isStuck(silence, running);
+	// A retry the hub reported explains the silence (modelRetry deliberately
+	// leaves lastFrameAt alone, model.ts), so it wins, as on the web
+	// (liveness.ts's describeLiveness). When the shared stuck rule fires the
+	// line adds the silence and turns amber. A first attempt is gated behind
+	// the ordinary quiet threshold too (the web's retryKnownEarly = retry.attempt
+	// >= 2): a retry that resolves on its next try shouldn't flash across the
+	// tray, but from the second attempt on, the retry is known information and
+	// always wins.
+	if (session.modelRetry && (silence >= AGENT_QUIET_AFTER_MS || session.modelRetry.attempt >= 2)) {
+		const retry = retryText(session.modelRetry);
+		return stuck
+			? { text: `${retry} · no updates for ${compactDuration(silence)}`, attention: true, timed: true }
+			: { text: retry, attention: false };
+	}
 	// An agent waiting on subagents is never stuck (Jesse's ruling on S5): a
 	// subagent inside one long model call sends nothing for minutes. Quiet
 	// below is unreachable while one runs, since every path with a running
 	// subagent returns first.
-	if (running === 0 && silence >= STUCK_AFTER_MS)
-		return { text: `May be stuck · no updates for ${compactDuration(silence)}`, attention: true, timed: true };
+	if (stuck) return { text: `May be stuck · no updates for ${compactDuration(silence)}`, attention: true, timed: true };
 	const step = currentStep(session);
 	if (running > 0 && (!step || step.waitsOnSubagents)) return { text: waitingOnSubagents(running), attention: false };
 	if (step)
@@ -163,7 +162,7 @@ function stepFor(item: ItemModel, cwd: string | undefined): Step | null {
 	const namesCommand = toolFamily(item.toolName ?? "") === "shell" && progress !== RUNNING_A_COMMAND;
 	return {
 		text: namesCommand ? progress : intent || progress,
-		startedAt: timeOf(item.startedAt),
+		startedAt: parseTimestampMs(item.startedAt),
 		waitsOnSubagents: WAITING_TOOLS.has(item.toolName ?? ""),
 	};
 }
@@ -183,12 +182,6 @@ function thinkingTokens(item: ItemModel): number {
 
 function runningSubagents(session: TraySource): number {
 	return runningSubagentCount(session.delegates ?? []);
-}
-
-function timeOf(value: string | undefined): number | undefined {
-	if (!value) return undefined;
-	const time = Date.parse(value);
-	return Number.isFinite(time) ? time : undefined;
 }
 
 /** The frames this phone saw each minute while the session was open: the

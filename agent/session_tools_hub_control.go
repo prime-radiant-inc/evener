@@ -88,7 +88,7 @@ func managerControlSchema() map[string]any {
 	branches := make([]any, 0, len(managerControlActions))
 	for _, a := range managerControlActions {
 		actions = append(actions, a.name)
-		branches = append(branches, map[string]any{"properties": map[string]any{"action": map[string]any{"const": a.name}, "arguments": managerParametersSchema(reflect.TypeOf(a.params))}, "required": []string{"action", "arguments"}})
+		branches = append(branches, map[string]any{"type": "object", "properties": map[string]any{"action": map[string]any{"type": "string", "const": a.name}, "arguments": managerParametersSchema(reflect.TypeOf(a.params))}, "required": []string{"action", "arguments"}})
 	}
 	return map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
 		"action":    map[string]any{"type": "string", "enum": actions},

@@ -27,13 +27,18 @@ import type {
 	MutationRecoveryKind,
 	MutationRecoveryRecord,
 	MutationStopBarrier,
+	QueuedMessageStorage,
 	SecureRandomSource,
 } from "@evener/appwire-client/state/mutation";
 import {
 	acceptedRecord,
-	carriesOptimisticInput,
+	canEditQueuedMessage,
+	canRemoveQueuedMessage,
 	createSecureUUID,
+	matchesQueuedMessageSnapshot,
 	PENDING_TURN_METHODS,
+	retainsAcceptedCopy,
+	settlementRetiresRecovery,
 } from "@evener/appwire-client/state/mutation";
 import { type SqliteSync, type SqliteSyncRunResult, withSavepoint } from "./sqliteSync";
 
@@ -62,6 +67,12 @@ export interface MutationOutboxSQLiteOptions {
 	getOwnClientId?: () => string | undefined;
 }
 
+export interface RecoveryResendCommit {
+	targetRef: string;
+	sourceIds: readonly string[];
+	clientMutationId: string;
+}
+
 // The one row shape all three tables share: a record's current table IS its
 // state (submitting/blockedUnknown -> outbox, accepted -> optimistic,
 // rejected/orphaned -> recovery), so no separate state machine duplicates
@@ -84,6 +95,8 @@ const COLUMNS = [
 	"attachments",
 	"optimistic_display",
 	"composer_text",
+	"composer_mentions",
+	"draft_capture_token",
 	"intent_sequence",
 	"created_at",
 	"state",
@@ -113,6 +126,8 @@ export interface Row {
 	attachments: string;
 	optimistic_display: string;
 	composer_text: string | null;
+	composer_mentions: string | null;
+	draft_capture_token: string | null;
 	intent_sequence: number;
 	created_at: number;
 	state: string;
@@ -137,6 +152,8 @@ export function fromRow<A extends MutationAttachmentRef, T extends MutationRecor
 		attachments: JSON.parse(row.attachments),
 		optimisticDisplay: optimisticDisplay === null ? undefined : optimisticDisplay,
 		composerText: row.composer_text ?? undefined,
+		composerMentions: row.composer_mentions == null ? undefined : JSON.parse(row.composer_mentions),
+		draftCaptureToken: row.draft_capture_token ?? undefined,
 		intentSequence: row.intent_sequence,
 		createdAt: row.created_at,
 		state: row.state as MutationOutboxState,
@@ -156,7 +173,7 @@ export function fromRow<A extends MutationAttachmentRef, T extends MutationRecor
 // (outbox.ts's own comment: "a host with a synchronous store returns
 // resolved promises").
 export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAttachmentRef>
-	implements MutationOutboxStorage<A>
+	implements MutationOutboxStorage<A>, QueuedMessageStorage<A>
 {
 	readonly db: SqliteSync;
 	readonly #createMutationId: () => string;
@@ -173,7 +190,7 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			client_mutation_id TEXT PRIMARY KEY, version INTEGER NOT NULL,
 			origin_client_id TEXT, target_ref TEXT NOT NULL, thread_id TEXT, instance_id TEXT, method TEXT NOT NULL,
 			payload TEXT NOT NULL, attachments TEXT NOT NULL, optimistic_display TEXT NOT NULL,
-			composer_text TEXT, intent_sequence INTEGER NOT NULL, created_at INTEGER NOT NULL,
+			composer_text TEXT, composer_mentions TEXT, draft_capture_token TEXT, intent_sequence INTEGER NOT NULL, created_at INTEGER NOT NULL,
 			state TEXT NOT NULL, attempted INTEGER NOT NULL DEFAULT 0,
 			unresolved_attempts INTEGER NOT NULL DEFAULT 0,
 			stop_epoch_at_enqueue INTEGER NOT NULL DEFAULT 0,
@@ -194,114 +211,104 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 		);
 		this.db.execSync(
 			`CREATE TABLE IF NOT EXISTS mutation_sequence (target_ref TEXT PRIMARY KEY, last_sequence INTEGER NOT NULL,
-			 stop_epoch INTEGER NOT NULL DEFAULT 0)`,
+			 stop_epoch INTEGER NOT NULL DEFAULT 0, recovery_resends TEXT NOT NULL DEFAULT '[]')`,
 		);
+		// Each additive column below is the whole migration for databases from
+		// before it existed: ALTER TABLE has no IF NOT EXISTS, so
+		// addColumnIfMissing checks the table's columns first, and rows written
+		// earlier read as the column's default.
+		//
 		// The ref's durable stop epoch (§4's stop barrier) rides the sequence
-		// row - the same seat the web adapter's sequences store gives it. A
-		// database created before the barrier lacks the column, and ALTER
-		// TABLE has no IF NOT EXISTS, so check the table's columns first: the
-		// additive default-0 column is the whole migration, no data rewrite,
-		// and existing rows read as "never stopped".
-		const sequenceColumns = this.db.getAllSync<{ name: string }>("PRAGMA table_info(mutation_sequence)");
-		if (!sequenceColumns.some((column) => column.name === "stop_epoch")) {
-			this.db.execSync("ALTER TABLE mutation_sequence ADD COLUMN stop_epoch INTEGER NOT NULL DEFAULT 0");
-		}
-		// The record tables' own additive column (the web's fused identity
-		// fix, 4059723ab4): a durable row carries its enqueue-time instance so
-		// cleanup and Retry can compare the identity the daemon actually
-		// fences with (instanceId ?? threadId). A database created before the
-		// field existed has no such column, and ALTER TABLE has no IF NOT
-		// EXISTS, so check each table's columns first - the nullable column is
-		// the whole migration, no data rewrite, and rows written before the
-		// field existed read as instanceId-undefined, their identity falling
-		// back to the threadId exactly the way the fused identity defines.
+		// row - the same seat the web adapter's sequences store gives it;
+		// existing rows read as "never stopped".
+		this.addColumnIfMissing("mutation_sequence", "stop_epoch", "INTEGER NOT NULL DEFAULT 0");
+		this.addColumnIfMissing("mutation_sequence", "recovery_resends", "TEXT NOT NULL DEFAULT '[]'");
 		for (const table of Object.values(TABLES)) {
-			const columns = this.db.getAllSync<{ name: string }>(`PRAGMA table_info(${table})`);
-			if (!columns.some((column) => column.name === "instance_id")) {
-				this.db.execSync(`ALTER TABLE ${table} ADD COLUMN instance_id TEXT`);
-			}
+			// The enqueue-time instance (the web's fused identity fix,
+			// 4059723ab4): cleanup and Retry compare the identity the daemon
+			// actually fences with (instanceId ?? threadId). Rows written before
+			// it read as instanceId-undefined, falling back to the threadId.
+			this.addColumnIfMissing(table, "instance_id", "TEXT");
+			this.addColumnIfMissing(table, "composer_mentions", "TEXT");
+			this.addColumnIfMissing(table, "draft_capture_token", "TEXT");
+			// #4342: the ref's stop epoch at enqueue time - the barrier's own
+			// read, stored, so a refusal can fence its rollback: a Stop whose
+			// cancel scan skipped the attempted row must not be outrun by the
+			// refusal's redelivery. Part of the shared insert shape, so every
+			// record table needs it. Rows written before it read as
+			// captured-at-zero, the conservative direction.
+			this.addColumnIfMissing(table, "stop_epoch_at_enqueue", "INTEGER NOT NULL DEFAULT 0");
+			// When a record was accepted. The prune asks "accepted before this
+			// read began", which enqueue time cannot answer: a replacement
+			// client's read can be out when an earlier request's receipt lands.
+			// A row written before the column existed is backfilled from its
+			// enqueue time (it was accepted before the upgrade, and leaving it
+			// at 0 would exclude exactly the records the prune exists to heal).
+			// The ALTER and its backfill commit together: a process that died
+			// between them would leave the column present and the rows
+			// unstamped, and no later start would retry the backfill.
+			this.addColumnIfMissing(
+				table,
+				"accepted_at",
+				"INTEGER NOT NULL DEFAULT 0",
+				`UPDATE ${table} SET accepted_at = created_at WHERE state = 'accepted'`,
+			);
 		}
 		// #4342: unresolved attempt counts live beside the attempted flag on
-		// the outbox table. A database created before the column existed
-		// lacks it, and ALTER TABLE has no IF NOT EXISTS, so check the
-		// columns first - the default-zero column is the whole migration, and
-		// rows written before it existed read as zero unresolved attempts.
-		const outboxColumns = this.db.getAllSync<{ name: string }>(`PRAGMA table_info(${TABLES.outbox})`);
-		if (!outboxColumns.some((column) => column.name === "unresolved_attempts")) {
-			this.db.execSync(`ALTER TABLE ${TABLES.outbox} ADD COLUMN unresolved_attempts INTEGER NOT NULL DEFAULT 0`);
-		}
-		// #4342: the ref's stop epoch at enqueue time - the barrier's own
-		// read, stored, so a refusal can fence its rollback: a Stop whose
-		// cancel scan skipped the attempted row must not be outrun by the
-		// refusal's redelivery. The column is part of the shared insert
-		// shape, so every record table needs it - the instance_id loop, not an
-		// outbox-only ALTER: a database from the previous schema would
-		// otherwise throw on every optimistic and recovery write. Rows
-		// written before the column existed read as captured-at-zero, the
-		// conservative direction.
-		for (const table of Object.values(TABLES)) {
-			const columns = this.db.getAllSync<{ name: string }>(`PRAGMA table_info(${table})`);
-			if (!columns.some((column) => column.name === "stop_epoch_at_enqueue")) {
-				this.db.execSync(`ALTER TABLE ${table} ADD COLUMN stop_epoch_at_enqueue INTEGER NOT NULL DEFAULT 0`);
-			}
-		}
-		// When a record was accepted. The prune below asks "accepted before this
-		// read began", which enqueue time cannot answer: a replacement client's
-		// read can be out when an earlier request's receipt lands, so pruning that
-		// fresh acceptance by its older enqueue time would drop a send whose
-		// snapshot never mentioned it. Shared insert shape, so every record table
-		// carries it. A row written before the column existed is backfilled from
-		// its enqueue time: it was accepted at some point before the upgrade, so
-		// any read after the upgrade began later than its acceptance - and leaving
-		// it at 0 would permanently exclude exactly the records this prune exists
-		// to heal. The ALTER and its backfill commit together: a process that died
-		// between them would leave the column present and the rows unstamped, and
-		// no later start would retry the backfill.
-		for (const table of Object.values(TABLES)) {
-			const columns = this.db.getAllSync<{ name: string }>(`PRAGMA table_info(${table})`);
-			if (!columns.some((column) => column.name === "accepted_at")) {
-				withSavepoint(this.db, `mutation_accepted_at_${table}`, () => {
-					this.db.execSync(`ALTER TABLE ${table} ADD COLUMN accepted_at INTEGER NOT NULL DEFAULT 0`);
-					this.db.execSync(`UPDATE ${table} SET accepted_at = created_at WHERE state = 'accepted'`);
-				});
-			}
-		}
+		// the outbox table; rows written before it read as zero unresolved
+		// attempts.
+		this.addColumnIfMissing(TABLES.outbox, "unresolved_attempts", "INTEGER NOT NULL DEFAULT 0");
+	}
+
+	// Adds `column` to `table` when a database from before it existed lacks it.
+	// A backfill statement commits together with the ALTER.
+	private addColumnIfMissing(table: string, column: string, definition: string, backfill?: string): void {
+		const columns = this.db.getAllSync<{ name: string }>(`PRAGMA table_info(${table})`);
+		if (columns.some((existing) => existing.name === column)) return;
+		withSavepoint(this.db, `mutation_add_${table}_${column}`, () => {
+			this.db.execSync(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+			if (backfill) this.db.execSync(backfill);
+		});
 	}
 
 	async enqueueIntent(intent: MutationIntent<A>, barrier?: MutationStopBarrier): Promise<MutationOutboxRecord<A>> {
 		if (!intent.targetRef.trim()) throw new Error("targetRef is required");
-		return this.transaction("mutation_outbox_enqueue", () => {
-			// §4's stop barrier: a Stop whose cancel transaction committed while
-			// this submission was in flight - after the click, before this
-			// write - left the ref's durable stop epoch past the click-time
-			// capture. The row commits born-"canceled": never dispatched,
-			// released only by an explicit Retry.
-			const stopEpoch = this.stopEpochOf(intent.targetRef);
-			const canceledByBarrier = barrier !== undefined && stopEpoch > barrier.stopEpoch;
-			// Allocate and persist the next sequence in one write so a reentrant
-			// enqueue cannot reuse a value read before another allocation.
-			const intentSequence = this.allocateSequence(intent.targetRef);
-			const clientMutationId = this.#createMutationId();
-			this.assertMutationIdAvailable(clientMutationId);
-			const record: MutationOutboxRecord<A> = {
-				...intent,
-				// The dispatcher sends this payload verbatim as the RPC params, and
-				// every retry-safe method requires clientMutationId on it for the
-				// daemon's own correlation - the record's top-level field is not
-				// enough, the daemon never sees that.
-				payload: { ...intent.payload, clientMutationId },
-				version: 1,
-				clientMutationId,
-				originClientId: this.#getOwnClientId(),
-				intentSequence,
-				createdAt: this.#now(),
-				state: canceledByBarrier ? "canceled" : "submitting",
-				stopEpochAtEnqueue: stopEpoch,
-				attempted: false,
-			};
-			this.insertNew(TABLES.outbox, record);
-			return record;
-		});
+		return this.transaction("mutation_outbox_enqueue", () => this.enqueueRecord(intent, barrier));
+	}
+
+	// Synchronous body shared by enqueue and recovery resend. Its caller owns
+	// the savepoint, so no async continuation can escape the transaction.
+	private enqueueRecord(intent: MutationIntent<A>, barrier?: MutationStopBarrier): MutationOutboxRecord<A> {
+		// §4's stop barrier: a Stop whose cancel transaction committed while
+		// this submission was in flight - after the click, before this
+		// write - left the ref's durable stop epoch past the click-time
+		// capture. The row commits born-"canceled": never dispatched,
+		// released only by an explicit Retry.
+		const stopEpoch = this.stopEpochOf(intent.targetRef);
+		const canceledByBarrier = barrier !== undefined && stopEpoch > barrier.stopEpoch;
+		// Allocate and persist the next sequence in one write so a reentrant
+		// enqueue cannot reuse a value read before another allocation.
+		const intentSequence = this.allocateSequence(intent.targetRef);
+		const clientMutationId = this.#createMutationId();
+		this.assertMutationIdAvailable(clientMutationId);
+		const record: MutationOutboxRecord<A> = {
+			...intent,
+			// The dispatcher sends this payload verbatim as the RPC params, and
+			// every retry-safe method requires clientMutationId on it for the
+			// daemon's own correlation - the record's top-level field is not
+			// enough, the daemon never sees that.
+			payload: { ...intent.payload, clientMutationId },
+			version: 1,
+			clientMutationId,
+			originClientId: this.#getOwnClientId(),
+			intentSequence,
+			createdAt: this.#now(),
+			state: canceledByBarrier ? "canceled" : "submitting",
+			stopEpochAtEnqueue: stopEpoch,
+			attempted: false,
+		};
+		this.insertNew(TABLES.outbox, record);
+		return record;
 	}
 
 	// Stop's combined durable write (the port's enqueueInterruptAndCancel):
@@ -509,10 +516,10 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 	// Moves a receipt-settled record out of whichever table currently holds it
 	// (outbox, or - a receipt for an already-transferred record - recovery or
 	// optimistic): a pending receipt whose optimisticDisplay still carries
-	// composer input becomes (or stays) an accepted optimistic record (the
-	// daemon has not reflected it into the thread yet); any other pending
-	// receipt (a receipt-only control) or projection state has nothing worth
-	// carrying forward, so the record is simply retired everywhere it lives.
+	// composer input, or a note save, becomes (or stays) an accepted optimistic
+	// record (the daemon has not reflected it yet); any other pending receipt
+	// (a receipt-only control) or projection state has nothing worth carrying
+	// forward, so the record is simply retired everywhere it lives.
 	async settleReceipt(clientMutationId: string, projectionState: string): Promise<boolean> {
 		return this.transaction("mutation_outbox_settle_receipt", () => {
 			const outboxRecord = this.get<MutationOutboxRecord<A>>(TABLES.outbox, clientMutationId);
@@ -521,8 +528,7 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			const source = outboxRecord ?? recoveryRecord ?? optimisticRecord;
 			if (!source) return false;
 			this.discardSupersededNoteRecovery(source);
-			const retainsOptimisticDisplay = projectionState === "pending" && carriesOptimisticInput(source);
-			if (retainsOptimisticDisplay) {
+			if (retainsAcceptedCopy(source, projectionState)) {
 				// The package's acceptedRecord is the one whitelist both adapters
 				// build: it never spreads, so a recovery-sourced receipt
 				// (source.recoveryKind/recoveryReason) and attempted evidence do
@@ -540,7 +546,7 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 				this.delete(TABLES.optimistic, clientMutationId);
 			}
 			if (outboxRecord) this.delete(TABLES.outbox, clientMutationId);
-			if (recoveryRecord) this.delete(TABLES.recovery, clientMutationId);
+			if (recoveryRecord && settlementRetiresRecovery(recoveryRecord)) this.delete(TABLES.recovery, clientMutationId);
 			return true;
 		});
 	}
@@ -598,6 +604,135 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 
 	// Read methods required by MutationOutboxStorage.
 
+	/** Moves every waiting row from one ref to the ref a resume returned, in
+	 * one savepoint, keeping each clientMutationId (the daemon's reconciliation
+	 * keys on it) and rewriting the thread/instance fence the row dispatches
+	 * with. Returns the ids that moved. A resume that returns a new identity
+	 * makes the old ref useless: a row left there would dispatch against an
+	 * instance the daemon no longer serves. */
+	retarget(ref: string, to: { ref: string; wireRef: string; threadId?: string; instanceId?: string }): string[] {
+		if (!to.ref.trim()) throw new Error("retarget ref is required");
+		if (ref === to.ref) return [];
+		return this.transaction("mutation_outbox_retarget", () => {
+			// Source order matters: the moved rows keep their relative order at the
+			// destination, so the FIFO the daemon saw is the FIFO it keeps seeing.
+			const rows = this.db.getAllSync<{ client_mutation_id: string; payload: string }>(
+				`SELECT client_mutation_id, payload FROM ${TABLES.outbox}
+				 WHERE target_ref = ? AND state IN ('submitting', 'blockedUnknown')
+				 ORDER BY intent_sequence`,
+				ref,
+			);
+			if (rows.length === 0) return [];
+			const ids = rows.map((row) => row.client_mutation_id);
+			// A recovery resend's receipt is the draft owner's proof that its
+			// captured sources were consumed. Its source rows move below, so the
+			// receipt must move with them in this same savepoint: a receipt left
+			// on the retired ref can never be read by the resumed draft, and the
+			// moved sources could never reconcile.
+			const sourceReceipts = this.recoveryResendsOf(ref);
+			if (sourceReceipts.length) {
+				const destinationReceipts = this.recoveryResendsOf(to.ref);
+				const merged = new Map(destinationReceipts.map((receipt) => [receipt.clientMutationId, receipt]));
+				for (const receipt of sourceReceipts)
+					if (!merged.has(receipt.clientMutationId))
+						merged.set(receipt.clientMutationId, { ...receipt, targetRef: to.ref });
+				this.writeRecoveryResends(to.ref, [...merged.values()]);
+				this.writeRecoveryResends(ref, []);
+			}
+			// Each row's target and sequence move in ONE write. Moving the target
+			// first would keep the source sequence, and both refs can already hold
+			// that number: the unique (target_ref, intent_sequence) index would
+			// reject the move and roll the whole retarget back.
+			//
+			// Only the rows this move knows how to finish take part. A canceled row
+			// left behind is harmless - it can never dispatch - while one carried
+			// over without the rewrite below would reopen under the new target still
+			// naming the retired identity.
+			//
+			// The optimistic table has the same unique index and the same risk, so
+			// it moves the same way.
+			//
+			// The OUTBOX move is restricted to `ids` - exactly the rows this method
+			// rewrites below. Moving a canceled row here would give it the new target
+			// while its payload still named the retired identity, and its "Send now"
+			// action would release a request addressing a session that no longer
+			// exists. A canceled row left on the old ref can never dispatch, which is
+			// the safe resting place for it.
+			const destinationEpoch = this.stopEpochOf(to.ref);
+			const optimistic = this.db.getAllSync<{ client_mutation_id: string }>(
+				`SELECT client_mutation_id FROM ${TABLES.optimistic} WHERE target_ref = ? ORDER BY intent_sequence`,
+				ref,
+			);
+			for (const row of optimistic) {
+				this.db.runSync(
+					`UPDATE ${TABLES.optimistic} SET target_ref = ?, intent_sequence = ? WHERE client_mutation_id = ?`,
+					to.ref,
+					this.allocateSequence(to.ref),
+					row.client_mutation_id,
+				);
+			}
+			// Recovery rows carry no unique sequence index, but they do carry the same
+			// wire identity as the outbox rows they came from: a resumed screen looks
+			// one up by ref, thread and instance, and an interrupted Edit whose columns
+			// still name the retired identity is discarded as a lost capture. Move the
+			// routing fields with the target while leaving composition and ownership
+			// untouched.
+			const recoveryRows = this.db.getAllSync<{ client_mutation_id: string; payload: string }>(
+				`SELECT client_mutation_id, payload FROM ${TABLES.recovery} WHERE target_ref = ?`,
+				ref,
+			);
+			// The destination's stop counter is its own. A row carrying the source's
+			// epoch would be compared against an unrelated counter - falsely canceled
+			// by a lower one, or un-fenced by a higher one. Starting at the
+			// destination's current epoch (read above, before any move) keeps every
+			// existing stop effective.
+			// A resume that names no instance still changed identity: the daemon's
+			// fence token is then the thread id, the same fused rule every other
+			// caller derives it by.
+			const fence = to.instanceId ?? to.threadId;
+			for (const row of recoveryRows) {
+				const payload = JSON.parse(row.payload) as Record<string, unknown>;
+				if (typeof payload.ref === "string") payload.ref = to.wireRef;
+				if (fence !== undefined) payload.expectedInstanceId = fence;
+				this.db.runSync(
+					`UPDATE ${TABLES.recovery}
+						 SET target_ref = ?, payload = ?, thread_id = COALESCE(?, thread_id),
+						     instance_id = COALESCE(?, instance_id)
+						 WHERE client_mutation_id = ?`,
+					to.ref,
+					JSON.stringify(payload),
+					to.threadId ?? null,
+					fence ?? null,
+					row.client_mutation_id,
+				);
+			}
+			for (const row of rows) {
+				// The dispatcher sends the payload verbatim as the RPC params, so the
+				// row's own wire ref and instance fence must move with it: a payload
+				// still naming the old identity is refused as stale however the
+				// columns read. Sequences are allocated per destination so a later
+				// send cannot take a lower number and overtake a moved row.
+				const payload = JSON.parse(row.payload) as Record<string, unknown>;
+				if (typeof payload.ref === "string") payload.ref = to.wireRef;
+				if (fence !== undefined) payload.expectedInstanceId = fence;
+				this.db.runSync(
+					`UPDATE ${TABLES.outbox}
+					 SET target_ref = ?, payload = ?, intent_sequence = ?, stop_epoch_at_enqueue = ?,
+					     thread_id = COALESCE(?, thread_id), instance_id = COALESCE(?, instance_id)
+					 WHERE client_mutation_id = ?`,
+					to.ref,
+					JSON.stringify(payload),
+					this.allocateSequence(to.ref),
+					destinationEpoch,
+					to.threadId ?? null,
+					fence ?? null,
+					row.client_mutation_id,
+				);
+			}
+			return ids;
+		});
+	}
+
 	async listTargetRefs(): Promise<string[]> {
 		// UNION (not UNION ALL) already removes duplicates, so a DISTINCT under
 		// each arm would only repeat what the merge already guarantees. The
@@ -616,6 +751,104 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 
 	async getOutbox(clientMutationId: string): Promise<MutationOutboxRecord<A> | undefined> {
 		return this.get<MutationOutboxRecord<A>>(TABLES.outbox, clientMutationId);
+	}
+
+	async getOutboxWithStopEpoch(
+		clientMutationId: string,
+	): Promise<{ record: MutationOutboxRecord<A> | undefined; stopEpoch: number }> {
+		return this.transaction("mutation_outbox_snapshot", () => {
+			const record = this.get<MutationOutboxRecord<A>>(TABLES.outbox, clientMutationId);
+			return { record, stopEpoch: record ? this.stopEpochOf(record.targetRef) : 0 };
+		});
+	}
+
+	async editQueuedMessage(
+		expected: MutationOutboxRecord<A>,
+		barrier: MutationStopBarrier,
+	): Promise<MutationRecoveryRecord<A> | undefined> {
+		return this.transaction("mutation_outbox_edit", () => {
+			const record = this.get<MutationOutboxRecord<A>>(TABLES.outbox, expected.clientMutationId);
+			if (!record || !matchesQueuedMessageSnapshot(record, expected) || !canEditQueuedMessage(record)) return undefined;
+			if (this.stopEpochOf(record.targetRef) !== barrier.stopEpoch) return undefined;
+			const recovery: MutationRecoveryRecord<A> = { ...record, recoveryKind: "editing" };
+			this.replace(TABLES.recovery, recovery);
+			this.delete(TABLES.outbox, record.clientMutationId);
+			return recovery;
+		});
+	}
+
+	async removeQueuedMessage(expected: MutationOutboxRecord<A>, barrier: MutationStopBarrier): Promise<boolean> {
+		return this.transaction("mutation_outbox_remove", () => {
+			const record = this.get<MutationOutboxRecord<A>>(TABLES.outbox, expected.clientMutationId);
+			if (!record || !matchesQueuedMessageSnapshot(record, expected) || !canRemoveQueuedMessage(record)) return false;
+			if (this.stopEpochOf(record.targetRef) !== barrier.stopEpoch) return false;
+			return this.delete(TABLES.outbox, record.clientMutationId);
+		});
+	}
+
+	async resendRecovery(
+		sourceIds: string | readonly string[],
+		intent: MutationIntent<A>,
+		barrier?: MutationStopBarrier,
+	): Promise<MutationOutboxRecord<A> | undefined> {
+		if (!intent.targetRef.trim()) throw new Error("targetRef is required");
+		return this.transaction("mutation_recovery_resend", () => {
+			const ids = [...new Set(typeof sourceIds === "string" ? [sourceIds] : sourceIds)];
+			if (ids.length === 0) return undefined;
+			for (const id of ids) {
+				const source = this.get<MutationRecoveryRecord<A>>(TABLES.recovery, id);
+				if (!source || source.targetRef !== intent.targetRef) return undefined;
+			}
+			const record = this.enqueueRecord(intent, barrier);
+			for (const id of ids) this.delete(TABLES.recovery, id);
+			const receipts = this.recoveryResendsOf(intent.targetRef);
+			receipts.push({ targetRef: intent.targetRef, sourceIds: ids, clientMutationId: record.clientMutationId });
+			this.writeRecoveryResends(intent.targetRef, receipts);
+			return record;
+		});
+	}
+
+	// Receipt ownership is independent of outbox/optimistic settlement. Only
+	// the draft owner's explicit acknowledgment may retire it after a restart.
+	async readRecoveryResend(targetRef: string, sourceIds: readonly string[]): Promise<RecoveryResendCommit | undefined> {
+		const ids = new Set(sourceIds);
+		return this.recoveryResendsOf(targetRef).find(
+			(receipt) => receipt.sourceIds.length === ids.size && receipt.sourceIds.every((id) => ids.has(id)),
+		);
+	}
+
+	async acknowledgeRecoveryResend(targetRef: string, clientMutationId: string): Promise<void> {
+		this.transaction("mutation_recovery_acknowledge", () => {
+			const receipts = this.recoveryResendsOf(targetRef);
+			this.writeRecoveryResends(
+				targetRef,
+				receipts.filter((receipt) => receipt.clientMutationId !== clientMutationId),
+			);
+		});
+	}
+
+	private recoveryResendsOf(targetRef: string): RecoveryResendCommit[] {
+		const row = this.db.getFirstSync<{ recovery_resends: string }>(
+			"SELECT recovery_resends FROM mutation_sequence WHERE target_ref = ?",
+			targetRef,
+		);
+		return row ? JSON.parse(row.recovery_resends) : [];
+	}
+
+	private writeRecoveryResends(targetRef: string, receipts: RecoveryResendCommit[]): void {
+		const updated = this.db.runSync(
+			"UPDATE mutation_sequence SET recovery_resends = ? WHERE target_ref = ?",
+			JSON.stringify(receipts),
+			targetRef,
+		);
+		// A destination ref can have no sequence row yet; its receipt still has
+		// to land. The UPDATE first keeps the resend rollback boundary truthful.
+		if (changedRows(updated) === 0)
+			this.db.runSync(
+				"INSERT INTO mutation_sequence (target_ref, last_sequence, recovery_resends) VALUES (?, 0, ?)",
+				targetRef,
+				JSON.stringify(receipts),
+			);
 	}
 
 	async getOptimistic(clientMutationId: string): Promise<MutationOptimisticRecord<A> | undefined> {
@@ -886,6 +1119,8 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			JSON.stringify(record.attachments),
 			JSON.stringify(record.optimisticDisplay ?? null),
 			record.composerText ?? null,
+			record.composerMentions === undefined ? null : JSON.stringify(record.composerMentions),
+			record.draftCaptureToken ?? null,
 			record.intentSequence,
 			record.createdAt,
 			record.state,

@@ -37,7 +37,7 @@ func TestManagerRequestAllBranches(t *testing.T) {
 				allowed = []string{"communicate"}
 			}
 			adapter := newMessagingAdapter()
-			adapter.script("root", func(llm.Request) llm.Response { return finalResponse("capture") })
+			adapter.script("root", func(llm.Request) llm.Response { return agenttest.FinalResponse("capture") })
 			root := newMessagingRoot(t, adapter, func(cfg *SessionConfig) {
 				cfg.Manager = mode != "ordinary"
 				cfg.spawn.allowedToolNames = allowed

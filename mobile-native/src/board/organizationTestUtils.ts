@@ -4,7 +4,7 @@
 // and answered by `answer`. Tests only.
 import type { NavigationReadParams } from "@evener/appwire-client";
 import { manifest, wireSnapshot } from "@evener/appwire-client/testing/navigation";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 
 /** A session id localSessionId accepts (22 base62 characters). */
 export const SESSION_ID = "034Kc9793pXlhHyCRXdeAk";

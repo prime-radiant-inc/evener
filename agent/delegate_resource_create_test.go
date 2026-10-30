@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -19,6 +20,7 @@ import (
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/skill"
 	taskpkg "primeradiant.com/evener/agent/task"
@@ -52,27 +54,6 @@ func TestDelegateResourceCreate_IsolationFailurePublishesNothing(t *testing.T) {
 	}
 	if root.delegateController.turnsInUse != 0 {
 		t.Fatalf("isolation failure retained turn capacity = %d", root.delegateController.turnsInUse)
-	}
-}
-
-func TestDelegateResourceCreate_StableRouteSkipsLegacyRetentionReservation(t *testing.T) {
-	t.Parallel()
-	root, _, _ := newDelegateResourceBootstrapSession(t)
-	legacyReservationCalled := false
-	root.cfg.testOnly.subagentReserveSlot = func(*Session) ([]*subagent, error) {
-		legacyReservationCalled = true
-		return nil, errors.New("legacy retained-session reservation invoked")
-	}
-
-	result := root.createDelegate(context.Background(), delegateArgs{
-		Task:                "do not reclaim legacy sessions",
-		DelegationAllowance: new(0),
-	})
-	if legacyReservationCalled {
-		t.Fatal("stable create invoked the legacy retained-session reservation seam")
-	}
-	if result.Err != nil {
-		t.Fatalf("createDelegate: %v", result.Err)
 	}
 }
 
@@ -234,7 +215,7 @@ func TestDelegateResourceCreate_RegisteredPostCommitFailureRetainsStableIdentity
 	if got := jsonCharLen(resultJSON); got > jobToolResultMinJSONChars {
 		t.Fatalf("registered post-commit result length = %d, want <= %d", got, jobToolResultMinJSONChars)
 	}
-	var result stableDelegateCreateResult
+	var result delegateCreateResult
 	if err := json.Unmarshal(resultJSON, &result); err != nil {
 		t.Fatalf("decode registered post-commit result %q: %v", resultJSON, err)
 	}
@@ -386,7 +367,7 @@ func TestDelegateResourceCreate_ResultMatchesCommittedSnapshot(t *testing.T) {
 		}
 
 		result := root.createDelegate(context.Background(), delegateArgs{Task: "retain fenced start"})
-		if !errors.Is(result.Err, constructionErr) || !strings.Contains(result.Err.Error(), "store is closed") {
+		if !errors.Is(result.Err, constructionErr) || !errors.Is(result.Err, delegatestore.ErrStoreClosed) {
 			t.Fatalf("create error = %v, want construction and compensating append diagnostics", result.Err)
 		}
 		if result.Status != jobstore.StatusRunning || result.Reason != "" || result.Resumable == nil || !*result.Resumable {
@@ -1064,7 +1045,7 @@ func TestDelegateResourceCreate_ResumabilityAppendFailureDestroysNothing(t *test
 		root.delegateController.mu.Lock()
 		for _, aggregate := range root.delegateController.durable {
 			if aggregate != nil && aggregate.CurrentRunOpen {
-				artifactPath = filepath.Join(root.stateDir, sessionsSubdir, aggregate.Descriptor.ChildSessionID+".transcript.jsonl")
+				artifactPath = schema.SessionTranscriptPath(root.stateDir, aggregate.Descriptor.ChildSessionID)
 				break
 			}
 		}
@@ -1087,7 +1068,7 @@ func TestDelegateResourceCreate_ResumabilityAppendFailureDestroysNothing(t *test
 		Task:                "retain after append failure",
 		DelegationAllowance: new(0),
 	})
-	if !errors.Is(result.Err, wantErr) || !strings.Contains(result.Err.Error(), "store is closed") {
+	if !errors.Is(result.Err, wantErr) || !errors.Is(result.Err, delegatestore.ErrStoreClosed) {
 		t.Fatalf("createDelegate error = %v, want construction and closure-append failures", result.Err)
 	}
 	root.delegateController.mu.Lock()
@@ -1266,7 +1247,7 @@ func TestDelegateResourceCreate_CloseAfterDrainRefusesFailedStartRetention(t *te
 
 	constructionErr := errors.New("construction failed after controller attachment")
 	result := runtime.failCommittedStart(started, isolation, prepared, true, constructionErr, "construction_failed")
-	if !errors.Is(result.Err, constructionErr) || !strings.Contains(result.Err.Error(), "store is closed") {
+	if !errors.Is(result.Err, constructionErr) || !errors.Is(result.Err, delegatestore.ErrStoreClosed) {
 		t.Fatalf("failed create error = %v, want construction and append failures", result.Err)
 	}
 	if got := root.subagents.get(prepared.sub.id); got != nil {
@@ -1284,7 +1265,7 @@ func TestDelegateResourceCreate_CloseAfterDrainRefusesFailedStartRetention(t *te
 	}
 	for _, path := range []string{
 		started.transcriptPath,
-		filepath.Join(root.stateDir, sessionsSubdir, prepared.sub.id+".meta.json"),
+		schema.SessionMetaPath(root.stateDir, prepared.sub.id),
 	} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("durable isolation artifact %s was not retained: %v", path, err)
@@ -1294,39 +1275,143 @@ func TestDelegateResourceCreate_CloseAfterDrainRefusesFailedStartRetention(t *te
 
 func prepareCommittedUnadoptedDelegate(t *testing.T, root *Session, task string) (delegateRuntime, delegateStartCommit, delegateIsolation, *preparedSubagentRun) {
 	t.Helper()
+	return prepareCommittedDelegate(t, root, delegateArgs{Task: task, DelegationAllowance: new(0)})
+}
+
+// prepareStableChild builds a delegate child the way create does (describe,
+// reserve, commit, construct, attach, admit the start input) and stops before
+// launch, so a test can inspect the child session a real delegate would run,
+// and that child can delegate in turn. Disposal is registered with t.Cleanup.
+func prepareStableChild(t *testing.T, root *Session, args delegateArgs) *preparedSubagentRun {
+	t.Helper()
+	return prepareStableChildOnLane(t, root, args, committedDelegateLane{})
+}
+
+// prepareStableChildOnLane is prepareStableChild with the child's environment
+// placed by lane.
+func prepareStableChildOnLane(t *testing.T, root *Session, args delegateArgs, lane committedDelegateLane) *preparedSubagentRun {
+	t.Helper()
+	_, started, _, prepared, err := buildCommittedDelegate(root, args, lane)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(prepared.disposeUnadopted)
+	t.Cleanup(func() { endUnlaunchedDelegate(root, started) })
+	claim, err := root.delegateController.BeginStartInput(started.lease)
+	if err != nil {
+		t.Fatalf("BeginStartInput: %v", err)
+	}
+	if _, err := root.delegateController.CompleteStartInput(claim, true, delegateFinish{}); err != nil {
+		t.Fatalf("CompleteStartInput: %v", err)
+	}
+	return prepared
+}
+
+// endUnlaunchedDelegate ends the open generation of a delegate that was built
+// but never launched. A root that closes with a generation still open waits out
+// its stop drain.
+func endUnlaunchedDelegate(root *Session, started delegateStartCommit) {
+	_, _ = root.delegateController.FinishGeneration(started.lease, delegatePermanentStartFailure(errors.New("test teardown"), "test_teardown"))
+}
+
+// delegateActorForTest is the actor a create from owner would act as: the
+// root for a root session, the owning delegate's live lease for a delegate
+// that delegates in turn.
+func delegateActorForTest(owner *Session) (delegateActor, error) {
+	if owner.owningDelegateID == "" {
+		return rootDelegateActor(owner.delegateRootSessionID), nil
+	}
+	controller := owner.delegateController
+	controller.mu.Lock()
+	defer controller.mu.Unlock()
+	live := controller.live[owner.owningDelegateID]
+	if live == nil || live.binding == nil {
+		return delegateActor{}, fmt.Errorf("delegate %q has no live generation binding to act as", owner.owningDelegateID)
+	}
+	lease := live.binding.lease
+	return delegateActor{lease: &lease}, nil
+}
+
+func prepareCommittedDelegate(t *testing.T, root *Session, args delegateArgs) (delegateRuntime, delegateStartCommit, delegateIsolation, *preparedSubagentRun) {
+	t.Helper()
+	runtime, started, isolation, prepared, err := buildCommittedDelegate(root, args, committedDelegateLane{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(prepared.disposeUnadopted)
+	return runtime, started, isolation, prepared
+}
+
+// committedDelegateLane puts a test delegate's environment on a plain
+// directory under a chosen sandbox policy, standing in for the isolation
+// step's worktree so the environment preparation runs without cutting a git
+// lane. The zero value takes the real isolation step.
+type committedDelegateLane struct {
+	dir     string
+	sandbox *sandbox.SandboxPolicy
+}
+
+// buildCommittedDelegate is prepareCommittedDelegate without the testing.T
+// calls that need the test goroutine: it returns the first stage's error, and
+// leaves disposing the prepared run to the caller.
+func buildCommittedDelegate(root *Session, args delegateArgs, lane committedDelegateLane) (delegateRuntime, delegateStartCommit, delegateIsolation, *preparedSubagentRun, error) {
 	runtime := delegateRuntime{owner: root}
 	ctx := context.Background()
-	args := delegateArgs{Task: task, DelegationAllowance: new(0)}
+	if args.DelegationAllowance == nil {
+		root.mu.Lock()
+		args.DelegationAllowance = new(defaultDelegateGrant(root.delegationAllowance))
+		root.mu.Unlock()
+	}
 	selection, err := root.selectSubagentModel(ctx, args.Model, args.AgentType)
 	if err != nil {
-		t.Fatalf("selectSubagentModel: %v", err)
+		return runtime, delegateStartCommit{}, delegateIsolation{}, nil, fmt.Errorf("selectSubagentModel: %w", err)
 	}
-	toolNameCeiling := root.stableDelegateEffectiveToolNameCeiling(selection, args, "")
-	descriptor, project, err := runtime.describe(ctx, args, task, "", nil, selection, toolNameCeiling)
-	if err != nil {
-		t.Fatalf("describe delegate: %v", err)
+	toolNameCeiling := root.delegateEffectiveToolNameCeiling(selection, args, "")
+	requestedSandbox := lane.sandbox
+	if requestedSandbox == nil {
+		requestedSandbox, err = root.requestedDelegateSandbox(args, toolNameCeiling)
+		if err != nil {
+			return runtime, delegateStartCommit{}, delegateIsolation{}, nil, fmt.Errorf("requestedDelegateSandbox: %w", err)
+		}
 	}
-	reservation, err := root.delegateController.ReserveCreate(rootDelegateActor(root.ID()), descriptor)
+	descriptor, project, err := runtime.describe(ctx, args, args.Task, "", requestedSandbox, selection, toolNameCeiling)
 	if err != nil {
-		t.Fatalf("ReserveCreate: %v", err)
+		return runtime, delegateStartCommit{}, delegateIsolation{}, nil, fmt.Errorf("describe delegate: %w", err)
 	}
-	isolation, err := runtime.prepareIsolation(ctx, reservation, project, nil)
+	if lane.dir != "" {
+		descriptor.WorkingDir = lane.dir
+	}
+	actor, err := delegateActorForTest(root)
 	if err != nil {
-		t.Fatalf("prepareIsolation: %v", err)
+		return runtime, delegateStartCommit{}, delegateIsolation{}, nil, err
+	}
+	reservation, err := root.delegateController.ReserveCreate(actor, descriptor)
+	if err != nil {
+		return runtime, delegateStartCommit{}, delegateIsolation{}, nil, fmt.Errorf("ReserveCreate: %w", err)
+	}
+	var isolation delegateIsolation
+	if lane.dir != "" {
+		env, ownsFresh, envErr := root.prepareSubagentEnvironmentFor(lane.dir, requestedSandbox, reservation.descriptor.ChildSessionID)
+		isolation, err = delegateIsolation{env: env, ownsFreshEnv: ownsFresh}, envErr
+	} else {
+		isolation, err = runtime.prepareIsolation(ctx, reservation, project, requestedSandbox)
+	}
+	if err != nil {
+		return runtime, delegateStartCommit{}, delegateIsolation{}, nil, fmt.Errorf("prepareIsolation: %w", err)
 	}
 	started, err := root.delegateController.CommitStart(reservation)
 	if err != nil {
-		t.Fatalf("CommitStart: %v", err)
+		return runtime, delegateStartCommit{}, isolation, nil, fmt.Errorf("CommitStart: %w", err)
 	}
 	prepared, err := runtime.construct(ctx, args, selection, started, isolation)
 	if err != nil {
-		t.Fatalf("construct: %v", err)
+		return runtime, started, isolation, nil, fmt.Errorf("construct: %w", err)
 	}
-	t.Cleanup(prepared.disposeUnadopted)
 	if err := root.delegateController.AttachRuntime(started.lease, prepared.sub.sess); err != nil {
-		t.Fatalf("AttachRuntime: %v", err)
+		prepared.disposeUnadopted()
+		return runtime, started, isolation, nil, fmt.Errorf("AttachRuntime: %w", err)
 	}
-	return runtime, started, isolation, prepared
+	return runtime, started, isolation, prepared, nil
 }
 
 func TestDelegateResourceCreate_DescendantEventCallbackSurvivesSpawnConfig(t *testing.T) {
@@ -1417,7 +1502,7 @@ func TestDelegateResourceCreate_ChildTranscriptIsPreseededBeforeRun(t *testing.T
 	case <-time.After(30 * time.Second):
 		t.Fatal("provider was not reached")
 	}
-	_, entries, _, err := readTranscript(filepath.Join(stateDir, "", sessionsSubdir, childID+".transcript.jsonl"), "")
+	_, entries, _, err := readTranscript(context.Background(), filepath.Join(stateDir, "", schema.SessionsSubdir, childID+".transcript.jsonl"), "")
 	if err != nil {
 		t.Fatalf("read child transcript at provider boundary: %v", err)
 	}
@@ -1471,7 +1556,7 @@ func TestDelegateResourceCreate_InputTranscriptAppendRunsAfterControllerUnlock(t
 	if providerChildID != childID {
 		t.Fatalf("provider child = %q, want registered child %q", providerChildID, childID)
 	}
-	_, entries, _, err := readTranscript(filepath.Join(root.stateDir, "", sessionsSubdir, childID+".transcript.jsonl"), "")
+	_, entries, _, err := readTranscript(context.Background(), filepath.Join(root.stateDir, "", schema.SessionsSubdir, childID+".transcript.jsonl"), "")
 	if err != nil {
 		t.Fatalf("read real child transcript at provider boundary: %v", err)
 	}
@@ -1487,7 +1572,7 @@ func TestDelegateResourceCreate_InputTranscriptAppendRunsAfterControllerUnlock(t
 	adapter.releaseRun()
 }
 
-func TestDelegateResourceCreate_RegisteredToolReturnsOnlyStableDelegateIdentity(t *testing.T) {
+func TestDelegateResourceCreate_RegisteredToolReturnsOnlyDelegateIdentity(t *testing.T) {
 	t.Parallel()
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 	result := executeTask6RegisteredDelegate(context.Background(), t, root, "registered stable identity", 0)

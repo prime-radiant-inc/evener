@@ -1,6 +1,6 @@
 {
   "name": "@evener/appwire-client",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Typed AppWire client shared by Evener web and native applications",
   "type": "commonjs",
   "files": [
@@ -49,6 +49,11 @@
       "types": "./dist/pairing.d.ts",
       "import": "./dist/pairing.js",
       "require": "./dist/pairing.js"
+    },
+    "./hubOrigin": {
+      "types": "./dist/hubOrigin.d.ts",
+      "import": "./dist/hubOrigin.js",
+      "require": "./dist/hubOrigin.js"
     }
   },
   "scripts": {
@@ -58,10 +63,11 @@
   },
   "devDependencies": {
     "tinykeys": "^4.0.0",
-    "typescript": "~6.0.3",
+    "typescript": "6.0.3",
     "ws": "^8.18.0"
   },
   "dependencies": {
+    "anser": "2.3.5",
     "tweetnacl": "1.0.3"
   }
 }

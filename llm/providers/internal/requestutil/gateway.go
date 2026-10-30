@@ -36,6 +36,9 @@ type GatewayPiCompat struct {
 	ThinkingFormat string `json:"thinkingFormat"`
 	// MaxTokensField is the output-limit spelling this model takes.
 	MaxTokensField string `json:"maxTokensField"`
+	// SupportsReasoningEffort says whether the model takes an effort
+	// parameter at all. Nil means the gateway states nothing.
+	SupportsReasoningEffort *bool `json:"supportsReasoningEffort"`
 }
 
 // ApplyGatewayFacts folds a row's own per-model facts (lunaroute's shape) into
@@ -91,6 +94,31 @@ func applyGatewayReasoning(caps *registry.Caps, capsFacts GatewayCapabilities, c
 			return
 		}
 	}
+	// The gateway's verdict is recorded in both directions. A `true` must clear
+	// an inherited rejection as well as a `false` creating one: an alias target
+	// or a curated layer can supply either value, and letting a stale rejection
+	// survive would make derivation discard a ladder the gateway just advertised.
+	if pi := compat.Pi; pi != nil && pi.SupportsReasoningEffort != nil {
+		caps.EffortParameterUnsupported = new(!*pi.SupportsReasoningEffort)
+	}
+	// A model the gateway says takes no effort parameter publishes an empty
+	// ladder, so the live layer replaces a curated one instead of inheriting it.
+	// The controls themselves are derivation's call: it removes the effort
+	// control while preserving a numeric budget, which a wholesale write here
+	// would destroy before derivation ever saw it.
+	if pi := compat.Pi; pi != nil && pi.SupportsReasoningEffort != nil && !*pi.SupportsReasoningEffort {
+		caps.EffortValues = []string{}
+		// The map still proves the model reasons, even though its ladder is
+		// not published. Without this, a row whose verdict was inferred false
+		// from a provider-wide parameter list loses the controls derivation
+		// just installed, and request shaping drops reasoning entirely. A
+		// published map with no usable level proves nothing, though: it says
+		// the model takes no effort, not that it reasons.
+		if hasUsableLevel(pi.ThinkingLevelMap) {
+			caps.Reasoning = new(true)
+		}
+		return
+	}
 	ladder, published := gatewayEffortLadder(compat)
 	if len(ladder) > 0 {
 		caps.Reasoning = new(true)
@@ -136,6 +164,18 @@ func gatewayEffortLadder(compat GatewayClientCompat) (ladder []string, published
 		ladder = []string{}
 	}
 	return ladder, true
+}
+
+// hasUsableLevel reports whether a thinking-level map names at least one level
+// evener can rank. It is the evidence that the model reasons, separate from
+// whether its ladder is publishable.
+func hasUsableLevel(levels map[string]string) bool {
+	for _, wire := range levels {
+		if llm.ReasoningEffortRank(wire) != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // gatewayInputModalities is the input modality list a /models row advertises:

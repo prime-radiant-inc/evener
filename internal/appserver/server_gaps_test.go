@@ -181,47 +181,6 @@ func (e *genericError) Error() string { return e.msg }
 
 func newGenericError(msg string) error { return &genericError{msg: msg} }
 
-// TestSubscribeNoConnection covers the path where no connection is in the context.
-func TestSubscribeNoConnection(t *testing.T) {
-	if ok := Subscribe(context.Background(), "thread-1"); !ok {
-		t.Fatal("Subscribe with no connection should return true")
-	}
-}
-
-// TestSubscribeEmptyThreadID covers the path where threadID is empty.
-func TestSubscribeEmptyThreadID(t *testing.T) {
-	server := NewServer(ServerConfig{})
-	conn := server.NewConnection("conn-sub-empty")
-	server.registerConnection(conn)
-	ctx := context.WithValue(context.Background(), connectionContextKey{}, conn)
-	if ok := Subscribe(ctx, ""); ok {
-		t.Fatal("Subscribe with empty threadID should return false")
-	}
-}
-
-// TestSubscribeReplacedConnection covers the path where the connection has been
-// replaced (server.conns[conn.id] != conn).
-func TestSubscribeReplacedConnection(t *testing.T) {
-	server := NewServer(ServerConfig{})
-	conn := server.NewConnection("conn-replaced")
-	server.registerConnection(conn)
-	// Replace the connection with a new one.
-	newConn := server.NewConnection("conn-replaced")
-	server.registerConnection(newConn)
-	ctx := context.WithValue(context.Background(), connectionContextKey{}, conn)
-	if ok := Subscribe(ctx, "thread-1"); ok {
-		t.Fatal("Subscribe with replaced connection should return false")
-	}
-}
-
-// TestReplaceSubscriptionsNoConnection covers the path where no connection is
-// in the context for ReplaceSubscriptions.
-func TestReplaceSubscriptionsNoConnection(t *testing.T) {
-	if ok := ReplaceSubscriptions(context.Background(), "thread-1"); !ok {
-		t.Fatal("ReplaceSubscriptions with no connection should return true")
-	}
-}
-
 // TestNewNotifierZeroLimit covers the limit<=0 default path in NewNotifier.
 func TestNewNotifierZeroLimit(t *testing.T) {
 	n := NewNotifier(0)
@@ -235,31 +194,5 @@ func TestNewNotifierNegativeLimit(t *testing.T) {
 	n := NewNotifier(-5)
 	if n.limit != 1000 {
 		t.Fatalf("limit = %d, want 1000", n.limit)
-	}
-}
-
-// TestRetainedWindowEmptyHistoryWithSeq covers the branch in RetainedWindow
-// where history is empty but nextSeq > 0. This happens when limit=0 (but
-// NewNotifier clamps to 1000) — actually it's hard to get an empty history
-// with nextSeq > 0 because Record always appends. The only way is if
-// history is trimmed to 0, which doesn't happen (limit is at least 1 after
-// clamping). So this branch is for the case where the notifier was
-// constructed but never had Record called — but then nextSeq is 0. The
-// `n.nextSeq > 0` branch with empty history is unreachable in practice
-// because Record always appends at least one entry before trimming.
-func TestRetainedWindowEmptyHistoryWithSeqUnreachable(t *testing.T) {
-	t.Skip("the nextSeq > 0 with empty history branch in RetainedWindow is unreachable: Record always appends before trimming")
-}
-
-// TestRetainedWindowNoHistoryNoSeq covers the branch where history is empty
-// and nextSeq is 0.
-func TestRetainedWindowNoHistoryNoSeq(t *testing.T) {
-	n := NewNotifier(10)
-	window := n.RetainedWindow("")
-	if window.LowerSeq != 0 {
-		t.Fatalf("LowerSeq = %d, want 0", window.LowerSeq)
-	}
-	if window.UpperSeq != 0 {
-		t.Fatalf("UpperSeq = %d, want 0", window.UpperSeq)
 	}
 }

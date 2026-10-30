@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"maps"
 	"path/filepath"
@@ -37,9 +38,11 @@ type sessionOpts struct {
 	adapters        []llm.ProviderAdapter
 	steps           []func(req llm.Request) llm.Response
 	profile         *provider.Profile
+	env             execenv.ExecutionEnvironment
 	dir             string
 	cfg             SessionConfig
 	cfgSet          bool
+	stateDir        string
 	skipGitSnapshot bool
 	immediateRest   bool
 	clock           clock.Clock
@@ -55,6 +58,21 @@ func withImmediateRest() sessionOpt { return func(o *sessionOpts) { o.immediateR
 // dropped, for tests that build a SessionConfig literal.
 func immediateRestConfig() testConfig {
 	return testConfig{needsResponseQuietPeriod: new(time.Duration)}
+}
+
+// minimalTestSessionConfig is newTestSession's fixture configuration: the
+// smallest deterministic session that still runs the real init path.
+func minimalTestSessionConfig(t *testing.T) SessionConfig {
+	t.Helper()
+	return SessionConfig{
+		MaxSubagentDepth: 1,
+		testOnly: testConfig{
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+			noSyncJobStore:      true,
+			sandboxProber:       bwrapCapableProber(t.TempDir()),
+		},
+	}
 }
 
 // withClock runs the session on c, keeping newSession's default config.
@@ -77,11 +95,18 @@ func withAdapter(a llm.ProviderAdapter) sessionOpt {
 }
 
 func withProfile(p *provider.Profile) sessionOpt { return func(o *sessionOpts) { o.profile = p } }
-func withDir(dir string) sessionOpt              { return func(o *sessionOpts) { o.dir = dir } }
+func withEnv(env execenv.ExecutionEnvironment) sessionOpt {
+	return func(o *sessionOpts) { o.env = env }
+}
+func withDir(dir string) sessionOpt { return func(o *sessionOpts) { o.dir = dir } }
 func withConfig(cfg SessionConfig) sessionOpt {
 	return func(o *sessionOpts) { o.cfg = cfg; o.cfgSet = true }
 }
-func withoutGitSnapshot() sessionOpt { return func(o *sessionOpts) { o.skipGitSnapshot = true } }
+
+// withStateDir gives the session a durable state directory on top of whatever
+// config it otherwise has, as delegate creation requires.
+func withStateDir(dir string) sessionOpt { return func(o *sessionOpts) { o.stateDir = dir } }
+func withoutGitSnapshot() sessionOpt     { return func(o *sessionOpts) { o.skipGitSnapshot = true } }
 
 // newSession builds a *Session for tests. The zero-option form yields the
 // canonical default: scripted "openai" and dedicated session-namer adapters, a
@@ -132,6 +157,9 @@ func newSession(t *testing.T, opts ...sessionOpt) *Session {
 		// explicit cfg is the caller's own answer and is left untouched.
 		cfg.AgentsDocPath = filepath.Join(t.TempDir(), "no-personal-AGENTS.md")
 	}
+	if o.stateDir != "" {
+		cfg.StateDir = o.stateDir
+	}
 	if o.skipGitSnapshot {
 		cfg.testOnly.skipGitSnapshot = true
 	}
@@ -141,7 +169,11 @@ func newSession(t *testing.T, opts ...sessionOpt) *Session {
 	if o.clock != nil {
 		cfg.clock = o.clock
 	}
-	sess, err := NewSession(o.client, profile, execenv.NewLocalExecutionEnvironment(o.dir), cfg)
+	env := o.env
+	if env == nil {
+		env = execenv.NewLocalExecutionEnvironment(o.dir)
+	}
+	sess, err := NewSession(o.client, profile, env, cfg)
 	if err != nil {
 		t.Fatalf("newSession: %v", err)
 	}
@@ -252,6 +284,20 @@ func adapterInstance(name string) registry.Provider {
 		Base: "openai-compatible", APIKey: "test",
 		Transport: registry.Transport{BaseURL: "http://" + name + ".test.invalid/v1"},
 	}
+}
+
+// --- turn driving ---
+
+// tripwireCtx returns the standard turn context for scripted-adapter tests.
+func tripwireCtx(t *testing.T) context.Context {
+	t.Helper()
+	// TRIPWIRE: scripted in-process adapter, no real I/O; the 30-second
+	// ceiling only fires on a genuine hang, not on scheduler contention
+	// under a loaded suite. Cancel is registered with t.Cleanup, so the
+	// context lives for the whole test exactly as a deferred cancel would.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+	return ctx
 }
 
 // --- deterministic clock ---

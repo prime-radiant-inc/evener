@@ -206,16 +206,6 @@ var knownHookSpecKeys = map[string]bool{
 	"statusMessage": true,
 }
 
-// parsePluginHooks parses hook configuration from JSON data.
-// Accepts wrapper format ({"hooks": {...}}) or direct format (events at top level).
-// Expands plugin-root placeholders in Command and Prompt fields.
-// This is a thin wrapper over parsePluginHooksDiag for callers that do not need
-// the recognized-but-unsupported and unknown event diagnostics.
-func parsePluginHooks(data []byte, pluginDir, pluginName string) (map[HookEvent][]RegisteredHook, error) {
-	hooks, _, _, err := parsePluginHooksDiag(data, pluginDir, pluginName)
-	return hooks, err
-}
-
 // parsePluginHooksDiag parses hook configuration from JSON data and classifies
 // event names into three buckets:
 //   - supported: returned in the hooks map (events in validHookEvents)
@@ -245,7 +235,7 @@ func dropHookMetaKeys(eventsRaw map[string]json.RawMessage) {
 }
 
 // parsePluginHooksDiagWithSource is the full implementation used internally and
-// by discoverPluginHooks (which knows the resolved file path).
+// by discoverPluginHooksDiag (which knows the resolved file path).
 func parsePluginHooksDiagWithSource(data []byte, pluginDir, pluginName, sourcePath string) (hooks map[HookEvent][]RegisteredHook, unsupported map[HookEvent]bool, unknown map[string]bool, err error) {
 	// Try wrapper format first: {"hooks": {...}} or {"description": "...", "hooks": {...}}
 	var wrapper struct {
@@ -417,12 +407,4 @@ func discoverPluginHooksDiag(pluginDir string, manifestHooks json.RawMessage, pl
 		return nil, nil, nil, fmt.Errorf("reading hooks file %q: %w", defaultPath, err)
 	}
 	return parsePluginHooksDiagWithSource(data, pluginDir, pluginName, defaultPath)
-}
-
-// discoverPluginHooks finds and parses hook configuration for a plugin.
-// It is a thin wrapper over discoverPluginHooksDiag for callers that do not
-// need the unsupported/unknown diagnostic sets.
-func discoverPluginHooks(pluginDir string, manifestHooks json.RawMessage, pluginName string) (map[HookEvent][]RegisteredHook, error) {
-	hooks, _, _, err := discoverPluginHooksDiag(pluginDir, manifestHooks, pluginName)
-	return hooks, err
 }

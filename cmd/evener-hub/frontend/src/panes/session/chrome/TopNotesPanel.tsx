@@ -1,7 +1,7 @@
 import type { ThreadModel } from "@evener/appwire-client";
-import { canReadSharedNotes } from "@evener/appwire-client";
+import { canReadSharedNotes, canWriteSharedNotes } from "@evener/appwire-client";
 import { useEffect, useRef } from "react";
-import { canWriteHumanNote, syncHumanNote, useHumanNoteDraft } from "../../../stores/humanNoteDrafts";
+import { syncHumanNote, useHumanNoteDraft } from "../../../stores/humanNoteDrafts";
 import { topNotesStore, usePendingTopNotesFocus, useTopNotesExpanded } from "../../../stores/topNotes";
 import { Chevron, Eyebrow, ToolIcon } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
@@ -30,7 +30,7 @@ export function TopNotesPanel({ sessionRef, model, sourcePaneId }: TopNotesPanel
   const expanded = useTopNotesExpanded(sessionRef);
   const pendingRequest = usePendingTopNotesFocus(sessionRef);
   const readable = canReadSharedNotes(model);
-  const canWrite = canWriteHumanNote(model);
+  const canWrite = canWriteSharedNotes(model);
   // Subscribed before the canReadSharedNotes guard below so the early return
   // can never skip a hook (Rules of Hooks).
   const draftState = useHumanNoteDraft(sessionRef);

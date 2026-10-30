@@ -1,7 +1,6 @@
 // The hub's hosts as evener/host/list reports them, kept current while a page
 // shows them. No host lifecycle notification exists, so a started controller
-// reads every 2 seconds, as the web's hosts section does (HOST_POLL_MS,
-// cmd/evener-hub/frontend/src/panes/settings/sections/hosts.tsx), and keeps its
+// reads every 2 seconds, as the web's hosts section does (HOST_POLL_MS), and keeps its
 // last rows when a read fails. Edit and Remove go through the package's guarded
 // host mutations (hostMutations.ts), the core the web's hosts store wraps.
 import {
@@ -11,12 +10,11 @@ import {
 	HostMutationOutcomeError,
 	type HostEntry,
 	type HostMutationPair,
+	HOST_POLL_MS,
 	type HostMutations,
 	type HostRow,
 } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
-
-export const HOST_POLL_MS = 2_000;
+import type { ConversationClientLike } from "../conversation/services/conversation";
 
 const noMutationIds = (): string => {
 	throw new Error("HostsController: editing or removing a host needs a mutation id source");

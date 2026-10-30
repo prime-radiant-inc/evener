@@ -13,8 +13,8 @@
 // every store still bound to the old client (releaseCreations): a start sent
 // there reads as uncertain at once rather than starting forever, and Start
 // holds that draft until it changes (startMayRepeat).
-import { createNewSessionService, type NewSessionService } from "../../../mobile/src/services/newSession";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import { createNewSessionService, type NewSessionService } from "../conversation/services/newSession";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 import { perHub } from "../board/perHub";
 import { createNewSessionStore, type DraftStorage } from "../newSession";
 import type { NewSessionStore } from "./newSessionContext";

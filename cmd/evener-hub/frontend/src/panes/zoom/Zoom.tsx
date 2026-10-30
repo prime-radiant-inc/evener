@@ -10,7 +10,7 @@ import { StatusBar } from "../../shell/statusbar/StatusBar";
 import { deriveScope } from "../../shell/statusbar/statusScope";
 import { useIsMobile } from "../../shell/useIsMobile";
 import { type OpenPaneRecord, workspaceStore } from "../../shell/workspace";
-import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
+import { navigationStore } from "../../stores/navigation/store";
 import { useSessionActivity, useSubagentCounts } from "../../stores/sessionActivity";
 import { useThreadsStore } from "../../stores/threads";
 import { Button, EmptyState, Loader, PaneScaffold, Skeleton } from "../../widgets";
@@ -70,11 +70,10 @@ function ScopeConversation({
   // Spines retain summary demand, not transcript or collection demand.
   const { snapshot } = useSessionActivity(scope.requestedRef);
   const subagents = useSubagentCounts(scope.requestedRef);
-  useNavigationStore((state) => state.resources);
   const model = useThreadsStore(
     useShallow((state) => {
       const thread = state.threads.get(scope.requestedRef);
-      return thread === undefined ? undefined : { name: thread.name, imageSessionId: thread.imageSessionId };
+      return thread === undefined ? undefined : { imageSessionId: thread.imageSessionId };
     }),
   );
   // The scope's node describes the path's canonical session, but a ref the
@@ -104,7 +103,7 @@ function ScopeConversation({
   }, [view, readable, admitted]);
 
   const activity = deriveScope(navigationStore.getState(), scope.requestedRef, snapshot, subagents);
-  activity.leaf.title = (imageMatches && model?.name) || scope.title;
+  activity.leaf.title = useScopeTitle(scope.requestedRef, scope.title, imageMatches);
   const composer = (admitted ? retainedConversationComposer(lifetime, scope.requestedRef) : null) ?? null;
   const seat = useMemo<ConversationSeat>(
     () => ({
@@ -178,7 +177,7 @@ function ScopeConversation({
                     content
                   )
                 }
-                conversationFooter={state === "live" ? footer : null}
+                conversationFooter={footer}
               />
             )}
           />

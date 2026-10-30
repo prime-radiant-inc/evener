@@ -49,7 +49,7 @@ export interface HubSheetContextValue {
 	/** Whether a control that needs the hub may act right now. */
 	canUseConnection: () => boolean;
 	/** The hub's own update: the header's "up to date" or "Update available",
-	 * and About's "Update hub" (ruling 22). */
+	 * and About's Install update and Restart hub (ruling 22). */
 	updates: HubUpdateController;
 	/** The hub's hosts and its live sessions, per client; null before one. */
 	hosts: HostsController | null;

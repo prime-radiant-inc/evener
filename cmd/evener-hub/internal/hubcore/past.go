@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"hash/fnv"
 	"os"
 	"path/filepath"
@@ -19,6 +18,7 @@ import (
 	_ "modernc.org/sqlite" // registers the "sqlite" driver for database/sql
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/execsupport/componentlog"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -367,10 +367,6 @@ func (i *PastIndex) scanAll() ([]PastEntry, map[string]PastEntry, map[string]str
 // and a count rather than hundreds of lines.
 const maxReportedSkips = 5
 
-// metaFileSuffix is the on-disk filename suffix schema writes a session meta
-// under, mirrored here so a skip report can name the files the lister dropped.
-const metaFileSuffix = ".meta.json"
-
 // The identifier validators report the rule an id broke ("invalid UUID
 // payload") but not the shape to write instead, which is the fact whoever
 // seeded the entry actually needs. A skip report carries both.
@@ -392,7 +388,7 @@ func badProjectID(err error) string {
 // sessionMetaPath renders the on-disk location a session's meta was read from,
 // for naming it in a skip report.
 func sessionMetaPath(project, id string) string {
-	return filepath.Join(project, "sessions", id+".meta.json")
+	return schema.SessionMetaPath(project, id)
 }
 
 // reportUnlistedMetas records every <id>.meta.json under a project that
@@ -405,16 +401,16 @@ func sessionMetaPath(project, id string) string {
 // lister already refused to hand it. Re-deriving the difference here is what
 // puts the seeded path and its rejection in front of whoever seeded it.
 func reportUnlistedMetas(fs afero.Fs, project string, indexed map[string]bool, skipped map[string]string) {
-	sessionsDir := filepath.Join(project, "sessions")
+	sessionsDir := schema.SessionsDir(project)
 	entries, err := afero.ReadDir(fs, sessionsDir)
 	if err != nil {
 		return // no sessions dir (or unreadable): nothing to compare against
 	}
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), metaFileSuffix) {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), schema.SessionMetaSuffix) {
 			continue
 		}
-		id := strings.TrimSuffix(e.Name(), metaFileSuffix)
+		id := strings.TrimSuffix(e.Name(), schema.SessionMetaSuffix)
 		if indexed[id] {
 			continue
 		}
@@ -456,10 +452,10 @@ func (i *PastIndex) reportSkips(skipped map[string]string) {
 		named = named[:maxReportedSkips]
 	}
 	for _, path := range named {
-		fmt.Fprintf(os.Stderr, "[hub] past index: skipped %s: %s\n", path, skipped[path])
+		componentlog.New("hub").Warn("past index: skipped", "path", path, "reason", skipped[path])
 	}
 	if len(fresh) > len(named) {
-		fmt.Fprintf(os.Stderr, "[hub] past index: skipped %d more unindexable entries\n", len(fresh)-len(named))
+		componentlog.New("hub").Warn("past index: skipped more unindexable entries", "count", len(fresh)-len(named))
 	}
 }
 
@@ -590,7 +586,7 @@ func (i *PastIndex) RefreshOne(id string) {
 	}
 	meta, err := schema.LoadSessionMeta(entry.StateDir, id)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[hub] RefreshOne(%s): load meta: %v\n", id, err)
+		componentlog.New("hub").Error("RefreshOne: load meta", "session", id, "err", err)
 		return
 	}
 	i.UpdateMeta(id, meta)

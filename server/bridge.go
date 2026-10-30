@@ -185,10 +185,9 @@ func (s *Server) applySessionEventStatus(ev events.SessionEvent) {
 // settledStatusSupersededLocked reports whether a resting status that settled
 // outside any turn (EventStatusSettled) can't be published now: an input is
 // being taken (it may be held for the end of processing, settledStatusLocked),
-// a turn is reserved and its own end restates the state, or the session
-// already closed, and closed wins. The caller holds s.mu.
+// or the session already closed, and closed wins. The caller holds s.mu.
 func (s *Server) settledStatusSupersededLocked() bool {
-	return s.processing || s.appReservedTurnID != "" || s.status.State == string(agent.SessionClosed)
+	return s.processing || s.status.State == string(agent.SessionClosed)
 }
 
 func sessionEventClosesSession(ev events.SessionEvent) bool {

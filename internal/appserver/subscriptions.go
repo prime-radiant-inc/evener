@@ -86,17 +86,6 @@ func (s *Subscriptions) UnsubscribeLifecycle(connID, lifecycleKey string) {
 	s.unsubscribeMatchingLocked(connID, func(sub *subscription) bool { return sub.lifecycleKey == lifecycleKey })
 }
 
-// UnsubscribeLifecycleAlias removes the requested delivery alias only when it
-// belongs to the resolved lifecycle. Other aliases sharing that delivery key
-// remain owned by their respective lifecycles.
-func (s *Subscriptions) UnsubscribeLifecycleAlias(connID, deliveryKey, lifecycleKey string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.unsubscribeMatchingLocked(connID, func(sub *subscription) bool {
-		return sub.threadID == deliveryKey && sub.lifecycleKey == lifecycleKey
-	})
-}
-
 func (s *Subscriptions) unsubscribeMatchingLocked(connID string, matches func(*subscription) bool) {
 	var withdraw func(*subscription)
 	withdraw = func(sub *subscription) {
@@ -127,15 +116,6 @@ func (s *Subscriptions) subscribeOwned(connID, threadID, lifecycleKey string, re
 		s.removeConnectionLocked(connID)
 	}
 	s.subscribeLocked(&subscription{connID: connID, threadID: threadID, lifecycleKey: lifecycleKey})
-}
-
-func (s *Subscriptions) ReplaceConnectionSubscriptions(connID, threadID string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.removeConnectionLocked(connID)
-	if threadID != "" {
-		s.subscribeLocked(&subscription{connID: connID, threadID: threadID})
-	}
 }
 
 func (s *Subscriptions) beginBuffered(connID, threadID string, replace bool, generation uint64, lifecycleKeys ...string) subscriptionCaptureRollback {
@@ -255,16 +235,6 @@ func (s *Subscriptions) Release(connID, threadID string, generation uint64) ([]S
 	return release, true
 }
 
-// IsSubscribed reports whether the connection holds a live interest in the
-// thread; a withdrawn mid-capture entry does not count (see
-// subscription.withdrawn).
-func (s *Subscriptions) IsSubscribed(connID, threadID string) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	sub, ok := s.byConn[connID][threadID]
-	return ok && !sub.withdrawn
-}
-
 // Threads lists the threads the connection holds a live interest in; a
 // withdrawn mid-capture entry does not count (see subscription.withdrawn).
 func (s *Subscriptions) Threads(connID string) []string {
@@ -278,19 +248,6 @@ func (s *Subscriptions) Threads(connID string) []string {
 		threads = append(threads, threadID)
 	}
 	return threads
-}
-
-func (s *Subscriptions) Connections(threadID string) []string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	conns := make([]string, 0, len(s.byThread[threadID]))
-	for connID, sub := range s.byThread[threadID] {
-		if sub.withdrawn {
-			continue
-		}
-		conns = append(conns, connID)
-	}
-	return conns
 }
 
 // ConnectionCount reports how many connections hold a live interest in the

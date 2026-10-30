@@ -21,6 +21,7 @@
     "paths": {
       "@evener/appwire-client": ["../../../appwire-client/typescript/index.ts"],
       "@evener/appwire-client/docContent": ["../../../appwire-client/typescript/docContent.ts"],
+      "@evener/appwire-client/hubOrigin": ["../../../appwire-client/typescript/hubOrigin.ts"],
       "@evener/appwire-client/pairing": ["../../../appwire-client/typescript/pairing.ts"],
       "@evener/appwire-client/state/navigation": ["../../../appwire-client/typescript/state/navigation/index.ts"],
       "@evener/appwire-client/state/credentials": ["../../../appwire-client/typescript/state/credentials/index.ts"],
@@ -41,7 +42,8 @@
       "vitest": ["./node_modules/vitest"],
       "@testing-library/react": ["./node_modules/@testing-library/react"],
       "tinykeys": ["./node_modules/tinykeys"],
-      "tweetnacl": ["./node_modules/tweetnacl"]
+      "tweetnacl": ["./node_modules/tweetnacl"],
+      "anser": ["./node_modules/anser"]
     }
   },
   // The package is in this program in its own right, not only through the app

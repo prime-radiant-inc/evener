@@ -240,10 +240,7 @@ func TestAppWireRenameKeepsNonLocalRefSeparateFromMatchingLocalSession(t *testin
 	if err := schema.SaveSessionMeta(stateDir, localMeta); err != nil {
 		t.Fatal(err)
 	}
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 
 	remote := &renameNavigationSource{scriptedAppSource: &scriptedAppSource{
 		id: "remote",
@@ -285,10 +282,7 @@ func TestAppWireRenameReportsEndedMetadataFailures(t *testing.T) {
 	if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
 		t.Fatal(err)
 	}
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	server := newHubAppServerWithNavigation(hubcore.WebConfig{Past: past}, appsource.NewRegistry(), nil, nil)
 
 	originalLoad := loadSessionMetaForRename
@@ -333,10 +327,7 @@ func TestAppWireRenameDoesNotEditMetaWhenEndedSessionBecomesLive(t *testing.T) {
 	if err := schema.SaveSessionMeta(stateDir, original); err != nil {
 		t.Fatal(err)
 	}
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 
 	runDir := t.TempDir()
 	roster := hubcore.NewRoster(runDir, fakeProber{sessionID: sessionID, status: appwire.ThreadStatusIdle})
@@ -407,10 +398,7 @@ func TestRenameLiveWorkspaceAliasReachesDaemon(t *testing.T) {
 	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{ID: savedID, Name: "saved name"}); err != nil {
 		t.Fatal(err)
 	}
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	if _, ok := past.Find(savedID); !ok {
 		t.Fatal("saved session missing from index")
 	}

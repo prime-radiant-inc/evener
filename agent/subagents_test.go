@@ -12,6 +12,8 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provenance"
@@ -23,15 +25,7 @@ import (
 // Close is registered via t.Cleanup.
 func newTestSession(t *testing.T) *Session {
 	t.Helper()
-	return newSession(t, withConfig(SessionConfig{
-		MaxSubagentDepth: 1,
-		testOnly: testConfig{
-			skipGitSnapshot:     true,
-			minimalSystemPrompt: true,
-			noSyncJobStore:      true,
-			sandboxProber:       bwrapCapableProber(t.TempDir()),
-		},
-	}))
+	return newSession(t, withConfig(minimalTestSessionConfig(t)))
 }
 
 func TestSubagentInheritsSelectedPluginDirs(t *testing.T) {
@@ -42,11 +36,7 @@ func TestSubagentInheritsSelectedPluginDirs(t *testing.T) {
 		PluginDirs:       want,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}))
-	prepared, err := parent.prepareSubagentRun(context.Background(), "inspect", "", "", 1, "", "", nil, nil)
-	if err != nil {
-		t.Fatalf("prepareSubagentRun: %v", err)
-	}
-	defer releasePreparedTreeSlot(prepared)
+	prepared := prepareStableChild(t, parent, delegateArgs{Task: "inspect"})
 	defer prepared.sub.sess.Close()
 	if !slices.Equal(prepared.sub.sess.cfg.PluginDirs, want) {
 		t.Fatalf("child PluginDirs = %v, want %v", prepared.sub.sess.cfg.PluginDirs, want)
@@ -127,14 +117,10 @@ func TestFrozenSubagentToolNamesIncludeRecoveryReader(t *testing.T) {
 		SystemPrompt: "Read the requested files.",
 		Tools:        []string{"read_file"},
 	}
-	prepared, err := s.prepareSubagentRun(context.Background(), "inspect", "", "", 1, "task7-reader", "", nil, nil)
-	if err != nil {
-		t.Fatalf("prepareSubagentRun: %v", err)
-	}
-	releasePreparedTreeSlot(prepared)
+	prepared := prepareStableChild(t, s, delegateArgs{Task: "inspect", AgentType: "task7-reader"})
 	defer prepared.sub.sess.Close()
 	got := prepared.frozenToolNames
-	if !slices.Equal(got, []string{"read_file", "task_list", "compact_context", "use_skill", "job_list", "job_status", "job_stop", "job_watch", "read_transcript"}) {
+	if !slices.Equal(got, []string{"communicate", "compact_context", "job_list", "job_status", "job_stop", "job_watch", "read_file", "read_transcript", "task_list", "use_skill"}) {
 		t.Fatalf("frozen names = %v", got)
 	}
 }
@@ -181,23 +167,24 @@ func TestSubagentRunSnapshotsFinalProvenance(t *testing.T) {
 	}
 }
 
-func spawnRuntimeAgent(t *testing.T, sess *Session, task, model string, maxTurns int, agentType, reasoningEffort string, grantTools []string) string {
+// spawnRuntimeDelegate creates and launches a stable delegate.
+func spawnRuntimeDelegate(t *testing.T, sess *Session, args delegateArgs) delegateResult {
 	t.Helper()
-	result, err := sess.spawnAgent(context.Background(), task, model, "", maxTurns, agentType, reasoningEffort, nil, grantTools)
-	if err != nil {
-		t.Fatalf("spawnAgent: %v", err)
+	result := sess.createDelegate(context.Background(), args)
+	if result.Err != nil {
+		t.Fatalf("createDelegate: %v", result.Err)
 	}
-	var spawned struct {
-		AgentID string `json:"agent_id"`
-		Status  string `json:"status"`
+	if result.DelegateID == "" || result.ChildSessionID == "" {
+		t.Fatalf("create result missing delegate identity: %+v", result)
 	}
-	if err := json.Unmarshal([]byte(result.(string)), &spawned); err != nil {
-		t.Fatalf("unmarshal spawn result: %v (out=%q)", err, result)
-	}
-	if spawned.AgentID == "" {
-		t.Fatalf("spawn result missing agent_id: %s", result)
-	}
-	return spawned.AgentID
+	return result
+}
+
+// spawnRuntimeAgent is spawnRuntimeDelegate returning the child session id,
+// which getSub resolves to the tracked run.
+func spawnRuntimeAgent(t *testing.T, sess *Session, args delegateArgs) string {
+	t.Helper()
+	return spawnRuntimeDelegate(t, sess, args).ChildSessionID
 }
 
 func waitForRuntimeSubagent(t *testing.T, sess *Session, agentID string) subagentResult {
@@ -316,7 +303,7 @@ func (a *cancelBlockAdapter) Complete(ctx context.Context, req llm.Request) (llm
 		<-ctx.Done()
 		return llm.Response{}, ctx.Err()
 	}
-	resp := finalResponse(a.resume)
+	resp := agenttest.FinalResponse(a.resume)
 	resp.Provider = a.name
 	resp.Model = req.Model
 	return resp, nil
@@ -328,19 +315,20 @@ func (a *cancelBlockAdapter) Stream(ctx context.Context, req llm.Request) (llm.S
 	return nil, llm.ErrStreamUnsupported
 }
 
-// TestCancelAgent_RunningChildBecomesCancelledAndResumable cancels a child whose
-// run is blocked inside an in-flight LLM call, asserts the run finalizes as
-// cancelled and the child goes idle, then resumes it and asserts a fresh round
-// runs to completion. Timing is controlled by the adapter's `blocked` channel and
-// the context cancel — no sleeps.
-func TestCancelAgent_RunningChildBecomesCancelledAndResumable(t *testing.T) {
+// TestDelegate_StopRunningChildThenResume stops a delegate whose run is
+// blocked inside an in-flight LLM call, asserts the run finalizes as cancelled
+// and the delegate goes idle and resumable, then sends it a message and asserts
+// a fresh round runs to completion. Timing is controlled by the adapter's
+// `blocked` channel and the context cancel — no sleeps.
+func TestDelegate_StopRunningChildThenResume(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	blocked := make(chan struct{})
 	c.Register(&cancelBlockAdapter{name: "openai", blocked: blocked, resume: "resumed work"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
 	})
 	if err != nil {
@@ -348,48 +336,42 @@ func TestCancelAgent_RunningChildBecomesCancelledAndResumable(t *testing.T) {
 	}
 	defer sess.Close()
 
-	agentID := spawnRuntimeAgent(t, sess, "do long work", "", 0, "", "", nil)
+	created := spawnRuntimeDelegate(t, sess, delegateArgs{Task: "do long work"})
+	agentID := created.ChildSessionID
 
 	// Wait until the child's run is blocked inside the in-flight LLM call.
 	<-blocked
 
-	cancelOut, err := sess.cancelAgent(agentID)
-	if err != nil {
-		t.Fatalf("cancelAgent: %v", err)
-	}
-	var cancelled subagentResult
-	if err := json.Unmarshal([]byte(cancelOut.(string)), &cancelled); err != nil {
-		t.Fatalf("unmarshal cancel result: %v (output: %s)", err, cancelOut)
-	}
-	if cancelled.Status != SubagentCancelled {
-		t.Fatalf("status = %q, want %q (output: %s)", cancelled.Status, SubagentCancelled, cancelOut)
-	}
-	if cancelled.Success {
-		t.Errorf("cancelled run must not report success")
+	value, stopErr := jobStopTool(context.Background(), sess, map[string]any{
+		"target":      created.DelegateID,
+		"max_wait_ms": 60_000,
+	}, jobToolResultDefaultMaxChar)
+	invocation := stableJobStopInvocation{value: value, err: stopErr}
+	assertStableStopCompleted(t, invocation, created.DelegateID, delegateLifecycleRunning, "cancelled_by_request")
+	if state := stableJobStopState(t, invocation); state.Resumable == nil || !*state.Resumable {
+		t.Fatalf("stopped delegate resumable = %#v, want true", state.Resumable)
 	}
 
 	// The child must be idle (resumable), not removed from tracking.
 	sub := sess.getSub(agentID)
 	if sub == nil {
-		t.Fatal("cancelled child must remain tracked")
+		t.Fatal("stopped child must remain tracked")
 	}
 	sub.mu.Lock()
 	running := sub.running
 	sub.mu.Unlock()
 	if running {
-		t.Fatal("child must be idle after cancel")
+		t.Fatal("child must be idle after stop")
 	}
 
-	// A following resume runs a fresh round to completion.
-	if _, err := sess.sendInput(context.Background(), agentID, "continue"); err != nil {
-		t.Fatalf("sendInput: %v", err)
+	// A following send runs a fresh round to completion.
+	outcome := (delegateRuntime{owner: sess}).send(context.Background(), created.DelegateID, "continue", 60_000)
+	abortUnpersistedDelegateOutcome(t, outcome)
+	if outcome.result.Err != nil {
+		t.Fatalf("send after stop: %v", outcome.result.Err)
 	}
-	resumed := waitForRuntimeSubagent(t, sess, agentID)
-	if resumed.Status != SubagentCompleted {
-		t.Fatalf("resumed status = %q, want %q (output: %+v)", resumed.Status, SubagentCompleted, resumed)
-	}
-	if !resumed.Success {
-		t.Errorf("resumed run must report success")
+	if outcome.result.Status != jobstore.StatusCompleted {
+		t.Fatalf("resumed status = %q, want %q (result: %+v)", outcome.result.Status, jobstore.StatusCompleted, outcome.result)
 	}
 }
 
@@ -432,7 +414,6 @@ func TestCancelAgent_GenuineFailureRacingCancelStaysFailed(t *testing.T) {
 	sub := &subagent{
 		id:              sess.id,
 		sess:            sess,
-		emit:            sess.emit,
 		running:         true,
 		status:          SubagentRunning,
 		done:            make(chan struct{}),
@@ -484,7 +465,6 @@ func TestCancelAgent_JoinedCanceledAndExhaustionStaysCancelledWithJoinedError(t 
 	sub := &subagent{
 		id:              sess.id,
 		sess:            sess,
-		emit:            sess.emit,
 		running:         true,
 		status:          SubagentRunning,
 		done:            make(chan struct{}),
@@ -512,33 +492,6 @@ func TestCancelAgent_JoinedCanceledAndExhaustionStaysCancelledWithJoinedError(t 
 	}
 }
 
-// TestCancelAgent_NotRunning asserts cancelling an idle/terminal child returns the
-// "is not running" error rather than fabricating a cancelled outcome.
-func TestCancelAgent_NotRunning(t *testing.T) {
-	t.Parallel()
-	sess := newTestSession(t)
-	// The child's sess is a distinct session (as in production), so the parent's
-	// teardown closes a different session rather than re-entering its own Close.
-	sub := &subagent{
-		id:      "01IDLE",
-		sess:    newTestSession(t),
-		emit:    sess.emit,
-		running: false,
-		status:  SubagentCompleted,
-		done:    make(chan struct{}),
-	}
-	close(sub.done)
-	sess.subagents.track(sub)
-
-	_, err := sess.cancelAgent("01IDLE")
-	if err == nil {
-		t.Fatal("cancelAgent on idle child must error")
-	}
-	if !strings.Contains(err.Error(), "is not running") {
-		t.Fatalf("error = %q, want it to contain \"is not running\"", err.Error())
-	}
-}
-
 // resumeBlockAdapter is a two-step adapter used by TestSubagentTimestamps_ResetOnResume.
 // Step 0 (first run): completes immediately.
 // Step 1 (resumed run): closes started to signal the test that the run is in-flight,
@@ -561,7 +514,7 @@ func (a *resumeBlockAdapter) Complete(ctx context.Context, req llm.Request) (llm
 	a.mu.Unlock()
 
 	if step == 0 {
-		resp := finalResponse("first run")
+		resp := agenttest.FinalResponse("first run")
 		resp.Provider = a.name
 		resp.Model = req.Model
 		return resp, nil
@@ -573,7 +526,7 @@ func (a *resumeBlockAdapter) Complete(ctx context.Context, req llm.Request) (llm
 	case <-ctx.Done():
 		return llm.Response{}, ctx.Err()
 	}
-	resp := finalResponse("second run")
+	resp := agenttest.FinalResponse("second run")
 	resp.Provider = a.name
 	resp.Model = req.Model
 	return resp, nil
@@ -603,7 +556,8 @@ func TestSubagentTimestamps_ResetOnResume(t *testing.T) {
 	}
 	c.Register(adapter)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
 	})
 	if err != nil {
@@ -614,11 +568,11 @@ func TestSubagentTimestamps_ResetOnResume(t *testing.T) {
 	// TRIPWIRE: adapter is a scripted in-process call, no real I/O; this
 	// normally completes in well under a second. 30s only fires on a genuine
 	// hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 
 	// Non-blocking spawn; the first run (adapter step 0) completes immediately.
-	agentID := spawnRuntimeAgent(t, sess, "timestamp test", "", 0, "", "", nil)
+	created := spawnRuntimeDelegate(t, sess, delegateArgs{Task: "timestamp test"})
+	agentID := created.ChildSessionID
 
 	// Wait for the first run to complete so we observe a stable post-finalize state.
 	waitForRuntimeSubagent(t, sess, agentID)
@@ -645,9 +599,9 @@ func TestSubagentTimestamps_ResetOnResume(t *testing.T) {
 	if endedAt0 == nil {
 		t.Error("endedAt must be non-nil after first run completes")
 	}
-	// Default spawns have no agent_type; empty string is the correct value.
-	if agentTypeVal != "" {
-		t.Errorf("agentType = %q, want empty for default spawn", agentTypeVal)
+	// An untyped create resolves to the default agent type.
+	if agentTypeVal != "default" {
+		t.Errorf("agentType = %q, want %q for an untyped create", agentTypeVal, "default")
 	}
 
 	// Capture a reference point just before the sleep so we can make a robust
@@ -659,10 +613,10 @@ func TestSubagentTimestamps_ResetOnResume(t *testing.T) {
 	beforeResume := time.Now()
 	time.Sleep(50 * time.Millisecond)
 
-	// Non-blocking resume: sendInput spawns the goroutine and returns "ok" immediately
-	// while adapter step 1 blocks inside Complete waiting for release.
-	if _, err := sess.sendInput(ctx, agentID, "continue"); err != nil {
-		t.Fatalf("sendInput: %v", err)
+	// Non-blocking resume: a send with no wait starts the run and returns
+	// immediately while adapter step 1 blocks inside Complete waiting for release.
+	if outcome := (delegateRuntime{owner: sess}).send(ctx, created.DelegateID, "continue", 0); outcome.result.Err != nil {
+		t.Fatalf("send: %v", outcome.result.Err)
 	}
 
 	// Wait (channel receive, no sleep) until the resumed run is blocked in-flight.
@@ -672,7 +626,7 @@ func TestSubagentTimestamps_ResetOnResume(t *testing.T) {
 		t.Fatal("timed out waiting for resumed run to reach in-flight state")
 	}
 
-	// Inspect IN-FLIGHT: sendInput has already reset the fields but finalize has not
+	// Inspect IN-FLIGHT: the send has already reset the fields but finalize has not
 	// yet run. These are the load-bearing assertions:
 	//   - endedAt == nil proves resume CLEARED it (catches deleted `sub.endedAt = nil`)
 	//   - startedAt.After(beforeResume) proves resume RE-STAMPED it to a strictly later
@@ -816,7 +770,7 @@ func TestWatchParentGrantIsNotInheritedByGrandchild(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
-	subCfg := SessionConfig{MaxSubagentDepth: 3}
+	subCfg := SessionConfig{MaxSubagentDepth: 3, StateDir: t.TempDir()}
 	subCfg.spawn.depth = 1
 	subCfg.spawn.parentSessionID = "parent"
 	subCfg.spawn.delegationAllowance = 1
@@ -827,7 +781,7 @@ func TestWatchParentGrantIsNotInheritedByGrandchild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer child.Close()
+	t.Cleanup(child.Close)
 	if child.reg.Get("job_watch") == nil {
 		t.Fatal("test setup: watch_parent child must have job_watch registered")
 	}
@@ -838,13 +792,7 @@ func TestWatchParentGrantIsNotInheritedByGrandchild(t *testing.T) {
 			Tools: []string{"read_file"},
 		},
 	}
-	ctx := context.WithValue(context.Background(), ctxDelegationAllowance, 0)
-	prepared, err := child.prepareSubagentRun(ctx, "grandchild task", "", dir, 5, "typed-child", "", nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer releasePreparedTreeSlot(prepared)
-	defer prepared.sub.sess.Close()
+	prepared := prepareStableChild(t, child, delegateArgs{Task: "grandchild task", AgentType: "typed-child", DelegationAllowance: new(0)})
 
 	grandchild := prepared.sub.sess
 	if grandchild.cfg.spawn.parentWatchGranted {
@@ -881,11 +829,10 @@ func hasCachedCallableToolDefinition(s *Session, name string) bool {
 	return false
 }
 
-// TestPrepareSubagentRunAllowsRecursionWithAllowance verifies that a depth-1
-// session with delegationAllowance == 1 passes the spawn gate (spec §1 seam 1).
-// Today this fails with "subagent management is top-level only" because the gate
-// checks depth > 0 instead of checking allowance.
-func TestPrepareSubagentRunAllowsRecursionWithAllowance(t *testing.T) {
+// TestSelectSubagentModelAllowsRecursionWithAllowance verifies that a depth-1
+// session with delegationAllowance == 1 passes the delegation gate (spec §1
+// seam 1): the gate checks the allowance, not the session's depth.
+func TestSelectSubagentModelAllowsRecursionWithAllowance(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -906,52 +853,8 @@ func TestPrepareSubagentRunAllowsRecursionWithAllowance(t *testing.T) {
 	}
 	defer sess.Close()
 
-	_, gotErr := sess.prepareSubagentRun(context.Background(), "task", "", dir, 5, "", "", nil, nil)
-
-	// The allowance gate must be cleared. Any later error is fine (no model, env,
-	// etc.) but it MUST NOT be the old depth-gate strings.
-	if gotErr != nil {
-		msg := gotErr.Error()
-		if msg == "subagent management is top-level only" || msg == "subagent depth limit reached" {
-			t.Fatalf("depth gate fired on a session with delegationAllowance=1: %v", gotErr)
-		}
-	}
-}
-
-// TestPrepareSubagentRunRejectsZeroAllowance verifies that a session with
-// delegationAllowance == 0 is rejected with the exact allowance-gate error
-// (spec §1 seam 2). Before the implementation the gate returns the old depth
-// string, not the allowance string, so this test is red today.
-func TestPrepareSubagentRunRejectsZeroAllowance(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai"})
-
-	// Root session: depth=0, delegationAllowance will be 0 because we override it
-	// directly after construction (the zero value — no delegation permitted).
-	cfg := SessionConfig{
-		MaxSubagentDepth: 1,
-	}
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), cfg)
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
-
-	// Force allowance to 0 — leaf behavior.
-	sess.mu.Lock()
-	sess.delegationAllowance = 0
-	sess.mu.Unlock()
-
-	_, gotErr := sess.prepareSubagentRun(context.Background(), "task", "", dir, 5, "", "", nil, nil)
-
-	const wantErr = "delegation not permitted: your delegation_allowance is 0"
-	if gotErr == nil {
-		t.Fatalf("expected error %q, got nil", wantErr)
-	}
-	if gotErr.Error() != wantErr {
-		t.Fatalf("got error %q, want %q", gotErr.Error(), wantErr)
+	if _, err := sess.selectSubagentModel(context.Background(), "", ""); err != nil {
+		t.Fatalf("delegation gate fired on a session with delegationAllowance=1: %v", err)
 	}
 }
 
@@ -1026,123 +929,4 @@ func TestBaseSubagentPolicyAllowsDelegateWithAllowance(t *testing.T) {
 			}
 		}
 	})
-}
-
-// TestGrantRejectionAllowanceTruthful verifies Part B of seam 5: the
-// grant_tools rejection message for a root-only tool states the allowance rule
-// ("delegation_allowance") rather than the old "top-level only" string, so the
-// error is truthful about the actual constraint.
-func TestGrantRejectionAllowanceTruthful(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("done") },
-		},
-	})
-
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		MaxSubagentDepth: 2,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer sess.Close()
-
-	_, err = sess.spawnAgent(context.Background(), "help with follow-up work", "", "", 0, "", "", nil, []string{"delegate"})
-	if err == nil {
-		t.Fatal("expected root-only grant rejection")
-	}
-	errMsg := err.Error()
-	if strings.Contains(errMsg, "top-level only") {
-		t.Fatalf("grant error still says %q, want allowance-truthful message instead", errMsg)
-	}
-	if !strings.Contains(errMsg, "delegation_allowance") {
-		t.Fatalf("grant error = %q, want message referencing 'delegation_allowance'", errMsg)
-	}
-	// The rejection fires only when the spawning session's allowance is already
-	// > 0 (the depth-allowance gate pre-empts allowance 0), so the message must
-	// not state a satisfied precondition ("yours is N") as the failure reason.
-	if strings.Contains(errMsg, "yours is") {
-		t.Fatalf("grant error = %q states a satisfied allowance precondition as the reason; "+
-			"grant_tools cannot grant delegation tools regardless of allowance", errMsg)
-	}
-}
-
-// TestGrantToolsCannotRegrantAskUser verifies the protected-grants set (spec
-// §7 point 2). ask_user is deliberately NOT on rootOnlySubagentTools (that
-// list's removal is allowance-gated; ask_user's exclusion from subagents is
-// unconditional), and the grant loop otherwise consults the PARENT's own
-// registry — where ask_user is legitimately registered on a plain interactive
-// root session. Without a dedicated check, grant_tools has no reason to
-// reject it. It must be rejected anyway, with its own message.
-func TestGrantToolsCannotRegrantAskUser(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai"})
-
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		MaxSubagentDepth: 2,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer sess.Close()
-
-	// Sanity: ask_user is genuinely registered on this interactive root
-	// session — the exact condition the protected check exists to guard.
-	if sess.reg.Get("ask_user") == nil {
-		t.Fatal("test setup: ask_user must be registered on an interactive root session")
-	}
-
-	const wantErr = "ask_user is root-only and cannot be granted to subagents"
-
-	_, err = sess.spawnAgent(context.Background(), "help with follow-up work", "", "", 0, "", "", nil, []string{"ask_user"})
-	if err == nil {
-		t.Fatal("expected grant rejection for ask_user")
-	}
-	if err.Error() != wantErr {
-		t.Fatalf("err = %q, want %q", err.Error(), wantErr)
-	}
-}
-
-// TestGrantToolsAskUserAliasNeverSilentlyGranted covers the Claude-style
-// spelling "AskUserQuestion". Unlike a plugin's static `tools:` frontmatter
-// (converted at load time via toolname.ClaudeToEvener, agent/plugin/agents.go),
-// grant_tools is a runtime model argument canonicalized only through the
-// provider profile's canonical->wire-name map
-// (Session.canonicalizeToolNames -> Profile.ToolNameMap), which carries
-// provider wire renames (e.g. OpenAI's shell->exec_command) and does not
-// include this Claude-Code plugin/hook alias. So "AskUserQuestion" reaches
-// the grant loop unchanged, isProtectedGrantTool does not match it, and it is
-// rejected later by the pre-existing missing-from-child-registry check
-// instead of the new ask_user-specific message. This test locks in that the
-// call is still rejected either way (no silent grant under either spelling),
-// while documenting that the two spellings do NOT currently produce the same
-// error message.
-func TestGrantToolsAskUserAliasNeverSilentlyGranted(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai"})
-
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		MaxSubagentDepth: 2,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer sess.Close()
-
-	_, err = sess.spawnAgent(context.Background(), "help with follow-up work", "", "", 0, "", "", nil, []string{"AskUserQuestion"})
-	if err == nil {
-		t.Fatal("expected grant rejection for the AskUserQuestion alias")
-	}
-	if err.Error() == "ask_user is root-only and cannot be granted to subagents" {
-		t.Fatal("AskUserQuestion unexpectedly canonicalized to ask_user and hit the protected-grant message; " +
-			"update this test's documentation if canonicalizeToolNames grew alias support")
-	}
 }

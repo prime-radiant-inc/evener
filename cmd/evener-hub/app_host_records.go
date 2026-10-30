@@ -141,31 +141,6 @@ func hostGenerationFor(entry hostreg.Host) HostGeneration {
 	}
 }
 
-// resolveHostIdentity maps the records a hub.toml file carries onto the
-// registry entry for one live host: the generation the file persisted (the boot
-// load restores it; spec §15) and the live record's incarnation id and presence
-// epoch. The [generations] record is a *high-water* mark, not a live identity:
-// it restores the generation and seeds the counters (hostHighWaterMarks), but
-// its incarnation id and epoch describe a removed incarnation and must never be
-// inherited by a live name. A name with no live record is a new incarnation —
-// spec §15: the boot "mints a fresh incarnation id for every hub.toml host name
-// with no persisted incarnation" — minted at load, with its epoch advanced past
-// whatever the mark retained.
-func resolveHostIdentity(name string, records map[string]HostRecord, generations map[string]HostGeneration) (generation uint64, incarnationID string, presenceEpoch uint64) {
-	record := records[name]
-	return generations[name].Generation, record.IncarnationID, record.PresenceEpoch
-}
-
-// hostHighWaterMarks maps the file's [generations] records onto the registry's
-// high-water marks: the counters a boot seeds before anything mints.
-func hostHighWaterMarks(cfg Config) map[string]hostreg.HighWater {
-	marks := make(map[string]hostreg.HighWater, len(cfg.Generations))
-	for name, mark := range cfg.Generations {
-		marks[name] = hostreg.HighWater{Generation: mark.Generation, PresenceEpoch: mark.PresenceEpoch}
-	}
-	return marks
-}
-
 // hostFileRecordSet derives the machine records a hub.toml write carries: every
 // live entry's own triple, plus every retained high-water record whose name has
 // no live entry (a removal's record). It is the one derivation both the writer
@@ -263,18 +238,9 @@ func fileOnlyHostEntries(cfg Config, known, entries []hostreg.Host) []HostConfig
 // the advanced mark the derivation is writing, so the older copy must not ride
 // back in through preservation.
 func hubTOMLRecordTables(cfg Config, entries, known []hostreg.Host, highWater map[string]HostGeneration, purgedNames map[string]struct{}) (map[string]HostRecord, map[string]HostGeneration) {
-	preserve := known != nil
-	owned := make(map[string]struct{}, len(known)+len(entries))
-	if preserve {
-		for _, e := range known {
-			owned[e.Name] = struct{}{}
-		}
-		for _, e := range entries {
-			owned[e.Name] = struct{}{}
-		}
-	}
+	owned := ownedRecordNames(entries, known)
 	records, generations := hostFileRecordSet(entries, highWater)
-	if preserve {
+	if known != nil {
 		for name, record := range cfg.HostRecords {
 			if _, ok := owned[name]; ok {
 				continue
@@ -354,33 +320,7 @@ func validateHostRecords(records map[string]HostRecord, generations map[string]H
 func hubTOMLReceiptTables(cfg Config, entries, known []hostreg.Host, receipts map[string]HostMutationReceipt, dropped map[string]struct{}) map[string]HostMutationReceipt {
 	out := make(map[string]HostMutationReceipt, len(receipts)+len(cfg.MutationReceipts))
 	maps.Copy(out, receipts)
-	if known == nil {
-		return out
-	}
-	owned := make(map[string]struct{}, len(known)+len(entries))
-	for _, e := range known {
-		owned[e.Name] = struct{}{}
-	}
-	for _, e := range entries {
-		owned[e.Name] = struct{}{}
-	}
-	for key, receipt := range cfg.MutationReceipts {
-		scope, ok := parseHostReceiptScopedKey(key)
-		if !ok {
-			// Unreachable: decodeHubTOMLForRewrite validates the section, so a
-			// key this build cannot parse already refused the write.
-			continue
-		}
-		if _, carried := owned[scope.Name]; carried {
-			continue
-		}
-		if _, pruned := dropped[key]; pruned {
-			// The derivation dropped this receipt (compaction or a purge);
-			// preservation must not resurrect the file's older copy.
-			continue
-		}
-		out[key] = receipt
-	}
+	preserveUnowned(out, cfg.MutationReceipts, ownedRecordNames(entries, known), receiptKeyHost, dropped)
 	return out
 }
 
@@ -402,6 +342,48 @@ func ownedRecordNames(entries, known []hostreg.Host) map[string]struct{} {
 	return owned
 }
 
+// preserveUnowned carries a file section's records through a rewrite into out
+// (the carried set the derivation built). A file record is skipped when out
+// already holds the key (the carried record is authoritative: the derivation
+// may move or drop records for names outside the live set, so ownership alone
+// cannot guard them), when ownerOf names a host the write owns or reports the
+// record not preservable, or when the derivation dropped the key (preservation
+// must not resurrect a pruned or compacted record). owned nil is the
+// exact-write sentinel: nothing is preserved.
+func preserveUnowned[V any](out, fileSection map[string]V, owned map[string]struct{}, ownerOf func(key string, record V) (host string, preservable bool), dropped map[string]struct{}) {
+	if owned == nil {
+		return
+	}
+	for key, record := range fileSection {
+		if _, carried := out[key]; carried {
+			continue
+		}
+		host, preservable := ownerOf(key, record)
+		if !preservable {
+			continue
+		}
+		if _, ours := owned[host]; ours {
+			continue
+		}
+		if _, pruned := dropped[key]; pruned {
+			continue
+		}
+		out[key] = record
+	}
+}
+
+// keyIsHost is the owner of a record keyed by its host name.
+func keyIsHost[V any](name string, _ V) (string, bool) { return name, true }
+
+// receiptKeyHost is the owner of a record keyed by a scoped receipt key: the
+// name in the key. A key this build cannot parse is unreachable here:
+// decodeHubTOMLForRewrite validates the section, so a key this build cannot
+// parse already refused the write.
+func receiptKeyHost[V any](key string, _ V) (string, bool) {
+	scope, ok := parseHostReceiptScopedKey(key)
+	return scope.Name, ok
+}
+
 // hubTOMLTombstoneTables derives the tombstone tables a rewrite writes: the
 // set the write carries (already pruned and evicted by the derivation), with
 // every file tombstone for a name this write does not own preserved verbatim —
@@ -411,21 +393,7 @@ func ownedRecordNames(entries, known []hostreg.Host) map[string]struct{} {
 func hubTOMLTombstoneTables(cfg Config, entries, known []hostreg.Host, tombstones map[string]HostTombstone, dropped map[string]struct{}) map[string]HostTombstone {
 	out := make(map[string]HostTombstone, len(tombstones)+len(cfg.Tombstones))
 	maps.Copy(out, tombstones)
-	owned := ownedRecordNames(entries, known)
-	if owned == nil {
-		return out
-	}
-	for name, tombstone := range cfg.Tombstones {
-		if _, carried := owned[name]; carried {
-			continue
-		}
-		if _, pruned := dropped[name]; pruned {
-			// The derivation pruned this record (expiry, eviction, a live-name
-			// purge): it must not ride back in through preservation.
-			continue
-		}
-		out[name] = tombstone
-	}
+	preserveUnowned(out, cfg.Tombstones, ownedRecordNames(entries, known), keyIsHost, dropped)
 	return out
 }
 
@@ -436,27 +404,7 @@ func hubTOMLTombstoneTables(cfg Config, entries, known []hostreg.Host, tombstone
 func hubTOMLPrunedReceiptTables(cfg Config, entries, known []hostreg.Host, markers map[string]PrunedReceiptMarker, dropped map[string]struct{}) map[string]PrunedReceiptMarker {
 	out := make(map[string]PrunedReceiptMarker, len(markers)+len(cfg.PrunedReceipts))
 	maps.Copy(out, markers)
-	owned := ownedRecordNames(entries, known)
-	if owned == nil {
-		return out
-	}
-	for key, marker := range cfg.PrunedReceipts {
-		scope, ok := parseHostReceiptScopedKey(key)
-		if !ok {
-			// Unreachable: decodeHubTOMLForRewrite validates the section, so a
-			// key this build cannot parse already refused the write.
-			continue
-		}
-		if _, carried := owned[scope.Name]; carried {
-			continue
-		}
-		if _, pruned := dropped[key]; pruned {
-			// The derivation compacted this marker away; preservation must not
-			// resurrect it.
-			continue
-		}
-		out[key] = marker
-	}
+	preserveUnowned(out, cfg.PrunedReceipts, ownedRecordNames(entries, known), receiptKeyHost, dropped)
 	return out
 }
 
@@ -469,27 +417,7 @@ func hubTOMLPrunedReceiptTables(cfg Config, entries, known []hostreg.Host, marke
 func hubTOMLStagedReceiptTables(cfg Config, entries, known []hostreg.Host, markers map[string]HostStagedReceipt, dropped map[string]struct{}) map[string]HostStagedReceipt {
 	out := make(map[string]HostStagedReceipt, len(markers)+len(cfg.StagedReceipts))
 	maps.Copy(out, markers)
-	owned := ownedRecordNames(entries, known)
-	if owned == nil {
-		return out
-	}
-	for name, marker := range cfg.StagedReceipts {
-		if _, carried := out[name]; carried {
-			// The carried set is authoritative for the keys it names: a marker
-			// this write moves (the flip writes) or drops must not be overwritten
-			// by the file's older copy, which is also why the ownership test
-			// below cannot be the only guard — a marker for a name outside the
-			// live set (a tombstoned host's) is still this write's to move.
-			continue
-		}
-		if _, carried := owned[name]; carried {
-			continue
-		}
-		if _, pruned := dropped[name]; pruned {
-			continue
-		}
-		out[name] = marker
-	}
+	preserveUnowned(out, cfg.StagedReceipts, ownedRecordNames(entries, known), keyIsHost, dropped)
 	return out
 }
 
@@ -501,25 +429,9 @@ func hubTOMLStagedReceiptTables(cfg Config, entries, known []hostreg.Host, marke
 func hubTOMLTeardownRemnantTables(cfg Config, entries, known []hostreg.Host, remnants map[string]HostTeardownRemnant, dropped map[string]struct{}) map[string]HostTeardownRemnant {
 	out := make(map[string]HostTeardownRemnant, len(remnants)+len(cfg.TeardownRemnants))
 	maps.Copy(out, remnants)
-	owned := ownedRecordNames(entries, known)
-	if owned == nil {
-		return out
-	}
-	for id, remnant := range cfg.TeardownRemnants {
-		if _, carried := out[id]; carried {
-			// The carried record wins: the retry's clearance, the re-add purge,
-			// and the boot compaction all move records for names outside the
-			// live set (a removed host's), so ownership alone cannot guard them.
-			continue
-		}
-		if _, carried := owned[remnant.Host]; carried {
-			continue
-		}
-		if _, pruned := dropped[id]; pruned {
-			continue
-		}
-		out[id] = remnant
-	}
+	preserveUnowned(out, cfg.TeardownRemnants, ownedRecordNames(entries, known), func(_ string, remnant HostTeardownRemnant) (string, bool) {
+		return remnant.Host, true
+	}, dropped)
 	return out
 }
 
@@ -530,30 +442,16 @@ func hubTOMLTeardownRemnantTables(cfg Config, entries, known []hostreg.Host, rem
 func hubTOMLTeardownAttemptTables(cfg Config, entries, known []hostreg.Host, attempts map[string]HostTeardownAttempt, remnants map[string]HostTeardownRemnant, dropped map[string]struct{}) map[string]HostTeardownAttempt {
 	out := make(map[string]HostTeardownAttempt, len(attempts)+len(cfg.TeardownAttempts))
 	maps.Copy(out, attempts)
-	owned := ownedRecordNames(entries, known)
-	if owned == nil {
-		return out
-	}
-	for id, attempt := range cfg.TeardownAttempts {
-		if _, carried := out[id]; carried {
-			continue
-		}
+	preserveUnowned(out, cfg.TeardownAttempts, ownedRecordNames(entries, known), func(_ string, attempt HostTeardownAttempt) (string, bool) {
 		if _, carried := remnants[attempt.RemnantID]; carried {
 			// A remnant this write carries owns its attempts: the derivation
 			// already decided which survive.
-			continue
+			return "", false
 		}
-		if remnant, ok := cfg.TeardownRemnants[attempt.RemnantID]; ok {
-			if _, carried := owned[remnant.Host]; carried {
-				// The write owns the remnant's host but no longer carries the
-				// remnant (a purge): the attempt goes with it.
-				continue
-			}
-		}
-		if _, pruned := dropped[id]; pruned {
-			continue
-		}
-		out[id] = attempt
-	}
+		// The write owns the remnant's host but no longer carries the remnant
+		// (a purge): the attempt goes with it. An attempt whose remnant the file
+		// does not hold has no owner and rides through.
+		return cfg.TeardownRemnants[attempt.RemnantID].Host, true
+	}, dropped)
 	return out
 }

@@ -45,7 +45,7 @@ func sortedPreviewCallIDs(calls map[string]struct{}) []string {
 
 func (s *Session) resetCommunicatePreviews(calls map[string]struct{}) {
 	for callID := range calls {
-		s.emit(events.EventCommunicatePreviewReset, events.CommunicatePreviewResetData{CallID: callID})
+		s.emit(events.CommunicatePreviewResetData{CallID: callID})
 		delete(calls, callID)
 	}
 }
@@ -130,7 +130,7 @@ func (s *Session) emitModelRetry(policy llm.RetryPolicy, req llm.Request, group 
 		if le, ok := errors.AsType[llm.Error](err); ok {
 			data.StatusCode = le.StatusCode()
 		}
-		s.emit(events.EventModelRetry, data)
+		s.emit(data)
 	}
 }
 
@@ -167,94 +167,92 @@ func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile
 	// bounded-recovery paths before provider attempt handling. llm.Client repeats
 	// the check immediately before dispatch by design, protecting both paths from
 	// middleware that mutates an already admitted request.
-	if profile.SupportsStreaming() {
-		// Retry the whole open+consume cycle: a retryable failure can surface
-		// at stream open (connect/4xx-5xx) OR mid-stream (truncation, after the
-		// HTTP response already returned 200). Wrapping only the open — as the
-		// old llm.Retry did here — left mid-stream truncations unretried, so a
-		// single transient cutoff failed the entire turn.
-		var result sessionModelResponse
-		streamUnavailableForProfile := false
-		err := llm.RetryStream(ctx, llm.RetryStreamOptions{
-			Policy:            policy,
-			Sleep:             s.cfg.LLMSleep,
-			RetryAfterPartial: true,
-			// Before retrying an attempt that already streamed partial output,
-			// discard it so the retry's output replaces rather than appends.
-			OnReset: func() {
-				s.emit(events.EventAssistantTextReset, events.AssistantTextResetData{})
-				s.resetCommunicatePreviews(previewCalls)
-			},
-			// FailFastAfter enables both llm.RetryStream early-stop rules: the
-			// streak rule (modelRetryFailFastAfter consecutive consume-phase
-			// failures) and the cap rule (2 consecutive long streams cut
-			// mid-flight). Disabled (0) in RetryStream's non-agent callers,
-			// which see no behavior change.
-			FailFastAfter: modelRetryFailFastAfter,
-		}, func(ctx context.Context) (llm.AttemptReport, error) {
-			attemptStart := time.Now()
-			dispatchReq, budgetErr := budgetModelDispatchRequest(profile, req)
-			if budgetErr != nil {
-				group.observe(attemptRecord{Phase: llm.PhaseOpen, Err: budgetErr, Duration: time.Since(attemptStart)}, nil)
-				return llm.AttemptReport{Phase: llm.PhaseOpen}, budgetErr
-			}
-			// Final skill-delivery admission: revalidate the exact outgoing
-			// shape against pending obligations and commit before dispatch. A
-			// missing protected body fails visibly here — never a truncated
-			// delivery and never another compact/reload cycle.
-			if deliveryErr := s.finalizeSkillDelivery(ctx, dispatchReq); deliveryErr != nil {
-				group.observe(attemptRecord{Phase: llm.PhaseOpen, Err: deliveryErr, Duration: time.Since(attemptStart)}, nil)
-				return llm.AttemptReport{Phase: llm.PhaseOpen}, deliveryErr
-			}
-			st, err := s.client.Stream(ctx, dispatchReq)
-			if streamUnavailable(err) || (err == nil && st == nil) {
-				// Nothing was attempted against the provider: the call falls
-				// through to the non-streaming path below, so no attempt is
-				// recorded for it.
-				streamUnavailableForProfile = true
-				return llm.AttemptReport{}, nil
-			}
-			if err != nil {
-				// Rejected before or at stream open — open-phase by definition;
-				// consumeModelStream never runs, so it cannot classify this one.
-				group.observe(attemptRecord{Phase: llm.PhaseOpen, Err: err, Duration: time.Since(attemptStart)}, nil)
-				return llm.AttemptReport{Phase: llm.PhaseOpen}, err
-			}
-			var obs attemptObservation
-			var consumeErr error
-			result, obs, consumeErr = s.consumeModelStream(ctx, req, st)
-			rememberPreviewCalls(result.CommunicatePreviewCallIDs)
-			if sessionCallModelAfterConsumeHook != nil {
-				sessionCallModelAfterConsumeHook()
-			}
-			// Recorded inside the closure, so the group keeps this attempt's
-			// partial before OnReset discards it ahead of the next one.
-			group.observe(attemptRecord{
-				Phase:         obs.Phase,
-				Err:           consumeErr,
-				Duration:      time.Since(attemptStart),
-				ContentWindow: obs.ContentWindow,
-				SalvagedBytes: obs.SalvagedBytes,
-			}, obs.Partial)
-			return llm.AttemptReport{
-				// obs.Partial != nil is the accumulator's "something was
-				// delivered to the caller" signal — text, communicate
-				// preview, tool-call args, or reasoning — and unlike
-				// sessionModelResponse.StreamedAssistant it survives the
-				// error path (StreamedAssistant stays zeroed on every error
-				// return, kata-pinned in the msfz fuzz test).
-				PartialOutput: obs.Partial != nil,
-				Phase:         obs.Phase,
-				ContentWindow: obs.ContentWindow,
-				SalvagedBytes: obs.SalvagedBytes,
-			}, consumeErr
-		})
-		if !streamUnavailableForProfile {
-			return withPreviewCalls(result), err
+	// Retry the whole open+consume cycle: a retryable failure can surface
+	// at stream open (connect/4xx-5xx) OR mid-stream (truncation, after the
+	// HTTP response already returned 200). Wrapping only the open — as the
+	// old llm.Retry did here — left mid-stream truncations unretried, so a
+	// single transient cutoff failed the entire turn.
+	var result sessionModelResponse
+	streamUnavailableForProfile := false
+	err := llm.RetryStream(ctx, llm.RetryStreamOptions{
+		Policy:            policy,
+		Sleep:             s.cfg.LLMSleep,
+		RetryAfterPartial: true,
+		// Before retrying an attempt that already streamed partial output,
+		// discard it so the retry's output replaces rather than appends.
+		OnReset: func() {
+			s.emit(events.AssistantTextResetData{})
+			s.resetCommunicatePreviews(previewCalls)
+		},
+		// FailFastAfter enables both llm.RetryStream early-stop rules: the
+		// streak rule (modelRetryFailFastAfter consecutive consume-phase
+		// failures) and the cap rule (2 consecutive long streams cut
+		// mid-flight). Disabled (0) in RetryStream's non-agent callers,
+		// which see no behavior change.
+		FailFastAfter: modelRetryFailFastAfter,
+	}, func(ctx context.Context) (llm.AttemptReport, error) {
+		attemptStart := time.Now()
+		dispatchReq, budgetErr := budgetModelDispatchRequest(profile, req)
+		if budgetErr != nil {
+			group.observe(attemptRecord{Phase: llm.PhaseOpen, Err: budgetErr, Duration: time.Since(attemptStart)}, nil)
+			return llm.AttemptReport{Phase: llm.PhaseOpen}, budgetErr
 		}
-		// Streaming unsupported by this provider/runtime — fall through to the
-		// non-streaming Complete path.
+		// Final skill-delivery admission: revalidate the exact outgoing
+		// shape against pending obligations and commit before dispatch. A
+		// missing protected body fails visibly here — never a truncated
+		// delivery and never another compact/reload cycle.
+		if deliveryErr := s.finalizeSkillDelivery(ctx, dispatchReq); deliveryErr != nil {
+			group.observe(attemptRecord{Phase: llm.PhaseOpen, Err: deliveryErr, Duration: time.Since(attemptStart)}, nil)
+			return llm.AttemptReport{Phase: llm.PhaseOpen}, deliveryErr
+		}
+		st, err := s.client.Stream(ctx, dispatchReq)
+		if streamUnavailable(err) || (err == nil && st == nil) {
+			// Nothing was attempted against the provider: the call falls
+			// through to the non-streaming path below, so no attempt is
+			// recorded for it.
+			streamUnavailableForProfile = true
+			return llm.AttemptReport{}, nil
+		}
+		if err != nil {
+			// Rejected before or at stream open — open-phase by definition;
+			// consumeModelStream never runs, so it cannot classify this one.
+			group.observe(attemptRecord{Phase: llm.PhaseOpen, Err: err, Duration: time.Since(attemptStart)}, nil)
+			return llm.AttemptReport{Phase: llm.PhaseOpen}, err
+		}
+		var obs attemptObservation
+		var consumeErr error
+		result, obs, consumeErr = s.consumeModelStream(ctx, req, st)
+		rememberPreviewCalls(result.CommunicatePreviewCallIDs)
+		if sessionCallModelAfterConsumeHook != nil {
+			sessionCallModelAfterConsumeHook()
+		}
+		// Recorded inside the closure, so the group keeps this attempt's
+		// partial before OnReset discards it ahead of the next one.
+		group.observe(attemptRecord{
+			Phase:         obs.Phase,
+			Err:           consumeErr,
+			Duration:      time.Since(attemptStart),
+			ContentWindow: obs.ContentWindow,
+			SalvagedBytes: obs.SalvagedBytes,
+		}, obs.Partial)
+		return llm.AttemptReport{
+			// obs.Partial != nil is the accumulator's "something was
+			// delivered to the caller" signal — text, communicate
+			// preview, tool-call args, or reasoning — and unlike
+			// sessionModelResponse.StreamedAssistant it survives the
+			// error path (StreamedAssistant stays zeroed on every error
+			// return, kata-pinned in the msfz fuzz test).
+			PartialOutput: obs.Partial != nil,
+			Phase:         obs.Phase,
+			ContentWindow: obs.ContentWindow,
+			SalvagedBytes: obs.SalvagedBytes,
+		}, consumeErr
+	})
+	if !streamUnavailableForProfile {
+		return withPreviewCalls(result), err
 	}
+	// Streaming unsupported by this provider/runtime — fall through to the
+	// non-streaming Complete path.
 
 	resp, err := llm.Retry(ctx, policy, s.cfg.LLMSleep, nil, func() (llm.Response, error) {
 		dispatchReq, budgetErr := budgetModelDispatchRequest(profile, req)
@@ -322,7 +320,7 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			for _, callID := range previewCallIDs() {
-				s.emit(events.EventCommunicatePreviewReset, events.CommunicatePreviewResetData{CallID: callID})
+				s.emit(events.CommunicatePreviewResetData{CallID: callID})
 			}
 			panic(recovered)
 		}
@@ -378,7 +376,7 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 		if assistantStarted {
 			return
 		}
-		s.emit(events.EventAssistantTextStart, events.AssistantTextStartData{Model: req.Model})
+		s.emit(events.AssistantTextStartData{Model: req.Model})
 		assistantStarted = true
 		streamedAssistant = true
 	}
@@ -387,13 +385,13 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 			return
 		}
 		emitAssistantStart()
-		s.emit(events.EventAssistantTextDelta, events.AssistantTextDeltaData{Delta: delta})
+		s.emit(events.AssistantTextDeltaData{Delta: delta})
 	}
 	emitReasoningDelta := func(delta string) {
 		if delta == "" {
 			return
 		}
-		s.emit(events.EventReasoningSummaryDelta, events.ReasoningSummaryDeltaData{Delta: delta})
+		s.emit(events.ReasoningSummaryDeltaData{Delta: delta})
 	}
 	emitCommunicatePreview := func(callID string) {
 		args := ""
@@ -410,11 +408,11 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 		}
 		communicateText[callID] = message
 		if !communicatePreviewStarted[callID] {
-			s.emit(events.EventCommunicatePreviewStart, events.CommunicatePreviewStartData{CallID: callID})
+			s.emit(events.CommunicatePreviewStartData{CallID: callID, Authorship: s.roundTranscriptAuthorship()})
 			communicatePreviewStarted[callID] = true
 			communicatePreviewOrder = append(communicatePreviewOrder, callID)
 		}
-		s.emit(events.EventCommunicatePreviewDelta, events.CommunicatePreviewDeltaData{CallID: callID, Delta: message[len(prev):]})
+		s.emit(events.CommunicatePreviewDeltaData{CallID: callID, Delta: message[len(prev):]})
 	}
 
 	for ev := range st.Events() {

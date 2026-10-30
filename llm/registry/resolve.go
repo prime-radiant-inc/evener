@@ -135,6 +135,7 @@ func liveFacts(m Model) Model {
 		MaxInputTokens: m.Caps.MaxInputTokens, MaxOutputTokens: m.Caps.MaxOutputTokens, EffortValues: m.Caps.EffortValues, Cost: m.Caps.Cost, Reasoning: m.Caps.Reasoning,
 		DefaultEffort: m.Caps.DefaultEffort, ReasoningControls: m.Caps.ReasoningControls,
 		ThinkingFormat: m.Caps.ThinkingFormat, MaxTokensField: m.Caps.MaxTokensField,
+		EffortParameterUnsupported: m.Caps.EffortParameterUnsupported,
 	}}
 	if m.Caps.ThinkingAlwaysOn != nil && *m.Caps.ThinkingAlwaysOn {
 		out.Caps.ThinkingAlwaysOn = new(true)
@@ -702,12 +703,6 @@ func (r *Registry) resolveOnMode(rec *record, ref Ref, warnings []string, includ
 	return res, nil
 }
 
-// resolveLayers replays one reference on a record — layers, aliases, live
-// facts, globs, derivation — without judging the row's Disabled flag. The
-// gate lives with the callers: resolveOn turns the flag into an error for
-// Resolve, while alias seeding needs the facts of a target a flag disables
-// (a cross-provider alias resolves from a target whose own connection
-// disabled it).
 // resolveDepth names how far a replay goes. resolveFull materializes the
 // credential stage — the only depth that expands $(command) expressions, so
 // the launch path alone runs it. resolveFacts runs the whole replay except
@@ -726,7 +721,8 @@ const (
 	resolveTransport
 )
 
-// resolveLayersMode is resolveLayers with one switch: how far the replay
+// resolveLayersMode is resolveLayersModeLive with live facts and without the
+// Codex candidate allowance, with one switch: how far the replay
 // goes, per resolveDepth. The credential stage is the only part of the
 // replay that expands command expressions, so the shallower depths keep
 // the hub-side views — listings, fingerprints, alias seeding — free of
@@ -742,6 +738,12 @@ func (r *Registry) resolveLayersMode(rec *record, ref Ref, warnings []string, de
 // resolve again.
 var ErrCodexModelNotListed = errors.New("unknown model on the Codex transport")
 
+// resolveLayers replays one reference on a record — layers, aliases, live
+// facts, globs, derivation — without judging the row's Disabled flag. The
+// gate lives with the callers: resolveOn turns the flag into an error for
+// Resolve, while alias seeding needs the facts of a target a flag disables
+// (a cross-provider alias resolves from a target whose own connection
+// disabled it).
 func (r *Registry) resolveLayersModeLive(rec *record, ref Ref, warnings []string, depth resolveDepth, includeLive, allowCodexCandidate bool) (Resolved, error) {
 	hit := r.lookupRowMode(rec, ref.Model, includeLive)
 	if hit.synthesized && rec.head.Transport.Auth == AuthOAuthOpenAICodex && !allowCodexCandidate {
@@ -843,75 +845,35 @@ func (r *Registry) resolveLayersModeLive(rec *record, ref Ref, warnings []string
 	}
 	crossProto := rowProto != rec.head.Protocol
 
-	seenTag := map[string]bool{}
-	liveApplied := false
-	// Missing top-level tags replay at their true layer positions,
-	// interleaved with the present layers: snapshot extras before the
-	// first layer, overlay extras before live and before config, config
-	// extras after live. An overlay extra never lands after config
-	// rows, so curated values cannot overwrite user config; a config
-	// extra still lands after live, so user config wins over live
-	// facts on implicit records too.
-	layerOrder := map[string]int{LayerSnapshot: 0, LayerOverlay: 1, LayerConfig: 2}
-	applyExtrasBefore := func(tag string) {
-		if seenTag[tag] || len(r.topGlobs[tag]) == 0 {
-			return
-		}
-		if tag == LayerConfig {
-			return
-		}
-		r.applyGlobs(&caps, &row, r.topGlobs[tag], tag, ref.Model, altID, rowProto, crossProto, prov)
+	var liveReplay func()
+	if includeLive {
+		liveReplay = func() { r.applyLive(&caps, rec, ref.Model, hit, prov) }
 	}
-	applyConfigExtras := func() {
-		if seenTag[LayerConfig] || len(r.topGlobs[LayerConfig]) == 0 {
-			return
-		}
-		r.applyGlobs(&caps, &row, r.topGlobs[LayerConfig], LayerConfig, ref.Model, altID, rowProto, crossProto, prov)
-	}
-	for _, layer := range rec.layers {
-		// Missing tags that sort before this layer replay first.
-		for _, tag := range []string{LayerSnapshot, LayerOverlay} {
-			if !seenTag[tag] && layerOrder[tag] < layerOrder[layer.tag] {
-				applyExtrasBefore(tag)
-				seenTag[tag] = true
+	r.replayLayerPositions(rec, layerReplay{
+		live: liveReplay,
+		provider: func(layer capLayer) {
+			if layer.resetFields {
+				resetLayerFields(&caps, prov)
 			}
-		}
-		if includeLive && layer.tag == LayerConfig && !liveApplied {
-			r.applyLive(&caps, rec, ref.Model, hit, prov)
-			liveApplied = true
-		}
-		if layer.resetFields {
-			resetLayerFields(&caps, prov)
-		}
-		pc := layer.provider
-		if crossProto {
-			pc.Fields = nil
-		}
-		mergeCaps(&caps, pc, layer.tag+"/provider", prov)
-		if !seenTag[layer.tag] {
-			seenTag[layer.tag] = true
-			r.applyGlobs(&caps, &row, r.topGlobs[layer.tag], layer.tag, ref.Model, altID, rowProto, crossProto, prov)
-		}
-		r.applyGlobs(&caps, &row, layer.rows, layer.tag, ref.Model, altID, rowProto, crossProto, prov)
-		if hit.rowID != "" {
-			if lr, ok := layer.rows[hit.rowID]; ok {
-				mergeCaps(&caps, lr.Caps, layer.tag+"/row", prov)
-				applyRowScalars(&row, lr, layer.tag+"/row", prov)
+			pc := layer.provider
+			if crossProto {
+				pc.Fields = nil
 			}
-		}
-	}
-	// Missing snapshot/overlay tags that sort after every present
-	// layer replay before live; missing config replays after live.
-	for _, tag := range []string{LayerSnapshot, LayerOverlay} {
-		if !seenTag[tag] {
-			applyExtrasBefore(tag)
-			seenTag[tag] = true
-		}
-	}
-	if includeLive && !liveApplied {
-		r.applyLive(&caps, rec, ref.Model, hit, prov)
-	}
-	applyConfigExtras()
+			mergeCaps(&caps, pc, layer.tag+"/provider", prov)
+		},
+		extras: func(tag string) {
+			r.applyGlobs(&caps, &row, r.topGlobs[tag], tag, ref.Model, altID, rowProto, crossProto, prov)
+		},
+		rows: func(layer capLayer) {
+			r.applyGlobs(&caps, &row, layer.rows, layer.tag, ref.Model, altID, rowProto, crossProto, prov)
+			if hit.rowID != "" {
+				if lr, ok := layer.rows[hit.rowID]; ok {
+					mergeCaps(&caps, lr.Caps, layer.tag+"/row", prov)
+					applyRowScalars(&row, lr, layer.tag+"/row", prov)
+				}
+			}
+		},
+	})
 	seedFields(&caps, rowProto)
 	if aliasLockstep {
 		row.Disabled = aliasDisabled
@@ -986,15 +948,6 @@ func (r *Registry) resolveLayersModeLive(rec *record, ref Ref, warnings []string
 	}, nil
 }
 
-// resolveAliasTarget resolves an alias target through the same machinery
-// at facts depth: the replay hands back the target's caps, surface,
-// family, and transport — everything an alias row seeds from — without
-// materializing the target's credentials, whose command expressions are
-// not the alias row's to run: the launch sends the alias's own credential,
-// and the hub-side contract executes command expressions only on the
-// agent path (spec §10.1). A same-provider row on rec, else
-// "provider-id/id" on the target's instance record when one exists (so
-// user-layer flags like Disabled apply), else the curated record.
 // aliasTargetRow applies the alias-target acceptance rules both resolve
 // paths share: an exact non-alias row on the record, else a provider-id/id
 // reference. A glob pattern never names a target, on either side of the
@@ -1026,6 +979,15 @@ func (r *Registry) aliasTargetRow(rec *record, aliasOf string) (*record, string,
 	return nil, "", false
 }
 
+// resolveAliasTarget resolves an alias target through the same machinery
+// at facts depth: the replay hands back the target's caps, surface,
+// family, and transport — everything an alias row seeds from — without
+// materializing the target's credentials, whose command expressions are
+// not the alias row's to run: the launch sends the alias's own credential,
+// and the hub-side contract executes command expressions only on the
+// agent path (spec §10.1). A same-provider row on rec, else
+// "provider-id/id" on the target's instance record when one exists (so
+// user-layer flags like Disabled apply), else the curated record.
 func (r *Registry) resolveAliasTarget(rec *record, aliasOf string, includeLive bool) (Resolved, bool, error) {
 	target, id, ok := r.aliasTargetRow(rec, aliasOf)
 	if !ok {
@@ -1045,8 +1007,9 @@ func seedFromAlias(c *Caps, row *Model, target Resolved, aliasProtocol string, p
 		ContextWindow: target.Caps.ContextWindow, MaxInputTokens: target.Caps.MaxInputTokens, MaxOutputTokens: target.Caps.MaxOutputTokens, Tools: target.Caps.Tools,
 		StructuredOutput: target.Caps.StructuredOutput, Sampling: target.Caps.Sampling, Reasoning: target.Caps.Reasoning,
 		ReasoningControls: target.Caps.ReasoningControls, EffortValues: target.Caps.EffortValues,
-		DefaultEffort:   target.Caps.DefaultEffort,
-		InputModalities: target.Caps.InputModalities, KnowledgeCutoff: target.Caps.KnowledgeCutoff, Cost: target.Caps.Cost,
+		EffortParameterUnsupported: target.Caps.EffortParameterUnsupported,
+		DefaultEffort:              target.Caps.DefaultEffort,
+		InputModalities:            target.Caps.InputModalities, KnowledgeCutoff: target.Caps.KnowledgeCutoff, Cost: target.Caps.Cost,
 	}
 	// A thinking shape is a verdict of the target's protocol: a same-protocol
 	// alias inherits it settled, while a cross-protocol alias re-derives from
@@ -1363,6 +1326,76 @@ func (r *Registry) FindModel(id string) []Ref {
 	return out
 }
 
+// layerReplay names what a replay does at each position of the layer order.
+// Nil hooks are skipped.
+type layerReplay struct {
+	// live applies the live roster facts. It runs once, after the snapshot and
+	// overlay positions and before the config layer.
+	live func()
+	// provider applies one present layer's provider-level caps.
+	provider func(layer capLayer)
+	// extras applies the top-level glob rows for tag, once per tag with any.
+	extras func(tag string)
+	// rows applies one present layer's glob and exact-row entries.
+	rows func(layer capLayer)
+}
+
+// replayLayerOrder is the position of each layer tag in the replay.
+var replayLayerOrder = map[string]int{LayerSnapshot: 0, LayerOverlay: 1, LayerConfig: 2}
+
+// replayLayerPositions walks a record's layers in order, calling the hooks of
+// v at each position. Top-level glob rows for a tag that has no layer on the
+// record replay at that tag's true position, interleaved with the present
+// layers: snapshot extras before the first layer, overlay extras before live
+// and before config, config extras after live. An overlay extra never lands
+// after config rows, so curated values cannot overwrite user config; a config
+// extra still lands after live, so user config wins over live facts on
+// implicit records too. A layer's own tag replays its extras after the layer's
+// provider caps and before its rows. Resolve and modelDisabled both walk the
+// layers here, so the cheap Disabled replay cannot drift from the full one.
+func (r *Registry) replayLayerPositions(rec *record, v layerReplay) {
+	seenTag := map[string]bool{}
+	liveApplied := false
+	extrasFor := func(tag string) {
+		if seenTag[tag] {
+			return
+		}
+		seenTag[tag] = true
+		if v.extras != nil && len(r.topGlobs[tag]) > 0 {
+			v.extras(tag)
+		}
+	}
+	applyLive := func() {
+		if v.live != nil && !liveApplied {
+			v.live()
+		}
+		liveApplied = true
+	}
+	for _, layer := range rec.layers {
+		for _, tag := range []string{LayerSnapshot, LayerOverlay} {
+			if replayLayerOrder[tag] < replayLayerOrder[layer.tag] {
+				extrasFor(tag)
+			}
+		}
+		if layer.tag == LayerConfig {
+			applyLive()
+		}
+		if v.provider != nil {
+			v.provider(layer)
+		}
+		extrasFor(layer.tag)
+		if v.rows != nil {
+			v.rows(layer)
+		}
+	}
+	// Missing snapshot and overlay extras that sort after every present layer
+	// replay before live; missing config extras replay after it.
+	extrasFor(LayerSnapshot)
+	extrasFor(LayerOverlay)
+	applyLive()
+	extrasFor(LayerConfig)
+}
+
 // modelDisabled replays just the Disabled flag for a reference: every
 // matching glob in spec §4.1 order (via orderedGlobKeys, the same order
 // applyGlobs replays) then the exact row per layer, later layers after
@@ -1397,50 +1430,23 @@ func (r *Registry) modelDisabled(rec *record, ref Ref, hit lookupHit) bool {
 		}
 	}
 	var disabled, set bool
-	// Mirror resolveOn's interleave: missing tags replay at their true
-	// layer positions (snapshot → overlay → config), never bunched
-	// after the loop — so a curated overlay Disabled value cannot
-	// overwrite user config here either, and FindModel agrees with
-	// Resolve.
-	seenTag := map[string]bool{}
-	applyTop := func(tag string) {
-		for _, g := range orderedGlobKeys(r.topGlobs[tag], ref.Model, altID) {
-			if d := r.topGlobs[tag][g].Disabled; d != nil {
+	setFrom := func(rows map[string]Model, id string) {
+		for _, g := range orderedGlobKeys(rows, ref.Model, altID) {
+			if d := rows[g].Disabled; d != nil {
 				disabled, set = *d, true
 			}
 		}
-	}
-	layerOrder := map[string]int{LayerSnapshot: 0, LayerOverlay: 1, LayerConfig: 2}
-	for _, layer := range rec.layers {
-		// Missing tags that sort before this layer replay first, at
-		// their true positions — never bunched after config rows.
-		for _, tag := range []string{LayerSnapshot, LayerOverlay, LayerConfig} {
-			if !seenTag[tag] && layerOrder[tag] < layerOrder[layer.tag] && len(r.topGlobs[tag]) > 0 {
-				seenTag[tag] = true
-				applyTop(tag)
-			}
+		if id == "" {
+			return
 		}
-		if !seenTag[layer.tag] {
-			seenTag[layer.tag] = true
-			applyTop(layer.tag)
-		}
-		for _, g := range orderedGlobKeys(layer.rows, ref.Model, altID) {
-			if d := layer.rows[g].Disabled; d != nil {
-				disabled, set = *d, true
-			}
-		}
-		if hit.rowID != "" {
-			if lr, ok := layer.rows[hit.rowID]; ok && lr.Disabled != nil {
-				disabled, set = *lr.Disabled, true
-			}
+		if row, ok := rows[id]; ok && row.Disabled != nil {
+			disabled, set = *row.Disabled, true
 		}
 	}
-	for _, tag := range []string{LayerSnapshot, LayerOverlay, LayerConfig} {
-		if !seenTag[tag] && len(r.topGlobs[tag]) > 0 {
-			seenTag[tag] = true
-			applyTop(tag)
-		}
-	}
+	r.replayLayerPositions(rec, layerReplay{
+		extras: func(tag string) { setFrom(r.topGlobs[tag], "") },
+		rows:   func(layer capLayer) { setFrom(layer.rows, hit.rowID) },
+	})
 	if !set && inherited != nil {
 		return *inherited
 	}

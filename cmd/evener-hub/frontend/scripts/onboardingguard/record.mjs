@@ -2,12 +2,96 @@
 // The annotation is rendered offscreen, never inserted into production UI.
 
 import { spawnSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { copyFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { evaluate, navigateTo } from "../browserGuardCdp.mjs";
 
-// Browser environment emulation only. Theme selection still runs through the
-// production system-theme listener, and Change runs its actual click handler.
+// Acquisition evidence is taken in the layout the journey actually ran in.
+// Nothing here resizes, clicks, focuses or otherwise touches the page: the
+// production flow must have restored focus and settled the draft on its own.
+export async function captureAcquisition(
+  driver,
+  { artifactDir, evidenceDir, label, width, height, theme, work, task, adopted },
+) {
+  const themeExpr = `(document.documentElement.dataset.theme ?? 'dark') === ${JSON.stringify(theme)}`;
+  const ready = `${themeExpr} && (() => {
+    const button = document.querySelector('[data-testid="spawn-submit"]');
+    const slot = document.querySelector('[data-testid="spawn-model-slot"]');
+    const value = document.querySelector('[data-testid="spawn-model-value"]');
+    const editor = document.querySelector('[data-testid="spawn-prompt-card"] [contenteditable="true"]');
+    const tiles = document.querySelectorAll('[data-testid="spawn-attachments"] [data-testid="attachment-tile"]');
+    if (!button || button.disabled || !slot || !editor) return false;
+    if (slot.dataset.state !== 'chosen') return false;
+    if (!(value?.textContent ?? '').includes(${JSON.stringify(adopted)})) return false;
+    if (tiles.length !== 1) return false;
+    if (document.querySelector('[role="dialog"]') || document.querySelector('[role="option"]')) return false;
+    return document.activeElement === editor;
+  })()`;
+  try {
+    await driver.waitPage(ready, { label: `${label} ${width}x${height} ${theme} acquisition` });
+  } catch (error) {
+    const state = await evaluate(driver.send, `(() => ({
+      theme: document.documentElement.dataset.theme ?? 'dark',
+      viewport: { width: innerWidth, height: innerHeight },
+      dialog: document.querySelector('[role="dialog"]') !== null,
+      option: document.querySelector('[role="option"]')?.id ?? null,
+      disabled: document.querySelector('[data-testid="spawn-submit"]')?.disabled ?? null,
+      slot: document.querySelector('[data-testid="spawn-model-slot"]')?.dataset.state ?? null,
+      model: document.querySelector('[data-testid="spawn-model-value"]')?.textContent?.trim() ?? '',
+      tiles: document.querySelectorAll('[data-testid="spawn-attachments"] [data-testid="attachment-tile"]').length,
+      focus: document.activeElement?.tagName + '#' + (document.activeElement?.id ?? ''),
+      body: document.body.innerText.slice(0, 400)
+    }))()`);
+    throw new Error(`${error.message}; acquisition state ${JSON.stringify(state)}`);
+  }
+  const detail = await evaluate(driver.send, `(() => {
+    const editor = document.querySelector('[data-testid="spawn-prompt-card"] [contenteditable="true"]');
+    return { theme: document.documentElement.dataset.theme ?? 'dark',
+      viewport: { width: innerWidth, height: innerHeight },
+      modal: document.querySelector('[role="dialog"]') !== null,
+      option: document.querySelector('[role="option"]')?.id ?? null,
+      modelState: document.querySelector('[data-testid="spawn-model-slot"]')?.dataset.state,
+      model: document.querySelector('[data-testid="spawn-model-value"]')?.textContent?.trim() ?? '',
+      startEnabled: !document.querySelector('[data-testid="spawn-submit"]')?.disabled,
+      task: editor?.textContent ?? '',
+      tiles: document.querySelectorAll('[data-testid="spawn-attachments"] [data-testid="attachment-tile"]').length,
+      cwd: document.querySelector('#spawn-cwd')?.getAttribute('aria-label') ?? '',
+      focused: document.activeElement === editor,
+      focus: document.activeElement?.tagName + '#' + (document.activeElement?.id ?? ''),
+      pageWidth: document.documentElement.scrollWidth };
+  })()`);
+  if (!detail.focused) throw new Error(`${label} ${width} ${theme}: composer lost focus: ${detail.focus}`);
+  if (!detail.task.includes(task)) throw new Error(`${label} ${width} ${theme}: task draft lost`);
+  if (detail.tiles !== 1) throw new Error(`${label} ${width} ${theme}: attachment draft lost`);
+  if (!detail.cwd.includes(work)) throw new Error(`${label} ${width} ${theme}: directory draft lost`);
+  const filename = `acquisition-${label}-${width}-${theme}.png`;
+  const image = await driver.send("Page.captureScreenshot", { format: "png" });
+  writeFileSync(path.join(artifactDir, filename), Buffer.from(image.result.data, "base64"));
+  if (evidenceDir) copyFileSync(path.join(artifactDir, filename), path.join(evidenceDir, filename));
+  const jsonName = `acquisition-${label}-${width}-${theme}.json`;
+  writeFileSync(path.join(artifactDir, jsonName), `${JSON.stringify({ filename, ...detail }, null, 2)}\n`);
+  if (evidenceDir) copyFileSync(path.join(artifactDir, jsonName), path.join(evidenceDir, jsonName));
+  return detail;
+}
+
+// The launched reply at the journey's real viewport/theme, behind no dialog.
+export async function captureSession(driver, { artifactDir, evidenceDir, label, width, height, theme }) {
+  const themeExpr = `(document.documentElement.dataset.theme ?? 'dark') === ${JSON.stringify(theme)}`;
+  await driver.waitPage(
+    `${themeExpr} && !!document.querySelector('[data-testid="spawn-submit"]') === false && document.body.innerText.includes('ONBOARDING_REPLY_72e') && !document.querySelector('[role="dialog"]')`,
+    { label: `${label} ${width}x${height} ${theme} reply` },
+  );
+  const filename = `session-${label}-${width}-${theme}.png`;
+  const image = await driver.send("Page.captureScreenshot", { format: "png" });
+  writeFileSync(path.join(artifactDir, filename), Buffer.from(image.result.data, "base64"));
+  if (evidenceDir) copyFileSync(path.join(artifactDir, filename), path.join(evidenceDir, filename));
+  const jsonName = `session-${label}-${width}-${theme}.json`;
+  writeFileSync(path.join(artifactDir, jsonName), `${JSON.stringify({ filename, phase: "session", theme, viewport: { width, height } }, null, 2)}\n`);
+  if (evidenceDir) copyFileSync(path.join(artifactDir, jsonName), path.join(evidenceDir, jsonName));
+}
+
+// Optional recording-only access-view capture. It navigates and resizes, so it
+// is presentation evidence, never the acquisition/focus journey.
 export async function captureAccessViews(driver, url, output) {
   const dir = path.dirname(output);
   const observations = [];
@@ -35,7 +119,6 @@ export async function captureAccessViews(driver, url, output) {
             label: "Change focuses access owner",
           });
         }
-        // Let browser scrolling and the disclosure's visual transition settle.
         await new Promise((resolve) => setTimeout(resolve, 800));
         const filename = `access-${width}-${theme}-${state}.png`;
         const image = await driver.send("Page.captureScreenshot", { format: "png" });

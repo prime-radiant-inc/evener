@@ -64,7 +64,7 @@ func TestDelegateResourceRuntime_RunningSendPersistsBeforeAck(t *testing.T) {
 
 func TestDelegateResourceRuntime_RestoresDescriptorPluginDirs(t *testing.T) {
 	pluginDir := makePluginDir(t, "delegate-selected")
-	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+	fixture := newColdDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
 		descriptor.Config.PluginDirs = []string{pluginDir}
 	})
 	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
@@ -80,7 +80,7 @@ func TestDelegateResourceRuntime_RestoresDescriptorPluginDirs(t *testing.T) {
 }
 
 func TestRestoredDelegatePostStartPopulationEmitsTaskCorrection(t *testing.T) {
-	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+	fixture := newColdDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
 		descriptor.TaskTemplates = []taskpkg.TaskTemplate{{
 			Title:  "Restored committed workflow",
 			Prompt: "Resume the committed workflow.",
@@ -132,6 +132,23 @@ func TestRestoredDelegatePostStartPopulationEmitsTaskCorrection(t *testing.T) {
 	if update.TaskStoreOwnerSessionID != fixture.childID {
 		t.Fatalf("restored task correction owner = %q, want child %q", update.TaskStoreOwnerSessionID, fixture.childID)
 	}
+
+	// A restored child whose tasks this restore seeded must be announced to the
+	// same way a fresh spawn is: one plan message carrying every step and
+	// naming the step to work first.
+	sub.sess.mu.Lock()
+	var queued []string
+	for _, message := range sub.sess.steeringQueue {
+		queued = append(queued, message.Text)
+	}
+	sub.sess.mu.Unlock()
+	var plan string
+	for _, text := range queued {
+		if len(parseCurrentTaskElements(text)) > 0 {
+			plan = text
+		}
+	}
+	assertCurrentTaskElement(t, plan, 1, "Resume the committed workflow.")
 }
 
 func TestDelegateResourceRuntime_RunningSendDoesNotStartSuccessor(t *testing.T) {
@@ -220,7 +237,7 @@ func TestDelegateResourceRuntime_IdleSendReservesOneSuccessor(t *testing.T) {
 }
 
 func TestDelegateResourceRuntime_IdleRestoreFailureCommitsBeforeConstruction(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
 	if err != nil {
 		t.Fatalf("restore root: %v", err)
@@ -259,7 +276,7 @@ func TestDelegateResourceRuntime_IdleRestoreFailureCommitsBeforeConstruction(t *
 }
 
 func TestDelegateResourceRuntime_RegisteredIdleRestoreFailureReturnsStableResult(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
 	if err != nil {
 		t.Fatalf("restore root: %v", err)
@@ -312,7 +329,7 @@ func TestDelegateResourceRuntime_RegisteredIdleSendClampsInlineWaitOnSuccessAndF
 			{name: "maximum", requested: 60_001, want: 60 * time.Second},
 		} {
 			t.Run(path+"/"+tc.name, func(t *testing.T) {
-				fixture := newColdStableDelegateFixture(t, "")
+				fixture := newColdDelegateFixture(t, "")
 				root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
 				if err != nil {
 					t.Fatalf("restore root: %v", err)
@@ -367,7 +384,7 @@ func TestDelegateResourceRuntime_RegisteredIdleSendClampsInlineWaitOnSuccessAndF
 }
 
 func TestDelegateResourceRuntime_PostCommitFailureWaitsForPriorDelivery(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "missing-owner")
+	fixture := newColdDelegateFixture(t, "missing-owner")
 	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
 	if err != nil {
 		t.Fatalf("restore root: %v", err)
@@ -387,7 +404,7 @@ func TestDelegateResourceRuntime_PostCommitFailureWaitsForPriorDelivery(t *testi
 		t.Fatalf("first delivery plans = %#v", firstPlans.deliveries)
 	}
 
-	outcomes := make(chan stableDelegateSendOutcome, 1)
+	outcomes := make(chan delegateSendOutcome, 1)
 	go func() {
 		outcomes <- (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "generation two restore failure", 60_000)
 	}()
@@ -423,7 +440,7 @@ func TestDelegateResourceRuntime_PostCommitFailureWaitsForPriorDelivery(t *testi
 }
 
 func TestDelegateResourceRuntime_InputCompensationFailureLatchesBeforeRunReset(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
 	if err != nil {
 		t.Fatalf("restore root: %v", err)
@@ -447,7 +464,7 @@ func TestDelegateResourceRuntime_InputCompensationFailureLatchesBeforeRunReset(t
 	}
 
 	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "fail input and compensation", 0)
-	if outcome.result.DelegateID != fixture.delegateID || outcome.result.Err == nil || !strings.Contains(outcome.result.Err.Error(), "store is closed") {
+	if outcome.result.DelegateID != fixture.delegateID || !errors.Is(outcome.result.Err, delegatestore.ErrStoreClosed) {
 		t.Fatalf("double-failure send result = %#v, want stable identity and durable append error", outcome.result)
 	}
 	c := root.delegateController
@@ -483,7 +500,7 @@ func TestDelegateResourceRuntime_InputCompensationFailureLatchesBeforeRunReset(t
 }
 
 func TestDelegateResourceRuntime_StopOwnsColdRestoreBeforeSideEffects(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
 	if err != nil {
 		t.Fatalf("restore root: %v", err)
@@ -496,7 +513,7 @@ func TestDelegateResourceRuntime_StopOwnsColdRestoreBeforeSideEffects(t *testing
 		<-releaseRestore
 	}
 
-	sendDone := make(chan stableDelegateSendOutcome, 1)
+	sendDone := make(chan delegateSendOutcome, 1)
 	go func() {
 		sendDone <- (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "race stop with cold restore", 0)
 	}()
@@ -553,7 +570,7 @@ const parentCloseFailedInlineResultWindow = time.Second
 // The window below bounds only how long a broken close is given to arrive; the
 // arrival itself is the evidence, and it is read after the fact.
 func TestDelegateResourceRuntime_ParentCloseWaitsForColdRestoreSideEffects(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
 	if err != nil {
 		t.Fatalf("restore root: %v", err)
@@ -597,7 +614,7 @@ func TestDelegateResourceRuntime_ParentCloseWaitsForColdRestoreSideEffects(t *te
 		return nil
 	}
 
-	sendDone := make(chan stableDelegateSendOutcome, 1)
+	sendDone := make(chan delegateSendOutcome, 1)
 	go func() {
 		sendDone <- (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "race close with cold restore", 0)
 	}()
@@ -641,7 +658,7 @@ func TestDelegateResourceRuntime_ParentCloseWaitsForColdRestoreSideEffects(t *te
 }
 
 func TestDelegateResourceRuntime_ParentCloseDoesNotWaitForFailedInlineResult(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
 	if err != nil {
 		t.Fatalf("restore root: %v", err)
@@ -668,7 +685,7 @@ func TestDelegateResourceRuntime_ParentCloseDoesNotWaitForFailedInlineResult(t *
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	sendDone := make(chan stableDelegateSendOutcome, 1)
+	sendDone := make(chan delegateSendOutcome, 1)
 	go func() {
 		sendDone <- (delegateRuntime{owner: root}).send(ctx, fixture.delegateID, "failed generation two", 60_000)
 	}()
@@ -713,7 +730,7 @@ func TestDelegateResourceRuntime_ParentCloseDoesNotWaitForFailedInlineResult(t *
 func TestDelegateResourceRuntime_ConcurrentIdleSendsStartOneGeneration(t *testing.T) {
 	root, fixture, entered, release := newBlockingColdDelegateRuntime(t)
 	start := make(chan struct{})
-	outcomes := make(chan stableDelegateSendOutcome, 2)
+	outcomes := make(chan delegateSendOutcome, 2)
 	for _, message := range []string{"first", "second"} {
 		go func() {
 			<-start
@@ -729,7 +746,7 @@ func TestDelegateResourceRuntime_ConcurrentIdleSendsStartOneGeneration(t *testin
 	generation := c.durable[fixture.delegateID].Generation
 	c.mu.Unlock()
 	started := 0
-	for _, outcome := range []stableDelegateSendOutcome{first, second} {
+	for _, outcome := range []delegateSendOutcome{first, second} {
 		if outcome.result.Action == "started" && outcome.result.Err == nil {
 			started++
 		}
@@ -899,7 +916,7 @@ func TestDelegateResourceRuntime_CanonicalPacketReusedAcrossFinishReplayAndDeliv
 	endedAt := time.Date(2026, 8, 14, 12, 15, 0, 0, time.UTC)
 	inputs := delegateTerminalRunInputs{session: sess, result: reply, endedAt: endedAt}
 	inputs.captureCommunicateReport(sess)
-	finish := stableDelegateFinishFromRun(inputs)
+	finish := delegateFinishFromRun(inputs)
 	want := cloneDelegateTerminalPacket(*finish.packet)
 	lease := delegateLease{delegateID: "dlg_target", generation: 1}
 	if continued, _, err := c.prepareSettlementForTest(lease, finish.packet); err != nil || continued {
@@ -959,7 +976,7 @@ func TestDelegateResourceRuntime_CanonicalPacketReusedAcrossFinishReplayAndDeliv
 	t.Run("typed exhaustion replay", func(t *testing.T) {
 		controller, replayPath := newDelegateControllerTestHarness(t, 1, 1)
 		seedDelegateControllerRunning(t, controller, "dlg_exhausted", "")
-		exhausted := stableDelegateFinishFromRun(delegateTerminalRunInputs{
+		exhausted := delegateFinishFromRun(delegateTerminalRunInputs{
 			runErr: &budgetExhaustionError{Budget: exhaustedBudgetTurns, Limit: 23, Resumable: false},
 		})
 		lease := delegateLease{delegateID: "dlg_exhausted", generation: 1}
@@ -1000,7 +1017,7 @@ func TestDelegateResourceRuntime_CanonicalPacketReusedAcrossFinishReplayAndDeliv
 		controller, replayPath := newDelegateControllerTestHarness(t, 1, 1)
 		seedDelegateControllerRunning(t, controller, "dlg_cancelled", "")
 		endedAt := time.Date(2026, 8, 14, 12, 30, 0, 0, time.UTC)
-		cancelled := stableDelegateFinishFromRun(delegateTerminalRunInputs{runErr: context.Canceled, endedAt: endedAt})
+		cancelled := delegateFinishFromRun(delegateTerminalRunInputs{runErr: context.Canceled, endedAt: endedAt})
 		lease := delegateLease{delegateID: "dlg_cancelled", generation: 1}
 		if _, err := controller.FinishGeneration(lease, cancelled); err != nil {
 			t.Fatalf("FinishGeneration cancellation: %v", err)
@@ -1036,23 +1053,23 @@ func TestDelegateResourceRuntime_CanonicalPacketReusedAcrossFinishReplayAndDeliv
 
 func TestDelegateResourceRuntime_CanonicalInlineDeliveryPreservesPacketSemantics(t *testing.T) {
 	t.Run("typed exhaustion", func(t *testing.T) {
-		finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{
+		finish := delegateFinishFromRun(delegateTerminalRunInputs{
 			runErr: &budgetExhaustionError{Budget: exhaustedBudgetToolRounds, Limit: 17, Resumable: true},
 		})
-		result := runStableDelegateInlinePacket(t, finish)
+		result := runDelegateInlinePacket(t, finish)
 		if result.Status != jobstore.StatusExhausted || result.Reason != "tool_round_budget_exhausted" || result.ExhaustionBudget != string(exhaustedBudgetToolRounds) || result.ExhaustionLimit != 17 || result.Resumable == nil || !*result.Resumable {
 			t.Fatalf("inline typed exhaustion = %#v", result)
 		}
 	})
 
 	t.Run("explicit null", func(t *testing.T) {
-		finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{
+		finish := delegateFinishFromRun(delegateTerminalRunInputs{
 			result:                  "explicit null",
 			communicated:            true,
 			structuredResult:        json.RawMessage(`null`),
 			structuredResultPresent: true,
 		})
-		result := runStableDelegateInlinePacket(t, finish)
+		result := runDelegateInlinePacket(t, finish)
 		marshaled, err := marshalDelegateSendResult(result, 64*1024)
 		if err != nil {
 			t.Fatalf("marshal inline result: %v", err)
@@ -1076,14 +1093,14 @@ func TestDelegateResourceRuntime_CanonicalInlineDeliveryPreservesPacketSemantics
 	})
 
 	t.Run("invalid structured result", func(t *testing.T) {
-		finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{
+		finish := delegateFinishFromRun(delegateTerminalRunInputs{
 			result:       "missing structured result",
 			communicated: true,
 			descriptor: delegatestore.Descriptor{
 				ResultSchema: json.RawMessage(`{"type":"object","required":["answer"]}`),
 			},
 		})
-		result := runStableDelegateInlinePacket(t, finish)
+		result := runDelegateInlinePacket(t, finish)
 		if !result.StructuredResultValidSet || result.StructuredResultValid || result.StructuredResultReason != structuredResultReasonSchemaResultMissing {
 			t.Fatalf("inline invalid structured result = %#v", result)
 		}
@@ -1093,7 +1110,7 @@ func TestDelegateResourceRuntime_CanonicalInlineDeliveryPreservesPacketSemantics
 		startedAt := time.Date(2026, 8, 14, 8, 0, 0, 0, time.UTC)
 		endedAt := startedAt.Add(90 * time.Second)
 		activityAt := endedAt.Add(-2 * time.Second)
-		finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{
+		finish := delegateFinishFromRun(delegateTerminalRunInputs{
 			session:      &Session{comm: communicateResult{called: true}},
 			result:       "complete",
 			communicated: true,
@@ -1124,7 +1141,7 @@ func TestDelegateResourceRuntime_CanonicalInlineDeliveryPreservesPacketSemantics
 				Dirty:   true,
 			},
 		})
-		marshaled, err := marshalDelegateSendResult(runStableDelegateInlinePacket(t, finish), 64*1024)
+		marshaled, err := marshalDelegateSendResult(runDelegateInlinePacket(t, finish), 64*1024)
 		if err != nil {
 			t.Fatalf("marshal inline operational metadata: %v", err)
 		}
@@ -1163,7 +1180,7 @@ func TestDelegateResourceRuntime_CanonicalInlineDeliveryPreservesPacketSemantics
 func TestDelegateResourceRuntime_GenericStopUsesCanonicalFinish(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "stop-hook-ran")
 	pluginDir := writeStableOnceBlockingStopPlugin(t, marker)
-	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+	fixture := newColdDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
 		descriptor.Config.PluginDirs = []string{pluginDir}
 		// The Stop hook intentionally writes a marker outside private scratch.
 		// Declare that mutating fixture scope instead of weakening the read-only
@@ -1171,12 +1188,12 @@ func TestDelegateResourceRuntime_GenericStopUsesCanonicalFinish(t *testing.T) {
 		descriptor.ToolNameCeiling = append(descriptor.ToolNameCeiling, "write_file")
 	})
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("before generic Stop continuation") },
-		func(llm.Request) llm.Response { return finalResponse("after generic Stop continuation") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("before generic Stop continuation") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("after generic Stop continuation") },
 	}
 	root := restoreSupervisionRoot(t, fixture, nil)
 	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "run Stop hook", 60_000)
-	abortUnpersistedStableDelegateOutcome(t, outcome)
+	abortUnpersistedDelegateOutcome(t, outcome)
 	if outcome.result.Err != nil || outcome.result.Status != jobstore.StatusCompleted || !strings.Contains(outcome.result.Output, "before generic Stop continuation") {
 		t.Fatalf("stable generic Stop outcome = %#v", outcome.result)
 	}
@@ -1346,7 +1363,7 @@ func TestDelegateResourceRuntime_StableStopReportsActorAndResumability(t *testin
 }
 
 func TestDelegateResourceRuntime_StableStopIdleCompletionReportsAlreadyIdle(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	root := restoreSupervisionRoot(t, fixture, nil)
 	value, err := jobStopTool(context.Background(), root, map[string]any{
 		"target":      fixture.delegateID,
@@ -1503,7 +1520,7 @@ func TestDelegateResourceRuntime_TransientDriverFailureCanBeRetried(t *testing.T
 }
 
 func TestDelegateResourceRuntime_RootStoreCloseJoinsReconciliationDriver(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	root := restoreSupervisionRoot(t, fixture, nil)
 	result, _, _, err := root.delegateController.StopSubtree(rootDelegateActor(root.delegateRootSessionID), fixture.delegateID)
 	if err != nil {
@@ -1578,7 +1595,7 @@ type stableJobStopInvocation struct {
 
 type stableStopRuntimeHarness struct {
 	root    *Session
-	fixture coldStableDelegateFixture
+	fixture coldDelegateFixture
 	release func()
 }
 
@@ -1588,7 +1605,7 @@ func newStableStopRuntimeHarness(t *testing.T) stableStopRuntimeHarness {
 
 func newStableStopRuntimeHarnessWithClock(t *testing.T, clock *agenttest.FakeClock) stableStopRuntimeHarness {
 	t.Helper()
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	entered := make(chan struct{})
 	releaseProvider := make(chan struct{})
 	var releaseOnce sync.Once
@@ -1597,7 +1614,7 @@ func newStableStopRuntimeHarnessWithClock(t *testing.T, clock *agenttest.FakeClo
 	fixture.adapter.steps = []func(llm.Request) llm.Response{func(llm.Request) llm.Response {
 		close(entered)
 		<-releaseProvider
-		return finalResponse("provider released after stop")
+		return agenttest.FinalResponse("provider released after stop")
 	}}
 	root := restoreSupervisionRoot(t, fixture, clock)
 	started := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "block for stop", 0)
@@ -1728,10 +1745,10 @@ func writeStableOnceBlockingStopPlugin(t *testing.T, marker string) string {
 	return pluginDir
 }
 
-func runStableDelegateInlinePacket(t *testing.T, finish delegateFinish) sendMessageResult {
+func runDelegateInlinePacket(t *testing.T, finish delegateFinish) sendMessageResult {
 	t.Helper()
 	root, fixture, entered, release := newBlockingColdDelegateRuntime(t)
-	outcomes := make(chan stableDelegateSendOutcome, 1)
+	outcomes := make(chan delegateSendOutcome, 1)
 	go func() {
 		outcomes <- (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "continue inline", 60_000)
 	}()
@@ -1761,11 +1778,11 @@ func runStableDelegateInlinePacket(t *testing.T, finish delegateFinish) sendMess
 	if outcome.result.Err != nil || outcome.commit == nil {
 		t.Fatalf("inline outcome = %#v", outcome)
 	}
-	abortUnpersistedStableDelegateOutcome(t, outcome)
+	abortUnpersistedDelegateOutcome(t, outcome)
 	return outcome.result
 }
 
-func abortUnpersistedStableDelegateOutcome(t *testing.T, outcome stableDelegateSendOutcome) {
+func abortUnpersistedDelegateOutcome(t *testing.T, outcome delegateSendOutcome) {
 	t.Helper()
 	if outcome.commit == nil {
 		t.Fatal("terminal inline delegate outcome has no delivery commit")
@@ -1812,7 +1829,7 @@ func TestDelegateResourceRuntime_TerminalPacketUsesProductionActivityBoundary(t 
 		startedAt:        endedAt.Add(-time.Minute),
 		stableDescriptor: &descriptor,
 	}
-	metadata := decodeDelegatePacketMetadata(t, *sub.stableDelegateFinish("failed", errors.New("failed")).packet)
+	metadata := decodeDelegatePacketMetadata(t, *sub.buildDelegateFinish("failed", errors.New("failed")).packet)
 	if got := metadata["latest_activity_at"]; got != activityAt.Format(time.RFC3339Nano) {
 		t.Fatalf("production latest_activity_at = %#v, want %q", got, activityAt.Format(time.RFC3339Nano))
 	}
@@ -1822,7 +1839,7 @@ func TestDelegateResourceRuntime_StructuredResultExplicitNullIsPresent(t *testin
 	t.Parallel()
 	var captured any
 	deps := &toolDeps{
-		emit:               func(events.EventKind, events.EventData) {},
+		emit:               func(events.EventData) {},
 		deliverCommunicate: func(events.CommunicateData) error { return nil },
 		abort:              func(context.Context) error { return nil },
 		drainSteering:      func() []steeringMessage { return nil },
@@ -1855,7 +1872,7 @@ func TestDelegateResourceRuntime_StructuredResultExplicitNullIsPresent(t *testin
 		t.Fatalf("captured explicit null = %#v", captured)
 	}
 	sess := &Session{comm: communicateResult{called: true}}
-	finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{
+	finish := delegateFinishFromRun(delegateTerminalRunInputs{
 		session:                 sess,
 		result:                  "explicit null",
 		communicated:            true,
@@ -1878,7 +1895,7 @@ func TestDelegateResourceRuntime_InvalidStructuredResultIsBoundedAndExplained(t 
 	t.Parallel()
 	structured := map[string]any{"wrong": true}
 	sess := &Session{comm: communicateResult{called: true, structured: structured}}
-	finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{
+	finish := delegateFinishFromRun(delegateTerminalRunInputs{
 		session:                 sess,
 		result:                  "schema-invalid result",
 		communicated:            true,
@@ -1899,7 +1916,7 @@ func TestDelegateResourceRuntime_InvalidStructuredResultIsBoundedAndExplained(t 
 	if packet.StructuredResultValid == nil || *packet.StructuredResultValid || packet.StructuredResultReason != structuredResultReasonSchemaValidationFailed {
 		t.Fatalf("invalid structured validation = valid:%v reason:%q", packet.StructuredResultValid, packet.StructuredResultReason)
 	}
-	tooLarge := stableDelegateFinishFromRun(delegateTerminalRunInputs{
+	tooLarge := delegateFinishFromRun(delegateTerminalRunInputs{
 		result:                  "oversized result",
 		communicated:            true,
 		structuredResult:        strings.Repeat("x", delegatestore.MaxTerminalStructuredResultBytes),
@@ -1914,7 +1931,7 @@ func TestDelegateResourceRuntime_InvalidStructuredResultIsBoundedAndExplained(t 
 func TestDelegateResourceRuntime_ToolRoundExhaustionIsTypedAndResumable(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
-	finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{
+	finish := delegateFinishFromRun(delegateTerminalRunInputs{
 		runErr: &budgetExhaustionError{Budget: exhaustedBudgetToolRounds, Limit: 17, Resumable: true},
 	})
 	settleDelegateTerminalRun(t, c, delegateLease{delegateID: "dlg_target", generation: 1}, finish)
@@ -1929,7 +1946,7 @@ func TestDelegateResourceRuntime_ToolRoundExhaustionIsTypedAndResumable(t *testi
 func TestDelegateResourceRuntime_TurnExhaustionClosesResumabilityAtomically(t *testing.T) {
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
-	finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{
+	finish := delegateFinishFromRun(delegateTerminalRunInputs{
 		runErr: &budgetExhaustionError{Budget: exhaustedBudgetTurns, Limit: 23, Resumable: false},
 	})
 	settleDelegateTerminalRun(t, c, delegateLease{delegateID: "dlg_target", generation: 1}, finish)
@@ -1948,7 +1965,7 @@ func TestDelegateResourceRuntime_TerminalPacketPreservesTaskModelEffortTimingUsa
 	endedAt := startedAt.Add(90 * time.Second)
 	activityAt := endedAt.Add(-2 * time.Second)
 	sess := &Session{comm: communicateResult{called: true}}
-	finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{
+	finish := delegateFinishFromRun(delegateTerminalRunInputs{
 		session:      sess,
 		result:       "complete",
 		communicated: true,
@@ -2021,7 +2038,7 @@ func TestDelegateResourceRuntime_TerminalPacketPreservesTaskModelEffortTimingUsa
 // already does regardless of outcome.
 func TestDelegateResourceRuntime_CancelledRunCapturesScratchPath(t *testing.T) {
 	t.Parallel()
-	finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{
+	finish := delegateFinishFromRun(delegateTerminalRunInputs{
 		runErr:      context.Canceled,
 		descriptor:  delegatestore.Descriptor{Task: "rebuild the search index"},
 		scratchPath: "/abs/scratch/dlg_target",
@@ -2080,9 +2097,9 @@ func selfReportedCancelledPacket(t *testing.T) delegatestore.TerminalPacket {
 }
 
 // TestDelegateResourceRuntime_StoppedSendSurvivesPacketClobber reproduces
-// issue #184 at the delivery-plan site: stableDelegateFailedSendResult
+// issue #184 at the delivery-plan site: delegateFailedSendResult
 // correctly seeds Status from the durable lastOutcome ("stopped"), but the
-// delivery-matching loop then calls populateStableDelegateSendResult, which
+// delivery-matching loop then calls populateDelegateSendResult, which
 // derives Status from the delegate's self-reported terminal packet
 // ("cancelled"). The durable outcome must win for Status the same way it
 // already does for Reason.
@@ -2098,7 +2115,7 @@ func TestDelegateResourceRuntime_StoppedSendSurvivesPacketClobber(t *testing.T) 
 		}},
 	}
 
-	result := stableDelegateFailedSendResult(started, plans, errors.New("construction_failed"))
+	result := delegateFailedSendResult(started, plans, errors.New("construction_failed"))
 
 	if result.Status != jobstore.StatusStopped {
 		t.Fatalf("delegate_send status = %q, want %q (durable stop outcome must survive the packet-derived clobber); reason = %q",
@@ -2112,7 +2129,7 @@ func TestDelegateResourceRuntime_StoppedSendSurvivesPacketClobber(t *testing.T) 
 // TestDelegateResourceRuntime_StoppedSendSurvivesInlineResolutionClobber covers
 // the second clobber site from issue #184: stableSendFailureOutcomeAfterDispatch
 // applies the inline waiter's resolution packet via
-// populateStableDelegateSendResult after the durable outcome already set
+// populateDelegateSendResult after the durable outcome already set
 // Status/Reason, so the durable "stopped" status must survive that overwrite
 // too.
 func TestDelegateResourceRuntime_StoppedSendSurvivesInlineResolutionClobber(t *testing.T) {
@@ -2237,7 +2254,7 @@ func assertLastDelegateBatchKinds(t *testing.T, path string, want ...delegatesto
 }
 
 func TestDelegateResourceRuntime_ColdIdleUsesCommittedConfigTemplatesAndToolCeiling(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
 	if err != nil {
 		t.Fatalf("restore root: %v", err)
@@ -2278,7 +2295,7 @@ func TestDelegateResourceRuntime_ColdIdleUsesCommittedConfigTemplatesAndToolCeil
 }
 
 func TestDelegateResourceRuntime_ColdIdleInheritsLiveLifetimeContext(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
 	if err != nil {
 		t.Fatalf("restore root: %v", err)
@@ -2315,7 +2332,7 @@ func TestDelegateResourceRuntime_ColdIdleInheritsLiveLifetimeContext(t *testing.
 }
 
 func TestDelegateResourceRuntime_ColdIdleReusesExactSharedRootTaskStore(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "root")
+	fixture := newColdDelegateFixture(t, "root")
 	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
 	if err != nil {
 		t.Fatalf("restore root: %v", err)
@@ -2347,7 +2364,7 @@ func TestDelegateResourceRuntime_ColdIdleReusesExactSharedRootTaskStore(t *testi
 }
 
 func TestDelegateResourceRuntime_ColdIdleUnavailableAncestorStoreFailsClosedProviderFree(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "missing-owner")
+	fixture := newColdDelegateFixture(t, "missing-owner")
 	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
 	if err != nil {
 		t.Fatalf("restore root: %v", err)
@@ -2375,7 +2392,7 @@ func TestDelegateResourceRuntime_ColdIdleUnavailableAncestorStoreFailsClosedProv
 	}
 }
 
-type coldStableDelegateFixture struct {
+type coldDelegateFixture struct {
 	meta       schema.SessionMeta
 	client     *llm.Client
 	profile    *provider.Profile
@@ -2386,15 +2403,15 @@ type coldStableDelegateFixture struct {
 	childID    string
 }
 
-func newBlockingColdDelegateRuntime(t *testing.T) (*Session, coldStableDelegateFixture, <-chan struct{}, chan struct{}) {
+func newBlockingColdDelegateRuntime(t *testing.T) (*Session, coldDelegateFixture, <-chan struct{}, chan struct{}) {
 	t.Helper()
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	fixture.adapter.steps = []func(llm.Request) llm.Response{func(llm.Request) llm.Response {
 		close(entered)
 		<-release
-		return communicateResponse(true, "done")
+		return agenttest.CommunicateResponse(true, "done")
 	}}
 	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
 	if err != nil {
@@ -2411,11 +2428,11 @@ func newBlockingColdDelegateRuntime(t *testing.T) (*Session, coldStableDelegateF
 	return root, fixture, entered, release
 }
 
-func newColdStableDelegateFixture(t *testing.T, sharedOwner string) coldStableDelegateFixture {
-	return newColdStableDelegateFixtureConfigured(t, sharedOwner, nil)
+func newColdDelegateFixture(t *testing.T, sharedOwner string) coldDelegateFixture {
+	return newColdDelegateFixtureConfigured(t, sharedOwner, nil)
 }
 
-func newColdStableDelegateFixtureConfigured(t *testing.T, sharedOwner string, configure func(*delegatestore.Descriptor)) coldStableDelegateFixture {
+func newColdDelegateFixtureConfigured(t *testing.T, sharedOwner string, configure func(*delegatestore.Descriptor)) coldDelegateFixture {
 	t.Helper()
 	meta, client, profile, stateDir, workspace, adapter := closedDelegateResourceBootstrapFixture(t)
 	delegateID := identifier.MustNewDelegateID()
@@ -2496,5 +2513,5 @@ func newColdStableDelegateFixtureConfigured(t *testing.T, sharedOwner string, co
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
 	}
-	return coldStableDelegateFixture{meta: meta, client: client, profile: profile, stateDir: stateDir, workspace: workspace, adapter: adapter, delegateID: delegateID, childID: childID}
+	return coldDelegateFixture{meta: meta, client: client, profile: profile, stateDir: stateDir, workspace: workspace, adapter: adapter, delegateID: delegateID, childID: childID}
 }

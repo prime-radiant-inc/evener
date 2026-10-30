@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -26,7 +27,7 @@ func TestSession_ProcessInputRepairsOrphanedAssistantToolCallsBeforeModelRequest
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
 				validationErr = validateRecoveredToolCallHistory(req.Messages)
-				return finalResponse("recovered")
+				return agenttest.FinalResponse("recovered")
 			},
 		},
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -86,7 +87,7 @@ func TestRemoveHostClearsPerHostCaches(t *testing.T) {
 	if m.resolvedTarget("alpha") != "" {
 		t.Fatal("resolvedTarget survived RemoveHost")
 	}
-	if m.pendingRestart("alpha") != (pendingRestartState{}) {
+	if !reflect.DeepEqual(m.pendingRestart("alpha"), pendingRestartState{}) {
 		t.Fatal("pendingRestart survived RemoveHost")
 	}
 }
@@ -105,7 +106,7 @@ func TestDetachHostClearsPerHostCaches(t *testing.T) {
 	if m.resolvedTarget("alpha") != "" {
 		t.Fatal("resolvedTarget survived DetachHost")
 	}
-	if m.pendingRestart("alpha") != (pendingRestartState{}) {
+	if !reflect.DeepEqual(m.pendingRestart("alpha"), pendingRestartState{}) {
 		t.Fatal("pendingRestart survived DetachHost")
 	}
 	// The registry entry itself survives a detach — that is the difference

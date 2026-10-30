@@ -43,10 +43,7 @@ func TestInterruptMarkerOfMutationNamedTurnCarriesTheTurn(t *testing.T) {
 		},
 	}))
 	defer sess.Close()
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 	if err := sess.ensureClientMutationStore(); err != nil {
 		t.Fatalf("ensureClientMutationStore: %v", err)
 	}
@@ -73,7 +70,7 @@ func TestInterruptMarkerOfMutationNamedTurnCarriesTheTurn(t *testing.T) {
 		t.Fatal("the interrupted turn never returned")
 	}
 
-	data, err := readTranscriptFull(transcriptPath(sess.stateDir, sess.id), "")
+	data, err := readTranscriptFull(context.Background(), transcriptPath(sess.stateDir, sess.id), "")
 	if err != nil {
 		t.Fatalf("read transcript: %v", err)
 	}

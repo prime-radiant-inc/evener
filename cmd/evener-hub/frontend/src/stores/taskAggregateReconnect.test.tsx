@@ -1,26 +1,11 @@
-import type { Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
+import type { Thread, ThreadReadResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, render, screen } from "@testing-library/react";
 import { beforeEach, expect, test } from "vitest";
 import { TasksPanel } from "../panes/session/chrome/TasksPanel";
-import { connectionStore } from "./connection";
+import { ALL_CAPABILITIES as CAPABILITIES } from "../threadTestUtils";
+import { connectionStore, resetConnectionStoreForTests } from "./connection";
 import { resetThreadsStoreForTests, threadsStore, useThreadsStore } from "./threads";
-
-const CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
 
 function readResponse(ref: string, tasks: { total: number; done: number }): ThreadReadResponse {
   const thread: Thread = {
@@ -50,7 +35,7 @@ async function flushUntil(done: () => boolean, maxTurns = 20): Promise<void> {
 }
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
 });
 

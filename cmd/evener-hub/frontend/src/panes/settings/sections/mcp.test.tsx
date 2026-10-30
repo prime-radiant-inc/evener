@@ -8,16 +8,11 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { connectionStore } from "../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../../stores/extensions";
+import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
 import { McpSection, type SettingsOverviewLike } from "./mcp";
-
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  return fake;
-}
 
 // Both launch-layer editors mount together once the layer has loaded.
 async function launchLayerLoaded(): Promise<void> {
@@ -40,7 +35,7 @@ function overviewHook(overrides: Partial<SettingsOverviewLike> = {}): () => Sett
 }
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetExtensionsStoreForTests();
   resetToastStoreForTests();
 });
@@ -51,7 +46,7 @@ afterEach(() => {
 });
 
 test("calls the injected overview hook's fetch on mount", async () => {
-  connectFakeClient();
+  connectReadyFakeClient();
   const fetchFn = vi.fn(async () => {});
   const fetchLaunchLayer = vi.spyOn(extensionsStore.getState(), "fetchLaunchLayer");
   render(<McpSection useOverviewStore={overviewHook({ fetch: fetchFn })} />);
@@ -62,7 +57,7 @@ test("calls the injected overview hook's fetch on mount", async () => {
 });
 
 test("renders discovered servers from the injected overview data with a status per row", async () => {
-  connectFakeClient();
+  connectReadyFakeClient();
   const data: SettingsOverviewResponse = {
     mcpDiscovered: {
       servers: [
@@ -84,7 +79,7 @@ test("renders discovered servers from the injected overview data with a status p
 });
 
 test("shows the discovered-servers empty state", async () => {
-  connectFakeClient();
+  connectReadyFakeClient();
   const fetchLaunchLayer = vi.spyOn(extensionsStore.getState(), "fetchLaunchLayer");
   render(<McpSection useOverviewStore={overviewHook({ data: { mcpDiscovered: { servers: [] } } })} />);
   expect(screen.getByTestId("mcp-discovered-empty")).toBeTruthy();
@@ -94,7 +89,7 @@ test("shows the discovered-servers empty state", async () => {
 });
 
 test("shows a loading state for discovered servers before the overview resolves", async () => {
-  connectFakeClient();
+  connectReadyFakeClient();
   const fetchLaunchLayer = vi.spyOn(extensionsStore.getState(), "fetchLaunchLayer");
   render(<McpSection useOverviewStore={overviewHook({ loading: true, data: null })} />);
   expect(screen.getAllByRole("status", { name: "Loading" }).length).toBeGreaterThan(0);
@@ -104,7 +99,7 @@ test("shows a loading state for discovered servers before the overview resolves"
 });
 
 test("a top-level probe failure replaces the discovered-servers list with one message", async () => {
-  connectFakeClient();
+  connectReadyFakeClient();
   const fetchLaunchLayer = vi.spyOn(extensionsStore.getState(), "fetchLaunchLayer");
   render(<McpSection useOverviewStore={overviewHook({ data: { mcpDiscovered: { error: "probe timed out" } } })} />);
   expect(screen.queryByRole("list", { name: "Discovered MCP servers" })).toBeNull();
@@ -115,7 +110,7 @@ test("a top-level probe failure replaces the discovered-servers list with one me
 });
 
 test("renders the mcpConfigs entries from the launch layer", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/launch/getLayer", () => ({ mcpConfigs: ["/etc/mcp.json"], mcps: [] }));
   render(<McpSection useOverviewStore={overviewHook()} />);
   expect(await screen.findByText("/etc/mcp.json")).toBeTruthy();
@@ -123,7 +118,7 @@ test("renders the mcpConfigs entries from the launch layer", async () => {
 
 test("adding a config file validates as kind:file and saves mcpConfigs", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/launch/getLayer", () => ({ mcpConfigs: [], mcps: [] }));
   fake.on("evener/path/validate", (params) => {
     expect(params).toEqual({ path: "/etc/mcp.json", kind: "file" });
@@ -149,7 +144,7 @@ test("adding a config file validates as kind:file and saves mcpConfigs", async (
 // add field outright rather than only navigating toward its directory.
 test("the config-file add row browses files, and picking one fills the add field", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/launch/getLayer", () => ({ mcpConfigs: [], mcps: [] }));
   fake.on("evener/paths/complete", (params) => {
     expect(params).toEqual({ prefix: "", includeFiles: true });
@@ -166,7 +161,7 @@ test("the config-file add row browses files, and picking one fills the add field
 
 test("removing a config file confirms first, then saves with it filtered out", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/launch/getLayer", () => ({ mcpConfigs: ["/etc/mcp.json"], mcps: [] }));
   fake.on("evener/launch/setLayer", (params) => {
     expect(params).toEqual({ cwd: "/", layer: "global", config: { mcpConfigs: [], mcps: [] } });
@@ -192,7 +187,7 @@ async function addInlineServer(user: ReturnType<typeof userEvent.setup>, entry: 
 
 test("an inline server entry without a command is refused before validating", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/launch/getLayer", () => ({ mcpConfigs: [], mcps: [] }));
   const validateSpy = vi.fn();
   fake.on("evener/path/validate", validateSpy);
@@ -204,7 +199,7 @@ test("an inline server entry without a command is refused before validating", as
 });
 
 test("renders inline MCP servers as '{name} → {command} {args}'", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/launch/getLayer", () => ({
     mcpConfigs: [],
     mcps: [{ name: "search", command: "/usr/bin/search-mcp", args: ["--port", "9000"] }],
@@ -215,7 +210,7 @@ test("renders inline MCP servers as '{name} → {command} {args}'", async () => 
 
 test("adding an inline server validates the command as kind:command and saves mcps", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/launch/getLayer", () => ({ mcpConfigs: [], mcps: [] }));
   fake.on("evener/path/validate", (params) => {
     expect(params).toEqual({ path: "/usr/bin/search-mcp", kind: "command" });
@@ -237,7 +232,7 @@ test("adding an inline server validates the command as kind:command and saves mc
 
 test("an invalid command shows the inline error and does not save", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/launch/getLayer", () => ({ mcpConfigs: [], mcps: [] }));
   fake.on("evener/path/validate", () => ({ path: "nope", valid: false, error: "validator-refusal" }));
   const setLayerSpy = vi.fn();
@@ -251,7 +246,7 @@ test("an invalid command shows the inline error and does not save", async () => 
 
 test("removing an inline server confirms first, then saves with it filtered out", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/launch/getLayer", () => ({
     mcpConfigs: [],
     mcps: [{ name: "search", command: "/usr/bin/search-mcp", args: [] }],
@@ -270,7 +265,7 @@ test("removing an inline server confirms first, then saves with it filtered out"
 
 test("the remove-server confirm's buttons disable while the save is in flight", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/launch/getLayer", () => ({
     mcpConfigs: [],
     mcps: [{ name: "search", command: "/usr/bin/search-mcp", args: [] }],
@@ -287,7 +282,7 @@ test("the remove-server confirm's buttons disable while the save is in flight", 
 
 test("a failed save while removing a config file toasts failure", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/launch/getLayer", () => ({ mcpConfigs: ["/etc/mcp.json"], mcps: [] }));
   fake.on("evener/launch/setLayer", () => {
     throw new Error("disk full");
@@ -305,7 +300,7 @@ test("a failed save while removing a config file toasts failure", async () => {
 
 test("adding a config file with invalid path shows error without saving", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/launch/getLayer", () => ({ mcpConfigs: [], mcps: [] }));
   fake.on("evener/path/validate", () => ({ path: "", valid: false, error: "validator-refusal" }));
   const setLayerSpy = vi.fn();
@@ -324,7 +319,7 @@ test("adding a config file with invalid path shows error without saving", async 
 
 test("adding a config file when setLayer fails returns error to PathListEditor", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/launch/getLayer", () => ({ mcpConfigs: [], mcps: [] }));
   fake.on("evener/path/validate", () => ({ path: "/etc/mcp.json", valid: true }));
   fake.on("evener/launch/setLayer", () => {
@@ -344,7 +339,7 @@ test("adding a config file when setLayer fails returns error to PathListEditor",
 
 test("adding an inline server when setLayer fails shows error message", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/launch/getLayer", () => ({ mcpConfigs: [], mcps: [] }));
   fake.on("evener/path/validate", () => ({ path: "/usr/bin/srv", valid: true }));
   fake.on("evener/launch/setLayer", () => {
@@ -358,7 +353,7 @@ test("adding an inline server when setLayer fails shows error message", async ()
 
 test("removing an inline server when setLayer fails shows error toast", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/launch/getLayer", () => ({
     mcpConfigs: [],
     mcps: [{ name: "srv", command: "/usr/bin/srv", args: [] }],
@@ -375,7 +370,7 @@ test("removing an inline server when setLayer fails shows error toast", async ()
 
 test("cancelling the remove server dialog does not call setLayer", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/launch/getLayer", () => ({
     mcpConfigs: [],
     mcps: [{ name: "srv", command: "/usr/bin/srv", args: [] }],
@@ -396,7 +391,7 @@ test("cancelling the remove server dialog does not call setLayer", async () => {
 // it can only ever describe the controller's hub. Under a remote selection it
 // must not be presented as the host's probe.
 test("under a remote host the discovered-servers block is not shown, and this hub's probe is not fetched", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/host/request", (params) => {
     const forwarded = params as { host: string; method: string };
     if (forwarded.method === "evener/launch/getLayer") return { mcps: [] } as never;
@@ -415,7 +410,7 @@ test("under a remote host the discovered-servers block is not shown, and this hu
 });
 
 test("the local hub still renders the discovered-servers block", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/launch/getLayer", () => ({ mcps: [] }));
   const data: SettingsOverviewResponse = {
     mcpDiscovered: { servers: [{ name: "local-tool", transport: "stdio", status: "available" }] },
@@ -430,7 +425,7 @@ test("the local hub still renders the discovered-servers block", async () => {
 
 test("an unsaved inline-server entry survives a failed refresh and the recovery after it", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   let failRefresh = false;
   fake.on("evener/launch/getLayer", () => {
     if (failRefresh) throw new WireError("refresh failed", -1);
@@ -466,7 +461,7 @@ test("the inline-server editor waits for the launch layer's first load", async (
 // overwrite edits made to the file elsewhere. The typed entry stays.
 test("while a refresh has failed, saves are refused and keep the typed entry", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   let failReads = false;
   fake.on("evener/launch/getLayer", () => {
     if (failReads) throw new WireError("read failed", -1);
@@ -489,7 +484,7 @@ test("while a refresh has failed, saves are refused and keep the typed entry", a
 
 test("removing one of two identical servers removes the one confirmed", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   const a = { name: "a", command: "/bin/a", args: [] };
   const b = { name: "b", command: "/bin/b", args: [] };
   // Distinct objects, as the wire decodes them: identical entries are equal,
@@ -511,7 +506,7 @@ test("removing one of two identical servers removes the one confirmed", async ()
 
 test("saves stay refused while a recovery refresh is still in flight, and resume on its fresh layer", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   let mode: "ok" | "fail" | "hold" = "ok";
   let release: (layer: Record<string, unknown>) => void = () => {};
   fake.on("evener/launch/getLayer", () => {
@@ -554,7 +549,7 @@ test("saves stay refused while a recovery refresh is still in flight, and resume
 // A row's meta is one truncated line, so a failed probe's error renders in
 // full in its own wrapping notice under the row, never as the row's meta.
 test("a discovered server's probe error is shown in full beneath its row", async () => {
-  connectFakeClient();
+  connectReadyFakeClient();
   const fetchLaunchLayer = vi.spyOn(extensionsStore.getState(), "fetchLaunchLayer");
   const longError = `dial unix /run/mcp/${"deep/".repeat(30)}server.sock: connect: no such file or directory`;
   render(
@@ -578,7 +573,7 @@ test("a discovered server's probe error is shown in full beneath its row", async
 // renders in full: the layoutguard case mcp-discovered-long-name proves it
 // wraps inside the row instead of truncating, which jsdom cannot measure.
 test("a discovered server's transport sits apart from a long name, and the full name is rendered", async () => {
-  connectFakeClient();
+  connectReadyFakeClient();
   const fetchLaunchLayer = vi.spyOn(extensionsStore.getState(), "fetchLaunchLayer");
   const longName = `team-shared-${"knowledge-".repeat(8)}server`;
   render(
@@ -604,7 +599,7 @@ test.each([
   ["a hub-reported WireError", new WireError("launch.toml is being rewritten", -32000)],
   ["the client's connection-state failure", new ConnectionClosedError("AppwireClient: closed")],
 ])("a launch-layer read failure from %s shows its friendly form", async (_name, err) => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/launch/getLayer", () => {
     throw err;
   });

@@ -7,7 +7,7 @@ messages are queued" (rejected until the queue drains — the daemon's
 `processing` flag covers the whole drain loop, so there is no reachable turn
 boundary until it empties). Exercises the status strip's model switcher
 (`panes/session/chrome/ModelSwitch.tsx`), the `thread/model/set` RPC
-(`appwire/types.go:19`), and the `thread/model/changed` broadcast (`:94`).
+(`appwire/types_protocol.go#MethodThreadModelSet`), and the `thread/model/changed` broadcast (`appwire/types_protocol.go#NotifyThreadModelChanged`).
 
 **Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" — the
 selector map there is the single place these hooks are maintained. The
@@ -102,7 +102,7 @@ mid-turn, and this card previously asserted that it was.
   Falsification: tab 2 needs a manual reload to see model B.
 - **Step 4 (AC 4, exact)**: AppWire **conflict** with an error whose message is
   the daemon's own `turn <reservedTurnID> is active`
-  (`server/appwire_runtime.go:820-831`; `appwire.Conflict` →
+  (`server/appwire_thread_settings.go#handleAppThreadModelSet`; `appwire.Conflict` →
   `CodeConflict`). The re-read `modelProvider` is unchanged — no partial state.
   Falsification: a successful response with the model mutated, or an internal
   error that hides which layer refused.
@@ -115,7 +115,7 @@ mid-turn, and this card previously asserted that it was.
   drained turn (`cmd/evener/serve.go:950-958`), and `ProcessInputKind` loops to
   run queued messages as further turns (`agent/session_lifecycle.go:517-524`),
   so `handleAppThreadModelSet`'s `processing || reservedTurnID != ""` guard
-  (`server/appwire_runtime.go#handleAppThreadModelSet`) stays true across the whole drain.
+  (`server/appwire_thread_settings.go#handleAppThreadModelSet`) stays true across the whole drain.
   Falsification: it succeeds while a queued message is still draining.
 - **Step 7**: once idle, the identical call that was rejected in steps 4 and 6
   returns 204 — confirms the rejection was state (turn-in-flight), not a
@@ -152,8 +152,7 @@ mid-turn, and this card previously asserted that it was.
   session earlier, with `404 session not live` (`web_api.go:309-312`) — so
   the two paths legitimately differ here, and step 4's curl must run against
   a live session.
-- The busy signal the daemon reads is its own `s.processing` plus
-  `s.appReservedTurnID` (`server/appwire_runtime.go:820-824`) — **not**
+- The busy signal the daemon reads is its own `s.processing` — **not**
   `ActiveFlags` (Evener daemons never populate it). Don't assert on
   `ActiveFlags`.
 - The queued-input rejection (step 6) is easy to miss if the drain is fast

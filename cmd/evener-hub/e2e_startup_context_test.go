@@ -9,10 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/evener/internal/e2ecap"
-
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/test/e2e/fakellm"
 )
 
 // TestE2E_StartingASessionThatHasDaemonStartupContext is the whole path a user
@@ -33,19 +30,7 @@ import (
 // daemon's turn in it. The context still has to reach the model, riding the
 // user's first turn the way steering is meant to.
 func TestE2E_StartingASessionThatHasDaemonStartupContext(t *testing.T) {
-	e2ecap.RequireLoopbackBind(t)
-	e2ecap.RequireProcessInspect(t)
-	if testing.Short() {
-		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
-	}
-
-	provider, err := fakellm.New()
-	if err != nil {
-		t.Fatalf("start fake provider: %v", err)
-	}
-	t.Cleanup(provider.Close)
-
-	stack := startHubStack(t, provider)
+	stack, provider := startE2EHubStack(t)
 
 	const contextMarker = "EVENER-E2E-DAEMON-STARTUP-CONTEXT"
 	pluginDir := writeSessionStartContextPlugin(t, contextMarker)

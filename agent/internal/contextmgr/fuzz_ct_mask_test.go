@@ -33,7 +33,7 @@ func FuzzCtMaskToolResult(f *testing.F) {
 			Content:    content,
 			IsError:    isError,
 		}
-		summarize := func(string, any, json.RawMessage) string { return summaryOut }
+		summarize := func(string, any, bool, json.RawMessage) string { return summaryOut }
 
 		newContent, mask := maskToolResultContent(tr, resultToolName, summarize, nil)
 		if nc2, m2 := maskToolResultContent(tr, resultToolName, summarize, nil); nc2 != newContent || m2 != mask {

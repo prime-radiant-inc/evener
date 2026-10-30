@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/internal/foldcache"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/apptranscript"
 )
@@ -321,8 +322,8 @@ func (c *historicalActivityCache) rootDelegates(stateDir, rootSessionID string) 
 // omits the field and the UI hides the token cluster rather than rendering
 // ↑0 ↓0.
 func historicalActivityUsage(stateDir, sessionID string, meta schema.SessionMeta) *appwire.EvenerUsage {
-	path := filepath.Join(stateDir, sessionsSubdir, sessionID+".transcript.jsonl")
-	total, err := activityUsageCache.UsageTotalFromFile(path, transcriptJSONLMaxLineBytes, meta.DivergenceTurn)
+	path := schema.SessionTranscriptPath(stateDir, sessionID)
+	total, err := activityUsageCache.UsageTotalFromFile(path, transcript.DefaultMaxLineBytes, meta.DivergenceTurn)
 	if err != nil {
 		return nil
 	}
@@ -416,18 +417,18 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool, cache
 		return activityLoadedBase{}, err
 	}
 	return activityLoadedBase{snapshot: activitySessionSnapshot{
-		SessionID:       sessionID,
-		Ref:             encodeRef("", sessionID),
-		Label:           activityLabelFromMeta(sessionID, meta, metaErr),
-		RootID:          rootID,
-		Revision:        activityRevisionFromMeta(meta),
-		Jobs:            jobs,
-		LiveJobs:        map[string]*jobstore.JobRecord{},
-		StableDelegates: stable,
-		Usage:           historicalActivityUsage(stateDir, sessionID, meta),
-		Diagnostics:     diagnostics,
-		JobsEpoch:       jobsEpoch,
-		DelegatesEpoch:  delegates.epoch,
+		SessionID:      sessionID,
+		Ref:            encodeRef("", sessionID),
+		Label:          activityLabelFromMeta(sessionID, meta, metaErr),
+		RootID:         rootID,
+		Revision:       activityRevisionFromMeta(meta),
+		Jobs:           jobs,
+		LiveJobs:       map[string]*jobstore.JobRecord{},
+		Delegates:      stable,
+		Usage:          historicalActivityUsage(stateDir, sessionID, meta),
+		Diagnostics:    diagnostics,
+		JobsEpoch:      jobsEpoch,
+		DelegatesEpoch: delegates.epoch,
 
 		JobsJournalAbsent:          jobsAbsent,
 		DelegatesJournalAbsent:     delegates.absent,

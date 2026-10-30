@@ -72,7 +72,7 @@ func FuzzSessionInitSeed100Exact(f *testing.F) {
 			{"new-prompt-error", TestW3Init_NewSession_SystemPromptFileReadError},
 			{"new-strategy-tool-error", TestW3Init_NewSession_StrategyToolRegisterError},
 			{"restore-env-error", TestW3Init_Restore_EnvInitializeError},
-			{"restore-legacy-scan-first", TestW3Init_Restore_LegacyScanErrorPrecedesJobManager},
+			{"restore-legacy-scan-first", TestW3Init_Restore_CorruptJobJournalFailsRestore},
 			{"restore-init-error", TestW3Init_Restore_InitSessionStateError},
 			{"restore-strategy-error", TestW3Init_Restore_SelectStrategyError},
 			{"restore-sandbox", TestRestoreProvisionsPersistedSandbox},
@@ -155,7 +155,7 @@ func FuzzSessionInitSeed100Exact(f *testing.F) {
 			nilSession.runSessionStartHooksWithContext(context.Background(), plugin.SessionStartKindStartup)
 
 			blocked := t.TempDir()
-			logDir := filepath.Join(blocked, sessionsSubdir)
+			logDir := schema.SessionsDir(blocked)
 			if err := os.MkdirAll(logDir, 0o700); err != nil {
 				t.Fatal(err)
 			}

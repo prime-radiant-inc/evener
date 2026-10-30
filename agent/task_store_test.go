@@ -12,6 +12,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/provider"
 	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/llm"
@@ -1755,7 +1756,7 @@ func TestTaskListTool_UpdateShowsAllComplete(t *testing.T) {
 func TestTaskListTool_UpdateNamesBlockingDelegateDependency(t *testing.T) {
 	root, fixture, entered, release := newBlockingColdDelegateRuntime(t)
 
-	outcomes := make(chan stableDelegateSendOutcome, 1)
+	outcomes := make(chan delegateSendOutcome, 1)
 	go func() {
 		outcomes <- (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "resolve the open question", 60_000)
 	}()
@@ -1794,13 +1795,13 @@ func TestTaskListTool_UpdateNamesBlockingDelegateDependency(t *testing.T) {
 	if outcome.result.Err != nil || outcome.result.Status != "completed" || outcome.commit == nil {
 		t.Fatalf("blocking delegate outcome = %#v", outcome.result)
 	}
-	abortUnpersistedStableDelegateOutcome(t, outcome)
+	abortUnpersistedDelegateOutcome(t, outcome)
 }
 
 func TestTaskListTool_UpdateLeavesBackgroundDelegateOutOfDependencyReminder(t *testing.T) {
 	root, fixture, entered, release := newBlockingColdDelegateRuntime(t)
 
-	outcomes := make(chan stableDelegateSendOutcome, 1)
+	outcomes := make(chan delegateSendOutcome, 1)
 	go func() {
 		outcomes <- (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "resolve in background", 0)
 	}()
@@ -1847,7 +1848,7 @@ func TestTaskListTool_UpdateIgnoresTerminalDelegates(t *testing.T) {
 		{name: "failed", failed: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			fixture := newColdStableDelegateFixture(t, "")
+			fixture := newColdDelegateFixture(t, "")
 			if tc.failed {
 				fixture.client.Register(&fakeErrAdapter{
 					name: "openai",
@@ -1859,7 +1860,7 @@ func TestTaskListTool_UpdateIgnoresTerminalDelegates(t *testing.T) {
 				})
 			} else {
 				fixture.adapter.steps = []func(llm.Request) llm.Response{
-					func(llm.Request) llm.Response { return communicateResponse(true, "done") },
+					func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "done") },
 				}
 			}
 			root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
@@ -1879,7 +1880,7 @@ func TestTaskListTool_UpdateIgnoresTerminalDelegates(t *testing.T) {
 			if got := string(outcome.result.Status); got != wantStatus {
 				t.Fatalf("terminal delegate status = %q, want %q", got, wantStatus)
 			}
-			abortUnpersistedStableDelegateOutcome(t, outcome)
+			abortUnpersistedDelegateOutcome(t, outcome)
 
 			ctx := context.Background()
 			root.reg.ExecuteCall(ctx, root.env, llm.ToolCallData{
@@ -2083,7 +2084,7 @@ func TestSharedTaskStore_ShareTasksWithChildrenConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	defer parentSess.Close()
+	t.Cleanup(parentSess.Close)
 
 	// Populate parent task store.
 	parentStore := parentSess.getOrCreateTaskStore()
@@ -2091,21 +2092,13 @@ func TestSharedTaskStore_ShareTasksWithChildrenConfig(t *testing.T) {
 		{Type: taskpkg.TaskTypeResearch, Description: "Shared via config", Prompt: "Work"},
 	})
 
-	// Exercise the actual propagation path inside prepareSubagentRun (subagents.go
-	// lines 385-388). A re-implementation of the if-statement here would not catch
-	// a condition inversion in the SUT.
-	ctx := context.Background()
-	prepared, err := parentSess.prepareSubagentRun(ctx, "child task", "", "", 0, "", "", nil, nil)
-	if err != nil {
-		t.Fatalf("prepareSubagentRun: %v", err)
-	}
-	// We are not launching the child; release the tree-counter slot that
-	// prepareSubagentRun reserved (mirrors the spawnAgent in-process path).
-	releasePreparedTreeSlot(prepared)
-	defer prepared.sub.sess.Close()
+	// Exercise the actual propagation path of the stable create. A
+	// re-implementation of the if-statement here would not catch a condition
+	// inversion in the SUT.
+	prepared := prepareStableChild(t, parentSess, delegateArgs{Task: "child task"})
 
 	// The child's spawn config must carry the parent's store — not a copy, not nil.
-	// This assertion fails if the condition in prepareSubagentRun is ever inverted.
+	// This assertion fails if the sharing condition is ever inverted.
 	if got := prepared.sub.sess.cfg.spawn.sharedTaskStore; got != parentStore {
 		t.Fatalf("child cfg.spawn.sharedTaskStore = %v, want parent's store (%v)", got, parentStore)
 	}

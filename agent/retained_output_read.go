@@ -88,7 +88,7 @@ func encodeRawOutputBytes(content []byte) (encoding, data string) {
 
 // searchSource supplies stable, forward, lifetime-offset raw windows. Concrete
 // job sources use OutputStore.ReadWindow while live and
-// jobstore.ReadOutputWindowSnapshot after closure; artifacts use ReaderAt.
+// jobstore.ReadOutputWindowSnapshotFromFile after closure; artifacts use ReaderAt.
 type searchSource interface {
 	ReadWindow(offset int64, maxBytes int) (jobstore.OutputWindowSnapshot, error)
 }

@@ -34,8 +34,7 @@ import type { AskUserOption } from "./askShared";
 import { parseAskUserQuestions } from "./askShared";
 import type { ItemModel, ThreadModel } from "./model";
 
-// AskQuestionRef is one flattened, individually-addressable question -
-// mirrors legacy's pendingAsk item shape (renderer.js:5832-5844). `key` is
+// AskQuestionRef is one flattened, individually-addressable question. `key` is
 // stable and re-derivable (callId:idx within that call's own questions
 // array), never a locally-minted id - the same call posted twice (e.g.
 // after a reconnect replay) always re-derives the same keys.
@@ -67,7 +66,7 @@ function isAckedAskUserItem(item: ItemModel): boolean {
 // isUserAuthoredSteer answers one wire-level question: is this steering item
 // the human speaking, as opposed to the daemon injecting one on its own
 // (SteeringSourceUser) or a human-note update recorded through the same
-// source (session_notes_rpc.go's steeringOrigin machinery stamps a note
+// source (session_notes_selfecho.go's steeringOrigin machinery stamps a note
 // SteeringKindHumanNote even though a human wrote it - writing a note is not
 // the human speaking through the transcript). Shared with web layoutRoles.ts,
 // which asks the same wire question for its own, unrelated reason (routing
@@ -91,7 +90,7 @@ export function isUserAuthoredSteer(item: ItemModel): boolean {
 // accepted-turn path that clears askPending for a plain user message -
 // isUserAuthoredSteer above). A daemon-originated steer with neither marker,
 // and a human-note steer, are not the user speaking and resolve nothing.
-function isResolutionItem(item: ItemModel): boolean {
+export function isResolutionItem(item: ItemModel): boolean {
   if (item.type === "userMessage") return true;
   if (item.type !== "steering") return false;
   if (item.steeringKind === "interrupted") return true;

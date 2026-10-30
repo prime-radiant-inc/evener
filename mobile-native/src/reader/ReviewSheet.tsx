@@ -20,7 +20,7 @@ import { useSheet } from "../sheet/useSheet";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { QuoteBlock } from "./CommentSheet";
 import { documentMemory } from "./nativeDocumentMemory";
-import { reviewMessage, type Verdict } from "./reviewMessage";
+import { reviewDocumentName, reviewMessage, type Verdict } from "./reviewMessage";
 
 const VERDICTS: readonly { verdict: Verdict; label: string }[] = [
 	{ verdict: "approve", label: "Approve" },
@@ -29,11 +29,11 @@ const VERDICTS: readonly { verdict: Verdict; label: string }[] = [
 ];
 
 export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes, "ReviewSheet">) {
-	const { hubId, sessionRef, path, sessionTitle } = route.params;
+	const { hubId, sessionRef, path, sessionTitle, root, readTarget } = route.params;
 	const { client, state } = useConnection();
 	const online = state === "ready" && client !== null;
 	const memory = documentMemory(hubId);
-	const key = { sessionRef, path };
+	const key = { sessionRef, path, ...(root === "artifacts" ? { root } : {}) };
 	useSyncExternalStore(memory.subscribe, memory.getRevision);
 	const comments = memory.comments(key);
 	const [verdict, setVerdict] = useState<Verdict | null>(null);
@@ -84,7 +84,8 @@ export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes
 				client,
 				now.target,
 				now.action === "queue" ? "queue" : "send",
-				reviewMessage(path, verdict, comments, note),
+				reviewMessage(reviewDocumentName({ path, root, readTarget }), verdict, comments, note),
+				now.action === "resume",
 			);
 		} catch (error) {
 			setFailure(error instanceof Error ? error.message : String(error));

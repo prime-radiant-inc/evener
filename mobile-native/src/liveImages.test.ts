@@ -1,9 +1,8 @@
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { expect, it } from "vitest";
 import type { AnyNotification, Thread, ThreadItem } from "@evener/appwire-client";
-import { type ConversationClientLike, createConversationService } from "../../mobile/src/services/conversation";
-import { createActivityStore } from "../../mobile/src/state/activity";
-import { createConversationStore } from "../../mobile/src/state/conversation";
+import { type ConversationClientLike, createConversationService } from "./conversation/services/conversation";
+import { createConversationStore } from "./conversation/state/conversation";
 
 async function setup(initialItems: ThreadItem[] = []) {
 	const thread: Thread = {
@@ -66,12 +65,10 @@ async function setup(initialItems: ThreadItem[] = []) {
 		} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">) as ConversationClientLike,
 	);
 	const store = createConversationStore();
-	const sink = createActivityStore().getState();
-	await store.getState().openProjected(service, sink, "local:thread");
+	await store.getState().openProjected(service, "local:thread");
 	return {
 		store,
 		service,
-		sink,
 		holdNextRead: () => {
 			let release!: () => void;
 			let start!: () => void;
@@ -215,9 +212,9 @@ it("commits the snapshot's image over a live replacement", async () => {
 		text: "look",
 		images: [{ type: "image", mediaType: "image/png", data: "AQID" }],
 	};
-	const { store, service, sink, publish, holdNextRead } = await setup([item]);
+	const { store, service, publish, holdNextRead } = await setup([item]);
 	const held = holdNextRead();
-	const refresh = store.getState().rehydrate(service, sink);
+	const refresh = store.getState().rehydrate(service);
 	await held.started;
 	publish({ ...item, images: replacement });
 	// The live change is on screen at once.
@@ -246,9 +243,9 @@ it("keeps the item's images when a live settle carries an empty list and an olde
 		text: "look",
 		images: [{ type: "image", mediaType: "image/png", data: "AQID" }],
 	};
-	const { store, service, sink, publish, holdNextRead } = await setup([item]);
+	const { store, service, publish, holdNextRead } = await setup([item]);
 	const held = holdNextRead();
-	const refresh = store.getState().rehydrate(service, sink);
+	const refresh = store.getState().rehydrate(service);
 	await held.started;
 	publish({ ...item, images: [] });
 	held.release();
@@ -291,7 +288,7 @@ it("commits the snapshot's own rows over an image added while the read was in fl
 		// a position; these two just need to too.
 		position: { entry: 0, item: 0 },
 	};
-	const { store, service, sink, publish, holdNextRead } = await setup([
+	const { store, service, publish, holdNextRead } = await setup([
 		item,
 		{
 			type: "agentMessage",
@@ -302,7 +299,7 @@ it("commits the snapshot's own rows over an image added while the read was in fl
 		},
 	]);
 	const held = holdNextRead();
-	const refresh = store.getState().rehydrate(service, sink);
+	const refresh = store.getState().rehydrate(service);
 	await held.started;
 	publish({
 		...item,
@@ -323,12 +320,12 @@ it("accepts image removal in an authoritative snapshot after a live insertion", 
 		status: "completed",
 		text: "look",
 	};
-	const { store, service, sink, publish } = await setup([item]);
+	const { store, service, publish } = await setup([item]);
 	publish({
 		...item,
 		images: [{ type: "image", mediaType: "image/png", data: "AQID" }],
 	});
 	expect(store.getState().conversation?.items.some((row) => row.kind === "attachments")).toBe(true);
-	await store.getState().rehydrate(service, sink);
+	await store.getState().rehydrate(service);
 	expect(store.getState().conversation?.items.map((row) => row.id)).toEqual(["user"]);
 });

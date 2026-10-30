@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -35,7 +36,7 @@ func TestDeploymentRecoveryRetainsUnverifiedContract(t *testing.T) {
 						if unreadable {
 							return []byte("unreadable launch contract"), nil
 						}
-						return json.Marshal(map[string]any{"protocol": protocol, "version": disk, "launch_flags": flags})
+						return json.Marshal(map[string]any{"hub_endpoint_schema": 1, "protocol": protocol, "version": disk, "launch_flags": flags})
 					}, func(int) ([]byte, error) {
 						if !present {
 							return nil, errors.New("no listener")
@@ -62,13 +63,13 @@ func TestDeploymentRecoveryRetainsUnverifiedContract(t *testing.T) {
 									flags = nil
 								}
 							}
-						case strings.Contains(command, "systemctl restart"):
+						case strings.Contains(command, "systemctl restart"), strings.Contains(command, "systemctl start"):
 							restarts++
 							present, served, pin, started = true, disk, "requested-sha", "2026-01-02T00:00:00Z"
 							return nil, nil
 						case strings.Contains(command, "lsof -ti :9180"):
 							return []byte(noListenerMarker), nil
-						case strings.Contains(command, "if test -x"):
+						case strings.Contains(command, "if test -e"), strings.Contains(command, "if test -x"):
 							if absent {
 								return nil, absentExit
 							}
@@ -100,7 +101,7 @@ func TestDeploymentRecoveryRetainsUnverifiedContract(t *testing.T) {
 					case "absent":
 						wantErr = ErrExecutableMissing
 					}
-					if _, _, err := m.DeployForOperation(t.Context(), host, facts, approvedRestart, nil); !errors.Is(err, wantErr) {
+					if _, _, err := m.DeployForOperation(t.Context(), registeredTestHost(t, m, host), facts, approvedRestart, nil, nil); !errors.Is(err, wantErr) {
 						t.Fatalf("initial post-write validation: %v", err)
 					}
 					pending := m.pendingRestart(host.Name)
@@ -128,13 +129,13 @@ func TestDeploymentRecoveryRetainsUnverifiedContract(t *testing.T) {
 						}
 						wantBridges = 2
 					} else if !approvedRestart || drift == "unknown" {
-						if !errors.Is(err, wantErr) || ch != nil || bridges != 0 || writes != 1 || restarts != 0 || present != predecessorAlive || served != "host-A" || started != "2026-01-01T00:00:00Z" || m.pendingRestart(host.Name) != pending {
+						if !errors.Is(err, wantErr) || ch != nil || bridges != 0 || writes != 1 || restarts != 0 || present != predecessorAlive || served != "host-A" || started != "2026-01-01T00:00:00Z" || !reflect.DeepEqual(m.pendingRestart(host.Name), pending) {
 							t.Fatalf("lost installation ownership: err=%v channel=%v bridges=%d writes=%d restarts=%d present=%t served=%s started=%s pending=%+v, want %+v", err, ch, bridges, writes, restarts, present, served, started, m.pendingRestart(host.Name), pending)
 						}
 					}
 					if !approvedRestart || drift == "unknown" {
 						// Only this explicit Restart may promote deploy-only intent to replacement.
-						version, restartErr := m.RestartForOperation(t.Context(), host, facts, nil)
+						version, restartErr := m.RestartForOperation(t.Context(), registeredTestHost(t, m, host), facts, nil)
 						if restartErr != nil || version != "snapshot" {
 							t.Fatalf("explicit repair: version=%s err=%v", version, restartErr)
 						}

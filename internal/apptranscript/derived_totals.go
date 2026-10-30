@@ -1,6 +1,7 @@
 package apptranscript
 
 import (
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
@@ -64,25 +65,22 @@ func (c *TurnCache) DerivedTotalsFromFile(path string, maxLineBytes int, fromEnt
 func scanDerivedTotals(path string, maxLineBytes int, fromEntryOrdinal int) (derivedTotals, error) {
 	var totals derivedTotals
 	var accumulated usageAccumulator
-	failures := newFailureCounter()
+	failures := transcript.NewFailureCounter(fromEntryOrdinal)
 	if err := narrowScan(path, maxLineBytes, 1,
 		decodeNarrowEntry[derivedTotalsEntry]("derived totals"),
 		func(record derivedTotalsEntry, ordinal int) error {
-			if record.Turn.OriginalOrdinal != nil {
-				return nil // a compaction fold copy: its original already counts
-			}
-			counting := ordinal >= fromEntryOrdinal
-			if counting {
+			foldCopy := record.Turn.OriginalOrdinal != nil
+			failures.ObserveToolParts(foldCopy, record.Turn.Message.Content)
+			if !foldCopy && ordinal >= fromEntryOrdinal {
 				accumulated.add(record.Turn.Usage)
 			}
-			failures.observe(record.Turn.Message.Content, counting)
 			return nil
 		}); err != nil {
 		return derivedTotals{}, err
 	}
 	observeIndexRead(ReadStats{derivedScans: 1})
 	totals.usage = accumulated.total()
-	totals.failedToolCall = failures.count
+	totals.failedToolCall = failures.Count()
 	return totals, nil
 }
 

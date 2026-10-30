@@ -496,6 +496,22 @@ test("the open disclosure keeps the dot-joined duration label - never the old 'f
   expect(thoughtSummaryParts()).toEqual({ durationMs: "4000", preview: undefined });
 });
 
+test("a thought that took no measurable time still shows a duration of at least one millisecond", () => {
+  renderTools(
+    <ThinkBlock
+      item={item({
+        id: "think_zero_duration",
+        reasoningSummaries: [["content"]],
+        startedAt: "2026-01-01T00:00:00.000Z",
+        completedAt: "2026-01-01T00:00:00.000Z",
+      })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  expect(document.querySelector("[data-duration-ms]")?.textContent).toBe("1ms");
+});
+
 // --- the settled thought is a Disclosure ------------------------------------
 
 test("the settled summary opens and closes the thought", () => {

@@ -318,8 +318,3 @@ export function entryWriteAdmissionFor(cache: SessionEntryCache): EntryWriteAdmi
   }
   return admission;
 }
-
-/** @internal Forget a cache's shared admission, for test isolation. */
-export function resetEntryWriteAdmissionForTests(cache: SessionEntryCache): void {
-  admissionsByCache.delete(cache);
-}

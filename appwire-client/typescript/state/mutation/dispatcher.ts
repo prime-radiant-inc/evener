@@ -8,10 +8,9 @@
 // serialized dispatch per target ref (a second submission for the same thread
 // waits rather than racing), a receipt reconciled into storage before the next
 // attempt, a terminal refusal turned into a recovery record with the daemon's
-// own reason, a transient backpressure refusal kept queued for a later event
-// (#4342), and an outcome nobody can vouch for left blockedUnknown — never
-// retried until an authoritative read has settled it (#1116's standing
-// decision).
+// own reason, a transient backpressure refusal kept queued for a later event,
+// and an outcome nobody can vouch for left blockedUnknown — never
+// retried until an authoritative read has settled it.
 //
 // Everything host-shaped is a parameter: the storage is D26's
 // MutationOutboxStorage port, and the surfaces that react to an outcome
@@ -19,7 +18,13 @@
 // app supplies. No clock, no timer, no DOM.
 import type { AppwireClientLike } from "../../clientLike";
 import { mutationErrorData, refusedBeforeRunning, WireError } from "../../errors";
-import type { MethodName, MutationReceipt, NotesHumanSetResponse, ThreadClearResponse } from "../../types.gen";
+import {
+  RETRY_SAFE_MUTATION_METHODS as GENERATED_RETRY_SAFE_MUTATION_METHODS,
+  type MethodName,
+  type MutationReceipt,
+  type NotesHumanSetResponse,
+  type ThreadClearResponse,
+} from "../../types.gen";
 import { isClientReady, type MutationOutboxStorage } from "./outbox";
 import type { MutationAttachmentRef, MutationOutboxRecord, MutationRecord } from "./records";
 
@@ -54,7 +59,7 @@ export interface MutationDispatcherOptions<A extends MutationAttachmentRef = Mut
   getClient: MutationDispatchClientLookup;
   onStorageChange?: (targetRefs: string[], cause?: MutationStorageChangeCause) => void;
   onBlockedMutation?: (targetRef: string, client: AppwireClientLike) => void;
-  // #4342: fired when the hub refused an attempt in band as transient
+  // Fired when the hub refused an attempt in band as transient
   // backpressure (notAccepted plus an automatic retry disposition) — the
   // record stays queued and this callback owns surfacing the busy state and
   // pacing the next attempt. The error is the hub's own refusal, so a host
@@ -129,26 +134,37 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
     const existing = this.#dispatching.get(targetRef);
     if (existing) return existing;
 
-    const dispatch = this.#runTarget(targetRef).finally(() => {
-      if (this.#dispatching.get(targetRef) === dispatch) this.#dispatching.delete(targetRef);
-    });
+    const dispatch = this.#runTarget(targetRef);
     this.#dispatching.set(targetRef, dispatch);
     return dispatch;
   }
 
   async #runTarget(targetRef: string): Promise<void> {
-    let observedRun = 0;
-    do {
-      observedRun = this.#requestedRuns.get(targetRef) ?? 0;
-      const shouldContinue = await this.#drainTarget(targetRef);
-      if (!shouldContinue) return;
-    } while (observedRun !== (this.#requestedRuns.get(targetRef) ?? 0));
+    try {
+      let observedRun = 0;
+      do {
+        observedRun = this.#requestedRuns.get(targetRef) ?? 0;
+        const canRerun = await this.#drainTarget(targetRef);
+        // A transport outcome owns its stop, even if discovery requested work
+        // during the attempt. Readiness/empty exits may honor a newer wake.
+        if (!canRerun) return;
+      } while (observedRun !== (this.#requestedRuns.get(targetRef) ?? 0));
+    } finally {
+      // Retire in the same continuation as the final requested-run check.
+      // A separate promise.finally leaves a completed run registered long
+      // enough for a readiness wake to join it and disappear.
+      this.#dispatching.delete(targetRef);
+      this.#requestedRuns.delete(targetRef);
+    }
   }
 
+  // True permits another pass ONLY for a newer dispatch request. A closed
+  // readiness gate is not a failed attempt, and must not swallow its release.
+  // False preserves pacing/readback after transient or uncertain outcomes.
   async #drainTarget(targetRef: string): Promise<boolean> {
     for (;;) {
       const client = this.#getClient(targetRef);
-      if (!isClientReady(client)) return false;
+      if (!isClientReady(client)) return true;
       const loaded = await this.#storage.nextDispatchable(targetRef);
       if (!loaded) return true;
 
@@ -159,13 +175,13 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
       // The method-aware recheck: the top-of-loop lookup answered for the ref
       // alone (it runs before nextDispatchable picks a record), so a host that
       // fences one queued verb must still be able to park THIS record here.
-      if (this.#getClient(targetRef, current.method) !== client) return false;
+      if (this.#getClient(targetRef, current.method) !== client) return true;
 
       if (!(await this.#storage.markAttempted(current.clientMutationId))) continue;
       // Keep the committed attempt evidence if this client was retired: another
       // tab may have dispatched the same record, so absence of this send is not
       // proof of non-delivery. Live recovery retries the original payload.
-      if (this.#getClient(targetRef, current.method) !== client) return false;
+      if (this.#getClient(targetRef, current.method) !== client) return true;
       const outcome = await this.#attempt(client, current);
       if (outcome === "stop") return false;
     }
@@ -229,7 +245,7 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
         // forwarding, appwire.InvalidParams, which names no clientMutationId)
         // — an identical retry can never succeed. Retaining "submitting"
         // here turned one malformed intent at the FIFO head into a
-        // permanently parked thread (kata wr3s). Recovery preserves the text
+        // permanently parked thread. Recovery preserves the text
         // and surfaces the failure; the FIFO advances.
         if (data?.clientMutationId === undefined && refusedBeforeRunning(error)) {
           await this.#storage.transferToRecovery(record.clientMutationId, "rejected", rejectionReason(error, data));
@@ -239,7 +255,7 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
         return "stop";
       }
       if (data?.mutationOutcome === "notAccepted" && data.retryDisposition === "automatic") {
-        // #4342: the hub refused the attempt in band without queueing it —
+        // The hub refused the attempt in band without queueing it —
         // this attempt never reached the queue, so it stays rolled back in
         // the FIFO while any earlier or concurrent unresolved attempt's
         // evidence survives. The busy surface and the pacing arm only when
@@ -310,24 +326,19 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
   }
 }
 
-export const RETRY_SAFE_MUTATION_METHODS: ReadonlySet<string> = new Set([
-  "turn/start",
-  "turn/steer",
-  "turn/interrupt",
-  "turn/queue",
-  "turn/drainAsSteer",
-  "turn/promoteQueuedAsSteer",
-  "turn/cancelQueued",
-  "thread/clear",
-  "notes/human/set",
-]);
+// The retry-safe methods the dispatcher can settle. urls/remove is retry-safe
+// on the wire, but its response carries no mutation receipt, so a queued
+// record for it could never settle; its callers resend it directly.
+export const RETRY_SAFE_MUTATION_METHODS: ReadonlySet<string> = new Set(
+  GENERATED_RETRY_SAFE_MUTATION_METHODS.filter((method) => method !== "urls/remove"),
+);
 
 // rejectionReason extracts what to show a user whose control was refused.
 // Preference order: the daemon's own structured explanation, then the wire
 // error message, then nothing -- a row with no reason is still better than a
 // row that claims a reason it does not have.
 //
-// This is the storage side of kata 2f41. A refused Steer or Stop rendered as a
+// This is the storage side of surfacing refusals. A refused Steer or Stop rendered as a
 // bare recovery row is indistinguishable from a queued one, which is how five
 // rejections in a mutation journal produced nothing on screen.
 function rejectionReason(error: unknown, data: ReturnType<typeof mutationErrorData>): string | undefined {

@@ -54,7 +54,7 @@ func TestManagerWatchResyncReReadsWithoutStatusSelector(t *testing.T) {
 			}, nil)
 			server := appserver.NewServer(appserver.ServerConfig{})
 			defer server.Shutdown(ctx)
-			owner := &sessionOperations{cfg: cfg, sources: sources, server: server, relays: newHubRelayFunctions(server, cfg, sources)}
+			owner := &sessionOperations{cfg: cfg, sources: sources, server: server, relays: newHubRelay(server, cfg, sources)}
 			var reads atomic.Int32
 			readStarted, releaseRead := make(chan struct{}), make(chan struct{})
 			appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, func(ctx context.Context, p appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {

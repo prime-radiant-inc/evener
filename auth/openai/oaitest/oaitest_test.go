@@ -13,8 +13,8 @@ func TestIsolateOpenAIAuthReturnsStateDirForStorage(t *testing.T) {
 
 	// F2: the path returned by IsolateOpenAIAuth must equal what DefaultStateDir()
 	// computes from XDG_STATE_HOME — verifies env setup and returned path stay consistent.
-	if got := authopenai.DefaultStateDir(); got != stateDir {
-		t.Fatalf("DefaultStateDir() = %q, want %q (returned by IsolateOpenAIAuth)", got, stateDir)
+	if got, err := authopenai.DefaultStateDir(); err != nil || got != stateDir {
+		t.Fatalf("DefaultStateDir() = %q, %v, want %q (returned by IsolateOpenAIAuth)", got, err, stateDir)
 	}
 
 	record := authopenai.AuthRecord{

@@ -7,16 +7,17 @@ import { formatElapsed } from "@evener/appwire-client";
 import { render, renderHook, screen, within } from "@testing-library/react";
 import { IDBFactory } from "fake-indexeddb";
 import { beforeEach, expect, test } from "vitest";
-import { connectionStore } from "../../../../stores/connection";
+import { resetConnectionStoreForTests } from "../../../../stores/connection";
 import type { InputAttachment } from "../../../../stores/threads";
 import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
+import { connectFakeClient } from "../../../../testing/connectionTestUtils";
 import type { PendingTurnEntry } from "../../composer/queue/pendingReconcile";
 import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "../../composer/queue/pendingTurnsStore";
 import { pendingEntryPreview } from "../../composer/queue/queueDisplay";
 import { flushPendingTurnsProjectionForTests } from "../../composer/queue/testing/flushPendingTurnsProjection";
 import { SessionNowContext } from "../../liveness";
 import { HeldSteerStack, heldCaption, heldCaptionParts, heldSteerEntries, useHeldSteerEpoch } from "./HeldSteerStack";
-import { CAPABILITIES, connectFakeClient, hydrate, readResponse, seedHeld } from "./testing/heldSteerTestUtils";
+import { CAPABILITIES, hydrate, readResponse, seedHeld } from "./testing/heldSteerTestUtils";
 
 // The fixed clock every render is wrapped in: SessionNowContext's default is
 // Date.now() frozen at module import, so caption assertions must pin their own
@@ -26,7 +27,7 @@ const NOW = 43_000;
 
 beforeEach(() => {
   globalThis.indexedDB = new IDBFactory();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetPendingTurnsStoreForTests();
 });
@@ -168,7 +169,7 @@ test("pendingEntryPreview composes to the empty string for contentless input", (
 test("renders one ghost per held entry with its body and caption", async () => {
   const fake = connectFakeClient();
   await hydrate(fake, "ref_a"); // status active; no queue
-  await seedHeld("steer", "focus on the parser");
+  await seedHeld("steer", "focus on the parser", { attempted: true });
   render(
     <SessionNowContext.Provider value={NOW}>
       <HeldSteerStack ref="ref_a" />
@@ -179,9 +180,8 @@ test("renders one ghost per held entry with its body and caption", async () => {
   expect(screen.getByText(/joining this turn · 0s/i)).toBeTruthy();
 });
 
-// #4342 (implementation review): the busy marker reaches the steer family's
-// own surface — a refused held steer's ghost marks itself busy.
-test("a hub-refused held steer's ghost marks itself busy", async () => {
+// A local refusal returns ownership to QueueStrip, including its busy marker.
+test("a locally queued hub-refused steer belongs to QueueStrip, not a ghost", async () => {
   const fake = connectFakeClient();
   await hydrate(fake, "ref_a");
   const clientMutationId = await seedHeld("steer", "steer the parser");
@@ -196,8 +196,7 @@ test("a hub-refused held steer's ghost marks itself busy", async () => {
       <HeldSteerStack ref="ref_a" />
     </SessionNowContext.Provider>,
   );
-  const row = screen.getByText("steer the parser").closest("li");
-  expect(row?.getAttribute("data-busy")).toBe("true");
+  expect(screen.queryByTestId("held-steer-stack")).toBeNull();
 });
 
 test("a skill-only entry renders the skill marker, not an empty bubble", async () => {
@@ -207,8 +206,8 @@ test("a skill-only entry renders the skill marker, not an empty bubble", async (
   // plain-text one, each row asserting only its own content - a skill-less
   // row must not pick up a neighbor's marker, and the skill-only row must
   // render the marker rather than an empty bubble.
-  await seedHeld("steer", "just words");
-  await seedHeld("steer", "", { skillNames: ["pkg:probe"] });
+  await seedHeld("steer", "just words", { attempted: true });
+  await seedHeld("steer", "", { attempted: true, skillNames: ["pkg:probe"] });
   render(
     <SessionNowContext.Provider value={NOW}>
       <HeldSteerStack ref="ref_a" />
@@ -237,9 +236,9 @@ test("an image-bearing entry shows the daemon's own placeholder plus count", asy
   const fake = connectFakeClient();
   await hydrate(fake, "ref_a");
   const image = (marker: number): InputAttachment => ({ marker, mediaType: "image/png", data: "AAAA" });
-  await seedHeld("steer", "look", { attachments: [image(1)] });
-  await seedHeld("steer", "", { attachments: [image(2)] });
-  await seedHeld("steer", "", { attachments: [image(3), image(4)] });
+  await seedHeld("steer", "look", { attempted: true, attachments: [image(1)] });
+  await seedHeld("steer", "", { attempted: true, attachments: [image(2)] });
+  await seedHeld("steer", "", { attempted: true, attachments: [image(3), image(4)] });
   render(
     <SessionNowContext.Provider value={NOW}>
       <HeldSteerStack ref="ref_a" />
@@ -253,7 +252,7 @@ test("an image-bearing entry shows the daemon's own placeholder plus count", asy
 test("a blank composed drain body shows the stack-owned [queued messages] fallback", async () => {
   const fake = connectFakeClient();
   await hydrate(fake, "ref_a");
-  await seedHeld("drain", "");
+  await seedHeld("drain", "", { attempted: true });
   render(
     <SessionNowContext.Provider value={NOW}>
       <HeldSteerStack ref="ref_a" />
@@ -265,7 +264,7 @@ test("a blank composed drain body shows the stack-owned [queued messages] fallba
 test("the drain ghost's text refines to the authoritative combined input at the next hydrate", async () => {
   const fake = connectFakeClient();
   await hydrate(fake, "ref_a");
-  const id = await seedHeld("drain", "composer text");
+  const id = await seedHeld("drain", "composer text", { attempted: true });
   // Re-hydrate with the daemon's pendingMutations carrying the combined input.
   // The wire field is EvenerThread.pendingMutations - a sibling of queue
   // inside thread.evener, verified against types.gen.ts's Thread shape; the
@@ -306,7 +305,7 @@ test("the drain ghost's text refines to the authoritative combined input at the 
 test("another client's authoritative entry renders after this client's own", async () => {
   const fake = connectFakeClient();
   await hydrate(fake, "ref_a");
-  await seedHeld("steer", "mine"); // own, has createdAt
+  const ownId = await seedHeld("steer", "mine", { attempted: true }); // own, has createdAt
   // Re-hydrate adding a foreign pendingMutations steer: no durable record,
   // never submitted here, so it carries no client-side createdAt and lands in
   // the unknown-createdAt bucket the shared known-first sort renders last
@@ -318,6 +317,13 @@ test("another client's authoritative entry renders after this client's own", asy
         capabilities: CAPABILITIES,
         queue: { revision: 0 },
         pendingMutations: [
+          {
+            clientMutationId: ownId,
+            method: "turn/steer",
+            input: [{ type: "text", text: "mine" }],
+            executionState: "accepted",
+            projectionState: "pending",
+          },
           {
             clientMutationId: "mutation_foreign",
             method: "turn/steer",
@@ -346,7 +352,7 @@ test("another client's authoritative entry renders after this client's own", asy
 test("the ghost disappears once the transcript reflects its id", async () => {
   const fake = connectFakeClient();
   await hydrate(fake, "ref_a");
-  const id = await seedHeld("steer", "reflected steer");
+  const id = await seedHeld("steer", "reflected steer", { attempted: true });
   fake.on("thread/read", () =>
     readResponse("ref_a", {
       turns: [

@@ -4,10 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strconv"
 	"testing"
 
+	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/schema"
 
 	"primeradiant.com/evener/appwire"
 )
@@ -93,6 +97,41 @@ func TestSessionActivityContextAndChildRef(t *testing.T) {
 	_, err = s.AppServer().Router().Dispatch(canceled, appwire.Request{Method: appwire.MethodEvenerThreadActivityRead, Params: json.RawMessage(`{"ref":"local:child"}`)})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled read = %v", err)
+	}
+}
+
+func TestSessionActivityHandlerForwardsDomainDelegateNames(t *testing.T) {
+	stateDir := t.TempDir()
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{ID: "leaf", JobTreeRootSessionID: "root", Name: "Thread title, not leaf name"}); err != nil {
+		t.Fatal(err)
+	}
+	// This durable Created journal is folded by the real retained domain reader
+	// behind the actual public handler; the thread title is never a name source.
+	journal := []byte(`{"version":1}
+{"events":[{"kind":"delegate_created","seq":1,"delegate_id":"dlg_parent","created":{"descriptor":{"child_session_id":"parent","transcript_ref":"local:parent","owner_session_id":"root","visible_session_id":"root","name":"Parent canonical name","description":"Parent description","task":"parent task","agent_type":"general","resolved_model":"gpt-5.2","tool_name_ceiling":["communicate"],"resumable":true}}},{"kind":"delegate_created","seq":2,"delegate_id":"dlg_leaf","created":{"descriptor":{"child_session_id":"leaf","transcript_ref":"local:leaf","parent_delegate_id":"dlg_parent","owner_session_id":"parent","visible_session_id":"root","name":"Leaf canonical name","description":"Leaf description","task":"leaf task","agent_type":"general","resolved_model":"gpt-5.2","tool_name_ceiling":["communicate"],"resumable":true}}}]}
+`)
+	path := filepath.Join(stateDir, "sessions", "root", "delegates.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, journal, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := NewServer(ServerConfig{})
+	s.SetAppIdentity("local", "root")
+	s.SetThreadActivityReadFunc(func(ctx context.Context, params appwire.SessionActivityReadParams) (appwire.SessionActivitySummary, error) {
+		return agent.LoadSessionActivitySummary(ctx, stateDir, "leaf", params)
+	})
+	result, err := s.AppServer().Router().Dispatch(t.Context(), appwire.Request{Method: appwire.MethodEvenerThreadActivityRead, Params: json.RawMessage(`{"ref":"local:leaf"}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	context := result.(appwire.SessionActivitySummary).Context
+	if !context.AncestryKnown || context.DelegateID != "dlg_leaf" || context.DelegateName != "Leaf canonical name" || context.ParentRef != "local:parent" || context.RootRef != "local:root" || len(context.Ancestors) != 2 {
+		t.Fatalf("handler lost produced addressed context: %+v", context)
+	}
+	if context.Ancestors[0].Ref != "local:root" || context.Ancestors[0].DelegateName != "" || context.Ancestors[1].Ref != "local:parent" || context.Ancestors[1].DelegateID != "dlg_parent" || context.Ancestors[1].DelegateName != "Parent canonical name" || context.Ancestors[1].Title != "Parent description" {
+		t.Fatalf("handler lost produced ancestor name/title/identity: %+v", context.Ancestors)
 	}
 }
 
@@ -201,5 +240,83 @@ func TestSessionActivityIncarnationFencePreservesAddressedChild(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// Every session activity route answers its refusals the same way: an
+// unparseable ref is InvalidParams, a ref for another source or a route with
+// no installed read is SessionUnavailable, and an installed read receives the
+// request's own params.
+func TestSessionActivityRoutesShareRefusals(t *testing.T) {
+	routes := []struct {
+		method  string
+		install func(s *Server, seen *string)
+	}{
+		{appwire.MethodEvenerThreadActivityRead, func(s *Server, seen *string) {
+			s.SetThreadActivityReadFunc(func(_ context.Context, p appwire.SessionActivityReadParams) (appwire.SessionActivitySummary, error) {
+				*seen = p.Ref
+				return appwire.SessionActivitySummary{}, nil
+			})
+		}},
+		{appwire.MethodEvenerThreadDelegatesList, func(s *Server, seen *string) {
+			s.SetThreadDelegatesListFunc(func(_ context.Context, p appwire.SessionActivityListParams) (appwire.SessionDelegatesResponse, error) {
+				*seen = p.Ref
+				return appwire.SessionDelegatesResponse{}, nil
+			})
+		}},
+		{appwire.MethodEvenerThreadJobsList, func(s *Server, seen *string) {
+			s.SetThreadJobsListFunc(func(_ context.Context, p appwire.SessionActivityListParams) (appwire.SessionJobsResponse, error) {
+				*seen = p.Ref
+				return appwire.SessionJobsResponse{}, nil
+			})
+		}},
+		{appwire.MethodEvenerThreadWatchesList, func(s *Server, seen *string) {
+			s.SetThreadWatchesListFunc(func(_ context.Context, p appwire.SessionActivityListParams) (appwire.SessionWatchesResponse, error) {
+				*seen = p.Ref
+				return appwire.SessionWatchesResponse{}, nil
+			})
+		}},
+	}
+	dispatch := func(s *Server, method, ref string) error {
+		raw, _ := json.Marshal(appwire.SessionActivityListParams{Ref: ref})
+		_, err := s.AppServer().Router().Dispatch(t.Context(), appwire.Request{Method: method, Params: raw})
+		return err
+	}
+	infoOf := func(t *testing.T, err error) (appwire.WireError, appwire.ErrorData) {
+		t.Helper()
+		wire, ok := errors.AsType[appwire.WireError](err)
+		if !ok {
+			t.Fatalf("error %v is not a WireError", err)
+		}
+		data, _ := wire.Data.(appwire.ErrorData)
+		return wire, data
+	}
+	for _, route := range routes {
+		t.Run(route.method, func(t *testing.T) {
+			s := NewServer(ServerConfig{})
+			s.SetAppIdentity("local", "root")
+
+			wire, data := infoOf(t, dispatch(s, route.method, "local:root"))
+			if wire.Code != appwire.CodeUnavailable || data.EvenerErrorInfo != appwire.ErrorSessionUnavailable {
+				t.Fatalf("unwired route = %+v", wire)
+			}
+
+			var seen string
+			route.install(s, &seen)
+			if wire, _ := infoOf(t, dispatch(s, route.method, "not a ref")); wire.Code != appwire.CodeInvalidParams {
+				t.Fatalf("malformed ref = %+v", wire)
+			}
+			wire, data = infoOf(t, dispatch(s, route.method, "elsewhere:root"))
+			if wire.Code != appwire.CodeUnavailable || data.EvenerErrorInfo != appwire.ErrorSessionUnavailable {
+				t.Fatalf("foreign source = %+v", wire)
+			}
+			if seen != "" {
+				t.Fatalf("read ran for a refused ref %q", seen)
+			}
+
+			if err := dispatch(s, route.method, "local:child"); err != nil || seen != "local:child" {
+				t.Fatalf("installed route: err=%v seen=%q", err, seen)
+			}
+		})
 	}
 }

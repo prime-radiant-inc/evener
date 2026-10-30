@@ -8,6 +8,7 @@ import {
 } from "react";
 import dialogStyles from "../dialog/dialog.module.css";
 import { OverlayPanel } from "../dialog/OverlayPanel";
+import { ownerWindowOf } from "../internal/documentRealm";
 import { requireClass } from "../internal/requireClass";
 import styles from "./sheet.module.css";
 
@@ -81,7 +82,7 @@ function DragHandle({ onPointerDown }: { onPointerDown: (e: ReactPointerEvent) =
  * above the header and manages a "peek" | "full" geometry state, resetting
  * to "full" on every open false->true transition (when fullScreenFirst).
  * The handle drags between the two geometries (pointermove past a threshold
- * on the window) and taps to toggle. The current geometry is surfaced on a
+ * on its own window) and taps to toggle. The current geometry is surfaced on a
  * wrapper div inside the body as a `data-geometry` attribute for tests and
  * for CSS to key off. When `expandable` is not set, this is the plain
  * Sheet - no handle, no extra classes, fixed geometry - byte-for-byte the
@@ -102,13 +103,11 @@ export function Sheet({
   const [geometry, setGeometry] = useState<"peek" | "full">(expandable?.fullScreenFirst ? "full" : "peek");
   const dragStartYRef = useRef<number | null>(null);
   const dragStartGeometryRef = useRef<"peek" | "full">("peek");
-  // The window pointermove/pointerup listeners added in startDrag are
-  // removed in handlePointerUp. If the component unmounts mid-drag (e.g.
-  // the panel closes), handlePointerUp never runs and the listeners leak
-  // on window. These refs hold the active listener functions so an unmount
-  // cleanup can remove them by the same reference that added them.
-  const pointerMoveRef = useRef<((e: PointerEvent) => void) | null>(null);
-  const pointerUpRef = useRef<((e: PointerEvent) => void) | null>(null);
+  // One closure owns the active pointermove/pointerup pair, bound to the
+  // window that accepted the pointerdown. handlePointerUp and the unmount
+  // effect both call it, so a mid-drag close removes from the same window the
+  // listeners were added to.
+  const dragCleanupRef = useRef<(() => void) | null>(null);
 
   // Reset geometry to full on every open transition (false->true). An effect
   // keyed on `open` (and fullScreenFirst) is the only place that observes
@@ -120,13 +119,11 @@ export function Sheet({
   }, [open, expandable?.fullScreenFirst]);
 
   // Remove any active drag listeners on unmount so a mid-drag close can't
-  // leak pointermove/pointerup handlers on window. The refs hold the exact
-  // functions that were added (stored in startDrag); if no drag is active
-  // they are null and removeEventListener is a no-op on a missing handler.
+  // leak pointermove/pointerup handlers on the window the drag started in.
   useEffect(() => {
     return () => {
-      if (pointerMoveRef.current) window.removeEventListener("pointermove", pointerMoveRef.current);
-      if (pointerUpRef.current) window.removeEventListener("pointerup", pointerUpRef.current);
+      dragCleanupRef.current?.();
+      dragCleanupRef.current = null;
     };
   }, []);
   function handlePointerMove(e: PointerEvent) {
@@ -146,21 +143,25 @@ export function Sheet({
       // Tap toggles between the two geometries.
       setGeometry((g) => (g === "peek" ? "full" : "peek"));
     }
-    window.removeEventListener("pointermove", handlePointerMove);
-    window.removeEventListener("pointerup", handlePointerUp);
-    pointerMoveRef.current = null;
-    pointerUpRef.current = null;
+    dragCleanupRef.current?.();
+    dragCleanupRef.current = null;
   }
 
   function startDrag(e: ReactPointerEvent) {
     dragStartYRef.current = e.clientY;
     dragStartGeometryRef.current = geometry;
-    // Store the listener functions in the refs BEFORE adding them so the
-    // unmount cleanup can remove these exact references.
-    pointerMoveRef.current = handlePointerMove;
-    pointerUpRef.current = handlePointerUp;
-    window.addEventListener("pointermove", handlePointerMove);
-    window.addEventListener("pointerup", handlePointerUp);
+    // The drag surface's own window: a Sheet in a Dockview popout must hear
+    // that window's pointer events, never the opener's.
+    const win = ownerWindowOf(e.currentTarget);
+    // A second pointerdown before a pointerup replaces the pair; drop the old
+    // pair from its own window first.
+    dragCleanupRef.current?.();
+    dragCleanupRef.current = () => {
+      win.removeEventListener("pointermove", handlePointerMove);
+      win.removeEventListener("pointerup", handlePointerUp);
+    };
+    win.addEventListener("pointermove", handlePointerMove);
+    win.addEventListener("pointerup", handlePointerUp);
   }
 
   const composedPanelClassName = panelClassName

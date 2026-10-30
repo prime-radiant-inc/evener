@@ -14,21 +14,8 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/gittest"
 )
-
-// runGitCmd runs a real git command (via the ambient PATH, not through any
-// session execution environment) for test fixture setup.
-func runGitCmd(t *testing.T, dir string, args ...string) {
-	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=Test", "GIT_AUTHOR_EMAIL=test@example.com",
-		"GIT_COMMITTER_NAME=Test", "GIT_COMMITTER_EMAIL=test@example.com")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
-	}
-}
 
 // TestSwapEnvAndRefresh_UpdatesEnvInfoAndPromptCache proves swapEnvAndRefresh
 // (a) installs the new env, (b) recomputes envInfo (working dir, git branch,
@@ -43,13 +30,13 @@ func TestSwapEnvAndRefresh_UpdatesEnvInfoAndPromptCache(t *testing.T) {
 	oldWD := sess.currentEnv().WorkingDirectory()
 
 	repoDir := t.TempDir()
-	runGitCmd(t, repoDir, "init")
+	gittest.Run(t, repoDir, "init")
 	if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("hello\n"), 0o644); err != nil {
 		t.Fatalf("write README.md: %v", err)
 	}
-	runGitCmd(t, repoDir, "add", "README.md")
-	runGitCmd(t, repoDir, "commit", "-m", "initial commit")
-	runGitCmd(t, repoDir, "checkout", "-b", "feature-branch")
+	gittest.Run(t, repoDir, "add", "README.md")
+	gittest.Run(t, repoDir, "commit", "-m", "initial commit")
+	gittest.Run(t, repoDir, "checkout", "-b", "feature-branch")
 
 	base, ok := sess.currentEnv().(*execenv.LocalExecutionEnvironment)
 	if !ok {
@@ -106,7 +93,7 @@ func TestSwapEnvAndRefresh_TestConfigSkipsGitDiscovery(t *testing.T) {
 	}
 
 	repoDir := t.TempDir()
-	runGitCmd(t, repoDir, "init")
+	gittest.Run(t, repoDir, "init")
 
 	shimDir := t.TempDir()
 	shimPath := filepath.Join(shimDir, "git")
@@ -204,13 +191,13 @@ func TestSwapEnvAndRefresh_NoGitForkWhileLocked(t *testing.T) {
 	}
 
 	repoDir := t.TempDir()
-	runGitCmd(t, repoDir, "init")
+	gittest.Run(t, repoDir, "init")
 	if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("hello\n"), 0o644); err != nil {
 		t.Fatalf("write README.md: %v", err)
 	}
-	runGitCmd(t, repoDir, "add", "README.md")
-	runGitCmd(t, repoDir, "commit", "-m", "initial commit")
-	runGitCmd(t, repoDir, "remote", "add", "origin", "https://example.invalid/repo.git")
+	gittest.Run(t, repoDir, "add", "README.md")
+	gittest.Run(t, repoDir, "commit", "-m", "initial commit")
+	gittest.Run(t, repoDir, "remote", "add", "origin", "https://example.invalid/repo.git")
 
 	shimDir := t.TempDir()
 	shimPath := filepath.Join(shimDir, "git")

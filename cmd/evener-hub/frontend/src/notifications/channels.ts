@@ -4,14 +4,15 @@
 // focus itself, matching the legacy's belt-and-suspenders gate
 // (notifications.js:173,189). Every failure is silently swallowed: a browser
 // that refuses either API must never break the app.
-import { navigate } from "../shell/routing";
+import { openSessionByRef } from "../shell/sessionPlacement";
 import type { AttentionEntry } from "./attention";
 
 // OS notification. Requires the API, permission "granted", and an unfocused
 // document (floor §3.4). Title "evener · <title||ref>"; construction failure
-// swallowed. Click focuses the window (best-effort) and navigates to the
-// session pane via SPA routing — no full reload, unlike the legacy's
-// location.href assignment.
+// swallowed. Click focuses the window (best-effort) and opens the session
+// through the same ref seam the rail uses - no full reload, unlike the
+// legacy's location.href assignment, and an attention entry that happens to
+// name the same URL is left behind rather than keeping its own reader.
 export function fireOsNotification(entry: AttentionEntry): void {
   const Ctor = window.Notification;
   if (typeof Ctor !== "function") return;
@@ -29,7 +30,7 @@ export function fireOsNotification(entry: AttentionEntry): void {
     } catch {
       // best-effort focus: a browser that blocks programmatic focus still navigates
     }
-    navigate(`/s/${encodeURIComponent(entry.ref)}`);
+    openSessionByRef(entry.ref);
   };
 }
 

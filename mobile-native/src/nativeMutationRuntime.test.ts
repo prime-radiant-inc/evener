@@ -20,11 +20,10 @@ import {
 	NativeMutationRuntime,
 	type NativeMutationRequest,
 } from "./nativeMutationRuntime";
+import { MutationNotSentError } from "./conversation/state/conversationMutation";
 
 const expoSQLite = vi.hoisted(() => ({ openDatabaseSync: vi.fn() }));
 vi.mock("expo-sqlite", () => expoSQLite);
-vi.mock("expo-crypto", () => ({ randomUUID: () => "test-uuid", getRandomValues: (array: Uint8Array) => array }));
-
 let database: SqliteDoubleDatabase | undefined;
 
 function openDatabase(): SqliteSync {
@@ -129,6 +128,61 @@ test("a target stays gated until a matching authoritative read opens it", async 
 	await runtime.reconcileAuthoritativeRead(lease!, readResponse("ref-1"));
 
 	await vi.waitFor(() => expect(client.calls).toHaveLength(1));
+	await runtime.stop();
+});
+
+test("submit returns the durable row's id as a local admission after an ordinary enqueue", async () => {
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => "mutation-1",
+	});
+	const client = new FakeClient("ready");
+	await registerAndStart(runtime, client);
+
+	const admission = await runtime.submit(request("send"));
+
+	const [row] = (await runtime.read(nativeMutationTargetKey("hub-1", "ref-1"))).outbox;
+	expect(row).toMatchObject({ clientMutationId: "mutation-1" });
+	expect(admission).toEqual({ clientMutationId: "mutation-1" });
+	// The production path acknowledges at the enqueue boundary, before the
+	// daemon answers, so the local admission carries no wire receipt.
+	expect(admission).not.toHaveProperty("receipt");
+	await runtime.stop();
+});
+
+test("submit returns the interrupt row's id as a local admission after a Stop", async () => {
+	let nextId = 0;
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => `mutation-${++nextId}`,
+	});
+	const client = new FakeClient("connecting");
+	runtime.registerTarget("hub-1", "ref-1", client);
+	await runtime.start();
+
+	await runtime.submit(request("send"));
+	const admission = await runtime.submit(request("interrupt"));
+
+	expect(await runtime.storage.getOutbox("mutation-2")).toMatchObject({
+		clientMutationId: "mutation-2",
+		method: "turn/interrupt",
+	});
+	expect(admission).toEqual({ clientMutationId: "mutation-2" });
+	await runtime.stop();
+});
+
+test("submit returns the resend row's id as a local admission after a recovery resend", async () => {
+	let nextId = 0;
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => `mutation-${++nextId}`,
+	});
+	await runtime.start();
+	await runtime.submit(request("send"));
+	expect(await runtime.storage.transferToRecovery("mutation-1", "editing")).toBeDefined();
+
+	const admission = await runtime.submit({ ...request("send"), recoverySourceIds: ["mutation-1"] });
+
+	const rows = (await runtime.read(nativeMutationTargetKey("hub-1", "ref-1"))).outbox;
+	expect(rows.map((row) => row.clientMutationId)).toEqual(["mutation-2"]);
+	expect(admission).toEqual({ clientMutationId: "mutation-2" });
 	await runtime.stop();
 });
 
@@ -597,6 +651,127 @@ test("resume-required reads hold even never-attempted work until a later valid r
 	const secondLease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
 	await runtime.reconcileAuthoritativeRead(secondLease!, readResponse("ref-1"));
 	await vi.waitFor(() => expect(client.calls).toHaveLength(1));
+	await runtime.stop();
+});
+
+// An offline Send to a fenced session parks and the reconnect flush releases
+// it. Only the flush asks for the resume; an ordinary read must never resume a
+// session the person has not sent to.
+test("a fenced settle resumes the target, an ordinary read does not", async () => {
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => "mutation-1",
+	});
+	const client = new FakeClient("ready");
+	// The session is fenced until a resume clears it, exactly as the hub's own
+	// fence behaves.
+	let fenced = true;
+	client.on("thread/read", () => readResponse("ref-1", fenced ? { resumeRequired: true } : {}));
+	client.on("thread/resume", () => {
+		fenced = false;
+		return readResponse("ref-1");
+	});
+	client.on("turn/start", appliedReceipt);
+	await registerAndStart(runtime, client);
+	await runtime.submit(request("send"));
+
+	// The ordinary read path: fenced work stays held, and nothing resumes.
+	const heldLease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+	expect(await runtime.reconcileAuthoritativeRead(heldLease!, readResponse("ref-1", { resumeRequired: true }))).toBe(
+		"blocked",
+	);
+	expect(client.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
+	expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+
+	// The flush's settle: same fenced read, but it resumes the target and then
+	// reconciles the unfenced read in that same settle, so the parked row goes
+	// without waiting for a flush that a storage-only wake would never send.
+	expect(await runtime.settleTarget("hub-1", "ref-1", client, { mayResumeFenced: async () => true })).toBe(
+		"reconciled",
+	);
+	expect(client.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+	await vi.waitFor(() => expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(1));
+	await runtime.stop();
+});
+
+// The caller's predicate is asked only after a fence is seen, and its refusal
+// is final: a session the person stopped has nothing waiting, and reconnecting
+// must not restart it just to deliver a Stop.
+test("a fenced settle leaves the session alone when the caller refuses the resume", async () => {
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => "mutation-1",
+	});
+	const client = new FakeClient("ready");
+	client.on("thread/read", () => readResponse("ref-1", { resumeRequired: true }));
+	client.on("turn/start", appliedReceipt);
+	await registerAndStart(runtime, client);
+	await runtime.submit(request("send"));
+
+	expect(await runtime.settleTarget("hub-1", "ref-1", client, { mayResumeFenced: async () => false })).toBe("blocked");
+	expect(client.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
+	expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+	await runtime.stop();
+});
+
+// A resume can hand back a different identity. The parked row must move with
+// it, keeping its clientMutationId (the daemon's reconciliation key) and taking
+// the resumed instance fence, or it dispatches against an instance the daemon
+// no longer serves.
+test("a resume that changes identity retargets the parked row", async () => {
+	const runtime = new NativeMutationRuntime(openDatabase(), { createMutationId: () => "mutation-1" });
+	const storage = runtime.storage;
+	const client = new FakeClient("ready");
+	let resolved = false;
+	client.on("thread/read", (params) =>
+		readResponse(String(params.ref), resolved ? {} : { resumeRequired: true, threadId: "thread-new" }),
+	);
+	client.on("thread/resume", () => {
+		resolved = true;
+		return readResponse("ref-2", { threadId: "thread-new" });
+	});
+	client.on("turn/start", appliedReceipt);
+	await registerAndStart(runtime, client);
+	await runtime.submit(request("send"));
+
+	await runtime.settleTarget("hub-1", "ref-1", client, { mayResumeFenced: async () => true });
+	expect(await storage.listOutbox(nativeMutationTargetKey("hub-1", "ref-1"))).toEqual([]);
+	const moved = await storage.listOutbox(nativeMutationTargetKey("hub-1", "ref-2"));
+	expect(moved.map((record) => record.clientMutationId)).toEqual(["mutation-1"]);
+	// The dispatcher sends the payload verbatim, so the row's own wire ref must
+	// move too - a payload still naming ref-1 would be refused however the
+	// columns read.
+	expect(moved[0]?.payload).toMatchObject({ ref: "ref-2" });
+	await vi.waitFor(() => expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(1));
+	await runtime.stop();
+});
+
+// Both refs can already hold sequence 1. Moving the target before the sequence
+// would violate the unique (target_ref, intent_sequence) index and roll the
+// whole retarget back, so the two must move together.
+test("a retarget into a target that already holds work keeps both rows", async () => {
+	let minted = 0;
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => {
+			minted += 1;
+			return `m-${minted}`;
+		},
+	});
+	const storage = runtime.storage;
+	const client = new FakeClient("ready");
+	await registerAndStart(runtime, client);
+	await runtime.submit(request("send"));
+	await runtime.submit({ ...request("send"), targetRef: "ref-2", threadId: "thread-2", instanceId: "instance-2" });
+
+	const moved = storage.retarget(nativeMutationTargetKey("hub-1", "ref-1"), {
+		ref: nativeMutationTargetKey("hub-1", "ref-2"),
+		wireRef: "ref-2",
+		threadId: "thread-2",
+		instanceId: "instance-2",
+	});
+	expect(moved).toHaveLength(1);
+	const rows = await storage.listOutbox(nativeMutationTargetKey("hub-1", "ref-2"));
+	expect(rows).toHaveLength(2);
+	// Distinct sequences, or the unique index would have rejected the second.
+	expect(new Set(rows.map((row) => row.intentSequence)).size).toBe(2);
 	await runtime.stop();
 });
 
@@ -1473,7 +1648,7 @@ test.each([
 			params: { ref: "ref-1", expectedInstanceId: "instance-1", ...extra },
 		});
 		expect((client.calls[0]?.params as { clientMutationId?: string }).clientMutationId).toEqual(expect.any(String));
-		expect(await runtime.storage.listOutbox("")).toEqual([]);
+		expect(await runtime.storage.listOutbox(nativeMutationTargetKey("hub-1", "ref-1"))).toEqual([]);
 		await runtime.stop();
 	},
 );
@@ -1487,6 +1662,51 @@ test("a direct send is remembered as this phone's", async () => {
 
 	const sent = (client.calls[0]?.params as { clientMutationId: string }).clientMutationId;
 	expect(runtime.submittedHere(nativeMutationTargetKey("hub-1", "ref-1")).has(sent)).toBe(true);
+	await runtime.stop();
+});
+
+test("a direct fallback returns the request's clientMutationId as a local admission", async () => {
+	const { runtime, client } = await readyRuntimeWithClient(() => "mutation-1");
+	client.on("turn/start", (params) => appliedReceipt(params));
+	refuseWrites(database!);
+
+	const admission = await runtime.submit(request("send"));
+
+	expect(client.calls).toHaveLength(1);
+	expect((client.calls[0]?.params as { clientMutationId?: string }).clientMutationId).toBe("mutation-1");
+	expect(admission).toEqual({ clientMutationId: "mutation-1" });
+	expect(admission).not.toHaveProperty("receipt");
+	await runtime.stop();
+});
+
+test("a false precondition refuses before the durable enqueue", async () => {
+	const { runtime, client } = await readyRuntimeWithClient();
+	client.on("turn/start", (params) => appliedReceipt(params));
+	const precondition = vi.fn(() => false);
+
+	await expect(runtime.submit({ ...request("send"), precondition })).rejects.toBeInstanceOf(MutationNotSentError);
+
+	expect(precondition).toHaveBeenCalledTimes(1);
+	expect(await runtime.storage.listOutbox(nativeMutationTargetKey("hub-1", "ref-1"))).toEqual([]);
+	expect(client.calls).toHaveLength(0);
+	await runtime.stop();
+});
+
+test("a precondition rechecked immediately before the storage fallback can still refuse it", async () => {
+	const { runtime, client } = await readyRuntimeWithClient();
+	client.on("turn/start", (params) => appliedReceipt(params));
+	refuseWrites(database!);
+	let checks = 0;
+	const precondition = () => {
+		checks += 1;
+		return checks === 1;
+	};
+
+	await expect(runtime.submit({ ...request("send"), precondition })).rejects.toBeInstanceOf(MutationNotSentError);
+
+	// Once before the enqueue, once again immediately before the direct request.
+	expect(checks).toBe(2);
+	expect(client.calls).toHaveLength(0);
 	await runtime.stop();
 });
 

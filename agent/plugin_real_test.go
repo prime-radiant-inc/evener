@@ -116,9 +116,9 @@ func TestRealPlugin_Superpowers_Skills(t *testing.T) {
 
 	// Verify skill body can be loaded.
 	if meta, ok := lp.Skills["superpowers:brainstorming"]; ok {
-		body, err := skill.LoadSkillBody(meta)
+		body, err := loadSkillBody(meta)
 		if err != nil {
-			t.Fatalf("LoadSkillBody(brainstorming): %v", err)
+			t.Fatalf("Load(brainstorming): %v", err)
 		}
 		if !strings.Contains(body, "Brainstorming") {
 			t.Error("brainstorming skill body should contain 'Brainstorming'")
@@ -224,7 +224,7 @@ func TestRealPlugin_Superpowers_HookExecution(t *testing.T) {
 		CWD:           dir,
 		HookEventName: "SessionStart",
 	}
-	result := runner.RunSessionStart(context.Background(), input)
+	result := runner.RunSessionStartFor(context.Background(), input, plugin.SessionStartKindStartup)
 
 	// The superpowers session-start.sh outputs JSON with hookSpecificOutput.additionalContext
 	// which routes to ModelContext (model-visible), not UserMessages (user-visible).
@@ -560,10 +560,7 @@ func TestRealPlugin_LoadMultiple(t *testing.T) {
 		realPluginDir(t, "agent-sdk-dev/2cd88e7947b7"),
 	}
 
-	plugins, err := plugin.LoadAll(dirs)
-	if err != nil {
-		t.Fatalf("plugin.LoadAll: %v", err)
-	}
+	plugins := loadPluginDirs(t, dirs)
 	if len(plugins) != 4 {
 		t.Fatalf("expected 4 plugins, got %d", len(plugins))
 	}
@@ -589,10 +586,7 @@ func TestRealPlugin_AggregateAgents(t *testing.T) {
 		realPluginDir(t, "agent-sdk-dev/2cd88e7947b7"),
 	}
 
-	plugins, err := plugin.LoadAll(dirs)
-	if err != nil {
-		t.Fatalf("plugin.LoadAll: %v", err)
-	}
+	plugins := loadPluginDirs(t, dirs)
 
 	// Merge all agents from all plugins
 	allAgents := map[string]plugin.Agent{}
@@ -629,10 +623,7 @@ func TestRealPlugin_AggregateHooks(t *testing.T) {
 		realPluginDir(t, "security-guidance/2cd88e7947b7"),
 	}
 
-	plugins, err := plugin.LoadAll(dirs)
-	if err != nil {
-		t.Fatalf("plugin.LoadAll: %v", err)
-	}
+	plugins := loadPluginDirs(t, dirs)
 
 	// Build a runner with hooks from both plugins
 	runner := newHookRunnerFromPlugins(plugins)
@@ -656,10 +647,7 @@ func TestRealPlugin_AggregateSkills(t *testing.T) {
 		realPluginDir(t, "security-guidance/2cd88e7947b7"),
 	}
 
-	plugins, err := plugin.LoadAll(dirs)
-	if err != nil {
-		t.Fatalf("plugin.LoadAll: %v", err)
-	}
+	plugins := loadPluginDirs(t, dirs)
 
 	allSkills := map[string]skill.SkillMeta{}
 	for _, p := range plugins {
@@ -729,54 +717,6 @@ func TestRealPlugin_ToolNameMapping_BidirectionalComplete(t *testing.T) {
 	}
 }
 
-func TestRealPlugin_Settings_NotPresent(t *testing.T) {
-	t.Parallel()
-	workDir := t.TempDir()
-
-	// No settings file exists for any plugin
-	settings, err := plugin.LoadSettings(workDir, "superpowers")
-	if err != nil {
-		t.Fatalf("plugin.LoadSettings: %v", err)
-	}
-	if settings != nil {
-		t.Error("settings should be nil when no file exists")
-	}
-}
-
-func TestRealPlugin_Settings_WithFile(t *testing.T) {
-	t.Parallel()
-	workDir := t.TempDir()
-
-	// Create a settings file for the superpowers plugin
-	if err := os.MkdirAll(filepath.Join(workDir, ".claude"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	content := "---\ntdd-strict: true\ndefault-branch: main\n---\n# Custom Superpowers Config\nAlways use TDD."
-	if err := os.WriteFile(filepath.Join(workDir, ".claude", "superpowers.local.md"), []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	settings, err := plugin.LoadSettings(workDir, "superpowers")
-	if err != nil {
-		t.Fatalf("plugin.LoadSettings: %v", err)
-	}
-	if settings == nil {
-		t.Fatal("settings should not be nil")
-	}
-	if settings.Frontmatter["tdd-strict"] != true {
-		t.Errorf("tdd-strict = %v, want true", settings.Frontmatter["tdd-strict"])
-	}
-	if settings.Frontmatter["default-branch"] != "main" {
-		t.Errorf("default-branch = %v, want main", settings.Frontmatter["default-branch"])
-	}
-	if !strings.Contains(settings.Body, "Always use TDD") {
-		t.Error("body should contain 'Always use TDD'")
-	}
-}
-
-// ---------- Helpers ----------
-
-// newHookRunnerFromPlugin creates a hooks.Runner populated with a single plugin's hooks.
 func newHookRunnerFromPlugin(p plugin.Instance) *hooks.Runner {
 	runner := hooks.NewRunner(nil, "")
 	for event, eventHooks := range p.Hooks {

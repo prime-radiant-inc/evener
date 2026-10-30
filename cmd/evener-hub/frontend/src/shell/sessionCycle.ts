@@ -13,13 +13,13 @@
 // previous on the LAST - needsYouCycle.ts's nextNeedsYouRef precedent for
 // "current not in the cycle list".
 
-import { workspaceStore } from "./workspace";
+import { presentedPanes, workspaceStore } from "./workspace";
 
 export type SessionCycleDirection = "next" | "previous";
 
 export function cycleSessionPane(direction: SessionCycleDirection): void {
   const state = workspaceStore.getState();
-  const sessions = state.panes.filter((pane) => pane.type === "session");
+  const sessions = presentedPanes(state.panes).filter((pane) => pane.type === "session");
   if (sessions.length < 2) return;
   const index = sessions.findIndex((pane) => pane.id === state.focusedPaneId);
   let target: (typeof sessions)[number] | undefined;

@@ -9,6 +9,8 @@ import {
   type HubUpdatePorts,
   type HubUpdateState,
   INITIAL_HUB_UPDATE_STATE,
+  RESTART_REQUEST_TIMEOUT_MS,
+  type RestartBaseline,
 } from "./hubUpdate";
 import type { UpdateCheckResponse } from "./types.gen";
 
@@ -21,8 +23,18 @@ const UP_TO_DATE: UpdateCheckResponse = {
   latestCommit: "be7002918fdc60dbdeab71d9dd17e00d3d006c56",
   updateAvailable: false,
   applicable: true,
+  installAvailable: false,
+  restartPending: false,
+  startedAt: "2026-10-21T12:00:00Z",
+  restartSupported: true,
+  installTargetMatchesLaunch: true,
 };
-const WAITING: UpdateCheckResponse = { ...UP_TO_DATE, updateAvailable: true, latestCommit: "c0ffee" };
+const WAITING: UpdateCheckResponse = {
+  ...UP_TO_DATE,
+  updateAvailable: true,
+  installAvailable: true,
+  latestCommit: "c0ffee",
+};
 
 interface Pending {
   method: string;
@@ -36,7 +48,7 @@ interface Pending {
  * wait the test settles too. */
 function scripted(options: { noClient?: boolean } = {}) {
   const pending: Pending[] = [];
-  const restarts: { previous: string | null; resolve(back: boolean): void }[] = [];
+  const restarts: { previous: RestartBaseline; resolve(back: boolean): void }[] = [];
   const ports: HubUpdatePorts = {
     client() {
       if (options.noClient) throw new Error("hubUpdate: no connected client");
@@ -45,6 +57,7 @@ function scripted(options: { noClient?: boolean } = {}) {
           new Promise((resolve, reject) => pending.push({ method, params, opts, resolve, reject }))) as never,
       };
     },
+    currentIncarnation: async () => "2026-10-21T10:00:00Z",
     awaitRestart: (previous) =>
       new Promise<boolean>((resolve) => {
         restarts.push({ previous, resolve });
@@ -190,7 +203,7 @@ describe("apply", () => {
     request.resolve({ restarting: true });
     await settle();
     expect(hub.controller.getState()).toMatchObject({ applying: false, restarting: true });
-    expect(hub.restarts.map((restart) => restart.previous)).toEqual(["be70029"]);
+    expect(hub.restarts.map((restart) => restart.previous)).toEqual([{ version: "be70029", incarnation: null }]);
     hub.restarts[0]?.resolve(true);
     await applying;
     expect(hub.controller.getState()).toMatchObject({ restarting: false, restartTimedOut: false });
@@ -247,6 +260,7 @@ describe("apply", () => {
         request: (async (method: string) =>
           method === "evener/update/apply" ? { restarting: true } : WAITING) as never,
       }),
+      currentIncarnation: async () => null,
       awaitRestart: async () => {
         throw new Error("the wait broke");
       },
@@ -295,12 +309,13 @@ describe("apply", () => {
 
   test("reports an apply that was never sent as an error, not a restart", async () => {
     let connected = true;
-    const restarts: (string | null)[] = [];
+    const restarts: RestartBaseline[] = [];
     const controller = createHubUpdateController({
       client() {
         if (!connected) throw new Error("hubUpdate: no connected client");
         return { request: (async () => WAITING) as never };
       },
+      currentIncarnation: async () => null,
       awaitRestart: async (previous) => {
         restarts.push(previous);
         return true;
@@ -318,6 +333,179 @@ describe("apply", () => {
   });
 });
 
+describe("install", () => {
+  test("installs with evener/upgrade and re-checks without restarting", async () => {
+    const hub = await checked(WAITING);
+    const installing = hub.controller.install();
+    const request = hub.take("evener/upgrade");
+    expect(request.params).toEqual({ requested: "" });
+    expect(request.opts).toEqual({ timeoutMs: APPLY_TIMEOUT_MS });
+    expect(hub.controller.getState().installing).toBe(true);
+    request.resolve({});
+    await settle();
+    const recheck = hub.take("evener/update/check");
+    recheck.resolve({ ...WAITING, onDiskCommit: "c0ffee", installAvailable: false, restartPending: true });
+    await installing;
+    expect(hub.controller.getState()).toMatchObject({
+      installing: false,
+      installError: null,
+      check: { installAvailable: false, restartPending: true },
+    });
+    expect(hub.restarts).toHaveLength(0);
+  });
+
+  test("sends nothing without a check, for a dev build, or when nothing is installable", async () => {
+    const none = scripted();
+    await none.controller.install();
+    expect(none.controller.getState().installError).not.toBeNull();
+
+    const dev = await checked({ ...WAITING, applicable: false, buildChannel: "dev" });
+    await dev.controller.install();
+    expect(dev.controller.getState().installError).not.toBeNull();
+
+    const current = await checked(UP_TO_DATE);
+    await current.controller.install();
+    expect(current.controller.getState().installError).not.toBeNull();
+
+    expect([...none.pending, ...dev.pending, ...current.pending].some((r) => r.method === "evener/upgrade")).toBe(
+      false,
+    );
+  });
+
+  test("refuses a stale check and reports a failed install without re-checking", async () => {
+    const stale = scripted();
+    stale.controller.setChannel("release");
+    const running = stale.controller.runCheck();
+    stale.take("evener/update/check").resolve({ ...WAITING, channel: "snapshot" });
+    await running;
+    await stale.controller.install();
+    expect(stale.controller.getState().installError).not.toBeNull();
+
+    const failed = await checked(WAITING);
+    const installing = failed.controller.install();
+    failed.take("evener/upgrade").reject(new WireError("download failed", -32000));
+    await installing;
+    expect(failed.controller.getState()).toMatchObject({ installing: false, installError: "download failed" });
+    expect(failed.pending.some((r) => r.method === "evener/update/check")).toBe(false);
+  });
+
+  test("sends one install while another is in flight", async () => {
+    const hub = await checked(WAITING);
+    const first = hub.controller.install();
+    await hub.controller.install();
+    expect(hub.pending.filter((r) => r.method === "evener/upgrade")).toHaveLength(1);
+    hub.take("evener/upgrade").resolve({});
+    await settle();
+    hub.take("evener/update/check").resolve({ ...WAITING, installAvailable: false });
+    await first;
+  });
+
+  test("re-checks after a lost install response instead of claiming failure", async () => {
+    const hub = await checked(WAITING);
+    const installing = hub.controller.install();
+    hub.take("evener/upgrade").reject(new Error("socket hung up"));
+    await installing;
+    expect(hub.controller.getState()).toMatchObject({
+      installing: false,
+      installError: null,
+      installReconcile: true,
+    });
+    expect(hub.pending.some((r) => r.method === "evener/update/check")).toBe(false);
+
+    const recheck = hub.controller.runCheck();
+    hub.take("evener/update/check").resolve({ ...WAITING, installAvailable: false, restartPending: true });
+    await recheck;
+    expect(hub.controller.getState()).toMatchObject({
+      check: { installAvailable: false, restartPending: true },
+      installReconcile: false,
+    });
+  });
+});
+
+describe("restart", () => {
+  test("sends evener/hub/restart and waits for a new incarnation, even at the same version", async () => {
+    const hub = await checked(WAITING);
+    const restarting = hub.controller.restart();
+    await settle();
+    const request = hub.take("evener/hub/restart");
+    expect(request.params).toEqual({});
+    expect(request.opts).toEqual({ timeoutMs: RESTART_REQUEST_TIMEOUT_MS });
+    expect(hub.controller.getState().restarting).toBe(true);
+    request.resolve({ restarting: true, incarnation: "2026-10-21T11:00:00Z" });
+    await settle();
+    expect(hub.controller.getState().restarting).toBe(true);
+    expect(hub.restarts.map((r) => r.previous)).toEqual([{ version: "be70029", incarnation: "2026-10-21T11:00:00Z" }]);
+    hub.restarts[0]?.resolve(true);
+    await restarting;
+    expect(hub.controller.getState()).toMatchObject({ restarting: false, restartTimedOut: false });
+  });
+
+  test("runs a check first when there is no baseline", async () => {
+    const hub = scripted();
+    const restarting = hub.controller.restart();
+    hub.take("evener/update/check").resolve({ ...WAITING, restartSupported: true });
+    await settle();
+    await settle();
+    const request = hub.take("evener/hub/restart");
+    request.resolve({ restarting: true });
+    await settle();
+    hub.restarts[0]?.resolve(true);
+    await restarting;
+    expect(hub.controller.getState().restarting).toBe(false);
+  });
+
+  test("two restarts started together send one request", async () => {
+    const hub = scripted();
+    const first = hub.controller.restart();
+    const second = hub.controller.restart();
+    // The operation is claimed before the baseline check, so the second call
+    // returns without starting a check of its own.
+    expect(hub.pending.filter((r) => r.method === "evener/update/check")).toHaveLength(1);
+
+    hub.take("evener/update/check").resolve({ ...WAITING, restartSupported: true });
+    await settle();
+    await settle();
+    const request = hub.take("evener/hub/restart");
+    expect(hub.pending.some((r) => r.method === "evener/hub/restart")).toBe(false);
+
+    request.resolve({ restarting: true });
+    await settle();
+    hub.restarts[0]?.resolve(true);
+    await Promise.all([first, second]);
+    expect(hub.controller.getState()).toMatchObject({ restarting: false, restartError: null });
+  });
+
+  test("refuses when the hub does not report restart support", async () => {
+    const hub = await checked({ ...WAITING, restartSupported: undefined as unknown as boolean });
+    await hub.controller.restart();
+    expect(hub.controller.getState().restartError).not.toBeNull();
+    expect(hub.pending.some((r) => r.method === "evener/hub/restart")).toBe(false);
+  });
+
+  test("keeps a server refusal an error and waits for nothing", async () => {
+    const hub = await checked(WAITING);
+    const restarting = hub.controller.restart();
+    await settle();
+    hub.take("evener/hub/restart").reject(new WireError("no launch path", -32000));
+    await restarting;
+    expect(hub.controller.getState()).toMatchObject({ restarting: false, restartError: "no launch path" });
+    expect(hub.restarts).toHaveLength(0);
+  });
+
+  test("waits when the response was lost, and times out when the hub does not return", async () => {
+    const hub = await checked(WAITING);
+    const restarting = hub.controller.restart();
+    await settle();
+    hub.take("evener/hub/restart").reject(new Error("socket hung up"));
+    await settle();
+    expect(hub.controller.getState()).toMatchObject({ restarting: true, restartError: null });
+    expect(hub.restarts[0]?.previous.incarnation).toBe("2026-10-21T10:00:00Z");
+    hub.restarts[0]?.resolve(false);
+    await restarting;
+    expect(hub.controller.getState()).toMatchObject({ restarting: false, restartTimedOut: true });
+  });
+});
+
 describe("an app's own state store", () => {
   test("keeps its state there, so the app's own writes are what the controller reads", async () => {
     const store = createFrameworkFreeStore<HubUpdateState & { label: string }>(() => ({
@@ -327,6 +515,7 @@ describe("an app's own state store", () => {
     const controller = createHubUpdateController(
       {
         client: () => ({ request: (async () => ({ ...WAITING, channel: "snapshot" })) as never }),
+        currentIncarnation: async () => null,
         awaitRestart: async () => true,
       },
       store,

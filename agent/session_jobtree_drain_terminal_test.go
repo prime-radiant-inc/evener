@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/llm"
 )
@@ -69,7 +70,7 @@ func seedWatchSendResidue(t *testing.T, sess *Session) {
 func TestTerminalDrainExitsDespiteWatchSendResidue(t *testing.T) {
 	t.Parallel()
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("all done") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("all done") },
 	}}
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
 		TurnEndsProcess: true,
@@ -133,7 +134,7 @@ func TestTerminalDrainKeepsFinalizingDelegateLive(t *testing.T) {
 func TestPostTerminalNotificationTurnEmptyResponseFinishesIdle(t *testing.T) {
 	t.Parallel()
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("the answer") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("the answer") },
 		// The post-terminal notification turn: truly empty (no text, no tool
 		// calls, no phase metadata) — the model glitch shape the retry budget
 		// exists for, which after a terminal communicate must finish idle.
@@ -147,8 +148,7 @@ func TestPostTerminalNotificationTurnEmptyResponseFinishesIdle(t *testing.T) {
 
 	// TRIPWIRE: scripted in-process adapter, no real I/O; 30s only fires on a
 	// genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "do the task", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -302,9 +302,9 @@ func TestOneShotDrainDeliversCompletionThatLandsDuringTheFinalAnswer(t *testing.
 			// The final-answer request is built; finish the job before the reply
 			// so the completion lands inside the answer's generation window.
 			finalizeShell(t, sess.jobManager, jobID, releaseShell)
-			return finalResponse(firstAnswer)
+			return agenttest.FinalResponse(firstAnswer)
 		},
-		func(llm.Request) llm.Response { return finalResponse(finalAnswer) },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse(finalAnswer) },
 	}}
 	sess = newSession(t, withAdapter(adapter), withConfig(SessionConfig{
 		TurnEndsProcess: true,
@@ -313,8 +313,7 @@ func TestOneShotDrainDeliversCompletionThatLandsDuringTheFinalAnswer(t *testing.
 
 	// TRIPWIRE: scripted adapter and a controlled in-process shell; 30s only
 	// fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	res, err := sess.ProcessInput(ctx, "build it and report", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
@@ -361,16 +360,16 @@ func TestOneShotDrainKeepsDrainingWhenTheDeliveredCompletionStartsMoreWork(t *te
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
 			finalizeShell(t, sess.jobManager, firstJobID, releaseShell)
-			return finalResponse(firstAnswer)
+			return agenttest.FinalResponse(firstAnswer)
 		},
 		func(llm.Request) llm.Response {
-			return toolCallResponse(llm.ToolCallData{
+			return agenttest.ToolCallResponse(llm.ToolCallData{
 				ID: "second-job", Name: "shell", Type: "function",
 				Arguments: json.RawMessage(`{"command":"printf second-job-output","mode":"background"}`),
 			})
 		},
-		func(llm.Request) llm.Response { return finalResponse("started a follow-up job; waiting") },
-		func(llm.Request) llm.Response { return finalResponse(finalAnswer) },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("started a follow-up job; waiting") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse(finalAnswer) },
 	}}
 	sess = newSession(t, withAdapter(adapter), withConfig(SessionConfig{
 		TurnEndsProcess: true,
@@ -379,8 +378,7 @@ func TestOneShotDrainKeepsDrainingWhenTheDeliveredCompletionStartsMoreWork(t *te
 
 	// TRIPWIRE: scripted adapter, a controlled shell and one real printf; 30s
 	// only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	res, err := sess.ProcessInput(ctx, "build it and report", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
@@ -432,7 +430,7 @@ func TestOneShotDrainReturnsAfterAFinalAnswerThatSawEveryCompletion(t *testing.T
 	t.Parallel()
 	const answer = "FINAL-ANSWER: the build passed"
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse(answer) },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse(answer) },
 	}}
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
 		TurnEndsProcess: true,
@@ -444,8 +442,7 @@ func TestOneShotDrainReturnsAfterAFinalAnswerThatSawEveryCompletion(t *testing.T
 
 	// TRIPWIRE: scripted adapter and a controlled in-process shell; 30s only
 	// fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	res, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification)
 	if err != nil {
 		t.Fatalf("notification turn: %v", err)
@@ -497,9 +494,9 @@ func TestOneShotDrainDiscardsWatchFramesQueuedBeforeTheFinalAnswer(t *testing.T)
 			if n := sess.peekNotifications(); n < 2 {
 				t.Errorf("queued notifications before the reply = %d, want the watch frame and the completion", n)
 			}
-			return finalResponse(firstAnswer)
+			return agenttest.FinalResponse(firstAnswer)
 		},
-		func(llm.Request) llm.Response { return finalResponse(finalAnswer) },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse(finalAnswer) },
 	}}
 	sess = newSession(t, withAdapter(adapter), withConfig(SessionConfig{
 		TurnEndsProcess: true,
@@ -515,8 +512,7 @@ func TestOneShotDrainDiscardsWatchFramesQueuedBeforeTheFinalAnswer(t *testing.T)
 
 	// TRIPWIRE: scripted adapter and a controlled in-process shell; 30s only
 	// fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	res, err := sess.ProcessInput(ctx, "build it and report", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)

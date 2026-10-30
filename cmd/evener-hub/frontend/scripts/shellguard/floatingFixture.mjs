@@ -23,10 +23,10 @@
 // The witness expression is a named export so a Node test can evaluate the REAL
 // expression without a browser; `waitForFloatingState` and
 // `describeFloatingFailure` are named exports so that test can drive the same
-// functions run.mjs calls. Both follow sessionHoverCard.mjs's pattern for the
-// hover-card witness (#3741).
+// functions run.mjs calls. Both guards share browserGuardWitness.mjs's failure
+// contract from the hover-card witness (#3741).
 
-import { evaluate } from "../browserGuardCdp.mjs";
+import { witnessFailure } from "../browserGuardWitness.mjs";
 
 // The waits' labels, shared by the wait and the witness so the fixture and step
 // a recurrence names cannot drift from the ones that timed out.
@@ -52,25 +52,6 @@ export const WITNESS_READ_MS = 2000;
 const LAYOUT_STORAGE_KEY = "evener.workspace.layout.v2";
 
 const messageOf = (error) => (error instanceof Error ? error.message : String(error));
-
-// Reject after `ms` even if the promise never settles, so the named failure is
-// never withheld by a page that stopped answering.
-function bounded(promise, ms) {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`witness read did not return within ${ms}ms`)), ms);
-    timer.unref?.();
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (error) => {
-        clearTimeout(timer);
-        reject(error);
-      },
-    );
-  });
-}
 
 // The page expression that collects the floating fixture's state. It runs only
 // after a wait already failed - exactly when `window.shellguardFloat`, the store
@@ -187,19 +168,5 @@ export async function describeFloatingFailure(driver, context, error) {
     failedPolls: context.failedPolls,
     lastPollError: context.lastPollError,
   };
-  let witness;
-  try {
-    witness = await bounded(evaluate(driver.send, floatingWitnessExpr()), WITNESS_READ_MS);
-  } catch (witnessError) {
-    witness = { unreadable: ["witness"], error: messageOf(witnessError) };
-  }
-  let body;
-  try {
-    body = JSON.stringify({ ...host, ...witness });
-  } catch {
-    // The page's own fields are what could not be serialized; the host's always
-    // can be, so they are never dropped with them.
-    body = JSON.stringify({ ...host, unreadable: ["payload"], error: "witness not serializable" });
-  }
-  return new Error(`${messageOf(error)}; witness ${body}`, { cause: error });
+  return witnessFailure(driver, floatingWitnessExpr(), error, { context: host, readMs: WITNESS_READ_MS });
 }

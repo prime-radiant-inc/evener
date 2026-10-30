@@ -22,8 +22,9 @@
 // covers every pane that renders through this frame rather than trusting each
 // one to remember. The picker above stays outside the key, so the selection is
 // not remounted by its own change.
+
+import { isLocalHost } from "@evener/appwire-client";
 import { Fragment, type ReactNode } from "react";
-import { isLocalHost } from "../../../stores/hostRouting";
 import { hostInstanceIdentity, registrySaysHostGone, useHostsStore } from "../../../stores/hosts";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { HostPicker } from "../HostPicker";

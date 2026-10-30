@@ -198,23 +198,22 @@ func TestDegradedReadOnlyDelegateFileToolsRefuseWrites(t *testing.T) {
 	}
 }
 
-// TestDegradedDelegateSpawnFailureDisposesItsScratch: the degraded box provisions
-// a scratch dir like any other per-delegate sandbox, so a spawn that fails after
-// provisioning must dispose it. The leak is not just a stray directory: the
-// scratch holds a flock lease until it is retained or cleaned, and the crashed-
-// scratch sweeper only reclaims candidates whose lease it can acquire — so a
-// leaked one survives the sweeper for the daemon's whole uptime. Driven through
-// the real abort path (a nil child client fails NewSession after
-// prepareSubagentEnvironment), not by calling DisposeSandboxScratch directly. Not
+// TestDegradedDelegateSpawnFailureReleasesItsScratchLease: the degraded box
+// provisions a scratch dir like any other per-delegate sandbox, so a spawn that
+// fails after provisioning must release it. The scratch holds a flock lease
+// until it is retained or cleaned, and the crashed-scratch sweeper only
+// reclaims candidates whose lease it can acquire — so a leaked lease survives
+// the sweeper for the daemon's whole uptime. Driven through the real abort path
+// (a nil child client fails NewSession after the environment is prepared). Not
 // parallel: it isolates TMPDIR to observe the scratch base.
-func TestDegradedDelegateSpawnFailureDisposesItsScratch(t *testing.T) {
+func TestDegradedDelegateSpawnFailureReleasesItsScratchLease(t *testing.T) {
 	isolated := t.TempDir()
 	t.Setenv("TMPDIR", isolated)
 
 	lane, home := sbxLane(t)
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
-	s := newSession(t, withClient(client), withConfig(SessionConfig{
+	s := newSession(t, withClient(client), withDir(lane), withConfig(SessionConfig{
 		StateDir:         packageFixtureTempDir(t, "sbx-degrade-leak-*"),
 		MaxSubagentDepth: 1,
 		testOnly: testConfig{
@@ -229,20 +228,19 @@ func TestDegradedDelegateSpawnFailureDisposesItsScratch(t *testing.T) {
 		t.Fatalf("isolated tmp base must start free of sandbox scratch, got %v", before)
 	}
 
-	policy, err := s.readOnlyDelegateSandbox()
-	if err != nil {
-		t.Fatalf("readOnlyDelegateSandbox: %v", err)
-	}
-	ctx := context.WithValue(context.Background(), ctxDelegationAllowance, 0)
-	ctx = context.WithValue(ctx, ctxDelegateSandboxPolicy, policy)
-	prepared, err := s.prepareSubagentRun(ctx, "child task", "", lane, 0, "", "", nil, nil)
-	if err == nil {
-		releasePreparedTreeSlot(prepared)
-		prepared.sub.sess.Close()
+	// A read-only agent type derives the degraded box on its own.
+	res := s.createDelegate(context.Background(), delegateArgs{Task: "child task", AgentType: "explorer"})
+	if res.Err == nil {
 		t.Fatal("expected NewSession to fail with a nil child client")
 	}
-	if left := sandboxScratchDirs(t, isolated); len(left) != 0 {
-		t.Errorf("degraded delegate scratch leaked on spawn failure (with its lease): %v", left)
+	kept := sandboxScratchDirs(t, isolated)
+	if len(kept) == 0 {
+		t.Fatal("the failed start kept no scratch, so the lease check below would prove nothing")
+	}
+	for _, dir := range kept {
+		if scratchLeaseHeld(t, filepath.Join(isolated, dir)) {
+			t.Errorf("degraded delegate scratch %s still holds its lease after the failed start", dir)
+		}
 	}
 }
 

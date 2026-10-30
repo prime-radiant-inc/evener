@@ -245,7 +245,6 @@ it.each([
 	"[x](./docs/a%ZZ.md)",
 	"[x](./docs/a&bsol;b.md)",
 	"[x](./docs/a&Tab;b.md)",
-	"[x](file:///work/b/docs/a.md)",
 	"[x](https&colon;//example.test/docs/a.md)",
 	"../**docs/a.md**",
 	"docs/`README.md`/other",
@@ -1016,5 +1015,92 @@ describe("large adjoining prose spans", () => {
 		expect(entries.map(([, reference]) => reference.readTarget)).toEqual(["/work/tree/docs/a.md"]);
 		expect(result.markdown).toBe(`[docs/a.md](${entries[0]?.[0]})${markdown.slice("docs/a.md".length)}`);
 		expect(result.markdown.split(entries[0]?.[0] ?? "missing-generated-id")).toHaveLength(2);
+	});
+});
+
+// An agent files a report in the session's retained artifacts directory and
+// links it by file:// URL. The hub serves that directory, and the thread
+// snapshot names it, so the phone must bind the link the same way the web does.
+describe("native file URL links", () => {
+	const artifactsDir = "/state/projects/p/sessions/s1/artifacts";
+	const reportURL = `file://${artifactsDir}/docs-quality-repairs.md`;
+
+	it("binds a file URL inside the session artifacts to the retained file", () => {
+		const result = renderMarkdownFileReferences(`[Full report](${reportURL})`, cwd, artifactsDir);
+		const reference = [...result.references.values()][0];
+		expect(reference).toMatchObject({
+			path: "docs-quality-repairs.md",
+			cwd: artifactsDir,
+			readTarget: `${artifactsDir}/docs-quality-repairs.md`,
+			root: "artifacts",
+		});
+		expect([...result.references.keys()]).toHaveLength(1);
+	});
+
+	// Markdown's autolink form carries no label of its own: the angle-bracketed
+	// URL is both the destination and the visible text. An agent may use it for
+	// the same report it would otherwise link explicitly.
+	it("binds an angle-bracketed file URL autolink to the retained file", () => {
+		const result = renderMarkdownFileReferences(`Report: <${reportURL}>`, cwd, artifactsDir);
+		const reference = [...result.references.values()][0];
+		expect(reference).toMatchObject({
+			path: "docs-quality-repairs.md",
+			cwd: artifactsDir,
+			readTarget: `${artifactsDir}/docs-quality-repairs.md`,
+			root: "artifacts",
+		});
+		// The visible text stays the URL, so the message reads the same.
+		expect(result.markdown).toMatch(/^Report: \[file:\/\/[^\]]*\]\(evener-file:[\d-]+\)$/);
+		expect(result.markdown).toContain(reportURL);
+	});
+
+	// CommonMark gives an autolink's text no entity or escape processing: what
+	// sits between the angles is the URL. A file whose name looks like an entity
+	// therefore names that file, and a bracket in the name must not break the
+	// rewritten link.
+	it("keeps an autolink's text literal and escapes it when rewriting", () => {
+		const entityNamed = renderMarkdownFileReferences(`See <file://${cwd}/report&amp;.md>`, cwd);
+		expect([...entityNamed.references.values()][0]).toMatchObject({ path: "report&amp;.md" });
+		const bracketed = renderMarkdownFileReferences(`See <file://${cwd}/report].md>`, cwd);
+		const reference = [...bracketed.references.values()][0];
+		expect(reference).toMatchObject({ path: "report].md" });
+		// The rewritten label escapes the bracket so the link still parses, and
+		// the escaped form renders as the file name.
+		expect(bracketed.markdown).toMatch(/\[file:\/\/[^\]]*report\\\]\.md\]\(evener-file:[\d-]+\)$/u);
+		// Parse our own output back: the label kept the link intact and the
+		// generated identifier still names the file with its bracket.
+		const reparsed: string[] = [];
+		const visit = (tokens: ReturnType<typeof lexer>) => {
+			for (const token of tokens) {
+				if (token.type === "link") reparsed.push(token.href);
+				if ("tokens" in token && token.tokens) visit(token.tokens as ReturnType<typeof lexer>);
+			}
+		};
+		visit(lexer(bracketed.markdown));
+		expect(reparsed.map((href) => bracketed.references.get(href)?.path)).toEqual(["report].md"]);
+	});
+
+	it("binds a file URL inside the working directory", () => {
+		const result = renderMarkdownFileReferences(`[design](file://${cwd}/docs/plan.md)`, cwd);
+		expect([...result.references.values()][0]).toMatchObject({
+			path: "docs/plan.md",
+			cwd,
+		});
+	});
+
+	it.each(["file:///etc/passwd", "file:///state/other/artifacts/r.md"])(
+		"leaves %s, outside both roots, an ordinary link",
+		(target) => {
+			const result = renderMarkdownFileReferences(`[report](${target})`, cwd, artifactsDir);
+			expect(result.references.size).toBe(0);
+			expect(result.markdown).toContain(target);
+		},
+	);
+
+	it("mentions the file reference the same way for chips and prose", () => {
+		const references = markdownFileReferences(`[Full report](${reportURL})`, cwd, artifactsDir);
+		expect(references.map(({ reference }) => reference.readTarget)).toEqual([
+			`${artifactsDir}/docs-quality-repairs.md`,
+		]);
 	});
 });

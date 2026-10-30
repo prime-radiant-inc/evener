@@ -150,11 +150,7 @@ func TestProviderFileWatcherDoesNotEchoInstanceWrite(t *testing.T) {
 	defer hub.Close()
 	// The initial observation belongs to startup, before this client connects.
 	web.notices.watchRead(context.Background(), newRecordingBroadcaster())
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatal(err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 	var resp appwire.InstanceListResponse
 	if err := client.Request(context.Background(), appwire.MethodEvenerInstanceCreate,
 		appwire.InstanceCreateParams{Name: "work", Base: "anthropic", OriginClientId: "tab-a"}, &resp); err != nil {

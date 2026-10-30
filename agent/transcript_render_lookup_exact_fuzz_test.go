@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -130,7 +131,7 @@ func rleRenderEdges(t *testing.T, payload string) {
 		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, _, _, _, err := rawLinesForRange(path, "", 0, 1); err == nil {
+		if _, _, _, _, err := rawLinesForRange(context.Background(), path, "", 0, 1); err == nil {
 			t.Fatalf("rawLinesForRange accepted %s fixture", name)
 		}
 	}
@@ -139,7 +140,7 @@ func rleRenderEdges(t *testing.T, payload string) {
 	if err := os.WriteFile(incompleteBodyPath, []byte(incompleteBody), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	incompleteContent, incompleteLines, incompleteSkipped, incompleteTruncated, err := rawLinesForRange(incompleteBodyPath, "", 0, 1)
+	incompleteContent, incompleteLines, incompleteSkipped, incompleteTruncated, err := rawLinesForRange(context.Background(), incompleteBodyPath, "", 0, 1)
 	if err != nil || incompleteLines != 1 || incompleteSkipped != 1 || incompleteTruncated || !strings.Contains(incompleteContent, `"session_id":"`+trenderCurrentSession+`"`) {
 		t.Fatalf("unterminated body = lines %d skipped %d truncated %v err %v", incompleteLines, incompleteSkipped, incompleteTruncated, err)
 	}
@@ -149,11 +150,11 @@ func rleRenderEdges(t *testing.T, payload string) {
 	if err := os.WriteFile(largePath, []byte(largeBody), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	largeContent, largeLines, largeSkipped, largeTruncated, err := rawLinesForRange(largePath, "", 0, 0)
+	largeContent, largeLines, largeSkipped, largeTruncated, err := rawLinesForRange(context.Background(), largePath, "", 0, 0)
 	if err != nil || !largeTruncated || largeLines != 1 || largeSkipped != 0 || !strings.Contains(largeContent, `"session_id":"`+trenderLocalSession+`"`) {
 		t.Fatalf("large raw range = lines %d skipped %d truncated %v err %v", largeLines, largeSkipped, largeTruncated, err)
 	}
-	if _, _, _, _, err := rawLinesForRange(filepath.Join(root, "missing"), "", 0, 0); err == nil {
+	if _, _, _, _, err := rawLinesForRange(context.Background(), filepath.Join(root, "missing"), "", 0, 0); err == nil {
 		t.Fatal("rawLinesForRange accepted a missing transcript")
 	}
 	unsupportedPath := filepath.Join(root, "unsupported-mixed")
@@ -161,7 +162,7 @@ func rleRenderEdges(t *testing.T, payload string) {
 	if err := os.WriteFile(unsupportedPath, []byte(unsupported), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, _, err := rawLinesForRange(unsupportedPath, "", 0, 1); err == nil {
+	if _, _, _, _, err := rawLinesForRange(context.Background(), unsupportedPath, "", 0, 1); err == nil {
 		t.Fatal("rawLinesForRange accepted an API-call record in semantic JSONL")
 	}
 	capPath := filepath.Join(root, "cap")
@@ -171,7 +172,7 @@ func rleRenderEdges(t *testing.T, payload string) {
 	if err := os.WriteFile(capPath, []byte(capBody), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	capContent, capLines, capSkipped, capTruncated, err := rawLinesForRange(capPath, "", 0, 1)
+	capContent, capLines, capSkipped, capTruncated, err := rawLinesForRange(context.Background(), capPath, "", 0, 1)
 	if err != nil || !capTruncated || capLines != 2 || capSkipped != 0 || strings.Contains(capContent, strings.Repeat("y", 20)) {
 		t.Fatalf("capped raw range = lines %d skipped %d truncated %v err %v", capLines, capSkipped, capTruncated, err)
 	}
@@ -309,11 +310,11 @@ func rleRenderContracts(t *testing.T) {
 		wantParsed bool
 	}{
 		{nil, "", false}, {json.RawMessage("{"), "", false},
-		{json.RawMessage(`{"intent":false}`), "false", true},
+		{json.RawMessage(`{"intent":false}`), "", true},
 		{json.RawMessage(`{"intent":"why"}`), "why", true},
 	} {
-		if got := toolIntent(tc.raw); got != tc.wantIntent {
-			t.Fatalf("toolIntent(%q) = %q, want %q", tc.raw, got, tc.wantIntent)
+		if got := schema.ToolIntent(tc.raw); got != tc.wantIntent {
+			t.Fatalf("ToolIntent(%q) = %q, want %q", tc.raw, got, tc.wantIntent)
 		}
 		if parsed := parseArgs(tc.raw); (parsed != nil) != tc.wantParsed {
 			t.Fatalf("parseArgs(%q) parsed=%v, wantParsed=%v", tc.raw, parsed, tc.wantParsed)
@@ -494,13 +495,13 @@ func rleLookupContracts(t *testing.T) {
 		t.Fatalf("fallback resolved metadata = %#v", meta)
 	}
 	for _, format := range []string{"", formatMarkdown, formatOutline, formatJSONL} {
-		got, err := execReadSessionTranscript(deps, map[string]any{"transcript_ref": encodeRef("", trenderCurrentSession), "format": format})
+		got, err := execReadSessionTranscript(context.Background(), deps, map[string]any{"transcript_ref": encodeRef("", trenderCurrentSession), "format": format})
 		if err != nil {
 			t.Fatalf("execReadSessionTranscript(%q): %v", format, err)
 		}
 		rleAssertReadEnvelope(t, got, format, encodeRef("", trenderCurrentSession))
 	}
-	if _, err := execReadSessionTranscript(deps, map[string]any{"transcript_ref": encodeRef("", trenderCurrentSession), "format": "future"}); err == nil {
+	if _, err := execReadSessionTranscript(context.Background(), deps, map[string]any{"transcript_ref": encodeRef("", trenderCurrentSession), "format": "future"}); err == nil {
 		t.Fatal("execReadSessionTranscript accepted unknown format")
 	}
 

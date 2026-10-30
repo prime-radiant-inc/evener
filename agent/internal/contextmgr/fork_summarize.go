@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/internal/cheapmodel"
+	"primeradiant.com/evener/agent/internal/runetrim"
 	"primeradiant.com/evener/agent/internal/sessionlog"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
@@ -103,7 +104,7 @@ Respond with ONLY the JSON object, no markdown formatting.
 // truncate shortens s to limit characters, appending "..." if truncated.
 func truncate(s string, limit int) string {
 	if len(s) > limit {
-		return s[:limit] + "..."
+		return runetrim.Cut(s, limit) + "..."
 	}
 	return s
 }

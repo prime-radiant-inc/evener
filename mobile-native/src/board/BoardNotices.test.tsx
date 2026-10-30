@@ -9,7 +9,6 @@ import { BoardNotices, NoticeRow } from "./BoardNotices";
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 const palette = paletteFor("light");
 const list: Notice[] = [

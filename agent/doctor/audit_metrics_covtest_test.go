@@ -5,7 +5,7 @@ import (
 )
 
 // TestMetricSourceResolve_APIHealthUnknownMetric covers the "unknown metric"
-// error path inside the apilog health metric resolver (audit.go:423).
+// error path inside the apilog health metric resolver.
 func TestMetricSourceResolve_APIHealthUnknownMetric(t *testing.T) {
 	t.Parallel()
 	m := metricSource{
@@ -19,7 +19,7 @@ func TestMetricSourceResolve_APIHealthUnknownMetric(t *testing.T) {
 }
 
 // TestMetricSourceResolve_APIHealthErrorsByClassEmpty covers the empty-class
-// error path for apilog.errors_by_class (audit.go:418-419).
+// error path for apilog.errors_by_class.
 func TestMetricSourceResolve_APIHealthErrorsByClassEmpty(t *testing.T) {
 	t.Parallel()
 	m := metricSource{
@@ -33,7 +33,7 @@ func TestMetricSourceResolve_APIHealthErrorsByClassEmpty(t *testing.T) {
 }
 
 // TestMetricSourceResolve_APIHealthErrorsByClass covers the happy path for
-// apilog.errors_by_class.<class> (audit.go:421).
+// apilog.errors_by_class.<class>.
 func TestMetricSourceResolve_APIHealthErrorsByClass(t *testing.T) {
 	t.Parallel()
 	m := metricSource{
@@ -55,8 +55,7 @@ func TestMetricSourceResolve_APIHealthErrorsByClass(t *testing.T) {
 }
 
 // TestMetricSourceResolve_APIHealthScalarMetrics covers the scalar apilog
-// health metrics: recorded_empty, retry_storm_groups, unsettled_groups
-// (audit.go:410-415).
+// health metrics: recorded_empty, retry_storm_groups, unsettled_groups.
 func TestMetricSourceResolve_APIHealthScalarMetrics(t *testing.T) {
 	t.Parallel()
 	m := metricSource{

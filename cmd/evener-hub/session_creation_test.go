@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
@@ -56,7 +57,7 @@ func TestManagerCreatePostSpawnFailure(t *testing.T) {
 			if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 				t.Fatal(err)
 			}
-			_, err := client.ThreadStart(t.Context(), params)
+			_, err := appwiretest.ThreadStart(t.Context(), client, params)
 			wire, data := wireErrorData(t, err)
 			if wire.Code != appwire.CodeInvalidParams || data.EvenerErrorInfo != appwire.ErrorInvalidParams || data.RetryDisposition == appwire.RetryDispositionAutomatic || data.MutationOutcome == appwire.MutationOutcomeNotAccepted {
 				t.Fatalf("classification changed: %+v data=%+v", wire, data)
@@ -101,7 +102,7 @@ func TestManagerCreatePostSpawnFailureNoSpawnEvidence(t *testing.T) {
 	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatal(err)
 	}
-	_, err := client.ThreadStart(t.Context(), appwire.ThreadStartParams{Model: "openai/gpt-5", CWD: t.TempDir()})
+	_, err := appwiretest.ThreadStart(t.Context(), client, appwire.ThreadStartParams{Model: "openai/gpt-5", CWD: t.TempDir()})
 	wire, data := wireErrorData(t, err)
 	if wire.Code != appwire.CodeUnavailable || data.EvenerErrorInfo != appwire.ErrorHubLaunch || spawned != 1 {
 		t.Fatalf("spawn refusal changed: wire=%+v data=%+v spawned=%d", wire, data, spawned)

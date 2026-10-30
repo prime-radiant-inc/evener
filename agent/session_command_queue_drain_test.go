@@ -27,8 +27,6 @@ func TestSelectDrainNextActionRunsACommandOnlyQueuedEntry(t *testing.T) {
 		{"command-only entry runs", drainInputs{QueuedCommands: 1}, runQueued, false},
 		{"command-only entry runs while awaiting", drainInputs{Awaiting: true, QueuedCommands: 1}, runQueued, true},
 		{"command-only entry outranks a notification", drainInputs{NotificationsPending: true, QueuedCommands: 2}, runQueued, false},
-		{"a follow-up still outranks it", drainInputs{FollowUp: "FOLLOWUP_3660", QueuedCommands: 1}, runFollowUp, false},
-		{"awaiting holds a follow-up but runs the command", drainInputs{Awaiting: true, FollowUp: "FOLLOWUP_3660", QueuedCommands: 1}, runQueued, true},
 		{"command-only entry outranks a deferred continuation", drainInputs{HaveDeferredCont: true, QueuedCommands: 1}, runQueued, true},
 	}
 	for _, tc := range cases {
@@ -59,9 +57,9 @@ func TestProcessInputCompletedTurnDrainsCommandOnlyQueuedInput(t *testing.T) {
 		if calls == 1 {
 			close(started)
 			<-release
-			return toolCallResponse(communicateCall("first-3660", "FIRST_OUTPUT_3660"))
+			return agenttest.ToolCallResponse(communicateCall("first-3660", "FIRST_OUTPUT_3660"))
 		}
-		return toolCallResponse(communicateCall("queued-3660", "QUEUED_OUTPUT_3660"))
+		return agenttest.ToolCallResponse(communicateCall("queued-3660", "QUEUED_OUTPUT_3660"))
 	}}
 	s := newSession(t, withAdapter(adapter), withDir(root), withProfile(newAnthropicProfile("claude-test")),
 		withConfig(SessionConfig{StateDir: root, PluginDirs: []string{pluginDir}}), withoutGitSnapshot())
@@ -127,7 +125,7 @@ func TestProcessInputCompletedTurnDrainsCommandOnlyQueuedInput(t *testing.T) {
 	} else if data := strings.Join(userMessageTexts(requests[1]), "\n"); strings.Count(data, body) != 1 {
 		t.Errorf("next real turn lost or duplicated opaque command expansion: %q", data)
 	}
-	transcript, err := readTranscriptFull(s.TranscriptPath(), "")
+	transcript, err := readTranscriptFull(context.Background(), s.TranscriptPath(), "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { createPortal } from "react-dom";
 import { afterEach, expect, test, vi } from "vitest";
 import { Button } from "../button";
 import { Tooltip } from "./index";
@@ -461,4 +462,36 @@ test("leaving while inactive is still recorded, so a reactivated tooltip dismiss
   fireEvent.mouseLeave(wrapper);
   advance(400);
   expect(screen.queryByRole("tooltip")).toBeNull();
+});
+
+// A tooltip in a Dockview popout must render in that document: the shared
+// scaffold now measures against the trigger's own window, so a bubble left in
+// the opener would be positioned for one viewport and painted in another.
+test("a tooltip inside a popout document portals its bubble there", () => {
+  vi.useFakeTimers();
+  const frame = document.createElement("iframe");
+  document.body.append(frame);
+  const doc = frame.contentDocument;
+  if (!doc) throw new Error("iframe has no contentDocument");
+  const view = render(
+    createPortal(
+      <Tooltip label="Save your changes">
+        <button type="button">Save</button>
+      </Tooltip>,
+      doc.body,
+    ),
+  );
+  try {
+    const trigger = doc.querySelector("button");
+    if (!trigger) throw new Error("popout trigger missing");
+    fireEvent.mouseEnter(trigger);
+    advance(300);
+    const bubble = doc.querySelector('[role="tooltip"]');
+    expect(bubble).not.toBeNull();
+    expect(bubble?.parentElement).toBe(doc.body);
+    expect(document.body.contains(bubble)).toBe(false);
+  } finally {
+    view.unmount();
+    frame.remove();
+  }
 });

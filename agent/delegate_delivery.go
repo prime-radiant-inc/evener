@@ -317,24 +317,14 @@ func (c *delegateTreeController) CompleteDelivery(token delegateDeliveryToken, c
 			// The reply carrying this held result was abandoned.
 			c.restoreHeldClaimLocked(receipt.heldClaim)
 		}
-		if c.stop != nil {
-			if _, tracked := c.stop.deliveries[token]; tracked {
-				delete(c.stop.deliveries, token)
-				c.signalStopProgressLocked()
-			}
-		}
+		untrackStopLocked(c, func(s *delegateStopState) map[delegateDeliveryToken]struct{} { return s.deliveries }, token)
 		c.evidenceVersion++
 		return delegateMutationPlans{}, nil
 	}
 	aggregate := c.durable[receipt.delegateID]
 	if aggregate == nil || len(aggregate.PendingDeliveries) == 0 || aggregate.PendingDeliveries[0].DeliveryID != token.deliveryID {
 		delete(c.deliveries, token.processID)
-		if c.stop != nil {
-			if _, tracked := c.stop.deliveries[token]; tracked {
-				delete(c.stop.deliveries, token)
-				c.signalStopProgressLocked()
-			}
-		}
+		untrackStopLocked(c, func(s *delegateStopState) map[delegateDeliveryToken]struct{} { return s.deliveries }, token)
 		c.evidenceVersion++
 		return delegateMutationPlans{}, errDelegateStaleLease
 	}
@@ -367,12 +357,7 @@ func (c *delegateTreeController) CompleteDelivery(token delegateDeliveryToken, c
 		c.noteDelegateAttentionLocked(receipt.ownerID, attentionID)
 	}
 	delete(c.deliveries, token.processID)
-	if c.stop != nil {
-		if _, tracked := c.stop.deliveries[token]; tracked {
-			delete(c.stop.deliveries, token)
-			c.signalStopProgressLocked()
-		}
-	}
+	untrackStopLocked(c, func(s *delegateStopState) map[delegateDeliveryToken]struct{} { return s.deliveries }, token)
 	c.evidenceVersion++
 	plans := delegateMutationPlans{}
 	if ownerChanged {
@@ -622,10 +607,10 @@ func deliverDelegatePacket(plan delegateDeliveryPlan, receiver delegateDeliveryR
 			err = receiver.armDelegateAttention(attentionID)
 		} else {
 			receiver.notify()
-			plan.controller.notifyStableDelegateAttention()
+			plan.controller.notifyDelegateAttention()
 		}
 	case coldDelegateDeliveryReceiver:
-		plan.controller.notifyStableDelegateAttention()
+		plan.controller.notifyDelegateAttention()
 	}
 	return plans, err
 }
@@ -921,7 +906,7 @@ func (c *delegateTreeController) deliveryReceiverLocked(ownerDelegateID string) 
 	return nil
 }
 
-func (c *delegateTreeController) notifyStableDelegateAttention() {
+func (c *delegateTreeController) notifyDelegateAttention() {
 	if c == nil {
 		return
 	}
@@ -1024,30 +1009,19 @@ func (s *Session) scheduleDelegateDeliveryRetryLocked() {
 	if s.delegateDeliveryRetry.active || s.delegateDeliveryWake || len(s.pendingDelegateDeliveries) == 0 {
 		return
 	}
-	delay := s.delegateDeliveryRetry.delay
-	if delay <= 0 {
-		delay = jobNotificationRetryInitialDelay
-	}
-	s.delegateDeliveryRetry.active = true
-	s.delegateDeliveryRetry.generation++
-	generation := s.delegateDeliveryRetry.generation
+	delay, generation := s.delegateDeliveryRetry.arm()
 	s.sclock().AfterFunc(delay, func() {
 		s.delegateDeliveryMu.Lock()
-		if s.delegateDeliveryRetry.generation != generation {
+		if !s.delegateDeliveryRetry.fire(generation) {
 			s.delegateDeliveryMu.Unlock()
 			return
 		}
-		s.delegateDeliveryRetry.active = false
 		pending := len(s.pendingDelegateDeliveries) != 0
 		shouldWake := pending && !s.delegateDeliveryWake
 		if shouldWake {
 			s.delegateDeliveryWake = true
 		}
-		if pending {
-			s.delegateDeliveryRetry.delay = min(delay*2, jobNotificationRetryMaxDelay)
-		} else {
-			s.delegateDeliveryRetry.delay = jobNotificationRetryInitialDelay
-		}
+		s.delegateDeliveryRetry.settle(pending, delay, jobNotificationRetryMaxDelay)
 		s.delegateDeliveryMu.Unlock()
 		if shouldWake {
 			s.notify()
@@ -1056,9 +1030,7 @@ func (s *Session) scheduleDelegateDeliveryRetryLocked() {
 }
 
 func (s *Session) resetDelegateDeliveryRetryLocked() {
-	s.delegateDeliveryRetry.generation++
-	s.delegateDeliveryRetry.active = false
-	s.delegateDeliveryRetry.delay = jobNotificationRetryInitialDelay
+	s.delegateDeliveryRetry.reset()
 }
 
 func (s *Session) hasPendingDelegateDeliveries() bool {
@@ -1127,10 +1099,7 @@ func (s *Session) flushPendingDelegateDeliveries() error {
 	}
 	s.delegateDeliveryPumping = true
 	s.delegateDeliveryWake = false
-	if s.delegateDeliveryRetry.active {
-		s.delegateDeliveryRetry.generation++
-		s.delegateDeliveryRetry.active = false
-	}
+	s.delegateDeliveryRetry.disarmIfArmed()
 	s.delegateDeliveryMu.Unlock()
 	defer func() {
 		s.delegateDeliveryMu.Lock()
@@ -1236,11 +1205,8 @@ func delegateNotificationContent(plan delegateDeliveryPlan) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		// An update's body is the delegate's own words, with "<" escaped so
-		// they can neither close this frame nor open another. Like a job
-		// output excerpt, only "<" is escaped: a literal entity the delegate
-		// types (say "&amp;") decodes once on clients, a known remainder that
-		// issue #4245 tracks for every notification body.
+		// The shared body codec preserves literal entities and escapes "<"
+		// so the delegate's own words cannot close or forge a frame.
 		kind, body = "update", escapeNotificationBody(message)
 	} else {
 		packet, err := json.Marshal(plan.packet)

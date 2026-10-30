@@ -32,9 +32,6 @@ func TestOutputPageSelectsLatestAndBackwardRanges(t *testing.T) {
 		read func(*int64, int) (OutputWindowSnapshot, error)
 	}{
 		{"store", output.ReadPage},
-		{"path", func(before *int64, maxBytes int) (OutputWindowSnapshot, error) {
-			return ReadOutputPageSnapshot(path, before, maxBytes)
-		}},
 		{"descriptor", func(before *int64, maxBytes int) (OutputWindowSnapshot, error) {
 			return ReadOutputPageSnapshotFromFile(path, f, before, maxBytes)
 		}},
@@ -124,9 +121,6 @@ func TestOutputPagePreservesRawUnicodeAndMalformedBytes(t *testing.T) {
 			for _, read := range []func(*int64, int) (OutputWindowSnapshot, error){
 				output.ReadPage,
 				func(before *int64, maxBytes int) (OutputWindowSnapshot, error) {
-					return ReadOutputPageSnapshot(path, before, maxBytes)
-				},
-				func(before *int64, maxBytes int) (OutputWindowSnapshot, error) {
 					return ReadOutputPageSnapshotFromFile(path, f, before, maxBytes)
 				},
 			} {
@@ -153,9 +147,6 @@ func TestOutputPageEmptyRetainedInterval(t *testing.T) {
 	t.Cleanup(func() { _ = f.Close() })
 	for _, read := range []func(*int64, int) (OutputWindowSnapshot, error){
 		func(before *int64, maxBytes int) (OutputWindowSnapshot, error) {
-			return ReadOutputPageSnapshot(path, before, maxBytes)
-		},
-		func(before *int64, maxBytes int) (OutputWindowSnapshot, error) {
 			return ReadOutputPageSnapshotFromFile(path, f, before, maxBytes)
 		},
 	} {
@@ -163,26 +154,6 @@ func TestOutputPageEmptyRetainedInterval(t *testing.T) {
 		if err != nil || got.Start != 37 || got.End != 37 || got.TotalBytes != 37 || got.RetainedStart != 37 || len(got.Content) != 0 {
 			t.Fatalf("snapshot = %+v, error %v, want empty [37,37), total/floor 37", got, err)
 		}
-	}
-}
-
-func TestOutputPageSnapshotRetriesOnlyOnce(t *testing.T) {
-	t.Parallel()
-	fs := &snapshotChangingFS{
-		Fs:   afero.NewMemMapFs(),
-		path: "/job.log",
-		replacements: []snapshotReplacement{
-			{content: []byte("BBBB"), total: 8, retainedStart: 4},
-			{content: []byte("CCCC"), total: 12, retainedStart: 8},
-		},
-	}
-	mustWriteSnapshotFixture(t, fs.Fs, fs.path, []byte("AAAA"), 4, 0)
-	got, err := readOutputPageSnapshotFs(fs, fs.path, nil, 4)
-	if !errors.Is(err, ErrOutputChangedDuringRead) || len(got.Content) != 0 {
-		t.Fatalf("twice changed page = %+v, error %v, want change without bytes", got, err)
-	}
-	if len(fs.replacements) != 0 || fs.outputOpens != 6 {
-		t.Fatalf("attempt evidence = %d pending changes, %d output opens, want 0, 6", len(fs.replacements), fs.outputOpens)
 	}
 }
 
@@ -225,54 +196,39 @@ func TestOutputPageStoreHoldsMutexAcrossSelectionAndRead(t *testing.T) {
 func TestOutputPageSnapshotConcurrentProductionAppendAndPrune(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		name  string
-		cap   int64
-		floor int64
+		name string
+		cap  int64
 	}{
-		{"append", 1024, 0},
-		{"prune", 4, 4},
+		{"append", 1024},
+		{"prune", 4},
 	} {
-		for _, api := range []string{"path", "descriptor"} {
-			t.Run(tc.name+"/"+api, func(t *testing.T) {
-				path := filepath.Join(t.TempDir(), "job.log")
-				output, err := CreateOutputNoSync(path, tc.cap)
-				if err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() { _ = output.Close() })
-				appendOutput(t, output, "AAAA")
-				f, err := os.Open(path)
-				if err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() { _ = f.Close() })
-				gate := newPageMetadataGate(t, path)
-				done := make(chan pageReadResult, 1)
-				go func() {
-					var snapshot OutputWindowSnapshot
-					var readErr error
-					if api == "path" {
-						snapshot, readErr = readOutputPageSnapshotFs(gate, path, nil, 4)
-					} else {
-						snapshot, readErr = readOutputPageSnapshotFromFileOnce(gate, path, f, nil, 4)
-					}
-					done <- pageReadResult{snapshot, readErr}
-				}()
-				awaitPageReadGate(t, gate.entered)
-				appendOutput(t, output, "BBBB")
-				gate.unblock()
-				got := awaitPageReadResult(t, done)
-				if api == "descriptor" {
-					if !errors.Is(got.err, errOutputChanged) || len(got.snapshot.Content) != 0 {
-						t.Fatalf("changed descriptor = %+v, error %v, want change without bytes", got.snapshot, got.err)
-					}
-					return
-				}
-				if got.err != nil || got.snapshot.Start != 4 || got.snapshot.End != 8 || got.snapshot.TotalBytes != 8 || got.snapshot.RetainedStart != tc.floor || string(got.snapshot.Content) != "BBBB" {
-					t.Fatalf("retried latest page = %+v, error %v, want BBBB [4,8), total 8, floor %d", got.snapshot, got.err, tc.floor)
-				}
-			})
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "job.log")
+			output, err := CreateOutputNoSync(path, tc.cap)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = output.Close() })
+			appendOutput(t, output, "AAAA")
+			f, err := os.Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = f.Close() })
+			gate := newPageMetadataGate(t, path)
+			done := make(chan pageReadResult, 1)
+			go func() {
+				snapshot, readErr := readOutputPageSnapshotFromFileOnce(gate, path, f, nil, 4)
+				done <- pageReadResult{snapshot, readErr}
+			}()
+			awaitPageReadGate(t, gate.entered)
+			appendOutput(t, output, "BBBB")
+			gate.unblock()
+			got := awaitPageReadResult(t, done)
+			if !errors.Is(got.err, errOutputChanged) || len(got.snapshot.Content) != 0 {
+				t.Fatalf("changed descriptor = %+v, error %v, want change without bytes", got.snapshot, got.err)
+			}
+		})
 	}
 }
 

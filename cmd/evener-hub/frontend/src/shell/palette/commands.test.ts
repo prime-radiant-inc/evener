@@ -3,13 +3,14 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { IDBFactory } from "fake-indexeddb";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { appliedReceipt } from "../../mutationReceiptTestUtils";
+import { ALL_CAPABILITIES as CAPS } from "../../threadTestUtils";
 import "../../panes/sessionPanels";
 import { QUEUE_EMPTY, QUEUE_UNAVAILABLE, STEER_UNAVAILABLE } from "@evener/appwire-client";
-import { keyID } from "@evener/appwire-client/state/navigation";
 import { flushPendingTurnsProjectionForTests } from "../../panes/session/composer/queue/testing/flushPendingTurnsProjection";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { useCommandCatalog } from "../../stores/commandCatalog";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
@@ -57,22 +58,6 @@ afterAll(
 beforeAll(() => {
   installLocalStorage(new MemoryStorage());
 });
-
-const CAPS: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
 
 const NO_CAPS: ThreadCapabilities = {
   send: false,
@@ -166,6 +151,7 @@ function runContext(overrides: Partial<PaletteRunContext> = {}): PaletteRunConte
     ...buildPaletteContext(),
     toasts: { push: (kind, text) => pushes.push({ kind, text }) },
     ui: { clearToSearch: vi.fn(), showHelp: vi.fn() },
+    needsYou: { next: vi.fn() },
     ...overrides,
   };
 }
@@ -244,7 +230,7 @@ test.each(["idle", "active", "ended", "closed", "notLoaded"] as const)(
 
 beforeEach(() => {
   globalThis.indexedDB = new IDBFactory();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   topNotesStore.getState().resetForTests();
   useCommandCatalog.setState(useCommandCatalog.getInitialState());
@@ -498,12 +484,7 @@ test("/steer is blocked with the floor's message and makes no wire call when the
 test("/steer sends turn/steer when a turn is active", async () => {
   const fake = connectFake();
   fake.on("turn/steer", (params) => ({
-    receipt: {
-      clientMutationId: params.clientMutationId,
-      disposition: "applied",
-      threadId: "thread_a",
-      projectionState: "reflected",
-    },
+    receipt: appliedReceipt(params.clientMutationId, "thread_a"),
   }));
   focusSession("ref_a");
   seedModel("ref_a", { status: { type: "active" }, activeTurnId: "t1" });
@@ -518,12 +499,7 @@ test("/steer sends turn/steer when a turn is active", async () => {
 test("/steer sends turn/steer while the session is active with no open turn row yet", async () => {
   const fake = connectFake();
   fake.on("turn/steer", (params) => ({
-    receipt: {
-      clientMutationId: params.clientMutationId,
-      disposition: "applied",
-      threadId: "thread_a",
-      projectionState: "reflected",
-    },
+    receipt: appliedReceipt(params.clientMutationId, "thread_a"),
   }));
   focusSession("ref_a");
   seedModel("ref_a", { status: { type: "active" }, activeTurnId: undefined });
@@ -626,12 +602,7 @@ test("/queue and /drain-as-steer each block with their own no-active-turn messag
 test("/interrupt sends turn/interrupt for a working session whose turn has no name yet", async () => {
   const fake = connectFake();
   fake.on("turn/interrupt", (params) => ({
-    receipt: {
-      clientMutationId: params.clientMutationId,
-      disposition: "applied",
-      threadId: "thread_a",
-      projectionState: "reflected",
-    },
+    receipt: appliedReceipt(params.clientMutationId, "thread_a"),
   }));
   focusSession("ref_a");
   seedModel("ref_a", { status: { type: "active" }, activeTurnId: undefined });
@@ -646,7 +617,7 @@ test("/interrupt sends turn/interrupt for a working session whose turn has no na
 
 // The palette used to answer "is a turn in flight" itself and refuse. Only the
 // daemon knows: it answers Conflict for a genuine mid-turn switch
-// (server/appwire_runtime.go's handleAppThreadModelSet) and resumes a cold
+// (server/appwire_thread_settings.go's handleAppThreadModelSet) and resumes a cold
 // session for everyone else (app_model.go's setThreadModelWithResume).
 test("/model sends thread/model/set even while a turn is in progress, letting the daemon rule", async () => {
   const fake = connectFake();
@@ -799,166 +770,12 @@ test("next-needs-you is a global command", () => {
   expect(cmd("next-needs-you").scope).toBe("global");
 });
 
-test("next-needs-you opens the first needs-you session when nothing is focused", () => {
-  const key = { kind: "section", section: "needs_you", offset: 0, limit: 50 } as const;
-  navigationStore.setState({
-    mode: "v3",
-    visibleResourceKeys: new Set([keyID(key)]),
-    resources: new Map([
-      [
-        keyID(key),
-        {
-          key,
-          data: {
-            generation_id: "test",
-            revision: 1,
-            sessions: [
-              {
-                ref: "local:ny1",
-                host_id: "local",
-                session_id: "ny1",
-                title: "A",
-                project: "P",
-                state: "awaiting",
-                kind: "session",
-                live: true,
-                children: [],
-              },
-              {
-                ref: "local:ny2",
-                host_id: "local",
-                session_id: "ny2",
-                title: "B",
-                project: "P",
-                state: "awaiting",
-                kind: "session",
-                live: true,
-                children: [],
-              },
-            ],
-            remaining: 0,
-            truncated: false,
-          },
-          loadedRevision: 1,
-          targetRevision: 1,
-          forceToken: 0,
-          etag: '"test"',
-          loading: false,
-          stale: false,
-          error: null,
-          generationID: "test",
-        },
-      ],
-    ]),
-  });
+test("next-needs-you delegates to the shell's one needs-you action", () => {
+  const next = vi.fn();
 
-  cmd("next-needs-you").run?.(runContext());
+  cmd("next-needs-you").run?.(runContext({ needsYou: { next } }));
 
-  expect(window.location.pathname).toBe("/s/local%3Any1");
-});
-
-test("v1 next-needs-you ignores stale legacy tree rows", () => {
-  const key = { kind: "section", section: "needs_you", offset: 0, limit: 50 } as const;
-  navigationStore.setState({
-    mode: "v3",
-    visibleResourceKeys: new Set([keyID(key)]),
-    resources: new Map([
-      [
-        keyID(key),
-        {
-          key,
-          data: {
-            generation_id: "generation_test",
-            revision: 1,
-            sessions: [
-              {
-                ref: "local:navigation",
-                title: "Navigation",
-                host_id: "local",
-                session_id: "navigation",
-                project: "",
-                state: "awaiting",
-                kind: "session",
-                live: false,
-                children: [],
-              },
-            ],
-            remaining: 0,
-            truncated: false,
-          },
-          loadedRevision: 1,
-          targetRevision: 1,
-          forceToken: 0,
-          etag: "n",
-          loading: false,
-          stale: false,
-          error: null,
-          generationID: "generation_test",
-        },
-      ],
-    ]),
-  });
-  cmd("next-needs-you").run?.(runContext());
-  expect(window.location.pathname).toBe("/s/local%3Anavigation");
-});
-
-test("next-needs-you cycles from the focused session to the next needs-you session, wrapping", () => {
-  const key = { kind: "section", section: "needs_you", offset: 0, limit: 50 } as const;
-  navigationStore.setState({
-    mode: "v3",
-    visibleResourceKeys: new Set([keyID(key)]),
-    resources: new Map([
-      [
-        keyID(key),
-        {
-          key,
-          data: {
-            generation_id: "test",
-            revision: 1,
-            sessions: [
-              {
-                ref: "local:ny1",
-                host_id: "local",
-                session_id: "ny1",
-                title: "A",
-                project: "P",
-                state: "awaiting",
-                kind: "session",
-                live: true,
-                children: [],
-              },
-              {
-                ref: "local:ny2",
-                host_id: "local",
-                session_id: "ny2",
-                title: "B",
-                project: "P",
-                state: "awaiting",
-                kind: "session",
-                live: true,
-                children: [],
-              },
-            ],
-            remaining: 0,
-            truncated: false,
-          },
-          loadedRevision: 1,
-          targetRevision: 1,
-          forceToken: 0,
-          etag: '"test"',
-          loading: false,
-          stale: false,
-          error: null,
-          generationID: "test",
-        },
-      ],
-    ]),
-  });
-  focusSession("local:ny2");
-
-  cmd("next-needs-you").run?.(runContext());
-
-  expect(window.location.pathname).toBe("/s/local%3Any1");
+  expect(next).toHaveBeenCalledTimes(1);
 });
 
 // --- /project, /copy-id, /tasks, /status ---

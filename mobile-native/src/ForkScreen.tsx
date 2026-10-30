@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { Alert } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { MobileConversation } from "./projectedRows";
-import { createConversationService } from "../../mobile/src/services/conversation";
+import { createConversationService } from "./conversation/services/conversation";
 import { useConnection } from "./ConnectionProvider";
 import { ForkEditor } from "./ForkEditor";
 import { ForkActions } from "./forkActions";

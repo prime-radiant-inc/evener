@@ -18,6 +18,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
@@ -61,8 +62,8 @@ func TestTranscriptJSONLMaxLineCoversMaxImagePayload(t *testing.T) {
 	)
 	encodedImageBytes := ((maxImageBytes + 2) / 3) * 4
 	encodedPayloadBytes := maxImages*encodedImageBytes + jsonHeadroom
-	if transcriptJSONLMaxLineBytes < encodedPayloadBytes {
-		t.Fatalf("transcriptJSONLMaxLineBytes=%d, want at least %d", transcriptJSONLMaxLineBytes, encodedPayloadBytes)
+	if transcript.DefaultMaxLineBytes < encodedPayloadBytes {
+		t.Fatalf("transcript.DefaultMaxLineBytes=%d, want at least %d", transcript.DefaultMaxLineBytes, encodedPayloadBytes)
 	}
 }
 
@@ -479,7 +480,7 @@ func TestTranscriptWriter_LargeEntry(t *testing.T) {
 	tw.Close()
 
 	// Read back and verify
-	_, entries, _, err := readTranscript(path, "")
+	_, entries, _, err := readTranscript(context.Background(), path, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -530,7 +531,7 @@ func TestReadTranscript_ReturnsHeaderAndEntries(t *testing.T) {
 	}
 	w.Close()
 
-	gotHeader, entries, _, err := readTranscript(path, "")
+	gotHeader, entries, _, err := readTranscript(context.Background(), path, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -591,7 +592,7 @@ func TestReadTranscript_PartialLastLine(t *testing.T) {
 	f.WriteString(`{"kind":"entry","seq":3,"turn":{"kind":"ASSISTANT"`)
 	f.Close()
 
-	gotHeader, entries, _, err := readTranscript(path, "")
+	gotHeader, entries, _, err := readTranscript(context.Background(), path, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -620,7 +621,7 @@ func TestReadTranscript_EmptyFile(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	_, _, _, err := readTranscript(path, "")
+	_, _, _, err := readTranscript(context.Background(), path, "")
 	if err == nil {
 		t.Fatal("expected error for empty file, got nil")
 	}
@@ -644,7 +645,7 @@ func TestReadTranscript_HeaderOnly(t *testing.T) {
 	}
 	w.Close()
 
-	gotHeader, entries, _, err := readTranscript(path, "")
+	gotHeader, entries, _, err := readTranscript(context.Background(), path, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -699,7 +700,7 @@ func TestOpenTranscriptWriter_AppendsToExisting(t *testing.T) {
 	}
 
 	// Read back and verify.
-	_, entries, _, err := readTranscript(path, "")
+	_, entries, _, err := readTranscript(context.Background(), path, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -760,7 +761,7 @@ func TestOpenTranscriptWriter_TruncatesPartialLine(t *testing.T) {
 	}
 
 	// Read back and verify.
-	_, entries, _, err := readTranscript(path, "")
+	_, entries, _, err := readTranscript(context.Background(), path, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -808,7 +809,7 @@ func TestOpenTranscriptWriter_HeaderOnlyFile(t *testing.T) {
 	}
 
 	// Read back and verify.
-	_, entries, _, err := readTranscript(path, "")
+	_, entries, _, err := readTranscript(context.Background(), path, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -956,13 +957,13 @@ func TestSession_TranscriptCreatedOnNewSession(t *testing.T) {
 	defer sess.Close()
 
 	// Verify the transcript file exists at the expected path.
-	tpath := filepath.Join(stateDir, sessionsSubdir, sess.ID()+".transcript.jsonl")
+	tpath := schema.SessionTranscriptPath(stateDir, sess.ID())
 	if _, err := os.Stat(tpath); os.IsNotExist(err) {
 		t.Fatalf("transcript file not created at %s", tpath)
 	}
 
 	// Read it back and verify the header.
-	header, entries, _, err := readTranscript(tpath, "")
+	header, entries, _, err := readTranscript(context.Background(), tpath, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -996,11 +997,7 @@ func TestSession_NoTranscriptWithoutStateDir(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 
 	// The transcript field should be nil.
 	if sess.transcript != nil {
@@ -1018,7 +1015,7 @@ func TestSession_TranscriptRecordsTurns(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return finalResponse("hello back")
+				return agenttest.FinalResponse("hello back")
 			},
 		},
 	})
@@ -1042,8 +1039,8 @@ func TestSession_TranscriptRecordsTurns(t *testing.T) {
 	sess.Close()
 
 	// Read the transcript and verify entries were recorded.
-	tpath := filepath.Join(stateDir, sessionsSubdir, sess.ID()+".transcript.jsonl")
-	header, entries, _, err := readTranscript(tpath, "")
+	tpath := schema.SessionTranscriptPath(stateDir, sess.ID())
+	header, entries, _, err := readTranscript(context.Background(), tpath, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -1116,8 +1113,8 @@ func TestSession_TranscriptClosedOnSessionClose(t *testing.T) {
 	sess.Close()
 
 	// After Close, the transcript file should be readable (properly flushed).
-	tpath := filepath.Join(stateDir, sessionsSubdir, sess.ID()+".transcript.jsonl")
-	_, _, _, err = readTranscript(tpath, "")
+	tpath := schema.SessionTranscriptPath(stateDir, sess.ID())
+	_, _, _, err = readTranscript(context.Background(), tpath, "")
 	if err != nil {
 		t.Fatalf("transcript not readable after Close: %v", err)
 	}
@@ -1145,17 +1142,14 @@ func TestSubagent_TranscriptHasParentLinkage(t *testing.T) {
 	defer sess.Close()
 
 	// Drain the event channel so Close doesn't block.
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	// Read the transcript and verify parent linkage fields.
-	files, _ := filepath.Glob(filepath.Join(stateDir, sessionsSubdir, "*.transcript.jsonl"))
+	files, _ := filepath.Glob(filepath.Join(stateDir, schema.SessionsSubdir, "*.transcript.jsonl"))
 	if len(files) != 1 {
 		t.Fatalf("expected 1 transcript, got %d", len(files))
 	}
-	hdr, _, _, err := readTranscript(files[0], "")
+	hdr, _, _, err := readTranscript(context.Background(), files[0], "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1186,16 +1180,13 @@ func TestRootSession_TranscriptHasEmptyParentFields(t *testing.T) {
 	}
 	defer sess.Close()
 
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
-	files, _ := filepath.Glob(filepath.Join(stateDir, sessionsSubdir, "*.transcript.jsonl"))
+	files, _ := filepath.Glob(filepath.Join(stateDir, schema.SessionsSubdir, "*.transcript.jsonl"))
 	if len(files) != 1 {
 		t.Fatalf("expected 1 transcript, got %d", len(files))
 	}
-	hdr, _, _, err := readTranscript(files[0], "")
+	hdr, _, _, err := readTranscript(context.Background(), files[0], "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1222,10 +1213,7 @@ func TestSubagent_DepthSetFromConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sess.Close()
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	if sess.depth != 3 {
 		t.Errorf("sess.depth = %d, want 3", sess.depth)
@@ -1264,7 +1252,7 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 			},
 			// Round 1, after tool result: finish.
 			func(req llm.Request) llm.Response {
-				return finalResponse("finished reading")
+				return agenttest.FinalResponse("finished reading")
 			},
 			// Round 2, input 2: read again.
 			func(req llm.Request) llm.Response {
@@ -1283,12 +1271,12 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 			},
 			// Round 2, after tool result: finish.
 			func(req llm.Request) llm.Response {
-				return finalResponse("done with second read")
+				return agenttest.FinalResponse("done with second read")
 			},
 			// Some context-management paths can trigger one more completion round
 			// after compaction before returning the final answer.
 			func(req llm.Request) llm.Response {
-				return finalResponse("done with second read")
+				return agenttest.FinalResponse("done with second read")
 			},
 		},
 	})
@@ -1330,8 +1318,7 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 	// TRIPWIRE: every model step here is scripted and answered in-process with
 	// no I/O; the full two-input lifecycle normally completes in well under a
 	// second. 30s only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 
 	// First input: reads big file, fills context.
 	out1, err := sess.ProcessInput(ctx, "read the big file", nil)
@@ -1366,8 +1353,8 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 	}
 
 	// --- Read the transcript ---
-	tpath := filepath.Join(stateDir, sessionsSubdir, sess.ID()+".transcript.jsonl")
-	hdr, entries, _, err := readTranscript(tpath, "")
+	tpath := schema.SessionTranscriptPath(stateDir, sess.ID())
+	hdr, entries, _, err := readTranscript(context.Background(), tpath, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -1465,7 +1452,7 @@ func TestSession_StateDirSessionsPathConflictFailsClosedAtDelegateBootstrap(t *t
 	t.Parallel()
 	stateDir := t.TempDir()
 
-	if err := os.WriteFile(filepath.Join(stateDir, sessionsSubdir), []byte("not a directory"), 0o644); err != nil {
+	if err := os.WriteFile(schema.SessionsDir(stateDir), []byte("not a directory"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1474,7 +1461,7 @@ func TestSession_StateDirSessionsPathConflictFailsClosedAtDelegateBootstrap(t *t
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return finalResponse("first")
+				return agenttest.FinalResponse("first")
 			},
 		},
 	})
@@ -1485,9 +1472,6 @@ func TestSession_StateDirSessionsPathConflictFailsClosedAtDelegateBootstrap(t *t
 	if err == nil {
 		sess.Close()
 		t.Fatal("NewSession succeeded with unusable state sessions path")
-	}
-	if !strings.Contains(err.Error(), "scan legacy delegate state") || !strings.Contains(err.Error(), "not a directory") {
-		t.Fatalf("NewSession error = %v, want fail-closed delegate bootstrap state-dir failure", err)
 	}
 }
 
@@ -1532,8 +1516,8 @@ func TestReadTranscript_RejectsCorruptInteriorLines(t *testing.T) {
 	f.WriteString("\n")
 	f.Close()
 
-	_, entries, skipped, err := readTranscript(path, "")
-	if err == nil || !strings.Contains(err.Error(), "parsing transcript line") {
+	_, entries, skipped, err := readTranscript(context.Background(), path, "")
+	if !isTranscriptLineError(err) {
 		t.Fatalf("readTranscript = entries %d skipped %d err %v, want corruption error", len(entries), skipped, err)
 	}
 }
@@ -1555,7 +1539,7 @@ func TestReadTranscript_ZeroCorruptLinesOnCleanFile(t *testing.T) {
 	w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("msg")))
 	w.Close()
 
-	_, entries, skipped, err := readTranscript(path, "")
+	_, entries, skipped, err := readTranscript(context.Background(), path, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -1610,7 +1594,7 @@ func TestOpenTranscriptWriter_SingleFileHandle(t *testing.T) {
 	w2.Close()
 
 	// Read back: should have header + 3 clean entries, no partial line.
-	_, entries, skipped, err := readTranscript(path, "")
+	_, entries, skipped, err := readTranscript(context.Background(), path, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -1643,8 +1627,8 @@ func TestSession_TranscriptHeaderContainsSystemPrompt(t *testing.T) {
 	}
 	defer sess.Close()
 
-	tpath := filepath.Join(stateDir, sessionsSubdir, sess.ID()+".transcript.jsonl")
-	header, _, _, err := readTranscript(tpath, "")
+	tpath := schema.SessionTranscriptPath(stateDir, sess.ID())
+	header, _, _, err := readTranscript(context.Background(), tpath, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -1692,7 +1676,7 @@ func TestTranscriptWriter_PeriodicSync_CloseFlushesDirtyWrites(t *testing.T) {
 	}
 
 	// All entries must be readable.
-	_, entries, _, err := readTranscript(path, "")
+	_, entries, _, err := readTranscript(context.Background(), path, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -1781,7 +1765,7 @@ func TestTranscriptWriter_PeriodicSync_ConcurrentAppendWithInterval(t *testing.T
 		t.Fatalf("Close: %v", err)
 	}
 
-	_, entries, _, err := readTranscript(path, "")
+	_, entries, _, err := readTranscript(context.Background(), path, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -1838,8 +1822,8 @@ func TestTranscriptReadersRejectCorruptNonFinalLine(t *testing.T) {
 	if _, err := readStrictChildTranscript(path, "", "child-session", 0); err == nil || !strings.Contains(err.Error(), "corrupt_child_transcript") {
 		t.Fatalf("strict read error = %v, want corrupt_child_transcript", err)
 	}
-	_, entries, skipped, err := readTranscript(path, "")
-	if err == nil || !strings.Contains(err.Error(), "parsing transcript line") {
+	_, entries, skipped, err := readTranscript(context.Background(), path, "")
+	if !isTranscriptLineError(err) {
 		t.Fatalf("readTranscript = entries %d skipped %d err %v, want corruption error", len(entries), skipped, err)
 	}
 }
@@ -1890,8 +1874,8 @@ func TestStrictChildTranscriptCorruptBodyPrecedesSessionMismatch(t *testing.T) {
 	if _, err := readStrictChildTranscript(path, "", "child-session", 0); err == nil || !strings.Contains(err.Error(), "corrupt_child_transcript") {
 		t.Fatalf("strict read error = %v, want corrupt_child_transcript", err)
 	}
-	_, entries, skipped, err := readTranscript(path, "")
-	if err == nil || !strings.Contains(err.Error(), "parsing transcript line") {
+	_, entries, skipped, err := readTranscript(context.Background(), path, "")
+	if !isTranscriptLineError(err) {
 		t.Fatalf("readTranscript = entries %d skipped %d err %v, want corruption error", len(entries), skipped, err)
 	}
 }
@@ -1920,7 +1904,7 @@ func TestStrictChildTranscriptRejectsMalformedHeaderShape(t *testing.T) {
 			if _, err := readStrictChildTranscript(path, "", "child-session", 0); !errors.Is(err, transcript.ErrUnsupportedFormat) {
 				t.Fatalf("strict read error = %v, want ErrUnsupportedFormat", err)
 			}
-			if _, _, _, err := readTranscript(path, ""); !errors.Is(err, transcript.ErrUnsupportedFormat) {
+			if _, _, _, err := readTranscript(context.Background(), path, ""); !errors.Is(err, transcript.ErrUnsupportedFormat) {
 				t.Fatalf("readTranscript error = %v, want ErrUnsupportedFormat", err)
 			}
 		})
@@ -1966,8 +1950,8 @@ func TestStrictChildTranscriptRejectsOversizedBodyLine(t *testing.T) {
 	if _, err := readStrictChildTranscript(path, "", "child-session", 64); err == nil || !strings.Contains(err.Error(), "corrupt_child_transcript") {
 		t.Fatalf("strict read error = %v, want corrupt_child_transcript", err)
 	}
-	_, _, _, err = readTranscript(path, "")
-	if err == nil || !strings.Contains(err.Error(), "parsing transcript line") {
+	_, _, _, err = readTranscript(context.Background(), path, "")
+	if !isTranscriptLineError(err) {
 		t.Fatalf("readTranscript error = %v, want corruption error", err)
 	}
 }
@@ -2007,7 +1991,7 @@ func TestReadSessionTranscriptRejectsInvalidSourceCombinationsBeforeOpeningTrans
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			before := openCount
-			_, err := execReadSessionTranscript(deps, tc.args)
+			_, err := execReadSessionTranscript(context.Background(), deps, tc.args)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("error = %v, want %q", err, tc.want)
 			}
@@ -2072,7 +2056,7 @@ func writeTestAPILog(t *testing.T, bucketDir, sessionID string, records ...apilo
 
 func executeReadSessionTranscript(t *testing.T, deps *toolDeps, args map[string]any) tool.ExecResult {
 	t.Helper()
-	value, err := execReadSessionTranscript(deps, args)
+	value, err := execReadSessionTranscript(context.Background(), deps, args)
 	if err != nil {
 		return tool.ExecResult{ToolName: "read_transcript", IsError: true, Output: err.Error(), FullOutput: err.Error(), Err: err}
 	}
@@ -2286,7 +2270,7 @@ func TestReadSessionTranscriptAPILogSourceErrorsAreClear(t *testing.T) {
 	writeFindSession(t, dir, findMetaSpec{id: sessionID, updated: time.Now().UTC()}, "semantic turn")
 	deps := &toolDeps{stateDir: dir, sessionID: sessionID}
 
-	if _, err := execReadSessionTranscript(deps, map[string]any{"source": apiLogSource}); err == nil || !strings.Contains(err.Error(), "open API log") {
+	if _, err := execReadSessionTranscript(context.Background(), deps, map[string]any{"source": apiLogSource}); err == nil || !strings.Contains(err.Error(), "open API log") {
 		t.Fatalf("missing API-log error = %v, want open API log", err)
 	}
 
@@ -2304,7 +2288,7 @@ func TestReadSessionTranscriptAPILogSourceErrorsAreClear(t *testing.T) {
 		t.Fatalf("close corrupt API log: %v", err)
 	}
 
-	if _, err := execReadSessionTranscript(deps, map[string]any{"source": apiLogSource}); err == nil || !strings.Contains(err.Error(), "read API log") {
+	if _, err := execReadSessionTranscript(context.Background(), deps, map[string]any{"source": apiLogSource}); err == nil || !strings.Contains(err.Error(), "read API log") {
 		t.Fatalf("corrupt API-log error = %v, want read API log", err)
 	}
 }
@@ -2363,7 +2347,7 @@ func TestReadSessionTranscriptAPILogScansHonorCancellation(t *testing.T) {
 				return reader, nil
 			}
 
-			_, err := execReadSessionTranscriptWithContext(ctx, deps, tc.args)
+			_, err := execReadSessionTranscript(ctx, deps, tc.args)
 			if !errors.Is(err, context.Canceled) {
 				t.Fatalf("API-log %s error = %v, want context.Canceled", tc.name, err)
 			}
@@ -2397,7 +2381,7 @@ func TestReadSessionTranscriptDefaultSourcesNeverOpenAPILog(t *testing.T) {
 		if format != "" {
 			args["format"] = format
 		}
-		if _, err := execReadSessionTranscript(deps, args); err != nil {
+		if _, err := execReadSessionTranscript(context.Background(), deps, args); err != nil {
 			t.Fatalf("default transcript format %q: %v", format, err)
 		}
 	}
@@ -2422,7 +2406,7 @@ func TestReadSessionTranscriptAttemptRequiresExplicitAPILogSource(t *testing.T) 
 	}
 	t.Cleanup(func() { openAPILogFile = originalOpen })
 
-	_, err := execReadSessionTranscript(deps, map[string]any{"attempt_id": attempt.AttemptID})
+	_, err := execReadSessionTranscript(context.Background(), deps, map[string]any{"attempt_id": attempt.AttemptID})
 	if err == nil || err.Error() != "invalid_request: attempt_id requires source=api_log" {
 		t.Fatalf("attempt without explicit API-log source error = %v", err)
 	}

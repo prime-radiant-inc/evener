@@ -44,11 +44,11 @@ func FuzzSummarizeToolResult(f *testing.F) {
 		args := json.RawMessage(argsStr)
 
 		// --- summarizeToolResult: bracketed, newline-free, deterministic. ---
-		summary := summarizeToolResult(toolName, content, args)
+		summary := summarizeToolResult(toolName, content, false, args)
 		if !strings.HasPrefix(summary, "[") || !strings.HasSuffix(summary, "]") {
 			t.Fatalf("summary not bracketed: %q (tool=%q)", summary, toolName)
 		}
-		if again := summarizeToolResult(toolName, content, args); again != summary {
+		if again := summarizeToolResult(toolName, content, false, args); again != summary {
 			t.Fatalf("summarizeToolResult not deterministic: %q vs %q", summary, again)
 		}
 

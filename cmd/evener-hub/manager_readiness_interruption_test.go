@@ -23,7 +23,7 @@ import (
 	daemonserver "primeradiant.com/evener/server"
 )
 
-// The proxy holds only the real answer-continuation response after the daemon
+// The proxy holds only the first real answer-continuation response after the daemon
 // produced it. Every other frame, including notifications, can pass. The query
 // and response must carry the exact saved execution turns observed by the test.
 type readinessContinuationGate struct {
@@ -34,6 +34,7 @@ type readinessContinuationGate struct {
 	release             chan struct{}
 	settled             chan error
 	once                sync.Once
+	held                bool
 }
 
 func newReadinessContinuationGate() *readinessContinuationGate {
@@ -124,6 +125,17 @@ func (g *readinessContinuationGate) proxy(t *testing.T, daemon *httptest.Server,
 							t.Errorf("daemon returned no matching real continuation verdict: %+v", read.AnswerContinuation)
 							cancel()
 							return
+						}
+						g.mu.Lock()
+						hold := !g.held
+						g.held = true
+						g.mu.Unlock()
+						if !hold {
+							if err := dst.Write(ctx, kind, frame); err != nil {
+								cancel()
+								return
+							}
+							continue
 						}
 						g.entered <- read
 						forwarding.Go(func() {
@@ -217,8 +229,8 @@ type readinessInterruptionFixture struct {
 
 func newReadinessInterruptionFixture(t *testing.T) *readinessInterruptionFixture {
 	t.Helper()
-	// Tripwire for fixture startup, question/answer execution and one existing
-	// two-second operation budget, not a pacing mechanism.
+	// Tripwire for fixture startup, question/answer execution and the existing
+	// two-second operation budget plus recovery spacing, not a pacing mechanism.
 	ctx, cancel := context.WithTimeout(t.Context(), 18*time.Second)
 	workerProvider, managerProvider := &readinessWorkerProvider{}, &readinessManagerProvider{}
 	newSession := func(adapter llm.ProviderAdapter, manager bool) *agent.Session {
@@ -246,7 +258,8 @@ func newReadinessInterruptionFixture(t *testing.T) *readinessInterruptionFixture
 			t.Fatal(err)
 		}
 		daemon.ReplaceAppIdentity(identity.WithBootGeneration("7@readiness"), nil)
-		daemon.SetStatus(daemonserver.StatusInfo{SessionID: session.ID(), State: "idle"})
+		daemon.UpdateSessionInfo(session.ID(), "", "")
+		daemon.SetState("idle")
 		daemon.SetSessionTools(func() *agent.Session { return session })
 		daemon.SetThreadWatchesListFunc(session.ListActivityWatches)
 		daemon.WireTranscriptHistory(session)
@@ -452,7 +465,7 @@ func (f *readinessInterruptionFixture) lateAndHuman(t *testing.T, id string, rea
 		t.Fatalf("late real transport frame did not settle: %v", f.ctx.Err())
 	}
 	row := f.awaitEnded(t, id)
-	if row.Watch.EndReason != reason || acceptanceWatchCompleted(f.watch(t, id), id) {
+	if row.Watch.EndReason != reason || (reason != "completed" && acceptanceWatchCompleted(f.watch(t, id), id)) {
 		t.Fatalf("late response resurrected or completed watch: %+v", row)
 	}
 	// A real human note mutation produces a content-bearing, NEW target update.
@@ -522,10 +535,10 @@ func TestManagerReadinessInterruptionDeadline(t *testing.T) {
 	if elapsed := time.Since(started); elapsed < 2*time.Second {
 		t.Fatalf("existing two-second operation budget did not expire: %v", elapsed)
 	}
-	// No clear or stop was requested. The held real response, correlated
-	// cancellation and elapsed budget establish why this observation ended.
-	if row.Watch.EndReason == "" || row.Watch.EndReason == "cleared" || acceptanceWatchCompleted(f.watch(t, id), id) {
-		t.Fatalf("deadline did not explicitly fail observation: %+v", row)
+	// Only the first real response is held. The original watch must retry the
+	// same saved-answer verdict after correlated cancellation, not re-register.
+	if row.Watch.EndReason != "completed" || !acceptanceWatchCompleted(f.watch(t, id), id) {
+		t.Fatalf("deadline lost original completion watch: %+v", row)
 	}
 	f.lateAndHuman(t, id, row.Watch.EndReason)
 }

@@ -14,9 +14,6 @@ type sessionDeleteHandler func(context.Context, appwire.SessionDeleteParams) (ap
 
 func registerSessionDeleteHandler(server *appserver.Server, handler sessionDeleteHandler) {
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSessionDelete, func(ctx context.Context, params appwire.SessionDeleteParams) (appwire.SessionDeleteResponse, error) {
-		if handler == nil {
-			return appwire.SessionDeleteResponse{}, appwire.Unavailable("session deletion unavailable")
-		}
 		return handler(ctx, params)
 	})
 }
@@ -30,7 +27,7 @@ func (s *WebServer) sessionDelete(ctx context.Context, params appwire.SessionDel
 	if err != nil {
 		return appwire.SessionDeleteResponse{}, appwire.InvalidParams(err.Error())
 	}
-	if ref.SourceID != "local" {
+	if ref.SourceID != appwire.LocalSourceID {
 		return appwire.SessionDeleteResponse{}, appwire.InvalidParams("only local sessions can be deleted")
 	}
 	threadID := ref.ThreadID

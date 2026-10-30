@@ -1,0 +1,101 @@
+import { afterEach, expect, test, vi } from "vitest";
+import type { ComicRow } from "./layout";
+import { findComicAnchorRow, readComicPosition, readComicPositionRecord, writeComicPosition } from "./readerPosition";
+
+afterEach(() => {
+  sessionStorage.clear();
+  vi.restoreAllMocks();
+});
+test("finds the same source offset after continuation boundaries change", () => {
+  const rows: ComicRow[] = [
+    { id: "m:0", panels: [{ slice: { entryId: "m", start: 0, end: 5 }, composition: "wide" }] },
+    { id: "m:5", panels: [{ slice: { entryId: "m", start: 5, end: 12 }, composition: "wide" }] },
+  ];
+  expect(
+    findComicAnchorRow(rows, {
+      mode: "away",
+      sessionRef: "local:root",
+      path: [],
+      entryId: "m",
+      offset: 7,
+      viewportOffset: 24,
+    }),
+  ).toBe(1);
+  expect(
+    findComicAnchorRow(rows, {
+      mode: "away",
+      sessionRef: "local:root",
+      path: [],
+      entryId: "m",
+      offset: 5,
+      viewportOffset: 24,
+    }),
+  ).toBe(1);
+});
+test("stores only a versioned source anchor under the complete selected ref", () => {
+  const position = {
+    mode: "away" as const,
+    sessionRef: "remote:child",
+    path: ["local:root/delegate"],
+    entryId: "m",
+    offset: 7,
+    viewportOffset: -12,
+  };
+  writeComicPosition("local:root", position);
+  expect(readComicPosition("local:root")).toEqual(position);
+  expect(readComicPosition("remote:child")).toBeUndefined();
+  const key = sessionStorage.key(0)!;
+  expect(JSON.parse(sessionStorage.getItem(key)!)).toEqual({ version: 1, ownerRef: "local:root", position });
+  for (const value of [
+    "bad json",
+    "null",
+    '{"version":99}',
+    JSON.stringify({ version: 1, ownerRef: "local:root", position: { ...position, offset: -1 } }),
+    JSON.stringify({ version: 1, ownerRef: "local:root", position: { ...position, viewportOffset: null } }),
+    JSON.stringify({ version: 1, position }),
+    JSON.stringify({ version: 1, ownerRef: "", position }),
+  ]) {
+    sessionStorage.setItem(key, value);
+    expect(readComicPosition("local:root")).toBeUndefined();
+  }
+});
+test("stamps canonical ownership independently of routing and nested target refs", () => {
+  const position = { mode: "end" as const, sessionRef: "remote:child", path: ["delegate"] };
+  writeComicPosition("remote:workspace", position, "remote:replacement");
+  expect(readComicPositionRecord("remote:workspace")).toEqual({ ownerRef: "remote:replacement", position });
+  expect(readComicPosition("remote:workspace")).toEqual(position);
+  expect(readComicPositionRecord("local:workspace")).toBeUndefined();
+});
+test("storage denial never prevents reading or saving", () => {
+  vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+    throw new Error("denied");
+  });
+  vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+    throw new Error("quota");
+  });
+  expect(readComicPosition("local:root")).toBeUndefined();
+  expect(() => writeComicPosition("local:root", { mode: "end", sessionRef: "local:root", path: [] })).not.toThrow();
+});
+
+test("round-trips a nested qualified child anchor without changing another root's reading intent", () => {
+  const path = [JSON.stringify(["remoteA:root", "dlg_same"]), JSON.stringify(["remoteA:child", "dlg_leaf"])];
+  const nested = {
+    mode: "away" as const,
+    sessionRef: "remoteA:leaf",
+    path,
+    entryId: "same-item",
+    offset: 19,
+    viewportOffset: -6,
+  };
+  const other = { mode: "end" as const, sessionRef: "remoteB:root", path: [] };
+  writeComicPosition("remoteB:root", other);
+  writeComicPosition("remoteA:root", nested);
+  expect(readComicPosition("remoteA:root")).toEqual(nested);
+  expect(readComicPosition("remoteB:root")).toEqual(other);
+  expect(readComicPosition("remoteA:leaf")).toBeUndefined();
+  const restored = readComicPosition("remoteA:root")!;
+  expect(restored.path).not.toBe(path);
+  writeComicPosition("remoteA:root", { mode: "end", sessionRef: "remoteA:root", path: [] });
+  expect(readComicPosition("remoteA:root")).toEqual({ mode: "end", sessionRef: "remoteA:root", path: [] });
+  expect(readComicPosition("remoteB:root")).toEqual(other);
+});

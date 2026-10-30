@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # The merge queue tests each queued PR on top of main and the PRs ahead of
+  # it, and main requires the same checks on that candidate.
+  merge_group:
+    types: [checks_requested]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
@@ -24,7 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: "22"
           cache: npm
@@ -62,7 +66,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: "22"
           cache: npm
@@ -78,6 +82,17 @@ jobs:
       - uses: ./.github/actions/go-cache-restore
         with:
           kind: web
+
+      - name: Prepare enforcing sandbox for Comic browser guard
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends bubblewrap
+          # Ubuntu 24.04 restricts unprivileged user namespaces by default.
+          # Enable the namespace backend, not an unsandboxed test fallback.
+          sudo sysctl -w kernel.unprivileged_userns_clone=1
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          bwrap --unshare-user --unshare-pid --die-with-parent --new-session \
+            --ro-bind / / --proc /proc --dev /dev --argv0 true -- true
 
       - name: Build and browser guards
         run: make test-web-browser
@@ -100,14 +115,17 @@ jobs:
       # Named for the run so two failures on the same PR do not collide.
       # The cascade guard keeps its evidence the same way (its temp dir is
       # KeptTempDir, which on a runner is /tmp), so its path is collected too.
+      # So are the background Jobs and job output paging guards'.
       - name: Keep the browser guards' artifacts
         if: failure()
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7
         with:
           name: browser-guards-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             /tmp/skillguard-browser-*/artifacts/**
             /tmp/cascadeguard-browser-*/**
+            /tmp/backgroundjobsguard-*/**
+            /tmp/joboutputpagingguard-*/**
           retention-days: 7
           # The step also fires when make build-web is what failed, and then
           # there is nothing to collect: say so quietly instead of adding a
@@ -131,7 +149,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: "22"
           cache: npm
@@ -152,7 +170,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: "22"
           cache: npm
@@ -267,7 +285,7 @@ jobs:
       - name: Lint repository structure, generated output, formatting, and secrets
         env:
           EVENER_GITLEAKS_REQUIRED: "1"
-        run: make lint-generated lint-naming lint-gofmt lint-internal lint-package-imports secret-scan
+        run: make lint-generated lint-naming lint-gofmt lint-internal lint-package-imports lint-js-toolchain-pins lint-tracked-file-size secret-scan
 
       - uses: ./.github/actions/go-cache-save
 

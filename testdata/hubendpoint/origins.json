@@ -1,0 +1,238 @@
+[
+  {
+    "name": "http DNS origin",
+    "raw": "http://example.test",
+    "origin": "http://example.test",
+    "rpc_url": "ws://example.test/rpc",
+    "hostname": "example.test",
+    "port": 80,
+    "scheme": "http"
+  },
+  {
+    "name": "HTTPS case default port and root slash",
+    "raw": "https://EXAMPLE.test:443/",
+    "origin": "https://example.test",
+    "rpc_url": "wss://example.test/rpc",
+    "hostname": "example.test",
+    "port": 443,
+    "scheme": "https"
+  },
+  {
+    "name": "HTTP explicit default port",
+    "raw": "http://Example.TEST:80/",
+    "origin": "http://example.test",
+    "rpc_url": "ws://example.test/rpc",
+    "hostname": "example.test",
+    "port": 80,
+    "scheme": "http"
+  },
+  {
+    "name": "HTTPS nondefault port",
+    "raw": "https://example.test:8443",
+    "origin": "https://example.test:8443",
+    "rpc_url": "wss://example.test:8443/rpc",
+    "hostname": "example.test",
+    "port": 8443,
+    "scheme": "https"
+  },
+  {
+    "name": "Unicode hostname",
+    "raw": "https://BÜCHER.example/",
+    "origin": "https://xn--bcher-kva.example",
+    "rpc_url": "wss://xn--bcher-kva.example/rpc",
+    "hostname": "xn--bcher-kva.example",
+    "port": 443,
+    "scheme": "https"
+  },
+  {
+    "name": "canonical IPv4 literal",
+    "raw": "http://127.0.0.1:9180",
+    "origin": "http://127.0.0.1:9180",
+    "rpc_url": "ws://127.0.0.1:9180/rpc",
+    "hostname": "127.0.0.1",
+    "port": 9180,
+    "scheme": "http"
+  },
+  {
+    "name": "IPv6 loopback",
+    "raw": "http://[::1]:9180/",
+    "origin": "http://[::1]:9180",
+    "rpc_url": "ws://[::1]:9180/rpc",
+    "hostname": "::1",
+    "port": 9180,
+    "scheme": "http"
+  },
+  {
+    "name": "expanded IPv6 canonicalization",
+    "raw": "https://[2001:0DB8:0:0:0:0:0:1]:443",
+    "origin": "https://[2001:db8::1]",
+    "rpc_url": "wss://[2001:db8::1]/rpc",
+    "hostname": "2001:db8::1",
+    "port": 443,
+    "scheme": "https"
+  },
+  {
+    "name": "IPv4-mapped IPv6 retains IPv6 identity",
+    "raw": "http://[::ffff:127.0.0.1]",
+    "origin": "http://[::ffff:7f00:1]",
+    "rpc_url": "ws://[::ffff:7f00:1]/rpc",
+    "hostname": "::ffff:7f00:1",
+    "port": 80,
+    "scheme": "http"
+  },
+  {
+    "name": "empty origin",
+    "raw": "",
+    "error": {"code": "empty", "field": "origin"}
+  },
+  {
+    "name": "omitted scheme",
+    "raw": "example.test:9180",
+    "error": {"code": "scheme", "field": "scheme"}
+  },
+  {
+    "name": "unsupported scheme",
+    "raw": "ftp://example.test",
+    "error": {"code": "scheme", "field": "scheme"}
+  },
+  {
+    "name": "missing host",
+    "raw": "http://",
+    "error": {"code": "host", "field": "host"}
+  },
+  {
+    "name": "credentials",
+    "raw": "https://agent:secret-value@example.test",
+    "error": {"code": "userinfo", "field": "userinfo"}
+  },
+  {
+    "name": "path prefix",
+    "raw": "http://example.test/prefix",
+    "error": {"code": "path", "field": "path"}
+  },
+  {
+    "name": "normalizable dot path",
+    "raw": "http://example.test/a/..",
+    "error": {"code": "path", "field": "path"}
+  },
+  {
+    "name": "encoded path",
+    "raw": "http://example.test/%2Fprivate",
+    "error": {"code": "path", "field": "path"}
+  },
+  {
+    "name": "backslash",
+    "raw": "http://example.test\\prefix",
+    "error": {"code": "path", "field": "path"}
+  },
+  {
+    "name": "query",
+    "raw": "http://example.test?token=secret-value",
+    "error": {"code": "query", "field": "query"}
+  },
+  {
+    "name": "empty query delimiter",
+    "raw": "http://example.test?",
+    "error": {"code": "query", "field": "query"}
+  },
+  {
+    "name": "fragment",
+    "raw": "http://example.test#section",
+    "error": {"code": "fragment", "field": "fragment"}
+  },
+  {
+    "name": "empty fragment delimiter",
+    "raw": "http://example.test#",
+    "error": {"code": "fragment", "field": "fragment"}
+  },
+  {
+    "name": "leading whitespace",
+    "raw": " http://example.test",
+    "error": {"code": "control", "field": "origin"}
+  },
+  {
+    "name": "embedded control",
+    "raw": "http://example.test\n",
+    "error": {"code": "control", "field": "origin"}
+  },
+  {
+    "name": "IPv4 wildcard",
+    "raw": "http://0.0.0.0:9180",
+    "error": {"code": "wildcard", "field": "host"}
+  },
+  {
+    "name": "Unicode IPv4 wildcard after IDNA",
+    "raw": "http://０.０.０.０",
+    "error": {"code": "wildcard", "field": "host"}
+  },
+  {
+    "name": "IPv4 wildcard with trailing dot",
+    "raw": "http://0.0.0.0.:9180",
+    "error": {"code": "wildcard", "field": "host"}
+  },
+  {
+    "name": "IPv6 wildcard",
+    "raw": "http://[::]:9180",
+    "error": {"code": "wildcard", "field": "host"}
+  },
+  {
+    "name": "scoped IPv6",
+    "raw": "http://[fe80::1%25eth0]:9180",
+    "error": {"code": "scoped_host", "field": "host"}
+  },
+  {
+    "name": "ambiguous abbreviated numeric host",
+    "raw": "http://127.1",
+    "error": {"code": "host", "field": "host"}
+  },
+  {
+    "name": "Unicode abbreviated numeric host after IDNA",
+    "raw": "http://１２７.１",
+    "error": {"code": "host", "field": "host"}
+  },
+  {
+    "name": "Unicode full numeric host after IDNA",
+    "raw": "http://１２７.０.０.１",
+    "error": {"code": "host", "field": "host"}
+  },
+  {
+    "name": "ambiguous abbreviated numeric host with trailing dot",
+    "raw": "http://127.1.",
+    "error": {"code": "host", "field": "host"}
+  },
+  {
+    "name": "ambiguous integer numeric host",
+    "raw": "http://2130706433",
+    "error": {"code": "host", "field": "host"}
+  },
+  {
+    "name": "ambiguous integer numeric host with trailing dot",
+    "raw": "http://2130706433.",
+    "error": {"code": "host", "field": "host"}
+  },
+  {
+    "name": "negative port",
+    "raw": "http://example.test:-1",
+    "error": {"code": "port", "field": "port"}
+  },
+  {
+    "name": "zero port",
+    "raw": "http://example.test:0",
+    "error": {"code": "port", "field": "port"}
+  },
+  {
+    "name": "port above range",
+    "raw": "http://example.test:65536",
+    "error": {"code": "port", "field": "port"}
+  },
+  {
+    "name": "nonnumeric port",
+    "raw": "http://example.test:http",
+    "error": {"code": "port", "field": "port"}
+  },
+  {
+    "name": "empty port",
+    "raw": "http://example.test:",
+    "error": {"code": "port", "field": "port"}
+  }
+]

@@ -110,11 +110,11 @@ draft. Browser reports an error and permits another Start. Neither can identify
 the result by a durable creation request ID. The user must investigate or risk a
 duplicate; editing the draft does not resolve the first attempt.
 
-**Evidence.** [ThreadStartParams](../../appwire/types.go#L2316) has no client
+**Evidence.** [ThreadStartParams](../../appwire/types_turn.go) has no client
 creation key. The hub
 [detaches creation from peer cancellation](../../cmd/evener-hub/app_threadlifecycle.go#L82).
 Native [submit](../../mobile-native/src/newSession.ts#L429) persists uncertainty;
-browser [creation failure](../../cmd/evener-hub/frontend/src/panes/spawn/Spawn.tsx#L2257)
+browser [creation failure](../../cmd/evener-hub/frontend/src/panes/spawn/Spawn.tsx#L2333)
 clears the busy state. Native `newSession.test.ts` tests the held unchanged draft.
 
 **Decision.** Treat each Start submission as one durable request. Preserve its
@@ -144,9 +144,9 @@ Native open-session rehydration also retains open status on failure, outside its
 initial-read retry loop. The server can repair a projection on a later read.
 
 **Evidence.** Browser
-[hydrateAndSubscribe](../../cmd/evener-hub/frontend/src/stores/threads.ts#L1818),
-native [rehydrate](../../mobile/src/state/conversation.ts#L2017) and
-[useReadRetry](../../mobile-native/src/session/useReadRetry.ts#L46), and server
+[refreshTrackedThread](../../cmd/evener-hub/frontend/src/stores/threads.ts),
+native [rehydrate](../../mobile-native/src/conversation/state/conversation.ts) and
+[entry read actor](../../mobile-native/src/session/nativeConversationSessions.ts#L417), and server
 [recoverForRead](../../server/thread_history.go#L355) expose the ownership gap.
 Shared `reducer.history.test.ts` specifies that a later success clears history failure.
 
@@ -281,7 +281,7 @@ configure one on that host and offers a retry check. Existing host-scoped
 credential push and remote Codex sign-in live in Settings, so the user must find
 that route and return to the draft.
 
-**Evidence.** [Spawn provider gate](../../cmd/evener-hub/frontend/src/panes/spawn/Spawn.tsx#L2650)
+**Evidence.** [Spawn provider gate](../../cmd/evener-hub/frontend/src/panes/spawn/Spawn.tsx#L2582)
 differs from the available
 [remote sign-in](../../cmd/evener-hub/frontend/src/panes/settings/sections/credentials/CredentialsHostScope.tsx#L188)
 and [credential transfer](../../cmd/evener-hub/frontend/src/panes/settings/sections/credentials/CredentialsHostScope.tsx#L404)
@@ -427,15 +427,15 @@ no in-memory ordering guard, so the per-ref ordering gap applies without
 a refusal, and its dispatch gate does not apply to the fallback. With no
 ready connection the storage error is the send's failure.
 
-**Evidence.** [enqueueMutationIntent](../../cmd/evener-hub/frontend/src/stores/threads.ts#L2999)
-and its [direct-fallback branch and ordering guard](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3092);
-[dispatchMutationDirectly](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3303)
+**Evidence.** [enqueueMutationIntent](../../cmd/evener-hub/frontend/src/stores/threads.ts)
+and its [direct-fallback branch and ordering guard](../../cmd/evener-hub/frontend/src/stores/threads.ts);
+[dispatchMutationDirectly](../../cmd/evener-hub/frontend/src/stores/threads.ts)
 mints one `clientMutationId` before its retry ladder; the missing fence is the
 [click-time stop epoch](../../appwire-client/typescript/state/mutation/outbox.ts#L73)
 the enqueue compares against. The [reconcile
-classification](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3865)
+classification](../../cmd/evener-hub/frontend/src/stores/threads.ts)
 splits the storage-caused failure from a genuine one, and
-[currentDispatchClient](../../cmd/evener-hub/frontend/src/stores/threads.ts#L1150)
+[currentDispatchClient](../../cmd/evener-hub/frontend/src/stores/threads.ts)
 fences a storage-blocked ref everywhere except the send fallback's own re-earn.
 [NativeMutationRuntime.submit](../../mobile-native/src/nativeMutationRuntime.ts)
 and `isSqliteStorageFailure` in
@@ -568,16 +568,19 @@ every active saved registration with `runtime_lost`. Future monitoring stops,
 including declarative repeating timers whose configuration is saved. A repeating
 send watch that has already spoken can also skip an individual restart-end
 notice. Saved pending deliveries and future registrations have different lifetimes.
-The implemented **local Manager hub watch** is a narrower exception: it
-retains pending notices and ends a continuing watch on runtime restart with an
-explicit re-registration notice, even after prior event delivery. This does not
-restore general repeating timers or prove an end notice to a remotely hosted
-Manager revoked during an outage; remote Manager target watches are unsupported.
+Manager is an immutable session-start role. Its local and remote hub watches use
+the shared human/Manager subscription path, with independent subscriber lifetimes.
+They retain pending notices across interruption and resume only after checking
+the caller's ref and instance and the target's ref, instance and generation.
+Resync re-reads authoritative state; replacement or exhausted recovery ends the
+watch with re-registration guidance. Runtime restart also ends a continuing watch
+with an explicit re-registration notice, even after prior event delivery. This
+does not restore ordinary watches or repeating timers.
 
-**Evidence.** [newJobManagerWithStoreOpen](../../agent/jobs.go#L647) and
-[clearUnrestoredActiveWatches](../../agent/jobs.go#L1526) clear all active records;
-[watchConfigSnapshot](../../agent/job_watch.go#L2174) retains filters, identities
-and intervals. [noticeUnrestoredWatchEnds](../../agent/job_watch.go#L3830) handles
+**Evidence.** [newJobManagerWithStoreOpen](../../agent/jobs.go) and
+[clearUnrestoredActiveWatches](../../agent/jobs.go) clear all active records;
+[watchConfigSnapshot](../../agent/watch_registry.go) retains filters, identities
+and intervals. [noticeUnrestoredWatchEnds](../../agent/watch_expiry.go) handles
 the end notices. The [job-control contract](../job-control.md) distinguishes
 durable registration and delivery records from process-local observation,
 timers and callbacks.
@@ -591,8 +594,8 @@ does not shut down the independent session runtimes. Explicitly detached process
 have a separately chosen lifetime outside session-owned job supervision.
 
 The normal shutdown path already marks and signals owned jobs in
-[closeRuntimeState](../../agent/jobs.go#L757), followed by tracked process-group
-[cleanup](../../agent/execenv/local.go#L1330). After an abrupt loss, the restored
+[closeRuntimeState](../../agent/jobs.go), followed by tracked process-group
+[cleanup](../../agent/execenv/local.go#L485). After an abrupt loss, the restored
 job record's `runtime_lost` status describes lost supervision; it does not by
 itself prove that every OS process was terminated.
 
@@ -622,8 +625,8 @@ The child's resumable data is preserved, but unrelated parent work becomes
 unavailable until the child storage problem is fixed.
 
 **Evidence.** Parent [initialization](../../agent/session_init.go#L1202) calls
-[delegate restoration](../../agent/delegate_runtime.go#L2905), whose
-[resource error handling](../../agent/delegate_runtime.go#L3069) propagates the
+[delegate restoration](../../agent/delegate_restore_idle.go), whose
+[resource error handling](../../agent/delegate_bootstrap.go) propagates the
 operational error. `delegate_resource_bootstrap_test.go` tests parent failure
 while leaving the child resumable, including EACCES/EIO scenarios.
 
@@ -764,7 +767,7 @@ preserving an unanswered question.
 **Evidence.** [Compact](../../agent/session_compaction.go#L30) checks pending asks
 before compaction, and the [explicit command
 callback](../../cmd/evener/serve.go#L1430) uses that entry point. Automatic
-[context management](../../agent/internal/contextmgr/context_strategy.go#L91)
+[context management](../../agent/internal/contextmgr/context_strategy.go#L68)
 calls the context manager separately. Existing `session_ask_test.go` tests the
 explicit-compaction refusal.
 
@@ -787,7 +790,7 @@ history, local navigation and unrelated provider instances unavailable. Provider
 configuration has a separate degraded path, so failure scope is inconsistent.
 
 **Evidence.** [Credential loading](../../internal/credentials/store.go#L58) rejects
-the file; [hub startup](../../cmd/evener-hub/main.go#L385) returns the error.
+the file; [hub startup](../../cmd/evener-hub/hub_startup.go#L374) returns the error.
 `TestStore_PermissionsEnforced` specifies the store's permission refusal.
 Separately, `TestAuth_UnreadableCredentialsStoreRefusesInsteadOfPanicking` tests
 an auth controller that keeps reads working while refusing writes; it does not
@@ -860,8 +863,8 @@ complete quarantine custody aborts hub startup. Remote host administration can
 therefore block unrelated local sessions and history. Complete quarantine and
 some other IO failures already have degraded recovery paths.
 
-**Evidence.** [openHostOpsStore](../../cmd/evener-hub/main.go#L952) and its
-[startup handling](../../cmd/evener-hub/main.go#L606);
+**Evidence.** [openHostOpsStore](../../cmd/evener-hub/main.go#L394) and its
+[startup handling](../../cmd/evener-hub/hub_startup.go#L461);
 `TestOpenHostOpsStoreRefusesStartupOnIncompleteCustody` pins the global
 refusal. This does not justify discarding the journal or following untrusted
 stash paths.
@@ -889,7 +892,7 @@ A transient failure in the first explicit Connect happens before that supervisor
 starts, and both clients issue only one attach request. A user who has already
 asked to connect must click again.
 
-**Evidence.** [Manager.Ensure](../../cmd/evener-hub/internal/sshconn/manager.go#L537)
+**Evidence.** [Manager.Ensure](../../cmd/evener-hub/internal/sshconn/ensure.go#L25)
 starts supervision after attachment; [host attach](../../cmd/evener-hub/app_host_attach.go#L108)
 returns the initial failure. Browser
 [connect](../../cmd/evener-hub/frontend/src/stores/hosts.ts#L627) and native
@@ -1028,6 +1031,12 @@ has replaced the file, reconcile the newer operation before restarting.
 Cancellation or a superseding request takes precedence over the pending update.
 Implementation remains pending.
 
+**Progress (2026-10-21).** The Settings split now distinguishes an installed
+build from the running one, keeps the old hub reachable when a restart does not
+complete, and retains digest and install-lock validation. Restart confirmation
+uses the process incarnation. Automatic retry of a recoverable restart failure
+remains open.
+
 **Acceptance.** Fail delayed restart after a successful response. The client
 learns the installed-but-not-restarted outcome and retains access to the working
 hub. Recovery after the initial polling window automatically completes the same
@@ -1044,9 +1053,9 @@ Hub home's update footer.
 start a detached hub with output redirected to `/dev/null`. A startup failure
 then loses the original explanation before the health check reports failure.
 
-**Evidence.** [bootstrapHub](../../cmd/evener-hub/internal/sshconn/manager.go#L2182)
+**Evidence.** [bootstrapHub](../../cmd/evener-hub/internal/sshconn/ensure.go#L868)
 passes an empty log path to
-[relaunchCommand](../../cmd/evener-hub/internal/sshconn/version.go#L1862).
+[relaunchCommand](../../cmd/evener-hub/internal/sshconn/version.go#L870).
 Manual host access or a separate supervisor/log setup is the remaining diagnosis
 path; an existing configured log path does not have this issue.
 
@@ -1144,7 +1153,7 @@ are explicitly never parked.
 **Evidence.** [Registry dispatch](../../agent/internal/tool/registry.go#L719) and
 [breaker state](../../agent/internal/tool/breaker.go#L280) own the fingerprint and
 park. The production bypass is a
-[sandbox-approved rerun](../../agent/session_tools.go#L950). Existing
+[sandbox-approved rerun](../../agent/session_tools.go#L403). Existing
 `TestBreakerDispatch_IdenticalFailureNudgesThenParks`,
 `TestBreakerDispatch_ParkedResultDoesNotUnparkTheNextCall` and
 `TestBreakerDispatch_IdenticalSuccessLoopIsNeverParked` specify those contracts.
@@ -1440,7 +1449,7 @@ These are useful patterns and preservation checks, rather than new fix requests.
 - [Task-tool loading](../../agent/session_tools_task.go#L340) retries after a
   transient load failure without replacing malformed source with an empty plan.
 - [History repair](../../agent/history_repair.go#L127) records interrupted tool
-  execution honestly; [lost-job reconciliation](../../agent/jobs.go#L1457) ends
+  execution honestly; [lost-job reconciliation](../../agent/jobs.go) ends
   lost owned runtime with retained output and delivery. Neither blindly restarts
   commands with unknown effects. Explicit Force stop has deliberate resume rules.
 - Tool dispatch repairs supported malformed arguments before execution, and

@@ -497,11 +497,12 @@ func TestEnrichModelListResponse_KeepsCapabilitiesAndAddsDisplayNames(t *testing
 	contextWindow := 7
 	supportsTools := false
 	in := appwire.ModelDescriptor{
-		Provider:      "anthropic",
-		Model:         "claude-opus-4-6",
-		DisplayName:   "Configured",
-		ContextWindow: &contextWindow,
-		SupportsTools: &supportsTools,
+		Provider:        "anthropic",
+		Model:           "claude-opus-4-6",
+		DisplayName:     "Configured",
+		ContextWindow:   &contextWindow,
+		SupportsTools:   &supportsTools,
+		InstanceDefault: true,
 	}
 	got := enrichModelListResponse(appwire.ModelListResponse{Data: []appwire.ModelDescriptor{in}}).Data
 	if len(got) != 1 {

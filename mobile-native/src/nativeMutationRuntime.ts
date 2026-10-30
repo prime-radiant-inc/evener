@@ -1,10 +1,14 @@
 import { openDatabaseSync } from "expo-sqlite";
 import * as Crypto from "expo-crypto";
-import type { AppwireClientLike, MutationReceipt, ThreadReadResponse } from "@evener/appwire-client";
+import type { AppwireClientLike, ThreadReadResponse } from "@evener/appwire-client";
 import { collectAuthoritativeMutationIds } from "@evener/appwire-client";
 import {
+	COMPOSER_METHODS,
+	DIRECT_FALLBACK_METHODS,
 	createClientIdentity,
 	createSecureUUID,
+	canEditQueuedMessage,
+	canRemoveQueuedMessage,
 	validConsumedClientMutationIds,
 	MutationDispatcher,
 	MutationOutbox,
@@ -16,15 +20,18 @@ import {
 	type MutationOutboxStorage,
 	type MutationPersistenceSnapshot,
 	type MutationRecoveryRecord,
+	type QueuedMessageStorage,
 	type SecureRandomSource,
 } from "@evener/appwire-client/state/mutation";
-import { READ_ITEM_LIMIT } from "../../mobile/src/services/conversation";
-import type {
-	ConversationMutationKind,
-	ConversationMutationRequest,
-	ConversationMutationSubmitter,
-} from "../../mobile/src/state/conversationMutation";
-import { MutationOutboxSQLite } from "./mutationOutboxStorage";
+import { READ_ITEM_LIMIT } from "./conversation/services/conversation";
+import {
+	type ConversationMutationAdmission,
+	type ConversationMutationKind,
+	type ConversationMutationRequest,
+	type ConversationMutationSubmitter,
+	MutationNotSentError,
+} from "./conversation/state/conversationMutation";
+import { MutationOutboxSQLite, type RecoveryResendCommit } from "./mutationOutboxStorage";
 import { isSqliteStorageFailure, type SqliteSync } from "./sqliteSync";
 
 export interface NativeMutationRuntimeOptions {
@@ -35,21 +42,32 @@ export interface NativeMutationRuntimeOptions {
 	clearInterval?: MutationOutboxOptions["clearInterval"];
 }
 
-type NativeStorage = MutationOutboxStorage<MutationAttachmentRef> & {
-	listOutbox(targetRef?: string): Promise<MutationOutboxRecord<MutationAttachmentRef>[]>;
-	readStopEpoch(targetRef: string): Promise<number>;
-	listRecovery(targetRef: string): Promise<MutationRecoveryRecord<MutationAttachmentRef>[]>;
-	discardRecovery(clientMutationId: string, targetRef: string): Promise<boolean>;
-	discardUndelivered(clientMutationId: string, targetRef: string): Promise<boolean>;
-	releaseCanceled(clientMutationId: string, targetRef: string, barrier: MutationStopBarrier): Promise<boolean>;
-	pruneUnlistedAccepted(
-		targetRef: string,
-		acceptedBefore: number,
-		authoritativeIds: ReadonlySet<string>,
-	): Promise<string[]>;
-};
+type NativeStorage = MutationOutboxStorage<MutationAttachmentRef> &
+	QueuedMessageStorage & {
+		readRecoveryResend(targetRef: string, sourceIds: readonly string[]): Promise<RecoveryResendCommit | undefined>;
+		acknowledgeRecoveryResend(targetRef: string, clientMutationId: string): Promise<void>;
+		listOutbox(targetRef?: string): Promise<MutationOutboxRecord<MutationAttachmentRef>[]>;
+		readStopEpoch(targetRef: string): Promise<number>;
+		listRecovery(targetRef: string): Promise<MutationRecoveryRecord<MutationAttachmentRef>[]>;
+		discardRecovery(clientMutationId: string, targetRef: string): Promise<boolean>;
+		discardUndelivered(clientMutationId: string, targetRef: string): Promise<boolean>;
+		releaseCanceled(clientMutationId: string, targetRef: string, barrier: MutationStopBarrier): Promise<boolean>;
+		/** Moves a resumed session's waiting rows to its resolved identity and
+		 * returns the ids that moved. */
+		retarget(ref: string, to: { ref: string; wireRef: string; threadId?: string; instanceId?: string }): string[];
+		pruneUnlistedAccepted(
+			targetRef: string,
+			acceptedBefore: number,
+			authoritativeIds: ReadonlySet<string>,
+		): Promise<string[]>;
+	};
 
 export type NativeMutationStorageListener = (targetRefs: readonly string[]) => void;
+
+export interface NativeMutationTargetIdentity {
+	readonly threadId: string;
+	readonly instanceId?: string;
+}
 
 export interface NativeMutationReadLease {
 	readonly targetKey: string;
@@ -75,22 +93,12 @@ function nativeRandomSource(): SecureRandomSource {
 }
 
 function methodFor(kind: ConversationMutationKind, expectedQueueRevision: number | undefined): string {
-	if (kind === "send") return "turn/start";
-	if (kind === "queue") return "turn/queue";
+	if (kind === "send") return COMPOSER_METHODS.send;
+	if (kind === "queue") return COMPOSER_METHODS.queue;
 	if (kind === "interrupt") return "turn/interrupt";
-	if (kind === "promote") return "turn/promoteQueuedAsSteer";
-	return expectedQueueRevision === undefined ? "turn/steer" : "turn/drainAsSteer";
+	if (kind === "promote") return COMPOSER_METHODS.promote;
+	return expectedQueueRevision === undefined ? COMPOSER_METHODS.steer : COMPOSER_METHODS.drain;
 }
-
-// The composer's four send verbs: the only mutations that go out as a plain
-// request when storage refuses their durable write. Stop and promote keep
-// their durable contract and fail instead.
-const DIRECT_FALLBACK_METHODS: ReadonlySet<string> = new Set([
-	"turn/start",
-	"turn/queue",
-	"turn/steer",
-	"turn/drainAsSteer",
-]);
 
 function intentFor(request: NativeMutationRequest): MutationIntent {
 	const method = methodFor(request.kind, request.expectedQueueRevision);
@@ -99,11 +107,12 @@ function intentFor(request: NativeMutationRequest): MutationIntent {
 		expectedInstanceId: request.instanceId,
 	};
 	if (request.kind !== "interrupt" && request.kind !== "promote") payload.input = request.input;
-	if (method === "turn/drainAsSteer") payload.expectedQueueRevision = request.expectedQueueRevision;
+	if (method === COMPOSER_METHODS.drain) payload.expectedQueueRevision = request.expectedQueueRevision;
 	if (request.kind === "promote") {
 		payload.index = request.queueEntry.index;
 		payload.expectedEntryId = request.queueEntry.id;
 	}
+	const composer = request.composer;
 	const input = request.display ?? request.input;
 	return {
 		targetRef: nativeMutationTargetKey(request.hubId, request.targetRef),
@@ -111,7 +120,20 @@ function intentFor(request: NativeMutationRequest): MutationIntent {
 		instanceId: request.instanceId,
 		method,
 		payload,
-		attachments: [],
+		attachments:
+			composer?.attachments.map((attachment) => ({
+				presentationId: createSecureUUID(nativeRandomSource()),
+				marker: attachment.marker,
+				name: attachment.name ?? "",
+				mediaType: attachment.mediaType,
+			})) ?? [],
+		...(composer === undefined
+			? {}
+			: {
+					composerText: composer.text,
+					...(composer.mentions === undefined ? {} : { composerMentions: composer.mentions }),
+				}),
+		...(request.draftCaptureToken === undefined ? {} : { draftCaptureToken: request.draftCaptureToken }),
 		optimisticDisplay: request.kind === "interrupt" ? { method } : { method, input },
 	};
 }
@@ -143,6 +165,15 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		{ client: AppwireClientLike; token: symbol; readToken?: symbol; unsubscribe: () => void }
 	>();
 	readonly #blockedTargets = new Set<string>();
+	// A cached screen identity is sufficient for local actions, even without a
+	// client. Never infer the current session from the queued row being claimed.
+	readonly #targetIdentities = new Map<string, NativeMutationTargetIdentity & { owner?: symbol }>();
+	// Registrations this runtime created for its own work and must release when
+	// that work ends. A settle that retargets a resumed session registers the
+	// new identity so the moved rows can dispatch; nothing else owns that
+	// registration, so it is retired with the settle rather than left pinned to
+	// a client a later connection replaces.
+	readonly #retireWithSettle: Array<() => void> = [];
 	// The mutations this phone submitted to each target, by id, with when:
 	// reconcilePendingEntries' submittedHere. An authoritative read that lists
 	// a send as pending settles its durable record before any turn shows it,
@@ -234,6 +265,17 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		this.#started = false;
 		this.#startup = undefined;
 		await this.#outbox.stop();
+		// A stopped runtime serves nothing, so the registrations it made for its
+		// own work end here. A later start that needs the identity registers it
+		// again; leaving them held would pin the targets to this attempt's client.
+		//
+		// A registration like that can outlive its client between ordinary
+		// connection replacements, since the process-lifetime runtime never stops.
+		// It is harmless rather than released early: the flush reads a registration
+		// whose client is gone as no holder at all (hasStaleRegistration), so the
+		// replacement claims the target. Releasing it from the settle instead would
+		// strand the very dispatch it exists for.
+		for (const release of this.#retireWithSettle.splice(0)) release();
 	}
 
 	// The scoped durable read (NativeMutationPersistenceRead): the snapshot
@@ -266,6 +308,104 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		const discarded = await this.storage.discardRecovery(clientMutationId, targetRef);
 		this.#notifyStorageChange([targetRef]);
 		return discarded;
+	}
+
+	async editQueuedMessage(id: string, targetKey: string): Promise<MutationRecoveryRecord | undefined> {
+		const snapshot = await this.#queuedMessageSnapshot(id, targetKey);
+		const recovery =
+			snapshot?.isCurrent() && canEditQueuedMessage(snapshot.record)
+				? await this.storage.editQueuedMessage(snapshot.record, { stopEpoch: snapshot.stopEpoch })
+				: undefined;
+		this.#notifyStorageChange([targetKey]);
+		return recovery;
+	}
+
+	async removeQueuedMessage(id: string, targetKey: string): Promise<boolean> {
+		const snapshot = await this.#queuedMessageSnapshot(id, targetKey);
+		const removed =
+			snapshot?.isCurrent() && canRemoveQueuedMessage(snapshot.record)
+				? await this.storage.removeQueuedMessage(snapshot.record, { stopEpoch: snapshot.stopEpoch })
+				: false;
+		this.#notifyStorageChange([targetKey]);
+		return removed;
+	}
+
+	/** Fresh guarded row proof for a caller that must transfer local capture
+	 * ownership before Edit/Remove. The eventual action takes its own new proof. */
+	async queuedMessageForAction(
+		id: string,
+		targetKey: string,
+		action: "edit" | "remove",
+	): Promise<MutationOutboxRecord<MutationAttachmentRef> | undefined> {
+		const snapshot = await this.#queuedMessageSnapshot(id, targetKey);
+		if (!snapshot?.isCurrent()) return undefined;
+		return (action === "edit" ? canEditQueuedMessage(snapshot.record) : canRemoveQueuedMessage(snapshot.record))
+			? snapshot.record
+			: undefined;
+	}
+
+	/** Fresh exact-identity proof for an already-claimed editing source. The
+	 * returned currentness check fences a target replacement before draft clear
+	 * and again before append. Cached offline identity remains sufficient. */
+	async retainedRecoveryForAction(
+		id: string,
+		targetKey: string,
+	): Promise<{ record: MutationRecoveryRecord<MutationAttachmentRef>; isCurrent: () => boolean } | undefined> {
+		const target = this.#targetIdentitySnapshot(targetKey);
+		const identity = target.identity;
+		if (!identity) return undefined;
+		const record = (await this.storage.listRecovery(targetKey)).find(
+			(recovery) => recovery.clientMutationId === id && recovery.recoveryKind === "editing",
+		);
+		if (
+			!record ||
+			record.targetRef !== targetKey ||
+			record.threadId !== identity.threadId ||
+			(record.instanceId ?? record.threadId) !== (identity.instanceId ?? identity.threadId) ||
+			!target.isCurrent()
+		)
+			return undefined;
+		return { record, isCurrent: target.isCurrent };
+	}
+
+	#targetIdentitySnapshot(targetKey: string) {
+		const registration = this.#targets.get(targetKey);
+		const identity = this.#targetIdentities.get(targetKey);
+		return {
+			identity,
+			isCurrent: () =>
+				identity !== undefined &&
+				this.#targets.get(targetKey) === registration &&
+				this.#targetIdentities.get(targetKey) === identity,
+		};
+	}
+
+	async #queuedMessageSnapshot(id: string, targetKey: string) {
+		const target = this.#targetIdentitySnapshot(targetKey);
+		const identity = target.identity;
+		const { record, stopEpoch } = await this.storage.getOutboxWithStopEpoch(id);
+		if (!record) return undefined;
+		return {
+			record,
+			stopEpoch,
+			// Evaluate in the caller immediately before SQLite's synchronous claim,
+			// not here before this helper's promise adds another continuation.
+			isCurrent: () =>
+				record.targetRef === targetKey &&
+				identity !== undefined &&
+				target.isCurrent() &&
+				record.threadId === identity.threadId &&
+				(record.instanceId ?? record.threadId) === (identity.instanceId ?? identity.threadId),
+		};
+	}
+
+	readRecoveryResend(targetKey: string, sourceIds: readonly string[]): Promise<RecoveryResendCommit | undefined> {
+		return this.storage.readRecoveryResend(targetKey, sourceIds);
+	}
+
+	async acknowledgeRecoveryResend(targetKey: string, clientMutationId: string): Promise<void> {
+		await this.storage.acknowledgeRecoveryResend(targetKey, clientMutationId);
+		this.#notifyStorageChange([targetKey]);
 	}
 
 	// Discard on your own message a Stop held or whose delivery couldn't be
@@ -310,14 +450,27 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		await this.#dispatcher.reconcileIdentities(clientMutationIds);
 	}
 
-	registerTarget(hubId: string, targetRef: string, client: AppwireClientLike | null): () => void {
+	registerTarget(
+		hubId: string,
+		targetRef: string,
+		client: AppwireClientLike | null,
+		identity?: NativeMutationTargetIdentity,
+	): () => void {
 		const key = nativeMutationTargetKey(hubId, targetRef);
 		const current = this.#targets.get(key);
+		const token = Symbol();
+		// Optional cached identity adds local ownership without changing a null
+		// client's existing no-op transport semantics or another screen's lease.
+		const knownIdentity = identity ?? (client === null ? undefined : this.#targetIdentities.get(key));
+		const localIdentity = knownIdentity === undefined ? undefined : { ...knownIdentity, owner: token };
+		if (localIdentity) this.#targetIdentities.set(key, localIdentity);
 		// A null client is a state transition, not an owner identity. Only the
 		// closure returned to the registering screen may remove its binding.
-		if (client === null) return () => undefined;
+		if (client === null)
+			return () => {
+				if (this.#targetIdentities.get(key)?.owner === token) this.#targetIdentities.delete(key);
+			};
 		current?.unsubscribe();
-		const token = Symbol();
 		const unsubscribe = client.onStateChange((state) => {
 			const target = this.#targets.get(key);
 			if (target?.token !== token) return;
@@ -337,6 +490,7 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 			if (this.#targets.get(key)?.token === token) {
 				this.#targets.delete(key);
 				this.#blockedTargets.delete(key);
+				if (this.#targetIdentities.get(key)?.owner === token) this.#targetIdentities.delete(key);
 			}
 		};
 	}
@@ -345,6 +499,18 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 	 * with; undefined while nobody holds it. */
 	targetClient(hubId: string, targetRef: string): AppwireClientLike | undefined {
 		return this.#targets.get(nativeMutationTargetKey(hubId, targetRef))?.client;
+	}
+
+	/** A registration exists, but nobody live is behind it: its client was
+	 * replaced or closed and no screen rebinds that target any more. The flush
+	 * reads this to tell "another owner is reading this" from "a stale entry is
+	 * holding it", which is what an identity-changing resume leaves behind when
+	 * the runtime outlives a connection. A stale entry is not an owner, so the
+	 * target is claimable. */
+	hasStaleRegistration(hubId: string, targetRef: string): boolean {
+		const target = this.#targets.get(nativeMutationTargetKey(hubId, targetRef));
+		if (target === undefined) return false;
+		return target.client.state !== "ready" && target.client.state !== "reconnecting";
 	}
 
 	beginAuthoritativeRead(
@@ -381,6 +547,11 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		)
 			return "stale";
 
+		this.#targetIdentities.set(lease.targetKey, {
+			threadId: response.thread.id,
+			instanceId: response.thread.evener.instanceId ?? response.thread.id,
+			owner: lease.registrationToken,
+		});
 		const authoritativeIds = collectAuthoritativeMutationIds(response);
 		if (!this.#isCurrentRead(lease)) return "stale";
 		await this.#dispatcher.reconcileIdentities(authoritativeIds);
@@ -450,7 +621,14 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		hubId: string,
 		targetRef: string,
 		client: AppwireClientLike,
-	): Promise<"open" | "reconciled" | "blocked" | "stale" | "unregistered"> {
+		options: {
+			mayResumeFenced?: () => Promise<boolean>;
+			/** Called with the resolved ref when a resume changes the session's
+			 * identity, so a mounted screen can follow it instead of staying on
+			 * the ref the daemon retired. */
+			onResolvedIdentity?: (ref: string) => void;
+		} = {},
+	): Promise<"open" | "reconciled" | "blocked" | "resumed" | "retry" | "stale" | "unregistered"> {
 		const targetKey = nativeMutationTargetKey(hubId, targetRef);
 		if (!this.#targets.has(targetKey)) return "unregistered";
 		if (!this.#blockedTargets.has(targetKey)) return "open";
@@ -466,6 +644,122 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 			});
 		} catch {
 			return "blocked";
+		}
+		// A fenced target that still holds a waiting message resumes here, so an
+		// offline send is not stranded: the resume's own read is what releases the
+		// parked row, and the next settle finishes it. Off by default - an
+		// ordinary read must never resume a session the person has not sent to.
+		if (
+			options.mayResumeFenced !== undefined &&
+			// Validate before acting: a newer read may already have cleared the
+			// fence and started dispatching, and resuming on this older answer
+			// would recycle the transport out from under that healthy work.
+			this.#isCurrentRead(lease) &&
+			response.thread.evener.resumeRequired === true &&
+			// A daemon that needs restarting refuses a resume; that shape stays with
+			// the person, whose older process must be stopped first.
+			response.thread.status.type !== "restartRequired"
+		) {
+			// Asked only now, on a fence the caller has actually seen: the ordinary
+			// settle path pays no storage read for it.
+			//
+			// A refusal and a failure are different facts. Refused: the session has
+			// no message worth resuming for, and "blocked" is its resting state.
+			// Failed: the caller could not tell, and answering "blocked" would skip
+			// the storage backoff it needs - so that answer is its own, and the
+			// flush schedules the retry it already has for a failed read.
+			let mayResume: boolean;
+			try {
+				mayResume = await options.mayResumeFenced();
+			} catch {
+				return "retry";
+			}
+			// Declining the resume must not throw away the read this settle
+			// already made. That read is the only proof the caller gets about
+			// what landed: skipping it would leave an attempted row "submitting"
+			// forever instead of surfacing it as the uncertain send it is. The
+			// target stays fenced, so reconciliation settles what the read proves
+			// without dispatching anything.
+			if (!mayResume) {
+				if (!this.#isCurrentRead(lease)) return "stale";
+				await this.reconcileAuthoritativeRead(lease, response);
+				return "blocked";
+			}
+			// The predicate reads storage, so it is an await of its own: a newer
+			// read can clear the fence and start healthy work inside it. Acting on
+			// this older answer then would recycle the transport out from under that
+			// work, so the lease is checked again here, not only before.
+			if (!this.#isCurrentRead(lease)) return "stale";
+			// A refused resume leaves the row parked and the next settle retries.
+			const resumed = await client.resumeThread(targetRef).catch(() => undefined);
+			if (!resumed) return "blocked";
+			// A resume can return a different identity. The parked rows still name
+			// the old ref and its instance, so they move to the resumed one before
+			// any read below - otherwise reconciliation sees rows under a ref the
+			// daemon no longer serves, or dispatches them with a stale fence.
+			const resolvedRef = resumed.thread.evener.ref;
+			if (resolvedRef !== targetRef) {
+				// Rows are keyed by the composite hub+ref the intent was built
+				// with, so the move names that same key on both sides.
+				const resolvedKey = nativeMutationTargetKey(hubId, resolvedRef);
+				this.storage.retarget(targetKey, {
+					ref: resolvedKey,
+					// The wire ref is the bare session ref; the key above is this
+					// phone's storage identity for it. Conflating them would send the
+					// daemon a JSON-encoded pair as a session ref.
+					wireRef: resolvedRef,
+					threadId: resumed.thread.id,
+					instanceId: resumed.thread.evener.instanceId,
+				});
+				// The resumed identity needs its own registration: the dispatcher
+				// reaches a client only through the key it names, so without this the
+				// moved rows would sit under a key nothing can serve. The original
+				// registration still belongs to its owner and is left alone.
+				//
+				// The one created here is scoped to this settle: it exists so the rows
+				// can dispatch, and holding it longer would pin the target to this
+				// connection's client - a later flush would then find the target
+				// "owned" and skip it, stranding whatever moved later.
+				const releaseResolved = this.registerTarget(hubId, resolvedRef, client);
+				this.#retireWithSettle.push(releaseResolved);
+				// Subscribers match the composite key, so a bare ref reaches none of
+				// them and both projections would keep showing rows that moved.
+				this.#notifyStorageChange([targetKey, resolvedKey]);
+				options.onResolvedIdentity?.(resolvedRef);
+			}
+			try {
+				// The resume cleared the fence, so read once more and reconcile in
+				// this same settle. A flush with no screen on the target lets go after
+				// a "blocked" answer and is woken by storage writes only, and the
+				// resume writes none - so leaving the row for "the next settle" would
+				// strand it.
+				//
+				// The resume recycles its transport, so the registration this read
+				// started under may be gone by now: a lease whose registration
+				// vanished reconciles as "stale". Reconcile what this tab can still
+				// prove, and let the caller's own retry own the rest.
+				const afterLease = this.beginAuthoritativeRead(hubId, resolvedRef, client);
+				if (!afterLease) return "resumed";
+				let after: ThreadReadResponse;
+				try {
+					after = await client.request("thread/read", {
+						ref: resolvedRef,
+						includeTurns: true,
+						itemsView: "fragment",
+						itemLimit: READ_ITEM_LIMIT,
+					});
+				} catch {
+					return "resumed";
+				}
+				return await this.reconcileAuthoritativeRead(afterLease, after);
+			} finally {
+				// Deliberately NOT released here. The dispatch this registration
+				// enables runs asynchronously and reads storage several awaits deep,
+				// so any release timed from this settle either strands the dispatch
+				// (too early, which a test caught) or holds the target claimed by
+				// this connection (too late). Its lifetime is the runtime's, released
+				// in stop(); see the KNOWN LIMITATION note there.
+			}
 		}
 		return this.reconcileAuthoritativeRead(lease, response);
 	}
@@ -491,8 +785,19 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		await this.#outbox.connectionReady();
 	}
 
-	async submit(request: NativeMutationRequest): Promise<MutationReceipt | undefined> {
+	/** Every admitted path returns the durable row it committed. The production
+	 * path is acknowledged at the enqueue boundary, before the daemon answers,
+	 * so an admission carries no wire receipt; the service-only caller adds
+	 * one when it has it. */
+	async submit(request: NativeMutationRequest): Promise<ConversationMutationAdmission> {
 		const intent = intentFor(request);
+		if (!this.#targetIdentities.has(intent.targetRef)) {
+			this.#targetIdentities.set(intent.targetRef, {
+				threadId: request.threadId,
+				instanceId: request.instanceId,
+				owner: this.#targets.get(intent.targetRef)?.token,
+			});
+		}
 		if (request.kind === "interrupt") {
 			// Stop's click is the cancel moment: the combined durable write
 			// cancels the target's never-attempted rows and enqueues the
@@ -502,7 +807,23 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 			await this.start();
 			const record = await this.#outbox.enqueueInterruptAndCancel(intent);
 			this.#notifyStorageChange([record.targetRef]);
-			return undefined;
+			return { clientMutationId: record.clientMutationId };
+		}
+		if (request.recoverySourceIds?.length) {
+			// Capture before startup, not when the all-source transaction begins.
+			// This path has no ordinary enqueue or direct-send fallback: the draft
+			// retains ownership until its exact durable receipt is acknowledged.
+			const barrier = { stopEpoch: await this.storage.readStopEpoch(intent.targetRef) };
+			await this.start();
+			const record = await this.storage.resendRecovery(request.recoverySourceIds, intent, barrier);
+			if (!record) {
+				this.#notifyStorageChange([intent.targetRef]);
+				throw new Error("Recovery sources are no longer available");
+			}
+			this.#rememberSubmitted(record.targetRef, record.clientMutationId, record.createdAt);
+			this.#notifyStorageChange([record.targetRef]);
+			void this.#dispatcher.dispatchTargets([record.targetRef]).catch(() => undefined);
+			return { clientMutationId: record.clientMutationId };
 		}
 		try {
 			// The click-time half of the stop barrier, captured before the
@@ -513,13 +834,18 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 				stopEpoch: await this.storage.readStopEpoch(intent.targetRef),
 			};
 			await this.start();
+			// The last local word before anything durable exists: a Retry whose
+			// view retired, whose binding moved, or whose canonical/pending facts
+			// changed refuses here with a non-storage error, so no row and no
+			// request are made. Ordinary Send/Queue carry no precondition.
+			if (request.precondition !== undefined && !request.precondition()) throw new MutationNotSentError();
 			const record = await this.#outbox.enqueueIntent(intent, undefined, barrier);
 			this.#rememberSubmitted(record.targetRef, record.clientMutationId, record.createdAt);
 			this.#notifyStorageChange([record.targetRef]);
-			return undefined;
+			return { clientMutationId: record.clientMutationId };
 		} catch (error) {
 			if (!DIRECT_FALLBACK_METHODS.has(intent.method) || !isSqliteStorageFailure(error)) throw error;
-			return this.#sendDirectly(intent, error);
+			return this.#sendDirectly(request, intent, error);
 		}
 	}
 
@@ -532,17 +858,25 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 	// send carries none of the row's guarantees: no per-ref ordering against
 	// earlier undelivered rows, no Stop fence, and a human retry after a lost
 	// reply is a new mutation.
-	async #sendDirectly(intent: MutationIntent, storageError: unknown): Promise<undefined> {
+	async #sendDirectly(
+		request: NativeMutationRequest,
+		intent: MutationIntent,
+		storageError: unknown,
+	): Promise<ConversationMutationAdmission> {
+		// Storage failed after the first check; the local facts may have moved on
+		// while it did. Recheck before the plain request, which has no durable row
+		// to own a later refusal.
+		if (request.precondition !== undefined && !request.precondition()) throw new MutationNotSentError();
 		const client = this.#targets.get(intent.targetRef)?.client;
 		if (!client || client.state !== "ready") throw storageError;
-		const request = client.request as unknown as (method: string, params: Record<string, unknown>) => Promise<unknown>;
+		const call = client.request as unknown as (method: string, params: Record<string, unknown>) => Promise<unknown>;
 		const clientMutationId = this.#createMutationId();
-		const result = await request.call(client, intent.method, { ...intent.payload, clientMutationId });
+		const result = await call.call(client, intent.method, { ...intent.payload, clientMutationId });
 		// The send is this phone's, so a read that lists it as pending must
 		// not classify it as another client's.
 		this.#rememberSubmitted(intent.targetRef, clientMutationId, this.#now());
-		if (intent.method === "turn/drainAsSteer") await this.#settleConsumedByDrain(result);
-		return undefined;
+		if (intent.method === COMPOSER_METHODS.drain) await this.#settleConsumedByDrain(result);
+		return { clientMutationId };
 	}
 
 	// The queued messages a direct drain consumed settle as the dispatcher

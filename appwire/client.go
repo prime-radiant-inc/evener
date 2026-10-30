@@ -42,7 +42,6 @@ type Client struct {
 	pending       map[string]pendingRequest
 	notifications chan Notification
 	orderedFrames func(Message, error)
-	pendingCoord  PendingCoordinator
 	featuresMu    sync.RWMutex
 	features      FeatureSet
 	// logf sinks connection-lifecycle events; nil discards them. See SetLogf.
@@ -263,11 +262,12 @@ func (c *Client) Features() FeatureSet {
 	return c.features
 }
 
-// SetPendingCoordinator installs an optimistic-rendering coordinator
-// that observes the four conversation-affecting Turn* methods. Pass
-// nil to disable. Safe to call before Start.
-func (c *Client) SetPendingCoordinator(pc PendingCoordinator) {
-	c.pendingCoord = pc
+// Ready reports whether the client was constructed with NewClient and has a
+// transport it can send on. A zero-value Client carries handshake facts in
+// tests and embedders but cannot serve a request; callers that would issue one
+// must check Ready first instead of panicking on its nil pending map.
+func (c *Client) Ready() bool {
+	return c != nil && c.transport != nil && c.closed != nil
 }
 
 // RequestNotSentError reports that Client.Request failed before the request was
@@ -493,6 +493,35 @@ func (e ProtocolVersionMismatchError) Error() string {
 	return fmt.Sprintf("appwire initialize: server protocol version %q, want %q", e.Got, e.Want)
 }
 
+// legacyProtocolVersion reads the version an older server names when it refuses
+// a newer client's initialize. Servers built before this client compare the
+// announced protocol exactly and answer a newer one with InvalidRequest, not
+// the structured upgradeRequired arm they reserve for an older client. Those
+// binaries cannot change, so the client translates the frozen sentence into the
+// typed mismatch its callers already match.
+func legacyProtocolVersion(message string) (string, bool) {
+	const prefix = "appwire " + MethodInitialize + `: protocol version "`
+	rest, ok := strings.CutPrefix(message, prefix)
+	if !ok {
+		return "", false
+	}
+	announced, rest, ok := strings.Cut(rest, `" is incompatible; want "`)
+	if !ok {
+		return "", false
+	}
+	wanted, ok := strings.CutSuffix(rest, `"`)
+	if !ok {
+		return "", false
+	}
+	if announced != ProtocolVersion || wanted == ProtocolVersion {
+		return "", false
+	}
+	if _, ok := ProtocolVersionNumber(wanted); !ok {
+		return "", false
+	}
+	return wanted, true
+}
+
 func (c *Client) Initialize(ctx context.Context, params InitializeParams) (InitializeResponse, error) {
 	var out InitializeResponse
 	if params.ProtocolVersion == "" {
@@ -502,6 +531,11 @@ func (c *Client) Initialize(ctx context.Context, params InitializeParams) (Initi
 		return out, fmt.Errorf("appwire initialize: protocol version %q, want %q", params.ProtocolVersion, ProtocolVersion)
 	}
 	if err := c.request(ctx, MethodInitialize, params, &out); err != nil {
+		if wire, ok := errors.AsType[WireError](err); ok && wire.Code == CodeInvalidRequest {
+			if wanted, ok := legacyProtocolVersion(wire.Message); ok {
+				return out, ProtocolVersionMismatchError{Got: wanted, Want: ProtocolVersion}
+			}
+		}
 		return out, err
 	}
 	if out.ProtocolVersion != ProtocolVersion {
@@ -540,18 +574,6 @@ func (c *Client) ThreadTurnsList(ctx context.Context, params ThreadTurnsListPara
 	return out, err
 }
 
-func (c *Client) ThreadTurnItemsList(ctx context.Context, params ThreadTurnItemsListParams) (ThreadTurnItemsListResponse, error) {
-	var out ThreadTurnItemsListResponse
-	err := c.request(ctx, MethodThreadTurnItemsList, params, &out)
-	return out, err
-}
-
-func (c *Client) ThreadTranscriptList(ctx context.Context, params ThreadTranscriptListParams) (ThreadTranscriptListResponse, error) {
-	var out ThreadTranscriptListResponse
-	err := c.request(ctx, MethodEvenerThreadTranscriptsList, params, &out)
-	return out, err
-}
-
 func (c *Client) ThreadActivityRead(ctx context.Context, params SessionActivityReadParams) (SessionActivitySummary, error) {
 	var out SessionActivitySummary
 	err := c.request(ctx, MethodEvenerThreadActivityRead, params, &out)
@@ -573,24 +595,6 @@ func (c *Client) ThreadJobsList(ctx context.Context, params SessionActivityListP
 func (c *Client) ThreadWatchesList(ctx context.Context, params SessionActivityListParams) (SessionWatchesResponse, error) {
 	var out SessionWatchesResponse
 	err := c.request(ctx, MethodEvenerThreadWatchesList, params, &out)
-	return out, err
-}
-
-func (c *Client) ThreadStart(ctx context.Context, params ThreadStartParams) (ThreadStartResponse, error) {
-	var out ThreadStartResponse
-	err := c.request(ctx, MethodThreadStart, params, &out)
-	return out, err
-}
-
-func (c *Client) ThreadResume(ctx context.Context, params ThreadResumeParams) (ThreadResumeResponse, error) {
-	var out ThreadResumeResponse
-	err := c.request(ctx, MethodThreadResume, params, &out)
-	return out, err
-}
-
-func (c *Client) ThreadFork(ctx context.Context, params ThreadForkParams) (ThreadForkResponse, error) {
-	var out ThreadForkResponse
-	err := c.request(ctx, MethodThreadFork, params, &out)
 	return out, err
 }
 
@@ -624,47 +628,10 @@ func (c *Client) ThreadShutdown(ctx context.Context, params ThreadShutdownParams
 	return c.request(ctx, MethodThreadShutdown, params, nil)
 }
 
-// TurnStart deliberately does not register with the pending coordinator
-// (TestTurnStart_DoesNotRegisterPending): the caller renders its own local
-// echo of the opening message before the RPC even goes out, so there is no
-// gap for a coordinator-drawn placeholder to fill.
 func (c *Client) TurnStart(ctx context.Context, params TurnStartParams) (TurnStartResponse, error) {
 	var out TurnStartResponse
 	err := c.request(ctx, MethodTurnStart, params, &out)
 	return out, err
-}
-
-func (c *Client) TurnSteer(ctx context.Context, params TurnSteerParams) error {
-	var handle PendingHandle
-	if c.pendingCoord != nil {
-		handle = c.pendingCoord.Register(MethodTurnSteer, inputText(params.Input), pendingTargetRef(params.Ref, params.ThreadID), params.ClientMutationID)
-	}
-	err := c.request(ctx, MethodTurnSteer, params, nil)
-	if err != nil && handle != nil {
-		handle.Fail(err.Error())
-	}
-	return err
-}
-
-func inputText(input []InputItem) string {
-	for _, item := range input {
-		if strings.TrimSpace(item.Text) != "" {
-			return item.Text
-		}
-	}
-	return ""
-}
-
-func (c *Client) TurnInterrupt(ctx context.Context, params TurnInterruptParams) error {
-	return c.request(ctx, MethodTurnInterrupt, params, nil)
-}
-
-// TurnQueue calls turn/queue (kata 111a) to enqueue a user message during a
-// running turn. The daemon returns immediately once the text has been
-// recorded; the queued message is processed as a fresh user turn after the
-// active turn completes.
-func (c *Client) TurnQueue(ctx context.Context, params TurnQueueParams) error {
-	return c.request(ctx, MethodTurnQueue, params, nil)
 }
 
 // GoalSet calls goal/set to set (or, with an empty objective, clear) the
@@ -692,31 +659,6 @@ func (c *Client) UrlsRemove(ctx context.Context, params UrlsRemoveParams) (UrlsR
 	return out, err
 }
 
-// TurnDrainAsSteer calls turn/drainAsSteer (kata 0bq1) to drain every queued
-// message into a single STEERING message for the in-flight turn.
-func (c *Client) TurnDrainAsSteer(ctx context.Context, params TurnDrainAsSteerParams) error {
-	var handle PendingHandle
-	if c.pendingCoord != nil {
-		handle = c.pendingCoord.Register(MethodTurnDrainAsSteer, "", params.Ref, params.ClientMutationID)
-	}
-	err := c.request(ctx, MethodTurnDrainAsSteer, params, nil)
-	if err != nil && handle != nil {
-		handle.Fail(err.Error())
-	}
-	return err
-}
-
-// TurnPromoteQueuedAsSteer calls turn/promoteQueuedAsSteer (issue #22) to
-// remove the queued message at params.Index and inject it as a user-sourced
-// STEERING message into the in-flight turn (or the next turn when none is
-// running), leaving the rest of the queue in place. Unlike TurnSteer, no
-// turn needs to be active: a queue a Stop parked is promoteable. The daemon
-// returns Conflict when the index no longer resolves against the live queue
-// or the expected entry id mismatches.
-func (c *Client) TurnPromoteQueuedAsSteer(ctx context.Context, params TurnPromoteQueuedAsSteerParams) error {
-	return c.request(ctx, MethodTurnPromoteQueuedAsSteer, params, nil)
-}
-
 // TurnCancelQueued calls turn/cancelQueued (issue #23) to remove the queued
 // message at params.Index so it is never consumed. The response echoes the
 // removed entry's full text and image count. The daemon returns Conflict
@@ -729,13 +671,6 @@ func (c *Client) TurnCancelQueued(ctx context.Context, params TurnCancelQueuedPa
 		return TurnCancelQueuedResponse{}, err
 	}
 	return resp, nil
-}
-
-func pendingTargetRef(ref, threadID string) string {
-	if strings.TrimSpace(ref) != "" {
-		return ref
-	}
-	return threadID
 }
 
 func (c *Client) TasksList(ctx context.Context, params TaskListParams) (TaskListResponse, error) {
@@ -762,66 +697,6 @@ func (c *Client) JobsGet(ctx context.Context, params JobsGetParams) (JobsGetResp
 	return out, err
 }
 
-func (c *Client) PathsComplete(ctx context.Context, params PathsCompleteParams) (PathsCompleteResponse, error) {
-	var out PathsCompleteResponse
-	err := c.request(ctx, MethodEvenerPathsComplete, params, &out)
-	return out, err
-}
-
-func (c *Client) DirsCreate(ctx context.Context, params DirsCreateParams) (DirsCreateResponse, error) {
-	var out DirsCreateResponse
-	err := c.request(ctx, MethodEvenerDirsCreate, params, &out)
-	return out, err
-}
-
-func (c *Client) ProjectsRecent(ctx context.Context, params ProjectsRecentParams) (ProjectsRecentResponse, error) {
-	var out ProjectsRecentResponse
-	err := c.request(ctx, MethodEvenerProjectsRecent, params, &out)
-	return out, err
-}
-
-func (c *Client) GitHead(ctx context.Context, params GitHeadParams) (GitHeadResponse, error) {
-	var out GitHeadResponse
-	err := c.request(ctx, MethodEvenerGitHead, params, &out)
-	return out, err
-}
-
-func (c *Client) MobilePairing(ctx context.Context, params MobilePairingParams) (MobilePairingResponse, error) {
-	var out MobilePairingResponse
-	err := c.request(ctx, MethodEvenerMobilePairing, params, &out)
-	return out, err
-}
-
-func (c *Client) NavigationRead(ctx context.Context, params NavigationReadParams) (NavigationReadResponse, error) {
-	var out NavigationReadResponse
-	err := c.request(ctx, MethodEvenerNavigationRead, params, &out)
-	return out, err
-}
-
-func (c *Client) FavoriteSet(ctx context.Context, params FavoriteSetParams) (FavoriteSetResponse, error) {
-	var out FavoriteSetResponse
-	err := c.request(ctx, MethodEvenerFavoriteSet, params, &out)
-	return out, err
-}
-
-func (c *Client) ArchiveSet(ctx context.Context, params ArchiveParams) (ArchiveResponse, error) {
-	var out ArchiveResponse
-	err := c.request(ctx, MethodEvenerArchiveSet, params, &out)
-	return out, err
-}
-
-func (c *Client) ProjectDelete(ctx context.Context, params ProjectDeleteParams) (ProjectDeleteResponse, error) {
-	var out ProjectDeleteResponse
-	err := c.request(ctx, MethodEvenerProjectDelete, params, &out)
-	return out, err
-}
-
-func (c *Client) SessionDelete(ctx context.Context, params SessionDeleteParams) (SessionDeleteResponse, error) {
-	var out SessionDeleteResponse
-	err := c.request(ctx, MethodEvenerSessionDelete, params, &out)
-	return out, err
-}
-
 func (c *Client) Search(ctx context.Context, params SearchParams) (SearchResponse, error) {
 	var out SearchResponse
 	err := c.request(ctx, MethodEvenerSearch, params, &out)
@@ -834,179 +709,14 @@ func (c *Client) ArchivedList(ctx context.Context, params ArchivedListParams) (A
 	return out, err
 }
 
-func (c *Client) HarnessList(ctx context.Context, params HarnessListParams) (HarnessListResponse, error) {
-	var out HarnessListResponse
-	err := c.request(ctx, MethodEvenerHarnessesList, params, &out)
-	return out, err
-}
-
 func (c *Client) Upgrade(ctx context.Context, params UpgradeParams) (UpgradeResponse, error) {
 	var out UpgradeResponse
 	err := c.request(ctx, MethodEvenerUpgrade, params, &out)
 	return out, err
 }
 
-func (c *Client) UpdateCheck(ctx context.Context, params UpdateCheckParams) (UpdateCheckResponse, error) {
-	var out UpdateCheckResponse
-	err := c.request(ctx, MethodEvenerUpdateCheck, params, &out)
-	return out, err
-}
-
-func (c *Client) UpdateApply(ctx context.Context, params UpdateApplyParams) (UpdateApplyResponse, error) {
-	var out UpdateApplyResponse
-	err := c.request(ctx, MethodEvenerUpdateApply, params, &out)
-	return out, err
-}
-
-func (c *Client) AuthStatus(ctx context.Context, params AuthStatusParams) (AuthStatusResponse, error) {
-	var out AuthStatusResponse
-	err := c.request(ctx, MethodEvenerAuthStatus, params, &out)
-	return out, err
-}
-
-func (c *Client) AuthLoginStart(ctx context.Context, params AuthLoginStartParams) (AuthLoginStartResponse, error) {
-	var out AuthLoginStartResponse
-	err := c.request(ctx, MethodEvenerAuthLoginStart, params, &out)
-	return out, err
-}
-
-func (c *Client) AuthLoginComplete(ctx context.Context, params AuthLoginCompleteParams) (AuthLoginCompleteResponse, error) {
-	var out AuthLoginCompleteResponse
-	err := c.request(ctx, MethodEvenerAuthLoginComplete, params, &out)
-	return out, err
-}
-
-func (c *Client) AuthLogout(ctx context.Context, params AuthLogoutParams) (AuthLogoutResponse, error) {
-	var out AuthLogoutResponse
-	err := c.request(ctx, MethodEvenerAuthLogout, params, &out)
-	return out, err
-}
-
 func (c *Client) ModelList(ctx context.Context, params ModelListParams) (ModelListResponse, error) {
 	var out ModelListResponse
 	err := c.request(ctx, MethodModelList, params, &out)
-	return out, err
-}
-
-func (c *Client) CommandList(ctx context.Context) (CommandListResponse, error) {
-	var out CommandListResponse
-	err := c.request(ctx, MethodEvenerCommandList, EmptyParams{}, &out)
-	return out, err
-}
-
-func (c *Client) MarketplaceList(ctx context.Context) (MarketplaceListResponse, error) {
-	var out MarketplaceListResponse
-	err := c.request(ctx, MethodEvenerMarketplaceList, EmptyParams{}, &out)
-	return out, err
-}
-
-func (c *Client) MarketplaceAdd(ctx context.Context, params MarketplaceAddParams) (MarketplaceListResponse, error) {
-	var out MarketplaceListResponse
-	err := c.request(ctx, MethodEvenerMarketplaceAdd, params, &out)
-	return out, err
-}
-
-func (c *Client) MarketplaceEdit(ctx context.Context, params MarketplaceEditParams) (MarketplaceListResponse, error) {
-	var out MarketplaceListResponse
-	err := c.request(ctx, MethodEvenerMarketplaceEdit, params, &out)
-	return out, err
-}
-
-func (c *Client) MarketplaceRemove(ctx context.Context, params MarketplaceNameParams) (MarketplaceListResponse, error) {
-	var out MarketplaceListResponse
-	err := c.request(ctx, MethodEvenerMarketplaceRemove, params, &out)
-	return out, err
-}
-
-func (c *Client) MarketplaceRefresh(ctx context.Context, params MarketplaceNameParams) (MarketplaceListResponse, error) {
-	var out MarketplaceListResponse
-	err := c.request(ctx, MethodEvenerMarketplaceRefresh, params, &out)
-	return out, err
-}
-
-func (c *Client) MarketplaceBrowse(ctx context.Context, params MarketplaceBrowseParams) (MarketplaceBrowseResponse, error) {
-	var out MarketplaceBrowseResponse
-	err := c.request(ctx, MethodEvenerMarketplaceBrowse, params, &out)
-	return out, err
-}
-
-func (c *Client) PluginList(ctx context.Context) (PluginListResponse, error) {
-	var out PluginListResponse
-	err := c.request(ctx, MethodEvenerPluginList, EmptyParams{}, &out)
-	return out, err
-}
-
-func (c *Client) PluginCheckUpdates(ctx context.Context) (PluginListResponse, error) {
-	var out PluginListResponse
-	err := c.request(ctx, MethodEvenerPluginCheckUpdates, EmptyParams{}, &out)
-	return out, err
-}
-
-func (c *Client) PluginPreview(ctx context.Context, params PluginPreviewParams) (PluginPreviewResponse, error) {
-	var out PluginPreviewResponse
-	err := c.request(ctx, MethodEvenerPluginPreview, params, &out)
-	return out, err
-}
-
-func (c *Client) SpawnSlashCatalog(ctx context.Context, params SpawnSlashCatalogParams) (SpawnSlashCatalogResponse, error) {
-	var out SpawnSlashCatalogResponse
-	err := c.request(ctx, MethodEvenerSpawnSlashCatalog, params, &out)
-	return out, err
-}
-
-func (c *Client) PluginInstall(ctx context.Context, params PluginRefParams) (PluginListResponse, error) {
-	var out PluginListResponse
-	err := c.request(ctx, MethodEvenerPluginInstall, params, &out)
-	return out, err
-}
-
-func (c *Client) PluginUpgrade(ctx context.Context, params PluginRefParams) (PluginListResponse, error) {
-	var out PluginListResponse
-	err := c.request(ctx, MethodEvenerPluginUpgrade, params, &out)
-	return out, err
-}
-
-func (c *Client) PluginRemove(ctx context.Context, params PluginRefParams) (PluginListResponse, error) {
-	var out PluginListResponse
-	err := c.request(ctx, MethodEvenerPluginRemove, params, &out)
-	return out, err
-}
-
-func (c *Client) PluginEnable(ctx context.Context, params PluginRefParams) (PluginListResponse, error) {
-	var out PluginListResponse
-	err := c.request(ctx, MethodEvenerPluginEnable, params, &out)
-	return out, err
-}
-
-func (c *Client) PluginDisable(ctx context.Context, params PluginRefParams) (PluginListResponse, error) {
-	var out PluginListResponse
-	err := c.request(ctx, MethodEvenerPluginDisable, params, &out)
-	return out, err
-}
-
-func (c *Client) PluginSetAutoUpgrade(ctx context.Context, params PluginSetAutoUpgradeParams) (PluginListResponse, error) {
-	var out PluginListResponse
-	err := c.request(ctx, MethodEvenerPluginSetAutoUpgrade, params, &out)
-	return out, err
-}
-
-func (c *Client) DevicePairingCreate(ctx context.Context, params DevicePairingCreateParams) (DevicePairingInvitation, error) {
-	var out DevicePairingInvitation
-	err := c.request(ctx, MethodEvenerDevicePairingCreate, params, &out)
-	return out, err
-}
-func (c *Client) DevicePairingRead(ctx context.Context, params DevicePairingParams) (DevicePairingStatus, error) {
-	var out DevicePairingStatus
-	err := c.request(ctx, MethodEvenerDevicePairingRead, params, &out)
-	return out, err
-}
-func (c *Client) DevicePairingApprove(ctx context.Context, params DevicePairingApproveParams) (DevicePairingStatus, error) {
-	var out DevicePairingStatus
-	err := c.request(ctx, MethodEvenerDevicePairingApprove, params, &out)
-	return out, err
-}
-func (c *Client) DevicePairingCancel(ctx context.Context, params DevicePairingParams) (DevicePairingStatus, error) {
-	var out DevicePairingStatus
-	err := c.request(ctx, MethodEvenerDevicePairingCancel, params, &out)
 	return out, err
 }

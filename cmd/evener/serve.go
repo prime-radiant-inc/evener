@@ -7,15 +7,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"math"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
-	"slices"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"syscall"
 	"text/tabwriter"
@@ -27,14 +24,11 @@ import (
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
-	"primeradiant.com/evener/agent/skill"
-	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener/internal/rvreg"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/identifier"
-	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/llm"
 	_ "primeradiant.com/evener/llm/providers/all"
@@ -124,7 +118,7 @@ type serveServer interface {
 	// the live session's registry resolution of an instance/model reference.
 	SetCostLookupFunc(func(string) *registry.Cost)
 	SetTasksFunc(func() []appwire.Task)
-	SetJobsFunc(func(appwire.JobsListParams) (any, error))
+	SetJobsFunc(func(context.Context, appwire.JobsListParams) (any, error))
 	SetThreadActivityReadFunc(func(context.Context, appwire.SessionActivityReadParams) (appwire.SessionActivitySummary, error))
 	SetThreadDelegatesListFunc(func(context.Context, appwire.SessionActivityListParams) (appwire.SessionDelegatesResponse, error))
 	SetThreadJobsListFunc(func(context.Context, appwire.SessionActivityListParams) (appwire.SessionJobsResponse, error))
@@ -210,9 +204,13 @@ type serveDeps struct {
 	// Injectable so a test can wedge it: the reason the tee exists is that the
 	// real one can be a pipe nobody drains, and that is not reproducible against
 	// a real terminal.
-	verboseOut       io.Writer
-	subscriberCount  func(serveServer, string) int
-	notifyContext    func(context.Context, ...os.Signal) (context.Context, context.CancelFunc)
+	verboseOut      io.Writer
+	subscriberCount func(serveServer, string) int
+	notifyContext   func(context.Context, ...os.Signal) (context.Context, context.CancelFunc)
+	// runContext derives the run's lifetime from the signal context. Its cancel
+	// is what thread/shutdown and retirement call to start the exit path, so it
+	// is injectable for a test that must gate exactly that call.
+	runContext       func(context.Context) (context.Context, context.CancelFunc)
 	startCPUProfile  func(string) (func(), error)
 	startTrace       func(string) (func(), error)
 	startLivePprof   func(logf func(format string, args ...any)) (indexURL string, stop func(), err error)
@@ -265,7 +263,7 @@ func defaultServeDeps() serveDeps {
 		getwd:      os.Getwd, ensureConfigDirs: cmdutil.EnsureUserConfigDirs,
 		resolveMeta: cmdutil.ResolveSessionMeta, newClient: newUnloggedServeLLMClient,
 		attachAPILogger: serveAttachSessionAPILogger,
-		buildProfile:    buildInitialProfile, applyCheap: applyFastCheapModel,
+		buildProfile:    buildInitialProfile, applyCheap: cmdutil.ApplyFastCheapModel,
 		newSession: agent.NewSession, restoreSession: agent.RestoreSessionFromMetaWithConfig,
 		listen: func(ctx context.Context, network, addr string) (net.Listener, error) {
 			var lc net.ListenConfig
@@ -285,7 +283,8 @@ func defaultServeDeps() serveDeps {
 		},
 		drainWaitExpiry: func() <-chan time.Time { return time.After(shutdownDrainWaitBudget) },
 		subscriberCount: func(s serveServer, id string) int { return s.(*server.Server).AppSubscriberCount(id) },
-		notifyContext:   signal.NotifyContext, startCPUProfile: cmdutil.StartCPUProfile, startTrace: cmdutil.StartTrace,
+		notifyContext:   signal.NotifyContext, runContext: context.WithCancel,
+		startCPUProfile: cmdutil.StartCPUProfile, startTrace: cmdutil.StartTrace,
 		startLivePprof:       cmdutil.StartLivePprof,
 		register:             func(r *rvreg.Registration, dir string, entry rendezvous.Entry) error { return r.Register(dir, entry) },
 		rendezvousRetryPause: func() <-chan time.Time { return time.After(rendezvousRemovalRetryPause) },
@@ -382,7 +381,7 @@ func (e *startupInterruptedError) Unwrap() error { return e.err }
 // the one order an accepted interrupt needs: the runner first.
 //
 // The interrupt path does not consult the server cancel func; it calls
-// cancelAndWaitMutationRunner, which reads the runner fields under
+// serveBridge.cancelAndWaitMutationRunner, which reads the runner fields under
 // mutationRunnerMu and then waits for runnerDone before it finalizes the fence.
 // Armed cancel-first, a Stop accepted between the two statements finds the runner
 // fields still nil, returns without waiting, finalizes the fence and clears it --
@@ -395,59 +394,17 @@ func armInterruptRunner(setRunner, setCancel func()) {
 
 func runServeWithDeps(args []string, deps serveDeps) error {
 	fs := deps.newFlagSet("serve", flag.ExitOnError)
+	lf := registerLaunchFlags(fs)
 	addr := fs.String("addr", "127.0.0.1:9131", "listen address")
-	model := fs.String("model", "", "LLM model identifier (provider/model)")
-	fastCheapModel := fs.String("fast-cheap-model", "", "auxiliary model for side calls (naming, summarization, web fetch); 'provider/model' may use a different provider than --model, or a bare 'model' for the active provider")
-	visionModel := fs.String("vision-model", "", "vision side-channel model: 'off' disables image description, 'provider/model' or bare 'model' routes it (default: the session model)")
-	workDir := fs.String("dir", "", "working directory")
-	stateDir := fs.String("state-dir", "", "override runtime state directory")
-	disableMemory := fs.Bool("disable-memory", false, "disable native memory for this session, including on resume")
 	runDirFlag := fs.String("run-dir", "", "override rendezvous run directory")
-	resume := fs.String("resume", "", "resume a previous session by ID")
-	resumeLast := fs.Bool("resume-last", false, "resume the most recent session")
-	systemPrompt := fs.String("system-prompt", "", "path to a custom system prompt file")
-	var systemPromptAppend cmdutil.StringSliceFlag
-	fs.Var(&systemPromptAppend, "system-prompt-append", "path to append to system prompt (repeatable)")
-	systemPromptAsUser := fs.Bool("system-prompt-as-user", false, "deliver system prompt as first user message")
-	maxRounds := fs.Int("max-rounds", -1, "max tool rounds per input (-1=default, 0=unlimited)")
-	maxSubagentDepth := fs.Int("max-subagent-depth", -1, "max subagent nesting depth")
-	maxConcurrentDelegates := fs.Int("max-concurrent-delegates", -1, "max concurrently running delegate turns per session tree (default: 50)")
-	maxRetainedTerminal := fs.Int("max-retained-terminal", -1, "max retained terminal delegate records per session (default: 2048)")
-	shareTaskStore := fs.Bool("share-task-store", false, "share task list between parent and child sessions")
-	resultToolName := fs.String("result-tool-name", "", "override the result tool name")
-	reasoningEffort := fs.String("reasoning-effort", "", "reasoning effort: minimal|low|medium|high|xhigh|max|none")
-	exportATIF := fs.String("export-atif", "", "export ATIF trajectory to this path")
-	exportATIFProviderHandles := fs.String("export-atif-provider-handles", "", "ATIF provider handle export mode: redacted|raw-local (default: redacted)")
-	contextStrategy := fs.String("context-strategy", "", "context management strategy")
-	outputSchema := fs.String("output-schema", "", "inline JSON Schema applied to the communicate tool's output field")
-	verbose := fs.Bool("verbose", false, "emit NDJSON events to stderr")
 	appReplaySize := fs.Int("app-replay-size", 0, "AppWire notification replay ring size (default 1000)")
 	nonInteractive := fs.Bool("non-interactive", false, "mark this daemon session as headless/non-interactive")
 	managerMode := fs.Bool("manager", false, "start this session as a Manager of the sessions its hub can reach (a start-time property; persisted with the session)")
-	agentName := fs.String("agent", "", "agent persona name (default: default)")
-	var skillsDirs cmdutil.StringSliceFlag
-	fs.Var(&skillsDirs, "skills-dir", "extra skill directory (repeatable)")
-	var mcpServers cmdutil.StringSliceFlag
-	fs.Var(&mcpServers, "mcp", "MCP server (repeatable)")
-	var mcpConfigs cmdutil.StringSliceFlag
-	fs.Var(&mcpConfigs, "mcp-config", "path to .mcp.json file (repeatable)")
-	var pluginDirs cmdutil.StringSliceFlag
-	fs.Var(&pluginDirs, "plugin-dir", "plugin directory (repeatable)")
 	pluginRoot := fs.String("plugin-root", "", "internal plugin registry root override")
 	agentsDoc := fs.String("agents-doc", "", "personal AGENTS.md loaded ahead of project docs (default: <user config root>/AGENTS.md)")
-	var enabledPlugins pluginSelectionFlag
-	fs.Var(&enabledPlugins, "enabled-plugins", "comma-separated plugin names to enable (empty selects none)")
 	var modelFallbacks cmdutil.StringSliceFlag
 	fs.Var(&modelFallbacks, "model-fallback", "fallback model (provider/model) tried on permanent provider errors (repeatable)")
-	providerIdleTimeout := fs.String("provider-idle-timeout", "", "Provider response-byte idle duration (default: 10m; no total request limit)")
 	daemonIdleTimeout := fs.Duration("daemon-idle-timeout", 0, "retire this daemon after continuous proven inactivity (default: 0 = automatic retirement disabled; the Hub passes its configured value)")
-	openAIResponsesContinuation := fs.String("openai-responses-continuation", "", "OpenAI Responses continuation mode: off|auto (default: off)")
-	sandboxMode := fs.String("sandbox", "off", "sandbox mode: off (default), read-only, workspace-write, or restricted")
-	sandboxNet := fs.String("sandbox-net", "on", "sandbox network egress on|off (default on; only applies with a non-off --sandbox mode)")
-	apiLog := fs.String("api-log", "off", "durable API request logging on|off (default off; on records every provider request and response to <state-dir>/sessions/<id>.api.jsonl)")
-	cpuProfile := fs.String("cpu-profile", "", "write CPU profile to file")
-	traceFile := fs.String("trace", "", "write execution trace to file")
-
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: evener serve [flags]\n\n")
 		fmt.Fprintf(os.Stderr, "Start evener as an app-wire JSON-RPC server.\n\n")
@@ -462,7 +419,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		return fmt.Errorf("--daemon-idle-timeout must not be negative (got %v)", *daemonIdleTimeout)
 	}
 	pluginManager := plugins.NewManager(*pluginRoot)
-	if err := rejectPluginSelectionWithResume(enabledPlugins.Value(), *resume, *resumeLast); err != nil {
+	if err := rejectPluginSelectionWithResume(lf.enabledPlugins.Value(), *lf.resume, *lf.resumeLast); err != nil {
 		return err
 	}
 	// Signal handling, installed before the first thing that can wait on
@@ -470,7 +427,19 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// install or an auto-upgrade can be holding across git fetches, and an
 	// interrupt has to end that wait rather than being ignored until the
 	// daemon reaches its listener.
-	ctx, cancel := deps.notifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	//
+	// The handler stays registered until serve returns, so the run gets its own
+	// context. thread/shutdown and idle retirement end the run by cancelling
+	// ctx, and teardown -- where the session closes and
+	// kills its background jobs -- comes after that. Stopping NotifyContext
+	// there would restore SIGTERM's default disposition, so a supervisor's
+	// SIGTERM landing mid-teardown would kill the daemon on the spot and orphan
+	// every background job it owns. A repeat SIGTERM during teardown is
+	// swallowed on purpose: exiting on it would orphan the jobs the same way,
+	// and the drain-wait budget already bounds a wedged teardown.
+	signalCtx, stopSignals := deps.notifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+	ctx, cancel := deps.runContext(signalCtx)
 	defer cancel()
 
 	// Before anything that can create the user config root: the legacy-data
@@ -487,8 +456,8 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			return pluginManager.ResolveForLaunch(ctx, explicit, enabled)
 		}
 	}
-	resolvedPlugins, resolveErr := resolvePlugins(ctx, []string(pluginDirs), enabledPlugins.Value())
-	if fatal := fatalLaunchPluginError(resolveErr, enabledPlugins.Value()); fatal != nil {
+	resolvedPlugins, resolveErr := resolvePlugins(ctx, []string(lf.pluginDirs), lf.enabledPlugins.Value())
+	if fatal := fatalLaunchPluginError(resolveErr, lf.enabledPlugins.Value()); fatal != nil {
 		return fatal
 	}
 	if resolveErr != nil {
@@ -498,24 +467,20 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	if err := resolvedPlugins.ValidateSelection(); err != nil {
 		return err
 	}
-	if _, err := agent.ParseProviderIdleTimeout(*providerIdleTimeout); err != nil {
+	settings, err := resolveLaunchSettings(*lf.providerIdleTimeout, *lf.apiLog, *lf.openAIResponsesContinuation)
+	if err != nil {
 		return err
 	}
-	apiLogEnabled, apiLogErr := parseAPILog(*apiLog)
-	if apiLogErr != nil {
-		return apiLogErr
-	}
-	resolvedOpenAIResponsesContinuation := resolveOpenAIResponsesContinuation(*openAIResponsesContinuation, nil)
 
-	if *cpuProfile != "" {
-		stop, err := deps.startCPUProfile(*cpuProfile)
+	if *lf.cpuProfile != "" {
+		stop, err := deps.startCPUProfile(*lf.cpuProfile)
 		if err != nil {
 			return fmt.Errorf("CPU profile: %w", err)
 		}
 		defer stop()
 	}
-	if *traceFile != "" {
-		stop, err := deps.startTrace(*traceFile)
+	if *lf.traceFile != "" {
+		stop, err := deps.startTrace(*lf.traceFile)
 		if err != nil {
 			return fmt.Errorf("trace: %w", err)
 		}
@@ -530,7 +495,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	defer stopPprof()
 
 	// Resolve working directory.
-	wd := *workDir
+	wd := *lf.workDir
 	if wd == "" {
 		var err error
 		wd, err = deps.getwd()
@@ -558,7 +523,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// Resolve state directory.
 	// Priority: --state-dir flag > EVENER_STATE_DIR env > XDG-computed default.
 	var project identifier.Project
-	sd := *stateDir
+	sd := *lf.stateDir
 	if sd == "" {
 		sd = envvars.EVENERStateDir.Getenv()
 	}
@@ -576,18 +541,18 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		return fmt.Errorf("resolve absolute state directory: %w", stateDirErr)
 	}
 	sd = absoluteStateDir
-	resuming := *resume != "" || *resumeLast
+	resuming := *lf.resume != "" || *lf.resumeLast
 	var resumedMeta schema.SessionMeta
 	if resuming {
 		var metaErr error
-		resumedMeta, metaErr = deps.resolveMeta(sd, *resume, *resumeLast)
+		resumedMeta, metaErr = deps.resolveMeta(sd, *lf.resume, *lf.resumeLast)
 		if metaErr != nil {
 			return metaErr
 		}
 		// An implicit --resume-last that lands on a delegate resolves to the
 		// newest resumable root, so a recently-touched delegate does not make it
 		// useless; an explicit id is still refused below.
-		if *resume == "" && *resumeLast && resumedMeta.IsSubagent {
+		if *lf.resume == "" && *lf.resumeLast && resumedMeta.IsSubagent {
 			if root, ok := latestResumableRootMeta(sd); ok {
 				resumedMeta = root
 			}
@@ -605,28 +570,38 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		resumeModel = resumedMeta.Model
 	}
 	var modelRef cmdutil.ModelRef
-	var err error
 	if resuming {
-		modelRef, err = cmdutil.ResolveResumeModelRef(*model, envvars.EVENERModel.Getenv(), resumeProvider, resumeModel)
+		modelRef, err = cmdutil.ResolveResumeModelRef(*lf.model, envvars.EVENERModel.Getenv(), resumeProvider, resumeModel)
 	} else {
-		modelRef, err = cmdutil.ResolveModelRef(*model, envvars.EVENERModel.Getenv(), "", "")
+		modelRef, err = cmdutil.ResolveModelRef(*lf.model, envvars.EVENERModel.Getenv(), "", "")
 	}
 	if err != nil {
 		return err
 	}
 
-	effort, err := cmdutil.ResolveReasoningEffort(*reasoningEffort, envvars.EVENERReasoningEffort.Getenv())
+	effort, err := cmdutil.ResolveReasoningEffort(*lf.reasoningEffort, envvars.EVENERReasoningEffort.Getenv())
 	if err != nil {
 		return err
 	}
 
 	// Create LLM client and session.
+	// Resolved before the session and listener exist, so a missing state home
+	// fails the launch with nothing to unwind.
+	runDir := *runDirFlag
+	if runDir == "" {
+		runDir = envvars.EVENERRunDir.Getenv()
+	}
+	if runDir == "" {
+		if runDir, err = rendezvous.DefaultDir(); err != nil {
+			return fmt.Errorf("resolve runtime directory: %w", err)
+		}
+	}
 	client, closeClient, err := deps.newClient(sd, os.Stderr)
 	if err != nil {
 		return err
 	}
 	defer closeClient() //nolint:errcheck
-	reserveSession, closeAPILog, err := deps.attachAPILogger(client, sd, os.Stderr, apiLogEnabled)
+	reserveSession, closeAPILog, err := deps.attachAPILogger(client, sd, os.Stderr, settings.apiLogEnabled)
 	if err != nil {
 		return err
 	}
@@ -640,15 +615,15 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	if resuming {
 		profileCtx = llm.WithAPILogContext(ctx, resumedMeta.ID)
 	}
-	profile, startupListing, err := deps.buildProfile(profileCtx, client, modelRef, *outputSchema)
+	profile, startupListing, err := deps.buildProfile(profileCtx, client, modelRef, *lf.outputSchema)
 	if err != nil {
 		return err
 	}
-	profile, err = deps.applyCheap(profile, *fastCheapModel, client)
+	profile, err = deps.applyCheap(profile, *lf.fastCheapModel, client)
 	if err != nil {
 		return err
 	}
-	visionModelVal, err := applyVisionModel(profile, *visionModel, client)
+	visionModelVal, err := applyVisionModel(profile, *lf.visionModel, client)
 	if err != nil {
 		return err
 	}
@@ -667,10 +642,11 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	if !resuming {
 		memoryProjectID = resolveMemoryProjectID(env, os.Stderr)
 	}
+	memoryStateRoot := memoryStateRootForLaunch(*lf.disableMemory || (resuming && resumedMeta.Config.DisableMemory), os.Stderr)
 	sessionCfg := agent.SessionConfig{
-		MemoryStateRoot: cmdutil.DefaultStateRoot(),
+		MemoryStateRoot: memoryStateRoot,
 		MemoryProjectID: memoryProjectID,
-		DisableMemory:   *disableMemory,
+		DisableMemory:   *lf.disableMemory,
 		// The session tree lives exactly as long as this daemon does. Shutdown
 		// waits for the input loop before it closes the session, so work that
 		// runs synchronously on that loop -- a Notification hook, which runs
@@ -678,46 +654,46 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// only cancellation it ever sees arrives after the wait it is holding
 		// up. A turn is already cancelled directly (turnCtx derives from ctx).
 		LifetimeContext:             ctx,
-		MaxToolRoundsPerInput:       cmdutil.MaxRoundsToConfig(*maxRounds),
-		ShareTasksWithChildren:      *shareTaskStore,
-		ResultToolName:              *resultToolName,
+		MaxToolRoundsPerInput:       cmdutil.MaxRoundsToConfig(*lf.maxRounds),
+		ShareTasksWithChildren:      *lf.shareTaskStore,
+		ResultToolName:              *lf.resultToolName,
 		StateDir:                    sd,
 		AcquireSessionOwnership:     reserveSession,
 		Project:                     project,
-		SystemPromptFile:            *systemPrompt,
-		SystemPromptAppend:          []string(systemPromptAppend),
+		SystemPromptFile:            *lf.systemPrompt,
+		SystemPromptAppend:          []string(lf.systemPromptAppend),
 		AgentsDocPath:               *agentsDoc,
-		AgentName:                   *agentName,
-		SkillsDirs:                  []string(skillsDirs),
-		MCPConfigFiles:              []string(mcpConfigs),
-		MCPInline:                   []string(mcpServers),
+		AgentName:                   *lf.agentName,
+		SkillsDirs:                  []string(lf.skillsDirs),
+		MCPConfigFiles:              []string(lf.mcpConfigs),
+		MCPInline:                   []string(lf.mcpServers),
 		PluginDirs:                  resolvedPlugins.SelectedDirs,
-		ContextStrategy:             *contextStrategy,
-		ExportATIFPath:              *exportATIF,
-		ExportATIFProviderHandles:   *exportATIFProviderHandles,
+		ContextStrategy:             *lf.contextStrategy,
+		ExportATIFPath:              *lf.exportATIF,
+		ExportATIFProviderHandles:   *lf.exportATIFProviderHandles,
 		VisionModel:                 visionModelVal,
 		NonInteractive:              *nonInteractive,
 		Manager:                     *managerMode,
-		SystemPromptAsUser:          *systemPromptAsUser,
+		SystemPromptAsUser:          *lf.systemPromptAsUser,
 		ModelFallbacks:              []string(modelFallbacks),
-		OpenAIResponsesContinuation: resolvedOpenAIResponsesContinuation,
-		ProviderIdleTimeout:         *providerIdleTimeout,
+		OpenAIResponsesContinuation: settings.openAIResponsesContinuation,
+		ProviderIdleTimeout:         *lf.providerIdleTimeout,
 		ResolveProfile:              cmdutil.BuildResolveProfile(client),
 		StartupModelListing:         startupListing,
 	}
-	if *maxSubagentDepth >= 0 {
-		sessionCfg.MaxSubagentDepth = *maxSubagentDepth
+	if *lf.maxSubagentDepth >= 0 {
+		sessionCfg.MaxSubagentDepth = *lf.maxSubagentDepth
 	}
-	if *maxConcurrentDelegates >= 0 {
-		sessionCfg.MaxConcurrentDelegateTurns = *maxConcurrentDelegates
+	if *lf.maxConcurrentDelegates >= 0 {
+		sessionCfg.MaxConcurrentDelegateTurns = *lf.maxConcurrentDelegates
 	}
-	if *maxRetainedTerminal >= 0 {
-		sessionCfg.MaxRetainedTerminal = *maxRetainedTerminal
+	if *lf.maxRetainedTerminal >= 0 {
+		sessionCfg.MaxRetainedTerminal = *lf.maxRetainedTerminal
 	}
 	if effort.Set {
 		sessionCfg.ReasoningEffort = effort.Value
 	}
-	if err := configureSandbox(&sessionCfg, *sandboxMode, *sandboxNet); err != nil {
+	if err := cmdutil.ConfigureSandbox(&sessionCfg, *lf.sandbox, *lf.sandboxNet); err != nil {
 		return err
 	}
 	// Engage enforcement for a FRESH session from the flag-set mode. A resume
@@ -744,7 +720,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	if resuming {
 		sess, err = deps.restoreSession(client, profile, env, resumedMeta, agent.RestoreSessionConfig{
 			MemoryStateRoot:             sessionCfg.MemoryStateRoot,
-			DisableMemory:               *disableMemory,
+			DisableMemory:               *lf.disableMemory,
 			LifetimeContext:             ctx,
 			StateDir:                    sd,
 			Project:                     project,
@@ -753,8 +729,8 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			AcquireSessionOwnership:     reserveSession,
 			OwnershipAlreadyAcquired:    true,
 			ModelFallbacks:              sessionCfg.ModelFallbacks,
-			OpenAIResponsesContinuation: resolvedOpenAIResponsesContinuation,
-			ProviderIdleTimeout:         *providerIdleTimeout,
+			OpenAIResponsesContinuation: settings.openAIResponsesContinuation,
+			ProviderIdleTimeout:         *lf.providerIdleTimeout,
 			AgentsDocPath:               *agentsDoc,
 		})
 		if err != nil {
@@ -770,7 +746,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 				return fmt.Errorf("set reasoning effort: %w", err)
 			}
 		}
-		reportServeResume(os.Stderr, resumedMeta, modelRef, resumeProvider, resumeModel, strings.TrimSpace(*model) != "")
+		reportServeResume(os.Stderr, resumedMeta, modelRef, resumeProvider, resumeModel, strings.TrimSpace(*lf.model) != "")
 	} else {
 		sess, err = deps.newSession(client, profile, env, sessionCfg)
 		if err != nil {
@@ -837,73 +813,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	srv.ReplaceAppIdentity(prepared.WithRecordedLength(sess.TranscriptRecordedLength()).WithBootGeneration(appwire.BootGeneration(startGeneration)), nil)
 	rvRegistration := &rvreg.Registration{}
 
-	var currentMu sync.RWMutex
-	// identityTransitionMu serializes shutdown's ownership claim with a clear's
-	// final identity swap. It remains held through the old session's drain and
-	// identity projection; currentMu is held only for the brief ownership check.
-	var identityTransitionMu sync.Mutex
-	currentSess := sess
-	// currentEnv tracks the CURRENT session's execution environment (each session
-	// owns its own). thread/clear reads it to inherit the live sandbox and swaps it
-	// alongside currentSess, so a cleared session's sandbox reflects what the running
-	// session actually enforces (on resume the persisted mode, not the launch flag).
-	currentEnv := env
-	// liveSessionClosed records that shutdown has already made its ONE closing
-	// pass over the live session, so no session installed after it is covered by
-	// that pass. It is monotonic and it is written inside the same currentMu
-	// hold that reads the session to close, which is what makes the pass and the
-	// swap one decision instead of two racing ones.
-	var liveSessionClosed bool
-	// exitPolicy records who owns the process exit: "" while undecided,
-	// "shutdown" once closeLiveSession claims it, "retirement" once a
-	// retirement consumer reserves it. First writer wins; the loser joins the
-	// winner's exit instead of making a second closing pass.
-	var exitPolicy string
-	getSession := func() *agent.Session {
-		currentMu.RLock()
-		defer currentMu.RUnlock()
-		return currentSess
-	}
-	setSession := func(next *agent.Session, nextEnv *execenv.LocalExecutionEnvironment) {
-		currentMu.Lock()
-		currentSess = next
-		currentEnv = nextEnv
-		currentMu.Unlock()
-	}
-	// closeLiveSession is shutdown's single pass. Marking inside the SAME hold
-	// that reads the session is the whole point: a swap that lands after this
-	// critical section cannot observe the pass as still pending, so it knows it
-	// owns its replacement's teardown.
-	closeLiveSession := func() {
-		identityTransitionMu.Lock()
-		defer identityTransitionMu.Unlock()
-		currentMu.Lock()
-		liveSessionClosed = true
-		live := currentSess
-		owned := false
-		if exitPolicy == "" {
-			exitPolicy = "shutdown"
-			owned = true
-		}
-		currentMu.Unlock()
-		if !owned {
-			// Retirement's consumer reserved the exit and already released
-			// the root; this pass is the ctx.Done() tail of that same exit
-			// and must not close the released session a second time.
-			return
-		}
-		live.CloseForShutdown()
-	}
-	// shutdownClosedTheLiveSession reports whether that pass has already run.
-	// Read it only AFTER the session in question is the current one, which is
-	// what makes a negative answer a promise rather than a guess: the pass reads
-	// currentSess under the same lock, so a pass still to come will find that
-	// session and close it.
-	shutdownClosedTheLiveSession := func() bool {
-		currentMu.RLock()
-		defer currentMu.RUnlock()
-		return liveSessionClosed
-	}
+	live := newLiveSession(sess, env)
 
 	// The retirement controller owns the daemon's idle deadline. Exactly one
 	// consumer drives a claim to process exit; the timer (controller Run) is
@@ -927,241 +837,17 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			return c.Commit(claim)
 		}
 	}
-	retirementObserve := func(event, rootID string) {
-		if deps.retirementObserve != nil {
-			deps.retirementObserve(event, rootID)
-		}
-	}
+	retiring := &serveRetirement{deps: deps, live: live, retirement: retirement, rvRegistration: rvRegistration, commit: commitRetirement, ctx: ctx, cancel: cancel}
 	if err := retirement.AttachRoot(sess); err != nil {
 		sess.Close()
 		listener.Close() //nolint:errcheck // as above
 		return fmt.Errorf("retirement root: %w", err)
 	}
-	retirementObserve("root_published", sess.ID())
-	// reserveRetirementExit hands the process exit to the retirement consumer
-	// exactly once: it refuses when shutdown already owns the exit, when the
-	// shutdown pass already ran, or when the published root moved under the
-	// claim (a thread/clear replacement is not the prepared tree).
-	reserveRetirementExit := func(root *agent.Session) bool {
-		currentMu.Lock()
-		defer currentMu.Unlock()
-		if exitPolicy != "" || liveSessionClosed || currentSess != root {
-			return false
-		}
-		exitPolicy = "retirement"
-		return true
-	}
-	// consumeRetirementClaim is the single pipeline both triggers share. Any
-	// failure before Commit aborts the claim and leaves the daemon resident.
-	// Past Commit admission is closed permanently, so teardown runs under the
-	// daemon's own lifetime context rather than the caller's request context: a
-	// client that disconnects mid-teardown must not be able to wedge the process
-	// in "retiring". Exit is unconditional once Commit returns — a teardown
-	// failure is reported, never fatal to terminating the process.
-	consumeRetirementClaim := func(reqCtx context.Context, claim *agent.RetirementClaim) error {
-		root := getSession()
-		retirementObserve("claim_consumed", root.ID())
-		// Every failure before Commit must abort the claim, or it wedges in
-		// preparing and the daemon never retires and never recovers. This is
-		// deliberately NOT a defer: a failure at or after Commit must leave the
-		// process retiring, not abort it.
-		failBeforeCommit := func(err error) error {
-			_ = retirement.Abort(claim, "prepare_failed")
-			return err
-		}
-		if !rendezvous.StrongOwnershipAvailable() {
-			return failBeforeCommit(errors.New("retirement requires strong rendezvous ownership, unavailable on this platform"))
-		}
-		prepared, err := retirement.Prepare(reqCtx, claim)
-		if err != nil {
-			return failBeforeCommit(fmt.Errorf("retirement preparation: %w", err))
-		}
-		retirementObserve("prepared", root.ID())
-		if !reserveRetirementExit(root) {
-			return failBeforeCommit(errors.New("retirement exit is no longer owned by the prepared root"))
-		}
-		if err := commitRetirement(retirement, claim); err != nil {
-			// The process did not commit, so the exit is genuinely still
-			// undecided: drop the reservation reserveRetirementExit took before
-			// the claim aborts. Without this, closeLiveSession sees
-			// exitPolicy != "" and returns early forever, leaking the live
-			// session's open delegates, running jobs, worktree locks and
-			// transcript flushes. Written under currentMu, the same lock every
-			// other exitPolicy read/write holds.
-			currentMu.Lock()
-			exitPolicy = ""
-			currentMu.Unlock()
-			return failBeforeCommit(fmt.Errorf("retirement commit: %w", err))
-		}
-		retirementObserve("committed", root.ID())
-		// Post-commit teardown is daemon-owned, not request-owned. The ctx used
-		// here is the daemon's lifetime context (the incoming request context is
-		// reqCtx): a committed retirement already closed admission forever, so
-		// request cancellation must never strand the process. The drain stays
-		// bounded by retirementReaderDrainBudget.
-		drainCtx, drainCancel := context.WithTimeout(ctx, retirementReaderDrainBudget)
-		drainErr := retirement.DrainReaders(drainCtx)
-		drainCancel()
-		var teardownErr error
-		if drainErr != nil {
-			serveLogf(os.Stderr, root.ID(), "retirement reader drain failed: %v", drainErr)
-			teardownErr = fmt.Errorf("retirement reader drain: %w", drainErr)
-		} else if err := agent.ReleaseForRetirement(ctx, prepared); err != nil {
-			serveLogf(os.Stderr, root.ID(), "retirement release failed: %v", err)
-			teardownErr = fmt.Errorf("retirement release: %w", err)
-		} else {
-			retirementObserve("released", root.ID())
-		}
-		// Exit is unconditional after Commit: teardown success is not the
-		// precondition for terminating the process. The cancel is what starts
-		// that exit -- the shutdown goroutine below waits on ctx.Done() -- so on
-		// the RPC trigger it must not run until the accepted response has reached
-		// the transport. Cancelling from inside the handler starts the shutdown
-		// pass before the response frame is written, which leaves the caller with
-		// a transport error and the Hub with a failure banner despite a
-		// successful retirement. AfterResponseWritten runs the cancel once that
-		// frame has been written, or at connection teardown if it never could be,
-		// so exit is preserved. The idle-timer trigger runs on the daemon's own
-		// lifetime context, which carries no connection, so it reports false and
-		// cancels immediately.
-		if !appserver.AfterResponseWritten(reqCtx, cancel) {
-			cancel()
-		}
-		if teardownErr != nil {
-			return &retirementTeardownError{err: teardownErr}
-		}
-		return nil
-	}
-	// requireExactOwnership is the one exact-ownership fence behind both
-	// identity-fenced daemon control RPCs: the current rendezvous entry must
-	// exist and the caller's generation fingerprint must match it, where an
-	// unrendered (empty) generation never compares equal. The retire path runs
-	// it again between TryManualClaim and the claim's prepare so a thread/clear
-	// that swapped ownership under an uncommitted claim cannot be retired by its
-	// predecessor's stale row.
-	requireExactOwnership := func(generation string) error {
-		entry, ok := rvRegistration.Entry()
-		if !ok {
-			return appwire.Unavailable("daemon rendezvous not registered")
-		}
-		if generation == "" || generation != rendezvous.OwnershipFingerprint(entry) {
-			return appwire.Conflict("daemon identity does not match current ownership")
-		}
-		return nil
-	}
-	// requestRetirement serves evener/daemon/retire. Exact-ownership
-	// revalidation runs BEFORE the admission fence is touched: a caller
-	// holding a stale generation (same PID, drifted identity) gets a conflict
-	// and no claim is consumed.
-	requestRetirement := func(ctx context.Context, params appwire.DaemonRetireParams) (appwire.DaemonRetireResponse, error) {
-		if err := requireExactOwnership(params.Identity.Generation); err != nil {
-			return appwire.DaemonRetireResponse{}, err
-		}
-		// claim_attempted marks the instant between the pre-claim identity check
-		// and the admission fence: the caller's generation has been accepted but
-		// TryManualClaim has not run. It is an observability beat outside every
-		// lock (retirementObserve is nil in production) so a test can interleave
-		// a thread/clear into exactly the window this closure must still defend.
-		// TryManualClaim widens that window: it first waits, up to the namer's
-		// timeout, for a session namer to settle (#3921). The ownership re-check
-		// after the claim covers the wider window the same way.
-		retirementObserve("claim_attempted", getSession().ID())
-		claim, snap, err := retirement.TryManualClaim(ctx)
-		if err != nil {
-			return appwire.DaemonRetireResponse{}, err
-		}
-		if claim == nil {
-			return appwire.DaemonRetireResponse{Accepted: false, Lifecycle: server.DaemonLifecycleFromSnapshot(snap)}, nil
-		}
-		// The pre-claim check above and TryManualClaim are not atomic: a thread/clear
-		// can run to completion between them. It holds its own admission lease
-		// (so TryClaim declines while it is in flight), rewrites rendezvous
-		// ownership to the replacement, swaps the session and re-roots the
-		// controller, then releases. The claim TryClaim just took is therefore
-		// against whatever root is current now, not necessarily the generation
-		// the caller proved. Re-read ownership and abort the uncommitted claim if
-		// it moved, so a stale request can never retire its replacement. The
-		// abort is essential: a claim left in "preparing" wedges the daemon.
-		if err := requireExactOwnership(params.Identity.Generation); err != nil {
-			_ = retirement.Abort(claim, "prepare_failed")
-			return appwire.DaemonRetireResponse{}, err
-		}
-		if err := consumeRetirementClaim(ctx, claim); err != nil {
-			// A post-commit teardown failure means the retirement already
-			// succeeded — admission is closed for good and the process exits —
-			// so it is reported as accepted. The failure is logged (serveLogf)
-			// and stays in the lifecycle's Failure field; it is observability,
-			// not an RPC error the caller could misread as a refused retire.
-			if _, ok := errors.AsType[*retirementTeardownError](err); !ok {
-				return appwire.DaemonRetireResponse{Accepted: false, Lifecycle: server.DaemonLifecycleFromSnapshot(retirement.Snapshot())}, err
-			}
-		}
-		return appwire.DaemonRetireResponse{Accepted: true, Lifecycle: server.DaemonLifecycleFromSnapshot(retirement.Snapshot())}, nil
-	}
+	retiring.observe("root_published", sess.ID())
 	srv.SetDaemonLifecycle(func() appwire.DaemonLifecycle {
 		return server.DaemonLifecycleFromSnapshot(retirement.Snapshot())
-	}, requestRetirement)
-	// requestIdleTimeoutSet serves evener/daemon/idle-timeout/set. Like retire,
-	// the exact-ownership fence runs BEFORE the controller is touched, so a
-	// caller holding a stale generation (same PID, drifted identity) gets a
-	// conflict and no deadline moves.
-	requestIdleTimeoutSet := func(_ context.Context, params appwire.DaemonIdleTimeoutSetParams) (appwire.DaemonIdleTimeoutSetResponse, error) {
-		if err := requireExactOwnership(params.Identity.Generation); err != nil {
-			return appwire.DaemonIdleTimeoutSetResponse{}, err
-		}
-		if params.TimeoutMillis < 0 {
-			return appwire.DaemonIdleTimeoutSetResponse{}, appwire.InvalidParams("timeoutMillis must not be negative")
-		}
-		// maxIdleTimeoutMillis is the largest value whose nanosecond conversion
-		// cannot overflow time.Duration: larger values would wrap — 1<<58 millis
-		// lands on exactly zero, a success response that silently disabled
-		// automatic retirement.
-		const maxIdleTimeoutMillis = math.MaxInt64 / int64(time.Millisecond)
-		if params.TimeoutMillis > maxIdleTimeoutMillis {
-			return appwire.DaemonIdleTimeoutSetResponse{}, appwire.InvalidParams("timeoutMillis exceeds the maximum representable duration")
-		}
-		// idle_timeout_attempted marks the instant between the pre-retarget
-		// identity check and the controller write: the caller's generation has
-		// been accepted but Retarget has not run. Like claim_attempted above, it
-		// is an observability beat outside every lock (retirementObserve is nil
-		// in production) so a test can interleave a thread/clear into exactly
-		// the window the revalidation below must still defend.
-		retirementObserve("idle_timeout_attempted", getSession().ID())
-		prev, token, err := retirement.RetargetStamped(time.Duration(params.TimeoutMillis) * time.Millisecond)
-		if err != nil {
-			return appwire.DaemonIdleTimeoutSetResponse{}, err
-		}
-		// idle_timeout_written parks the handler immediately after the
-		// controller write and before the revalidation fence — the exact
-		// window in which a later legitimate writer's deadline must survive
-		// the stale request's revert. Same contract as idle_timeout_attempted:
-		// observability only, nil in production.
-		retirementObserve("idle_timeout_written", getSession().ID())
-		// The pre-retarget check and Retarget are not atomic: a thread/clear can
-		// run to completion between them (mutations do not serialize with each
-		// other), re-rooting the controller to the replacement — and the write
-		// above then moved the REPLACEMENT's deadline, so a bare conflict would
-		// leave the harm in place. Re-read ownership and, if it moved, undo the
-		// write by its token: UndoRetarget restores the deadline the write
-		// replaced, but only while this request's write is still the newest — a
-		// later legitimate writer (the replacement's own archive decision) owns
-		// the deadline now and must survive the refusal, even when it chose the
-		// same value, which a value comparison could not tell apart. A clear
-		// that completed before this write reset the fresh root to the
-		// configured baseline, so this write landed after that reset and the
-		// undo below is the only thing that can take it back; a clear that
-		// completes after the write has already superseded this write's token
-		// with its own reset, and the undo correctly yields. Refuse like the
-		// retire path does after its claim. The undo is best-effort: a
-		// controller that is no longer resident never restores (the process is
-		// preparing or retiring and its deadline no longer matters).
-		if err := requireExactOwnership(params.Identity.Generation); err != nil {
-			retirement.UndoRetarget(token, prev)
-			return appwire.DaemonIdleTimeoutSetResponse{}, err
-		}
-		return appwire.DaemonIdleTimeoutSetResponse{Lifecycle: server.DaemonLifecycleFromSnapshot(retirement.Snapshot())}, nil
-	}
-	srv.SetDaemonIdleTimeoutSet(requestIdleTimeoutSet)
+	}, retiring.requestRetirement)
+	srv.SetDaemonIdleTimeoutSet(retiring.requestIdleTimeoutSet)
 	// Install the retirement admission boundary on the router. Every routed
 	// handler is classified by access kind (server/appwire_retirement_admission.go):
 	// a mutation holds a lease for the handler's duration and is refused while
@@ -1176,14 +862,14 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		if kind == "read" {
 			return retirement.Borrow()
 		}
-		return retirement.BeginMutation(getSession().ID(), "admission")
+		return retirement.BeginMutation(live.session().ID(), "admission")
 	})
 
 	// The observer runs ON the bridge goroutine, which is the daemon's
 	// authoritative consumer, so it must never block: see verboseEventTee.
 	var eventObserver func(events.SessionEvent)
 	var closeEventObserver func()
-	if *verbose {
+	if *lf.verbose {
 		verboseOut := deps.verboseOut
 		if verboseOut == nil {
 			verboseOut = os.Stderr
@@ -1193,295 +879,21 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		closeEventObserver = tee.close
 	}
 
-	// Every bridge drain this serve starts, so teardown can wait for them.
-	// A session gets a new one on thread/clear, and each ends when its own session's
-	// event channel closes.
-	var drainsMu sync.Mutex
-	var bridgeStartMu sync.Mutex
-	var bridgeDrains []<-chan struct{}
-	bridgeDrainBySession := make(map[string]<-chan struct{})
-	// teardownStarted says the snapshot below has already been taken, so no
-	// later drain can ever appear in it. bridgeSession refuses to start one
-	// past this point; see the refusal there for why that is the right answer.
-	var teardownStarted bool
-	var shutdownExpiryOnce sync.Once
-	var shutdownExpiry <-chan struct{}
-	shutdownExpiryStop := make(chan struct{})
-	sharedShutdownExpiry := func() <-chan struct{} {
-		shutdownExpiryOnce.Do(func() {
-			source := deps.drainWaitExpiry()
-			done := make(chan struct{})
-			shutdownExpiry = done
-			go func() {
-				defer close(done)
-				select {
-				case <-source:
-				case <-shutdownExpiryStop:
-				}
-			}()
-		})
-		return shutdownExpiry
-	}
-	// The tee must OUTLIVE every drain. Session.Close() closes the event channel
-	// but does not wait for the buffered tail, so a drain is still calling the
-	// observer after the session is closed -- and observe on a closed tee panics
-	// on the drain's own goroutine, which kills the process and skips every
-	// defer registered above this one. Waiting and closing live in ONE defer so
-	// the order cannot be broken by inserting another defer between them.
-	//
-	// THE WAIT IS BUDGETED, AND EXPIRY SKIPS THE CLOSE. A drain wedged inside
-	// BridgeEvent -- on a lock, or on a subsystem that stopped answering --
-	// must not make the daemon ignore SIGTERM until something SIGKILLs it, so
-	// the wait gives up after shutdownDrainWaitBudget.
-	//
-	// Giving up means LEAVING THE TEE OPEN, not closing it anyway. Closing it
-	// under a live drain is the exact crash this defer exists to prevent, so an
-	// expiry that closed anyway would trade a hang for the bug rather than fix
-	// either. An abandoned tee costs a truncated NDJSON tail on a process that
-	// is exiting regardless, and the OS reclaims the goroutine and the buffer.
-	//
-	// The budget bounds the pathological case ONLY; it must never absorb real
-	// work, because a budget that can expire on a slow machine quietly converts
-	// a slowness bug into a truncated log. A healthy drain is the session's
-	// buffered tail -- at most its 256-deep channel, each event memory work plus
-	// at most one jobs.jsonl read -- which is milliseconds, and still under
-	// 100ms with the deliberately slowed observer serve_verbose_e2e_test uses.
-	// Thirty seconds is two orders of magnitude past that, so an expiry here
-	// means a genuine wedge, and it stays inside systemd's 90s default stop
-	// timeout so the daemon still gets to exit by its own decision.
-	//
-	// "Genuine wedge" is a claim about every drain that can reach this wait, and
-	// it holds because every session this daemon makes current is closed by
-	// someone: shutdown's one pass (closeLiveSession) over whatever was live
-	// when it ran, or the thread/clear that installed a replacement past that pass and
-	// therefore closes its own. Without that second half, a thread/clear landing in
-	// the window between the pass and this snapshot registered a drain on a
-	// session nothing would ever close, which no budget can end -- the expiry
-	// fired every time, on work that was neither wedged nor real.
-	defer func() {
-		defer close(shutdownExpiryStop)
-		bridgeStartMu.Lock()
-		drainsMu.Lock()
-		pending := append([]<-chan struct{}(nil), bridgeDrains...)
-		// The bridge-start lock prevents bridgeSession from slipping a drain
-		// behind this snapshot while drainsMu protects the list itself.
-		teardownStarted = true
-		drainsMu.Unlock()
-		bridgeStartMu.Unlock()
-		// One budget for the whole teardown, not one per drain: what must be
-		// bounded is how long SIGTERM goes unanswered.
-		expiry := sharedShutdownExpiry()
-		for _, drained := range pending {
-			select {
-			case <-drained:
-			case <-expiry:
-				return
-			}
-		}
-		if closeEventObserver != nil {
-			closeEventObserver()
-		}
-	}()
-
-	var notifyCallback func()
-	var subscriberCallback func() int
-	var mutationRunnerMu sync.Mutex
-	var mutationRunnerCancel context.CancelFunc
-	var mutationRunnerDone <-chan struct{}
-	setMutationRunner := func(cancel context.CancelFunc, done <-chan struct{}) {
-		mutationRunnerMu.Lock()
-		mutationRunnerCancel = cancel
-		mutationRunnerDone = done
-		mutationRunnerMu.Unlock()
-	}
-	clearMutationRunner := func(done <-chan struct{}) {
-		mutationRunnerMu.Lock()
-		if mutationRunnerDone == done {
-			mutationRunnerCancel = nil
-			mutationRunnerDone = nil
-		}
-		mutationRunnerMu.Unlock()
-	}
-	cancelAndWaitMutationRunner := func() {
-		mutationRunnerMu.Lock()
-		cancelRunner := mutationRunnerCancel
-		runnerDone := mutationRunnerDone
-		mutationRunnerMu.Unlock()
-		if cancelRunner != nil {
-			cancelRunner()
-		}
-		if runnerDone != nil {
-			<-runnerDone
-		}
-	}
-	bridgeSession := func(s *agent.Session) {
-		// The idle kick is set on the Session, so it must be re-established
-		// whenever the session is replaced (e.g. on thread/clear). It feeds the
-		// first continuation prompt back into the serve loop's input channel
-		// as an EntryContinuation-kind message (the agent module must not
-		// import server, so this is a callback into the server, spec §C4/§7).
-		s.SetKickFunc(func(prompt string) { srv.SubmitContinuation(prompt) })
-		// The notify wake is wired alongside the kick: when a child finishes
-		// and the parent is idle, the durable notification queue is already
-		// populated; this callback feeds a text-less EntryNotification kick
-		// into the serve loop so the parent drains it on the next turn.
-		notifyCallback = func() { srv.SubmitNotification() }
-		s.SetNotifyFunc(notifyCallback)
-		// Each execution the session starts publishes its TurnID, with the
-		// thread active, before its first entry is recorded, so clients hold
-		// the running turn before any of its history arrives.
-		s.SetExecutionStartedFunc(srv.SetProcessingTurn)
-		s.SetClientMutationStartWakeFunc(func() {
-			srv.SubmitClientMutationStart(s.ID())
-		})
-		s.SetPendingUserInputWakeFunc(func() {
-			srv.SubmitPendingUserInput(s.ID())
-		})
-		// Descendants do not have their own daemon or authoritative event
-		// consumer. Forward their enriched events synchronously into this
-		// daemon's per-thread AppWire projections instead.
-		ownerThreadID := s.ID()
-		s.SetDescendantEventFunc(func(event events.SessionEvent) {
-			srv.RecordDescendantAppEvent(ownerThreadID, event)
-		})
-		// A descendant's transcript lives alongside its owner's, under the same
-		// state dir convention every other session/transcript lookup in this
-		// codebase uses. A descendant's history is projected from it, from
-		// its first observation on (ledger #110/#111).
-		stateDir := s.StateDir()
-		srv.SetDescendantTranscriptPathFunc(func(threadID string) string {
-			return filepath.Join(stateDir, "sessions", threadID+".transcript.jsonl")
-		})
-		// A descendant session's own watches live in that child's job manager and
-		// appear on no row today, because only the root's status is projected. The
-		// root's own row also carries watches the diagnostics facet only re-samples
-		// on a few events and a turn boundary, so it can lag a watch armed in
-		// between. The appwire thread LIST samples both on read through this seam,
-		// resolving the root to its own rows and a descendant to that child's, for
-		// every row of a page in one walk of the live tree. Wire it beside the
-		// transcript resolver: both reach across the appwire-server/delegate-controller
-		// boundary, and both must track the session that is current after a
-		// thread/clear identity swap.
-		srv.SetDescendantLiveWatchesFunc(func(threadIDs []string) map[string][]agent.WatchStatusInfo {
-			return s.LiveWatchRowsForSessions(threadIDs)
-		})
-		// The root's row carries its whole tree's subagent tally (S3), read from
-		// the delegate controller when the list is served. Set per session so it
-		// follows the replacement a thread/clear installs.
-		srv.SetSubagentTallyFunc(s.SubagentTally)
-		// The M7 sandbox-escalation gate blocks a denied tool call only when a human
-		// is actually watching this thread; the probe reads the live AppWire
-		// subscriber count. Set per-session (like the kick/notify wakes) so it tracks
-		// the current session's id across thread/clear.
-		subscriberCallback = func() int { return deps.subscriberCount(srv, s.ID()) }
-		s.SetSubscriberCountFunc(subscriberCallback)
-		// Called synchronously, NOT with `go`: the bridge registers as the
-		// session's authoritative consumer and then drains on its own
-		// goroutine, so returning here means the registration has taken effect.
-		// Spawning this would reopen the window in which the session is live
-		// and its feed is still best-effort.
-		//
-		// The bridge start and drain registration are one critical section with
-		// teardown, but the bridge call itself must stay outside drainsMu because
-		// a closed session invokes onDrained synchronously.
-		drained := make(chan struct{})
-		bridgeStartMu.Lock()
-		defer bridgeStartMu.Unlock()
-		// Past the teardown's snapshot, a drain started here would be one the
-		// wait cannot see, and the tee would be closed under it -- the same
-		// crash the wait exists to prevent, reached from the other side. The
-		// lock that makes the registration atomic makes this mutually exclusive
-		// with the snapshot for free.
-		//
-		// Refusing leaves this session with no authoritative consumer, which
-		// anywhere else on this branch is the corruption being prevented. Here
-		// it costs nothing: the only caller that can reach this is thread/clear on a
-		// handler goroutine that outlived httpSrv.Close(), and by the time the
-		// snapshot has been taken the listener is closed, the rendezvous entry
-		// has been removed, and the input loop has exited. The replacement
-		// cannot take a turn and no client can read it, so there is no reader
-		// for its projection to be permanently wrong for.
-		//
-		// It costs nothing on disk either, and that is a SEPARATE guarantee
-		// rather than a consequence of this refusal: a thread/clear reaching here
-		// installed its replacement past shutdown's closing pass, so it has
-		// already closed it, which is what runs the env's Cleanup()
-		// (agent/execenv/local.go) and disposes the session's owned scratch
-		// directory. Left unclosed that directory is disk state -- unlike the
-		// tee's buffered tail above, which the OS reclaims once this process
-		// exits, it survives AFTER exit. Do not read this refusal as the thing
-		// that prevents that: declining to bridge a session and closing one are
-		// different acts, and only the second reaches the env.
-		drainsMu.Lock()
-		teardown := teardownStarted
-		drainsMu.Unlock()
-		if teardown {
-			return
-		}
-		deps.bridge(srv, s, eventObserver, func() {
-			close(drained)
-			drainsMu.Lock()
-			if bridgeDrainBySession[s.ID()] == drained {
-				delete(bridgeDrainBySession, s.ID())
-			}
-			drainsMu.Unlock()
-		})
-		drainsMu.Lock()
-		bridgeDrains = append(bridgeDrains, drained)
-		bridgeDrainBySession[s.ID()] = drained
-		completed := false
-		select {
-		case <-drained:
-			completed = true
-		default:
-		}
-		if completed && bridgeDrainBySession[s.ID()] == drained {
-			delete(bridgeDrainBySession, s.ID())
-		}
-		drainsMu.Unlock()
-	}
-	waitForSessionBridgeDrain := func(sessionID string) bool {
-		drainsMu.Lock()
-		drained := bridgeDrainBySession[sessionID]
-		drainsMu.Unlock()
-		if drained == nil {
-			return true
-		}
-		select {
-		case <-drained:
-			drainsMu.Lock()
-			if bridgeDrainBySession[sessionID] == drained {
-				delete(bridgeDrainBySession, sessionID)
-			}
-			drainsMu.Unlock()
-			return true
-		default:
-		}
-		select {
-		case <-drained:
-			drainsMu.Lock()
-			if bridgeDrainBySession[sessionID] == drained {
-				delete(bridgeDrainBySession, sessionID)
-			}
-			drainsMu.Unlock()
-			return true
-		case <-sharedShutdownExpiry():
-			return false
-		}
-	}
+	bridge := newServeBridge(srv, deps, eventObserver, closeEventObserver)
+	defer bridge.awaitDrains()
 
 	srv.SetSandboxEscalationResolveFunc(func(id string, approve bool) error {
-		return getSession().ResolveSandboxEscalation(id, approve)
+		return live.session().ResolveSandboxEscalation(id, approve)
 	})
 	if managerApproval, ok := srv.(interface {
 		SetSandboxEscalationResolveAsFunc(func(string, bool, schema.SessionActor) error)
 	}); ok {
 		managerApproval.SetSandboxEscalationResolveAsFunc(func(id string, approve bool, actor schema.SessionActor) error {
-			return getSession().ResolveSandboxEscalationAs(id, approve, actor)
+			return live.session().ResolveSandboxEscalationAs(id, approve, actor)
 		})
 	}
 	srv.SetDelegateStopFunc(func(delegateID string) (appwire.DelegateStopOutcome, error) {
-		return getSession().StopDelegateRun(delegateID)
+		return live.session().StopDelegateRun(delegateID)
 	})
 	if jobsStop, ok := srv.(interface {
 		SetJobStopFunc(func(context.Context, appwire.SessionStopRequest) (appwire.SessionStopResponse, error))
@@ -1490,9 +902,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			var result appwire.SessionJobStopResponse
 			var err error
 			if request.Job != nil {
-				result, err = getSession().StopJobForManager(ctx, *request.Job)
+				result, err = live.session().StopJobForManager(ctx, *request.Job)
 			} else {
-				result, err = getSession().StopOwnedDelegateForManager(ctx, *request.OwnedDelegate)
+				result, err = live.session().StopOwnedDelegateForManager(ctx, *request.OwnedDelegate)
 			}
 			if err != nil {
 				return appwire.SessionStopResponse{}, err
@@ -1500,56 +912,56 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			return appwire.SessionStopResponse{Job: &result}, nil
 		})
 	}
-	srv.SetCompactFunc(func(ctx context.Context) error { return getSession().Compact(ctx) })
+	srv.SetCompactFunc(func(ctx context.Context) error { return live.session().Compact(ctx) })
 	srv.SetGoalFunc(func(objective string) (bool, error) {
 		if strings.TrimSpace(objective) == "" {
-			return false, getSession().ClearGoal()
+			return false, live.session().ClearGoal()
 		}
-		return getSession().SetGoal(ctx, objective)
+		return live.session().SetGoal(ctx, objective)
 	})
 	srv.SetNotesHumanSetFunc(func(outerID, note string) (appwire.NotesHumanSetResponse, error) {
-		return getSession().SetHumanNote(outerID, note)
+		return live.session().SetHumanNote(outerID, note)
 	})
 	srv.SetUrlsRemoveFunc(func(outerID, id string) (bool, error) {
-		return getSession().RemoveSessionURL(outerID, id)
+		return live.session().RemoveSessionURL(outerID, id)
 	})
 	srv.SetRetrySafeTurnFunctions(server.RetrySafeTurnFunctions{
 		Start: func(params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
-			return getSession().AcceptClientMutationStart(params)
+			return live.session().AcceptClientMutationStart(params)
 		},
 		StartAs: func(params appwire.TurnStartParams, actor schema.SessionActor) (appwire.TurnStartResponse, error) {
-			return getSession().AcceptClientMutationStartAs(params, actor)
+			return live.session().AcceptClientMutationStartAs(params, actor)
 		},
 		Steer: func(params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
-			return getSession().AcceptClientMutationSteer(params)
+			return live.session().AcceptClientMutationSteer(params)
 		},
 		SteerAs: func(params appwire.TurnSteerParams, actor schema.SessionActor) (appwire.TurnSteerResponse, error) {
-			return getSession().AcceptClientMutationSteerAs(params, actor)
+			return live.session().AcceptClientMutationSteerAs(params, actor)
 		},
 		Queue: func(params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
-			return getSession().AcceptClientMutationQueue(params)
+			return live.session().AcceptClientMutationQueue(params)
 		},
 		QueueAs: func(params appwire.TurnQueueParams, actor schema.SessionActor) (appwire.TurnQueueResponse, error) {
-			return getSession().AcceptClientMutationQueueAs(params, actor)
+			return live.session().AcceptClientMutationQueueAs(params, actor)
 		},
 		Drain: func(params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
-			return getSession().AcceptClientMutationDrainAsSteer(params)
+			return live.session().AcceptClientMutationDrainAsSteer(params)
 		},
 		DrainAs: func(params appwire.TurnDrainAsSteerParams, actor schema.SessionActor) (appwire.TurnDrainAsSteerResponse, error) {
-			return getSession().AcceptClientMutationDrainAsSteerAs(params, actor)
+			return live.session().AcceptClientMutationDrainAsSteerAs(params, actor)
 		},
 		Promote: func(params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
-			return getSession().AcceptClientMutationPromoteQueuedAsSteer(params)
+			return live.session().AcceptClientMutationPromoteQueuedAsSteer(params)
 		},
 		PromoteAs: func(params appwire.TurnPromoteQueuedAsSteerParams, actor schema.SessionActor) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
-			return getSession().AcceptClientMutationPromoteQueuedAsSteerAs(params, actor)
+			return live.session().AcceptClientMutationPromoteQueuedAsSteerAs(params, actor)
 		},
 		Cancel: func(params appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
-			return getSession().AcceptClientMutationCancelQueued(params)
+			return live.session().AcceptClientMutationCancelQueued(params)
 		},
 		Interrupt: func(waitCtx context.Context, params appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
-			return getSession().InterruptClientMutation(waitCtx, params, func() {
-				cancelAndWaitMutationRunner()
+			return live.session().InterruptClientMutation(waitCtx, params, func() {
+				bridge.cancelAndWaitMutationRunner()
 			})
 		},
 	})
@@ -1557,13 +969,13 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// state through this at the moments it changes (server/thread_envelope.go's
 	// facetsByEvent) and never on a read.
 	srv.SetThreadEnvelopeSource(liveThreadEnvelopeSource{
-		session: func() agent.EnvelopeSampling { return getSession() },
+		session: func() agent.EnvelopeSampling { return live.session() },
 	})
 	pendingEscalations := func() []appwire.SandboxEscalationRequested {
-		return mapServePendingEscalations(getSession().PendingEscalations())
+		return mapServePendingEscalations(live.session().PendingEscalations())
 	}
 	srv.SetModelFunc(func(model string) error {
-		sess := getSession()
+		sess := live.session()
 		if err := sess.SetModel(model); err != nil {
 			return err
 		}
@@ -1575,50 +987,50 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		srv.UpdateSessionInfo(sess.ID(), p.Model(), p.ID())
 		return nil
 	})
-	srv.SetNameFunc(func(name string) error { return getSession().Rename(name) })
-	srv.SetReasoningEffortFunc(func(effort string) error { return getSession().SetReasoningEffort(effort) })
+	srv.SetNameFunc(func(name string) error { return live.session().Rename(name) })
+	srv.SetReasoningEffortFunc(func(effort string) error { return live.session().SetReasoningEffort(effort) })
 	// Resolve the session per call like the model/effort hooks above: binding one
 	// session's method value here would pin the hook to the pre-thread/clear session.
-	srv.SetVisionModelFunc(func(v string) error { return getSession().SetVisionModel(v) })
+	srv.SetVisionModelFunc(func(v string) error { return live.session().SetVisionModel(v) })
 	srv.SetListModelsFunc(cmdutil.ListModelsFunc(client, profile.ID()))
 	// Resolved per call like the model hook above: the replacement session a
 	// thread/clear installs resolves on its own registry.
-	srv.SetCostLookupFunc(func(ref string) *registry.Cost { return getSession().CostFor(ref) })
-	srv.SetTasksFunc(func() []appwire.Task { return getSession().Tasks() })
+	srv.SetCostLookupFunc(func(ref string) *registry.Cost { return live.session().CostFor(ref) })
+	srv.SetTasksFunc(func() []appwire.Task { return live.session().Tasks() })
 	if sessionTools, ok := srv.(interface{ SetSessionTools(func() *agent.Session) }); ok {
-		sessionTools.SetSessionTools(getSession)
+		sessionTools.SetSessionTools(live.session)
 	}
 	srv.SetThreadActivityReadFunc(func(ctx context.Context, params appwire.SessionActivityReadParams) (appwire.SessionActivitySummary, error) {
-		sess := getSession()
+		sess := live.session()
 		if params.Ref == workspaceRef {
 			params.Ref = appwire.Ref{SourceID: "local", ThreadID: sess.ID()}.String()
 		}
 		return sess.ActivitySummary(ctx, params)
 	})
 	srv.SetThreadDelegatesListFunc(func(ctx context.Context, params appwire.SessionActivityListParams) (appwire.SessionDelegatesResponse, error) {
-		sess := getSession()
+		sess := live.session()
 		if params.Ref == workspaceRef {
 			params.Ref = appwire.Ref{SourceID: "local", ThreadID: sess.ID()}.String()
 		}
 		return sess.ListActivityDelegates(ctx, params)
 	})
 	srv.SetThreadJobsListFunc(func(ctx context.Context, params appwire.SessionActivityListParams) (appwire.SessionJobsResponse, error) {
-		sess := getSession()
+		sess := live.session()
 		if params.Ref == workspaceRef {
 			params.Ref = appwire.Ref{SourceID: "local", ThreadID: sess.ID()}.String()
 		}
 		return sess.ListActivityJobs(ctx, params)
 	})
 	srv.SetThreadWatchesListFunc(func(ctx context.Context, params appwire.SessionActivityListParams) (appwire.SessionWatchesResponse, error) {
-		sess := getSession()
+		sess := live.session()
 		if params.Ref == workspaceRef {
 			params.Ref = appwire.Ref{SourceID: "local", ThreadID: sess.ID()}.String()
 		}
 		return sess.ListActivityWatches(ctx, params)
 	})
 
-	srv.SetJobsFunc(func(params appwire.JobsListParams) (any, error) {
-		sess := getSession()
+	srv.SetJobsFunc(func(ctx context.Context, params appwire.JobsListParams) (any, error) {
+		sess := live.session()
 		if strings.TrimSpace(params.Ref) != "" {
 			ref, err := appwire.ParseRef(params.Ref)
 			if err != nil {
@@ -1632,16 +1044,16 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			// current instance after a thread/clear replacement.
 			params.Ref = appwire.Ref{SourceID: "local", ThreadID: sess.ID()}.String()
 		}
-		return sess.JobActivityTree(params)
+		return sess.JobActivityTree(ctx, params)
 	})
 	srv.SetJobOutputFunc(func(jobID string, beforeBytes *int64, maxBytes int64) (appwire.JobOutputPage, bool, error) {
-		return getSession().JobOutputPage(jobID, beforeBytes, maxBytes)
+		return live.session().JobOutputPage(jobID, beforeBytes, maxBytes)
 	})
 	srv.SetJobGetFunc(func(jobID string) (appwire.JobActivityJob, bool, error) {
-		return getSession().JobGet(jobID)
+		return live.session().JobGet(jobID)
 	})
 	srv.SetClearFunc(func(ctx context.Context, _ appwire.ThreadClearParams) error {
-		oldSess := getSession()
+		oldSess := live.session()
 		// The admission lease runs from BEFORE any durable construction to
 		// after the new root is published and the old one settled: retirement
 		// can neither claim the tree being replaced nor start its interval
@@ -1652,9 +1064,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			return err
 		}
 		defer releaseAdmission()
-		currentMu.RLock()
-		oldEnv := currentEnv
-		currentMu.RUnlock()
+		oldEnv := live.environment()
 		clearCfg := sessionCfg
 		clearCfg.WorkspaceID = oldSess.WorkspaceID()
 		// A resumed daemon has no Manager launch flag; the session owns it.
@@ -1707,18 +1117,18 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// client that discovers the new session id can always reach a daemon
 		// already serving it; a failure here still names the old session, which
 		// is still the live one.
-		identityTransitionMu.Lock()
-		shutdownClaimed := shutdownClosedTheLiveSession()
+		live.transitionMu.Lock()
+		shutdownClaimed := live.shutdownClosed()
 		if shutdownClaimed {
 			closeSupersededSession(oldSess, true) // disposes oldEnv
-			if !waitForSessionBridgeDrain(oldSess.ID()) {
-				identityTransitionMu.Unlock()
+			if !bridge.waitForSessionBridgeDrain(oldSess.ID()) {
+				live.transitionMu.Unlock()
 				newSess.Close() // disposes clearEnv; old identity remains current
 				return errors.New("old session bridge did not drain before clear deadline")
 			}
 		}
 		if err := deps.updateSessionID(rvRegistration, newSess.ID()); err != nil {
-			identityTransitionMu.Unlock()
+			live.transitionMu.Unlock()
 			newSess.Close() // disposes clearEnv
 			return fmt.Errorf("rendezvous update: %w", err)
 		}
@@ -1726,7 +1136,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// and the thread's history. The stable workspace ref remains subscribed
 		// while a resync tells every client to hydrate the new instance.
 		srv.WireTranscriptHistory(newSess)
-		srv.ReplaceAppIdentity(prepared.WithRecordedLength(newSess.TranscriptRecordedLength()).WithBootGeneration(appwire.BootGeneration(clearGeneration)), func() { setSession(newSess, clearEnv) })
+		srv.ReplaceAppIdentity(prepared.WithRecordedLength(newSess.TranscriptRecordedLength()).WithBootGeneration(appwire.BootGeneration(clearGeneration)), func() { live.set(newSess, clearEnv) })
 		servedBootGeneration.Store(clearGeneration)
 		// Re-root the retirement controller at the replacement. The lease held
 		// since the top of this func keeps the controller resident, so this
@@ -1734,7 +1144,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		if err := retirement.AttachRoot(newSess); err != nil {
 			serveLogf(os.Stderr, newSess.ID(), "retirement root re-attach failed: %v", err)
 		}
-		retirementObserve("root_published", newSess.ID())
+		retiring.observe("root_published", newSess.ID())
 		// The commit above zeroed the envelope with the identity it described.
 		// Re-seed from the replacement session here rather than inside the
 		// commit: sampling every facet reads jobs.jsonl and the task store, and
@@ -1745,7 +1155,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		if !shutdownClaimed {
 			closeSupersededSession(oldSess, false) // disposes oldEnv after the swap
 		}
-		identityTransitionMu.Unlock()
+		live.transitionMu.Unlock()
 		// Every session this daemon makes current gets closed by someone, and
 		// shutdown covers only the one that was live when its pass ran. A
 		// replacement installed after that pass has no other closer, so thread/clear
@@ -1760,10 +1170,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// Closing here happens BEFORE the bridge on purpose:
 		// ConsumeEventsLossless reports an already-closed session drained
 		// immediately, so nothing is registered that has to be waited out.
-		if shutdownClosedTheLiveSession() {
+		if live.shutdownClosed() {
 			newSess.Close() // disposes clearEnv
 		}
-		bridgeSession(newSess)
+		bridge.bridgeSession(newSess)
 		return nil
 	})
 
@@ -1777,7 +1187,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// no single event announces that; this is that moment for the first one.
 	srv.RefreshThreadEnvelope()
 	// Bridge session events to appwire notifications.
-	bridgeSession(sess)
+	bridge.bridgeSession(sess)
 	// Belt-and-suspenders with the Bridge/projector SessionStart fix (spec
 	// §5.4 "two touchpoints"): the session's SessionStart event may already be
 	// sitting in its buffered event channel by the time the bridge goroutine
@@ -1798,9 +1208,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	srv.SetState(sess.WireState())
 	if deps.observeCallbacks != nil {
 		deps.observeCallbacks(serveCallbackObserver{
-			notify:          notifyCallback,
-			subscriberCount: subscriberCallback, pendingEscalations: pendingEscalations,
-			setSession: func(next *agent.Session) { setSession(next, currentEnv) },
+			notify:          bridge.notifyCallback,
+			subscriberCount: bridge.subscriberCallback, pendingEscalations: pendingEscalations,
+			setSession: func(next *agent.Session) { live.set(next, live.environment()) },
 			session:    sess,
 		})
 	}
@@ -1831,7 +1241,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 				// announced as running while nothing can stop it, and a
 				// capability set sampled in between says exactly that (5gdv).
 				srv.SetCancelFunc(cancelDrain)
-				setMutationRunner(cancelDrain, runnerDone)
+				bridge.setMutationRunner(cancelDrain, runnerDone)
 				srv.SetProcessing(true)
 				return drainCtx, cancelDrain
 			}
@@ -1847,7 +1257,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 				// finds the fields still nil, returns without waiting, finalizes
 				// the fence and clears it -- and the turn then runs anyway.
 				armInterruptRunner(
-					func() { setMutationRunner(cancelTurn, runnerDone) },
+					func() { bridge.setMutationRunner(cancelTurn, runnerDone) },
 					func() { srv.SetCancelFunc(cancelTurn) },
 				)
 				if !holdServeStateForAwaitingWake(msg.Kind, sess.HasPendingAsk()) {
@@ -1869,7 +1279,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 					// and then waits for runnerDone before finalizing the fence,
 					// and it never consults srv.SetCancelFunc.
 					armInterruptRunner(
-						func() { setMutationRunner(cancelTurn, runnerDone) },
+						func() { bridge.setMutationRunner(cancelTurn, runnerDone) },
 						func() { srv.SetCancelFunc(cancelTurn) },
 					)
 					// The execution the claim admits publishes its own TurnID
@@ -1883,7 +1293,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 					// The claim refused: nothing is running, so drop the runner
 					// armed for it rather than leave a Stop pointed at a turn
 					// that will never start.
-					clearMutationRunner(runnerDone)
+					bridge.clearMutationRunner(runnerDone)
 					srv.SetCancelFunc(nil)
 				}
 			} else if msg.QueuedInput {
@@ -1894,7 +1304,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 				// finalizes the unincorporated claim with nothing to cancel and
 				// the input is lost.
 				armInterruptRunner(
-					func() { setMutationRunner(cancelTurn, runnerDone) },
+					func() { bridge.setMutationRunner(cancelTurn, runnerDone) },
 					func() { srv.SetCancelFunc(cancelTurn) },
 				)
 				result, processed, processErr = sess.ProcessPendingUserInput(turnCtx, func(string) {
@@ -1904,7 +1314,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 					// The claim refused: nothing is running, so drop the runner
 					// armed for it rather than leave a Stop pointed at a turn
 					// that will never start.
-					clearMutationRunner(runnerDone)
+					bridge.clearMutationRunner(runnerDone)
 					srv.SetCancelFunc(nil)
 				}
 			} else {
@@ -1917,7 +1327,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			srv.SetCancelFunc(nil)
 			currentCancel()
 			close(runnerDone)
-			clearMutationRunner(runnerDone)
+			bridge.clearMutationRunner(runnerDone)
 			if processErr != nil {
 				serveLogf(os.Stderr, sess.ID(), "error: %s", turnFailureSummary(processErr))
 			}
@@ -1925,9 +1335,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			return processed
 		}
 		for {
-			sess := getSession()
+			sess := live.session()
 			if !processNextServeInput(ctx, srv.InputCh(), sess.ID(), func(msg server.InputMessage) bool {
-				return processMessage(getSession(), msg)
+				return processMessage(live.session(), msg)
 			}) {
 				return
 			}
@@ -1935,18 +1345,11 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	}()
 
 	// Start HTTP server.
-	serveLogf(os.Stderr, getSession().ID(), "listening on %s", listener.Addr())
+	serveLogf(os.Stderr, live.session().ID(), "listening on %s", listener.Addr())
 
 	spawnedBy := "user"
 	if envvars.EVENERHubSpawned.Getenv() == "1" {
 		spawnedBy = "hub"
-	}
-	runDir := *runDirFlag
-	if runDir == "" {
-		runDir = envvars.EVENERRunDir.Getenv()
-	}
-	if runDir == "" {
-		runDir = rendezvous.DefaultDir()
 	}
 	rvEntry := rendezvous.Entry{
 		PID:          os.Getpid(),
@@ -1954,13 +1357,13 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		Protocol:     appwire.ProtocolVersion,
 		Endpoint:     "ws://" + listener.Addr().String() + "/rpc",
 		SourceID:     "local",
-		ThreadID:     getSession().ID(),
-		SessionID:    getSession().ID(),
+		ThreadID:     live.session().ID(),
+		SessionID:    live.session().ID(),
 		WorkspaceRef: workspaceRef,
-		InstanceID:   getSession().ID(),
+		InstanceID:   live.session().ID(),
 		WorkingDir:   wd,
 		StateDir:     sd,
-		Agent:        *agentName,
+		Agent:        *lf.agentName,
 		Model:        modelRef.Model,
 		Provider:     modelRef.Provider,
 		HubToken:     hubToken,
@@ -1972,11 +1375,11 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// loop was started, so the shutdown path has nothing to join.
 	var retirementLoopDone chan struct{}
 	if err := deps.register(rvRegistration, runDir, rvEntry); err != nil {
-		serveLogf(os.Stderr, getSession().ID(), "rendezvous write failed: %v", err)
+		serveLogf(os.Stderr, live.session().ID(), "rendezvous write failed: %v", err)
 	} else {
 		defer func() {
 			removeRendezvousAtShutdown(rvRegistration.Remove, deps.rendezvousRetryPause, func(err error) {
-				serveLogf(os.Stderr, getSession().ID(), "rendezvous removal failed after %d attempts, entry may be stale: %v", rendezvousRemovalAttempts, err)
+				serveLogf(os.Stderr, live.session().ID(), "rendezvous removal failed after %d attempts, entry may be stale: %v", rendezvousRemovalAttempts, err)
 			})
 		}()
 		// The idle clock may only start once the daemon has published its
@@ -1990,8 +1393,8 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		retirementLoopDone = make(chan struct{})
 		go func() {
 			defer close(retirementLoopDone)
-			_ = retirement.Run(ctx, consumeRetirementClaim, func(attempt agent.RetirementAttempt) {
-				serveLogf(os.Stderr, getSession().ID(), "%s", retirementAttemptSummary(attempt))
+			_ = retirement.Run(ctx, retiring.consumeClaim, func(attempt agent.RetirementAttempt) {
+				serveLogf(os.Stderr, live.session().ID(), "%s", retirementAttemptSummary(attempt))
 			})
 		}()
 	}
@@ -2014,7 +1417,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		if retirementLoopDone != nil {
 			<-retirementLoopDone
 		}
-		closeLiveSession()
+		live.closeForShutdown()
 	}()
 
 	if err := deps.serveHTTP(httpSrv, listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -2046,7 +1449,7 @@ func removeRendezvousAtShutdown(remove func() error, pause func() <-chan time.Ti
 // closeSupersededSession closes a session a concurrent clear has replaced, in
 // the form its owner is entitled to. shutdownClaimed means shutdown's single
 // pass already reached this session -- and already closed it with
-// CloseForShutdown, because closeLiveSession holds identityTransitionMu across
+// CloseForShutdown, because closeForShutdown holds the live session's transitionMu across
 // that close and the claim is read under the same lock -- so the call below is
 // a no-op over a terminal boundary shutdown has already published. Without the
 // claim this is the session's only close, and the ordinary form is the right
@@ -2200,30 +1603,6 @@ func resolveInitialProfile(ctx context.Context, client *llm.Client, modelRef cmd
 	return profile, &agent.StartupModelListing{Instance: modelRef.Provider, Listing: listing}, nil
 }
 
-// errFastCheapProviderUnavailable identifies a --fast-cheap-model provider the
-// client cannot route a side call to.
-var errFastCheapProviderUnavailable = errors.New("is not configured or has no credential")
-
-// applyFastCheapModel sets the auxiliary cheap model for side calls. The ref is
-// "provider/model" to route side calls to a different provider instance than the
-// active model, or a bare "model" to keep the active provider. A cross-provider
-// cheap provider must be registered in the client (i.e. configured AND
-// credentialed) — that is what actually lets the side call route, unlike a
-// config-only check which is credential-blind.
-func applyFastCheapModel(profile *provider.Profile, raw string, client *llm.Client) (*provider.Profile, error) {
-	if profile == nil || strings.TrimSpace(raw) == "" {
-		return profile, nil
-	}
-	raw = strings.TrimSpace(raw)
-	if cheapProvider, model, ok := strings.Cut(raw, "/"); ok && cheapProvider != "" && model != "" && cheapProvider != profile.ID() {
-		if !client.HasProvider(cheapProvider) {
-			return nil, fmt.Errorf("--fast-cheap-model provider %q %w (active provider %q); available providers: %s",
-				cheapProvider, errFastCheapProviderUnavailable, profile.ID(), strings.Join(client.ProviderNames(), ", "))
-		}
-	}
-	return provider.WithCheapModel(profile, raw), nil
-}
-
 // applyVisionModel validates the --vision-model ref against the registered
 // providers and returns the canonical SessionConfig.VisionModel value. "off"
 // (canonicalized to lowercase) disables the side-channel, a bare model keeps
@@ -2248,272 +1627,4 @@ func applyVisionModel(profile *provider.Profile, raw string, client *llm.Client)
 		}
 	}
 	return raw, nil
-}
-
-// evenerUsageFromLLM maps a session's cumulative llm.Usage to the wire
-// appwire.EvenerUsage shown in thread/read. Returns nil when every
-// total (including CacheReadTokens) is zero — a fresh session, an old daemon
-// that never seeded usage, or a session without recorded usage — so the status row hides the
-// usage cluster rather than rendering ↑0 ↓0 (WS2 A7).
-func evenerUsageFromLLM(u llm.Usage) *appwire.EvenerUsage {
-	return appwire.EvenerUsageFromLLM(u)
-}
-
-func agentToServerDetailedStatus(ds agent.DetailedStatus) server.DetailedStatus {
-	var out server.DetailedStatus
-	out.Commands = slices.Clone(ds.Commands)
-	if ds.Plugins != nil {
-		out.Plugins = make([]server.PluginStatusInfo, 0, len(ds.Plugins))
-	}
-
-	for _, t := range ds.Tools {
-		out.Tools = append(out.Tools, server.ToolInfo{Name: t.Name, Source: t.Source})
-	}
-	for _, m := range ds.MCP {
-		out.MCP = append(out.MCP, server.MCPServerInfo{Name: m.Name, Tools: m.Tools, Status: m.Status, Error: m.Error})
-	}
-	// Real invocation controls and availability come from the inspection
-	// catalog; Skills is its user-advertisement view, so each listed skill is
-	// matched back to its descriptor. Values are Stage 1 copies, never
-	// re-derived here.
-	descriptors := make(map[string]skill.Descriptor, len(ds.SkillCatalog))
-	for _, descriptor := range ds.SkillCatalog {
-		descriptors[descriptor.CatalogName] = descriptor
-	}
-	for _, s := range ds.Skills {
-		info := server.SkillInfo{Name: s.Name, Description: s.Description}
-		if descriptor, ok := descriptors[s.Name]; ok {
-			info.DisableModelInvocation = descriptor.Controls.DisableModelInvocation
-			info.UserInvocable = descriptor.Controls.UserInvocable
-			info.Available = !descriptor.Unavailable
-			info.AllowedTools = append([]string(nil), s.AllowedTools...)
-		}
-		out.Skills = append(out.Skills, info)
-	}
-	// Stage 1 discovery diagnostics copy verbatim alongside the catalog: the
-	// path-free Skills view stays the completion source, SkillDiagnostics is
-	// the explicit source-detail view.
-	for _, d := range ds.SkillDiagnostics {
-		out.SkillDiagnostics = append(out.SkillDiagnostics, server.SkillDiagnosticInfo{
-			Category:    d.Category,
-			Name:        d.Name,
-			Source:      d.Source,
-			OtherSource: d.OtherSource,
-			Field:       d.Field,
-			Message:     d.Message,
-		})
-	}
-	for _, p := range ds.Plugins {
-		out.Plugins = append(out.Plugins, server.PluginStatusInfo{
-			Name:       p.Name,
-			Version:    p.Version,
-			SkillCount: p.SkillCount,
-			AgentCount: p.AgentCount,
-			HookCount:  p.HookCount,
-			MCPCount:   p.MCPCount,
-		})
-	}
-	for _, he := range ds.HookEvents {
-		if out.HookEvents == nil {
-			out.HookEvents = make([]server.HookEventStatus, 0, len(ds.HookEvents))
-		}
-		out.HookEvents = append(out.HookEvents, server.HookEventStatus{
-			Event:     string(he.Event),
-			Count:     he.Count,
-			Tier:      he.Tier,
-			Supported: he.Supported,
-		})
-	}
-	for _, job := range ds.Jobs {
-		out.Jobs = append(out.Jobs, server.JobStatusInfo{
-			JobID:            job.JobID,
-			JobType:          job.JobType,
-			Status:           job.Status,
-			Reason:           job.Reason,
-			ExhaustionBudget: job.ExhaustionBudget,
-			ExhaustionLimit:  job.ExhaustionLimit,
-			Resumable:        job.Resumable,
-			ExitCode:         job.ExitCode,
-			OutputBytes:      job.OutputBytes,
-			TranscriptRef:    job.TranscriptRef,
-			Command:          job.Command,
-			Intent:           job.Intent,
-			Task:             job.Task,
-		})
-	}
-	for _, delegate := range ds.Delegates {
-		out.Delegates = append(out.Delegates, server.DelegateStatusInfo{
-			DelegateID: delegate.DelegateID, RunGeneration: delegate.RunGeneration, OwnerSessionID: delegate.OwnerSessionID, RootSessionID: delegate.RootSessionID,
-			ChildSessionID: delegate.ChildSessionID, TranscriptRef: delegate.TranscriptRef, ParentDelegateID: delegate.ParentDelegateID,
-			Type: delegate.Type, Lifecycle: delegate.Lifecycle, Phase: delegate.Phase, Status: delegate.Status,
-			Outcome: delegate.Outcome, Reason: delegate.Reason, Error: delegate.Error, Terminal: delegate.Terminal, Resumable: delegate.Resumable, NeedsAttention: delegate.NeedsAttention,
-			NotResumableReason: delegate.NotResumableReason, ProjectionRevision: delegate.ProjectionRevision,
-			Task: delegate.Task, Description: delegate.Description, AgentType: delegate.AgentType, RequestedModel: delegate.RequestedModel,
-			ResolvedProfileID: delegate.ResolvedProfileID, ResolvedModel: delegate.ResolvedModel, Model: delegate.Model,
-			ReasoningEffort: delegate.ReasoningEffort, OriginTurnID: delegate.OriginTurnID, OriginToolCallID: delegate.OriginToolCallID,
-			OriginItemID: delegate.OriginItemID, RunStartedAt: delegate.RunStartedAt, RunEndedAt: delegate.RunEndedAt,
-			LatestActivityAt: delegate.LatestActivityAt, RunningForMS: cloneServeInt64(delegate.RunningForMS),
-			QuietForMS: cloneServeInt64(delegate.QuietForMS), DurationMS: cloneServeInt64(delegate.DurationMS),
-			PacketKind: delegate.PacketKind, Message: append(json.RawMessage(nil), delegate.Message...),
-			StructuredResult: append(json.RawMessage(nil), delegate.StructuredResult...), StructuredValid: cloneServeBool(delegate.StructuredValid),
-			StructuredReason: delegate.StructuredReason, Warnings: append([]string(nil), delegate.Warnings...),
-			Diagnostics: append([]string(nil), delegate.Diagnostics...), ExhaustionBudget: delegate.ExhaustionBudget,
-			ExhaustionLimit: delegate.ExhaustionLimit, ExhaustionResumable: cloneServeBool(delegate.ExhaustionResumable),
-			DelegationAllowance: delegate.DelegationAllowance, ParentWatchGranted: delegate.ParentWatchGranted,
-			Usage: cloneServeUsage(delegate.Usage), Worktree: cloneServeWorktree(delegate.Worktree),
-		})
-	}
-	out.Watches = cloneServeWatches(ds.Watches)
-	if ds.TurnSlots != nil {
-		out.TurnSlots = &server.TurnSlotStatus{
-			InUse: ds.TurnSlots.InUse, Cap: ds.TurnSlots.Cap, Jobs: ds.TurnSlots.Jobs, Drives: ds.TurnSlots.Drives,
-		}
-	}
-	out.Agents = ds.Agents
-
-	return out
-}
-
-func cloneServeBool(value *bool) *bool {
-	if value == nil {
-		return nil
-	}
-	clone := *value
-	return &clone
-}
-
-func cloneServeInt64(value *int64) *int64 {
-	if value == nil {
-		return nil
-	}
-	clone := *value
-	return &clone
-}
-
-func cloneServeUsage(value *appwire.EvenerUsage) *appwire.EvenerUsage {
-	if value == nil {
-		return nil
-	}
-	clone := *value
-	return &clone
-}
-
-func cloneServeWorktree(value *appwire.JobActivityWorktree) *appwire.JobActivityWorktree {
-	if value == nil {
-		return nil
-	}
-	clone := *value
-	return &clone
-}
-
-// cloneServeWatches returns a defensive copy of the watch diagnostics in a
-// DetailedStatus. Cadence, event, and delivery-time slices are copied so a
-// consumer mutating its copy cannot reach the shared status value, matching
-// appwire.CloneEvenerWatches and appWatchFromDetailedStatus.
-func cloneServeWatches(watches []agent.WatchStatusInfo) []agent.WatchStatusInfo {
-	if watches == nil {
-		return nil
-	}
-	out := make([]agent.WatchStatusInfo, len(watches))
-	for i := range watches {
-		out[i] = watches[i]
-		out[i].Cadence = append([]agent.WatchCadenceInfo(nil), watches[i].Cadence...)
-		out[i].Events = append([]string(nil), watches[i].Events...)
-		out[i].DeliveryTimes = append([]string(nil), watches[i].DeliveryTimes...)
-	}
-	return out
-}
-
-// liveThreadEnvelopeSource is the daemon's one sampling window onto live session
-// state for the materialized root envelope. The server uses it for the
-// pre-bridge seed and retained checkpoint/legacy facets, never on a read. Typed
-// task and goal carriers bypass this adapter and patch cached root/descendant
-// state inside CommitProjection. Every method here can take the session's mutex,
-// the task store's, or read jobs.jsonl, and a read path that could reach them
-// would hold the projection gate across that work.
-//
-// It resolves the session per call rather than capturing one, so it follows
-// thread/clear onto the replacement session exactly as the sixteen closures it
-// replaced did.
-//
-// The session is reached as agent.EnvelopeSampling rather than as *agent.Session
-// ON PURPOSE, and the narrowing is a deadlock guard rather than tidiness. These
-// methods run on the bridge's drain goroutine, which is the session's
-// AUTHORITATIVE event consumer: a sample that blocks on a lock an emitter holds
-// stops the drain, fills the event buffer, blocks the emitter inside that same
-// critical section, and leaves the session unclosable. Which locks those are is a
-// fact about package agent that is invisible from here, so the interface is where
-// a new facet has to go to ask — read its doc comment before adding a method to
-// it, and note that agent/session_envelope_sampling_test.go proves the answer for
-// every method it declares.
-type liveThreadEnvelopeSource struct {
-	session func() agent.EnvelopeSampling
-}
-
-func (l liveThreadEnvelopeSource) ContextStatus() (server.ContextMetrics, float64) {
-	metrics, pressure := l.session().ContextStatus()
-	return server.ContextMetrics{Used: metrics.Used, Window: metrics.Window, Remaining: metrics.Remaining, Assumed: metrics.Assumed}, pressure
-}
-
-func (l liveThreadEnvelopeSource) DetailedStatus() server.DetailedStatus {
-	return agentToServerDetailedStatus(l.session().DetailedStatus())
-}
-
-func (l liveThreadEnvelopeSource) ClientMutationProjection() (appwire.QueueState, []appwire.PendingMutation) {
-	return l.session().ClientMutationProjection()
-}
-
-// TaskAggregate reports nil on a persisted-store failure. That is unavailable
-// task state, not an authoritative empty list, and the wire distinguishes them.
-func (l liveThreadEnvelopeSource) TaskAggregate() *appwire.TaskAggregate {
-	tasks, err := l.session().TasksWithError()
-	if err != nil {
-		return nil
-	}
-	summary := taskpkg.Summarize(tasks)
-	aggregate := &appwire.TaskAggregate{
-		Total:     summary.Total,
-		Done:      summary.Done,
-		Cancelled: summary.Cancelled,
-		Remaining: summary.Remaining,
-	}
-	if summary.Current != nil {
-		aggregate.Current = &appwire.TaskSummary{ID: summary.Current.ID, Description: summary.Current.Description}
-	}
-	return aggregate
-}
-
-func (l liveThreadEnvelopeSource) WorkMetrics() (int64, *appwire.EvenerUsage, int64) {
-	sess := l.session()
-	return sess.WorkMillisSnapshot(), evenerUsageFromLLM(sess.CumulativeUsageSnapshot()), sess.ActiveTurnStartedAtMillis()
-}
-
-func (l liveThreadEnvelopeSource) FailedToolCalls() (int, bool) {
-	return l.session().FailedToolCallsSnapshot()
-}
-
-func (l liveThreadEnvelopeSource) PendingQuestion() *appwire.PendingQuestion {
-	return l.session().PendingQuestion()
-}
-
-func (l liveThreadEnvelopeSource) RestingFailure() *appwire.ThreadFailure {
-	return l.session().RestingFailure()
-}
-
-func (l liveThreadEnvelopeSource) PendingEscalations() []appwire.SandboxEscalationRequested {
-	return mapServePendingEscalations(l.session().PendingEscalations())
-}
-
-func (l liveThreadEnvelopeSource) ReasoningInfo() (string, []string, bool) {
-	sess := l.session()
-	p := sess.Profile()
-	return sess.ReasoningEffort(), p.ReasoningEffortLevels(), p.SupportsReasoning()
-}
-
-func (l liveThreadEnvelopeSource) VisionModel() string {
-	return l.session().VisionModel()
-}
-
-func (l liveThreadEnvelopeSource) SessionMeta() schema.SessionMeta {
-	return l.session().Meta()
 }

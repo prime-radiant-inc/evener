@@ -13,8 +13,8 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtestenv"
-	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/internal/devtool/shardrun"
 	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/rendezvous"
@@ -226,15 +226,24 @@ func TestGoSubprocessesCacheOutsideTheTestRoot(t *testing.T) {
 func hubDefaultRoots() []hubtestenv.NamedPath {
 	return append(hubtestenv.BaseRoots(), []hubtestenv.NamedPath{
 		{Name: "hubLaunchConfigRoot with LaunchConfigRoot unset", Path: hubLaunchConfigRoot(hubcore.WebConfig{})},
-		{Name: "cmdutil.DefaultStateRoot", Path: cmdutil.DefaultStateRoot()},
+		{Name: "userdirs.DefaultStateRoot", Path: defaultRoot(userdirs.DefaultStateRoot())},
 		{Name: "plugins.DefaultRoot", Path: plugins.DefaultRoot()},
 		{Name: "defaultMCPConfigPath", Path: defaultMCPConfigPath()},
-		{Name: "DefaultHubStateRoot", Path: DefaultHubStateRoot()},
+		{Name: "DefaultHubStateRoot", Path: defaultRoot(DefaultHubStateRoot())},
 		{Name: "DefaultConfigPath", Path: DefaultConfigPath()},
-		{Name: "DefaultStateGlob", Path: DefaultStateGlob()},
-		{Name: "DefaultPastIndexDBPath", Path: DefaultPastIndexDBPath()},
-		{Name: "rendezvous.DefaultDir", Path: rendezvous.DefaultDir()},
+		{Name: "DefaultStateGlob", Path: defaultRoot(DefaultStateGlob())},
+		{Name: "DefaultPastIndexDBPath", Path: defaultRoot(DefaultPastIndexDBPath())},
+		{Name: "rendezvous.DefaultDir", Path: defaultRoot(rendezvous.DefaultDir())},
 	}...)
+}
+
+// defaultRoot unwraps a default-root resolution. The throwaway test environment
+// always carries a HOME, so a failure here is a broken test environment.
+func defaultRoot(path string, err error) string {
+	if err != nil {
+		panic(err)
+	}
+	return path
 }
 
 // defaultRootsOutsideTestEnv is testEnv.PathsOutside over the hub's own default

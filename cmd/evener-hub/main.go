@@ -14,10 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"strings"
-	"sync"
-	"syscall"
 	"text/tabwriter"
 	"time"
 
@@ -32,12 +29,8 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
-	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/binresolve"
 	"primeradiant.com/evener/internal/credentials"
-	"primeradiant.com/evener/internal/plugins"
-	"primeradiant.com/evener/llm/providers/tokenauth"
-	"primeradiant.com/evener/rendezvous"
 
 	// Side-effect imports register provider adapters. These are the same
 	// adapters `evener serve` uses, so the hub's model/list reflects what
@@ -145,6 +138,7 @@ type hubOptions struct {
 	// be absent and yield DefaultConfig().
 	configExplicit bool
 	addr           string
+	addrPresent    bool
 	evenerBinary   string
 	appwireTrace   string
 	// deployBinary and buildSource describe how a host needing installation gets the
@@ -173,6 +167,8 @@ type hubOptions struct {
 }
 
 type mainDeps struct {
+	// inspectFilesystem is the external fstatfs boundary, nil uses the OS.
+	inspectFilesystem hostlock.FilesystemInspector
 	// loadConfig loads the path the flag layer resolved; the bool is true when
 	// the operator named it with --config, which makes a missing file a startup
 	// refusal instead of a silent DefaultConfig() fallback.
@@ -260,6 +256,28 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	if len(args) > 0 && args[0] == "attach" {
 		return runAttach(args[1:], stderr, deps)
 	}
+	if len(args) > 0 && args[0] == "endpoint" {
+		return runEndpoint(args[1:], deps.stdout, stderr, deps)
+	}
+	if len(args) > 0 && args[0] == "login-url" {
+		return runLoginURL(args[1:], deps.stdout, stderr, deps)
+	}
+	if len(args) > 0 && args[0] == "restart" {
+		return runHubRestart(args[1:], stderr, deps)
+	}
+
+	// Record the launch entrypoint once, before any request can resolve it
+	// against a changed PATH or working directory. A failure disables restart
+	// without preventing the hub from starting.
+	hubLaunchEntrypoint, errHubLaunchEntrypoint = resolveLaunchEntrypoint(hubProcessArgs(), hubExecutable)
+	if errHubLaunchEntrypoint != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] launch path: %v\n", errHubLaunchEntrypoint)
+	} else {
+		_, _, hubLaunchShareBinDir = hubInstallDirs()
+		if digest, err := launchBinaryDigest(hubLaunchEntrypoint); err == nil {
+			hubLaunchBinarySHA256 = digest
+		}
+	}
 
 	opts, err := parseHubOptions(args, stderr)
 	if err != nil {
@@ -270,692 +288,73 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		return err
 	}
 
-	cfg, err := deps.loadConfig(opts.configPath, opts.configExplicit)
+	r, err := loadHubRuntime(opts, stderr, deps)
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] config: %v\n", err)
 		return err
 	}
-	// Stamp the build User-Agent once: previously every registry-client
-	// construction rewrote this process global per request, racing
-	// in-flight Codex requests. Fetch paths now bind scoped
-	// authenticators per request and never write it.
-	tokenauth.ClientVersion = buildinfo.Version()
-	if opts.addr != "" {
-		cfg.Addr = opts.addr
-	}
-	if err := deps.ensureDirs(); err != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
-		return err
-	}
-
-	// flock to ensure single hub per host. hub.lock lives beside the other
-	// hub-level state (auth-token, index.db, deletions/) under HubStateRoot,
-	// not a raw home-dir join, so a configured hub_state_root override moves
-	// the lock too.
-	lockPath := filepath.Join(cfg.HubStateRoot, "hub.lock")
-	release, err := deps.acquireLock(lockPath)
+	release, err := r.acquireProcessLock()
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
 		return err
 	}
 	defer release()
 
-	_, stopPprof, err := cmdutil.StartLivePprof(func(format string, args ...any) {
-		_, _ = fmt.Fprintf(stderr, "[hub] "+format+"\n", args...)
-	})
+	appwireTrace, stopDiagnostics, err := startDiagnostics(opts, stderr)
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
 		return err
 	}
-	defer stopPprof()
+	defer stopDiagnostics()
 
-	var appwireTrace *appserver.WebSocketTrace
-	if opts.appwireTrace != "" {
-		tracePath, absErr := filepath.Abs(opts.appwireTrace)
-		if absErr != nil {
-			_, _ = fmt.Fprintf(stderr, "[hub] appwire trace path: %v\n", absErr)
-			return fmt.Errorf("resolve appwire trace path: %w", absErr)
-		}
-		appwireTrace, err = appserver.NewWebSocketTrace(tracePath)
-		if err != nil {
-			_, _ = fmt.Fprintf(stderr, "[hub] appwire trace: %v\n", err)
-			return fmt.Errorf("create appwire trace: %w", err)
-		}
-		defer func() {
-			if closeErr := appwireTrace.Close(); closeErr != nil {
-				_, _ = fmt.Fprintf(stderr, "[hub] close appwire trace: %v\n", closeErr)
-			}
-		}()
-		_, _ = fmt.Fprintf(stderr, "[hub] recording raw browser AppWire frames at %s; this file contains sensitive data\n", tracePath)
-	}
-
-	// Resolve runtime paths.
-	runDir := cfg.RunDir
-	if runDir == "" {
-		runDir = rendezvous.DefaultDir()
-	}
-	// Initial ownership discovery must be ready before any request can resume
-	// a saved session; the background watcher is not a startup barrier.
-	if err := os.MkdirAll(runDir, 0o700); err != nil {
-		return fmt.Errorf("prepare runtime directory: %w", err)
-	}
-	stateGlob := cfg.StateGlob
-	if stateGlob == "" {
-		stateGlob = DefaultStateGlob()
-	}
-	pastIndexDB := cfg.PastIndexDB
-	if pastIndexDB == "" {
-		pastIndexDB = DefaultPastIndexDBPath()
-	}
-
-	// Roster + past index
-	prober := &hubcore.StatusProber{Timeout: deps.rosterProbeTimeout}
-	roster := hubcore.NewRoster(runDir, prober)
-
-	past := hubcore.NewPastIndexWithDB(stateGlob, pastIndexDB)
-	if _, err := past.Rebuild(); err != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] past index rebuild: %v\n", err)
-	}
-	archive := hubcore.NewArchiveStore(pastIndexDB)
-	favorite := hubcore.NewFavoriteStore(pastIndexDB)
-	pinSections := hubcore.NewPinSectionStore(pastIndexDB)
-	sessionSeen := hubcore.NewSessionSeenStore(pastIndexDB)
-	hubIdentity := hubcore.NewHubIdentityStore(pastIndexDB)
-	// Bindings and the authenticated bridge exchange share this durable identity.
-	// Resolve it before opening the listener so failure leaves no live endpoint.
-	sessionToolsHubID, err := hubIdentity.HubID()
+	closeStores, err := r.openStores()
 	if err != nil {
-		return fmt.Errorf("session tools hub identity: %w", err)
-	}
-
-	// Spawner
-	hubToken, err := deps.newToken()
-	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
 		return err
 	}
-	// hubStateRoot holds hub-level machine state: the auth token, the
-	// deletion-fence store, hub.lock (above), and index.db (below). Provider
-	// config (providers.toml/credentials.toml) is user-editable and lives
-	// under the config root instead — see cmdutil.DefaultConfigRoot.
-	hubStateRoot := cfg.HubStateRoot
-	authToken, err := deps.loadAuthToken(hubStateRoot)
-	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] auth token: %v\n", err)
+	defer closeStores()
+	if err := r.loadProviders(); err != nil {
 		return err
 	}
-	// The message search index (S14) lives in its own file beside index.db.
-	// A hub that cannot open it still serves; search then finds sessions by
-	// title and prompt only.
-	messageSearch, err := hubcore.OpenMessageSearch(filepath.Join(hubStateRoot, "search.db"))
+	closeListener, err := r.openListener()
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] message search: %v\n", err)
-	} else {
-		defer func() { _ = messageSearch.Close() }()
-		// A transcript whose index refused a refresh read asks the repair
-		// registry's single lane for the shared repair.
-		messageSearch.SetRepairAsker(transcriptIndexRepairs.askFromRefresher)
-	}
-	providersConfigPath, noUserLayer := cmdutil.ProvidersConfigPath()
-	credentialsPath := cmdutil.CredentialsPath()
-	credsStore, err := deps.loadCredentials(credentialsPath)
-	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] credentials store: %v\n", err)
 		return err
 	}
-	// A providers.toml the registry cannot read is a diagnostic, not a
-	// startup failure: the hub keeps an implicit-only registry, every child
-	// it spawns resolves the same set, and instance writes stay refused
-	// until the user fixes the file by hand (spec §10, §14.1).
-	hubReg := hubcore.NewProviderRegistry(deps.loadRegistry)
-	if err := hubReg.Reload(); err != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] providers config: %v — starting with implicit instances only\n", err)
-	}
-	resolvedEvenerBinary := resolveEvenerBinaryPath(opts.evenerBinary, currentExecutable(), exec.LookPath)
-	if opts.evenerBinary == "" && resolvedEvenerBinary != "" && resolvedEvenerBinary != "evener" {
-		_, _ = fmt.Fprintf(stderr, "[hub] resolved evener at %s\n", resolvedEvenerBinary)
-	}
-	spawner := &HubSpawner{
-		Cfg:                 cfg,
-		EvenerBinary:        resolvedEvenerBinary,
-		RunDir:              runDir,
-		HubToken:            hubToken,
-		Registry:            hubReg,
-		ProvidersConfigPath: providersConfigPath,
-		CredentialsPath:     credentialsPath,
-		NoUserLayer:         noUserLayer,
-	}
-	// stateDir is the parent of the projects/ directory; used for ForkSession
-	// as a fallback when a session's project dir can't be found in the past index.
-	stateDir := filepath.Dir(filepath.Clean(strings.TrimSuffix(stateGlob, "*")))
-
-	// inputs is the shared source-revision counter used by NavigationService and
-	// the remaining memoized tree projection; bumping it makes the next read
-	// observe changed navigation inputs instead of stale state.
-	inputs := &hubcore.InputsVersion{}
-
-	// Wire archive/favorite's content-delta-gated onChange hook (Task 10) to
-	// the shared inputs-version counter, so a decision busts the tree memo.
-	// Past/roster get the same bump below, composed with the
-	// evener/tree/changed broadcast once web (and its appRPC) exists.
-	bump := inputs.Bump
-	archive.SetOnChange(bump)
-	favorite.SetOnChange(bump)
-
-	// A session's Status transitioning (detected per-id by roster.Refresh)
-	// means its daemon likely just rewrote its own meta.json out-of-process
-	// (agent/session.go's periodic autosave); re-read just that session
-	// instead of waiting for the past index's next 60s Rebuild tick, so the
-	// sidebar order (which is keyed off UpdatedAt) doesn't lag behind a
-	// completed turn.
-	roster.SetOnStatusChange(refreshPastOnStatus(past))
-
-	// attentionPoke lets a web handler (e.g. an archive decision) nudge the
-	// attention watcher below to recompute immediately instead of waiting for
-	// its next tick. Buffered 1 + non-blocking send: a poke that arrives while
-	// one is already pending coalesces into the same recompute. remotePoke is
-	// a second, independently-buffered channel fed by the same pokeAttention
-	// call so the remote-thread-cache refresher (below) reacts to the same
-	// event without stealing pokes from the attention watcher — each has its
-	// own channel and drains only its own.
-	attentionPoke := make(chan struct{}, 1)
-	remotePoke := make(chan struct{}, 1)
-	pokeAttention := func() {
-		inputs.Bump()
-		select {
-		case attentionPoke <- struct{}{}:
-		default:
-		}
-		select {
-		case remotePoke <- struct{}{}:
-		default:
-		}
-	}
-
-	// remoteCache holds the last-refreshed remote-source thread list; the
-	// refresher goroutine below Stores into it on a ~30s ticker + poke, and
-	// the tree read path (remoteTreeThreads) reads it via WebConfig instead of
-	// performing a synchronous network walk per request.
-	remoteCache := &hubcore.RemoteThreadCache{}
-
-	// Bind the listener before anything downstream (WebConfig.HubAddr, the
-	// startup log line, the advertised auth URL) reads cfg.Addr, and
-	// overwrite cfg.Addr with what actually got bound. This is what makes
-	// "-addr 127.0.0.1:0" a real ephemeral-port request instead of a literal
-	// ":0" that never resolves to anything callable: the OS hands back a
-	// free port that cannot collide with another hub, sidestepping the
-	// TOCTOU race in "probe a free port, then hope nothing else grabs it
-	// before we bind" (see docs/developing-evener/agentic-testing.md).
-	hubListener, err := deps.listen(context.Background(), "tcp", cfg.Addr)
-	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] listen %s: %v\n", cfg.Addr, err)
-		return fmt.Errorf("listen %s: %w", cfg.Addr, err)
-	}
-	cfg.Addr = hubListener.Addr().String()
-
-	resumeLocks, err := hubcore.NewPersistentResumeLocks(hubStateRoot)
-	if err != nil {
-		_ = hubListener.Close()
-		return fmt.Errorf("load recovery state: %w", err)
-	}
-	deletionStore, err := hubcore.NewDeletionStore(hubStateRoot)
-	if err != nil {
-		_ = hubListener.Close()
-		return fmt.Errorf("load deletion state: %w", err)
-	}
-	transcriptDisplayStore, transcriptDisplayStoreErr := hubcore.NewTranscriptDisplayStore(hubStateRoot)
-	if transcriptDisplayStoreErr != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] transcript display state: %v\n", transcriptDisplayStoreErr)
-	}
-	keybindingsStore, keybindingsStoreErr := hubcore.NewKeybindingsStore(hubStateRoot)
-	if keybindingsStoreErr != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] keybindings state: %v\n", keybindingsStoreErr)
-	}
-
-	// Resolve the registry root once for this hub process. Launch configuration
-	// may override XDG_CONFIG_HOME for a child, so the child must receive this
-	// concrete root rather than resolving its own default from that environment.
-	pluginRoot := plugins.NewManager("").Root
-
-	// Web
-	hostEntries := hostRegistryEntries(cfg)
-	// Config loading already validated these through hostreg.New; build the
-	// real registry used by the SSH manager and handle the (impossible) error
-	// like any other startup failure. The file's retained high-water marks seed
-	// the counters first, so a hub.toml host with no persisted record is minted
-	// above every mark the file carries (registry spec 08 §1) rather than below
-	// a mark another name retained.
-	hostRegistry, err := hostreg.NewSeeded(hostEntries, hostHighWaterMarks(cfg))
-	if err != nil {
-		_ = hubListener.Close()
-		return fmt.Errorf("validate hosts: %w", err)
-	}
-	// sshStateInvalidatedNavigation is late-bound: the sshconn manager is
-	// constructed before the WebServer it must invalidate, and it is only ever
-	// invoked once the background loops start attaching hosts.
-	var sshStateInvalidatedNavigation func()
-	// hostAttachedWakeup is late-bound like the navigation hook above: the
-	// host-admin controller (and its per-host fan-outs) is constructed with
-	// the WebServer below, after the SSH manager, and it is only ever invoked
-	// once the background loops start attaching hosts.
-	var hostAttachedWakeup func(host string)
-	// hostManageEvents is late-bound the same way: the host-management
-	// controller is constructed with the WebServer below, after the SSH
-	// manager, and its event recorder is only ever invoked once the
-	// background loops start attaching hosts.
-	var hostManageEvents func(sshconn.Event)
-	// The deploy wiring is a pure function of the flags: -deploy-binary wins over
-	// -build-source, matching the manager's own BuildBinary-first dispatch, and
-	// with neither set the default is this hub's own executable — unless
-	// -no-deploy disables deploying. Startup says which source is effective, so
-	// the default and an opt-out are visible rather than inferred.
-	deploy := opts.deployWiring()
-	if line := opts.deployPathLogLine(); line != "" {
-		_, _ = fmt.Fprintln(stderr, line)
-	}
-	newSSHManager := deps.newSSHManager
-	if newSSHManager == nil {
-		newSSHManager = sshconn.New
-	}
-	sshManager := newSSHManager(hostRegistry, sshconn.Options{
-		SessionToolsHubID: sessionToolsHubID,
-		Logger:            func(format string, args ...any) { _, _ = fmt.Fprintf(stderr, "[hub] "+format+"\n", args...) },
-		BuildBinary:       deploy.buildBinary,
-		BuildSource:       deploy.buildSource,
-		OwnExecutable:     deploy.ownExecutable,
-		DeployDisabled:    deploy.disabled,
-		DeployHelp:        deploy.help,
-		OnEvent: func(ev sshconn.Event) {
-			hubSSHStateInvalidation(
-				func() {
-					if sshStateInvalidatedNavigation != nil {
-						sshStateInvalidatedNavigation()
-					}
-				},
-				// An attach is not only a liveness change: a host that was dormant
-				// contributes no fresh rows to the snapshot walk (it is skipped
-				// attached-only), so its threads stay absent from the navigation tree
-				// until the next ~30s tick. Poke the remote-thread refresher on the
-				// same transition so an explicit evener/host/attach populates the tree
-				// immediately. remotePoke is buffered 1 and this send is non-blocking,
-				// so the sshconn event loop never blocks on a refresh already pending.
-				func(host string) {
-					select {
-					case remotePoke <- struct{}{}:
-					default:
-					}
-					// The same transition wakes the host-notification fan-out: a
-					// fan-out sleeping in backoff would otherwise wait up to 30s
-					// before subscribing while the new client's notification buffer
-					// fills undrained. The wakeup carries no client — the fan-out
-					// still resolves the fresh client through ClientIfAttached —
-					// and the send below is non-blocking for the same reason the
-					// poke above is: the sshconn event loop must never block.
-					if hostAttachedWakeup != nil {
-						hostAttachedWakeup(host)
-					}
-				},
-			)(ev)
-			// The host-management surface records per-host attach state from
-			// the same lifecycle events (midAttach, lastAttachError). The
-			// recorder only writes its own map: OnEvent runs with the
-			// per-host lock held, so it must never call back into the manager.
-			if hostManageEvents != nil {
-				hostManageEvents(ev)
-			}
-		},
-	})
-	// The manager owns every live SSH channel; tie their lifetime to this
-	// process so they die with the hub.
-	defer func() { _ = sshManager.Close() }()
-
-	// Boot-prune the state-root write probe's crash orphans: evener/host/running
-	// writes (and removes) one probe file per probe under every durable state
-	// root, so a crash between its rename and its remove leaves a prefix-named
-	// stray that only this pass removes.
-	for _, root := range runningStateRoots(hubStateRoot, stateDir) {
-		if pruned := pruneHostRunningProbeStrays(root); pruned > 0 {
-			_, _ = fmt.Fprintf(stderr, "[hub] pruned %d orphaned host-running probe file(s) under %s\n", pruned, root)
-		}
-	}
-	// The operation store opens before the hub serves anything. A corrupt store
-	// file takes §4's custody-first quarantine; a corrupt file whose custody
-	// snapshot is incomplete refuses the boot outright — the hub must never serve
-	// hosts past a fence the quarantine cannot prove.
-	opsStore, err := openHostOpsStore(hubStateRoot, stderr, hostOperationRetention(cfg))
-	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
+	defer closeListener()
+	if err := r.openDurableState(); err != nil {
 		return err
 	}
-	// The operation store loads before the web server is built; a loaded
-	// compensation record whose stash reference is not this hub.toml family's
-	// own must never become a read, restore, or remove target, so a foreign
-	// path refuses startup (the machine-managed-file posture: a record this
-	// build cannot account for is refused loudly, never served).
-	if err := validateHostOpsStashReferences(opsStore, opts.configPath); err != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
+	closeHosts, err := r.connectHosts()
+	if err != nil {
 		return err
 	}
-	scratchReconcile := newScratchReconciler(hubcore.WebConfig{Past: past, Archive: archive, Roster: roster})
-	web := newWebServer(hubcore.WebConfig{
-		HubAddr:                   cfg.Addr,
-		AuthToken:                 authToken,
-		MobileBaseURL:             cfg.MobileBaseURL,
-		HubStateRoot:              cfg.HubStateRoot,
-		LaunchConfigRoot:          cmdutil.DefaultConfigRoot(),
-		MachineRoots:              cfg.Roots,
-		PluginRoot:                pluginRoot,
-		TranscriptDisplayStore:    transcriptDisplayStore,
-		TranscriptDisplayStoreErr: transcriptDisplayStoreErr,
-		KeybindingsStore:          keybindingsStore,
-		KeybindingsStoreErr:       keybindingsStoreErr,
-		RunDir:                    runDir,
-		DaemonIdleTimeout:         cfg.DaemonIdleTimeout,
-		PastIndexPath:             pastIndexDB,
-		Roster:                    roster,
-		Past:                      past,
-		Archive:                   archive,
-		Favorite:                  favorite,
-		PinSections:               pinSections,
-		SessionSeen:               sessionSeen,
-		HubID:                     sessionToolsHubID,
-		MessageSearch:             messageSearch,
-		Spawner:                   spawner,
-		APILogDefault:             cfg.APILog,
-		DeletionStore:             deletionStore,
-		ResumeLocks:               resumeLocks,
-		PastPerPage:               cfg.PastResultsPerPage,
-		StateDir:                  stateDir,
-		CredsStore:                credsStore,
-		Registry:                  hubReg,
-		ProvidersConfigPath:       providersConfigPath,
-		CredentialsPath:           credentialsPath,
-		NoUserLayer:               noUserLayer,
-		PokeAttention:             pokeAttention,
-		ScratchReconcile:          scratchReconcile.Kick,
-		Inputs:                    inputs,
-		RemoteThreadCache:         remoteCache,
-		RemoteHosts:               hostEntries,
-		// The one live registry the SSH manager dials through, shared with the
-		// attach handler and the host-management surface, and the selected
-		// hub.toml path the host surface rewrites in place (machine-managed).
-		RemoteHostRegistry:   hostRegistry,
-		RemoteHostSSHManager: sshManager,
-		RemoteHostConfigPath: opts.configPath,
-		RemoteHostOpsStore:   opsStore,
-		// This hub's own running identity and the two owner-adjustable
-		// deploy-pipeline knobs: the probe deadline the plan's gated probe
-		// uses, and the minimum free space evener/host/running's health
-		// predicate requires on each durable state root.
-		HubBootID:             hubBootID,
-		HubProcessStart:       hubProcessStart,
-		HostProbeTimeout:      cfg.HostProbeTimeout,
-		HostMinFreeSpaceBytes: cfg.HostMinFreeSpaceBytes,
-		// The host-record retention knobs (registry spec 08 §6/§11/§15): the
-		// tombstone retention and bounds and the receipt/marker/audit bounds the
-		// host-management surface prunes and evicts by.
-		HostTombstoneRetention:        cfg.HostTombstoneRetention,
-		HostTombstoneMaxRows:          cfg.HostTombstoneMaxRows,
-		HostTombstoneMaxRowBytes:      cfg.HostTombstoneMaxRowBytes,
-		HostTombstoneMaxCount:         cfg.HostTombstoneMaxCount,
-		HostTombstoneMaxBytes:         cfg.HostTombstoneMaxBytes,
-		HostSupersededReceiptMaxCount: cfg.HostSupersededReceiptMaxCount,
-		HostSupersededReceiptTTL:      cfg.HostSupersededReceiptTTL,
-		HostPrunedReceiptMaxCount:     cfg.HostPrunedReceiptMaxCount,
-		HostPrunedReceiptTTL:          cfg.HostPrunedReceiptTTL,
-		HostKeylessAuditMaxCount:      cfg.HostKeylessAuditMaxCount,
-		HostKeylessAuditTTL:           cfg.HostKeylessAuditTTL,
-		RemoteHostClient: func(ctx context.Context, host string) (*appwire.Client, error) {
-			ch, err := sshManager.Ensure(ctx, host)
-			if err != nil {
-				return nil, err
-			}
-			return ch.Client(), nil
-		},
-		// The attached-only lookup every non-explicit read path resolves
-		// through, so none can implicitly attach a dormant host.
-		RemoteHostClientIfAttached: sshManager.ClientIfAttached,
-		RemoteHostFacts: func(ctx context.Context, host string, client *appwire.Client) (appsource.HostFacts, error) {
-			return remoteHostFactsIfAttached(ctx, host, client, func(host string) (attachedChannelView, bool) {
-				// Non-dialing: read one installed channel and refuse unless it is
-				// the very channel client belongs to, so the facts can never
-				// describe a different generation than the probe's wire reads.
-				ch, ok := sshManager.ChannelIfAttached(host)
-				if !ok {
-					return nil, false
-				}
-				return ch, true
-			})
-		},
-		RemoteHostHandshake: func(host string, client *appwire.Client) (appwire.InitializeResponse, bool) {
-			ch, ok := sshManager.ChannelIfAttached(host)
-			if !ok {
-				return appwire.InitializeResponse{}, false
-			}
-			return remoteHostHandshakeForChannel(ch, client)
-		},
-		RemoteHostOnline: sshManager.Attached,
-	}, appwireTrace)
-	// Bind the host-notification wakeup now that the controller exists: the
-	// sshconn manager (built above) fires EventAttached once the fresh channel
-	// is installed, and the controller (built with the WebServer just above)
-	// owns the fan-outs. The wakeup rides that same attach event — alongside
-	// the navigation invalidation and the remote-thread poke wired into OnEvent
-	// above — rather than inventing a second path. A nil controller (no remote
-	// hosts) leaves the slot nil, which the callback already tolerates.
-	if web.hostAdmin != nil {
-		hostAttachedWakeup = web.hostAdmin.hostAttached
-	}
-	// Bind the host-management event recorder the same way: the sshconn
-	// manager fires lifecycle events, and the host rows retain attach state
-	// from them.
-	if web.hostManage != nil {
-		hostManageEvents = web.hostManage.observeEvent
-	}
-	// The deploy pipeline's operation workers run under the controller's
-	// lifetime, never an RPC's. On the way out they are cancelled and their
-	// records settle to `interrupted` (naming the shutdown) with their hosts'
-	// gates released, before the SSH manager below tears the channels down.
-	if web.hostManage != nil {
-		defer func() { web.hostManage.ShutdownHostOperations(operationsShutdownTimeout) }()
-	}
-	// Drain the AppWire RPC server on every exit path, tracing or not: the
-	// remote-admin fan-out is bound to appserver.Server.Lifetime(), and
-	// Shutdown is what cancels it, so a hub that only stopped its HTTP server
-	// would leave one fan-out goroutine per remote host subscribed to the
-	// previous server's sources — a leak, and duplicate host notifications
-	// once a replacement server subscribed too.
-	//
-	// It is registered after the SSH manager's teardown, so it runs first: the
-	// fan-outs stop while the transports they read from are still open, rather
-	// than discovering a closed channel and re-dialling on their next retry.
-	defer func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if shutdownErr := web.appRPC.Shutdown(shutdownCtx); shutdownErr != nil {
-			_, _ = fmt.Fprintf(stderr, "[hub] drain AppWire connections: %v\n", shutdownErr)
-		}
-	}()
-
-	// Navigation invalidation hooks: Roster's onChange and PastIndex's onRootChange
-	// hooks already gate on an actual fingerprint delta (never a no-op
-	// probe/rebuild cycle — see bump above), so composing the navigation
-	// invalidation into the same hook pushes the sidebar exactly on a daemon
-	// appearing/disappearing/changing liveness, or a root session changing or a
-	// subagent appearing/disappearing in the past index. Archive and favorite decisions live in ArchiveStore/FavoriteStore,
-	// which never route through PastIndex at all, so they invalidate directly.
-	wirePastNavigation(past, bump, web.navigation)
-	// A session whose turn the provider refused makes the hub check that
-	// instance's credential at once (#3539); the watch starts probing once the
-	// background runner exists, below.
-	sessionCredentials := &sessionCredentialWatch{auth: web.auth}
-	observeSessionCredentials := sessionCredentials.observer(roster)
-	roster.SetOnChange(func() {
-		bump()
-		web.navigation.Invalidate(navigationChangeHint{})
-		observeSessionCredentials()
-		reconcileSessionTools(web.sources)
-	})
-	archive.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{AllLoadedProjects: true}) })
-	favorite.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{AllLoadedProjects: true}) })
-	remoteCache.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{Sources: true}) })
-	// A connection-state transition flips sshconn.Manager.Attached, which is the
-	// online signal every remote row's liveness and the manifest's
-	// sources[].online are derived from. Roster/PastIndex/remoteCache hooks do not
-	// observe it on their own: the remote cache only refreshes on its ~30s tick and
-	// only invalidates when its contents changed, and a detached host whose last
-	// list already failed changes nothing there. Without this the fleet view can
-	// keep reporting a host online after it dropped, or keep its rows metas-only
-	// after it reconnected.
-	sshStateInvalidatedNavigation = func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) }
-	if pinSections != nil {
-		pinSections.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) })
-	}
-	// A seen mark changes live rows' unseen flag; a mark committed by any
-	// writer, the RPC or a session deletion's scrub, invalidates navigation.
-	sessionSeen.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) })
+	defer closeHosts()
+	web, closeWeb := r.buildWeb(appwireTrace)
+	defer closeWeb()
+	r.wireNavigationInvalidation(web)
 
 	if deps.afterWeb != nil {
 		deps.afterWeb(web)
 	}
 
-	// Lifecycle
-	signalCtx, cancelSignals := deps.notifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancelSignals()
-	ctx, cancelBackground := context.WithCancel(signalCtx)
-	// The web server's request-triggered background work (the launch-model
-	// refresh) hangs off this context, so shutdown cancels an outstanding
-	// launch check instead of leaving it to outlive the hub.
-	web.lifetime = ctx
-	var background sync.WaitGroup
-	defer func() {
-		cancelBackground()
-		background.Wait()
-		// The refresh group is not the background group: a request-triggered
-		// refresh is started by a handler, not by startBackground, so it is
-		// awaited here. cancelBackground has already canceled its context.
-		web.waitLaunchRefreshes()
-	}()
-	startBackground := func(fn func()) {
-		background.Go(fn)
-	}
-	// Transcript-index repairs are detached on purpose: a multi-minute rebuild
-	// must not hold hub exit, so the repair goroutine deliberately escapes
-	// this awaited group and only the context gates starting one.
-	transcriptIndexRepairs.wire(ctx)
-	sessionCredentials.start(ctx, startBackground)
-	startSessionTools(ctx, web.sources, startBackground)
-	// Populate the roster before serving so the first sidebar request can't hit
-	// an empty roster (the "flash of no sessions" right after a restart). Probes
-	// run concurrently, so this is bounded by ~one probe timeout regardless of
-	// how many daemons are live.
-	roster.Refresh()
-	// With live daemons known, catch up on archived sessions' scratch: ones that
-	// aged into the archive and ones whose daemon exited while the hub was down.
-	startBackground(func() { scratchReconcile.Run(ctx) })
-	scratchReconcile.Kick()
-	// Start the resettable navigation scheduler only after the initial roster
-	// seed, so its first capture cannot publish a transient empty generation.
-	startBackground(func() { web.navigation.Start(ctx) })
-	// NavigationService is the sole typed-event authority. Drain its FIFO from
-	// one lifecycle-owned publisher so readiness coalescing cannot duplicate or
-	// reorder invalidations.
-	startBackground(func() { runNavigationPublisher(ctx, web.navigation, web.appRPC) })
-	startBackground(func() { watchHubRoster(ctx, roster) })
-
-	startBackground(func() {
-		ticker := time.NewTicker(cfg.PastIndexRebuild)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				_, _ = past.Rebuild()
-			}
-		}
-	})
-
-	// Message search refresher: re-reads the transcripts that changed on the
-	// past index's rebuild interval (S14).
-	startBackground(func() { refreshHubMessageSearch(ctx, messageSearch, past, cfg.PastIndexRebuild) })
-
-	// Attention watcher: derives each live session's attention level from the
-	// same remote-inclusive metas/live the sidebar tree uses (see
-	// web.navigationSnapshot), and broadcasts evener/attention/changed when a
-	// session's level actually transitions (notifications.js drives the tab
-	// title/favicon badge and OS notifications from it). Ticks every 5s and
-	// on-demand via attentionPoke.
-	startBackground(func() { watchHubAttention(ctx, attentionPoke, archive, web) })
-
-	// Notices watcher: re-derives the hub's notices every few seconds and
-	// broadcasts evener/notices/changed when they change (S11).
-	startBackground(func() { watchHubNotices(ctx, web) })
-
-	// Seed the bundled default marketplaces (best-effort, first-run-gated —
-	// see SeedDefaultMarketplaces). Every evener CLI path does this already
-	// (cmd/evener/run.go, serve.go, plugincmd.go); the hub was the one surface
-	// that never did, so a fresh install whose first interaction is the web
-	// UI (Settings → Marketplaces & Plugins) saw zero marketplaces until a
-	// session happened to spawn and seed them first.
-	seedHubMarketplaces(ctx, web)
-
-	// Plugin auto-upgrade daemon (design doc §9.1): refreshes every known
-	// marketplace, then upgrades every installed, git-backed plugin with
-	// autoUpgrade enabled. Runs once immediately and then on
-	// cfg.PluginAutoUpgradeInterval; gated by cfg.PluginAutoUpgrade (on by
-	// default — see config.go). Published plugin revisions are retained for
-	// existing and resumable sessions. `evener plugin gc`, also run once here,
-	// cleans unused marketplace clones without reclaiming published packages.
-	startHubPluginMaintenance(ctx, cfg, web, startBackground)
-	// Remote-thread cache refresher: refreshRemoteThreads (web_api_tree.go)
-	// walks every configured remote source's ListThreads, a synchronous
-	// network hop that used to run inline on every navigation read. Move it
-	// to a ~30s ticker + poke so a tree render never blocks on it; the navigation
-	// read path (remoteTreeThreads) reads remoteCache.Get() instead whenever
-	// RemoteThreadCache is configured.
-	startBackground(func() { refreshHubRemoteThreads(ctx, remotePoke, web) })
-	// Live-model prefetch: fetch every instance's /models listing into the
-	// held registry once at startup, so the Providers sheet reads cached
-	// inventory instead of fetching on open. Once only: the hub never polls
-	// providers on a timer. Best-effort per instance; a provider that is down
-	// keeps its catalog rows until a refresh. A pass that changes what any
-	// client shows announces it over the reused instance channel, so every
-	// browser refetches its list; a no-op pass stays silent.
-	// Through deps so hermetic runMain tests stay offline: the default
-	// warms the live cache from real provider endpoints.
-	deps.startLivePrefetch(ctx, hubReg, web.auth, startBackground, func() {
-		// A server-initiated pass has no originating client, so the broadcast
-		// names none: every client, including the one that may have just asked
-		// for the prefetch, reads it as an unowned list change and refetches.
-		notifyInstanceUpdated(web.appRPC, "")
-	})
-	// Launch-model warm: run the picker's `evener launch-check --models` once
-	// at startup, so the first model picker open is served from cache instead
-	// of waiting on the live listing. After that the picker refreshes the list
-	// when it is opened.
-	// Through deps so hermetic runMain tests stay offline.
-	deps.startLaunchPrefetch(ctx, web, startBackground)
+	ctx, stopBackground := r.startBackground(web)
+	defer stopBackground()
 
 	srv := &listenerHTTPServer{
 		Server: &http.Server{
-			Addr:              cfg.Addr,
+			Addr:              r.boundAddr,
 			Handler:           web.Handler(),
 			ReadHeaderTimeout: hubHTTPReadHeaderTimeout,
 			IdleTimeout:       hubHTTPIdleTimeout,
 		},
-		ln: hubListener,
+		ln: r.listener,
 	}
-
-	// Build a usable auth URL. If the bind addr is 0.0.0.0 or ::, replace
-	// it with a hostname the operator can reach the hub at.
-	authHost := advertisedHubHost(cfg.Addr, hubHostname)
-	browserAddress := "http://" + authHost
-	_, _ = fmt.Fprintf(stderr, "[hub] Browser address: %s\n", browserAddress)
-	_, _ = fmt.Fprintf(stderr, "[hub] Private sign-in link: %s\n", hubedge.AuthURLFor(browserAddress, authToken))
-	_, _ = fmt.Fprintln(stderr, "[hub] Keep this terminal running while you use Evener in the browser.")
-	_, _ = fmt.Fprintf(stderr, "[hub] evener-hub %s listening on %s (run_dir=%s)\n", Version, cfg.Addr, runDir)
-	_, _ = fmt.Fprintf(stderr, "[hub] Auth token file: %s (use as Authorization: Bearer ... for scripted clients)\n", filepath.Join(hubStateRoot, hubedge.TokenFileName))
+	record, retireEndpoint, err := publishEndpoint(web, r.endpoint, r.configIdentity, r.hubStateRoot, r.boundAddr)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if removeErr := retireEndpoint(); removeErr != nil {
+			_, _ = fmt.Fprintf(stderr, "[hub] retire endpoint: %v\n", removeErr)
+		}
+	}()
+	announceHub(stderr, record, r.runDir, r.hubStateRoot, r.authToken)
 	if err := deps.serve(ctx, srv); err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
 		return err
@@ -1027,56 +426,11 @@ func openHostOpsStore(stateRoot string, stderr io.Writer, retention hostops.Rete
 	return store, nil
 }
 
-// hostOperationRetention maps the hub's owner knobs onto the operation store's
-// §4 retention policy: the five terminal/tombstone/store-byte/age bounds, with
-// the removed-host horizon being the tombstoneRetention knob §4 cites
-// (registry spec §15). Every zero value floors to the store's shipped default.
+// hostOperationRetention maps the hub's tombstone retention onto the operation
+// store's removed-host horizon (registry spec §15); every other bound takes the
+// store's shipped default.
 func hostOperationRetention(cfg Config) hostops.RetentionPolicy {
-	return hostops.RetentionPolicy{
-		TerminalPerHost:    cfg.HostOperationTerminalPerHost,
-		TerminalStoreWide:  cfg.HostOperationTerminalStoreWide,
-		StoreMaxBytes:      cfg.HostOperationStoreMaxBytes,
-		TerminalMaxAge:     cfg.HostOperationTerminalMaxAge,
-		TombstonesPerHost:  cfg.HostOperationTombstonesPerHost,
-		RemovedHostHorizon: cfg.HostTombstoneRetention,
-	}
-}
-
-// hostRegistryEntries maps the validated [[hosts]] entries onto the host
-// registry's values. runMain hands the result to hostreg.New (the registry
-// sshconn consumes) and to the web config's RemoteHosts (one source per host),
-// so this mapping is the last place a configured field can be lost before
-// either consumer sees it: every field belongs here, including the host's
-// non-default locations (EvenerPath, ConfigPath, Addr) that keep the SSH
-// manager attaching with the host's own hub.toml and probing its own listener.
-//
-// It is also where the file's machine records join the entry: the persisted
-// (generation, incarnation id, presence epoch) triple is restored onto the
-// entry, so the boot load keeps the identity the file recorded instead of
-// minting a new one (registry spec 08 §15: "The boot load restores persisted
-// generations before the store serves any request"). A file that carries no
-// record leaves the zeros hostreg.New fills at load.
-func hostRegistryEntries(cfg Config) []hostreg.Host {
-	entries := make([]hostreg.Host, 0, len(cfg.Hosts))
-	for _, h := range cfg.Hosts {
-		generation, incarnation, epoch := resolveHostIdentity(h.Name, cfg.HostRecords, cfg.Generations)
-		entries = append(entries, hostreg.Host{
-			Name:       h.Name,
-			SSH:        h.SSH,
-			User:       h.User,
-			EvenerPath: h.EvenerPath,
-			ConfigPath: h.ConfigPath,
-			Addr:       h.Addr,
-			Roots:      h.Roots,
-			KeyPath:    h.KeyPath,
-			// Generation, IncarnationID and PresenceEpoch: the persisted
-			// identity, when the file carries one.
-			Generation:    generation,
-			IncarnationID: incarnation,
-			PresenceEpoch: epoch,
-		})
-	}
-	return entries
+	return hostops.RetentionPolicy{RemovedHostHorizon: cfg.HostTombstoneRetention}
 }
 
 // hubSSHStateInvalidation adapts an sshconn lifecycle hook to navigation
@@ -1125,6 +479,8 @@ func parseHubOptions(args []string, stderr io.Writer) (hubOptions, error) {
 		fs.PrintDefaults()
 		_, _ = fmt.Fprintf(stderr, "\nSubcommands:\n")
 		_, _ = fmt.Fprintf(stderr, "  attach --stdio\tproxy AppWire between the hub's loopback /rpc and stdin/stdout\n")
+		_, _ = fmt.Fprintf(stderr, "  endpoint --json [--config PATH]\tinspect the selected hub without credentials\n")
+		_, _ = fmt.Fprintf(stderr, "  login-url [--config PATH]\tprint a password-like browser login link for the running hub\n")
 		_, _ = fmt.Fprintf(stderr, "\nEnvironment variables:\n")
 		printHubEnvVars(stderr)
 	}
@@ -1134,13 +490,10 @@ func parseHubOptions(args []string, stderr io.Writer) (hubOptions, error) {
 	}
 	if err == nil {
 		// Only a path the operator named is a promise to load a file; the
-		// default path is allowed to be absent. fs.Visit reports the flags that
-		// were actually set, so the two are distinguishable after parsing.
-		fs.Visit(func(f *flag.Flag) {
-			if f.Name == "config" {
-				opts.configExplicit = true
-			}
-		})
+		// default path is allowed to be absent.
+		set := setFlagNames(fs)
+		opts.configExplicit = set["config"]
+		opts.addrPresent = set["addr"]
 	}
 	// Validate the deploy flags where they are read: a bad path fails startup
 	// naming the flag rather than surfacing at the first attach as a deploy
@@ -1176,17 +529,15 @@ type attachedChannelView interface {
 	Handshake() appwire.InitializeResponse
 }
 
-// remoteHostFactsForChannel returns the preflight half of the host's capability
-// snapshot for client, refusing when ch is not the channel client belongs to.
+// remoteHostFactsForChannel returns the host's preflight facts for client,
+// refusing when ch is not the channel client belongs to.
 //
-// The capability probe resolves client through the attached-only lookup and
-// runs every wire read on it, then asks for the facts. A supervisor reconnect
-// between those two steps would leave ch describing a newer connection than
-// client; answering from it would let the probe cache a snapshot assembled from
-// two generations — the hazard sshconn's channel identity check exists to
-// prevent. Refuse with the typed unavailable error the auto-resume gate already
-// understands instead; the probe is not cached on failure, so it re-probes the
-// new generation cleanly.
+// Attach resolves client through the attached-only lookup, then asks for the
+// facts. A supervisor reconnect between those two steps would leave ch
+// describing a newer connection than client; answering from it would report
+// facts assembled from two generations — the hazard sshconn's channel identity
+// check exists to prevent. Refuse with the typed unavailable error the
+// auto-resume gate already understands instead.
 func remoteHostFactsForChannel(ch attachedChannelView, host string, client *appwire.Client) (appsource.HostFacts, error) {
 	if ch == nil || ch.Client() != client {
 		return appsource.HostFacts{}, appwire.SessionUnavailable("remote hub unavailable: " + host)
@@ -1200,8 +551,7 @@ func remoteHostFactsForChannel(ch attachedChannelView, host string, client *appw
 //
 // A caller cancellation or deadline is the caller's own context ending, not
 // host unavailability, so it is returned raw before the lookup runs — exactly
-// as the capability probe leaves a canceled context raw and resolveClient/call
-// leave it raw. Reporting it as the typed SessionUnavailable would fire the
+// as resolveClient/call leave it raw. Reporting it as the typed SessionUnavailable would fire the
 // auto-resume/refusal gates for a request the caller abandoned. A host whose
 // channel is gone or is a different generation is the typed SessionUnavailable
 // those gates act on.
@@ -1218,9 +568,8 @@ func remoteHostFactsIfAttached(ctx context.Context, host string, client *appwire
 
 // remoteHostHandshakeForChannel returns the attach handshake ch captured, but
 // only when ch is the channel client belongs to. Reporting false otherwise
-// keeps the probe from pairing one connection's wire reads with another's
-// handshake; the preflight facts it already accepted (remoteHostFactsForChannel)
-// are then the only source, and those are pinned to the same client.
+// keeps attach from pairing one connection's dial with another's handshake;
+// the preflight facts (remoteHostFactsForChannel) are pinned to the same client.
 func remoteHostHandshakeForChannel(ch attachedChannelView, client *appwire.Client) (appwire.InitializeResponse, bool) {
 	if ch == nil || ch.Client() != client {
 		return appwire.InitializeResponse{}, false

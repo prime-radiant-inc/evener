@@ -109,7 +109,7 @@ func TestConsumeModelStream_Observation_ToolArgsThenError(t *testing.T) {
 }
 
 // TestConsumeModelStream_Observation_ToolCallEndOnlyThenError pins the
-// google adapter's emission shape (llm/providers/google/adapter.go:558-566):
+// google adapter's emission shape:
 // a complete functionCall arrives on ToolCallEnd with no preceding
 // ToolCallDelta at all. Those bytes must count as a content event, not just
 // as salvage — otherwise a dropped connection right after a full tool call

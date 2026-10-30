@@ -1,0 +1,55 @@
+/* The floating attention control's own chrome. Placement belongs to
+ * FlowOverlay's measured stack (live transcript) or session.module.css's
+ * dormant attention dock; this file only lays out the trigger row and the
+ * independent list panel. */
+.root {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  max-width: 100%;
+  pointer-events: auto;
+}
+
+/* Layout only: the widget's own box is Button's, so a caller-side container
+ * sets the compact ceiling and lets the label truncate inside it. The slot is
+ * a one-column flex with stretch, not a plain block: Button is an inline-flex
+ * shrink-to-fit box, so a plain block would let the nowrap label keep its full
+ * min-content width and overflow the slot. Stretched to the slot's width,
+ * Button hands that width to its own label, which already truncates. */
+.nextSlot {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  min-width: 0;
+  max-width: min(18rem, 55vw);
+}
+
+.nextLead {
+  flex: none;
+  color: var(--ink-mid);
+}
+
+.nextLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ellipsis {
+  display: block;
+  font-size: var(--font-size-body);
+  line-height: 1;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 15rem;
+  max-width: min(24rem, calc(100vw - var(--space-4) * 2));
+  max-height: min(20rem, 60vh);
+  overflow-y: auto;
+  padding: var(--space-1);
+}

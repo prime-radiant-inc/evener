@@ -26,6 +26,7 @@ export {
   selectProjectPage,
   selectProjectResource,
   selectProjectSummaries,
+  selectSectionCanDemand,
   selectSectionRemaining,
   selectSources,
 } from "@evener/appwire-client/state/navigation";

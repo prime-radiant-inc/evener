@@ -261,7 +261,7 @@ func resolveOpenAIStateDir(workDir, override string) (string, error) {
 	if strings.TrimSpace(override) != "" {
 		return override, nil
 	}
-	return authopenai.DefaultStateDir(), nil
+	return authopenai.DefaultStateDir()
 }
 
 func makeRedirectURLReader(stdin io.Reader, stderr io.Writer) func(context.Context) (string, error) {

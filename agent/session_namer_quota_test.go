@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -111,7 +110,7 @@ func (h *namerQuotaHarness) failingNamerAdapter(t *testing.T, providerName strin
 // namerFailureAdvisories counts the session log's session_namer failure entries.
 func (h *namerQuotaHarness) namerFailureAdvisories(t *testing.T) int {
 	t.Helper()
-	log := mustNewSessionLog(t, filepath.Join(h.dir, sessionsSubdir, h.sess.ID()+".log.jsonl"))
+	log := mustNewSessionLog(t, schema.SessionLogPath(h.dir, h.sess.ID()))
 	count := 0
 	for _, entry := range log.Entries() {
 		if entry.Action == "session_namer" && entry.Outcome == "failure" {
@@ -133,8 +132,7 @@ func (h *namerQuotaHarness) namerIdle() bool {
 //
 // Both conditions are load-bearing, and waiting on the advisory alone is a race.
 // nameSessionFromText writes the advisory and returns; only then does the
-// launcher goroutine call clearPromptNamePendingAfterAttempt
-// (session_namer.go:232-233). Between those two steps the advisory is already
+// launcher goroutine call clearPromptNamePendingAfterAttempt. Between those two steps the advisory is already
 // visible on disk while promptPending is still set, so an advisory-only wait can
 // resume inside that window -- and the next launch would then be suppressed by
 // the in-flight pending guard rather than by the quota state.

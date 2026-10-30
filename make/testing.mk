@@ -56,23 +56,23 @@ test-web-browser: build-web build-dev
 # only thing that reads tsconfig.json, whether the hand-run scripts/*.mts tools
 # can still load their module graph. The scripts run under no gate, so nothing
 # noticed when they stopped resolving.
-## The native iPhone app and its shared session core gate.
-## proves: Metro bundles the real iOS entry point, the native and
-##   shared-session Vitest suites plus strict native TypeScript compilation
+## The native iPhone app gate.
+## proves: Metro bundles the real iOS entry point, the native
+##   Vitest suites plus strict native TypeScript compilation
 ##   pass against the checked-in Expo/React Native sources, the
-##   `mobile-native/src` and `mobile/src` sources match the native Biome
+##   `mobile-native/src` sources match the native Biome
 ##   formatter config (`mobile-native/biome.jsonc`, the `npm run lint` step),
 ##   and the hand-run scripts/*.mts tools still resolve their module graph
 ##   under tsx.
-## trigger: Native CI; local pre-merge when native or shared mobile sources change.
+## trigger: Native CI; local pre-merge when native sources change.
 ## requires: Node 22.13+ and an already-installed mobile-native dependency tree;
 ##   does not contact a hub or provider - script resolution is checked without
 ##   loading anything, since every one of those scripts opens a socket the
 ##   moment its body runs.
-## fails-when: Bundling, native tests, shared-session tests, native
+## fails-when: Bundling, native tests, native
 ##   typechecking, formatting, or script module resolution fail.
 test-native: test-native-bundle
-	@cd mobile-native && NODE_DISABLE_COMPILE_CACHE=1 npm test && NODE_DISABLE_COMPILE_CACHE=1 npm run test:shared && NODE_DISABLE_COMPILE_CACHE=1 npm run check && NODE_DISABLE_COMPILE_CACHE=1 npm run lint && NODE_DISABLE_COMPILE_CACHE=1 npm run check:scripts
+	@cd mobile-native && NODE_DISABLE_COMPILE_CACHE=1 npm test && NODE_DISABLE_COMPILE_CACHE=1 npm run check && NODE_DISABLE_COMPILE_CACHE=1 npm run lint && NODE_DISABLE_COMPILE_CACHE=1 npm run check:scripts
 
 # native-preflight turns the misleading Metro failure a fresh worktree gets into
 # a message naming the missing install and the command to run. A symlinked
@@ -101,7 +101,7 @@ native-preflight:
 # cheaper failure to read.
 ## The native app's Metro bundling gate.
 ## proves: Metro resolves every specifier the real iOS entry point reaches —
-##   the app's own sources, the shared mobile/ and frontend sources its
+##   the app's own sources, the frontend sources its
 ##   resolveRequest redirects, and the AppWire client wherever that package
 ##   lives — and the export writes an iOS bundle.
 ## trigger: Native CI (via make test-native); local pre-merge when native
@@ -230,7 +230,7 @@ test-short:
 ## fails-when: The first failing phase stops the gate and returns nonzero;
 ##   do not infer a verdict from partial logs.
 merge-approval-gate:
-	@tsv="$$(mktemp)"; trap 'rm -f "$$tsv"' EXIT INT TERM; \
+	@tsv="$$(mktemp "$${TMPDIR:-/tmp}/evener-gate-timing.XXXXXX")"; trap 'rm -f "$$tsv"' EXIT INT TERM; \
 		$(MAKE) lint && \
 		$(MAKE) build && \
 		$(MAKE) docs-check && \
@@ -296,15 +296,10 @@ vet:
 ##   strictly against that class's ceiling (a breach is nonzero under CHECK=1 in
 ##   a CI-shaped environment), while a test in no class keeps the flat
 ##   perTestCeilingSeconds and is warn-only in every mode, CHECK=1 included, so
-##   the unclassified backlog cannot red the gate (#4601). While the budget
-##   file's metric marker is absent (the checked-in pre-#172 baseline, until a
-##   rebaseline rewrites it under package wall time), the Go-package ratio check
-##   is suspended to a warning; the
-##   frontend ("web") row warns with them: its metric did not change, but the
-##   checked-in number was blessed on a quiet workstation and a four-core CI
-##   runner measures the same suite 2.6x-3.9x higher, so it is not comparable to
-##   a CI run either. While the file carries no wall-time marker every ratio
-##   warns with its numbers.
+##   the unclassified backlog cannot red the gate (#4601). The checked-in
+##   budget carries the package-wall-seconds metric marker, so per-package ratios
+##   (frontend "web" included) are enforced; a budget file without the marker
+##   downgrades every ratio failure to a warning.
 ## trigger: Local/on-demand. merge-approval-gate runs the check through
 ##   --measured over the rows its own ROOT_FULL=1 make test run captured, so
 ##   enforcing the budget no longer needs a second full test run (issue #144);

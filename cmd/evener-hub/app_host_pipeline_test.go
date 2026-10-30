@@ -97,7 +97,7 @@ func pipelineEntry(name string, generation uint64) hostreg.Host {
 // path.
 func pipelineToken(t *testing.T, store *hostops.Store, host string, generation uint64) hostops.Token {
 	t.Helper()
-	token, err := store.MintToken(hostops.MintRequest{
+	token, err := store.MintTokenIfQuiescent(hostops.MintRequest{
 		Host:               host,
 		Generation:         generation,
 		IncarnationID:      "inc-" + host,
@@ -111,9 +111,9 @@ func pipelineToken(t *testing.T, store *hostops.Store, host string, generation u
 		RunningHealthy:     true,
 		FreshnessBound:     hostops.DefaultFreshnessBound,
 		TTL:                hostops.DefaultTokenTTL,
-	})
+	}, store.Sequence())
 	if err != nil {
-		t.Fatalf("MintToken(%s): %v", host, err)
+		t.Fatalf("MintTokenIfQuiescent(%s): %v", host, err)
 	}
 	return token
 }
@@ -361,7 +361,7 @@ func TestBootCompensationResumesTheOwedRowsAfterAFailedAdvance(t *testing.T) {
 	}
 	m.reconcileCompensations()
 	record, open := m.cfg.ops.Compensation("keep")
-	if !open || hostops.NormalizeCompensationPhase(record.Phase) != hostops.CompensationHubTOML {
+	if !open || record.Phase != hostops.CompensationHubTOML {
 		t.Fatalf("record after the failed advance = %+v/%v, want it left in %s", record, open, hostops.CompensationHubTOML)
 	}
 	restoredCfg, _ := readPipelineConfig(t, fixture.configPath)
@@ -419,7 +419,7 @@ func TestBootCompensationArmedWithRowsPresentLeavesTheRecordWhenTheRegistryLacks
 	}
 	m := fixture.manager(t)
 	record, open := m.cfg.ops.Compensation("m4")
-	if !open || hostops.NormalizeCompensationPhase(record.Phase) != hostops.CompensationRuntime {
+	if !open || record.Phase != hostops.CompensationRuntime {
 		t.Fatalf("record = %+v/%v, want it left in %s (the restored host is not served)", record, open, hostops.CompensationRuntime)
 	}
 	if _, carried := m.cfg.store.storeSyncSnapshot()["m4"]; carried {
@@ -713,7 +713,7 @@ func TestBootCompensationRuntimeLeavesTheRecordWhenTheRestoredFileIsMissing(t *t
 	m.testOnlyFailRuntimeRevert = func(string) error { return errors.New("injected runtime-revert failure") }
 	m.reconcileCompensations()
 	record, ok := m.cfg.ops.Compensation("m4")
-	if !ok || hostops.NormalizeCompensationPhase(record.Phase) != hostops.CompensationRuntime {
+	if !ok || record.Phase != hostops.CompensationRuntime {
 		t.Fatalf("record after a failed runtime revert = %+v/%v, want it left in %s", record, ok, hostops.CompensationRuntime)
 	}
 	if _, err := os.Stat(stash); err != nil {
@@ -879,7 +879,7 @@ func TestBootCompensationRuntimeLeavesTheRecordWhenTheRestoredHostIsNotRegistere
 	// The registry is empty: the boot loaded the committed (host-less) file.
 	m := fixture.manager(t)
 	record, open := m.cfg.ops.Compensation("m4")
-	if !open || hostops.NormalizeCompensationPhase(record.Phase) != hostops.CompensationRuntime {
+	if !open || record.Phase != hostops.CompensationRuntime {
 		t.Fatalf("record after the unserved runtime revert = %+v/%v, want it left in %s", record, open, hostops.CompensationRuntime)
 	}
 	if _, err := os.Stat(stash); err != nil {
@@ -1157,7 +1157,7 @@ func TestBootRestoreReversesTheHostRemovedMarks(t *testing.T) {
 	if _, staged := crashed.cfg.store.stagedSnapshot()["keep"]; staged {
 		t.Fatal("the crash boot left the marker staged in the model")
 	}
-	if record, open := fixture.store.Compensation("keep"); !open || hostops.NormalizeCompensationPhase(record.Phase) != hostops.CompensationRuntime {
+	if record, open := fixture.store.Compensation("keep"); !open || record.Phase != hostops.CompensationRuntime {
 		t.Fatalf("record after the crash boot = %+v/%v, want it left in %s", record, open, hostops.CompensationRuntime)
 	}
 	// Boot 2 loads the restored file's live set: the runtime arm converges and
@@ -1474,28 +1474,30 @@ func TestRemoveWithAConfiguredPathAndNoFilePurgesTokensLive(t *testing.T) {
 	}
 }
 
-// TestNoConfigRemovalLeavesTokensWhenTheStagedCommitFails pins L1: the
-// no-cross-file purge rides the commit, so a staged write that refuses leaves
-// the token in place for the retry.
-func TestNoConfigRemovalLeavesTokensWhenTheStagedCommitFails(t *testing.T) {
+// TestRemovalLeavesTokensWhenTheHubTOMLIsCorrupt pins that a hub.toml the hub
+// cannot read refuses the removal's write, and the refused commit leaves the
+// token in place for the retry.
+func TestRemovalLeavesTokensWhenTheHubTOMLIsCorrupt(t *testing.T) {
 	entry := pipelineEntry("keep", 2)
 	fixture := newPipelineFixture(t, []hostreg.Host{entry}, func(store *hostops.Store) {
 		pipelineToken(t, store, "keep", 2)
 	})
-	registry, err := hostreg.New([]hostreg.Host{entry})
-	if err != nil {
-		t.Fatalf("hostreg.New: %v", err)
+	m := fixture.manager(t)
+	corrupt := []byte("[[hosts\nname = \"keep\"\n")
+	if err := os.WriteFile(fixture.configPath, corrupt, 0o600); err != nil {
+		t.Fatalf("corrupt hub.toml: %v", err)
 	}
-	m := newHubHostManager(nil, nil, hubcore.WebConfig{
-		RemoteHostRegistry: registry,
-		RemoteHostOpsStore: fixture.store,
-	}, "", registry, nil)
-	m.cfg.store.poison(errors.New("injected store-load failure"))
 	if _, err := m.Remove(context.Background(), removeRequest(t, m, "keep")); err == nil {
-		t.Fatal("the poisoned store's removal succeeded")
+		t.Fatal("the removal over a corrupt hub.toml succeeded")
 	}
 	if _, ok := m.cfg.ops.OutstandingToken("keep"); !ok {
 		t.Fatal("a failed staged commit purged the token")
+	}
+	if got, err := os.ReadFile(fixture.configPath); err != nil || !bytes.Equal(got, corrupt) {
+		t.Fatalf("the refused removal rewrote the corrupt hub.toml: %q, %v", got, err)
+	}
+	if _, live := m.cfg.hosts.Get("keep"); !live {
+		t.Fatal("the refused removal dropped the live host")
 	}
 }
 
@@ -1521,9 +1523,6 @@ func TestValidateHostOpsStashReferencesRefusesAForeignPath(t *testing.T) {
 	}
 	if !m.ownsStashPath(hubTOMLStashPath(fixture.configPath, "key")) {
 		t.Fatal("ownsStashPath refused this hub's own per-commit stash path")
-	}
-	if !m.ownsStashPath(fixture.configPath + ".stash") {
-		t.Fatal("ownsStashPath refused the legacy canonical stash path")
 	}
 	if m.ownsStashPath(foreign) || m.ownsStashPath("/elsewhere/hub.toml.stash."+"zz") {
 		t.Fatal("ownsStashPath accepted a path outside this hub's family")
@@ -1587,6 +1586,7 @@ func TestCompensationWithAFailedRollbackConvergesTheModelToTheFile(t *testing.T)
 	if _, err := m.compensateStagedCrossFile(plan, []hostreg.Host{entry}, cause, stash); err == nil {
 		t.Fatal("the compensation reported success")
 	}
+	m.cfg.mu.Unlock()
 	if err := os.Chmod(fixture.dir, 0o700); err != nil {
 		t.Fatalf("chmod back: %v", err)
 	}
@@ -1634,6 +1634,7 @@ func TestCompensateStagedCrossFileLeavesAStaleRecordUntouched(t *testing.T) {
 	if _, err := m.compensateStagedCrossFile(plan, []hostreg.Host{entry}, cause, stash); err == nil {
 		t.Fatal("the compensation reported success")
 	}
+	m.cfg.mu.Unlock()
 	m.cfg.mu.Lock()
 	marked := m.isMutating("keep")
 	m.cfg.mu.Unlock()
@@ -1699,6 +1700,7 @@ func TestCompensateStagedCrossFileLeavesTheRecordWhenAStepFails(t *testing.T) {
 			if _, err := m.compensateStagedCrossFile(plan, []hostreg.Host{entry}, cause, stash); err == nil {
 				t.Fatal("the compensation reported success")
 			}
+			m.cfg.mu.Unlock()
 			m.cfg.mu.Lock()
 			marked := m.isMutating("keep")
 			m.cfg.mu.Unlock()
@@ -1715,7 +1717,7 @@ func TestCompensateStagedCrossFileLeavesTheRecordWhenAStepFails(t *testing.T) {
 				wantPhase = hostops.CompensationClear
 			}
 			record, open := m.cfg.ops.Compensation("keep")
-			if !open || hostops.NormalizeCompensationPhase(record.Phase) != wantPhase {
+			if !open || record.Phase != wantPhase {
 				t.Fatalf("record after the failed step = %+v/%v, want it left in %s", record, open, wantPhase)
 			}
 			if _, err := os.Stat(stash); err != nil {
@@ -1729,6 +1731,7 @@ func TestCompensateStagedCrossFileLeavesTheRecordWhenAStepFails(t *testing.T) {
 			if _, err := m.compensateStagedCrossFile(plan, []hostreg.Host{entry}, cause, stash); err == nil {
 				t.Fatal("the retried compensation reported success without the cause")
 			}
+			m.cfg.mu.Unlock()
 			if _, open := m.cfg.ops.Compensation("keep"); open {
 				t.Fatal("the retried compensation did not clear")
 			}

@@ -339,12 +339,9 @@ func TestArchiveSetRemovesTheSessionsScratchTree(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeSessionUpdatedAt(t, filepath.Join(projects, project.ID), sessionID, project.CanonicalPath, time.Now())
-	past := hubcore.NewPastIndex(filepath.Join(projects, "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(projects, "*"))
 	cfg := hubcore.WebConfig{Archive: archive, HubStateRoot: t.TempDir(), Past: past}
-	cfg.ScratchReconcile = func() { reconcileArchivedScratch(context.Background(), cfg, time.Now()) }
+	cfg.ScratchReconcile = func() { reconcileArchivedScratch(t.Context(), cfg.Past, cfg.Archive, cfg.Roster, time.Now()) }
 	web := NewWebServer(cfg)
 
 	tree := mintEndedScratchTree(t, sessionID, "CHILD1")
@@ -430,17 +427,14 @@ func TestReconcileArchivedScratchFollowsEveryArchiveRule(t *testing.T) {
 		}
 		trees[name] = mintEndedScratchTree(t, id, "CHILD1")
 	}
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
 	roster.Refresh()
 	if _, ok := roster.Find(ids["live and archived"]); !ok {
 		t.Fatal("the live session was not confirmed into the roster")
 	}
 
-	reconcileArchivedScratch(context.Background(), hubcore.WebConfig{Past: past, Archive: archive, Roster: roster}, now)
+	reconcileArchivedScratch(t.Context(), past, archive, roster, now)
 
 	for name, s := range sessions {
 		_, err := os.Lstat(trees[name])
@@ -503,10 +497,7 @@ func TestReconcileFindsAnArchivedTreeInTheDaemonsTempDir(t *testing.T) {
 	if err := schema.SaveSessionMeta(filepath.Join(projects, project.ID), meta); err != nil {
 		t.Fatal(err)
 	}
-	past := hubcore.NewPastIndex(filepath.Join(projects, "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(projects, "*"))
 	archive := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
 	if err := archive.Set("", "session", sessionID, true, time.Now()); err != nil {
 		t.Fatal(err)
@@ -515,7 +506,7 @@ func TestReconcileFindsAnArchivedTreeInTheDaemonsTempDir(t *testing.T) {
 	tree := mintEndedScratchTree(t, sessionID)
 	t.Setenv("TMPDIR", hubTmp)
 
-	reconcileArchivedScratch(context.Background(), hubcore.WebConfig{Past: past, Archive: archive}, time.Now())
+	reconcileArchivedScratch(t.Context(), past, archive, nil, time.Now())
 
 	if _, err := os.Lstat(tree); !os.IsNotExist(err) {
 		t.Errorf("the reconcile left the archived tree %s in the daemon's temp dir: %v", tree, err)
@@ -534,16 +525,13 @@ func TestScratchReconcilerRunServesAKick(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeSessionUpdatedAt(t, filepath.Join(projects, project.ID), sessionID, project.CanonicalPath, time.Now())
-	past := hubcore.NewPastIndex(filepath.Join(projects, "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(projects, "*"))
 	archive := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
 	if err := archive.Set("", "session", sessionID, true, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	tree := mintEndedScratchTree(t, sessionID)
-	reconciler := newScratchReconciler(hubcore.WebConfig{Past: past, Archive: archive})
+	reconciler := newScratchReconciler(past, archive, nil)
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
 	go func() { defer close(done); reconciler.Run(ctx) }()
@@ -590,7 +578,7 @@ func TestDaemonExitRemovesOnlyAnArchivedSessionsScratchTree(t *testing.T) {
 				t.Fatal(err)
 			}
 			cfg := hubcore.WebConfig{Roster: roster, Archive: archive, Past: past}
-			cfg.ScratchReconcile = func() { reconcileArchivedScratch(context.Background(), cfg, time.Now()) }
+			cfg.ScratchReconcile = func() { reconcileArchivedScratch(t.Context(), cfg.Past, cfg.Archive, cfg.Roster, time.Now()) }
 			newHubSourceRegistry(cfg)
 			tree := mintEndedScratchTree(t, sessionID, "CHILD1")
 

@@ -4,14 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"hash"
-	"hash/fnv"
 	"maps"
-	"os"
-	"reflect"
 	"slices"
 	"sort"
-	"strconv"
 	"sync"
 	"time"
 
@@ -19,6 +14,7 @@ import (
 	"github.com/spf13/afero"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/execsupport/componentlog"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/rendezvous"
 )
@@ -476,292 +472,6 @@ func (r *Roster) SetOnStatusChange(fn func(sessionID string)) { r.onStatusChange
 // nothing else would.
 func (r *Roster) SetOnSessionGone(fn func(gone LiveEntry)) { r.onSessionGone = fn }
 
-func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
-	ids := make([]string, 0, len(bySess))
-	for id := range bySess {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	h := fnv.New64a()
-	for _, id := range ids {
-		_, _ = h.Write([]byte(id))
-		_, _ = h.Write([]byte{0})
-		_, _ = h.Write([]byte(bySess[id].Status))
-		_, _ = h.Write([]byte{0})
-		// A recovery flag raised while the status itself holds still is what
-		// hides the fork action, so it has to move the fingerprint. Sorted on a
-		// copy: which order a daemon happens to list its flags in is not a
-		// change, and the caller's slice is not this function's to reorder.
-		activeFlags := append([]string(nil), bySess[id].ActiveFlags...)
-		sort.Strings(activeFlags)
-		for _, flag := range activeFlags {
-			_, _ = h.Write([]byte(flag))
-			_, _ = h.Write([]byte{0})
-		}
-		_, _ = h.Write([]byte{0})
-		if bySess[id].Crashed {
-			_, _ = h.Write([]byte{1})
-		}
-		_, _ = h.Write([]byte{0})
-		if bySess[id].PendingAsk {
-			_, _ = h.Write([]byte{1})
-		}
-		_, _ = h.Write([]byte{0})
-		// An escalation moving while the status holds still changes the
-		// Clear bit list rows advertise — the fallback folds it out the way
-		// the daemon's clear gate does — so it must bump the fingerprint like
-		// its sibling ask flag, or onChange never invalidates.
-		if bySess[id].PendingEscalation {
-			_, _ = h.Write([]byte{1})
-		}
-		_, _ = h.Write([]byte{0})
-		// A row names the oldest card's action and target, and a card replaced
-		// while another stays pending holds the flag above still, so each card
-		// moves the fingerprint too. A card's ID names it for its whole life, so
-		// the IDs in raise order cover every card field.
-		for _, card := range bySess[id].PendingEscalations {
-			_, _ = h.Write([]byte(card.EscalationID))
-			_, _ = h.Write([]byte{0})
-		}
-		_, _ = h.Write([]byte{0})
-		// A row names the first pending question, and a question answered and
-		// another asked between two probes holds the ask flag and the status
-		// still (S1b).
-		if question := bySess[id].PendingQuestion; question != nil {
-			_, _ = h.Write([]byte(question.Question))
-			_, _ = h.Write([]byte{0})
-			for _, label := range question.Options {
-				_, _ = h.Write([]byte(label))
-				_, _ = h.Write([]byte{0})
-			}
-			_, _ = h.Write([]byte(strconv.Itoa(question.Count)))
-		}
-		_, _ = h.Write([]byte{0})
-		// A Failed row says why, and a turn retried and failed again between
-		// two probes holds the status still (S1c).
-		if failure := bySess[id].Failure; failure != nil {
-			_, _ = h.Write([]byte(failure.Title))
-			_, _ = h.Write([]byte{0})
-			if cause := failure.Cause; cause != nil {
-				for _, field := range []string{cause.Kind, cause.Provider, cause.Model, strconv.Itoa(cause.Status)} {
-					_, _ = h.Write([]byte(field))
-					_, _ = h.Write([]byte{0})
-				}
-			}
-		}
-		_, _ = h.Write([]byte{0})
-		// The daemon's capability answer is per-session observable state in
-		// the same sense the status is: bits fold daemon state the status
-		// string itself does not (Clear folds the clear-blocked reason, Send
-		// folds activity), so a bit can flip while the status holds still.
-		// Reflection walks the whole set so a capability bit added later
-		// moves the fingerprint without anyone having to remember this site.
-		capsV := reflect.ValueOf(bySess[id].Capabilities)
-		for _, fieldValue := range capsV.Fields() {
-			// Hash every field whatever its kind: Bool() would panic on a
-			// future non-bool ThreadCapabilities field, and skipping a field
-			// would silently drop it from the fingerprint.
-			if fieldValue.Kind() != reflect.Bool {
-				_, _ = fmt.Fprintf(h, "%v", fieldValue.Interface())
-			} else if fieldValue.Bool() {
-				_, _ = h.Write([]byte{1})
-			}
-			_, _ = h.Write([]byte{0})
-		}
-		if bySess[id].CapabilitiesKnown {
-			_, _ = h.Write([]byte{1})
-		}
-		_, _ = h.Write([]byte{0})
-		runningSubagentIDs := append([]string(nil), bySess[id].RunningSubagentIDs...)
-		sort.Strings(runningSubagentIDs)
-		for _, childID := range runningSubagentIDs {
-			_, _ = h.Write([]byte(childID))
-			_, _ = h.Write([]byte{0})
-			// A child's own state transition (working -> settled) must bump the
-			// fingerprint just like its arrival or departure: it changes what
-			// the sidebar renders for that child.
-			_, _ = h.Write([]byte(bySess[id].RunningSubagentStates[childID]))
-			_, _ = h.Write([]byte{0})
-			// A child's watches render on the child's row, so a new watch, a
-			// delivery, or a flip to inactive on that child must bump the
-			// fingerprint just like the child's own state, or navigation never
-			// invalidates and the child keeps a stale watch list.
-			writeWatchFingerprint(h, bySess[id].ChildWatches[childID])
-		}
-		writeJobs := func(jobs []appwire.EvenerJobInfo) {
-			sort.SliceStable(jobs, func(i, j int) bool {
-				if jobs[i].JobID != jobs[j].JobID {
-					return jobs[i].JobID < jobs[j].JobID
-				}
-				if jobs[i].JobType != jobs[j].JobType {
-					return jobs[i].JobType < jobs[j].JobType
-				}
-				return jobs[i].Status < jobs[j].Status
-			})
-			for _, job := range jobs {
-				_, _ = h.Write([]byte(job.JobID))
-				_, _ = h.Write([]byte{0})
-				_, _ = h.Write([]byte(job.JobType))
-				_, _ = h.Write([]byte{0})
-				_, _ = h.Write([]byte(job.Status))
-				_, _ = h.Write([]byte{0})
-				_, _ = h.Write([]byte(job.Command))
-				_, _ = h.Write([]byte{0})
-				_, _ = h.Write([]byte(job.Task))
-				_, _ = h.Write([]byte{0})
-				_, _ = h.Write([]byte(job.Reason))
-				_, _ = h.Write([]byte{0})
-			}
-		}
-		runningJobs := append([]appwire.EvenerJobInfo(nil), bySess[id].RunningJobs...)
-		writeJobs(runningJobs)
-		_, _ = h.Write([]byte{0})
-		completedJobs := append([]appwire.EvenerJobInfo(nil), bySess[id].CompletedJobs...)
-		writeJobs(completedJobs)
-		_, _ = h.Write([]byte{0})
-		// Lifecycle phase transitions (resident -> preparing -> retiring) and
-		// blocker changes must bump the fingerprint exactly like child state:
-		// they change what resident UI surfaces for this daemon.
-		if bySess[id].LifecycleFresh {
-			_, _ = h.Write([]byte{1})
-		}
-		_, _ = h.Write([]byte{0})
-		if lifecycle := bySess[id].Lifecycle; lifecycle != nil {
-			_, _ = h.Write([]byte(lifecycle.Phase))
-			_, _ = h.Write([]byte{0})
-			_, _ = h.Write([]byte(strconv.FormatInt(lifecycle.TimeoutMillis, 10)))
-			_, _ = h.Write([]byte{0})
-			_, _ = h.Write([]byte(lifecycle.EligibleSince))
-			_, _ = h.Write([]byte{0})
-			_, _ = h.Write([]byte(lifecycle.Deadline))
-			_, _ = h.Write([]byte{0})
-			_, _ = h.Write([]byte(lifecycle.Failure))
-			_, _ = h.Write([]byte{0})
-			for _, blocker := range lifecycle.Blockers {
-				_, _ = h.Write([]byte(blocker.Category))
-				_, _ = h.Write([]byte{0})
-				_, _ = h.Write([]byte(blocker.SessionID))
-				_, _ = h.Write([]byte{0})
-				_, _ = h.Write([]byte(blocker.DelegateID))
-				_, _ = h.Write([]byte{0})
-			}
-		}
-		_, _ = h.Write([]byte{0})
-		// Watches are rendered on the session row, so any change the sidebar
-		// shows — a new watch, a delivery, a flip to inactive — must move the
-		// fingerprint or onChange never invalidates navigation. Sorted on a
-		// copy: a daemon listing its watches in another order is not a change.
-		writeWatchFingerprint(h, bySess[id].Watches)
-		_, _ = h.Write([]byte{0})
-		// The task line renders on the session row too, so a task finishing,
-		// being cancelled or starting must move the fingerprint while the
-		// status holds still, or onChange never invalidates navigation.
-		writeTaskFingerprint(h, bySess[id].Tasks)
-		// A subagent failing or finishing changes the row's last line (S3).
-		tally := bySess[id].Subagents
-		for _, count := range []int{tally.Running, tally.Failed, tally.Done} {
-			_, _ = h.Write([]byte(strconv.Itoa(count)))
-			_, _ = h.Write([]byte{0})
-		}
-		_, _ = h.Write([]byte{0})
-		// A turn that starts and ends between two probes leaves Status where it
-		// was and moves only this, and it turns the row Finished (S4).
-		_, _ = h.Write([]byte(strconv.FormatInt(UnixMilliseconds(bySess[id].LastTurnEndedAt), 10)))
-		_, _ = h.Write([]byte{0})
-		// A Finished row shows its last message, which can land while the
-		// status and the turn end hold still (S1d).
-		_, _ = h.Write([]byte(bySess[id].LastMessage))
-		_, _ = h.Write([]byte{0})
-		// A row names its session's model, which a switch moves while
-		// everything else a row shows holds still (S17).
-		_, _ = h.Write([]byte(bySess[id].CurrentModel))
-	}
-	return h.Sum64()
-}
-
-// writeWatchFingerprint folds one session's watch inventory into the roster
-// hash. Sorted on a copy: a daemon listing its watches in another order is not a
-// change. The same routine hashes a root's own Watches and each child's
-// ChildWatches, so the two can never cover different fields.
-func writeWatchFingerprint(h hash.Hash64, watches []appwire.EvenerWatchInfo) {
-	ordered := append([]appwire.EvenerWatchInfo(nil), watches...)
-	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].ID < ordered[j].ID })
-	for _, watch := range ordered {
-		for _, field := range []string{
-			watch.ID, watch.Source, watch.Target, watch.SendTo, watch.Note,
-			watch.OutputMatch, watch.CreatedAt, watch.EndReason,
-		} {
-			_, _ = h.Write([]byte(field))
-			_, _ = h.Write([]byte{0})
-		}
-		if watch.WildcardEvents {
-			_, _ = h.Write([]byte{1})
-		}
-		_, _ = h.Write([]byte{0})
-		if watch.Active {
-			_, _ = h.Write([]byte{1})
-		}
-		_, _ = h.Write([]byte{0})
-		_, _ = h.Write([]byte(strconv.Itoa(watch.Deliveries)))
-		_, _ = h.Write([]byte{0})
-		for _, cadence := range watch.Cadence {
-			_, _ = h.Write([]byte(cadence.Kind))
-			_, _ = h.Write([]byte{0})
-			_, _ = h.Write([]byte(strconv.FormatFloat(cadence.Seconds, 'g', -1, 64)))
-			_, _ = h.Write([]byte{0})
-			// The derived next-fire instant changes only when the ring or the
-			// interval changes (both already hashed above), but hashing it here
-			// keeps the field explicitly covered if its derivation ever moves.
-			_, _ = h.Write([]byte(cadence.DerivedNextFireAt))
-			_, _ = h.Write([]byte{0})
-			// Every throttles an event watch and Filter narrows what it
-			// matches, so either changing must move the fingerprint or the
-			// sidebar keeps a row whose cadence no longer matches. Null
-			// separators keep the field boundary unambiguous.
-			_, _ = h.Write([]byte(strconv.Itoa(cadence.Every)))
-			_, _ = h.Write([]byte{0})
-			_, _ = h.Write([]byte(cadence.Filter))
-			_, _ = h.Write([]byte{0})
-		}
-		for _, event := range watch.Events {
-			_, _ = h.Write([]byte(event))
-			_, _ = h.Write([]byte{0})
-		}
-		// DeliveryTimes feeds the activity panel's timeline, and the
-		// daemon-restore case rebuilds the ring empty. A delivery-only change
-		// (same count, new instants) must still move the fingerprint or that
-		// timeline never invalidates.
-		for _, at := range watch.DeliveryTimes {
-			_, _ = h.Write([]byte(at))
-			_, _ = h.Write([]byte{0})
-		}
-		_, _ = h.Write([]byte{0})
-	}
-}
-
-// writeTaskFingerprint folds one session's task-list progress into the roster
-// hash: the counts and the current task that the row's task line shows.
-// Remaining is left out because the three counts determine it, and a daemon
-// that cannot read its task state (nil) hashes like an empty list because
-// neither puts a task line on the row.
-func writeTaskFingerprint(h hash.Hash64, tasks *appwire.TaskAggregate) {
-	var progress appwire.TaskAggregate
-	if tasks != nil {
-		progress = *tasks
-	}
-	var current appwire.TaskSummary
-	if progress.Current != nil {
-		current = *progress.Current
-	}
-	for _, field := range []string{
-		strconv.Itoa(progress.Total), strconv.Itoa(progress.Done), strconv.Itoa(progress.Cancelled),
-		strconv.Itoa(current.ID), current.Description,
-	} {
-		_, _ = h.Write([]byte(field))
-		_, _ = h.Write([]byte{0})
-	}
-}
-
 // Refresh re-scans the rendezvous dir and updates the in-memory roster.
 //
 // Probes run concurrently and WITHOUT the roster lock held, so List() never
@@ -843,97 +553,26 @@ func (r *Roster) refresh() error {
 			res.OK = false
 		}
 		if !res.OK {
-			alive := identity != ProcessNotOwner
-			if alive {
-				for _, claim := range previousUnconfirmed {
-					if claim.PID == e.PID {
-						retainUnconfirmed(claim)
+			prev, had := prevByPID[e.PID]
+			miss := classifyMissedProbe(prev, had, e, identity, previousUnconfirmed)
+			for _, claim := range miss.retain {
+				retainUnconfirmed(claim)
+			}
+			switch miss.kind {
+			case missReused:
+				byPID[e.PID] = miss.entry
+				if miss.entry.SessionID != "" {
+					if current, ok := bySess[miss.entry.SessionID]; !ok || preferLiveEntry(miss.entry, current) {
+						bySess[miss.entry.SessionID] = miss.entry
 					}
 				}
-			}
-			// A transient probe miss preserves a route only while the complete
-			// rendezvous identity is unchanged. PID liveness cannot confirm a
-			// replacement's ownership of either the old or the new session.
-			//
-			// Nor can it tell a busy daemon from a PID the kernel reused after
-			// the daemon crashed: both miss the probe, both answer signal 0,
-			// and the crashed daemon's file is byte-identical. The identity
-			// verdict taken above folds into `alive`, so a PID verified not
-			// to be the daemon's never reaches this branch: it takes the
-			// crashed path below and leaves the listing, which is what lets
-			// the relay announce the daemon gone.
-			if prev, had := prevByPID[e.PID]; had && alive {
-				if !sameDaemonIdentity(prev.Entry, e) {
-					retainUnconfirmed(prev.Entry)
-					resolved := prev.Entry
-					resolved.SessionID = prev.SessionID
-					retainUnconfirmed(resolved)
-					retainUnconfirmed(e)
-					continue
-				}
-				// The exact identity still matches, so keep the last-known route
-				// and status. The probe itself failed, though, so this reused entry
-				// carries no fresh lifecycle observation: clear the capability and
-				// mark it stale. Stale lifecycle data must never present as current
-				// eligibility, and a stale row must not offer a retire action.
-				prev.Lifecycle = nil
-				prev.LifecycleFresh = false
-				byPID[e.PID] = prev
-				if prev.SessionID != "" {
-					if current, ok := bySess[prev.SessionID]; !ok || preferLiveEntry(prev, current) {
-						bySess[prev.SessionID] = prev
-					}
-				}
-				continue
-			}
-			if alive {
-				retainUnconfirmed(e)
-				continue // ownership is unresolved; do not publish it as a live daemon
-			}
-			// The process is confirmed GONE, yet its rendezvous file is still
-			// on disk. The rendezvous package writes that file on startup and
-			// removes it only on graceful shutdown (rvreg.Registration.Remove);
-			// a file surviving its own PID's death means the daemon never got
-			// to run that cleanup - a crash, not a normal exit (kata zm6s: a
-			// SIGKILLed session read identically to one that finished its
-			// task). Surface it as "errored" instead of silently dropping it,
-			// using whichever session id the file itself carries - it was
-			// written before the daemon could die, so this needs no in-memory
-			// history and survives a hub restart discovering an
-			// already-stale file just as well as watching the crash live.
-			sessionID := envvars.FirstNonEmpty(e.SessionID, e.ThreadID)
-			if sessionID == "" {
-				// Never resolved an id; nothing to attribute the crash to. The
-				// file on disk is pure garbage, so reclaim it instead of
-				// rescanning it on every refresh forever. Removal failure is
-				// non-fatal (same stance as the List error above): the file
-				// just survives until a later refresh. Removal is exact-owned:
-				// if a replacement daemon has since reused this PID and
-				// rewritten the file, it is not ours to unlink, so the guard's
-				// refusal is a normal no-op rather than an error to surface.
+			case missReclaim:
 				_ = rendezvous.RemoveIfOwned(r.runDir, e)
-				continue
-			}
-			if time.Since(e.StartedAt) > crashedFileRetention {
-				// Old enough that crash reporting no longer matters: drop the
-				// entry and unlink the file so dead-pid rendezvous files stop
-				// accumulating forever. Fresh crashes keep the retained
-				// "errored" contract below untouched.
-				_ = rendezvous.RemoveIfOwned(r.runDir, e)
-				continue
-			}
-			crashed := LiveEntry{Entry: e, SessionID: sessionID}
-			if prev, had := prevByPID[e.PID]; had {
-				// Prefer the roster's own richer last-seen snapshot (ask/
-				// subagent state) when available; a crash always overrides
-				// whatever status the daemon last reported before dying.
-				crashed = prev
-			}
-			crashed.Status = "errored"
-			crashed.Crashed = true
-			byPID[e.PID] = crashed
-			if current, ok := bySess[sessionID]; !ok || preferLiveEntry(crashed, current) {
-				bySess[sessionID] = crashed
+			case missCrashed:
+				byPID[e.PID] = miss.entry
+				if current, ok := bySess[miss.sessionID]; !ok || preferLiveEntry(miss.entry, current) {
+					bySess[miss.sessionID] = miss.entry
+				}
 			}
 			continue
 		}
@@ -1153,6 +792,130 @@ func (r *Roster) RefreshAndWait(ctx context.Context) error {
 	}
 }
 
+type missKind int
+
+const (
+	// missRetained: the process may still be the daemon but nothing confirms
+	// it, so the entry stays an unconfirmed claim and is not published.
+	missRetained missKind = iota
+	// missReused: the exact rendezvous identity still matches the last
+	// confirmed one, so that row is kept with its lifecycle marked stale.
+	missReused
+	// missReclaim: the daemon is gone and its file is not worth reporting; the
+	// refresh unlinks it.
+	missReclaim
+	// missCrashed: the daemon is gone and left its file behind; the row is
+	// published as errored.
+	missCrashed
+)
+
+// missOutcome is what one refresh does with an entry whose probe missed.
+type missOutcome struct {
+	kind missKind
+	// retain lists the unconfirmed claims to keep, in order.
+	retain []rendezvous.Entry
+	// entry is the row to publish for missReused and missCrashed.
+	entry LiveEntry
+	// sessionID is the session a missCrashed row is indexed under.
+	sessionID string
+}
+
+// classifyMissedProbe decides what a probe that did not confirm entry e means.
+// prev is the last confirmed row for e's PID (had reports whether there is
+// one), identity is the host's verdict on the process behind the PID, and
+// previousUnconfirmed holds the claims the previous refresh kept.
+func classifyMissedProbe(prev LiveEntry, had bool, e rendezvous.Entry, identity ProcessIdentity, previousUnconfirmed []rendezvous.Entry) missOutcome {
+	var outcome missOutcome
+	alive := identity != ProcessNotOwner
+	if alive {
+		for _, claim := range previousUnconfirmed {
+			if claim.PID == e.PID {
+				outcome.retain = append(outcome.retain, claim)
+			}
+		}
+	}
+	// A transient probe miss preserves a route only while the complete
+	// rendezvous identity is unchanged. PID liveness cannot confirm a
+	// replacement's ownership of either the old or the new session.
+	//
+	// Nor can it tell a busy daemon from a PID the kernel reused after
+	// the daemon crashed: both miss the probe, both answer signal 0,
+	// and the crashed daemon's file is byte-identical. The identity
+	// verdict taken above folds into `alive`, so a PID verified not
+	// to be the daemon's never reaches this branch: it takes the
+	// crashed path below and leaves the listing, which is what lets
+	// the relay announce the daemon gone.
+	if had && alive {
+		if !sameDaemonIdentity(prev.Entry, e) {
+			resolved := prev.Entry
+			resolved.SessionID = prev.SessionID
+			outcome.kind = missRetained
+			outcome.retain = append(outcome.retain, prev.Entry, resolved, e)
+			return outcome
+		}
+		// The exact identity still matches, so keep the last-known route
+		// and status. The probe itself failed, though, so this reused entry
+		// carries no fresh lifecycle observation: clear the capability and
+		// mark it stale. Stale lifecycle data must never present as current
+		// eligibility, and a stale row must not offer a retire action.
+		prev.Lifecycle = nil
+		prev.LifecycleFresh = false
+		outcome.kind = missReused
+		outcome.entry = prev
+		return outcome
+	}
+	if alive {
+		outcome.kind = missRetained
+		outcome.retain = append(outcome.retain, e)
+		return outcome // ownership is unresolved; do not publish it as a live daemon
+	}
+	// The process is confirmed GONE, yet its rendezvous file is still
+	// on disk. The rendezvous package writes that file on startup and
+	// removes it only on graceful shutdown (rvreg.Registration.Remove);
+	// a file surviving its own PID's death means the daemon never got
+	// to run that cleanup - a crash, not a normal exit (kata zm6s: a
+	// SIGKILLed session read identically to one that finished its
+	// task). Surface it as "errored" instead of silently dropping it,
+	// using whichever session id the file itself carries - it was
+	// written before the daemon could die, so this needs no in-memory
+	// history and survives a hub restart discovering an
+	// already-stale file just as well as watching the crash live.
+	sessionID := envvars.FirstNonEmpty(e.SessionID, e.ThreadID)
+	if sessionID == "" {
+		// Never resolved an id; nothing to attribute the crash to. The
+		// file on disk is pure garbage, so reclaim it instead of
+		// rescanning it on every refresh forever. Removal failure is
+		// non-fatal (same stance as the List error above): the file
+		// just survives until a later refresh. Removal is exact-owned:
+		// if a replacement daemon has since reused this PID and
+		// rewritten the file, it is not ours to unlink, so the guard's
+		// refusal is a normal no-op rather than an error to surface.
+		outcome.kind = missReclaim
+		return outcome
+	}
+	if time.Since(e.StartedAt) > crashedFileRetention {
+		// Old enough that crash reporting no longer matters: drop the
+		// entry and unlink the file so dead-pid rendezvous files stop
+		// accumulating forever. Fresh crashes keep the retained
+		// "errored" contract below untouched.
+		outcome.kind = missReclaim
+		return outcome
+	}
+	crashed := LiveEntry{Entry: e, SessionID: sessionID}
+	if had {
+		// Prefer the roster's own richer last-seen snapshot (ask/
+		// subagent state) when available; a crash always overrides
+		// whatever status the daemon last reported before dying.
+		crashed = prev
+	}
+	crashed.Status = "errored"
+	crashed.Crashed = true
+	outcome.kind = missCrashed
+	outcome.entry = crashed
+	outcome.sessionID = sessionID
+	return outcome
+}
+
 func (r *Roster) refreshOwnership() {
 	for {
 		r.mu.Lock()
@@ -1260,15 +1023,43 @@ func (r *Roster) SubagentState(sessionID string) (string, bool) {
 	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	entry, ok := r.subagentOwnerLocked(sessionID)
+	if !ok {
+		return "", false
+	}
+	return entry.RunningSubagentStates[sessionID], true
+}
+
+// SubagentOwner returns the live entry that currently runs sessionID as an
+// in-process child, or false when no live daemon lists it. The answer is a
+// clone of that owner, and the scan runs under the read lock without the
+// clones and sort a Snapshot pays.
+func (r *Roster) SubagentOwner(sessionID string) (LiveEntry, bool) {
+	if sessionID == "" {
+		return LiveEntry{}, false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	entry, ok := r.subagentOwnerLocked(sessionID)
+	if !ok {
+		return LiveEntry{}, false
+	}
+	return CloneLiveEntry(entry), true
+}
+
+// subagentOwnerLocked returns the entry that lists sessionID as a running
+// child. The caller holds the read lock, so the result must not escape
+// uncloned.
+func (r *Roster) subagentOwnerLocked(sessionID string) (LiveEntry, bool) {
 	for _, entry := range r.byPID {
 		if entry.Crashed {
 			continue
 		}
 		if slices.Contains(entry.RunningSubagentIDs, sessionID) {
-			return entry.RunningSubagentStates[sessionID], true
+			return entry, true
 		}
 	}
-	return "", false
+	return LiveEntry{}, false
 }
 
 func preferLiveEntry(candidate, current LiveEntry) bool {
@@ -1318,7 +1109,7 @@ func (r *Roster) hasConfirmedEntry(entry rendezvous.Entry) bool {
 // snapshot. It never reads persisted ancestry or probes daemon endpoints.
 func (r *Roster) RestartRequiredRootRef(rawRef string) (string, bool) {
 	ref, err := appwire.ParseRef(rawRef)
-	if err != nil || ref.SourceID != "local" {
+	if err != nil || ref.SourceID != appwire.LocalSourceID {
 		return "", false
 	}
 	r.mu.RLock()
@@ -1330,7 +1121,7 @@ func (r *Roster) RestartRequiredRootRef(rawRef string) (string, bool) {
 		refs := []string{entry.WorkspaceRef}
 		for _, id := range []string{entry.SessionID, entry.Entry.SessionID, entry.ThreadID} {
 			if id != "" {
-				refs = append(refs, appwire.Ref{SourceID: "local", ThreadID: id}.String())
+				refs = append(refs, appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: id}.String())
 			}
 		}
 		return refs
@@ -1338,7 +1129,7 @@ func (r *Roster) RestartRequiredRootRef(rawRef string) (string, bool) {
 	var owner LiveEntry
 	found := false
 	for _, entry := range r.byPID {
-		if entry.Crashed || (entry.SourceID != "" && entry.SourceID != "local") {
+		if entry.Crashed || (entry.SourceID != "" && entry.SourceID != appwire.LocalSourceID) {
 			continue
 		}
 		ids := aliases(entry)
@@ -1364,10 +1155,10 @@ func (r *Roster) RestartRequiredRootRef(rawRef string) (string, bool) {
 			}
 		}
 	}
-	if workspace, err := appwire.ParseRef(owner.WorkspaceRef); err == nil && workspace.SourceID == "local" {
+	if workspace, err := appwire.ParseRef(owner.WorkspaceRef); err == nil && workspace.SourceID == appwire.LocalSourceID {
 		return owner.WorkspaceRef, true
 	}
-	return appwire.Ref{SourceID: "local", ThreadID: owner.SessionID}.String(), true
+	return appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: owner.SessionID}.String(), true
 }
 
 // Find returns the entry with the given session_id, or false if not present.
@@ -1419,7 +1210,7 @@ func (r *Roster) Watch(ctx context.Context) error {
 			r.Refresh()
 		case err := <-w.Errors():
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "[hub] fsnotify error on %s: %v\n", r.runDir, err)
+				componentlog.New("hub").Error("fsnotify error", "dir", r.runDir, "err", err)
 			}
 			r.Refresh()
 		case <-ticker.C():
@@ -1552,23 +1343,7 @@ func (r *Roster) ReadSpawnedThread(ctx context.Context, entry rendezvous.Entry, 
 	result := ProbeResultFromThread(root)
 	result.OK = true
 	if root.Evener.Diagnostics != nil {
-		result.RunningSubagentStates = make(map[string]string)
-		for _, delegate := range root.Evener.Diagnostics.Delegates {
-			if delegate.ChildSessionID == "" || delegate.Lifecycle == "closed" {
-				continue
-			}
-			state := ""
-			switch delegate.Lifecycle {
-			case "idle":
-				state = appwire.ThreadStatusIdle
-			case "running":
-				state = appwire.ThreadStatusActive
-				if delegate.NeedsAttention {
-					state = appwire.ThreadStatusAwaiting
-				}
-			}
-			result.RunningSubagentStates[delegate.ChildSessionID] = state
-		}
+		result.RunningSubagentStates = subagentStatesFromDelegates(root.Evener.Diagnostics)
 		for childID := range result.RunningSubagentStates {
 			result.RunningSubagentIDs = append(result.RunningSubagentIDs, childID)
 		}

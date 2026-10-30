@@ -407,7 +407,7 @@ controls without `effort` (a toggle-only or budget-only row).
 | `thinking_format` | when an effort is set | with `ThinkingAlwaysOn` and no effort |
 |---|---|---|
 | `openai` (default) | `reasoning_effort: <wire>` when the ladder vouches for the level, else nothing | `reasoning_effort: medium` clamped to `EffortValues` when the ladder lists a level, else nothing |
-| `openrouter` | `reasoning: {effort: <wire>}` unconditionally — the vouch-gate exception below | `reasoning: {enabled: true}` |
+| `openrouter` | `reasoning: {effort: <wire>}` — the vouch-gate exception below, except on a row whose gateway states the no-effort verdict, which gets `{enabled: true}` | `reasoning: {enabled: true}` |
 | `zai` | always `thinking: {type: enabled, clear_thinking: false}`; plus `reasoning_effort: <wire>` when the ladder vouches | `thinking: {type: enabled, clear_thinking: false}` |
 | `deepseek` | always `thinking: {type: enabled}`; plus `reasoning_effort: <wire>` when the ladder vouches | `thinking: {type: enabled}` |
 | `together` | always `reasoning: {enabled: true}`; plus `reasoning_effort: <wire>` when the ladder vouches | `reasoning: {enabled: true}` |
@@ -436,6 +436,20 @@ supported efforts; and rows that map the effort to a numeric budget (Anthropic
 effort even with an empty ladder, because the row declares that control. On
 the Responses protocol the encrypted-reasoning `include` and a configured
 summary survive an unvouched effort: no level is sent, but replay stays intact.
+
+**The no-effort verdict.** A gateway can state per model that it accepts no
+effort parameter at all (`supportsReasoningEffort: false` in its
+`client_compat` block). That is narrower than "the model does not reason", and
+narrower than the catalog's toggle-only rows, whose provider translates a level
+into a budget. The verdict records `Caps.EffortParameterUnsupported` and
+derivation clears the ladder, so `EffortCapable` answers false and no dialect
+spells a level. Everything else about thinking survives: an effort-only Claude
+row keeps its `adaptive` shape, a budget row keeps `budget_tokens` and its
+derived shape, Google's `thinkingConfig` keeps `includeThoughts`, and the
+Responses builder keeps its summary and encrypted-reasoning `include`. The
+value travels through the live layer, alias seeding, and `Provider` views like
+the other compat facts, and a gateway stating `true` clears a rejection an
+alias target or a curated row supplied.
 
 **anthropic.** `ThinkingShape` picks one of three bodies: `adaptive` →
 `thinking: {type: adaptive}` plus `display`, sent whenever `ThinkingAlwaysOn`

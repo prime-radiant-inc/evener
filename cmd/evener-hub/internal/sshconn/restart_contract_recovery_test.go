@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -45,7 +46,7 @@ func TestRestartRecoveryValidatesExecutableBeforeMutation(t *testing.T) {
 							if unknown {
 								return []byte("unreadable launch contract"), nil
 							}
-							return json.Marshal(map[string]any{"protocol": protocol, "version": disk, "launch_flags": flags})
+							return json.Marshal(map[string]any{"hub_endpoint_schema": 1, "protocol": protocol, "version": disk, "launch_flags": flags})
 						}, func(int) ([]byte, error) {
 							if !running {
 								return nil, errors.New("no listener")
@@ -66,7 +67,7 @@ func TestRestartRecoveryValidatesExecutableBeforeMutation(t *testing.T) {
 								return nil, nil
 							case strings.Contains(command, "cat >"), strings.Contains(command, "evener-install.XXXXXX"):
 								writes++
-							case strings.Contains(command, "if test -x"):
+							case strings.Contains(command, "if test -e"):
 								if absent {
 									return nil, absentExit
 								}
@@ -88,7 +89,7 @@ func TestRestartRecoveryValidatesExecutableBeforeMutation(t *testing.T) {
 						if operation == "start-stopped" {
 							_, err = m.Ensure(t.Context(), host.Name)
 						} else {
-							_, err = m.RestartForOperation(t.Context(), host, facts, nil)
+							_, err = m.RestartForOperation(t.Context(), registeredTestHost(t, m, host), facts, nil)
 						}
 						if !errors.Is(err, ErrRestart) {
 							t.Fatalf("initial interruption: %v", err)
@@ -123,7 +124,7 @@ func TestRestartRecoveryValidatesExecutableBeforeMutation(t *testing.T) {
 								return m.ensureOnce(t.Context(), host, false)
 							}
 							if ingress == "restart" {
-								if _, err := m.RestartForOperation(t.Context(), host, facts, nil); err != nil {
+								if _, err := m.RestartForOperation(t.Context(), registeredTestHost(t, m, host), facts, nil); err != nil {
 									return nil, err
 								}
 							}
@@ -142,7 +143,7 @@ func TestRestartRecoveryValidatesExecutableBeforeMutation(t *testing.T) {
 							if running != beforeRunning || started != beforeStarted || served != beforeServed {
 								t.Fatalf("invalid target mutated process: running=%t started=%s served=%s", running, started, served)
 							}
-							if !errors.Is(err, wantErr) || ch != nil || effects != refusedEffects || writes != 0 || m.pendingRestart(host.Name) != pending {
+							if !errors.Is(err, wantErr) || ch != nil || effects != refusedEffects || writes != 0 || !reflect.DeepEqual(m.pendingRestart(host.Name), pending) {
 								t.Fatalf("unsafe recovery: err=%v channel=%v effects=%d writes=%d pending=%+v, want %+v", err, ch, effects, writes, m.pendingRestart(host.Name), pending)
 							}
 							protocol, flags, disk = appwire.ProtocolVersion, []string{"api-log"}, target
@@ -169,16 +170,40 @@ func TestRestartRecoverySupervisedProcessProof(t *testing.T) {
 			for _, supervisor := range []string{"systemd", "systemd-user", "launchd"} {
 				t.Run(label+"/"+mode+"/"+supervisor, func(t *testing.T) {
 					effects, running := 0, false
-					fr := deployRunner(t, func(int) ([]byte, error) { return launchContract(label), nil }, func(int) ([]byte, error) {
+					fr, fixture := deployRunnerForFixture(t, "linux", "amd64", func(int) ([]byte, error) { return launchContract(label), nil }, func(int) ([]byte, error) {
 						if !running {
 							return nil, errors.New("no health answer")
 						}
 						return fmt.Appendf(nil, `{"version":%q,"mobile_api_version":1,"hub_addr":"127.0.0.1:9180","started_at":"2026-01-02T00:00:00Z"}`, label), nil
 					})
+					fixture.darwin = supervisor == "launchd"
+					observe := fixture.observe
+					fixture.observe = func(f *selectedProcessFixture) {
+						observe(f)
+						// Live-but-unreachable and unverifiable selected owners are not
+						// stopped roots. Live recovery needs an authorized restart.
+						f.initialUnavailable = !running && mode != "dormant"
+						if f.initialUnavailable {
+							f.stopped = false
+						}
+						if mode == "live" {
+							f.mutated = effects > 0
+						}
+					}
 					run := fr.runFn
 					fr.runFn = func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 						command := strings.Join(argv, " ")
 						switch {
+						case supervisor == "launchd" && strings.Join(argv[12:], " ") == "test ! -L /home/dev/.local/state/evener/hub.lock && test -f /home/dev/.local/state/evener/hub.lock && stat -f '%d %i' /home/dev/.local/state/evener/hub.lock":
+							return []byte("16777234 777\n"), nil
+						case supervisor == "launchd" && strings.Join(argv[12:], " ") == "lsof -a -p 4242 -F pftDi":
+							return []byte("p4242\nf3\ntREG\nD0x1000012\ni777\n"), nil
+						case mode == "occupied" && strings.Join(argv[12:], " ") == selectedLockRemote("/home/dev/.local/state/evener"):
+							// The selected lock, not the legacy listener, has an unknown owner.
+							return []byte("9999\n"), nil
+						case mode == "occupied" && supervisor == "launchd" && strings.Contains(command, "-d txt -F Di"):
+							// Darwin's independent mapped image is not the selected executable.
+							return []byte("p4242\nD0x4d2\ni999\n"), nil
 						case strings.Contains(command, "list-units"):
 							if supervisor == "systemd-user" != strings.Contains(command, "--user") {
 								return nil, nil
@@ -191,7 +216,10 @@ func TestRestartRecoverySupervisedProcessProof(t *testing.T) {
 						case strings.Contains(command, "launchctl list"):
 							pid := "-"
 							if mode == "live" {
-								pid = "123"
+								pid = "4242"
+								if effects > 0 {
+									pid = "4343"
+								}
 							}
 							return []byte(pid + " 0 com.example.evener-hub\n"), nil
 						case strings.Contains(command, "lsof -ti :9180"):
@@ -199,7 +227,7 @@ func TestRestartRecoverySupervisedProcessProof(t *testing.T) {
 								return []byte(listenerPresentMarker), nil
 							}
 							return []byte(noListenerMarker), nil
-						case strings.Contains(command, " restart "), strings.Contains(command, "launchctl kickstart"):
+						case strings.Contains(command, " restart "), strings.Contains(command, " start "), strings.Contains(command, "launchctl kickstart"):
 							effects++
 							running = true
 							return nil, nil
@@ -219,11 +247,12 @@ func TestRestartRecoverySupervisedProcessProof(t *testing.T) {
 					switch mode {
 					case "dormant":
 						if err != nil || effects != 1 || result.TargetVersion != label || !result.ReplacedStartedAt.IsZero() || result.StartedAt.Format(time.RFC3339) != "2026-01-02T00:00:00Z" || m.pendingRestart(host.Name).active() {
+							t.Logf("declared owner commands: %v", fr.recordedRuns())
 							t.Fatalf("dormant startup: result=%+v effects=%d err=%v pending=%+v", result, effects, err, m.pendingRestart(host.Name))
 						}
 					case "live":
-						if !errors.Is(err, ErrRestart) || effects != 1 || !result.StartedAt.IsZero() || m.pendingRestart(host.Name).start {
-							t.Fatalf("live unit invented startup proof: result=%+v effects=%d err=%v", result, effects, err)
+						if err != nil || effects != 1 || result.TargetVersion != label || !result.ReplacedStartedAt.IsZero() || result.StartedAt.Format(time.RFC3339) != "2026-01-02T00:00:00Z" || !fixture.mutated || m.pendingRestart(host.Name).active() {
+							t.Fatalf("live unit restart proof: result=%+v effects=%d err=%v", result, effects, err)
 						}
 					case "occupied":
 						if !errors.Is(err, ErrRestart) || effects != 0 || !result.StartedAt.IsZero() || m.pendingRestart(host.Name).active() {

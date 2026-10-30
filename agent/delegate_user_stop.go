@@ -79,8 +79,8 @@ func (s *Session) subagentForChild(childSessionID string) *subagent {
 // cancellation as requested, so settlement maps it to a cancelled outcome.
 // asUserStop marks it as S6's direct user stop (StopDelegateRun), so a
 // cancelled run with nothing to report tells its coordinator "Stopped by the
-// user."; cancelAgent's own cancel (unwired in production today) passes
-// false, so it is never misattributed as a direct user stop.
+// user."; any other cancel passes false, so it is never misattributed as a
+// direct user stop.
 // It refuses a subagent that is not running, one whose run has passed its
 // last pre-settlement check, and one already stopping, so a repeated stop
 // answers notRunning. On success it returns the admitted run's done channel,

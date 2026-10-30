@@ -28,7 +28,7 @@
 // the name. The name is the daemon's own session id, read off the
 // session-affinity headers (session_id, then x-client-request-id, then
 // x-session-affinity), which is why the fixture's providers.toml sets
-// send_session_affinity_headers — see scripts/e2e-webui-turn-controls.sh.
+// session_affinity_headers — see scripts/e2e-webui-turn-controls.sh.
 // That name is the id the daemon uses everywhere else, so a round line points
 // straight at the session's own sessions/<id>.api.jsonl.
 //

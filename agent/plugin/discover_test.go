@@ -7,10 +7,10 @@ import (
 	"testing"
 )
 
-// TestDiscoverPluginHooks covers discoverPluginHooks's manifest-shape branches
+// TestDiscoverPluginHooks covers discoverPluginHooksDiag's manifest-shape branches
 // (gremlins flagged hooks.go:392-408 as not covered): hooks given as a STRING
 // path to a hooks file vs an inline OBJECT, and a missing file. The existing
-// hooks_test only drives parsePluginHooks directly, never the discover/file path.
+// hooks_test only drives parsePluginHooksDiag directly, never the discover/file path.
 func TestDiscoverPluginHooks(t *testing.T) {
 	hooksJSON := `{"hooks":{"PreToolUse":[{"matcher":"Write","hooks":[{"type":"command","command":"echo hi","timeout":10}]}]}}`
 
@@ -20,9 +20,9 @@ func TestDiscoverPluginHooks(t *testing.T) {
 			t.Fatal(err)
 		}
 		manifestHooks, _ := json.Marshal("hooks.json") // a JSON string value = path
-		hooks, err := discoverPluginHooks(dir, manifestHooks, "p")
+		hooks, _, _, err := discoverPluginHooksDiag(dir, manifestHooks, "p")
 		if err != nil {
-			t.Fatalf("discoverPluginHooks: %v", err)
+			t.Fatalf("discoverPluginHooksDiag: %v", err)
 		}
 		got := hooks[HookPreToolUse]
 		if len(got) != 1 {
@@ -34,9 +34,9 @@ func TestDiscoverPluginHooks(t *testing.T) {
 	})
 
 	t.Run("inline object", func(t *testing.T) {
-		hooks, err := discoverPluginHooks(t.TempDir(), json.RawMessage(hooksJSON), "p")
+		hooks, _, _, err := discoverPluginHooksDiag(t.TempDir(), json.RawMessage(hooksJSON), "p")
 		if err != nil {
-			t.Fatalf("discoverPluginHooks: %v", err)
+			t.Fatalf("discoverPluginHooksDiag: %v", err)
 		}
 		if len(hooks[HookPreToolUse]) != 1 {
 			t.Fatalf("PreToolUse = %d, want 1", len(hooks[HookPreToolUse]))
@@ -45,7 +45,7 @@ func TestDiscoverPluginHooks(t *testing.T) {
 
 	t.Run("missing hooks file errors", func(t *testing.T) {
 		manifestHooks, _ := json.Marshal("nonexistent.json")
-		if _, err := discoverPluginHooks(t.TempDir(), manifestHooks, "p"); err == nil {
+		if _, _, _, err := discoverPluginHooksDiag(t.TempDir(), manifestHooks, "p"); err == nil {
 			t.Fatal("err = nil, want a read error for a missing hooks file")
 		}
 	})
@@ -60,7 +60,7 @@ func TestDiscoverPluginAgents_Override(t *testing.T) {
 		dir := t.TempDir()
 		writeAgentFile(t, dir, "extra", "other.md", "---\nname: other\ndescription: d\n---\nx\n")
 		override, _ := json.Marshal([]string{"extra"})
-		agents, err := discoverPluginAgents(dir, override, "p")
+		agents, _, err := discoverPluginAgents(dir, override, "p")
 		if err != nil {
 			t.Fatalf("discoverPluginAgents: %v", err)
 		}
@@ -75,7 +75,7 @@ func TestDiscoverPluginAgents_Override(t *testing.T) {
 		dir := t.TempDir()
 		writeAgentFile(t, dir, "agents", "browser-user.md", "---\nname: browser-user\ndescription: d\ntools: Read, Grep\n---\nx\n")
 		override, _ := json.Marshal([]string{"./agents/browser-user.md"})
-		agents, err := discoverPluginAgents(dir, override, "p")
+		agents, _, err := discoverPluginAgents(dir, override, "p")
 		if err != nil {
 			t.Fatalf("discoverPluginAgents: %v", err)
 		}
@@ -85,7 +85,7 @@ func TestDiscoverPluginAgents_Override(t *testing.T) {
 	})
 
 	t.Run("malformed override errors", func(t *testing.T) {
-		if _, err := discoverPluginAgents(t.TempDir(), json.RawMessage(`{bad`), "p"); err == nil {
+		if _, _, err := discoverPluginAgents(t.TempDir(), json.RawMessage(`{bad`), "p"); err == nil {
 			t.Fatal("err = nil, want an agents-override parse error")
 		}
 	})
@@ -103,7 +103,7 @@ func TestDiscoverPluginCommands_FileOverride(t *testing.T) {
 		t.Fatal(err)
 	}
 	override, _ := json.Marshal([]string{"./extra/solo.md"})
-	commands, err := discoverPluginCommands(dir, override, "p")
+	commands, _, err := discoverPluginCommands(dir, override, "p")
 	if err != nil {
 		t.Fatalf("discoverPluginCommands: %v", err)
 	}

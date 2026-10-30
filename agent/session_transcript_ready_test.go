@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
@@ -23,7 +24,7 @@ import (
 // transcriptTurnKinds returns the kind of every entry in a transcript file.
 func transcriptTurnKinds(t *testing.T, path string) []schema.TurnKind {
 	t.Helper()
-	data, err := readTranscriptFull(path, "")
+	data, err := readTranscriptFull(context.Background(), path, "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}
@@ -41,10 +42,7 @@ func TestTurnRecordedBeforeTranscriptWriterExistsReachesTheFile(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	sess := newSession(t, withDir(dir), withConfig(SessionConfig{StateDir: dir, MaxSubagentDepth: 1}))
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 	tpath := sess.TranscriptPath()
 
 	// Reproduce the construction window: the writer has not been attached yet.
@@ -80,10 +78,7 @@ func TestDurableTurnRecordedBeforeTranscriptWriterExistsReachesTheFile(t *testin
 	t.Parallel()
 	dir := t.TempDir()
 	sess := newSession(t, withDir(dir), withConfig(SessionConfig{StateDir: dir, MaxSubagentDepth: 1}))
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 	tpath := sess.TranscriptPath()
 
 	w := sess.transcript
@@ -124,10 +119,7 @@ func TestTurnsAreNotHeldOnceTheSessionKnowsItHasNoTranscript(t *testing.T) {
 	t.Parallel()
 	// No StateDir: attachTranscript is still reached, with a nil writer.
 	sess := newSession(t)
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 	if sess.transcript != nil {
 		t.Fatalf("session without a state directory has a transcript writer")
 	}
@@ -155,10 +147,7 @@ func TestTurnsAreNotHeldOnceTheSessionKnowsItHasNoTranscript(t *testing.T) {
 func TestAttachTranscriptWithNilWriterDrainsWithoutPanic(t *testing.T) {
 	t.Parallel()
 	sess := newSession(t)
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 	sess.mu.Lock()
 	sess.transcript = nil
 	sess.transcriptReady = false

@@ -55,9 +55,9 @@ func (jm *jobManager) configureHubWatch(ref, instance, generation, caller string
 	if err != nil {
 		return watchResult{}, err
 	}
-	cfg.events = append([]string(nil), selectors...)
+	cfg.events = canonicalWatchEvents(selectors)
 	cfg.hubRef, cfg.hubInstance, cfg.hubGeneration, cfg.hubCaller, cfg.hubCompletion = ref, instance, generation, caller, completion
-	cfg.configHash = fmt.Sprintf("%s:%s:%s:%s:%s:%v:%v", cfg.configHash, ref, instance, generation, caller, selectors, completion)
+	cfg.configHash = fmt.Sprintf("%s:%s:%s:%s:%s:%v:%v", cfg.configHash, ref, instance, generation, caller, cfg.events, completion)
 	key := watchKey{VisibleSessionID: jm.sessionID, Target: ref, SendTo: runtimeMessageAliasCaller}
 	jm.mu.Lock()
 	existing := jm.watches[key]
@@ -290,7 +290,7 @@ func (jm *jobManager) onHubObservationLookup(watchID string, update appwire.Sess
 	return nil
 }
 
-// suspendHubWatch reports a single transport-loss episode without ending the
+// suspendHubWatch reports a single observation-loss episode without ending the
 // durable watch or discarding a pending delivery.
 func (jm *jobManager) suspendHubWatch(watchID string) error {
 	jm.mu.Lock()
@@ -300,7 +300,7 @@ func (jm *jobManager) suspendHubWatch(watchID string) error {
 		return nil
 	}
 	cfg.hubSuspended = true
-	delivery := jm.watchSendSnapshot(cfg, cfg.hubRef+"#interruption", "observation interrupted: connection lost, waiting for rebind", events.SessionEvent{SessionID: jm.sessionID})
+	delivery := jm.watchSendSnapshot(cfg, cfg.hubRef+"#interruption", "observation interrupted: waiting for recovery", events.SessionEvent{SessionID: jm.sessionID})
 	jm.mu.Unlock()
 	jm.recordWatchSendsAndKick([]watchSendDelivery{delivery})
 	return nil
@@ -312,23 +312,6 @@ func (jm *jobManager) resumeHubWatch(watchID string) {
 	if _, cfg, ok := jm.watchConfigByIDLocked(watchID); ok {
 		cfg.hubSuspended = false
 	}
-}
-
-func (jm *jobManager) endHubWatches(reason string) error {
-	jm.mu.Lock()
-	ids := []string{}
-	for _, cfg := range jm.watches {
-		if cfg.hubRef != "" {
-			ids = append(ids, cfg.watchID)
-		}
-	}
-	jm.mu.Unlock()
-	for _, id := range ids {
-		if err := jm.endHubWatch(id, reason, nil); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (jm *jobManager) endHubWatch(watchID, reason string, completion *watchSendDelivery) error {
@@ -525,14 +508,38 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 				return false, errors.New("answer continuation transport unavailable")
 			}
 			query := &appwire.AnswerContinuationQuery{AncestorTurnID: ancestor, CandidateTurnID: candidate}
-			readCtx, cancel := context.WithTimeout(ctx, hubWatchReadBudget)
-			defer cancel()
-			result, err := client.Invoke(readCtx, appwire.SessionOperationRequest{Read: &appwire.ThreadReadParams{Ref: ref, HeldSnapshot: held, AnswerContinuation: query}})
-			if err != nil {
-				return false, err
-			}
-			if err := readCtx.Err(); err != nil {
-				return false, err
+			var result appwire.SessionOperationResponse
+			for failures := 1; ; failures++ {
+				readCtx, cancel := context.WithTimeout(ctx, hubWatchReadBudget)
+				var err error
+				result, err = client.Invoke(readCtx, appwire.SessionOperationRequest{Read: &appwire.ThreadReadParams{Ref: ref, HeldSnapshot: held, AnswerContinuation: query}})
+				if err == nil {
+					err = readCtx.Err()
+				}
+				cancel()
+				if ctx.Err() != nil {
+					return false, ctx.Err()
+				}
+				if err == nil {
+					break
+				}
+				if !retryableHubContinuationRead(err) || failures >= hubWatchStateFailureLimit {
+					return false, err
+				}
+				if err := jm.suspendHubWatch(id); err != nil {
+					return false, err
+				}
+				// Retain this exact query and held cut, not a newer snapshot that
+				// may no longer contain the failed terminal candidate. Only call
+				// failures retry, never missing or incompatible evidence below.
+				select {
+				case <-ctx.Done():
+					return false, ctx.Err()
+				case <-time.After(hubWatchRetryDelay):
+				}
+				if !managerHubWatchPresent(jm, id) {
+					return false, context.Canceled
+				}
 			}
 			read := result.Read
 			if read == nil {
@@ -545,11 +552,15 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 			if verdict == nil || verdict.AncestorTurnID != ancestor || verdict.CandidateTurnID != candidate {
 				return false, errors.New("answer continuation response omitted requested verdict")
 			}
+			jm.resumeHubWatch(id)
 			return verdict.Matches, nil
 		})
 	}
 	for {
 		if err := observe(initial); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
 			_ = jm.endHubWatch(id, "observation snapshot failed: "+err.Error(), nil)
 			return
 		}
@@ -571,6 +582,9 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 					return
 				}
 				if err := observe(update); err != nil {
+					if ctx.Err() != nil {
+						return
+					}
 					_ = jm.endHubWatch(id, "observation failed: "+err.Error(), nil)
 					return
 				}
@@ -653,6 +667,28 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 		if ctx.Err() != nil || !managerHubWatchPresent(jm, id) {
 			return
 		}
+	}
+}
+
+// The daemon maps an untyped index-lock error to InternalError. Retry that
+// ambiguous read failure finitely, but do not retry typed permanent history or
+// request errors. Response evidence is validated outside this retry boundary.
+func retryableHubContinuationRead(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) || appwire.IsTransportFailure(err) {
+		return true
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		return false
+	}
+	data, _ := appwire.DecodedErrorData(wire.Data)
+	switch data.EvenerErrorInfo {
+	case appwire.ErrorTranscriptIndexLocked, appwire.ErrorTranscriptIndexRebuilding:
+		return true
+	case "", appwire.ErrorInternal, appwire.ErrorSessionUnavailable, appwire.ErrorActionUnavailable:
+		return wire.Code == appwire.CodeInternalError || wire.Code == appwire.CodeUnavailable
+	default:
+		return false
 	}
 }
 

@@ -1,0 +1,143 @@
+[
+ {
+  "id": "go-tests-agent-1",
+  "title": "Three parallel scripted-adapter families and about 60 hand-rolled Complete fakes",
+  "category": "duplication",
+  "original_severity": "high",
+  "verdict": "confirmed",
+  "severity": "high",
+  "note": "Confirmed. session_test.go:56-71 fakeAdapter.Complete matches agenttest.go:44-60 line for line. Recounted: &fakeAdapter{ 910 (206 files), fakeErrAdapter{ 91, agenttest.ScriptedAdapter{ 139, agenttest.FakeAdapter{ 23, newSessionScriptAdapter( 11, ') Complete(' 66 in tests, 43 'return nil, llm.ErrStreamUnsupported'. hooks fakeProviderAdapter.Stream returns nil,nil (clientadapter_test.go:80-82) confirmed."
+ },
+ {
+  "id": "go-tests-agent-2",
+  "title": "communicateCall/finalResponse/toolCallResponse builders reinvented with drift",
+  "category": "duplication",
+  "original_severity": "medium",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Confirmed. communicate_test_helpers_test.go:10 communicateResponse is identical to agenttest.CommunicateResponse (agenttest.go:212); tool_web_fetch_test.go:111 toolCallResponse duplicates agenttest.ToolCallResponse (:200); finalResponse( 642 vs agenttest.FinalResponse 63; contextmgr/testhelpers_test.go:19 admits it 'mirrors the agent package's test helper'; session_communicate_test.go:58 forwards end_reason, agenttest does not. Also doctor/sessions_test.go:81 communicateCall has a different signature, so it is a different helper, not a straight dup."
+ },
+ {
+  "id": "go-tests-agent-3",
+  "title": "testkit newSession adoption stalled",
+  "category": "duplication",
+  "original_severity": "high",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Confirmed numbers: root-package NewSession( 922 lines in 219 files, newSession(t 833, llm.NewClient() 1044; session_dod_definition_test.go 65 vs 0, session_config_test.go 40 vs 1, session_model_test.go 34 vs 3; testkit_test.go:21-27 states the intent. Severity lowered to medium: pure test-code ergonomics with no drift-induced bug, and the 'about -4,000 net' estimate is optimistic given per-test config variation.",
+  "revised_fix_plan": "Same plan, but do it opportunistically per file when touched or in a few PRs of the heaviest files; the allowlist audit is the only part worth doing up front. Do not claim -4,000 LOC until a pilot on the 3 named files measures the real reduction."
+ },
+ {
+  "id": "go-tests-agent-4",
+  "title": "543 error-message phrase assertions violate Copy Is Not a Test Oracle",
+  "category": "slop",
+  "original_severity": "high",
+  "verdict": "confirmed",
+  "severity": "high",
+  "note": "Confirmed: strings.Contains(err.Error() 785 in 190 files. session_tools_worktree_errors_test.go:337 asserts 'is not a managed worktree', job_watch_config_test.go:29 asserts 'progress_interval_ms must be non-negative'; testing.md:62-72 bans exactly this pattern. internal/devtool/copyonly exists (allowlist.go/tsv) so extending it is the right home. Note the 543/133 multiword subset was not recounted."
+ },
+ {
+  "id": "go-tests-agent-5",
+  "title": "Coverage-wave test files organized by sprint label with stale line-number comments",
+  "category": "inconsistency",
+  "original_severity": "medium",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Core confirmed: session_tools_jobs_covtest2_test.go:18-20 cites session_tools_jobs.go lines 298-300 but clearDescendantReceiverWatchByID is at session_tools_jobs.go:370; 388 lines in 50 files carry '(lines N-M)' references; TestS3Cov_ 59, TestS2Cov_ 31 confirmed. Size is overstated or counted differently: a find over agent/** for names containing cov/coverage gives 247 files / 47.4K lines (including subpackages); root-only cov/covtest/s4cov names give 133 files / 28K lines. Not the claimed 211/42.1K. 'Merge into subject files' of ~28-47K lines is a very large churn for a cosmetic gain.",
+  "revised_fix_plan": "Do the cheap parts: strip '(file.go lines N-M)' parentheticals mechanically and rename wave-prefixed tests/helpers by AST rename. Defer file merging until files are otherwise touched. Do not delete tests (coverage floor agent 94.7 needs Jesse approval)."
+ },
+ {
+  "id": "go-tests-agent-6",
+  "title": "Nil-receiver and trivia tests pad coverage and pin over-defensive production guards",
+  "category": "slop",
+  "original_severity": "medium",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Evidence real: 272 Test*Nil* funcs, 95 'var x *Session' decls; nil_guards_covtest_test.go:19,31 pin the same error text via err.Error() != literal (also a copy-oracle violation); cov_s2_getters_test.go:24-28 weak oracles (ContextPressure() < 0); session_attention_cov_test.go:95-110 no-assertion nil tests. But the fix of deleting production nil guards is not safe to assume: guards on *Session methods are defensive against partially constructed sessions and removal needs per-guard caller analysis; plan itself notes a floor decision. Severity lowered to low as the harm is padding, not drift.",
+  "revised_fix_plan": "Phase 1 only: delete assertion-free tests and >=0 style oracles, and collapse duplicate NilSession/EmptyID pairs, keeping guards. Phase 2 (removing production guards) only per guard with proven-unreachable callers and Jesse's approval of the coverage-floor change."
+ },
+ {
+  "id": "go-tests-agent-7",
+  "title": "Fuzz targets that ignore their input and replay about 60 TestXxx funcs; seed100 files named for a percentage",
+  "category": "slop",
+  "original_severity": "medium",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Partly right. session_init_seed100_exact_fuzz_test.go:26-33 confirmed: f.Add(byte(0)), f.Fuzz(func(t, _ byte)) replaying existing Test funcs (e.g. TestInitPlugins_UnknownHookEventWarnsLoudly). But all 17 *seed100* files are //go:build evenerfuzz, so the range_a/b/c/d, more, final helpers are fuzz-lane-only code, not duplicates of untagged tests, and runAgentJobsSeed100 (jobs_seed100_fuzz_test.go:24) is invoked by a registered fuzz target with real text input. Deleting them would drop coverage the fuzz lane provides, contrary to the claim that they add nothing. Only the Test-func-replay targets are redundant.",
+  "revised_fix_plan": "Delete only fuzz targets whose body is a pure replay of untagged Test funcs (session_init_seed100_exact first). For helper-based seed100 files, rename to subject names and keep them; verify the coverage union in CI before deleting anything."
+ },
+ {
+  "id": "go-tests-agent-8",
+  "title": "21 copies of the byte-program reader in fuzz harnesses",
+  "category": "duplication",
+  "original_severity": "medium",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Confirmed: 21 'func (r *x) next() byte' definitions in agent tests (all in root-package files); fuzz/schemagen/source.go:74 NewByteSource exists with Bool (&1==1), Intn, IntRange, String. Corpus-compat risk is real (differing bool conventions), as the plan notes."
+ },
+ {
+  "id": "go-tests-agent-9",
+  "title": "Git fixture helpers duplicated; maintenance probe copy-pasted between agent and internal/worktree",
+  "category": "duplication",
+  "original_severity": "medium",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Confirmed: worktreeMaintenanceAutoEnabled (session_tools_worktree_create_test.go:82) and predicateMaintenanceAutoEnabled (internal/worktree/predicates_test.go:88) differ only in the func name (diff shows 1 line); worktreeQuiescentCommitArgs :109 vs predicateQuiescentCommitArgs :115 likewise. History comment 'round-30 run' at :353 confirmed. 12-runner count not independently recounted."
+ },
+ {
+  "id": "go-tests-agent-10",
+  "title": "Transcript and session-log fixture writers hand-rolled 133 times",
+  "category": "duplication",
+  "original_severity": "medium",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Confirmed: transcript.NewWriter( 133 occurrences in 50 root test files. Per-instance error-handling drift not re-verified."
+ },
+ {
+  "id": "go-tests-agent-11",
+  "title": "execenv/glob_budget_test.go near-clone tests and copy-pasted stub setters",
+  "category": "complexity",
+  "original_severity": "medium",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Confirmed: glob_budget_test.go is 3096 lines, 75 Test funcs, 18 TestLoadIgnoreSetRefuses*, boundedDirFS appears 42 times (claim said 31 for one line shape), 15 stub* funcs in execenv tests. Bodies at :2194-2240 differ only in rule text, total, and message, as claimed. -900 LOC estimate plausible."
+ },
+ {
+  "id": "go-tests-agent-12",
+  "title": "Review-round, phase and task narration in comments, file names and identifiers",
+  "category": "slop",
+  "original_severity": "low",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Confirmed: 318 comment hits for 'round N'/'fix-round' (broader regex than the claimed 74, may include unrelated uses); 8 root files named phase<N>/task<N>. Low and opportunistic is the right call."
+ },
+ {
+  "id": "go-tests-agent-13",
+  "title": "Duplicated wait/poll helpers and avoidable real sleeps",
+  "category": "duplication",
+  "original_severity": "low",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Helpers confirmed: waitForCondition (poll_test.go:18), waitFor (session_lossless_events_test.go:785, 5 call sites), waitForTreeCount/waitForDriveCount (tree_counter_test.go:20,34 identical except message). 1100ms sleeps at jobs_activity_incremental_fold_test.go:190,237 and foldcache_test.go:174,240,277,531 confirmed. But subagent_intent_report_test.go:255 is a deliberate hold 'past the activity publication window' tied to a production real-clock window; replacing with agenttest.NewFakeClock is only valid if production reads an injectable clock there, which was not shown.",
+  "revised_fix_plan": "Replace waitFor/waitForTreeCount/waitForDriveCount with waitForCondition; use os.Chtimes for the mtime sleeps; leave the 1200ms sleep unless the activity window is shown to use an injectable clock."
+ },
+ {
+  "id": "go-tests-agent-14",
+  "title": "package agent TestMain and global fixtures live inside a feature test file",
+  "category": "inconsistency",
+  "original_severity": "low",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Confirmed: TestMain at session_tools_worktree_create_test.go:164 and TestMainAppliesTheShardRunFile at :1377; execenv, plugin, command, skill, mcpconfig have testmain_test.go. Pure move."
+ },
+ {
+  "id": "go-tests-agent-15",
+  "title": "Small helper copies across test packages",
+  "category": "duplication",
+  "original_severity": "low",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Partly wrong. equalStrings exists once (watch_restore_clear_history_program_fuzz_test.go:829); profile_test.go:1387 is stringSliceEqual and the other two cited sites were not found. mustJSON has 4 definitions with differing signatures (some return string, some []byte, one without t). mustNewSessionLog duplicated in 3 places (agent, contextmgr, sessionlog with different return type). readTranscriptLines duplicated (transcript_test.go:31, transcript/transcript_test.go:18) confirmed. The headers duplicate is not same-name: mcphttp_test.go:24 TestClientWithHeaders_NilBase_InjectsHeaders vs internal/mcp/cov_s5_headers_test.go:16 TestCov_HTTPClientWithHeaders_InjectsHeaders, both test mcphttp.ClientWithHeaders from different packages.",
+  "revised_fix_plan": "Replace the one equalStrings/stringSliceEqual with slices.Equal, delete the cov_s5_headers test in internal/mcp (owner of ClientWithHeaders is mcphttp), consolidate readTranscriptLines. Leave differing-signature mustJSON variants alone."
+ }
+]

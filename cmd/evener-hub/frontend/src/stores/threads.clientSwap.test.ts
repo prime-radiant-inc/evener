@@ -1,21 +1,19 @@
+import { type TestThreadOverrides, testThread } from "../threadTestUtils";
 import "fake-indexeddb/auto";
-import type {
-  InitializeResponse,
-  QueueState,
-  Thread,
-  ThreadCapabilities,
-  ThreadReadResponse,
-} from "@evener/appwire-client";
+import type { InitializeResponse, ThreadReadResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { connectionStore } from "./connection";
+import { connectReadyFakeClient } from "../testing/connectionTestUtils";
+import { connectionStore, resetConnectionStoreForTests } from "./connection";
+import { setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { SessionEntryCache } from "./sessionEntryCache";
-import { resetThreadsStoreForTests, setProductionEntryCacheForTests, threadsStore } from "./threads";
+import { resetThreadsStoreForTests, threadsStore } from "./threads";
+import { getReadyEpoch } from "./wiredClient";
 
 let cache: SessionEntryCache;
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   cache = new SessionEntryCache({
     indexedDB: new IDBFactory(),
@@ -29,59 +27,7 @@ afterEach(() => {
   cache.close();
   vi.restoreAllMocks();
 });
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  fake.on("thread/unsubscribe", () => ({}));
-  connectionStore.getState().connect(fake);
-  return fake;
-}
-
-const CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
-
-type TestThreadOverrides = Omit<Partial<Thread>, "evener"> & {
-  evener?: Omit<Thread["evener"], "queue"> & { queue: Partial<QueueState> };
-};
-
-function testThread(ref: string, overrides: TestThreadOverrides = {}): Thread {
-  const { evener, ...threadOverrides } = overrides;
-  const threadID = threadOverrides.id ?? `thr_${ref}`;
-  return {
-    id: threadID,
-    sessionId: `sess_${ref}`,
-    preview: "test",
-    ephemeral: false,
-    modelProvider: "anthropic/claude-sonnet-4-5",
-    createdAt: 1000,
-    updatedAt: 1000,
-    status: { type: "idle" },
-    cwd: "/tmp/project",
-    cliVersion: "1.0.0",
-    source: "evener",
-    evener: {
-      ref,
-      instanceId: threadID,
-      mutationStateAuthoritative: true,
-      capabilities: CAPABILITIES,
-      ...evener,
-      queue: { revision: 0, ...evener?.queue },
-    },
-    ...threadOverrides,
-  };
-}
+const connectFakeClient = () => connectReadyFakeClient((fake) => fake.on("thread/unsubscribe", () => ({})));
 
 function readResponse(ref: string, overrides: TestThreadOverrides = {}, requestGeneration = 1): ThreadReadResponse {
   return {
@@ -228,5 +174,26 @@ describe("client swap (manual retry) rewiring", () => {
       params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
     });
     expect(threadsStore.getState().threads.get("ref_a")?.status).toEqual({ type: "idle" });
+  });
+});
+
+describe("ready generation without a transcript residency", () => {
+  test("a client swap starts a new ready generation", () => {
+    connectFakeClient();
+    const before = getReadyEpoch();
+
+    connectionStore.getState().connect(new FakeClient("ready"));
+
+    expect(getReadyEpoch()).toBeGreaterThan(before);
+  });
+
+  test("the same client reconnecting starts a new ready generation", () => {
+    const client = connectFakeClient();
+    const before = getReadyEpoch();
+
+    client.emitStateChange("reconnecting");
+    client.emitStateChange("ready");
+
+    expect(getReadyEpoch()).toBeGreaterThan(before);
   });
 });

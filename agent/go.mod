@@ -16,7 +16,7 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 	pgregory.net/rapid v1.3.0
 	primeradiant.com/evener v0.0.0
-	primeradiant.com/evener/auth v0.1.0
+	primeradiant.com/evener/auth v0.0.0
 	primeradiant.com/evener/envvars v0.0.0
 	primeradiant.com/evener/execsupport v0.0.0
 	primeradiant.com/evener/fuzz v0.0.0

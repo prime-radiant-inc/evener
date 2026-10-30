@@ -406,16 +406,23 @@ func TestHasPendingDelegateAttentionNotResumable(t *testing.T) {
 
 func TestHasPendingDelegateAttentionClosedPhase(t *testing.T) {
 	t.Parallel()
-	c := &delegateTreeController{
-		attention: map[string]*delegateAttentionState{
-			"dlg_1": {wakeIDs: map[string]struct{}{"att_1": {}}},
-		},
-		durable: map[string]*delegatestore.Aggregate{
-			"dlg_1": {Resumable: true, Phase: delegatestore.PhaseClosed},
-		},
+	// The fold cannot produce {Resumable: true, Phase: PhaseClosed}: every
+	// transition into PhaseClosed requires a non-resumable delegate. Build the
+	// fixture through the controller's own append/fold path.
+	c, _ := newDelegateControllerTestHarness(t, 4, 2)
+	seedDelegateControllerIdle(t, c, "dlg_1", "")
+	if !c.noteDelegateAttention("dlg_1", "att_1") {
+		t.Fatal("note delegate attention")
+	}
+	closeDelegateControllerResumability(t, c, "dlg_1", "test-closure")
+	c.mu.Lock()
+	aggregate := c.durable["dlg_1"]
+	c.mu.Unlock()
+	if aggregate == nil || aggregate.Resumable || aggregate.Phase != delegatestore.PhaseClosed {
+		t.Fatalf("folded closed aggregate = %#v, want closed and not resumable", aggregate)
 	}
 	if c.hasPendingDelegateAttention() {
-		t.Fatalf("expected false for closed phase")
+		t.Fatalf("expected false for a closed delegate's retained wake")
 	}
 }
 

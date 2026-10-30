@@ -27,6 +27,9 @@ Keep those references current when changing the behavior they describe.
   to do when no widget fits.
 - **[environment.md](environment.md)** — every environment variable evener
   reads, keyed to the `envvars` package that's their source of truth.
+- **[config-knobs.md](config-knobs.md)** — generated: every environment
+  variable and `hub.toml` key with its default, doc row and consumer, so a
+  knob nothing reads is visible.
 - **[worktrees.md](worktrees.md)** — the `manage_worktree` tool and delegate
   worktree isolation: what a worktree is for here and how it's cleaned up.
 - **[agentic-testing.md](agentic-testing.md)** — the practical guide for
@@ -51,8 +54,9 @@ Keep those references current when changing the behavior they describe.
   public guide: the publication manifest, link and export rules, and the
   GitHub Pages workflow. Edit chapters in `docs/`, never in `.generated/`.
 - **[conventions/](conventions/)** — naming conventions for serialized
-  identifiers, working in the `go.work` multi-module workspace, and running
-  a fleet of agents against this repo without them stepping on each other.
+  identifiers, working in the `go.work` multi-module workspace, running
+  a fleet of agents against this repo without them stepping on each other, and
+  where a fresh `context.Background()` is allowed.
 
 ## Documentation
 
@@ -114,6 +118,19 @@ own diff and run focused checks for the files you changed; [Testing](testing.md)
 explains which checks apply. CI owns the full lint, test, browser, and build
 gates. Open a review with the commands you ran and any checks you could not run.
 
+Import rules for the TypeScript trees: the web and native apps import the AppWire
+package by name (`@evener/appwire-client`), never by path, and native never
+imports `cmd/evener-hub/frontend/src`. Code both apps need goes in the package,
+as a framework-free store or function with a thin React binding in each app.
+`make lint-package-imports` enforces both.
+
+A Go string enum that clients must share joins the generated TypeScript by
+adding a row to `stringEnums` in `internal/appwirets/emit.go`: the generator
+emits its values as a runtime catalog and types every field of that Go type by
+the derived union. Client limits that mirror a Go constant are pinned by a test
+that reads the Go source (`appwire-client/typescript/wireLimits.test.ts`)
+instead of being generated.
+
 ## Git hooks
 
 `make hooks` sets `core.hooksPath=scripts/hooks` in the clone's shared git
@@ -121,7 +138,7 @@ config, so every worktree runs its own checkout's hooks. The one hook today is
 `scripts/hooks/pre-commit`: it formats the staged TypeScript and re-stages it,
 so formatting never reaches review as a finding.
 
-- `mobile-native/src` and `mobile/src` go through mobile-native's Biome
+- `mobile-native/src` goes through mobile-native's Biome
   (`format --write`); `cmd/evener-hub/frontend/src` and
   `appwire-client/typescript` go through the frontend's (`check --write` with
   the linter off, which also organizes imports). Each runs from its own tree
@@ -157,7 +174,7 @@ The tests for both scripts are in `hooks_test.go` (part of `make test`); `EVENER
 | `make tools-gitleaks` | Install the CI-pinned gitleaks version from .tool-versions. |
 | `make hooks` | Install the checked-in git hooks (core.hooksPath=scripts/hooks): pre-commit formats staged TypeScript with each tree's own pinned Biome. |
 | `make refresh-model-catalog` | Replace the embedded models.dev snapshot in llm/registry/data/ with the current upstream and run the converter tests and overlay report. |
-| `make generate` | Run the appwire and maketargetsdoc `go generate` directives: the AppWire protocol reference and frontend TypeScript declarations from appwire/protocol.go, and the per-family make-target tables in docs/developing-evener/. |
+| `make generate` | Run the appwire, maketargetsdoc and knobtable `go generate` directives: the AppWire protocol reference and frontend TypeScript declarations from appwire/protocol.go, the per-family make-target tables in docs/developing-evener/, and the configuration knob table. |
 | `make clean` | Remove the built binaries from the repo root. |
 | `make help` | Print every make target, grouped by family, with its one-line summary. |
 <!-- END GENERATED -->

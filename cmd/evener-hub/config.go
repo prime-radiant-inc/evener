@@ -3,18 +3,17 @@ package hub
 import (
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
-	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/envvars/userdirs"
+	"primeradiant.com/evener/internal/hubendpoint"
 )
 
 var configUserHomeDir = os.UserHomeDir
@@ -43,9 +42,8 @@ type HostConfig struct {
 	// ConfigPath is the host hub's hub.toml, when it is not at the default
 	// location, so the bridge attaches with the host's own configuration.
 	ConfigPath string `toml:"config_path,omitempty"`
-	// Addr is the host hub's listen address, when it is not the default. The
-	// manager needs it to restart the hub and to health-check it after a deploy,
-	// where a wrong default would probe or kill the wrong listener.
+	// Addr is a listener override only for explicitly authorized fresh bootstrap.
+	// Existing service definitions and selected connection endpoints ignore it.
 	Addr  string   `toml:"addr,omitempty"`
 	Roots []string `toml:"roots,omitempty"`
 	// KeyPath is the SSH private-key file for this host, when it is not the
@@ -58,13 +56,16 @@ type HostConfig struct {
 // Config is the hub's runtime configuration loaded from hub.toml (see
 // DefaultConfigPath).
 type Config struct {
-	Addr               string           `toml:"addr"`
-	MobileBaseURL      string           `toml:"mobile_base_url"`
+	Addr        string `toml:"addr"`
+	PublicURL   string `toml:"public_url"`
+	addrPresent bool   `toml:"-"`
+	// removedKnobs names the retired keys the file still sets. They are
+	// ignored; runMain warns about each one at boot.
+	removedKnobs       []string         `toml:"-"`
 	HubStateRoot       string           `toml:"hub_state_root"`
 	StateGlob          string           `toml:"state_glob"`
 	RunDir             string           `toml:"run_dir"`
 	PastIndexDB        string           `toml:"past_index_db"`
-	StatusPollInterval time.Duration    `toml:"status_poll_interval"`
 	PastIndexRebuild   time.Duration    `toml:"past_index_rebuild_interval"`
 	SpawnTimeout       time.Duration    `toml:"spawn_timeout"`
 	PastResultsPerPage int              `toml:"past_results_per_page"`
@@ -176,69 +177,6 @@ type Config struct {
 	// `list` between those writes. Default DefaultHostTombstoneRetention; a
 	// value at or below zero is floored back to the default at load.
 	HostTombstoneRetention time.Duration `toml:"host_tombstone_retention"`
-	// HostTombstoneMaxRows and HostTombstoneMaxRowBytes are the per-tombstone
-	// retained-projection bounds (spec §15: "at most 500 retained rows per
-	// tombstone and at most 1 MiB of serialized row bytes per tombstone
-	// (owner-adjustable knobs in the same family as the cleared-marker TTL; the
-	// defaults ship in the implementing PR)"). A non-positive value is floored
-	// to the default at load, so an unset knob never disables the bound.
-	HostTombstoneMaxRows     int   `toml:"host_tombstone_max_rows"`
-	HostTombstoneMaxRowBytes int64 `toml:"host_tombstone_max_row_bytes"`
-	// HostTombstoneMaxCount and HostTombstoneMaxBytes are the GLOBAL tombstone
-	// caps (spec §15: "at most 64 tombstones and at most 16 MiB of total
-	// serialized tombstone bytes (same knob family; defaults ship in the
-	// implementing PR)"). A non-positive value is floored to the default.
-	HostTombstoneMaxCount int   `toml:"host_tombstone_max_count"`
-	HostTombstoneMaxBytes int64 `toml:"host_tombstone_max_bytes"`
-	// HostOperationTerminalPerHost, HostOperationTerminalStoreWide,
-	// HostOperationStoreMaxBytes, HostOperationTerminalMaxAge and
-	// HostOperationTombstonesPerHost are the operation store's retention knobs
-	// (deploy pipeline 08b §4: "at most 50 terminal records per host (tunable
-	// owner knob ...) ... at most 500 terminal records store-wide, at most
-	// 64 MiB of serialized store bytes, and at most 30 days of terminal-record
-	// age ... At most 50 tombstones per host (same owner-knob family)"). A
-	// non-positive value is floored to the default at load. The removed-host
-	// horizon is HostTombstoneRetention itself: §4's "past the
-	// `tombstoneRetention` horizon — 7-day default".
-	HostOperationTerminalPerHost   int           `toml:"host_operation_terminal_per_host"`
-	HostOperationTerminalStoreWide int           `toml:"host_operation_terminal_store_wide"`
-	HostOperationStoreMaxBytes     int64         `toml:"host_operation_store_max_bytes"`
-	HostOperationTerminalMaxAge    time.Duration `toml:"host_operation_terminal_max_age"`
-	HostOperationTombstonesPerHost int           `toml:"host_operation_tombstones_per_host"`
-	// HostSupersededReceiptMaxCount and HostSupersededReceiptTTL bound a live
-	// name's superseded-generation receipts (spec §6: "at most 8 newest
-	// same-key superseded receipts per name (owner-adjustable count bound; a
-	// same-key superseded receipt older than the owner-set superseded-receipt
-	// TTL compacts the same way)"). A non-positive value is floored to the
-	// default at load.
-	HostSupersededReceiptMaxCount int           `toml:"host_superseded_receipt_max_count"`
-	HostSupersededReceiptTTL      time.Duration `toml:"host_superseded_receipt_ttl"`
-	// HostPrunedReceiptMaxCount and HostPrunedReceiptTTL bound a live name's
-	// pruned markers (spec §6: "at most 64 newest markers per live name plus a
-	// marker TTL in the same owner-knob family as the superseded-receipt TTL
-	// (every `hub.toml` mutation and every boot compacts markers past either
-	// bound in the same atomic write; defaults ship in the implementing PR)").
-	// A non-positive value is floored to the default at load.
-	HostPrunedReceiptMaxCount int           `toml:"host_pruned_receipt_max_count"`
-	HostPrunedReceiptTTL      time.Duration `toml:"host_pruned_receipt_ttl"`
-	// HostKeylessAuditMaxCount and HostKeylessAuditTTL bound a name's
-	// keyless-add audit records (spec §11: "audit records compact under the
-	// same dual bound as receipts — at most 64 newest per name plus an
-	// owner-set audit TTL in the same knob family, every `hub.toml` mutation
-	// and every boot compacting past either bound in the same atomic write").
-	// A non-positive value is floored to the default at load.
-	HostKeylessAuditMaxCount int           `toml:"host_keyless_audit_max_count"`
-	HostKeylessAuditTTL      time.Duration `toml:"host_keyless_audit_ttl"`
-	// The teardown-repair bounds (registry spec 08 §6): the cleared-remnant
-	// marker bounds, the recovery-marker bounds, and the attempt-history bound
-	// per remnant. Non-positive values take the documented defaults.
-	HostRemnantClearedMaxCount  int           `toml:"host_remnant_cleared_max_count"`
-	HostRemnantClearedTTL       time.Duration `toml:"host_remnant_cleared_ttl"`
-	HostRemnantRecoveryMaxCount int           `toml:"host_remnant_recovery_max_count"`
-	HostRemnantRecoveryTTL      time.Duration `toml:"host_remnant_recovery_ttl"`
-	HostRemnantAttemptMaxCount  int           `toml:"host_remnant_attempt_max_count"`
-	HostRemnantTeardownTimeout  time.Duration `toml:"host_remnant_teardown_timeout"`
-	HostRemnantEscalationAge    time.Duration `toml:"host_remnant_escalation_age"`
 }
 
 const (
@@ -257,126 +195,70 @@ const (
 	// DefaultHostTombstoneRetention is the tombstone retention period spec 08
 	// §15 names: seven days.
 	DefaultHostTombstoneRetention = 7 * 24 * time.Hour
-	// DefaultHostTombstoneMaxRows and DefaultHostTombstoneMaxRowBytes are the
-	// per-tombstone retained-projection bounds spec §15 names: 500 rows and
-	// 1 MiB of serialized row bytes.
-	DefaultHostTombstoneMaxRows           = 500
-	DefaultHostTombstoneMaxRowBytes int64 = 1 << 20
-	// DefaultHostTombstoneMaxCount and DefaultHostTombstoneMaxBytes are the
-	// global caps spec §15 names: 64 tombstones and 16 MiB of serialized
-	// tombstone bytes.
-	DefaultHostTombstoneMaxCount       = 64
-	DefaultHostTombstoneMaxBytes int64 = 16 << 20
-	// DefaultHostOperationTerminalPerHost, DefaultHostOperationTerminalStoreWide,
-	// DefaultHostOperationStoreMaxBytes, DefaultHostOperationTerminalMaxAge and
-	// DefaultHostOperationTombstonesPerHost are deploy pipeline 08b §4's
-	// shipped operation-store retention defaults: 50 terminal records per host,
-	// 500 store-wide, 64 MiB of serialized store bytes, 30 days of terminal
-	// age, and 50 dedup tombstones per host.
-	DefaultHostOperationTerminalPerHost         = 50
-	DefaultHostOperationTerminalStoreWide       = 500
-	DefaultHostOperationStoreMaxBytes     int64 = 64 << 20
-	DefaultHostOperationTerminalMaxAge          = 30 * 24 * time.Hour
-	DefaultHostOperationTombstonesPerHost       = 50
-	// DefaultHostSupersededReceiptMaxCount and DefaultHostSupersededReceiptTTL
-	// are the superseded-receipt bounds spec §6 describes. The TTL matches the
-	// tombstone retention: a superseded receipt's post-remove recovery window
-	// is the tombstone's own window, and any replay past it refuses through the
-	// retained pruned marker instead.
-	DefaultHostSupersededReceiptMaxCount = 8
-	DefaultHostSupersededReceiptTTL      = 7 * 24 * time.Hour
-	// DefaultHostPrunedReceiptMaxCount and DefaultHostPrunedReceiptTTL are the
-	// pruned-marker bounds spec §6 describes; the TTL matches the tombstone
-	// retention for the same reason.
-	DefaultHostPrunedReceiptMaxCount = 64
-	DefaultHostPrunedReceiptTTL      = 7 * 24 * time.Hour
-	// DefaultHostKeylessAuditMaxCount and DefaultHostKeylessAuditTTL are the
-	// keyless-add audit bounds spec §11 describes; the TTL is longer than the
-	// tombstone window because the audit trail's purpose is post-hoc forensics
-	// rather than outcome recovery.
-	DefaultHostKeylessAuditMaxCount = 64
-	DefaultHostKeylessAuditTTL      = 30 * 24 * time.Hour
-	// DefaultHostRemnantClearedMaxCount and DefaultHostRemnantClearedTTL are the
-	// cleared-remnant marker bounds spec §6 names: "owner-set cleared-marker TTL
-	// plus an at-most-64-newest-per-name count bound in the same owner-knob
-	// family". The TTL matches the tombstone retention so a lost-response retry
-	// keeps its `already-cleared` replay for the window the tombstone lives, and
-	// past it reads `teardown-unknown-key` exactly as the spec requires.
-	DefaultHostRemnantClearedMaxCount = 64
-	DefaultHostRemnantClearedTTL      = 7 * 24 * time.Hour
-	// DefaultHostRemnantRecoveryMaxCount and DefaultHostRemnantRecoveryTTL are
-	// the recovery-marker bounds spec §11 names: "at most 64 newest recovery
-	// records per name plus a recovery-marker TTL in the same owner-knob family
-	// as the cleared-marker TTL".
-	DefaultHostRemnantRecoveryMaxCount = 64
-	DefaultHostRemnantRecoveryTTL      = 7 * 24 * time.Hour
-	// DefaultHostRemnantAttemptMaxCount bounds the attempt history one remnant
-	// keeps: the newest attempts survive so a timed-out attempt's record stays
-	// readable while a churn of retries cannot grow hub.toml without limit.
-	DefaultHostRemnantAttemptMaxCount = 8
-	// DefaultHostRemnantTeardownTimeout is the retry's bounded execution
-	// deadline (spec §6: "the retry's own teardown run carries a bounded
-	// execution deadline of the same owner-set family"). Two minutes is long
-	// enough for a local supervisor/channel teardown to drain and short enough
-	// that a stuck remote surfaces the terminal outcome with a live retry handle
-	// instead of holding the host gate.
-	DefaultHostRemnantTeardownTimeout = 2 * time.Minute
-	// DefaultHostRemnantEscalationAge is the bound past which an open remnant's
-	// row reports `escalationAgeSec` (spec §11): an hour is long enough that a
-	// transient teardown failure resolves itself through one retry and short
-	// enough that an operator hears about a remnant that is not going away.
-	DefaultHostRemnantEscalationAge = time.Hour
 )
 
+// removedKnobs are the keys that were once tunable. The host_* retention and
+// pruning keys fold into one internal default policy (defaultHostRecordPolicy);
+// status_poll_interval had no reader. A hub.toml that still sets one starts
+// normally and warns.
+var removedKnobs = []string{
+	"status_poll_interval",
+	"host_tombstone_max_rows",
+	"host_tombstone_max_row_bytes",
+	"host_tombstone_max_count",
+	"host_tombstone_max_bytes",
+	"host_operation_terminal_per_host",
+	"host_operation_terminal_store_wide",
+	"host_operation_store_max_bytes",
+	"host_operation_terminal_max_age",
+	"host_operation_tombstones_per_host",
+	"host_superseded_receipt_max_count",
+	"host_superseded_receipt_ttl",
+	"host_pruned_receipt_max_count",
+	"host_pruned_receipt_ttl",
+	"host_keyless_audit_max_count",
+	"host_keyless_audit_ttl",
+	"host_remnant_cleared_max_count",
+	"host_remnant_cleared_ttl",
+	"host_remnant_recovery_max_count",
+	"host_remnant_recovery_ttl",
+	"host_remnant_attempt_max_count",
+	"host_remnant_teardown_timeout",
+	"host_remnant_escalation_age",
+}
+
 // DefaultConfig returns a Config populated with sensible defaults.
+//
+// HubStateRoot is empty when the state root cannot be resolved (no
+// XDG_STATE_HOME and no home directory); LoadConfig reports that as an error
+// rather than hand back a config with nowhere to keep state.
 func DefaultConfig() Config {
+	hubStateRoot, _ := DefaultHubStateRoot()
 	return Config{
-		Addr:                           "127.0.0.1:9180",
-		HubStateRoot:                   DefaultHubStateRoot(),
-		StateGlob:                      "",
-		RunDir:                         "",
-		StatusPollInterval:             2 * time.Second,
-		PastIndexRebuild:               60 * time.Second,
-		SpawnTimeout:                   30 * time.Second,
-		PastResultsPerPage:             50,
-		PluginAutoUpgrade:              true,
-		PluginAutoUpgradeInterval:      12 * time.Hour,
-		DaemonIdleTimeout:              time.Hour,
-		HostProbeTimeout:               DefaultHostProbeTimeout,
-		HostMinFreeSpaceBytes:          DefaultHostMinFreeSpaceBytes,
-		HostTombstoneRetention:         DefaultHostTombstoneRetention,
-		HostTombstoneMaxRows:           DefaultHostTombstoneMaxRows,
-		HostTombstoneMaxRowBytes:       DefaultHostTombstoneMaxRowBytes,
-		HostTombstoneMaxCount:          DefaultHostTombstoneMaxCount,
-		HostTombstoneMaxBytes:          DefaultHostTombstoneMaxBytes,
-		HostOperationTerminalPerHost:   DefaultHostOperationTerminalPerHost,
-		HostOperationTerminalStoreWide: DefaultHostOperationTerminalStoreWide,
-		HostOperationStoreMaxBytes:     DefaultHostOperationStoreMaxBytes,
-		HostOperationTerminalMaxAge:    DefaultHostOperationTerminalMaxAge,
-		HostOperationTombstonesPerHost: DefaultHostOperationTombstonesPerHost,
-		HostSupersededReceiptMaxCount:  DefaultHostSupersededReceiptMaxCount,
-		HostSupersededReceiptTTL:       DefaultHostSupersededReceiptTTL,
-		HostPrunedReceiptMaxCount:      DefaultHostPrunedReceiptMaxCount,
-		HostPrunedReceiptTTL:           DefaultHostPrunedReceiptTTL,
-		HostKeylessAuditMaxCount:       DefaultHostKeylessAuditMaxCount,
-		HostKeylessAuditTTL:            DefaultHostKeylessAuditTTL,
-		HostRemnantClearedMaxCount:     DefaultHostRemnantClearedMaxCount,
-		HostRemnantClearedTTL:          DefaultHostRemnantClearedTTL,
-		HostRemnantRecoveryMaxCount:    DefaultHostRemnantRecoveryMaxCount,
-		HostRemnantRecoveryTTL:         DefaultHostRemnantRecoveryTTL,
-		HostRemnantAttemptMaxCount:     DefaultHostRemnantAttemptMaxCount,
-		HostRemnantTeardownTimeout:     DefaultHostRemnantTeardownTimeout,
-		HostRemnantEscalationAge:       DefaultHostRemnantEscalationAge,
+		Addr:                      "127.0.0.1:9180",
+		HubStateRoot:              hubStateRoot,
+		StateGlob:                 "",
+		RunDir:                    "",
+		PastIndexRebuild:          60 * time.Second,
+		SpawnTimeout:              30 * time.Second,
+		PastResultsPerPage:        50,
+		PluginAutoUpgrade:         true,
+		PluginAutoUpgradeInterval: 12 * time.Hour,
+		DaemonIdleTimeout:         time.Hour,
+		HostProbeTimeout:          DefaultHostProbeTimeout,
+		HostMinFreeSpaceBytes:     DefaultHostMinFreeSpaceBytes,
+		HostTombstoneRetention:    DefaultHostTombstoneRetention,
 	}
 }
 
 // DefaultHubStateRoot returns the hub's machine-generated state root
-// (cmdutil.DefaultStateRoot(): $XDG_STATE_HOME/evener, or
-// ~/.local/state/evener when XDG_STATE_HOME is unset). It holds the auth
-// token, the past-session index, the deletion-fence store, the host lock,
-// and the daemon rendezvous/log directory.
-func DefaultHubStateRoot() string {
-	return cmdutil.DefaultStateRoot()
+// (userdirs.StateRoot: $XDG_STATE_HOME/evener, or ~/.local/state/evener when
+// XDG_STATE_HOME is unset). It holds the auth token, the past-session index,
+// the deletion-fence store, the host lock, and the daemon rendezvous/log
+// directory. It returns userdirs.ErrNoStateHome when neither XDG_STATE_HOME
+// nor a home directory is available.
+func DefaultHubStateRoot() (string, error) {
+	return userdirs.StateRoot(envvars.XDGStateHome.Getenv(), configUserHomeDir)
 }
 
 // DefaultConfigPath returns the hub's optional config file:
@@ -387,21 +269,21 @@ func DefaultConfigPath() string {
 }
 
 // DefaultStateGlob returns the project state roots indexed by the hub.
-func DefaultStateGlob() string {
-	base := envvars.XDGStateHome.Getenv()
-	if base == "" {
-		home, err := configUserHomeDir()
-		if err != nil || home == "" {
-			home = "."
-		}
-		base = filepath.Join(home, ".local", "state")
+func DefaultStateGlob() (string, error) {
+	root, err := DefaultHubStateRoot()
+	if err != nil {
+		return "", err
 	}
-	return filepath.Join(base, "evener", "projects", "*")
+	return filepath.Join(root, "projects", "*"), nil
 }
 
 // DefaultPastIndexDBPath returns DefaultHubStateRoot()/index.db.
-func DefaultPastIndexDBPath() string {
-	return filepath.Join(DefaultHubStateRoot(), "index.db")
+func DefaultPastIndexDBPath() (string, error) {
+	root, err := DefaultHubStateRoot()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, "index.db"), nil
 }
 
 // LoadConfig reads path. A missing file returns DefaultConfig() and a nil
@@ -434,14 +316,25 @@ func loadConfigForCommandLine(cfgPath string, explicit bool) (Config, error) {
 }
 
 func loadConfig(path string, explicit bool) (Config, error) {
+	var cfg Config
 	data, err := configReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) && !explicit {
-			return DefaultConfig(), nil
-		}
+	switch {
+	case err == nil:
+		cfg, err = decodeConfig(path, string(data))
+	case errors.Is(err, os.ErrNotExist) && !explicit:
+		cfg, err = DefaultConfig(), nil
+	default:
 		return DefaultConfig(), fmt.Errorf("read config %s: %w", path, err)
 	}
-	return decodeConfig(path, string(data))
+	if err != nil {
+		return cfg, err
+	}
+	if cfg.HubStateRoot == "" {
+		if cfg.HubStateRoot, err = DefaultHubStateRoot(); err != nil {
+			return cfg, fmt.Errorf("hub state root: %w", err)
+		}
+	}
+	return cfg, nil
 }
 
 // decodeConfig decodes and validates one hub.toml document. loadConfig runs it
@@ -451,14 +344,18 @@ func loadConfig(path string, explicit bool) (Config, error) {
 func decodeConfig(name, data string) (Config, error) {
 	cfg := DefaultConfig()
 	metadata, decodeErr := toml.Decode(data, &cfg)
+	if decodeErr != nil {
+		return cfg, fmt.Errorf("parse config %s: %w", name, decodeErr)
+	}
+	if metadata.IsDefined("mobile_base_url") {
+		return cfg, &EndpointMigrationError{Retired: "mobile_base_url", Replacement: "public_url"}
+	}
 	for _, key := range []string{"codex_sources", "codex_launches"} {
 		if metadata.IsDefined(key) {
 			return cfg, fmt.Errorf("config section %q is no longer supported because Codex agent integration has been removed; remove it from hub.toml", key)
 		}
 	}
-	if decodeErr != nil {
-		return cfg, fmt.Errorf("parse config %s: %w", name, decodeErr)
-	}
+	cfg.addrPresent = metadata.IsDefined("addr")
 	// The retired crash-fencing bootstrap keys decode into HostRecord's retired
 	// fields (the type documents them) so a hub.toml the bootstrap build wrote
 	// still loads: the reserved-record rule below refuses a reserved field this
@@ -488,21 +385,14 @@ func decodeConfig(name, data string) (Config, error) {
 	if metadata.Type("host_probe_timeout") == "Integer" {
 		return cfg, fmt.Errorf("host_probe_timeout %[1]w such as \"10s\" (got the integer %[2]d, which TOML decodes as %[2]d nanoseconds)", errIntegerDuration, int64(cfg.HostProbeTimeout))
 	}
-	// The same footgun, same refusal, for every duration-shaped record knob:
-	// `host_tombstone_retention = 7` would arm a 7ns retention and prune every
-	// tombstone on the next write.
-	for _, knob := range []struct {
-		key   string
-		value time.Duration
-	}{
-		{"host_tombstone_retention", cfg.HostTombstoneRetention},
-		{"host_operation_terminal_max_age", cfg.HostOperationTerminalMaxAge},
-		{"host_superseded_receipt_ttl", cfg.HostSupersededReceiptTTL},
-		{"host_pruned_receipt_ttl", cfg.HostPrunedReceiptTTL},
-		{"host_keyless_audit_ttl", cfg.HostKeylessAuditTTL},
-	} {
-		if metadata.Type(knob.key) == "Integer" {
-			return cfg, fmt.Errorf("%[1]s %[3]w such as \"168h\" (got the integer %[2]d, which TOML decodes as %[2]d nanoseconds)", knob.key, int64(knob.value), errIntegerDuration)
+	// The same footgun, same refusal: `host_tombstone_retention = 7` would arm a
+	// 7ns retention and prune every tombstone on the next write.
+	if metadata.Type("host_tombstone_retention") == "Integer" {
+		return cfg, fmt.Errorf("host_tombstone_retention %[1]w such as \"168h\" (got the integer %[2]d, which TOML decodes as %[2]d nanoseconds)", errIntegerDuration, int64(cfg.HostTombstoneRetention))
+	}
+	for _, key := range removedKnobs {
+		if metadata.IsDefined(key) {
+			cfg.removedKnobs = append(cfg.removedKnobs, key)
 		}
 	}
 	applyConfigDefaults(&cfg)
@@ -583,8 +473,8 @@ func decodeConfig(name, data string) (Config, error) {
 			return cfg, fmt.Errorf("config %s: reserved record %s carries a field this build does not decode; refusing rather than dropping it on the next rewrite", name, key.String())
 		}
 	}
-	if err := validateMobileBaseURL(cfg.MobileBaseURL); err != nil {
-		return cfg, fmt.Errorf("validate mobile_base_url: %w", err)
+	if err := validatePublicURL(cfg.PublicURL); err != nil {
+		return cfg, &EndpointValidationError{Source: "config", Err: fmt.Errorf("validate public_url: %w", err)}
 	}
 	return cfg, nil
 }
@@ -593,18 +483,7 @@ func decodeConfig(name, data string) (Config, error) {
 // validateHostConfigs. They are named sentinels so tests and callers can match
 // them with errors.Is.
 var (
-	// ErrHostAddrPair marks a [[hosts]] entry that sets exactly one of
-	// config_path and addr. The pair describes one host hub layout — the bridge
-	// resolves the hub's address and token from config_path, while the SSH
-	// manager's restart and health path probes addr — so a half-specified entry
-	// would attach through one layout while the manager probes another.
-	ErrHostAddrPair = errors.New("host config_path and addr must be set together")
-	// ErrHostAddr marks an addr the controller cannot use: malformed, missing a
-	// usable port, or not a loopback/wildcard bind. addr is interpolated into an
-	// SSH-side health probe and restart identity check, so a non-loopback value
-	// could let those paths reach an arbitrary host; the wildcard spellings are
-	// accepted because the manager normalizes them to loopback for its own dial
-	// and probe.
+	// ErrHostAddr marks a malformed fresh-bootstrap listener override.
 	ErrHostAddr = errors.New("host addr unusable")
 	// errIntegerDuration refuses a duration knob written as a bare integer,
 	// which TOML decodes as a nanosecond count.
@@ -628,8 +507,7 @@ func normalizeMachineRoots(roots []string) []string {
 // throwaway registry, so name grammar, duplicate names, reserved "local", the
 // ".." rule, ssh presence, the user/ssh-user conflict, and empty roots are all
 // checked by the single source of truth in hostreg. Each entry also runs
-// validateHostEntry — the pair and addr rules spec 03's "config_path / addr"
-// contract requires, the same function the runtime add/update paths run — so a
+// validateHostEntry — including optional fresh-bootstrap listener intent, the same function the runtime add/update paths run — so a
 // hub.toml entry and a UI-added entry are validated by one code path. No host
 // is registered anywhere: this is pure validation.
 //
@@ -672,8 +550,8 @@ func validateHostConfigs(hosts []HostConfig) error {
 
 // validateHostEntry runs every entry check the host surfaces share: hostreg's
 // own shape validation (name grammar, reserved name, ssh destination, user/ssh
-// agreement, non-empty roots) plus the config_path/addr pair and addr host
-// rules hub.toml loading applies (validateHostAddr). hub.toml loading and the
+// agreement, non-empty roots) plus optional bootstrap listener
+// validation hub.toml loading applies (validateHostAddr). hub.toml loading and the
 // runtime evener/host/add and evener/host/update paths all call it, so an entry
 // one surface refuses can never be stored by another.
 func validateHostEntry(entry hostreg.Host) error {
@@ -683,82 +561,29 @@ func validateHostEntry(entry hostreg.Host) error {
 	return validateHostAddr(entry)
 }
 
-// validateHostAddr refuses an entry whose config_path/addr pair is
-// half-specified, or whose addr the controller cannot use. It checks the
-// normalized values the registry would store.
-//
-// The pair describes ONE host hub layout (component 04, "Address, config path,
-// token"): the bridge resolves the hub's listen address and token state root
-// from config_path, while the manager's restart and health path probes addr. A
-// half-specified entry attaches through one layout while the manager probes
-// another — a silent split-brain, not a clean failure.
-//
-// addr is interpolated into an SSH-side curl probe and the restart identity
-// check, so a non-loopback value could let those paths reach an arbitrary
-// reachable host. The address half delegates to sshconn.ValidateHubAddrShape —
-// the SSH probe's own accepted-address rule — and wraps its refusal in this
-// package's ErrHostAddr, so load-time validation and the use-time probe cannot
-// drift on what an address may be: a loopback host literal, "localhost", the
-// wildcard spellings the manager normalizes to loopback (0.0.0.0, ::, and the
-// empty host of ":port"), and a usable port.
+// validateHostAddr validates optional fresh-bootstrap listener intent.
 func validateHostAddr(entry hostreg.Host) error {
-	if (entry.ConfigPath == "") != (entry.Addr == "") {
-		return fmt.Errorf("%w: host %q sets exactly one of config_path and addr; set both or neither", ErrHostAddrPair, entry.Name)
-	}
 	if entry.Addr == "" {
 		return nil
 	}
-	if err := sshconn.ValidateHubAddrShape(entry.Addr); err != nil {
+	if _, err := hubendpoint.ParseListenAddr(entry.Addr); err != nil {
 		return fmt.Errorf("%w: host %q %w", ErrHostAddr, entry.Name, err)
 	}
 	return nil
 }
 
-// validateMobileBaseURL accepts only an HTTP(S) origin. The pairing endpoint
+// validatePublicURL accepts only an HTTP(S) origin. The pairing endpoint
 // appends the capability path and token itself, so a configured path or query
 // would either be discarded or accidentally extend the public contract.
-func validateMobileBaseURL(raw string) error {
+func validatePublicURL(raw string) error {
 	if raw == "" {
 		return nil
 	}
-	u, err := url.ParseRequestURI(raw)
-	if err != nil {
-		return fmt.Errorf("must be an http(s) origin: %w", err)
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return errors.New("must use http or https")
-	}
-	if u.Host == "" || u.Hostname() == "" || u.User != nil || u.Opaque != "" {
-		return errors.New("must be an origin without userinfo")
-	}
-	if u.Path != "" && u.Path != "/" {
-		return errors.New("must not include a path")
-	}
-	if u.RawQuery != "" || u.ForceQuery {
-		return errors.New("must not include a query")
-	}
-	if u.Fragment != "" {
-		return errors.New("must not include a fragment")
-	}
-	if strings.HasSuffix(u.Host, ":") {
-		return errors.New("port must not be empty")
-	}
-	if port := u.Port(); port != "" {
-		p, err := strconv.Atoi(port)
-		if err != nil || p < 1 || p > 65535 {
-			return errors.New("port must be between 1 and 65535")
-		}
-	}
-	return nil
+	_, err := hubendpoint.ParseOrigin(raw)
+	return err
 }
 
 func applyConfigDefaults(cfg *Config) {
-	if cfg.Addr == "" {
-		cfg.Addr = "127.0.0.1:9180"
-	}
-	if cfg.StatusPollInterval == 0 {
-		cfg.StatusPollInterval = 2 * time.Second
-	}
 	if cfg.PastIndexRebuild == 0 {
 		cfg.PastIndexRebuild = 60 * time.Second
 	}
@@ -776,54 +601,6 @@ func applyConfigDefaults(cfg *Config) {
 	}
 	if cfg.HostTombstoneRetention <= 0 {
 		cfg.HostTombstoneRetention = DefaultHostTombstoneRetention
-	}
-	if cfg.HostTombstoneMaxRows <= 0 {
-		cfg.HostTombstoneMaxRows = DefaultHostTombstoneMaxRows
-	}
-	if cfg.HostTombstoneMaxRowBytes <= 0 {
-		cfg.HostTombstoneMaxRowBytes = DefaultHostTombstoneMaxRowBytes
-	}
-	if cfg.HostTombstoneMaxCount <= 0 {
-		cfg.HostTombstoneMaxCount = DefaultHostTombstoneMaxCount
-	}
-	if cfg.HostTombstoneMaxBytes <= 0 {
-		cfg.HostTombstoneMaxBytes = DefaultHostTombstoneMaxBytes
-	}
-	if cfg.HostOperationTerminalPerHost <= 0 {
-		cfg.HostOperationTerminalPerHost = DefaultHostOperationTerminalPerHost
-	}
-	if cfg.HostOperationTerminalStoreWide <= 0 {
-		cfg.HostOperationTerminalStoreWide = DefaultHostOperationTerminalStoreWide
-	}
-	if cfg.HostOperationStoreMaxBytes <= 0 {
-		cfg.HostOperationStoreMaxBytes = DefaultHostOperationStoreMaxBytes
-	}
-	if cfg.HostOperationTerminalMaxAge <= 0 {
-		cfg.HostOperationTerminalMaxAge = DefaultHostOperationTerminalMaxAge
-	}
-	if cfg.HostOperationTombstonesPerHost <= 0 {
-		cfg.HostOperationTombstonesPerHost = DefaultHostOperationTombstonesPerHost
-	}
-	if cfg.HostSupersededReceiptMaxCount <= 0 {
-		cfg.HostSupersededReceiptMaxCount = DefaultHostSupersededReceiptMaxCount
-	}
-	if cfg.HostSupersededReceiptTTL <= 0 {
-		cfg.HostSupersededReceiptTTL = DefaultHostSupersededReceiptTTL
-	}
-	if cfg.HostPrunedReceiptMaxCount <= 0 {
-		cfg.HostPrunedReceiptMaxCount = DefaultHostPrunedReceiptMaxCount
-	}
-	if cfg.HostPrunedReceiptTTL <= 0 {
-		cfg.HostPrunedReceiptTTL = DefaultHostPrunedReceiptTTL
-	}
-	if cfg.HostKeylessAuditMaxCount <= 0 {
-		cfg.HostKeylessAuditMaxCount = DefaultHostKeylessAuditMaxCount
-	}
-	if cfg.HostKeylessAuditTTL <= 0 {
-		cfg.HostKeylessAuditTTL = DefaultHostKeylessAuditTTL
-	}
-	if cfg.HubStateRoot == "" {
-		cfg.HubStateRoot = DefaultHubStateRoot()
 	}
 	// time.NewTicker (app_plugin_autoupgrade.go) panics on d <= 0, and the
 	// daemon is launched with a bare `go` (no recover), so a bad interval

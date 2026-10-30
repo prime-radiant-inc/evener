@@ -1,12 +1,29 @@
 package selfupdate
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 )
+
+func TestInstallLockAcquiresReadOnlyLockFile(t *testing.T) {
+	dir := t.TempDir()
+	lockPath := filepath.Join(dir, ".install.lock")
+	if err := os.WriteFile(lockPath, nil, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(lockPath, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	release, err := AcquireInstallLockForVerify(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("AcquireInstallLockForVerify: %v", err)
+	}
+	release()
+}
 
 // TestInstallLockSerializesConcurrentUpgrades proves two Upgrade calls
 // against the same prefix do not interleave: the second waits for (or

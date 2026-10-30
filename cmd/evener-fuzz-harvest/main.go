@@ -23,8 +23,8 @@ import (
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/doctor"
-	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/envvars/userdirs"
 )
 
 type stringSlice []string
@@ -35,7 +35,10 @@ func (s *stringSlice) Set(v string) error {
 	return nil
 }
 
-const defaultMaxSeedBytes = 32768
+const (
+	defaultMaxSeedBytes = 32768
+	defaultMaxPerTarget = 100
+)
 
 var allSurfaces = []string{"sse", "toolargs", "appwire", "http", "jobs"}
 
@@ -46,7 +49,7 @@ func Run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 var harvestDiscoverSources = discoverSources
 var harvestCoreToolNames = agent.CoreToolNames
 var harvestGitleaksScan = gitleaksScan
-var harvestDefaultStateRoot = cmdutil.DefaultStateRoot
+var harvestDefaultStateRoot = userdirs.DefaultStateRoot
 var harvestResolveStateBase = doctor.ResolveStateBase
 var harvestIsDir = isDir
 
@@ -60,11 +63,26 @@ func run(args []string, stdout, stderr io.Writer) int {
 	surfaceList := fs.String("surface", strings.Join(allSurfaces, ","), "comma-separated surfaces to harvest")
 	keepValues := fs.Bool("keep-values", false, "skip shape-scrub, keep real values (GATED; local-only, never committed)")
 	maxSeedBytes := fs.Int("max-seed-bytes", defaultMaxSeedBytes, "drop seeds whose data exceeds this many bytes")
+	maxPerTarget := fs.Int("max-per-target", defaultMaxPerTarget, "cap on files per target directory; at the cap the directory is pruned by coverage, then further seeds are dropped")
+	var pruneDirs stringSlice
+	fs.Var(&pruneDirs, "prune", "corpus directory (relative to --out-root, repeatable) to prune by coverage instead of harvesting")
 	dryRun := fs.Bool("dry-run", false, "report counts and would-write paths; write nothing")
 	logPath := fs.String("log", "", "write per-seed provenance to this file")
 	noGitleaks := fs.Bool("no-gitleaks", false, "skip the post-write gitleaks barrier")
 	if err := fs.Parse(args); err != nil {
 		return 2
+	}
+
+	if len(pruneDirs) > 0 {
+		for _, dir := range pruneDirs {
+			report, err := pruneCorpus(filepath.Join(*outRoot, dir), *dryRun)
+			if err != nil {
+				fmt.Fprintf(stderr, "prune %s: %v\n", dir, err) //nolint:errcheck
+				return 1
+			}
+			fmt.Fprintf(stdout, "%s: %s\n", dir, report) //nolint:errcheck
+		}
+		return 0
 	}
 
 	surfaces, err := parseSurfaces(*surfaceList)
@@ -79,7 +97,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if len(stateDirs) == 0 {
-		stateDirs = defaultStateDirs()
+		var err error
+		if stateDirs, err = defaultStateDirs(); err != nil {
+			fmt.Fprintf(stderr, "resolve default state dirs: %v\n", err) //nolint:errcheck
+			return 2
+		}
 	}
 
 	var logw io.Writer
@@ -103,6 +125,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	emit := NewEmitter(*dryRun, *maxSeedBytes)
+	emit.maxPerTarget = *maxPerTarget
+	emit.makeRoom = func(dir string) error {
+		_, err := pruneCorpus(dir, false)
+		return err
+	}
 	r := newRunner(*outRoot, emit, logw)
 
 	for _, sd := range stateDirs {
@@ -141,6 +168,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 		exit = 1
 	}
 
+	for _, err := range emit.roomErrs {
+		fmt.Fprintf(stderr, "FAIL: %v\n", err) //nolint:errcheck
+		exit = 1
+	}
+
 	if !*dryRun && !*noGitleaks {
 		switch clean, available := harvestGitleaksScan(r.dir("."), stderr); {
 		case !available:
@@ -156,7 +188,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 // defaultStateDirs returns the roots to harvest when no --state-dir is given.
 // Evener installations may have session state under an explicit/default state
 // root or the XDG session base. Both are walked and deduplicated.
-func defaultStateDirs() stringSlice {
+func defaultStateDirs() (stringSlice, error) {
 	seen := map[string]bool{}
 	var out stringSlice
 	add := func(dir string) {
@@ -170,14 +202,25 @@ func defaultStateDirs() stringSlice {
 		seen[abs] = true
 		out = append(out, dir)
 	}
-	add(harvestDefaultStateRoot())
-	base := harvestResolveStateBase("")
-	if sub := filepath.Join(base, "evener"); harvestIsDir(sub) {
-		add(sub)
-	} else {
-		add(base)
+	// The two sources resolve independently (EVENER_STATE_DIR can name usable
+	// recordings when the global root is unavailable); it is an error only
+	// when neither does.
+	root, rootErr := harvestDefaultStateRoot()
+	if rootErr == nil {
+		add(root)
 	}
-	return out
+	base, baseErr := harvestResolveStateBase("")
+	if baseErr == nil {
+		if sub := filepath.Join(base, "evener"); harvestIsDir(sub) {
+			add(sub)
+		} else {
+			add(base)
+		}
+	}
+	if len(out) == 0 {
+		return nil, errors.Join(rootErr, baseErr)
+	}
+	return out, nil
 }
 
 func isDir(path string) bool {

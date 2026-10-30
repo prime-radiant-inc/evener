@@ -22,12 +22,12 @@ import (
 	"strings"
 )
 
-// browserGuards is every guard in verdict order. The last four
-// (skillguard, cascadeguard, backgroundjobsguard, backgroundtranscriptguard) are the never-signalled
+// browserGuards is every guard in verdict order. The last five
+// (skillguard, cascadeguard, backgroundjobsguard, backgroundtranscriptguard, comicguard) are the never-signalled
 // checks that also need the built production frontend (needsBuild);
 // retirementguard is never-signalled too, but needs no build. Keep the
-// building four last.
-var browserGuards = []string{"layoutguard", "overflowguard", "shellguard", "spawnguard", "transcriptscrollguard", "retirementguard", "mermaidguard", "memoryguard", "skillguard", "cascadeguard", "backgroundjobsguard", backgroundTranscriptGuard}
+// building five last.
+var browserGuards = []string{"layoutguard", "overflowguard", "shellguard", "spawnguard", "transcriptscrollguard", "retirementguard", "mermaidguard", "memoryguard", "skillguard", "cascadeguard", "backgroundjobsguard", backgroundTranscriptGuard, "comicguard"}
 
 const (
 	skillGuard      = "skillguard"
@@ -60,6 +60,15 @@ func newBrowserGate(slots int, buildFrontend bool) *webGate {
 func browserGuardSpec(guard, root string) guardSpec {
 	vite := "BROWSER_GUARD_VITE_CACHE_DIR=" + filepath.Join(root, "vite-cache")
 	switch guard {
+	case "comicguard":
+		return guardSpec{
+			name:            guard,
+			argv:            []string{"go", "test", "-tags", "browserguard", "./cmd/evener-hub", "-run", "^TestComicChatBrowser$", "-count=1"},
+			dir:             ".",
+			env:             []string{vite},
+			needsBuild:      true,
+			waitOnInterrupt: true,
+		}
 	case backgroundJobsGuard:
 		return guardSpec{
 			name:            guard,
@@ -80,13 +89,14 @@ func browserGuardSpec(guard, root string) guardSpec {
 		}
 	case skillGuard:
 		// web-skillguard carries the full-stack skill and onboarding guards:
-		// cmd/evener-hub's TestSkillComposerBrowser and TestOnboardingBrowser
-		// (browserguard build tag) drive the production web app in real Chrome
-		// through a real hub against real `evener serve` daemons. Their tagged
-		// TestSkillGuard* and TestOnboardingEvidence* rejection tests ride along.
+		// cmd/evener-hub's TestSkillComposerBrowser, TestOnboardingBrowser and
+		// TestOnboardingOAuthBrowser (browserguard build tag) drive the
+		// production web app in real Chrome through a real hub against real
+		// `evener serve` daemons. Their tagged TestSkillGuard* and
+		// TestOnboardingEvidence* rejection tests ride along.
 		return guardSpec{
 			name:            guard,
-			argv:            []string{"go", "test", "-tags", "browserguard", "./cmd/evener-hub", "-run", "^TestSkillComposerBrowser$|^TestSkillGuard|^TestOnboardingBrowser$|^TestOnboardingEvidence", "-count=1"},
+			argv:            []string{"go", "test", "-tags", "browserguard", "./cmd/evener-hub", "-run", "^TestSkillComposerBrowser$|^TestSkillGuard|^TestOnboardingBrowser$|^TestOnboardingOAuthBrowser$|^TestOnboardingEvidence", "-count=1"},
 			dir:             ".",
 			env:             []string{vite},
 			needsBuild:      true,

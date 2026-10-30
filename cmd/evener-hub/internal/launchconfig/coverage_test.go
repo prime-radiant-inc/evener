@@ -4,109 +4,12 @@ import (
 	"errors"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/BurntSushi/toml"
 	"github.com/spf13/afero"
 )
-
-type failureFile struct {
-	afero.File
-	writeErr error
-	syncErr  error
-	closeErr error
-}
-
-func (f *failureFile) Write(p []byte) (int, error) {
-	if f.writeErr != nil {
-		return 0, f.writeErr
-	}
-	return f.File.Write(p)
-}
-
-func (f *failureFile) Sync() error {
-	if f.syncErr != nil {
-		return f.syncErr
-	}
-	return f.File.Sync()
-}
-
-func (f *failureFile) Close() error {
-	if f.closeErr != nil {
-		return f.closeErr
-	}
-	return f.File.Close()
-}
-
-type atomicFailureFS struct {
-	afero.Fs
-	writeErr error
-	syncErr  error
-	closeErr error
-}
-
-func (fs *atomicFailureFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
-	f, err := fs.Fs.OpenFile(name, flag, perm)
-	if err != nil {
-		return nil, err
-	}
-	return &failureFile{File: f, writeErr: fs.writeErr, syncErr: fs.syncErr, closeErr: fs.closeErr}, nil
-}
-
-func checkWriteAtomicFSFailuresRemoveTemporaryFile(t *testing.T) {
-	tests := []struct {
-		name      string
-		encodeErr error
-		writeErr  error
-		syncErr   error
-		closeErr  error
-		want      string
-	}{
-		{name: "encode", encodeErr: errors.New("encode failed"), want: "encode"},
-		{name: "write", writeErr: errors.New("write failed"), want: "write"},
-		{name: "sync", syncErr: errors.New("sync failed"), want: "sync"},
-		{name: "close", closeErr: errors.New("close failed"), want: "close"},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			sentinel := tc.encodeErr
-			if sentinel == nil {
-				sentinel = tc.writeErr
-			}
-			if sentinel == nil {
-				sentinel = tc.syncErr
-			}
-			if sentinel == nil {
-				sentinel = tc.closeErr
-			}
-			base := afero.NewMemMapFs()
-			fs := &atomicFailureFS{Fs: base, writeErr: tc.writeErr, syncErr: tc.syncErr, closeErr: tc.closeErr}
-			path := filepath.Join("config", "launch.toml")
-			if err := afero.WriteFile(base, path, []byte("original"), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			err := writeAtomicFS(fs, path, func(w io.Writer) error {
-				if tc.encodeErr != nil {
-					return tc.encodeErr
-				}
-				_, err := w.Write([]byte("model = \"x\"\n"))
-				return err
-			})
-			if !errors.Is(err, sentinel) || !strings.Contains(err.Error(), tc.want+" "+path+".tmp") {
-				t.Fatalf("writeAtomicFS error = %v, want %q failure", err, tc.want)
-			}
-			got, readErr := afero.ReadFile(base, path)
-			if readErr != nil || string(got) != "original" {
-				t.Fatalf("destination = %q, err=%v; want unchanged", got, readErr)
-			}
-			if exists, err := afero.Exists(base, path+".tmp"); err != nil || exists {
-				t.Fatalf("temporary file exists=%v, err=%v", exists, err)
-			}
-		})
-	}
-}
 
 func checkValidateRepoRelativePathResolutionError(t *testing.T) {
 	errSentinel := errors.New("rel failed")

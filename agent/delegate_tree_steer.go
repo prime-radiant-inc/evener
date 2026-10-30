@@ -45,6 +45,7 @@ type delegateSteeringClaim struct {
 	lease      delegateLease
 	runtime    *Session
 	entryID    string
+	author     schema.TranscriptAuthor
 }
 
 type delegateModelRequestClaim struct {
@@ -71,7 +72,7 @@ func (c *delegateTreeController) Steer(ctx context.Context, actor delegateActor,
 	if err != nil {
 		return delegateMutationPlans{}, err
 	}
-	entry, err := claim.runtime.appendDelegateSteeringDurably(message, claim.entryID)
+	entry, err := claim.runtime.appendDelegateSteeringDurably(message, claim.entryID, claim.author)
 	if err != nil {
 		_ = c.AbortSteerPersistence(claim)
 		return delegateMutationPlans{}, err
@@ -107,6 +108,7 @@ func (c *delegateTreeController) BeginSteerPersistence(actor delegateActor, dele
 		lease:      live.binding.lease,
 		runtime:    live.binding.runtime,
 		entryID:    newQueueEntryID(),
+		author:     c.transcriptActorAuthorLocked(actor),
 	}
 	c.steeringClaims[claim.token] = claim
 	c.evidenceVersion++
@@ -291,22 +293,12 @@ func (c *delegateTreeController) AbortModelRequest(claim *delegateModelRequestCl
 
 func (c *delegateTreeController) releaseSteeringClaimLocked(token uint64) {
 	delete(c.steeringClaims, token)
-	if c.stop != nil {
-		if _, tracked := c.stop.steeringClaims[token]; tracked {
-			delete(c.stop.steeringClaims, token)
-			c.signalStopProgressLocked()
-		}
-	}
+	untrackStopLocked(c, func(s *delegateStopState) map[uint64]struct{} { return s.steeringClaims }, token)
 }
 
 func (c *delegateTreeController) releaseModelClaimLocked(token uint64) {
 	delete(c.modelClaims, token)
-	if c.stop != nil {
-		if _, tracked := c.stop.modelClaims[token]; tracked {
-			delete(c.stop.modelClaims, token)
-			c.signalStopProgressLocked()
-		}
-	}
+	untrackStopLocked(c, func(s *delegateStopState) map[uint64]struct{} { return s.modelClaims }, token)
 }
 
 func (c *delegateTreeController) dropRuntimeClaimsForMembersLocked(members map[string]struct{}) {
@@ -397,7 +389,7 @@ func parentSteeringTurn(message, stableTurnID string, now time.Time) schema.Turn
 	return turn
 }
 
-func (s *Session) appendDelegateSteeringDurably(message, stableTurnID string) (delegateTranscriptEntry, error) {
+func (s *Session) appendDelegateSteeringDurably(message, stableTurnID string, authors ...schema.TranscriptAuthor) (delegateTranscriptEntry, error) {
 	s.mu.Lock()
 	ready := s.transcriptReady && s.transcript != nil
 	s.mu.Unlock()
@@ -405,6 +397,9 @@ func (s *Session) appendDelegateSteeringDurably(message, stableTurnID string) (d
 		return delegateTranscriptEntry{}, errDelegateTranscriptUnavailable
 	}
 	turn := parentSteeringTurn(message, stableTurnID, s.sclock().Now())
+	if len(authors) != 0 {
+		turn.Authorship = &schema.TranscriptAuthorship{Author: authors[0]}
+	}
 	if err := s.appendTurnAfterTranscriptWrite(
 		turn,
 		func() error {

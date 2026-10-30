@@ -1,22 +1,24 @@
+import { ALL_CAPABILITIES as CAPABILITIES, type TestThreadOverrides, testThread } from "../threadTestUtils";
 import "fake-indexeddb/auto";
-import {
-  type ConnectionState,
-  type QueueState,
-  type Thread,
-  type ThreadCapabilities,
-  type ThreadReadResponse,
-  WireError,
-} from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { type ThreadReadResponse, WireError } from "@evener/appwire-client";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { connectionStore } from "./connection";
+import { connectReadyFakeClient } from "../testing/connectionTestUtils";
+import { resetConnectionStoreForTests } from "./connection";
+import { productionEntryTranscriptForTests, setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { SessionEntryCache } from "./sessionEntryCache";
-import { ConflictError, resetThreadsStoreForTests, setProductionEntryCacheForTests, threadsStore } from "./threads";
+import {
+  acquireBackgroundThread,
+  clearCachedSessions,
+  resetThreadsStoreForTests,
+  settleEntryTranscriptForTests,
+  threadsStore,
+} from "./threads";
+import { ConflictError } from "./threadsErrors";
 
 let cache: SessionEntryCache;
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   cache = new SessionEntryCache({
     indexedDB: new IDBFactory(),
@@ -30,59 +32,7 @@ afterEach(() => {
   cache.close();
   vi.restoreAllMocks();
 });
-function connectFakeClient(state: ConnectionState = "ready"): FakeClient {
-  const fake = new FakeClient(state);
-  fake.on("thread/unsubscribe", () => ({}));
-  connectionStore.getState().connect(fake);
-  return fake;
-}
-
-const CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
-
-type TestThreadOverrides = Omit<Partial<Thread>, "evener"> & {
-  evener?: Omit<Thread["evener"], "queue"> & { queue: Partial<QueueState> };
-};
-
-function testThread(ref: string, overrides: TestThreadOverrides = {}): Thread {
-  const { evener, ...threadOverrides } = overrides;
-  const threadID = threadOverrides.id ?? `thr_${ref}`;
-  return {
-    id: threadID,
-    sessionId: `sess_${ref}`,
-    preview: "test",
-    ephemeral: false,
-    modelProvider: "anthropic/claude-sonnet-4-5",
-    createdAt: 1000,
-    updatedAt: 1000,
-    status: { type: "idle" },
-    cwd: "/tmp/project",
-    cliVersion: "1.0.0",
-    source: "evener",
-    evener: {
-      ref,
-      instanceId: threadID,
-      mutationStateAuthoritative: true,
-      capabilities: CAPABILITIES,
-      ...evener,
-      queue: { revision: 0, ...evener?.queue },
-    },
-    ...threadOverrides,
-  };
-}
+const connectFakeClient = () => connectReadyFakeClient((fake) => fake.on("thread/unsubscribe", () => ({})));
 
 function readResponse(ref: string, overrides: TestThreadOverrides = {}): ThreadReadResponse {
   return {
@@ -156,7 +106,7 @@ describe("useThreadsStore.resolveEscalation", () => {
     fake.on("thread/read", () => threadWithEscalation("ref_a", "esc_1"));
     await threadsStore.getState().ensureThread("ref_a");
     // A stale/double/raced resolve is surfaced as appwire.Conflict() by the
-    // daemon (server/appwire_runtime.go's handleAppSandboxEscalationResolve:
+    // daemon (server/appwire_turn_handlers.go's handleAppSandboxEscalationResolve:
     // "Surface it as a conflict so the client can drop the card rather than
     // retry"). resolve must map it to ConflictError like every other mutating
     // action, so the escalation rail treats it as terminal, not retryable.
@@ -195,6 +145,507 @@ describe("useThreadsStore.resolveEscalation", () => {
     const before = threadsStore.getState().threads;
     await threadsStore.getState().resolveEscalation("ref_a", "esc_never_pending", true);
     expect(threadsStore.getState().threads).toBe(before);
+  });
+
+  // The resolving client is not sent the resolved broadcast, so its own clear
+  // is the only one. The transcript repository republishes its model on every
+  // later accepted frame, and that model must not still hold the card.
+  test("a frame accepted after the resolve does not bring the escalation back", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => threadWithEscalation("ref_a", "esc_1"));
+    fake.on("evener/sandbox/escalation/resolve", () => ({}));
+    await threadsStore.getState().ensureThread("ref_a");
+    expect(threadsStore.getState().threads.get("ref_a")?.pendingEscalations).toHaveLength(1);
+
+    await threadsStore.getState().resolveEscalation("ref_a", "esc_1", true);
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active", activeFlags: [] } },
+    } as never);
+
+    expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("active");
+    expect(threadsStore.getState().threads.get("ref_a")?.pendingEscalations).toEqual([]);
+  });
+
+  // A refresh read issued before the resolve can return after it, carrying the
+  // escalation in its snapshot. The resolve is local, so the daemon's cut does
+  // not order it against that snapshot.
+  test("a read issued before the resolve and answered after it does not bring the escalation back", async () => {
+    const fake = connectFakeClient();
+    let answerRead: (response: ThreadReadResponse) => void = () => {};
+    let reads = 0;
+    fake.on("thread/read", (params) => {
+      reads += 1;
+      if (reads === 1) return threadWithEscalation("ref_a", "esc_1");
+      const requestGeneration = (params as { requestGeneration?: number }).requestGeneration;
+      return new Promise<ThreadReadResponse>((resolve) => {
+        answerRead = (response) => resolve({ ...response, requestGeneration });
+      });
+    });
+    fake.on("evener/sandbox/escalation/resolve", () => ({}));
+    await threadsStore.getState().ensureThread("ref_a");
+
+    const refresh = threadsStore.getState().refreshThread("ref_a");
+    await vi.waitFor(() => expect(reads).toBe(2));
+    await threadsStore.getState().resolveEscalation("ref_a", "esc_1", true);
+    answerRead(threadWithEscalation("ref_a", "esc_1"));
+    await refresh;
+
+    expect(threadsStore.getState().threads.get("ref_a")?.pendingEscalations).toEqual([]);
+  });
+
+  function readCarrying(ids: string[], requestGeneration: number | undefined): ThreadReadResponse {
+    return {
+      ...readResponse("ref_a", {
+        evener: {
+          ref: "ref_a",
+          capabilities: CAPABILITIES,
+          queue: { revision: 0 },
+          pendingEscalations: ids.map((escalationId) => ({
+            ref: "ref_a",
+            threadId: "thr_ref_a",
+            escalationId,
+            mode: "workspace-write" as const,
+            tool: "shell",
+            kind: "shell" as const,
+            deniedPath: "/etc/hosts",
+          })),
+        },
+      }),
+      requestGeneration,
+    };
+  }
+
+  function pendingIds(): string[] | undefined {
+    return threadsStore
+      .getState()
+      .threads.get("ref_a")
+      ?.pendingEscalations.map((e) => e.escalationId);
+  }
+
+  // The daemon keeps an approved escalation advertised until its tool's rerun
+  // finishes, and a long session resolves many of them. The client forgets one
+  // only once a read issued after the resolve stops advertising it.
+  test("a resolved escalation stays filtered while reads advertise it and is forgotten once one stops", async () => {
+    const fake = connectFakeClient();
+    const ids = Array.from({ length: 100 }, (_, i) => `esc_${i}`);
+    let advertised: string[] = [];
+    let reads = 0;
+    fake.on("thread/read", (params) => {
+      reads += 1;
+      if (reads === 1) return threadWithEscalation("ref_a", "esc_seed");
+      return readCarrying(advertised, (params as { requestGeneration?: number }).requestGeneration);
+    });
+    fake.on("evener/sandbox/escalation/resolve", () => ({}));
+    await threadsStore.getState().ensureThread("ref_a");
+    for (const id of ids) await threadsStore.getState().resolveEscalation("ref_a", id, true);
+
+    advertised = ids;
+    await threadsStore.getState().refreshThread("ref_a");
+    expect(pendingIds()).toEqual([]);
+
+    // Reruns finish: a later read no longer advertises them, so they are forgotten.
+    advertised = [];
+    await threadsStore.getState().refreshThread("ref_a");
+    advertised = ids;
+    await threadsStore.getState().refreshThread("ref_a");
+    expect(pendingIds()).toEqual(ids);
+  });
+
+  // A read issued before the resolve says nothing about the escalation, even
+  // when it is answered after a read that confirmed another id gone.
+  test("a read issued before a resolve does not forget that resolve", async () => {
+    const fake = connectFakeClient();
+    let answerRead: (response: ThreadReadResponse) => void = () => {};
+    let reads = 0;
+    fake.on("thread/read", (params) => {
+      reads += 1;
+      if (reads === 1) return threadWithEscalation("ref_a", "esc_1");
+      const requestGeneration = (params as { requestGeneration?: number }).requestGeneration;
+      return new Promise<ThreadReadResponse>((resolve) => {
+        answerRead = (response) => resolve({ ...response, requestGeneration });
+      });
+    });
+    fake.on("evener/sandbox/escalation/resolve", () => ({}));
+    await threadsStore.getState().ensureThread("ref_a");
+
+    const refresh = threadsStore.getState().refreshThread("ref_a");
+    await vi.waitFor(() => expect(reads).toBe(2));
+    await threadsStore.getState().resolveEscalation("ref_a", "esc_1", true);
+    answerRead(readCarrying([], undefined));
+    await refresh;
+    reads = 1;
+    fake.on("thread/read", (params) =>
+      readCarrying(["esc_1"], (params as { requestGeneration?: number }).requestGeneration),
+    );
+    await threadsStore.getState().refreshThread("ref_a");
+
+    expect(pendingIds()).toEqual([]);
+  });
+
+  // Saved history omits pending escalations without the daemon having said
+  // anything about them.
+  test("a read that is not a live snapshot does not forget a resolve", async () => {
+    const fake = connectFakeClient();
+    let mode: "saved" | "live" = "saved";
+    let reads = 0;
+    fake.on("thread/read", (params) => {
+      reads += 1;
+      if (reads === 1) return threadWithEscalation("ref_a", "esc_1");
+      const requestGeneration = (params as { requestGeneration?: number }).requestGeneration;
+      if (mode === "saved") {
+        const saved = readCarrying([], requestGeneration);
+        return {
+          ...saved,
+          thread: { ...saved.thread, evener: { ...saved.thread.evener, mutationStateAuthoritative: false } },
+        };
+      }
+      return readCarrying(["esc_1"], requestGeneration);
+    });
+    fake.on("evener/sandbox/escalation/resolve", () => ({}));
+    await threadsStore.getState().ensureThread("ref_a");
+    await threadsStore.getState().resolveEscalation("ref_a", "esc_1", true);
+
+    await threadsStore.getState().refreshThread("ref_a");
+    mode = "live";
+    await threadsStore.getState().refreshThread("ref_a");
+
+    expect(pendingIds()).toEqual([]);
+  });
+
+  // A read still in flight from before the confirming one can carry the card.
+  test("an older read answered after a newer read confirmed the resolve does not bring it back", async () => {
+    const fake = connectFakeClient();
+    const answers: Array<(response: ThreadReadResponse) => void> = [];
+    let reads = 0;
+    fake.on("thread/read", (params) => {
+      reads += 1;
+      if (reads === 1) return threadWithEscalation("ref_a", "esc_1");
+      const requestGeneration = (params as { requestGeneration?: number }).requestGeneration;
+      return new Promise<ThreadReadResponse>((resolve) => {
+        answers.push((response) => resolve({ ...response, requestGeneration }));
+      });
+    });
+    fake.on("evener/sandbox/escalation/resolve", () => ({}));
+    await threadsStore.getState().ensureThread("ref_a");
+    await threadsStore.getState().resolveEscalation("ref_a", "esc_1", true);
+
+    const tracked = threadsStore.getState().refreshThread("ref_a");
+    await vi.waitFor(() => expect(answers).toHaveLength(1));
+    const watched = threadsStore.getState().watchThread("ref_a", { includeTurns: true });
+    await vi.waitFor(() => expect(answers).toHaveLength(2));
+    answers[1]?.(readCarrying([], undefined));
+    await watched;
+    answers[0]?.(readCarrying(["esc_1"], undefined));
+    await tracked;
+
+    expect(pendingIds()).toEqual([]);
+  });
+
+  // A response that arrived before the resolve is still being adopted (it waits
+  // on cache authorities) when a newer read confirms the id gone.
+  test("a response awaiting adoption does not bring back a resolve a newer read confirmed", async () => {
+    const fake = connectFakeClient();
+    let reads = 0;
+    fake.on("thread/read", (params) => {
+      reads += 1;
+      const requestGeneration = (params as { requestGeneration?: number }).requestGeneration;
+      return reads === 2 ? readCarrying(["esc_1"], requestGeneration) : readCarrying([], requestGeneration);
+    });
+    fake.on("evener/sandbox/escalation/resolve", () => ({}));
+    await threadsStore.getState().ensureThread("ref_a");
+
+    let releaseAuthority: (generation: number) => void = () => {};
+    const entered = new Promise<void>((resolve) => {
+      vi.spyOn(cache, "getHistoryGeneration").mockImplementationOnce(() => {
+        resolve();
+        return new Promise<number>((release) => {
+          releaseAuthority = release;
+        });
+      });
+    });
+    const tracked = threadsStore.getState().refreshThread("ref_a");
+    await entered;
+    await threadsStore.getState().resolveEscalation("ref_a", "esc_1", true);
+    const published: string[][] = [];
+    const unsubscribe = threadsStore.subscribe(() => published.push(pendingIds() ?? []));
+    await threadsStore.getState().watchThread("ref_a", { includeTurns: true });
+    releaseAuthority(0);
+    await tracked;
+    unsubscribe();
+
+    expect(published.flat()).not.toContain("esc_1");
+    expect(pendingIds()).toEqual([]);
+  });
+
+  // Reads are answered concurrently, so a read issued after the confirming one
+  // can still carry a snapshot taken before the daemon dropped the escalation.
+  test("a later-issued read answered after a confirming read does not bring the resolve back", async () => {
+    const fake = connectFakeClient();
+    const answers: Array<(response: ThreadReadResponse) => void> = [];
+    let reads = 0;
+    fake.on("thread/read", (params) => {
+      reads += 1;
+      if (reads === 1) return threadWithEscalation("ref_a", "esc_1");
+      const requestGeneration = (params as { requestGeneration?: number }).requestGeneration;
+      return new Promise<ThreadReadResponse>((resolve) => {
+        answers.push((response) => resolve({ ...response, requestGeneration }));
+      });
+    });
+    fake.on("evener/sandbox/escalation/resolve", () => ({}));
+    await threadsStore.getState().ensureThread("ref_a");
+    await threadsStore.getState().resolveEscalation("ref_a", "esc_1", true);
+
+    const watched = threadsStore.getState().watchThread("ref_a", { includeTurns: true });
+    await vi.waitFor(() => expect(answers).toHaveLength(1));
+    const tracked = threadsStore.getState().refreshThread("ref_a");
+    await vi.waitFor(() => expect(answers).toHaveLength(2));
+    answers[0]?.(readCarrying([], undefined));
+    await watched;
+    answers[1]?.(readCarrying(["esc_1"], undefined));
+    await tracked;
+
+    expect(pendingIds()).toEqual([]);
+  });
+
+  // The repository's own end-of-round reconciliation read is no hydration, so
+  // only the in-flight read count keeps a confirmed id until it is answered.
+  test("a repository-owned end read answered after a confirming read does not bring the resolve back", async () => {
+    const fake = connectFakeClient();
+    let answerEnd: (response: ThreadReadResponse) => void = () => {};
+    let reads = 0;
+    fake.on("thread/read", (params) => {
+      reads += 1;
+      if (reads === 1) return threadWithEscalation("ref_a", "esc_1");
+      const requestGeneration = (params as { requestGeneration?: number }).requestGeneration;
+      if (reads === 2)
+        return new Promise<ThreadReadResponse>((resolve) => {
+          answerEnd = (response) => resolve({ ...response, requestGeneration });
+        });
+      return readCarrying([], requestGeneration);
+    });
+    fake.on("evener/sandbox/escalation/resolve", () => ({}));
+    const owner = acquireBackgroundThread("ref_a");
+    await owner.ready;
+    await settleEntryTranscriptForTests("ref_a");
+    fake.emitNotification({
+      method: "overlay/upserted",
+      params: {
+        ref: "ref_a",
+        threadId: "thr_ref_a",
+        item: {
+          key: "tool:old",
+          kind: "tool",
+          roundId: "r1",
+          historyKey: "old-tool",
+          turnId: "turn_1",
+          anchor: { entry: 2, item: 0 },
+          item: { id: "old-tool", type: "commandExecution", turnId: "turn_1", status: "inProgress", output: "" },
+        },
+      },
+    } as never);
+    fake.emitNotification({
+      method: "overlay/end",
+      params: { ref: "ref_a", threadId: "thr_ref_a", roundId: "r1" },
+    } as never);
+    await vi.waitFor(() => expect(reads).toBe(2));
+    await threadsStore.getState().resolveEscalation("ref_a", "esc_1", true);
+    await threadsStore.getState().watchThread("ref_a", { includeTurns: true });
+    answerEnd(readCarrying(["esc_1"], undefined));
+    await settleEntryTranscriptForTests("ref_a");
+
+    expect(productionEntryTranscriptForTests("ref_a").repository?.getSnapshot()?.pendingEscalations).toEqual([]);
+    await owner.release();
+  });
+
+  test("a superseded read answered after the resolve is still discarded", async () => {
+    const fake = connectFakeClient();
+    let answerRead: (response: ThreadReadResponse) => void = () => {};
+    let reads = 0;
+    fake.on("thread/read", () => {
+      reads += 1;
+      if (reads === 1) return threadWithEscalation("ref_a", "esc_1");
+      return new Promise<ThreadReadResponse>((resolve) => {
+        answerRead = resolve;
+      });
+    });
+    fake.on("evener/sandbox/escalation/resolve", () => ({}));
+    await threadsStore.getState().ensureThread("ref_a");
+    const publishedBefore = threadsStore.getState().hydrations.get("ref_a");
+
+    const refresh = threadsStore.getState().refreshThread("ref_a");
+    await vi.waitFor(() => expect(reads).toBe(2));
+    await threadsStore.getState().resolveEscalation("ref_a", "esc_1", true);
+    // No requestGeneration echo: the response answers an older request than the
+    // one issued, so the reducer discards it.
+    answerRead(threadWithEscalation("ref_a", "esc_1"));
+    await refresh;
+
+    expect(threadsStore.getState().hydrations.get("ref_a")).toBe(publishedBefore);
+    expect(threadsStore.getState().threads.get("ref_a")?.pendingEscalations).toEqual([]);
+  });
+
+  test("a stale-cursor retry that replaces the repository does not bring a resolved escalation back", async () => {
+    const fake = connectFakeClient();
+    let answerRetry: (response: ThreadReadResponse) => void = () => {};
+    let reads = 0;
+    fake.on("thread/read", (params) => {
+      reads += 1;
+      if (reads === 1) return threadWithEscalation("ref_a", "esc_1");
+      const { heldSnapshot, requestGeneration } = params as { heldSnapshot?: unknown; requestGeneration?: number };
+      if (heldSnapshot !== undefined)
+        throw new WireError("stale", -32000, { evenerErrorInfo: "transcriptItemCursorStale" });
+      return new Promise<ThreadReadResponse>((resolve) => {
+        answerRetry = (response) => resolve({ ...response, requestGeneration });
+      });
+    });
+    fake.on("evener/sandbox/escalation/resolve", () => ({}));
+    await threadsStore.getState().ensureThread("ref_a");
+
+    const refresh = threadsStore.getState().refreshThread("ref_a");
+    await vi.waitFor(() => expect(reads).toBe(3));
+    await threadsStore.getState().resolveEscalation("ref_a", "esc_1", true);
+    answerRetry(threadWithEscalation("ref_a", "esc_1"));
+    await refresh;
+
+    expect(threadsStore.getState().threads.get("ref_a")?.pendingEscalations).toEqual([]);
+  });
+
+  test("a resolve before a stale-cursor retry that replaces the repository stays resolved", async () => {
+    const fake = connectFakeClient();
+    let reads = 0;
+    fake.on("thread/read", (params) => {
+      reads += 1;
+      if (reads === 1) return threadWithEscalation("ref_a", "esc_1");
+      const { heldSnapshot, requestGeneration } = params as { heldSnapshot?: unknown; requestGeneration?: number };
+      if (heldSnapshot !== undefined)
+        throw new WireError("stale", -32000, { evenerErrorInfo: "transcriptItemCursorStale" });
+      return { ...threadWithEscalation("ref_a", "esc_1"), requestGeneration };
+    });
+    fake.on("evener/sandbox/escalation/resolve", () => ({}));
+    await threadsStore.getState().ensureThread("ref_a");
+    await threadsStore.getState().resolveEscalation("ref_a", "esc_1", true);
+
+    await threadsStore.getState().refreshThread("ref_a");
+
+    expect(reads).toBe(3);
+    expect(threadsStore.getState().threads.get("ref_a")?.pendingEscalations).toEqual([]);
+  });
+
+  test.each(["a status frame", "a goal response"] as const)(
+    "a resolve acknowledged during a committed Clear stays resolved when %s arrives before the refresh",
+    async (arrival) => {
+      const fake = connectFakeClient();
+      let answerRefresh: (response: ThreadReadResponse) => void = () => {};
+      let reads = 0;
+      fake.on("thread/read", (params) => {
+        reads += 1;
+        if (reads === 1) return threadWithEscalation("ref_a", "esc_1");
+        const requestGeneration = (params as { requestGeneration?: number }).requestGeneration;
+        return new Promise<ThreadReadResponse>((resolve) => {
+          answerRefresh = (response) => resolve({ ...response, requestGeneration });
+        });
+      });
+      fake.on("evener/sandbox/escalation/resolve", () => ({}));
+      await threadsStore.getState().ensureThread("ref_a");
+      await settleEntryTranscriptForTests("ref_a");
+
+      let commitClear: () => void = () => {};
+      const heldClear = new Promise<void>((resolve) => {
+        commitClear = resolve;
+      });
+      const originalClear = cache.clear.bind(cache);
+      vi.spyOn(cache, "clear").mockImplementation(async () => {
+        await heldClear;
+        return originalClear();
+      });
+      const clearing = clearCachedSessions();
+      await threadsStore.getState().resolveEscalation("ref_a", "esc_1", true);
+      commitClear();
+      expect(await clearing).toEqual({ committed: true });
+      await vi.waitFor(() => expect(reads).toBe(2));
+
+      if (arrival === "a status frame") {
+        fake.emitNotification({
+          method: "thread/status/changed",
+          params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active", activeFlags: [] } },
+        } as never);
+        expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("active");
+      } else {
+        fake.on("goal/set", () => ({ started: true }));
+        await threadsStore.getState().setGoal("ref_a", "ship it");
+        expect(threadsStore.getState().threads.get("ref_a")?.goal?.objective).toBe("ship it");
+      }
+      expect(threadsStore.getState().threads.get("ref_a")?.pendingEscalations).toEqual([]);
+      answerRefresh(threadWithEscalation("ref_a", "esc_1"));
+    },
+  );
+
+  test("a watch read issued before the resolve and answered after it does not bring the escalation back", async () => {
+    const fake = connectFakeClient();
+    let answerWatchRead: (response: ThreadReadResponse) => void = () => {};
+    let reads = 0;
+    fake.on("thread/read", (params) => {
+      reads += 1;
+      if (reads === 1) return threadWithEscalation("ref_a", "esc_1");
+      const requestGeneration = (params as { requestGeneration?: number }).requestGeneration;
+      return new Promise<ThreadReadResponse>((resolve) => {
+        answerWatchRead = (response) => resolve({ ...response, requestGeneration });
+      });
+    });
+    fake.on("evener/sandbox/escalation/resolve", () => ({}));
+    await threadsStore.getState().ensureThread("ref_a");
+
+    const watch = threadsStore.getState().watchThread("ref_a");
+    await vi.waitFor(() => expect(reads).toBe(2));
+    await threadsStore.getState().resolveEscalation("ref_a", "esc_1", true);
+    answerWatchRead(threadWithEscalation("ref_a", "esc_1"));
+    await watch;
+
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.pendingEscalations).toEqual([]);
+  });
+
+  test("a watch-only ref's read issued before the resolve does not bring the escalation back", async () => {
+    const fake = connectFakeClient();
+    let answerUpgrade: (response: ThreadReadResponse) => void = () => {};
+    let reads = 0;
+    fake.on("thread/read", (params) => {
+      reads += 1;
+      if (reads === 1) return threadWithEscalation("ref_a", "esc_1");
+      const requestGeneration = (params as { requestGeneration?: number }).requestGeneration;
+      return new Promise<ThreadReadResponse>((resolve) => {
+        answerUpgrade = (response) => resolve({ ...response, requestGeneration });
+      });
+    });
+    fake.on("evener/sandbox/escalation/resolve", () => ({}));
+    await threadsStore.getState().watchThread("ref_a");
+
+    const upgrade = threadsStore.getState().watchThread("ref_a", { includeTurns: true });
+    await vi.waitFor(() => expect(reads).toBe(2));
+    await threadsStore.getState().resolveEscalation("ref_a", "esc_1", true);
+    answerUpgrade(threadWithEscalation("ref_a", "esc_1"));
+    await upgrade;
+
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.pendingEscalations).toEqual([]);
+  });
+
+  test("a watch upgrade after the resolve does not bring the escalation back", async () => {
+    const fake = connectFakeClient();
+    let reads = 0;
+    fake.on("thread/read", (params) => {
+      reads += 1;
+      const requestGeneration = (params as { requestGeneration?: number }).requestGeneration;
+      return { ...threadWithEscalation("ref_a", "esc_1"), requestGeneration };
+    });
+    fake.on("evener/sandbox/escalation/resolve", () => ({}));
+    await threadsStore.getState().watchThread("ref_a");
+    await threadsStore.getState().resolveEscalation("ref_a", "esc_1", true);
+
+    await threadsStore.getState().watchThread("ref_a", { includeTurns: true });
+
+    expect(reads).toBe(2);
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.pendingEscalations).toEqual([]);
   });
 
   test("updates BOTH threads and watchedThreads when the same ref is tracked in each", async () => {
@@ -257,7 +708,7 @@ describe("useThreadsStore.resolveEscalation", () => {
 
     // The real wire shape (appwire.SandboxEscalationResolved): {threadId, ref,
     // escalationId} — the daemon's broadcast to every OTHER subscribed client
-    // when a pending escalation leaves the set (server/appwire_runtime.go's M7
+    // when a pending escalation leaves the set (server/appwire_record_events.go's M7
     // fix). Unlike the local resolveEscalation action, this arrives for a
     // resolve some OTHER client made, so a client that only watches the session
     // still drops its now-stale card.

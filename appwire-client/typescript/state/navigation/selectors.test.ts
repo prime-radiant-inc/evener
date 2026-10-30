@@ -1,8 +1,15 @@
 import { expect, test } from "vitest";
 import type { NavigationManifest, NavigationSessionSummary } from "../../types.gen";
 import { normalizedGraphFromSnapshot } from "./codec";
-import { selectDisplaySources, selectSources, subagentTallyToShow } from "./selectors";
-import { isSettledGone, navigationViewScope, type ResourceKey, type ResourceState } from "./types";
+import {
+  selectDisplaySources,
+  selectSectionCanDemand,
+  selectSectionRemaining,
+  selectSources,
+  subagentTallyToShow,
+} from "./selectors";
+import type { NavigationStoreState } from "./store";
+import { isSettledGone, keyID, navigationViewScope, type ResourceKey, type ResourceState } from "./types";
 
 test.each([
   [
@@ -186,4 +193,103 @@ test("subagentTallyToShow shows a live root's running and failed counts and hide
   expect(subagentTallyToShow(row({ subagents: { running: 0, failed: 0, done: 4 } }))).toBeNull();
   expect(subagentTallyToShow(row({}))).toBeNull();
   expect(subagentTallyToShow(row({ live: false, subagents: { running: 3, failed: 0, done: 0 } }))).toBeNull();
+});
+
+// selectSectionCanDemand is the one rule every navigation surface asks before
+// spending a page read: a settled page owns completion, remaining rows keep
+// demand, a failed page keeps demand, and the manifest count decides only
+// while no page has settled.
+function sectionPage(
+  section: "live" | "needs_you",
+  options: { remaining?: number; rows?: string[] } & Partial<ResourceState> = {},
+): ResourceState {
+  const { remaining = 0, rows = [], ...overrides } = options;
+  return {
+    key: { kind: "section", section, offset: 0, limit: 50 },
+    data: { sessions: rows.map((ref) => ({ ref })), remaining },
+    loadedRevision: 1,
+    targetRevision: null,
+    forceToken: 0,
+    etag: '"page"',
+    loading: false,
+    stale: false,
+    error: null,
+    generationID: "generation_test",
+    ...overrides,
+  };
+}
+
+function demandState(
+  pages: ResourceState[],
+  manifest: ResourceState<NavigationManifest> | null,
+  visible: "all" | "none" = "all",
+): NavigationStoreState {
+  return {
+    resources: new Map(pages.map((page) => [keyID(page.key), page])),
+    visibleResourceKeys: new Set(visible === "all" ? pages.map((page) => keyID(page.key)) : []),
+    manifest,
+  } as unknown as NavigationStoreState;
+}
+
+function manifestWithCount(section: "live" | "needs_you", count: number): ResourceState<NavigationManifest> {
+  const sections = { ...manifestData.sections, [section]: { count } };
+  return manifestResource({ data: { ...manifestData, sections } });
+}
+
+test("selectSectionCanDemand demands before a manifest reports any count", () => {
+  for (const section of ["live", "needs_you"] as const) {
+    expect(selectSectionCanDemand(section, demandState([], null))).toBe(true);
+  }
+});
+
+test("a settled page with no remaining rows owns completion despite a larger manifest count", () => {
+  for (const section of ["live", "needs_you"] as const) {
+    const state = demandState([sectionPage(section, { rows: ["a", "b"] })], manifestWithCount(section, 9));
+    expect(selectSectionRemaining(section, state)).toBe(0);
+    expect(selectSectionCanDemand(section, state)).toBe(false);
+  }
+});
+
+test("a page that reports remaining rows may demand another page", () => {
+  for (const section of ["live", "needs_you"] as const) {
+    const state = demandState([sectionPage(section, { rows: ["a"], remaining: 1 })], manifestWithCount(section, 0));
+    expect(selectSectionCanDemand(section, state)).toBe(true);
+  }
+});
+
+// A page that answered with no data is a settled tombstone: the section has
+// nothing more to fetch, so a stale-high manifest count must not keep demand
+// alive.
+test("a settled page with no data owns completion", () => {
+  for (const section of ["live", "needs_you"] as const) {
+    const state = demandState([sectionPage(section, { data: null })], manifestWithCount(section, 3));
+    expect(selectSectionCanDemand(section, state)).toBe(false);
+  }
+});
+
+test("a failed page keeps demand even when no rows remain", () => {
+  for (const section of ["live", "needs_you"] as const) {
+    const state = demandState(
+      [sectionPage(section, { data: null, error: new Error("read failed") })],
+      manifestWithCount(section, 0),
+    );
+    expect(selectSectionCanDemand(section, state)).toBe(true);
+  }
+});
+
+test("an unsettled page falls back to the manifest count against the loaded rows", () => {
+  for (const section of ["live", "needs_you"] as const) {
+    const retrying = sectionPage(section, { rows: ["a"], loading: true });
+    expect(selectSectionCanDemand(section, demandState([retrying], manifestWithCount(section, 2)))).toBe(true);
+    expect(selectSectionCanDemand(section, demandState([retrying], manifestWithCount(section, 1)))).toBe(false);
+    const empty = sectionPage(section, { data: null, loading: true });
+    expect(selectSectionCanDemand(section, demandState([empty], manifestWithCount(section, 1)))).toBe(true);
+  }
+});
+
+test("a settled page the reader cannot see does not own completion", () => {
+  // Only live pages load without visibility (the background lease); a needs_you
+  // page is always registered as the reader's, so the hidden case is live's.
+  const state = demandState([sectionPage("live", { rows: ["a"] })], manifestWithCount("live", 4), "none");
+  expect(selectSectionCanDemand("live", state)).toBe(true);
 });

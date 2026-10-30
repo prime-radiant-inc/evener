@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"os"
 	"path/filepath"
 
@@ -43,7 +42,7 @@ func lookupDaemonOwner(ctx context.Context, cfg hubcore.WebConfig, ref, threadID
 		if err != nil {
 			return hubcore.LiveEntry{}, false, err
 		}
-		if parsed.SourceID != "local" {
+		if parsed.SourceID != appwire.LocalSourceID {
 			return hubcore.LiveEntry{}, false, nil
 		}
 		threadID = parsed.ThreadID
@@ -251,7 +250,7 @@ func refreshDaemonRestartRequiredError(ctx context.Context, cfg hubcore.WebConfi
 		if err != nil {
 			return appwire.InvalidParams(err.Error())
 		}
-		if parsed.SourceID != "local" {
+		if parsed.SourceID != appwire.LocalSourceID {
 			return nil
 		}
 	}
@@ -297,14 +296,8 @@ func isDaemonRestartRequiredError(err error) bool {
 	if !errors.As(err, &wire) {
 		return false
 	}
-	switch data := wire.Data.(type) {
-	case appwire.ErrorData:
-		return data.Cause == "daemonRestartRequired"
-	case map[string]any:
-		return data["cause"] == "daemonRestartRequired"
-	default:
-		return false
-	}
+	data, _ := appwire.DecodedErrorData(wire.Data)
+	return data.Cause == "daemonRestartRequired"
 }
 
 // Admission fences cannot resolve an earlier acceptance of the same mutation.
@@ -314,19 +307,7 @@ func blockedAdmissionMutationError(err error, mutationID string) error {
 	if !errors.As(err, &wire) {
 		return err
 	}
-	switch data := wire.Data.(type) {
-	case appwire.ErrorData:
-		data.ClientMutationID = mutationID
-		data.MutationOutcome = appwire.MutationOutcomeUnknown
-		data.RetryDisposition = appwire.RetryDispositionBlocked
-		wire.Data = data
-	case map[string]any:
-		updated := maps.Clone(data)
-		updated["clientMutationId"] = mutationID
-		updated["mutationOutcome"] = string(appwire.MutationOutcomeUnknown)
-		updated["retryDisposition"] = string(appwire.RetryDispositionBlocked)
-		wire.Data = updated
-	}
+	wire, _ = wire.WithMutation(mutationID, appwire.MutationOutcomeUnknown, appwire.RetryDispositionBlocked)
 	if isSessionRecoveryAdmissionError(err) {
 		return sessionRecoveryAdmissionError{wire}
 	}

@@ -189,8 +189,15 @@ alone never answers a question. Resolve a pending approval with
 
 A completion watch follows the recorded question-to-answer relationship across
 successive answers, including a watch attached while a question is pending.
-Unrelated work cannot complete it. An unavailable continuation lookup ends the
-watch explicitly rather than guessing; see [completion evidence](job-control.md#manager-observation-evidence).
+Unrelated work cannot complete it. A transient continuation read retries the
+original candidate under the same watch ID, preserving pending deliveries. The
+existing subscription consumer uses two seconds per call, two seconds between
+retries and at most five consecutive failed calls, with an interruption notice.
+Clear, replacement or subscription cancellation stops recovery. Permanent
+request/evidence failures and exhausted retries end the watch explicitly rather
+than guessing. Cancellation checks between reads do not impose a hard wall-clock
+bound on catch-up or underlying OS I/O; see
+[completion evidence](job-control.md#manager-observation-evidence).
 
 Creation is local. `hub` accepts only `cwd`, `model` and `watch`, and an
 unknown field such as a source or host name is rejected rather than ignored.
@@ -219,6 +226,14 @@ attribution are checked through real two-hub SSH acceptance, without a browser.
 Clearing a Manager watch leaves human subscribers attached. Local no-browser
 sandbox approval is qualified; approval caused by a live remote prompt remains
 unexercised end to end.
+
+An in-process owned child can also be watched by its canonical child ref. Its
+list and read identify the child session, but `instanceId` names the current
+serving root session and its boot generation is root-qualified. Root replacement
+invalidates that observation identity. A completion-enabled watch observes child
+`communicate` events, but those events have no `end_reason` and do not certify a
+`done` completion. Watching a child does not make it eligible for sandbox approval:
+approval remains root-only, and ordinary delegated controls are unchanged.
 
 ## Apply human controls from a Manager
 

@@ -11,7 +11,9 @@ import type { UpdateCheckResponse } from "@evener/appwire-client";
 export function hubStatusLine(ready: boolean, connection: string | null, check: UpdateCheckResponse | null): string {
 	const parts = [hubConnectionWord(ready, connection)];
 	if (check?.currentVersion) parts.push(`evener ${check.currentVersion}`);
-	if (check?.applicable) parts.push(check.updateAvailable ? "Update available" : "up to date");
+	// A failed channel lookup leaves applicable true and updateAvailable
+	// false; it says nothing about whether this build is current.
+	if (check?.applicable && !check.checkError) parts.push(check.updateAvailable ? "Update available" : "up to date");
 	return parts.join(" · ");
 }
 

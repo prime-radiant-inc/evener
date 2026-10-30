@@ -256,23 +256,11 @@ func TestServerAppWireReplacementClosesTheOldStreamOnce(t *testing.T) {
 }
 
 // TestServerAppWireReplacementLeavesNoActiveTurn pins that an installed
-// identity starts with no active turn: neither the running execution the old
-// session published nor a reserved one survives the replacement.
+// identity starts with no active turn: the running execution the old session
+// published does not survive the replacement.
 func TestServerAppWireReplacementLeavesNoActiveTurn(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	reserved, err := srv.reserveAppTurnIDForStart()
-	if err != nil {
-		t.Fatalf("reserveAppTurnIDForStart: %v", err)
-	}
-	if srv.appThread().Evener.ActiveTurnID != reserved {
-		t.Fatalf("thread.evener.activeTurnId = %q, want the reserved %q", srv.appThread().Evener.ActiveTurnID, reserved)
-	}
-	srv.SetAppIdentity("local", "th_2")
-	if got := srv.appThread().Evener.ActiveTurnID; got != "" {
-		t.Fatalf("thread.evener.activeTurnId = %q after replacement, want none", got)
-	}
-
 	srv.SetProcessingTurn("t_running")
 	if got := srv.appThread().Evener.ActiveTurnID; got != "t_running" {
 		t.Fatalf("thread.evener.activeTurnId = %q, want the running t_running", got)
@@ -280,12 +268,6 @@ func TestServerAppWireReplacementLeavesNoActiveTurn(t *testing.T) {
 	srv.SetAppIdentity("local", "th_3")
 	if got := srv.appThread().Evener.ActiveTurnID; got != "" {
 		t.Fatalf("thread.evener.activeTurnId = %q after replacement, want none", got)
-	}
-	srv.mu.RLock()
-	reservedAfter := srv.appReservedTurnID
-	srv.mu.RUnlock()
-	if reservedAfter != "" {
-		t.Fatalf("reserved turn = %q after replacement, want none", reservedAfter)
 	}
 }
 
@@ -378,7 +360,7 @@ func TestTranscriptHeaderReadsOnlyLeadingHeader(t *testing.T) {
 		return path
 	}
 	large := writeNoAPICallTranscript(2000)
-	if got, err := transcriptHeader(large, appTranscriptMaxLineBytes); err != nil || got.SessionID != "th_1" {
+	if got, err := transcriptHeader(large, transcript.DefaultMaxLineBytes); err != nil || got.SessionID != "th_1" {
 		t.Fatalf("header = %+v, %v; want session th_1", got, err)
 	}
 
@@ -388,7 +370,7 @@ func TestTranscriptHeaderReadsOnlyLeadingHeader(t *testing.T) {
 	}
 	defer file.Close() //nolint:errcheck // read-only fixture
 	counted := &countingHeaderReader{Reader: file}
-	if got, err := transcriptHeaderFromReader(counted, appTranscriptMaxLineBytes); err != nil || got.SessionID != "th_1" {
+	if got, err := transcriptHeaderFromReader(counted, transcript.DefaultMaxLineBytes); err != nil || got.SessionID != "th_1" {
 		t.Fatalf("counted header = %+v, %v; want session th_1", got, err)
 	}
 	if counted.bytes > transcriptHeaderReadBufferBytes {

@@ -148,8 +148,8 @@ export async function runSpawnBuiltinAfterStart(
         return { ok: true };
       }
       // Resolve against the command's own source. In the pre-session caller
-      // (Task 6) unknown values are validated before start via
-      // resolveSpawnModelItems(modelCatalog); this post-start path validates
+      // unknown values are validated before start via
+      // resolveSpawnBuiltinLaunch; this post-start path validates
       // again against the live source. When the source is unavailable (null
       // catalog, tests) the unknown still fail-closes.
       const items = await enumItems();

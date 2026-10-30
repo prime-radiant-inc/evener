@@ -869,6 +869,15 @@ func TestTimingBudgetRunnerBoundMemberWarnsWhileKeptClassMemberFails(t *testing.
 			seconds: "32.28",
 		},
 		{
+			// A parent that builds one live stack per subtest: its wall time is the
+			// sum of three runner-bound stack starts (6.8s typical, 15.3-16.9s on a
+			// loaded runner), so a class ceiling measures the runner.
+			name:    "multi-stack E2E parent warns",
+			pkg:     "primeradiant.com/evener/cmd/evener-hub",
+			test:    "TestE2E_RetireOverlappedByAnotherOwnershipAction",
+			seconds: "16.86",
+		},
+		{
 			// The same class's remaining members stay strict: moving one member
 			// off must not quiet the class.
 			name:     "kept session-activity member still fails",
@@ -1021,4 +1030,54 @@ func TestTimingBudgetFailsOnANonObjectTopLevelBudgetInEveryMode(t *testing.T) {
 	const measured = "SUM\tpkg\t100.00\n"
 	assertBudgetFailsInEveryMode(t, "list", measured, `[]`)
 	assertBudgetFailsInEveryMode(t, "number", measured, `5`)
+}
+
+// TestCheckedInTimingBudgetEnforcesPackageRatios guards the ratchet against
+// silently disarming: the checked-in budget must carry the wall-time metric
+// marker, so a package far over its recorded budget fails under --strict
+// instead of downgrading to a stale-units warning.
+func TestCheckedInTimingBudgetEnforcesPackageRatios(t *testing.T) {
+	dir := t.TempDir()
+	measured := filepath.Join(dir, "measured.tsv")
+	const pkg = "primeradiant.com/evener/agent"
+	writeAuditScriptFixture(t, measured, "SUM\t"+pkg+"\t100000.00\n")
+	out, err := runTimingBudgetFixture(t, measured, "testing-budget.json", dir, []string{"--check", "--strict"}, nil)
+	if err == nil {
+		t.Fatalf("a package far over its checked-in budget must fail the strict check:\n%s", out)
+	}
+	if !strings.Contains(out, "FAIL  "+pkg) {
+		t.Fatalf("the over-budget package was not reported as a FAIL:\n%s", out)
+	}
+}
+
+// TestCheckedInTimingBudgetAcceptsHealthyWebMeasurement pairs with the test
+// above: with the ratios armed, the "web" row must be a CI-class number, so a
+// healthy web-unit measurement (the slowest seen was 547.26s) passes.
+func TestCheckedInTimingBudgetAcceptsHealthyWebMeasurement(t *testing.T) {
+	dir := t.TempDir()
+	measured := filepath.Join(dir, "measured.tsv")
+	writeAuditScriptFixture(t, measured, "SUM\tweb\t547.26\n")
+	out, err := runTimingBudgetFixture(t, measured, "testing-budget.json", dir, []string{"--check", "--strict"}, nil)
+	if err != nil {
+		t.Fatalf("a healthy CI web measurement must pass the strict check:\n%s", out)
+	}
+}
+
+// TestTimingTSVLibParsesFromAnyDirectoryWithoutRepoRoot pins the way CI's
+// web-unit lane uses the lib: sourced in a bare step by a relative path, with
+// no repo_root set and a report path relative to the caller's directory, after
+// the caller has changed directory. The lib must find its own checkout and read
+// the report where the caller meant it.
+func TestTimingTSVLibParsesFromAnyDirectoryWithoutRepoRoot(t *testing.T) {
+	work := t.TempDir()
+	writeAuditScriptFixture(t, filepath.Join(work, "vitest.json"), `{"testResults":[{"assertionResults":[{"fullName":"a b","duration":1500}]}]}`)
+	cmd := exec.Command("bash", "-c", `. scripts/lib/timing-tsv-lib.sh && cd "$WORK" && vitest_json_to_tsv vitest.json`)
+	cmd.Env = append(os.Environ(), "WORK="+work, "repo_root=")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("vitest_json_to_tsv without repo_root: %v\n%s", err, out)
+	}
+	if want := "SUM\tweb\t1.5\n"; !strings.Contains(string(out), want) {
+		t.Fatalf("rows = %q, want the web SUM row %q", out, want)
+	}
 }

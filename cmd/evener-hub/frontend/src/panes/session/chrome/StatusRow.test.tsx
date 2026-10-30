@@ -1,14 +1,15 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
+import type { ThreadModel } from "@evener/appwire-client";
 import { effortLabel, hydrateThread } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test } from "vitest";
-import { connectionStore } from "../../../stores/connection";
+import { resetConnectionStoreForTests } from "../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
+import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
+import { ALL_CAPABILITIES as CAPABILITIES } from "../../../threadTestUtils";
 import { Toast } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import rawMeterStyles from "../../../widgets/meter/meter.module.css";
@@ -32,22 +33,6 @@ test("phone status CSS reserves a visible model label without dropping fixed fac
   expect(phoneBlock).toContain("padding-inline: 0");
   expect(phoneBlock).toContain("min-width: 1rem");
 });
-
-const CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
 
 function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
   const { jobsTreeRevision = null, ...rest } = overrides;
@@ -96,14 +81,8 @@ function runningModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
   });
 }
 
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  return fake;
-}
-
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   // Toasts are module state and outlive cleanup(); without this a toast from
   // an earlier test here is still on screen when "a failed setReasoningEffort call surfaces an error
@@ -216,7 +195,7 @@ test("shows provider/model once a live thread/model/changed has actually split t
 // actually wires the ModelSwitch trigger in, for the SAME sessionRef.
 test("wires the model-switch trigger in, acting on the SAME sessionRef passed to StatusRow", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("model/list", () => ({ data: [{ provider: "openai", model: "gpt-5.5" }] }));
   let called: unknown;
   fake.on("thread/model/set", (params) => {
@@ -415,7 +394,7 @@ test("a current 'none' on a model without an off level reads 'none (provider def
 
 test("changing the reasoning-effort select calls setReasoningEffort with the new level", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   let called: unknown;
   fake.on("thread/reasoning-effort/set", (params) => {
     called = params;
@@ -441,7 +420,7 @@ test("changing the reasoning-effort select calls setReasoningEffort with the new
 
 test("a failed setReasoningEffort call surfaces an error toast", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("thread/reasoning-effort/set", () => {
     throw new Error("boom");
   });

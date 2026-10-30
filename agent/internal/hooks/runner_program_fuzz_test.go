@@ -108,11 +108,11 @@ func runHookRuntimeResidualProgram(t *testing.T, mode byte, token string) {
 		cancel()
 		_, err = executeCommandHook(canceled, plugin.RegisteredHook{
 			Type: "command", Command: "/scripted/not-executed", Args: []string{"arg"}, Timeout: 1,
-		}, Input{})
+		}, Input{}, newSystemCommandHookRuntime())
 		if err == nil {
 			t.Fatal("canceled default command runtime unexpectedly succeeded")
 		}
-		if _, err := executeCommandHookWithRuntime(context.Background(), plugin.RegisteredHook{
+		if _, err := executeCommandHook(context.Background(), plugin.RegisteredHook{
 			Type: "command", Command: "/scripted/not-executed", Args: []string{"arg"}, Timeout: 1,
 		}, Input{}, nil); err == nil {
 			t.Fatal("nil command runtime unexpectedly succeeded")
@@ -164,7 +164,6 @@ type hookRunnerProgramTrace struct {
 	Notification       RunResult
 	NoClient           RunResult
 	PublicClient       RunResult
-	Summary            []string
 	SupportedSummary   []string
 	Diagnostics        []string
 	Calls              []hookRunnerProgramCall
@@ -446,11 +445,9 @@ func runHookRunnerProgram(t *testing.T, mode byte, token string) hookRunnerProgr
 	runner.SetSandboxWrapper(nil)
 	addHookRunnerProgramHooks(runner, token, mode)
 
-	summary := summarizeHookRunnerProgramCounts(runner.Summary())
 	supported := summarizeHookRunnerProgramCounts(runner.SupportedSummary())
-	if !containsHookRunnerProgramCount(summary, string(plugin.HookPreToolUse)+"=6") ||
-		!containsHookRunnerProgramCount(supported, string(plugin.HookPreToolUse)+"=4") {
-		t.Fatalf("hook summaries = all:%v supported:%v", summary, supported)
+	if !containsHookRunnerProgramCount(supported, string(plugin.HookPreToolUse)+"=4") {
+		t.Fatalf("supported hook summary = %v", supported)
 	}
 	diagnostics := runner.Validate()
 	if len(diagnostics) != 1 || diagnostics[0].PluginName != "program-plugin" || diagnostics[0].Matcher != "[" ||
@@ -523,7 +520,7 @@ func runHookRunnerProgram(t *testing.T, mode byte, token string) hookRunnerProgr
 	if !reflect.DeepEqual(userPrompt.ModelContext, []string{"user context"}) || len(userPrompt.UserMessages) != 0 {
 		t.Fatalf("RunUserPromptSubmit = %#v", userPrompt)
 	}
-	startup := runner.RunSessionStart(ctx, input)
+	startup := runner.RunSessionStartFor(ctx, input, plugin.SessionStartKindStartup)
 	blankStartup := runner.RunSessionStartFor(ctx, input, "")
 	resume := runner.RunSessionStartFor(ctx, input, plugin.SessionStartKindResume)
 	clear := runner.RunSessionStartFor(ctx, input, plugin.SessionStartKindClear)
@@ -624,7 +621,6 @@ func runHookRunnerProgram(t *testing.T, mode byte, token string) hookRunnerProgr
 		Notification:       notification,
 		NoClient:           noClient,
 		PublicClient:       publicResult,
-		Summary:            summary,
 		SupportedSummary:   supported,
 		Diagnostics:        []string{diagnostics[0].PluginName + "|" + diagnostics[0].Event + "|" + diagnostics[0].Matcher},
 		Calls:              calls,
@@ -793,7 +789,7 @@ func hookRunnerProgramEnvMap(t *testing.T, env []string) map[string]string {
 func assertHookRunnerProgramCommandPreparationErrors(t *testing.T, runtime commandHookRuntime) {
 	t.Helper()
 	for _, shell := range []string{"powershell", "zsh"} {
-		_, err := executeCommandHookWithRuntime(context.Background(), plugin.RegisteredHook{
+		_, err := executeCommandHook(context.Background(), plugin.RegisteredHook{
 			Type:    "command",
 			Command: "never-run",
 			Shell:   shell,

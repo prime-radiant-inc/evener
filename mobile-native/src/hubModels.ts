@@ -1,5 +1,5 @@
 import type { ModelCatalog } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 import { reconnectDelay } from "./hubConnection";
 
 interface State {

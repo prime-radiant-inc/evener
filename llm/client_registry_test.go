@@ -565,3 +565,48 @@ func TestClientWebSearchGatedInstanceSendsNoHostedTool(t *testing.T) {
 		t.Fatalf("the hosted web_search tool must not reach a gated endpoint: %v", tools)
 	}
 }
+
+// A registry row speaking a protocol nothing registered fails dispatch with
+// the configuration error naming it, on the completion path and the listing
+// path alike: an unregistered protocol is a setup defect, never a wire call.
+func TestClientRejectsAnUnregisteredProtocol(t *testing.T) {
+	r := fixtureRegistry(t, "http://127.0.0.1:9", map[string]registry.Provider{
+		"weird": {
+			Base: "openai", APIKey: "k", Protocol: "not-a-registered-protocol",
+			Transport: registry.Transport{BaseURL: "http://127.0.0.1:9"},
+		},
+	})
+	c := llm.NewClient(llm.WithRegistry(r))
+	var cfgErr *llm.ConfigurationError
+	if _, err := c.Complete(context.Background(), userRequest("weird", "m")); !errors.As(err, &cfgErr) {
+		t.Fatalf("Complete err = %v, want a ConfigurationError naming the unregistered protocol", err)
+	}
+	if _, _, err := c.ListLive(context.Background(), "weird"); !errors.As(err, &cfgErr) {
+		t.Fatalf("ListLive err = %v, want a ConfigurationError naming the unregistered protocol", err)
+	}
+}
+
+// LiveListingUsable decides from the advertised facts alone when the row has
+// no static record: a live-only row that declares nothing about tools is
+// usable (the permissive default), one that declares Tools=false is not, and
+// a row whose static record is hidden never resurrects through the live path.
+func TestLiveListingUsableDecidesFromTheAdvertisedFacts(t *testing.T) {
+	r := fixtureRegistry(t, "http://127.0.0.1:9", map[string]registry.Provider{
+		"catalog": {
+			Base: "openai", APIKey: "k",
+			Transport: registry.Transport{BaseURL: "http://127.0.0.1:9"},
+			Models:    map[string]registry.Model{"secretly-hidden": {Hidden: true}},
+		},
+	})
+	c := llm.NewClient(llm.WithRegistry(r))
+
+	if !c.LiveListingUsable("catalog", []registry.Model{{ID: "live-new"}}) {
+		t.Fatal("a live-only row with no tools fact is usable: the advertised facts default permissive")
+	}
+	if c.LiveListingUsable("catalog", []registry.Model{{ID: "live-new", Caps: registry.Caps{Tools: new(false)}}}) {
+		t.Fatal("a live-only row that declares Tools=false is not usable")
+	}
+	if c.LiveListingUsable("catalog", []registry.Model{{ID: "secretly-hidden"}}) {
+		t.Fatal("a row whose static record is hidden is not usable")
+	}
+}

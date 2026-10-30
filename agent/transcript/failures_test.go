@@ -135,3 +135,40 @@ func TestExitCodeFromToolStateSkipsNonObjectState(t *testing.T) {
 		t.Fatalf("object state exit code = %v, want 3", got)
 	}
 }
+
+// A reader that decodes only the tool parts must count exactly what the full
+// turn decode counts: nameless results resolved from their call, communicate
+// excluded, a fold copy taking its ordinal but counting nothing, and a fork
+// cut hiding the inherited prefix while its calls still teach names.
+func TestObserveToolPartsAgreesWithObserve(t *testing.T) {
+	fold := toolResultTurn(llm.ToolResultData{ToolCallID: "c1", IsError: true})
+	ordinal := uint64(2)
+	fold.OriginalOrdinal = &ordinal
+	turns := []schema.Turn{
+		toolCallTurn("c1", "read_file"),
+		toolResultTurn(llm.ToolResultData{ToolCallID: "c1", IsError: true}),
+		fold,
+		toolCallTurn("c2", "communicate"),
+		toolResultTurn(llm.ToolResultData{ToolCallID: "c2", IsError: true}),
+		toolResultTurn(llm.ToolResultData{ToolCallID: "c3", Name: "shell", IsError: true}, llm.ToolResultData{ToolCallID: "c4", Name: "shell"}),
+	}
+	for _, from := range []int{0, 1, 3, 6} {
+		full := NewFailureCounter(from)
+		narrow := NewFailureCounter(from)
+		for _, turn := range turns {
+			full.Observe(turn)
+			raw, err := json.Marshal(turn.Message.Content)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var parts []ToolPart
+			if err := json.Unmarshal(raw, &parts); err != nil {
+				t.Fatal(err)
+			}
+			narrow.ObserveToolParts(turn.OriginalOrdinal != nil, parts)
+		}
+		if full.Count() != narrow.Count() {
+			t.Fatalf("from %d: narrow count %d, full count %d", from, narrow.Count(), full.Count())
+		}
+	}
+}

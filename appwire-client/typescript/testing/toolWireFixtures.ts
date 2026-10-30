@@ -10,7 +10,7 @@
 
 import toolCalls from "../../../agent/testdata/toolwire/calls.json?raw";
 import type { ItemModel, ThreadModel } from "../model";
-import { hydrateThread } from "../reducer";
+import { hydrateThread } from "../transcriptHistory";
 import type { Thread, ThreadItem } from "../types.gen";
 import { wireThread } from "./notifications";
 

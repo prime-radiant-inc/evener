@@ -519,7 +519,7 @@ func TestAttachUnderGateExplicitControlsTheBootstrap(t *testing.T) {
 	fr := &fakeRunner{
 		// Nothing answers the health probe: an explicit attach would take the
 		// first-attach bootstrap path.
-		runFn:   cannedRun(map[string][]byte{"api/health": nil}),
+		runFn:   cannedRun(map[remoteOp][]byte{opHealth: nil}),
 		startFn: goodStartFn(t),
 	}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "dev"})
@@ -557,7 +557,7 @@ func TestAttachUnderGateEmitsFailedOnATerminalAttachFailure(t *testing.T) {
 	fr := &fakeRunner{
 		// The host speaks another protocol: the attach ladder's terminal
 		// ErrProtocolIncompatible.
-		runFn:   cannedRun(map[string][]byte{"launch-check": []byte(`{"protocol":"evener-appwire-v5","version":"dev","launch_flags":["api-log"]}`)}),
+		runFn:   cannedRun(map[remoteOp][]byte{opLaunchCheck: []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v5","version":"dev","launch_flags":["api-log"]}`)}),
 		startFn: goodStartFn(t),
 	}
 	requireProtocolUpgrade(t, fr)
@@ -863,7 +863,7 @@ func TestAttachUnderGateTerminalFailureStopsAParkedSupervisor(t *testing.T) {
 	}
 	var terminalDials atomic.Bool
 	good := cannedRun(nil)
-	bad := cannedRun(map[string][]byte{"launch-check": []byte(`{"protocol":"evener-appwire-v5","version":"dev","launch_flags":["api-log"]}`)})
+	bad := cannedRun(map[remoteOp][]byte{opLaunchCheck: []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v5","version":"dev","launch_flags":["api-log"]}`)})
 	fr := &fakeRunner{
 		runFn: func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 			if terminalDials.Load() {

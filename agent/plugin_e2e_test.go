@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
@@ -77,17 +76,6 @@ func setupFullTestPlugin(t *testing.T) string {
 func TestPlugin_EndToEnd(t *testing.T) {
 	t.Parallel()
 	pluginDir := setupFullTestPlugin(t)
-	workDir := t.TempDir()
-	workDir, _ = filepath.EvalSymlinks(workDir)
-
-	// Create settings file in workDir
-	if err := os.MkdirAll(filepath.Join(workDir, ".claude"), 0755); err != nil {
-		t.Fatalf("mkdir .claude: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(workDir, ".claude", "e2e-plugin.local.md"),
-		[]byte("---\nstrict: true\n---\nProject-specific config."), 0644); err != nil {
-		t.Fatalf("write settings: %v", err)
-	}
 
 	// Load the plugin
 	lp, err := plugin.Load(pluginDir)
@@ -156,21 +144,6 @@ func TestPlugin_EndToEnd(t *testing.T) {
 		t.Error("SessionStart hook not found")
 	}
 
-	// 6. Settings loadable
-	settings, err := plugin.LoadSettings(workDir, "e2e-plugin")
-	if err != nil {
-		t.Fatalf("plugin.LoadSettings: %v", err)
-	}
-	if settings == nil {
-		t.Fatal("settings should not be nil")
-	}
-	if settings.Frontmatter["strict"] != true {
-		t.Errorf("strict = %v, want true", settings.Frontmatter["strict"])
-	}
-	if !strings.Contains(settings.Body, "Project-specific") {
-		t.Error("settings body should contain 'Project-specific'")
-	}
-
 	// 7. Tool name mapping bidirectional
 	if toolname.ClaudeToEvener("Read") != "read_file" {
 		t.Errorf("ClaudeToEvener(Read) = %q, want read_file", toolname.ClaudeToEvener("Read"))
@@ -189,10 +162,7 @@ func TestPlugin_EndToEnd(t *testing.T) {
 
 	// 9. Multiple plugins with unique names work
 	dir2 := makePluginDir(t, "second-plugin")
-	plugins, err := plugin.LoadAll([]string{pluginDir, dir2})
-	if err != nil {
-		t.Fatalf("plugin.LoadAll: %v", err)
-	}
+	plugins := loadPluginDirs(t, []string{pluginDir, dir2})
 	if len(plugins) != 2 {
 		t.Errorf("got %d plugins, want 2", len(plugins))
 	}
@@ -228,7 +198,7 @@ func TestPlugin_EndToEnd_HookExecution(t *testing.T) {
 		CWD:           pluginDir,
 		HookEventName: "SessionStart",
 	}
-	result := runner.RunSessionStart(context.Background(), input)
+	result := runner.RunSessionStartFor(context.Background(), input, plugin.SessionStartKindStartup)
 	// A successful command hook produces no model-context or user messages.
 	if len(result.ModelContext) != 0 {
 		t.Errorf("unexpected ModelContext from hook: %v", result.ModelContext)

@@ -5,6 +5,7 @@ import {
   findFileReferences,
   isImagePath,
   parseFileReference,
+  resolveFileLink,
 } from "@evener/appwire-client/docContent";
 import { MERMAID_DIAGRAM_ATTR } from "../../../../widgets/mermaid/markers";
 import { browserDocPort } from "../../../doc/browserDocPort";
@@ -13,6 +14,10 @@ import { type DocumentOpenRequest, openDocBeside } from "../../../doc/openDoc";
 const EXCLUDED = `a, pre, script, style, [data-entity-host], [data-file-action], [${MERMAID_DIAGRAM_ATTR}]`;
 const BLOCKS = "p, h1, h2, h3, h4, h5, h6, li, td, th, blockquote, div, ul, ol, table, tr, hr, br";
 const epochs = new WeakMap<HTMLElement, object>();
+
+/** resolveAnchorReference is the transcript's name for the shared resolver, so
+ * both anchor passes here and the phone ask one function what a link names. */
+export const resolveAnchorReference = resolveFileLink;
 
 interface TextOffset {
   node: Text;
@@ -24,7 +29,7 @@ interface TextOffset {
  * inline formatting, but ambiguous multi-node references remain unchanged. */
 export function enhanceFileReferences(
   root: HTMLElement,
-  context: { sessionRef: string; cwd: string; sourcePaneId: string },
+  context: { sessionRef: string; cwd: string; sourcePaneId: string; artifactsDir?: string },
 ): () => void {
   const epoch = {};
   epochs.set(root, epoch);
@@ -55,8 +60,9 @@ export function enhanceFileReferences(
 
   for (const link of root.querySelectorAll<HTMLAnchorElement>("a[href]")) {
     if (link.closest(`pre, [data-entity-host], [${MERMAID_DIAGRAM_ATTR}]`)) continue;
-    const reference = parseFileReference(link.getAttribute("href") ?? "", "link", context.cwd);
-    if (reference) activate(link, { session: context.sessionRef, reference, sourcePaneId: context.sourcePaneId });
+    const served = resolveAnchorReference(link.getAttribute("href") ?? "", context.cwd, context.artifactsDir);
+    if (served === undefined) continue;
+    activate(link, { session: context.sessionRef, reference: served, sourcePaneId: context.sourcePaneId });
   }
 
   // Retain the original Text as an empty anchor, just like the entity pass.

@@ -10,6 +10,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
@@ -247,7 +248,7 @@ func (a *closeRaceAdapter) Name() string { return a.name }
 func (a *closeRaceAdapter) Complete(context.Context, llm.Request) (llm.Response, error) {
 	close(a.blocked)
 	<-a.release
-	return finalResponse("done"), nil
+	return agenttest.FinalResponse("done"), nil
 }
 func (a *closeRaceAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
 	return nil, llm.ErrStreamUnsupported

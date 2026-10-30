@@ -23,25 +23,6 @@ func TestHandleAppThreadModelSet_RejectsWhileProcessing(t *testing.T) {
 	}
 }
 
-func TestHandleAppThreadModelSet_RejectsWhileTurnReserved_NamesTurnID(t *testing.T) {
-	s := NewServer(ServerConfig{})
-	called := false
-	s.SetModelFunc(func(string) error { called = true; return nil })
-	s.appActiveTurnID = "turn_abc123"
-	s.appReservedTurnID = "turn_abc123"
-
-	_, err := s.handleAppThreadModelSet(context.Background(), appwire.ThreadModelSetParams{Model: "claude-x"})
-	if err == nil {
-		t.Fatal("expected an error while a turn is reserved")
-	}
-	if called {
-		t.Fatal("model hook must not be invoked while a turn is reserved")
-	}
-	if !strings.Contains(err.Error(), "turn_abc123") {
-		t.Fatalf("error should name the active turn id, got: %v", err)
-	}
-}
-
 func TestHandleAppThreadModelSet_HookErrorSurfacesAsWireError(t *testing.T) {
 	s := NewServer(ServerConfig{})
 	hookErr := errors.New("unknown instance: nope")
@@ -95,7 +76,7 @@ func TestHandleAppThreadModelSet_JoinsSlashedModelUnconditionally(t *testing.T) 
 
 func TestHandleAppThreadModelSet_ThreadReadReflectsNewModelWithNoInterveningTurn(t *testing.T) {
 	s := NewServer(ServerConfig{})
-	s.SetStatus(StatusInfo{SessionID: "s1", Model: "gpt-5.4", Profile: "openai"})
+	seedStatus(s, StatusInfo{SessionID: "s1", Model: "gpt-5.4", Profile: "openai"})
 	s.SetModelFunc(func(m string) error {
 		// Mirrors serve.go: the hook itself refreshes the cached session info
 		// synchronously after a successful switch, rather than waiting for the

@@ -162,61 +162,6 @@ func TestParentCloseSettlesAnOwnedUnsandboxedChildScratch(t *testing.T) {
 	}
 }
 
-// Retained-terminal eviction closes a finished child to make room for a new
-// spawn. A child with no working directory and no box of its own runs on the
-// parent's very environment, and the parent is still working in it: eviction
-// must close the child's own resources and nothing else — not the parent's
-// in-flight processes, not the parent's scratch lease.
-func TestEvictedTerminalChildLeavesTheParentEnvironmentAlone(t *testing.T) {
-	client := llm.NewClient()
-	client.Register(&fakeAdapter{name: "openai"})
-	parent := newSession(t, withClient(client), withDir(t.TempDir()), withoutGitSnapshot())
-	shared, ok := parent.currentEnv().(*execenv.LocalExecutionEnvironment)
-	if !ok {
-		t.Fatalf("parent env = %T, want a local environment", parent.currentEnv())
-	}
-	pid, done, release := startInFlightProcess(t, shared)
-	sharedScratch := heldParentScratch(t, shared)
-
-	// A finished child on the parent's own environment, exactly as a delegate
-	// with neither a working dir nor a box of its own gets one.
-	finished, err := NewSession(client, parent.currentProfile(), shared, SessionConfig{
-		MaxSubagentDepth: 1,
-		testOnly:         testConfig{skipGitSnapshot: true},
-	})
-	if err != nil {
-		t.Fatalf("NewSession on the parent's environment: %v", err)
-	}
-	ended := time.Now()
-	finishedDone := make(chan struct{})
-	close(finishedDone)
-	terminal := &subagent{id: finished.id, sess: finished, status: SubagentCompleted, resultConsumed: true, endedAt: &ended, done: finishedDone}
-	parent.cfg.testOnly.subagentReserveSlot = func(*Session) ([]*subagent, error) {
-		return []*subagent{terminal}, nil
-	}
-
-	ctx := context.WithValue(context.Background(), ctxDelegationAllowance, 0)
-	prepared, err := parent.prepareSubagentRun(ctx, "child task", "", "", 0, "", "", nil, nil)
-	if err != nil {
-		t.Fatalf("prepareSubagentRun: %v", err)
-	}
-	t.Cleanup(func() {
-		releasePreparedTreeSlot(prepared)
-		prepared.disposeUnadopted()
-	})
-
-	if got := finished.State(); got != SessionClosed {
-		t.Errorf("evicted child state = %q, want %q", got, SessionClosed)
-	}
-	assertInFlightProcessSurvived(t, "eviction", pid, done)
-	assertParentScratchUntouched(t, "eviction", sharedScratch)
-
-	release()
-	if err := <-done; err != nil {
-		t.Fatalf("the parent's process after release: %v", err)
-	}
-}
-
 // Stable-controller reclamation closes retained terminal delegate runtimes to
 // admit a new one. Like eviction it is a child teardown: the runtime's
 // environment is the root's own or a clone sharing the root's process table,
@@ -438,13 +383,8 @@ func TestSpawnedChildOnTheParentEnvironmentRecordsNoOwnership(t *testing.T) {
 	pid, done, release := startInFlightProcess(t, shared)
 	sharedScratch := heldParentScratch(t, shared)
 
-	ctx := context.WithValue(context.Background(), ctxDelegationAllowance, 0)
-	prepared, err := parent.prepareSubagentRun(ctx, "child task", "", "", 0, "", "", nil, nil)
-	if err != nil {
-		t.Fatalf("prepareSubagentRun: %v", err)
-	}
+	prepared := prepareStableChild(t, parent, delegateArgs{Task: "child task", DelegationAllowance: new(0)})
 	t.Cleanup(func() {
-		releasePreparedTreeSlot(prepared)
 		prepared.disposeUnadopted()
 	})
 	child := prepared.sub.sess
@@ -492,7 +432,7 @@ type restoredCloneRuntime struct {
 // drains a still-committed stop for its whole budget.
 func restoreDelegateRuntimeOnAClone(t *testing.T) restoredCloneRuntime {
 	t.Helper()
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
 	if err != nil {
 		t.Fatalf("restore root: %v", err)
@@ -618,12 +558,7 @@ func TestSharedEnvChildTeardownReleasesTheEnteredWorktreeScratch(t *testing.T) {
 	sharedScratch := heldParentScratch(t, shared)
 	sibling := r.addSiblingWorktree(t, "child-lane", "child-branch")
 
-	ctx := context.WithValue(context.Background(), ctxDelegationAllowance, 2)
-	prepared, err := parent.prepareSubagentRun(ctx, "child task", "", "", 0, "", "", nil, nil)
-	if err != nil {
-		t.Fatalf("prepareSubagentRun: %v", err)
-	}
-	t.Cleanup(func() { releasePreparedTreeSlot(prepared) })
+	prepared := prepareStableChild(t, parent, delegateArgs{Task: "child task", DelegationAllowance: new(2)})
 	child := prepared.sub.sess
 	if child.currentEnv() != parent.currentEnv() {
 		t.Fatal("the spawned child did not land on the parent's environment; this test would prove nothing")
@@ -765,12 +700,7 @@ func TestSharedEnvChildKeepsItsWorktreeScratchAcrossExit(t *testing.T) {
 	parentScratch := heldParentScratch(t, shared)
 	sibling := r.addSiblingWorktree(t, "child-lane", "child-branch")
 
-	ctx := context.WithValue(context.Background(), ctxDelegationAllowance, 2)
-	prepared, err := parent.prepareSubagentRun(ctx, "child task", "", "", 0, "", "", nil, nil)
-	if err != nil {
-		t.Fatalf("prepareSubagentRun: %v", err)
-	}
-	t.Cleanup(func() { releasePreparedTreeSlot(prepared) })
+	prepared := prepareStableChild(t, parent, delegateArgs{Task: "child task", DelegationAllowance: new(2)})
 	child := prepared.sub.sess
 	if child.currentEnv() != parent.currentEnv() {
 		t.Fatal("the spawned child did not land on the parent's environment; this test would prove nothing")
@@ -851,12 +781,7 @@ func TestSharedEnvChildInsideTheParentBoxKeepsTheParentScratchLease(t *testing.T
 		t.Fatal("the box's scratch lease is not held")
 	}
 
-	ctx := context.WithValue(context.Background(), ctxDelegationAllowance, 2)
-	prepared, err := parent.prepareSubagentRun(ctx, "child task", "", "", 0, "", "", nil, nil)
-	if err != nil {
-		t.Fatalf("prepareSubagentRun: %v", err)
-	}
-	t.Cleanup(func() { releasePreparedTreeSlot(prepared) })
+	prepared := prepareStableChild(t, parent, delegateArgs{Task: "child task", DelegationAllowance: new(2)})
 	child := prepared.sub.sess
 	if child.currentEnv() != parent.currentEnv() {
 		t.Fatal("the spawned child did not land on the parent's boxed environment; this test would prove nothing")

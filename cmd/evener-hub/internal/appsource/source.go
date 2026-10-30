@@ -119,12 +119,6 @@ type ItemReadCandidateSource interface {
 	ItemCandidatesFromRead(context.Context, appwire.ThreadReadParams, appwire.ThreadReadResponse) (ItemCandidateResult, error)
 }
 
-// CombinedItemReadSource returns an item-mode read and the private candidate
-// identity derived from that exact response in one source-owned operation.
-type CombinedItemReadSource interface {
-	ReadThreadWithItemCandidates(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, ItemCandidateResult, error)
-}
-
 func (s *LocalDaemonSource) ItemCandidatesFromRead(
 	ctx context.Context,
 	params appwire.ThreadReadParams,
@@ -457,7 +451,7 @@ func (s *LocalDaemonSource) localDaemonNativeWindow(ctx context.Context, resolve
 		}
 		return ItemCandidateResult{Identity: identity, Exhausted: true, History: PageHistoryIdentity(response)}, nil
 	}
-	selected := localDaemonCandidatesBefore(candidates, before, itemLimit)
+	selected := appitempaging.CandidatesBefore(candidates, before, itemLimit)
 	if len(selected) == 0 {
 		return ItemCandidateResult{}, appwire.TranscriptItemCursorStale()
 	}
@@ -513,7 +507,7 @@ func (s *LocalDaemonSource) localDaemonHiddenHistory(ctx context.Context, resolv
 		newer := pages[len(pages)-1]
 		if len(newer) > 0 {
 			last, first := candidates[len(candidates)-1].Position, newer[0].Position
-			if last.Entry > first.Entry || (last.Entry == first.Entry && last.Item >= first.Item) {
+			if appitempaging.ComparePosition(last, first) >= 0 {
 				return nil, appwire.TranscriptItemCursorStale()
 			}
 		}
@@ -552,20 +546,6 @@ func (s *LocalDaemonSource) localDaemonHiddenHistory(ctx context.Context, resolv
 		return nil, err
 	}
 	return history, ctx.Err()
-}
-
-func localDaemonCandidatesBefore(candidates []appitempaging.TranscriptItemCandidate, before appwire.ThreadItemPosition, limit int) []appitempaging.TranscriptItemCandidate {
-	older := make([]appitempaging.TranscriptItemCandidate, 0, len(candidates))
-	for _, candidate := range candidates {
-		if candidate.Position.Entry > before.Entry || (candidate.Position.Entry == before.Entry && candidate.Position.Item >= before.Item) {
-			continue
-		}
-		older = append(older, candidate)
-	}
-	if len(older) > limit {
-		older = older[len(older)-limit:]
-	}
-	return older
 }
 
 func localDaemonItemSnapshotIdentity(snapshot localDaemonItemSnapshot) appitempaging.CursorIdentity {
@@ -613,15 +593,8 @@ func localDaemonItemCursorStale(err error) bool {
 	if !ok || wire.Code != appwire.CodeInvalidParams {
 		return false
 	}
-	switch data := wire.Data.(type) {
-	case appwire.ErrorData:
-		return data.EvenerErrorInfo == appwire.ErrorTranscriptItemCursorStale
-	case map[string]any:
-		info, ok := data["evenerErrorInfo"].(string)
-		return ok && info == string(appwire.ErrorTranscriptItemCursorStale)
-	default:
-		return false
-	}
+	data, _ := appwire.DecodedErrorData(wire.Data)
+	return data.EvenerErrorInfo == appwire.ErrorTranscriptItemCursorStale
 }
 
 type localDaemonItemThread struct {

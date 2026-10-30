@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
+	"primeradiant.com/evener/envvars/userdirs"
 )
 
 func TestLoadConfig_Hosts(t *testing.T) {
@@ -123,24 +125,40 @@ func TestLoadConfig_Hosts(t *testing.T) {
 			wantErr: hostreg.ErrEmptyRoot,
 		},
 		{
-			name:    "config_path without addr",
-			toml:    "[[hosts]]\nname = \"m4\"\nssh = \"m4.local\"\nconfig_path = \"/etc/evener/hub.toml\"\n",
-			wantErr: ErrHostAddrPair,
+			name: "config_path without addr",
+			toml: "[[hosts]]\nname = \"m4\"\nssh = \"m4.local\"\nconfig_path = \"/etc/evener/hub.toml\"\n",
+			check: func(t *testing.T, cfg Config) {
+				if len(cfg.Hosts) != 1 || cfg.Hosts[0].ConfigPath != "/etc/evener/hub.toml" || cfg.Hosts[0].Addr != "" {
+					t.Fatalf("config-only host=%+v", cfg.Hosts)
+				}
+			},
 		},
 		{
-			name:    "addr without config_path",
-			toml:    "[[hosts]]\nname = \"m4\"\nssh = \"m4.local\"\naddr = \"127.0.0.1:9180\"\n",
-			wantErr: ErrHostAddrPair,
+			name: "addr without config_path",
+			toml: "[[hosts]]\nname = \"m4\"\nssh = \"m4.local\"\naddr = \"127.0.0.1:9180\"\n",
+			check: func(t *testing.T, cfg Config) {
+				if len(cfg.Hosts) != 1 || cfg.Hosts[0].Addr != "127.0.0.1:9180" || cfg.Hosts[0].ConfigPath != "" {
+					t.Fatalf("bootstrap-only host=%+v", cfg.Hosts)
+				}
+			},
 		},
 		{
-			name:    "non-loopback addr",
-			toml:    "[[hosts]]\nname = \"m4\"\nssh = \"m4.local\"\nconfig_path = \"/etc/evener/hub.toml\"\naddr = \"10.0.0.5:9180\"\n",
-			wantErr: ErrHostAddr,
+			name: "specific-interface bootstrap addr",
+			toml: "[[hosts]]\nname = \"m4\"\nssh = \"m4.local\"\nconfig_path = \"/etc/evener/hub.toml\"\naddr = \"10.0.0.5:9180\"\n",
+			check: func(t *testing.T, cfg Config) {
+				if len(cfg.Hosts) != 1 || cfg.Hosts[0].Addr != "10.0.0.5:9180" {
+					t.Fatalf("specific-interface listener=%+v", cfg.Hosts)
+				}
+			},
 		},
 		{
-			name:    "non-loopback named addr",
-			toml:    "[[hosts]]\nname = \"m4\"\nssh = \"m4.local\"\nconfig_path = \"/etc/evener/hub.toml\"\naddr = \"hub.example:9180\"\n",
-			wantErr: ErrHostAddr,
+			name: "DNS bootstrap addr",
+			toml: "[[hosts]]\nname = \"m4\"\nssh = \"m4.local\"\nconfig_path = \"/etc/evener/hub.toml\"\naddr = \"hub.example:9180\"\n",
+			check: func(t *testing.T, cfg Config) {
+				if len(cfg.Hosts) != 1 || cfg.Hosts[0].Addr != "hub.example:9180" {
+					t.Fatalf("DNS listener=%+v", cfg.Hosts)
+				}
+			},
 		},
 		{
 			name:    "addr without a port",
@@ -153,11 +171,8 @@ func TestLoadConfig_Hosts(t *testing.T) {
 			wantErr: ErrHostAddr,
 		},
 		{
-			// addr reaches an SSH-side curl probe and the restart identity
-			// check, so it must be loopback or a wildcard that normalizes to
-			// loopback: every spelling the shipped probe accepts
-			// (sshconn.validateHubAddr) must load, including other loopback
-			// literals such as 127.0.0.2 and the empty host of ":port".
+			// Listener spellings remain unchanged in config. They are not remote
+			// probe targets or attachment destinations.
 			name: "loopback and wildcard addrs load",
 			toml: "[[hosts]]\nname = \"a\"\nssh = \"a.local\"\nconfig_path = \"/etc/evener/hub.toml\"\naddr = \"127.0.0.1:9180\"\n\n" +
 				"[[hosts]]\nname = \"b\"\nssh = \"b.local\"\nconfig_path = \"/etc/evener/hub.toml\"\naddr = \"127.0.0.2:9180\"\n\n" +
@@ -364,7 +379,7 @@ func TestLoadConfig_PreservesExplicitHubStateRoot(t *testing.T) {
 	}
 }
 
-func TestMobileBaseURLConfig(t *testing.T) {
+func TestPublicURLConfig(t *testing.T) {
 	tests := []struct {
 		name string
 		url  string
@@ -388,7 +403,7 @@ func TestMobileBaseURLConfig(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "hub.toml")
-			if err := os.WriteFile(path, []byte(`mobile_base_url = "`+tt.url+`"`), 0o644); err != nil {
+			if err := os.WriteFile(path, []byte(`public_url = "`+tt.url+`"`), 0o644); err != nil {
 				t.Fatal(err)
 			}
 			cfg, err := LoadConfig(path)
@@ -396,13 +411,13 @@ func TestMobileBaseURLConfig(t *testing.T) {
 				if err != nil {
 					t.Fatalf("LoadConfig: %v", err)
 				}
-				if cfg.MobileBaseURL != tt.url {
-					t.Fatalf("MobileBaseURL = %q, want %q", cfg.MobileBaseURL, tt.url)
+				if cfg.PublicURL != tt.url {
+					t.Fatalf("PublicURL = %q, want %q", cfg.PublicURL, tt.url)
 				}
 				return
 			}
 			if err == nil {
-				t.Fatalf("LoadConfig accepted invalid mobile_base_url %q", tt.url)
+				t.Fatalf("LoadConfig accepted invalid public_url %q", tt.url)
 			}
 		})
 	}
@@ -533,20 +548,20 @@ func TestDefaultConfigPath_RespectsHome(t *testing.T) {
 func TestDefaultStateGlob_RespectsXDGStateHome(t *testing.T) {
 	t.Setenv("HOME", "/tmp/fakehome")
 	t.Setenv("XDG_STATE_HOME", "/srv/evener-state")
-	got := DefaultStateGlob()
+	got, err := DefaultStateGlob()
 	want := "/srv/evener-state/evener/projects/*"
-	if got != want {
-		t.Fatalf("DefaultStateGlob: got %q, want %q", got, want)
+	if err != nil || got != want {
+		t.Fatalf("DefaultStateGlob: got %q, %v, want %q", got, err, want)
 	}
 }
 
 func TestDefaultPastIndexDBPath_RespectsHome(t *testing.T) {
 	t.Setenv("HOME", "/tmp/fakehome")
 	t.Setenv("XDG_STATE_HOME", "")
-	got := DefaultPastIndexDBPath()
+	got, err := DefaultPastIndexDBPath()
 	want := "/tmp/fakehome/.local/state/evener/index.db"
-	if got != want {
-		t.Fatalf("DefaultPastIndexDBPath: got %q, want %q", got, want)
+	if err != nil || got != want {
+		t.Fatalf("DefaultPastIndexDBPath: got %q, %v, want %q", got, err, want)
 	}
 }
 
@@ -863,4 +878,41 @@ func TestLoadConfig_HostProbeAndFreeSpaceKnobs(t *testing.T) {
 			t.Fatalf("refusal %q does not name the duration-string rule for host_probe_timeout", err)
 		}
 	})
+}
+
+// With no XDG_STATE_HOME and no home directory the hub has nowhere to keep
+// state: loading the config reports it instead of defaulting to a relative
+// directory, and the next load with a home recovers.
+func TestLoadConfigReportsNoStateHome(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "hub.toml")
+	t.Setenv("XDG_STATE_HOME", "")
+	t.Setenv("HOME", "")
+
+	if _, err := LoadConfig(missing); !errors.Is(err, userdirs.ErrNoStateHome) {
+		t.Fatalf("LoadConfig error = %v, want ErrNoStateHome", err)
+	}
+	if _, err := DefaultStateGlob(); !errors.Is(err, userdirs.ErrNoStateHome) {
+		t.Fatalf("DefaultStateGlob error = %v, want ErrNoStateHome", err)
+	}
+	if _, err := DefaultPastIndexDBPath(); !errors.Is(err, userdirs.ErrNoStateHome) {
+		t.Fatalf("DefaultPastIndexDBPath error = %v, want ErrNoStateHome", err)
+	}
+
+	// An operator-chosen hub_state_root needs no home.
+	chosen := filepath.Join(t.TempDir(), "state")
+	explicit := filepath.Join(t.TempDir(), "hub.toml")
+	if err := os.WriteFile(explicit, []byte("hub_state_root = "+strconv.Quote(chosen)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(explicit)
+	if err != nil || cfg.HubStateRoot != chosen {
+		t.Fatalf("LoadConfig with hub_state_root = %q, %v, want %q", cfg.HubStateRoot, err, chosen)
+	}
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfg, err = LoadConfig(missing)
+	if want := filepath.Join(home, ".local", "state", "evener"); err != nil || cfg.HubStateRoot != want {
+		t.Fatalf("LoadConfig after the home returned = %q, %v, want %q", cfg.HubStateRoot, err, want)
+	}
 }

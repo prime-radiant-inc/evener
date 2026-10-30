@@ -77,14 +77,6 @@ func TestCovBeginAPIAttemptNilGroup(t *testing.T) {
 	}
 }
 
-// TestCovCompleteNilReceiver covers the nil-receiver guard in Complete
-// (line 254-255).
-func TestCovCompleteNilReceiver(t *testing.T) {
-	var a *APIAttempt
-	a.Complete(testAPIAttemptResult(time.Now(), apilog.AttemptSuccess, nil))
-	// No panic.
-}
-
 // TestCovAPIAttemptGroupFromContextNilContext covers the nil-ctx path
 // (line 309-310).
 func TestCovAPIAttemptGroupFromContextNilContext(t *testing.T) {

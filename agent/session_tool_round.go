@@ -32,7 +32,7 @@ func (s *Session) handleNoToolCalls(noContent bool, t *retryTracker) (retry bool
 
 func (s *Session) applyNoToolCallsDecision(dec noToolCallsDecision) (retry bool, ferr error) {
 	if dec.Retry {
-		s.emit(events.EventWarning, events.WarningData{Message: dec.WarningMsg})
+		s.emit(events.WarningData{Message: dec.WarningMsg})
 		s.appendSteeringTurn(dec.SteeringText, events.SteeringKindNoToolCalls)
 		return true, nil
 	}
@@ -131,7 +131,7 @@ func decideNoToolCalls(noContent bool, t retryTracker, resultToolName string) no
 // and returns the abort error alongside the partial results.
 func (s *Session) execToolBatch(ctx context.Context, calls []llm.ToolCallData, profile *provider.Profile, finishReason string) ([]tool.ExecResult, error) {
 	results := make([]tool.ExecResult, len(calls))
-	if profile.SupportsParallelToolCalls() && len(calls) > 1 {
+	if len(calls) > 1 {
 		// Ordered-group algorithm: batch consecutive read-only calls for
 		// parallel execution; serialize everything else.
 		flushReadBatch := func(batch []int) error {
@@ -423,7 +423,7 @@ func (s *Session) notifyStrategyAfterAction(ctx context.Context) error {
 	s.mu.Unlock()
 	if warn {
 		if abortErr := s.withResponseSideEffects(ctx, func() {
-			s.emit(events.EventWarning, bareWarningDataFromError("strategy AfterAction error", afterErr))
+			s.emit(bareWarningDataFromError("strategy AfterAction error", afterErr))
 		}); abortErr != nil {
 			return abortErr
 		}
@@ -474,7 +474,7 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 				warning = s.stuckEscalation(count)
 			}
 			if abortErr := s.withResponseSideEffects(ctx, func() {
-				s.emit(events.EventLoopDetection, events.LoopDetectionData{Message: warning})
+				s.emit(events.LoopDetectionData{Message: warning})
 				s.appendSteeringTurn(warning, events.SteeringKindLoopDetected)
 			}); abortErr != nil {
 				s.removeAllTurnOwnedSteering()

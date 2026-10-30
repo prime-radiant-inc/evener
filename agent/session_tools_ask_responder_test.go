@@ -4,9 +4,8 @@ import (
 	"context"
 	"reflect"
 	"testing"
-	"time"
 
-	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
@@ -117,15 +116,13 @@ func TestPendingAskArguments_AvailableWithNoEventConsumer(t *testing.T) {
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) },
 		},
 	}
 	sess := newSession(t, withAdapter(f))
 	// No goroutine, no select, nothing: sess.Events() is never called.
 
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "pick a db", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -157,14 +154,12 @@ func TestPendingAskArguments_OneEntryPerCallInOrder(t *testing.T) {
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return toolCallResponse(ask1, ask2) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask1, ask2) },
 		},
 	}
 	sess := newSession(t, withAdapter(f))
 
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "pick a db and a name", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -202,20 +197,14 @@ func TestPendingAskArguments_ClearedByAnsweringSteeringCarrierNotStale(t *testin
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return toolCallResponse(ask1) },
-			func(req llm.Request) llm.Response { return toolCallResponse(ask2) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask1) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask2) },
 		},
 	}
 	c.Register(adapter)
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{StateDir: dir}))
 
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -267,15 +256,13 @@ func TestPendingAskArguments_ClearedWithAskPending(t *testing.T) {
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
-			func(req llm.Request) llm.Response { return toolCallResponse(comm) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(comm) },
 		},
 	}
 	sess := newSession(t, withAdapter(f))
 
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "pick a db", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}

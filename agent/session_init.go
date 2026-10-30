@@ -274,17 +274,127 @@ func selectStrategy(cfg SessionConfig, cm *contextmgr.Manager, sess *Session) (c
 		return contextmgr.NewSessionLogStrategy(cm, host)
 	case "ooda":
 		return contextmgr.NewOODAStrategy(cm, host)
-	case "obs-mask":
-		return contextmgr.NewObsMaskStrategy(cm), nil
-	case "checkpoint-pred":
-		return contextmgr.NewCheckpointPredStrategy(cm), nil
-	case "memory-crystals":
-		return contextmgr.NewMemoryCrystalsStrategy(cm), nil
-	case "recursive-distill":
-		return contextmgr.NewRecursiveDistillStrategy(cm), nil
 	default:
 		return nil, fmt.Errorf("unknown context strategy: %q", cfg.ContextStrategy)
 	}
+}
+
+// requireSessionDeps rejects the nil collaborators every session constructor
+// needs before it touches any of them.
+func requireSessionDeps(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment) error {
+	if client == nil {
+		return errors.New("llm client is nil")
+	}
+	if profile == nil {
+		return errors.New("profile is nil")
+	}
+	if env == nil {
+		return errors.New("execution environment is nil")
+	}
+	return nil
+}
+
+// bindSpawnCounters returns the delegation allowance and tree-wide counters a
+// session starts with and mirrors the counters onto cfg.spawn, so
+// s.cfg.spawn.treeCounter always reflects the live counter. Root sessions
+// derive their allowance from MaxSubagentDepth (already defaulted to 1 by
+// applyDefaults) and mint the counters; children inherit the spawn carrier's.
+// prepareSubagentRun threads the pointers to children via subCfg := s.cfg, so
+// the mirror is what carries the root's minted counters down the tree.
+func (cfg *SessionConfig) bindSpawnCounters() (delegationAllowance int, tc, dc *treeCounter) {
+	delegationAllowance = cfg.spawn.delegationAllowance
+	tc = cfg.spawn.treeCounter
+	dc = cfg.spawn.driveCounter
+	if cfg.spawn.parentSessionID == "" {
+		delegationAllowance = cfg.MaxSubagentDepth
+		tc = newTreeCounter(int64(cfg.MaxConcurrentDelegateTurns))
+		dc = newTreeCounter(defaultMaxConcurrentDriveTurns)
+	}
+	cfg.spawn.treeCounter = tc
+	cfg.spawn.driveCounter = dc
+	return delegationAllowance, tc, dc
+}
+
+// bindJobActivityClock returns the clock ordering this session's job
+// activity and mirrors it onto cfg.spawn. A root session without a carried
+// clock starts a new tree, so it mints one for sessionID; a child keeps the
+// carrier's.
+func (cfg *SessionConfig) bindJobActivityClock(sessionID string) *jobActivityClock {
+	clock := cfg.spawn.jobActivityClock
+	if cfg.spawn.parentSessionID == "" && clock == nil {
+		clock = newJobActivityClock(sessionID)
+	}
+	cfg.spawn.jobActivityClock = clock
+	return clock
+}
+
+// wireJobManager connects a job manager to this session. It leaves jm.enqueue
+// to the caller: NewSession hands the hook to the constructor, while restore
+// installs it only after the session's queues are reloaded.
+func (s *Session) wireJobManager(jm *jobManager) {
+	jm.forward = s.cfg.spawn.forwardJobEvent
+	jm.parentDelegateID = s.cfg.spawn.parentDelegateID
+	jm.consume = s.consumeJobNotification
+	jm.holdWake = s.holdJobNotificationWake
+	jm.notifySystem = s.routeSystemNotification
+	jm.wake = s.notify
+	jm.emit = s.emitWithJobTreeRevision
+	jm.currentProvenance = s.activeCausalProvenance
+	jm.clock = s.clock
+	jm.now = s.clock.Now
+	jm.delegateController = s.delegateController
+	jm.retirementOwner = s
+	s.jobManager = jm
+}
+
+// transcriptHeader is the header of a transcript this session creates.
+func (s *Session) transcriptHeader(createdAt time.Time) transcript.Header {
+	return transcript.Header{
+		SessionID:        s.id,
+		ParentSessionID:  s.cfg.spawn.parentSessionID,
+		ParentToolCallID: s.cfg.spawn.parentToolCallID,
+		Task:             s.cfg.spawn.subagentTask,
+		CreatedAt:        createdAt,
+		ProfileID:        s.profile.ID(),
+		Model:            s.profile.Model(),
+		WorkingDir:       s.envInfo.WorkingDir,
+		Depth:            s.cfg.spawn.depth,
+		BuildVersion:     BuildVersion,
+		SystemPrompt:     s.cachedSystemPrompt,
+	}
+}
+
+// createTranscript creates this session's transcript file, failing at the
+// named init fault point when a test injects one.
+func (s *Session) createTranscript(faultPoint string, hdr transcript.Header) (*transcript.Writer, error) {
+	if fault := s.sessionInitFault(faultPoint); fault != nil {
+		return nil, fault
+	}
+	tpath := schema.SessionTranscriptPath(s.stateDir, s.id)
+	if testSpeedIO(s.cfg) {
+		return transcript.NewWriterNoSync(tpath, hdr)
+	}
+	return transcript.NewWriter(tpath, hdr)
+}
+
+// installContextStrategy selects the configured context strategy and registers
+// the tools it provides.
+func (s *Session) installContextStrategy() error {
+	contextmgr.ApplyThresholdScale(s.contextMgr, s.cfg.testOnly.compactionThresholdScale)
+	s.contextMgr.OnCompactionTurn = s.handleCompactionTurn
+	strategy, err := selectStrategy(s.cfg, s.contextMgr, s)
+	if err != nil {
+		return err
+	}
+	s.strategy = strategy
+	if s.strategy != nil {
+		for _, tool := range s.strategy.Tools() {
+			if err := s.reg.Register(tool); err != nil {
+				return fmt.Errorf("register strategy tool: %w", err)
+			}
+		}
+	}
+	return nil
 }
 
 // NewSession creates a new Session from the given client, provider profile,
@@ -300,14 +410,8 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	if err != nil {
 		return nil, err
 	}
-	if client == nil {
-		return nil, errors.New("llm client is nil")
-	}
-	if profile == nil {
-		return nil, errors.New("profile is nil")
-	}
-	if env == nil {
-		return nil, errors.New("execution environment is nil")
+	if err := requireSessionDeps(client, profile, env); err != nil {
+		return nil, err
 	}
 	if err := env.Initialize(); err != nil {
 		return nil, fmt.Errorf("env initialize: %w", err)
@@ -353,10 +457,6 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	}
 	profile = resolvedProfile
 	cfg.applyDefaults()
-	// Let the provider profile override the generic default command timeout.
-	if profileTimeout := profile.DefaultCommandTimeoutMS(); profileTimeout > 0 && cfg.DefaultCommandTimeoutMS == 10_000 {
-		cfg.DefaultCommandTimeoutMS = profileTimeout
-	}
 	store, ownsArtifactStore, artifactStoreErr := resolveArtifactStore(cfg.artifactStore, cfg.artifactStoreInherited)
 
 	owner := cfg.LifetimeContext
@@ -372,25 +472,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 			}
 		}
 	}()
-	delegationAllowance := cfg.spawn.delegationAllowance
-	if cfg.spawn.parentSessionID == "" {
-		// Root sessions derive their allowance from MaxSubagentDepth (already
-		// defaulted to 1 by applyDefaults), not from the spawn carrier.
-		delegationAllowance = cfg.MaxSubagentDepth
-	}
-	tc := cfg.spawn.treeCounter
-	dc := cfg.spawn.driveCounter
-	if cfg.spawn.parentSessionID == "" {
-		// Root sessions mint the tree-wide counters; children inherit the pointers.
-		tc = newTreeCounter(int64(cfg.MaxConcurrentDelegateTurns))
-		dc = newTreeCounter(defaultMaxConcurrentDriveTurns)
-	}
-	// Mirror the live counter onto cfg.spawn so s.cfg.spawn.treeCounter always
-	// reflects it. prepareSubagentRun threads the pointer to children via
-	// subCfg := s.cfg, so the mirror is what carries the root's minted counter
-	// down the tree.
-	cfg.spawn.treeCounter = tc
-	cfg.spawn.driveCounter = dc
+	delegationAllowance, tc, dc := cfg.bindSpawnCounters()
 	if sessionID == "" {
 		sessionID, err = identifier.NewSessionID()
 		if err != nil {
@@ -405,11 +487,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	if cfg.spawn.parentSessionID == "" {
 		nameRootScratch(env, sessionID, sessionID)
 	}
-	jobClock := cfg.spawn.jobActivityClock
-	if cfg.spawn.parentSessionID == "" && jobClock == nil {
-		jobClock = newJobActivityClock(sessionID)
-	}
-	cfg.spawn.jobActivityClock = jobClock
+	jobClock := cfg.bindJobActivityClock(sessionID)
 	cfg.StateDir = canonicalStateDir(cfg.StateDir)
 	clientMutations, err := newClientMutationStore(cfg.StateDir, sessionID)
 	if err != nil {
@@ -485,13 +563,12 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	if err := s.bootstrapDelegateResources(); err != nil {
 		return nil, err
 	}
-	closeDelegateStoreOnError := true
 	defer func() {
-		if closeDelegateStoreOnError {
+		if !initComplete {
 			_ = s.closeOwnedDelegateStore()
 		}
 	}()
-	s.subagents = newSubagentManager(s.emit, cfg.MaxRetainedTerminal)
+	s.subagents = newSubagentManager(cfg.MaxRetainedTerminal)
 	newJM := newJobManager
 	if cfg.testOnly.noSyncJobStore || testSpeedIO(cfg) {
 		newJM = newJobManagerNoSync
@@ -505,25 +582,12 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	if err != nil {
 		return nil, fmt.Errorf("job manager: %w", err)
 	}
-	closeJobManagerOnError := true
 	defer func() {
-		if closeJobManagerOnError {
+		if !initComplete {
 			_ = jm.closeStoreOnly()
 		}
 	}()
-	jm.forward = cfg.spawn.forwardJobEvent
-	jm.parentDelegateID = cfg.spawn.parentDelegateID
-	jm.consume = s.consumeJobNotification
-	jm.holdWake = s.holdJobNotificationWake
-	jm.notifySystem = s.routeSystemNotification
-	jm.wake = s.notify
-	jm.emit = s.emitWithJobTreeRevision
-	jm.currentProvenance = s.activeCausalProvenance
-	jm.clock = s.clock
-	jm.now = s.clock.Now
-	jm.delegateController = s.delegateController
-	jm.retirementOwner = s
-	s.jobManager = jm
+	s.wireJobManager(jm)
 
 	// Capture the launch origin from the environment before initSessionState
 	// runs. initSessionState is shared with RestoreSessionFromMetaWithConfig
@@ -542,9 +606,8 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	// initSessionState (via initMCP) may have set s.mcpMgr to a manager holding
 	// live server connections; every error return below this point must close
 	// it rather than orphan those connections.
-	closeMCPManagerOnError := true
 	defer func() {
-		if closeMCPManagerOnError && s.mcpMgr != nil {
+		if !initComplete && s.mcpMgr != nil {
 			s.mcpMgr.Close()
 		}
 	}()
@@ -564,13 +627,13 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		if agent, ok := s.pluginAgents[agentName]; ok && len(agent.Tasks) > 0 {
 			store := s.getOrCreateTaskStore()
 			if err := store.PopulateFromTemplates(agent.Tasks, nil); err == nil {
-				// Inject the first task prompt. Its reasoning_effort applies
-				// per-round via prepareModelRequestWithError while it is in progress; it
-				// must not overwrite the session's configured effort.
-				if current, ok := store.CurrentInProgress(); ok {
-					if err := s.SteerKind(formatCurrentTaskSteering(current, s.canInstructTool("task_list")), events.SteeringKindCurrentTask); err != nil {
-						s.emitDiagnosticWarning(events.WarningData{Message: fmt.Sprintf("steering admission failed: %v", err)})
-					}
+				// Announce the workflow the same way a delegate receives its plan:
+				// an agent's own workflow has the same property, that a later step's
+				// instructions decide what the first must build. Each task's
+				// reasoning_effort still applies per-round via
+				// prepareModelRequestWithError; this only affects the prompt.
+				if err := steerDelegatePlan(s, store); err != nil {
+					s.emitDiagnosticWarning(events.WarningData{Message: fmt.Sprintf("steering admission failed: %v", err)})
 				}
 			}
 		}
@@ -587,29 +650,10 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		if s.taskStore != nil {
 			agentTasks = s.taskStore.View()
 		}
-		hdr := transcript.Header{
-			SessionID:        s.id,
-			ParentSessionID:  cfg.spawn.parentSessionID,
-			ParentToolCallID: cfg.spawn.parentToolCallID,
-			Task:             cfg.spawn.subagentTask,
-			CreatedAt:        s.sclock().Now().UTC(),
-			ProfileID:        profile.ID(),
-			Model:            profile.Model(),
-			WorkingDir:       s.envInfo.WorkingDir,
-			Depth:            cfg.spawn.depth,
-			BuildVersion:     BuildVersion,
-			SystemPrompt:     s.cachedSystemPrompt,
-			AgentTasks:       agentTasks,
-		}
-		tpath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
+		hdr := s.transcriptHeader(s.sclock().Now().UTC())
+		hdr.AgentTasks = agentTasks
 		var twErr error
-		if fault := s.sessionInitFault("new_transcript"); fault != nil {
-			twErr = fault
-		} else if testSpeedIO(cfg) {
-			tw, twErr = transcript.NewWriterNoSync(tpath, hdr)
-		} else {
-			tw, twErr = transcript.NewWriter(tpath, hdr)
-		}
+		tw, twErr = s.createTranscript("new_transcript", hdr)
 		if twErr != nil {
 			// Buffered, not emitted directly (kata et0x): SESSION_START has not
 			// fired yet at this point in construction, and every other
@@ -649,23 +693,8 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		return nil, fmt.Errorf("rearm root delegate attention: %w", err)
 	}
 
-	contextmgr.ApplyThresholdScale(s.contextMgr, cfg.testOnly.compactionThresholdScale)
-	s.contextMgr.OnCompactionTurn = s.handleCompactionTurn
-
-	// Create context strategy.
-	strategy, err := selectStrategy(cfg, s.contextMgr, s)
-	if err != nil {
+	if err := s.installContextStrategy(); err != nil {
 		return nil, err
-	}
-	s.strategy = strategy
-
-	// Register any tools provided by the context strategy.
-	if s.strategy != nil {
-		for _, tool := range s.strategy.Tools() {
-			if err := s.reg.Register(tool); err != nil {
-				return nil, fmt.Errorf("register strategy tool: %w", err)
-			}
-		}
 	}
 
 	s.emitSessionStartEnvelope(events.SessionStartData{
@@ -681,9 +710,6 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	// The method itself no-ops for subagent sessions and non-local envs.
 	s.armLaneResidueSweepTimer()
 	initComplete = true
-	closeJobManagerOnError = false
-	closeMCPManagerOnError = false
-	closeDelegateStoreOnError = false
 	return s, nil
 }
 
@@ -843,24 +869,13 @@ type RestoreSessionConfig struct {
 	artifactStoreInherited bool
 }
 
-// RestoreSessionFromMeta creates a Session from a SessionMeta, recovering
-// history exclusively from the transcript JSONL. If no transcript exists,
-// the session starts with empty history (no snapshot fallback).
-func RestoreSessionFromMeta(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, meta schema.SessionMeta, stateDir string) (*Session, error) {
-	return RestoreSessionFromMetaWithConfig(client, profile, env, meta, RestoreSessionConfig{StateDir: stateDir})
-}
-
-// RestoreSessionFromMetaWithConfig is RestoreSessionFromMeta with explicit
-// runtime-only restore configuration.
+// RestoreSessionFromMetaWithConfig creates a Session from a SessionMeta,
+// recovering history exclusively from the transcript JSONL. If no transcript
+// exists, the session starts with empty history (no snapshot fallback).
+// restoreCfg carries the runtime-only restore configuration.
 func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, meta schema.SessionMeta, restoreCfg RestoreSessionConfig) (*Session, error) {
-	if client == nil {
-		return nil, errors.New("llm client is nil")
-	}
-	if profile == nil {
-		return nil, errors.New("profile is nil")
-	}
-	if env == nil {
-		return nil, errors.New("execution environment is nil")
+	if err := requireSessionDeps(client, profile, env); err != nil {
+		return nil, err
 	}
 	// meta arrives from a caller, not from a load this function performs itself,
 	// so validate before meta.ID is joined into any transcript path below.
@@ -997,7 +1012,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// refresh below can't flip it.
 	restoredTranscriptOpened := false
 	if cfg.StateDir != "" {
-		tpath := filepath.Join(cfg.StateDir, sessionsSubdir, meta.ID+".transcript.jsonl")
+		tpath := schema.SessionTranscriptPath(cfg.StateDir, meta.ID)
 		var openErr error
 		resumeTranscript, transcriptEntries, openErr = transcript.OpenWriterForSession(tpath, meta.ID)
 		if openErr != nil && !errors.Is(openErr, os.ErrNotExist) {
@@ -1107,36 +1122,14 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		owner = context.Background()
 	}
 	sessCtx, sessCancel := context.WithCancel(owner)
-	delegationAllowance := cfg.spawn.delegationAllowance
-	if cfg.spawn.parentSessionID == "" {
-		// Root sessions derive their allowance from MaxSubagentDepth (already
-		// defaulted to 1 by applyDefaults), not from the spawn carrier.
-		delegationAllowance = cfg.MaxSubagentDepth
-	}
-	tc := cfg.spawn.treeCounter
-	dc := cfg.spawn.driveCounter
-	if cfg.spawn.parentSessionID == "" {
-		// Root sessions mint the tree-wide counters; children inherit the pointers.
-		tc = newTreeCounter(int64(cfg.MaxConcurrentDelegateTurns))
-		dc = newTreeCounter(defaultMaxConcurrentDriveTurns)
-	}
-	// Mirror the live counter onto cfg.spawn so s.cfg.spawn.treeCounter always
-	// reflects it. prepareSubagentRun threads the pointer to children via
-	// subCfg := s.cfg, so the mirror is what carries the root's minted counter
-	// down the tree.
-	cfg.spawn.treeCounter = tc
-	cfg.spawn.driveCounter = dc
-	jobClock := cfg.spawn.jobActivityClock
-	if cfg.spawn.parentSessionID == "" && jobClock == nil {
-		// A restore without the parent's live tree carrier is a new root runtime.
-		// Persisted ancestor identity remains useful to durable history traversal,
-		// but must not route new lifecycle notifications to that old tree.
-		jobClock = newJobActivityClock(meta.ID)
-	}
+	delegationAllowance, tc, dc := cfg.bindSpawnCounters()
+	// A restore without the parent's live tree carrier is a new root runtime.
+	// Persisted ancestor identity remains useful to durable history traversal,
+	// but must not route new lifecycle notifications to that old tree.
+	jobClock := cfg.bindJobActivityClock(meta.ID)
 	if jobClock != nil {
 		jobClock.ensureAtLeast(meta.JobTreeRevision)
 	}
-	cfg.spawn.jobActivityClock = jobClock
 	s := &Session{
 		id:                       meta.ID,
 		skillLifecycle:           schema.SkillLifecycleSnapshot{Inventory: make(map[string]schema.SkillInventoryEntry)},
@@ -1215,13 +1208,12 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	profile, selectedModels := resolveStartupModelProfileWithReuse(client, profile, s.id, *s.providerAdapterTimeout(), restoreCfg.StartupModelListing)
 	s.profile = profile
 	s.captureModelAvailability(selectedModels)
-	closeDelegateStoreOnError := true
 	defer func() {
-		if closeDelegateStoreOnError {
+		if !restoreComplete {
 			_ = s.closeOwnedDelegateStore()
 		}
 	}()
-	s.subagents = newSubagentManager(s.emit, cfg.MaxRetainedTerminal)
+	s.subagents = newSubagentManager(cfg.MaxRetainedTerminal)
 	newJM := newJobManager
 	if cfg.testOnly.noSyncJobStore || testSpeedIO(cfg) {
 		newJM = newJobManagerNoSync
@@ -1230,31 +1222,18 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if err != nil {
 		return nil, fmt.Errorf("job manager: %w", err)
 	}
-	closeJobManagerOnError := true
 	defer func() {
-		if closeJobManagerOnError {
+		if !restoreComplete {
 			_ = jm.closeStoreOnly()
 		}
 	}()
-	jm.forward = cfg.spawn.forwardJobEvent
-	jm.parentDelegateID = cfg.spawn.parentDelegateID
+	s.wireJobManager(jm)
 	jm.enqueue = s.enqueueJobNotificationAndNotify
-	jm.consume = s.consumeJobNotification
-	jm.holdWake = s.holdJobNotificationWake
-	jm.notifySystem = s.routeSystemNotification
-	jm.wake = s.notify
-	jm.emit = s.emitWithJobTreeRevision
-	jm.currentProvenance = s.activeCausalProvenance
-	jm.clock = s.clock
-	jm.now = s.clock.Now
-	jm.delegateController = s.delegateController
-	jm.retirementOwner = s
-	s.jobManager = jm
 	// Restore daemon steering before restore side effects can enqueue a
 	// restart-owned notification. Loading it later would overwrite that new
 	// notification with the pre-restart snapshot.
 	if steering, _, err := loadQueues(s.stateDir, s.id); err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("restore: queue reload failed: %v", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("restore: queue reload failed: %v", err)})
 	} else {
 		s.steeringQueue = daemonSourcedSteering(steering)
 	}
@@ -1381,9 +1360,8 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// initSessionState (via initMCP) may have set s.mcpMgr to a manager holding
 	// live server connections; every error return below this point must close
 	// it rather than orphan those connections.
-	closeMCPManagerOnError := true
 	defer func() {
-		if closeMCPManagerOnError && s.mcpMgr != nil {
+		if !restoreComplete && s.mcpMgr != nil {
 			s.mcpMgr.Close()
 		}
 	}()
@@ -1410,30 +1388,10 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// writeTranscript consults is closed exactly once, on every path.
 	var tw *transcript.Writer
 	if s.stateDir != "" {
-		tpath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
 		tw = resumeTranscript
 		if tw == nil {
-			hdr := transcript.Header{
-				SessionID:        s.id,
-				ParentSessionID:  cfg.spawn.parentSessionID,
-				ParentToolCallID: cfg.spawn.parentToolCallID,
-				Task:             cfg.spawn.subagentTask,
-				CreatedAt:        meta.CreatedAt,
-				ProfileID:        profile.ID(),
-				Model:            profile.Model(),
-				WorkingDir:       s.envInfo.WorkingDir,
-				Depth:            cfg.spawn.depth,
-				BuildVersion:     BuildVersion,
-				SystemPrompt:     s.cachedSystemPrompt,
-			}
 			var twErr error
-			if fault := s.sessionInitFault("restore_new_transcript"); fault != nil {
-				twErr = fault
-			} else if testSpeedIO(cfg) {
-				tw, twErr = transcript.NewWriterNoSync(tpath, hdr)
-			} else {
-				tw, twErr = transcript.NewWriter(tpath, hdr)
-			}
+			tw, twErr = s.createTranscript("restore_new_transcript", s.transcriptHeader(meta.CreatedAt))
 			if twErr != nil {
 				return nil, fmt.Errorf("create transcript for resume: %w", twErr)
 			}
@@ -1457,7 +1415,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// one turn behind the file. Both refresh triggers share it so there is
 	// one refresh, not two mechanisms.
 	refreshFromDisk := func(reason string) error {
-		refreshed, err := readTranscriptFull(transcriptPath(s.stateDir, s.id), s.stateDir)
+		refreshed, err := readTranscriptFull(context.Background(), transcriptPath(s.stateDir, s.id), s.stateDir)
 		if err != nil {
 			return fmt.Errorf("refresh transcript after %s: %w", reason, err)
 		}
@@ -1543,22 +1501,8 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		}
 	}
 
-	contextmgr.ApplyThresholdScale(s.contextMgr, cfg.testOnly.compactionThresholdScale)
-	s.contextMgr.OnCompactionTurn = s.handleCompactionTurn
-
-	// Create context strategy.
-	strategy, err := selectStrategy(cfg, s.contextMgr, s)
-	if err != nil {
+	if err := s.installContextStrategy(); err != nil {
 		return nil, err
-	}
-	s.strategy = strategy
-
-	if s.strategy != nil {
-		for _, tool := range s.strategy.Tools() {
-			if err := s.reg.Register(tool); err != nil {
-				return nil, fmt.Errorf("register strategy tool: %w", err)
-			}
-		}
 	}
 
 	// Re-derive the at-rest state from the restored history's tail: an
@@ -1585,7 +1529,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// and neither may ever fail the restore.
 	restoredAskPending, isAskRound := deriveRestoredAskPending(s.history, divergenceTurn, steeringProvenance)
 	if isAskRound && len(restoredAskPending) == 0 {
-		s.emit(events.EventWarning, events.WarningData{Message: "restore: found a pending ask_user round but could not parse any of its questions; the pending-ask holds will not apply this session"})
+		s.emit(events.WarningData{Message: "restore: found a pending ask_user round but could not parse any of its questions; the pending-ask holds will not apply this session"})
 	}
 	s.mu.Lock()
 	s.state = restoredState
@@ -1637,10 +1581,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		// path keeps that guarantee explicit.
 		s.armLaneResidueSweepTimer()
 	}
-	closeJobManagerOnError = false
-	closeMCPManagerOnError = false
 	restoreComplete = true
-	closeDelegateStoreOnError = false
 	return s, nil
 }
 
@@ -1832,6 +1773,10 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		s.reg.RestrictKeepingResultTool(ceiling, s.resultToolName())
 	}
 	s.filterUnavailableMemoryTools()
+	// A role preload is prepared on the creating parent and a frozen descriptor
+	// replays the body frozen at creation; drop what this session cannot follow
+	// before the permanent prompt and inventory carry it.
+	s.dropUnavailableSkillPreloads()
 
 	// Manager is a start-time property carried by the session itself: the
 	// hub tools are installed here, before the first tool cache build, and no
@@ -2016,6 +1961,14 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessi
 			allAgents[exposedAgentCatalogKey(p, rawKey, agent)] = agent
 		}
 		s.pendingHookWarnings = append(s.pendingHookWarnings, commandUnenforcedFieldWarnings(p)...)
+		for _, skipped := range p.SkippedComponents {
+			s.pendingHookWarnings = append(s.pendingHookWarnings, events.WarningData{
+				Source:     "plugin",
+				Title:      "plugin " + skipped.Kind + " skipped",
+				Message:    skipped.File + ": " + skipped.Reason,
+				PluginName: p.Manifest.Name,
+			})
+		}
 		for event, eventHooks := range p.Hooks {
 			runner.Add(event, eventHooks...)
 		}
@@ -2111,7 +2064,7 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessi
 			s.emitHookCompleted(end)
 			return
 		}
-		s.emit(kind, data)
+		s.emit(data)
 	})
 	s.hookRunner = runner
 	// Merge plugin agents on top of built-in agents (plugin agents win on conflict).
@@ -2135,11 +2088,9 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessi
 // dirs before they ever reach here): resume replays a PluginDirs list
 // persisted in the session's ConfigSnapshot, which can name a plugin that was
 // edited, broken, or uninstalled since the session started, bypassing that
-// CLI-side gate entirely. plugin.LoadAll itself is fail-hard (aborts on the
-// first bad or duplicate-named dir) by design for direct/explicit callers, so
-// this instead calls the shared plugin.LoadAllFailSoft and turns each skip
-// into a queued warning (delivered through the normal SESSION_START warning
-// stream, see emitSessionStartEnvelope) instead of aborting.
+// CLI-side gate entirely. This calls the shared plugin.LoadAllFailSoft and turns
+// each skip into a queued warning (delivered through the normal SESSION_START
+// warning stream, see emitSessionStartEnvelope) instead of aborting.
 func (s *Session) loadPluginsFailSoft(dirs []string) []plugin.Instance {
 	plugins, skipped := plugin.LoadAllFailSoft(dirs)
 	for _, sk := range skipped {
@@ -2335,7 +2286,7 @@ func (s *Session) logPluginLoadDiag(p plugin.Instance) {
 		Summary: fmt.Sprintf("plugin loaded: name=%s flavor=%s manifest=%s", p.Manifest.Name, p.ManifestFlavor, p.ManifestPath),
 		Outcome: "success",
 	}
-	logPath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".log.jsonl")
+	logPath := schema.SessionLogPath(s.stateDir, s.id)
 	log, err := sessionlog.NewSessionLog(logPath)
 	if err != nil {
 		return
@@ -2381,7 +2332,7 @@ func (s *Session) logSessionStartHookDispatch(kind plugin.SessionStartKind, deli
 		Outcome:  outcome,
 		Failures: failures,
 	}
-	logPath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".log.jsonl")
+	logPath := schema.SessionLogPath(s.stateDir, s.id)
 	log, err := sessionlog.NewSessionLog(logPath)
 	if err != nil {
 		return
@@ -2408,8 +2359,7 @@ func (s *Session) conversationSignals() (historyTurns, modelResponses int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, t := range s.history {
-		switch t.Kind {
-		case schema.TurnHookCompleted, schema.TurnEnvironment, schema.TurnNotesContext, schema.TurnMemoryContext:
+		if t.Kind == schema.TurnHookCompleted || t.Kind.HarnessContext() {
 			continue
 		}
 		if t.Kind.TranscriptOnly() {

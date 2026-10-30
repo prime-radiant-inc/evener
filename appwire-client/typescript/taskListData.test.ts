@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { expect, test } from "vitest";
 import { parseTaskListData, taskAggregateLabel } from "./taskListData";
+import { TASK_STATUSES } from "./types.gen";
 
 // The parser accepts untrusted task-list input and preserves the persisted
 // snake_case wire contract while normalizing display rows.
@@ -193,6 +194,13 @@ test("drops a row carrying a status outside the daemon's four-status enum rather
     { id: 2, type: "implement", description: "unrecognized", prompt: "", status: "blocked" },
   ]);
   expect(rows).toEqual([{ id: 1, type: "implement", description: "good", prompt: "", status: "open" }]);
+});
+
+test("keeps a row for every status the Go enum defines", () => {
+  const rows = parseTaskListData(
+    TASK_STATUSES.map((status, index) => ({ id: index + 1, type: "implement", description: "d", prompt: "", status })),
+  );
+  expect(rows?.map((row) => row.status)).toEqual([...TASK_STATUSES]);
 });
 
 test("the aggregate reads 'N of M tasks left' while work remains", () => {

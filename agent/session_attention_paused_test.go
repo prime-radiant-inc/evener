@@ -250,10 +250,7 @@ func TestModelSwitchDoesNotReopenAStopParkedRail(t *testing.T) {
 	s, _, _, _ := newAttentionLivelockSession(t, llm.ErrorFromHTTPStatus("openai", 401, "unauthorized", nil, nil))
 	// Unserved, as TestStopParksRootDelegateAttentionUntilReEngagement keeps
 	// it, so nothing claims the parked queue behind the test's back.
-	go func() {
-		for range s.Events() {
-		}
-	}()
+	drainSessionEvents(s)
 	queueOneMutation(t, s, "queue-behind-stop", "please still run me")
 	armOneRootAttention(t, s, "dlg_stop", "delegate:dlg_stop/delivery/1")
 	_, _ = s.ProcessInputKind(context.Background(), "", nil, EntryNotification)

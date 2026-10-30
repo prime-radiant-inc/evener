@@ -19,7 +19,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 )
 
-func TestStableDelegateOutcomeJobStatus(t *testing.T) {
+func TestDelegateOutcomeJobStatus(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		outcome delegatestore.OutcomeStatus
@@ -32,8 +32,8 @@ func TestStableDelegateOutcomeJobStatus(t *testing.T) {
 		{delegatestore.OutcomeFailed, jobstore.StatusFailed},
 		{"unknown", jobstore.StatusFailed},
 	} {
-		if got := stableDelegateOutcomeJobStatus(tc.outcome); got != tc.want {
-			t.Errorf("stableDelegateOutcomeJobStatus(%q) = %q, want %q", tc.outcome, got, tc.want)
+		if got := delegateOutcomeJobStatus(tc.outcome); got != tc.want {
+			t.Errorf("delegateOutcomeJobStatus(%q) = %q, want %q", tc.outcome, got, tc.want)
 		}
 	}
 }
@@ -74,7 +74,7 @@ func TestDelegatePermanentStartFailure(t *testing.T) {
 	}
 }
 
-func TestStableDelegateResult(t *testing.T) {
+func TestDelegateResult(t *testing.T) {
 	t.Parallel()
 	descriptor := delegatestore.Descriptor{
 		ChildSessionID:    "child",
@@ -85,7 +85,7 @@ func TestStableDelegateResult(t *testing.T) {
 	committed := delegateUpdatePlan{rows: []delegateSnapshot{
 		{id: "dlg_1", lifecycle: delegateLifecycleIdle, resumable: true},
 	}}
-	result := stableDelegateResult(descriptor, "dlg_1", committed, delegateMutationPlans{}, nil)
+	result := startedDelegateResult(descriptor, "dlg_1", committed, delegateMutationPlans{}, nil)
 	if result.DelegateID != "dlg_1" || result.ChildSessionID != "child" || result.Type != delegateResourceType {
 		t.Fatalf("result = %+v", result)
 	}
@@ -106,7 +106,7 @@ func TestStableDelegateResult(t *testing.T) {
 	committedWithOutcome := delegateUpdatePlan{rows: []delegateSnapshot{
 		{id: "dlg_1", lifecycle: delegateLifecycleIdle, lastOutcome: outcome},
 	}}
-	result2 := stableDelegateResult(descriptor, "dlg_1", committedWithOutcome, delegateMutationPlans{}, errors.New("err"))
+	result2 := startedDelegateResult(descriptor, "dlg_1", committedWithOutcome, delegateMutationPlans{}, errors.New("err"))
 	if result2.Reason != "timeout" {
 		t.Errorf("reason = %q, want timeout", result2.Reason)
 	}
@@ -117,20 +117,20 @@ func TestStableDelegateResult(t *testing.T) {
 	network := false
 	descriptorWithSandbox := descriptor
 	descriptorWithSandbox.Sandbox = &delegatestore.SandboxSnapshot{Mode: "off", Network: &network}
-	result3 := stableDelegateResult(descriptorWithSandbox, "dlg_1", committed, delegateMutationPlans{}, nil)
+	result3 := startedDelegateResult(descriptorWithSandbox, "dlg_1", committed, delegateMutationPlans{}, nil)
 	if result3.Sandbox == nil || result3.Sandbox.Mode != "off" || result3.Sandbox.Network {
 		t.Fatalf("sandbox = %+v", result3.Sandbox)
 	}
 	// Sandbox with nil network defaults to true.
 	descriptorWithSandbox2 := descriptor
 	descriptorWithSandbox2.Sandbox = &delegatestore.SandboxSnapshot{Mode: "workspace-write"}
-	result4 := stableDelegateResult(descriptorWithSandbox2, "dlg_1", committed, delegateMutationPlans{}, nil)
+	result4 := startedDelegateResult(descriptorWithSandbox2, "dlg_1", committed, delegateMutationPlans{}, nil)
 	if result4.Sandbox == nil || !result4.Sandbox.Network {
 		t.Fatalf("sandbox = %+v, want network=true default", result4.Sandbox)
 	}
 	// Empty lifecycle maps to StatusRunning.
 	emptyCommitted := delegateUpdatePlan{}
-	result5 := stableDelegateResult(descriptor, "dlg_1", emptyCommitted, delegateMutationPlans{}, nil)
+	result5 := startedDelegateResult(descriptor, "dlg_1", emptyCommitted, delegateMutationPlans{}, nil)
 	if result5.Status != jobstore.StatusRunning {
 		t.Errorf("status = %q, want running for empty snapshot", result5.Status)
 	}
@@ -167,15 +167,15 @@ func TestLatestDelegateMutationSnapshot(t *testing.T) {
 	}
 }
 
-func TestStableDelegateSandboxSnapshot(t *testing.T) {
+func TestDelegateSandboxSnapshot(t *testing.T) {
 	t.Parallel()
 	// Nil policy returns nil.
-	if got := stableDelegateSandboxSnapshot(nil); got != nil {
+	if got := delegateSandboxSnapshot(nil); got != nil {
 		t.Fatal("nil policy should return nil")
 	}
 	// ModeOff returns nil.
 	off := &sandbox.SandboxPolicy{Mode: sandbox.ModeOff}
-	if got := stableDelegateSandboxSnapshot(off); got != nil {
+	if got := delegateSandboxSnapshot(off); got != nil {
 		t.Fatal("ModeOff should return nil")
 	}
 	// Active policy produces a snapshot with copied slices.
@@ -188,7 +188,7 @@ func TestStableDelegateSandboxSnapshot(t *testing.T) {
 		ExtraReadRoots:     []string{"d"},
 		Network:            &net,
 	}
-	got := stableDelegateSandboxSnapshot(policy)
+	got := delegateSandboxSnapshot(policy)
 	if got == nil || got.Mode != "workspace-write" {
 		t.Fatalf("snapshot = %+v", got)
 	}
@@ -200,7 +200,7 @@ func TestStableDelegateSandboxSnapshot(t *testing.T) {
 	}
 	// Nil network stays nil.
 	policy.Network = nil
-	got = stableDelegateSandboxSnapshot(policy)
+	got = delegateSandboxSnapshot(policy)
 	if got.Network != nil {
 		t.Error("nil network should stay nil")
 	}
@@ -340,7 +340,7 @@ func TestMissingDelegateRestoreInputReason(t *testing.T) {
 
 	// Corrupt child session meta (invalid JSON).
 	childID := "02" + strings.Repeat("a", 20)
-	metaPath := filepath.Join(tmpDir, sessionsSubdir, childID+".meta.json")
+	metaPath := schema.SessionMetaPath(tmpDir, childID)
 	if err := os.MkdirAll(filepath.Dir(metaPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -417,24 +417,24 @@ func TestDelegateQuietAttentionIDAndContent(t *testing.T) {
 	}
 }
 
-func TestStableDelegateRole(t *testing.T) {
+func TestDelegateRole(t *testing.T) {
 	t.Parallel()
 	s := newSubagentSessionForAvailability(t, "", 1)
 	// Custom agent with system prompt takes priority.
 	agent := &plugin.Agent{Name: "custom", SystemPrompt: "custom instructions"}
 	selection := subagentModelSelection{agent: agent}
-	name, prompt := stableDelegateRole(selection, false, s)
+	name, prompt := delegateRole(selection, false, s)
 	if name != "custom" || prompt != "custom instructions" {
 		t.Fatalf("name=%q prompt=%q, want custom agent", name, prompt)
 	}
 	// No agent but child can delegate -> delegating instructions.
-	name, prompt = stableDelegateRole(subagentModelSelection{}, true, s)
+	name, prompt = delegateRole(subagentModelSelection{}, true, s)
 	if name != "subagent" || prompt != defaultDelegatingSubagentInstructions {
 		t.Fatalf("name=%q prompt=%q, want delegating subagent", name, prompt)
 	}
 	// No agent, no delegation, with pluginAgents["subagent"] entry -> plugin's
 	// system prompt (the test session registers a "subagent" plugin agent).
-	name, prompt = stableDelegateRole(subagentModelSelection{}, false, s)
+	name, prompt = delegateRole(subagentModelSelection{}, false, s)
 	if name != "subagent" {
 		t.Fatalf("name=%q, want subagent", name)
 	}
@@ -447,16 +447,16 @@ func TestStableDelegateRole(t *testing.T) {
 	// Agent with empty system prompt falls through.
 	emptyAgent := &plugin.Agent{Name: "empty", SystemPrompt: "  "}
 	selection = subagentModelSelection{agent: emptyAgent}
-	name, _ = stableDelegateRole(selection, false, s)
+	name, _ = delegateRole(selection, false, s)
 	if name == "empty" {
 		t.Fatalf("name=%q, should fall through empty-prompt agent", name)
 	}
 }
 
-func TestPopulateStableDelegateSendResult(t *testing.T) {
+func TestPopulateDelegateSendResult(t *testing.T) {
 	t.Parallel()
 	// Nil result is a no-op.
-	populateStableDelegateSendResult(nil, delegatestore.TerminalPacket{})
+	populateDelegateSendResult(nil, delegatestore.TerminalPacket{})
 	// Full packet populates all fields.
 	resumable := false
 	valid := true
@@ -487,7 +487,7 @@ func TestPopulateStableDelegateSendResult(t *testing.T) {
 		Metadata:               metadata,
 	}
 	var result sendMessageResult
-	populateStableDelegateSendResult(&result, packet)
+	populateDelegateSendResult(&result, packet)
 	if result.Task != "inspect" || result.Description != "desc" || result.AgentType != "general" {
 		t.Fatalf("task/desc/agent = %q/%q/%q", result.Task, result.Description, result.AgentType)
 	}
@@ -527,14 +527,14 @@ func TestPopulateStableDelegateSendResult(t *testing.T) {
 	}
 }
 
-func TestPopulateStableDelegateSendResult_InvalidMetadata(t *testing.T) {
+func TestPopulateDelegateSendResult_InvalidMetadata(t *testing.T) {
 	t.Parallel()
 	packet := delegatestore.TerminalPacket{
 		Kind:     delegatestore.PacketTerminalError,
 		Metadata: json.RawMessage(`{invalid`),
 	}
 	var result sendMessageResult
-	populateStableDelegateSendResult(&result, packet)
+	populateDelegateSendResult(&result, packet)
 	// With invalid metadata, metadata-derived fields stay zero.
 	if result.Task != "" || result.Worktree != nil {
 		t.Fatalf("invalid metadata should leave fields empty: task=%q worktree=%v", result.Task, result.Worktree)
@@ -545,7 +545,7 @@ func TestPopulateStableDelegateSendResult_InvalidMetadata(t *testing.T) {
 	}
 }
 
-func TestPopulateStableDelegateSendResult_NoMetadata(t *testing.T) {
+func TestPopulateDelegateSendResult_NoMetadata(t *testing.T) {
 	t.Parallel()
 	// Packet with no metadata: finish comes from delegatePreparedFinish with
 	// default outcome.
@@ -554,7 +554,7 @@ func TestPopulateStableDelegateSendResult_NoMetadata(t *testing.T) {
 		Message: json.RawMessage(`"done"`),
 	}
 	var result sendMessageResult
-	populateStableDelegateSendResult(&result, packet)
+	populateDelegateSendResult(&result, packet)
 	if result.Status != jobstore.StatusCompleted {
 		t.Errorf("status = %q, want completed", result.Status)
 	}
@@ -563,7 +563,7 @@ func TestPopulateStableDelegateSendResult_NoMetadata(t *testing.T) {
 	}
 }
 
-func TestPopulateStableDelegateSendResult_StructuredResultOnly(t *testing.T) {
+func TestPopulateDelegateSendResult_StructuredResultOnly(t *testing.T) {
 	t.Parallel()
 	// StructuredResult present but StructuredResultValid nil.
 	packet := delegatestore.TerminalPacket{
@@ -571,7 +571,7 @@ func TestPopulateStableDelegateSendResult_StructuredResultOnly(t *testing.T) {
 		StructuredResult: json.RawMessage(`{"result":"data"}`),
 	}
 	var result sendMessageResult
-	populateStableDelegateSendResult(&result, packet)
+	populateDelegateSendResult(&result, packet)
 	if !result.StructuredResultValidSet {
 		t.Error("StructuredResultValidSet should be true when StructuredResult is present")
 	}

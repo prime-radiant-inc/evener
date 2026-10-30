@@ -176,7 +176,7 @@ func (o hubOptions) deployBinarySeam() func(ctx context.Context, goos, goarch, o
 
 // hubDeployHelpDefaultedSource is the remedy for the refusals a hub with the
 // defaulted own-executable source produces — today the cross-target refusal
-// (errOwnExecutableCannotServe): its own executable cannot serve this host, and
+// (ErrOwnExecutableCannotServe): its own executable cannot serve this host, and
 // that is the source it is already deploying, so the shared text's leading
 // clause ("run this hub without -no-deploy so it deploys its own executable")
 // names the state the hub is in and the one source that cannot work here. The
@@ -188,7 +188,7 @@ const hubDeployHelpDefaultedSource = "set -deploy-binary <path> (a pre-built eve
 // hubDeployHelpDefaultedDirtySource is hubDeployHelpDefaultedSource for a DIRTY
 // controller: the cross-target refusal fires there too, and the flags the clean
 // text leads with cannot work — a dirty controller refuses a named artifact and
-// a source checkout terminally (errControllerDirty), so recommending them would
+// a source checkout terminally (ErrControllerDirty), so recommending them would
 // name the two things guaranteed to fail. The actions that can succeed lead
 // instead, and no deploy flag is named: rebuild the hub from a clean checkout, or
 // get an evener built for the host's platform onto that host some other way.
@@ -431,7 +431,7 @@ func (a deployArtifact) remedy() string {
 // deployBinaryBuild plus the marker that says these bytes are this hub's own
 // build, which sshconn's dirty-controller rule reads. The file is read at deploy
 // time, so a hub whose executable is replaced under it deploys the replacement:
-// a cross-commit replacement is caught after the push (errDeployUnstamped — the
+// a cross-commit replacement is caught after the push (ErrDeployUnstamped — the
 // host reports a version this controller did not stamp), and a replacement that
 // is itself a dirty build at this controller's own commit reports the same
 // "<sha>-dirty" and is not detectable. That residual is accepted rather than

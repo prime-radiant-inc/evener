@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/auth/openai"
@@ -399,7 +400,7 @@ func TestMemoryEvalVerifierStopsRunner(t *testing.T) {
 					if mode == "final-compile" && calls == 1 {
 						return memoryEvalCall("write_file", map[string]any{"file_path": "main.go", "content": broken}), nil
 					}
-					return finalResponse("opaque-verifier-stop-707"), nil
+					return agenttest.FinalResponse("opaque-verifier-stop-707"), nil
 				}
 			})
 			if stages != 1 || runErr == nil || !errors.Is(b.terminalFailure(), runErr) || len(episodes) != 0 {
@@ -573,7 +574,7 @@ func TestMemoryEvalAdmission(t *testing.T) {
 	})
 	t.Run("complete-multiple-calls-one-round", func(t *testing.T) {
 		b := &memoryEvalAdmission{stageCap: 2, deadline: now.Add(time.Minute)}
-		response := toolCallResponse(llm.ToolCallData{ID: "1", Name: "read_file", Arguments: []byte("{}")}, llm.ToolCallData{ID: "2", Name: "read_file", Arguments: []byte("{}")})
+		response := agenttest.ToolCallResponse(llm.ToolCallData{ID: "1", Name: "read_file", Arguments: []byte("{}")}, llm.ToolCallData{ID: "2", Name: "read_file", Arguments: []byte("{}")})
 		call := b.middleware(nil).WrapComplete(func(context.Context, llm.Request) (llm.Response, error) { return response, nil })
 		if _, err := call(context.Background(), llm.Request{}); err != nil {
 			t.Fatal(err)
@@ -593,7 +594,7 @@ func TestMemoryEvalAdmission(t *testing.T) {
 	for _, finishOnly := range []bool{false, true} {
 		t.Run(fmt.Sprintf("stream-finish-only=%t", finishOnly), func(t *testing.T) {
 			b := &memoryEvalAdmission{stageCap: 2, deadline: now.Add(time.Minute)}
-			resp := toolCallResponse(llm.ToolCallData{ID: "1", Name: "read_file", Arguments: []byte("{}")}, llm.ToolCallData{ID: "2", Name: "read_file", Arguments: []byte("{}")})
+			resp := agenttest.ToolCallResponse(llm.ToolCallData{ID: "1", Name: "read_file", Arguments: []byte("{}")}, llm.ToolCallData{ID: "2", Name: "read_file", Arguments: []byte("{}")})
 			var closes atomic.Int32
 			call := b.middleware(nil).WrapStream(func(context.Context, llm.Request) (llm.Stream, error) {
 				s := llm.NewChanStream(func() { closes.Add(1) })
@@ -661,7 +662,7 @@ func TestMemoryEvalAdmission(t *testing.T) {
 
 func memoryEvalCall(name string, args map[string]any) llm.Response {
 	raw, _ := json.Marshal(args)
-	return toolCallResponse(llm.ToolCallData{ID: name, Name: name, Arguments: raw})
+	return agenttest.ToolCallResponse(llm.ToolCallData{ID: name, Name: name, Arguments: raw})
 }
 func TestMemoryEvalIsolation(t *testing.T) {
 	// Serial: HOME/XDG decoys and environment isolation are process-global.
@@ -692,7 +693,7 @@ func TestMemoryEvalIsolation(t *testing.T) {
 			b.beginStage(30, time.Now().Add(time.Minute))
 			var ioCount atomic.Int32
 			adapter := &memoryEvalAdapter{complete: func(context.Context, llm.Request) (llm.Response, error) {
-				return finalResponse("opaque-prior-617"), nil
+				return agenttest.FinalResponse("opaque-prior-617"), nil
 			}}
 			c, p := memoryEvalFixtureClient(t, b, adapter)
 			cfg := memoryEvalConfig(context.Background(), root, disabled, 30)
@@ -746,10 +747,10 @@ func TestMemoryEvalIsolation(t *testing.T) {
 					if !disabled {
 						return memoryEvalCall("memory_read", map[string]any{"scope": "personal", "file_path": "native.md"}), nil
 					}
-					return finalResponse("ordinary complete"), nil
+					return agenttest.FinalResponse("ordinary complete"), nil
 				default:
 					memoryRequireResult(t, req, "memory_read", "opaque-native-616")
-					return finalResponse("enabled complete"), nil
+					return agenttest.FinalResponse("enabled complete"), nil
 				}
 			}
 			second, err := NewSession(c, p, memoryEvalLocal(t, home, workspace, t.TempDir()), cfg)
@@ -985,7 +986,7 @@ func main() {}
 		if !disabled && pair == "correction" && stage.name == "B" {
 			steps = append(steps, memoryEvalCall("memory_edit", map[string]any{"scope": "project", "file_path": "check.md", "old_string": "sh scripts/check.sh", "new_string": "sh scripts/check.sh --current", "replace_all": true}))
 		}
-		steps = append(steps, finalResponse("opaque-episode-completion-631"))
+		steps = append(steps, agenttest.FinalResponse("opaque-episode-completion-631"))
 		n := 0
 		adapter.complete = func(ctx context.Context, req llm.Request) (llm.Response, error) {
 			if n >= len(steps) {

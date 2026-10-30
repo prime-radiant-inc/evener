@@ -16,12 +16,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	authopenai "primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/auth/openai/oaitest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
@@ -35,12 +39,20 @@ import (
 // client's own call.
 func newAuthOriginTestClient(t *testing.T) *appwire.Client {
 	t.Helper()
+	client, _ := newAuthOriginTestHub(t)
+	return client
+}
+
+// newAuthOriginTestHub is newAuthOriginTestClient plus the serving hub's own
+// WebServer, for a test that scripts the auth controller's network boundary.
+func newAuthOriginTestHub(t *testing.T) (*appwire.Client, *WebServer) {
+	t.Helper()
 	oaitest.IsolateOpenAIAuth(t)
 	dir := t.TempDir()
 	tomlPath := filepath.Join(dir, "providers.toml")
 	writeMinimalProvidersToml(t, tomlPath)
 	credsStore := newTestCredentialsStore(t)
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{
 		Past:                hubcore.NewPastIndex(""),
 		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, credsStore, nil),
 		ProvidersConfigPath: tomlPath,
@@ -51,10 +63,8 @@ func newAuthOriginTestClient(t *testing.T) *appwire.Client {
 	client := dialHubRPC(t, hub)
 	t.Cleanup(func() { client.Close() })
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	return client
+	mustInitializeHubClient(t, client)
+	return client, web
 }
 
 // waitForAuthUpdatedRaw reads notifications until evener/auth/updated arrives
@@ -123,31 +133,60 @@ func TestAuthApiKeySetBroadcastEchoesOriginClientId(t *testing.T) {
 }
 
 // TestAuthLoginCompleteFailedStatusReadBroadcastsNoData drives
-// evener/auth/loginComplete through the registered handler with
-// authLoginComplete stubbed to the exact shape statusAfterWrite produces when
-// its OAuth record write applied but the status read after it failed: Status
-// carries the read's own zero-value fallback (Provider named, ActiveSource
-// never actually read), wrapped in writeApplied. The broadcast that follows
-// must be the no-data form - no provider or activeSource key at all - never
-// the fabricated pair of a real provider beside an empty activeSource a
-// naive writeDidApply(err) gate would announce as fact. It sends its own
-// OriginClientId and requires that it is NOT echoed: an id-bearing
-// provider-less broadcast would be indistinguishable from a provider-instance
-// echo, so it could consume an instance mutation's marker and turn that
-// mutation's own echo foreign.
+// evener/auth/loginComplete through the registered handler and the hub's real
+// auth controller, with the token exchange scripted and the auth record
+// unreadable once it is saved: the shape statusAfterWrite produces when its
+// OAuth record write applied but the status read after it failed (Provider
+// named, ActiveSource never actually read), wrapped in writeApplied. The
+// broadcast that follows must be the no-data form - no provider or
+// activeSource key at all - never the fabricated pair of a real provider
+// beside an empty activeSource a naive writeDidApply(err) gate would announce
+// as fact. It sends its own OriginClientId and requires that it is NOT
+// echoed: an id-bearing provider-less broadcast would be indistinguishable
+// from a provider-instance echo, so it could consume an instance mutation's
+// marker and turn that mutation's own echo foreign.
 func TestAuthLoginCompleteFailedStatusReadBroadcastsNoData(t *testing.T) {
-	client := newAuthOriginTestClient(t)
+	client, web := newAuthOriginTestHub(t)
 
-	original := authLoginComplete
-	t.Cleanup(func() { authLoginComplete = original })
-	wantFailure := errors.New("the status could not be read")
-	authLoginComplete = func(*hubAuthController, context.Context, appwire.AuthLoginCompleteParams) (appwire.AuthLoginCompleteResponse, error) {
-		return appwire.AuthLoginCompleteResponse{Status: appwire.AuthStatusResponse{Provider: "anthropic"}}, writeApplied(wantFailure)
+	ctrl := web.auth
+	ctrl.exchangeCode = func(context.Context, *http.Client, authopenai.Config, authopenai.TokenExchangeRequest) (authopenai.TokenSet, error) {
+		return authopenai.TokenSet{
+			AccessToken:  "access-token",
+			RefreshToken: "refresh-token",
+			IDToken:      hubAuthTestJWT(t, map[string]any{"email": "oauth@example.com"}),
+			TokenType:    "Bearer",
+			Expiry:       time.Now().Add(time.Hour),
+		}, nil
 	}
+	saved := false
+	realSave, realLoad := ctrl.saveAuth, ctrl.loadAuth
+	ctrl.saveAuth = func(dir, name string, rec authopenai.AuthRecord) error {
+		err := realSave(dir, name, rec)
+		if err == nil {
+			saved = true
+		}
+		return err
+	}
+	ctrl.loadAuth = func(dir, name string) (authopenai.AuthRecord, error) {
+		if saved {
+			return authopenai.AuthRecord{}, errors.New("the auth record could not be read")
+		}
+		return realLoad(dir, name)
+	}
+
+	var start appwire.AuthLoginStartResponse
+	if err := client.Request(context.Background(), appwire.MethodEvenerAuthLoginStart,
+		appwire.AuthLoginStartParams{Provider: "openai-codex"}, &start); err != nil {
+		t.Fatalf("evener/auth/loginStart: %v", err)
+	}
+	state := mustAuthorizeState(t, start.URL)
 
 	var resp appwire.AuthLoginCompleteResponse
 	err := client.Request(context.Background(), appwire.MethodEvenerAuthLoginComplete,
-		appwire.AuthLoginCompleteParams{Provider: "anthropic", OriginClientId: "tab-a"}, &resp)
+		appwire.AuthLoginCompleteParams{
+			Provider: "openai-codex", FlowID: start.FlowID, OriginClientId: "tab-a",
+			RedirectURL: "http://localhost:1455/auth/callback?code=auth-code&state=" + url.QueryEscape(state),
+		}, &resp)
 	if err == nil {
 		t.Fatal("evener/auth/loginComplete = nil, want the failed status read reported")
 	}
@@ -158,6 +197,58 @@ func TestAuthLoginCompleteFailedStatusReadBroadcastsNoData(t *testing.T) {
 	}
 	if strings.Contains(string(raw), "originClientId") {
 		t.Fatalf("broadcast params = %s, want no originClientId: the no-data form must not be attributable as a provider-instance echo", raw)
+	}
+}
+
+// TestAuthLoginCompleteRestartBroadcastsNothing drives evener/auth/loginComplete
+// for a flow the hub cannot check because its fingerprint key was lost
+// mid-flow. The completion saved nothing and answers restart, so it owes no
+// evener/auth/updated: the next broadcast a client sees is the one a later
+// write sends, not an empty one that would send every client re-reading a
+// listing nothing changed.
+func TestAuthLoginCompleteRestartBroadcastsNothing(t *testing.T) {
+	client, web := newAuthOriginTestHub(t)
+
+	ctrl := web.auth
+	ctrl.exchangeCode = func(context.Context, *http.Client, authopenai.Config, authopenai.TokenExchangeRequest) (authopenai.TokenSet, error) {
+		if err := os.Remove(filepath.Join(ctrl.stateDir, endpointFingerprintKeyFile)); err != nil {
+			t.Errorf("remove fingerprint key: %v", err)
+		}
+		unkeyableStateRoot(t, ctrl.stateDir)
+		return authopenai.TokenSet{AccessToken: "access-token", RefreshToken: "refresh-token", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}, nil
+	}
+
+	var start appwire.AuthLoginStartResponse
+	if err := client.Request(context.Background(), appwire.MethodEvenerAuthLoginStart,
+		appwire.AuthLoginStartParams{Provider: "openai-codex"}, &start); err != nil {
+		t.Fatalf("evener/auth/loginStart: %v", err)
+	}
+	state := mustAuthorizeState(t, start.URL)
+
+	var resp appwire.AuthLoginCompleteResponse
+	if err := client.Request(context.Background(), appwire.MethodEvenerAuthLoginComplete,
+		appwire.AuthLoginCompleteParams{
+			Provider: "openai-codex", FlowID: start.FlowID, OriginClientId: "tab-a",
+			RedirectURL: "http://localhost:1455/auth/callback?code=auth-code&state=" + url.QueryEscape(state),
+		}, &resp); err != nil {
+		t.Fatalf("evener/auth/loginComplete: %v", err)
+	}
+	if !resp.Restart {
+		t.Fatalf("evener/auth/loginComplete = %+v, want Restart", resp)
+	}
+
+	// The state root can be keyed again, so a write goes through.
+	if err := os.RemoveAll(filepath.Join(ctrl.stateDir, endpointFingerprintKeyFile)); err != nil {
+		t.Fatalf("clear the key obstacle: %v", err)
+	}
+	var status appwire.AuthStatusResponse
+	if err := client.Request(context.Background(), appwire.MethodEvenerAuthApiKeySet,
+		appwire.AuthApiKeySetParams{Provider: "anthropic", Value: "sk-after-restart", OriginClientId: "tab-b"}, &status); err != nil {
+		t.Fatalf("evener/auth/apiKey/set: %v", err)
+	}
+	params := waitForAuthUpdated(t, client)
+	if params.OriginClientId != "tab-b" || params.Provider != "anthropic" {
+		t.Fatalf("first broadcast = %+v, want the later write's: the restart answer owes none", params)
 	}
 }
 

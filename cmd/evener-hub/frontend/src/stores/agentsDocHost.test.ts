@@ -1,13 +1,13 @@
 import type { AgentsDocResponse, AnyNotification, HostRow } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, beforeEach, expect, test } from "vitest";
+import { connectReadyFakeClient } from "../testing/connectionTestUtils";
 import {
   agentsDocStore,
   agentsDocStoreForHost,
   resetAgentsDocHostInstancesForTests,
   resetAgentsDocStoreForTests,
 } from "./agentsDoc";
-import { connectionStore } from "./connection";
+import { connectionStore, resetConnectionStoreForTests } from "./connection";
 import { hostsStore } from "./hosts";
 
 // The AGENTS.md store's host scope (component 07b): the controller's own
@@ -15,12 +15,6 @@ import { hostsStore } from "./hosts";
 // is a per-host instance whose get/set go through evener/host/request. Reads
 // and writes travel together - a remote selection both shows and changes THAT
 // host's file, never this hub's.
-
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  return fake;
-}
 
 const DOC: AgentsDocResponse = { path: "/home/u/.config/evener/AGENTS.md", exists: true, content: "# hi\n" };
 
@@ -37,7 +31,7 @@ function hostRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
 }
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetAgentsDocStoreForTests();
   resetAgentsDocHostInstancesForTests();
   hostsStore.getState().resetForTests();
@@ -45,11 +39,11 @@ beforeEach(() => {
 
 afterEach(() => {
   resetAgentsDocHostInstancesForTests();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
 });
 
 test("the local hub resolves to the controller's singleton and issues the plain calls", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/settings/agentsDoc/get", () => DOC);
   fake.on("evener/host/request", () => {
     throw new Error("the local hub must never route through the proxy");
@@ -63,7 +57,7 @@ test("the local hub resolves to the controller's singleton and issues the plain 
 });
 
 test("a remote host's document is read and written through evener/host/request", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/host/request", (params) => {
     const forwarded = params as { method: string; params: { content?: string } };
     return forwarded.method === "evener/settings/agentsDoc/get"
@@ -93,7 +87,7 @@ test("a remote host's document is read and written through evener/host/request",
 });
 
 test("only the host's own wrapped changed broadcast lands, never the controller's", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/settings/agentsDoc/get", () => DOC);
   await agentsDocStore.getState().fetch();
 
@@ -127,7 +121,7 @@ test("resetAgentsDocHostInstancesForTests drops a per-host instance so it is reb
 test.each([{ address: "new.example:22" }, { address: "old.example:22", incarnationId: "replacement" }])(
   "a host re-registered under the same name gets a fresh document store (%j)",
   async (replacement) => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/request", () => DOC as never);
     hostsStore.setState({ load: { phase: "ready", hosts: [hostRow({ name: "beta", address: "old.example:22" })] } });
     const first = agentsDocStoreForHost("beta");
@@ -175,7 +169,7 @@ test("an attach report on an unchanged registration keeps the document store", (
 // registration: nothing is kept, the previous registration's instance is
 // unwired, and what a caller is handed refuses rather than dialing.
 test("a host the registry reports gone keeps no instance and refuses instead of dialing", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/host/request", () => DOC as never);
   hostsStore.setState({ load: { phase: "ready", hosts: [hostRow({ name: "beta", address: "beta.example:22" })] } });
   const registered = agentsDocStoreForHost("beta");
@@ -214,7 +208,7 @@ async function reconnect(): Promise<void> {
 // subscriber live - and that subscriber re-reads the document on every reconnect,
 // forwarding evener/host/request for a host the registry no longer lists.
 test("a host removed while a pane is mounted is evicted, so nothing of it survives", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/host/request", () => DOC as never);
   hostsStore.setState({ load: { phase: "ready", hosts: [hostRow({ name: "beta", attached: true })] } });
   // What the pane is holding: it resolved this host's instance and read it.

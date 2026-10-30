@@ -37,7 +37,6 @@ vi.mock("react-native", async () => ({
 	TextInput: "TextInput",
 	useWindowDimensions: () => ({ width: 393, height: 852, fontScale: 1, scale: 3 }),
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("@react-navigation/native", async () => {
 	const { useEffect } = await import("react");
 	return {

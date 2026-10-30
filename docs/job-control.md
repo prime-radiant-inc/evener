@@ -14,8 +14,17 @@ sections below preserve tool parameters, ownership rules and terminal outcomes.
 | --- | --- | --- |
 | A short shell command | Foreground shell mode | Waits inline, but long work can promote to a managed job. Inspect the returned status and exit code. |
 | Work while the agent continues | Background shell mode | Returns a `job_...` ID. Completion notifies the owner. Session close stops managed processes. |
-| A service that must survive the session | Detached shell mode | Returns a PID, not a managed job. The caller owns logs and shutdown. No job notifications or Evener stop control. |
+| A service that must survive the session | Detached shell mode, where the environment supports it | Returns a PID, not a managed job. The caller owns logs and shutdown. No job notifications or Evener stop control. A sandboxed session with a wrapper cannot detach: use a session-owned background job there, and expect the process to stop with the session. |
 | Another agent's conversation | `delegate` | Returns a stable `dlg_...` ID. A completed run leaves the delegate idle and available for another message. |
+
+The environment decides whether detached mode exists. Evener asks it through
+`execenv.DetachSupportReporter` before building the model-facing shell schema: an
+environment that cannot disown a process — a sandboxed session with a wrapper
+provisioned, or a platform without detached-process attributes — omits
+`mode="detached"` from that schema, and `DetachCommand` refuses it with
+`ErrDetachUnsupported` if a call arrives anyway. On such a session a process
+that must keep running lives as a session-owned background job and stops when
+the session ends; it cannot outlive the session.
 
 For background work, keep the returned ID, continue independent work, then wait
 for the completion notification. Use `job_status` or `job_list` once to orient
@@ -40,7 +49,8 @@ Watches observe a source or a timer; they do not make output retention infinite.
 Watch frames can coalesce while the receiver is busy. Clear timers you no longer
 need, and read retained evidence when a frame alone cannot answer the question.
 Keep application-owned logs outside session scratch when a detached process must
-outlive the session.
+outlive the session (where the environment supports detaching; a session-owned
+background job cannot outlive it).
 
 ### Manager observation evidence
 
@@ -76,12 +86,24 @@ follows those recorded links across successive questions, whether the answer
 comes from a human or a Manager. It never follows unrelated later work or
 infers a link from an older record that lacks one. For a different terminal
 execution, the watch asks the existing history reader for a single-cut verdict;
-it keeps no continuation graph or terminal backlog. The query uses the same
-two-second operation budget as watch state reads. Missing required evidence,
-incompatible identity, timeout, cancellation or a busy index is an observation
-failure, not a negative verdict: the watch ends with re-registration guidance.
-Index traversal checks cancellation between reads; existing catch-up and OS
-I/O may still finish after the caller stops waiting.
+it keeps no continuation graph or terminal backlog. The existing subscription
+consumer retains the original candidate and held history cut while retrying a
+transient read-call failure. It uses the watch state-read policy: a two-second
+budget per call, two seconds between retries, and at most five consecutive
+failed calls. An operation timeout while the watch remains alive, transport
+unavailability, index contention or rebuilding, and an unclassified internal
+read error can recover without re-registration. The watch keeps its ID and
+pending-send identities and emits one interruption notice for that episode.
+Clearing, replacing or canceling the subscription stops its recovery.
+
+Missing required evidence, wrong requested turns, incompatible ref, instance,
+generation, epoch or history incarnation, and history truncation end observation
+immediately. Permanent request refusals and typed history failures also end it;
+none is a negative verdict. Exhausted retries end the watch with one durable
+end notice and re-registration guidance, never inferred completion. Index
+traversal checks cancellation between reads; existing catch-up and OS I/O may
+still finish after the caller stops waiting, so the operation budget is not a
+hard wall-clock bound on underlying I/O.
 
 The watch keeps its ID and pending notices through a connection interruption.
 It sends one interruption notice for the loss, then checks the Manager caller's
@@ -128,7 +150,9 @@ The default model-facing posture is:
 
 > Shell `mode="foreground"` (default) waits inline; a long command may promote
 > to a session-owned `job_...`. `mode="background"` launches that shell job
-> immediately. `mode="detached"` disowns the process and returns only its PID.
+> immediately. `mode="detached"`, where the environment can disown a process,
+> disowns it and returns only its PID; a sandboxed session with a wrapper has
+> no such mode and uses a session-owned background job instead.
 > `delegate` creates one durable `dlg_...` and returns after its metadata and
 > initial input are durable; creation has no `max_wait_ms`. Rely on typed
 > notifications plus one-off `job_status(target=...)` / `job_list` orientation.
@@ -158,13 +182,22 @@ separate wait tool. Reads never wait.
 
 ## Model-facing guidance requirements
 
-This reference contract is not itself the runtime system prompt, but the following guidance **must** be reflected in the tool descriptions and in Evener's `Background jobs` system-prompt section. These bullets are normative for model-facing documentation because they shape whether agents use jobs correctly:
+This reference contract is not itself the runtime system prompt, but the following guidance **must** be reflected in the tool descriptions and in Evener's `Background work` system-prompt section. These bullets are normative for model-facing documentation because they shape whether agents use jobs correctly:
 
-- Shell commands run in `mode="foreground"` by default and return inline output for quick commands. Set `mode="background"` to launch-and-return as a session-owned job; foreground commands that exceed the session-default wait are promoted to durable background jobs and return a `job_id`. Set `mode="detached"` only to immediately disown a process that does not need Evener job visibility, output, notification, or stop control; it returns only a PID.
+- Shell commands run in `mode="foreground"` by default and return inline output for quick commands. Set `mode="background"` to launch-and-return as a session-owned job; foreground commands that exceed the session-default wait are promoted to durable background jobs and return a `job_id`. Set `mode="detached"` only to immediately disown a process that does not need Evener job visibility, output, notification, or stop control; it returns only a PID. A sandboxed environment with a wrapper cannot disown a process: the session's shell schema omits `mode="detached"`, so use `mode="background"` there and accept the session-scoped lifetime.
 - Delegate creation returns after one stable `delegate_id` and its initial input
   are durable. It does not accept `max_wait_ms` and does not expose a run handle.
 - Use `delegate` to start a new delegate conversation: `prompt` is the brief
-  and `task_list` seeds its task list, one item per step. Sessions start clean
+  and `task_list` seeds its task list, one item per step. The delegate's first
+  turn carries the whole seeded plan — each step's title, status, effort, and
+  prompt — and names the step to work first. That step is the first
+  in-progress task, which is a step the role's own workflow contributes when
+  the role has one before its `parent_tasks` slot; otherwise it is the first
+  seeded step. A later step's instructions often decide what an earlier step
+  must build, so write each step's prompt as if every worker can read it.
+  A root non-interactive session started from a named agent's workflow receives
+  the same announcement, since that workflow has the same cross-step property.
+  Sessions start clean
   by default; use `fork_context=true` only when the assignment requires the
   parent's full context and history. It returns `dlg_...`,
   child/session transcript metadata, status, and resumability—never `job_...`.
@@ -217,7 +250,7 @@ Several tools can wait, but they wait on different things. Pick by intent, and d
 | --- | --- |
 | Run a command and use its output | `shell` — foreground; promoted to a background job if it exceeds the session timeout |
 | Launch a long command without waiting | `shell(mode="background")` — returns a `job_id` immediately |
-| Disown a command that must outlive this session | `shell(mode="detached")` — returns only a PID; no job tools apply |
+| Disown a command that must outlive this session, where the environment supports detached mode | `shell(mode="detached")` — returns only a PID; no job tools apply. A sandboxed environment with a wrapper refuses it, so use `shell(mode="background")` there |
 | Start a delegate | `delegate(...)` — returns its durable `dlg_...` immediately; completion is notification-driven |
 | Learn when a backgrounded job finishes | the automatic terminal notification — nothing to call |
 | Learn when a job's output contains X | `job_watch(operation="create", source=<job_id>, output_match=X)` to be notified |
@@ -385,7 +418,7 @@ Canonical foreground shape for ordinary commands:
 }
 ```
 
-Shell defaults to `mode="foreground"` because most shell calls are short and decision-producing. It waits up to the session command timeout (120s standard), then promotes the command to a durable background job if it is still running. Set `mode="background"` to launch-and-return immediately for deliberate background work that terminates on its own, such as a long build or test run the agent should not wait on inline. A background job is session-owned and dies with the session — a server or any other process that must keep running belongs in `mode="detached"`, which immediately disowns the process; it returns only a PID and cannot be discovered or controlled through job tools.
+Shell defaults to `mode="foreground"` because most shell calls are short and decision-producing. It waits up to the session command timeout (120s standard), then promotes the command to a durable background job if it is still running. Set `mode="background"` to launch-and-return immediately for deliberate background work that terminates on its own, such as a long build or test run the agent should not wait on inline. A background job is session-owned and dies with the session — a server or any other process that must keep running belongs in `mode="detached"` where the environment supports it, which immediately disowns the process; it returns only a PID and cannot be discovered or controlled through job tools. Where the environment cannot detach — a sandboxed session with a wrapper refuses `DetachCommand` — the shell schema omits `mode="detached"` and the process must run as a session-owned background job, stopping with the session.
 
 Launch-and-return (immediate background) shape:
 
@@ -414,7 +447,7 @@ Defaults and timeout semantics:
 - A foreground shell command that completes within that wait returns inline output and is ephemeral by default: no durable `job_id` is required and it does not appear in `job_list`.
 - A foreground shell command still running at the session command timeout is promoted to a durable background job: Evener returns the current bounded output/status with a `job_id`, and the normal terminal notification remains armed for the eventual terminal state.
 - `mode="background"`: Evener starts the command and returns a `job_id` immediately without waiting. The terminal notification fires when it finishes.
-- `mode="detached"`: Evener starts a disowned process and returns only its PID immediately. It is not a job, so Evener neither retains output nor sends notifications nor offers job control for it. It also gets no session scratch: the child's environment drops `EVENER_SCRATCH_DIR`, because the scratch is deleted when the root session is archived and the disowned process may outlive that, and `TMPDIR` names the world-usable session temp container instead, or nothing when that container could not be provisioned. Give a detached command absolute paths for its output and for any file it reads.
+- `mode="detached"`: where the environment can disown a process, Evener starts a disowned process and returns only its PID immediately. A sandboxed environment with a wrapper cannot detach — the mode is absent from the shell schema and `DetachCommand` refuses it — so a process that must keep running there belongs in `mode="background"` and stops with the session. A detached process is not a job, so Evener neither retains output nor sends notifications nor offers job control for it. It also gets no session scratch: the child's environment drops `EVENER_SCRATCH_DIR`, because the scratch is deleted when the root session is archived and the disowned process may outlive that. `TMPDIR` names the world-usable session temp container when provisioned. Otherwise, an unconfined environment keeps its inherited or caller-supplied `TMPDIR` (or leaves it absent); a scratch-naming environment drops `TMPDIR` rather than pointing the detached child at session scratch. Give a detached command absolute paths for its output and for any file it reads.
 - `max_runtime_ms` is an optional process runtime limit for shell jobs. If the process is still running after `max_runtime_ms`, Evener stops it and finalizes the job as `stopped` with reason `run_timeout`. It bounds how long the process may *run*, distinct from the foreground wait.
 - Omitted or zero `max_runtime_ms` sets no process-runtime deadline for streaming shell jobs, whether foreground, promoted, or background. Session shutdown and explicit cancellation can still stop session-owned jobs. The model-facing shell schema no longer exposes `max_runtime_ms`; the parser still accepts it for compatibility.
 - A shell command that completes before the tool returns does not inject a terminal notification; the terminal result is already in the tool result. Return field `timed_out`, when present, means the foreground wait expired; it never means the process hit `max_runtime_ms`.
@@ -422,8 +455,8 @@ Defaults and timeout semantics:
 
 Foreground-wait bounds:
 
-- The foreground wait is the session command timeout (`DefaultCommandTimeoutMS`, 120000 in stock provider profiles), clamped to `MaxCommandTimeoutMS`. Shell has no per-call wait parameter; `mode` selects foreground (wait, then promote), session-owned background, or immediate detached return.
-- These values belong to the internal [session Config](../agent/session_config.go) (`default_command_timeout_ms` and `max_command_timeout_ms`), not job-watch policy or per-call wait arguments. Provider profiles supply the normal default; the session fallback before profile selection is 10000 ms. These field names are not advertised CLI options.
+- The foreground wait is the session command timeout (`DefaultCommandTimeoutMS`, 120000 by default), clamped to `MaxCommandTimeoutMS`. Shell has no per-call wait parameter; `mode` selects foreground (wait, then promote), session-owned background, or immediate detached return where the environment supports detaching.
+- These values belong to the internal [session Config](../agent/session_config.go) (`default_command_timeout_ms` and `max_command_timeout_ms`), not job-watch policy or per-call wait arguments. The session default is 120000 ms. These field names are not advertised CLI options.
 
 Compatibility runtime-limit bounds:
 
@@ -667,8 +700,8 @@ Return shape when messaging a running target:
 
 A live steer carries no `transcript_ref` — the steer branch never resolves
 one, and the field is omitted rather than sent empty
-(`agent/delegate_runtime.go#delegateRuntime.send`,
-`agent/session_tools_jobs.go#delegateSendResult`). `delegate_id` is the only
+(`agent/delegate_send.go#delegateRuntime.send`,
+`agent/session_tools_delegate_send.go#delegateSendResult`). `delegate_id` is the only
 identity a steered result carries.
 
 Return shape when starting an idle delegate's next run:
@@ -1470,8 +1503,9 @@ reference, last outcome, and ordered owner delivery live in the root
 `delegates.jsonl` journal. The stable controller folds that journal directly;
 it never reconstructs a delegate through a job record. Receiver transcripts are
 the sole durable authority for pending delegate/watch/shell attention. Startup
-fails closed with `legacy_delegate_state` or
-`legacy_delegate_watch_state` rather than translating legacy activation rows.
+does not translate legacy activation rows: retired delegate job rows and
+job-addressed watch rows stay in the job journal, are ignored, and the session
+reports `legacy_delegate_state` as a warning.
 
 `job_list` combines the stable delegate fold with durable shell-job state and
 overlays in-memory state for currently running work.
@@ -1530,10 +1564,12 @@ terminal packet:
 `kind="report"` marks the generation's terminal packet, whatever its outcome.
 A mid-work update (`communicate(end_turn=false)`) is
 `<delegate-notification delegate_id="dlg_..." name="..." kind="update">` with
-the delegate's message as the body, `<` escaped so it can neither close the
-frame nor open another. Clients decode the body's entities once, so a
-literal entity the delegate types, such as `&amp;`, reads as the character it
-names; job output excerpts share this remainder. The `name` attribute appears
+the delegate's message as the body, escaping `&` first, then `<`. Clients
+decode exactly `&lt;` and `&amp;` once, preserving literal sender text such as
+`&lt;`; job output excerpts use the same body contract. Accepted breakage:
+pre-`6adc500868` frames render `&quot;`/`&gt;` literally and their entity-escaped
+JSON-envelope extraction fails. No migration or legacy fallback is applied.
+The `name` attribute appears
 only for a named delegate. The quiet watchdog's frame carries neither `name` nor `kind`. A
 delegate frame never carries `job_id` or `job_type="delegate"`. The full
 conversation stays available through the delegate's `transcript_ref`. A
@@ -1682,8 +1718,10 @@ This is not command failure. It is supervision loss.
 Restart loss is supervision loss, not shell command failure. A stable delegate
 remains addressable by `dlg_...`; missing or pruned retained state makes it
 non-resumable instead of triggering best-effort replay. Legacy delegate job
-rows or job-addressed watch rows fail startup with `legacy_delegate_state` or
-`legacy_delegate_watch_state` before new work is admitted.
+rows or job-addressed watch rows do not block startup: they are ignored, kept in
+the journal, and reported once per session start as a `legacy_delegate_state`
+warning. A retired delegate job that was still running ends as lost, as any job
+that did not survive the restart does.
 
 ```mermaid
 stateDiagram-v2

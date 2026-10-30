@@ -8,16 +8,11 @@ package hub
 // long-running work to a worker under the controller-lifetime context, never
 // the RPC's.
 //
-// Boundary seams this slice deliberately leaves to later ones:
+// Seams:
 //
-//   - remnants (S12): the remnant fence is a seam (m.remnantOpen) consulted
-//     exactly where §6 step 2 puts it — past dedup, before any probe or
-//     acquisition — and renders the typed `remnant-open` arm. No remnant store
-//     is built here.
-//   - last-known publication (its own slice): the post-operation refresh routes
-//     its verified facts through m.cfg.lastKnownPublish, a seam that is nil in
-//     production today. The worker's success does not depend on it, and the
-//     residual is recorded where the seam is declared.
+//   - remnants: the remnant fence (m.remnantOpen) is consulted exactly where §6
+//     step 2 puts it — past dedup, before any probe or acquisition — and
+//     renders the typed `remnant-open` arm.
 //   - restart reattach: §6 seam (d) is operation-owned — the worker keeps the
 //     host's gate across the restart's channel drop, reattaches through the
 //     manager's gate-aware `attachUnderGate` primitive (which suppresses
@@ -195,18 +190,10 @@ func (m *hubHostManager) liveHost(name string) (hostreg.Host, bool) {
 	return m.cfg.hosts.Get(name)
 }
 
-// remnantOpen reports the open remnant fencing name, if one does. Remnants are
-// S12's (registry spec §6); this seam is where their fence lands — §6 step 2
-// puts the refusal past dedup and before any probe or acquisition — and it
-// answers "no remnant" until that slice ships a store.
+// remnantOpen reports the open remnant fencing name, if one does. §6 step 2
+// puts the refusal past dedup and before any probe or acquisition.
 func (m *hubHostManager) remnantOpen(name string) string {
-	if m.cfg.remnantFence == nil {
-		return ""
-	}
-	remnantID, ok := m.cfg.remnantFence(name)
-	if !ok {
-		return ""
-	}
+	remnantID, _ := m.openRemnantID(name)
 	return remnantID
 }
 
@@ -224,48 +211,12 @@ func (m *hubHostManager) startOperation(ctx context.Context, req operationReques
 	}
 	pair := hostops.OperationPair{Generation: entry.Generation, IncarnationID: entry.IncarnationID}
 
-	// (1) Dedup first: a hit returns the record with no token validation and no
-	// consumption, so a lost-response replay succeeds without a fresh token and
-	// without acquiring a contested gate.
-	query := hostops.OperationDedupQuery{
-		ClientOperationID: req.clientOperationID,
-		Host:              entry.Name,
-		Kind:              req.kind,
-		Current:           pair,
-	}
-	switch req.kind {
-	case hostops.KindDeploy:
-		// The intended pair a deploy names is the one its outstanding token row
-		// carries; a consumed row names none, which is what makes a retry after
-		// an intervening update replay the newest retained record instead of
-		// opening fresh (§4).
-		if row, ok := ops.OutstandingToken(entry.Name); ok {
-			intended := hostops.OperationPair{Generation: row.Generation, IncarnationID: row.IncarnationID}
-			query.Intended = &intended
-		}
-	case hostops.KindRestart:
-		query.Intended = req.intended
-	}
-	record, hit, err := ops.LookupOperation(query)
+	query, replay, err := m.admitOperation(entry, req, pair)
 	if err != nil {
-		return hostops.Record{}, operationRefusal(entry.Name, err)
+		return hostops.Record{}, err
 	}
-	if hit {
-		return record, nil
-	}
-
-	// (2) The provisional token check (deploy) is a fail-fast readability check
-	// only: nothing is decided here, and a concurrent plan can supersede the
-	// value before the gate is acquired. Then the remnant fence: a fenced name
-	// never reaches the gate.
-	if req.kind == hostops.KindDeploy {
-		if _, err := ops.ValidateToken(entry.Name, req.tokenValue); err != nil {
-			return hostops.Record{}, tokenRefusalWire(entry.Name, err)
-		}
-	}
-	if remnantID := m.remnantOpen(entry.Name); remnantID != "" {
-		return hostops.Record{}, appwire.RemnantOpen(remnantID, fmt.Sprintf(
-			"host %q has an open teardown remnant; resume it through teardown-retry before deploying or restarting", entry.Name))
+	if replay != nil {
+		return *replay, nil
 	}
 
 	// (3) The gate, then the probe window and the under-gate re-resolution.
@@ -297,41 +248,27 @@ func (m *hubHostManager) startOperation(ctx context.Context, req operationReques
 	// write's own locked read — is a concurrent-terminal-op refusal.
 	sequenceBefore := ops.Sequence()
 
-	// The deploy path's durable probe epoch precedes the first probe: its own
-	// atomic store write, bound to the pair, and promoted by the consume.
+	// The deploy path's durable probe epoch precedes the first probe and is
+	// promoted by the consume. Every refusal past this point drops it; a dropped
+	// epoch that the consume already promoted is a no-op, and a restart has none.
 	var epoch hostops.ProbeEpoch
+	defer func() {
+		if !handedOff {
+			m.dropProbeEpoch(entry.Name, epoch)
+		}
+	}()
 	var probe hubcore.HostRuntimeProbe
 	var facts sshconn.Preflight
 	if req.kind == hostops.KindDeploy {
-		epoch, err = m.persistProbeEpoch(entry)
-		switch {
-		case err != nil && !hostops.RenameLanded(err):
-			return hostops.Record{}, appwire.ProbeFailed(entry.Name, appwire.ProbeFailureReadFailed, fmt.Sprintf(
-				"host %q: the durable probe epoch could not be persisted, so nothing was probed: %v", entry.Name, err))
-		case err != nil:
-			m.logf("host %q: the probe epoch's directory sync failed after its rename landed; the epoch is durable: %v", entry.Name, err)
-		}
-		probe, err = m.probeForOperation(ctx, entry, client, epoch)
+		epoch, probe, facts, err = m.probeDeployUnderGate(ctx, entry, client)
 		if err != nil {
-			m.dropProbeEpoch(entry.Name, epoch)
-			return hostops.Record{}, m.operationProbeRefusal(entry.Name, err)
-		}
-		// The deployment's own target re-resolution and running-state checks
-		// need the attached channel's captured preflight (the deploy path runs
-		// no fresh preflight of its own, §6 step 3).
-		facts, ok = m.attachedFactsFor(entry.Name)
-		if !ok {
-			m.dropProbeEpoch(entry.Name, epoch)
-			return hostops.Record{}, hostDetachedRefusal(entry.Name)
+			return hostops.Record{}, err
 		}
 	}
 
 	// The under-gate re-resolution: a mutation can legally commit between the
 	// resolution above and this gate.
 	if err := m.revalidateUnderGate(entry, req, probe, facts); err != nil {
-		if req.kind == hostops.KindDeploy {
-			m.dropProbeEpoch(entry.Name, epoch)
-		}
 		return hostops.Record{}, err
 	}
 
@@ -339,63 +276,18 @@ func (m *hubHostManager) startOperation(ctx context.Context, req operationReques
 	// while the probe ran is a re-plan refusal. The consume write re-runs the
 	// same check inside its locked read, so nothing can slip between.
 	if id, landed := ops.TerminalOperationSince(entry.Name, sequenceBefore); landed {
-		if req.kind == hostops.KindDeploy {
-			m.dropProbeEpoch(entry.Name, epoch)
-		}
 		return hostops.Record{}, appwire.StaleEntry(appwire.StaleEntryBindingConcurrentTerminalOp, fmt.Sprintf(
 			"host %q completed operation %q while this operation was being resolved; retry", entry.Name, id))
 	}
 
-	// (4) The atomic write. For a deploy it re-reads and consumes the token and
-	// promotes the probe epoch; for a restart it creates the record with its
-	// freshly minted epoch. Either way the record exists before the RPC
-	// answers, and the worker that follows owns the gate release.
-	// The in-write dedup query closes the window between the pre-gate lookup
-	// above and this write: a concurrent call with the same client operation ID
-	// that won the gate first is answered with its record instead of a second
-	// one (§4 holds one store mutex across the lookup that leads to a write).
-	var outcome hostops.OperationCreateOutcome
-	switch req.kind {
-	case hostops.KindDeploy:
-		outcome, err = ops.ConsumeTokenAndCreateOperation(hostops.OperationCreateRequest{
-			ClientOperationID: req.clientOperationID,
-			Host:              entry.Name,
-			Kind:              hostops.KindDeploy,
-			Pair:              pair,
-			TokenValue:        req.tokenValue,
-			SequenceBefore:    sequenceBefore,
-			Dedup:             &query,
-		})
-	case hostops.KindRestart:
-		outcome, err = ops.CreateOperation(hostops.OperationCreateRequest{
-			ClientOperationID: req.clientOperationID,
-			Host:              entry.Name,
-			Kind:              hostops.KindRestart,
-			Pair:              pair,
-			BootID:            m.cfg.bootID,
-			SequenceBefore:    sequenceBefore,
-			Dedup:             &query,
-		})
-	}
-	if err != nil && !hostops.RenameLanded(err) {
-		if req.kind == hostops.KindDeploy {
-			m.dropProbeEpoch(entry.Name, epoch)
-		}
-		return hostops.Record{}, operationRefusal(entry.Name, err)
-	}
+	outcome, err := m.createOperationRecord(req, entry, pair, query, sequenceBefore)
 	if err != nil {
-		// The rename landed, so the record is durable (see hostops.RenameLanded):
-		// the operation proceeds and the sync trouble is logged.
-		m.logf("host %q: operation %s's directory sync failed after its rename landed; the record is durable: %v",
-			entry.Name, outcome.Record.ID, err)
+		return hostops.Record{}, err
 	}
 	if outcome.Replayed {
 		// A concurrent call with this operation ID created the record while this
 		// one waited for the gate: answer with that record, launch no worker,
 		// and leave the token (deploy) and any persisted probe epoch alone.
-		if req.kind == hostops.KindDeploy {
-			m.dropProbeEpoch(entry.Name, epoch)
-		}
 		return outcome.Record, nil
 	}
 	// outcome.Token is the token row the atomic write consumed: its bindings
@@ -432,6 +324,135 @@ func (m *hubHostManager) startOperation(ctx context.Context, req operationReques
 	handedOff = true
 	m.startOperationWorker(work)
 	return created, nil
+}
+
+// admitOperation is the start path's pre-gate half: §6 steps 1 and 2. It
+// returns the dedup query the atomic write re-runs, and the existing record when
+// the request is a replay.
+func (m *hubHostManager) admitOperation(entry hostreg.Host, req operationRequest, pair hostops.OperationPair) (hostops.OperationDedupQuery, *hostops.Record, error) {
+	ops := m.cfg.ops
+
+	// (1) Dedup first: a hit returns the record with no token validation and no
+	// consumption, so a lost-response replay succeeds without a fresh token and
+	// without acquiring a contested gate.
+	query := m.operationDedupQuery(entry, req, pair)
+	record, hit, err := ops.LookupOperation(query)
+	if err != nil {
+		return query, nil, operationRefusal(entry.Name, err)
+	}
+	if hit {
+		return query, &record, nil
+	}
+
+	// (2) The provisional token check (deploy) is a fail-fast readability check
+	// only: nothing is decided here, and a concurrent plan can supersede the
+	// value before the gate is acquired. Then the remnant fence: a fenced name
+	// never reaches the gate.
+	if req.kind == hostops.KindDeploy {
+		if _, err := ops.ValidateToken(entry.Name, req.tokenValue); err != nil {
+			return query, nil, tokenRefusalWire(entry.Name, err)
+		}
+	}
+	if remnantID := m.remnantOpen(entry.Name); remnantID != "" {
+		return query, nil, appwire.RemnantOpen(remnantID, fmt.Sprintf(
+			"host %q has an open teardown remnant; resume it through teardown-retry before deploying or restarting", entry.Name))
+	}
+	return query, nil, nil
+}
+
+// operationDedupQuery is the identity a retry of req is looked up by.
+func (m *hubHostManager) operationDedupQuery(entry hostreg.Host, req operationRequest, pair hostops.OperationPair) hostops.OperationDedupQuery {
+	query := hostops.OperationDedupQuery{
+		ClientOperationID: req.clientOperationID,
+		Host:              entry.Name,
+		Kind:              req.kind,
+		Current:           pair,
+	}
+	switch req.kind {
+	case hostops.KindDeploy:
+		// The intended pair a deploy names is the one its outstanding token row
+		// carries; a consumed row names none, which is what makes a retry after
+		// an intervening update replay the newest retained record instead of
+		// opening fresh (§4).
+		if row, ok := m.cfg.ops.OutstandingToken(entry.Name); ok {
+			intended := hostops.OperationPair{Generation: row.Generation, IncarnationID: row.IncarnationID}
+			query.Intended = &intended
+		}
+	case hostops.KindRestart:
+		query.Intended = req.intended
+	}
+	return query
+}
+
+// probeDeployUnderGate is a deploy's §6 step 3 under the held gate: its own
+// atomic store write persists the probe epoch bound to the pair, then the gated
+// running probe presents it, then the attached channel's captured preflight is
+// read for the deployment's target re-resolution and running-state checks (the
+// deploy path runs no fresh preflight of its own). The epoch is returned even
+// on a refusal so the caller can drop it.
+func (m *hubHostManager) probeDeployUnderGate(ctx context.Context, entry hostreg.Host, client *appwire.Client) (hostops.ProbeEpoch, hubcore.HostRuntimeProbe, sshconn.Preflight, error) {
+	epoch, err := m.persistProbeEpoch(entry)
+	switch {
+	case err != nil && !hostops.RenameLanded(err):
+		return epoch, hubcore.HostRuntimeProbe{}, sshconn.Preflight{}, appwire.ProbeFailed(entry.Name, appwire.ProbeFailureReadFailed, fmt.Sprintf(
+			"host %q: the durable probe epoch could not be persisted, so nothing was probed: %v", entry.Name, err))
+	case err != nil:
+		m.logf("host %q: the probe epoch's directory sync failed after its rename landed; the epoch is durable: %v", entry.Name, err)
+	}
+	probe, err := m.probeForOperation(ctx, entry, client, epoch)
+	if err != nil {
+		return epoch, probe, sshconn.Preflight{}, m.operationProbeRefusal(entry.Name, err)
+	}
+	facts, ok := m.attachedFactsFor(entry.Name)
+	if !ok {
+		return epoch, probe, sshconn.Preflight{}, hostDetachedRefusal(entry.Name)
+	}
+	return epoch, probe, facts, nil
+}
+
+// createOperationRecord is §6 step 4's atomic write. For a deploy it re-reads
+// and consumes the token and promotes the probe epoch; for a restart it creates
+// the record with its freshly minted epoch. Either way the record exists before
+// the RPC answers, and the worker that follows owns the gate release.
+// The in-write dedup query closes the window between the pre-gate lookup and
+// this write: a concurrent call with the same client operation ID that won the
+// gate first is answered with its record instead of a second one (§4 holds one
+// store mutex across the lookup that leads to a write).
+func (m *hubHostManager) createOperationRecord(req operationRequest, entry hostreg.Host, pair hostops.OperationPair, query hostops.OperationDedupQuery, sequenceBefore uint64) (hostops.OperationCreateOutcome, error) {
+	var outcome hostops.OperationCreateOutcome
+	var err error
+	switch req.kind {
+	case hostops.KindDeploy:
+		outcome, err = m.cfg.ops.ConsumeTokenAndCreateOperation(hostops.OperationCreateRequest{
+			ClientOperationID: req.clientOperationID,
+			Host:              entry.Name,
+			Kind:              hostops.KindDeploy,
+			Pair:              pair,
+			TokenValue:        req.tokenValue,
+			SequenceBefore:    sequenceBefore,
+			Dedup:             &query,
+		})
+	case hostops.KindRestart:
+		outcome, err = m.cfg.ops.CreateOperation(hostops.OperationCreateRequest{
+			ClientOperationID: req.clientOperationID,
+			Host:              entry.Name,
+			Kind:              hostops.KindRestart,
+			Pair:              pair,
+			BootID:            m.cfg.bootID,
+			SequenceBefore:    sequenceBefore,
+			Dedup:             &query,
+		})
+	}
+	if err != nil && !hostops.RenameLanded(err) {
+		return outcome, operationRefusal(entry.Name, err)
+	}
+	if err != nil {
+		// The rename landed, so the record is durable (see hostops.RenameLanded):
+		// the operation proceeds and the sync trouble is logged.
+		m.logf("host %q: operation %s's directory sync failed after its rename landed; the record is durable: %v",
+			entry.Name, outcome.Record.ID, err)
+	}
+	return outcome, nil
 }
 
 // probeForOperation runs the gated running probe under the caller's held gate,
@@ -725,181 +746,244 @@ func (m *hubHostManager) interruptLeftoverOperations() int {
 func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 	defer work.release()
 
-	id := work.record.ID
+	run := &opRun{m: m, ctx: ctx, work: work, id: work.record.ID}
+	defer func() { run.handOff("as the operation ended") }()
+
+	if m.interruptIfShuttingDown(ctx, run.id) {
+		return
+	}
+	if _, err := m.cfg.ops.TransitionToState(run.id, hostops.StateRunning, nil, fmt.Sprintf(
+		"%s operation for host %q started", work.record.Kind, work.entry.Name)); err != nil {
+		m.logf("operation %s: could not mark running: %v", run.id, err)
+	}
+
+	plan := planOperationRun(work)
+	beforeMutation := m.operationEntryValidator(work.entry, plan.fingerprint)
+
+	if m.interruptIfShuttingDown(ctx, run.id) {
+		return
+	}
+	// The irreversible steps, each behind a fresh fingerprint check.
+	var err error
+	if work.record.Kind == hostops.KindDeploy {
+		err = run.deploy(&plan, beforeMutation)
+	} else {
+		err = run.restart(&plan, beforeMutation)
+	}
+	if err != nil {
+		run.fail(err)
+		return
+	}
+	if m.interruptIfShuttingDown(ctx, run.id) {
+		return
+	}
+	run.verify(plan)
+}
+
+// opRun is one worker's state: the persisted operation it drives and the
+// supervisor handoff it owes for the channel an attach left live.
+type opRun struct {
+	m    *hubHostManager
+	ctx  context.Context
+	work opWork
+	id   string
 	// handoff is the supervisor handoff for the channel a restart left live:
 	// the attach-first attach's, superseded by the post-restart reattach's once
 	// that replacement is published. It is invoked exactly once, always under
 	// the still-held gate — explicitly at terminal verification, or by the
-	// deferred finish below on any earlier exit — so a restart that fails after
-	// an attach-first can never strand an attached channel without a
-	// supervisor.
-	var handoff func() bool
-	handedOff := false
-	handOff := func(when string) bool {
-		if handedOff || handoff == nil {
-			return true
-		}
-		handedOff = true
-		if handoff() {
-			return true
-		}
-		m.logf("operation %s: the host's supervisor could not be started %s; the host may be left without automatic reconnect", id, when)
-		return false
-	}
-	defer func() { handOff("as the operation ended") }()
-	// fail records a terminal failure, first handing the channel a completed
-	// attach left to its supervisor under the still-held gate. A handoff that
-	// cannot start the supervisor is joined into the recorded failure instead
-	// of being masked by it, so an attached-but-unsupervised host is visible in
-	// the record. The deferred finish above stays the backstop for paths that
-	// return without recording a failure (an interrupted shutdown).
-	fail := func(err error) {
-		if !handOff("as the operation failed") {
-			err = errors.Join(err, errors.New("the host's supervisor could not be started, so the host may be attached without automatic reconnect"))
-		}
-		m.failOperation(ctx, id, err)
-	}
+	// deferred finish in runOperationWorker on any earlier exit — so a restart
+	// that fails after an attach-first can never strand an attached channel
+	// without a supervisor.
+	handoff   func() bool
+	handedOff bool
+}
 
-	if m.interruptIfShuttingDown(ctx, id) {
-		return
-	}
-	if _, err := m.cfg.ops.TransitionToState(id, hostops.StateRunning, nil, fmt.Sprintf(
-		"%s operation for host %q started", work.record.Kind, work.entry.Name)); err != nil {
-		m.logf("operation %s: could not mark running: %v", id, err)
-	}
-
-	restartFollows := false
+// opPlan is the state the deploy and restart flows hand to the verification.
+type opPlan struct {
+	// fingerprint is the hub.toml entry fingerprint every irreversible step
+	// re-reads against.
+	fingerprint    string
+	restartFollows bool
 	// beforeProbe is the pre-replacement running-state the post-operation
 	// refresh compares the new process against: the step-(3) probe for a deploy,
 	// and the worker's own pre-restart probe for a restart.
-	beforeProbe := work.probe
-	// The requested build is separate from that predecessor's identity: a
-	// standalone restart can finish an earlier deployment to another build.
-	targetVersion := work.token.ControllerRevision
-	var startedAt time.Time
-	fingerprint := work.fingerprint
+	beforeProbe hubcore.HostRuntimeProbe
+	// targetVersion is the requested build, separate from that predecessor's
+	// identity: a standalone restart can finish an earlier deployment to another
+	// build.
+	targetVersion string
+	startedAt     time.Time
+}
+
+// planOperationRun is the plan an operation starts with, before either flow has
+// run: a deploy decides from its token's bindings whether a restart follows.
+func planOperationRun(work opWork) opPlan {
+	plan := opPlan{
+		fingerprint:   work.fingerprint,
+		beforeProbe:   work.probe,
+		targetVersion: work.token.ControllerRevision,
+	}
 	if work.record.Kind == hostops.KindDeploy {
-		fingerprint = work.token.HubTOMLFingerprint
-		restartFollows = planRestartFollows(hubcore.HostRuntimeProbe{
+		plan.fingerprint = work.token.HubTOMLFingerprint
+		plan.restartFollows = planRestartFollows(hubcore.HostRuntimeProbe{
 			Version:          work.token.RunningVersion,
 			RunningHealthy:   work.token.RunningHealthy,
 			ProcessStartTime: work.token.ProcessStartTime,
 		}, work.token.ControllerRevision)
 	}
-	beforeMutation := m.operationEntryValidator(work.entry, fingerprint)
+	return plan
+}
 
-	if m.interruptIfShuttingDown(ctx, id) {
-		return
+// handOff starts the supervisor for the channel the operation left live, once.
+func (r *opRun) handOff(when string) bool {
+	if r.handedOff || r.handoff == nil {
+		return true
 	}
-	// The irreversible steps, each behind a fresh fingerprint check.
-	if work.record.Kind == hostops.KindDeploy {
-		if err := beforeMutation(); err != nil {
-			fail(err)
-			return
-		}
-		if m.cfg.deployHost == nil {
-			fail(errors.New("this hub has no deploy step wired, so the operation cannot run"))
-			return
-		}
-		facts, ok := m.attachedFactsFor(work.entry.Name)
-		if !ok {
-			fail(hostDetachedRefusal(work.entry.Name))
-			return
-		}
-		m.recordProgress(id, "pushing the controller's build")
-		_, afterDeploy, err := m.cfg.deployHost(ctx, work.entry, facts, restartFollows, beforeMutation)
+	r.handedOff = true
+	if r.handoff() {
+		return true
+	}
+	r.m.logf("operation %s: the host's supervisor could not be started %s; the host may be left without automatic reconnect", r.id, when)
+	return false
+}
+
+// fail records a terminal failure, first handing the channel a completed
+// attach left to its supervisor under the still-held gate. A handoff that
+// cannot start the supervisor is joined into the recorded failure instead
+// of being masked by it, so an attached-but-unsupervised host is visible in
+// the record. The deferred finish in runOperationWorker stays the backstop for
+// paths that return without recording a failure (an interrupted shutdown).
+func (r *opRun) fail(err error) {
+	if !r.handOff("as the operation failed") {
+		err = errors.Join(err, errors.New("the host's supervisor could not be started, so the host may be attached without automatic reconnect"))
+	}
+	r.m.failOperation(r.ctx, r.id, err)
+}
+
+// deploy pushes the controller's build, then runs the planned restart when the
+// token's bindings call for one.
+func (r *opRun) deploy(plan *opPlan, beforeMutation func() error) error {
+	m, id, entry := r.m, r.id, r.work.entry
+	if err := beforeMutation(); err != nil {
+		return err
+	}
+	if m.cfg.deployHost == nil {
+		return errors.New("this hub has no deploy step wired, so the operation cannot run")
+	}
+	facts, ok := m.attachedFactsFor(entry.Name)
+	if !ok {
+		return hostDetachedRefusal(entry.Name)
+	}
+	m.recordProgress(id, "pushing the controller's build")
+	_, afterDeploy, err := m.cfg.deployHost(r.ctx, entry, facts, plan.restartFollows, beforeMutation, &sshconn.DeploymentJournal{
+		OperationID: id,
+		Supersede: func(priorID string) error {
+			prior, found := m.cfg.ops.Record(priorID)
+			if !found {
+				return hostops.ErrRecordNotFound
+			}
+			note := fmt.Sprintf("supersedes pending intent: priorOperationId=%s host=%q generation=%d incarnationId=%q", prior.ID, prior.Host, prior.Generation, prior.IncarnationID)
+			_, err := m.cfg.ops.AppendProgress(id, note)
+			return err
+		},
+	})
+	if err != nil {
+		return err
+	}
+	m.recordProgress(id, "the controller's build is installed and verified")
+	if !plan.restartFollows {
+		return nil
+	}
+	if err := beforeMutation(); err != nil {
+		return err
+	}
+	_, err = m.runRestartStep(r.ctx, id, entry, afterDeploy, beforeMutation)
+	return err
+}
+
+// restart runs a standalone restart: first any deployment repair a pending
+// installation authorized, then, when that left no replacement to verify, the
+// attach-first restart.
+func (r *opRun) restart(plan *opPlan, beforeMutation func() error) error {
+	m, id, entry := r.m, r.id, r.work.entry
+	if err := beforeMutation(); err != nil {
+		return err
+	}
+	if m.cfg.recoverDeployment != nil {
+		result, err := m.cfg.recoverDeployment(r.ctx, entry, hostops.Holder{Kind: hostops.HolderOperation, OperationID: id}, beforeMutation)
 		if err != nil {
-			fail(err)
-			return
+			return err
 		}
-		m.recordProgress(id, "the controller's build is installed and verified")
-		if restartFollows {
-			if err := beforeMutation(); err != nil {
-				fail(err)
-				return
+		if result != nil {
+			// The pending installation already authorized repair. Recovery has
+			// replaced its original predecessor under this persisted operation,
+			// not attached a predecessor that needs another restart. Keep that
+			// identity for the independent epoch-bearing post-reattach probe.
+			plan.beforeProbe.ProcessStartTime = nil
+			if !result.ReplacedStartedAt.IsZero() {
+				plan.beforeProbe.ProcessStartTime = &result.ReplacedStartedAt
 			}
-			if _, err := m.runRestartStep(ctx, id, work.entry, afterDeploy, beforeMutation); err != nil {
-				fail(err)
-				return
-			}
-		}
-	} else {
-		if err := beforeMutation(); err != nil {
-			fail(err)
-			return
-		}
-		if m.cfg.recoverDeployment != nil {
-			result, err := m.cfg.recoverDeployment(ctx, work.entry, hostops.Holder{Kind: hostops.HolderOperation, OperationID: id}, beforeMutation)
-			if err != nil {
-				fail(err)
-				return
-			}
-			if result != nil {
-				// The pending installation already authorized repair. Recovery has
-				// replaced its original predecessor under this persisted operation,
-				// not attached a predecessor that needs another restart. Keep that
-				// identity for the independent epoch-bearing post-reattach probe.
-				beforeProbe.ProcessStartTime = nil
-				if !result.ReplacedStartedAt.IsZero() {
-					beforeProbe.ProcessStartTime = &result.ReplacedStartedAt
-				}
-				targetVersion = result.TargetVersion
-				startedAt = result.StartedAt
-				restartFollows = true
-				m.recordProgress(id, "the pending deployment was recovered and its replacement verified before attachment")
-			}
-		}
-		// §6's attach-first arm: a restart with no usable attached channel —
-		// the handler saw none, or the link dropped before this worker ran —
-		// attaches the host under the held gate first, and names the path in
-		// the record. The pre-restart probe then reads the identity of the
-		// process the restart must replace over that channel. The handoff from
-		// this attach is provisional: the reattach below supersedes it when its
-		// replacement publishes, and an earlier exit hands this channel off
-		// through fail() before the failure is recorded — the deferred finish
-		// is the backstop for an exit that records no failure — so a failed
-		// probe or restart cannot strand it.
-		if !restartFollows {
-			if _, attached := m.attachedClient(work.entry); !attached {
-				h, err := m.attachOperationChannel(ctx, id, work.entry,
-					"attach-first: the host had no usable attached channel, so the restart attaches it under the held host gate", true)
-				if h != nil {
-					// A published channel keeps its handoff even when the call
-					// reports a failure, so it is never left unsupervised.
-					handoff = h
-				}
-				if err != nil {
-					fail(err)
-					return
-				}
-			}
-			// Restart has no pre-operation probe step of its own (no token, no
-			// plan), so the worker takes the "pre-operation probe" value the
-			// post-operation refresh compares against here, under the held gate,
-			// presenting the epoch the record was created with.
-			probe, err := m.probeBeforeRestart(ctx, work)
-			if err != nil {
-				fail(err)
-				return
-			}
-			beforeProbe = probe
-			facts, ok := m.attachedFactsFor(work.entry.Name)
-			if !ok {
-				fail(hostDetachedRefusal(work.entry.Name))
-				return
-			}
-			targetVersion, err = m.runRestartStep(ctx, id, work.entry, facts, beforeMutation)
-			if err != nil {
-				fail(err)
-				return
-			}
-			restartFollows = true
+			plan.targetVersion = result.TargetVersion
+			plan.startedAt = result.StartedAt
+			plan.restartFollows = true
+			m.recordProgress(id, "the pending deployment was recovered and its replacement verified before attachment")
 		}
 	}
-	if m.interruptIfShuttingDown(ctx, id) {
-		return
+	if plan.restartFollows {
+		return nil
 	}
+	return r.attachFirstRestart(plan, beforeMutation)
+}
 
+// attachFirstRestart is §6's attach-first arm: a restart with no usable
+// attached channel — the handler saw none, or the link dropped before this
+// worker ran — attaches the host under the held gate first, and names the path
+// in the record. The pre-restart probe then reads the identity of the process
+// the restart must replace over that channel. The handoff from this attach is
+// provisional: the reattach in verify supersedes it when its replacement
+// publishes, and an earlier exit hands this channel off through fail() before
+// the failure is recorded — the deferred finish is the backstop for an exit
+// that records no failure — so a failed probe or restart cannot strand it.
+func (r *opRun) attachFirstRestart(plan *opPlan, beforeMutation func() error) error {
+	m, id, entry := r.m, r.id, r.work.entry
+	if _, attached := m.attachedClient(entry); !attached {
+		h, err := m.attachOperationChannel(r.ctx, id, entry,
+			"attach-first: the host had no usable attached channel, so the restart attaches it under the held host gate", true)
+		if h != nil {
+			// A published channel keeps its handoff even when the call
+			// reports a failure, so it is never left unsupervised.
+			r.handoff = h
+		}
+		if err != nil {
+			return err
+		}
+	}
+	// Restart has no pre-operation probe step of its own (no token, no
+	// plan), so the worker takes the "pre-operation probe" value the
+	// post-operation refresh compares against here, under the held gate,
+	// presenting the epoch the record was created with.
+	probe, err := m.probeBeforeRestart(r.ctx, r.work)
+	if err != nil {
+		return err
+	}
+	plan.beforeProbe = probe
+	facts, ok := m.attachedFactsFor(entry.Name)
+	if !ok {
+		return hostDetachedRefusal(entry.Name)
+	}
+	plan.targetVersion, err = m.runRestartStep(r.ctx, id, entry, facts, beforeMutation)
+	if err != nil {
+		return err
+	}
+	plan.restartFollows = true
+	return nil
+}
+
+// verify finishes an operation whose irreversible steps ran: the operation-owned
+// reattach, §6's post-operation refresh, the supervisor handoff, and the
+// terminal record.
+func (r *opRun) verify(plan opPlan) {
+	m, id, entry := r.m, r.id, r.work.entry
 	// §6 seam (d): the operation-owned reattach. The worker retains the host's
 	// gate across the restart's channel drop and re-runs the attach dialing
 	// closure through the gate-aware primitive, which accepts the already-held
@@ -910,15 +994,15 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 	// A retryable attach failure — a host still coming back up — is retried
 	// within the refresh window, and a terminal cause fails fast; see
 	// reattachOperationChannel.
-	if restartFollows {
-		h, err := m.reattachOperationChannel(ctx, id, work.entry)
+	if plan.restartFollows {
+		h, err := m.reattachOperationChannel(r.ctx, id, entry)
 		if h != nil {
 			// A published replacement keeps its handoff even when the call
 			// reports an error, so it is never left unsupervised.
-			handoff = h
+			r.handoff = h
 		}
 		if err != nil {
-			fail(err)
+			r.fail(err)
 			return
 		}
 	}
@@ -926,21 +1010,21 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 	// §6's post-operation refresh: the verified channel-free preflight, then
 	// the running probe over the attached (reattached) channel, then the
 	// verification.
-	refreshErr := m.refreshOperation(ctx, id, work, beforeProbe, targetVersion, restartFollows, startedAt)
+	refreshErr := m.refreshOperation(r.ctx, id, r.work, plan.beforeProbe, plan.targetVersion, plan.restartFollows, plan.startedAt)
 	// The suppress-supervisor scope ends at verification: hand the channel back
 	// to a supervisor under the still-held gate, whether or not the refresh
 	// verified the outcome — the operation is over either way, and the host
 	// must keep automatic reconnect after the restart. A failed handoff is
 	// recorded alongside a failed refresh rather than masked by it.
 	var handoffErr error
-	if !handOff("after the restart verification") {
+	if !r.handOff("after the restart verification") {
 		handoffErr = errors.New("the host's supervisor could not be started after the restart, so the host is attached without automatic reconnect")
 	}
-	if m.interruptIfShuttingDown(ctx, id) {
+	if m.interruptIfShuttingDown(r.ctx, id) {
 		return
 	}
 	if refreshErr != nil || handoffErr != nil {
-		fail(errors.Join(refreshErr, handoffErr))
+		r.fail(errors.Join(refreshErr, handoffErr))
 		return
 	}
 	m.recordTerminal(id, hostops.StateComplete, true, "operation complete")
@@ -1016,7 +1100,7 @@ func (m *hubHostManager) refreshOperation(ctx context.Context, id string, work o
 	if m.cfg.planFacts == nil {
 		return errors.New("the post-operation preflight is not wired")
 	}
-	refreshFacts, err := m.cfg.planFacts(ctx, work.entry)
+	_, err := m.cfg.planFacts(ctx, work.entry)
 	if err != nil {
 		return fmt.Errorf("the post-operation preflight failed: %w", err)
 	}
@@ -1031,22 +1115,14 @@ func (m *hubHostManager) refreshOperation(ctx context.Context, id string, work o
 	if err != nil {
 		return fmt.Errorf("the post-operation running probe failed: %w", err)
 	}
-	// The last-known publication is its own slice's store (registry spec §10);
-	// this seam is where its verified facts land, and the residual is recorded
-	// here rather than answered as if a store existed.
-	if m.cfg.lastKnownPublish != nil {
-		if err := m.cfg.lastKnownPublish(work.entry, probe, refreshFacts); err != nil {
-			return fmt.Errorf("publishing the post-operation last-known state failed: %w", err)
-		}
-	}
 	m.recordProgress(id, fmt.Sprintf("post-operation probe: build %q healthy=%t", probe.Version, probe.RunningHealthy))
 
 	if !probe.RunningHealthy {
 		return fmt.Errorf("the post-operation probe reports the host unhealthy (build %q), so the operation is not a verified success", probe.Version)
 	}
 	if !startedAt.IsZero() {
-		// An owned free-port start can have no predecessor. Its proof is the
-		// actual process sshconn verified, independently observed at this epoch.
+		// An owned start or unavailable predecessor can lack a start time. The
+		// proof is sshconn's verified successor, independently observed at this epoch.
 		if probe.ProcessStartTime == nil || !probe.ProcessStartTime.Equal(startedAt) {
 			return errors.New("the post-operation probe did not identify the verified startup process")
 		}

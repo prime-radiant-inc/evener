@@ -1,0 +1,211 @@
+[
+ {
+  "id": "hub-internal-small-1",
+  "title": "fs 'sync unsupported' predicate in 6 copies; canonical one unreachable, 3 pass-through wrappers",
+  "category": "duplication",
+  "original_severity": "medium",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Verified: fsdurability.go:20 plus identical errno sets in server/thread_clear_journal.go:155, auth/openai/storage.go:229, agent/session_client_mutation_persist.go:423, agent/internal/worktree/sync_unix.go:36, internal/hubendpoint/runtime.go:203 (inline). auth/ and agent/ have their own go.mod; server/ and internal/hubendpoint are in the root module and cannot import cmd/evener-hub/internal. app_host_manage.go:1049 comment says hubcore keeps a private copy, but hubcore/state_file.go:127 is itself a wrapper, so the comment is stale. Real but a 3-line predicate that almost never changes: low."
+ },
+ {
+  "id": "hub-internal-small-2",
+  "title": "Adding a launch option touches ~8 parallel per-field lists in launchconfig",
+  "category": "duplication",
+  "original_severity": "high",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Pattern is real: merge.go has 31 'nonEmpty = true' blocks, wire.go FromWire/ToWire list ~35 fields each, args.go and runtime_defaults.go enumerate fields again, and no reflect/NumField completeness test exists. But the cited line numbers do not exist (merge.go is 344 lines, not 435; types.go/schema.go/runtime_defaults.go refs also off) and the -250 LOC estimate is inflated: merge.go can shrink by roughly 80-100 lines, args.go by ~30. No evidence of an actual dropped field or live bug, so not high. Existing merge/wire/args tests (merge_test 464 lines) already pin behavior.",
+  "revised_fix_plan": "Add the completeness test first (every Layer field has a schema row and is covered by merge/ToArgs/FromWire/ToWire or an explicit exclusion). Then add generic mergeScalar/mergePtr helpers and convert merge.go block by block; keep app_replay_size, system prompt modes, env, mcps, model_fallbacks, enabled_plugins explicit. Fold finding 4's clonePtr into this PR. Skip the ToArgs table unless it measurably shrinks. Expect about -120 net."
+ },
+ {
+  "id": "hub-internal-small-3",
+  "title": "runtime_defaults.go re-implements per-field switches the schema is said to own",
+  "category": "duplication",
+  "original_severity": "medium",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Verified: runtime_defaults.go:106-190 is a 14-case switch on WireField with near-identical bodies; comment says the schema is the single source and the function does not duplicate it. Production callers (app_launch.go:125,209,263, app_threadlifecycle.go:342) all pass LaunchOptionSchema(). runtime_defaults_test.go:16 schemaForTest is a hand-copied schema that already lacks api_log, so it is stale. Line numbers 200/267 exceed the 200-line file; actual locations are 106-190."
+ },
+ {
+  "id": "hub-internal-small-4",
+  "title": "wire.go mirror-image converters and 5 near-identical pointer/slice clone helpers",
+  "category": "duplication",
+  "original_severity": "medium",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "copyIntPtr and copyBoolPtr are identical (wire.go:~140-164) and merge.go inlines 'v := *l.X' 9 times. But copyStringSlicePtr (slice->ptr), derefStringSlicePtr (ptr->slice) and cloneStringSlicePtr (ptr->ptr) have different signatures and encode the wire<->Layer three-state mapping, so they are not duplicates. merge.go:473 does not exist (file is 344 lines). Saves ~15-20 lines, not 40.",
+  "revised_fix_plan": "Replace copyIntPtr/copyBoolPtr with one generic clonePtr[T] and use it in merge.go. Leave the slice converters. Do it inside the finding 2 PR."
+ },
+ {
+  "id": "hub-internal-small-5",
+  "title": "Two parallel path-field validators enumerate the same 9 fields",
+  "category": "duplication",
+  "original_severity": "low",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Verified resolver.go:216-289: validateAndExpandRepoLayer and validateAbsolutePaths list the same 9 fields in the same order with parallel expand/check and expandOne/checkOne closures. The diags!=nil guards are dead: both callers (resolver.go:50,97) pass non-nil. Schema PathKind is a third source."
+ },
+ {
+  "id": "hub-internal-small-6",
+  "title": "Pass-through wrappers and a production-dead function in launchconfig",
+  "category": "dead-code",
+  "original_severity": "low",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "trust.go TrustHashSet->trustHashes and merge.go IsCredentialEnvKey->isCredentialEnvKey are real thin wrappers, but both exported names are used outside the package (app_launch.go:245,193; HashInSet at app_launch.go:247 plus tests), so the fix is to export one name, not delete. loadRepoLayer (resolver.go:146) is referenced only from resolver_test.go:368: confirmed. ValidateRepoRelativePath/ValidateAbsolutePath have no outside caller: confirmed. tomlDecode is used in io.go:34, resolver.go:187 and fuzz tests, so it is not dead; it is a one-line wrapper. Cited line numbers (trust.go:534/550/555, io.go:399) do not exist.",
+  "revised_fix_plan": "Export trustHashes once as TrustHashSet and rename; swap HashInSet for slices.Contains at its 3 callers; delete loadRepoLayer and point resolver_test at loadRepoLayerFS; unexport the two Validate* funcs. Leave tomlDecode or inline it everywhere."
+ },
+ {
+  "id": "hub-internal-small-7",
+  "title": "Coverage-only function-injection seams in production signatures; coverage_test files test mocked behavior",
+  "category": "test-debt",
+  "original_severity": "medium",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Verified seams: paths.go:56 validateRepoRelativePath(relPath), trust.go:24 canonicalHashTOML(encode), resolver.go decodeTrustedRepoLayer(decode), fspaths/paths.go:17 pathOps (only injected from paths_test.go:320), hubedge/auth_token.go:77 loadOrCreateAuthToken(random, rename). coverage_test.go:111-150 asserts that injected sentinel errors propagate: tests of the mock. Caveat: launchconfig coverage_test.go also drives writeAtomicFS through an afero Fs that fails on rename/write; that injects at a real filesystem boundary and is defensible, so keep those. Line numbers coverage_test.go:113/123/133 roughly right.",
+  "revised_fix_plan": "Delete the stdlib-error seams (Rel, toml encode/decode, EvalSymlinks/stat, rand) and their tests; keep afero-boundary fault tests for writeAtomicFS and test the token rename failure with a real fault (target path is a directory). Delete merge_coverage_test.go after folding any unique case into merge_test.go."
+ },
+ {
+  "id": "hub-internal-small-8",
+  "title": "Tests assert on error/diagnostic phrasing (28 hits)",
+  "category": "test-debt",
+  "original_severity": "medium",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Verified counts of strings.Contains on err/Message/body: io_test.go 10, merge_test.go 3, hubedge/auth_token_test.go 7, hostlock_test.go 4 (=24 in the 4 files; hubapi/client_test.go:122 adds one and goes away with finding 13). Examples read: io_test.go:136 'launchconfig: read '+path, io_test.go:271 rename message, merge_test.go:250 'UI supports one append source', auth_token_test.go:432 'hub state root not configured', :507 'Unauthorized'. Violates AGENTS 'Copy Is Not a Test Oracle'."
+ },
+ {
+  "id": "hub-internal-small-9",
+  "title": "Path-containment and symlink-ancestor resolution reinvented 10+ times with divergent edge cases",
+  "category": "duplication",
+  "original_severity": "medium",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Copies exist (fspaths/paths.go:124 withinRoot prefix-based and root-inclusive; launchconfig/paths.go:56 Rel-based; hubtestenv.ContainedIn strict by design; agent pathWithin variants; plugins pathWithinDir). But in this slice only two production copies exist (fspaths, launchconfig); hubtestenv is a test helper that deliberately rejects rel=='.'; and the resolver_fuzz_test.go copy is an independent oracle, which should not call the production function. Remaining copies are in agent/ (separate module). Realistic saving is about 10-15 lines, on a security boundary.",
+  "revised_fix_plan": "Optional: export fspaths.Within and call it from launchconfig.validateRepoRelativePath. Leave hubtestenv and the fuzz oracle alone. Cross-module copies need Jesse's decision."
+ },
+ {
+  "id": "hub-internal-small-10",
+  "title": "Tilde expansion in 3 hub copies plus llm.ExpandTilde; output-file kind spelling forks between Go validator and schema",
+  "category": "inconsistency",
+  "original_severity": "low",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Tilde: verified three identical copies (fspaths/app_paths.go:35, :156, cmd/evener-hub/app_dirs.go:22); llm.ExpandTilde has different rules. Spelling: the Go validator accepts 'output-file' (app_paths.go:169) while the schema says 'outputFile', bridged by launchSchema.ts:25 and pinned by TS and frontend tests. Changing the RPC spelling is a wire change and needs a coordinated web/mobile update; the 'is a directory'/'not executable' repeats in ValidateLaunchPath are verified but trivial.",
+  "revised_fix_plan": "Add fspaths.ExpandHome and use it at the three hub sites. Treat the output-file spelling change as a separate wire decision for Jesse; do not bundle it."
+ },
+ {
+  "id": "hub-internal-small-11",
+  "title": "hostreg identity-counter raise logic repeated 11 times; file is 42% comments",
+  "category": "complexity",
+  "original_severity": "medium",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Verified in hostreg.go: gen raise at 325,512,579,670,956 and presence raise at 347,412,515,590,673,959 (11 sites); 426 of 1014 lines are comment lines; 18 lines cite spec 08/component 05 (claim of 21 is slightly high). RebaseBootCollision (hostreg.go:~940-975) does next gen + next presence + mintIncarnationID inline, which mintIdentityLocked also does. Caveat: Stamp at :411 assigns r.gen unconditionally (not raise-only), so raiseLocked must not change that path blindly.",
+  "revised_fix_plan": "Add raiseLocked(name, gen, presence) for the raise-only sites, reuse mintIdentityLocked in RebaseBootCollision, trim comments to the invariant. Keep Stamp's assignment as is unless a test proves it equivalent. Expect about -80 total."
+ },
+ {
+  "id": "hub-internal-small-12",
+  "title": "hostreg.SameRegistration omits PresenceEpoch; four call sites hand-roll the full comparison",
+  "category": "inconsistency",
+  "original_severity": "medium",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Hand-rolled sites verified: sshconn/deploy.go:1121, :1240, :1255 and selected_restart.go:189 add PresenceEpoch to the comparison. But no latent fence hole: PresenceEpoch only changes on add/re-add/rebase/seed (hostreg.go:335,404,913,~950; Update/Stamp-replace preserve it), and each of those also changes Generation and IncarnationID, which SameRegistration already compares. So adding it is a consistency cleanup, not a bug fix, and no failing test can be written against real registry flows.",
+  "revised_fix_plan": "Include PresenceEpoch in hostreg.SameRegistration (document the identity triple) and replace the four hand-written checks with it. Pin with a table test; no behavior change expected in practice."
+ },
+ {
+  "id": "hub-internal-small-13",
+  "title": "hubapi.Client, HTTPError, URL dead in production; StateWord has no Go caller",
+  "category": "dead-code",
+  "original_severity": "medium",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Verified: hubapi.NewClient/Client have no importer outside hubapi (grep of whole repo); HTTPError (client.go:21) is never constructed, get() returns fmt.Errorf at client.go:73; StateWord used only by attention_test.go and refs_fuzz_test.go. NeedsResponse is used by hubcore/attention.go:105 so it stays (the finding hedged this correctly). client.go + client_test.go = 207 lines. Cleanup touches: scripts/fuzz/fuzz-targets.txt:192 only lists FuzzParseRef (keep), refs_fuzz_test.go coverClient/Client fuzz parts, and TS comments referencing hubapi.StateWord in appwire-client/typescript/railSessionState.ts:6,13 which should be reworded."
+ },
+ {
+  "id": "hub-internal-small-14",
+  "title": "Two Ref types/parsers with drifted grammar; twin AttentionSummary; stale 'does not import appwire' doc",
+  "category": "duplication",
+  "original_severity": "medium",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Core verified: hubapi/refs.go refPattern allows ':' (refs.go:10) so ParseRef('local:a:b') yields SessionID 'a:b', while appwire/refs.go rejects ':' in either part; hubapi.AttentionSummary (types.go:41) is field-identical to appwire.AttentionSummary (appwire/attention.go:31); types.go:35 says hubapi does not import appwire but navigation.go imports it. Cited lines hubapi/refs.go:69,96 do not exist (file is 53 lines). Non-test hubapi.ParseRef callers: 13, not 16. appwire.ParseRef: 82 confirmed.",
+  "revised_fix_plan": "First settle the grammar with Jesse (is ':' in a session id intended?). Then make hubapi.Ref a thin layer over appwire.Ref or alias it, alias AttentionSummary to appwire's, fix the stale comment. Table test for ':' first."
+ },
+ {
+  "id": "hub-internal-small-15",
+  "title": "launchconfig and hubedge atomic writes are ad hoc and weaker than the hub's other stores",
+  "category": "duplication",
+  "original_severity": "medium",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Verified: launchconfig/io.go:53 writeAtomicFS uses fixed path+'.tmp' with O_TRUNC (concurrent saves share one tmp) and fsyncs the file but not the directory; hubedge/auth_token.go:105 os.WriteFile (no fsync) then rename, and the loader treats an empty file as absent (auth_token.go:~90) so a crash could rotate the token. hubcore/state_file.go:35 writeStateFileAtomic is the stronger version. The plan overlooks that internal/plugins/atomic.go and transcriptindex already have helpers, so a new shared package may be unnecessary; whether concurrent SaveLayer is reachable is unproven.",
+  "revised_fix_plan": "Fix hubedge first (temp+fsync+rename+dir sync with fsdurability tolerance) with a test; then make launchconfig use a unique temp name and dir sync. Evaluate reusing internal/plugins/atomic.go before extracting anything new."
+ },
+ {
+  "id": "hub-internal-small-16",
+  "title": "Backward-compat paths in launchconfig predate the no-compat rule and need Jesse's decision",
+  "category": "compat-legacy",
+  "original_severity": "low",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Verified: resolver.go:127-140 LegacyProject read-only fallback with a migrate diagnostic; merge.go:~232 legacy system_prompt_append list truncated to first entry with diagnostic; SystemPromptAppend still emitted by args.go and carried over appwire/types.go:4323 and wire.go, so removal changes the wire. Cited merge.go:376, paths.go:434 do not exist. Needs Jesse's decision before any change."
+ },
+ {
+  "id": "hub-internal-small-17",
+  "title": "Stub backends for unshipped platforms, duplicate no-op lockMarker, and two seams for one inspector",
+  "category": "complexity",
+  "original_severity": "low",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "lockMarker no-op is duplicated in marker_darwin.go (//go:build darwin) and hostlock_other.go (!linux&&!darwin): confirmed. But the plan's suggestion to drop non-unix builds is wrong: .github/workflows/ci.yml:186 runs 'GOOS=windows make vet', so the _other stubs are a compile floor. The package var filesystemInspector (storage.go:27) is needed because AcquireLock calls CheckStorage(..., nil) (hostlock.go:21) and storage_test.go:108-152 injects through it; removing it would break those tests without a new AcquireLock parameter. NewController triplicate (process_linux.go:24, darwin:39, other:8) confirmed.",
+  "revised_fix_plan": "Merge the two no-op lockMarker definitions into one file tagged !linux. Hoist NewController only if it removes lines. Leave filesystemInspector and the stub backends."
+ },
+ {
+  "id": "hub-internal-small-18",
+  "title": "Bearer parsing and constant-time compare duplicated across hubedge and httpguard with opposite empty-token semantics",
+  "category": "duplication",
+  "original_severity": "low",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Verified: httpguard.go:70 HubTokenAuthorized (empty expected authorizes all) vs hubedge/auth_token.go:132 tokensEqual (empty never equal) and tokenFromRequest:121. httpsec has one 25-line middleware with one consumer (web.go:348); app_device_pairing.go sets nosniff by hand. The differing empty-token semantics are intentional per package, so share only the header parse and compare."
+ },
+ {
+  "id": "hub-internal-small-19",
+  "title": "History, rulings and spec-section narration in comments",
+  "category": "slop",
+  "original_severity": "low",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Verified: httpsec.go 'kata 1pgw' and 'tracked separately'; hubedge/auth_token.go:~181 and auth_token_test.go:168 \"JESSE'S RULING (2026-09-01)\"; hubapi/attention.go:3 'Previously AttentionRank and rollupRank were duplicated'; hostreg.go has 18 spec-08 line refs. daemonprocess/process.go:235 is a load-bearing explanation with an issue number, not history, so drop it from the list."
+ },
+ {
+  "id": "hub-internal-small-20",
+  "title": "hubapi navigation Validate duplicates owner checks, uses unparenthesized compound boolean and raw kind literals",
+  "category": "complexity",
+  "original_severity": "low",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Verified navigation_delta.go:149 'Kind==resource_root && EntityKey!=\"\" || Kind==entity && (...)' followed by a separate kind check at :152; Delta.Validate (:250-257) re-checks a subset and does not require Slot for entity owners, which Snapshot.Validate does, so the two have drifted. 'resource_root' appears 9 times in non-test Go."
+ },
+ {
+  "id": "hub-internal-small-21",
+  "title": "daemonprocess: controller struct plus nativeBind var wrap a function; darwin proc_info parsed with unnamed byte offsets",
+  "category": "complexity",
+  "original_severity": "low",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Verified: process.go:~136 controller{bind}; NewController one-liners in three platform files; process_darwin.go uses literal sizes 56/136/176 and offsets [16:],[32:],[120:],[128:], masks 2/0x4000 (lines 80,84,104,144,208,221) while process_linux.go:141 names linuxPFExiting. Cosmetic; darwin code cannot be run locally."
+ },
+ {
+  "id": "hub-internal-small-22",
+  "title": "Test-env helper packages are non-test packages and duplicate Go-cache pinning from other TestMains",
+  "category": "duplication",
+  "original_severity": "low",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Verified hubtestenv.go:83-97 comment 'exactly as cmd/evener's TestMain does' and the go env GOCACHE/GOPATH/GOMODCACHE loop; GOMODCACHE appears in 93 test-file lines across modules. hubtestenv imports agent/sandbox/sandboxtest and hubtest imports daemonserver from non-test files, but only test files import them. Opportunistic only."
+ }
+]

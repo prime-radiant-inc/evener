@@ -33,10 +33,12 @@ import {
   CONNECTION_REPLACED_ERROR,
   credentialLayers,
   errorText,
+  filterModels,
   friendlyErrorMessage,
   fromEnvironment,
   isEndpointConflict,
   isInstanceRenamePersisted,
+  MODEL_LIST_CAP,
   renameLeavesEnvironmentRow,
   safeCredentialTestMessage,
   safeCredentialTestResult,
@@ -45,31 +47,13 @@ import {
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { useIsMobile } from "../../../../shell/useIsMobile";
 import { credentialsStore, isStaleListingRefusal, useCredentialsStore } from "../../../../stores/credentials";
-import {
-  Button,
-  Chip,
-  FormRow,
-  InlineNotice,
-  Input,
-  PropertyList,
-  Select,
-  Sheet,
-  StatusDot,
-  Switch,
-  useToasts,
-} from "../../../../widgets";
+import { Button, Chip, FormRow, InlineNotice, Input, Sheet, StatusDot, Switch, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { ConnectionFacts, ConnectionSettingsDisclosure, connectionSettingsFields } from "./ConnectionFacts";
 import { CREDENTIAL_DOT, credentialState } from "./credentialState";
 import type { FormError } from "./formError";
 import styles from "./InstanceSheet.module.css";
-import {
-  draftFor,
-  type InstanceDraft,
-  instanceEditParams,
-  PROTOCOL_OPTIONS,
-  SURFACE_OPTIONS,
-  varRows,
-} from "./instanceEdit";
+import { draftFor, type InstanceDraft, instanceEditParams, varRows } from "./instanceEdit";
 import {
   baseCarriedByRename,
   changedFields,
@@ -94,11 +78,6 @@ const CLASS = {
 
 const LITERAL_HEADER_ERROR =
   "Credential header must reference a $VARIABLE or run a $(command), never a literal secret.";
-// A provider such as OpenRouter lists hundreds of models. The sheet mounts at
-// most this many switches at once and offers a search to reach the rest; the
-// phone makes the same decision (ProvidersPage's MODEL_LIST_CAP), so one long
-// list is handled the same way on both clients (issue #3279).
-const MODEL_LIST_CAP = 50;
 const EMPTY_NAME_ERROR = "Name cannot be empty.";
 // The save landed, but its response was superseded, so nothing reseeded the
 // form: the toast says what the sheet is showing - the user's own draft - and
@@ -266,6 +245,9 @@ export function InstanceSheet({
   const [formError, setFormError] = useState<FormError<FormErrorReason> | null>(null);
   const [busy, setBusy] = useState(false);
   const [modelSearch, setModelSearch] = useState("");
+  // The sheet is the editor, so its full connection settings start open; the
+  // disclosure still folds them away when the reader wants the actions.
+  const [settingsOpen, setSettingsOpen] = useState(true);
   // The rename of this sheet's own that went out, held with the request that
   // carries its destination. The old name leaves the store when the response
   // lands, a beat before the section re-selects the new one, so for that beat
@@ -733,8 +715,8 @@ export function InstanceSheet({
   // Filter by substring, then cap what is mounted; the search field below
   // appears only when the list is long enough to need it, so a short list is
   // unchanged.
-  const modelQuery = modelSearch.trim().toLowerCase();
-  const matchingModels = modelQuery ? models.filter((row) => row.id.toLowerCase().includes(modelQuery)) : models;
+  const modelQuery = modelSearch.trim();
+  const matchingModels = filterModels(models, modelQuery);
   const shownModels = matchingModels.slice(0, MODEL_LIST_CAP);
   const safeTestResult = testCredentialsResult
     ? safeCredentialTestResult(name ?? "", testCredentialsResult)
@@ -788,82 +770,74 @@ export function InstanceSheet({
                 void handleSave();
               }}
             >
-              <FormRow label="Name" htmlFor={`${ids}-name`} help={nameHelp}>
-                <Input
-                  id={`${ids}-name`}
-                  value={draft.name}
-                  onChange={(event) => update({ name: event.target.value })}
-                  disabled={busy}
-                />
-              </FormRow>
-              <PropertyList
+              <ConnectionFacts
+                data-testid="connection-facts"
                 rows={[
-                  { label: "Base provider", value: <span data-testid="base-provider">{instance.providerId}</span> },
+                  {
+                    key: "name",
+                    label: "Name",
+                    htmlFor: `${ids}-name`,
+                    value: (
+                      <Input
+                        id={`${ids}-name`}
+                        value={draft.name}
+                        onChange={(event) => update({ name: event.target.value })}
+                        disabled={busy}
+                      />
+                    ),
+                    help: nameHelp,
+                  },
+                  {
+                    key: "base-provider",
+                    label: "Base provider",
+                    value: <span data-testid="base-provider">{instance.providerId}</span>,
+                  },
+                  {
+                    key: "base-url",
+                    label: "Base URL",
+                    htmlFor: `${ids}-baseurl`,
+                    value: (
+                      <Input
+                        id={`${ids}-baseurl`}
+                        value={draft.baseUrl}
+                        onChange={(event) => update({ baseUrl: event.target.value })}
+                        placeholder="https://…"
+                        disabled={busy}
+                      />
+                    ),
+                    help: clearingBaseUrl ? "Resets the endpoint to the provider's default." : undefined,
+                  },
                 ]}
               />
-              <FormRow
-                label="Base URL"
-                htmlFor={`${ids}-baseurl`}
-                help={clearingBaseUrl ? "Resets the endpoint to the provider's default." : undefined}
-              >
-                <Input
-                  id={`${ids}-baseurl`}
-                  value={draft.baseUrl}
-                  onChange={(event) => update({ baseUrl: event.target.value })}
-                  placeholder="https://…"
-                  disabled={busy}
-                />
-              </FormRow>
-              <FormRow label="Protocol" htmlFor={`${ids}-protocol`}>
-                <Select
-                  id={`${ids}-protocol`}
-                  value={draft.protocol}
-                  onChange={(event) => update({ protocol: event.target.value })}
-                  options={PROTOCOL_OPTIONS}
-                  disabled={busy}
-                />
-              </FormRow>
-              <FormRow label="Surface" htmlFor={`${ids}-surface`}>
-                <Select
-                  id={`${ids}-surface`}
-                  value={draft.surface}
-                  onChange={(event) => update({ surface: event.target.value })}
-                  options={SURFACE_OPTIONS}
-                  disabled={busy}
-                />
-              </FormRow>
-              {varRows(draft, template).map(({ key, label }) => (
-                <FormRow key={key} label={label} htmlFor={`${ids}-var-${key}`}>
-                  <Input
-                    id={`${ids}-var-${key}`}
-                    value={draft.vars[key] ?? ""}
-                    onChange={(event) => updateVar(key, event.target.value)}
-                    disabled={busy}
-                  />
-                </FormRow>
-              ))}
-              <FormRow label="API key environment variable" htmlFor={`${ids}-apikeyenv`}>
-                <Input
-                  id={`${ids}-apikeyenv`}
-                  value={draft.apiKeyEnv}
-                  onChange={(event) => update({ apiKeyEnv: event.target.value })}
-                  placeholder="e.g. PORTKEY_KEY"
-                  disabled={busy}
-                />
-              </FormRow>
-              <FormRow
-                label="Credential header"
-                htmlFor={`${ids}-credentialheader`}
-                help="NAME=VALUE; the value must reference a $VARIABLE or run a $(command), never a literal secret."
-              >
-                <Input
-                  id={`${ids}-credentialheader`}
-                  value={draft.credentialHeader}
-                  onChange={(event) => update({ credentialHeader: event.target.value })}
-                  placeholder="Authorization=Bearer $VAR"
-                  disabled={busy}
-                />
-              </FormRow>
+              <ConnectionSettingsDisclosure
+                open={settingsOpen}
+                onOpenChange={setSettingsOpen}
+                data-testid="connection-settings"
+                fields={
+                  settingsOpen
+                    ? connectionSettingsFields({
+                        idPrefix: ids,
+                        variableRows: varRows(draft, template),
+                        values: {
+                          vars: draft.vars,
+                          protocol: draft.protocol,
+                          surface: draft.surface,
+                          apiKeyEnv: draft.apiKeyEnv,
+                          credentialHeader: draft.credentialHeader,
+                        },
+                        disabled: busy,
+                        copy: {
+                          apiKeyEnvLabel: "API key environment variable",
+                          credentialHeaderPlaceholder: "Authorization=Bearer $VAR",
+                          credentialHeaderHelp:
+                            "NAME=VALUE; the value must reference a $VARIABLE or run a $(command), never a literal secret.",
+                        },
+                        onVariableChange: updateVar,
+                        onFieldChange: (field, value) => update({ [field]: value }),
+                      })
+                    : []
+                }
+              />
               {formError !== null && (
                 <InlineNotice tone="danger" data-reason={formError.reason}>
                   {formError.message}

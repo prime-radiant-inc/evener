@@ -15,6 +15,7 @@ import (
 	"regexp"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
@@ -57,7 +58,7 @@ func (s *WebServer) handleSessionImage(w http.ResponseWriter, r *http.Request, s
 		http.NotFound(w, r)
 		return
 	}
-	transcriptPath := filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
+	transcriptPath := schema.SessionTranscriptPath(entry.StateDir, entry.Meta.ID)
 	data, mediaType, ok, err := findImageInTranscript(transcriptPath, sha)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -81,7 +82,7 @@ func (s *WebServer) handleSessionImage(w http.ResponseWriter, r *http.Request, s
 // containing an image part with the given sha256. Returns the raw bytes and
 // media type. Image bytes can be large; we only buffer the matching one.
 func findImageInTranscript(path, wantSha string) ([]byte, string, bool, error) {
-	return scanTranscriptForImage(path, wantSha, transcriptJSONLMaxLineBytes, 0)
+	return scanTranscriptForImage(path, wantSha, transcript.DefaultMaxLineBytes, 0)
 }
 
 // sessionImageRecordOverhead is the space the largest legitimate record may
@@ -220,8 +221,7 @@ func decodeHexSha256(raw string) ([sha256.Size]byte, bool) {
 // 05). It is the AppWire counterpart of handleSessionImage and handleDocImage
 // and shares their resolution discipline: the sha branch re-scans the session
 // transcript under the 8 MiB bound, and the file-backed branch resolves a
-// relative or current-root absolute path inside the session's own working
-// directory with fspaths.ResolveInRoot. SessionImageParams carries no source
+// path with resolveSessionFile. SessionImageParams carries no source
 // selector, so the method can only ever resolve against the recipient's own
 // state and can never read an arbitrary host file; anything it cannot resolve
 // is refused typed rather than guessed.
@@ -274,23 +274,21 @@ func sessionImageBySha(cfg hubcore.WebConfig, sessionID, sha string) (appwire.Se
 	}, nil
 }
 
-// sessionImageByPath answers the file-backed form: a relative or current-root
-// absolute path inside the session's own working directory, refused on any
-// escape and bounded by outputImageMaxBytes at stat time
-// (readOutputImageInRoot).
+// sessionImageByPath answers the file-backed form: a path resolveSessionFile
+// accepts (the session's working directory, or an absolute path in its retained
+// artifacts directory), refused on any escape and bounded by outputImageMaxBytes
+// at stat time (readOutputImageInRoot).
 func sessionImageByPath(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, sessionID, path string) (appwire.SessionImageResponse, error) {
-	cwd, err := sessionCWD(ctx, cfg, sources, sessionID)
-	if err != nil {
+	root, abs, err := resolveSessionFile(ctx, cfg, sources, canonicalRouteID(sessionID), path)
+	switch {
+	case errors.Is(err, fspaths.ErrPathEscapesRoot):
+		return appwire.SessionImageResponse{}, appwire.InvalidParams("path must resolve inside the session root")
+	case errors.Is(err, errSessionFileNotFound):
+		return appwire.SessionImageResponse{}, appwire.ResourceNotFound("image not found")
+	case err != nil:
 		return appwire.SessionImageResponse{}, err
 	}
-	abs, err := fspaths.ResolveInRoot(cwd, path)
-	if err != nil {
-		if errors.Is(err, fspaths.ErrPathEscapesRoot) {
-			return appwire.SessionImageResponse{}, appwire.InvalidParams("path must resolve inside the session root")
-		}
-		return appwire.SessionImageResponse{}, appwire.ResourceNotFound("image not found")
-	}
-	data, info, ok := readOutputImageInRoot(cwd, abs)
+	data, info, ok := readOutputImageInRoot(root, abs)
 	if !ok {
 		return appwire.SessionImageResponse{}, appwire.ResourceNotFound("image not found")
 	}

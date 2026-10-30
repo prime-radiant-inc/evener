@@ -1,7 +1,7 @@
+import { hostRequest, isLocalHost, LOCAL_HOST } from "@evener/appwire-client";
 import { useCallback, useEffect, useState } from "react";
 import { useConnectionStore } from "../../stores/connection";
 import { credentialsStore, retryHostRead, useCredentialsStore, useHostInstances } from "../../stores/credentials";
-import { hostRequest, isLocalHost, LOCAL_HOST } from "../../stores/hostRouting";
 
 /** Credential configuration is read from the hub, never a browser first-run flag.
  * A failed lookup is unknown; it must not send a configured user through setup.

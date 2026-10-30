@@ -38,7 +38,7 @@ func TestRemoteManagerActorNamespace(t *testing.T) {
 			}
 			t.Run("snapshot", func(t *testing.T) {
 				response := appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "worker", Source: "local", Evener: appwire.EvenerThread{Ref: "local:worker", InstanceID: "worker-instance"}, Turns: []appwire.Turn{{ID: "turn-1", Items: []appwire.ThreadItem{item()}}}}}
-				if err := s.translateOut(&response); err != nil {
+				if err := s.translateOut(nil, &response); err != nil {
 					t.Fatal(err)
 				}
 				if response.Thread.Evener.Ref != "host-b:worker" {
@@ -48,14 +48,14 @@ func TestRemoteManagerActorNamespace(t *testing.T) {
 			})
 			t.Run("paged_turns", func(t *testing.T) {
 				response := appwire.ThreadTurnsListResponse{Data: []appwire.Turn{{ID: "turn-1", Items: []appwire.ThreadItem{item()}}}}
-				if err := s.translateOut(&response); err != nil {
+				if err := s.translateOut(nil, &response); err != nil {
 					t.Fatal(err)
 				}
 				check(t, response.Data[0].Items[0])
 			})
 			t.Run("paged_items", func(t *testing.T) {
 				response := appwire.ThreadTurnItemsListResponse{Data: []appwire.ThreadItem{item()}}
-				if err := s.translateOut(&response); err != nil {
+				if err := s.translateOut(nil, &response); err != nil {
 					t.Fatal(err)
 				}
 				check(t, response.Data[0])
@@ -68,7 +68,7 @@ func TestRemoteManagerActorNamespace(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					translated, target, ok := s.translateNotification(appwire.Notification{Method: method, Params: raw})
+					translated, target, ok := s.translateNotification(appwire.Notification{Method: method, Params: raw}, nil)
 					if !ok || target != "worker" {
 						t.Fatalf("notification rejected: ok=%v target=%q", ok, target)
 					}

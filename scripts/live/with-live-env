@@ -142,7 +142,7 @@ script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 . "$script_dir/../lib/private-go-home.sh"
 
 # An explicit template, never `mktemp -t`: macOS's mktemp ignores TMPDIR for
-# -t (scripts/lib/live-eval-isolation.sh made the same call).
+# -t.
 fake_home_root=$(mktemp -d "${TMPDIR:-/tmp}/evener-live-env.XXXXXX")
 chmod 700 "$fake_home_root"
 

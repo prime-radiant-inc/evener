@@ -8,6 +8,7 @@ import {
 } from "@evener/appwire-client";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { HoldingModal } from "./alerts/HoldingModal";
 import { copyText } from "./clipboard";
@@ -100,7 +101,7 @@ export function TimelineItem({
 	 * reads its outcome from; the screen holds it (useTranscriptSubagentTree). */
 	subagentTree?: ActivityTree | null;
 	/** Opens a subagent's own transcript. */
-	openSubagent?: (ref: string, title: string) => void;
+	openSubagent?: (ref: string, title: string, runStartedAt?: string) => void;
 	/** Your answer to the question an ask_user row asked, when you gave one. */
 	answerFor?: (itemId: string) => string | undefined;
 	/** The one action an error row offers (errorAction), and running it. */
@@ -502,13 +503,30 @@ function AgentMessage({
 		[markdown, quote],
 	);
 	const accessibility = useMemo(() => menuAccessibility(menu), [menu]);
+	// A Pressable here would become the touch responder and every link in the
+	// prose would go dead (#4839). A long-press gesture waits for the hold and
+	// leaves a short tap to the text view, so links still open. The detector
+	// needs one host view, and this View is also what covers a diagram-only
+	// reply and every segment of a message with a diagram in it.
+	const holdForMenu = useMemo(
+		() =>
+			Gesture.LongPress()
+				.runOnJS(true)
+				.onStart(() => showMenu(menu, menuPreview(markdown))),
+		[menu, markdown],
+	);
 	return (
 		<>
-			{/* The markdown view stays VoiceOver's element (it reads the
-			formatting and its links); the pressable only adds touch and hold. */}
-			<Pressable accessible={false} onLongPress={() => showMenu(menu, menuPreview(markdown))}>
-				<MarkdownResponse markdown={markdown || "…"} selectable={false} fileContext={fileContext} {...accessibility} />
-			</Pressable>
+			<GestureDetector gesture={holdForMenu}>
+				<View>
+					<MarkdownResponse
+						markdown={markdown || "…"}
+						selectable={false}
+						fileContext={fileContext}
+						{...accessibility}
+					/>
+				</View>
+			</GestureDetector>
 			<HoldingModal
 				visible={selecting}
 				animationType="slide"
@@ -539,7 +557,7 @@ function Subagent({
 	row: Extract<TimelineRow, { kind: "activity" }>;
 	delegates: readonly EvenerDelegateInfo[] | undefined;
 	tree: ActivityTree | null | undefined;
-	openSubagent: ((ref: string, title: string) => void) | undefined;
+	openSubagent: ((ref: string, title: string, runStartedAt?: string) => void) | undefined;
 }) {
 	// The state's time ("failed · 6m") moves on with the minute clock, and
 	// its line turns Quiet the moment a silent subagent crosses into it.

@@ -1,50 +1,15 @@
-import type {
-  NavigationCatalogs,
-  NavigationProjectPage,
-  NavigationProjectResource,
-  NavigationProjectSummary,
-  NavigationSessionSummary,
-  Source,
-} from "@evener/appwire-client";
-import { errorText } from "@evener/appwire-client";
+import type { NavigationSessionSummary, Source } from "@evener/appwire-client";
+import { errorText, LOCAL_HOST } from "@evener/appwire-client";
+import { keyID } from "@evener/appwire-client/state/navigation";
+import { type CSSProperties, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
-  isSettledGone,
-  keyID,
-  navigationOwnedContainerKey,
-  navigationRootContainerKey,
-  nextNavigationOffset,
-  projectNodeExpansionKey,
-  type ResourceKey,
-  type ResourceState,
-} from "@evener/appwire-client/state/navigation";
-import {
-  type ChangeEvent,
-  type CSSProperties,
-  memo,
-  useCallback,
-  useEffect,
-  useId,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
-import {
-  type ArchivedList,
   archivedListKey,
   loadMoreArchivedList,
   refreshArchivedList,
   useArchivedLists,
 } from "../../stores/archivedList";
 import { useConnectionStore } from "../../stores/connection";
-import { LOCAL_HOST } from "../../stores/hostRouting";
-import {
-  selectAttentionSummary,
-  selectDisplaySources,
-  selectPinSectionSummaries,
-  selectPinSections,
-  selectRailModel,
-} from "../../stores/navigation/selectors";
+import { selectAttentionSummary, selectDisplaySources } from "../../stores/navigation/selectors";
 import { buildShutdownConvergence } from "../../stores/navigation/shutdownConvergence";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
 import { type SidebarGroupingPref, usePrefsStore } from "../../stores/prefs";
@@ -53,12 +18,9 @@ import {
   Badge,
   Button,
   ConfirmDialog,
-  Dialog,
   DisclosureHeading,
   EmptyState,
-  FormRow,
   IconButton,
-  Input,
   Menu,
   Popover,
   RadioGroup,
@@ -79,13 +41,11 @@ import { useIsMobile } from "../useIsMobile";
 import { currentSessionRef, useWorkspaceStore, workspaceStore } from "../workspace";
 import {
   assignSessionPin,
-  deletePinSection,
   deleteProject,
   deleteSession,
   type NavigationMutationReceipt,
   partialFanOutNotice,
   projectOwnership,
-  renamePinSection,
   setArchived,
   setFavorite,
   unpinSession,
@@ -93,7 +53,14 @@ import {
 import styles from "./Rail.module.css";
 import { RAIL_WIDTH_PROPERTY, RailResizeHandle } from "./RailResizeHandle";
 import { RailRow, type RailRowActions } from "./RailRow";
-import { loadExpansion, saveExpansion } from "./railExpansion";
+import {
+  ARCHIVED_SECTION_KEY,
+  LIVE_SECTION_KEY,
+  loadExpansion,
+  PROJECTS_SECTION_KEY,
+  saveExpansion,
+  TEST_RUNS_SECTION_KEY,
+} from "./railExpansion";
 import { GearIcon, SearchIcon, SidebarIcon, TuneIcon } from "./railIcons";
 import {
   archivedCount,
@@ -116,12 +83,22 @@ import {
   type RailPinSection,
   type RailProject,
   type RailSession,
-  revealExpansionIds,
   sectionOverflowNode,
   sessionNodes,
 } from "./railNodes";
 import { RailTickProvider } from "./railNow";
-import { applyPending, buildPinSourceIndex, type PendingOp, type RailResources } from "./railPending";
+import { applyPending, buildPinSourceIndex, type PendingOp } from "./railPending";
+import {
+  allRailProjects,
+  nonEmpty,
+  railResources,
+  resourceData,
+  resourceState,
+  withArchivedLists,
+} from "./railResources";
+import { usePinSectionDialogs } from "./usePinSectionDialogs";
+import { useProjectRootLoads } from "./useProjectRootLoads";
+import { useRailReveal } from "./useRailReveal";
 
 const CLASS = {
   rail: requireClass(styles.rail, "Rail.module.css", "rail"),
@@ -136,29 +113,6 @@ const CLASS = {
   organizeRow: requireClass(styles.organizeRow, "Rail.module.css", "organizeRow"),
   organizePanel: requireClass(styles.organizePanel, "Rail.module.css", "organizePanel"),
 };
-
-// Section-fold keys. Archived is the only one that starts collapsed; every
-// other tier is where you expect to find your work.
-const LIVE_SECTION_KEY = "section:live";
-const PROJECTS_SECTION_KEY = "section:projects";
-const TEST_RUNS_SECTION_KEY = "section:test_runs";
-const ARCHIVED_SECTION_KEY = "section:archived";
-type CatalogKind = keyof NavigationCatalogs;
-const sessionModelCache = new WeakMap<object, Map<string, RailSession>>();
-type ProjectPageDependency = Readonly<{
-  id: string;
-  tier: "current" | "recent" | "archived";
-  graphOrData: object | null;
-}>;
-type ProjectModelCacheEntry = Readonly<{
-  mode: "compatibility" | "graph";
-  root: object | null;
-  pages: readonly ProjectPageDependency[];
-  compatibilityError?: string;
-  result: RailProject;
-}>;
-const projectModelCache = new WeakMap<object, ProjectModelCacheEntry>();
-const archivedProjectModelCache = new WeakMap<object, RailProject>();
 
 interface RailSectionProps {
   title: string;
@@ -290,7 +244,7 @@ function withCatalogOverflow(
 
 /** The Projects tier under the organize-by setting: ONE decision pairs the
  * section's title with its node shape, so they cannot drift apart (the same
- * one-decision doctrine as projectPlacement below). Test runs stay flat -
+ * one-decision doctrine as projectPlacement in useRailReveal). Test runs stay flat -
  * that tier is a catalog, not the work surface the setting addresses. */
 function projectsTierFor(
   mode: RailGroupingMode,
@@ -318,8 +272,7 @@ function projectsTierFor(
 // chords are desktop-only - so only the desktop instance releases
 // Alt-held arrows/Home/End from the tree. On mobile the chords are inert,
 // and released Alt+ArrowLeft/Right would fall through to the browser's
-// history navigation, so the tree keeps them tree-owned (roborev PR #1044
-// round-9 medium 1).
+// history navigation, so the tree keeps them tree-owned.
 function RailTree(props: Omit<TreeProps<RailNode>, "releaseModifierKeys">) {
   const isMobile = useIsMobile();
   return <Tree {...props} releaseModifierKeys={!isMobile} />;
@@ -455,510 +408,6 @@ export interface RailProps {
    * the whole rail instead, so the rail grows with its content. */
   scrollOwner?: "rail" | "parent";
 }
-interface RevealRequestGuard {
-  target: string;
-  token: symbol;
-}
-
-function summarySession(
-  summary: NavigationSessionSummary,
-  scope: string,
-  tier?: string,
-  pinSectionID?: string,
-  projectKey?: string,
-): RailSession {
-  const context = `${scope}\0${tier ?? ""}\0${pinSectionID ?? ""}\0${projectKey ?? ""}`;
-  const cached = sessionModelCache.get(summary as object)?.get(context);
-  if (cached) return cached;
-  const result = {
-    ...summary,
-    row_id: `navigation:${scope}:${summary.ref}`,
-    tier,
-    pin_section_id: pinSectionID,
-    project_key: projectKey,
-    // Archived lists retain separate fork-original conversations. Delegate
-    // activity belongs to the scoped activity owner, not navigation rows.
-    children:
-      tier === "archived"
-        ? summary.children
-            .filter((child) => child.kind === "fork")
-            .map((child) => summarySession(child, scope, tier, pinSectionID, projectKey))
-        : [],
-  };
-  let entries = sessionModelCache.get(summary as object);
-  if (!entries) {
-    entries = new Map();
-    sessionModelCache.set(summary as object, entries);
-  }
-  entries.set(context, result);
-  return result;
-}
-function sessions(
-  summaries: readonly NavigationSessionSummary[],
-  scope: string,
-  tier?: string,
-  pinSectionID?: string,
-  projectKey?: string,
-): RailSession[] {
-  return summaries.map((summary) => summarySession(summary, scope, tier, pinSectionID, projectKey));
-}
-function dedupeSessions(rows: readonly RailSession[]): RailSession[] {
-  const seen = new Set<string>();
-  return rows.filter((row) => {
-    if (seen.has(row.ref)) return false;
-    seen.add(row.ref);
-    return true;
-  });
-}
-function resourceState(
-  state: ReturnType<typeof navigationStore.getState>,
-  key: ResourceKey,
-): ResourceState | undefined {
-  return state.resources.get(keyID(key));
-}
-function resourceData<T>(state: ReturnType<typeof navigationStore.getState>, key: ResourceKey): T | null {
-  const resource = resourceState(state, key);
-  if (resource?.normalized?.presence === "gone") return null;
-  return (resource?.data as T | undefined) ?? null;
-}
-function returnedRootRows(resource: ResourceState, slot: string, field: string): number {
-  const normalized = resource.normalized;
-  if (normalized)
-    return normalized.graph.containers.get(navigationRootContainerKey(resource.key, slot))?.children.length ?? 0;
-  const data = resource.data as Record<string, unknown> | null;
-  const rows = data?.[field];
-  return Array.isArray(rows) ? rows.length : 0;
-}
-// The tiers a project resource serves rows for. Archived rows come from the
-// project's archived list (withArchivedList), not from navigation.
-const PROJECT_TIERS = ["current", "recent"] as const;
-function projectPageStates(
-  pages: ReadonlyMap<string, ResourceState>,
-  projectKey: string,
-): Array<ResourceState & { key: Extract<ResourceKey, { kind: "project_page" }> }> {
-  const tierOrder = { current: 0, recent: 1, archived: 2 } as const;
-  return [...pages.values()]
-    .filter(
-      (state): state is ResourceState & { key: Extract<ResourceKey, { kind: "project_page" }> } =>
-        state.key.kind === "project_page" &&
-        state.key.projectKey === projectKey &&
-        state.data !== null &&
-        state.normalized?.presence !== "gone",
-    )
-    .sort(
-      (a, b) =>
-        tierOrder[a.key.tier] - tierOrder[b.key.tier] ||
-        a.key.offset - b.key.offset ||
-        a.key.limit - b.key.limit ||
-        keyID(a.key).localeCompare(keyID(b.key)),
-    );
-}
-function projectPageDependencies(states: readonly ResourceState[]): ProjectPageDependency[] {
-  return states.flatMap((state) => {
-    if (state.key.kind !== "project_page") return [];
-    const graphOrData = state.normalized?.graph ?? (typeof state.data === "object" ? state.data : null);
-    return [{ id: keyID(state.key), tier: state.key.tier, graphOrData }];
-  });
-}
-function sameProjectPageDependencies(
-  left: readonly ProjectPageDependency[],
-  right: readonly ProjectPageDependency[],
-): boolean {
-  return (
-    left.length === right.length &&
-    left.every(
-      (dependency, index) =>
-        dependency.id === right[index]?.id &&
-        dependency.tier === right[index]?.tier &&
-        dependency.graphOrData === right[index]?.graphOrData,
-    )
-  );
-}
-function cachedProject(
-  summary: NavigationProjectSummary,
-  mode: ProjectModelCacheEntry["mode"],
-  root: object | null,
-  pages: readonly ProjectPageDependency[],
-  compatibilityError?: string,
-): RailProject | undefined {
-  const cached = projectModelCache.get(summary as object);
-  return cached?.mode === mode &&
-    cached.root === root &&
-    sameProjectPageDependencies(cached.pages, pages) &&
-    (mode === "graph" || cached.compatibilityError === compatibilityError)
-    ? cached.result
-    : undefined;
-}
-function cacheProject(
-  summary: NavigationProjectSummary,
-  mode: ProjectModelCacheEntry["mode"],
-  root: object | null,
-  pages: readonly ProjectPageDependency[],
-  result: RailProject,
-  compatibilityError?: string,
-): RailProject {
-  projectModelCache.set(summary as object, { mode, root, pages, compatibilityError, result });
-  return result;
-}
-interface LoadedSection {
-  sessions: RailSession[];
-  remaining: number;
-  offset: number;
-  limit: number;
-}
-function loadedSection(
-  state: ReturnType<typeof navigationStore.getState>,
-  section: "live" | "needs_you",
-): LoadedSection {
-  const pages = [...state.resources.values()]
-    .filter(
-      (resource) =>
-        resource.key.kind === "section" &&
-        resource.key.section === section &&
-        resource.data !== null &&
-        state.visibleResourceKeys.has(keyID(resource.key)),
-    )
-    .sort((a, b) =>
-      a.key.kind === "section" && b.key.kind === "section"
-        ? a.key.offset - b.key.offset || a.key.limit - b.key.limit
-        : 0,
-    );
-  const seen = new Set<string>();
-  const rows = pages.flatMap((resource) => {
-    const normalized = resource.normalized;
-    if (normalized) {
-      const model = selectRailModel(normalized);
-      const root = normalized.graph.containers.get(navigationRootContainerKey(resource.key, "sessions"));
-      return (root?.children ?? []).flatMap((entityKey) => {
-        const session = model.sessions.get(entityKey);
-        if (!session || seen.has(session.ref)) return [];
-        seen.add(session.ref);
-        return [session];
-      });
-    }
-    return (resource.data as { sessions: NavigationSessionSummary[] }).sessions.flatMap((summary) => {
-      if (seen.has(summary.ref)) return [];
-      seen.add(summary.ref);
-      return [summarySession(summary, section)];
-    });
-  });
-  const last = pages.at(-1);
-  const data = last?.data as { remaining?: number } | null;
-  const pageKey = last?.key.kind === "section" ? last.key : { offset: 0, limit: 50 };
-  return {
-    sessions: rows,
-    remaining: data?.remaining ?? 0,
-    offset: nextNavigationOffset(pageKey.offset, last ? returnedRootRows(last, "sessions", "sessions") : 0),
-    limit: pageKey.limit,
-  };
-}
-function projectFromSummary(
-  summary: NavigationProjectSummary,
-  root: NavigationProjectResource | null,
-  rootError: string | undefined,
-  pages: ReadonlyMap<string, ResourceState>,
-): RailProject {
-  const rootObject = root as object | null;
-  const allPageStates = projectPageStates(pages, summary.key);
-  const pageDependencies = projectPageDependencies(allPageStates);
-  const cached = cachedProject(summary, "compatibility", rootObject, pageDependencies, rootError);
-  if (cached) return cached;
-  const all: RailSession[] = [];
-  const more: Partial<Record<"current" | "recent", number>> = {};
-  const nextOffsets: Partial<Record<"current" | "recent" | "archived", number>> = {};
-  for (const tier of PROJECT_TIERS) {
-    const base = root?.[tier];
-    const pageStates = allPageStates.filter((state) => state.key.tier === tier);
-    const rows = [...(base?.sessions ?? [])];
-    let remaining = base?.remaining ?? summary[`more_${tier}`] ?? 0;
-    for (const pageState of pageStates) {
-      const page = pageState.data as NavigationProjectPage;
-      for (const row of page.sessions) if (!rows.some((existing) => existing.ref === row.ref)) rows.push(row);
-      remaining = Math.min(remaining, page.remaining);
-    }
-    const lastPage = pageStates.at(-1);
-    nextOffsets[tier] =
-      lastPage?.key.kind === "project_page"
-        ? nextNavigationOffset(lastPage.key.offset, returnedRootRows(lastPage, "sessions", "sessions"))
-        : rows.length;
-    all.push(...sessions(rows, `project:${summary.key}:${tier}`, tier, undefined, summary.key));
-    more[tier] = remaining;
-  }
-  const result = {
-    ...summary,
-    loaded: root !== null,
-    resourceError: rootError,
-    nextOffsets,
-    sessions: all,
-    more_current: more.current,
-    more_recent: more.recent,
-  };
-  return cacheProject(summary, "compatibility", rootObject, pageDependencies, result, rootError);
-}
-function graphSessionsForResource(resource: ResourceState): RailSession[] {
-  const normalized = resource.normalized;
-  if (!normalized) return [];
-  const model = selectRailModel(normalized);
-  const root = normalized.graph.containers.get(navigationRootContainerKey(resource.key, "sessions"));
-  return (root?.children ?? []).flatMap((entityKey) => {
-    const session = model.sessions.get(entityKey);
-    return session ? [session] : [];
-  });
-}
-function projectFromGraph(
-  summary: NavigationProjectSummary,
-  resource: ResourceState,
-  pages: ReadonlyMap<string, ResourceState>,
-): RailProject | null {
-  const normalized = resource.normalized;
-  if (!normalized || normalized.presence === "gone") return null;
-  const allPageStates = projectPageStates(pages, summary.key);
-  const pageDependencies = projectPageDependencies(allPageStates);
-  const cached = cachedProject(summary, "graph", normalized.graph as object, pageDependencies);
-  if (cached) return cached;
-  const projectEntity = [...normalized.graph.entities.values()].find(
-    (entity) =>
-      entity.kind === "project" &&
-      entity.value !== null &&
-      typeof entity.value === "object" &&
-      (entity.value as Record<string, unknown>).key === summary.key,
-  );
-  if (!projectEntity) return null;
-  const metadata = normalized.graph.metadata;
-  const all: RailSession[] = [];
-  const more: Partial<Record<"current" | "recent", number>> = {};
-  const nextOffsets: Partial<Record<"current" | "recent" | "archived", number>> = {};
-  for (const tier of PROJECT_TIERS) {
-    const container = normalized.graph.containers.get(navigationOwnedContainerKey(projectEntity.key, tier));
-    const rootSessions = (container?.children ?? []).flatMap((entityKey) => {
-      const session = selectRailModel(normalized).sessions.get(entityKey);
-      return session ? [session] : [];
-    });
-    const pageStates = allPageStates.filter((page) => page.key.tier === tier);
-    const seen = new Set(rootSessions.map((session) => session.ref));
-    const sessions = [...rootSessions];
-    for (const page of pageStates) {
-      for (const session of graphSessionsForResource(page)) {
-        if (seen.has(session.ref)) continue;
-        seen.add(session.ref);
-        sessions.push(session);
-      }
-    }
-    all.push(...sessions);
-    const lastPage = pageStates.at(-1);
-    nextOffsets[tier] =
-      lastPage?.key.kind === "project_page"
-        ? nextNavigationOffset(lastPage.key.offset, returnedRootRows(lastPage, "sessions", "sessions"))
-        : (container?.children.length ?? 0);
-    const pageRemaining = pageStates.at(-1)?.data as { remaining?: number } | undefined;
-    const metadataRemaining = metadata[`${tier}_remaining`];
-    more[tier] = pageRemaining?.remaining ?? (typeof metadataRemaining === "number" ? metadataRemaining : 0);
-  }
-  return cacheProject(summary, "graph", normalized.graph as object, pageDependencies, {
-    ...summary,
-    loaded: true,
-    sessions: all,
-    nextOffsets,
-    more_current: more.current,
-    more_recent: more.recent,
-  });
-}
-function asArchivedProject(project: RailProject): RailProject {
-  if (project.is_archived === true) return project;
-  const cached = archivedProjectModelCache.get(project as object);
-  if (cached) return cached;
-  const archived = { ...project, is_archived: true };
-  archivedProjectModelCache.set(project as object, archived);
-  return archived;
-}
-// withArchivedList adds a project's loaded archived rows, from its archived
-// list, to the rows navigation served, and leaves more_archived as the archived
-// rows not loaded yet. The summary's more_archived is the whole archived count;
-// once the list has loaded, its own total is the fresher count. Cached per
-// built project and list entry so an unchanged pair keeps one identity.
-const archivedListProjectCache = new WeakMap<object, { list: ArchivedList | undefined; result: RailProject }>();
-function withArchivedList(project: RailProject, catalog: CatalogKind, list: ArchivedList | undefined): RailProject {
-  const cached = archivedListProjectCache.get(project);
-  if (cached && cached.list === list) return cached.result;
-  const rows = list ? sessions(list.rows, `project:${project.key}:archived`, "archived", undefined, project.key) : [];
-  const summaryTotal = project.more_archived ?? 0;
-  const total = list?.loaded ? list.total : summaryTotal;
-  const result = {
-    ...project,
-    catalog,
-    archived_total: summaryTotal,
-    // A session unarchived moments ago can be in navigation's rows and still
-    // in the list until the list refreshes.
-    sessions: dedupeSessions([...project.sessions, ...rows]),
-    more_archived: Math.max(0, total - rows.length),
-  };
-  archivedListProjectCache.set(project, { list, result });
-  return result;
-}
-function allRailProjects(resources: RailResources): RailProject[] {
-  return [...resources.projects, ...resources.archivedProjects, ...resources.testRuns];
-}
-function withArchivedLists(resources: RailResources, lists: Readonly<Record<string, ArchivedList>>): RailResources {
-  const apply = (projects: readonly RailProject[], catalog: CatalogKind) =>
-    projects.map((project) => withArchivedList(project, catalog, lists[archivedListKey(catalog, project.key)]));
-  return {
-    ...resources,
-    projects: apply(resources.projects, "projects"),
-    archivedProjects: apply(resources.archivedProjects, "archived_projects"),
-    testRuns: apply(resources.testRuns, "test_runs"),
-  };
-}
-function projectsFor(state: ReturnType<typeof navigationStore.getState>, catalog: CatalogKind): RailProject[] {
-  const output: RailProject[] = [];
-  const catalogResources = [...state.resources.values()]
-    .filter(
-      (resource) =>
-        resource.key.kind === "catalog" &&
-        resource.key.catalog === catalog &&
-        resource.data !== null &&
-        resource.normalized?.presence !== "gone",
-    )
-    .sort((a, b) =>
-      a.key.kind === "catalog" && b.key.kind === "catalog"
-        ? a.key.offset - b.key.offset || a.key.limit - b.key.limit
-        : 0,
-    );
-  for (const resource of catalogResources) {
-    const normalizedCatalog = resource.normalized;
-    const data = resource.data as { projects: NavigationProjectSummary[] };
-    const summaries = normalizedCatalog
-      ? (() => {
-          const root = normalizedCatalog.graph.containers.get(navigationRootContainerKey(resource.key, "projects"));
-          return (root?.children ?? []).flatMap((entityKey) => {
-            const entity = normalizedCatalog.graph.entities.get(entityKey);
-            if (entity?.kind !== "project" || !entity.value || typeof entity.value !== "object") return [];
-            return [entity.value as NavigationProjectSummary];
-          });
-        })()
-      : data.projects;
-    for (const summary of summaries) {
-      if (output.some((project) => project.key === summary.key)) continue;
-      const rootState = state.resources.get(keyID({ kind: "project", projectKey: summary.key }));
-      if (normalizedCatalog && rootState) {
-        const graphProject = projectFromGraph(summary, rootState, state.resources);
-        if (graphProject) {
-          output.push(graphProject);
-          continue;
-        }
-      }
-      const root =
-        rootState?.normalized?.presence === "gone"
-          ? null
-          : ((rootState?.data as NavigationProjectResource | null | undefined) ?? null);
-      output.push(
-        projectFromSummary(summary, root, rootState?.error ? errorText(rootState.error) : undefined, state.resources),
-      );
-    }
-  }
-  return output;
-}
-function catalogOverflowFor(
-  state: ReturnType<typeof navigationStore.getState>,
-  catalog: CatalogKind,
-): { remaining: number; offset: number; limit: number } | undefined {
-  const pages = [...state.resources.values()]
-    .filter(
-      (resource) =>
-        resource.key.kind === "catalog" &&
-        resource.key.catalog === catalog &&
-        resource.data !== null &&
-        resource.normalized?.presence !== "gone",
-    )
-    .sort((a, b) =>
-      a.key.kind === "catalog" && b.key.kind === "catalog"
-        ? a.key.offset - b.key.offset || a.key.limit - b.key.limit
-        : 0,
-    );
-  const last = pages.at(-1);
-  if (!last) return undefined;
-  const remaining = (last.data as { remaining?: number } | null)?.remaining ?? 0;
-  if (remaining <= 0) return undefined;
-  const pageKey = last.key.kind === "catalog" ? last.key : { offset: 0, limit: 100 };
-  return {
-    remaining,
-    offset: nextNavigationOffset(pageKey.offset, returnedRootRows(last, "projects", "projects")),
-    limit: pageKey.limit,
-  };
-}
-function railResources(state: ReturnType<typeof navigationStore.getState>): RailResources {
-  const live = loadedSection(state, "live");
-  const needsYou = loadedSection(state, "needs_you");
-  const pinCatalog = [...state.resources.values()]
-    .filter((resource) => resource.key.kind === "pin_catalog" && resource.data !== null)
-    .sort((a, b) => (a.key.kind === "pin_catalog" && b.key.kind === "pin_catalog" ? a.key.offset - b.key.offset : 0))
-    .flatMap(
-      (resource) =>
-        (resource.data as { pin_sections: Array<{ id: string; name: string; count: number }> }).pin_sections,
-    );
-  const pinCounts = new Map<string, number>();
-  for (const descriptor of pinCatalog)
-    if (!pinCounts.has(descriptor.id)) pinCounts.set(descriptor.id, descriptor.count);
-  const pinSections = selectPinSections(state)
-    .map((section) => {
-      const pages = [...state.resources.values()]
-        .filter(
-          (resource) =>
-            resource.key.kind === "pin_section" && resource.key.sectionId === section.id && resource.data !== null,
-        )
-        .sort((a, b) =>
-          a.key.kind === "pin_section" && b.key.kind === "pin_section"
-            ? a.key.offset - b.key.offset || a.key.limit - b.key.limit
-            : 0,
-        );
-      const last = pages.at(-1);
-      const pageKey = last?.key.kind === "pin_section" ? last.key : { offset: 0, limit: 50 };
-      const remaining = (last?.data as { remaining?: number } | null)?.remaining ?? 0;
-      const normalizedPages = pages.filter((resource) => resource.normalized);
-      const graphSessions = normalizedPages.length
-        ? dedupeSessions(normalizedPages.flatMap((resource) => graphSessionsForResource(resource)))
-        : null;
-      return {
-        id: section.id,
-        name: section.name,
-        member_count: pinCounts.get(section.id) ?? section.sessions.length,
-        remaining,
-        offset: nextNavigationOffset(pageKey.offset, last ? returnedRootRows(last, "sessions", "sessions") : 0),
-        limit: pageKey.limit,
-        sessions:
-          graphSessions ?? dedupeSessions(sessions(section.sessions, `pin:${section.id}`, undefined, section.id)),
-      };
-    })
-    .filter((section) => section.sessions.length > 0);
-  return {
-    live: live.sessions,
-    needsYou: needsYou.sessions,
-    liveOverflow: { remaining: live.remaining, offset: live.offset, limit: live.limit },
-    needsYouOverflow: { remaining: needsYou.remaining, offset: needsYou.offset, limit: needsYou.limit },
-    pinSections,
-    projects: projectsFor(state, "projects"),
-    archivedProjects: projectsFor(state, "archived_projects").map(asArchivedProject),
-    testRuns: projectsFor(state, "test_runs"),
-    catalogOverflow: {
-      projects: catalogOverflowFor(state, "projects"),
-      archived_projects: catalogOverflowFor(state, "archived_projects"),
-      test_runs: catalogOverflowFor(state, "test_runs"),
-    },
-  };
-}
-export const adaptNavigationResources = (
-  state: ReturnType<typeof navigationStore.getState>,
-  lists: Readonly<Record<string, ArchivedList>> = {},
-): RailResources => withArchivedLists(railResources(state), lists);
-function nonEmpty(resources: RailResources): boolean {
-  return (
-    resources.live.length > 0 ||
-    resources.needsYou.length > 0 ||
-    resources.pinSections.length > 0 ||
-    resources.projects.length > 0 ||
-    resources.archivedProjects.length > 0 ||
-    resources.testRuns.length > 0
-  );
-}
 
 async function convergeMutation(result: unknown): Promise<void> {
   if (!isNavigationMutationReceipt(result)) return;
@@ -987,8 +436,7 @@ function isNavigationMutationReceipt(result: unknown): result is NavigationMutat
 // session ID instead (tree.go builds local nodes with ID: m.ID; the local
 // entries in web_api_tree.go carry SessionID: past.Meta.ID), and archive
 // decisions reach the read model through archiveDecisions() verbatim
-// (web_api_tree.go's memoTreeWithAuthority and navigation_service.go's
-// Capture), with no alias expansion - unlike favorites, which pass through
+// (navigation_service.go's Capture), with no alias expansion - unlike favorites, which pass through
 // ClassifyFavoriteDecisions.
 //
 // The write side normalizes, so those two spellings are ONE stored key rather
@@ -1050,18 +498,6 @@ function NavigationRail({
   const isRowSelected = (node: RailNode): boolean | undefined =>
     node.kind === "session" ? node.session.ref === selectedSessionRef : undefined;
   const [expandedOverrides, setExpandedOverrides] = useState<ReadonlyMap<string, boolean>>(loadExpansion);
-  const [sectionRenameTarget, setSectionRenameTarget] = useState<RailPinSection | null>(null);
-  const [sectionRenameValue, setSectionRenameValue] = useState("");
-  const [sectionRenameError, setSectionRenameError] = useState("");
-  const [sectionRenameSubmitting, setSectionRenameSubmitting] = useState(false);
-  const sectionRenameInputID = useId();
-  const sectionRenameSubmission = useRef<{ token: number; sectionID: string } | null>(null);
-  const sectionRenameToken = useRef(0);
-  const sectionDeleteRequestToken = useRef(0);
-  const [sectionDeleteTarget, setSectionDeleteTarget] = useState<{
-    section: RailPinSection;
-    memberCount: number;
-  } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<RailProject | null>(null);
   const [pending, setPending] = useState<readonly PendingOp[]>([]);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -1079,47 +515,6 @@ function NavigationRail({
     [base, pending],
   );
   const isExpanded = useMemo(() => overrideLookup(expandedOverrides), [expandedOverrides]);
-  const revealLookupInFlight = useRef<RevealRequestGuard | null>(null);
-  const revealResourceRequests = useRef(new Map<string, RevealRequestGuard>());
-  const revealCompletedTarget = useRef<string | null>(null);
-  const revealRequestTarget = useRef<string | null>(null);
-
-  useEffect(() => {
-    if (revealRequestTarget.current === revealTarget) return;
-    revealRequestTarget.current = revealTarget ?? null;
-    revealLookupInFlight.current = null;
-    revealResourceRequests.current.clear();
-    revealCompletedTarget.current = null;
-  }, [revealTarget]);
-
-  const requestRevealResource = useCallback(
-    (target: string, key: string, request: () => Promise<unknown> | undefined): void => {
-      if (revealRequestTarget.current !== target || revealResourceRequests.current.has(key)) return;
-      const guard: RevealRequestGuard = { target, token: Symbol(key) };
-      revealResourceRequests.current.set(key, guard);
-      let result: Promise<unknown> | undefined;
-      try {
-        result = request();
-      } catch (error) {
-        result = Promise.reject(error);
-      }
-      if (!result) {
-        if (revealResourceRequests.current.get(key) === guard) revealResourceRequests.current.delete(key);
-        return;
-      }
-      void result.catch(() => {
-        if (revealRequestTarget.current !== target || revealResourceRequests.current.get(key) !== guard) return;
-        revealResourceRequests.current.delete(key);
-      });
-    },
-    [],
-  );
-  const consumeReveal = useCallback(() => {
-    if (!revealTarget || revealCompletedTarget.current === revealTarget) return;
-    revealCompletedTarget.current = revealTarget;
-    onRevealConsumed?.();
-  }, [revealTarget, onRevealConsumed]);
-
   useEffect(() => {
     if (navigationMode !== "v3") return;
     if (!manifest)
@@ -1128,14 +523,6 @@ function NavigationRail({
         .loadManifest()
         .catch(() => undefined);
   }, [navigationMode, manifest]);
-  useEffect(
-    () => () => {
-      sectionRenameToken.current += 1;
-      sectionRenameSubmission.current = null;
-      sectionDeleteRequestToken.current += 1;
-    },
-    [],
-  );
 
   const setExpanded = useCallback(
     (id: string, value: boolean) => {
@@ -1146,88 +533,12 @@ function NavigationRail({
     },
     [expandedOverrides],
   );
-  // A reveal lands on a row that may be sitting inside a section fold the
-  // reader closed (or that starts closed, like Archived). Open it and report
-  // that the caller should re-run rather than scroll to a hidden row.
-  const openRevealSection = useCallback(
-    (key: string, defaultOpen: boolean) => {
-      if (isExpanded(key, defaultOpen)) return true;
-      setExpanded(key, true);
-      return false;
-    },
-    [isExpanded, setExpanded],
+  const { rootLoadsInFlight, loadProjectRoot, projectRetryCallback } = useProjectRootLoads(
+    resources,
+    navigationMode,
+    isExpanded,
+    groupingMode,
   );
-  // Where a revealed project's row lives: the fold it is rendered in, whether
-  // that fold starts open, and the catalog that carries it. Archived is the
-  // tier that folds under "Archived sessions" and starts closed; a test-run
-  // project folds - and is catalogued - under "Test runs".
-  const projectPlacement = useCallback(
-    (location: { project_key?: string; tier?: string }) => {
-      // A whole-archived project's sessions keep their own tier, so the
-      // catalog is the reliable membership test there and the tier is not.
-      const archived =
-        location.tier === "archived" ||
-        resources.archivedProjects.some((project) => project.key === location.project_key);
-      if (archived)
-        return { sectionKey: ARCHIVED_SECTION_KEY, defaultOpen: false, catalog: "archived_projects" as const };
-      if (resources.testRuns.some((project) => project.key === location.project_key))
-        return { sectionKey: TEST_RUNS_SECTION_KEY, defaultOpen: true, catalog: "test_runs" as const };
-      return { sectionKey: PROJECTS_SECTION_KEY, defaultOpen: true, catalog: "projects" as const };
-    },
-    [resources],
-  );
-  const rootLoadsInFlight = useRef(new Set<string>());
-  const rootGeneration = useRef("");
-  const loadProjectRoot = useCallback((key: string) => {
-    if (rootLoadsInFlight.current.has(key)) return;
-    rootLoadsInFlight.current.add(key);
-    void Promise.resolve(navigationStore.getState().loadProject(key))
-      .catch(() => undefined)
-      .finally(() => rootLoadsInFlight.current.delete(key));
-  }, []);
-  const currentLoadProjectRoot = useRef(loadProjectRoot);
-  const projectRetryCallbacks = useRef(new Map<string, () => void>());
-  const projectRetryCallback = useCallback((key: string): (() => void) => {
-    const cached = projectRetryCallbacks.current.get(key);
-    if (cached) return cached;
-    const retry = () => {
-      rootLoadsInFlight.current.delete(key);
-      currentLoadProjectRoot.current(key);
-    };
-    projectRetryCallbacks.current.set(key, retry);
-    return retry;
-  }, []);
-  useEffect(() => {
-    currentLoadProjectRoot.current = loadProjectRoot;
-    const ownedKeys = new Set(allRailProjects(resources).map((project) => project.key));
-    for (const key of projectRetryCallbacks.current.keys()) {
-      if (!ownedKeys.has(key)) projectRetryCallbacks.current.delete(key);
-    }
-  }, [loadProjectRoot, resources]);
-  useEffect(() => {
-    if (navigationMode !== "v3") return;
-    const generation = navigationStore.getState().clientGenerationID;
-    if (generation !== rootGeneration.current) {
-      rootLoadsInFlight.current.clear();
-      rootGeneration.current = generation;
-    }
-    for (const project of allRailProjects(resources)) {
-      const expanded = projectLoadExpansionKeys(project, groupingMode).some((id) =>
-        isExpanded(id, project.default_expanded ?? false),
-      );
-      if (
-        !expanded ||
-        project.loaded === true ||
-        project.resourceError !== undefined ||
-        (project.session_count ?? 0) === 0 ||
-        resourceState(navigationStore.getState(), { kind: "project", projectKey: project.key })?.normalized
-          ?.presence === "gone" ||
-        rootLoadsInFlight.current.has(project.key)
-      )
-        continue;
-      loadProjectRoot(project.key);
-    }
-  }, [navigationMode, resources, isExpanded, loadProjectRoot, groupingMode]);
   // A hydrated project with archived sessions loads its archived list. A
   // loaded list refetches when the navigation count moves to a total the list
   // does not hold: rows were archived or unarchived elsewhere (another client,
@@ -1253,181 +564,17 @@ function NavigationRail({
       }
     }
   }, [resources, archivedLists]);
-  useEffect(() => {
-    if (!revealTarget) return;
-    const row = Array.from(bodyRef.current?.querySelectorAll<HTMLElement>("[data-session-ref]") ?? []).find(
-      (element) => element.dataset.sessionRef === revealTarget,
-    );
-    if (row && revealCompletedTarget.current !== revealTarget) {
-      row.scrollIntoView({ block: "center", behavior: "smooth" });
-      consumeReveal();
-      return;
-    }
-    // The chain must name folds that actually render: only the Projects
-    // section honors the grouping, so grouped ids apply to it alone while
-    // the always-flat tiers keep flat ids whatever the mode. A test run's
-    // archived rows still route to the archived-group fold; a whole-archived
-    // project renders every row under its own node instead.
-    const chain = [
-      ...revealExpansionIds(resources.projects, resources.live, revealTarget, groupingMode),
-      ...revealExpansionIds(resources.testRuns, [], revealTarget, "flat"),
-      ...revealExpansionIds(resources.archivedProjects, [], revealTarget, "flat", { rowsUnderProjectNode: true }),
-    ];
-    const nextFold = chain.find((id) => expandedOverrides.get(id) !== true);
-    if (nextFold) {
-      setExpanded(nextFold, true);
-      return;
-    }
-    const currentState = navigationStore.getState();
-    const locationKey = { kind: "location", ref: revealTarget } as const;
-    // Only a settled tombstone consumes the reveal: a stale one retained
-    // across a generation reset may precede the fresh response showing the
-    // session present again, and consuming here is irreversible.
-    if (isSettledGone(resourceState(currentState, locationKey))) {
-      consumeReveal();
-      return;
-    }
-    const location = resourceData<{
-      project_key?: string;
-      tier?: string;
-      pin_section_id?: string;
-      session?: NavigationSessionSummary;
-      top_level?: boolean;
-      top_level_ref?: string;
-    }>(currentState, locationKey);
-    if (!location) {
-      if (revealLookupInFlight.current?.target !== revealTarget) {
-        const target = revealTarget;
-        const guard: RevealRequestGuard = { target, token: Symbol(`location:${target}`) };
-        revealLookupInFlight.current = guard;
-        let request: Promise<unknown>;
-        try {
-          request = Promise.resolve(navigationStore.getState().lookupLocation(target));
-        } catch (error) {
-          request = Promise.reject(error);
-        }
-        void request
-          .catch(() => undefined)
-          .finally(() => {
-            if (revealRequestTarget.current === target && revealLookupInFlight.current === guard)
-              revealLookupInFlight.current = null;
-          });
-      }
-      return;
-    }
-    if (!location.session) {
-      consumeReveal();
-      return;
-    }
-    // Delegate refs reveal their carrier in the flat navigation rail. An
-    // archived fork original has its own inline row; the loaded fold chain
-    // above reveals that row after its continuation arrives.
-    const carrierRef =
-      location.top_level === false && location.top_level_ref && location.top_level_ref !== revealTarget
-        ? location.top_level_ref
-        : null;
-    const archivedForkOriginal = location.tier === "archived" && location.session.kind === "fork";
-    if (carrierRef !== null && !archivedForkOriginal) {
-      const carrierRow = Array.from(bodyRef.current?.querySelectorAll<HTMLElement>("[data-session-ref]") ?? []).find(
-        (element) => element.dataset.sessionRef === carrierRef,
-      );
-      if (carrierRow && revealCompletedTarget.current !== revealTarget) {
-        carrierRow.scrollIntoView({ block: "center", behavior: "smooth" });
-        consumeReveal();
-        return;
-      }
-      const carrierChain = [
-        ...revealExpansionIds(resources.projects, resources.live, carrierRef, groupingMode),
-        ...revealExpansionIds(resources.testRuns, [], carrierRef, "flat"),
-        ...revealExpansionIds(resources.archivedProjects, [], carrierRef, "flat", { rowsUnderProjectNode: true }),
-      ];
-      const nextCarrierFold = carrierChain.find((id) => expandedOverrides.get(id) !== true);
-      if (nextCarrierFold) {
-        setExpanded(nextCarrierFold, true);
-        return;
-      }
-    }
-    if (location.project_key) {
-      const projectState = resourceState(currentState, { kind: "project", projectKey: location.project_key });
-      if (isSettledGone(projectState)) {
-        consumeReveal();
-        return;
-      }
-      const projectID = projectNodeExpansionKey(location.project_key);
-      if (expandedOverrides.get(projectID) !== true) {
-        setExpanded(projectID, true);
-        return;
-      }
-      // One decision covers both which fold must open and which catalog holds
-      // the row; deriving them separately is how a test run ends up opening
-      // one fold while loading another catalog's rows.
-      const placement = projectPlacement(location);
-      if (!openRevealSection(placement.sectionKey, placement.defaultOpen)) return;
-      requestRevealResource(revealTarget, `catalog:${placement.catalog}`, () =>
-        navigationStore.getState().loadCatalog(placement.catalog),
-      );
-      requestRevealResource(revealTarget, `project:${location.project_key}`, () =>
-        navigationStore.getState().loadProject(location.project_key as string),
-      );
-      // An archived row lives in its project's archived list, not in a
-      // navigation resource: page the list until the row loads, then the fold
-      // chain above opens it. A list that ends without the row cannot reveal it.
-      if (location.tier === "archived") {
-        const project = allRailProjects(resources).find((candidate) => candidate.key === location.project_key);
-        const catalog = project?.catalog;
-        const list = catalog ? archivedLists[archivedListKey(catalog, location.project_key)] : undefined;
-        // A nested row (a fork original) is found through the row that carries
-        // it, the location's top_level_ref.
-        const rowRef = location.top_level === false ? location.top_level_ref : revealTarget;
-        // The count effect creates the list when navigation counts archived
-        // rows. A location can resolve to one while the count is still 0 (a
-        // lagging revision, a deep link ahead of the count), so fetch it here.
-        if (catalog && !list && (project?.archived_total ?? 0) === 0)
-          requestRevealResource(revealTarget, `archived:${catalog}:${location.project_key}:first`, () =>
-            refreshArchivedList(catalog, location.project_key as string),
-          );
-        if (catalog && list && !list.loading && !list.rows.some((row) => row.ref === rowRef)) {
-          const cursor = list.nextCursor;
-          if (cursor)
-            requestRevealResource(revealTarget, `archived:${catalog}:${cursor}`, () =>
-              loadMoreArchivedList(catalog, location.project_key as string),
-            );
-          else if (list.error === null) consumeReveal();
-          // A failed first page has no cursor to page from, and the count
-          // effect skips it (the count has not moved). Ask once per reveal.
-          else
-            requestRevealResource(revealTarget, `archived:${catalog}:${location.project_key}:retry`, () =>
-              refreshArchivedList(catalog, location.project_key as string),
-            );
-        }
-      }
-      return;
-    }
-    if (location.pin_section_id) {
-      if (!openRevealSection(pinSectionDisclosureID(location.pin_section_id), true)) return;
-      requestRevealResource(revealTarget, "pin_catalog", () => navigationStore.getState().loadPinCatalog());
-      requestRevealResource(revealTarget, `pin:${location.pin_section_id}`, () =>
-        navigationStore.getState().loadPinSection(location.pin_section_id as string),
-      );
-      return;
-    }
-    const section = location.tier === "needs_you" ? "needs_you" : "live";
-    // needs_you has no fold of its own, and the rail renders none of its rows
-    // today, so Live is the only section that can hide this one.
-    if (section === "live" && !openRevealSection(LIVE_SECTION_KEY, true)) return;
-    requestRevealResource(revealTarget, `section:${section}`, () => navigationStore.getState().loadSection(section));
-  }, [
+  useRailReveal({
     revealTarget,
+    onRevealConsumed,
     resources,
-    expandedOverrides,
-    groupingMode,
-    consumeReveal,
-    setExpanded,
-    requestRevealResource,
-    openRevealSection,
-    projectPlacement,
     archivedLists,
-  ]);
+    expandedOverrides,
+    isExpanded,
+    setExpanded,
+    groupingMode,
+    bodyRef,
+  });
 
   function handleToggle(node: RailNode) {
     if (isPassiveRailNode(node)) return;
@@ -1702,6 +849,7 @@ function NavigationRail({
     }),
     [client, runAction, toasts.push],
   );
+  const pinSectionDialogs = usePinSectionDialogs(runAction);
   function closeDeleteDialog() {
     setDeleteTarget(null);
   }
@@ -1729,81 +877,6 @@ function NavigationRail({
     } finally {
       if (!mutationCompleted || converged) setPending((ops) => ops.filter((op) => op !== optimistic));
     }
-  }
-  function openSectionRename(section: RailPinSection) {
-    sectionRenameToken.current += 1;
-    sectionRenameSubmission.current = null;
-    setSectionRenameTarget(section);
-    setSectionRenameValue(section.name);
-    setSectionRenameError("");
-    setSectionRenameSubmitting(false);
-  }
-  function closeSectionRename() {
-    if (sectionRenameSubmission.current) return;
-    sectionRenameToken.current += 1;
-    setSectionRenameTarget(null);
-    setSectionRenameValue("");
-    setSectionRenameError("");
-    setSectionRenameSubmitting(false);
-  }
-  async function confirmSectionRename() {
-    if (sectionRenameSubmission.current) return;
-    const target = sectionRenameTarget;
-    const name = sectionRenameValue.trim();
-    if (!target) return;
-    if (!name) {
-      setSectionRenameError("Section name is required");
-      return;
-    }
-    if ([...name].length > 80) {
-      setSectionRenameError("Section names must be 80 characters or fewer");
-      return;
-    }
-    const submission = { token: sectionRenameToken.current + 1, sectionID: target.id };
-    sectionRenameToken.current = submission.token;
-    sectionRenameSubmission.current = submission;
-    setSectionRenameSubmitting(true);
-    try {
-      await runAction(
-        () => renamePinSection(client, target.id, name),
-        "Couldn't rename pin section",
-        (section) => ({ kind: "pinSectionRename", id: target.id, name: section.section.name }),
-        true,
-      );
-      if (sectionRenameSubmission.current !== submission) return;
-      sectionRenameSubmission.current = null;
-      setSectionRenameTarget(null);
-      setSectionRenameValue("");
-      setSectionRenameSubmitting(false);
-    } catch (error) {
-      if (sectionRenameSubmission.current !== submission) return;
-      sectionRenameSubmission.current = null;
-      setSectionRenameError(errorText(error));
-      setSectionRenameSubmitting(false);
-    }
-  }
-  async function requestSectionDelete(section: RailPinSection) {
-    const token = ++sectionDeleteRequestToken.current;
-    try {
-      await navigationStore.getState().loadPinCatalogPages(true);
-      if (token !== sectionDeleteRequestToken.current) return;
-      const summaries = selectPinSectionSummaries(navigationStore.getState());
-      const durable = summaries.find((candidate) => candidate.id === section.id);
-      if (!durable) throw new Error("pin section not found");
-      setSectionDeleteTarget({ section, memberCount: durable.member_count });
-    } catch (error) {
-      if (token === sectionDeleteRequestToken.current)
-        toasts.push("error", `Couldn't load pin section details: ${errorText(error)}`);
-    }
-  }
-  async function confirmSectionDelete() {
-    const target = sectionDeleteTarget;
-    if (!target) return;
-    setSectionDeleteTarget(null);
-    await runAction(() => deletePinSection(client, target.section.id), "Couldn't delete pin section", {
-      kind: "pinSectionDelete",
-      id: target.section.id,
-    });
   }
 
   const archivedOpen = isExpanded(ARCHIVED_SECTION_KEY, false);
@@ -2016,8 +1089,8 @@ function NavigationRail({
                   section={section}
                   open={isExpanded(pinSectionDisclosureID(section.id), true)}
                   onToggleOpen={() => toggleSection(pinSectionDisclosureID(section.id), true)}
-                  onRename={() => openSectionRename(section)}
-                  onDelete={() => void requestSectionDelete(section)}
+                  onRename={() => pinSectionDialogs.openRename(section)}
+                  onDelete={() => void pinSectionDialogs.requestDelete(section)}
                   onToggle={handleToggle}
                   onActivate={handleActivate}
                   actions={rowActions}
@@ -2074,46 +1147,7 @@ function NavigationRail({
           )}
         </div>
       </RailTickProvider>
-      {sectionRenameTarget && (
-        <Dialog
-          open
-          onClose={closeSectionRename}
-          title="Rename pin section"
-          footer={
-            <>
-              <Button variant="quiet" onClick={closeSectionRename} disabled={sectionRenameSubmitting}>
-                Cancel
-              </Button>
-              <Button onClick={() => void confirmSectionRename()} disabled={sectionRenameSubmitting}>
-                Rename section
-              </Button>
-            </>
-          }
-        >
-          <FormRow label="Section name" htmlFor={sectionRenameInputID} error={sectionRenameError || undefined}>
-            <Input
-              id={sectionRenameInputID}
-              value={sectionRenameValue}
-              onChange={(event: ChangeEvent<HTMLInputElement>) => {
-                setSectionRenameValue(event.target.value);
-                setSectionRenameError("");
-              }}
-              disabled={sectionRenameSubmitting}
-              aria-describedby={sectionRenameError ? `${sectionRenameInputID}-error` : undefined}
-            />
-          </FormRow>
-        </Dialog>
-      )}
-      <ConfirmDialog
-        open={sectionDeleteTarget !== null}
-        title="Delete pin section?"
-        confirmLabel="Delete section"
-        onConfirm={() => void confirmSectionDelete()}
-        onCancel={() => setSectionDeleteTarget(null)}
-      >
-        {sectionDeleteTarget &&
-          `Delete “${sectionDeleteTarget.section.name}”? This will unpin ${sectionDeleteTarget.memberCount} session${sectionDeleteTarget.memberCount === 1 ? "" : "s"}.`}
-      </ConfirmDialog>
+      {pinSectionDialogs.dialogs}
       <ConfirmDialog
         open={deleteTarget !== null}
         title="Delete project?"

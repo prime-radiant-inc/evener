@@ -1,9 +1,9 @@
 // HeldSteerStack: every held steering message rendered as the provisional
 // user message it will become (steering-ghost spec §2). Reads the shared
 // pendingTurnsStore (usePendingTurnEntries) and keeps ONLY the steer
-// family - steer/drain/promote - except the terminal states QueueStrip
-// owns rows for (blockedUnknown, canceled - the same filter the chips used
-// to apply). Scope: every client's held steering renders, not only this
+// family - steer/drain/promote - except the durable local rows QueueStrip
+// owns (unattempted, blockedUnknown and canceled). Scope: every client's
+// in-flight held steering renders, not only this
 // client's own. Order arrives from reconcilePendingEntries' shared sort
 // (§4) - this component never re-sorts.
 
@@ -12,7 +12,7 @@ import type { JSX } from "react";
 import { useContext, useEffect, useRef, useState } from "react";
 import { useThreadsStore } from "../../../../stores/threads";
 import type { PendingTurnEntry } from "../../composer/queue/pendingReconcile";
-import { usePendingTurnEntries } from "../../composer/queue/pendingTurnsStore";
+import { usePendingTurnEntries, useQueueStripMutationIds } from "../../composer/queue/pendingTurnsStore";
 import { pendingEntryPreview } from "../../composer/queue/queueDisplay";
 import { SessionNowContext } from "../../liveness";
 import styles from "./heldsteerstack.module.css";
@@ -20,10 +20,14 @@ import { UserMessageView } from "./UserMessageItem";
 
 // The one steer-family filter every consumer shares (Session's trailing-row
 // predicate, the ghost stack, the announcements region).
-export function heldSteerEntries(entries: readonly PendingTurnEntry[]): PendingTurnEntry[] {
+export function heldSteerEntries(
+  entries: readonly PendingTurnEntry[],
+  queueStripIds?: ReadonlySet<string>,
+): PendingTurnEntry[] {
   return entries.filter(
     (entry) =>
       (entry.method === "steer" || entry.method === "drain" || entry.method === "promote") &&
+      !queueStripIds?.has(entry.id) &&
       entry.state !== "blockedUnknown" &&
       entry.state !== "canceled",
   );
@@ -115,7 +119,8 @@ export function useHeldSteerEpoch(ref: string, entries: readonly PendingTurnEntr
 
 export function HeldSteerStack({ ref: sessionRef }: { ref: string }): JSX.Element | null {
   const allEntries = usePendingTurnEntries(sessionRef);
-  const entries = heldSteerEntries(allEntries);
+  const queueStripIds = useQueueStripMutationIds(sessionRef);
+  const entries = heldSteerEntries(allEntries, queueStripIds);
   const statusType = useThreadsStore((s) => s.threads.get(sessionRef)?.status.type);
   const refusedId = useThreadsStore((s) => s.transientRefusalPaces.get(sessionRef)?.clientMutationId);
   // The caption reads the same clock the liveness line does: Session's

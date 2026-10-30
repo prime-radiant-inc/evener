@@ -44,6 +44,31 @@ function openSessions(...refs: string[]): string[] {
   return refs.map((ref) => workspaceStore.getState().openPane("session", { ref }));
 }
 
+test("ordinary session cycling skips parked neighbors", () => {
+  const [a, hidden, b] = openSessions("local:a", "local:hidden", "local:b") as [string, string, string];
+  const parked = workspaceStore.getState().panes.find((pane) => pane.id === hidden);
+  if (!parked) throw new Error("missing parked fixture");
+  parked.slot = "parked";
+  workspaceStore.getState().focusPane(a);
+  cycleSessionPane("next");
+  expect(workspaceStore.getState().focusedPaneId).toBe(b);
+  cycleSessionPane("previous");
+  expect(workspaceStore.getState().focusedPaneId).toBe(a);
+  // Hidden records at both ends must not intercept a non-session origin.
+  workspaceStore.setState({ panes: [parked, ...workspaceStore.getState().panes.filter((pane) => pane !== parked)] });
+  const settings = workspaceStore.getState().openPane("settings");
+  cycleSessionPane("next");
+  expect(workspaceStore.getState().focusedPaneId).toBe(a);
+  workspaceStore.getState().focusPane(settings);
+  cycleSessionPane("previous");
+  expect(workspaceStore.getState().focusedPaneId).toBe(b);
+  workspaceStore.getState().closePane(b);
+  workspaceStore.getState().focusPane(settings);
+  cycleSessionPane("next");
+  cycleSessionPane("previous");
+  expect(workspaceStore.getState().focusedPaneId).toBe(settings);
+});
+
 test("next cycles through the session panes in workspace order", () => {
   // The tuple casts: noUncheckedIndexedAccess types destructured elements string|undefined.
   const [a, b, c] = openSessions("local:a", "local:b", "local:c") as [string, string, string];

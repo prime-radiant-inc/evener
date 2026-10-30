@@ -16,16 +16,14 @@ import (
 // unrepresentableContentKinds is the spec's per-protocol policy table
 // (docs/superpowers/specs/2026-07-12-model-switching-design.md, "Unrepresentable
 // history") for content kinds a target's request builder cannot faithfully
-// carry. It keys on the wire protocol because the restriction belongs to the
-// request builder: a protocol misfiled here whose builder hard-errors on the
-// kind would brick every subsequent turn.
+// carry in at least one role. It keys on the wire protocol because the
+// restriction belongs to the request builder: a protocol misfiled here whose
+// builder hard-errors on the kind would brick every subsequent turn.
 //
-// Per protocol: hard errors for google (its request builder rejects the kind
-// outright); silent drops for openai-chat (llm/providers/chatcompletions has
-// no document/audio case — silently dropping user content counts as
-// unrepresentable by policy); audio only for anthropic (its builder writes a
-// document content block, #4209) and openai-responses (llm/providers/responses
-// carries documents).
+// Google rejects audio and non-user documents. OpenAI Chat silently drops
+// documents/audio, which counts as unrepresentable by policy. Anthropic and
+// OpenAI Responses carry documents but reject audio. User-document delivery
+// is checked separately below.
 func unrepresentableContentKinds(protocol string) map[llm.ContentKind]bool {
 	switch protocol {
 	case registry.ProtocolGoogle, registry.ProtocolOpenAIChat:
@@ -47,10 +45,14 @@ func unrepresentableHistoryKinds(history []schema.Turn, protocol string) []llm.C
 	if len(restricted) == 0 {
 		return nil
 	}
+	deliversUserDocuments := llm.DeliversUserMessageDocuments(registry.Resolved{Protocol: protocol})
 	seen := make(map[llm.ContentKind]bool, len(restricted))
 	var out []llm.ContentKind
 	for _, t := range history {
 		for _, p := range t.Message.Content {
+			if p.Kind == llm.ContentDocument && t.Message.Role == llm.RoleUser && deliversUserDocuments {
+				continue
+			}
 			if restricted[p.Kind] && !seen[p.Kind] {
 				seen[p.Kind] = true
 				out = append(out, p.Kind)

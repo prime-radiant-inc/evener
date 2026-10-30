@@ -76,7 +76,7 @@ func decodeLifecycleArtifact(data []byte) lifecycleArtifact {
 			if code == opProcessInterrupted {
 				rec.IntAt = r.intn(scriptLen + 1)
 			}
-		case opSteer, opEnqueue, opFollowUp, opSetGoal:
+		case opSteer, opEnqueue, opSetGoal:
 			rec.Text = inputTexts[r.intn(len(inputTexts))]
 		case opAdvanceClock:
 			rec.Dur = int64(r.next()) * int64(time.Second) // 0..255s, within the rapid range

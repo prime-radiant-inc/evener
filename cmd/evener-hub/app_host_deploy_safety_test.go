@@ -13,8 +13,8 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtestenv"
-	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
 	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/execsupport/shellquote"
 )
 
@@ -29,9 +29,13 @@ func runHostDeployEnvironmentProbe() error {
 		return err
 	}
 	providers, _ := cmdutil.ProvidersConfigPath()
+	state, err := userdirs.DefaultStateRoot()
+	if err != nil {
+		return err
+	}
 	paths := map[string]string{
 		"home": os.Getenv("HOME"), "config": cmdutil.DefaultConfigRoot(),
-		"state": cmdutil.DefaultStateRoot(), "cache": cache,
+		"state": state, "cache": cache,
 		"providers": providers, "credentials": cmdutil.CredentialsPath(),
 		"state_override": os.Getenv("EVENER_STATE_DIR"),
 	}
@@ -314,21 +318,21 @@ func runHostSafetyChild(t *testing.T, name, root string) {
 		if name == "cleanup-stop-error" {
 			if commands == 1 {
 				script = "exit 1"
-			} else if script == sshconn.ListenerProbeRemote("19180") {
-				script = "printf '%s\\n' " + shellquote.RemoteWord(sshconn.NoListenerMarker)
+			} else if script == hostListenerProbeScript("19180") {
+				script = "printf '%s\\n' " + shellquote.RemoteWord(hostNoListenerMarker)
 			}
 		}
 		if name == "cleanup-probe-error" || name == "cleanup-probe-unrecognized" || name == "cleanup-cleared" {
 			if commands == 1 {
 				script = "exit 0"
-			} else if script == sshconn.ListenerProbeRemote("19180") {
+			} else if script == hostListenerProbeScript("19180") {
 				switch name {
 				case "cleanup-probe-error":
-					script = "printf '%s\\n' " + shellquote.RemoteWord(sshconn.NoListenerMarker) + "; exit 1"
+					script = "printf '%s\\n' " + shellquote.RemoteWord(hostNoListenerMarker) + "; exit 1"
 				case "cleanup-probe-unrecognized":
 					script = "printf 'unrecognized\\n'"
 				case "cleanup-cleared":
-					script = "printf '%s\\n' " + shellquote.RemoteWord(sshconn.NoListenerMarker)
+					script = "printf '%s\\n' " + shellquote.RemoteWord(hostNoListenerMarker)
 				}
 			}
 		}

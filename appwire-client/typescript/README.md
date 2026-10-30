@@ -17,7 +17,7 @@ it again, the translation that turns those markers into prose at send and
 the composer input assembly that applies that translation and stages the
 attached images beside the text, the thread view model and
 its notification reducer, the activity tree parser, merge and disclosure
-rules, the lossless job-output page codec, the send/queue availability table, the
+rules, the lossless job-output page codec, the ANSI escape parser both apps colour shell and job output with (`parseAnsiLines`, the byte-row parser and `AnsiTailBuffer`) the mermaid sanitize config both sanitizers apply and the mermaid fence rules both markdown renderers split on (`MERMAID_SANITIZE_CONFIG`, `fenceTokenTerminated`), the shared-notes gates (`canReadSharedNotes`, `canWriteSharedNotes`), the send/queue availability table, the
 send/steer/queue/drain routing decisions a composer makes off it, the stable
 delegate status rule, the delegate timing and model derivations both apps'
 delegate details render from, and the continuation message a failed turn's
@@ -35,7 +35,11 @@ both render out of (`createTasksPanelStore(listTasks)`: the triple plus a
 coalescing `refresh` and a notification-following `watch`, over a
 `TasksListRead` port so the web's reconnect-waiting read and native's direct
 one both fit), the display formatters
-both apps render counts, durations and clock times with, the text and
+both apps render counts, durations and clock times with (every duration and
+age builds on `durationParts`, which floors to the largest whole unit:
+`compactDuration`, `spokenDuration`, the rail's `relativeAge` and the task
+list's `relativeTime` all agree that 90 minutes is 1h; `formatSpan` words a
+caller-supplied span of seconds), the text and
 argument helpers a tool call's rendering is built from, the marketplace
 source label both apps show beside a registered marketplace,
 the short lowercase session-state gloss a session row's second line leads
@@ -113,10 +117,25 @@ actions (`refresh`, `loadMore`, `refreshLoaded`, `reset`) over a
 `request`-only port: each opened project's archived sessions from
 `evener/archived/list`, paged by cursor and refreshed in place (a refresh
 sends the list's revision and keeps its rows when the hub answers
-unchanged); the host resets it when its connection is replaced or recovers. The hub's own update
-check and apply,
+unchanged); the host resets it when its connection is replaced or recovers.
+The scoped host read store, `createScopedHostReadStore()`, is the debounced
+read about one host and project behind the New session plugin preview and the
+web slash catalog: `start(inputs)` begins a read and returns its cancel,
+`view(inputs)` reports the state for the inputs now (keeping the last response
+for the same client, host and project, never another request's), and `retry()`
+asks again. `pluginPreviewReadInputs` builds the plugin preview's inputs; each
+app binds the store with a thin React hook.
+The hub's own update check, install, and restart,
 `createHubUpdateController({ client, awaitRestart })`, is the same triple
 with the restart wait as a port: each app says how it notices the new hub.
+`install()` writes the channel's verified artifact and re-checks;
+`restart()` execs the binary already on disk. `awaitRestart` receives
+`{ version, incarnation }` and resolves true when a different process answers,
+which is what makes a same-version rebuild visible. `currentIncarnation()`
+captures the process immediately before the restart so a lost response still
+has a fresh baseline; a host without a health read may return null and fall
+back to the check. The deprecated `apply()` still calls the combined
+`evener/update/apply` RPC for older hubs.
 
 The slash-completion module is ported from Beautiful UI's prompt-bar
 completion affordance and ships its MIT attribution at
@@ -178,6 +197,24 @@ turn scalars while retaining the already-owned item array. These helpers do not
 establish range coverage or own persisted turn metadata.
 
 ## Transcript reader reducer helpers
+
+The transcript reducer is split by responsibility. The warning fold (`foldWarningParams`,
+`joinWarningParts`, the bounded raw-frame fallback) lives in `warningFold.ts`, a
+leaf module the reducer imports and that imports nothing from it. The cache
+and checkpoint shape validators (`valid*`, the persisted-record types they
+check) live in `transcriptValidators.ts`, and wire-item hydration (image mapping,
+the omitted-text and identity-only marks, `wireItemToModel`, the tool-id
+predicates) in `transcriptItems.ts`; both are leaves over `model` and
+`types.gen`. The tool-call fold and turn/page history merge
+(`mergeTurnHistory*`, `mergeOlderItemPageWithFolds`, `itemIdentityMatches`) live in
+`turnHistoryMerge.ts`, which imports `transcriptItems` only. Versioned history and
+the live overlay (history state, versioned merges, overlay display, read dispositions,
+`applyReadResponse`/`applyReadModel`, `hydrateThread`) live in `transcriptHistory.ts`,
+which imports `turnHistoryMerge` and `transcriptItems`. The persisted session record
+codec (`cachedSessionRecord`, `threadModelFromCache`, the current-transcript
+checkpoint) lives in `transcriptCache.ts`, which imports the validators and
+`transcriptHistory`. `reducer.ts` is the notification fold and imports all of
+them; no split-out module imports `reducer.ts`.
 
 `mergeTranscriptReaderWindow(model, turns)` folds actual bounded local reader
 rows into `model.history` with the reducer's ordinary versioned merge rules.
@@ -255,6 +292,18 @@ Fixtures use the same six-field contract. The codec owns validation and
 decoding; each application owns its read cadence, retained windows and recovery.
 The [output guide](../../docs/product/session-activity.md#job-output-pages)
 defines snapshot selection, floor/EOF semantics and the current protocol.
+
+## Session attention
+
+`attentionState(wireState, facts)` is the one precedence order that turns a
+session's wire state and its facts (a pending question or approval, running
+children, an unreachable source) into an `AttentionClass`. It accepts the raw
+`ThreadStatus.type` vocabulary and the navigation summary's, through
+`normalizeWireState`. `attentionNeedsYou` names the needs-you family and
+`approvalWaiting` states the approval half of the rule the hub's
+`hubapi.AttentionState` shares; the cases both run live in
+`testdata/attention`. Clients map the class onto their own presentation and keep
+no precedence table of their own.
 
 ## Search grouping
 
@@ -497,7 +546,8 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   (`readExpansion`/`writeExpansion`) for expansion, with `projectNodeExpansionKey`
   naming a project's row, and the selectors the web app reads that state
   through (`selectors`): launch sources, section rows with their remaining
-  count and next offset, pin-section summaries, the project catalog and a
+  count and next offset, whether a section may ask for another page,
+  pin-section summaries, the project catalog and a
   session summary found by ref, each pure over `NavigationStoreState` and
   adoptable by native if it ever gains a store, and host grouping
   (`hostGrouping`): where a row, and a project whose rows live on several
@@ -518,16 +568,17 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   `HubWriteBusyError`. The global launch-layer store
   (`createLaunchLayerStore(client)`, the one `LaunchConfigLayer` the plugin and
   skill directory lists and the MCP server list are four fields of, read and
-  written at cwd `/` and layer `global`), and the pieces they are built over:
-  `createListRevision`, the fence on a list every response replaces whole, and
-  `createStoreLifecycle`, the notification subscription, debounced refetch,
+  written at cwd `/` and layer `global`), and `createHubWriteGate`, the one
+  write gate the marketplaces and plugins stores share. Every store follows
+  the same lifecycle: a notification subscription, debounced refetch,
   `connectionChanged` recovery (a list a host has read is read again when the
   connection is ready again, because the hub's broadcast only reaches clients
   that were connected) and the `start`/`reset`/`dispose` trio a host drives
-  from its screen, and `createHubWriteGate`, the one write gate the marketplaces
-  and plugins stores share. In every store fetches record their failure in state and
-  mutations reject. The subpath resolves to `state/extensions/index.ts`, a
-  barrel over the layer's modules.
+  from its screen. The revision fence and lifecycle helpers the stores are
+  built over are internal to the package. In every store fetches record their failure in state and
+  mutations reject. `REFETCH_DEBOUNCE_MS` is the one debounce every store uses,
+  exported from this subpath and from `state/credentials`. The subpath resolves
+  to `state/extensions/index.ts`, a barrel that names its exports.
 - `@evener/appwire-client/state/credentials` - the credentials state layer:
   `createCredentialInstancesStore({ ownClientId })` is the framework-free
   store core (`instances`) each app's Providers & credentials store adapts:
@@ -540,7 +591,7 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   hub's credential statuses (`evener/auth/list`) by provider, each with the
   error the hub found with its credential, over the extensions stores'
   lifecycle (it follows `evener/auth/updated` and re-reads on reconnect).
-  Resolves to `state/credentials/index.ts`, a barrel.
+  Resolves to `state/credentials/index.ts`, a barrel that names its exports.
 - `@evener/appwire-client/state/mutation` - the mutation state layer: the
   durable record shapes both apps' outboxes store (`MutationIntent`,
   `MutationRecord`, `MutationOutboxRecord`, `MutationOptimisticRecord`,
@@ -576,7 +627,9 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   nobody can vouch for left `blockedUnknown` rather than replayed - the rule a
   client must not break after a lost connection. Every reaction to an outcome (a
   blocked mutation, a clear's response, a shared note's authority) is a callback
-  the app supplies. Its pure reconciliation (`reconcilePendingEntries`) turns
+  the app supplies. `COMPOSER_METHODS` states the composer verbs and their wire
+  methods once (with `PENDING_TURN_METHODS`, `DIRECT_FALLBACK_METHODS` and
+  `composerVerb` derived from it). Its pure reconciliation (`reconcilePendingEntries`) turns
   those durable records plus a live `ThreadModel` into the `PendingTurnEntry`
   rows a composer's queue renders - identity-based, so an authoritative
   projection replaces the same outbox entry rather than duplicating it - and
@@ -686,3 +739,11 @@ an Authorization header, adapt `clientFromEnvironment` to the authenticated
 comparison fingerprints, claim requests and encrypted credential decoding.
 It is a separate subpath so ordinary AppWire consumers do not load NaCl. See
 [the device pairing protocol](../../docs/device-pairing.md) for the wire contract.
+
+`@evener/appwire-client/hubOrigin` exports `parseHubOrigin(raw)` and
+`hubRPCURL(origin)` for HTTP(S) hub origins and their root `/rpc` WebSocket
+endpoint. It rejects credentials, wildcard hosts, ambiguous numeric addresses,
+query, fragment and non-root paths before URL normalization. Validation errors
+are `HubOriginError` with `code` and `field`, never the supplied URL. Callers
+retain their own reachability and credential policies; this module does not
+change the low-level WebSocket transport URL API.

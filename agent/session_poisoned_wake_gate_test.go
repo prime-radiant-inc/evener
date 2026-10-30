@@ -4,6 +4,7 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -913,5 +914,216 @@ func TestStartClaimDoesNotRefusePoisonWithNothingClaimable(t *testing.T) {
 	}
 	if ok || claimed.ClientMutationID != "" {
 		t.Fatalf("start claim = (%#v, ok=%v), want no claim", claimed, ok)
+	}
+}
+
+// TestTurnGateAcceptsAReplacementAfterAttentionReopenClosesTheSampledWriter:
+// an attention reopen publishes its replacement under s.mu and closes the
+// writer it replaced only after releasing s.mu. A turn gate that sampled the
+// old writer before that swap must not refuse the healthy session because the
+// old handle is now closed (issue #4367).
+func TestTurnGateAcceptsAReplacementAfterAttentionReopenClosesTheSampledWriter(t *testing.T) {
+	t.Parallel()
+	sess := newQueuePersistTestSession(t, t.TempDir())
+	defer sess.Close()
+	sample, wait := startSampledTurnGate(t, sess)
+	old := sample()
+	sess.attentionMu.Lock()
+	replacement, _, err := sess.reopenAttentionTranscriptDurably(old, sess.TranscriptPath(), sess.ID())
+	sess.attentionMu.Unlock()
+	if err != nil {
+		t.Fatalf("reopen attention transcript: %v", err)
+	}
+	if replacement == old {
+		t.Fatal("the reopen did not replace the sampled writer")
+	}
+	if got := sess.attachedTranscript(); got != replacement {
+		t.Fatal("the reopen did not publish its replacement")
+	}
+	if !old.Closed() {
+		t.Fatal("the reopen did not close the sampled writer")
+	}
+	if err := wait(); err != nil {
+		t.Fatalf("the turn gate refused a healthy session after an attention reopen replaced and closed the writer it sampled: %v", err)
+	}
+}
+
+// TestTurnGateRefusesAClosedCurrentWriterAfterAttentionReopen is the control:
+// a reopen publishes and closes the old writer, but if the current replacement
+// is itself closed in place, the gate must still refuse (issue #4367).
+func TestTurnGateRefusesAClosedCurrentWriterAfterAttentionReopen(t *testing.T) {
+	t.Parallel()
+	sess := newQueuePersistTestSession(t, t.TempDir())
+	defer sess.Close()
+	old := sess.attachedTranscript()
+	if old == nil {
+		t.Fatal("session has no transcript writer")
+	}
+	sess.attentionMu.Lock()
+	replacement, _, err := sess.reopenAttentionTranscriptDurably(old, sess.TranscriptPath(), sess.ID())
+	sess.attentionMu.Unlock()
+	if err != nil {
+		t.Fatalf("reopen attention transcript: %v", err)
+	}
+	if err := sess.closeAttachedTranscript(); err != nil {
+		t.Fatalf("close the current replacement: %v", err)
+	}
+	if got := sess.attachedTranscript(); got != replacement {
+		t.Fatal("setup: the closed replacement is not the attached writer")
+	}
+	if err := sess.refuseTurnOnUnhealthyTranscript(t.Context()); !errors.Is(err, transcript.ErrWriterClosed) {
+		t.Fatalf("turn gate over a genuinely closed current writer = %v, want transcript.ErrWriterClosed", err)
+	}
+}
+
+// startSampledTurnGate starts the turn gate with a one-shot seam that hands the
+// caller the writer it sampled and blocks until the caller releases it. sample
+// waits for that hand-off; wait releases the gate and returns its result. The
+// cleanup releases and joins the gate when a test returns before wait.
+func startSampledTurnGate(t *testing.T, sess *Session) (sample func() *transcript.Writer, wait func() error) {
+	t.Helper()
+	sampled := make(chan *transcript.Writer, 1)
+	release := make(chan struct{})
+	releaseOnce := sync.OnceFunc(func() { close(release) })
+	sess.cfg.testOnly.turnGateSampledTranscript = func(writer *transcript.Writer) {
+		sess.cfg.testOnly.turnGateSampledTranscript = nil
+		sampled <- writer
+		<-release
+	}
+	gateDone := make(chan struct{})
+	var gateErr error
+	go func() {
+		defer close(gateDone)
+		gateErr = sess.refuseTurnOnUnhealthyTranscript(t.Context())
+	}()
+	var waitOnce sync.Once
+	wait = func() error {
+		waitOnce.Do(func() {
+			releaseOnce()
+			waitForTestSignal(t, gateDone, "the turn gate to return")
+		})
+		return gateErr
+	}
+	t.Cleanup(func() {
+		releaseOnce()
+		waitForTestSignal(t, gateDone, "the turn gate to return")
+	})
+	sample = func() *transcript.Writer {
+		select {
+		case writer := <-sampled:
+			return writer
+		// TRIPWIRE: the gate goroutine is in process; only a hang reaches it.
+		case <-time.After(30 * time.Second):
+			t.Fatal("the turn gate never sampled the transcript writer")
+			return nil
+		}
+	}
+	return sample, wait
+}
+
+// markServed makes sess a daemon-served session: the state failClosed records.
+func markServed(t *testing.T, sess *Session) {
+	t.Helper()
+	sess.eventsMu.Lock()
+	sess.authoritativeConsumer = true
+	sess.eventsMu.Unlock()
+}
+
+// poisonAttachedWriterWithoutFailingClosed poisons the session's attached
+// writer through the buffered door directly, bypassing recordTranscriptLocked,
+// which would fail the session closed on its own. That leaves the gate's
+// finality latch as the only thing that can fail the session closed.
+func poisonAttachedWriterWithoutFailingClosed(t *testing.T, sess *Session) {
+	t.Helper()
+	fs := attachEnvironmentFailureFS(t, sess)
+	armEnvironmentPartialWrite(fs)
+	turn := schema.NewTurn(schema.TurnAssistant, llm.Assistant("stops partway"))
+	if _, err := sess.attachedTranscript().Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: transcript.PlaceSession}); err == nil {
+		t.Fatal("partial transcript write reported success")
+	}
+	if !sess.attachedTranscript().Poisoned() {
+		t.Fatal("the partial write did not poison the attached writer")
+	}
+	if refusal := sess.failedClosedRefusal(); refusal != nil {
+		t.Fatalf("the direct poisoning failed the session closed before the gate ran: %v", refusal)
+	}
+}
+
+// TestTurnGateAcceptsAReplacementAfterAttentionReopenRepairsPoison: a reopen
+// from complete records truncates the partial tail a poisoned writer left and
+// clears the shared tail's poison, while the old handle still reports itself
+// poisoned. The gate must not refuse the healthy replacement, and must not
+// latch the failed-closed state on the stale handle (issue #4367).
+func TestTurnGateAcceptsAReplacementAfterAttentionReopenRepairsPoison(t *testing.T) {
+	t.Parallel()
+	sess := newTestSessionForEnvctx(t)
+	defer sess.Close()
+	markServed(t, sess)
+	poisonAttachedWriterWithoutFailingClosed(t, sess)
+	sample, wait := startSampledTurnGate(t, sess)
+	poisoned := sample()
+	sess.attentionMu.Lock()
+	replacement, _, err := sess.reopenAttentionTranscriptDurably(poisoned, sess.TranscriptPath(), sess.ID())
+	sess.attentionMu.Unlock()
+	if err != nil {
+		t.Fatalf("reopen attention transcript: %v", err)
+	}
+	if replacement == poisoned {
+		t.Fatal("the reopen did not replace the poisoned writer")
+	}
+	if !poisoned.Closed() {
+		t.Fatal("the reopen did not close the poisoned writer")
+	}
+	if err := wait(); err != nil {
+		t.Fatalf("the turn gate refused a healthy session after a reopen repaired the poisoned writer it sampled: %v", err)
+	}
+	if refusal := sess.failedClosedRefusal(); refusal != nil {
+		t.Fatalf("the gate failed a repaired session closed: %v", refusal)
+	}
+}
+
+// TestTurnGateRefusesAndLatchesAPoisonedCurrentWriter is the positive control
+// for the finality latch: a writer that is still poisoned when the gate's
+// decision becomes final must still refuse and fail the served session closed
+// (issue #4367).
+func TestTurnGateRefusesAndLatchesAPoisonedCurrentWriter(t *testing.T) {
+	t.Parallel()
+	sess := newTestSessionForEnvctx(t)
+	defer sess.Close()
+	markServed(t, sess)
+	poisonAttachedWriterWithoutFailingClosed(t, sess)
+	err := sess.refuseTurnOnUnhealthyTranscript(t.Context())
+	if !errors.Is(err, ErrTranscriptFailedClosed) {
+		t.Fatalf("turn gate over a poisoned current writer = %v, want ErrTranscriptFailedClosed", err)
+	}
+	if !errors.Is(err, transcript.ErrWriterPoisoned) {
+		t.Fatalf("the failed-closed refusal does not carry the poison cause: %v", err)
+	}
+	if refusal := sess.failedClosedRefusal(); refusal == nil {
+		t.Fatal("the gate did not latch a poisoned current writer")
+	}
+}
+
+// TestTurnGateRefusesAPoisonedWriterWhenUnserved: failClosed is a no-op for an
+// unserved session, so the finality latch must keep the poison refusal rather
+// than replace it with nil. Updating the refusal unconditionally would let an
+// unserved session accept a turn on a poisoned writer (issue #4367).
+func TestTurnGateRefusesAPoisonedWriterWhenUnserved(t *testing.T) {
+	t.Parallel()
+	sess := newTestSessionForEnvctx(t)
+	defer sess.Close()
+	poisonAttachedWriterWithoutFailingClosed(t, sess)
+	err := sess.refuseTurnOnUnhealthyTranscript(t.Context())
+	if err == nil {
+		t.Fatal("the turn gate accepted a poisoned writer on an unserved session")
+	}
+	if !errors.Is(err, transcript.ErrWriterPoisoned) {
+		t.Fatalf("unserved poisoned gate = %v, want transcript.ErrWriterPoisoned", err)
+	}
+	if errors.Is(err, ErrTranscriptFailedClosed) {
+		t.Fatalf("an unserved session reported a failed-closed refusal: %v", err)
+	}
+	if refusal := sess.failedClosedRefusal(); refusal != nil {
+		t.Fatalf("an unserved session latched failed closed: %v", refusal)
 	}
 }

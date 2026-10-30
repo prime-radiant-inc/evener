@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -13,6 +15,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/memorypages"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
@@ -52,7 +55,7 @@ func TestMemoryRefreshSkipsLaterRoundsOfATurn(t *testing.T) {
 			if got := memoryContextMessages(req); got != first {
 				t.Fatalf("second round carries %d memory contexts, first carried %d", got, first)
 			}
-			return finalResponse("done")
+			return agenttest.FinalResponse("done")
 		},
 	))
 	if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
@@ -80,13 +83,13 @@ func TestMemoryRefreshIgnoresOwnPageDescriptionEdit(t *testing.T) {
 			if got := memoryContextMessages(req); got != 1 {
 				t.Fatalf("round after the edit carries %d memory contexts, want 1", got)
 			}
-			return finalResponse("edited")
+			return agenttest.FinalResponse("edited")
 		},
 		func(req llm.Request) llm.Response {
 			if got := memoryContextMessages(req); got != 1 {
 				t.Fatalf("next turn carries %d memory contexts, want 1", got)
 			}
-			return finalResponse("next")
+			return agenttest.FinalResponse("next")
 		},
 	))
 	if _, err := s.ProcessInput(context.Background(), "edit", nil); err != nil {
@@ -118,7 +121,7 @@ func TestMemoryRefreshFullIndexAfterCompactionAndResume(t *testing.T) {
 			if want := memoryExpectedIndex(t, root, "memory"); state != "current" || got != want || !strings.Contains(got, marker) {
 				t.Fatalf("personal index state=%s body=%q, want current %q with %s", state, got, want, marker)
 			}
-			return finalResponse("observed")
+			return agenttest.FinalResponse("observed")
 		}
 	}
 	s.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
@@ -179,14 +182,14 @@ func TestMemoryRefreshNoPagesThenAPageDeliversFullIndex(t *testing.T) {
 			if got := memoryContextMessages(req); got != 0 {
 				t.Fatalf("a scope with no pages produced %d memory contexts, want 0", got)
 			}
-			return finalResponse("first")
+			return agenttest.FinalResponse("first")
 		},
 		func(req llm.Request) llm.Response {
 			state, body, _ := memoryRequestIndex(t, req, "personal")
 			if want := memoryExpectedIndex(t, root, "memory"); state != "current" || body != want || !strings.Contains(body, "opaque-later-1") {
 				t.Fatalf("personal index state=%s body=%q, want current %q", state, body, want)
 			}
-			return finalResponse("second")
+			return agenttest.FinalResponse("second")
 		},
 	))
 	if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
@@ -212,13 +215,13 @@ func TestMemoryRefreshIgnoresOwnPageWriteWithoutPages(t *testing.T) {
 			if got := memoryContextMessages(req); got != 0 {
 				t.Fatalf("round after the write carries %d memory contexts, want 0", got)
 			}
-			return finalResponse("written")
+			return agenttest.FinalResponse("written")
 		},
 		func(req llm.Request) llm.Response {
 			if got := memoryContextMessages(req); got != 0 {
 				t.Fatalf("next turn carries %d memory contexts, want 0", got)
 			}
-			return finalResponse("next")
+			return agenttest.FinalResponse("next")
 		},
 	))
 	if _, err := s.ProcessInput(context.Background(), "write", nil); err != nil {
@@ -245,12 +248,12 @@ func TestMemoryRefreshIgnoresOwnPageDelete(t *testing.T) {
 		func(llm.Request) llm.Response {
 			return memoryCallResponse("memory_delete", map[string]any{"scope": "personal", "file_path": "fact.md"})
 		},
-		func(llm.Request) llm.Response { return finalResponse("deleted") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("deleted") },
 		func(req llm.Request) llm.Response {
 			if got := memoryContextMessages(req); got != 1 {
 				t.Fatalf("next turn carries %d memory contexts, want only the first full index", got)
 			}
-			return finalResponse("next")
+			return agenttest.FinalResponse("next")
 		},
 	))
 	if _, err := s.ProcessInput(context.Background(), "delete", nil); err != nil {
@@ -279,12 +282,12 @@ func TestMemoryRefreshIgnoresOwnDeleteOfAControlCharacterPath(t *testing.T) {
 			}
 			return memoryCallResponse("memory_delete", map[string]any{"scope": "personal", "file_path": "bad\nname.md"})
 		},
-		func(llm.Request) llm.Response { return finalResponse("deleted") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("deleted") },
 		func(req llm.Request) llm.Response {
 			if got := memoryContextMessages(req); got != 1 {
 				t.Fatalf("next turn carries %d memory contexts, want only the first full index", got)
 			}
-			return finalResponse("next")
+			return agenttest.FinalResponse("next")
 		},
 	))
 	if _, err := s.ProcessInput(context.Background(), "delete", nil); err != nil {
@@ -318,7 +321,7 @@ func TestMemoryRefreshNoPagesAfterCompactionThenPageDeliversFullIndex(t *testing
 			if state != wantState || got != want || !strings.Contains(got, marker) {
 				t.Fatalf("personal index state=%s body=%q, want %s %q with %q", state, got, wantState, want, marker)
 			}
-			return finalResponse("observed")
+			return agenttest.FinalResponse("observed")
 		}
 	}
 	s.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
@@ -348,7 +351,7 @@ func TestMemoryRefreshNoPagesAfterCompactionThenPageDeliversFullIndex(t *testing
 // memorySeedManyPages writes count pages into the scope directory dir, each
 // stamped updated and with a description long enough that the rendered index
 // outgrows the projection budget, and returns them as listed.
-func memorySeedManyPages(t *testing.T, root, dir string, count int, updated string) []memoryPage {
+func memorySeedManyPages(t *testing.T, root, dir string, count int, updated string) []memorypages.Page {
 	t.Helper()
 	for i := range count {
 		memorySeedPage(t, root, dir, fmt.Sprintf("p%03d.md", i), fmt.Sprintf("opaque-filler-%03d-%s", i, strings.Repeat("x", 40)), memorySeedUpdated(updated))
@@ -363,14 +366,14 @@ func TestMemoryRefreshBaselineIsTheFullRenderedIndex(t *testing.T) {
 	root := t.TempDir()
 	pages := memorySeedManyPages(t, root, "memory", 200, "2026-10-01")
 	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
-		func(llm.Request) llm.Response { return finalResponse("observed") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("observed") },
 	))
 	if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
 		t.Fatal(err)
 	}
 	baseline, known := s.memoryBaselineFor("personal")
-	if want := renderMemoryIndex(pages); !known || baseline.index != want || len(want) <= memoryProjectionCap {
-		t.Fatalf("baseline known=%t holds %d bytes, want the whole %d-byte rendering past the %d-byte budget", known, len(baseline.index), len(want), memoryProjectionCap)
+	if want := memorypages.RenderIndex(pages); !known || baseline.index != want || len(want) <= memorypages.ProjectionCap {
+		t.Fatalf("baseline known=%t holds %d bytes, want the whole %d-byte rendering past the %d-byte budget", known, len(baseline.index), len(want), memorypages.ProjectionCap)
 	}
 }
 
@@ -548,20 +551,20 @@ func TestMemoryRefreshDeliversIndexDeltaOncePerTurn(t *testing.T) {
 			if got := memoryContextMessages(req); got != 1 {
 				t.Fatalf("first turn carries %d memory contexts, want the full index", got)
 			}
-			return finalResponse("first")
+			return agenttest.FinalResponse("first")
 		},
 		func(req llm.Request) llm.Response {
 			if got := memoryContextMessages(req); got != 2 {
 				t.Fatalf("turn after the change carries %d memory contexts, want 2", got)
 			}
 			delta = latestMemoryContext(req, "personal")
-			return finalResponse("second")
+			return agenttest.FinalResponse("second")
 		},
 		func(req llm.Request) llm.Response {
 			if got := memoryContextMessages(req); got != 2 {
 				t.Fatalf("unchanged turn carries %d memory contexts, want 2", got)
 			}
-			return finalResponse("third")
+			return agenttest.FinalResponse("third")
 		},
 	))
 	turn := func() {
@@ -602,14 +605,14 @@ func TestMemoryRefreshDeliversEveryScopeInOneMessage(t *testing.T) {
 			if got := memoryContextMessages(req); got != 1 {
 				t.Fatalf("first turn carries %d memory contexts, want both indexes in one", got)
 			}
-			return finalResponse("first")
+			return agenttest.FinalResponse("first")
 		},
 		func(req llm.Request) llm.Response {
 			if got := memoryContextMessages(req); got != 2 {
 				t.Fatalf("turn after both changes carries %d memory contexts, want 2", got)
 			}
 			latest = latestMemoryContextMessage(req)
-			return finalResponse("second")
+			return agenttest.FinalResponse("second")
 		},
 	))
 	if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
@@ -636,13 +639,13 @@ func TestMemoryRefreshCapsLargeIndexDelta(t *testing.T) {
 	memorySeedPage(t, root, "memory", "fact.md", "opaque-small-1")
 	var delta string
 	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
-		func(llm.Request) llm.Response { return finalResponse("first") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("first") },
 		func(req llm.Request) llm.Response {
 			if got := memoryContextMessages(req); got != 2 {
 				t.Fatalf("turn after the change carries %d memory contexts, want 2", got)
 			}
 			delta = latestMemoryContext(req, "personal")
-			return finalResponse("second")
+			return agenttest.FinalResponse("second")
 		},
 	))
 	if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
@@ -677,7 +680,7 @@ func TestMemoryRefreshIndexDeltaComparesTheFullIndex(t *testing.T) {
 				_, _, firstTruncated = memoryRequestIndex(t, req, "personal")
 			}
 			deltas = append(deltas, latestMemoryContext(req, "personal"))
-			return finalResponse("observed")
+			return agenttest.FinalResponse("observed")
 		}
 	}
 	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
@@ -726,7 +729,7 @@ func TestMemoryRefreshIndexDeltaFollowsTheWhenLine(t *testing.T) {
 				t.Fatalf("turn carries %d memory contexts, want %d", got, want)
 			}
 			deltas = append(deltas, latestMemoryContext(req, "personal"))
-			return finalResponse("observed")
+			return agenttest.FinalResponse("observed")
 		}
 	}
 	// The third turn adds no memory context: the index did not change.
@@ -808,7 +811,7 @@ func TestMemoryRefreshNoticesChangedReadPages(t *testing.T) {
 				t.Fatalf("turn carries %d memory contexts, want %d", got, want)
 			}
 			notices = append(notices, latestMemoryContext(req, "personal"))
-			return finalResponse("observed")
+			return agenttest.FinalResponse("observed")
 		}
 	}
 	// Removing the read page also removes its index line: neither the page nor
@@ -820,14 +823,14 @@ func TestMemoryRefreshNoticesChangedReadPages(t *testing.T) {
 			t.Fatalf("turn after the page returns carries %d memory contexts, want 3", got)
 		}
 		restoredSections, _ = memoryScopeSections(latestMemoryContextMessage(req), "personal")
-		return finalResponse("observed")
+		return agenttest.FinalResponse("observed")
 	}
 	afterRestoreTurn := noticeTurn(3)
 	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
 		func(llm.Request) llm.Response {
 			return memoryCallResponse("memory_read", map[string]any{"scope": "personal", "file_path": "opaque-read-page.md"})
 		},
-		func(llm.Request) llm.Response { return finalResponse("read") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("read") },
 		changedTurn, removedTurn, unchangedTurn, restoredTurn, afterRestoreTurn,
 	))
 	turn := func() {
@@ -879,12 +882,12 @@ func TestMemoryRefreshIgnoresOwnPageEdit(t *testing.T) {
 		func(llm.Request) llm.Response {
 			return memoryCallResponse("memory_edit", map[string]any{"scope": "personal", "file_path": "opaque-own-page.md", "old_string": "opaque-own-body-1", "new_string": "opaque-own-body-2"})
 		},
-		func(llm.Request) llm.Response { return finalResponse("edited") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("edited") },
 		func(req llm.Request) llm.Response {
 			if got := memoryContextMessages(req); got != 1 {
 				t.Fatalf("next turn carries %d memory contexts, want 1", got)
 			}
-			return finalResponse("next")
+			return agenttest.FinalResponse("next")
 		},
 	))
 	if _, err := s.ProcessInput(context.Background(), "edit", nil); err != nil {
@@ -1031,11 +1034,11 @@ func TestMemoryRefreshPageRecordsSurviveCompaction(t *testing.T) {
 		func(llm.Request) llm.Response {
 			return memoryCallResponse("memory_read", map[string]any{"scope": "personal", "file_path": "opaque-kept-page.md"})
 		},
-		func(llm.Request) llm.Response { return finalResponse("read") },
-		func(llm.Request) llm.Response { return finalResponse("after fold") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("read") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("after fold") },
 		func(req llm.Request) llm.Response {
 			notice = latestMemoryContext(req, "personal")
-			return finalResponse("noticed")
+			return agenttest.FinalResponse("noticed")
 		},
 	}})
 	turn := func() {
@@ -1070,7 +1073,7 @@ func TestMemoryRefreshPageRecordsDoNotSurviveResume(t *testing.T) {
 		func(llm.Request) llm.Response {
 			return memoryCallResponse("memory_read", map[string]any{"scope": "personal", "file_path": "opaque-forgotten-page.md"})
 		},
-		func(llm.Request) llm.Response { return finalResponse("read") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("read") },
 	))
 	if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
 		t.Fatal(err)
@@ -1093,7 +1096,7 @@ func TestMemoryRefreshPageRecordsDoNotSurviveResume(t *testing.T) {
 				scoped, _ := memoryScopeSections(msg.Text(), "personal")
 				sections = append(sections, scoped...)
 			}
-			return finalResponse("resumed")
+			return agenttest.FinalResponse("resumed")
 		},
 	}})
 	if _, err := r.ProcessInput(context.Background(), "go", nil); err != nil {
@@ -1193,12 +1196,12 @@ func TestMemoryRefreshResumeIgnoresPageNoticesWhenSeedingObservedScopes(t *testi
 		func(llm.Request) llm.Response {
 			return memoryCallResponse("memory_read", map[string]any{"scope": "personal", "file_path": ".opaque-noticed-page.md"})
 		},
-		func(llm.Request) llm.Response { return finalResponse("read") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("read") },
 		func(req llm.Request) llm.Response {
 			if !strings.Contains(latestMemoryContext(req, "personal"), ".opaque-noticed-page.md") {
 				t.Fatal("fixture produced no page notice")
 			}
-			return finalResponse("noticed")
+			return agenttest.FinalResponse("noticed")
 		},
 	))
 	if _, err := s.ProcessInput(context.Background(), "read", nil); err != nil {
@@ -1252,7 +1255,7 @@ func TestMemoryProjectionReportsOnlyAPartialIndex(t *testing.T) {
 			s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(func(req llm.Request) llm.Response {
 				text = latestMemoryContext(req, "personal")
 				state, _, truncated = memoryRequestIndex(t, req, "personal")
-				return finalResponse("observed")
+				return agenttest.FinalResponse("observed")
 			}))
 			if !tc.withSkill {
 				s.reg.Remove("use_skill")
@@ -1343,7 +1346,7 @@ func TestMemoryProjectionMigratesAHandWrittenIndex(t *testing.T) {
 	var text string
 	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(func(req llm.Request) llm.Response {
 		text = latestMemoryContextMessage(req)
-		return finalResponse("observed")
+		return agenttest.FinalResponse("observed")
 	}))
 	if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
 		t.Fatal(err)
@@ -1352,8 +1355,42 @@ func TestMemoryProjectionMigratesAHandWrittenIndex(t *testing.T) {
 	if !ok || !strings.Contains(display.Content, "- [cents.md](cents.md) — opaque-migrated-description") {
 		t.Fatalf("projection=%+v ok=%t", display, ok)
 	}
-	if _, err := os.Stat(filepath.Join(scope, memoryLegacyIndexBackup)); err != nil {
+	if _, err := os.Stat(filepath.Join(scope, memorypages.LegacyIndexBackup)); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A migration that fails does not block the turn, and the failure is logged at
+// warning level so it is not silent.
+func TestMemoryProjectionLogsAFailedMigration(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("directory permissions do not bind root")
+	}
+	root := t.TempDir()
+	scope := filepath.Join(root, "memory")
+	if err := os.MkdirAll(scope, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeMemoryPage(t, root, "MEMORY.md", "- [Cents](cents.md) — opaque-migrated-description\n")
+	writeMemoryPage(t, root, "cents.md", "# Cents\n")
+	if err := os.Chmod(scope, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(scope, 0o700) })
+
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(func(llm.Request) llm.Response {
+		return agenttest.FinalResponse("observed")
+	}))
+	if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(logs.String(), `"level":"WARN"`) {
+		t.Fatalf("no warning logged for the failed migration: %q", logs.String())
 	}
 }
 
@@ -1368,10 +1405,10 @@ func TestMemoryRefreshDeltaListsPageLinesOnly(t *testing.T) {
 	memorySeedPage(t, root, "memory", "changed.md", "opaque-before")
 	var delta string
 	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
-		func(llm.Request) llm.Response { return finalResponse("first") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("first") },
 		func(req llm.Request) llm.Response {
 			delta = latestMemoryContext(req, "personal")
-			return finalResponse("second")
+			return agenttest.FinalResponse("second")
 		},
 	))
 	if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
@@ -1402,12 +1439,12 @@ func TestMemoryRefreshIgnoresOwnPageWriteOfAnyPage(t *testing.T) {
 		func(llm.Request) llm.Response {
 			return memoryCallResponse("memory_write", map[string]any{"scope": "personal", "file_path": "new.md", "when": "opaque-own-page", "body": ""})
 		},
-		func(llm.Request) llm.Response { return finalResponse("wrote") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("wrote") },
 		func(req llm.Request) llm.Response {
 			if got := memoryContextMessages(req); got != 1 {
 				t.Fatalf("next turn carries %d memory contexts, want only the first projection", got)
 			}
-			return finalResponse("next")
+			return agenttest.FinalResponse("next")
 		},
 	))
 	for range 2 {
@@ -1452,7 +1489,7 @@ func TestMemoryRefreshOwnPageWriteKeepsOtherSessionsChanges(t *testing.T) {
 	gone := memorySeedPage(t, root, "memory", "gone.md", "opaque-gone")
 	var delta string
 	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
-		func(llm.Request) llm.Response { return finalResponse("first") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("first") },
 		func(llm.Request) llm.Response {
 			// Another session changes the scope after this turn's boundary.
 			memorySeedPage(t, root, "memory", "other.md", "opaque-other")
@@ -1461,10 +1498,10 @@ func TestMemoryRefreshOwnPageWriteKeepsOtherSessionsChanges(t *testing.T) {
 			}
 			return memoryCallResponse("memory_write", map[string]any{"scope": "personal", "file_path": "mine.md", "when": "opaque-mine", "body": ""})
 		},
-		func(llm.Request) llm.Response { return finalResponse("wrote") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("wrote") },
 		func(req llm.Request) llm.Response {
 			delta = latestMemoryContext(req, "personal")
-			return finalResponse("next")
+			return agenttest.FinalResponse("next")
 		},
 	))
 	for range 3 {
@@ -1499,7 +1536,7 @@ func TestMemoryReadOnlySessionDoesNotMigrate(t *testing.T) {
 			var text string
 			s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(func(req llm.Request) llm.Response {
 				text = latestMemoryContextMessage(req)
-				return finalResponse("observed")
+				return agenttest.FinalResponse("observed")
 			}))
 			s.reg.Remove(denied)
 			refreshModelFacingCaches(s)
@@ -1535,7 +1572,7 @@ func TestMemoryRefreshIgnoresOwnPageWriteInAnotherCase(t *testing.T) {
 			if got := memoryContextMessages(req); got != 1 {
 				t.Fatalf("turn after the %s carries %d memory contexts, want only the first full index", after, got)
 			}
-			return finalResponse("next")
+			return agenttest.FinalResponse("next")
 		}
 	}
 	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
@@ -1545,12 +1582,12 @@ func TestMemoryRefreshIgnoresOwnPageWriteInAnotherCase(t *testing.T) {
 		func(llm.Request) llm.Response {
 			return memoryCallResponse("memory_write", map[string]any{"scope": "personal", "file_path": "Fact.md", "when": "opaque-cased-2", "body": ""})
 		},
-		func(llm.Request) llm.Response { return finalResponse("wrote") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("wrote") },
 		nextTurn("write"),
 		func(llm.Request) llm.Response {
 			return memoryCallResponse("memory_delete", map[string]any{"scope": "personal", "file_path": "Fact.md"})
 		},
-		func(llm.Request) llm.Response { return finalResponse("deleted") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("deleted") },
 		nextTurn("delete"),
 	))
 	for _, input := range []string{"write", "next", "delete", "next"} {
@@ -1574,14 +1611,14 @@ func TestMemoryRefreshIgnoresOwnRewriteOfPageNamedWithALink(t *testing.T) {
 	}
 	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
 		write("opaque-linked-1"),
-		func(llm.Request) llm.Response { return finalResponse("wrote") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("wrote") },
 		write("opaque-linked-2"),
-		func(llm.Request) llm.Response { return finalResponse("rewrote") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("rewrote") },
 		func(req llm.Request) llm.Response {
 			if got := memoryContextMessages(req); got != 1 {
 				t.Fatalf("turn after the rewrites carries %d memory contexts, want only the first full index", got)
 			}
-			return finalResponse("next")
+			return agenttest.FinalResponse("next")
 		},
 	))
 	for range 3 {
@@ -1609,12 +1646,12 @@ func TestMemoryRefreshOwnWriteMatchesPageReadInAnotherCase(t *testing.T) {
 		func(llm.Request) llm.Response {
 			return memoryCallResponse("memory_write", map[string]any{"scope": "personal", "file_path": "Notes/Fact.md", "when": "opaque-nested-2", "body": ""})
 		},
-		func(llm.Request) llm.Response { return finalResponse("wrote") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("wrote") },
 		func(req llm.Request) llm.Response {
 			if got := memoryContextMessages(req); got != 1 {
 				t.Fatalf("turn after the write carries %d memory contexts, want only the first full index: %s", got, latestMemoryContext(req, "personal"))
 			}
-			return finalResponse("next")
+			return agenttest.FinalResponse("next")
 		},
 	))
 	for range 2 {
@@ -1638,27 +1675,27 @@ func TestMemoryRefreshRemovalOnlyBoundaryEmitsNothingThenAddReportsOnlyTheAdd(t 
 			if got := memoryContextMessages(req); got != 1 {
 				t.Fatalf("first turn carries %d memory contexts, want the full index", got)
 			}
-			return finalResponse("first")
+			return agenttest.FinalResponse("first")
 		},
 		func(req llm.Request) llm.Response {
 			if got := memoryContextMessages(req); got != 1 {
 				t.Fatalf("removal-only turn carries %d memory contexts, want none new", got)
 			}
-			return finalResponse("second")
+			return agenttest.FinalResponse("second")
 		},
 		func(req llm.Request) llm.Response {
 			if got := memoryContextMessages(req); got != 2 {
 				t.Fatalf("turn after the add carries %d memory contexts, want one new", got)
 			}
 			delta = latestMemoryContext(req, "personal")
-			return finalResponse("third")
+			return agenttest.FinalResponse("third")
 		},
 		func(req llm.Request) llm.Response {
 			if got := memoryContextMessages(req); got != 3 {
 				t.Fatalf("turn after the page returns carries %d memory contexts, want one new", got)
 			}
 			returned = latestMemoryContext(req, "personal")
-			return finalResponse("fourth")
+			return agenttest.FinalResponse("fourth")
 		},
 	))
 	turn := func() {

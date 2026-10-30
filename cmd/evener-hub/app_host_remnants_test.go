@@ -1082,11 +1082,7 @@ presence_epoch = 1
 	cfg, _, _ := hostManageWiringConfig(t, configPath, []hostreg.Host{{Name: "m4", SSH: "m4.example"}}, &dialRecordingRunner{})
 	hub, _ := newHubRPCTestServerWithWeb(t, cfg)
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 
 	err := client.Request(context.Background(), appwire.MethodEvenerHostAttach, appwire.HostAttachParams{Host: "m4"}, nil)
 	if err == nil {
@@ -2245,5 +2241,33 @@ func TestHostUpdateRepairKeepsTheCommittedGeneration(t *testing.T) {
 	}
 	if replay.HostMutationCommitted == nil && replay.HostMutationTeardownFailure == nil {
 		t.Fatalf("replay = %+v, want the recorded outcome", replay)
+	}
+}
+
+// TestClaimTeardownAttemptFencesAnOpenPriorAttempt pins the claim both retry
+// and recover persist: a fresh open attempt stamped with this boot, plus the
+// fenced-closed mark of a prior open attempt only when one stands.
+func TestClaimTeardownAttemptFencesAnOpenPriorAttempt(t *testing.T) {
+	m, _, _ := newRemnantFixture(t)
+	now := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	prior := HostTeardownAttempt{RemnantID: "r1", State: hostAttemptStateOpen, StartedAt: "2026-09-27T11:00:00Z"}
+
+	attemptID, attempt, change := m.claimTeardownAttempt("r1", now, "prior-id", prior, true)
+	if attempt.State != hostAttemptStateOpen || attempt.RemnantID != "r1" || attempt.FencingEpochBoot != m.cfg.bootID {
+		t.Fatalf("claimed attempt = %+v, want an open attempt for r1 on this boot", attempt)
+	}
+	if change.attempt == nil || change.attempt.AttemptID != attemptID || change.attempt.Attempt != attempt {
+		t.Fatalf("claim change = %+v, want the new attempt under %q", change.attempt, attemptID)
+	}
+	if change.fencedAttempt == nil || change.fencedAttempt.AttemptID != "prior-id" {
+		t.Fatalf("fenced change = %+v, want the prior attempt", change.fencedAttempt)
+	}
+	if got := change.fencedAttempt.Attempt; got.State != hostAttemptStateFencedClosed || got.FencedAt != hostInstant(now) {
+		t.Fatalf("prior attempt = %+v, want fenced-closed at the claim instant", got)
+	}
+
+	_, _, change = m.claimTeardownAttempt("r1", now, "", HostTeardownAttempt{}, false)
+	if change.fencedAttempt != nil {
+		t.Fatalf("no prior attempt stood, but the claim fenced %+v", change.fencedAttempt)
 	}
 }

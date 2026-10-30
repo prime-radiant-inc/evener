@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { parseAnsiLines } from "../../cmd/evener-hub/frontend/src/widgets/codeblock/ansi";
+import { parseAnsiLines } from "@evener/appwire-client";
 import { ansiRunTextStyle, expandLineTabs } from "./ansiOutputStyles";
 
 function parsedRun(lines: ReturnType<typeof parseAnsiLines>, index: number) {

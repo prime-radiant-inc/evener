@@ -97,10 +97,7 @@ func TestRestoredSteeringWakesWhenTheDaemonAttaches(t *testing.T) {
 func TestSteerLandsWhenItsTurnAlreadyEnded(t *testing.T) {
 	t.Parallel()
 	s := newTestSessionForEnvctx(t)
-	serveSession(t, s)
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
+	serveSessionWithMutationStore(t, s)
 
 	// No turn is running: the one the client aimed at has ended.
 	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
@@ -122,10 +119,7 @@ func TestSteerLandsWhenItsTurnAlreadyEnded(t *testing.T) {
 func TestSteerWakesAnIdleSessionToDeliverItself(t *testing.T) {
 	t.Parallel()
 	s := newTestSessionForEnvctx(t)
-	serveSession(t, s)
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
+	serveSessionWithMutationStore(t, s)
 
 	var mu sync.Mutex
 	notifies := 0
@@ -161,10 +155,7 @@ func TestSteerWakesAnIdleSessionToDeliverItself(t *testing.T) {
 func TestSteerWakesEvenWhileATurnIsRunning(t *testing.T) {
 	t.Parallel()
 	s := newTestSessionForEnvctx(t)
-	serveSession(t, s)
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
+	serveSessionWithMutationStore(t, s)
 	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
 		snapshot.NextTurnSequence++
 		snapshot.ActiveTurnID = appwire.ClientMutationTurnID(snapshot.NextTurnSequence)
@@ -204,10 +195,7 @@ func TestSteerWakesEvenWhileATurnIsRunning(t *testing.T) {
 func TestSteerRetryStillProvokesDelivery(t *testing.T) {
 	t.Parallel()
 	s := newTestSessionForEnvctx(t)
-	serveSession(t, s)
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
+	serveSessionWithMutationStore(t, s)
 
 	params := appwire.TurnSteerParams{
 		ClientMutationID: "cm-steer-retry",

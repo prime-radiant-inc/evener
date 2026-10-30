@@ -28,25 +28,14 @@ test to raise its number — read `make coverage-floor`, which unions the two
 tracks. The test you were about to write may already exist under the other build
 tag.
 
-`cmd/evener-hub/cov_*_test.go` pulls the union number in the other direction.
-(The `cov_`-prefixed name is not the marker — some, like
-`agent/execenv/cov_s4_local_test.go`, are ordinary untagged `TestXxx`
-suites. The marker is the shape below: a `FuzzXxx` target, not a `TestXxx`
-function — the `//go:build evenerfuzz` tag is not part of it, and most of
-`cmd/evener-hub`'s cov_* files carry no such tag, including
-`cov_auth_instances_fuzz_test.go` below. Its own seed shape isn't universal
-either: it ignores a single seed byte, `f.Add(byte(0))`, but several other
-cov_* files seed multiple bytes that select between behaviors.) Each of
-`cmd/evener-hub`'s cov_* files is a deterministic replay matrix that calls
-production functions and discards most results (`_ = f(x)`). Their oracle is
-real — a panic or a `-race` failure still fails the build — but thin: a call
-site with no assertion cannot fail on a wrong answer, only a crash. So
-statements these files reach count as EXECUTED toward coverage-floor, not
-TESTED — read the number that way for `cmd/evener-hub`, where they are a large
-share of the fuzz track. Upgrading a call site's target from panic-net to an
-assertion against an independently-written literal (see
-`cov_auth_instances_fuzz_test.go`) turns EXECUTED into TESTED for that call
-site; it is not required for the rest of the file to keep earning its lines.
+A fuzz target that replays a fixed matrix of production calls and discards the
+results (`_ = f(x)`) earns lines only as EXECUTED: its oracle is a panic or a
+`-race` failure, so it cannot fail on a wrong answer. Such targets do not belong
+in the tree: a call site earns its coverage from a test that asserts a result
+against an independently written literal, which is what turns EXECUTED into
+TESTED. The floors in `scripts/coverage/coverage-floors.txt` are a local report,
+not a gate CI enforces, so deleting a replay target without a replacement
+assertion is a legitimate way to lower them; lower the affected row by hand.
 
 ## Targets
 

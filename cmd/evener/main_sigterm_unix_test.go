@@ -95,6 +95,22 @@ func TestRunSignalHandlerStopsAfterRunHelperProcess(t *testing.T) {
 	os.Exit(0)
 }
 
+// startHelperProcess re-execs the test binary running only helperTest, with env
+// appended to this process's environment. output returns everything the child
+// has written to stdout and stderr, for failure messages.
+func startHelperProcess(t *testing.T, helperTest string, env ...string) (*exec.Cmd, func() string) {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^"+helperTest+"$")
+	cmd.Env = append(os.Environ(), env...)
+	var childOut, childErr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &childOut, &childErr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start helper: %v", err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill() })
+	return cmd, func() string { return childOut.String() + childErr.String() }
+}
+
 // waitForChildExit bounds a child's exit so a missing escalation surfaces as a
 // diagnosed failure rather than an unbounded Wait.
 func waitForChildExit(t *testing.T, cmd *exec.Cmd, output func() string) *exec.ExitError {
@@ -127,24 +143,11 @@ func TestRunRegistersSIGTERMForGracefulClose(t *testing.T) {
 	ready := filepath.Join(dir, "ready")
 	closed := filepath.Join(dir, "closed")
 
-	cmd := exec.Command(os.Args[0], "-test.run=^TestRunSIGTERMGracefulCloseHelperProcess$")
-	cmd.Env = append(os.Environ(),
+	cmd, output := startHelperProcess(t, "TestRunSIGTERMGracefulCloseHelperProcess",
 		runSIGTERMHelperEnv+"=1",
 		runSIGTERMReadyEnv+"="+ready,
 		runSIGTERMClosedEnv+"="+closed,
 	)
-	var childOut, childErr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &childOut, &childErr
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start helper: %v", err)
-	}
-	t.Cleanup(func() {
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-		}
-	})
-
-	output := func() string { return childOut.String() + childErr.String() }
 	if _, ok := waitForFileContent(ready, 10*time.Second); !ok {
 		t.Fatalf("helper never reached the run path\noutput:\n%s", output())
 	}
@@ -171,24 +174,11 @@ func TestRunEscalatesOnSecondSignalWhileCloseWedged(t *testing.T) {
 	ready := filepath.Join(dir, "ready")
 	first := filepath.Join(dir, "first")
 
-	cmd := exec.Command(os.Args[0], "-test.run=^TestRunSecondSignalEscalationHelperProcess$")
-	cmd.Env = append(os.Environ(),
+	cmd, output := startHelperProcess(t, "TestRunSecondSignalEscalationHelperProcess",
 		runSecondSignalHelperEnv+"=1",
 		runSecondSignalReadyEnv+"="+ready,
 		runSecondSignalFirstEnv+"="+first,
 	)
-	var childOut, childErr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &childOut, &childErr
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start helper: %v", err)
-	}
-	t.Cleanup(func() {
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-		}
-	})
-
-	output := func() string { return childOut.String() + childErr.String() }
 	if _, ok := waitForFileContent(ready, 10*time.Second); !ok {
 		t.Fatalf("helper never reached the run path\noutput:\n%s", output())
 	}
@@ -218,23 +208,10 @@ func TestRunStopsSignalHandlerAfterTheRunEnds(t *testing.T) {
 	dir := t.TempDir()
 	ready := filepath.Join(dir, "ready")
 
-	cmd := exec.Command(os.Args[0], "-test.run=^TestRunSignalHandlerStopsAfterRunHelperProcess$")
-	cmd.Env = append(os.Environ(),
+	cmd, output := startHelperProcess(t, "TestRunSignalHandlerStopsAfterRunHelperProcess",
 		runSignalLeakHelperEnv+"=1",
 		runSignalLeakReadyEnv+"="+ready,
 	)
-	var childOut, childErr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &childOut, &childErr
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start helper: %v", err)
-	}
-	t.Cleanup(func() {
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-		}
-	})
-
-	output := func() string { return childOut.String() + childErr.String() }
 	if _, ok := waitForFileContent(ready, 10*time.Second); !ok {
 		t.Fatalf("helper never reached the run path\noutput:\n%s", output())
 	}

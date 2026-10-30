@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { STUCK_AFTER_MS } from "@evener/appwire-client";
 import { expect, test } from "vitest";
 import {
   describeLiveness,
@@ -7,7 +8,6 @@ import {
   formatSubagentCount,
   QUIET_THRESHOLD_MS,
   type RetryWait,
-  STALL_THRESHOLD_MS,
 } from "./liveness";
 
 // Fills in RetryWait's non-attempt/delay fields with values these tests don't
@@ -24,10 +24,6 @@ function retryWait(overrides: Partial<RetryWait> & Pick<RetryWait, "attempt" | "
 // module), explicitly not unified with this one per the doc's own Highlights.
 test("QUIET_THRESHOLD_MS is 20s", () => {
   expect(QUIET_THRESHOLD_MS).toBe(20_000);
-});
-
-test("STALL_THRESHOLD_MS is 180s", () => {
-  expect(STALL_THRESHOLD_MS).toBe(180_000);
 });
 
 // runningSubagents is 0 in every test below except the dedicated "waiting"
@@ -50,12 +46,12 @@ test("describeLiveness: active thread AT the quiet threshold enters the quiet le
   expect(describeLiveness(20_000, true, 0).level).toBe("quiet");
 });
 
-test("describeLiveness: quiet level just under the stall threshold is still quiet, not stalled", () => {
-  expect(describeLiveness(179_999, true, 0).level).toBe("quiet");
+test("describeLiveness: quiet level just under the package's stuck threshold is still quiet, not stalled", () => {
+  expect(describeLiveness(STUCK_AFTER_MS - 1, true, 0).level).toBe("quiet");
 });
 
-test("describeLiveness: AT the stall threshold escalates to stalled", () => {
-  expect(describeLiveness(180_000, true, 0).level).toBe("stalled");
+test("describeLiveness: AT the package's stuck threshold escalates to stalled", () => {
+  expect(describeLiveness(STUCK_AFTER_MS, true, 0).level).toBe("stalled");
 });
 
 test("describeLiveness: quiet level's text contains the bucketed quiet phrase", () => {
@@ -63,9 +59,9 @@ test("describeLiveness: quiet level's text contains the bucketed quiet phrase", 
 });
 
 test("describeLiveness: stalled level's text names the exact-ish gap and reads as an honest concern, not a reassuring animation cue", () => {
-  const { level, text } = describeLiveness(185_000, true, 0);
+  const { level, text } = describeLiveness(STUCK_AFTER_MS + 5_000, true, 0);
   expect(level).toBe("stalled");
-  expect(text).toContain(formatExactGap(185_000));
+  expect(text).toContain(formatExactGap(STUCK_AFTER_MS + 5_000));
 });
 
 // --- runningSubagents: "waiting on N subagents" (design brief principle 6) -
@@ -99,20 +95,13 @@ test("describeLiveness: below the stall threshold, a running child reads 'waitin
   expect(text).not.toContain(formatExactGap(60_000));
 });
 
-test("describeLiveness: past the stall threshold, a running child reports BOTH facts - believed running, and silent for a long time", () => {
-  const { level, text } = describeLiveness(999_999, true, 2);
-  expect(level).toBe("stalled");
-  expect(text).toContain(formatSubagentCount(2));
-  expect(text).toContain(formatExactGap(999_999));
-});
-
-// The claim a stale row makes is exactly "running", so this is the shape the
-// bug takes in the wild: one child believed running, nothing arriving for
-// minutes. The line must not stay confidently quiet about it.
-test("describeLiveness: a single believed-running child cannot suppress the stall report forever", () => {
-  const { level, text } = describeLiveness(600_000, true, 1);
-  expect(level).toBe("stalled");
-  expect(text).toContain(formatExactGap(600_000));
+test("describeLiveness: a running child is never stuck, however long the silence", () => {
+  for (const gap of [STUCK_AFTER_MS, 999_999_999]) {
+    const { level, text } = describeLiveness(gap, true, 2);
+    expect(level).toBe("waiting");
+    expect(text).toContain(formatSubagentCount(2));
+    expect(text).not.toContain(formatExactGap(gap));
+  }
 });
 
 test("describeLiveness: waiting text carries the pluralized subagent count", () => {
@@ -122,7 +111,7 @@ test("describeLiveness: waiting text carries the pluralized subagent count", () 
 
 test("describeLiveness: once no children are running, the plain quiet/stalled decision applies again", () => {
   expect(describeLiveness(30_000, true, 0).level).toBe("quiet");
-  expect(describeLiveness(185_000, true, 0).level).toBe("stalled");
+  expect(describeLiveness(STUCK_AFTER_MS + 5_000, true, 0).level).toBe("stalled");
 });
 
 test("describeLiveness: an inactive thread with running children still shows nothing - the active gate still comes first", () => {
@@ -177,6 +166,12 @@ test("formatQuietBucket: just under the 180s stall threshold still reads ~2m, ne
   expect(formatQuietBucket(179_999)).toBe("~2m");
 });
 
+test("formatQuietBucket: past two minutes it counts whole minutes up to the stuck threshold", () => {
+  expect(formatQuietBucket(179_999)).toBe("~2m");
+  expect(formatQuietBucket(180_000)).toBe("~3m");
+  expect(formatQuietBucket(STUCK_AFTER_MS - 1)).toBe("~9m");
+});
+
 test("formatQuietBucket: a gap at the very start of the quiet band (20s) reads ~30s", () => {
   expect(formatQuietBucket(20_000)).toBe("~30s");
 });
@@ -225,7 +220,7 @@ test("describeLiveness: a non-rate-limit retryable error names itself genericall
   });
 });
 
-test("describeLiveness: past the stall threshold a retry reports both facts, never suppressing the stall", () => {
+test("describeLiveness: past the stuck threshold a retry reports both facts, never suppressing the stall", () => {
   const retry = retryWait({ attempt: 9, attemptCap: 11, delayMs: 60_000, errorClass: "rate_limit" });
   expect(describeLiveness(630_000, true, 0, retry)).toEqual({
     level: "stalled",
@@ -240,6 +235,11 @@ test("describeLiveness: past the stall threshold a retry reports both facts, nev
 test("describeLiveness: a first retry (attempt 1) under the quiet threshold stays invisible", () => {
   const retry = retryWait({ attempt: 1, attemptCap: 11, delayMs: 1_000, errorClass: "rate_limit" });
   expect(describeLiveness(5_000, true, 0, retry)).toEqual({ level: "none", text: null });
+});
+
+test("describeLiveness: a retry is never stuck while a subagent runs", () => {
+  const retry = retryWait({ attempt: 9, attemptCap: 11, delayMs: 60_000, errorClass: "rate_limit" });
+  expect(describeLiveness(STUCK_AFTER_MS * 2, true, 1, retry).level).toBe("retrying");
 });
 
 test("describeLiveness: a retry pre-empts the subagent wait — it is the more specific explanation", () => {

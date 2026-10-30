@@ -1,0 +1,111 @@
+[
+ {
+  "id": "x-compat-legacy-1",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Policy gap is real (no compat statement in docs/product; counts roughly hold: mobile 17, frontend 14, appwire-client 51 incl ~24 in types.gen.ts). But appwire/types.go:30-35 documents that daemons outlive the hub that spawned them, so hub-N talking to daemon-N-1 is routine, and legacyTaskPublication (server/appwire_runtime.go:832, 'old-producer compatibility path' at :863) serves live older daemons, not stale releases. Not purely un-approved accretion, and 'rely on ProtocolVersion mismatch' would not cover the daemon-outlives-hub case. Severity high overstated.",
+  "revised_fix_plan": "Step 1: Jesse defines the skew window, explicitly including daemons that outlive a hub restart; write it as an evergreen docs/product section. Step 2: require each fallback to name its removal condition. Step 3: sweep only fallbacks older than the window; do not remove daemon-facing fallbacks (legacyTaskPublication) until the daemon-lifetime policy is settled."
+ },
+ {
+  "id": "x-compat-legacy-2",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Verified: both UIs re-derive 'older hub' via the same (check as {restartSupported?}) cast (hubUpdates.tsx:104, HubHome.tsx:38). Correction: the Go handler is not caller-less, since hubUpdate.ts:321 invokes evener/update/apply for the legacy path; it can only be deleted together with the TS path. Removal strands UIs talking to hubs older than the install/restart split; needs Jesse approval."
+ },
+ {
+  "id": "x-compat-legacy-3",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Verified: the six alias consts at prefs.ts:237-265 have no references outside their definitions; prefs.transcript/showCost/setTranscriptStatus have readers only in TurnSeparator.test.tsx (TurnSeparator.tsx reads metadata). setLocal/clearLocal call dualWriteTranscriptDisplayLegacy plus verifyLegacyWrite (transcriptDisplay.ts:533-545). Extra scope: transcriptDisplay.test.ts:702-712 and prefs.test.ts:700-754 also assert the legacy keys and need rewriting. Dual-write also serves rollback to an older build, so deleting it is a (minor) downgrade decision."
+ },
+ {
+  "id": "x-compat-legacy-4",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Verified: waitHealthy (version.go:1040) has no non-test caller; waitForHealthyHub, hostAddr/hostAddrFor (62-72), hubPort (105) and defaultHubAddr (25, used only at 68) are reachable only through it. Comments at 62 and 1068 say they exist for tests."
+ },
+ {
+  "id": "x-compat-legacy-5",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Verified: Add/Update/Remove and committedHostRow are called only from tests; HostUpdateResponse/HostRemoveResponse appear in non-test code only in the wrappers (also used as decode targets in wiring tests, which can use the committed-arm type instead). No TS reference to either type."
+ },
+ {
+  "id": "x-compat-legacy-6",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Verified: sidecar migration landed 2026-09-26 (3ffeccc893); app_host_manage.go:2804-2808 says the .stash name 'never shipped' (so item (a) is clearly deletable); store.poison exists (599-611, 1625-1628); compensating-sidecar alias at hostops/intent.go:166; LegacyProject fallback at launchconfig/resolver.go:127. Unverified: exact line counts and the 2026-09-20..26 format window. Item (c) is wrong-headed: indexMigrationInterleave is a deterministic seam for a race and replacing it with real concurrent connections would make the test nondeterministic, which AGENTS.md forbids.",
+  "revised_fix_plan": "(a) delete the never-shipped .stash spelling and compensating-sidecar alias after confirming no tag contains them; (b) Jesse decides sidecar end of life and, if kept, replace write-poisoning with recovery (surface the file, keep serving); (c) leave indexMigrationInterleave unless the index rebuild itself is dropped; (d) delete LegacyProject only after confirming no users."
+ },
+ {
+  "id": "x-compat-legacy-7",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Verified: evener-migrate is 801 non-test lines (2760 total), created 2026-08-18; cmdutil/userdirs.go:34 runs checkLegacyDataDirs at launch and returns ErrLegacySerfData. Corrections: the refusal has an explicit escape hatch (create the target dir to start fresh) and it covers only ~/.config/serf and ~/.local/state/serf pairs plus home-root files; install.sh:176 only prints an advisory, it does not refuse; non-test 'serf' mentions outside the migrate code number about 13, not 18; source also covers ~/.evener (interim generation) so removal also strands those users. Still conflicts with recovery-over-lockdown.",
+  "revised_fix_plan": "Ask Jesse who besides him has ~/.serf or ~/.evener data. If none, delete migrate tool, launch check and install.sh notes. Otherwise replace the launch refusal with automatic first-launch migration (no refusal)."
+ },
+ {
+  "id": "x-compat-legacy-8",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Verified: rejectLegacyDelegateState (delegate_legacy_state.go:11, called delegate_runtime.go:3236) and doctor legacyDelegateFailures (doctor/jobs.go:276) are separate implementations that emit the same codes and are not equivalent (doctor strips 'job:' prefix and uses Fold; session scans raw events and also flags delegate_created/stop_gate/disposed lifecycle), plus tool refusals at session_tools_jobs.go:712,1203. UPGRADING.md documents the refusal as intended behavior, so removal is a product decision."
+ },
+ {
+  "id": "x-compat-legacy-9",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Verified: toolIntent (transcript_render.go:1746), toolIntentFromArguments (doctor/transcript.go:324) and ToolIntentFromArguments (apptranscript.go:217) all fall back to 'purpose', and all three already import agent/schema, so a shared helper is feasible. Drift confirmed (scalarString vs strict string+TrimSpace). Correction: apptranscript.go comment says TUI toolsummary/msgrender packages carry further independent copies in other modules, so the real count is higher and a schema helper would not reach all of them (grep of non-test Go finds only the three; TUI copies not found, treat as stale comment).",
+  "revised_fix_plan": "With approval drop the fallback in all three and fix the stale comments. Otherwise add schema.ToolIntent(args) and call it from the three sites; fix doctor's 'mirrors rather than shares' comment."
+ },
+ {
+  "id": "x-compat-legacy-10",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Verified: ResolveStateKeyDir (statedir.go:83), hexHash (runtime_dir.go:70), TaskStore.Progress (task_store.go:551) and the gitpath wrappers have no non-test callers; ApplyAdapterTimeout ignores its bool (llm/adapter_timeout.go:128) with 12 total call lines (4 non-test incl. definition). Correction: ObserveCloseStopJoin* (session_worktree_close.go:307) is a test seam, not a compat shim. Hook payload fields and the 'recall' alias are public surface needing Jesse approval; not verified here. Severity lowered: dead one-liners.",
+  "revised_fix_plan": "One PR per directory group deleting the no-caller wrappers and the unused bool parameter; keep alias/hook items out until approved."
+ },
+ {
+  "id": "x-compat-legacy-11",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Verified: 15 non-test //nolint:unused lines; spot-checked jobs.go, subagent_manager.go, sandbox_delegate.go, session_tools_jobs.go and plugins/enabled.go: each helper is retained for tagged harnesses or tests. watchSendArg (session_tools_jobs.go:2576) is only called from a test. Same-package _test files can host them."
+ },
+ {
+  "id": "x-compat-legacy-12",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Verified: TurnFormatIdentity introduced 2026-09-26 (#2305), sole writer agent/transcript/placement.go:81; internal/transcriptindex/build.go keeps applyLegacy (195) and legacy grouping state alongside identity handling. Real two-algorithm cost, but risk is high and the line estimate is unverified; decision belongs to Jesse before any work."
+ },
+ {
+  "id": "x-compat-legacy-13",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Verified sizes: marketplace_migration.go 1282 lines, metadata_migration.go 343, store_format.go 94; migration-related files 7514 lines of 31720 in package; migrateStore in locks.go:253 runs the migration on lock entry. Corrections: store_format.go and metadata_migration.go date from 2026-10-21 (4 days old, a managed-content/private-metadata audit, not clearly a compat shim), and marketplace_migration also enforces name-validity invariants (path traversal, '@', scratch names). Estimate of -1200 to -1500 prod lines exceeds the 1719 total prod lines of the three files and is not credible.",
+  "revised_fix_plan": "Scope to marketplace rename recovery only, after Jesse confirms which builds wrote bad names; keep name validation and the preservation behavior. Treat metadata_migration/store_format as separate, current-security work and leave them out."
+ },
+ {
+  "id": "x-compat-legacy-14",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Verified: migrateLegacyLayout/legacyDuplicatePanels (workspace.ts:378,457), introduced 2026-10-12 (#4373); legacySupersededByProbe (sessionEntryCache.ts:327) coexists with sessionCacheSchema.ts:130 'rebuilt from the server, never migrated (Ruling 37)'; questionAnswers.ts created 2026-09-11. Native draft migrations not opened. Native draft items touch user text so cannot be bulk-deleted.",
+  "revised_fix_plan": "Cache and layout: bump the DB version and reset unrecognized layout. Native drafts: leave until Jesse decides, never discard draft text."
+ },
+ {
+  "id": "x-compat-legacy-15",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Verified: cmd/evener-hub/assets holds only icons and manifest; textarea/index.tsx:24 cites cmd/evener-hub/assets/renderer.js:6307; ~49 occurrences across 28 non-test source files (claim of 55/31 slightly high). appwirelegacypath_audit_test.go is 102 lines and only polices a comment path. Comment-only cleanup; severity lowered."
+ },
+ {
+  "id": "x-compat-legacy-16",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Verified: four 'Unreleased' headings (UPGRADING.md:49,58,79,87); git tag shows 27 tags, latest v0.3.16; the purpose-rename and tui-removal entries are contained in v0.2.0 and v0.3.10, and Binary consolidation in the 'snapshot' tag."
+ },
+ {
+  "id": "x-compat-legacy-17",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Verified: readV3 has 94 references with no readV1/V2 (navigation_service.go:566, caller app_navigation.go:41); TranscriptDisplayConfigV1 has 215 references and no V2. Cosmetic rename."
+ }
+]

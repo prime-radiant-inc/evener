@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,56 +8,8 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/memorypages"
 )
-
-func TestMemoryPageFromFieldsAssemblesFrontmatter(t *testing.T) {
-	t.Parallel()
-	page, err := memoryPageFromFields(map[string]any{
-		"when": "When code stores, computes or prints a money amount: any of them",
-		"body": "# Money is integer cents\n\nMoney is integer cents.\n\n**Why:** a rounding bug.\n",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := "---\nwhen: 'When code stores, computes or prints a money amount: any of them'\n---\n\n# Money is integer cents\n\nMoney is integer cents.\n\n**Why:** a rounding bug.\n"
-	if page != want {
-		t.Fatalf("got %q\nwant %q", page, want)
-	}
-	p := parseMemoryPage("cents.md", []byte(page), time.Time{})
-	if p.Unreadable || p.When != "When code stores, computes or prints a money amount: any of them" {
-		t.Fatalf("page reads back as %+v", p)
-	}
-}
-
-func TestMemoryPageFromFieldsRequiresWhen(t *testing.T) {
-	t.Parallel()
-	for _, when := range []any{nil, "", "  \n"} {
-		args := map[string]any{"body": "# T\nfact\n"}
-		if when != nil {
-			args["when"] = when
-		}
-		_, err := memoryPageFromFields(args)
-		if !errors.Is(err, errMemoryWriteNeedsWhen) {
-			t.Fatalf("when %q: err = %v", when, err)
-		}
-	}
-}
-
-func TestMemoryPageFromFieldsRefusesFrontmatterInBody(t *testing.T) {
-	t.Parallel()
-	for _, body := range []string{"---\ndescription: d\n---\nfact\n", "\n---\nwhen: w\n---\n"} {
-		_, err := memoryPageFromFields(map[string]any{"when": "w", "body": body})
-		if !errors.Is(err, errMemoryBodyFrontmatter) {
-			t.Fatalf("body %q: err = %v", body, err)
-		}
-	}
-	// A horizontal rule is not a frontmatter block, however it opens the body.
-	for _, body := range []string{"# T\nfact\n\n---\n\nmore\n", "----\n# T\nfact\n", "---\n# T\nfact\n"} {
-		if _, err := memoryPageFromFields(map[string]any{"when": "w", "body": body}); err != nil {
-			t.Fatalf("body %q was refused: %v", body, err)
-		}
-	}
-}
 
 // memory_write takes when and body, writes the assembled page stamped as an
 // edit stamps it, with no note about a description, the page indexes by its
@@ -75,12 +26,12 @@ func TestMemoryWriteWritesStampedPageFromFields(t *testing.T) {
 	if string(raw) != want {
 		t.Fatalf("got %q\nwant %q", raw, want)
 	}
-	page := parseMemoryPage("cents.md", raw, time.Time{})
-	if got := memoryIndexLine(page); !strings.HasPrefix(got, "- [cents.md](cents.md) — When code handles money (updated ") {
+	page := memorypages.ParsePage("cents.md", raw, time.Time{})
+	if got := memorypages.IndexLine(page); !strings.HasPrefix(got, "- [cents.md](cents.md) — When code handles money (updated ") {
 		t.Fatalf("index line %q", got)
 	}
-	if strings.Contains(page.Description, memoryNoDescription) {
-		t.Fatalf("a page with a when is marked %q: %q", memoryNoDescription, page.Description)
+	if strings.Contains(page.Description, memorypages.NoDescription) {
+		t.Fatalf("a page with a when is marked %q: %q", memorypages.NoDescription, page.Description)
 	}
 	for _, args := range []map[string]any{
 		{"when": "w", "body": "---\ndescription: d\n---\n"},

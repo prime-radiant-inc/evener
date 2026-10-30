@@ -7,12 +7,7 @@
 // panel - all ported from search.js, adapted to React state instead of
 // imperative innerHTML.
 
-import type {
-  CommandDescriptor,
-  GroupedSearchRow,
-  NavigationSessionSummary,
-  SearchResponse,
-} from "@evener/appwire-client";
+import type { CommandDescriptor, GroupedSearchRow, SearchResponse } from "@evener/appwire-client";
 import {
   countSearchMatches,
   errorText,
@@ -27,7 +22,11 @@ import { requestComposerFocus } from "../../panes/session/composer/composerFocus
 import { requestQuoteInsert } from "../../panes/session/composer/quoteInsert";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { useConnectionStore } from "../../stores/connection";
-import { selectNeedsYouRows, selectNextSectionOffset, selectSectionRemaining } from "../../stores/navigation/selectors";
+import {
+  selectNextSectionOffset,
+  selectSectionCanDemand,
+  selectSectionRemaining,
+} from "../../stores/navigation/selectors";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
 import { threadsStore } from "../../stores/threads";
 import {
@@ -44,11 +43,14 @@ import {
 } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { useClient } from "../clientContext";
+import { useNeedsYou } from "../NeedsYouProvider";
+import type { NeedsYouChoice, NeedsYouController, NeedsYouSnapshot } from "../needsYouActions";
 import { openInNewTab } from "../openInNewTab";
-import { openNeedsYouSession } from "../rail/needsYouCycle";
 import { displayState } from "../rail/railNodes";
-import { navigate } from "../routing";
+import { observeRouteHistory } from "../routing";
+import { openSessionByRef } from "../sessionPlacement";
 import { cadenceStateFor } from "../sessionStatus";
+import { workspaceStore } from "../workspace";
 import { isBlocked } from "./blocked";
 import styles from "./commandpalette.module.css";
 import {
@@ -63,9 +65,10 @@ import {
   sessionScopedHandoffMatch,
   visibleCatalogCommands,
 } from "./commands";
+import { useHelpRows } from "./helpRows";
 import { computeMode } from "./mode";
 import { buildPaletteContext, focusedModel } from "./paletteContext";
-import { closePalette, usePaletteStore } from "./paletteController";
+import { closePalette, paletteStore, usePaletteStore } from "./paletteController";
 import { rememberCommand } from "./recentCommands";
 import { fetchSearch, findInSessionMatches, type HighlightPart, highlightParts, type InSessionMatch } from "./search";
 
@@ -100,47 +103,6 @@ const CLASS = {
 const SEARCH_PLACEHOLDER = "search live + past sessions · / for commands · ? for shortcuts";
 const SEARCH_DEBOUNCE_MS = 150;
 
-// UX fix: rebuilt from a stale, hand-rolled §2.8 list (search.js:697-705,
-// palette-only, whose Enter/Shift+Enter/Mod+Enter row was never accurate for
-// THIS composer's real keydown routing) into an app-wide shortcut legend,
-// rendered through the shared ShortcutList widget (Mod resolves to the reviewing
-// platform's own ⌘/Ctrl) instead of literal glyph strings.
-//
-// The palette's own rows (still accurate) come first; the composer/rail/ask-
-// dock rows this task adds follow. The same chord legitimately appears twice
-// (Mod+Enter: composer submit vs. ask dock/sandbox answer) - context-
-// dependent, not a duplicate, so both rows stay with their own label.
-const HELP_ROWS: ShortcutListItem[] = [
-  { keys: ["Mod", "K"], label: "open the command palette" },
-  {
-    keys: ["/"],
-    label:
-      "in the palette — filters app-global commands; a session command (goal, model, …) hands off to the composer instead",
-  },
-  { keys: ["/"], label: "at the start of an empty composer — opens the inline slash-command menu" },
-  { keys: ["↑"], label: "move up the results list" },
-  { keys: ["↓"], label: "move down the results list" },
-  { keys: ["Enter"], label: "run the highlighted command (or open a search result)" },
-  { keys: ["Mod", "Enter"], label: "open a search result in a new tab" },
-  { keys: ["Shift", "Enter"], label: "jump to a turn in the current session" },
-  { keys: ["Esc"], label: "close the palette (or back out of args mode)" },
-  { keys: ["Mod", "B"], label: "toggle the sidebar — inert while typing in an editable field" },
-  { keys: ["Mod", "I"], label: "focus the composer" },
-  { keys: ["Mod", "J"], label: "go to the next session needing you" },
-  { keys: ["Mod", "'"], label: "quote the selection into the composer" },
-  // Composer.tsx's own handleKeyDown: a plain Enter (or Mod+Enter, always)
-  // submits - send now, or queue when the agent is mid-turn - and Shift+
-  // Enter only steers when Enter-to-send is OFF (with it on, Shift+Enter is
-  // a literal newline instead).
-  { keys: ["Enter"], label: "send now (or queue, mid-turn) — when Enter-to-send is on" },
-  { keys: ["Shift", "Enter"], label: "steer mid-turn — when Enter-to-send is off" },
-  { keys: ["Mod", "Enter"], label: "send or queue now, regardless of the Enter-to-send setting" },
-  // AskDock.tsx's handleBatchKeyDown / sandboxEscalation.tsx's own Mod+Enter.
-  { keys: ["Mod", "Enter"], label: "answer or approve (ask dock questions, sandbox approvals)" },
-  { keys: ["←"], label: "previous ask-dock question" },
-  { keys: ["→"], label: "next ask-dock question" },
-];
-
 // Live-row status dot: the search API's normalized state (hubcore.
 // NormalizeState) mapped onto the StatusDot widget's CadenceState via the
 // shared shell/sessionStatus.ts cadenceStateFor mapping.
@@ -161,8 +123,8 @@ type PaletteItem =
   | { kind: "command"; command: ScopedCommand }
   | { kind: "arg"; item: CommandArgsEnumItem }
   // UX fix: the empty-query view's needs-you list (Mod+J's palette-visible
-  // counterpart) - one row per tree.needs_you entry.
-  | { kind: "needsYou"; node: NavigationSessionSummary }
+  // counterpart) - one row per controller-published needs-you choice.
+  | { kind: "needsYou"; choice: NeedsYouChoice }
   // 2026-08-14: the ONE row a session-scoped command name prefix-match
   // resolves to (sessionScopedHandoffMatch) - see activateHandoff's own doc
   // comment. hasFocusedSession decides both the row's own copy and whether
@@ -218,26 +180,136 @@ function Highlighted({ parts }: { parts: HighlightPart[] }) {
   );
 }
 
+// deferNeedsYouAction closes the palette, waits until the controller reports
+// itself unblocked, then runs one intended needs-you action. The palette's own
+// dialog is an aria-modal surface, and the controller observes modal
+// transitions on a MutationObserver microtask, so acting immediately after
+// closePalette cannot work. Both the needs-you result row and the
+// next-needs-you command go through this one helper, so they share one
+// deferral rule and one cancellation fence: a newer palette activation, a
+// navigation generation change, any workspace write (including a host
+// transition's host-scoped pane rewrite), an accepted route event, popstate,
+// a newer modal, or unmount discards the intent before it acts.
+function deferNeedsYouAction(
+  controller: NeedsYouController,
+  pendingSelection: { current: (() => void) | null },
+  act: (snapshot: NeedsYouSnapshot) => void,
+): void {
+  pendingSelection.current?.();
+  // A modal opening after this activation is a newer modal intent and
+  // supersedes the deferred action. The controller counts opens and does not
+  // count closes, so a dialog that was already open under the palette cannot
+  // expire this intent when it closes.
+  const modalOpenCount = controller.getSnapshot().modalOpenCount;
+  let active = true;
+  let unsubscribeController = () => {};
+  let unsubscribeNavigation = () => {};
+  let unsubscribeWorkspace = () => {};
+  let unsubscribeRoute = () => {};
+  let unsubscribePalette = () => {};
+  const cleanup = () => {
+    if (!active) return;
+    active = false;
+    unsubscribeController();
+    unsubscribeNavigation();
+    unsubscribeWorkspace();
+    unsubscribeRoute();
+    unsubscribePalette();
+    window.removeEventListener("popstate", cancel);
+    if (pendingSelection.current === cleanup) pendingSelection.current = null;
+  };
+  const cancel = () => cleanup();
+  const generation = navigationStore.getState().clientGenerationID;
+  unsubscribeNavigation = navigationStore.subscribe((state) => {
+    if (state.clientGenerationID !== generation) cancel();
+  });
+  unsubscribeWorkspace = workspaceStore.subscribe(cancel);
+  unsubscribeRoute = observeRouteHistory(cancel);
+  // A new palette activation supersedes whatever this palette had deferred:
+  // it is a newer modal intent, so it must not inherit the old intent.
+  unsubscribePalette = paletteStore.subscribe((state) => {
+    if (state.open) cancel();
+  });
+  window.addEventListener("popstate", cancel);
+  const attempt = () => {
+    if (!active) return;
+    const snapshot = controller.getSnapshot();
+    if (snapshot.modalOpenCount !== modalOpenCount) {
+      cleanup();
+      return;
+    }
+    if (snapshot.blocked) return;
+    cleanup();
+    act(snapshot);
+  };
+  unsubscribeController = controller.subscribe(attempt);
+  pendingSelection.current = cleanup;
+  closePalette();
+  attempt();
+}
+
 export function CommandPalette() {
+  const { controller, snapshot } = useNeedsYou();
   const open = usePaletteStore((s) => s.open);
   const query = usePaletteStore((s) => s.query);
   const openSeq = usePaletteStore((s) => s.openSeq);
+  const pendingSelection = useRef<(() => void) | null>(null);
+  useEffect(
+    () => () => {
+      pendingSelection.current?.();
+      pendingSelection.current = null;
+    },
+    [],
+  );
+  const selectNeedsYou = (ref: string) => {
+    // The rendered row can be a React commit behind the navigation store. Read
+    // the controller's current choice before closing, so a page that went
+    // stale since the last paint is refused with the palette still open.
+    if (!controller.getSnapshot().choices.find((choice) => choice.summary.ref === ref)?.selectable) return;
+    deferNeedsYouAction(controller, pendingSelection, (snapshot) => {
+      const choice = snapshot.choices.find((item) => item.summary.ref === ref);
+      if (choice?.selectable) controller.select(ref);
+    });
+  };
+  const nextNeedsYou = () => {
+    deferNeedsYouAction(controller, pendingSelection, () => {
+      void controller.next();
+    });
+  };
   return (
     <Dialog open={open} onClose={closePalette} title="Command palette">
-      {open ? <PaletteBody key={openSeq} initialQuery={query} /> : null}
+      {open ? (
+        <PaletteBody
+          key={openSeq}
+          initialQuery={query}
+          needsYouChoices={snapshot.choices}
+          onNeedsYouSelect={selectNeedsYou}
+          onNeedsYouNext={nextNeedsYou}
+        />
+      ) : null}
     </Dialog>
   );
 }
 
-function PaletteBody({ initialQuery }: { initialQuery: string }) {
+function PaletteBody({
+  initialQuery,
+  needsYouChoices,
+  onNeedsYouSelect,
+  onNeedsYouNext,
+}: {
+  initialQuery: string;
+  needsYouChoices: readonly NeedsYouChoice[];
+  onNeedsYouSelect: (ref: string) => void;
+  onNeedsYouNext: () => void;
+}) {
   const toasts = useToasts();
+  const helpRows = useHelpRows();
   const catalogCommands = useCommandCatalog((state) => state.commands);
   const searchClient = useClient();
   const connectionState = useConnectionStore((state) => state.state);
   // UX fix: the empty-query view's needs-you list (Mod+J's palette-visible
   // counterpart, needsYouCycle.ts's own tree-order source of truth).
   const navigation = useNavigationStore();
-  const needsYouNodes = useMemo(() => selectNeedsYouRows(navigation), [navigation]);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const [query, setQuery] = useState(initialQuery);
@@ -256,8 +328,9 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
   const mode = computeMode({ query, hasSelectedCommand: selectedCommand !== null });
   useEffect(() => {
     if (mode !== "search" || query.trim()) return;
-    const needsYouCount = needsYouNodes.length;
-    const initialDemand = needsYouCount === 0 && (navigation.manifest?.data?.sections.needs_you.count ?? 0) > 0;
+    const needsYouCount = needsYouChoices.length;
+    const initialDemand =
+      needsYouCount === 0 && !!navigation.manifest?.data && selectSectionCanDemand("needs_you", navigation);
     const overflowDemand =
       needsYouCount > 0 && activeIndex >= needsYouCount - 1 && selectSectionRemaining("needs_you", navigation) > 0;
     if (!initialDemand && !overflowDemand) return;
@@ -266,7 +339,7 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
     if (requestedNeedsPages.current.has(pageID)) return;
     requestedNeedsPages.current.add(pageID);
     void navigationStore.getState().loadSection("needs_you", offset);
-  }, [activeIndex, mode, navigation, needsYouNodes.length, query]);
+  }, [activeIndex, mode, navigation, needsYouChoices.length, query]);
 
   // The palette's context is fixed at open time - focus is trapped inside the
   // overlay, so the focused session can't change while it's open. Computing it
@@ -301,7 +374,7 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
   };
 
   function runContext(): PaletteRunContext {
-    return { ...ctx, toasts, ui };
+    return { ...ctx, toasts, ui, needsYou: { next: onNeedsYouNext } };
   }
 
   // Debounced search (§2.3): an empty query clears locally with no backend
@@ -404,9 +477,9 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
         enumItems,
         showingHelp,
         catalogCommands: visibleCatalog,
-        needsYouNodes,
+        needsYouChoices,
       }),
-    [mode, query, ctx, searchResp, selectedCommand, enumItems, showingHelp, visibleCatalog, needsYouNodes],
+    [mode, query, ctx, searchResp, selectedCommand, enumItems, showingHelp, visibleCatalog, needsYouChoices],
   );
 
   // Reset the active row whenever the row list is rebuilt (§2.3/§2.4:
@@ -540,8 +613,15 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
       // No new-tab semantics here (unlike live/past below) - this row isn't
       // a plain URL open, it's the same top-level/nested-aware seam Mod+J
       // uses, so a Mod+Enter on it just opens same-tab like a bare Enter.
-      closePalette();
-      openNeedsYouSession(item.node.ref);
+      //
+      // A row whose page is refreshing or failed is refused in place. Closing
+      // the palette first would leave the deferred controller.select(ref) to
+      // decline the same row with no explanation. The row itself states the
+      // reason and becomes activatable when the controller publishes a current
+      // page again. selectNeedsYou rechecks the controller's live snapshot
+      // before closing, covering the paint-to-keypress window.
+      if (!item.choice.selectable) return;
+      onNeedsYouSelect(item.choice.summary.ref);
       return;
     }
     if (item.kind === "insession") {
@@ -561,7 +641,7 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
       // which carries the per-client mutation identity, and a shared identity
       // would let both tabs claim each other's durable sends.
       if (newTab) openInNewTab(url);
-      else navigate(url);
+      else openSessionByRef(item.row.result.ref);
     }
   }
 
@@ -712,6 +792,7 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
           query,
           view,
           showingHelp,
+          helpRows,
           selectedCommand,
           enumStatus,
           searchFailed,
@@ -756,9 +837,9 @@ function buildView(args: {
   enumItems: CommandArgsEnumItem[];
   showingHelp: boolean;
   catalogCommands: CommandDescriptor[];
-  needsYouNodes: readonly NavigationSessionSummary[];
+  needsYouChoices: readonly NeedsYouChoice[];
 }): ResultsView {
-  const { mode, query, ctx, searchResp, selectedCommand, enumItems, showingHelp, catalogCommands, needsYouNodes } =
+  const { mode, query, ctx, searchResp, selectedCommand, enumItems, showingHelp, catalogCommands, needsYouChoices } =
     args;
   const entries: Entry[] = [];
   const items: PaletteItem[] = [];
@@ -778,9 +859,9 @@ function buildView(args: {
     // sessions instead, when there are any - Mod+J's own tree-order list,
     // opened the same way (needsYouCycle.ts). A non-empty query keeps the
     // existing live/past/in-session behavior untouched below.
-    if (!query.trim() && needsYouNodes.length > 0) {
+    if (!query.trim() && needsYouChoices.length > 0) {
       entries.push({ type: "header", section: "needs-you", label: "Needs you" });
-      for (const node of needsYouNodes) push({ kind: "needsYou", node });
+      for (const choice of needsYouChoices) push({ kind: "needsYou", choice });
       return { entries, items };
     }
     // Subagent hits group under their top-level session (shared client
@@ -845,13 +926,25 @@ function renderResults(args: {
   query: string;
   view: ResultsView;
   showingHelp: boolean;
+  helpRows: ShortcutListItem[];
   selectedCommand: Command | null;
   enumStatus: "idle" | "loading" | "loaded" | "error";
   searchFailed: boolean;
   activeIndex: number;
   onActivate: (index: number) => void;
 }) {
-  const { mode, query, view, showingHelp, selectedCommand, enumStatus, searchFailed, activeIndex, onActivate } = args;
+  const {
+    mode,
+    query,
+    view,
+    showingHelp,
+    helpRows,
+    selectedCommand,
+    enumStatus,
+    searchFailed,
+    activeIndex,
+    onActivate,
+  } = args;
 
   if (showingHelp) {
     return (
@@ -860,7 +953,7 @@ function renderResults(args: {
           <Eyebrow>Keyboard shortcuts</Eyebrow>
         </div>
         <div className={CLASS.help}>
-          <ShortcutList items={HELP_ROWS} />
+          <ShortcutList items={helpRows} />
         </div>
       </>
     );
@@ -930,10 +1023,12 @@ function Row({
 }) {
   // aria-disabled, never the disabled attribute: the row must stay focusable
   // and activatable so choosing it explains itself (activateCommand /
-  // activateHandoff), instead of swallowing the keystroke.
+  // activateHandoff), or is refused in place by the needs-you guard in
+  // activateResult, instead of swallowing the keystroke.
   const unavailable =
     (item.kind === "command" && item.command.unavailableReason !== undefined) ||
-    (item.kind === "handoff" && !item.hasFocusedSession);
+    (item.kind === "handoff" && !item.hasFocusedSession) ||
+    (item.kind === "needsYou" && !item.choice.selectable);
   const nested = item.kind === "past" && item.row.nested;
   const indirect = item.kind === "past" && item.row.indirect;
   const className = [
@@ -951,6 +1046,8 @@ function Row({
       className={className}
       role="option"
       data-kind={item.kind}
+      data-ref={item.kind === "needsYou" ? item.choice.summary.ref : undefined}
+      data-refresh-state={item.kind === "needsYou" ? (item.choice.refreshState ?? undefined) : undefined}
       data-nested={nested || undefined}
       data-indirect={indirect || undefined}
       aria-selected={active}
@@ -1010,11 +1107,12 @@ function RowContent({ item, query }: { item: PaletteItem; query: string }) {
     );
   }
   if (item.kind === "needsYou") {
+    const refusal = needsYouRefusal(item.choice);
     return (
       <>
-        <StatusDot state={cadenceStateFor(displayState(item.node))} />
-        <span className={CLASS.title}>{item.node.title}</span>
-        <span className={CLASS.hint}>needs you</span>
+        <StatusDot state={cadenceStateFor(displayState(item.choice.summary))} />
+        <span className={CLASS.title}>{item.choice.summary.title}</span>
+        {refusal ? <span className={CLASS.unavailable}>{refusal}</span> : <span className={CLASS.hint}>needs you</span>}
       </>
     );
   }
@@ -1068,4 +1166,16 @@ function RowContent({ item, query }: { item: PaletteItem; query: string }) {
       {item.row.result.age && <span className={CLASS.age}>{item.row.result.age}</span>}
     </>
   );
+}
+
+// needsYouRefusal is the palette row's reason a needs-you choice cannot be
+// activated, or undefined when it can. It reads the controller's structured
+// refresh state, never the row's appearance. The copy matches #4846's
+// NextNeedsYou.rowMeta; it stays local because that file is out of this
+// follow-up's scope.
+function needsYouRefusal(choice: NeedsYouChoice): string | undefined {
+  if (choice.selectable) return undefined;
+  if (choice.refreshState === "failed") return "Couldn't refresh";
+  if (choice.refreshState === "refreshing") return "Refreshing";
+  return undefined;
 }

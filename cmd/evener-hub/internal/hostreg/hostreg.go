@@ -68,10 +68,9 @@ type Host struct {
 	Name string
 	SSH  string
 	User string
-	// EvenerPath, ConfigPath, and Addr carry the host's non-default locations:
-	// the binary, its hub.toml, and the hub's listen address. Consumers need
-	// them to attach with the host's own configuration rather than a default
-	// that would address the wrong process.
+	// EvenerPath and ConfigPath select the owning executable and configuration.
+	// Addr is listener intent only for explicitly authorized fresh bootstrap,
+	// never a connection, presence or restart target.
 	EvenerPath string
 	ConfigPath string
 	Addr       string
@@ -846,6 +845,13 @@ func (r *Registry) Get(name string) (Host, bool) {
 // mints together. All three are needed.
 func SameRegistration(a, b Host) bool {
 	return a.Equal(b) && a.Generation == b.Generation && a.IncarnationID == b.IncarnationID
+}
+
+// SameRegistrationAndPresence is SameRegistration plus the presence epoch, for
+// callers that fence on the full registration identity (content, generation,
+// incarnation id, presence epoch) before acting on a captured entry.
+func SameRegistrationAndPresence(a, b Host) bool {
+	return SameRegistration(a, b) && a.PresenceEpoch == b.PresenceEpoch
 }
 
 // SameRegistration reports whether name is currently registered as the same

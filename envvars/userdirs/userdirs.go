@@ -3,6 +3,7 @@
 package userdirs
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 
@@ -23,6 +24,39 @@ func ConfigRoot(xdgConfigHome string, userHomeDir func() (string, error)) string
 		base = filepath.Join(home, ".config")
 	}
 	return filepath.Join(base, "evener")
+}
+
+// ErrNoStateHome reports that neither XDG_STATE_HOME nor a home directory is
+// available, so there is no honest place for Evener's state. Callers surface
+// it rather than writing under a temporary or relative directory.
+var ErrNoStateHome = errors.New("no state home: neither XDG_STATE_HOME nor a home directory is available")
+
+// StateHome resolves the XDG state home (the parent of the "evener" state
+// root) from an XDG state base and a caller-supplied home-directory lookup.
+// It returns ErrNoStateHome when the base is empty and the home lookup fails
+// or yields nothing.
+func StateHome(xdgStateHome string, userHomeDir func() (string, error)) (string, error) {
+	if xdgStateHome != "" {
+		return xdgStateHome, nil
+	}
+	home, err := userHomeDir()
+	if err != nil {
+		return "", errors.Join(ErrNoStateHome, err)
+	}
+	if home == "" {
+		return "", ErrNoStateHome
+	}
+	return filepath.Join(home, ".local", "state"), nil
+}
+
+// StateRoot resolves Evener's machine-generated state root,
+// <state home>/evener. See StateHome for the error contract.
+func StateRoot(xdgStateHome string, userHomeDir func() (string, error)) (string, error) {
+	base, err := StateHome(xdgStateHome, userHomeDir)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(base, "evener"), nil
 }
 
 // Subdir derives a child directory or file from a config root. It preserves an
@@ -58,6 +92,26 @@ func DefaultConfigRoot() string {
 	return ConfigRoot(envvars.XDGConfigHome.Getenv(), os.UserHomeDir)
 }
 
+// DefaultStateHome resolves the XDG state home from the process environment.
+func DefaultStateHome() (string, error) {
+	return StateHome(envvars.XDGStateHome.Getenv(), os.UserHomeDir)
+}
+
+// DefaultStateRoot resolves the Evener state root from the process
+// environment: $XDG_STATE_HOME/evener, or ~/.local/state/evener.
+//
+// It holds machine-generated, non-config state: the auth token, the past-
+// session index, the hub lock, and the daemon rendezvous/log directory. It is
+// the evener-wide counterpart to DefaultConfigRoot (user-editable config, e.g.
+// providers.toml) and to agent.RuntimeDir (per-project session state, also
+// under $XDG_STATE_HOME/evener). EVENER_STATE_DIR does NOT override this root:
+// that variable is a per-invocation project/session state override, a
+// different concept from this evener-wide root, and XDG_STATE_HOME is already
+// the standard override for it.
+func DefaultStateRoot() (string, error) {
+	return StateRoot(envvars.XDGStateHome.Getenv(), os.UserHomeDir)
+}
+
 // StateHomeForBucketDir reports the XDG-style state home that a project
 // bucket directory lives under, or "" when stateDir is not laid out as
 // <stateHome>/evener/projects/<project-id>.
@@ -85,4 +139,33 @@ func StateHomeForBucketDir(stateDir string) string {
 		return ""
 	}
 	return filepath.Dir(evener)
+}
+
+// HomeRootFile is one file or directory that used to live directly under a
+// legacy (~/.serf) or interim (~/.evener) home root, and the XDG root it
+// belongs under in the final layout.
+type HomeRootFile struct {
+	Name  string // basename under the home root
+	State bool   // true: XDG state root; false: XDG config root
+	Kind  string // migration report label
+}
+
+// HomeRootFiles is the complete inventory of what ~/.serf and ~/.evener held.
+// providers.toml/credentials.toml/hub.toml/launch.toml are user-editable
+// configuration and move to the XDG config root; auth-token/index.db/hub.lock/
+// run/deletions are machine-generated (or, for hub.lock and run,
+// runtime-coordination) state and move to the XDG state root. evener-migrate
+// moves these and the launch check uses the same list to decide whether a
+// home root still holds unmigrated data, so both always agree on what
+// "migrated" means.
+var HomeRootFiles = []HomeRootFile{
+	{Name: "providers.toml", Kind: "provider config"},
+	{Name: "credentials.toml", Kind: "credentials"},
+	{Name: "hub.toml", Kind: "hub config"},
+	{Name: "launch.toml", Kind: "launch config"},
+	{Name: "auth-token", State: true, Kind: "hub auth token"},
+	{Name: "index.db", State: true, Kind: "past-session index"},
+	{Name: "hub.lock", State: true, Kind: "hub lock"},
+	{Name: "run", State: true, Kind: "daemon rendezvous/log directory"},
+	{Name: "deletions", State: true, Kind: "deletion-fence state"},
 }

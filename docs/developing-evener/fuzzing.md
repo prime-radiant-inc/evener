@@ -292,9 +292,9 @@ stateful/sequence property fuzzer — no build tag hides them, so a plain
 Each test in the family is now individually gated at the top of its body:
 
 ```go
-func TestDelegateSeqFuzz(t *testing.T) {
+func TestWatchSeqFuzz(t *testing.T) {
 	if os.Getenv("EVENER_FUZZ_TESTS") != "1" {
-		t.Skip("fuzz: skipped by default; run `make test-fuzz`, or EVENER_FUZZ_TESTS=1 go test ./agent -run TestDelegateSeqFuzz -count=1 -v")
+		t.Skip("fuzz: skipped by default; run `make test-fuzz`, or EVENER_FUZZ_TESTS=1 go test ./agent -run TestWatchSeqFuzz -count=1 -v")
 	}
 	...
 ```
@@ -302,28 +302,28 @@ func TestDelegateSeqFuzz(t *testing.T) {
 The gate is an env-var check rather than reusing `-short`, precisely so that
 `go test ./agent` with no flags stays fuzz-free too — matching the ruling's
 spirit rather than only its `-short` letter. The gate is the first statement
-in every one of these functions, including the two (`TestDelegateSeqFuzz`,
-`TestLifecycleSeqFuzz`) that resolve `fuzz/promoter.PersistPaths` before
-deciding whether to call `t.Parallel()`: the skip must fire before any of that
-path resolution or parallelism decision runs.
+in every one of these functions, including `TestLifecycleSeqFuzz`, which
+resolves `fuzz/promoter.PersistPaths` before deciding whether to call
+`t.Parallel()`: the skip must fire before any of that path resolution or
+parallelism decision runs.
 
 The family, by file and function:
 
 | File | Function |
 | --- | --- |
-| `agent/delegate_seqfuzz_test.go` | `TestDelegateSeqFuzz` |
 | `agent/watch_seqfuzz_test.go` | `TestWatchSeqFuzz` |
 | `agent/lifecycle_seqfuzz_test.go` | `TestLifecycleSeqFuzz` |
 | `agent/jobs_fc2_seqfuzz_test.go` | `TestJobsFc2DescendantMergeSeqFuzz` |
 | `agent/registry_schemafuzz_test.go` | `TestToolArgsSchemaFuzz` |
 | `agent/internal/contextmgr/compaction_seqfuzz_test.go` | `TestCompactionSeqFuzz` |
+| `agent/internal/contextmgr/forcecompact_doublelayer_seqfuzz_test.go` | `TestForceCompactDoubleLayerSeqFuzz` |
 | `agent/internal/contextmgr/maybecompact_fc1_seqfuzz_test.go` | `TestFc1MaybeCompactSeqFuzz` |
 | `agent/internal/jobstore/seqfuzz_test.go` | `TestJobstoreSeqFuzz` |
 | `internal/appserver/router_seqfuzz_test.go` | `TestRouterSeqFuzz` |
 | `internal/appserver/hub_multisession_seqfuzz_test.go` | `TestHubMultiSessionSeqFuzz` |
 
 A test that merely has "fuzz" in its name is not automatically in this family
-— `TestDelegateSeqFuzzReplayClean`, `TestToolArgsAdapter_PromotesDeterministicFailure`,
+— `TestToolArgsAdapter_PromotesDeterministicFailure`,
 and the other promoter-adapter tests alongside these files replay one fixed,
 deterministic artifact (or a synthetic failure) rather than running a
 `rapid.Check` search; they stay in the default suite because they are fast and

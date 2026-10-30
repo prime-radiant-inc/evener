@@ -330,10 +330,7 @@ func TestCuratedOverlay_GoogleVertexExpress(t *testing.T) {
 		t.Fatal("express row did not inherit google's gemini-2.5-flash")
 	}
 
-	res, err := r.Resolve("google-vertex-express/gemini-2.5-flash")
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := mustResolve(t, r, "google-vertex-express/gemini-2.5-flash")
 	if res.Transport.BaseURL != "https://aiplatform.googleapis.com/v1" || res.Credential.Value != "k-express" || res.Credential.Source != "env:GOOGLE_VERTEX_API_KEY" || res.Synthesized {
 		t.Fatalf("resolved: base=%q cred=%+v synthesized=%v", res.Transport.BaseURL, res.Credential, res.Synthesized)
 	}

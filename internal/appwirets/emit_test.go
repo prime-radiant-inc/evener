@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -368,27 +369,6 @@ func TestRegistryPanicsOnDivergentSameNameTypes(t *testing.T) {
 	registerTopLevel(reg, AttentionSummary{}, "unused")
 }
 
-// The live catalog already contains one same-named pair across packages —
-// hubapi.AttentionSummary and appwire.AttentionSummary (#1014's aliasing never
-// landed here). Their shapes are identical, so the generated TypeScript cannot
-// tell them apart and the dedup is invisible and correct. This pins that the
-// collision guard leaves such a pair alone: no panic, one interface emitted.
-func TestRegistryAllowsIdenticalSameNameTypesFromDifferentPackages(t *testing.T) {
-	reg := newRegistry()
-	registerTopLevel(reg, hubapi.AttentionSummary{}, "unused")
-	registerTopLevel(reg, appwire.AttentionSummary{}, "unused")
-
-	occurrences := 0
-	for _, name := range reg.order {
-		if name == "AttentionSummary" {
-			occurrences++
-		}
-	}
-	if occurrences != 1 {
-		t.Fatalf("AttentionSummary registered %d times, want 1 (registered: %v)", occurrences, reg.order)
-	}
-}
-
 // A same-named pair that renders identically is deduped, but the second
 // claimant's fields must still be walked: otherwise a divergent same-named
 // type reachable only through the dropped claimant would never be discovered,
@@ -739,6 +719,48 @@ func TestEmitCatalogEmitsRuntimeNotificationNames(t *testing.T) {
 
 	if !strings.Contains(out, "export type NotificationName = (typeof NOTIFICATION_NAMES)[number];\n") {
 		t.Error("NotificationName is not derived from NOTIFICATION_NAMES")
+	}
+}
+
+// Every closed string enum carries a runtime catalog of its Go values and a
+// type derived from it, and a field of that Go type references the type by
+// name instead of widening to string.
+func TestEmitCatalogEmitsStringEnums(t *testing.T) {
+	out := EmitCatalog()
+	for _, e := range stringEnums {
+		if got := runtimeNameList(t, out, e.constName); !slices.Equal(got, e.values) {
+			t.Errorf("%s = %v, want %v", e.constName, got, e.values)
+		}
+		if got := typeExpr(e.goType); got != e.typeName {
+			t.Errorf("typeExpr(%s) = %q, want %q", e.goType, got, e.typeName)
+		}
+	}
+	if !strings.Contains(out, "  status: TaskStatus;\n") {
+		t.Error("Task.status is not typed by the TaskStatus enum")
+	}
+}
+
+func TestEmitCatalogEmitsRetrySafeMutationMethods(t *testing.T) {
+	got := runtimeNameList(t, EmitCatalog(), "RETRY_SAFE_MUTATION_METHODS")
+	if !slices.Equal(got, appwire.RetrySafeMutationMethods) {
+		t.Fatalf("RETRY_SAFE_MUTATION_METHODS = %v, want %v", got, appwire.RetrySafeMutationMethods)
+	}
+}
+
+func TestEmitCatalogEmitsShippedTranscriptDisplayDefaults(t *testing.T) {
+	out := EmitCatalog()
+	const open = "export const SHIPPED_TRANSCRIPT_DISPLAY_DEFAULTS: TranscriptDisplayDefaults = "
+	_, rest, ok := strings.Cut(out, open)
+	if !ok {
+		t.Fatal("missing SHIPPED_TRANSCRIPT_DISPLAY_DEFAULTS")
+	}
+	literal, _, _ := strings.Cut(rest, ";\n")
+	var got appwire.TranscriptDisplayDefaults
+	if err := json.Unmarshal([]byte(literal), &got); err != nil {
+		t.Fatalf("decode emitted defaults: %v", err)
+	}
+	if want := appwire.TranscriptDisplayShippedDefaults(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("emitted defaults = %+v, want %+v", got, want)
 	}
 }
 
@@ -1119,5 +1141,55 @@ func TestEmitHostRequestMethodCatalog(t *testing.T) {
 	}
 	if !strings.Contains(out, "export type HostRequestMethod = (typeof HOST_REQUEST_METHODS)[number];\n") {
 		t.Error("HostRequestMethod is not derived from the runtime catalog")
+	}
+}
+
+// WIRE_FIELD_KEYS carries, for every wire type a client validator checks
+// against, exactly the JSON field names of the registered Go struct, so the
+// validator's allowed-key list cannot drift from the wire type.
+func TestEmitCatalogEmitsWireFieldKeys(t *testing.T) {
+	out := EmitCatalog()
+	const open = "export const WIRE_FIELD_KEYS = {\n"
+	_, rest, ok := strings.Cut(out, open)
+	if !ok {
+		t.Fatal("missing WIRE_FIELD_KEYS")
+	}
+	body, _, ok := strings.Cut(rest, "} as const;\n")
+	if !ok {
+		t.Fatal("WIRE_FIELD_KEYS has no `} as const;` terminator")
+	}
+	emitted := map[string][]string{}
+	for line := range strings.SplitSeq(strings.TrimSpace(body), "\n") {
+		name, list, ok := strings.Cut(strings.TrimSpace(line), ": ")
+		if !ok {
+			t.Fatalf("WIRE_FIELD_KEYS line has no name: %q", line)
+		}
+		var keys []string
+		if err := json.Unmarshal([]byte(strings.TrimSuffix(list, ",")), &keys); err != nil {
+			t.Fatalf("decode %s keys: %v", name, err)
+		}
+		emitted[name] = keys
+	}
+
+	for _, name := range keyedWireTypes {
+		if _, ok := emitted[name]; !ok {
+			t.Errorf("WIRE_FIELD_KEYS is missing %s", name)
+		}
+	}
+	for name, keys := range emitted {
+		if !strings.Contains(out, "export interface "+name+" {\n") {
+			t.Errorf("WIRE_FIELD_KEYS names %s, which is not an emitted interface", name)
+		}
+		if len(keys) == 0 {
+			t.Errorf("WIRE_FIELD_KEYS.%s is empty", name)
+		}
+	}
+	if got, want := emitted["EvenerUsage"], []string{"inputTokens", "outputTokens", "cacheReadTokens", "totalTokens"}; !slices.Equal(got, want) {
+		t.Errorf("WIRE_FIELD_KEYS.EvenerUsage = %v, want %v", got, want)
+	}
+	for _, f := range rawFieldsOf(reflect.TypeFor[appwire.EvenerDelegateInfo]()) {
+		if !slices.Contains(emitted["EvenerDelegateInfo"], f.json) {
+			t.Errorf("WIRE_FIELD_KEYS.EvenerDelegateInfo lacks %s", f.json)
+		}
 	}
 }

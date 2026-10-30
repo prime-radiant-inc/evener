@@ -5,6 +5,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { expect, test, vi } from "vitest";
+import { readModuleCss } from "../../styles/cssBlock";
 import { Select } from "./index";
 
 const OPTIONS = [
@@ -123,8 +124,7 @@ test("declares the sunken-field background/shadow and an edge-strong hover/focus
 });
 
 test("keeps the native select at 32px on desktop and the mobile touch floor", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "select.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readModuleCss(import.meta.url, "select.module.css");
   expect(css).toMatch(/\.select\s*\{[^}]*height:\s*32px/);
   expect(css).toMatch(
     /@media \(max-width: 899px\), \(any-pointer: coarse\) \{[\s\S]*?\.select\s*\{[^}]*min-height:\s*var\(--tap-min\)/,

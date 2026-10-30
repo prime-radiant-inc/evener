@@ -12,13 +12,14 @@ import (
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/cmdutil"
 )
 
 // TestConfigureSandboxOffIsNoop: --sandbox off (the default) leaves the config's
 // carrier fields untouched, so a default session is byte-identical to today.
 func TestConfigureSandboxOffIsNoop(t *testing.T) {
 	cfg := agent.SessionConfig{}
-	if err := configureSandbox(&cfg, "off", "on"); err != nil {
+	if err := cmdutil.ConfigureSandbox(&cfg, "off", "on"); err != nil {
 		t.Fatalf("off must not error: %v", err)
 	}
 	if cfg.Sandbox != "" || cfg.SandboxNet != nil {
@@ -28,7 +29,7 @@ func TestConfigureSandboxOffIsNoop(t *testing.T) {
 	// An unset mode ("" — internal callers that skip the flag layer) is also off,
 	// not an "unknown mode" error.
 	empty := agent.SessionConfig{}
-	if err := configureSandbox(&empty, "", ""); err != nil {
+	if err := cmdutil.ConfigureSandbox(&empty, "", ""); err != nil {
 		t.Fatalf("empty mode must default to off, got error: %v", err)
 	}
 	if empty.Sandbox != "" || empty.SandboxNet != nil {
@@ -44,7 +45,7 @@ func TestConfigureSandboxOffIsNoop(t *testing.T) {
 func TestConfigureSandboxNonOffCarriesInert(t *testing.T) {
 	for _, mode := range []string{"read-only", "workspace-write", "restricted"} {
 		cfg := agent.SessionConfig{}
-		if err := configureSandbox(&cfg, mode, "off"); err != nil {
+		if err := cmdutil.ConfigureSandbox(&cfg, mode, "off"); err != nil {
 			t.Fatalf("mode %q must no longer error at the flag boundary (gate removed): %v", mode, err)
 		}
 		if cfg.Sandbox != mode {
@@ -59,10 +60,10 @@ func TestConfigureSandboxNonOffCarriesInert(t *testing.T) {
 // TestConfigureSandboxBadValues: an unknown mode or net value is a clear error.
 func TestConfigureSandboxBadValues(t *testing.T) {
 	cfg := agent.SessionConfig{}
-	if err := configureSandbox(&cfg, "bogus", "on"); err == nil {
+	if err := cmdutil.ConfigureSandbox(&cfg, "bogus", "on"); err == nil {
 		t.Error("an unknown --sandbox mode must error")
 	}
-	if err := configureSandbox(&cfg, "off", "maybe"); err == nil {
+	if err := cmdutil.ConfigureSandbox(&cfg, "off", "maybe"); err == nil {
 		t.Error("an invalid --sandbox-net value must error")
 	}
 }
@@ -74,8 +75,8 @@ func TestConfigureSandboxBadValues(t *testing.T) {
 func TestSandboxFlagOffIsInert(t *testing.T) {
 	worktree := t.TempDir()
 	cfg := agent.SessionConfig{}
-	if err := configureSandbox(&cfg, "off", "on"); err != nil {
-		t.Fatalf("configureSandbox(off): %v", err)
+	if err := cmdutil.ConfigureSandbox(&cfg, "off", "on"); err != nil {
+		t.Fatalf("cmdutil.ConfigureSandbox(off): %v", err)
 	}
 	env := execenv.NewLocalExecutionEnvironment(worktree)
 	t.Cleanup(env.Cleanup)
@@ -123,15 +124,15 @@ func TestSandboxFlagRestrictedEnforces(t *testing.T) {
 
 	// The flag boundary: a non-off mode now carries inert without erroring (gate gone).
 	cfg := agent.SessionConfig{}
-	if err := configureSandbox(&cfg, "restricted", "on"); err != nil {
-		t.Fatalf("configureSandbox(restricted): %v", err)
+	if err := cmdutil.ConfigureSandbox(&cfg, "restricted", "on"); err != nil {
+		t.Fatalf("cmdutil.ConfigureSandbox(restricted): %v", err)
 	}
 
 	// The live-flip: provisioning builds an enforced env (file-tool layer + wrapper).
 	env := execenv.NewLocalExecutionEnvironment(worktree)
 	t.Cleanup(env.Cleanup)
-	if err := provisionSandboxWithHost(env, &cfg, worktree, facts); err != nil {
-		t.Fatalf("provisionSandboxWithHost(restricted): %v", err)
+	if err := cmdutil.ProvisionSandboxWithHost(env, &cfg, worktree, facts); err != nil {
+		t.Fatalf("cmdutil.ProvisionSandboxWithHost(restricted): %v", err)
 	}
 	if env.Sandbox == nil || !env.Sandbox.Enforced() {
 		t.Fatal("restricted flag path must build an enforced env")
@@ -166,12 +167,11 @@ func TestSandboxFlagRestrictedEnforces(t *testing.T) {
 	}
 }
 
-// TestSandboxReprovisionAfterCleanup proves EnableSandbox is re-entrant after a
-// Cleanup: provisioning, disposing the env, and provisioning again must mint a FRESH
-// session tmp and a usable enforced env rather than leaving a stale one pointing at a
-// disposed tmp. This property backs any path that re-provisions an env (e.g. a
-// delegate re-rooting/resuming onto a cleaned env). Gated on a real bwrap host and
-// skipped under -short.
+// TestSandboxReprovisionAfterCleanup proves /clear provisions a new session with
+// fresh scratch while retaining the old session's scratch for handoff. Like the
+// production clear path, it resets the session ID and builds a fresh env: resuming
+// the same named session intentionally reopens its scratch. Gated on a real bwrap
+// host and skipped under -short.
 func TestSandboxReprovisionAfterCleanup(t *testing.T) {
 	if testing.Short() {
 		t.Skip("real-bwrap sandbox re-provision skipped under -short")
@@ -188,12 +188,12 @@ func TestSandboxReprovisionAfterCleanup(t *testing.T) {
 	}
 
 	cfg := agent.SessionConfig{}
-	if err := configureSandbox(&cfg, "workspace-write", "on"); err != nil {
+	if err := cmdutil.ConfigureSandbox(&cfg, "workspace-write", "on"); err != nil {
 		t.Fatalf("configureSandbox: %v", err)
 	}
 	env := execenv.NewLocalExecutionEnvironment(worktree)
 	t.Cleanup(env.Cleanup)
-	if err := provisionSandboxWithHost(env, &cfg, worktree, facts); err != nil {
+	if err := cmdutil.ProvisionSandboxWithHost(env, &cfg, worktree, facts); err != nil {
 		t.Fatalf("first provision: %v", err)
 	}
 	if env.Wrapper == nil {
@@ -203,8 +203,12 @@ func TestSandboxReprovisionAfterCleanup(t *testing.T) {
 	if _, err := os.Stat(tmp1); err != nil {
 		t.Fatalf("first session tmp must exist: %v", err)
 	}
+	artifact := filepath.Join(tmp1, "handoff.txt")
+	if err := os.WriteFile(artifact, []byte("handoff"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
-	// The old session's Close() releases the SHARED env's lease but RETAINS
+	// The old session's Close() releases its env's lease but RETAINS
 	// the scratch dir on disk for human handoff (6190f9d46, "retain delegate
 	// scratch for handoff") - the /clear scenario must not destroy artifacts
 	// a person may still want.
@@ -213,24 +217,43 @@ func TestSandboxReprovisionAfterCleanup(t *testing.T) {
 		t.Errorf("first session tmp must be retained after Cleanup (handoff contract): %v", err)
 	}
 
-	// The /clear fix: re-provisioning rebuilds an enforced env with a FRESH tmp.
-	if err := provisionSandboxWithHost(env, &cfg, worktree, facts); err != nil {
+	// /clear copies the launch config, clears its picked ID, and provisions a new
+	// env. Reusing either identity would instead model same-session scratch reuse.
+	clearCfg := cfg
+	clearCfg.SessionID = ""
+	clearEnv := execenv.NewLocalExecutionEnvironment(worktree)
+	t.Cleanup(clearEnv.Cleanup)
+	if err := cmdutil.ProvisionSandboxWithHost(clearEnv, &clearCfg, worktree, facts); err != nil {
 		t.Fatalf("re-provision after cleanup: %v", err)
 	}
-	if env.Sandbox == nil || !env.Sandbox.Enforced() || env.Wrapper == nil {
+	if clearCfg.SessionID == "" || clearCfg.SessionID == cfg.SessionID {
+		t.Fatal("cleared session must have a fresh identity")
+	}
+	// Old teardown must also be harmless while the replacement is live.
+	env.Cleanup()
+	if _, err := os.Stat(tmp1); err != nil {
+		t.Errorf("first session tmp must remain after re-provision: %v", err)
+	}
+	if got, err := os.ReadFile(artifact); err != nil || string(got) != "handoff" {
+		t.Errorf("old session's handoff artifact changed: %q, %v", got, err)
+	}
+	if clearEnv.Sandbox == nil || !clearEnv.Sandbox.Enforced() || clearEnv.Wrapper == nil {
 		t.Fatal("re-provision must rebuild an enforced env")
 	}
-	tmp2 := env.Wrapper.SessionTmp()
+	tmp2 := clearEnv.Wrapper.SessionTmp()
 	if tmp2 == tmp1 {
-		t.Error("re-provision must mint a fresh tmp, not reuse the disposed one")
+		t.Error("re-provision must mint a fresh tmp, not reuse the retained one")
 	}
 	if _, err := os.Stat(tmp2); err != nil {
 		t.Errorf("re-provisioned session tmp must exist: %v", err)
 	}
 	// A spawn under the re-provisioned env runs (the cleared session is usable).
-	res, err := env.ExecCommand(context.Background(), "echo REPROVISION-OK", 15000, worktree, nil)
+	res, err := clearEnv.ExecCommand(context.Background(), "echo REPROVISION-OK", 15000, worktree, nil)
 	if err != nil {
 		t.Fatalf("spawn after re-provision failed: %v", err)
+	}
+	if res.ExitCode != 0 {
+		t.Errorf("spawn after re-provision exited %d: %q %q", res.ExitCode, res.Stdout, res.Stderr)
 	}
 	if !strings.Contains(res.Stdout, "REPROVISION-OK") {
 		t.Errorf("spawn after re-provision did not run: %q %q", res.Stdout, res.Stderr)
@@ -280,35 +303,6 @@ func TestReconcileClearSandbox(t *testing.T) {
 	}
 }
 
-// TestParseSandboxNet: on/off/empty map correctly (case- and space-insensitive);
-// anything else errors.
-func TestParseSandboxNet(t *testing.T) {
-	cases := []struct {
-		in   string
-		want bool
-		err  bool
-	}{
-		{"on", true, false},
-		{"off", false, false},
-		{"", true, false},
-		{"ON", true, false},
-		{" off ", false, false},
-		{"yes", false, true},
-	}
-	for _, tc := range cases {
-		got, err := parseSandboxNet(tc.in)
-		if tc.err {
-			if err == nil {
-				t.Errorf("parseSandboxNet(%q) should error", tc.in)
-			}
-			continue
-		}
-		if err != nil || got != tc.want {
-			t.Errorf("parseSandboxNet(%q) = %v, %v; want %v, nil", tc.in, got, err, tc.want)
-		}
-	}
-}
-
 // backendlessSandboxHost resolves a mode successfully and then has no binary to
 // enforce it with: EnableSandbox mints the session scratch it would have wrapped
 // and only THEN refuses. It is the one provisioning failure that could leave a
@@ -326,14 +320,14 @@ func TestProvisionSandboxNamesTheFreshSessionsScratch(t *testing.T) {
 	facts := sandbox.HostFacts{OS: "linux", Home: t.TempDir(), BwrapPath: "/usr/bin/bwrap", BwrapCapable: true}
 	worktree := t.TempDir()
 	cfg := agent.SessionConfig{}
-	if err := configureSandbox(&cfg, "restricted", "on"); err != nil {
-		t.Fatalf("configureSandbox(restricted): %v", err)
+	if err := cmdutil.ConfigureSandbox(&cfg, "restricted", "on"); err != nil {
+		t.Fatalf("cmdutil.ConfigureSandbox(restricted): %v", err)
 	}
 	env := execenv.NewLocalExecutionEnvironment(worktree)
 	t.Cleanup(func() { _ = env.DisposeSessionScratch() })
 
-	if err := provisionSandboxWithHost(env, &cfg, worktree, facts); err != nil {
-		t.Fatalf("provisionSandboxWithHost(restricted): %v", err)
+	if err := cmdutil.ProvisionSandboxWithHost(env, &cfg, worktree, facts); err != nil {
+		t.Fatalf("cmdutil.ProvisionSandboxWithHost(restricted): %v", err)
 	}
 	if cfg.SessionID == "" {
 		t.Fatal("provisioning a fresh session left SessionConfig.SessionID empty, so NewSession picks an ID the scratch is not named after")
@@ -380,7 +374,7 @@ func TestLaunchProvisioningFailureLeavesNoScratch(t *testing.T) {
 		old := runProvisionSandbox
 		runProvisionSandbox = func(env *execenv.LocalExecutionEnvironment, cfg *agent.SessionConfig, cwd string) error {
 			provisioned = env
-			return provisionSandboxWithHost(env, cfg, cwd, facts)
+			return cmdutil.ProvisionSandboxWithHost(env, cfg, cwd, facts)
 		}
 		t.Cleanup(func() { runProvisionSandbox = old })
 
@@ -398,7 +392,7 @@ func TestLaunchProvisioningFailureLeavesNoScratch(t *testing.T) {
 		var provisioned *execenv.LocalExecutionEnvironment
 		deps.provisionSandbox = func(env *execenv.LocalExecutionEnvironment, cfg *agent.SessionConfig, cwd string) error {
 			provisioned = env
-			return provisionSandboxWithHost(env, cfg, cwd, facts)
+			return cmdutil.ProvisionSandboxWithHost(env, cfg, cwd, facts)
 		}
 
 		err := runServeWithDeps(append(args, "--sandbox", "restricted"), deps)

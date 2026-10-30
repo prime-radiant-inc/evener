@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"io/fs"
 	"strings"
 	"testing"
 
@@ -38,19 +39,40 @@ func promptResourceCaps(t *testing.T, s *Session) (renderedResourceCaps, bool) {
 	return caps, true
 }
 
-type maskedResourceFixtureEnv struct {
-	*resourceFixtureEnv
+// cgroupV2HostEnv serves a one-CPU, 2 GiB cgroup v2 layout through the
+// optional host-file seam while its model-facing shell is masked: ExecCommand
+// succeeds with no output, as the enforced wrapper does when it hides /sys.
+type cgroupV2HostEnv struct {
+	*execenv.LocalExecutionEnvironment
 }
 
-func (e *maskedResourceFixtureEnv) ExecCommand(context.Context, string, int, string, map[string]string) (execenv.ExecResult, error) {
-	// This is the model-facing boundary: the enforced wrapper masks /sys, so the
-	// old shell probe exits successfully without returning cgroup facts.
+func (e *cgroupV2HostEnv) Platform() string  { return "linux" }
+func (e *cgroupV2HostEnv) OSVersion() string { return "Linux fixture" }
+
+func (e *cgroupV2HostEnv) ExecCommand(context.Context, string, int, string, map[string]string) (execenv.ExecResult, error) {
 	return execenv.ExecResult{ExitCode: 0}, nil
+}
+
+func (e *cgroupV2HostEnv) ReadHostFile(path string) ([]byte, error) {
+	files := map[string]string{
+		"/proc/self/cgroup":                        "0::/docker/fixture\n",
+		"/proc/self/mountinfo":                     "29 23 0:26 / /sys/fs/cgroup rw,nosuid,nodev,noexec,relatime - cgroup2 cgroup rw\n",
+		"/sys/fs/cgroup/docker/fixture/cpu.max":    "100000 100000\n",
+		"/sys/fs/cgroup/docker/fixture/memory.max": "2147483648\n",
+		"/sys/fs/cgroup/docker/cpu.max":            "max 100000\n",
+		"/sys/fs/cgroup/docker/memory.max":         "max\n",
+		"/proc/meminfo":                            "MemTotal: 65536000 kB\nMemAvailable: 32768000 kB\n",
+	}
+	content, ok := files[path]
+	if !ok {
+		return nil, fs.ErrNotExist
+	}
+	return []byte(content), nil
 }
 
 func TestRenderedEnvironmentUsesTrustedStructuredResourcesWhenModelShellMasked(t *testing.T) {
 	t.Parallel()
-	env := &maskedResourceFixtureEnv{resourceFixtureEnv: newResourceFixtureEnv(t, resourceFixtureV2("100000 100000", "2147483648"))}
+	env := &cgroupV2HostEnv{LocalExecutionEnvironment: execenv.NewLocalExecutionEnvironment(t.TempDir())}
 	info := envInfoFromEnv(env, clock.Real())
 	if info.Resources == nil || info.Resources.CPUs != 1 || info.Resources.MemoryMB != 2048 {
 		t.Fatalf("trusted resource snapshot = %+v, want finite fixture caps", info.Resources)

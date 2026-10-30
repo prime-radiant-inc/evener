@@ -21,11 +21,12 @@ import (
 	"primeradiant.com/evener/rendezvous"
 )
 
-// RelayLifecycleHooks are optional test seams the relay idle-retirement loop
-// invokes to observe teardown. They are nil in production and set once via
+// RelayLifecycleHooks are optional test seams for relay reads, publication,
+// subscription and teardown. They are nil in production and set once via
 // WebConfig at construction (never mutated after a relay goroutine starts), so
 // each hub server instance carries its own — no shared global, no data race.
 type RelayLifecycleHooks struct {
+	BeforeReadThread           func()
 	IdleExit                   func(threadID string)
 	AfterIdleDelete            func(threadID string)
 	RetryWait                  func(context.Context, time.Duration) error
@@ -43,7 +44,7 @@ type RelayLifecycleHooks struct {
 type WebConfig struct {
 	HubAddr                   string
 	AuthToken                 string                   // capability token gating every non-exempt route
-	MobileBaseURL             string                   // optional external origin used for mobile pairing QR codes
+	PublicURL                 string                   // optional external origin used for mobile pairing QR codes
 	HubStateRoot              string                   // root of hub-level machine state (auth-token, index.db, deletions/); defaults to cmdutil.DefaultStateRoot()
 	LaunchConfigRoot          string                   // root of the layered launch config (launch.toml, projects/<id>/{launch.toml,meta.toml}); user-editable, so distinct from HubStateRoot — defaults to cmdutil.DefaultConfigRoot() when empty
 	MachineRoots              []string                 // the hub's own machine's project roots (hub.toml's top-level roots), reported in ServerInfo so a client can show them beside a host's; nil means none
@@ -53,6 +54,7 @@ type WebConfig struct {
 	KeybindingsStoreErr       error                    // diagnostic returned while loading the injected store; retained for startup diagnostics
 	DaemonProcesses           daemonprocess.Controller // nil selects verified native process operations
 	RunDir                    string                   // run directory where rendezvous files live
+	SpawnTimeout              time.Duration            // how long the Hub waits for a spawned daemon to report ready; surfaced in settings
 	DaemonIdleTimeout         time.Duration            // configured idle-retirement deadline the Hub passes to spawned daemons; surfaced in settings
 	PastIndexPath             string                   // path to the SQLite past-index DB, for display in settings
 	Roster                    *Roster
@@ -94,11 +96,11 @@ type WebConfig struct {
 	// sessions by title and prompt only.
 	MessageSearch *MessageSearch
 
-	Inputs *InputsVersion // shared inputs-version counter; nil in tests (memo treats as version 0)
+	Inputs *InputsVersion // shared inputs-version counter; nil in tests (revision treats as version 0)
 
 	// RemoteThreadCache holds the last-refreshed remote-source thread list so
 	// the tree read path never blocks on a network hop. Nil in tests, which
-	// fall back to the old synchronous walk (see remoteTreeThreads).
+	// fall back to the old synchronous walk (see remoteThreadFetch).
 	RemoteThreadCache *RemoteThreadCache
 
 	// RemoteHosts are the validated [[hosts]] entries (component 03) in
@@ -147,14 +149,11 @@ type WebConfig struct {
 	RemoteHostClientIfAttached func(host string) (*appwire.Client, bool)
 	// RemoteHostFacts returns the component-04 preflight facts (protocol
 	// version, hub version, OS/arch, advertised features) for the AppWire
-	// connection behind client, the exact generation the probe resolved for the
-	// capability probe. An implementation must answer from that same generation
-	// rather than racing a reconnect: it reads one
-	// sshconn.Manager.ChannelIfAttached value and refuses (a typed
-	// SessionUnavailable) when that channel's client is not client, so a probe
-	// can never cache a snapshot assembled from two connections. The capability
-	// probe combines the facts with its AppWire reads. nil leaves the
-	// preflight-owned fields zero-valued (tests).
+	// connection behind client, the exact generation attach dialed. An
+	// implementation must answer from that same generation rather than racing a
+	// reconnect: it reads one sshconn.Manager.ChannelIfAttached value and
+	// refuses (a typed SessionUnavailable) when that channel's client is not
+	// client. nil leaves the preflight-owned fields zero-valued (tests).
 	RemoteHostFacts func(ctx context.Context, host string, client *appwire.Client) (appsource.HostFacts, error)
 	// RemoteHostHandshake returns the attach handshake facts (ProtocolVersion,
 	// ServerInfo, SourceID, Features) captured when a remote host's channel
@@ -162,9 +161,8 @@ type WebConfig struct {
 	// production it is a closure over component 04's Manager.ChannelIfAttached
 	// with the client-identity guard at the call site, not
 	// Manager.HandshakeIfAttached (which has no production caller). It takes
-	// client — the exact generation the probe resolved — and reports false when
-	// the installed channel is a different one, so the probe cannot pair one
-	// connection's wire reads with another's handshake. nil leaves those fields
+	// client — the exact generation attach dialed — and reports false when the
+	// installed channel is a different one. nil leaves those fields
 	// zero-valued (tests).
 	RemoteHostHandshake func(host string, client *appwire.Client) (appwire.InitializeResponse, bool)
 	// RemoteHostOnline reports whether the controller's channel to host is
@@ -200,34 +198,9 @@ type WebConfig struct {
 	// against (deploy pipeline 08b §10): below it the hub reports unhealthy
 	// without running the write probe. Zero takes DefaultHostMinFreeSpaceBytes.
 	HostMinFreeSpaceBytes int64
-	// The host-record retention knobs (registry spec 08 §6/§11/§15): the
-	// tombstone retention period, the per-tombstone and global tombstone
-	// bounds, and the superseded-receipt, pruned-marker, and keyless-audit
-	// bounds. Each non-positive value takes the hub package's documented
-	// default, so a zero WebConfig (tests, embedders) uses the shipped
-	// defaults.
-	HostTombstoneRetention        time.Duration
-	HostTombstoneMaxRows          int
-	HostTombstoneMaxRowBytes      int64
-	HostTombstoneMaxCount         int
-	HostTombstoneMaxBytes         int64
-	HostSupersededReceiptMaxCount int
-	HostSupersededReceiptTTL      time.Duration
-	HostPrunedReceiptMaxCount     int
-	HostPrunedReceiptTTL          time.Duration
-	HostKeylessAuditMaxCount      int
-	HostKeylessAuditTTL           time.Duration
-	// The teardown-repair bounds (registry spec 08 §6): the cleared-remnant
-	// marker bounds, the recovery-marker bounds, the attempt-history bound per
-	// remnant, and the retry's bounded execution deadline. Each non-positive
-	// value takes the hub package's documented default.
-	HostRemnantClearedMaxCount  int
-	HostRemnantClearedTTL       time.Duration
-	HostRemnantRecoveryMaxCount int
-	HostRemnantRecoveryTTL      time.Duration
-	HostRemnantAttemptMaxCount  int
-	HostRemnantTeardownTimeout  time.Duration
-	HostRemnantEscalationAge    time.Duration
+	// HostTombstoneRetention is the host-record tombstone retention period; a
+	// non-positive value takes the hub package's documented default.
+	HostTombstoneRetention time.Duration
 	// HostRemnantFence reports the open teardown remnant fencing a host name, if
 	// one does (registry spec 08 §6). It is installed by the host-management
 	// manager at construction (the manager owns the durable remnant records) and

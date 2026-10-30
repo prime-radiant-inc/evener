@@ -18,9 +18,8 @@ beforeEach(() => {
   resetPendingTurnsStoreForTests();
 });
 
-// A successful perform() deliberately does NOT reconcile the entry (see
-// pendingTurnsStore's own contract), so a resolving perform leaves the chip
-// pending - exactly the optimistic in-flight state PendingChips renders.
+// Admit a real transport attempt. Unattempted local rows belong to QueueStrip,
+// while these in-flight fixtures retain the optimistic PendingChips surface.
 async function seedPending(
   method: PendingMethod,
   text: string,
@@ -46,7 +45,7 @@ async function seedPending(
     ...skillNames.map((name) => ({ type: "skill", name })),
   ];
   const storage = new MutationOutboxIndexedDB();
-  await storage.enqueueIntent({
+  const record = await storage.enqueueIntent({
     targetRef: ref,
     method: wireMethod,
     payload: { ref, input },
@@ -59,6 +58,7 @@ async function seedPending(
     })),
     optimisticDisplay: { method: wireMethod, input },
   });
+  await storage.markAttempted(record.clientMutationId);
   storage.close();
   await refreshPendingTurnsProjection(ref);
   await flushPendingTurnsProjectionForTests();
@@ -75,11 +75,9 @@ test("renders a compact chip for a pending send, showing its preview text", asyn
   expect(screen.getByText("hello there")).toBeTruthy();
 });
 
-// #4342: a send the hub refused in band as backpressure stays a pending
-// chip — the row is still queued — but the chip marks itself busy rather
-// than reading as an ordinary in-flight send: the hub has not accepted it
-// yet and a paced retry will redeliver it.
-test("a hub-refused send's chip marks itself busy instead of reading as an ordinary send", async () => {
+// A refusal that proves no acceptance makes the row locally controllable
+// again. QueueStrip carries the busy marker and controls, not a sending chip.
+test("a locally queued hub-refused send belongs to QueueStrip, not a sending chip", async () => {
   const storage = new MutationOutboxIndexedDB();
   const row = await storage.enqueueIntent({
     targetRef: "ref_a",
@@ -99,7 +97,7 @@ test("a hub-refused send's chip marks itself busy instead of reading as an ordin
   }));
 
   render(<PendingChips sessionRef="ref_a" />);
-  expect(screen.getByText("hub is busy").closest("li")?.getAttribute("data-busy")).toBe("true");
+  expect(screen.queryByTestId("pending-chips")).toBeNull();
 });
 
 test("chips send only: steer/drain are the ghost stack's surface, never a chip", async () => {

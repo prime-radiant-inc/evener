@@ -20,7 +20,7 @@ type sessionOperations struct {
 	hubID      string
 	navigation *NavigationService
 	resolve    topLevelSessionResolver
-	relays     hubRelayFunctions
+	relays     *hubRelay
 	server     *appserver.Server
 }
 
@@ -415,7 +415,9 @@ func (o *sessionOperations) Read(ctx context.Context, params appwire.ThreadReadP
 
 func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadParams, capture bool) (appwire.ThreadReadResponse, error) {
 	cfg, sources, relays := o.cfg, o.sources, o.relays
-
+	if err := params.ValidateAnswerContinuation(); err != nil {
+		return appwire.ThreadReadResponse{}, err
+	}
 	if err := appwire.ValidateThreadReadParams(params); err != nil {
 		return appwire.ThreadReadResponse{}, err
 	}
@@ -427,6 +429,12 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 		if _, err := appwire.ParseRef(params.Ref); err != nil {
 			return appwire.ThreadReadResponse{}, appwire.InvalidParams(err.Error())
 		}
+	}
+	// Deletion is authoritative even when unrelated daemon ownership
+	// cannot be discovered. Keep the locked source check below as well:
+	// deletion may begin after this early terminal check.
+	if err := deletionFenceError(cfg, params.Ref, params.ThreadID, ""); err != nil {
+		return appwire.ThreadReadResponse{}, err
 	}
 	if cfg.Roster != nil {
 		if _, required, ownershipErr := restartRequiredDaemon(ctx, cfg, params.Ref, params.ThreadID); required || ownershipErr != nil {
@@ -456,6 +464,7 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 	}
 	read, err := relays.readThread(ctx, source, params)
 	if err != nil {
+		recovered := false
 		allowPast := allowsPastFallbackAfterLiveReadFailure(source, params, err)
 		if _, local := localPastThreadID(params); local && cfg.Roster != nil && daemonOwnershipMayHaveChanged(err) {
 			refreshErr := hubRosterRefresh(ctx, cfg.Roster)
@@ -475,9 +484,40 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 				if ownershipErr != nil {
 					return appwire.ThreadReadResponse{}, appwire.Unavailable(ownershipErr.Error())
 				}
+				// Discovery can publish a child that the first read could not
+				// route. Re-resolve under the deletion fence, then use the same
+				// live read and handoff once, without refreshing again on failure.
+				refreshedSource, sourceErr := sourceForThreadWithDeletionFence(ctx, cfg, sources, params.Ref, params.ThreadID)
+				if ctx.Err() != nil {
+					return appwire.ThreadReadResponse{}, ctx.Err()
+				}
+				if isTargetDeletedError(sourceErr) {
+					return appwire.ThreadReadResponse{}, sourceErr
+				}
+				if sourceErr != nil {
+					err = sourceErr
+				} else if daemon, ok := refreshedSource.(*appsource.LocalDaemonSource); ok {
+					source = refreshedSource
+					_, err = daemon.ResolveSubscriptionAdmission(params)
+					if err == nil {
+						read, err = relays.readThread(ctx, source, params)
+						recovered = err == nil
+					}
+					if ctx.Err() != nil {
+						if read != nil {
+							read.finish(false)
+						}
+						return appwire.ThreadReadResponse{}, ctx.Err()
+					}
+					if isTargetDeletedError(err) {
+						return appwire.ThreadReadResponse{}, err
+					}
+				}
 			}
 		}
-		if allowPast {
+		// Keep the first attempt's saved-history eligibility if the
+		// discovered owner disappears before the retry lands.
+		if !recovered && allowPast {
 			saved, ok, pastErr := unavailableThreadReadResponse(ctx, cfg, sources, params)
 			if pastErr != nil {
 				return appwire.ThreadReadResponse{}, pastErr
@@ -486,14 +526,14 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 				return saved, nil
 			}
 		}
-		return appwire.ThreadReadResponse{}, err
+		if !recovered {
+			return appwire.ThreadReadResponse{}, err
+		}
 	}
 	resp := read.response
 	liveItemCandidatesEmpty := false
 	if params.IncludeTurns {
-		if read.hasItemCandidates {
-			liveItemCandidatesEmpty = len(read.itemCandidates.Candidates.Candidates) == 0
-		} else if candidates, candidateErr := itemCandidateResultFromReadResponse(resp); candidateErr == nil {
+		if candidates, candidateErr := itemCandidateResultFromReadResponse(resp); candidateErr == nil {
 			liveItemCandidatesEmpty = len(candidates.Candidates.Candidates) == 0
 		}
 	}
@@ -535,14 +575,10 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 			resp.Thread = enrichSourcedThreadImages(source, resp.Thread)
 			annotateThreadProjects([]appwire.Thread{resp.Thread})
 		} else {
-			candidates := transcriptItemCandidateResultFromSource(read.itemCandidates)
-			if !read.hasItemCandidates {
-				var candidateErr error
-				candidates, candidateErr = sourceItemCandidateResultForRead(ctx, source, params, resp)
-				if candidateErr != nil {
-					read.finish(false)
-					return appwire.ThreadReadResponse{}, candidateErr
-				}
+			candidates, candidateErr := sourceItemCandidateResultForRead(ctx, source, params, resp)
+			if candidateErr != nil {
+				read.finish(false)
+				return appwire.ThreadReadResponse{}, candidateErr
 			}
 			packed, packErr := packThreadReadItemCandidates(candidates, func(response appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error) {
 				response.Thread = threadWithPackedTurns(resp.Thread, response.Thread.Turns)

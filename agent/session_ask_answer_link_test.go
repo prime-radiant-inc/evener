@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"reflect"
 	"testing"
 
@@ -66,7 +67,7 @@ func TestAskUser_AnswerLinkDurableAdmission(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			sess, adapter := newDurableAdmissionAskSessionWithAdapter(t, SessionConfig{})
 			ctx := seedDurableAdmissionAsk(t, sess)
-			adapter.steps = append(adapter.steps, func(llm.Request) llm.Response { return communicateResponse(true, "answer received") })
+			adapter.steps = append(adapter.steps, func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "answer received") })
 			questionID := ""
 			for _, turn := range answerLinkRecords(t, sess) {
 				if turn.Kind == schema.TurnToolResults {
@@ -97,7 +98,7 @@ func TestAskUser_AnswerLinkDurableAdmission(t *testing.T) {
 				meta, dir := sess.Meta(), sess.stateDir
 				sess.Close()
 				client := llm.NewClient()
-				client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(llm.Request) llm.Response { return communicateResponse(true, "answer received") }}})
+				client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "answer received") }}})
 				restored, err := RestoreSessionFromMeta(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
 				if err != nil {
 					t.Fatal(err)
@@ -159,9 +160,11 @@ func TestAskUser_AnswerLinkSuccessiveQuestions(t *testing.T) {
 	sess, adapter := newDurableAdmissionAskSessionWithAdapter(t, SessionConfig{})
 	ctx := seedDurableAdmissionAsk(t, sess)
 	adapter.steps = append(adapter.steps,
-		func(llm.Request) llm.Response { return toolCallResponse(askUserCall("ask2", askUserArgsValid())) },
-		func(llm.Request) llm.Response { return communicateResponse(true, "finished") },
-		func(llm.Request) llm.Response { return communicateResponse(true, "unrelated finished") },
+		func(llm.Request) llm.Response {
+			return agenttest.ToolCallResponse(askUserCall("ask2", askUserArgsValid()))
+		},
+		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "finished") },
+		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "unrelated finished") },
 	)
 	for _, input := range []string{"first answer", "second answer", "unrelated input"} {
 		if _, err := sess.ProcessInput(ctx, input, nil); err != nil {
@@ -208,7 +211,7 @@ func TestAskUser_AnswerLinkSteeringAdmission(t *testing.T) {
 			if len(questionIDs) != 1 {
 				t.Fatalf("pending question identities=%v", questionIDs)
 			}
-			adapter.steps = append(adapter.steps, func(llm.Request) llm.Response { return communicateResponse(true, "steering received") })
+			adapter.steps = append(adapter.steps, func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "steering received") })
 			if mode == "human_note" {
 				if _, err := sess.SetHumanNote("steer-link", "a note, not an answer"); err != nil {
 					t.Fatal(err)
@@ -233,7 +236,7 @@ func TestAskUser_AnswerLinkSteeringAdmission(t *testing.T) {
 				meta, dir := sess.Meta(), sess.stateDir
 				sess.Close()
 				client := llm.NewClient()
-				client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(llm.Request) llm.Response { return communicateResponse(true, "retry received") }}})
+				client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "retry received") }}})
 				restored, err := RestoreSessionFromMeta(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
 				if err != nil {
 					t.Fatal(err)

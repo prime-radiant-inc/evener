@@ -76,7 +76,7 @@ func TestUserStopRefusesARunThatIsNotRunning(t *testing.T) {
 // requestRunCancel captures the run's own done channel under the same lock
 // as its admission check, so a caller cannot be handed a channel a
 // concurrent run reset invalidates between the check and the wait. Found by
-// RoboRev on this PR: cancelAgent used to read sub.done separately, before
+// RoboRev on this PR: the caller used to read sub.done separately, before
 // this admission check, which can race a settle-and-resume in between.
 func TestRequestRunCancelReturnsTheAdmittedRunsDoneChannelAtomically(t *testing.T) {
 	original := make(chan struct{})
@@ -103,10 +103,9 @@ func TestRequestRunCancelReturnsTheAdmittedRunsDoneChannelAtomically(t *testing.
 
 // A cancellation is credited to the user in the coordinator's packet only
 // when the caller marks it a direct user stop (S6, StopDelegateRun):
-// cancelAgent's own cancel (unwired in production today) leaves the run
-// error's own text, so a future caller of cancelAgent is never misattributed
-// as "Stopped by the user." Found by RoboRev on this PR.
-func TestStableDelegateFinish_OnlyADirectUserStopReadsStoppedByTheUser(t *testing.T) {
+// any other cancel leaves the run error's own text, so it is never
+// misattributed as "Stopped by the user." Found by RoboRev on this PR.
+func TestDelegateFinish_OnlyADirectUserStopReadsStoppedByTheUser(t *testing.T) {
 	readPacketMessage := func(t *testing.T, finish delegateFinish) string {
 		t.Helper()
 		var message string
@@ -120,7 +119,7 @@ func TestStableDelegateFinish_OnlyADirectUserStopReadsStoppedByTheUser(t *testin
 	if _, err := notUserStop.requestRunCancel(false); err != nil {
 		t.Fatalf("requestRunCancel(false) = %v", err)
 	}
-	if got := readPacketMessage(t, notUserStop.stableDelegateFinish("", context.Canceled)); got != context.Canceled.Error() {
+	if got := readPacketMessage(t, notUserStop.buildDelegateFinish("", context.Canceled)); got != context.Canceled.Error() {
 		t.Fatalf("cancelled without a direct user stop = %q, want the run error's own text %q", got, context.Canceled.Error())
 	}
 
@@ -128,7 +127,7 @@ func TestStableDelegateFinish_OnlyADirectUserStopReadsStoppedByTheUser(t *testin
 	if _, err := userStop.requestRunCancel(true); err != nil {
 		t.Fatalf("requestRunCancel(true) = %v", err)
 	}
-	if got := readPacketMessage(t, userStop.stableDelegateFinish("", context.Canceled)); got != delegateUserStopMessage {
+	if got := readPacketMessage(t, userStop.buildDelegateFinish("", context.Canceled)); got != delegateUserStopMessage {
 		t.Fatalf("cancelled with a direct user stop = %q, want %q", got, delegateUserStopMessage)
 	}
 }

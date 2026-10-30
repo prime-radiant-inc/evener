@@ -11,7 +11,8 @@ precedence.
 The session engine owns binding, native tools and index refresh:
 [`session_memory.go`](../../agent/session_memory.go) and
 [`session_tools_memory.go`](../../agent/session_tools_memory.go). The owning
-host's [`DefaultStateRoot`](../../cmdutil/statedir.go) supplies these roots:
+host's [`DefaultStateRoot`](../../envvars/userdirs/userdirs.go) supplies these
+roots:
 
 ```text
 <state-root>/memory/
@@ -19,8 +20,12 @@ host's [`DefaultStateRoot`](../../cmdutil/statedir.go) supplies these roots:
 ```
 
 The state root is `$XDG_STATE_HOME/evener`, normally
-`~/.local/state/evener`. Personal pages sit directly in `memory/`, and any
-subdirectory there is part of personal memory, so nothing else is kept in it.
+`~/.local/state/evener`. With neither a state home nor a home directory there is
+no root: the session starts without memory and says so (unless memory was opted
+out anyway) instead of rooting it in a temporary or relative directory, and the
+next launch with a home has memory again. Personal pages sit
+directly in `memory/`, and any subdirectory there is part of personal memory, so
+nothing else is kept in it.
 Project memory sits in the project's default state directory, beside its
 session history, under the same `Project.ID`. A history `StateDir`,
 `--state-dir` or `EVENER_STATE_DIR` override does not relocate memory, and
@@ -241,8 +246,8 @@ cannot follow.
 ## Generated index
 
 A scope's `MEMORY.md` is not a file. Evener renders it from the scope's pages
-whenever it is needed, in [`memory_index_render.go`](../../agent/memory_index_render.go)
-and [`memory_page.go`](../../agent/memory_page.go). A hand-written root index
+whenever it is needed, in [`memory_index_render.go`](../../agent/memorypages/memory_index_render.go)
+and [`memory_page.go`](../../agent/memorypages/memory_page.go). A hand-written root index
 from earlier builds stays on disk until migrated (see **Migration**). Every
 rule here about a root `MEMORY.md` ignores letter case, since `memory.md` names
 the same file on macOS's default filesystem.

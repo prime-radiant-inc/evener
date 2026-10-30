@@ -73,6 +73,7 @@ export {
   selectProjectPage,
   selectProjectResource,
   selectProjectSummaries,
+  selectSectionCanDemand,
   selectSectionRemaining,
   selectSessionSummary,
   selectSources,

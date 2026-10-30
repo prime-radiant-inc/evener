@@ -1,20 +1,14 @@
 import { friendlyErrorMessage, type SettingsOverviewResponse, WireError } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, test } from "vitest";
-import { connectionStore } from "../../../stores/connection";
+import { resetConnectionStoreForTests } from "../../../stores/connection";
 import { resetDaemonResidentsStoreForTests } from "../../../stores/daemonResidents";
 import { resetSettingsOverviewStoreForTests } from "../../../stores/settingsOverview";
+import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
 import { HubSection } from "./hub";
 import { statusReasons } from "./reasonTestUtils";
 import { settingsFieldHelp, settingsFieldIds, settingsFieldValue } from "./settingsFieldTestUtils";
-
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  return fake;
-}
 
 const SAMPLE_RESPONSE: SettingsOverviewResponse = {
   hub: {
@@ -27,13 +21,13 @@ const SAMPLE_RESPONSE: SettingsOverviewResponse = {
 };
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetSettingsOverviewStoreForTests();
   resetDaemonResidentsStoreForTests();
 });
 
 test("fetches the overview on mount and renders the runtime and authentication fields with their help text", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/settings/overview", () => SAMPLE_RESPONSE);
   fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
 
@@ -56,7 +50,7 @@ test("fetches the overview on mount and renders the runtime and authentication f
 });
 
 test("shows a loading skeleton before the overview resolves", () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/settings/overview", () => new Promise(() => {})); // never resolves
   // daemon/list is not called until settings/overview resolves (HubResidents mounts after data)
 
@@ -69,7 +63,7 @@ describe("on load failure", () => {
   // wrote for a person to read), so friendlyErrorMessage replaces it with a
   // generic sentence - see protocol/errors.test.ts for that contract.
   test("shows an inline error state with a retry action instead of a toast", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/settings/overview", () => {
       throw new Error("raw-overview-failure");
     });
@@ -86,7 +80,7 @@ describe("on load failure", () => {
   });
 
   test("Retry re-requests the overview", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/settings/overview", () => {
       throw new Error("raw-overview-failure");
     });
@@ -105,7 +99,7 @@ describe("on load failure", () => {
   });
 
   test("a hub-reported WireError shows that error's friendly form", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const err = new WireError("overview index is rebuilding", -32000);
     fake.on("evener/settings/overview", () => {
       throw err;
@@ -120,7 +114,7 @@ describe("on load failure", () => {
 });
 
 test.each(["fixture-token-age", undefined])("renders only a fixed token mask and optional age %s", async (age) => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/settings/overview", () => ({
     ...SAMPLE_RESPONSE,
     hub: { ...SAMPLE_RESPONSE.hub, daemonIdleTimeoutMillis: 3600000, bearerTokenAge: age },
@@ -133,7 +127,7 @@ test.each(["fixture-token-age", undefined])("renders only a fixed token mask and
 });
 
 test("hides client internals when the overview transport becomes unreachable", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/settings/overview", () => {
     throw new Error('AppwireClient: cannot call "evener/settings/overview" while state is "closed"');
   });
@@ -143,7 +137,7 @@ test("hides client internals when the overview transport becomes unreachable", a
 });
 
 test("runtime details start folded while resident controls remain available", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/settings/overview", () => SAMPLE_RESPONSE);
   fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
   render(<HubSection />);

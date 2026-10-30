@@ -2,14 +2,10 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { friendlyErrorMessage, WireError } from "../../errors";
 import { deferRequest, FakeClient, failing } from "../../testing/fakeClient";
 import type { MarketplaceEntry, PluginEntry } from "../../types.gen";
+import { REFETCH_DEBOUNCE_MS } from "../refetchDebounce";
 import { createHubWriteGate, HubWriteBusyError, type HubWriteGate } from "./hubWriteGate";
 import { createMarketplacesStore } from "./marketplaces";
-import {
-  createPluginsStore,
-  PLUGIN_REFETCH_DEBOUNCE_MS,
-  PLUGIN_UPDATE_CHECK_TIMEOUT_MS,
-  type PluginsStore,
-} from "./plugins";
+import { createPluginsStore, PLUGIN_UPDATE_CHECK_TIMEOUT_MS, type PluginsStore } from "./plugins";
 
 const LINTER: PluginEntry = {
   plugin: "linter",
@@ -409,11 +405,11 @@ describe("notifications", () => {
 
     fake.emitNotification({ method: "evener/plugin/updated", params: {} });
     expect(store.getState().pluginRevision).toBe(1);
-    await vi.advanceTimersByTimeAsync(PLUGIN_REFETCH_DEBOUNCE_MS - 1);
+    await vi.advanceTimersByTimeAsync(REFETCH_DEBOUNCE_MS - 1);
     expect(store.getState().plugins).toEqual([LINTER]);
     fake.emitNotification({ method: "evener/plugin/updated", params: {} });
     expect(store.getState().pluginRevision).toBe(2);
-    await vi.advanceTimersByTimeAsync(PLUGIN_REFETCH_DEBOUNCE_MS - 1);
+    await vi.advanceTimersByTimeAsync(REFETCH_DEBOUNCE_MS - 1);
     expect(store.getState().plugins).toEqual([LINTER]); // the second notification reset the window
     await vi.advanceTimersByTimeAsync(1);
     expect(store.getState().plugins).toEqual([LINTER, FORMATTER]);

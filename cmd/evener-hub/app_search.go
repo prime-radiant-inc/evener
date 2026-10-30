@@ -260,7 +260,7 @@ func compactSessionPromptTitle(prompt string) string {
 	if len(prompt) <= maxLen {
 		return prompt
 	}
-	return strings.TrimSpace(prompt[:maxLen-1]) + "…"
+	return strings.TrimSpace(strings.ToValidUTF8(prompt[:maxLen-1], "")) + "…"
 }
 
 func pastSearchResult(e hubcore.PastEntry, decisions map[hubcore.ArchiveKey]bool, now time.Time) appwire.SearchResult {

@@ -70,7 +70,7 @@ test("decorative keeps the shared geometry: the failed diamond and the round dot
 // vitest leaves CSS Modules unprocessed, so the motion contract is read off
 // disk: the working spinner turns only inside the no-preference gate, and
 // under reduced motion the working state is the plain static alive dot.
-const CSS = readModuleCss(import.meta.url, "statusdot.module.css").replace(/\/\*[\s\S]*?\*\//g, " ");
+const CSS = readModuleCss(import.meta.url, "statusdot.module.css");
 
 test("working plays its activity spinner only when motion is allowed", () => {
   render(<StatusDot state="working" />);

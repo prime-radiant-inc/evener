@@ -240,7 +240,7 @@ func TestLoadHistoricalStableActivityWithAttention_SkipNonMatching(t *testing.T)
 	rootID := "attnskiproot"
 	otherID := "attnskipother"
 	// Create delegates owned by a different session.
-	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(otherID, "childskip", "skip me"))
+	writePastDelegates(t, stateDir, rootID, pastStableDescriptor(otherID, "childskip", "skip me"))
 	rows, _, err := loadHistoricalStableActivityWithAttention(context.Background(), stateDir, rootID, rootID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -261,7 +261,7 @@ func TestLoadHistoricalStableActivityWithAttention_SkipNonMatching(t *testing.T)
 func TestLoadHistoricalStableActivityWithAttention_UsesBoundedScan(t *testing.T) {
 	stateDir := t.TempDir()
 	rootID := "attnbounded"
-	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, "childattnbounded", "task"))
+	writePastDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, "childattnbounded", "task"))
 
 	var calls int32
 	original := scanDelegateJournal
@@ -291,7 +291,7 @@ func TestLoadHistoricalStableActivityWithAttention_RespectsCancellation(t *testi
 	t.Parallel()
 	stateDir := t.TempDir()
 	rootID := "attncancel"
-	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, "childattncancel", "task"))
+	writePastDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, "childattncancel", "task"))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -324,7 +324,7 @@ func TestLoadHistoricalStableActivityWithAttention_ChecksCancellationDuringAtten
 	for i := range descriptors {
 		descriptors[i] = pastStableDescriptor(rootID, fmt.Sprintf("childattnloopcancel%d", i), "task")
 	}
-	writePastStableDelegates(t, stateDir, rootID, descriptors...)
+	writePastDelegates(t, stateDir, rootID, descriptors...)
 	ctx := &agenttest.CountdownContext{Context: context.Background(), Allow: 10}
 
 	_, _, err := loadHistoricalStableActivityWithAttention(ctx, stateDir, rootID, rootID)
@@ -340,7 +340,7 @@ func TestLoadHistoricalStableActivityWithAttention_TornTailDiagnostic(t *testing
 	stateDir := t.TempDir()
 	rootID := "attntorntail"
 	childID := "childtorntail"
-	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "torn"))
+	writePastDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "torn"))
 	// Append an unterminated batch to the delegates.jsonl to trigger torn tail.
 	dlgPath := filepath.Join(jobsDir(stateDir, rootID), "delegates.jsonl")
 	f, err := os.OpenFile(dlgPath, os.O_WRONLY|os.O_APPEND, 0o600)
@@ -454,7 +454,7 @@ func TestLoadHistoricalStableActivity_TornTailDiagnostic(t *testing.T) {
 	stateDir := t.TempDir()
 	rootID := "basetorntail"
 	childID := "childbasetorn"
-	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "torn"))
+	writePastDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "torn"))
 	// Append an unterminated batch to trigger torn tail.
 	dlgPath := filepath.Join(jobsDir(stateDir, rootID), "delegates.jsonl")
 	f, err := os.OpenFile(dlgPath, os.O_WRONLY|os.O_APPEND, 0o600)
@@ -485,7 +485,7 @@ func TestLoadHistoricalStableActivity_NilAggregateSkipped(t *testing.T) {
 	// Create a delegates.jsonl with a delegate that folds to nil.
 	// This is hard to construct directly, so we test the normal path
 	// with a valid delegate and verify the non-nil branch (line 118).
-	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, "childnilagg", "nil test"))
+	writePastDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, "childnilagg", "nil test"))
 	rows, _, _, err := loadHistoricalStableActivity(newHistoricalActivityCache(context.Background(), ""), stateDir, rootID, rootID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -531,10 +531,10 @@ func TestLoadHistoricalStableActivityWithAttention_AttentionTranscriptError(t *t
 		t.Fatal(err)
 	}
 	// Create a transcript file so the delegate is eligible.
-	if err := os.MkdirAll(filepath.Join(stateDir, sessionsSubdir), 0o755); err != nil {
+	if err := os.MkdirAll(schema.SessionsDir(stateDir), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(stateDir, sessionsSubdir, childID+".transcript.jsonl"), []byte("{}"), 0o600); err != nil {
+	if err := os.WriteFile(schema.SessionTranscriptPath(stateDir, childID), []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_ = store.Close()

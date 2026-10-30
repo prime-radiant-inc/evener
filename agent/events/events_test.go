@@ -8,7 +8,6 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/provenance"
-	"primeradiant.com/evener/llm"
 )
 
 func TestSessionEventCarriesCausalProvenanceOnEnvelope(t *testing.T) {
@@ -153,122 +152,6 @@ func TestEventKindWireStrings(t *testing.T) {
 	}
 }
 
-func TestToStreamEvent_Mappings(t *testing.T) {
-	tests := []struct {
-		name      string
-		event     events.SessionEvent
-		wantType  llm.StreamEventType
-		wantDelta string
-		wantTool  *llm.ToolCallData
-	}{
-		{
-			name:     "AssistantTextStart",
-			event:    events.New(events.AssistantTextStartData{Model: "m"}),
-			wantType: llm.StreamEventTextStart,
-		},
-		{
-			name:      "AssistantTextDelta",
-			event:     events.New(events.AssistantTextDeltaData{Delta: "hello"}),
-			wantType:  llm.StreamEventTextDelta,
-			wantDelta: "hello",
-		},
-		{
-			name:     "AssistantTextEnd",
-			event:    events.New(events.AssistantTextEndData{Text: "done", Model: "m"}),
-			wantType: llm.StreamEventTextEnd,
-		},
-		{
-			name:     "ToolCallStart",
-			event:    events.New(events.ToolCallStartData{ToolName: "read_file", CallID: "call-1"}),
-			wantType: llm.StreamEventToolCallStart,
-			wantTool: &llm.ToolCallData{ID: "call-1", Name: "read_file"},
-		},
-		{
-			name:     "ToolCallEnd",
-			event:    events.New(events.ToolCallEndData{ToolName: "read_file", CallID: "call-1"}),
-			wantType: llm.StreamEventToolCallEnd,
-			wantTool: &llm.ToolCallData{ID: "call-1", Name: "read_file"},
-		},
-		{
-			name:     "SessionStart",
-			event:    events.New(events.SessionStartData{Profile: "p", Model: "m"}),
-			wantType: llm.StreamEventStreamStart,
-		},
-		{
-			name:     "SessionEnd",
-			event:    events.New(events.SessionEndData{Reason: "done"}),
-			wantType: llm.StreamEventFinish,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := tt.event.ToStreamEvent()
-			if got == nil {
-				t.Fatalf("ToStreamEvent() = nil, want non-nil")
-			}
-			if got.Type != tt.wantType {
-				t.Errorf("Type = %q, want %q", got.Type, tt.wantType)
-			}
-			if tt.wantDelta != "" {
-				if got.Delta != tt.wantDelta {
-					t.Errorf("Delta = %q, want %q", got.Delta, tt.wantDelta)
-				}
-			} else if got.Delta != "" {
-				t.Errorf("Delta = %q, want empty", got.Delta)
-			}
-			if tt.wantTool != nil {
-				if got.ToolCall == nil {
-					t.Fatalf("ToolCall = nil, want non-nil")
-				}
-				if got.ToolCall.ID != tt.wantTool.ID || got.ToolCall.Name != tt.wantTool.Name {
-					t.Errorf("ToolCall = %+v, want %+v", got.ToolCall, tt.wantTool)
-				}
-			} else if got.ToolCall != nil {
-				t.Errorf("ToolCall = %+v, want nil", got.ToolCall)
-			}
-		})
-	}
-}
-
-func TestToStreamEvent_AgentOnlyEventsReturnNil(t *testing.T) {
-	agentOnly := []events.EventData{
-		events.UserInputData{Text: "hi"},
-		events.EnvironmentChangedData{WorkingDir: "/work/tree"},
-		events.AssistantTextResetData{},
-		events.ReasoningSummaryDeltaData{Delta: "d"},
-		events.ToolCallOutputDeltaData{Delta: "d"},
-		events.SteeringInjectedData{Text: "s"},
-		events.QueueChangedData{Depth: 1},
-		events.TurnLimitData{},
-		events.LoopDetectionData{Message: "m"},
-		events.CommunicateData{Message: "m"},
-		events.SkillActivatedData{Name: "n"},
-		events.ContextCompactionData{},
-		events.CompactionTurnData{},
-		events.WarningData{Message: "w"},
-		events.ErrorData{Error: "e"},
-		events.JobStartedData{JobID: "j"},
-		events.JobFinishedData{JobID: "j"},
-		events.PluginLoadedData{Name: "p"},
-		events.HookStartData{},
-		events.HookEndData{},
-		events.ForkSummaryData{},
-		events.PromptLoadedData{},
-		events.RoundTimings{},
-		events.GoalContinuationData{},
-		events.GoalEndedData{},
-		events.GoalUpdatedData{},
-	}
-	for _, data := range agentOnly {
-		t.Run(string(events.New(data).Kind), func(t *testing.T) {
-			ev := events.New(data)
-			if got := ev.ToStreamEvent(); got != nil {
-				t.Errorf("ToStreamEvent() = %+v, want nil", got)
-			}
-		})
-	}
-}
-
 func TestEnvironmentChanged_KindAndPayload(t *testing.T) {
 	ev := events.New(events.EnvironmentChangedData{WorkingDir: "/work/tree"})
 	if ev.Kind != events.EventEnvironmentChanged {
@@ -280,35 +163,6 @@ func TestEnvironmentChanged_KindAndPayload(t *testing.T) {
 	}
 	if got, want := string(b), `"working_dir":"/work/tree"`; !strings.Contains(got, want) {
 		t.Fatalf("marshaled event missing %s: %s", want, got)
-	}
-}
-
-func TestToStreamEvent_WrongPayloadReturnsNil(t *testing.T) {
-	// EventAssistantTextDelta expects AssistantTextDeltaData, not SessionStartData
-	ev := events.SessionEvent{
-		Kind: events.EventAssistantTextDelta,
-		Data: events.SessionStartData{Profile: "p"},
-	}
-	if got := ev.ToStreamEvent(); got != nil {
-		t.Errorf("ToStreamEvent() = %+v, want nil", got)
-	}
-
-	// EventToolCallStart expects ToolCallStartData, not ToolCallEndData
-	ev = events.SessionEvent{
-		Kind: events.EventToolCallStart,
-		Data: events.ToolCallEndData{ToolName: "t", CallID: "c"},
-	}
-	if got := ev.ToStreamEvent(); got != nil {
-		t.Errorf("ToStreamEvent() = %+v, want nil", got)
-	}
-
-	// EventToolCallEnd expects ToolCallEndData, not ToolCallStartData
-	ev = events.SessionEvent{
-		Kind: events.EventToolCallEnd,
-		Data: events.ToolCallStartData{ToolName: "t", CallID: "c"},
-	}
-	if got := ev.ToStreamEvent(); got != nil {
-		t.Errorf("ToStreamEvent() = %+v, want nil", got)
 	}
 }
 

@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { SyncStringStorage } from "../syncStringStorage";
 import { memoryStorage } from "../syncStringStorageTestUtils";
-import { CONTINUE_READING_MS, DocumentMemory, type DocumentKey, forgetDocuments } from "./documentMemory";
+import {
+	CONTINUE_READING_MS,
+	DocumentMemory,
+	type DocumentComment,
+	type DocumentKey,
+	forgetDocuments,
+} from "./documentMemory";
 
 const plan: DocumentKey = { sessionRef: "local:s-pr2138", path: "docs/superpowers/plans/settle.md" };
 const other: DocumentKey = { sessionRef: "local:s-pr2138", path: "docs/design/flake-triage.md" };
@@ -185,24 +191,131 @@ describe("what the phone remembers about a document", () => {
 		expect(relaunched.comments(plan).map((comment) => comment.text)).toEqual(["two"]);
 	});
 
-	it("keeps the 100 most recent documents, and never drops one with unsent comments for that", () => {
-		const storage = memoryStorage();
-		let now = 0;
-		const memory = new DocumentMemory(storage, "hub-1", () => now);
-		memory.addComment(plan, { blockIndex: 0, blockHash: "h", quote: "q", text: "keep me" });
-		for (let index = 0; index < 120; index += 1) {
-			now = index + 1;
-			memory.savePosition(
-				{ sessionRef: "local:s", path: `doc-${index}.md` },
-				{ blockIndex: 0, blockHash: "h", offset: 0, progress: 0.1 },
-			);
-		}
-		const stored = JSON.parse(storage.values.get("evener.native.documents.hub-1") as string);
-		expect(Object.keys(stored)).toHaveLength(100);
-		expect(new DocumentMemory(storage, "hub-1").comments(plan).map((comment) => comment.text)).toEqual(["keep me"]);
-		expect(new DocumentMemory(storage, "hub-1").position({ sessionRef: "local:s", path: "doc-119.md" })).not.toBeNull();
-		expect(new DocumentMemory(storage, "hub-1").position({ sessionRef: "local:s", path: "doc-0.md" })).toBeNull();
+	describe.each(["increasing", "tied"] as const)("with %s timestamps", (timestamps) => {
+		it.each(["forward", "reverse", "interleaved"] as const)(
+			"retains every unsent comment on 101 documents after restart, %s insertion",
+			(order) => {
+				const storage = memoryStorage();
+				let now = 1_000;
+				const memory = new DocumentMemory(storage, "hub-1", () => now);
+				const keys = Array.from({ length: 101 }, (_, index) => ({
+					sessionRef: "local:s",
+					path: `comment-${index}.md`,
+				}));
+				let ordered = keys;
+				if (order === "reverse") ordered = [...keys].reverse();
+				else if (order === "interleaved")
+					ordered = [...keys.filter((_, index) => index % 2 === 0), ...keys.filter((_, index) => index % 2 === 1)];
+				const expected = new Map<DocumentKey, DocumentComment[]>();
+				for (const key of ordered) {
+					if (timestamps === "increasing") now += 1;
+					const comments = [0, 1].map((index) => {
+						const authored = {
+							blockIndex: index,
+							blockHash: `h-${index}`,
+							quote: key.path,
+							text: `${key.path}:${index}`,
+						};
+						const added = memory.addComment(key, authored);
+						return { ...authored, id: added.id, createdAt: now };
+					});
+					expected.set(key, comments);
+				}
+				const reopened = new DocumentMemory(storage, "hub-1", () => now);
+				for (const [key, comments] of expected) expect(reopened.comments(key), key.path).toEqual(comments);
+				// No commented key is refreshed while unrelated reading churns the cache.
+				for (let index = 0; index < 120; index += 1) {
+					now += 1;
+					reopened.savePosition(
+						{ sessionRef: "local:s", path: `reading-${index}.md` },
+						{ blockIndex: 0, blockHash: "h", offset: 0, progress: 0.1 },
+					);
+				}
+				const afterReading = new DocumentMemory(storage, "hub-1", () => now);
+				for (const [key, comments] of expected) expect(afterReading.comments(key), key.path).toEqual(comments);
+			},
+		);
 	});
+
+	it.each([0, 101])(
+		"keeps the 100 most recent comment-free documents beside %i protected documents",
+		(protectedCount) => {
+			const storage = memoryStorage();
+			let now = 0;
+			const memory = new DocumentMemory(storage, "hub-1", () => now);
+			for (let index = 0; index < protectedCount; index += 1) {
+				memory.addComment(
+					{ sessionRef: "local:s", path: `protected-${index}.md` },
+					{ blockIndex: 0, blockHash: "h", quote: "q", text: `comment-${index}` },
+				);
+			}
+			const position = { blockIndex: 0, blockHash: "h", offset: 0, progress: 1 };
+			const keys = Array.from({ length: 120 }, (_, index) => ({ sessionRef: "local:s", path: `doc-${index}.md` }));
+			const expected = keys.map((key, index) => {
+				now += 1;
+				const lastRead = { blocks: [key.path], readAt: now };
+				memory.left(key, { title: key.path, sessionTitle: "s", blocks: lastRead.blocks, position });
+				// Refresh the oldest while it still exists, so recency differs from insertion order.
+				if (index === 20) {
+					now += 1;
+					memory.savePosition({ sessionRef: "local:s", path: "doc-0.md" }, position);
+				}
+				return lastRead;
+			});
+			const stored: Record<string, { comments?: DocumentComment[] }> = JSON.parse(
+				storage.values.get("evener.native.documents.hub-1") as string,
+			);
+			expect(Object.values(stored).filter((record) => !record.comments?.length)).toHaveLength(100);
+			expect(Object.values(stored).filter((record) => record.comments?.length)).toHaveLength(protectedCount);
+			const reopened = new DocumentMemory(storage, "hub-1", () => now);
+			for (const [index, key] of keys.entries()) {
+				if (index === 0 || index >= 21) {
+					expect(reopened.position(key), key.path).toEqual(position);
+					expect(reopened.lastRead(key), key.path).toEqual(expected[index]);
+				} else {
+					expect(reopened.position(key), key.path).toBeNull();
+					expect(reopened.lastRead(key), key.path).toBeNull();
+				}
+			}
+		},
+	);
+
+	it.each(["removeComment", "clearComments"] as const)(
+		"makes a document disposable only after its final comment, %s",
+		(remove) => {
+			const storage = memoryStorage();
+			let now = 0;
+			const memory = new DocumentMemory(storage, "hub-1", () => now);
+			memory.left(plan, leaving(1));
+			const first = memory.addComment(plan, { blockIndex: 0, blockHash: "h", quote: "q", text: "first" });
+			const second = memory.addComment(plan, { blockIndex: 1, blockHash: "p", quote: "q2", text: "second" });
+			memory.removeComment(plan, first.id);
+			for (let index = 0; index < 120; index += 1) {
+				now += 1;
+				memory.savePosition(
+					{ sessionRef: "local:s", path: `doc-${index}.md` },
+					{ blockIndex: 0, blockHash: "h", offset: 0, progress: 0.1 },
+				);
+			}
+			const reopened = new DocumentMemory(storage, "hub-1", () => now);
+			expect(reopened.comments(plan)).toEqual([second]);
+			expect(reopened.lastRead(plan)).not.toBeNull();
+			if (remove === "removeComment") reopened.removeComment(plan, second.id);
+			else reopened.clearComments(plan);
+			for (let index = 120; index < 240; index += 1) {
+				now += 1;
+				reopened.savePosition(
+					{ sessionRef: "local:s", path: `doc-${index}.md` },
+					{ blockIndex: 0, blockHash: "h", offset: 0, progress: 0.1 },
+				);
+			}
+			const afterReading = new DocumentMemory(storage, "hub-1", () => now);
+			expect(afterReading.comments(plan)).toEqual([]);
+			expect(afterReading.position(plan)).toBeNull();
+			expect(afterReading.lastRead(plan)).toBeNull();
+			expect(Object.keys(JSON.parse(storage.values.get("evener.native.documents.hub-1") as string))).toHaveLength(100);
+		},
+	);
 
 	it("reads corrupt or malformed storage as empty, and keeps working when the store throws", () => {
 		const storage = memoryStorage(
@@ -275,6 +388,54 @@ describe("what the phone remembers about a document", () => {
 		expect(new DocumentMemory(storage, "hub-2").lastRead(plan)).toBeNull();
 		forgetDocuments(storage, "hub-1");
 		expect([...storage.values.keys()]).toEqual([]);
+	});
+
+	// An agent files a report in the session artifacts, and the folder holds a
+	// file of the same name. Both are named "report.md"; they are not the same
+	// document, so neither's reading position or unsent comments may answer for
+	// the other's.
+	it("keeps a working-directory file and an artifacts file of one name apart", () => {
+		const storage = memoryStorage();
+		const folder: DocumentKey = { sessionRef: "local:s-1", path: "report.md" };
+		const retained: DocumentKey = { sessionRef: "local:s-1", path: "report.md", root: "artifacts" };
+		const memory = new DocumentMemory(storage, "hub-1", () => 1_000);
+		memory.savePosition(folder, { blockIndex: 1, blockHash: "p1", offset: 4, progress: 0.3 });
+		memory.addComment(folder, { blockIndex: 1, blockHash: "p1", quote: "folder words", text: "fix this" });
+		expect(memory.position(retained)).toBeNull();
+		expect(memory.comments(retained)).toEqual([]);
+		memory.savePosition(retained, { blockIndex: 5, blockHash: "p5", offset: 0, progress: 0.9 });
+		memory.addComment(retained, { blockIndex: 5, blockHash: "p5", quote: "retained words", text: "keep" });
+		expect(memory.position(folder)).toEqual({ blockIndex: 1, blockHash: "p1", offset: 4, progress: 0.3 });
+		expect(memory.comments(folder).map((comment) => comment.text)).toEqual(["fix this"]);
+		expect(memory.comments(retained).map((comment) => comment.text)).toEqual(["keep"]);
+		// Clearing one document's drafts leaves the other's where they were.
+		memory.clearComments(folder);
+		expect(memory.comments(folder)).toEqual([]);
+		expect(memory.comments(retained).map((comment) => comment.text)).toEqual(["keep"]);
+	});
+
+	// Positions and unsent comments saved before artifacts documents existed
+	// were keyed by session and path alone. They are still that document's.
+	it("still reads a record saved under the old working-directory key", () => {
+		const key = JSON.stringify(["local:s-1", "report.md"]);
+		const storage = memoryStorage(
+			new Map([
+				[
+					"evener.native.documents.hub-1",
+					JSON.stringify({
+						[key]: {
+							position: { blockIndex: 2, blockHash: "p2", offset: 0, progress: 0.4 },
+							comments: [{ id: "c1", blockIndex: 2, blockHash: "p2", quote: "words", text: "old", createdAt: 1 }],
+							touchedAt: 1_000,
+						},
+					}),
+				],
+			]),
+		);
+		const memory = new DocumentMemory(storage, "hub-1", () => 2_000);
+		const folder: DocumentKey = { sessionRef: "local:s-1", path: "report.md" };
+		expect(memory.position(folder)).toEqual({ blockIndex: 2, blockHash: "p2", offset: 0, progress: 0.4 });
+		expect(memory.comments(folder).map((comment) => comment.text)).toEqual(["old"]);
 	});
 
 	it("tells subscribers when something changes", () => {

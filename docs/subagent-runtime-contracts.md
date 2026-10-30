@@ -32,7 +32,7 @@ historical proposals, not current behavior. Source citations use paths and
 symbols so readers can locate the implementation after line numbers change.
 
 Stable attention drives revalidate transcript-owned pending IDs after claiming
-the retained child for a start (`Session.driveStableDelegateAttention`). A delayed
+the retained child for a start (`Session.driveDelegateAttention`). A delayed
 drive cannot reserve an ID an intervening generation already consumed and
 finished. A start already accepted into the transcript retains its exact
 reservation and generation across a failed delegate-journal commit; retry does
@@ -127,8 +127,7 @@ What validation actually runs when evener loads a plugin (`agent/plugin/plugin.g
   See the [plugin package format](plugins.md#package-format-reference).
 - **Duplicate plugin names use the first valid manifest.** Session loading uses
   `LoadAllFailSoft`: later manifests with the same name are skipped with a warning,
-  even if an unrelated component of the first plugin fails to load. The separate
-  `LoadAll` API rejects duplicates; it is not the session-loading policy.
+  even if an unrelated component of the first plugin fails to load.
 - **Agent `name`/`description`** are required non-empty strings (`getString`).
   **`tools`** accepts string lists, comma-separated strings, single tool names,
   or scalar `all`; see [role metadata and validation](plugins.md#add-a-delegate-role)
@@ -257,14 +256,14 @@ sites:
 - `web_fetch` cheap-model summarization (`agent/tool_web_fetch.go` `webFetch`),
 - session auto-naming (`agent/session_namer.go` `nameSession`, advisory — failure does
   not fail the session),
-- image description (`describeImage`, `agent/session_tools.go` — side-channel call, no
+- image description (`describeImage`, `agent/session_tools_vision.go` — side-channel call, no
   `Tools` set),
 - prompt hooks (`agent/internal/hooks/hooks.go` `clientAdapter`/`executePromptHook`),
 - context-manager strategies (fork-summarize, recursive distill, checkpoint prediction,
   memory crystals — `agent/internal/contextmgr/*`).
 
 The isolation is structural: a delegate enters the stable controller only
-through the registered create path (`agent/delegate_runtime.go` and
+through the registered create path (`agent/delegate_create.go` and
 `agent/delegate_tree_controller.go`), which none of the helper sites reach.
 Because helpers all route through `llm.Client.Complete`
 (`llm/client.go`) — directly, or via `llm.GenerateObject`/`Generate` for the schema'd

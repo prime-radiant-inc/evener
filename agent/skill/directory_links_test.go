@@ -138,7 +138,7 @@ func TestSkillDirectoryLinksPublicRoots(t *testing.T) {
 				if !ok || meta.SkillFile != filepath.Join(link, "SKILL.md") {
 					t.Fatalf("older scanner=%+v", old)
 				}
-				body, err := LoadSkillBody(meta)
+				body, err := loadSkillBody(meta)
 				if err != nil || body != "LINKED_BYTES_3689\n" {
 					t.Fatalf("older body=%q err=%v", body, err)
 				}

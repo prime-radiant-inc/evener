@@ -17,6 +17,7 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 
@@ -56,7 +57,21 @@ type hubInstancesController struct {
 	// remember to attach. Cleared when a mutation takes mu, and again when a
 	// rollback puts the previous file back.
 	applied appliedWrites
+	// afterAccessReload, when set, runs after an access-affecting edit's
+	// reload has published the replacement access and before the probe fence
+	// advances. A test uses it to settle a probe inside that window
+	// deterministically; nil in production.
+	afterAccessReload func()
+	// beforeList, when set, runs at the start of List before any lock is
+	// taken. A race test holds a post-mutation listing until a racing write
+	// completes. Nil in production.
+	beforeList func()
 }
+
+// observeInstancesController, when set, receives the instances controller the
+// app server builds, for tests that need to arm one of its seams. Nil in
+// production.
+var observeInstancesController func(*hubInstancesController)
 
 func (c *hubInstancesController) read() (*registry.Layer, bool, error) {
 	return registry.ReadConfigFile(c.providersConfigPath)
@@ -101,10 +116,34 @@ func (c *hubInstancesController) captureApplied(errp *error) {
 	}
 }
 
+// lockMutation takes mu and then auth.credMu exclusively for a providers.toml
+// mutation and returns the release, to be deferred: it drops credMu, folds the
+// write record into *errp, then drops mu. Both locks are held across the
+// mutation's read, write and reload (hubAuthController.credMu). A credential
+// write's endpoint assertion is checked under credMu, so it describes what the
+// stored secret lands on only if no instance edit, create or rename can land
+// between that check and the store (authoring an entry can move it: a name
+// that was a curated provider until now resolves to the entry's endpoint
+// afterwards); a reload commits the credential view it
+// read, so one running across a credential write's clear could publish a state
+// that clear had already invalidated.
+func (c *hubInstancesController) lockMutation(errp *error) (release func()) {
+	c.lockForWrite()
+	c.auth.credMu.Lock()
+	return func() {
+		c.auth.credMu.Unlock()
+		c.captureApplied(errp)
+		c.mu.Unlock()
+	}
+}
+
 // List returns every instance the registry currently holds, each with its
 // credential status, plus the providers an add form can build on and the
 // diagnostics the pane shows above them.
 func (c *hubInstancesController) List() appwire.InstanceListResponse {
+	if c.beforeList != nil {
+		c.beforeList()
+	}
 	// The fingerprint key is resolved once, before either lock is taken:
 	// resolving it can repair the file (an inter-process lock and a write), and
 	// holding the credential lock across that would let a listing stall every
@@ -921,6 +960,16 @@ func (c *hubInstancesController) refuseWhenBroken() error {
 // read or write failure) stays a plain error: that is not the caller's to
 // fix.
 func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) (err error) {
+	return c.create(params, nil)
+}
+
+// create applies a create. When out is non-nil it receives the listing captured
+// while this create's write lock is still held, so the answer describes the
+// state this create authored rather than a later List() a concurrent edit can
+// slip into. The RPC handler uses it that way for its response, exactly as
+// edit's captured answer does: a create's response is the only proof a client
+// has of which endpoint its credential belongs to.
+func (c *hubInstancesController) create(params appwire.InstanceCreateParams, out *appwire.InstanceListResponse) (err error) {
 	if err := c.refuseWhenBroken(); err != nil {
 		return err
 	}
@@ -948,18 +997,18 @@ func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) (er
 	if err := validVarNames(params.Vars); err != nil {
 		return invalidParamsFor(err)
 	}
-	c.lockForWrite()
-	defer c.mu.Unlock()
-	defer c.captureApplied(&err)
-	// The discipline every providers.toml mutation here follows
-	// (hubAuthController.credMu): held across the read, the write and the
-	// reload. A credential write's endpoint assertion is checked under this
-	// lock, so only an instance set that cannot move out from under it
-	// describes what the stored secret lands on - and authoring an entry can
-	// move it, since a name that was a curated provider until now resolves to
-	// the entry's endpoint afterwards.
-	c.auth.credMu.Lock()
-	defer c.auth.credMu.Unlock()
+	// Resolved before the locks, as Edit resolves its own: resolving can repair
+	// the key file (an inter-process lock and a write), so doing it while c.mu
+	// and credMu are held would hold every listing and credential op behind it.
+	// Only a capture needs it: a plain Create is a write that installs no
+	// listing, and the controller's other callers must keep the pre-existing
+	// property that creating an entry does not touch the fingerprint key.
+	var key []byte
+	var keyErr error
+	if out != nil {
+		key, keyErr = resolveEndpointFingerprintKey(c.authStateDir())
+	}
+	defer c.lockMutation(&err)()
 	// before is an independent parse from l below — a fresh read sharing no
 	// maps with it — so a create whose config parses but cannot load (#711) can
 	// be written back exactly as the file was, the way Edit restores its own.
@@ -1013,6 +1062,13 @@ func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) (er
 		_ = c.reg.Reload() // best-effort: put the last-good registry view back
 		return invalidParamsFor(fmt.Errorf("instance %q %w: %w", name, errInstanceUnloadable, err))
 	}
+	if out != nil {
+		// Still under this create's write locks, so no concurrent edit can land
+		// between the write and this read. The row (and its immutable endpoint
+		// fingerprint) is the one this create authored, not a destination that
+		// replaced it before the handler answered.
+		*out = c.listLocked(key, keyErr)
+	}
 	return nil
 }
 
@@ -1055,32 +1111,11 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 	if err := c.requireAuth(); err != nil {
 		return err
 	}
-	name := strings.TrimSpace(params.Name)
-	if err := validVarSets(params.Vars); err != nil {
-		return invalidParamsFor(err)
+	req, err := parseEditRequest(params)
+	if err != nil {
+		return err
 	}
-	// Not parsed at all under the clear flag: the clear branch below wins, as
-	// it does for base URL, protocol, surface and api_key_env, so the value
-	// riding along with it is one this request discards. Parsing it anyway
-	// turns a removal into a refusal — and the value a user reaches for the
-	// clear over is often the invalid one the parse would refuse.
-	var credentialHeaders map[string]string
-	if !params.ClearCredentialHeader {
-		parsed, err := credentialHeaderFrom(params.CredentialHeader)
-		if err != nil {
-			return err
-		}
-		credentialHeaders = parsed
-	}
-	// api_key_env names an environment variable, never the key itself, and is
-	// checked here for the same reason and under the same clear-flag rule as
-	// the credential header above.
-	apiKeyEnv := strings.TrimSpace(params.APIKeyEnv)
-	if !params.ClearAPIKeyEnv && apiKeyEnv != "" {
-		if err := registry.CheckAPIKeyEnvName(apiKeyEnv); err != nil {
-			return appwire.InvalidParams(err.Error())
-		}
-	}
+	name := req.name
 
 	// Resolved before the locks, as Remove resolves its own (see the file's note
 	// on resolving the fingerprint key before the locks): resolving can repair
@@ -1090,17 +1125,7 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 	// edit captures under its write locks (listLocked), so it is resolved for
 	// every caller rather than only the captured-listing one.
 	key, keyErr := resolveEndpointFingerprintKey(c.authStateDir())
-	c.lockForWrite()
-	defer c.mu.Unlock()
-	defer c.captureApplied(&err)
-	// Held for the rest of the call, so the providers.toml write and the
-	// reload that follows it sit inside the same held lock
-	// (hubAuthController.credMu). An edit that moves base_url is one step with
-	// every credential write: the write's endpoint assertion is checked under
-	// this lock and only describes the instance it lands on if no edit can
-	// land between that check and the store.
-	c.auth.credMu.Lock()
-	defer c.auth.credMu.Unlock()
+	defer c.lockMutation(&err)()
 	// before is an independent parse from l below — a fresh read sharing no
 	// maps with it — so if the edit parses fine but fails to load (#711),
 	// writing it back restores exactly what was on disk before this call.
@@ -1131,49 +1156,201 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 	// caller that DID assert an endpoint is still refused, because the hub
 	// cannot say the name resolves where the caller was told it does.
 	if params.ExpectedEndpointFingerprint != "" {
-		if err := c.auth.verifyEndpointFingerprintWithKey(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
+		if err := c.auth.verifyEndpointFingerprint(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
 			return err
 		}
 	}
-	newName := strings.TrimSpace(params.NewName)
-	renaming := newName != "" && newName != name
+	renaming := req.newName != "" && req.newName != name
 	if renaming {
-		if !registry.ValidInstanceName(newName) {
-			return appwire.InvalidParams(fmt.Sprintf("invalid instance name %q (lowercase, no slash)", params.NewName))
-		}
-		if _, taken := l.Providers[newName]; taken {
-			return appwire.Conflict(fmt.Sprintf("instance %q already exists", newName))
-		}
-		if _, taken := c.reg.Get().Instance(newName); taken {
-			return appwire.Conflict(fmt.Sprintf("instance %q already exists", newName))
-		}
-		// The destination check below and the move at the end of this call are
-		// one step too: a credential written between them is one the check
-		// never saw and the move would overwrite, and the lock that orders
-		// this call against every credential write is already held.
-		// Both checks above ask which instances exist, and a credential can
-		// outlive the instance it belonged to: providers.toml hand-edited
-		// while credentials.toml or the OAuth state kept its entry. Under a
-		// name the registry does not curate that leftover resolves no
-		// instance, so it is invisible to them, and moveCredentials would
-		// overwrite it. The refusal belongs here rather than there: by the
-		// time moveCredentials runs the file is re-keyed and the registry
-		// reloaded, so there is no longer anything to refuse.
-		// The destination check below and the move at the end of this call both
-		// read and move the credentials store, and neither can be done without
-		// one: an unreadable credentials.toml (creds nil) would panic a direct
-		// Store.Get, and - worse than the panic - a rename that reached
-		// writeAndReload and then failed to move the key would leave the key
-		// stranded under the old name after providers.toml had moved. So the
-		// refusal is made here, before the destination check and long before any
-		// config change is persisted, rather than after the file is re-keyed.
-		if err := c.requireCredentialStore(); err != nil {
+		if err := c.checkRenameTarget(l, params, name, req.newName); err != nil {
 			return err
 		}
-		if held := c.credentialsUnder(newName); len(held) > 0 {
-			return appwire.Conflict(fmt.Sprintf("renaming %q to %q would overwrite %s; clear that first", name, newName, strings.Join(held, " and ")))
+	}
+	applyEditFields(&p, params, req)
+	// A clear-only edit on an implicit instance (one the environment or a
+	// curated provider supplies, with no authored entry) has no authored
+	// value to change: the entry it would write carries nothing but its id.
+	// That empty shadow changes no behavior — the name still inherits by
+	// matching (spec §4.2) — but leaves noise in providers.toml (#1024), so
+	// the edit is a no-op rather than a write. A rename is not this case: it
+	// re-keys the entry, and it pins a base below, so it always writes.
+	if !renaming && !authored && providerIsBare(p) {
+		if out != nil {
+			// Still under this edit's write locks, like the listing captured
+			// on the write path, so a concurrent edit cannot slip in.
+			*out = c.listLocked(key, keyErr)
+		}
+		return nil
+	}
+	if renaming {
+		if err := c.rekeyProvider(l, p, name, req.newName); err != nil {
+			return err
+		}
+	} else {
+		l.Providers[name] = p
+	}
+	// An access-affecting edit replaces the access a credential probe is about
+	// even when the public credential-configuration revision cannot show it:
+	// that revision deliberately omits the credential-header expressions, and a
+	// probe of this instance must not have its old answer accepted for the
+	// replacement. effectiveAccessIdentity compares the resolved public
+	// identity plus those authored expressions and the resolved transport
+	// variables the instance's auth scheme reads, so re-authoring values the
+	// instance already resolved to is no change while a real endpoint,
+	// protocol, credential-header, api_key_env or scheme-read vars change is.
+	// This is the same per-instance fence a hub credential write advances
+	// (forgetCredentialRejection), so unrelated instances and the registry's
+	// global generation stay out of it. A rename is not this case: its name,
+	// and so the revision identity, moves, and moveCredentials already retires
+	// the old and new names when it lands.
+	var beforeProvider registry.Provider
+	var beforeAuthored bool
+	beforeAccess := ""
+	if !renaming {
+		beforeProvider, beforeAuthored = before.Providers[name]
+		beforeAccess = effectiveAccessIdentity(key, c.reg.Get(), name, beforeProvider, beforeAuthored)
+	}
+	// writeAndReload restores before when the reload fails (see #711
+	// on its comment); a rename continues below on success.
+	if err := c.writeAndReload(before, l, name, "edit"); err != nil {
+		// A write that landed although its rollback could not run is standing:
+		// retire the probes of the access it replaced. A clean rollback leaves
+		// the old access in place, and its probes remain current. The reload
+		// failed, so the intended access cannot be resolved against the live
+		// registry; the authored comparison is deliberately conservative here.
+		if !renaming && c.applied.peekApplied() && authoredAccessDiffers(beforeProvider, beforeAuthored, p) {
+			c.auth.forgetCredentialRejection(name)
+		}
+		// A rename whose reload failed and whose rollback write also failed
+		// is an applied write: providers.toml carries the new name, so the
+		// rename is as persisted as one that ended cleanly and gets the same
+		// discriminator (instanceRenameError) the handler maps to
+		// ErrorInstanceRenamePersisted. The write primitive marked that applied
+		// state on the controller, so the marker is not wrapped onto the error.
+		// A non-rename edit has no rename to report, so it keeps the error as
+		// it came.
+		if renaming && c.applied.peekApplied() {
+			return renamePersistedError{err}
+		}
+		return err
+	}
+	if !renaming {
+		afterAccess := effectiveAccessIdentity(key, c.reg.Get(), name, p, true)
+		// An edit that only re-authored values the instance already resolved to
+		// is no access change: pending probes and a standing rejection describe
+		// the same access and stay.
+		if effectiveAccessChanged(beforeAccess, afterAccess, beforeProvider, beforeAuthored, p) {
+			if c.afterAccessReload != nil {
+				c.afterAccessReload()
+			}
+			// The replacement stands: void probes that dialed the old access and
+			// drop a rejection recorded for the configuration the edit replaced.
+			c.auth.forgetCredentialRejection(name)
 		}
 	}
+	if renaming {
+		if err := c.moveCredentialsAfterRename(name, req.newName); err != nil {
+			return err
+		}
+	}
+	if out != nil {
+		// Still under this edit's write locks, so no concurrent edit can land
+		// between the write and this read. Reached for a plain edit AND a clean
+		// rename (the rename branch above only returns on an applied error).
+		*out = c.listLocked(key, keyErr)
+	}
+	return nil
+}
+
+// editRequest is the part of an edit that is validated and normalized before
+// any lock is taken.
+type editRequest struct {
+	name    string
+	newName string
+	// apiKeyEnv is the trimmed environment variable name, "" when unset.
+	apiKeyEnv string
+	// credentialHeaders is nil when the request clears the header or sends none.
+	credentialHeaders map[string]string
+}
+
+// parseEditRequest validates the fields of params that need no registry
+// state. The refusals blame what the caller sent, so they are InvalidParams.
+func parseEditRequest(params appwire.InstanceEditParams) (editRequest, error) {
+	req := editRequest{
+		name:    strings.TrimSpace(params.Name),
+		newName: strings.TrimSpace(params.NewName),
+	}
+	if err := validVarSets(params.Vars); err != nil {
+		return req, invalidParamsFor(err)
+	}
+	// Not parsed at all under the clear flag: the clear branch in
+	// applyEditFields wins, as it does for base URL, protocol, surface and
+	// api_key_env, so the value riding along with it is one this request
+	// discards. Parsing it anyway turns a removal into a refusal — and the
+	// value a user reaches for the clear over is often the invalid one the
+	// parse would refuse.
+	if !params.ClearCredentialHeader {
+		parsed, err := credentialHeaderFrom(params.CredentialHeader)
+		if err != nil {
+			return req, err
+		}
+		req.credentialHeaders = parsed
+	}
+	// api_key_env names an environment variable, never the key itself, and is
+	// checked here for the same reason and under the same clear-flag rule as
+	// the credential header above.
+	req.apiKeyEnv = strings.TrimSpace(params.APIKeyEnv)
+	if !params.ClearAPIKeyEnv && req.apiKeyEnv != "" {
+		if err := registry.CheckAPIKeyEnvName(req.apiKeyEnv); err != nil {
+			return req, appwire.InvalidParams(err.Error())
+		}
+	}
+	return req, nil
+}
+
+// checkRenameTarget refuses a rename whose destination is unusable, before
+// anything is written.
+func (c *hubInstancesController) checkRenameTarget(l *registry.Layer, params appwire.InstanceEditParams, name, newName string) error {
+	if !registry.ValidInstanceName(newName) {
+		return appwire.InvalidParams(fmt.Sprintf("invalid instance name %q (lowercase, no slash)", params.NewName))
+	}
+	if _, taken := l.Providers[newName]; taken {
+		return appwire.Conflict(fmt.Sprintf("instance %q already exists", newName))
+	}
+	if _, taken := c.reg.Get().Instance(newName); taken {
+		return appwire.Conflict(fmt.Sprintf("instance %q already exists", newName))
+	}
+	// The destination check below and the move at the end of this call are
+	// one step too: a credential written between them is one the check
+	// never saw and the move would overwrite, and the lock that orders
+	// this call against every credential write is already held.
+	// Both checks above ask which instances exist, and a credential can
+	// outlive the instance it belonged to: providers.toml hand-edited
+	// while credentials.toml or the OAuth state kept its entry. Under a
+	// name the registry does not curate that leftover resolves no
+	// instance, so it is invisible to them, and moveCredentials would
+	// overwrite it. The refusal belongs here rather than there: by the
+	// time moveCredentials runs the file is re-keyed and the registry
+	// reloaded, so there is no longer anything to refuse.
+	// The destination check below and the move at the end of this call both
+	// read and move the credentials store, and neither can be done without
+	// one: an unreadable credentials.toml (creds nil) would panic a direct
+	// Store.Get, and - worse than the panic - a rename that reached
+	// writeAndReload and then failed to move the key would leave the key
+	// stranded under the old name after providers.toml had moved. So the
+	// refusal is made here, before the destination check and long before any
+	// config change is persisted, rather than after the file is re-keyed.
+	if err := c.requireCredentialStore(); err != nil {
+		return err
+	}
+	if held := c.credentialsUnder(newName); len(held) > 0 {
+		return appwire.Conflict(fmt.Sprintf("renaming %q to %q would overwrite %s; clear that first", name, newName, strings.Join(held, " and ")))
+	}
+	return nil
+}
+
+// applyEditFields lays the request's field changes over p.
+func applyEditFields(p *registry.Provider, params appwire.InstanceEditParams, req editRequest) {
 	if params.ClearBaseURL {
 		// Drops the authored override and goes back to the registry
 		// default, restoring spec §10's credential inheritance from the
@@ -1196,13 +1373,13 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 	}
 	if params.ClearAPIKeyEnv {
 		p.APIKeyEnv = nil
-	} else if apiKeyEnv != "" {
-		p.APIKeyEnv = []string{apiKeyEnv}
+	} else if req.apiKeyEnv != "" {
+		p.APIKeyEnv = []string{req.apiKeyEnv}
 	}
 	if params.ClearCredentialHeader {
 		p.CredentialHeaders = nil
-	} else if credentialHeaders != nil {
-		p.CredentialHeaders = credentialHeaders
+	} else if req.credentialHeaders != nil {
+		p.CredentialHeaders = req.credentialHeaders
 	}
 	// An empty value deletes the variable (appwire.InstanceEditParams);
 	// anything else is set over whatever was authored before, trimmed as
@@ -1220,125 +1397,90 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 		}
 		p.Transport.Vars[key] = value
 	}
-	// A clear-only edit on an implicit instance (one the environment or a
-	// curated provider supplies, with no authored entry) has no authored
-	// value to change: the entry it would write carries nothing but its id.
-	// That empty shadow changes no behavior — the name still inherits by
-	// matching (spec §4.2) — but leaves noise in providers.toml (#1024), so
-	// the edit is a no-op rather than a write. A rename is not this case: it
-	// re-keys the entry, and it pins a base below, so it always writes.
-	if !renaming && !authored && providerIsBare(p) {
-		if out != nil {
-			// Still under this edit's write locks, like the listing captured
-			// on the write path, so a concurrent edit cannot slip in.
-			*out = c.listLocked(key, keyErr)
-		}
-		return nil
-	}
-	if renaming {
-		// An entry with no base inherits protocol, surface and models from the
-		// curated provider its own name matches (spec §4.2). The new name
-		// matches nothing, so the inheritance would vanish with the old name
-		// and the reload below would refuse the rename. Writing down the base
-		// the entry was already resolving against keeps the effective
-		// configuration identical; it is not a re-base onto a different
-		// provider, which spec §7 puts out of scope.
-		if p.Base == "" {
-			if _, curated := c.reg.Get().Provider(name); curated {
-				p.Base = name
-			}
-		}
-		// The same rule pointed at the new name: an entry the rule above left
-		// without a base has none to pin its configuration, so under a curated
-		// id it would start inheriting that provider's protocol, transport,
-		// models and credential resolution instead of resolving its own
-		// fields. Neither taken-name check refuses it — a curated provider
-		// with no credential is not an instance — and nothing has moved yet,
-		// so the refusal costs nothing to make here.
-		if p.Base == "" {
-			if _, curated := c.reg.Get().Provider(newName); curated {
-				return appwire.InvalidParams(fmt.Sprintf("%q is a curated provider id; an instance named after it would inherit its configuration. Give the instance an explicit base or choose another name.", newName))
-			}
-		}
-		// The map key is the instance name providers.toml is written under,
-		// and the default pointer follows so the file still loads. It is set
-		// whenever this rename moves the instance an unqualified launch
-		// resolves: either the pointer named it, or §5.1 ranking picked it
-		// with no pointer at all. Renaming a ranked default without pinning it
-		// would hand the next bare launch to whatever instance ranks behind it
-		// - a signed-in Codex account loses to a configured Groq key - and the
-		// user moved their account, not their default.
-		delete(l.Providers, name)
-		p.ID = newName
-		if l.Default == name || c.launchDefaultIs(name) {
-			l.Default = newName
-		}
-		l.Providers[newName] = p
-	} else {
-		l.Providers[name] = p
-	}
-	// writeAndReload restores before when the reload fails (see #711
-	// on its comment); a rename continues below on success.
-	if err := c.writeAndReload(before, l, name, "edit"); err != nil {
-		// A rename whose reload failed and whose rollback write also failed
-		// is an applied write: providers.toml carries the new name, so the
-		// rename is as persisted as one that ended cleanly and gets the same
-		// discriminator (instanceRenameError) the handler maps to
-		// ErrorInstanceRenamePersisted. The write primitive marked that applied
-		// state on the controller, so the marker is not wrapped onto the error.
-		// A non-rename edit has no rename to report, so it keeps the error as
-		// it came.
-		if renaming && c.applied.peekApplied() {
-			return renamePersistedError{err}
-		}
-		return err
-	}
-	if renaming {
-		moveErr := c.moveCredentials(name, newName)
-		// The reload above ran while the stored key and OAuth record still
-		// sat under the old name, so a curated provider this instance had
-		// shadowed could resolve a credential and reappear as a phantom
-		// implicit instance — one that also makes renaming back a sticky
-		// Conflict. Remove clears credentials before its reload; a rename
-		// cannot, because a failed reload restores the file and the
-		// credentials would already have moved.
-		reloadErr := c.reg.Reload()
-		switch {
-		case reloadErr == nil:
-			if moveErr != nil {
-				return moveErr
-			}
-			// Both halves landed, so this is a clean rename: fall through to the
-			// listing captured below rather than returning nil here, so the RPC
-			// handler's answer still describes the state this edit produced.
-		case moveErr == nil:
-			// Everything this rename writes is already written, so it is as
-			// persisted as one that ended cleanly and is announced the same
-			// way: renamePersistedError is what the RPC handler reads to hand
-			// the client the discriminator, and the write primitive's applied
-			// mark is what the handler broadcasts on.
-			return renamePersistedError{reloadErr}
-		default:
-			// Both halves failed, and the caller has to hear both: the move
-			// report says what credential was left behind, and the reload
-			// failure says the hub's own view may still list the old name
-			// (and refuse instance writes) until it loads again. The
-			// renamePersistedError discriminator comes from the move report
-			// (moveCredentials marks its own failure), and the applied marker
-			// comes from the providers.toml write this rename landed in
-			// writeAndReload — captureApplied folds it onto this error — so
-			// folding the reload error around the move report preserves both
-			// without losing the move's message or wire class.
-			return fmt.Errorf("%w; %w, so it may still list the old name and refuse instance writes until it can be (%w)", moveErr, errRegistryNotReloaded, reloadErr)
+}
+
+// rekeyProvider moves p from name to newName in l, pinning the base and the
+// default pointer so the renamed instance resolves as the old one did.
+func (c *hubInstancesController) rekeyProvider(l *registry.Layer, p registry.Provider, name, newName string) error {
+	// An entry with no base inherits protocol, surface and models from the
+	// curated provider its own name matches (spec §4.2). The new name
+	// matches nothing, so the inheritance would vanish with the old name
+	// and the reload below would refuse the rename. Writing down the base
+	// the entry was already resolving against keeps the effective
+	// configuration identical; it is not a re-base onto a different
+	// provider, which spec §7 puts out of scope.
+	if p.Base == "" {
+		if _, curated := c.reg.Get().Provider(name); curated {
+			p.Base = name
 		}
 	}
-	if out != nil {
-		// Still under this edit's write locks, so no concurrent edit can land
-		// between the write and this read. Reached for a plain edit AND a clean
-		// rename (the rename branch above only returns on an applied error).
-		*out = c.listLocked(key, keyErr)
+	// The same rule pointed at the new name: an entry the rule above left
+	// without a base has none to pin its configuration, so under a curated
+	// id it would start inheriting that provider's protocol, transport,
+	// models and credential resolution instead of resolving its own
+	// fields. Neither taken-name check refuses it — a curated provider
+	// with no credential is not an instance — and nothing has moved yet,
+	// so the refusal costs nothing to make here.
+	if p.Base == "" {
+		if _, curated := c.reg.Get().Provider(newName); curated {
+			return appwire.InvalidParams(fmt.Sprintf("%q is a curated provider id; an instance named after it would inherit its configuration. Give the instance an explicit base or choose another name.", newName))
+		}
 	}
+	// The map key is the instance name providers.toml is written under,
+	// and the default pointer follows so the file still loads. It is set
+	// whenever this rename moves the instance an unqualified launch
+	// resolves: either the pointer named it, or §5.1 ranking picked it
+	// with no pointer at all. Renaming a ranked default without pinning it
+	// would hand the next bare launch to whatever instance ranks behind it
+	// - a signed-in Codex account loses to a configured Groq key - and the
+	// user moved their account, not their default.
+	delete(l.Providers, name)
+	p.ID = newName
+	if l.Default == name || c.launchDefaultIs(name) {
+		l.Default = newName
+	}
+	l.Providers[newName] = p
 	return nil
+}
+
+// moveCredentialsAfterRename moves the credentials from the old name to the
+// new one after the re-keyed providers.toml has been written and loaded, and
+// reloads the registry. A nil result is a clean rename.
+func (c *hubInstancesController) moveCredentialsAfterRename(name, newName string) error {
+	moveErr := c.moveCredentials(name, newName)
+	// The reload above ran while the stored key and OAuth record still
+	// sat under the old name, so a curated provider this instance had
+	// shadowed could resolve a credential and reappear as a phantom
+	// implicit instance — one that also makes renaming back a sticky
+	// Conflict. Remove clears credentials before its reload; a rename
+	// cannot, because a failed reload restores the file and the
+	// credentials would already have moved.
+	reloadErr := c.reg.Reload()
+	switch {
+	case reloadErr == nil:
+		// Both halves landed unless the move failed. A clean rename returns nil
+		// so the caller's answer still describes the state this edit produced.
+		return moveErr
+	case moveErr == nil:
+		// Everything this rename writes is already written, so it is as
+		// persisted as one that ended cleanly and is announced the same
+		// way: renamePersistedError is what the RPC handler reads to hand
+		// the client the discriminator, and the write primitive's applied
+		// mark is what the handler broadcasts on.
+		return renamePersistedError{reloadErr}
+	default:
+		// Both halves failed, and the caller has to hear both: the move
+		// report says what credential was left behind, and the reload
+		// failure says the hub's own view may still list the old name
+		// (and refuse instance writes) until it loads again. The
+		// renamePersistedError discriminator comes from the move report
+		// (moveCredentials marks its own failure), and the applied marker
+		// comes from the providers.toml write this rename landed in
+		// writeAndReload — captureApplied folds it onto this error — so
+		// folding the reload error around the move report preserves both
+		// without losing the move's message or wire class.
+		return fmt.Errorf("%w; %w, so it may still list the old name and refuse instance writes until it can be (%w)", moveErr, errRegistryNotReloaded, reloadErr)
+	}
 }
 
 // providerIsBare reports whether p carries nothing beyond its id: the
@@ -1346,6 +1488,96 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 // writing it back would only add an empty [providers.<name>] shadow (#1024).
 func providerIsBare(p registry.Provider) bool {
 	return reflect.DeepEqual(p, registry.Provider{ID: p.ID})
+}
+
+// authoredAccessDiffers is the conservative fallback for a write that stands
+// although its reload failed: the intended access cannot be resolved against
+// the live registry, so any difference in the authored record retires the
+// probe rather than risk publishing an answer about the old access.
+func authoredAccessDiffers(before registry.Provider, beforeAuthored bool, after registry.Provider) bool {
+	return !beforeAuthored || !reflect.DeepEqual(before, after)
+}
+
+// effectiveAccessChanged answers whether an edit changed what a credential
+// probe would send. beforeAccess and afterAccess come from
+// effectiveAccessIdentity; when either could not be established (no
+// fingerprint key, or the name does not resolve), the authored record
+// comparison is the fallback. That fallback can over-invalidate, but it never
+// reads two different access states as equal.
+func effectiveAccessChanged(beforeAccess, afterAccess string, before registry.Provider, beforeAuthored bool, after registry.Provider) bool {
+	if beforeAccess == "" || afterAccess == "" {
+		return authoredAccessDiffers(before, beforeAuthored, after)
+	}
+	return beforeAccess != afterAccess
+}
+
+// authSchemeReadVars lists, per authentication scheme, the resolved transport
+// variables that scheme's authenticator reads after resolution (in the order
+// they are appended to the identity): the variables whose disappearance or
+// change alters request bytes even though every resolved destination - and so
+// the public revision - stays equal. A scheme not listed reads none, and a
+// template variable no listed scheme reads is not compared: literalizing a
+// URL template to the value it already resolved to drops such a variable
+// from the resolution without changing any request. Maintenance contract: an
+// authenticator that starts reading a resolved variable must add its name
+// here, because this identity fences stale probe outcomes.
+var authSchemeReadVars = map[string][]string{
+	registry.AuthGCPADC: {"GOOGLE_VERTEX_PROJECT"},
+}
+
+// effectiveAccessIdentity is the access a probe would read, resolved from the
+// registry and the authored entry: the public credential-configuration
+// revision (destination, protocol, surface, auth, resolved source, authored
+// layer, credential-header names) plus the authored credential-header
+// expressions and the resolved transport variables the instance's auth
+// scheme reads (authSchemeReadVars). The public revision deliberately omits
+// those expressions so a reader cannot tell one secret reference from
+// another, and it carries the resolved destinations only: a URL template and
+// the literal that resolves to the same bytes hash equally there, while
+// buildTransport exposes a variable only while some URL template references
+// it, so literalizing the template drops its vars from the resolution even
+// though every destination stays byte-identical. Only the variables an
+// authenticator actually reads are request inputs of that shape (the GCP
+// authenticator's quota-project header comes from the resolved project
+// variable); a variable no scheme reads changed no request, and its
+// disappearance must not retire a probe or a rejection. Like the whole string
+// this identity is internal to the edit-fence decision and is never exported,
+// logged or sent. An implicit instance with no authored entry contributes no
+// expression.
+func effectiveAccessIdentity(key []byte, r *registry.Registry, name string, authored registry.Provider, authoredOK bool) string {
+	if len(key) == 0 || r == nil {
+		return ""
+	}
+	res, err := r.ResolveInstancePresence(name)
+	if err != nil {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(hubcore.CredentialConfigRevisionResolved(key, res))
+	if authoredOK && len(authored.CredentialHeaders) > 0 {
+		keys := make([]string, 0, len(authored.CredentialHeaders))
+		for header := range authored.CredentialHeaders {
+			keys = append(keys, header)
+		}
+		sort.Strings(keys)
+		b.WriteString("\x00credentialHeaders")
+		for _, header := range keys {
+			b.WriteByte(0)
+			b.WriteString(header)
+			b.WriteByte('=')
+			b.WriteString(authored.CredentialHeaders[header])
+		}
+	}
+	if names := authSchemeReadVars[res.Transport.Auth]; len(names) > 0 {
+		b.WriteString("\x00vars")
+		for _, n := range names {
+			b.WriteByte(0)
+			b.WriteString(n)
+			b.WriteByte('=')
+			b.WriteString(res.Transport.Vars[n])
+		}
+	}
+	return b.String()
 }
 
 // credentialsUnder names the credentials already filed under name, in the
@@ -1729,7 +1961,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 	// under it, or an edit to its base_url) is refused rather than having its
 	// replacement instance removed. Asked here, under the exclusive lock, so it
 	// describes the instance the cleanup below acts on.
-	if err := c.auth.verifyEndpointFingerprintWithKey(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
+	if err := c.auth.verifyEndpointFingerprint(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
 		return err
 	}
 
@@ -1753,48 +1985,24 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 	// removal failed, so the instance the caller still has must still
 	// authenticate. Capture and restore both sit inside this held lock, so no
 	// writer can slip between them.
-	storedKey, hasStoredKey := c.auth.storedKey(name)
-	oauthBytes, hasOAuth, err := c.captureOAuthFile(name)
+	rm := &removal{c: c, name: name, locked: locked}
+	rm.storedKey, rm.hasStoredKey = c.auth.storedKey(name)
+	rm.oauthBytes, rm.hasOAuth, err = c.captureOAuthFile(name)
 	if err != nil {
 		return err
 	}
-	refusalBytes, hasRefusal := c.captureRefreshRejectionFile(name)
+	rm.refusalBytes, rm.hasRefusal = c.captureRefreshRejectionFile(name)
 
 	// Whether the config authored this instance is read before the cleanup, so
 	// its failure below is classified by the same question every later branch
 	// asks: an authored entry resolves from the config, an implicit instance
 	// from the layer supplyOf names. A pure map read, so moving it ahead of the
 	// cleanup changes nothing it observes.
-	_, authored := before.Providers[name]
+	_, rm.authored = before.Providers[name]
 
 	removed, err := c.removeCredentials(name)
 	if err != nil {
-		// The cleanup never reached the config, so a clean restore leaves
-		// nothing changed; a credential that stays deleted is still a change
-		// every other client's status for this name is stale against, and the
-		// hub owes them the broadcast even though the entry itself never
-		// moved - restoreFailedRemoval wraps its own result in that case.
-		//
-		// An authored entry never moved, so the instance resolves from the config
-		// whatever happens to its credentials, and the configured frame with
-		// supplyAny's strict question is the honest report. An implicit instance
-		// has no entry to fall back on - the layer supplyOf names is what carries
-		// it - so when the cleanup deleted that layer and the restore cannot put
-		// it back, the instance no longer resolves: the removal stands, the frame
-		// must say so, and the discriminator goes with it, because
-		// instanceRemoveError reads it to tell the client the removal applied
-		// rather than leaving it to retry a removal that stands. supplyConfig is
-		// the provider carrying the row, with no credential of the user's at
-		// stake, so it keeps the configured frame.
-		frame, supplies := errInstanceStillConfigured, supplyAny
-		if !authored {
-			supplies = supplyOf(locked)
-			if supplies != supplyConfig {
-				frame = errRemovalStands
-			}
-		}
-		_, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey && removed.storedKey, oauthBytes, hasOAuth && removed.oauthRecord, refusalBytes, hasRefusal && removed.oauthRecord, err, frame, supplies)
-		return restoreErr
+		return rm.failedCleanup(removed, err)
 	}
 
 	// An instance the user credentialed through the UI has no authored entry:
@@ -1810,204 +2018,237 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 	if l.Default == name {
 		l.Default = ""
 	}
-	configChanged := authored || l.Default != before.Default
+	configChanged := rm.authored || l.Default != before.Default
 	if configChanged {
 		if err := c.writeLoadable(l); err != nil {
-			// The config write never landed, so a clean restore leaves
-			// nothing changed; a credential that stays deleted is still a
-			// change every other client's status for this name is stale
-			// against - restoreFailedRemoval wraps its own result in that
-			// case.
-			//
-			// Which layer the restore has to put back - and so what a failed
-			// restore means - depends on what was in the file before this
-			// write. An authored entry never moved: the write that would have
-			// deleted it failed, so the instance resolves from the config
-			// whatever happens to its credentials, and the configured frame
-			// with supplyAny's strict question is the honest report. An
-			// implicit instance has no entry to fall back on, and the change
-			// this write failed to make - dropping the `default` pointer - is
-			// not a layer it resolves from: the layer supplyOf names is. When
-			// that layer is a credential this call deleted, a restore that
-			// cannot put it back leaves the instance unresolvable, so the
-			// removal stands and the frame has to say so; the discriminator
-			// goes with it, because instanceRemoveError reads it to tell the
-			// client the removal applied instead of leaving it to retry a
-			// removal that stands. supplyConfig is the provider carrying the
-			// row, with no credential of the user's at stake, so it keeps the
-			// configured frame.
-			frame, supplies := errInstanceStillConfigured, supplyAny
-			if !authored {
-				supplies = supplyOf(locked)
-				if supplies != supplyConfig {
-					frame = errRemovalStands
-				}
-			}
-			restored, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth, refusalBytes, hasRefusal, err, frame, supplies)
-			if restored {
-				// The carrying layer is back, so the removal did not stand, and
-				// restoreFailedRemoval answers such a rollback with the
-				// leftovers when a stray other layer stayed deleted. The write
-				// failure and the applied mark - that deletion is what every
-				// other client's status for this name is stale against - are
-				// folded in here, the way the reload rollback below folds the
-				// same leftovers into its own report.
-				if leftovers, ok := errors.AsType[removalLeftoversError](restoreErr); ok {
-					return fmt.Errorf("%w; some credentials were not put back: %w", err, leftovers)
-				}
-			}
-			return restoreErr
+			return rm.failedWrite(err)
 		}
 	}
 	if err := c.reg.Reload(); err != nil {
 		if !configChanged {
-			// Nothing was written, so there is no file to put back: restoring
-			// the credentials this call deleted is the whole rollback, and a
-			// write here would create the providers.toml the guard above
-			// exists to avoid. The question is what actually carries this
-			// instance - it is implicit (nothing was authored), so that is the
-			// layer it resolved from, not "every file this call deleted came
-			// back" (supplyOf). When that layer is back the instance is
-			// configured again and the removal was rolled back, even if a stray
-			// other credential could not be restored; only when the carrying
-			// layer itself could not be put back does the removal stand, and
-			// reporting a rolled-back removal as a standing one - and skipping
-			// the reload that would republish the row - would tell the caller
-			// the opposite of the truth. The reload is retried only once the
-			// credentials are back: the failure above parked the registry on
-			// the implicit-only view a failed load leaves (writes refused, this
-			// row missing), and the state the file describes is unchanged, so a
-			// second attempt is the recovery rather than a repetition.
-			cause := fmt.Errorf("removing %q failed: %w", name, err)
-			restored, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth, refusalBytes, hasRefusal,
-				cause, errRemovalStands, supplyOf(locked))
-			if !restored {
-				return restoreErr
-			}
-			rolledBack := fmt.Errorf("removing %q %w: %w", name, errRemovalRolledBack, err)
-			if leftovers, ok := errors.AsType[removalLeftoversError](restoreErr); ok {
-				// Two separate facts, and the error has to carry both. The
-				// instance is configured again - the layer that carries it is
-				// back - so the removal is a rollback and the message says so.
-				// A credential is still gone, though: a deleted layer that
-				// could not be put back is a change every other client's
-				// credential status for this name is stale against, so the
-				// credential deletion's applied mark stays on the controller,
-				// which is what makes instanceWrite broadcast
-				// evener/auth/updated.
-				rolledBack = fmt.Errorf("%w; some credentials were not put back: %w", rolledBack, leftovers)
-			}
-			if reloadErr := c.reg.Reload(); reloadErr != nil {
-				return fmt.Errorf("%w; %w, so instance writes stay refused until it can be (%w)", rolledBack, errRegistryNotReloaded, reloadErr)
-			}
-			return rolledBack
+			return rm.failedReloadUnwritten(err)
 		}
-		// writeLoadable's dry parse only checks the layer against the registry
-		// schema; Reload resolves it, so a config that parses can still fail to
-		// load (#711). A failed reload drops the registry to implicit-only and
-		// refuses every instance write until the file loads again, so leaving
-		// the removal in place would have the file, the hub's view and every
-		// client's listing disagreeing about an instance only some of them
-		// still have - with nothing but hand-editing the file to get back. Put
-		// the file and the credentials this call deleted back, the way Edit
-		// restores its file.
-		if restoreErr := c.write(before); restoreErr != nil {
-			// The rollback could not land, so the entry stays gone and only the
-			// credentials can be put back - under the name the caller re-authors
-			// once this removal is reported as standing. No reload: the failure
-			// above already left the registry on the implicit-only view a load
-			// of this file produces, and writing is what is broken, not loading.
-			// The removal stands in the file, so it is an applied write
-			// however this call ends: the other clients are still listing an
-			// instance that is gone. Unconditional: unlike the other call
-			// sites, this one applies to the config regardless of whether the
-			// credential restore below also fails, so the applied state is
-			// re-marked here rather than left to restoreFailedRemoval, which
-			// clears it when it puts every credential back.
-			_, standingErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth, refusalBytes, hasRefusal,
-				fmt.Errorf("%w; the rollback could not be written, so %w in the config (%w)", err, errRemovalStands, restoreErr),
-				errEntryGoneFromConfig, supplyAny)
-			c.applied.markApplied()
-			return removeApplied(standingErr)
-		}
-		// The credentials go back before the reload below, because a load
-		// resolves each instance's credential from the stores: one that runs
-		// while this call's deletions are still missing caches "none" as the
-		// source of the instance the caller still has, and putting the key back
-		// afterwards does not rebuild that view. The pane would then show a
-		// stored key beside no active source, and the next launch would be
-		// refused for missing credentials, until some later write happened to
-		// reload again.
-		// The config rolled back cleanly, so this would be a plain refusal -
-		// unless the credential restore itself failed, in which case a stored
-		// key or OAuth record stays deleted under an instance that is back in
-		// the config, which every other client's status for it is stale
-		// against; restoreFailedRemoval wraps its own result in that case.
-		//
-		// Which layer the restore has to put back - and so what a failed
-		// restore means - depends on what held the instance up. An authored
-		// entry is back in the config, so the instance resolves from it whatever
-		// happens to its credentials: the configured frame with supplyAny's
-		// strict question is the honest report. An implicit instance has no
-		// entry to fall back on - configChanged is true only because a `default`
-		// pointer named it - so the layer supplyOf names is what carries it.
-		// When that layer is a credential this call deleted, a restore that
-		// cannot put it back leaves the instance unresolvable: the removal
-		// stands, the frame must say so, and the discriminator goes with it
-		// because instanceRemoveError reads it to tell the client the removal
-		// applied rather than leaving it to retry a removal that stands.
-		// supplyConfig is the provider carrying the row, with no credential of
-		// the user's at stake, so it keeps the configured frame.
-		frame, supplies := errInstanceStillConfigured, supplyAny
-		if !authored {
-			supplies = supplyOf(locked)
-			if supplies != supplyConfig {
-				frame = errRemovalStands
-			}
-		}
-		// The cause is neutral - "failed", not "was rolled back" - because this
-		// rollback only lands when restoreFailedRemoval answers carried. When the
-		// layer that carries the instance is a credential this call deleted and
-		// the restore cannot put it back, that answer is the standing frame, and
-		// a cause that already said "was rolled back" would have the one sentence
-		// report both outcomes at once ("removing X was rolled back: ...; the
-		// removal stands, ..."). The rollback wording is built below, once the
-		// restore has actually carried the instance, the way the !configChanged
-		// sibling builds it.
-		restored, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth, refusalBytes, hasRefusal,
-			fmt.Errorf("removing %q failed: %w", name, err), frame, supplies)
-		if restored {
-			// The carrying layer is back, so the config this rollback restored is
-			// the pre-removal one and the removal was rolled back - the message
-			// says so. A stray other layer that stayed deleted is still a change
-			// every other client's credential status for this name is stale
-			// against, so it is folded in with the applied mark, exactly as the
-			// !configChanged sibling folds its leftovers.
-			rolledBack := fmt.Errorf("removing %q %w: %w", name, errRemovalRolledBack, err)
-			if leftovers, ok := errors.AsType[removalLeftoversError](restoreErr); ok {
-				rolledBack = fmt.Errorf("%w; some credentials were not put back: %w", rolledBack, leftovers)
-			}
-			restoreErr = rolledBack
-		}
-		// The file this rollback put back is the pre-removal one, and the reload
-		// that just failed read the file this call wrote - so if the config was
-		// already unresolvable before the removal (Remove's own guard reads the
-		// registry, which had not been reloaded since and so never saw the change
-		// that broke it), this reload fails on the very file the rollback
-		// restored. The registry stays on the implicit-only view a failed load
-		// leaves and refuses instance writes until the file loads (registry.go's
-		// WritesRefused, spec §10). Reinstating the previous registry view would
-		// instead have the hub serve and rewrite a config it cannot load, which
-		// is what that refusal exists to prevent - so the failure reports what is
-		// left: the rollback landed, and the config still does not load. A caller
-		// told only that the removal "was rolled back" would read the hub as
-		// healthy.
-		if reloadErr := c.reg.Reload(); reloadErr != nil {
-			return fmt.Errorf("%w; %w, so instance writes stay refused until it does (%w)", restoreErr, errRestoredConfigUnloadable, reloadErr)
-		}
-		return restoreErr
+		return rm.failedReloadWritten(before, err)
 	}
 	return nil
+}
+
+// removal is one Remove call's snapshot of what its cleanup deletes, and the
+// rollbacks that put it back when a later step fails. Every rollback runs
+// inside the locks Remove holds.
+type removal struct {
+	c      *hubInstancesController
+	name   string
+	locked registry.Instance
+	// authored is whether providers.toml carries an entry for the instance.
+	authored bool
+
+	storedKey    string
+	hasStoredKey bool
+	oauthBytes   []byte
+	hasOAuth     bool
+	refusalBytes []byte
+	hasRefusal   bool
+}
+
+// restore puts back everything the removal captured.
+func (r *removal) restore(cause, frame error, supplies removalSupply) (bool, error) {
+	return r.c.restoreFailedRemoval(r.name, r.storedKey, r.hasStoredKey, r.oauthBytes, r.hasOAuth, r.refusalBytes, r.hasRefusal, cause, frame, supplies)
+}
+
+// restoreFrame says how a failed restore is reported, and which layer the
+// restore has to put back for the instance to count as carried again.
+//
+// An authored entry is in the config, so the instance resolves from it
+// whatever happens to its credentials: the configured frame with supplyAny's
+// strict question is the honest report. An implicit instance has no entry to
+// fall back on - the layer supplyOf names is what carries it - so when that
+// layer is a credential this call deleted and the restore cannot put it back,
+// the instance no longer resolves: the removal stands, the frame must say so,
+// and the discriminator goes with it, because instanceRemoveError reads it to
+// tell the client the removal applied rather than leaving it to retry a
+// removal that stands. supplyConfig is the provider carrying the row, with no
+// credential of the user's at stake, so it keeps the configured frame.
+func (r *removal) restoreFrame() (removalSupply, error) {
+	if r.authored {
+		return supplyAny, errInstanceStillConfigured
+	}
+	supplies := supplyOf(r.locked)
+	if supplies != supplyConfig {
+		return supplies, errRemovalStands
+	}
+	return supplies, errInstanceStillConfigured
+}
+
+// failedCleanup answers a credential cleanup that failed part-way. removed
+// names what it did delete, so the restore only rewrites those layers.
+//
+// The cleanup never reached the config, so a clean restore leaves nothing
+// changed; a credential that stays deleted is still a change every other
+// client's status for this name is stale against, and the hub owes them the
+// broadcast even though the entry itself never moved - restoreFailedRemoval
+// wraps its own result in that case.
+func (r *removal) failedCleanup(removed deletedCredentials, err error) error {
+	supplies, frame := r.restoreFrame()
+	_, restoreErr := r.c.restoreFailedRemoval(r.name, r.storedKey, r.hasStoredKey && removed.storedKey, r.oauthBytes, r.hasOAuth && removed.oauthRecord, r.refusalBytes, r.hasRefusal && removed.oauthRecord, err, frame, supplies)
+	return restoreErr
+}
+
+// failedWrite answers a providers.toml write that did not land.
+//
+// The config write never landed, so a clean restore leaves nothing changed; a
+// credential that stays deleted is still a change every other client's status
+// for this name is stale against - restoreFailedRemoval wraps its own result
+// in that case. For an implicit instance the change this write failed to make
+// - dropping the `default` pointer - is not a layer it resolves from, so
+// restoreFrame names the layer that is.
+func (r *removal) failedWrite(err error) error {
+	supplies, frame := r.restoreFrame()
+	restored, restoreErr := r.restore(err, frame, supplies)
+	if restored {
+		// The carrying layer is back, so the removal did not stand, and
+		// restoreFailedRemoval answers such a rollback with the
+		// leftovers when a stray other layer stayed deleted. The write failure
+		// and the applied mark - that deletion is what every other client's
+		// status for this name is stale against - are folded in here, the way
+		// the reload rollback folds the same leftovers into its own report.
+		if leftovers, ok := errors.AsType[removalLeftoversError](restoreErr); ok {
+			return fmt.Errorf("%w; some credentials were not put back: %w", err, leftovers)
+		}
+	}
+	return restoreErr
+}
+
+// failedReloadUnwritten answers a reload failure when the removal wrote no
+// config.
+//
+// Nothing was written, so there is no file to put back: restoring the
+// credentials this call deleted is the whole rollback, and a write here would
+// create the providers.toml the caller's configChanged guard exists to avoid.
+// The question is what actually carries this instance - it is implicit
+// (nothing was authored), so that is the layer it resolved from, not "every
+// file this call deleted came back" (supplyOf). When that layer is back the
+// instance is configured again and the removal was rolled back, even if a
+// stray other credential could not be restored; only when the carrying layer
+// itself could not be put back does the removal stand, and reporting a
+// rolled-back removal as a standing one - and skipping the reload that would
+// republish the row - would tell the caller the opposite of the truth. The
+// reload is retried only once the credentials are back: the failure above
+// parked the registry on the implicit-only view a failed load leaves (writes
+// refused, this row missing), and the state the file describes is unchanged,
+// so a second attempt is the recovery rather than a repetition.
+func (r *removal) failedReloadUnwritten(err error) error {
+	cause := fmt.Errorf("removing %q failed: %w", r.name, err)
+	restored, restoreErr := r.restore(cause, errRemovalStands, supplyOf(r.locked))
+	if !restored {
+		return restoreErr
+	}
+	rolledBack := fmt.Errorf("removing %q %w: %w", r.name, errRemovalRolledBack, err)
+	if leftovers, ok := errors.AsType[removalLeftoversError](restoreErr); ok {
+		// Two separate facts, and the error has to carry both. The
+		// instance is configured again - the layer that carries it is
+		// back - so the removal is a rollback and the message says so.
+		// A credential is still gone, though: a deleted layer that
+		// could not be put back is a change every other client's
+		// credential status for this name is stale against, so the
+		// credential deletion's applied mark stays on the controller,
+		// which is what makes instanceWrite broadcast
+		// evener/auth/updated.
+		rolledBack = fmt.Errorf("%w; some credentials were not put back: %w", rolledBack, leftovers)
+	}
+	if reloadErr := r.c.reg.Reload(); reloadErr != nil {
+		return fmt.Errorf("%w; %w, so instance writes stay refused until it can be (%w)", rolledBack, errRegistryNotReloaded, reloadErr)
+	}
+	return rolledBack
+}
+
+// failedReloadWritten answers a reload failure after the removal wrote the
+// config.
+//
+// writeLoadable's dry parse only checks the layer against the registry
+// schema; Reload resolves it, so a config that parses can still fail to load
+// (#711). A failed reload drops the registry to implicit-only and refuses
+// every instance write until the file loads again, so leaving the removal in
+// place would have the file, the hub's view and every client's listing
+// disagreeing about an instance only some of them still have - with nothing
+// but hand-editing the file to get back. Put the file and the credentials this
+// call deleted back, the way Edit restores its file.
+func (r *removal) failedReloadWritten(before *registry.Layer, err error) error {
+	if restoreErr := r.c.write(before); restoreErr != nil {
+		// The rollback could not land, so the entry stays gone and only the
+		// credentials can be put back - under the name the caller re-authors
+		// once this removal is reported as standing. No reload: the failure
+		// above already left the registry on the implicit-only view a load
+		// of this file produces, and writing is what is broken, not loading.
+		// The removal stands in the file, so it is an applied write
+		// however this call ends: the other clients are still listing an
+		// instance that is gone. Unconditional: unlike the other call
+		// sites, this one applies to the config regardless of whether the
+		// credential restore below also fails, so the applied state is
+		// re-marked here rather than left to restoreFailedRemoval, which
+		// clears it when it puts every credential back.
+		_, standingErr := r.restore(
+			fmt.Errorf("%w; the rollback could not be written, so %w in the config (%w)", err, errRemovalStands, restoreErr),
+			errEntryGoneFromConfig, supplyAny)
+		r.c.applied.markApplied()
+		return removeApplied(standingErr)
+	}
+	// The credentials go back before the reload below, because a load
+	// resolves each instance's credential from the stores: one that runs
+	// while this call's deletions are still missing caches "none" as the
+	// source of the instance the caller still has, and putting the key back
+	// afterwards does not rebuild that view. The pane would then show a
+	// stored key beside no active source, and the next launch would be
+	// refused for missing credentials, until some later write happened to
+	// reload again.
+	// The config rolled back cleanly, so this would be a plain refusal -
+	// unless the credential restore itself failed, in which case a stored
+	// key or OAuth record stays deleted under an instance that is back in
+	// the config, which every other client's status for it is stale
+	// against; restoreFailedRemoval wraps its own result in that case.
+	// The cause is neutral - "failed", not "was rolled back" - because this
+	// rollback only lands when restoreFailedRemoval answers carried. When the
+	// layer that carries the instance is a credential this call deleted and
+	// the restore cannot put it back, that answer is the standing frame, and
+	// a cause that already said "was rolled back" would have the one sentence
+	// report both outcomes at once ("removing X was rolled back: ...; the
+	// removal stands, ..."). The rollback wording is built below, once the
+	// restore has actually carried the instance, the way
+	// failedReloadUnwritten builds it. For an implicit instance
+	// configChanged is true only because a `default` pointer named it, so
+	// restoreFrame names the layer that carries it.
+	supplies, frame := r.restoreFrame()
+	restored, restoreErr := r.restore(fmt.Errorf("removing %q failed: %w", r.name, err), frame, supplies)
+	if restored {
+		// The carrying layer is back, so the config this rollback restored is
+		// the pre-removal one and the removal was rolled back - the message
+		// says so. A stray other layer that stayed deleted is still a change
+		// every other client's credential status for this name is stale
+		// against, so it is folded in with the applied mark, exactly as
+		// failedReloadUnwritten folds its leftovers.
+		rolledBack := fmt.Errorf("removing %q %w: %w", r.name, errRemovalRolledBack, err)
+		if leftovers, ok := errors.AsType[removalLeftoversError](restoreErr); ok {
+			rolledBack = fmt.Errorf("%w; some credentials were not put back: %w", rolledBack, leftovers)
+		}
+		restoreErr = rolledBack
+	}
+	// The file this rollback put back is the pre-removal one, and the reload
+	// that just failed read the file this call wrote - so if the config was
+	// already unresolvable before the removal (Remove's own guard reads the
+	// registry, which had not been reloaded since and so never saw the change
+	// that broke it), this reload fails on the very file the rollback
+	// restored. The registry stays on the implicit-only view a failed load
+	// leaves and refuses instance writes until the file loads (registry.go's
+	// WritesRefused, spec §10). Reinstating the previous registry view would
+	// instead have the hub serve and rewrite a config it cannot load, which
+	// is what that refusal exists to prevent - so the failure reports what is
+	// left: the rollback landed, and the config still does not load. A caller
+	// told only that the removal "was rolled back" would read the hub as
+	// healthy.
+	if reloadErr := r.c.reg.Reload(); reloadErr != nil {
+		return fmt.Errorf("%w; %w, so instance writes stay refused until it does (%w)", restoreErr, errRestoredConfigUnloadable, reloadErr)
+	}
+	return restoreErr
 }
 
 // captureOAuthFile reads the OAuth state file a removal's cleanup is about to
@@ -2447,15 +2688,7 @@ func (c *hubInstancesController) SetModelDisabled(params appwire.InstanceSetMode
 	name := strings.TrimSpace(params.Name)
 	model := strings.TrimSpace(params.Model)
 
-	c.lockForWrite()
-	defer c.mu.Unlock()
-	defer c.captureApplied(&err)
-	// Held across the write and the reload like every other mutation here
-	// (hubAuthController.credMu): a reload commits the credential view it
-	// read, so one running across a credential write's clear could publish a
-	// state that clear had already invalidated.
-	c.auth.credMu.Lock()
-	defer c.auth.credMu.Unlock()
+	defer c.lockMutation(&err)()
 	if _, ok := c.reg.Get().Instance(name); !ok {
 		return instanceNotFound(name)
 	}
@@ -2507,15 +2740,7 @@ func (c *hubInstancesController) SetDefault(params appwire.InstanceSetDefaultPar
 	}
 	name := strings.TrimSpace(params.Name)
 
-	c.lockForWrite()
-	defer c.mu.Unlock()
-	defer c.captureApplied(&err)
-	// Held across the write and the reload like every other mutation here
-	// (hubAuthController.credMu): a reload commits the credential view it
-	// read, so one running across a credential write's clear could publish a
-	// state that clear had already invalidated.
-	c.auth.credMu.Lock()
-	defer c.auth.credMu.Unlock()
+	defer c.lockMutation(&err)()
 	// Checked under the lock that holds the write: a rename landing between
 	// the two would leave a default naming an instance that has moved, which
 	// the next load refuses while it sits on disk.

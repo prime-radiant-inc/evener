@@ -13,6 +13,7 @@ import {
   openPage,
   waitForFonts,
 } from "../browserGuardCdp.mjs";
+import { witnessFailure } from "../browserGuardWitness.mjs";
 import { Driver } from "../skillguard/run.mjs";
 
 const TITLE = '[data-session-ref="local:p0-s0"] [data-testid="rail-row-title"]';
@@ -413,17 +414,7 @@ export function hoverWitnessExpr() {
 // a Node test can drive the same function the catch runs, through a fake CDP
 // send.
 export async function describeHoverFailure(driver, error) {
-  let witness;
-  try {
-    witness = await evaluate(driver.send, hoverWitnessExpr());
-  } catch (witnessError) {
-    witness = {
-      partial: true,
-      unreadable: ["witness"],
-      error: witnessError instanceof Error ? witnessError.message : String(witnessError),
-    };
-  }
-  return new Error(`${error.message}; witness ${JSON.stringify(witness)}`, { cause: error });
+  return witnessFailure(driver, hoverWitnessExpr(), error, { partial: true });
 }
 
 async function onPage(cdpEndpoint, vitePort, viewport) {

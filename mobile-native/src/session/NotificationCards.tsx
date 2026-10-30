@@ -25,7 +25,7 @@ export function NotificationCards({
 }: {
 	fragments: readonly SteeringFragment[];
 	delegates?: readonly EvenerDelegateInfo[];
-	openSubagent?: (ref: string, title: string) => void;
+	openSubagent?: (ref: string, title: string, runStartedAt?: string) => void;
 	/** Scopes each card's open state: the row's own disclosure id. */
 	disclosureId: string;
 }) {
@@ -67,14 +67,15 @@ function NotificationCard({
 	disclosureId,
 }: {
 	line: NotificationLine;
-	openSubagent?: (ref: string, title: string) => void;
+	openSubagent?: (ref: string, title: string, runStartedAt?: string) => void;
 	disclosureId: string;
 }) {
 	const { palette } = useColors();
 	const quiet = useQuietText();
 	const expanded = useDisclosureOpen(disclosureId, false);
 	const { subagent, output } = line;
-	const open = subagent && openSubagent ? () => openSubagent(subagent.ref, subagent.title) : undefined;
+	const open =
+		subagent && openSubagent ? () => openSubagent(subagent.ref, subagent.title, subagent.runStartedAt) : undefined;
 	const onPress = open ?? (output ? () => toggleDisclosure(disclosureId, false) : undefined);
 	const label = line.detail ? `${line.headline}, ${line.detail}` : line.headline;
 	const body = (

@@ -1,9 +1,4 @@
-import {
-	type AnsiColor,
-	type AnsiLine,
-	type AnsiRun,
-	parseAnsiLines,
-} from "../../cmd/evener-hub/frontend/src/widgets/codeblock/ansi";
+import { type AnsiColor, type AnsiLine, type AnsiRun, parseAnsiLines } from "@evener/appwire-client";
 
 export interface NativeAnsiTextStyle {
 	color?: string;

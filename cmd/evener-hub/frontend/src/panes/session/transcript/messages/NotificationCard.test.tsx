@@ -10,6 +10,7 @@ import type { ReactElement } from "react";
 import { afterEach, beforeAll, expect, test, vi } from "vitest";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import { navigationStore } from "../../../../stores/navigation/store";
+import { readModuleCss } from "../../../../styles/cssBlock";
 import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
 import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
 import { FailureGlyph } from "../../../../widgets/failureglyph";
@@ -951,8 +952,7 @@ test("keeps the raw disclosure native and preserves its visible marker row", asy
   expect(summary?.tagName).toBe("SUMMARY");
   expect(summary?.getAttribute("role")).toBeNull();
 
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "notificationcard.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readModuleCss(import.meta.url, "notificationcard.module.css");
   const summaryRule = css.match(/\.summary\s*\{([^}]*)\}/)?.[1] ?? "";
   expect(summaryRule).toContain("display: list-item");
   expect(summaryRule).toContain("width: 100%");

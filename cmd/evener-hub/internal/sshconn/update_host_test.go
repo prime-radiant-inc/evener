@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -212,7 +213,7 @@ func TestUpdateHostClearsPerHostCaches(t *testing.T) {
 	if m.resolvedTarget("alpha") != "" {
 		t.Fatal("resolvedTarget survived UpdateHost")
 	}
-	if m.pendingRestart("alpha") != (pendingRestartState{}) {
+	if !reflect.DeepEqual(m.pendingRestart("alpha"), pendingRestartState{}) {
 		t.Fatal("pendingRestart survived UpdateHost")
 	}
 }

@@ -66,6 +66,32 @@ func (a *managerReadAdapter) Complete(_ context.Context, r llm.Request) (llm.Res
 	}
 }
 
+type snapshotBoundarySource struct {
+	*appsource.LocalDaemonSource
+	afterRead func()
+}
+
+func (s *snapshotBoundarySource) AcquireRelaySession(ref appwire.Ref) (appsource.RelaySessionRoutePublicationLease, error) {
+	lease, err := s.LocalDaemonSource.AcquireRelaySession(ref)
+	if err != nil {
+		return nil, err
+	}
+	return &snapshotBoundaryLease{RelaySessionRoutePublicationLease: lease, afterRead: s.afterRead}, nil
+}
+
+type snapshotBoundaryLease struct {
+	appsource.RelaySessionRoutePublicationLease
+	afterRead func()
+}
+
+func (l *snapshotBoundaryLease) ReadWithRoutePublication(ctx context.Context, params appwire.ThreadReadParams, routes *appsource.RelayRoutePublication) (appsource.RelayReadResult, error) {
+	read, err := l.RelaySessionRoutePublicationLease.ReadWithRoutePublication(ctx, params, routes)
+	if err == nil {
+		l.afterRead()
+	}
+	return read, err
+}
+
 func TestSessionToolsWatchSnapshotHandoff(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
@@ -85,11 +111,15 @@ func TestSessionToolsWatchSnapshotHandoff(t *testing.T) {
 		return []appsource.LocalDaemonEntry{{Entry: entry, SessionID: instance, Manager: true}}
 	}, upstream.Client())
 	sources := appsource.NewRegistry()
-	sources.Add(source)
+	// Change state only after the real upstream snapshot is captured, before
+	// its canonical handoff commits or the Manager watch starts listening.
+	sources.Add(&snapshotBoundarySource{LocalDaemonSource: source, afterRead: func() {
+		daemon.SetProcessingTurn("turn-at-snapshot-boundary")
+	}})
 	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), HubID: "hub-test"}
 	server := appserver.NewServer(appserver.ServerConfig{})
 	defer server.Shutdown(ctx)
-	relays := newHubRelayFunctions(server, cfg, sources)
+	relays := newHubRelay(server, cfg, sources)
 	owner := &sessionOperations{cfg: cfg, sources: sources, relays: relays, server: server}
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, owner.Read)
 	binding := &boundSessionOperations{owner: owner, local: source, binding: appwire.SessionBinding{Ref: ref, InstanceID: instance, HubID: "hub-test", BindingID: "binding"}}
@@ -118,15 +148,6 @@ func TestSessionToolsWatchSnapshotHandoff(t *testing.T) {
 			}
 		}
 	}()
-	// The real upstream snapshot is already captured, but its canonical handoff
-	// has not committed. Change the state once, before this watch can listen.
-	owner.relays.readThread = func(ctx context.Context, source appsource.Source, p appwire.ThreadReadParams) (*hubThreadReadResult, error) {
-		read, err := relays.readThread(ctx, source, p)
-		if err == nil {
-			daemon.SetProcessingTurn("turn-at-snapshot-boundary")
-		}
-		return read, err
-	}
 	updates, err := binding.Watch(ctx, appwire.SessionWatchRequest{Ref: ref, Events: []string{"status"}})
 	if err != nil {
 		t.Fatal(err)
@@ -367,7 +388,9 @@ func TestManagerAdmissionRealToolRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	daemon.ReplaceAppIdentity(identity.WithBootGeneration("7@manager"), nil)
-	daemon.SetStatus(daemonserver.StatusInfo{SessionID: session.ID(), State: "idle", WorkingDir: workDir})
+	daemon.UpdateSessionInfo(session.ID(), "", "")
+	daemon.SetState("idle")
+	daemon.SetWorkingDir(workDir)
 	daemon.SetSessionTools(func() *agent.Session { return session })
 	daemon.WireTranscriptHistory(session)
 	sockets := make(chan net.Conn, 8)
@@ -569,7 +592,9 @@ func TestSessionToolsRuntimeIdentityReplacement(t *testing.T) {
 			t.Fatal(err)
 		}
 		daemon.ReplaceAppIdentity(identity, nil)
-		daemon.SetStatus(daemonserver.StatusInfo{SessionID: session.ID(), State: "idle", WorkingDir: workDir})
+		daemon.UpdateSessionInfo(session.ID(), "", "")
+		daemon.SetState("idle")
+		daemon.SetWorkingDir(workDir)
 		daemon.WireTranscriptHistory(session)
 	}
 	setIdentity(first)

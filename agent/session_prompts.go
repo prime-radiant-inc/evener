@@ -91,7 +91,7 @@ func (s *Session) reportPromptRenderFailure(warning string) {
 	if warning == "" {
 		return
 	}
-	s.emit(events.EventWarning, events.WarningData{Message: warning})
+	s.emit(events.WarningData{Message: warning})
 }
 
 // buildPromptData assembles a promptData from session state for template
@@ -118,6 +118,7 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 		IsSubagent:               s.isSubagentSession(),
 		Surface:                  s.profile.Surface(),
 		TurnEndsProcess:          s.cfg.TurnEndsProcess,
+		DetachSupported:          detachSupportedBy(env),
 		MemoryRead:               read,
 		MemorySearch:             read && s.canInstructTool("memory_search"),
 		MemorySaves:              saves,

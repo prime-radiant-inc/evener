@@ -6,7 +6,6 @@ import { markFor, StateMark } from "./StateMark";
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 describe("state marks pair shape with color (spec 13.1)", () => {
 	it.each([

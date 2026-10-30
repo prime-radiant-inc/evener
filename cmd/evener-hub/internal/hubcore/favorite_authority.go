@@ -3,7 +3,7 @@ package hubcore
 import (
 	"slices"
 
-	"primeradiant.com/evener/hubapi"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -22,8 +22,8 @@ const (
 // navigation layer. ID is the canonical session identity; Aliases are already
 // known local/ref spellings for that same identity. TopLevel and Lineage are
 // facts from the full metadata lineage set, not from a rendered or capped
-// tree. The caller should derive TopLevel with TopLevelSessionIDs so tree and
-// favorite policy share the same nestedSessionIDs rule.
+// tree. The caller should derive TopLevel from a RootIndex so tree and favorite
+// policy share the same nestedSessionIDs rule.
 type FavoriteSessionAuthority struct {
 	ID       string
 	Aliases  []string
@@ -126,7 +126,7 @@ func ClassifyFavoriteDecisions(decisions map[ArchiveKey]bool, authority Favorite
 // established local-ref spelling from authority that resolves to it. Remote
 // refs are never included.
 func LocalSessionDecisionAliases(sessionID string, authority FavoriteAuthority) []string {
-	aliases := []string{sessionID, hubapi.LocalRef(sessionID).String()}
+	aliases := []string{sessionID, appwire.LocalRef(sessionID).String()}
 	sessions := indexFavoriteSessions(authority.Sessions)
 	authorities := sessions.byID[sessionID]
 	if len(authorities) != 1 || sessions.ambiguousIDs[sessionID] {
@@ -136,8 +136,8 @@ func LocalSessionDecisionAliases(sessionID string, authority FavoriteAuthority) 
 		if alias == sessionID {
 			continue
 		}
-		ref, err := hubapi.ParseRef(alias)
-		if err == nil && ref.HostID == "local" && ref.SessionID == sessionID {
+		ref, err := appwire.ParseRef(alias)
+		if err == nil && ref.SourceID == appwire.LocalSourceID && ref.ThreadID == sessionID {
 			aliases = appendUniqueString(aliases, alias)
 		}
 	}
@@ -229,11 +229,11 @@ func classifyFavoriteSession(key ArchiveKey, sessions favoriteSessionIndex) Favo
 	}
 	ids := sessions.byAlias[key.ID]
 	if len(ids) == 0 {
-		ref, err := hubapi.ParseRef(key.ID)
-		if err == nil && ref.HostID == "local" && identifier.ValidateSessionID(ref.SessionID) == nil {
+		ref, err := appwire.ParseRef(key.ID)
+		if err == nil && ref.SourceID == appwire.LocalSourceID && identifier.ValidateSessionID(ref.ThreadID) == nil {
 			return FavoriteDecisionClassification{
 				State:        FavoriteDecisionDormant,
-				CanonicalKey: ArchiveKey{Kind: "session", ID: ref.SessionID},
+				CanonicalKey: ArchiveKey{Kind: "session", ID: ref.ThreadID},
 			}
 		}
 		return FavoriteDecisionClassification{State: FavoriteDecisionDormant}

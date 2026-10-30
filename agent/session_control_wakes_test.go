@@ -41,10 +41,7 @@ func countingWake(t *testing.T, s *Session) func() int {
 func TestQueueWakesAnIdleSessionToRunIt(t *testing.T) {
 	t.Parallel()
 	s := newTestSessionForEnvctx(t)
-	serveSession(t, s)
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
+	serveSessionWithMutationStore(t, s)
 	notifies := countingWake(t, s)
 
 	params := appwire.TurnQueueParams{
@@ -73,10 +70,7 @@ func TestQueueWakesAnIdleSessionToRunIt(t *testing.T) {
 func TestDrainWakesAnIdleSessionToDeliverIt(t *testing.T) {
 	t.Parallel()
 	s := newTestSessionForEnvctx(t)
-	serveSession(t, s)
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
+	serveSessionWithMutationStore(t, s)
 	if _, err := s.AcceptClientMutationQueue(appwire.TurnQueueParams{
 		ClientMutationID: "cm-queued-for-drain",
 		Input:            []appwire.InputItem{{Type: "text", Text: "drain me"}},
@@ -103,10 +97,7 @@ func TestDrainWakesAnIdleSessionToDeliverIt(t *testing.T) {
 func TestPromoteWakesAnIdleSessionToDeliverIt(t *testing.T) {
 	t.Parallel()
 	s := newTestSessionForEnvctx(t)
-	serveSession(t, s)
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
+	serveSessionWithMutationStore(t, s)
 	if _, err := s.AcceptClientMutationQueue(appwire.TurnQueueParams{
 		ClientMutationID: "cm-queued-for-promote",
 		Input:            []appwire.InputItem{{Type: "text", Text: "promote me"}},
@@ -138,10 +129,7 @@ func TestPromoteWakesAnIdleSessionToDeliverIt(t *testing.T) {
 func TestRestoredQueuedInputWakesWhenTheDaemonAttaches(t *testing.T) {
 	t.Parallel()
 	s := newTestSessionForEnvctx(t)
-	serveSession(t, s)
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
+	serveSessionWithMutationStore(t, s)
 	if _, err := s.AcceptClientMutationQueue(appwire.TurnQueueParams{
 		ClientMutationID: "cm-queued-before-crash",
 		Input:            []appwire.InputItem{{Type: "text", Text: "queued before the crash"}},

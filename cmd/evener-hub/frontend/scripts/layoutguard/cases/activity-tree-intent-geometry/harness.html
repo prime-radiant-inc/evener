@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1200, initial-scale=1">
+<title>Activity tree near-limit intent geometry</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+  .fixtures { display: flex; flex-direction: column; align-items: flex-start; gap: 16px; padding: 16px; }
+  iframe { border: 0; height: 320px; }
+</style>
+</head>
+<body data-font-size="m">
+<main class="fixtures"></main>
+<script>
+const widths = __LAYOUTGUARD_WIDTH_MATRIX__;
+const intent = "Reviewing activity geometry without hiding the delegate name or its transcript control. ".repeat(3).slice(0, 200);
+const openIcon = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M12.5 8.5V12.5H3.5V3.5H7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"></path><path d="M8 8L13 3M9.5 3H13V6.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg>';
+const chevron = '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" style="display:block"><path d="M6 3.5 L10.5 8 L6 12.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg>';
+
+// DenseRowView / RowShell / RowSegments and the real OpenButton hierarchy.
+// Only callbacks are fixture-local: geometry, glyphs, classes and order are
+// production's. Do not add a fixture min-width or remove the Sheet inset.
+function row(width, depth) {
+  return `<div class="denseRow" role="treeitem" aria-label="inspect" aria-description="running" aria-level="${depth + 1}" aria-expanded="false" tabindex="${depth === 0 ? 0 : -1}" data-row="${width}-${depth}">
+    <button type="button" class="rowToggle" tabindex="-1" aria-label="Show details for inspect" aria-expanded="false">${chevron}</button>
+    <span class="denseKind"><span role="img" aria-label="Working" aria-hidden="true" data-state="fresh" data-shape="dot" data-status-dot></span></span>
+    <span class="denseName denseNameLive">inspect</span>
+    <span class="inline" data-open-shell><button type="button" class="button quiet squareSm" tabindex="-1" aria-label="Open conversation" title="Open"><span class="icon">${openIcon}</span></button></span>
+    <span class="denseMeta"><span data-intent>${intent}</span> · <span>↑41.2K ↓6.1K</span> · <span class="denseQuiet">12s</span></span>
+  </div>`;
+}
+
+function frameDocument(spec) {
+  let rows = row(spec.width, 0);
+  for (let depth = 1; depth <= spec.depth; depth++) rows += `<div role="group" class="indentGuide">${row(spec.width, depth)}`;
+  rows += "</div>".repeat(spec.depth);
+  return `<!doctype html><html lang="en" data-theme="dark"><head>
+    <meta charset="utf-8"><meta name="viewport" content="width=${spec.width}, initial-scale=1"><base href="${location.href}">
+    <link rel="stylesheet" href="tokens.css"><link rel="stylesheet" href="resolved.css">
+    <style>*, *::before, *::after { transition:none !important; animation:none !important; }</style>
+    </head><body data-font-size="m"><div class="scrim"><div class="panel right wide">
+      <header class="header"><h2 class="title">Activity</h2></header>
+      <div class="body"><div class="activityPanel"><div class="panelColumn"><div class="tree" role="tree">${rows}</div></div></div></div>
+      <button type="button" class="closeButton" aria-label="Close">×</button>
+    </div></div>
+    <script type="module">
+      // Keep StatusDot's .danger distinct from Button's, as in production.
+      import styles from "/src/widgets/statusdot/statusdot.module.css";
+      for (const dot of document.querySelectorAll("[data-status-dot]")) {
+        dot.className = [styles.dot, styles.alive, styles.working].join(" ");
+      }
+    <\/script></body></html>`;
+}
+
+const frames = widths.map((spec) => {
+  const frame = document.createElement("iframe");
+  frame.style.width = `${spec.width}px`;
+  frame.srcdoc = frameDocument(spec);
+  document.querySelector(".fixtures").append(frame);
+  return { spec, frame };
+});
+
+function box(element) {
+  const rect = element.getBoundingClientRect();
+  return {
+    left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom,
+    width: rect.width, height: rect.height,
+    visible: element.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }),
+  };
+}
+
+function measureFrame({ spec, frame }) {
+  const doc = frame.contentDocument;
+  const win = frame.contentWindow;
+  const opened = [];
+  const disclosures = [];
+  const rows = [...doc.querySelectorAll("[data-row]")];
+  for (const row of rows) {
+    row.addEventListener("click", () => disclosures.push(row.dataset.row));
+    row.querySelector("[data-open-shell] button").addEventListener("click", (event) => {
+      event.stopPropagation();
+      opened.push(row.dataset.row);
+    });
+  }
+  return {
+    width: spec.width,
+    viewport: { width: win.innerWidth, height: win.innerHeight },
+    pane: box(doc.querySelector(".panelColumn")),
+    rows: rows.map((row) => {
+      const name = row.querySelector(".denseName");
+      const button = row.querySelector("[data-open-shell] button");
+      const meta = row.querySelector(".denseMeta");
+      const nameStyle = win.getComputedStyle(name);
+      const rowStyle = win.getComputedStyle(row);
+      const metaStyle = win.getComputedStyle(meta);
+      const canvas = doc.createElement("canvas").getContext("2d");
+      canvas.font = `${nameStyle.fontWeight} ${nameStyle.fontSize} ${nameStyle.fontFamily}`;
+      const prefixEllipsisWidth = canvas.measureText(name.textContent.slice(0, 1) + "…").width;
+      const nameRange = doc.createRange();
+      nameRange.selectNodeContents(name);
+      const target = box(button);
+      const cx = target.left + target.width / 2;
+      const cy = target.top + target.height / 2;
+      const points = [[cx, cy], [target.left + 2, cy], [target.right - 2, cy], [cx, target.top + 2], [cx, target.bottom - 2]];
+      const hits = points.map(([x, y]) => ({ x, y, ownButton: doc.elementFromPoint(x, y)?.closest("button") === button }));
+      const center = doc.elementFromPoint(cx, cy)?.closest("button");
+      const beforeOpen = opened.length;
+      const beforeDisclosure = disclosures.length;
+      // A center hit can be an SVG path without .click(). Resolve and verify
+      // its owning HTML button before checking enabled DOM activation.
+      if (center === button) center.click();
+      let depth = 0;
+      for (let parent = row.parentElement; parent; parent = parent.parentElement) {
+        if (parent.classList.contains("indentGuide")) depth++;
+      }
+      return {
+        depth, level: Number(row.getAttribute("aria-level")), box: box(row),
+        contentWidth: row.getBoundingClientRect().width - parseFloat(rowStyle.paddingLeft) - parseFloat(rowStyle.paddingRight),
+        intentLength: row.querySelector("[data-intent]").textContent.length,
+        statusDot: box(row.querySelector("[data-status-dot]")),
+        name: box(name), nameTextWidth: nameRange.getBoundingClientRect().width, prefixEllipsisWidth,
+        button: target, disabled: button.disabled || button.getAttribute("aria-disabled") === "true",
+        iconVisible: button.querySelector("svg").checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }),
+        meta: { ...box(meta), clientWidth: meta.clientWidth, scrollWidth: meta.scrollWidth, overflowX: metaStyle.overflowX, textOverflow: metaStyle.textOverflow, whiteSpace: metaStyle.whiteSpace, lineHeight: parseFloat(metaStyle.lineHeight) },
+        hits, opened: opened.slice(beforeOpen), disclosures: disclosures.length - beforeDisclosure,
+      };
+    }),
+  };
+}
+
+// The existing runner awaits every linked stylesheet in every srcdoc frame
+// and then the bundled fonts before calling this measurement.
+window.measure = () => frames.map(measureFrame);
+</script>
+</body>
+</html>

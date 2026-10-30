@@ -16,8 +16,7 @@ func TestExistingDirectory_StatError(t *testing.T) {
 	}
 }
 
-// TestMustDomainID_PanicOnFailure covers the panic branch in mustDomainID
-// (domains.go:44-45) where the underlying ID generator returns an error.
+// TestMustDomainID_PanicOnFailure covers the panic branch in mustDomainID where the underlying ID generator returns an error.
 func TestMustDomainID_PanicOnFailure(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {

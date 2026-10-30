@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { MotionProvider } from "../../motion";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { sessionActivitySnapshot } from "../../stores/sessionActivity";
 import {
   activityClient,
@@ -33,6 +33,12 @@ const jobs = Array.from({ length: 30 }, (_, index) =>
 const target = jobs[22];
 if (!target) throw new Error("fixture target missing");
 const anchor = { id: activityNodeID({ ...target, kind: "shell" }), offset: -12 };
+
+function targetJob() {
+  return screen.findByRole("button", {
+    name: (_name, element) => (element as HTMLElement).dataset.activityAnchor === anchor.id,
+  });
+}
 
 function viewport(): HTMLElement {
   const body = screen.getByTestId("activity-sidebar").getElementsByClassName(BODY_CLASS).item(0);
@@ -108,7 +114,7 @@ function resetLive() {
   resetActivitySidebarStoreForTests({ preserveStorage: true });
   resetDisclosureStoreForTests();
   resetThreadsStoreForTests();
-  connectionStore.setState({ client: null, state: "idle" });
+  resetConnectionStoreForTests();
   Visibility.observers = [];
 }
 
@@ -142,7 +148,7 @@ test("a real scroll survives reload and restores its semantic row through fresh 
   installFocusedScope(ref);
   activitySidebarStore.getState().openWith("jobs");
   mount();
-  await screen.findByRole("button", { name: /History 22/ });
+  await targetJob();
   viewport().scrollTop = 22 * ROW_HEIGHT + 12;
   fireEvent.scroll(viewport());
   resetLive();
@@ -172,7 +178,7 @@ test("a real scroll survives reload and restores its semantic row through fresh 
   act(() => firstBoundary.emit(true));
   expect(cold.calls.filter((call) => call.method === "evener/thread/jobs/list")).toHaveLength(2);
   await act(async () => Visibility.latest().emit(true));
-  const restored = await screen.findByRole("button", { name: /History 22/ });
+  const restored = await targetJob();
   expect(restored.getBoundingClientRect().top).toBe(-12);
   expect(viewport().scrollTop).toBe(23 * ROW_HEIGHT + 12);
   expect(cold.calls.filter((call) => call.method === "evener/thread/jobs/list").map((call) => call.params)).toEqual([
@@ -264,7 +270,7 @@ test("reload retains a clamped anchor until existing page demand supplies its tr
   }));
   connectionStore.getState().connect(client);
   mount();
-  const row = await screen.findByRole("button", { name: /History 22/ });
+  const row = await targetJob();
   expect(row.getBoundingClientRect().top).toBe(4);
   expect(viewport().scrollTop).toBe(viewport().scrollHeight - VIEW_HEIGHT);
   fireEvent.scroll(viewport());
@@ -285,7 +291,7 @@ test("an authoritative complete short collection settles at its available extent
   }));
   connectionStore.getState().connect(client);
   mount();
-  const row = await screen.findByRole("button", { name: /History 22/ });
+  const row = await targetJob();
   expect(row.getBoundingClientRect().top).toBe(4);
   expect(viewport().scrollTop).toBe(viewport().scrollHeight - VIEW_HEIGHT);
   expect(client.calls.filter((call) => call.method === "evener/thread/jobs/list")).toHaveLength(1);
@@ -323,7 +329,7 @@ test("the shared store's empty-page progress reaches the retained anchor without
   }));
   connectionStore.getState().connect(client);
   mount();
-  expect((await screen.findByRole("button", { name: /History 22/ })).getBoundingClientRect().top).toBe(-12);
+  expect((await targetJob()).getBoundingClientRect().top).toBe(-12);
   expect(client.calls.filter((call) => call.method === "evener/thread/jobs/list").map((call) => call.params)).toEqual([
     { ref, scope: "session" },
     { ref, scope: "session", cursor: "after-empty" },
@@ -352,7 +358,7 @@ test("a saved anchor waits for its successful-history disclosure to hydrate on a
   connect();
   installFocusedScope(ref);
   mount();
-  const restored = await screen.findByRole("button", { name: /History 22/ });
+  const restored = await targetJob();
   await waitFor(() => expect(restored.getBoundingClientRect().top).toBe(-12));
 });
 
@@ -426,7 +432,10 @@ test("reopening during sidebar exit resumes the same viewport and its pending an
   expect(screen.getAllByTestId("activity-sidebar")).toHaveLength(1);
   expect(viewport()).toBe(original);
   await act(async () => boundary.emit(true));
-  expect(screen.getByRole("button", { name: /History 22/ }).getBoundingClientRect().top).toBe(anchor.offset);
+  const target = screen.getByRole("button", {
+    name: (_name, element) => (element as HTMLElement).dataset.activityAnchor === anchor.id,
+  });
+  expect(target.getBoundingClientRect().top).toBe(anchor.offset);
   expect(client.calls.filter((call) => call.method === "evener/thread/jobs/list")).toHaveLength(2);
 });
 
@@ -477,7 +486,13 @@ test.each(["tab", "scope", "completed exit"])(
     expect(current.scrollTop).toBe(position);
     expect(activitySidebarStore.getState().views.get(ref)?.categories.jobs?.anchor).toEqual(saved);
     await act(async () => Visibility.latest().emit(true));
-    expect(screen.getByRole("button", { name: /History 22/ }).getBoundingClientRect().top).toBe(anchor.offset);
+    expect(
+      screen
+        .getByRole("button", {
+          name: (_name, element) => (element as HTMLElement).dataset.activityAnchor === anchor.id,
+        })
+        .getBoundingClientRect().top,
+    ).toBe(anchor.offset);
   },
 );
 
@@ -604,7 +619,7 @@ test.each(["Tab", "Shift", "Control", "Alt", "Meta", "a"])(
     await waitFor(() => expect(finish).toBeTypeOf("function"));
     fireEvent.keyDown(first, { key });
     await act(async () => finish?.());
-    const restored = await screen.findByRole("button", { name: /History 22/ });
+    const restored = await targetJob();
     expect(restored.getBoundingClientRect().top).toBe(anchor.offset);
     expect(client.calls.filter((call) => call.method === "evener/thread/jobs/list")).toHaveLength(2);
   },
@@ -650,7 +665,11 @@ test("keyboard activation of a history disclosure cancels its pending anchor bef
   const position = viewport().scrollTop;
   await act(async () => finish?.());
   await screen.findByText("30 completed jobs");
-  expect(screen.queryByRole("button", { name: /History 22/ })).toBeNull();
+  expect(
+    screen.queryByRole("button", {
+      name: (_name, element) => (element as HTMLElement).dataset.activityAnchor === anchor.id,
+    }),
+  ).toBeNull();
   expect(viewport().scrollTop).toBe(position);
   expect(disclosure.closest("details")?.open).toBe(false);
 });
@@ -689,7 +708,7 @@ test.each(["wheel", "touch", "pointer", "key", "scroll"])(
     }
     const position = body.scrollTop;
     await act(async () => finish?.());
-    await screen.findByRole("button", { name: /History 22/ });
+    await targetJob();
     expect(body.scrollTop).toBe(position);
     expect(activitySidebarStore.getState().views.get(ref)?.categories.jobs?.anchor?.id).not.toBe(anchor.id);
   },

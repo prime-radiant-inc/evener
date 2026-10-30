@@ -505,8 +505,8 @@ describe("projectedRow — item entries", () => {
 		});
 	});
 
-	it("labels a steer of a kind it has no label for as System steered, never its raw text", () => {
-		const row = projectedRow(itemEntry(item({ type: "steering", text: "steer", steeringKind: "note" })));
+	it("labels a steer of a retired kind (agent-message) as System steered, never its raw text", () => {
+		const row = projectedRow(itemEntry(item({ type: "steering", text: "steer", steeringKind: "agent-message" })));
 		expect(row).toMatchObject({ kind: "notice", label: "System steered", text: "steer" });
 	});
 

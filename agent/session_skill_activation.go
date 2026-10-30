@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/skill"
@@ -197,7 +196,7 @@ func (s *Session) admitPreparedSkillSelection(batch *skillActivationBatch) {
 			s.pendingSkillAdmissions = append(s.pendingSkillAdmissions, batch)
 		}
 		s.mu.Unlock()
-		s.emit(events.EventWarning, warningDataFromError("admitting a prepared skill selection failed", err))
+		s.emit(warningDataFromError("admitting a prepared skill selection failed", err))
 	}
 }
 
@@ -327,7 +326,7 @@ func (s *Session) reconcilePendingSkillSelections(ctx context.Context, entries [
 		historyBefore := len(s.history)
 		batch, err := s.prepareSkillActivations(ctx, invocations)
 		if err != nil {
-			s.emit(events.EventWarning, warningDataFromError("reconciling lost skill selection failed", err))
+			s.emit(warningDataFromError("reconciling lost skill selection failed", err))
 			continue
 		}
 		// Admission gates the next request on its own failure (it retains the
@@ -370,6 +369,17 @@ func skillInvocationAllowed(route string, controls skill.InvocationControls, aut
 	}
 }
 
+// unavailableSkillActivationError is the typed denial for a skill this session
+// cannot follow. Fresh activation and resumed delivery share it so the code and
+// message cannot drift between the two paths.
+func unavailableSkillActivationError(invocation skillInvocation, canonicalName string) error {
+	return &skillActivationError{
+		Invocation: invocation,
+		Code:       "policy_denied",
+		Err:        fmt.Errorf("skill %q needs the memory save tools this session does not have", canonicalName),
+	}
+}
+
 // prepareSkillActivations reads complete sources and checks current controls.
 // It neither changes inventory/obligations nor persists or publishes success.
 // Final admission and obligation satisfaction are separate transactions.
@@ -406,7 +416,7 @@ func (s *Session) prepareSkillActivations(ctx context.Context, invocations []ski
 		// A skill this session cannot follow is refused before its source is
 		// read, on every route, whatever the source controls say.
 		if !s.skillAvailableToSession(descriptor.CatalogName) {
-			return nil, &skillActivationError{Invocation: invocation, Code: "policy_denied", Err: fmt.Errorf("skill %q needs the memory save tools this session does not have", descriptor.CatalogName)}
+			return nil, unavailableSkillActivationError(invocation, descriptor.CatalogName)
 		}
 		loaded, diagnostics, err := loadSkillInvocationSource(invocation, descriptor)
 		if err != nil {
@@ -454,7 +464,7 @@ func (s *Session) mintSkillOperationID() (string, error) {
 	id := fmt.Sprintf("skill-op-%d", s.skillLifecycle.NextOperationGen)
 	s.mu.Unlock()
 	if err := s.saveMeta(); err != nil {
-		s.emit(events.EventWarning, warningDataFromError("persisting skill operation identity failed", err))
+		s.emit(warningDataFromError("persisting skill operation identity failed", err))
 		return "", err
 	}
 	return id, nil
@@ -575,7 +585,7 @@ func (s *Session) admitSkillActivationBatch(batch *skillActivationBatch) error {
 		s.skillLifecycle.Obligations = withoutObligationsByInvocationID(s.skillLifecycle.Obligations, added)
 		s.skillLifecycle.Revision++
 		s.mu.Unlock()
-		s.emit(events.EventWarning, warningDataFromError("saving skill delivery obligations failed", err))
+		s.emit(warningDataFromError("saving skill delivery obligations failed", err))
 		return err
 	}
 	for _, adm := range admissions {
@@ -632,6 +642,99 @@ func (s *Session) seedFrozenSkillPreloads() {
 	if changed {
 		s.skillLifecycle.Revision++
 	}
+}
+
+// dropUnavailableSkillPreloads removes role preloads this session cannot
+// follow before the permanent prompt and the frozen preload inventory carry
+// them. A role preload is prepared on the creating parent, and a frozen
+// descriptor replays the body frozen at creation, so construction is the first
+// point either path can ask this session's own registry. It runs after the
+// tool registry is final (filterUnavailableMemoryTools) and before
+// refreshSystemPromptCache and seedFrozenSkillPreloads.
+//
+// The name and body slices are parallel; every production producer appends or
+// replaces them together. A body without a parallel name (a direct fixture that
+// predates the field) is left untouched because its capability cannot be
+// decided. A preload record already restored from SessionMeta.Skills is pruned
+// the same way, preserving an ordinary activation record for the same name, so
+// the durable inventory agrees with the prompt.
+func (s *Session) dropUnavailableSkillPreloads() {
+	names := s.cfg.spawn.activatedSkillNames
+	bodies := s.cfg.spawn.activatedSkillBodies
+	pairsAligned := len(names) > 0 && len(names) == len(bodies)
+	candidates := make([]string, 0, len(names)+len(s.cfg.spawn.frozenSkillMetadata))
+	if pairsAligned {
+		candidates = append(candidates, names...)
+	}
+	for _, metadata := range s.cfg.spawn.frozenSkillMetadata {
+		candidates = append(candidates, metadata.Name)
+	}
+	// A preload record restored from SessionMeta.Skills can outlive the spawn
+	// carrier that delivered it; include it in the same capability pass.
+	s.mu.Lock()
+	for name, entry := range s.skillLifecycle.Inventory {
+		if entry.Preload != nil {
+			candidates = append(candidates, name)
+		}
+	}
+	s.mu.Unlock()
+	if len(candidates) == 0 {
+		return
+	}
+	availability := s.skillAvailability()
+	dropped := make(map[string]bool)
+	for _, name := range candidates {
+		if !availability.SkillAvailable(name) {
+			dropped[name] = true
+		}
+	}
+	if len(dropped) == 0 {
+		return
+	}
+
+	if pairsAligned {
+		keptNames := make([]string, 0, len(names))
+		keptBodies := make([]string, 0, len(bodies))
+		for i, name := range names {
+			if dropped[name] {
+				continue
+			}
+			keptNames = append(keptNames, name)
+			keptBodies = append(keptBodies, bodies[i])
+		}
+		s.cfg.spawn.activatedSkillNames = keptNames
+		s.cfg.spawn.activatedSkillBodies = keptBodies
+	}
+	if len(s.cfg.spawn.frozenSkillMetadata) > 0 {
+		kept := make([]schema.FrozenSkillPreload, 0, len(s.cfg.spawn.frozenSkillMetadata))
+		for _, metadata := range s.cfg.spawn.frozenSkillMetadata {
+			if dropped[metadata.Name] {
+				continue
+			}
+			kept = append(kept, metadata)
+		}
+		s.cfg.spawn.frozenSkillMetadata = kept
+	}
+
+	s.mu.Lock()
+	inventoryChanged := false
+	for name := range dropped {
+		entry, ok := s.skillLifecycle.Inventory[name]
+		if !ok || entry.Preload == nil {
+			continue
+		}
+		entry.Preload = nil
+		if entry.Ordinary == nil {
+			delete(s.skillLifecycle.Inventory, name)
+		} else {
+			s.skillLifecycle.Inventory[name] = entry
+		}
+		inventoryChanged = true
+	}
+	if inventoryChanged {
+		s.skillLifecycle.Revision++
+	}
+	s.mu.Unlock()
 }
 
 // skillToolState is the typed pending identity a use_skill execution hands

@@ -10,9 +10,11 @@ import (
 	"mime"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"primeradiant.com/evener/agent/schema"
@@ -39,27 +41,225 @@ const docFileMaxBytes = 512 * 1024
 // ~/git was 3.2 MB. A larger file is served without a revision.
 const docRevisionMaxBytes = 16 * 1024 * 1024
 
-// resolveLocalDocTarget resolves a local session id and a cwd-relative path to
-// the session's current working directory and a contained absolute path. It
-// answers the request itself when it cannot, so every local doc route refuses
-// an unknown session, an escape attempt and a missing path identically: 503 for
-// a session whose folder cannot be resolved, 403 for an escape, 404 otherwise.
-func (s *WebServer) resolveLocalDocTarget(w http.ResponseWriter, r *http.Request, session, rel string) (string, string, bool) {
-	cwd, err := s.localSessionCWD(r.Context(), session)
-	if err != nil {
-		serveSessionRootError(w, r, err)
-		return "", "", false
-	}
-	abs, err := fspaths.ResolveInRoot(cwd, rel)
-	if err != nil {
-		if errors.Is(err, fspaths.ErrPathEscapesRoot) {
-			http.Error(w, "forbidden", http.StatusForbidden)
-			return "", "", false
+// errSessionFileNotFound is resolveSessionFile's answer for a path that names
+// no readable file in any root that may serve it.
+var errSessionFileNotFound = errors.New("session file not found")
+
+// resolveSessionFile resolves a local session id and a path to a served root and
+// a contained absolute path. It is the one rule behind every doc and image
+// route, local and remote; each caller maps the typed failure to its own
+// status or wire error: fspaths.ErrPathEscapesRoot for an escape,
+// errSessionFileNotFound for a miss, and otherwise the session's own error
+// (a deletion refusal, an unresolvable session folder).
+//
+// A relative path resolves against the session's cwd only. An absolute path
+// may also name a file inside the session's retained artifacts directory:
+// agents file reports there and name them by file:// URL, and the transcript
+// turns those into document-pane links, so the routes have to serve them.
+// The artifacts root is one more boundary beside cwd, never a widening of it:
+// both are resolved by fspaths.ResolveInRoot, and the root that accepted the
+// path is returned so the read opens through that same root.
+func resolveSessionFile(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, session, rel string) (root, abs string, err error) {
+	cwd, cwdErr := sessionCWD(ctx, cfg, sources, session)
+	absolute := filepath.IsAbs(strings.TrimSpace(rel))
+	var cwdResolveErr error
+	if cwdErr == nil {
+		resolved, resolveErr := fspaths.ResolveInRoot(cwd, rel)
+		if resolveErr == nil {
+			return cwd, resolved, nil
 		}
+		// A relative path can only mean the working directory, so a cwd
+		// failure is the whole answer for it.
+		if !absolute {
+			return "", "", sessionFileMiss(resolveErr)
+		}
+		cwdResolveErr = resolveErr
+	}
+	// A retained artifact lives under the session's state directory, which
+	// outlives the working directory: that is why it is tried for an absolute
+	// path even when the cwd itself cannot be resolved at all (a removed
+	// worktree, or a session whose live source is momentarily unavailable).
+	// A deletion refusal is not one of those cases: it says this session's
+	// files must not be served, so it stands before anything is tried.
+	if absolute && !isTargetDeletedError(cwdErr) {
+		if root, resolved, contained, ok := artifactsDocTarget(ctx, cfg, session, rel); ok {
+			return root, resolved, nil
+		} else if contained {
+			// The path belongs to the artifacts root but names no readable
+			// file there. That is a miss, not the cwd's escape refusal.
+			return "", "", errSessionFileNotFound
+		}
+	}
+	if cwdErr != nil {
+		return "", "", cwdErr
+	}
+	// The cwd refused this absolute path as an escape and no served root
+	// accepted it, so the refusal stands rather than softening to a miss.
+	return "", "", sessionFileMiss(cwdResolveErr)
+}
+
+// sessionFileMiss classifies a failed ResolveInRoot as an escape or a miss.
+func sessionFileMiss(resolveErr error) error {
+	if errors.Is(resolveErr, fspaths.ErrPathEscapesRoot) {
+		return fspaths.ErrPathEscapesRoot
+	}
+	return errSessionFileNotFound
+}
+
+// resolveLocalDocTarget is resolveSessionFile for the local doc routes. It
+// answers the request itself when it cannot, so every local doc route refuses
+// an unknown session, an escape attempt and a missing path identically: 503
+// for a session whose folder cannot be resolved, 403 for an escape, 404
+// otherwise.
+func (s *WebServer) resolveLocalDocTarget(w http.ResponseWriter, r *http.Request, session, rel string) (string, string, bool) {
+	root, abs, err := resolveSessionFile(r.Context(), s.cfg, s.sources, session, rel)
+	switch {
+	case err == nil:
+		return root, abs, true
+	case errors.Is(err, fspaths.ErrPathEscapesRoot):
+		http.Error(w, "forbidden", http.StatusForbidden)
+	case errors.Is(err, errSessionFileNotFound):
 		http.NotFound(w, r)
+	default:
+		serveSessionRootError(w, r, err)
+	}
+	return "", "", false
+}
+
+// resolveArtifactsDocTarget resolves an absolute request path against the
+// session's retained artifacts directory. A relative path never reaches a
+// second root: only an absolute one can name a file outside the working
+// directory, and letting a relative path fall through here would silently
+// retarget it. An unknown session, a missing root and a path outside it all
+// report not-served, so the caller answers them as any other miss.
+// artifactsDocTarget is resolveArtifactsDocTarget plus whether the path was
+// contained by the artifacts root but named no readable file there. Callers
+// use that to answer a contained miss with not-found instead of turning it
+// into the cwd's escape refusal, which would call a missing report forbidden.
+func (s *WebServer) resolveArtifactsDocTarget(ctx context.Context, session, rel string) (string, string, bool) {
+	root, abs, _, ok := artifactsDocTarget(ctx, s.cfg, session, rel)
+	return root, abs, ok
+}
+
+// artifactsDocTarget answers the containment question resolveArtifactsDocTarget
+// cannot: whether a refused path was inside the artifacts root.
+func artifactsDocTarget(ctx context.Context, cfg hubcore.WebConfig, session, rel string) (root, abs string, contained, ok bool) {
+	if !filepath.IsAbs(strings.TrimSpace(rel)) {
+		return "", "", false, false
+	}
+	// A session fenced for deletion must not serve retained files through this
+	// root either. The cwd path gets this from sessionCWD's deletion check;
+	// artifacts resolve from the roster or the past index, which do not.
+	//
+	// A stable workspace ref can resolve to a different current session, so
+	// the fence covers both identities: a deletion recorded against the session
+	// the ref now names must not be bypassed by asking through the ref.
+	_, resolvedSession, resolved := artifactsSessionScope(ctx, cfg, session)
+	fenced := []string{canonicalRouteID(session)}
+	if resolved && resolvedSession != "" && resolvedSession != fenced[0] {
+		fenced = append(fenced, resolvedSession)
+	}
+	for _, identity := range fenced {
+		if err := deletionFenceError(cfg, appRefFromRouteID(identity), identity, ""); err != nil {
+			return "", "", false, false
+		}
+	}
+	root = sessionArtifactsRoot(ctx, cfg, session)
+	if root == "" {
+		return "", "", false, false
+	}
+	// A root that does not exist contains nothing, so every path is outside
+	// it. Without this, ResolveInRoot fails while resolving the root itself
+	// and the failure reads as a contained miss. This only chooses the refusal;
+	// the open enforces the boundary on its own.
+	if _, statErr := os.Stat(root); statErr != nil {
+		return "", "", false, false
+	}
+	// ResolveInRoot rejects an escaping path with ErrPathEscapesRoot and every
+	// other failure (a missing file, an unreadable directory) with its own
+	// error, which is exactly the containment/existence split callers need.
+	abs, err := fspaths.ResolveInRoot(root, rel)
+	if err != nil {
+		return root, "", !errors.Is(err, fspaths.ErrPathEscapesRoot), false
+	}
+	return root, abs, true, true
+}
+
+// sessionArtifactsRoot is the local session's retained artifacts directory, or
+// "" when this hub serves none for it. This is the one answer both the doc
+// routes and the thread snapshot use, so a link the wire advertises is exactly
+// a link the route serves.
+//
+// The argument may be a session id or the stable workspace ref a thread keeps
+// across Clear: the roster keys live entries by their current session id, so a
+// stable ref is first resolved to the session that owns it. A running
+// delegate's artifacts sit under its owner's project state directory, so a
+// child id resolves through the live entry that reports it. A remote session
+// names no local path.
+func sessionArtifactsRoot(ctx context.Context, cfg hubcore.WebConfig, ref string) string {
+	stateDir, session, ok := artifactsSessionScope(ctx, cfg, ref)
+	if !ok {
+		return ""
+	}
+	root, err := schema.SessionArtifactsDir(stateDir, session)
+	if err != nil {
+		return ""
+	}
+	declareArtifactRoot(root)
+	return root
+}
+
+// artifactsSessionScope resolves the state directory and the current session id
+// an artifacts path belongs to. A stable workspace ref follows to the live
+// session that owns it, because the roster keys entries by the current id. The
+// document fence needs that resolved identity as well as the requested one.
+func artifactsSessionScope(ctx context.Context, cfg hubcore.WebConfig, ref string) (stateDir, sessionID string, ok bool) {
+	ref = canonicalRouteID(ref)
+	if !isLocalRouteID(ref) {
 		return "", "", false
 	}
-	return cwd, abs, true
+	session := ref
+	if cfg.Roster != nil {
+		if live, liveOK := liveDaemonForThread(cfg.Roster, ref); liveOK && !live.Crashed {
+			if live.SessionID != "" {
+				session = live.SessionID
+			}
+		}
+	}
+	stateDir = sessionStateDir(ctx, cfg, session)
+	if stateDir == "" {
+		return "", "", false
+	}
+	return stateDir, session, true
+}
+
+// sessionStateDir resolves the project state directory that holds a local
+// session's own state: the live entry's own StateDir, else the live entry that
+// runs it as a subagent, else the past index's trusted locator. It reads the
+// roster's keyed maps rather than a cloned snapshot, and never a cached launch
+// root.
+func sessionStateDir(ctx context.Context, cfg hubcore.WebConfig, session string) string {
+	if ctx.Err() != nil {
+		return ""
+	}
+	if cfg.Roster != nil {
+		if live, ok := cfg.Roster.Find(session); ok && !live.Crashed {
+			if stateDir := strings.TrimSpace(live.StateDir); stateDir != "" {
+				return stateDir
+			}
+		}
+		if owner, ok := cfg.Roster.SubagentOwner(session); ok {
+			return strings.TrimSpace(owner.StateDir)
+		}
+	}
+	if cfg.Past == nil {
+		return ""
+	}
+	entry, ok := cfg.Past.Find(session)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(entry.StateDir)
 }
 
 // The representations /doc/file serves: the capped head a pane renders, and
@@ -238,21 +438,19 @@ func (s *WebServer) writeDocDownload(w http.ResponseWriter, r *http.Request, cwd
 // sessionDocumentFromHub serves the evener/session/document AppWire method: one
 // document out of THIS hub's own local session state, for the controller's
 // /doc/file proxy (S7). It is the AppWire counterpart of handleDocFile and
-// resolves the path by the same rule (sessionCWD, which refuses a session id
-// naming another source, then fspaths.ResolveInRoot), so a remote read is
-// confined to the session's folder exactly as a local one is.
+// resolves the path by the same rule, so a remote read is confined to the same
+// served roots a local one is: the session's folder, and an absolute path in
+// its retained artifacts directory.
 func sessionDocumentFromHub(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.SessionDocumentParams) (appwire.SessionDocumentResponse, error) {
 	if params.SessionID == "" || params.Path == "" {
 		return appwire.SessionDocumentResponse{}, appwire.InvalidParams("sessionId and path are required")
 	}
-	cwd, err := sessionCWD(ctx, cfg, sources, canonicalRouteID(params.SessionID))
+	session := canonicalRouteID(params.SessionID)
+	root, abs, err := resolveSessionFile(ctx, cfg, sources, session, params.Path)
 	if err != nil {
-		return appwire.SessionDocumentResponse{}, err
+		return appwire.SessionDocumentResponse{}, sessionDocumentWireError(err)
 	}
-	doc, err := readSessionDocument(cwd, params.Path)
-	if errors.Is(err, fspaths.ErrPathEscapesRoot) {
-		return appwire.SessionDocumentResponse{}, appwire.PathOutsideSession("path must resolve inside the session's working directory")
-	}
+	doc, err := readDocFile(root, abs)
 	if err != nil {
 		return appwire.SessionDocumentResponse{}, appwire.ResourceNotFound("document not found")
 	}
@@ -264,16 +462,16 @@ func sessionDocumentFromHub(ctx context.Context, cfg hubcore.WebConfig, sources 
 	}, nil
 }
 
-// readSessionDocument reads the document rel names inside a session's working
-// directory cwd, for evener/session/document. It fails with
-// fspaths.ErrPathEscapesRoot when rel, or a symlink along it, leads outside cwd;
-// any other failure means the document cannot be read.
-func readSessionDocument(cwd, rel string) (docFileRead, error) {
-	abs, err := fspaths.ResolveInRoot(cwd, rel)
-	if err != nil {
-		return docFileRead{}, err
+// sessionDocumentWireError maps a resolveSessionFile failure to the wire error
+// evener/session/document answers with; a session error passes through.
+func sessionDocumentWireError(err error) error {
+	switch {
+	case errors.Is(err, fspaths.ErrPathEscapesRoot):
+		return appwire.PathOutsideSession("path must resolve inside the session's working directory")
+	case errors.Is(err, errSessionFileNotFound):
+		return appwire.ResourceNotFound("document not found")
 	}
-	return readDocFile(cwd, abs)
+	return err
 }
 
 // handleDocImage serves a validated image file inside a session's working
@@ -318,13 +516,6 @@ func (s *WebServer) handleDocImage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "private, max-age=60")
 	w.Header().Set("ETag", `"`+imageSha(data)+`"`)
 	_, _ = w.Write(data)
-}
-
-// localSessionCWD resolves a local session's current working directory from its
-// owning live source or freshly loaded archived metadata. /doc/image is
-// local-session-only; non-local refs are not found.
-func (s *WebServer) localSessionCWD(ctx context.Context, session string) (string, error) {
-	return sessionCWD(ctx, s.cfg, s.sources, session)
 }
 
 // sessionCWD resolves a session's current working directory. A roster-owned
@@ -471,6 +662,16 @@ func readDocFile(root, abs string) (docFileRead, error) {
 // expressed relative to the resolved root. docOpenNonblock keeps the open from
 // waiting on a FIFO; a regular file reads the same.
 func openDocInRoot(root, abs string) (*os.File, error) {
+	// An artifacts root is opened through an anchored traversal of the trusted
+	// state directory, so a link planted in place of any component of the
+	// session layout is refused rather than followed. The kind comes from the
+	// resolver that chose this root, not from the pathname: an ordinary working
+	// directory can be shaped like a session layout, and guessing from shape
+	// would apply artifact traversal to a folder that has nothing to do with
+	// one.
+	if stateDir, layout, ok := declaredArtifactsLayout(root); ok {
+		return openArtifactsFile(stateDir, layout, abs, root)
+	}
 	realRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		return nil, err
@@ -489,6 +690,115 @@ func openDocInRoot(root, abs string) (*os.File, error) {
 	}
 	defer dir.Close() //nolint:errcheck // a file opened through it stays open
 	return dir.OpenFile(rel, os.O_RDONLY|docOpenNonblock, 0)
+}
+
+// declaredArtifactRoots records the artifacts roots this process resolved from
+// a session, so the open applies artifact traversal only to one that really is
+// an artifacts root. An ordinary working directory can be shaped exactly like
+// <stateDir>/sessions/<id>/artifacts, and deciding by shape would treat it as
+// one.
+//
+// A root is remembered only after the session resolution that produced it
+// succeeded, which no user-supplied working directory can reach.
+var declaredArtifactRoots sync.Map // cleaned root -> struct{}
+
+// declareArtifactRoot marks root as an artifacts root for a later open.
+func declareArtifactRoot(root string) {
+	if cleaned := filepath.Clean(root); cleaned != "" {
+		declaredArtifactRoots.Store(cleaned, struct{}{})
+	}
+}
+
+// declaredArtifactsLayout answers the artifacts layout for a root the resolver
+// declared, and false for every other directory.
+func declaredArtifactsLayout(root string) (stateDir, layout string, ok bool) {
+	if _, declared := declaredArtifactRoots.Load(filepath.Clean(root)); !declared {
+		return "", "", false
+	}
+	return artifactsLayout(root)
+}
+
+// artifactsLayout expresses artifactsDir as the trusted state directory it
+// hangs off and the layout path beneath it: <stateDir> and
+// sessions/<id>/artifacts. It answers false for any directory that is not that
+// shape.
+func artifactsLayout(artifactsDir string) (stateDir, layout string, ok bool) {
+	sessionDir := filepath.Dir(artifactsDir)
+	sessionsDir := filepath.Dir(sessionDir)
+	stateDir = filepath.Dir(sessionsDir)
+	if filepath.Base(sessionsDir) != "sessions" || filepath.Base(artifactsDir) != "artifacts" {
+		return "", "", false
+	}
+	if stateDir == sessionsDir || stateDir == "." || stateDir == string(filepath.Separator) {
+		return "", "", false
+	}
+	layout = path.Join("sessions", filepath.Base(sessionDir), "artifacts")
+	return stateDir, layout, true
+}
+
+// openArtifactsFile opens abs through one handle anchored at stateDir. Each
+// component of layout must be a real directory on that handle, so a symlink
+// where `sessions`, the session directory, or `artifacts` belongs is refused
+// instead of redirecting this session's read into another session's files.
+// Traversal and the open share the handle, so replacing the path between them
+// cannot redirect the read.
+func openArtifactsFile(stateDir, layout, abs, artifactsDir string) (*os.File, error) {
+	realAbs, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return nil, err
+	}
+	// The state directory may itself sit under a symlinked ancestor (macOS's
+	// /var, for one), while abs was resolved. Both sides are resolved so the
+	// relative path describes one spelling of the same tree.
+	realStateDir, err := filepath.EvalSymlinks(stateDir)
+	if err != nil {
+		return nil, err
+	}
+	realArtifactsDir := filepath.Join(realStateDir, filepath.FromSlash(layout))
+	rel, err := filepath.Rel(realArtifactsDir, realAbs)
+	if err != nil || rel == "." || isParentPath(rel) {
+		return nil, fspaths.ErrPathEscapesRoot
+	}
+	current, err := os.OpenRoot(realStateDir)
+	if err != nil {
+		return nil, err
+	}
+	// The handle is closed once the walk is done: the opened file outlives it.
+	for component := range strings.SplitSeq(filepath.ToSlash(layout), "/") {
+		info, statErr := current.Lstat(component)
+		if statErr != nil {
+			current.Close() //nolint:errcheck // read-only traversal
+			return nil, statErr
+		}
+		if !info.IsDir() {
+			current.Close() //nolint:errcheck // read-only traversal
+			return nil, fspaths.ErrPathEscapesRoot
+		}
+		next, openErr := current.OpenRoot(component)
+		current.Close() //nolint:errcheck // read-only traversal
+		if openErr != nil {
+			return nil, openErr
+		}
+		// The open follows a link inside the enclosing root, so the directory
+		// it reached must be the one just inspected. A component swapped for a
+		// link between the two calls fails here instead of being followed into
+		// a sibling session.
+		opened, openedErr := next.Lstat(".")
+		if openedErr != nil || !os.SameFile(info, opened) {
+			next.Close() //nolint:errcheck // read-only traversal
+			return nil, fspaths.ErrPathEscapesRoot
+		}
+		current = next
+	}
+	defer current.Close() //nolint:errcheck // the opened file outlives this handle
+	return current.OpenFile(rel, os.O_RDONLY|docOpenNonblock, 0)
+}
+
+// isParentPath reports whether rel climbs out of its base directory. It tests
+// for a real parent segment, so a contained name that merely begins with two
+// dots, such as "..report.md" or ".../plan.md", is still served.
+func isParentPath(rel string) bool {
+	return rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // looksBinaryBytes reports whether a byte slice looks like binary content. A

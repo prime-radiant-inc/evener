@@ -6,6 +6,9 @@ import (
 	"strings"
 )
 
+// LocalSourceID is the source ID of the controller's own hub in a ref.
+const LocalSourceID = "local"
+
 var refPartPattern = regexp.MustCompile(`^[A-Za-z0-9._~-]+$`)
 
 // ValidRefPart reports whether s is a valid part of an AppWire ref: the
@@ -43,4 +46,9 @@ func ParseRef(raw string) (Ref, error) {
 		return Ref{}, fmt.Errorf("invalid ref %q", raw)
 	}
 	return Ref{SourceID: sourceID, ThreadID: threadID}, nil
+}
+
+// LocalRef returns the ref of one of the controller's own sessions.
+func LocalRef(threadID string) Ref {
+	return Ref{SourceID: LocalSourceID, ThreadID: threadID}
 }

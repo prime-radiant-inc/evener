@@ -39,13 +39,8 @@ func TestRetirementReleaseOfASharedChildKeepsTheParentScratchLease(t *testing.T)
 	parentScratch := heldParentScratch(t, shared)
 	t.Cleanup(func() { _ = os.RemoveAll(parentScratch) })
 
-	ctx := context.WithValue(context.Background(), ctxDelegationAllowance, 0)
-	prepared, err := parent.prepareSubagentRun(ctx, "child task", "", "", 0, "", "", nil, nil)
-	if err != nil {
-		t.Fatalf("prepareSubagentRun: %v", err)
-	}
+	prepared := prepareStableChild(t, parent, delegateArgs{Task: "child task"})
 	t.Cleanup(func() {
-		releasePreparedTreeSlot(prepared)
 		prepared.disposeUnadopted()
 	})
 	child := prepared.sub.sess

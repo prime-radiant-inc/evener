@@ -17,6 +17,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import type { AnyNotification, Thread } from "@evener/appwire-client";
 import { keyboard, render, renderedText, screenConnection, settle, unmountMountedTrees } from "./renderNative.testkit";
 import { ConversationScreen } from "./screens";
+import { NativeConversationSessionsProvider } from "./session/NativeConversationSessionsProvider";
 import { TimelineItem } from "./TimelineItem";
 
 const harness = vi.hoisted(() => ({
@@ -85,7 +86,6 @@ vi.mock("@react-navigation/native", async () => {
 	};
 });
 vi.mock("expo-web-browser", () => ({ openBrowserAsync: vi.fn(async () => ({ type: "dismiss" })) }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-gesture-handler", async () =>
 	(await import("./renderNative.testkit")).gestureDetectorModuleMock(),
 );
@@ -95,10 +95,6 @@ vi.mock("react-native-gesture-handler/ReanimatedSwipeable", async () =>
 vi.mock("expo-clipboard", () => ({
 	setStringAsync: vi.fn(async () => {}),
 	getStringAsync: vi.fn(async () => ""),
-}));
-vi.mock("expo-crypto", () => ({
-	randomUUID: () => "memoization-test-uuid",
-	getRandomValues: (array: Uint8Array) => array,
 }));
 vi.mock("expo-sqlite", async () => {
 	const { openSqliteSyncDouble } = await import("./sqliteSync.testkit");
@@ -148,6 +144,14 @@ vi.mock("./NativePreferencesProvider", () => ({
 }));
 
 type ConversationScreenProps = ComponentProps<typeof ConversationScreen>;
+
+function SessionScreen(props: ConversationScreenProps) {
+	return (
+		<NativeConversationSessionsProvider>
+			<ConversationScreen {...props} />
+		</NativeConversationSessionsProvider>
+	);
+}
 
 const navigation = {
 	isFocused: () => true,
@@ -251,7 +255,7 @@ async function mount(served: Thread) {
 		params: { hubId: "hub-1", ref, title: "Session" },
 	} as unknown as ConversationScreenProps["route"];
 	navigationState.state = { index: 0, routes: [route] };
-	const tree = render(<ConversationScreen route={route} navigation={navigation} />);
+	const tree = render(<SessionScreen route={route} navigation={navigation} />);
 	await settle();
 	return { tree, route };
 }
@@ -272,7 +276,7 @@ function forkOf(tree: ReactTestRenderer) {
 // Re-render the screen exactly as a state change on the screen itself would:
 // the same route and navigation, a fresh element so React runs the component.
 function rerender(tree: ReactTestRenderer, route: ConversationScreenProps["route"]) {
-	act(() => tree.update(<ConversationScreen route={route} navigation={navigation} />));
+	act(() => tree.update(<SessionScreen route={route} navigation={navigation} />));
 }
 
 it("keeps one renderItem across a re-render that no row reads", async () => {

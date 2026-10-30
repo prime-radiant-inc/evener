@@ -1,3 +1,0 @@
-go test fuzz v1
-int(17)
-[]byte("{\"purpose\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\",\"status\":\"complete\"}")

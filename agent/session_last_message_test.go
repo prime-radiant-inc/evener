@@ -1,13 +1,13 @@
 package agent
 
 import (
-	"context"
 	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
@@ -62,7 +62,7 @@ func TestLastMessage_RecordsTheOpeningOfTheLastAgentMessage(t *testing.T) {
 	report := "Three layouts are ready for review.\n\nI recommend B: " + strings.Repeat("it keeps the project first. ", 20)
 	sess := newSession(t, withConfig(SessionConfig{StateDir: dir}), withSteps(
 		func(llm.Request) llm.Response {
-			response := communicateResponse(true, report)
+			response := agenttest.CommunicateResponse(true, report)
 			response.Message.Content = append([]llm.ContentPart{
 				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "private reasoning"}},
 				{Kind: llm.ContentText, Text: "Writing the report now."},
@@ -73,9 +73,7 @@ func TestLastMessage_RecordsTheOpeningOfTheLastAgentMessage(t *testing.T) {
 	if got := sess.Meta().LastMessage; got != "" {
 		t.Fatalf("a session that has written nothing reports %q", got)
 	}
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "mock up three layouts", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}

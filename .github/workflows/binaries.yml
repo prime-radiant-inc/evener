@@ -37,7 +37,7 @@ jobs:
           test -s dist/checksums.txt
 
       - name: Upload unsigned artifacts
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7
         with:
           name: evener-unsigned-artifacts
           path: |
@@ -185,7 +185,7 @@ jobs:
           (cd dist && shasum -a 256 -c checksums.txt)
 
       - name: Upload signed artifacts
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7
         with:
           name: evener-signed-artifacts
           path: |

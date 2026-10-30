@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
@@ -273,13 +274,9 @@ func TestHubRPCGitHeadUsesCanonicalDirectory(t *testing.T) {
 	})
 	defer hub.Close()
 
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 
-	resp, err := client.GitHead(context.Background(), appwire.GitHeadParams{CWD: link})
+	resp, err := appwiretest.GitHead(context.Background(), client, appwire.GitHeadParams{CWD: link})
 	if err != nil {
 		t.Fatalf("GitHead: %v", err)
 	}

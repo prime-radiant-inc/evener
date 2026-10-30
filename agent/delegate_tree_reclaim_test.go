@@ -385,7 +385,7 @@ func TestDelegateIdleRelease_ReleasesWholeSubtreeLeafFirst(t *testing.T) {
 	adapter := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
 		// The parent delegate's turn: spawn its own child delegate.
 		func(llm.Request) llm.Response {
-			return toolCallResponse(llm.ToolCallData{
+			return agenttest.ToolCallResponse(llm.ToolCallData{
 				ID:        "call_spawn_child",
 				Name:      "delegate",
 				Arguments: json.RawMessage(`{"prompt":"grandchild sentinel task"}`),
@@ -393,9 +393,9 @@ func TestDelegateIdleRelease_ReleasesWholeSubtreeLeafFirst(t *testing.T) {
 			})
 		},
 		// The grandchild's turn: finish.
-		func(llm.Request) llm.Response { return finalResponse("grandchild done") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("grandchild done") },
 		// The parent's follow-up turn, after the grandchild's tool result: finish.
-		func(llm.Request) llm.Response { return finalResponse("parent done") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("parent done") },
 	}}
 	client := llm.NewClient()
 	client.Register(adapter)
@@ -607,11 +607,11 @@ func driveWideSubtreeIdleRelease(t *testing.T, wideChildren, limit int, parkDead
 					Type:      "function",
 				}
 			}
-			return toolCallResponse(calls...)
+			return agenttest.ToolCallResponse(calls...)
 		},
 	}
 	for range wideChildren + 1 {
-		steps = append(steps, func(llm.Request) llm.Response { return finalResponse("member done") })
+		steps = append(steps, func(llm.Request) llm.Response { return agenttest.FinalResponse("member done") })
 	}
 	adapter := &fakeAdapter{name: "openai", steps: steps}
 	client := llm.NewClient()
@@ -1630,7 +1630,7 @@ func TestDelegateAttentionRestore_HoldsOffIdleReleaseMidWake(t *testing.T) {
 		// must count, so this pass's exit cannot drop the other pass's hold.
 		tree.holdAttentionRestore(res.DelegateID)
 	}
-	sess.drivePendingStableDelegateAttention()
+	sess.drivePendingDelegateAttention()
 	if !hookFired {
 		t.Fatal("wake pass restored nothing; fixture setup broken")
 	}

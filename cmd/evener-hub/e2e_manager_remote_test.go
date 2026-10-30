@@ -138,7 +138,13 @@ func TestE2E_ManagerRemoteSharedInput(t *testing.T) {
 		t.Fatal(err)
 	}
 	caps := read.Thread.Evener.Capabilities
-	if !caps.Send || !caps.Queue || !caps.Steer || !caps.SkillInput || !caps.CommandInput || caps.Clear || caps.Interrupt || caps.ChangeModel {
+	wantCaps := appwire.ThreadCapabilities{
+		Send: true, Steer: true, Interrupt: true, Compact: true, Clear: true,
+		ForkFromTurn: true, Shutdown: true, ChangeModel: true, ChangeVisionModel: true,
+		Queue: true, Goal: true, SharedNotes: true, Rename: true,
+		SkillInput: true, CommandInput: true, StopSubagent: true,
+	}
+	if caps != wantCaps {
 		t.Fatalf("shared remote input qualification: %+v", caps)
 	}
 	for _, item := range []appwire.InputItem{

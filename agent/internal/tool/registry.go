@@ -22,6 +22,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/searchresult"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
@@ -980,9 +981,9 @@ func truncateCharsWithStatus(s string, limit int, strategy schema.TruncationStra
 //
 // After the line-count bound is applied, maxChars (when positive) further
 // bounds the result's character count by truncating from the TAIL and
-// appending a warning — the line-count bound's head (and its summary line,
-// reserved for by the budget) is always preserved, so a single enormous
-// matched line still cannot balloon the result past both bounds.
+// appending a warning. The earliest entries survive; trailing notes, including
+// the line-count summary, are dropped whole when the character bound fires.
+// A single enormous matched line still cannot balloon past both bounds.
 func truncateHeadCount(s string, maxEntries, maxChars int) string {
 	out, _ := truncateHeadCountWithStatus(s, maxEntries, maxChars)
 	return out
@@ -1012,19 +1013,23 @@ func truncateHeadCountWithStatus(s string, maxEntries, maxChars int) (string, bo
 	return out, truncated
 }
 
-// truncateCharsFromTailWithStatus bounds s to at most limit characters by dropping
-// characters from the END and appending a warning marker, preserving
-// whatever head content the caller already assembled (e.g. truncateHeadCount's
-// earliest-first matches and their summary line), and reports whether it did so.
+// truncateCharsFromTailWithStatus keeps an entry prefix and a complete warning
+// marker when s exceeds limit. Existing notes after the first blank line are
+// dropped whole, never cut into fragments. The removed count includes them.
 func truncateCharsFromTailWithStatus(s string, limit int) (string, bool) {
 	runes := []rune(s)
 	if limit <= 0 || len(runes) <= limit {
 		return s, false
 	}
+	entries, _ := searchresult.Split(s)
+	entryRunes := len(runes)
+	if len(entries) != len(s) {
+		entryRunes = utf8.RuneCountInString(entries)
+	}
 	removed := len(runes) - limit
 	for {
 		marker := fmt.Sprintf("\n\n[Output truncated: %d characters removed from the end.]", removed)
-		keep := max(limit-len([]rune(marker)), 0)
+		keep := min(max(limit-len([]rune(marker)), 0), entryRunes)
 		actualRemoved := len(runes) - keep
 		if actualRemoved == removed {
 			return string(runes[:keep]) + marker, true

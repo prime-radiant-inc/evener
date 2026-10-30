@@ -24,8 +24,8 @@ func TestManagerAdmissionOrdinaryForgedDiscovery(t *testing.T) {
 	t.Parallel()
 	adapter := newMessagingAdapter()
 	adapter.script("root", func(req llm.Request) llm.Response {
-		return toolCallResponse(llm.ToolCallData{ID: "forged-discovery", Name: "job_list", Arguments: json.RawMessage(`{"hub":{"mode":"discovery"}}`), Type: "function"})
-	}, func(req llm.Request) llm.Response { return finalResponse("done") })
+		return agenttest.ToolCallResponse(llm.ToolCallData{ID: "forged-discovery", Name: "job_list", Arguments: json.RawMessage(`{"hub":{"mode":"discovery"}}`), Type: "function"})
+	}, func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") })
 	root := newMessagingRoot(t, adapter, nil)
 	// TRIPWIRE: scripted responses complete immediately; this only guards a hung request.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -121,7 +121,7 @@ func TestManagerModeKeepsRunningAndIdleOwnedDelegateSend(t *testing.T) {
 			name = "enabled"
 		}
 		t.Run(name, func(t *testing.T) {
-			fixture := newColdStableDelegateFixture(t, "")
+			fixture := newColdDelegateFixture(t, "")
 			fixture.meta.Config.Manager = enabled
 			entered, release := make(chan struct{}), make(chan struct{})
 			defer func() {
@@ -135,10 +135,10 @@ func TestManagerModeKeepsRunningAndIdleOwnedDelegateSend(t *testing.T) {
 				func(llm.Request) llm.Response {
 					close(entered)
 					<-release
-					return finalResponse("first result")
+					return agenttest.FinalResponse("first result")
 				},
-				func(llm.Request) llm.Response { return finalResponse("steering consumed") },
-				func(llm.Request) llm.Response { return finalResponse("idle follow-up consumed") },
+				func(llm.Request) llm.Response { return agenttest.FinalResponse("steering consumed") },
+				func(llm.Request) llm.Response { return agenttest.FinalResponse("idle follow-up consumed") },
 			}
 			root := restoreSupervisionRoot(t, fixture, nil)
 			state := &managerStateForUnit{}
@@ -196,7 +196,7 @@ func TestManagerRequestActualPolicyMatrix(t *testing.T) {
 			t.Run(name+"/"+mode, func(t *testing.T) {
 				build := func(manager bool) (*Session, *messagingAdapter) {
 					adapter := newMessagingAdapter()
-					adapter.script("root", func(llm.Request) llm.Response { return finalResponse("capture") })
+					adapter.script("root", func(llm.Request) llm.Response { return agenttest.FinalResponse("capture") })
 					root := newMessagingRoot(t, adapter, func(cfg *SessionConfig) { cfg.Manager = manager })
 					root.mu.Lock()
 					switch mode {

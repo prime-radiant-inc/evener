@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -14,7 +15,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
-	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
@@ -52,8 +53,8 @@ func TestMemoryRunAndServeLaunch(t *testing.T) {
 				capture := func(_ *llm.Client, _ *provider.Profile, env execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
 					defer env.Cleanup()
 					captured = true
-					if cfg.MemoryStateRoot != cmdutil.DefaultStateRoot() || cfg.MemoryStateRoot == state || cfg.MemoryProjectID != project.ID || cfg.DisableMemory != disabled {
-						t.Errorf("root=%q project=%q disabled=%t, want root=%q project=%q disabled=%t", cfg.MemoryStateRoot, cfg.MemoryProjectID, cfg.DisableMemory, cmdutil.DefaultStateRoot(), project.ID, disabled)
+					if cfg.MemoryStateRoot != mustStateRoot(t) || cfg.MemoryStateRoot == state || cfg.MemoryProjectID != project.ID || cfg.DisableMemory != disabled {
+						t.Errorf("root=%q project=%q disabled=%t, want root=%q project=%q disabled=%t", cfg.MemoryStateRoot, cfg.MemoryProjectID, cfg.DisableMemory, mustStateRoot(t), project.ID, disabled)
 					}
 					return nil, stop
 				}
@@ -104,7 +105,7 @@ func TestMemoryRunAndServeResumeLaunch(t *testing.T) {
 				capture := func(_ *llm.Client, _ *provider.Profile, env execenv.ExecutionEnvironment, meta schema.SessionMeta, cfg agent.RestoreSessionConfig) (*agent.Session, error) {
 					defer env.Cleanup()
 					captured = true
-					if cfg.MemoryStateRoot != cmdutil.DefaultStateRoot() || cfg.DisableMemory != disabled || meta.Config.MemoryProjectID != "saved-binding" {
+					if cfg.MemoryStateRoot != mustStateRoot(t) || cfg.DisableMemory != disabled || meta.Config.MemoryProjectID != "saved-binding" {
 						t.Errorf("resume root=%q disable=%t saved project=%q", cfg.MemoryStateRoot, cfg.DisableMemory, meta.Config.MemoryProjectID)
 					}
 					return nil, stop
@@ -203,7 +204,7 @@ func TestMemoryLaunchBindingFailure(t *testing.T) {
 	constructed := false
 	runNewSession = func(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
 		constructed = true
-		if cfg.MemoryProjectID != "" || cfg.MemoryStateRoot != cmdutil.DefaultStateRoot() {
+		if cfg.MemoryProjectID != "" || cfg.MemoryStateRoot != mustStateRoot(t) {
 			t.Errorf("failure binding=%q root=%q", cfg.MemoryProjectID, cfg.MemoryStateRoot)
 		}
 		return old(client, profile, env, cfg)
@@ -214,10 +215,109 @@ func TestMemoryLaunchBindingFailure(t *testing.T) {
 	if !constructed {
 		t.Fatal("ordinary session not constructed")
 	}
-	for path, want := range map[string]string{filepath.Join(dir, "ordinary.txt"): "opaque-ordinary-46", filepath.Join(cmdutil.DefaultStateRoot(), "memory", "topic.txt"): "---\nwhen: w\n---\n\nopaque-personal-58"} {
+	for path, want := range map[string]string{filepath.Join(dir, "ordinary.txt"): "opaque-ordinary-46", filepath.Join(mustStateRoot(t), "memory", "topic.txt"): "---\nwhen: w\n---\n\nopaque-personal-58"} {
 		bytes, err := os.ReadFile(path)
 		if err != nil || string(bytes) != want {
 			t.Fatalf("path=%s bytes=%q err=%v", path, bytes, err)
 		}
+	}
+}
+
+// mustStateRoot is the Evener state root of the test's isolated environment.
+func mustStateRoot(t *testing.T) string {
+	t.Helper()
+	root, err := userdirs.DefaultStateRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+// With no state home a launch still starts: memory is unavailable (an empty
+// root) and the user is told why, unless memory was opted out anyway.
+func TestMemoryLaunchWithoutStateHome(t *testing.T) {
+	for _, disabled := range []bool{false, true} {
+		t.Run(map[bool]string{false: "enabled", true: "disabled"}[disabled], func(t *testing.T) {
+			dir := memoryLaunchFixture(t)
+			t.Setenv("HOME", "")
+			t.Setenv("XDG_STATE_HOME", "")
+			stop := errors.New("fixture constructor reached")
+			captured := false
+			old := runNewSession
+			t.Cleanup(func() { runNewSession = old })
+			runNewSession = func(_ *llm.Client, _ *provider.Profile, env execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
+				defer env.Cleanup()
+				captured = true
+				if cfg.MemoryStateRoot != "" {
+					t.Errorf("MemoryStateRoot = %q, want empty", cfg.MemoryStateRoot)
+				}
+				return nil, stop
+			}
+			installRunScriptedProvider(t, &scriptedProvider{name: "openai"})
+			var stderr bytes.Buffer
+			err := run(context.Background(), runConfig{workDir: dir, stateDir: t.TempDir(), model: "openai/gpt-test", prompt: "fixture", disableMemory: disabled, stdout: io.Discard, stderr: &stderr})
+			if !errors.Is(err, stop) || !captured {
+				t.Fatalf("run = %v captured=%t, want the constructor reached", err, captured)
+			}
+			if told := stderr.Len() > 0; told == disabled {
+				t.Fatalf("warned=%t with memory disabled=%t; stderr: %s", told, disabled, stderr.String())
+			}
+		})
+	}
+}
+
+// A serve launch with no state home and no explicit run dir fails before any
+// session exists (so there is nothing to unwind), while an explicit run dir
+// starts without a home.
+func TestServeWithoutStateHomeFailsBeforeConstructingASession(t *testing.T) {
+	dir := memoryLaunchFixture(t)
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	t.Setenv("EVENER_RUN_DIR", "")
+	installServeScriptedProvider(t, &scriptedProvider{name: "openai"})
+
+	stop := errors.New("fixture constructor reached")
+	constructed := false
+	deps := defaultServeDeps()
+	deps.newSession = func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, agent.SessionConfig) (*agent.Session, error) {
+		constructed = true
+		return nil, stop
+	}
+	args := []string{"--dir", dir, "--state-dir", t.TempDir(), "--model", "openai/gpt-test", "--disable-memory"}
+
+	if err := runServeWithDeps(args, deps); !errors.Is(err, userdirs.ErrNoStateHome) || constructed {
+		t.Fatalf("serve = %v constructed=%t, want ErrNoStateHome before a session is constructed", err, constructed)
+	}
+	if err := runServeWithDeps(append(args, "--run-dir", t.TempDir()), deps); !errors.Is(err, stop) || !constructed {
+		t.Fatalf("serve with --run-dir = %v constructed=%t, want the constructor reached", err, constructed)
+	}
+}
+
+// Resuming a session that was saved with memory opted out needs no memory
+// warning when there is no state home, whether or not the flag is repeated.
+func TestResumeOfOptedOutSessionWithoutStateHomeDoesNotWarn(t *testing.T) {
+	dir := memoryLaunchFixture(t)
+	state := t.TempDir()
+	id := identifier.MustNewSessionID()
+	if err := schema.SaveSessionMeta(state, schema.SessionMeta{ID: id, ProfileID: "openai", Model: "gpt-test", Config: schema.ConfigSnapshot{DisableMemory: true}}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	stop := errors.New("fixture resume reached")
+	old := runRestoreSession
+	t.Cleanup(func() { runRestoreSession = old })
+	runRestoreSession = func(_ *llm.Client, _ *provider.Profile, env execenv.ExecutionEnvironment, _ schema.SessionMeta, _ agent.RestoreSessionConfig) (*agent.Session, error) {
+		defer env.Cleanup()
+		return nil, stop
+	}
+	installRunScriptedProvider(t, &scriptedProvider{name: "openai"})
+	var stderr bytes.Buffer
+	err := run(context.Background(), runConfig{workDir: dir, stateDir: state, model: "openai/gpt-test", resume: id, stdout: io.Discard, stderr: &stderr})
+	if !errors.Is(err, stop) {
+		t.Fatalf("run = %v, want the restore reached", err)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("warned about memory for an opted-out session: %s", stderr.String())
 	}
 }

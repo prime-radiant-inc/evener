@@ -408,7 +408,7 @@ func (s *Session) settleGoalOnIdle() bool {
 // no-op when there is no active goal, and — critically — when err is a genuine
 // user /interrupt: the goal stays active and resumes after the next completed
 // turn (spec §6). The discriminator is the interruptDrainConfig bool, not the
-// WithQueuedInputDrainOnInterrupt marker (which is installed on every turn ctx and
+// WithQueuedInputDrainOnInterruptHandler marker (which is installed on every turn ctx and
 // so discriminates nothing); a DeadlineExceeded or provider error routes the goal
 // to blocked while the session remains available for later input.
 //
@@ -468,7 +468,7 @@ func goalRootShutdown(ctx context.Context, err error) bool {
 // path routes through here so the "told why it stopped" promise holds on each one.
 func (s *Session) emitGoalEnded(snap goal.Snapshot) {
 	s.recordNotice(schema.NoticeInfo{Kind: schema.NoticeGoalEnded, GoalEnded: &schema.GoalEndedNotice{Status: string(snap.Status), Reason: snap.StopReason, Iterations: snap.Iterations}})
-	s.emit(events.EventGoalEnded, events.GoalEndedData{
+	s.emit(events.GoalEndedData{
 		Status:     string(snap.Status),
 		Reason:     snap.StopReason,
 		Iterations: snap.Iterations,
@@ -489,7 +489,7 @@ func goalStateData(snap goal.Snapshot) events.GoalStateData {
 // invoke it only after the store mutation has released its own mutex.
 func (s *Session) emitGoalUpdated(snap goal.Snapshot) {
 	state := goalStateData(snap)
-	s.emit(events.EventGoalUpdated, events.GoalUpdatedData{Goal: &state})
+	s.emit(events.GoalUpdatedData{Goal: &state})
 }
 
 // emitCurrentGoalState snapshots and publishes the current store state. A
@@ -501,7 +501,7 @@ func (s *Session) emitCurrentGoalState() {
 		s.emitGoalUpdated(snap)
 		return
 	}
-	s.emit(events.EventGoalUpdated, events.GoalUpdatedData{Goal: nil})
+	s.emit(events.GoalUpdatedData{Goal: nil})
 }
 
 // setGoalTerminal commits and announces a terminal transition as one ordered

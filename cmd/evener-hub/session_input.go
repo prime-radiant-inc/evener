@@ -5,7 +5,6 @@ import (
 	"errors"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
-	"strings"
 )
 
 func (o *sessionOperations) Start(ctx context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
@@ -13,8 +12,8 @@ func (o *sessionOperations) Start(ctx context.Context, params appwire.TurnStartP
 	if err := validateAppWireInputItems(params.Input); err != nil {
 		return appwire.TurnStartResponse{}, appwire.InvalidParams(err.Error())
 	}
-	if strings.TrimSpace(params.ClientMutationID) == "" {
-		return appwire.TurnStartResponse{}, appwire.InvalidParams("clientMutationId is required")
+	if err := requireClientMutationID(params.ClientMutationID); err != nil {
+		return appwire.TurnStartResponse{}, err
 	}
 	resolved := false
 	// initialPreDispatch records whether the ORIGINAL attempt is proven to
@@ -121,7 +120,7 @@ func (o *sessionOperations) Start(ctx context.Context, params appwire.TurnStartP
 	if params.Ref != "" && !hubKnowsRef(cfg, params.Ref) {
 		return appwire.TurnStartResponse{}, err
 	}
-	if !shouldResumeAfterTurnStartError(err) {
+	if !isSessionUnavailableError(err) {
 		return appwire.TurnStartResponse{}, err
 	}
 	if _, resumeErr := resumeTurnStartThread(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref, Session: params.ThreadID}); resumeErr != nil {
@@ -135,14 +134,10 @@ func (o *sessionOperations) Steer(ctx context.Context, params appwire.TurnSteerP
 	if err := validateAppWireInputItems(params.Input); err != nil {
 		return appwire.TurnSteerResponse{}, appwire.InvalidParams(err.Error())
 	}
-	if strings.TrimSpace(params.ClientMutationID) == "" {
-		return appwire.TurnSteerResponse{}, appwire.InvalidParams("clientMutationId is required")
+	if err := requireClientMutationID(params.ClientMutationID); err != nil {
+		return appwire.TurnSteerResponse{}, err
 	}
-	resp, err := withDeletionTargetOwnership(ctx, cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appwire.TurnSteerResponse, error) {
-		source, err := sourceForThread(sources, params.Ref, params.ThreadID)
-		if err != nil {
-			return appwire.TurnSteerResponse{}, err
-		}
+	resp, err := relayOwnedMutation(ctx, cfg, sources, params.Ref, params.ThreadID, params.ClientMutationID, func(source appsource.Source) (appwire.TurnSteerResponse, error) {
 		if err := ensureSkillInputSupported(ctx, source, params.Ref, params.ThreadID, params.Input); err != nil {
 			return appwire.TurnSteerResponse{}, err
 		}
@@ -157,8 +152,8 @@ func (o *sessionOperations) Queue(ctx context.Context, params appwire.TurnQueueP
 	if err := validateAppWireInputItems(params.Input); err != nil {
 		return appwire.TurnQueueResponse{}, appwire.InvalidParams(err.Error())
 	}
-	if strings.TrimSpace(params.ClientMutationID) == "" {
-		return appwire.TurnQueueResponse{}, appwire.InvalidParams("clientMutationId is required")
+	if err := requireClientMutationID(params.ClientMutationID); err != nil {
+		return appwire.TurnQueueResponse{}, err
 	}
 	// A queued message is a session mutation a past thread advertises, so it
 	// carries the same exited == never-exited contract as turn/start: the hub
@@ -172,9 +167,7 @@ func (o *sessionOperations) Queue(ctx context.Context, params appwire.TurnQueueP
 	resp, err := withSessionResume(ctx, cfg, sources, params.Ref, params.ClientMutationID, func() (appwire.TurnQueueResponse, error) {
 		source, err := sourceForThread(sources, params.Ref, "")
 		if err != nil {
-			// Resolution failed before anything reached a source, so a resume
-			// retry that fails the same way proves nothing was dispatched.
-			return appwire.TurnQueueResponse{}, preDispatchRefusalError{err}
+			return appwire.TurnQueueResponse{}, err
 		}
 		if err := ensureSkillInputSupported(ctx, source, params.Ref, "", params.Input); err != nil {
 			return appwire.TurnQueueResponse{}, err

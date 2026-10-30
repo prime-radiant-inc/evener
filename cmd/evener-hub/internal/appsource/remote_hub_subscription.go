@@ -285,7 +285,7 @@ func (s *RemoteHubSource) SubscribeThread(ctx context.Context, params appwire.Th
 			// mapping it as one keeps the auto-resume gate working; reporting
 			// context.Canceled would read as the caller giving up.
 			if !callerCanceled && errors.Is(result.err, context.Canceled) {
-				return nil, appwire.SessionUnavailable("remote hub unavailable: " + s.id + ": subscription ended before it attached")
+				return nil, remoteHubUnavailable(s.id, "subscription ended before it attached")
 			}
 			return nil, s.mapCallError(result.err)
 		}
@@ -306,7 +306,7 @@ func (s *RemoteHubSource) SubscribeThread(ctx context.Context, params appwire.Th
 				// it — surface the same refusal admission produces.
 				return nil, refusal
 			}
-			return nil, appwire.SessionUnavailable("remote hub unavailable: " + s.id + ": subscription was replaced before it attached")
+			return nil, remoteHubUnavailable(s.id, "subscription was replaced before it attached")
 		}
 		go s.pumpSubscription(subCtx, sub)
 		if previous != nil && previous != sub {
@@ -325,7 +325,7 @@ func (s *RemoteHubSource) SubscribeThread(ctx context.Context, params appwire.Th
 		cancel()
 		go s.retireCanceledSubscribe(sub, previous, outcome)
 		if !callerCanceled {
-			return nil, appwire.SessionUnavailable("remote hub unavailable: " + s.id + ": subscription ended before it attached")
+			return nil, remoteHubUnavailable(s.id, "subscription ended before it attached")
 		}
 		return nil, s.mapCallError(subCtx.Err())
 	}
@@ -1145,7 +1145,7 @@ func (s *RemoteHubSource) drainLoop(client *appwire.Client) {
 // controller relay treats that as subscription end and re-reads the thread, so
 // the notification is resynced rather than silently lost.
 func (s *RemoteHubSource) routeNotification(client *appwire.Client, notification appwire.Notification) {
-	translated, threadID, ok := s.translateNotification(notification)
+	translated, threadID, ok := s.translateNotification(notification, client)
 	if !ok || threadID == "" {
 		return
 	}
@@ -1206,7 +1206,7 @@ func (s *RemoteHubSource) routeNotification(client *appwire.Client, notification
 // the thread of thread/started, the turn of turn/started and turn/completed,
 // the item of item/started and item/completed, and the plural items array of
 // history/updated (see rewriteRemoteImageURL).
-func (s *RemoteHubSource) translateNotification(n appwire.Notification) (appwire.Notification, string, bool) {
+func (s *RemoteHubSource) translateNotification(n appwire.Notification, client *appwire.Client) (appwire.Notification, string, bool) {
 	if len(n.Params) == 0 {
 		return n, "", false
 	}
@@ -1247,18 +1247,23 @@ func (s *RemoteHubSource) translateNotification(n appwire.Notification) (appwire
 		}
 	}
 
+	// Resolve the forwarded set only when a field that carries capabilities is
+	// present: most notifications are turn/item deltas that never consult it.
+	forwarded := func() appwire.ThreadCapabilities {
+		return s.forwardedThreadCapabilitiesFor(client)
+	}
 	if raw, ok := fields["thread"]; ok {
-		translated, err := s.translateThreadRaw(raw)
+		translated, err := s.translateThreadRaw(raw, forwarded())
 		if err != nil {
 			return n, "", false
 		}
-		fields["thread"] = s.rewriteRawThreadImageURLs(translated)
+		fields["thread"] = s.translateRawThreadAuthorship(s.rewriteRawThreadImageURLs(translated))
 	}
 	// turn/started and turn/completed carry a Turn; item/started and
 	// item/completed carry a ThreadItem. Both are image carriers, so the shared
 	// visitor runs on them here exactly as it runs on a thread.
 	if raw, ok := fields["turn"]; ok {
-		fields["turn"] = s.rewriteRawTurnImageURLs(s.translateRawTurnActors(raw))
+		fields["turn"] = s.translateRawTurnAuthorship(s.rewriteRawTurnImageURLs(s.translateRawTurnActors(raw)))
 	}
 	if raw, ok := fields["item"]; ok {
 		fields["item"] = s.rewriteRawItemImageURLs(s.translateRawItemActor(raw))
@@ -1274,7 +1279,7 @@ func (s *RemoteHubSource) translateNotification(n appwire.Notification) (appwire
 	}
 	if n.Method == appwire.NotifyThreadStatusChanged {
 		if rawCapabilities, ok := fields[capabilitiesField]; ok {
-			fields[capabilitiesField] = maskRemoteCapabilitiesRaw(rawCapabilities)
+			fields[capabilitiesField] = maskRemoteCapabilitiesRaw(rawCapabilities, forwarded())
 		}
 	}
 

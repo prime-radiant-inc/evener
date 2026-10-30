@@ -1,0 +1,23 @@
+{
+  "name": "attention-dock-narrow-pane",
+  "description": "Session: a dormant conversation's attention dock in a narrow pane keeps a long next-session title inside the pane. The dock used to carry only a right anchor, so the control's own ceiling (min(18rem, 55vw)) grew it past the pane's left edge, where the scaffold clipped part of Next away.",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "panes/session/session.module.css",
+    "panes/session/nextNeedsYou.module.css",
+    "widgets/button/button.module.css",
+    "widgets/iconbutton/iconbutton.module.css"
+  ],
+  "viewport": {
+    "width": 1400,
+    "height": 900,
+    "deviceScaleFactor": 1,
+    "mobile": false
+  },
+  "mutation": {
+    "declaration": "panes/session/session.module.css: .attentionDock { left: var(--space-3) } (deleted - the pre-fix right-only anchor lets the 328px control start left of a 300px pane)",
+    "verified": "2026-10-23",
+    "expect": "fail"
+  }
+}

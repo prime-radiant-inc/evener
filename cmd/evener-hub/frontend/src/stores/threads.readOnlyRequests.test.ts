@@ -1,24 +1,21 @@
+import { connectFakeClient } from "../testing/connectionTestUtils";
 import "fake-indexeddb/auto";
-import {
-  ClientNotReadyError,
-  type ConnectionState,
-  errorKind,
-  type ModelListResponse,
-  WireError,
-} from "@evener/appwire-client";
+import { ClientNotReadyError, errorKind, type ModelListResponse, type Task, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { connectionStore } from "./connection";
+import { connectionStore, resetConnectionStoreForTests } from "./connection";
+import { setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { SessionEntryCache } from "./sessionEntryCache";
-import { ConflictError, resetThreadsStoreForTests, setProductionEntryCacheForTests, threadsStore } from "./threads";
+import { resetThreadsStoreForTests, threadsStore } from "./threads";
+import { ConflictError } from "./threadsErrors";
 
 // These direct read-only RPCs exercise the real store client/readiness path,
 // not transcript acquisition. No route selector is installed.
 let cache: SessionEntryCache;
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   cache = new SessionEntryCache({
     indexedDB: new IDBFactory(),
@@ -32,11 +29,6 @@ afterEach(() => {
   cache.close();
   vi.restoreAllMocks();
 });
-function connectFakeClient(state: ConnectionState = "ready"): FakeClient {
-  const fake = new FakeClient(state);
-  connectionStore.getState().connect(fake);
-  return fake;
-}
 async function flushUntil(done: () => boolean, maxTurns = 20): Promise<void> {
   for (let i = 0; i < maxTurns && !done(); i += 1) await Promise.resolve();
 }
@@ -45,7 +37,7 @@ const settleCallerContinuations = nextMacrotask;
 
 describe("useThreadsStore.listTasks", () => {
   // Fixtures use the task row's persisted snake_case wire fields.
-  const TASKS_DATA = [
+  const TASKS_DATA: Task[] = [
     { id: 1, type: "implement", description: "Wire up listModels/listTasks", prompt: "…", status: "done" },
     {
       id: 2,
@@ -185,7 +177,7 @@ describe("useThreadsStore.listJobs / jobOutput", () => {
     encoding: "utf8",
     data: "6789",
   };
-  // The single-job read carries the activity-job shape verbatim (appwire/types.go's
+  // The single-job read carries the activity-job shape verbatim (appwire/types_jobs.go's
   // JobActivityJob), including the untruncated command.
   const JOB_DATA = {
     jobId: "job_1",
@@ -343,7 +335,7 @@ describe("useThreadsStore.listJobs / jobOutput", () => {
 // chrome stream): both are plain read-only wire calls with no turn-CAS
 // concept - verified against every server-side handler
 // (cmd/evener-hub/app_rpc.go's registerMiscHandlers, cmd/evener-hub/
-// app source ListTasks implementations, and server/appwire_runtime.go's
+// app source ListTasks implementations, and server/appwire_jobs_models.go's
 // handleAppTasksList/handleAppModelList): none
 // of them ever construct appwire.Conflict(). Neither action maps errors -
 // a WireError (even one shaped like a Conflict, which cannot actually occur

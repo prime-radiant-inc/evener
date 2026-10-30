@@ -24,7 +24,7 @@ func losslessTestSession(id string) *Session {
 
 func emitN(s *Session, n int) {
 	for range n {
-		s.sendEvent(events.EventWarning, events.WarningData{Message: "x"}, nil)
+		s.sendEvent(events.WarningData{Message: "x"}, nil)
 	}
 }
 
@@ -101,7 +101,7 @@ func TestSessionCloseReleasesBlockedAuthoritativeEmitters(t *testing.T) {
 	shortenCloseCascadeBudget(t, 20*time.Millisecond)
 
 	s := losslessTestSession("close-wedged")
-	s.subagents = newSubagentManager(func(events.EventKind, events.EventData) {}, 0)
+	s.subagents = newSubagentManager(0)
 	s.authoritativeConsumer = true
 	emitN(s, testEventBuffer)
 	blocked := make(chan struct{})
@@ -111,7 +111,7 @@ func TestSessionCloseReleasesBlockedAuthoritativeEmitters(t *testing.T) {
 	emitterDone := make(chan struct{})
 	go func() {
 		defer close(emitterDone)
-		s.sendEvent(events.EventWarning, events.WarningData{Message: "blocked"}, nil)
+		s.sendEvent(events.WarningData{Message: "blocked"}, nil)
 	}()
 	select {
 	case <-blocked:
@@ -167,7 +167,7 @@ func TestBlockedAuthoritativeSendReleasedByTheSessionLifetime(t *testing.T) {
 	emitterDone := make(chan struct{})
 	go func() {
 		defer close(emitterDone)
-		s.sendEvent(events.EventWarning, events.WarningData{Message: "blocked"}, nil)
+		s.sendEvent(events.WarningData{Message: "blocked"}, nil)
 	}()
 	select {
 	case <-blocked:
@@ -222,8 +222,7 @@ func TestPublishedCloseBudgetOutranksTheSessionLifetimeForBlockedSends(t *testin
 	type sendResult struct{ delivered bool }
 	results := make(chan sendResult, 1)
 	go func() {
-		_, _, delivered := s.sendEventContext(context.Background(), events.EventWarning,
-			events.WarningData{Message: "waiting on the budget"}, nil)
+		_, _, delivered := s.sendEventContext(context.Background(), events.WarningData{Message: "waiting on the budget"}, nil)
 		results <- sendResult{delivered: delivered}
 	}()
 	select {
@@ -258,7 +257,7 @@ func TestPublishedCloseBudgetOutranksTheSessionLifetimeForBlockedSends(t *testin
 // so a fixed count would either leave room or park the filler itself.
 func fillEventBuffer(s *Session) {
 	for len(s.events) < cap(s.events) {
-		s.sendEvent(events.EventWarning, events.WarningData{Message: "fill"}, nil)
+		s.sendEvent(events.WarningData{Message: "fill"}, nil)
 	}
 }
 
@@ -296,8 +295,7 @@ func TestBudgetPublishedAfterAParkStillOwnsTheEvent(t *testing.T) {
 	}
 	results := make(chan bool, 1)
 	go func() {
-		_, _, delivered := s.sendEventContext(context.Background(), events.EventWarning,
-			events.WarningData{Message: "parked before the close"}, nil)
+		_, _, delivered := s.sendEventContext(context.Background(), events.WarningData{Message: "parked before the close"}, nil)
 		results <- delivered
 	}()
 	select {
@@ -659,11 +657,7 @@ func TestPreparedSubagentGetsNoAuthoritativeConsumer(t *testing.T) {
 	t.Parallel()
 	parent := newTestSession(t)
 
-	prepared, err := parent.prepareSubagentRun(context.Background(), "child task", "", "", 0, "", "", nil, nil)
-	if err != nil {
-		t.Fatalf("prepareSubagentRun: %v", err)
-	}
-	defer releasePreparedTreeSlot(prepared)
+	prepared := prepareStableChild(t, parent, delegateArgs{Task: "child task"})
 	child := prepared.sub.sess
 	defer child.Close()
 
@@ -697,15 +691,11 @@ func TestPreparedSubagentForwardsEventsToRootObserver(t *testing.T) {
 		observed = append(observed, event)
 	})
 
-	prepared, err := parent.prepareSubagentRun(context.Background(), "child task", "", "", 0, "", "", nil, nil)
-	if err != nil {
-		t.Fatalf("prepareSubagentRun: %v", err)
-	}
-	defer releasePreparedTreeSlot(prepared)
+	prepared := prepareStableChild(t, parent, delegateArgs{Task: "child task"})
 	child := prepared.sub.sess
 	defer child.Close()
 
-	child.sendEvent(events.EventAssistantTextDelta, events.AssistantTextDeltaData{Delta: "live"}, nil)
+	child.sendEvent(events.AssistantTextDeltaData{Delta: "live"}, nil)
 
 	foundStart := false
 	foundDelta := false

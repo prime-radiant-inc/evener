@@ -13,7 +13,7 @@
 
 import type { AuthDevicePollResponse } from "@evener/appwire-client";
 import { CONNECTION_REPLACED_ERROR, errorText } from "@evener/appwire-client";
-import { type FormEvent, useEffect, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 import { openInNewTab } from "../../../../shell/openInNewTab";
 import { credentialsStore, devicePollOnHost, fetchHost, isStaleListingRefusal } from "../../../../stores/credentials";
 import { Button, Dialog, FormRow, Input, OpenButton, useToasts } from "../../../../widgets";
@@ -33,19 +33,40 @@ const CLASS = {
   url: requireClass(styles.url, "oauthDialogs.module.css", "url"),
 };
 
+const RESTARTED_ERROR = "This sign-in could not be checked against its endpoint — start again.";
+
 export interface OAuthRedirectDialogProps {
   name: string;
   flowId: string;
   authUrl: string;
   onCancel: () => void;
+  /** Called once authorization is confirmed and before the interruptible
+   * listing reconciliation: a guided parent records the acquired source and
+   * its recovery ownership here, so a transport change during that read does
+   * not lose the handoff. Shared Settings callers omit it. */
+  onAuthorized?: () => void;
   onSuccess: () => void;
+  /** Starts the sign-in again. The hub calls for it when it discarded the flow
+   * unchecked, which saved nothing. */
+  onRestart: () => void;
 }
 
 /** The browser-redirect fallback flow's paste-back editor. */
-export function OAuthRedirectDialog({ name, flowId, authUrl, onCancel, onSuccess }: OAuthRedirectDialogProps) {
+export function OAuthRedirectDialog({
+  name,
+  flowId,
+  authUrl,
+  onCancel,
+  onAuthorized,
+  onSuccess,
+  onRestart,
+}: OAuthRedirectDialogProps) {
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // True once the hub discarded this flow unchecked: Finish would resubmit a
+  // flow that no longer exists, so the editor offers Start again instead.
+  const [discarded, setDiscarded] = useState(false);
   const toast = useToasts();
   const active = useEditorLifetime();
 
@@ -59,8 +80,17 @@ export function OAuthRedirectDialog({ name, flowId, authUrl, onCancel, onSuccess
     setBusy(true);
     setError(null);
     try {
-      await credentialsStore.getState().loginComplete(name, flowId, trimmed);
+      const completed = await credentialsStore.getState().loginComplete(name, flowId, trimmed);
       if (!active.current) return;
+      if (completed.restart === true) {
+        // Nothing was saved. The error stays up if the replacement start is
+        // refused and this editor remains.
+        setDiscarded(true);
+        setError(RESTARTED_ERROR);
+        onRestart();
+        return;
+      }
+      onAuthorized?.();
       await refreshListingAfterMutation();
       if (!active.current) return;
       toast.push("success", `Signed in to ${name}`);
@@ -103,13 +133,19 @@ export function OAuthRedirectDialog({ name, flowId, authUrl, onCancel, onSuccess
             value={value}
             onChange={(event) => setValue(event.target.value)}
             placeholder="https://…"
-            disabled={busy}
+            disabled={busy || discarded}
           />
         </FormRow>
         <div className={CLASS.actions}>
-          <Button type="submit" disabled={busy}>
-            Finish
-          </Button>
+          {discarded ? (
+            <Button type="button" onClick={onRestart}>
+              Start again
+            </Button>
+          ) : (
+            <Button type="submit" disabled={busy}>
+              Finish
+            </Button>
+          )}
           <Button type="button" variant="quiet" onClick={onCancel} disabled={busy}>
             Cancel
           </Button>
@@ -133,6 +169,8 @@ export interface DeviceCodeDialogProps {
    * plain devicePoll. */
   host?: string;
   onCancel: () => void;
+  /** See OAuthRedirectDialogProps.onAuthorized. */
+  onAuthorized?: () => void;
   onSuccess: () => void;
   /** "Start again" - re-runs the same start-flow handler CredentialsSection
    * uses for the row's own "Sign in…" button. */
@@ -149,6 +187,7 @@ export function DeviceCodeDialog({
   intervalSeconds,
   host,
   onCancel,
+  onAuthorized,
   onSuccess,
   onRestart,
 }: DeviceCodeDialogProps) {
@@ -161,6 +200,11 @@ export function DeviceCodeDialog({
   const [waitingForConnection, setWaitingForConnection] = useState(false);
   const toast = useToasts();
   const active = useEditorLifetime();
+  // The poll loop restarts the flow from inside its effect, and callers pass
+  // onRestart as an inline closure: reading it through a ref keeps a parent
+  // re-render from restarting the poll timer.
+  const onRestartRef = useRef(onRestart);
+  onRestartRef.current = onRestart;
 
   useEffect(() => {
     let cancelled = false;
@@ -222,6 +266,9 @@ export function DeviceCodeDialog({
       // the status line goes back to what the flow itself is doing.
       setWaitingForConnection(false);
       if (resp.state === "authorized") {
+        // The authorization is confirmed before this read: hand ownership over
+        // first so a reconnect during the read cannot lose the completion.
+        onAuthorized?.();
         // The listing that proves the sign-in is the one belonging to the hub
         // that ran the flow: the remote host's own partition, never this hub's.
         if (host === undefined) {
@@ -239,6 +286,16 @@ export function DeviceCodeDialog({
         setError("Code expired — start again.");
         return;
       }
+      if (resp.state === "restart") {
+        // The hub could not check this flow against its endpoint and discarded
+        // it without saving anything: begin a fresh flow instead of waiting.
+        // The dialog ends like an expired code, so a refused replacement start
+        // leaves Start again rather than a poll that never comes.
+        setExpired(true);
+        setError(RESTARTED_ERROR);
+        onRestartRef.current();
+        return;
+      }
       timer = setTimeout(() => void tick(), delayMs);
     }
 
@@ -254,7 +311,7 @@ export function DeviceCodeDialog({
     // caller-supplied onSuccess WOULD restart this poll's timer on every
     // parent re-render, which is the actual bug this dependency list guards
     // against, not just a lint nicety.
-  }, [name, flowId, intervalSeconds, host, onSuccess, toast.push, active]);
+  }, [name, flowId, intervalSeconds, host, onAuthorized, onSuccess, toast.push, active]);
 
   async function handleCopy(): Promise<void> {
     const ok = await copyText(userCode);

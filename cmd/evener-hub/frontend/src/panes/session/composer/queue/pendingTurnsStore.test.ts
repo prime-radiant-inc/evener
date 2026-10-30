@@ -1,12 +1,15 @@
 // @vitest-environment jsdom
 
 import type { Thread, ThreadReadResponse } from "@evener/appwire-client";
+import { ownPendingTurnInput } from "@evener/appwire-client/state/mutation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { connectionStore } from "../../../../stores/connection";
+import { appliedReceipt } from "../../../../mutationReceiptTestUtils";
+import { connectionStore, resetConnectionStoreForTests } from "../../../../stores/connection";
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
+import type { MutationOutboxRecord } from "../../../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexedDB";
 import { holdIndexedDBEvent, holdNextWriteTransaction } from "../../../../stores/testing/stalledIndexedDB";
 import {
@@ -29,6 +32,7 @@ import {
   useBlockedMutationEntries,
   usePendingTurnEntries,
   useRecoveryEntries,
+  useRetryPendingState,
 } from "./pendingTurnsStore";
 import {
   flushPendingTurnsProjectionForTests,
@@ -94,7 +98,7 @@ beforeEach(() => {
   globalThis.indexedDB = new IDBFactory();
   setMutationClientIdentityForTests(undefined);
   localStorage.clear();
-  connectionStore.setState({ state: "idle", client: null, serverInfo: undefined });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetPendingTurnsStoreForTests();
 });
@@ -571,15 +575,40 @@ test("recovery update and resend carry skill selections in their durable input",
   fake.on("turn/start", () => new Promise<never>(() => undefined));
   await refreshPendingTurnsProjection("ref_a");
 
-  expect(await updateRecoveryPendingTurn(original.clientMutationId, "ref_a", "edited", [], ["pkg:probe"])).toBe(true);
+  expect(
+    await updateRecoveryPendingTurn(
+      original.clientMutationId,
+      "ref_a",
+      "edited",
+      [],
+      ["pkg:probe"],
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      0,
+      { [original.clientMutationId]: 0 },
+    ),
+  ).toBeDefined();
   expect((await storage.getRecovery(original.clientMutationId))?.payload.input).toEqual([
     { type: "text", text: "edited" },
     { type: "skill", name: "pkg:probe" },
   ]);
 
-  expect(await resendRecoveryPendingTurn(original.clientMutationId, "ref_a", "send", "edited", [], ["pkg:probe"])).toBe(
-    true,
-  );
+  expect(
+    await resendRecoveryPendingTurn(
+      original.clientMutationId,
+      "ref_a",
+      "send",
+      "edited",
+      [],
+      ["pkg:probe"],
+      undefined,
+      undefined,
+      undefined,
+      { [original.clientMutationId]: 1 },
+    ),
+  ).toMatchObject({ status: "sent" });
   const outbox = await storage.listOutbox("ref_a");
   expect(outbox).toHaveLength(1);
   expect(outbox[0]?.payload.input).toEqual([
@@ -842,9 +871,36 @@ test("recovery action wrappers refresh the durable projection", async () => {
   fake.on("turn/start", () => new Promise<never>(() => undefined));
   await refreshPendingTurnsProjection("ref_a");
 
-  expect(await updateRecoveryPendingTurn(records[0]!.clientMutationId, "ref_a", "edited", [])).toBe(true);
-  expect(await discardRecoveryPendingTurn(records[1]!.clientMutationId, "ref_a")).toBe(true);
-  expect(await resendRecoveryPendingTurn(records[2]!.clientMutationId, "ref_a", "send", "resent", [])).toBe(true);
+  const edited = await updateRecoveryPendingTurn(
+    records[0]!.clientMutationId,
+    "ref_a",
+    "edited",
+    [],
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    0,
+    { [records[0]!.clientMutationId]: 0 },
+  );
+  expect(edited).toBeDefined();
+  expect(await discardRecoveryPendingTurn(records[1]!.clientMutationId, "ref_a", undefined, 0)).toBe(true);
+  const resend = await resendRecoveryPendingTurn(
+    records[2]!.clientMutationId,
+    "ref_a",
+    "send",
+    "resent",
+    [],
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    {
+      [records[2]!.clientMutationId]: 0,
+    },
+  );
+  expect(resend).toMatchObject({ status: "sent" });
 
   expect((await storage.getRecovery(records[0]!.clientMutationId))?.payload.input).toEqual([
     { type: "text", text: "edited" },
@@ -919,6 +975,10 @@ test("the outbox's interval scan publishes a recovery edit another tab made", as
       [{ type: "text", text: "second draft" }],
       undefined,
       "second draft",
+      undefined,
+      undefined,
+      undefined,
+      0,
     );
     vi.advanceTimersByTime(2_000);
     await flushPendingTurnsProjectionForTests();
@@ -963,11 +1023,20 @@ test("a recovery resend publishes its handoff without waiting for recovery proje
     return request;
   });
   let accepted = false;
-  const resend = resendRecoveryPendingTurn(original.clientMutationId, "ref_a", "send", "retry this", []).then(
-    (result) => {
-      accepted = result;
-    },
-  );
+  const resend = resendRecoveryPendingTurn(
+    original.clientMutationId,
+    "ref_a",
+    "send",
+    "retry this",
+    [],
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    { [original.clientMutationId]: 0 },
+  ).then((result) => {
+    accepted = result.status === "sent";
+  });
   try {
     await act(async () => {
       await readHeld;
@@ -1021,12 +1090,7 @@ test("an applied pending receipt settles transport without dropping optimistic s
   fake.on("turn/start", async (params) => {
     await receiptGate;
     return {
-      receipt: {
-        clientMutationId: params.clientMutationId,
-        disposition: "applied",
-        threadId: "thread_a",
-        projectionState: "pending",
-      },
+      receipt: appliedReceipt(params.clientMutationId, "thread_a", { projectionState: "pending" }),
       turn: { id: "turn_1", status: "inProgress", itemsView: "full" },
     };
   });
@@ -1254,4 +1318,142 @@ test("an authoritative assistant frame retires first-frame state by model identi
   });
   const awaiting = renderHook(() => useAwaitingFirstFrameSend("ref_a"));
   expect(awaiting.result.current).toBe(false);
+});
+
+// --- The activation-time view of the outbox owner ---------------------------
+//
+// continueTurn rechecks synchronously at activation through the shared Retry
+// gate: the same projected entries a render holds, read from the stores as they
+// are now. The render's disabled state is a projection; this is the live answer.
+
+// Allocates a REAL durable outbox row through the same storage adapter the
+// runtime uses: the `clientMutationId` comes from the adapter, never a
+// literal. The returned identity is the one the projection publishes.
+async function allocatePendingRow(
+  storage: MutationOutboxIndexedDB,
+  opts: { method?: "turn/start" | "turn/queue"; foreign?: boolean; canceled?: boolean } = {},
+): Promise<MutationOutboxRecord> {
+  const method = opts.method ?? "turn/start";
+  if (opts.foreign) setMutationClientIdentityForTests("another-tab");
+  let record: MutationOutboxRecord;
+  try {
+    record = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      method,
+      payload: { ref: "ref_a", input: [{ type: "text", text: "pending" }] },
+      attachments: [],
+      optimisticDisplay: { method, input: [{ type: "text", text: "pending" }] },
+    });
+  } finally {
+    if (opts.foreign) setMutationClientIdentityForTests(undefined);
+  }
+  if (opts.canceled) await storage.cancelUnattempted("ref_a");
+  await refreshPendingTurnsProjection("ref_a");
+  return record;
+}
+
+test("the activation-time pending read follows rows published after the last render snapshot", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  await connect();
+  const pending = renderHook(() => usePendingTurnEntries("ref_a"));
+  await flushPendingTurnsProjectionForTests();
+  expect(ownPendingTurnInput(pendingTurnEntries("ref_a"))).toBe(false);
+  const captured = pending.result.current;
+
+  let row!: MutationOutboxRecord;
+  await act(async () => {
+    row = await allocatePendingRow(storage);
+  });
+  // The render snapshot the action was drawn from is unchanged, while the
+  // activation read sees the durable row and its identity.
+  expect(captured).toEqual([]);
+  expect(ownPendingTurnInput(pendingTurnEntries("ref_a"))).toBe(true);
+  expect(pending.result.current.map((entry) => entry.id)).toContain(row.clientMutationId);
+});
+
+test.each([
+  ["an own unresolved send", { method: "turn/start" }, true],
+  ["an own unresolved queue", { method: "turn/queue" }, true],
+  ["a foreign send", { method: "turn/start", foreign: true }, false],
+  ["a canceled own send", { method: "turn/start", canceled: true }, false],
+] as const)("%s reads the live projection", async (_case, opts, expected) => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  await connect();
+  await flushPendingTurnsProjectionForTests();
+  let row!: MutationOutboxRecord;
+  await act(async () => {
+    row = await allocatePendingRow(storage, opts);
+  });
+  expect(pendingTurnEntries("ref_a").map((entry) => entry.id)).toContain(row.clientMutationId);
+  expect(ownPendingTurnInput(pendingTurnEntries("ref_a"))).toBe(expected);
+});
+
+test("the activation-time pending read clears once the durable row settles", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  await connect();
+  const record = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", input: [{ type: "text", text: "pending" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "pending" }] },
+  });
+  await refreshPendingTurnsProjection("ref_a");
+  expect(ownPendingTurnInput(pendingTurnEntries("ref_a"))).toBe(true);
+
+  await storage.settleApplied(record.clientMutationId);
+  await refreshPendingTurnsProjection("ref_a");
+  expect(ownPendingTurnInput(pendingTurnEntries("ref_a"))).toBe(false);
+});
+
+test("useRetryPendingState stays unloaded until the ref's durable read resolves", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  await connect();
+  await flushPendingTurnsProjectionForTests();
+
+  const getAll = IDBObjectStore.prototype.getAll;
+  let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
+  let announceRead: (() => void) | undefined;
+  const readStarted = new Promise<void>((resolve) => {
+    announceRead = resolve;
+  });
+  const spy = vi.spyOn(IDBObjectStore.prototype, "getAll").mockImplementation(function (this: IDBObjectStore, ...args) {
+    const request = getAll.apply(this, args);
+    if (this.name === "recovery" && !hold) {
+      hold = holdIndexedDBEvent(request, "success");
+      void hold.reached.then(() => announceRead?.());
+    }
+    return request;
+  });
+  const pending = renderHook(() => useRetryPendingState("ref_a"));
+  try {
+    await readStarted;
+    // Unknown, not empty.
+    expect(pending.result.current).toEqual({ loaded: false, unresolved: false });
+  } finally {
+    spy.mockRestore();
+    await act(async () => {
+      hold?.release();
+    });
+  }
+  await flushPendingTurnsProjectionForTests();
+  expect(pending.result.current).toEqual({ loaded: true, unresolved: false });
+});
+
+test("useRetryPendingState reports own unresolved input when loaded", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  await connect();
+  const pending = renderHook(() => useRetryPendingState("ref_a"));
+  await flushPendingTurnsProjectionForTests();
+  expect(pending.result.current).toEqual({ loaded: true, unresolved: false });
+
+  await act(async () => {
+    await allocatePendingRow(storage);
+  });
+  expect(pending.result.current).toEqual({ loaded: true, unresolved: true });
 });

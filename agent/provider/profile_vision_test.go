@@ -96,19 +96,34 @@ func TestProfileDocumentInputPredicate(t *testing.T) {
 		{"openai/gpt-5.2", false},
 		// A pdf-declaring row takes a user-message document when its protocol
 		// represents one: the Responses builder writes input_file and the
-		// Anthropic builder writes a document content block (#4209). The
-		// Google builder rejects the kind and chat silently strips it.
+		// Anthropic builder writes a document content block (#4209), while
+		// Google writes inlineData. Chat silently strips documents.
 		{"anthropic/claude-mythos-preview", true},
 		{"respdoc/doc-1", true},
 		{"respdoc/vis-1", false},
 		{"chatdoc/doc-1", false},
 		{"anthdoc/doc-1", true},
-		{"googdoc/doc-1", false},
+		{"googdoc/doc-1", true},
+		{"googdoc/vis-1", false},
+		{"google/gemini-2.5-flash", true},
 	}
 	for _, tc := range cases {
 		p := mustResolve(t, r, tc.ref)
 		if got := p.AcceptsDocumentInput(); got != tc.acceptsDocumentInput {
 			t.Errorf("%s: AcceptsDocumentInput = %v, want %v", tc.ref, got, tc.acceptsDocumentInput)
+		}
+	}
+}
+
+func TestProfileDocumentInputRequiresTheModelsOwnRow(t *testing.T) {
+	t.Parallel()
+	p := mustResolve(t, fixtureRegistryWith(t, documentCapabilityInstances()), "googdoc/doc-1")
+	if !p.AcceptsDocumentInput() {
+		t.Fatal("the Google row's own PDF declaration must accept documents")
+	}
+	for _, ref := range []string{"unknown-model-4463", "unconfigured-provider/model-4463"} {
+		if p.WithModel(ref).AcceptsDocumentInput() {
+			t.Errorf("%s inherited another model's PDF support", ref)
 		}
 	}
 }

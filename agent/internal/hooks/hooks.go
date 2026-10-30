@@ -183,24 +183,12 @@ func newRunner(client promptHookClient, model string) *Runner {
 	}
 }
 
-// Summary returns the number of registered hooks per event.
-// Events with zero hooks are omitted.
-func (r *Runner) Summary() map[plugin.HookEvent]int {
-	out := make(map[plugin.HookEvent]int)
-	for event, hooks := range r.hooks {
-		if len(hooks) > 0 {
-			out[event] = len(hooks)
-		}
-	}
-	return out
-}
-
 // SupportedSummary returns, per event, the number of registered hooks that can
 // ACTUALLY run — i.e. their handler type is one runHook executes (command/prompt)
 // AND their matcher is a valid regex (MatchHooks does not skip it). Hooks with an
 // unsupported handler type or an invalid matcher are dispatch-time dead and are
 // excluded. Events with zero runnable hooks are omitted. This backs the AppWire
-// "active supported hooks" count; Summary (above) counts every registered hook.
+// "active supported hooks" count.
 func (r *Runner) SupportedSummary() map[plugin.HookEvent]int {
 	out := make(map[plugin.HookEvent]int)
 	for event, hooks := range r.hooks {
@@ -471,7 +459,7 @@ func (r *Runner) runHook(ctx context.Context, hook plugin.RegisteredHook, event 
 
 	switch hook.Type {
 	case "command":
-		hr, err = executeCommandHookWithRuntime(ctx, hook, input, r.commandHookRuntime, r.sandboxWrapper)
+		hr, err = executeCommandHook(ctx, hook, input, r.commandHookRuntime, r.sandboxWrapper)
 	case "prompt":
 		if r.client == nil {
 			return parsedHookOutput{Continue: true, SystemMessage: "prompt hook skipped: no LLM client"}
@@ -712,11 +700,6 @@ func (r *Runner) runStopEvent(ctx context.Context, event plugin.HookEvent, input
 func (r *Runner) RunUserPromptSubmit(ctx context.Context, input Input) RunResult {
 	outputs := r.runAll(ctx, plugin.HookUserPromptSubmit, "", input)
 	return collectSystemMessages(plugin.HookUserPromptSubmit, outputs)
-}
-
-// RunSessionStart dispatches startup SessionStart hooks.
-func (r *Runner) RunSessionStart(ctx context.Context, input Input) RunResult {
-	return r.RunSessionStartFor(ctx, input, plugin.SessionStartKindStartup)
 }
 
 // RunSessionStartFor dispatches SessionStart hooks for a specific startup kind.

@@ -14,8 +14,8 @@ var mobileCGNATPrefix = netip.MustParsePrefix("100.64.0.0/10")
 // browser's usable origin. A local browser can instead use a network address
 // on which this Hub actually listens.
 func mobilePairingOrigin(cfg hubcore.WebConfig, proposed string) (string, bool) {
-	if cfg.MobileBaseURL != "" {
-		return safeMobileOrigin(cfg.MobileBaseURL)
+	if cfg.PublicURL != "" {
+		return safeMobileOrigin(cfg.PublicURL)
 	}
 	if origin, ok := safeMobileOrigin(proposed); ok {
 		return origin, true

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -16,6 +17,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/provenance"
 )
 
 func newShellTestRig(t *testing.T) (*jobManager, execenv.StreamingExecutor) {
@@ -108,7 +110,7 @@ func setShellReceiptPollHook(t *testing.T, fire func(jobID string)) {
 
 // shellReceiptHeld reports whether the stable-delegate controller still holds a
 // committed process receipt for jobID. Only a job manager bound to a stable
-// delegate parent has a lease, and beginStableDelegateShellReceipt takes a
+// delegate parent has a lease, and beginDelegateShellReceipt takes a
 // receipt only for a non-empty lease, so root-owned shells never hold one and
 // this is always false for them.
 func shellReceiptHeld(jm *jobManager, jobID string) bool {
@@ -1013,5 +1015,40 @@ func TestRunShellDetachedFinalizerRetriesUntilDurable(t *testing.T) {
 	}
 	if finishAttempts.Load() <= failuresBeforeSuccess || pendingAttempts.Load() <= failuresBeforeSuccess {
 		t.Fatalf("attempts finish=%d pending=%d, want retries past %d", finishAttempts.Load(), pendingAttempts.Load(), failuresBeforeSuccess)
+	}
+}
+
+// The test-only createShell helper and the production commit path both persist
+// jobStartedEvent, so folding it must reproduce every start field of the record.
+func TestJobStartedEventFoldsBackToRecord(t *testing.T) {
+	t.Parallel()
+	startedAt := time.Unix(1_700_000_000, 0).UTC()
+	prov := &provenance.Causal{ChainTruncated: true}
+	tests := []struct {
+		name string
+		rec  jobstore.JobRecord
+	}{
+		{"minimal", jobstore.JobRecord{JobID: "job_1", Type: jobstore.JobShell, Command: "true", StartedAt: startedAt}},
+		{"full", jobstore.JobRecord{
+			JobID: "job_2", Type: jobstore.JobShell, Command: "make", Background: true,
+			Intent: "build", Description: "build it", OwnerSessionID: "own", VisibleToSession: "vis",
+			ParentJobID: "job_1", ParentDelegateID: "del_1", StartedAt: startedAt,
+			OutputPath: "/tmp/out", WorkingDir: "/work", Provenance: prov,
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rec := tc.rec
+			got := jobstore.Fold([]jobstore.Event{jobStartedEvent(&rec)})[rec.JobID]
+			if got == nil {
+				t.Fatal("event did not fold to a record")
+			}
+			want := rec
+			want.Status, want.NotifyState = got.Status, got.NotifyState
+			if !reflect.DeepEqual(*got, want) {
+				t.Fatalf("folded record = %+v, want %+v", *got, want)
+			}
+		})
 	}
 }

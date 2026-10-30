@@ -272,9 +272,8 @@ REST surface, and what is no longer on it" in the runbook.
   non-image outright and surfaces `Couldn't attach <name> …`. Server:
   `validateAppWireInputItems`
   (`cmd/evener-hub/appwire_validation.go#validateAppWireInputItems`) against
-  `hubcore.SendMaxImageItems = 8` / `SendMaxImageBytes = 8 MiB` /
-  `SendMaxRequestBytes = 96 MiB`
-  (`cmd/evener-hub/internal/hubcore/types.go:12-14`). The old card's
+  `hubcore.SendMaxImageItems = 8` / `SendMaxImageBytes = 8 MiB`
+  (`cmd/evener-hub/internal/hubcore/types.go`). The old card's
   "12 MB per image / 40 MB per request" and its `web.go:sendMax*Bytes`
   citation were both wrong; there is no such symbol. Note the status
   codes differ by route: the browser goes over appwire, where an

@@ -19,7 +19,7 @@
 // counterparts (their contents were already correctly split, just under the
 // old name). ~/.serf and ~/.evener are retired entirely: each file/directory
 // they held moves individually into the config or state root — see
-// homeRootFiles. Per-project .serf directories also move wholesale to
+// userdirs.HomeRootFiles. Per-project .serf directories also move wholesale to
 // .evener.
 package migrate
 
@@ -32,6 +32,7 @@ import (
 	"path/filepath"
 
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/envvars/userdirs"
 )
 
 // migration tracks a single source -> destination move (a file or a
@@ -66,39 +67,6 @@ type report struct {
 	failed  int
 }
 
-// homeRootFile describes one file or directory that used to live directly
-// under the legacy (~/.serf) or interim (~/.evener) home root, and which XDG
-// root it belongs under in the final layout.
-type homeRootFile struct {
-	name string // basename under the home root
-	xdg  string // "config" or "state"
-	kind string // migration report label
-}
-
-// homeRootFiles is the complete inventory of what ~/.serf and ~/.evener held:
-// providers.toml/credentials.toml/hub.toml/launch.toml are user-editable
-// configuration, so they move to the XDG config root; auth-token/index.db/
-// hub.lock/run/deletions are machine-generated (or, for hub.lock and run,
-// runtime-coordination) state, so they move to the XDG state root — see the
-// PR's mapping table for the per-file config/state rationale.
-//
-// cmdutil.checkLegacyDataDirs (cmdutil/legacymigration.go) uses the identical
-// basename list to decide whether either home root still holds unmigrated
-// data. It is duplicated here rather than shared because evener-migrate is a
-// deliberately dependency-light standalone binary that does not import
-// cmdutil.
-var homeRootFiles = []homeRootFile{
-	{name: "providers.toml", xdg: "config", kind: "provider config"},
-	{name: "credentials.toml", xdg: "config", kind: "credentials"},
-	{name: "hub.toml", xdg: "config", kind: "hub config"},
-	{name: "launch.toml", xdg: "config", kind: "launch config"},
-	{name: "auth-token", xdg: "state", kind: "hub auth token"},
-	{name: "index.db", xdg: "state", kind: "past-session index"},
-	{name: "hub.lock", xdg: "state", kind: "hub lock"},
-	{name: "run", xdg: "state", kind: "daemon rendezvous/log directory"},
-	{name: "deletions", xdg: "state", kind: "deletion-fence state"},
-}
-
 func Run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	return run(args, stdout, stderr)
 }
@@ -131,9 +99,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		configBase = filepath.Join(home, ".config")
 	}
 
-	stateBase := os.Getenv(envvars.XDGStateHome.Name)
-	if stateBase == "" {
-		stateBase = filepath.Join(home, ".local", "state")
+	stateBase, err := userdirs.StateHome(os.Getenv(envvars.XDGStateHome.Name), func() (string, error) { return home, nil })
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "evener-migrate: resolve state home: %v\n", err)
+		return 1
 	}
 
 	cwd, err := os.Getwd()
@@ -218,13 +187,13 @@ func homeRootMigrations(opts options) []migration {
 		{path: filepath.Join(opts.home, ".serf"), kind: "legacy"},
 		{path: filepath.Join(opts.home, ".evener"), kind: "interim"},
 	}
-	migrations := make([]migration, 0, len(homeRoots)*len(homeRootFiles))
+	migrations := make([]migration, 0, len(homeRoots)*len(userdirs.HomeRootFiles))
 	for _, homeRoot := range homeRoots {
-		for _, hf := range homeRootFiles {
+		for _, hf := range userdirs.HomeRootFiles {
 			migrations = append(migrations, migration{
-				src:  filepath.Join(homeRoot.path, hf.name),
+				src:  filepath.Join(homeRoot.path, hf.Name),
 				dst:  homeRootFileDest(opts, hf),
-				kind: homeRoot.kind + " " + hf.kind,
+				kind: homeRoot.kind + " " + hf.Kind,
 			})
 		}
 	}
@@ -232,7 +201,7 @@ func homeRootMigrations(opts options) []migration {
 }
 
 // removeEmptyHomeRoot removes dir if it exists and is now empty — the state
-// after every known homeRootFiles entry it held has been moved out. It is
+// after every known userdirs.HomeRootFiles entry it held has been moved out. It is
 // best-effort and silent: a missing dir (nothing to remove) and a non-empty
 // one (unrecognized content evener-migrate deliberately leaves alone,
 // consistent with refuse-don't-clobber) both simply return.
@@ -246,12 +215,12 @@ func removeEmptyHomeRoot(dir string, verbose bool, stdout io.Writer) {
 }
 
 // homeRootFileDest resolves a homeRootFile to its final XDG path.
-func homeRootFileDest(opts options, hf homeRootFile) string {
+func homeRootFileDest(opts options, hf userdirs.HomeRootFile) string {
 	base := opts.configBase
-	if hf.xdg == "state" {
+	if hf.State {
 		base = opts.stateBase
 	}
-	return filepath.Join(base, "evener", hf.name)
+	return filepath.Join(base, "evener", hf.Name)
 }
 
 // migrate moves src to dst. If dst already exists it refuses to overwrite and
@@ -347,8 +316,8 @@ func repairHomeRootFileReferences(opts options, stdout, stderr io.Writer) {
 	newConfigRoot := filepath.Join(opts.configBase, "evener")
 	newStateRoot := filepath.Join(opts.stateBase, "evener")
 	for _, homeRoot := range []string{filepath.Join(opts.home, ".serf"), filepath.Join(opts.home, ".evener")} {
-		for _, hf := range homeRootFiles {
-			oldPath := filepath.Join(homeRoot, hf.name)
+		for _, hf := range userdirs.HomeRootFiles {
+			oldPath := filepath.Join(homeRoot, hf.Name)
 			newPath := homeRootFileDest(opts, hf)
 			for _, tree := range []string{newConfigRoot, newStateRoot} {
 				if _, err := os.Lstat(tree); err != nil {

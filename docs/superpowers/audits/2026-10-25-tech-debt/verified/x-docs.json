@@ -1,0 +1,75 @@
+[
+ {
+  "id": "x-docs-1",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Counts verified (481 plans/402,756 lines, 441 specs/117,976 lines; 161 non-docs files cite docs/superpowers, 92 distinct paths). Problem is real noise, but 'actively causing bugs' is not shown, and deleting ~500 files is a significant deletion needing Jesse's explicit approval. The demoSessions.ts/demo-hub.mts repoint is demo string content and not worth a change. Existing README already states plans are history.",
+  "revised_fix_plan": "Step 1: propose the 'delete the plan in the completing PR' rule to Jesse. Step 2: with approval, delete only plans not cited outside docs/superpowers (exact via git grep of each basename). Drop front-matter status schema and the demo-string repoint (YAGNI). Keep specs unless uncited and Jesse agrees."
+ },
+ {
+  "id": "x-docs-2",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Verified: 377 tracked images, 301 with no basename reference anywhere in tracked files (69.46 MB). But impact claim 'every clone carries 70 MB' is wrong: blobs stay in history, clone size does not shrink; only worktree checkouts shrink. Also plan Task 17 says screenshots are attached to PRs, supporting deletion.",
+  "revised_fix_plan": "Delete the unreferenced images in one PR with a small named script that lists candidates by basename grep; add a one-line rule that PR screenshots go on the PR. Do not claim clone-size savings."
+ },
+ {
+  "id": "x-docs-3",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Facts confirmed: ARCHIVE list and LIVING_IN_ARCHIVE in docs-site/scripts/check.mjs:11-35; design/README says 'records, not references' while design/context.md is a current contextmgr reference; subagent-management/11 line 3 says 'Shipped evergreen product authority'; web-ui/history/ux-and-implementation-plan.md:26 links design-system.md which does not exist under history/. Overstated: LIVING_IN_ARCHIVE docs ARE checked, so 'living docs get no checks' is true only for the few not listed (context.md, stop-cancellation-outbox, subagent 11). A repo-wide move of ~270 path citations into docs/archive is a large restructure for Jesse to decide.",
+  "revised_fix_plan": "Narrow first step: fix the broken web-ui/history link, add context.md, stop-cancellation-outbox.md and subagent-management/11 to LIVING_IN_ARCHIVE (or move those 3 docs out of record dirs), delete IMPLEMENTATION_PROMPT.md. Defer docs/archive consolidation until Jesse approves the restructure."
+ },
+ {
+  "id": "x-docs-4",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Verified: internal/appwire, internal/appsource, internal/hubapi, internal/launchconfig, agent/transcript.go, agent/mcp_config.go do not exist (real: appwire/, cmd/evener-hub/internal/appsource, etc.); naming.md:183 cites '// evener:naming-ignore' and no such marker exists in code; agent/delegate_seqfuzz_test.go does not exist yet fuzzing.md:295,314 name it; docs/specs/session-transcript-tools.md missing; .golangci.yml:88-100 holds the real carve-outs. Seqfuzz table omits at least appstack_seqfuzz_test.go and forcecompact_doublelayer_seqfuzz_test.go."
+ },
+ {
+  "id": "x-docs-5",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Verified contradiction: environment.md:14 says EVENER_ALLOWED_DECISIONS 'Restricts tool-decision modes' while envvars.go:61 says 'not tool approval modes'; environment.md EVENER_OFFLINE says 'embedded snapshot only' while environment-variables.md says a newer valid local cache can be used; environment.md:81 KIMI row says 'Meaning changed at the flag day'. Note docs/environment-variables.md is already declared derived from the registry, so the public page is not the drifting copy."
+ },
+ {
+  "id": "x-docs-6",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "testing.md is 1,973 lines and contains issue/date narrative; AGENTS.md and product README forbid dated narratives. Split into three files is more churn than needed and anchors are cited elsewhere."
+ },
+ {
+  "id": "x-docs-7",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Verified: resume-model-context-fix-plan.md exists (304 lines) and its fix has landed (cmdutil.ResolveResumeModelRef at cmdutil/cmdutil.go:83); agent/session_restore_profile_test.go does not exist; terminal-bench.md contains jesse@192.168.118.101, StrictHostKeyChecking=no, and cites agent/prompts/base.md while only agent/prompts/system.md.tmpl exists; IMPLEMENTATION_PROMPT.md exists. Only dated specs reference the plan/prompt/handoff names."
+ },
+ {
+  "id": "x-docs-8",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Verified typo '**Simplify-code*' at AGENTS.md:209 and wrong 'scripts/layoutguard' path at :125 (real: cmd/evener-hub/frontend/scripts/layoutguard). Wrong claim: mobile-native/CLAUDE.md contains only '@AGENTS.md' (an import), not a duplicate pointer; leave it. AGENTS.md is Jesse's instruction text; a 130-line rewrite and moving rules is consequential and needs his approval, and some 'anecdotes' document why gate rules exist.",
+  "revised_fix_plan": "Fix the typo and path only. Propose any trimming/moves to Jesse as a separate discussion, one rule at a time."
+ },
+ {
+  "id": "x-docs-9",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Overlap is real (session-activity: product 1,004 lines, design 375 lines, subagent runtime contracts 337 / job-control 1,927 / doc 10 365 / doc 11 2,244). But design/session-activity-api.md states it is the target contract for an API still being implemented (not shipped), and doc 10 carries a historical banner pointing at the canonical pages already, so ownership is already declared. Merging is premature and risky for high-traffic contracts.",
+  "revised_fix_plan": "Only strip 'flag day'/'no longer' history phrases from llm-provider-config-and-launch.md; revisit session-activity merge after the API ships."
+ },
+ {
+  "id": "x-docs-10",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "README is 420 lines mixing index and behavior (confirmed). 'thirteen live source comments' at README:40 could not be shown wrong: 7 non-docs files cite parity/history, comment count not checked. 'two dated feasibility designs' vs 9 files in web-ui/specs is confirmed stale.",
+  "revised_fix_plan": "Fix the stale 'two dated' count; split behavior out only if Jesse wants it."
+ },
+ {
+  "id": "x-docs-11",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "docs-check validates link syntax only (make/repo.mk:95); the publication manifest exists as docs-site/publication.json. The count of 8 undeclared top-level pages was not independently re-verified. A backticked-path resolver adds mechanism with a runtime-path allowlist.",
+  "revised_fix_plan": "Add only an unpublished list plus undeclared-page failure if desired; skip the path resolver unless x-docs-4 recurs."
+ }
+]

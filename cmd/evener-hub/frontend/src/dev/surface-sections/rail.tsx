@@ -8,11 +8,14 @@ import type {
   NavigationManifest,
   NavigationProjectCatalog,
   NavigationProjectResource,
+  NavigationReadParams,
   NavigationSectionResource,
   NavigationSessionSummary,
+  NavigationSnapshot,
 } from "@evener/appwire-client";
-import { keyID, type ResourceState } from "@evener/appwire-client/state/navigation";
+import { keyID, normalizedGraphFromSnapshot, type ResourceState } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { useEffect } from "react";
 import { ClientProvider } from "../../shell/clientContext";
 import { Rail } from "../../shell/rail/Rail";
@@ -110,10 +113,23 @@ const MANIFEST: NavigationManifest = {
   catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
 };
 
+// The resource as the store holds it after a decoded snapshot: the fixture
+// data plus the graph the rail reads rows from.
 function resourceState<T>(key: NavigationResourceKey, data: T): ResourceState<T> {
+  const resourceKey = key as ResourceState["key"];
   return {
-    key: key as ResourceState["key"],
+    key: resourceKey,
     data,
+    ...(key.kind === "manifest"
+      ? {}
+      : {
+          normalized: {
+            key: resourceKey,
+            graph: normalizedGraphFromSnapshot(wireSnapshot(readParams(key), data).data as NavigationSnapshot),
+            version: { generationId: GENERATION, revision: 1, etag: '"gallery"' },
+            presence: "present" as const,
+          },
+        }),
     loadedRevision: 1,
     targetRevision: 1,
     forceToken: 0,
@@ -125,6 +141,18 @@ function resourceState<T>(key: NavigationResourceKey, data: T): ResourceState<T>
   };
 }
 
+function readParams(key: Exclude<NavigationResourceKey, { kind: "manifest" }>): NavigationReadParams {
+  const v3 = { representationVersion: 3 as const };
+  switch (key.kind) {
+    case "section":
+      return { resource: "section", ...v3, section: key.section, offset: key.offset, limit: key.limit };
+    case "catalog":
+      return { resource: "catalog", ...v3, catalog: key.catalog, offset: key.offset, limit: key.limit };
+    case "project":
+      return { resource: "project", ...v3, projectKey: key.projectKey };
+  }
+}
+
 type NavigationResourceKey =
   | { kind: "manifest" }
   | { kind: "section"; section: "live" | "needs_you"; offset: number; limit: number }
@@ -133,7 +161,7 @@ type NavigationResourceKey =
 
 export default function RailSurfaceSection() {
   useEffect(() => {
-    const resources = new Map();
+    const resources = new Map<string, ResourceState>();
     resources.set(
       keyID({ kind: "section", section: "live", offset: 0, limit: 50 }),
       resourceState({ kind: "section", section: "live", offset: 0, limit: 50 }, LIVE_SECTION),
@@ -157,6 +185,7 @@ export default function RailSurfaceSection() {
       lastSequence: 0,
       manifest: resourceState({ kind: "manifest" }, MANIFEST),
       resources,
+      visibleResourceKeys: new Set(resources.keys()),
       attention: { changed: [], summary: MANIFEST.attentionSummary },
       protocolError: null,
     });

@@ -39,7 +39,7 @@ func installProjectedMutationCallbacksForTest(s *Server, functions RetrySafeTurn
 	if functions.Start == nil {
 		functions.Start = func(params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
 			text, images := inputFromItems("", params.Input)
-			turnID, err := s.reserveAppTurnIDForStart()
+			turnID, err := s.startTestTurn()
 			if err != nil {
 				return appwire.TurnStartResponse{}, err
 			}
@@ -47,7 +47,7 @@ func installProjectedMutationCallbacksForTest(s *Server, functions RetrySafeTurn
 			case s.inputCh <- InputMessage{Text: text, Images: images}:
 				return appwire.TurnStartResponse{Turn: appwire.Turn{ID: turnID, Status: appwire.TurnStatusInProgress}}, nil
 			default:
-				s.releaseAppTurnID(turnID)
+				s.releaseTestTurn(turnID)
 				return appwire.TurnStartResponse{}, appwire.Conflict("input buffer full")
 			}
 		}
@@ -55,10 +55,9 @@ func installProjectedMutationCallbacksForTest(s *Server, functions RetrySafeTurn
 	if steer := functions.Steer; steer != nil {
 		functions.Steer = func(params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
 			s.mu.RLock()
-			reservedTurnID := s.appReservedTurnID
 			processing := s.processing
 			s.mu.RUnlock()
-			if !processing && strings.TrimSpace(reservedTurnID) == "" {
+			if !processing {
 				return appwire.TurnSteerResponse{}, appwire.Conflict("turn is not active")
 			}
 			return steer(params)
@@ -68,13 +67,12 @@ func installProjectedMutationCallbacksForTest(s *Server, functions RetrySafeTurn
 		functions.Queue = func(params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
 			s.mu.RLock()
 			processing := s.processing
-			reservedTurnID := s.appReservedTurnID
-			closed := appStatus(s.status.State, processing, strings.TrimSpace(s.appReservedTurnID) != "") == appwire.ThreadStatusClosed
+			closed := appStatus(s.status.State, processing) == appwire.ThreadStatusClosed
 			s.mu.RUnlock()
 			if closed {
 				return appwire.TurnQueueResponse{}, appwire.Conflict("session is closed")
 			}
-			if !processing && strings.TrimSpace(reservedTurnID) == "" {
+			if !processing {
 				return appwire.TurnQueueResponse{}, appwire.Conflict("no active turn to queue against")
 			}
 			return queue(params)
@@ -86,7 +84,7 @@ func installProjectedMutationCallbacksForTest(s *Server, functions RetrySafeTurn
 			hasInput := strings.TrimSpace(text) != "" || len(images) > 0
 			s.mu.RLock()
 			processing := s.processing
-			closed := appStatus(s.status.State, processing, strings.TrimSpace(s.appReservedTurnID) != "") == appwire.ThreadStatusClosed
+			closed := appStatus(s.status.State, processing) == appwire.ThreadStatusClosed
 			s.mu.RUnlock()
 			if closed {
 				return appwire.TurnDrainAsSteerResponse{}, appwire.Conflict("session is closed")
@@ -103,14 +101,11 @@ func installProjectedMutationCallbacksForTest(s *Server, functions RetrySafeTurn
 	if cancel != nil {
 		functions.Interrupt = func(_ context.Context, _ appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
 			// An interrupt names no turn, so the precondition is whether
-			// anything is running -- the same signal the steer fake uses, since
-			// this harness marks a started turn by reserving its id rather than
-			// by flipping processing.
+			// anything is running.
 			s.mu.RLock()
-			reservedTurnID := s.appReservedTurnID
 			processing := s.processing
 			s.mu.RUnlock()
-			if !processing && strings.TrimSpace(reservedTurnID) == "" {
+			if !processing {
 				return appwire.TurnInterruptResponse{}, appwire.Conflict("session is not processing")
 			}
 			cancel()
@@ -120,35 +115,54 @@ func installProjectedMutationCallbacksForTest(s *Server, functions RetrySafeTurn
 	s.SetRetrySafeTurnFunctions(functions)
 }
 
-// reservedTestTurns numbers the turn ids reserveAppTurnIDForStart mints.
-var reservedTestTurns atomic.Uint64
+// startedTestTurns numbers the turn ids startTestTurn mints.
+var startedTestTurns atomic.Uint64
 
-// reserveAppTurnIDForStart is the projected-mutation fake's turn/start
-// reservation: it refuses a closed or busy thread and marks the thread's turn
-// reserved, which its status and capabilities report as active.
-func (s *Server) reserveAppTurnIDForStart() (string, error) {
+// startTestTurn is the projected-mutation fake's turn/start: it refuses a
+// closed or busy thread and marks a turn running under a fresh id.
+func (s *Server) startTestTurn() (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	processing := s.processing
-	reserved := strings.TrimSpace(s.appReservedTurnID) != ""
-	if appStatus(s.status.State, processing, reserved) == appwire.ThreadStatusClosed {
+	if appStatus(s.status.State, s.processing) == appwire.ThreadStatusClosed {
 		return "", appwire.Conflict("session is closed")
 	}
-	if processing || reserved {
+	if s.processing {
 		return "", appwire.Conflict("session is processing")
 	}
-	turnID := fmt.Sprintf("turn_reserved_%d", reservedTestTurns.Add(1))
+	turnID := fmt.Sprintf("turn_started_%d", startedTestTurns.Add(1))
+	s.processing = true
 	s.appActiveTurnID = turnID
-	s.appReservedTurnID = turnID
 	return turnID, nil
 }
 
-// releaseAppTurnID undoes reserveAppTurnIDForStart's reservation of turnID.
-func (s *Server) releaseAppTurnID(turnID string) {
+// releaseTestTurn undoes startTestTurn when its input could not be delivered.
+func (s *Server) releaseTestTurn(turnID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.appReservedTurnID == turnID {
-		s.appReservedTurnID = ""
-		s.appActiveTurnID = ""
+	if s.appActiveTurnID == turnID {
+		s.endProcessingLocked()
 	}
+}
+
+func inputFromItems(prompt string, items []appwire.InputItem) (string, []ImageAttachment) {
+	parts := []string{}
+	if strings.TrimSpace(prompt) != "" {
+		parts = append(parts, prompt)
+	}
+	images := make([]ImageAttachment, 0)
+	for _, item := range items {
+		switch item.Type {
+		case "text", "input_text", "":
+			if strings.TrimSpace(item.Text) != "" {
+				parts = append(parts, item.Text)
+			}
+		case "image", "input_image":
+			images = append(images, ImageAttachment{
+				MediaType: item.MediaType,
+				Data:      item.Data,
+				Name:      item.Name,
+			})
+		}
+	}
+	return strings.Join(parts, "\n"), images
 }

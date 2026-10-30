@@ -30,12 +30,10 @@ vi.mock("@react-navigation/native", () => {
 	return { useNavigation: () => navigation };
 });
 vi.mock("expo/fetch", () => ({ fetch: vi.fn() }));
-vi.mock("expo-crypto", () => ({ getRandomBytes: (count: number) => new Uint8Array(count).fill(7) }));
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 const LINK = "https://magic-kingdom:9180/auth/s3cret";
 const MAGIC: HubProfile = { id: "hub-1", name: "magic-kingdom", origin: "https://magic-kingdom:9180" };

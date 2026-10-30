@@ -1,0 +1,26 @@
+{
+  "name": "activity-tree-intent-geometry",
+  "description": "A 200-character intent cannot starve a short delegate name or hide its own Open control. Real phone Sheet insets, 360/390/430px viewports, and nested activity rows through four groups exercise the shipped denseMeta cap and ellipsis without product CSS overrides.",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "widgets/dialog/dialog.module.css",
+    "widgets/sheet/sheet.module.css",
+    "panes/session/chrome/activitypanel.module.css",
+    "widgets/button/button.module.css",
+    "widgets/iconbutton/iconbutton.module.css",
+    "widgets/openbutton/openbutton.module.css"
+  ],
+  "viewport": { "width": 1200, "height": 1100, "deviceScaleFactor": 1, "mobile": false },
+  "widthMatrix": [
+    { "width": 360, "depth": 0 },
+    { "width": 390, "depth": 2 },
+    { "width": 430, "depth": 4 }
+  ],
+  "mutation": {
+    "declaration": "activitypanel.module.css: remove only .denseMeta's max-width: 60%",
+    "verified": "2026-10-23",
+    "expect": "fail",
+    "note": "Chrome exited 1: all nine names fell below 16px (6.84-9.61px) and every meta exceeded 60% of row content width. The 430px root also lost its full name. Stylesheet restored byte-for-byte before the passing runs."
+  }
+}

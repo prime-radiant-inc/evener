@@ -1,4 +1,4 @@
-import type { InputItem } from "@evener/appwire-client";
+import { buildComposerInput, type InputItem } from "@evener/appwire-client";
 import { expect, test } from "vitest";
 import type { MutationAttachment, MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
 import type { PendingAttachment } from "../attachments/useAttachments";
@@ -146,6 +146,32 @@ test("falls back to the payload's own text when the record carries no composer t
 
   expect(draft.text).toBe("plain");
   expect(draft.attachments.map((attachment) => attachment.marker)).toEqual([1]);
+});
+
+test("a legacy literal remains unbound after pending-tile conversion and merge", () => {
+  const legacyText = "legacy [image 1] stays literal";
+  const recovered = recoveryComposerDraft(
+    recoveryRecord(
+      [
+        { type: "text", text: legacyText },
+        { type: "image", mediaType: "image/png", data: "LEGACY", name: "legacy.png" },
+      ],
+      { attachments: [durableAttachment(7, "legacy.png")] },
+    ),
+  );
+  const current = settledAttachment(1, "current.png", "CURRENT");
+
+  const merged = mergeRecoveryComposerDraft("current [image 1]", [current], recovered);
+  const settled = merged.attachments.flatMap((attachment) =>
+    attachment.data === undefined ? [] : [{ ...attachment, data: attachment.data }],
+  );
+  const encoded = buildComposerInput(merged.text, settled);
+
+  expect(merged.text).toBe(`current [image 2]\n\n${legacyText}`);
+  expect(merged.attachments.map((attachment) => attachment.marker)).toEqual([2, 3]);
+  expect(merged.attachments.every((attachment) => !attachment.pending)).toBe(true);
+  expect(settled).toHaveLength(merged.attachments.length);
+  expect(encoded.find((item) => item.type === "text")?.text).toContain(legacyText);
 });
 
 test("recovers canonical selections without converting them to prose", () => {

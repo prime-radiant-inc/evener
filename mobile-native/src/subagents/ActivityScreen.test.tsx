@@ -44,7 +44,6 @@ vi.mock("react-native", async () => ({
 	TextInput: "TextInput",
 	useWindowDimensions: () => ({ width: 393, height: 852, fontScale: 1, scale: 3 }),
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("@react-navigation/native", async () => {
 	const { useEffect } = await import("react");
 	return {
@@ -229,6 +228,7 @@ it("keeps a terminal parent's running child and stop identity reachable with his
 		ref: "local:repro",
 		title: "Reproduce the race",
 		coordinator: COORDINATOR,
+		runStartedAt: ago(4 * MIN),
 	});
 	act(() => pressable(tree, "Done · 23")?.props.onPress());
 	const parent = tree.root.find((node) => node.props.row?.id === "race").props.row;

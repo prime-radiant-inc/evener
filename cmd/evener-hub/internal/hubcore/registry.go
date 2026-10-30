@@ -476,6 +476,9 @@ func CredentialConfigRevisionResolved(key []byte, res registry.Resolved) string 
 // source label in the identity already distinguishes "no record" from
 // "record".
 func oauthAccountFingerprint(stateRoot, instance string) string {
+	if stateRoot == "" {
+		return ""
+	}
 	raw, err := os.ReadFile(authopenai.AuthFilePath(stateRoot, instance))
 	if err != nil {
 		return ""

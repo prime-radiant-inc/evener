@@ -1,34 +1,21 @@
 import { nativePlatform } from "./conversationPlatform.testkit";
-import { subagentOutcomesDelegatesResponse } from "@evener/appwire-client/testing/subagentWireFixtures";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { activityFixture } from "./subagents/sessionActivityTestUtils";
-import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
 // The Session's one Send and the tray's Stop, on the real ConversationScreen:
 // what a person presses, and which requests reach the hub through the durable
 // runtime. Only native edges are mocked, as in
 // ConversationScreen.recovery.test.tsx.
 import type { ComponentProps } from "react";
 import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-	type AnyNotification,
-	makeTranscriptDisplayConfig,
-	type SessionDelegatesResponse,
-	type Thread,
-	WireError,
-} from "@evener/appwire-client";
-import { findBar, findMatches, findShows } from "./findBarTestUtils";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { type AnyNotification, type SessionDelegatesResponse, type Thread } from "@evener/appwire-client";
 import { hasTestID, markers } from "./markerTestUtils";
-import { drafts, nativeDrafts } from "./nativeDrafts";
+import { nativeDrafts } from "./nativeDrafts";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
 import {
 	flatListCalls,
-	flatListScrollFailures,
 	keyboard,
-	alertRequests,
 	dockBody,
-	dropped as droppedConnection,
-	type PanGestureMock,
 	playedHaptics,
 	pressable,
 	render,
@@ -40,40 +27,32 @@ import {
 	unmountMountedTrees,
 	until,
 } from "./renderNative.testkit";
-import { queueHosts } from "./QueueSheet";
 import { ConversationScreen } from "./screens";
-import { nativeDisclosureStore, setDisclosureOpenAll } from "./nativeDisclosure";
-import { rowDisclosureIds, sessionDisclosureScope } from "./session/disclosureKeys";
-import { NotesSheet, notesHosts } from "./session/NotesSheet";
+import type { NativeConversationSessions } from "./session/nativeConversationSessions";
+import {
+	NativeConversationSessionsProvider,
+	useNativeConversationSessions,
+} from "./session/NativeConversationSessionsProvider";
 import { QuestionDock } from "./session/QuestionDock";
-import { FindBar } from "./session/FindBar";
-import { GlassHeaderPanel } from "./design/GlassHeaderPanel";
-import { indicatorRoom } from "./design/BarFrame";
-import { SessionHeader } from "./session/SessionHeader";
-import { sheetKey } from "./sheet/sheetHosts";
-import { holdQuote, takeQuote } from "./session/pendingQuote";
-import { modelHosts } from "./session/ModelSheet";
-import { SessionInfoSheet, sessionInfoHosts } from "./session/SessionInfoSheet";
-import { commandHosts } from "./session/CommandsSheet";
-import { compactDuration } from "./session/format";
-import { SubagentPanel } from "./subagents/SubagentPanel";
-import { AccessibilityInfo, ActionSheetIOS, Platform } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Platform } from "react-native";
 import type {
 	NativeStackHeaderItemMenu,
 	NativeStackHeaderItemMenuAction,
 	NativeStackNavigationOptions,
 } from "@react-navigation/native-stack";
-import { paletteFor } from "./design/tokens";
 import { answerFleetRead, type FleetShape, fleetSession } from "./session/fleetTestUtils";
 import { FloatingStack } from "./session/FloatingStack";
 import { Toast } from "./Toast";
-import { forgetStopRequestsForHub, stopRequests } from "./subagents/nativeStopRequests";
-import { forgetSubagentTrees } from "./subagents/subagentTree";
-import { SubagentScreen } from "./subagents/SubagentScreen";
-import { flattenSubagents } from "./subagents/subagentModel";
 import { DisplayPreferences } from "./display/displayPreferences";
 import { DisplayProvider } from "./display/displayContext";
+import {
+	actionErrors,
+	advanceFakeTimers,
+	ghostStates,
+	press,
+	saysSteerFailed,
+	toasts,
+} from "./conversationScreenTestUtils";
 
 const memoryStorage = () => {
 	const values = new Map<string, string>();
@@ -102,6 +81,7 @@ const navigationState = vi.hoisted(() => ({
 const alerts = vi.hoisted(() => ({ recent: [] as string[], nextUsed: vi.fn() }));
 
 vi.mock("@react-navigation/elements", () => ({ useHeaderHeight: () => 64 }));
+
 vi.mock("@react-navigation/native", async () => {
 	const { useEffect } = await import("react");
 	return {
@@ -112,16 +92,20 @@ vi.mock("@react-navigation/native", async () => {
 		usePreventRemove: () => {},
 	};
 });
+
 vi.mock("./ConnectionProvider", () => ({
 	useConnection: () => harness.connection,
 }));
+
 vi.mock("./alerts/alertsContext", async (importOriginal) => ({
 	...(await importOriginal<typeof import("./alerts/alertsContext")>()),
 	useAlertedRecently: () => alerts.recent,
 	useNextUsed: () => alerts.nextUsed,
 }));
+
 // The hub's transcript display setting, when a test sets one.
 const displayPrefs = vi.hoisted(() => ({ hubId: null as string | null, config: null as unknown }));
+
 vi.mock("./NativePreferencesProvider", () => ({
 	useNativePreferences: () => ({
 		hubId: displayPrefs.hubId,
@@ -137,6 +121,22 @@ vi.mock("./NativePreferencesProvider", () => ({
 
 type ConversationScreenProps = ComponentProps<typeof ConversationScreen>;
 
+/** Every screen mounts under the one real sessions provider, as the app's
+ * navigator does; the registry is constructed by the provider itself. */
+function SessionScreen(props: ConversationScreenProps) {
+	return (
+		<NativeConversationSessionsProvider>
+			<ConversationScreen {...props} />
+		</NativeConversationSessionsProvider>
+	);
+}
+
+/** The provider's registry, for a test that drives two views of one session. */
+function RegistryProbe({ seen }: { seen: { current: NativeConversationSessions | null } }) {
+	seen.current = useNativeConversationSessions();
+	return null;
+}
+
 const navigation = {
 	isFocused: () => true,
 	getState: () => navigationState.state,
@@ -148,12 +148,6 @@ const navigation = {
 	setParams: vi.fn(),
 	setOptions: vi.fn(),
 } as unknown as ConversationScreenProps["navigation"];
-
-async function advanceFakeTimers(ms: number) {
-	await act(async () => {
-		await vi.advanceTimersByTimeAsync(ms);
-	});
-}
 
 const CAPABILITIES = {
 	send: true,
@@ -238,9 +232,11 @@ function queueState(texts: string[], revision = 0) {
  * mutation, recording each request in order. It sends a frame only when a
  * test calls notify(). */
 const otherThreads = new Map<string, Thread>();
+
 // The fleet the hub answers the screen's navigation reads with: nobody else
 // needs you unless a test says so.
 const fleet: FleetShape = { live: [], needsYou: [] };
+
 // A coordinator's subagent tree (evener/jobs/list) and its direct stop
 // (evener/delegate/stop), for the subagent screen's tests.
 const coordinatorHub: {
@@ -254,16 +250,20 @@ const coordinatorHub: {
 	stop: () => ({ outcome: "stopping" }),
 	readFails: null,
 };
+
 // Whether thread/read answers with a history identity, as a v6 hub does:
 // only then does the store take live pushes (overlay streams among them).
 const readHistory = { live: false };
+
 const READ_HISTORY_IDENTITY = {
 	bootGeneration: "1",
 	epoch: 1,
 	snapshot: { incarnation: "inc-1", length: 0 },
 } as const;
+
 // Whether model/list refuses, as a hub mid-restart does.
 const catalogHub = { fails: false };
+
 // Keep diagnostics visible and check the entire case, including afterEach teardown.
 beforeEach(({ onTestFinished }) => {
 	const errors = vi.spyOn(console, "error");
@@ -277,8 +277,14 @@ beforeEach(({ onTestFinished }) => {
 		}
 	});
 });
-afterEach(() => {
+
+afterEach(async () => {
 	unmountMountedTrees();
+	// The runtime is memoized for the whole file and arms a 2000ms MutationOutbox
+	// discovery interval. Left running, a later case's mount re-registers a
+	// target and the interval re-sends an earlier case's lost row through it
+	// (#4901). Stop it with the trees that started it.
+	await getNativeMutationRuntime().stop();
 	displayPrefs.hubId = null;
 	displayPrefs.config = null;
 	catalogHub.fails = false;
@@ -295,6 +301,10 @@ afterEach(() => {
 	fleet.sources = undefined;
 	fleet.revision = undefined;
 	vi.unstubAllGlobals();
+});
+
+afterAll(() => {
+	for (const database of nativePlatform.sqliteDatabases) database.close();
 });
 
 function hubClient(
@@ -447,7 +457,7 @@ async function mount(
 	// read's clock, before handing the live renderer back to the case.
 	let tree!: ReactTestRenderer;
 	await act(async () => {
-		const screen = <ConversationScreen route={route} navigation={navigation} />;
+		const screen = <SessionScreen route={route} navigation={navigation} />;
 		tree = render(display ? <DisplayProvider value={display}>{screen}</DisplayProvider> : screen);
 	});
 	if (barLaysOut) {
@@ -458,6 +468,37 @@ async function mount(
 	}
 	if (settled) await settle();
 	return { tree, hub, route };
+}
+
+/** One view under the real sessions provider, with the shared entry in hand so
+ * a test can inspect the store the screen itself reads. */
+async function mountTracked(served: Thread) {
+	const hub = hubClient(served);
+	harness.connection = {
+		...screenConnection(hub.client, "ready"),
+		profiles: [{ id: "hub-1", name: "Work hub", origin: "https://hub.test" }],
+		error: null,
+		disconnect: () => {},
+	};
+	const ref = String((served as unknown as { evener: { ref: string } }).evener.ref);
+	const route = {
+		key: `conversation-${ref}`,
+		name: "Conversation",
+		params: { hubId: "hub-1", ref, title: "Session" },
+	} as unknown as ConversationScreenProps["route"];
+	navigationState.state = { index: 0, routes: [route] };
+	const seen = { current: null as NativeConversationSessions | null };
+	let tree!: ReactTestRenderer;
+	await act(async () => {
+		tree = render(
+			<NativeConversationSessionsProvider>
+				<RegistryProbe seen={seen} />
+				<ConversationScreen route={route} navigation={navigation} />
+			</NativeConversationSessionsProvider>,
+		);
+	});
+	await settle();
+	return { tree, hub, route, seen, entry: seen.current!.entryFor("hub-1", ref)! };
 }
 
 function field(tree: ReactTestRenderer) {
@@ -476,14 +517,6 @@ async function type(tree: ReactTestRenderer, text: string) {
 	const input = field(tree);
 	if (!input) throw new Error("no Message field");
 	act(() => input.props.onChangeText(text));
-	await settle();
-}
-
-async function press(tree: ReactTestRenderer, label: string) {
-	const target = pressable(tree, label);
-	if (!target) throw new Error(`no pressable labelled ${label}`);
-	expect(target.props.accessibilityState).toMatchObject({ disabled: false });
-	act(() => target.props.onPress());
 	await settle();
 }
 
@@ -598,9 +631,11 @@ function expectOnlyTheDockSlotShrinks(tree: ReactTestRenderer, testID: string) {
 // A question taller than any phone's bottom area: a long question, a long
 // why, and five options with long details.
 const LONG_QUESTION = "Fourteen tool descriptions mention options their tools don't accept. ".repeat(4).trim();
+
 const LONG_WHY = "Models try them and fail, which costs a retry each time and sometimes derails a whole turn. "
 	.repeat(6)
 	.trim();
+
 const LONG_QUESTION_TURN = {
 	...QUESTION_TURN,
 	items: [
@@ -864,7 +899,7 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 		};
 		act(() =>
 			tree.update(
-				<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />,
+				<SessionScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />,
 			),
 		);
 	}
@@ -1154,6 +1189,139 @@ it("holds Stop while a queued message is handed to the outbox", async () => {
 	});
 });
 
+/** Holds the production runtime's admission of the first press, so the store's
+ * click-to-commit marker stays set while the test inspects the screen's guards.
+ * The runtime underneath is the real one: release runs its real submit. */
+function holdFirstAdmission() {
+	const runtime = getNativeMutationRuntime();
+	const submit = runtime.submit;
+	let release!: () => void;
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	let first = true;
+	runtime.submit = (request) => {
+		if (!first) return submit.call(runtime, request);
+		first = false;
+		return gate.then(() => submit.call(runtime, request));
+	};
+	return {
+		release: () => release(),
+		restore: () => {
+			runtime.submit = submit;
+		},
+	};
+}
+
+// Stage B: the store's click-to-commit marker is one any-mutation fact. Stop
+// must refuse while a Send, a Queue, or Stop itself is still being admitted,
+// and it must be allowed again as soon as that attempt settles.
+describe("Stop refuses while any mutation is in its click-to-commit window", () => {
+	it("holds Stop while a send is admitted, then lets it stop", async () => {
+		const ref = "ref-stop-send-admission";
+		const served = thread(ref, "idle");
+		const { tree, hub } = await mount(served);
+		const held = holdFirstAdmission();
+		try {
+			await type(tree, "first");
+			act(() => pressable(tree, "Send")!.props.onPress());
+			await settle();
+			// A status frame reports the turn running before the send's admission
+			// settles: Stop takes the slot, disabled by the any-mutation marker.
+			act(() =>
+				hub.notify({
+					method: "thread/status/changed",
+					params: { threadId: served.id, ref, status: { type: "active" } },
+				} as AnyNotification),
+			);
+			await settle();
+			const stop = pressable(tree, "Stop");
+			expect(stop).toBeDefined();
+			expect(stop?.props.accessibilityState).toEqual({ disabled: true });
+			// A press that reaches the guard sends no interrupt.
+			act(() => stop!.props.onPress());
+			await settle();
+			expect(hub.mutations()).toEqual([]);
+
+			held.release();
+			await until(() => expect(pressable(tree, "Stop")?.props.accessibilityState).toEqual({ disabled: false }));
+			await press(tree, "Stop");
+			await until(() => expect(hub.mutations()).toEqual(["turn/start", "turn/interrupt"]));
+		} finally {
+			held.release();
+			await settle();
+			held.restore();
+		}
+	});
+
+	it("holds Stop while a queued message is admitted, then lets it stop", async () => {
+		const ref = "ref-stop-queue-admission";
+		const { tree, hub } = await mount(thread(ref, "active"));
+		const held = holdFirstAdmission();
+		try {
+			await type(tree, "later");
+			act(() => pressable(tree, "Queue message")!.props.onPress());
+			await settle();
+			const stop = pressable(tree, "Stop");
+			expect(stop).toBeDefined();
+			expect(stop?.props.accessibilityState).toEqual({ disabled: true });
+			act(() => stop!.props.onPress());
+			await settle();
+			expect(hub.mutations()).toEqual([]);
+
+			held.release();
+			await until(() => expect(pressable(tree, "Stop")?.props.accessibilityState).toEqual({ disabled: false }));
+			await press(tree, "Stop");
+			await until(() => expect(hub.mutations()).toEqual(["turn/queue", "turn/interrupt"]));
+		} finally {
+			held.release();
+			await settle();
+			held.restore();
+		}
+	});
+
+	it("holds a repeated Stop while the first interrupt is admitted, then lets it stop again", async () => {
+		const ref = "ref-stop-interrupt-admission";
+		const { tree, hub } = await mount(thread(ref, "active"));
+		const held = holdFirstAdmission();
+		try {
+			act(() => pressable(tree, "Stop")!.props.onPress());
+			await settle();
+			const stop = pressable(tree, "Stop");
+			expect(stop).toBeDefined();
+			expect(stop?.props.accessibilityState).toEqual({ disabled: true });
+			act(() => stop!.props.onPress());
+			await settle();
+			expect(hub.mutations()).toEqual([]);
+
+			held.release();
+			await until(() => expect(pressable(tree, "Stop")?.props.accessibilityState).toEqual({ disabled: false }));
+			await press(tree, "Stop");
+			await until(() => expect(hub.mutations()).toEqual(["turn/interrupt", "turn/interrupt"]));
+		} finally {
+			held.release();
+			await settle();
+			held.restore();
+		}
+	});
+});
+
+it("refuses answers while a mutation owns the click-to-commit marker", async () => {
+	const ref = "ref-question-marker";
+	const { tree, hub, entry } = await mountTracked(thread(ref, "awaiting", true));
+	await press(tree, "Drop them");
+	const sendAnswer = pressable(tree, "Send answer");
+	expect(sendAnswer?.props.accessibilityState).toMatchObject({ disabled: false });
+	// A send still in its click-to-commit window, with no legacy pending record:
+	// the marker alone is what the answer path must read.
+	act(() => entry.store.setState({ pendingSubmission: { kind: "send" } }));
+	await settle();
+	expect(pressable(tree, "Send answer")?.props.accessibilityState).toMatchObject({ disabled: true });
+	act(() => sendAnswer!.props.onPress());
+	await settle();
+	expect(hub.mutations()).toEqual([]);
+});
+
 // Two finished turns, each your message and the agent's reply.
 /** A settled turn: your ask, then the agent's reply. */
 function askReplyTurn(id: string, ask = `ask ${id}`, reply = `reply ${id}`) {
@@ -1333,6 +1501,14 @@ describe("opening a session", () => {
 			transcriptList(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }),
 		);
 		act(() => transcriptList(tree).props.onContentSizeChange(390, contentHeight));
+	};
+	/** The bottom bar lays out once per mount, so a view that remounts for a new
+	 * session key needs it again before its opening cap can start. */
+	const layOutBottomBar = (tree: ReactTestRenderer) => {
+		const bar = tree.root.findAll(
+			(node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar",
+		)[0];
+		if (bar) act(() => bar.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 0 } } }));
 	};
 	const savePosition = (ref: string, itemKey = "a-turn_2", turnsSeen = "turn_2") =>
 		nativePlatform.kv.set(
@@ -1531,7 +1707,11 @@ describe("opening a session", () => {
 			expect(opacity(tree)).toBe(0);
 			const moved = { ...route, params: { ...route.params, ref: next } };
 			navigationState.state = { index: 0, routes: [moved] };
-			act(() => tree.update(<ConversationScreen route={moved} navigation={navigation} />));
+			act(() => tree.update(<SessionScreen route={moved} navigation={navigation} />));
+			// A new session key commits a fresh attachment and view body.
+			await advanceFakeTimers(0);
+			layOutBottomBar(tree);
+			layOutViewport(tree);
 			await advanceFakeTimers(0);
 			// The first session's cap has 400ms left; the second's starts afresh.
 			await advanceFakeTimers(999);
@@ -1564,7 +1744,10 @@ describe("opening a session", () => {
 			expect(opacity(tree)).toBe(1);
 			const moved = { ...route, params: { ...route.params, ref: next } };
 			navigationState.state = { index: 0, routes: [moved] };
-			act(() => tree.update(<ConversationScreen route={moved} navigation={navigation} />));
+			act(() => tree.update(<SessionScreen route={moved} navigation={navigation} />));
+			await advanceFakeTimers(0);
+			layOutBottomBar(tree);
+			layOutViewport(tree);
 			await advanceFakeTimers(0);
 			// The second session's saved row is loaded but unmeasured too: it
 			// gets a fresh first cap, hidden through it.
@@ -1789,26 +1972,6 @@ it("has no Latest button, no pull to refresh, and no Load older button", async (
 	expect(list.props.refreshing).toBeUndefined();
 	expect(renderedText(tree)).not.toContain("Load older messages");
 });
-
-/** What the session's toasts say happened, by kind. */
-function toasts(tree: ReactTestRenderer): string[] {
-	return markers(tree, "toast");
-}
-
-/** Why the composer's last action failed, by reason. */
-function actionErrors(tree: ReactTestRenderer): string[] {
-	return markers(tree, "action-error");
-}
-
-/** Every ghost on the screen, by state. */
-function ghostStates(tree: ReactTestRenderer): string[] {
-	return markers(tree, "ghost");
-}
-
-/** Whether the screen says a steer failed: its toast, or a refused ghost. */
-function saysSteerFailed(tree: ReactTestRenderer): boolean {
-	return toasts(tree).some((kind) => kind.startsWith("steer:")) || ghostStates(tree).includes("refused");
-}
 
 function transcriptList(tree: ReactTestRenderer) {
 	return tree.root.findAll(
@@ -2154,6 +2317,39 @@ describe("following the live end (spec 8.2)", () => {
 		act(() => list(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }));
 		expect(flatListCalls.some((call) => call.method === "scrollToEnd")).toBe(false);
 	});
+
+	it("keeps the newest message clear of all three floating controls, and never shrinks the room back (#2988)", async () => {
+		// Stop can put the Stopped toast, Next and "↓ 1 new" on screen at once.
+		// Three 44pt rows and their 8pt gaps stand 148pt tall over the 10pt
+		// lift, while the end kept only 60pt.
+		const next = fleetSession("local:fail", {
+			title: "Fix retry loop",
+			state: "errored",
+			updated_at: new Date().toISOString(),
+		});
+		fleet.needsYou = [next];
+		const served = working("ref-follow-stack");
+		const { tree, hub } = await mount(served);
+		await drag(tree, 100);
+		stream(hub, served, "s-stack");
+		expect(pill(tree)).toBeDefined();
+		expect(pressable(tree, "Next, Fix retry loop")).toBeDefined();
+		await press(tree, "Stop");
+		expect(toasts(tree)).toEqual(["stop:stopped"]);
+		const bottom = () => list(tree).props.contentContainerStyle.paddingBottom;
+		expect(bottom()).toBe(60);
+		const stack = tree.root.findByType(FloatingStack);
+		const root = stack.findAll((node) => String(node.type) === "View")[0];
+		act(() => root?.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 148 } } }));
+		expect(bottom()).toBe(158);
+		// The toast's four seconds pass, leaving a shorter two-control stack:
+		// the room stays where it was, so the list never moves back under a
+		// reader.
+		act(() => tree.root.findByType(Toast).props.dismiss());
+		expect(tree.root.findAllByType(Toast)).toHaveLength(0);
+		act(() => root?.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 98 } } }));
+		expect(bottom()).toBe(158);
+	});
 });
 
 // A ghost can show before the first read lands (ghosts() lists this phone's
@@ -2169,1956 +2365,6 @@ it("keeps the loading blocks above a ghost until the conversation first loads", 
 	).toBeGreaterThan(0);
 });
 
-it("shows nothing for a loaded conversation with no rows: the composer invites", async () => {
-	const { tree } = await mount(thread("ref-empty", "idle"));
-	expect(tree.root.findAll((node) => node.props.accessibilityLabel === "Loading conversation")).toEqual([]);
-	for (const words of ["No messages", "Loading", "Pull down"]) expect(renderedText(tree)).not.toContain(words);
-});
-
-// Rows' open state lives in one app-wide store, scoped by session. Leaving a
-// session drops its scope, so the store stays bounded.
-it("forgets a session's open rows when you leave it", async () => {
-	const { tree } = await mount(twoTurns("ref-disclosure-scope"));
-	const run = { kind: "run" as const, id: "run:x", turnId: "turn_1", steps: [] };
-	act(() => setDisclosureOpenAll(rowDisclosureIds("hub-1", "ref-disclosure-scope", run), true));
-	const inScope = () =>
-		[...nativeDisclosureStore.getState().open.keys()].filter((id) =>
-			id.startsWith(`${sessionDisclosureScope("hub-1", "ref-disclosure-scope")}\0`),
-		);
-	expect(inScope()).toHaveLength(1);
-	act(() => tree.unmount());
-	expect(inScope()).toEqual([]);
-});
-
-// Where the device has Liquid Glass (iOS 26 and later), the nav bar is the
-// system's glass over the transcript (spec 16.3), and the header's glass runs
-// on under the chips and note: the transcript runs under both, and its top
-// starts below them. Elsewhere, and while Reduce Transparency is on, the bar
-// is opaque and the screen starts below it.
-describe("the nav bar's glass (spec 16.3)", () => {
-	// The bar's options: transparent, and clear, since react-native-screens
-	// draws a transparent bar's background only when its color is itself
-	// clear; and no system edge effect where the header's own glass is drawn.
-	const lastBar = () => {
-		const options = (vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][])
-			.map(([options]) => options)
-			.findLast((options) => "headerTransparent" in options);
-		if (options?.headerTransparent === undefined) return undefined;
-		const background = (options.headerStyle as { backgroundColor?: string } | undefined)?.backgroundColor;
-		expect(background === "transparent").toBe(options.headerTransparent);
-		return { transparent: options.headerTransparent, topEdge: options.scrollEdgeEffects?.top };
-	};
-	const header = (tree: ReactTestRenderer) => tree.root.findByType(SessionHeader);
-	const panel = (tree: ReactTestRenderer) => header(tree).findByType(GlassHeaderPanel);
-	const layout = (tree: ReactTestRenderer) => ({
-		headerTop: Object.assign({}, ...[panel(tree).props.style].flat(Number.POSITIVE_INFINITY)).top,
-		glassTop: header(tree).props.glassTop,
-		listTop: transcriptList(tree).props.contentContainerStyle.paddingTop,
-		keyboardOffset: tree.root.findAll((node) => String(node.type) === "KeyboardControllerAvoidingView")[0]?.props
-			.keyboardVerticalOffset,
-	});
-	const measureHeader = (tree: ReactTestRenderer, height: number) =>
-		act(() => panel(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height } } }));
-
-	it("runs the transcript under one glass spanning the bar and the chips, its top below them", async () => {
-		systemGlass.available = true;
-		const { tree } = await mount(twoTurns("ref-glass"));
-		await act(async () => {});
-		expect(lastBar()).toEqual({ transparent: true, topEdge: "hidden" });
-		// Before the header has measured, the list keeps the bar's room.
-		expect(layout(tree)).toEqual({ headerTop: 0, glassTop: 64, listTop: 16 + 64, keyboardOffset: 0 });
-		// The header's height covers the bar's room and the rows under it.
-		measureHeader(tree, 64 + 48);
-		expect(layout(tree).listTop).toBe(16 + 64 + 48);
-		// The find bar, in the chips' place, draws clear on the glass too.
-		chooseMenu("Find in session");
-		expect(tree.root.findByType(FindBar).props.onGlass).toBe(true);
-	});
-
-	// Turning the bar glass or opaque moves the list's frame by the bar's
-	// height and its top padding by the same, so the rows stay where they are
-	// with no scroll of the list's own; only the rows block growing or
-	// shrinking asks for one.
-	it("keeps the rows where they are when Reduce Transparency flips while scrolled", async () => {
-		systemGlass.available = true;
-		const { tree } = await mount(twoTurns("ref-glass-flip"));
-		await act(async () => {});
-		measureHeader(tree, 64 + 48);
-		scrollTo(tree, 500);
-		flatListCalls.length = 0;
-		act(() => systemGlass.setReduceTransparency(true));
-		measureHeader(tree, 48);
-		act(() => systemGlass.setReduceTransparency(false));
-		measureHeader(tree, 64 + 48);
-		expect(flatListCalls.filter((call) => call.method === "scrollToOffset")).toEqual([]);
-		// The rows block itself growing (the connection line arriving) still does.
-		measureHeader(tree, 64 + 48 + 24);
-		expect(flatListCalls.filter((call) => call.method === "scrollToOffset")).toEqual([
-			{ method: "scrollToOffset", args: { offset: 524, animated: false } },
-		]);
-	});
-
-	it("keeps an opaque bar the screen starts below where there is no glass", async () => {
-		const { tree } = await mount(twoTurns("ref-no-glass"));
-		await act(async () => {});
-		expect(lastBar()?.transparent).toBe(false);
-		expect(layout(tree)).toEqual({ headerTop: 0, glassTop: undefined, listTop: 16, keyboardOffset: 64 });
-	});
-
-	it("keeps an opaque bar while Reduce Transparency is on, following the setting", async () => {
-		systemGlass.available = true;
-		systemGlass.setReduceTransparency(true);
-		const { tree } = await mount(twoTurns("ref-reduce-transparency"));
-		await act(async () => {});
-		expect(lastBar()?.transparent).toBe(false);
-		expect(layout(tree)).toEqual({ headerTop: 0, glassTop: undefined, listTop: 16, keyboardOffset: 64 });
-		act(() => systemGlass.setReduceTransparency(false));
-		expect(lastBar()).toEqual({ transparent: true, topEdge: "hidden" });
-		expect(layout(tree)).toEqual({ headerTop: 0, glassTop: 64, listTop: 16 + 64, keyboardOffset: 0 });
-	});
-});
-
-it("moves the Session with the keyboard through the keyboard controller", async () => {
-	const { tree } = await mount(twoTurns("ref-keyboard-controller"));
-	const avoiding = tree.root.findAll((node) => String(node.type) === "KeyboardControllerAvoidingView");
-	expect(avoiding).toHaveLength(1);
-	expect(avoiding[0]?.props).toMatchObject({ behavior: "padding", keyboardVerticalOffset: 64 });
-});
-
-// A short transcript rests just above the composer (spec 8.5), not at the top
-// with the page's empty middle between it and the bar.
-it("rests a short transcript's end just above the composer", async () => {
-	const { tree } = await mount(twoTurns("ref-short-rests"), { barLaysOut: false });
-	const opacity = () => transcriptList(tree).props.style?.opacity;
-	// It shows once the viewport and the bar have both laid out.
-	expect(opacity()).toBe(0);
-	act(() => transcriptList(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }));
-	await settle();
-	expect(opacity()).toBe(0);
-	const bar = tree.root.find((node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar");
-	act(() => bar.props.onLayout({ nativeEvent: { layout: { x: 0, y: 450, width: 390, height: 150 } } }));
-	await settle();
-	// And once its last row has measured, so it lands at its end once.
-	expect(opacity()).toBe(0);
-	layOutRow(tree, 3, 300);
-	await settle();
-	expect(opacity()).toBe(1);
-	expect(transcriptList(tree).props.contentContainerStyle).toMatchObject({
-		minHeight: 450,
-		justifyContent: "flex-end",
-	});
-});
-
-it("loads older history as you drag near the top", async () => {
-	const { tree, hub } = await mount(twoTurns("ref-older"), { olderCursor: "cursor-1" });
-	const drag = (y: number) => {
-		const at = {
-			nativeEvent: { contentOffset: { y }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
-		};
-		act(() => transcriptList(tree).props.onScrollBeginDrag(at));
-		scrollTo(tree, y);
-		act(() => transcriptList(tree).props.onScrollEndDrag(at));
-	};
-	drag(2_000);
-	await settle();
-	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toEqual([]);
-	drag(100);
-	await settle();
-	expect(
-		hub.requests.filter((request) => request.method === "thread/turns/list").map((request) => request.params.cursor),
-	).toEqual(["cursor-1"]);
-});
-
-// A long session watched from its start: its first read held it all, so
-// there is no cursor, and the 500-row cap trimmed its top while you followed
-// the live end. Scrolling up asks for the trimmed rows by the oldest one kept.
-it("pages the rows the cap trimmed back as you drag near the top", async () => {
-	const served = thread("ref-trimmed", "idle");
-	const items = Array.from({ length: 600 }, (_, i) => ({
-		id: `u-${i}`,
-		turnId: "turn_1",
-		type: "userMessage",
-		status: "completed",
-		text: `message ${i}`,
-		transcriptKey: `turn_1:${i}:0`,
-		position: { entry: i, item: 0 },
-	}));
-	(served as unknown as { turns: unknown[] }).turns = [
-		{ id: "turn_1", status: "completed", itemsView: "default", items },
-	];
-	// The hub's read says it pages this thread from a before position.
-	const evener = (served as unknown as { evener: { capabilities: Record<string, unknown> } }).evener;
-	evener.capabilities = { ...evener.capabilities, pageBefore: true };
-	const { tree, hub } = await mount(served);
-	const at = {
-		nativeEvent: { contentOffset: { y: 100 }, contentSize: { height: 40_000 }, layoutMeasurement: { height: 600 } },
-	};
-	act(() => transcriptList(tree).props.onScrollBeginDrag(at));
-	scrollTo(tree, 100);
-	act(() => transcriptList(tree).props.onScrollEndDrag(at));
-	await settle();
-	const pages = hub.requests.filter((request) => request.method === "thread/turns/list").map((r) => r.params);
-	expect(pages).toHaveLength(1);
-	expect(pages[0]).toMatchObject({ ref: "ref-trimmed", before: { entry: 100, item: 0 } });
-	expect(pages[0]).not.toHaveProperty("cursor");
-});
-
-it("doesn't page older history at the live end of a short first page, or until you scroll", async () => {
-	// Opening at the live end of a page shorter than the screen puts the list
-	// near its top; paging there chained every older page in on open, each
-	// prepend landing the list near the top again.
-	const { tree, hub } = await mount(twoTurns("ref-older-live"), { olderCursor: "cursor-1" });
-	scrollTo(tree, 100);
-	await settle();
-	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toEqual([]);
-});
-
-it("pages older history on a short first page you drag, whose end is its top", async () => {
-	const { tree, hub } = await mount(twoTurns("ref-older-short"), { olderCursor: "cursor-1" });
-	const short = {
-		nativeEvent: { contentOffset: { y: 0 }, contentSize: { height: 300 }, layoutMeasurement: { height: 600 } },
-	};
-	act(() => transcriptList(tree).props.onScrollBeginDrag(short));
-	act(() => transcriptList(tree).props.onScrollEndDrag(short));
-	await settle();
-	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toHaveLength(1);
-});
-
-it("pages older history on a flick near the top that reports no scroll mid-drag", async () => {
-	const { tree, hub } = await mount(twoTurns("ref-older-flick"), { olderCursor: "cursor-1" });
-	const at = (y: number) => ({
-		nativeEvent: { contentOffset: { y }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
-	});
-	act(() => transcriptList(tree).props.onScrollBeginDrag(at(900)));
-	act(() => transcriptList(tree).props.onScrollEndDrag(at(700)));
-	await settle();
-	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toHaveLength(1);
-});
-
-it("pages older history when the list moves near the top with no drag, as a VoiceOver scroll moves it", async () => {
-	const { tree, hub } = await mount(twoTurns("ref-older-assistive"), { olderCursor: "cursor-1" });
-	// Away from the live end with no finger: the app scrolls only to follow
-	// the end or to restore (which suppresses capture), so this is the reader.
-	act(() => transcriptList(tree).props.onScrollBeginDrag());
-	act(() =>
-		transcriptList(tree).props.onScrollEndDrag({
-			nativeEvent: { contentOffset: { y: 2_000 }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
-		}),
-	);
-	await settle();
-	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toEqual([]);
-	scrollTo(tree, 1_400);
-	scrollTo(tree, 100);
-	await settle();
-	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toHaveLength(1);
-});
-
-it("doesn't page older history for a reading position restored near the top before you scroll", async () => {
-	nativePlatform.kv.set(
-		"evener.reader-positions",
-		JSON.stringify({
-			"hub-1\u0000ref-older-restored": {
-				hubId: "hub-1",
-				sessionRef: "ref-older-restored",
-				itemKey: "u-turn_1",
-				withinItemOffset: 0,
-				touchedAt: 1,
-				turnsSeen: "turn_2",
-			},
-		}),
-	);
-	const { tree, hub } = await mount(twoTurns("ref-older-restored"), { olderCursor: "cursor-1" });
-	scrollTo(tree, 40);
-	await settle();
-	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toEqual([]);
-});
-
-it("keeps the transcript's first row when an older page lands above it", async () => {
-	// Timed turns, the older one ending five minutes before the next starts,
-	// so a whole history marks only the first.
-	const minute = 60_000;
-	const start = Date.parse("2026-09-28T12:00:00Z");
-	const timed = (id: string, from: number) => ({ ...askReplyTurn(id), startedAt: from, completedAt: from + minute });
-	const served = thread("ref-older-first-key", "idle");
-	(served as unknown as { turns: unknown[] }).turns = [
-		timed("turn_1", start + 6 * minute),
-		timed("turn_2", start + 8 * minute),
-	];
-	const { tree } = await mount(served, { olderCursor: "cursor-1", olderTurns: [timed("turn_0", start)] });
-	const ids = () => (transcriptList(tree).props.data as { id: string }[]).map((row) => row.id);
-	const first = ids()[0];
-	// No time marker leads while older history is still to load.
-	expect(first).toBe("u-turn_1");
-	const at = {
-		nativeEvent: { contentOffset: { y: 100 }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
-	};
-	act(() => transcriptList(tree).props.onScrollBeginDrag(at));
-	act(() => transcriptList(tree).props.onScrollEndDrag(at));
-	await settle();
-	expect(ids()).toContain("u-turn_0");
-	expect(ids()).toContain(first);
-});
-
-it("doesn't page older history while the hub is away", async () => {
-	const { tree, hub } = await mount(twoTurns("ref-older-away"), { olderCursor: "cursor-1" });
-	harness.connection = { ...harness.connection, state: "connecting" };
-	const route = {
-		key: "conversation-ref-older-away",
-		name: "Conversation",
-		params: { hubId: "hub-1", ref: "ref-older-away", title: "Session" },
-	};
-	act(() =>
-		tree.update(
-			<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />,
-		),
-	);
-	await settle();
-	scrollTo(tree, 100);
-	await settle();
-	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toEqual([]);
-});
-
-it.each(["idle", "active"] as const)(
-	"retries a failed turn with continuation while %s, leaving the draft alone",
-	async (status) => {
-		const ref = `ref-retry-turn-${status}`;
-		const served = thread(ref, status);
-		(served as unknown as { turns: unknown[] }).turns = [
-			{
-				id: "turn_1",
-				status: "failed",
-				itemsView: "default",
-				error: { message: "go test exited 1" },
-				items: [
-					{ id: "u-1", turnId: "turn_1", type: "userMessage", status: "completed", text: "my original question" },
-				],
-			},
-		];
-		const { tree, hub } = await mount(served);
-		await type(tree, "keep this");
-		const destination = { hubId: "hub-1", sessionRef: ref };
-		const document = drafts.open(destination);
-		act(() =>
-			document.addImage({ id: "draft-image", marker: 1, mediaType: "image/png", name: "draft.png", data: "AQID" }),
-		);
-		const before = document.getSnapshot().record;
-		const imagesBefore = nativeDrafts().imageInputs(destination, before.images ?? []);
-		playedHaptics.length = 0;
-		await press(tree, "Retry");
-		const method = status === "idle" ? "turn/start" : "turn/queue";
-		expect(hub.mutations()).toEqual([method]);
-		// Spec 16.6: a light impact on send, a retry's included.
-		expect(playedHaptics).toEqual(["impact:light"]);
-		const start = hub.requests.find((request) => request.method === method);
-		expect(start?.params.input).toMatchInlineSnapshot(`
-		[
-		  {
-		    "text": "continue",
-		    "type": "text",
-		  },
-		]
-	`);
-		expect(field(tree)?.props.value).toBe(before.draft);
-		expect(document.getSnapshot().record).toEqual(before);
-		expect(nativeDrafts().imageInputs(destination, document.getSnapshot().record.images ?? [])).toEqual(imagesBefore);
-	},
-);
-
-it("Retry continues without re-sending the failed turn's images", async () => {
-	const served = thread("ref-retry-images", "idle");
-	(served as unknown as { turns: unknown[] }).turns = [
-		{
-			id: "turn_1",
-			status: "failed",
-			itemsView: "default",
-			error: { message: "go test exited 1" },
-			items: [
-				{
-					id: "u-1",
-					turnId: "turn_1",
-					type: "userMessage",
-					status: "completed",
-					text: "(attached image 1: plot.png) my original question",
-					images: [{ mediaType: "image/png", data: "image-bytes", name: "plot.png" }],
-				},
-			],
-		},
-	];
-	const { tree, hub } = await mount(served);
-	await press(tree, "Retry");
-	expect(hub.mutations()).toEqual(["turn/start"]);
-	const start = hub.requests.find((request) => request.method === "turn/start");
-	expect(start?.params.input).toMatchInlineSnapshot(`
-		[
-		  {
-		    "text": "continue",
-		    "type": "text",
-		  },
-		]
-	`);
-});
-
-it("Retry continues an image-only turn even when its bytes are unavailable", async () => {
-	const served = thread("ref-retry-dropped", "idle");
-	(served as unknown as { turns: unknown[] }).turns = [
-		{
-			id: "turn_1",
-			status: "failed",
-			itemsView: "default",
-			error: { message: "go test exited 1" },
-			items: [
-				{
-					id: "u-1",
-					turnId: "turn_1",
-					type: "userMessage",
-					status: "completed",
-					text: "(attached image 1: plot.png)",
-					images: [{ src: "sha:abc123", name: "plot.png" }],
-				},
-			],
-		},
-	];
-	const { tree, hub } = await mount(served);
-	await press(tree, "Retry");
-	expect(hub.mutations()).toEqual(["turn/start"]);
-	const start = hub.requests.find((request) => request.method === "turn/start");
-	expect(start?.params.input).toMatchInlineSnapshot(`
-		[
-		  {
-		    "text": "continue",
-		    "type": "text",
-		  },
-		]
-	`);
-	expect(toasts(tree)).toEqual([]);
-});
-
-it("Retry continues when the original input is outside loaded history", async () => {
-	const served = thread("ref-retry-none", "idle");
-	(served as unknown as { turns: unknown[] }).turns = [
-		{
-			id: "turn_1",
-			status: "failed",
-			itemsView: "default",
-			error: { message: "go test exited 1" },
-			// A reloaded failure entry: no user input anywhere to re-issue.
-			items: [],
-		},
-	];
-	const { tree, hub } = await mount(served);
-	await press(tree, "Retry");
-	expect(hub.mutations()).toEqual(["turn/start"]);
-	expect(hub.requests.find((request) => request.method === "turn/start")?.params.input).toMatchInlineSnapshot(`
-		[
-		  {
-		    "text": "continue",
-		    "type": "text",
-		  },
-		]
-	`);
-});
-
-// Retry shows only while a press would send, which a session control going
-// pending (a compact) changes without changing the rows: the row still
-// follows it.
-it.each(["", "  ", "unsent work"])("a refused Retry keeps native draft %j and remains recoverable", async (text) => {
-	const ref = `ref-retry-refusal-${text.length}`;
-	const { tree, hub } = await mount(failedTurn(ref, "provider failure"));
-	await type(tree, text);
-	const document = drafts.open({ hubId: "hub-1", sessionRef: ref });
-	const before = document.getSnapshot().record;
-	const request = hub.client.request;
-	let refuse = true;
-	vi.spyOn(hub.client, "request").mockImplementation(async (method, params) => {
-		if (method === "turn/start" && refuse) {
-			hub.requests.push({ method, params });
-			throw new WireError("refused", -32602, {
-				clientMutationId: params.clientMutationId,
-				mutationOutcome: "notAccepted",
-				retryDisposition: "none",
-			});
-		}
-		return request(method, params);
-	});
-	await press(tree, "Retry");
-	expect(ghostStates(tree)).toContain("refused");
-	expect(document.getSnapshot().record).toEqual(before);
-	expect(field(tree)?.props.value).toBe(text);
-	const runtime = getNativeMutationRuntime();
-	const target = nativeMutationTargetKey("hub-1", ref);
-	expect(await runtime.storage.listRecovery(target)).toHaveLength(1);
-	if (text === "") {
-		refuse = false;
-		await press(tree, "Edit");
-		await press(tree, "Send");
-		await press(tree, "Discard");
-		expect(await runtime.storage.listRecovery(target)).toHaveLength(0);
-		expect(hub.mutations()).toEqual(["turn/start", "turn/start"]);
-		expect(hub.requests.filter((entry) => entry.method === "turn/start")[1]?.params.input).toMatchInlineSnapshot(`
-			[
-			  {
-			    "text": "continue",
-			    "type": "text",
-			  },
-			]
-		`);
-	}
-});
-
-it("hides Retry while a session control is pending, and brings it back once it settles", async () => {
-	const served = thread("ref-retry-pending", "idle");
-	served.evener = { ...served.evener, capabilities: { ...served.evener.capabilities, compact: true } };
-	(served as unknown as { turns: unknown[] }).turns = [
-		{
-			id: "turn_1",
-			status: "failed",
-			itemsView: "default",
-			error: { message: "go test exited 1" },
-			items: [{ id: "u-1", turnId: "turn_1", type: "userMessage", status: "completed", text: "run the tests" }],
-		},
-	];
-	let settleCompact = () => {};
-	const compacting = new Promise<void>((resolve) => {
-		settleCompact = resolve;
-	});
-	const { tree } = await mount(served, { compacting });
-	expect(pressable(tree, "Retry")).toBeDefined();
-	await type(tree, "/compact");
-	await press(tree, "Compact transcript");
-	expect(pressable(tree, "Retry")).toBeUndefined();
-	await act(async () => settleCompact());
-	await settle();
-	expect(pressable(tree, "Retry")).toBeDefined();
-});
-
-it("opens a session switched to in place at its own newer reply, never the last session's rows", async () => {
-	const other = twoTurns("ref-switched-to");
-	// B's rows have their own ids, so an anchor worked out from A's rows can't
-	// land on them.
-	(other as unknown as { turns: { items: { id: string }[] }[] }).turns.forEach((turn) =>
-		turn.items.forEach((item) => {
-			item.id = `b-${item.id}`;
-		}),
-	);
-	otherThreads.set("ref-switched-to", other);
-	nativePlatform.kv.set(
-		"evener.reader-positions",
-		JSON.stringify({
-			"hub-1\u0000ref-switched-to": {
-				hubId: "hub-1",
-				sessionRef: "ref-switched-to",
-				itemKey: "b-u-turn_1",
-				withinItemOffset: 0,
-				touchedAt: 1,
-				turnsSeen: "turn_1",
-			},
-		}),
-	);
-	const { tree } = await mount(twoTurns("ref-switched-from"));
-	flatListCalls.length = 0;
-	const route = {
-		key: "conversation-ref-switched-from",
-		name: "Conversation",
-		params: { hubId: "hub-1", ref: "ref-switched-to", title: "Session" },
-	};
-	navigationState.state = { index: 0, routes: [route as unknown as { key: string; name: string }] };
-	act(() =>
-		tree.update(
-			<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />,
-		),
-	);
-	await settle();
-	expect(renderedText(tree)).toContain("ask turn_2");
-	const indexes = flatListCalls
-		.filter((call) => call.method === "scrollToIndex")
-		.map((call) => (call.args as { index: number }).index);
-	expect(indexes).toContain(3);
-});
-
-// A session whose last turn failed, as the hub reads it.
-function failedTurn(ref: string, message: string, resumeRequired = false): Thread {
-	const served = thread(ref, "idle");
-	(served as unknown as { turns: unknown[] }).turns = [
-		{
-			id: "turn_1",
-			status: "failed",
-			itemsView: "default",
-			error: { message },
-			items: [{ id: "u-1", turnId: "turn_1", type: "userMessage", status: "completed", text: "run the tests" }],
-		},
-	];
-	if (resumeRequired) (served as unknown as { evener: Record<string, unknown> }).evener.resumeRequired = true;
-	return served;
-}
-
-it("resumes a paused session from its error", async () => {
-	const { tree, hub } = await mount(failedTurn("ref-error-resume", "go test exited 1", true));
-	await press(tree, "Resume");
-	expect(
-		hub.requests.filter((request) => request.method === "resumeThread").map((request) => request.params.ref),
-	).toEqual(["ref-error-resume"]);
-});
-
-it("names the model on the composer's chip, which opens the model sheet with the session's controls", async () => {
-	vi.mocked(navigation.navigate).mockClear();
-	const served = thread("ref-model", "idle");
-	(served as unknown as { modelProvider: string }).modelProvider = "anthropic/claude-sonnet-5";
-	(served as unknown as { evener: Record<string, unknown> }).evener.capabilities = {
-		...CAPABILITIES,
-		changeModel: true,
-	};
-	const { tree, hub } = await mount(served);
-	// The screen loads the catalog once, so the chip can name the model.
-	expect(hub.requests.filter((request) => request.method === "model/list")).toHaveLength(1);
-	// The chip steps aside while the composer is collapsed, so reach for it first.
-	act(() => field(tree)?.props.onFocus());
-	const chip = pressable(tree, "Model: Claude Sonnet 5. Change model or effort");
-	if (!chip) throw new Error("no model chip");
-	act(() => chip.props.onPress());
-	expect(navigation.navigate).toHaveBeenCalledWith("ModelSheet", {
-		hubId: "hub-1",
-		ref: "ref-model",
-		setting: "model",
-	});
-	const host = modelHosts.get(sheetKey("hub-1", "ref-model"));
-	expect(host?.session.modelProvider).toBe("anthropic/claude-sonnet-5");
-	expect(host?.controls?.getSnapshot().catalog?.data).toHaveLength(1);
-});
-
-it("names the model as the session's Board row does while the catalog can't be read (S17)", async () => {
-	catalogHub.fails = true;
-	fleet.live = [fleetSession("ref-model", { title: "Model", state: "idle", model_name: "Claude Sonnet 5" })];
-	const served = thread("ref-model", "idle");
-	(served as unknown as { modelProvider: string }).modelProvider = "anthropic/claude-sonnet-5";
-	(served as unknown as { evener: Record<string, unknown> }).evener.capabilities = {
-		...CAPABILITIES,
-		changeModel: true,
-	};
-	const { tree } = await mount(served);
-	await act(async () => {});
-	// The chip steps aside while the composer is collapsed, so reach for it first.
-	act(() => field(tree)?.props.onFocus());
-	expect(pressable(tree, "Model: Claude Sonnet 5. Change model or effort")).toBeDefined();
-	expect(renderedText(tree)).not.toContain("claude-sonnet-5");
-});
-
-it("keeps the Session sheet and a half-typed name through a connection blip, and saves once the hub is back", async () => {
-	vi.mocked(navigation.goBack).mockClear();
-	const served = thread("ref-blip", "idle");
-	(served as unknown as { evener: Record<string, unknown> }).evener.capabilities = { ...CAPABILITIES, rename: true };
-	const { tree, hub } = await mount(served);
-	const params = { hubId: "hub-1", ref: "ref-blip" };
-	const sheet = render(
-		<SessionInfoSheet
-			route={
-				{ key: "session-info", name: "SessionInfoSheet", params } as unknown as ComponentProps<
-					typeof SessionInfoSheet
-				>["route"]
-			}
-			navigation={navigation as unknown as ComponentProps<typeof SessionInfoSheet>["navigation"]}
-		/>,
-	);
-	const title = sheet.root.findAll(
-		(node) => String(node.type) === "Pressable" && String(node.props.accessibilityLabel).endsWith(", rename"),
-	)[0];
-	if (!title) throw new Error("no rename");
-	act(() => title.props.onPress());
-	const nameField = () => sheet.root.find((node) => String(node.type) === "TextInput");
-	act(() => nameField().props.onChangeText("Settle race"));
-
-	const screenAt = (state: string) => {
-		harness.connection = { ...harness.connection, state };
-		const route = { key: "conversation-ref-blip", name: "Conversation", params: { ...params, title: "Session" } };
-		act(() =>
-			tree.update(
-				<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />,
-			),
-		);
-	};
-	screenAt("connecting");
-	await settle();
-	expect(navigation.goBack).not.toHaveBeenCalled();
-	expect(nameField().props.value).toBe("Settle race");
-	// Save waits for the hub.
-	await act(async () => nameField().props.onSubmitEditing());
-	expect(hub.requests.filter((request) => request.method === "evener/thread/name/set")).toEqual([]);
-	expect(nameField().props.value).toBe("Settle race");
-
-	screenAt("ready");
-	await settle();
-	await act(async () => nameField().props.onSubmitEditing());
-	await settle();
-	expect(
-		hub.requests.filter((request) => request.method === "evener/thread/name/set").map((request) => request.params),
-	).toEqual([{ ref: "ref-blip", name: "Settle race" }]);
-	act(() => sheet.unmount());
-});
-
-describe("a session that can't take a message yet (ruling 20)", () => {
-	it("asks for a restart in the composer's place, and restarts by stopping and resuming", async () => {
-		const served = thread("ref-restart", "idle");
-		(served as unknown as { status: unknown }).status = { type: "restartRequired" };
-		const { tree, hub } = await mount(served);
-		expect(markers(tree, "session-notice")).toEqual(["restartNeeded"]);
-		expect(field(tree)).toBeUndefined();
-		await press(tree, "Restart session");
-		expect(
-			hub.requests
-				.filter((request) => request.method === "forceStop" || request.method === "resumeThread")
-				.map((request) => [request.method, request.params.ref]),
-		).toEqual([
-			["forceStop", "ref-restart"],
-			["resumeThread", "ref-restart"],
-		]);
-	});
-
-	function restartNeeded(ref: string): Thread {
-		const served = thread(ref, "idle");
-		(served as unknown as { status: unknown }).status = { type: "restartRequired" };
-		return served;
-	}
-
-	function rerender(tree: ReactTestRenderer, ref: string, state: string) {
-		harness.connection = { ...harness.connection, state };
-		const route = {
-			key: `conversation-${ref}`,
-			name: "Conversation",
-			params: { hubId: "hub-1", ref, title: "Session" },
-		};
-		act(() =>
-			tree.update(
-				<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />,
-			),
-		);
-	}
-
-	it("still resumes after a restart whose controls were replaced while it stopped", async () => {
-		const { tree, hub } = await mount(restartNeeded("ref-restart-swap"));
-		let stopped!: () => void;
-		hub.client.forceStop = (ref: string) => {
-			hub.requests.push({ method: "forceStop", params: { ref } });
-			return new Promise<void>((resolve) => {
-				stopped = resolve;
-			});
-		};
-		await press(tree, "Restart session");
-		// A blip while the stop is on its way replaces the session's controls.
-		rerender(tree, "ref-restart-swap", "connecting");
-		await settle();
-		rerender(tree, "ref-restart-swap", "ready");
-		await settle();
-		stopped();
-		await settle();
-		expect(
-			hub.requests
-				.filter((request) => request.method === "forceStop" || request.method === "resumeThread")
-				.map((request) => request.method),
-		).toEqual(["forceStop", "resumeThread"]);
-		expect(pressable(tree, "Restart session")?.props.accessibilityState).toMatchObject({ busy: false });
-	});
-
-	it("says so in the notice when the session stopped but couldn't start again", async () => {
-		const { tree, hub } = await mount(restartNeeded("ref-restart-fails"));
-		hub.client.resumeThread = async (ref: string) => {
-			hub.requests.push({ method: "resumeThread", params: { ref } });
-			throw new Error("resume refused");
-		};
-		await press(tree, "Restart session");
-		expect(hasTestID(tree, "session-notice-error")).toBe(true);
-		expect(pressable(tree, "Restart session")?.props.disabled).toBe(false);
-	});
-
-	it("says so in the notice when the stop fails", async () => {
-		const { tree, hub } = await mount(restartNeeded("ref-stop-fails"));
-		hub.client.forceStop = async () => {
-			throw new Error("stop refused");
-		};
-		await press(tree, "Restart session");
-		expect(hub.requests.filter((request) => request.method === "resumeThread")).toEqual([]);
-		expect(hasTestID(tree, "session-notice-error")).toBe(true);
-	});
-
-	it("offers Resume in the composer's place for a paused session", async () => {
-		const served = thread("ref-paused", "idle");
-		(served as unknown as { evener: Record<string, unknown> }).evener.resumeRequired = true;
-		const { tree, hub } = await mount(served);
-		expect(markers(tree, "session-notice")).toEqual(["paused"]);
-		expect(field(tree)).toBeUndefined();
-		await press(tree, "Resume");
-		expect(
-			hub.requests.filter((request) => request.method === "resumeThread").map((request) => request.params.ref),
-		).toEqual(["ref-paused"]);
-	});
-});
-
-it("Retry continues an image-only failed turn without reattaching it", async () => {
-	const served = thread("ref-retry-image-only", "idle");
-	(served as unknown as { turns: unknown[] }).turns = [
-		{
-			id: "turn_1",
-			status: "failed",
-			itemsView: "default",
-			error: { message: "go test exited 1" },
-			items: [
-				{
-					id: "u-1",
-					turnId: "turn_1",
-					type: "userMessage",
-					status: "completed",
-					text: "(attached image 1: plot.png)",
-					images: [{ mediaType: "image/png", data: "image-bytes", name: "plot.png" }],
-				},
-			],
-		},
-	];
-	const { tree, hub } = await mount(served);
-	expect(pressable(tree, "Retry")).toBeDefined();
-	await press(tree, "Retry");
-	expect(hub.mutations()).toEqual(["turn/start"]);
-	const start = hub.requests.find((request) => request.method === "turn/start");
-	expect(start?.params.input).toMatchInlineSnapshot(`
-		[
-		  {
-		    "text": "continue",
-		    "type": "text",
-		  },
-		]
-	`);
-});
-
-it("opens sign-in from an error that says a sign-in failed", async () => {
-	vi.mocked(navigation.navigate).mockClear();
-	const { tree } = await mount(failedTurn("ref-error-sign-in", "401 Unauthorized"));
-	await press(tree, "Sign in");
-	// The error doesn't name the provider, so the Hub opens at Providers.
-	expect(navigation.navigate).toHaveBeenCalledWith("Hub", {
-		screen: "Providers",
-		params: { hubId: "hub-1" },
-		initial: false,
-	});
-});
-
-it("previews your note in the notes bar, and the sheet it opens saves through the screen", async () => {
-	vi.mocked(navigation.navigate).mockClear();
-	vi.mocked(navigation.goBack).mockClear();
-	const served = thread("ref-notes", "idle");
-	const evener = (served as unknown as { evener: Record<string, unknown> }).evener;
-	evener.capabilities = { ...CAPABILITIES, sharedNotes: true };
-	evener.humanNote = "keep the tests";
-	evener.sessionUrls = [
-		{ id: "u1", url: "https://example.com/pr/1", label: "The PR" },
-		{ id: "u2", url: "https://example.com/pr/2" },
-	];
-	(served as unknown as { cwd: string }).cwd = "/home/jesse/git/evener";
-	const { tree, hub } = await mount(served);
-	// The sheet opens a file link in the Reader with the session's folder and title.
-	expect(notesHosts.get(sheetKey("hub-1", "ref-notes"))).toMatchObject({
-		cwd: "/home/jesse/git/evener",
-		title: "Session",
-	});
-	const bar = pressable(tree, "Your note: keep the tests, 2 links");
-	if (!bar) throw new Error("no notes bar");
-	act(() => bar.props.onPress());
-	const params = { hubId: "hub-1", ref: "ref-notes", focusEditor: true };
-	expect(navigation.navigate).toHaveBeenCalledWith("NotesSheet", params);
-
-	// The sheet route renders beside the screen and reads the host it provides.
-	const sheetRoute = { key: "notes-sheet", name: "NotesSheet", params };
-	const sheet = render(
-		<NotesSheet
-			route={sheetRoute as unknown as ComponentProps<typeof NotesSheet>["route"]}
-			navigation={navigation as unknown as ComponentProps<typeof NotesSheet>["navigation"]}
-		/>,
-	);
-	const editor = sheet.root
-		.findAll((node) => String(node.type) === "TextInput")
-		.find((node) => node.props.accessibilityLabel === "Your note");
-	if (!editor) throw new Error("no note editor");
-	expect(editor.props.value).toBe("keep the tests");
-	act(() => editor.props.onChangeText("keep the tests green"));
-	act(() => pressable(sheet, "Done")?.props.onPress());
-	expect(navigation.goBack).toHaveBeenCalledOnce();
-	// The route leaves.
-	act(() => sheet.unmount());
-	await settle();
-
-	expect(
-		hub.requests.filter((request) => request.method === "notes/human/set").map((request) => request.params),
-	).toEqual([
-		expect.objectContaining({ ref: "ref-notes", expectedInstanceId: "instance", note: "keep the tests green" }),
-	]);
-	expect(toasts(tree)).toEqual(["note:saved-reading"]);
-});
-
-it("shows no notes bar for a session with nothing shared", async () => {
-	const served = thread("ref-no-notes", "idle");
-	(served as unknown as { evener: Record<string, unknown> }).evener.capabilities = {
-		...CAPABILITIES,
-		sharedNotes: true,
-	};
-	const { tree } = await mount(served);
-	expect(tree.root.findAll((node) => String(node.type) === "SymbolView" && node.props.name === "person")).toEqual([]);
-});
-
-it("retries a note that failed to save once, on its own, without needing a reconnect", async () => {
-	const served = thread("ref-notes-retry", "idle");
-	(served as unknown as { evener: Record<string, unknown> }).evener.capabilities = {
-		...CAPABILITIES,
-		sharedNotes: true,
-	};
-	const { hub } = await mount(served);
-	const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
-	const request = client.request;
-	let attempts = 0;
-	client.request = async (method, params) => {
-		if (method === "notes/human/set") {
-			attempts += 1;
-			if (attempts === 1) {
-				// Fail a timer turn late, as a real dropped request does, so the
-				// test can't count on the failure landing within a fixed turn.
-				await new Promise((resolve) => setTimeout(resolve, 0));
-				throw new Error("offline");
-			}
-		}
-		return request(method, params);
-	};
-	const params = { hubId: "hub-1", ref: "ref-notes-retry" };
-	const sheet = render(
-		<NotesSheet
-			route={
-				{ key: "notes-sheet", name: "NotesSheet", params } as unknown as ComponentProps<typeof NotesSheet>["route"]
-			}
-			navigation={navigation as unknown as ComponentProps<typeof NotesSheet>["navigation"]}
-		/>,
-	);
-	const editor = sheet.root
-		.findAll((node) => String(node.type) === "TextInput")
-		.find((node) => node.props.accessibilityLabel === "Your note");
-	if (!editor) throw new Error("no note editor");
-	act(() => editor.props.onChangeText("first try"));
-	act(() => pressable(sheet, "Done")?.props.onPress());
-	act(() => sheet.unmount());
-	// The session stayed open, connected and in front the whole time: the
-	// screen retries the failed save on its own rather than waiting for an
-	// unrelated reconnect or remount to notice it. The retry runs a timer turn
-	// after the failure lands, and the failure can itself land after any one
-	// timer turn, so wait for the attempt rather than counting turns (#4119).
-	await until(() => expect(attempts).toBe(2));
-	expect(
-		hub.requests.filter((request) => request.method === "notes/human/set").map((request) => request.params.note),
-	).toEqual(["first try"]);
-});
-
-it("sends a note kept on this phone from a failed save once the session opens connected", async () => {
-	nativePlatform.kv.set("evener.native.note-draft.hub-1", JSON.stringify({ "ref-kept-note": "kept from before" }));
-	const served = thread("ref-kept-note", "idle");
-	(served as unknown as { evener: Record<string, unknown> }).evener.capabilities = {
-		...CAPABILITIES,
-		sharedNotes: true,
-	};
-	const { hub } = await mount(served);
-	expect(
-		hub.requests.filter((request) => request.method === "notes/human/set").map((request) => request.params.note),
-	).toEqual(["kept from before"]);
-	expect(nativePlatform.kv.has("evener.native.note-draft.hub-1")).toBe(false);
-});
-
-it("keeps a note from a failed save on this phone while the session can't take notes", async () => {
-	nativePlatform.kv.set("evener.native.note-draft.hub-1", JSON.stringify({ "ref-kept-ended": "kept from before" }));
-	const served = thread("ref-kept-ended", "idle");
-	(served as unknown as { status: { type: string } }).status = { type: "ended" };
-	(served as unknown as { evener: Record<string, unknown> }).evener.capabilities = {
-		...CAPABILITIES,
-		sharedNotes: true,
-	};
-	const { hub } = await mount(served);
-	expect(hub.requests.filter((request) => request.method === "notes/human/set")).toEqual([]);
-	expect(nativePlatform.kv.has("evener.native.note-draft.hub-1")).toBe(true);
-});
-
-it("follows the hub's note in the bar and the open sheet when it changes", async () => {
-	const served = thread("ref-notes-follow", "idle");
-	const evener = (served as unknown as { evener: Record<string, unknown> }).evener;
-	evener.capabilities = { ...CAPABILITIES, sharedNotes: true };
-	evener.humanNote = "first";
-	const { tree, hub } = await mount(served);
-	const params = { hubId: "hub-1", ref: "ref-notes-follow", focusEditor: false };
-	const sheet = render(
-		<NotesSheet
-			route={
-				{ key: "notes-sheet", name: "NotesSheet", params } as unknown as ComponentProps<typeof NotesSheet>["route"]
-			}
-			navigation={navigation as unknown as ComponentProps<typeof NotesSheet>["navigation"]}
-		/>,
-	);
-	act(() =>
-		hub.notify({
-			method: "evener/notes/updated",
-			params: { threadId: served.id, ref: "ref-notes-follow", humanNote: "second", agentNote: "" },
-		} as unknown as AnyNotification),
-	);
-	await settle();
-	expect(renderedText(tree)).toContain("Your note: second");
-	const editor = sheet.root
-		.findAll((node) => String(node.type) === "TextInput")
-		.find((node) => node.props.accessibilityLabel === "Your note");
-	expect(editor?.props.value).toBe("second");
-	act(() => sheet.unmount());
-	await settle();
-	expect(hub.requests.filter((request) => request.method === "notes/human/set")).toEqual([]);
-});
-
-// Everything waiting to reach the agent is the transcript's last rows, just
-// above the composer, and scrolls with it (spec 8.5; Jesse, 2026-10-03).
-describe("queued messages at the transcript's end (spec 8.5)", () => {
-	const bottomBar = (tree: ReactTestRenderer) =>
-		tree.root.find((node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar");
-	const lastItem = (tree: ReactTestRenderer) => {
-		const row = transcriptList(tree)
-			.findAll((node) => String(node.type) === "Item")
-			.at(-1);
-		if (!row) throw new Error("no transcript rows");
-		return row;
-	};
-	const lastRow = (tree: ReactTestRenderer) => textOf(lastItem(tree));
-	/** The last row's ghost, by state. */
-	const lastGhost = (tree: ReactTestRenderer) => markers(lastItem(tree), "ghost");
-
-	it("shows a queued message as the transcript's last row, not in the bottom bar", async () => {
-		const served = thread("ref-queue-row", "active", false, ["check the logs"]);
-		(served as unknown as { turns: unknown[] }).turns = [askReplyTurn("turn_1")];
-		const { tree } = await mount(served);
-		expect(lastRow(tree)).toContain("check the logs");
-		expect(lastGhost(tree)).toEqual(["queued"]);
-		expect(textOf(transcriptList(tree))).toContain("ask turn_1");
-		expect(textOf(bottomBar(tree))).not.toContain("check the logs");
-	});
-
-	// A message you queue shows once at every frame on its way: its ghost
-	// while it sends and while it waits in the queue, then your message once
-	// its turn starts, never beside its ghost.
-	it("shows a queued message once at every frame until it lands as your message", async () => {
-		readHistory.live = true;
-		const served = thread("ref-queue-lands", "active");
-		(served as unknown as { turns: unknown[] }).turns = [
-			{
-				id: "turn_1",
-				status: "inProgress",
-				itemsView: "default",
-				items: [
-					{
-						id: "u-turn_1",
-						turnId: "turn_1",
-						type: "userMessage",
-						status: "completed",
-						text: "ask turn_1",
-						transcriptKey: "turn_1:0:0",
-						position: { entry: 0, item: 0 },
-					},
-				],
-			},
-		];
-		const { tree, hub } = await mount(served);
-		const shown = () => textOf(transcriptList(tree)).split("check the logs").length - 1;
-		// A frame that names a mutation id settles its durable record, and that
-		// settlement is async: await the same act block so its re-render lands
-		// inside it.
-		const frame = async (notification: Record<string, unknown>) =>
-			act(async () => hub.notify(notification as unknown as AnyNotification));
-		await type(tree, "check the logs");
-		await press(tree, "Queue message");
-		const clientMutationId = String(hub.requests.find((r) => r.method === "turn/queue")?.params.clientMutationId);
-		expect(shown()).toBe(1);
-		const queue = (texts: string[], revision: number) => ({
-			...queueState(texts, revision),
-			clientMutationIds: texts.map(() => clientMutationId),
-		});
-		await frame({
-			method: "thread/queueChanged",
-			params: { threadId: served.id, ref: "ref-queue-lands", queue: queue(["check the logs"], 1) },
-		});
-		expect(shown()).toBe(1);
-		expect(lastGhost(tree)).toEqual(["queued"]);
-		// The turn ends and the hub takes the message for the next one: the
-		// queue frame comes first, then the message's own item.
-		await frame({
-			method: "thread/queueChanged",
-			params: { threadId: served.id, ref: "ref-queue-lands", queue: queue([], 2) },
-		});
-		expect(shown()).toBe(1);
-		await frame({
-			method: "history/updated",
-			params: {
-				threadId: served.id,
-				ref: "ref-queue-lands",
-				...READ_HISTORY_IDENTITY,
-				items: [
-					{
-						id: "u-turn_2",
-						turnId: "turn_2",
-						type: "userMessage",
-						status: "completed",
-						text: "check the logs",
-						clientMutationId,
-						transcriptKey: "turn_2:1:0",
-						position: { entry: 1, item: 0 },
-					},
-				],
-			},
-		});
-		expect(shown()).toBe(1);
-		expect(markers(transcriptList(tree), "ghost")).toEqual([]);
-	});
-
-	// The usage lines (token counts, estimated cost) close the conversation;
-	// the ghosts still come last, just above the composer.
-	it("keeps the ghosts last, below the usage lines", async () => {
-		displayPrefs.hubId = "hub-1";
-		displayPrefs.config = makeTranscriptDisplayConfig({ kind: "preset", level: "intent" }, { tokenCounts: true });
-		const served = thread("ref-usage-ghost", "active", false, ["check the logs"]);
-		(served as unknown as { turns: unknown[] }).turns = [askReplyTurn("turn_1")];
-		(served as unknown as { evener: Record<string, unknown> }).evener.usage = { inputTokens: 1200, outputTokens: 300 };
-		const { tree } = await mount(served);
-		const text = textOf(transcriptList(tree));
-		expect(text).toContain("Input: 1,200");
-		expect(lastRow(tree)).toContain("check the logs");
-		expect(text.indexOf("Input: 1,200")).toBeLessThan(text.indexOf("check the logs"));
-	});
-
-	// With both settings off there are no usage lines, and no row stands in
-	// for them between the conversation and the ghosts.
-	it("adds no usage row when there are no usage lines to show", async () => {
-		displayPrefs.hubId = "hub-1";
-		displayPrefs.config = makeTranscriptDisplayConfig({ kind: "preset", level: "intent" });
-		const served = thread("ref-usage-none", "active", false, ["check the logs"]);
-		(served as unknown as { turns: unknown[] }).turns = [askReplyTurn("turn_1")];
-		const { tree } = await mount(served);
-		const rows = transcriptList(tree).props.data as { kind: string }[];
-		expect(rows.map((row) => row.kind)).toEqual(["user", "assistant", "ghost"]);
-	});
-
-	it("paints a swiped ghost the page it sits on, and keeps it there while the dock is open", async () => {
-		const palette = paletteFor("light");
-		const backdrop = (tree: ReactTestRenderer) =>
-			transcriptList(tree).findByProps({ testID: "swipe-row-content" }).props.style.backgroundColor;
-		const composing = (await mount(thread("ref-swipe-composer", "active", false, ["check the logs"]))).tree;
-		expect(backdrop(composing)).toBe(palette.page);
-		const asking = (await mount(thread("ref-swipe-dock", "awaiting", true, ["check the logs"]))).tree;
-		expect(field(asking)).toBeUndefined();
-		expect(backdrop(asking)).toBe(palette.page);
-	});
-
-	it("steers with a queued message the agent hasn't reached yet", async () => {
-		const { tree, hub } = await mount(thread("ref-steer-now", "active", false, ["check the logs"]));
-		expect(renderedText(tree)).toContain("check the logs");
-		expect(ghostStates(tree)).toEqual(["queued"]);
-		await press(tree, "Steer now");
-		const promote = hub.requests.filter((request) => request.method === "turn/promoteQueuedAsSteer");
-		expect(promote).toHaveLength(1);
-		expect(promote[0]?.params).toMatchObject({ index: 0, expectedEntryId: "queue_1" });
-		expect(saysSteerFailed(tree)).toBe(false);
-	});
-
-	// Between the press and the agent's next step, the hub holds the steer as
-	// a pending mutation; the phone shows it as its own (spec 8.5).
-	// Send now on a queue a Stop held is a promote too: it starts the turn
-	// that takes it.
-	const STEERS_FROM_QUEUE = [
-		["Steer now", "active", "turn/promoteQueuedAsSteer", ["check the logs"]],
-		["Send now", "idle", "turn/promoteQueuedAsSteer", ["check the logs"]],
-		["Steer all now", "active", "turn/drainAsSteer", ["check the logs", "and the metrics"]],
-	] as const;
-	// Starts the action, as a press does, and leaves it running. Steer all
-	// now is the Queue sheet's, which shows what it hands back.
-	async function steerFromQueue(tree: ReactTestRenderer, ref: string, label: string) {
-		let handedBack: Promise<unknown> | undefined;
-		if (label === "Steer all now")
-			await act(async () => {
-				handedBack = queueHosts.get(sheetKey("hub-1", ref))?.steerAll?.();
-			});
-		else await press(tree, label);
-		return { handedBack };
-	}
-	it.each(STEERS_FROM_QUEUE)("shows %s as steering until the agent takes it", async (label, status, method, queued) => {
-		const ref = `ref-steering-${label}`;
-		const served = thread(ref, status, false, [...queued]);
-		const { tree, hub } = await mount(served);
-		const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
-		const request = client.request;
-		client.request = async (requested, params) => {
-			const answer = await request(requested, params);
-			if (requested === method) {
-				// The next read: the queue is empty, and the hub holds the steer
-				// for the agent's next step.
-				const evener = (served as unknown as { evener: Record<string, unknown> }).evener;
-				evener.queue = queueState([], 1);
-				evener.pendingMutations = [
-					{
-						clientMutationId: params.clientMutationId,
-						method,
-						input: queued.map((text) => ({ type: "text", text })),
-						executionState: "accepted",
-						projectionState: "pending",
-					},
-				];
-				// A drain's receipt names every entry it took.
-				const { receipt } = answer as { receipt: Record<string, unknown> };
-				return { receipt: { queueEntryIds: queued.map((_, index) => `queue_${index + 1}`), ...receipt } };
-			}
-			return answer;
-		};
-		await steerFromQueue(tree, ref, label);
-		await settle();
-		// The read settles the phone's own record of the steer, and the hub's
-		// pending steer is still this phone's.
-		act(() =>
-			hub.notify({
-				method: "evener/thread/resync",
-				params: { ref, threadId: served.id },
-			} as AnyNotification),
-		);
-		await settle();
-		expect(hub.requests.filter((entry) => entry.method === "thread/read").length).toBeGreaterThan(1);
-		expect(hub.requests.filter((entry) => entry.method === method)).toHaveLength(1);
-		expect(lastRow(tree)).toContain("check the logs");
-		expect(lastGhost(tree)).toEqual(["steering"]);
-		expect(saysSteerFailed(tree)).toBe(false);
-	});
-
-	// The hub took the steer, but its answer never reached the phone: the
-	// phone sends it again under the same id, the hub replays it, and it
-	// shows as steering. Nothing says the steer failed.
-	it.each(STEERS_FROM_QUEUE)(
-		"shows %s as steering when the hub's answer was lost",
-		async (label, status, method, queued) => {
-			const ref = `ref-lost-${label}`;
-			const served = thread(ref, status, false, [...queued]);
-			const { tree, hub } = await mount(served);
-			const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
-			const request = client.request;
-			let lost = false;
-			client.request = async (requested, params) => {
-				const answer = await request(requested, params);
-				if (requested !== method || lost) return answer;
-				lost = true;
-				hub.notify({
-					method: "thread/queueChanged",
-					params: { threadId: served.id, ref, queue: queueState([], 1) },
-				} as AnyNotification);
-				throw new Error("connection lost");
-			};
-			const { handedBack } = await steerFromQueue(tree, ref, label);
-			await settle();
-			expect(saysSteerFailed(tree)).toBe(false);
-			expect(await handedBack).toBeFalsy();
-			await act(async () => {
-				await getNativeMutationRuntime().connectionReady();
-			});
-			await settle();
-			const sent = hub.requests.filter((entry) => entry.method === method);
-			expect(sent).toHaveLength(2);
-			expect(sent[1]?.params.clientMutationId).toBe(sent[0]?.params.clientMutationId);
-			expect(lastRow(tree)).toContain("check the logs");
-			expect(lastGhost(tree)).toEqual(["steering"]);
-			expect(saysSteerFailed(tree)).toBe(false);
-		},
-	);
-
-	// The hub's queue frame can reach the phone before its answer does: the
-	// message leaves the queue, and the transcript's end still shows it on
-	// its way.
-	it.each(STEERS_FROM_QUEUE)(
-		"keeps %s at the transcript's end while the hub's answer is on its way",
-		async (label, status, method, queued) => {
-			const ref = `ref-frames-first-${label}`;
-			const served = thread(ref, status, false, [...queued]);
-			const { tree, hub } = await mount(served);
-			const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
-			const request = client.request;
-			let answer: () => void = () => undefined;
-			const answered = new Promise<void>((resolve) => {
-				answer = resolve;
-			});
-			client.request = async (requested, params) => {
-				if (requested !== method) return request(requested, params);
-				const reply = request(requested, params);
-				hub.notify({
-					method: "thread/queueChanged",
-					params: { threadId: served.id, ref, queue: queueState([], 1) },
-				} as AnyNotification);
-				await answered;
-				return reply;
-			};
-			await steerFromQueue(tree, ref, label);
-			await settle();
-			expect(hub.requests.filter((entry) => entry.method === method)).toHaveLength(1);
-			expect(lastRow(tree)).toContain("check the logs");
-			expect(lastGhost(tree)).not.toContain("queued");
-			await act(async () => answer());
-			await settle();
-			expect(lastRow(tree)).toContain("check the logs");
-			expect(lastGhost(tree)).toEqual(["steering"]);
-		},
-	);
-
-	const rowsWith = (tree: ReactTestRenderer, text: string) =>
-		transcriptList(tree)
-			.findAll((node) => String(node.type) === "Item")
-			.map(textOf)
-			.filter((row) => row.includes(text));
-	/** The text of each transcript row whose ghost is `state`. */
-	const rowsWithGhost = (tree: ReactTestRenderer, state: string) =>
-		transcriptList(tree)
-			.findAll((node) => String(node.type) === "Item")
-			.filter((row) => markers(row, "ghost").includes(state))
-			.map(textOf);
-
-	// Until the hub answers, the message shows once, on its way, and there is
-	// no second Steer now (or Steer all now) to press for it.
-	it.each(STEERS_FROM_QUEUE)(
-		"shows a message once, with nothing to press again, while its %s waits for the hub",
-		async (label, status, method, queued) => {
-			const ref = `ref-pressed-once-${label}`;
-			const { tree, hub } = await mount(thread(ref, status, false, [...queued]));
-			const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
-			const request = client.request;
-			client.request = async (requested, params) => {
-				if (requested !== method) return request(requested, params);
-				// The hub never answers: record the request and leave it there.
-				hub.requests.push({ method: requested, params });
-				return new Promise(() => undefined);
-			};
-			await steerFromQueue(tree, ref, label);
-			await settle();
-			expect(hub.requests.filter((entry) => entry.method === method)).toHaveLength(1);
-			expect(rowsWith(tree, "check the logs")).toHaveLength(1);
-			expect(pressable(tree, "Steer now")).toBeUndefined();
-			expect(pressable(tree, "Send now")).toBeUndefined();
-			expect(queueHosts.get(sheetKey("hub-1", ref))?.steerAll).toBeUndefined();
-		},
-	);
-
-	// Steer all now would take the message Steer now is already steering with.
-	it("withholds Steer all now while a Steer now waits for the hub", async () => {
-		const ref = "ref-steer-all-after-promote";
-		const { tree, hub } = await mount(thread(ref, "active", false, ["check the logs", "one", "two"]));
-		expect(queueHosts.get(sheetKey("hub-1", ref))?.steerAll).toBeDefined();
-		const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
-		const request = client.request;
-		client.request = async (requested, params) => {
-			if (requested !== "turn/promoteQueuedAsSteer") return request(requested, params);
-			// The hub never answers: record the request and leave it there.
-			hub.requests.push({ method: requested, params });
-			return new Promise(() => undefined);
-		};
-		const [steerNow] = tree.root.findAll(
-			(node) => node.props.accessibilityLabel === "Steer now" && typeof node.props.onPress === "function",
-		);
-		act(() => steerNow?.props.onPress());
-		await settle();
-		expect(rowsWithGhost(tree, "queued")).toHaveLength(2);
-		expect(queueHosts.get(sheetKey("hub-1", ref))?.steerAll).toBeUndefined();
-		// Typed, it waits too, and says why.
-		await type(tree, "/drain-as-steer");
-		await press(tree, "Drain queue");
-		expect(hub.requests.filter((entry) => entry.method === "turn/drainAsSteer")).toEqual([]);
-		expect(actionErrors(tree)).toEqual(["refused"]);
-		// Nothing was tried, so the command stays in the composer.
-		expect(field(tree)?.props.value).toBe("/drain-as-steer");
-	});
-
-	// /drain-as-steer is Steer all now typed: the same outbox, so a lost answer
-	// isn't a failure, and the hub's pending steer reads as this phone's.
-	it("sends /drain-as-steer through the outbox, as Steer all now", async () => {
-		const ref = "ref-drain-command";
-		const queued = ["check the logs", "and the metrics"];
-		const served = thread(ref, "active", false, queued);
-		const { tree, hub } = await mount(served);
-		const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
-		const request = client.request;
-		client.request = async (requested, params) => {
-			const answer = await request(requested, params);
-			if (requested !== "turn/drainAsSteer") return answer;
-			// The hub took the drain, and its answer was lost.
-			const evener = (served as unknown as { evener: Record<string, unknown> }).evener;
-			evener.queue = queueState([], 1);
-			evener.pendingMutations = [
-				{
-					clientMutationId: params.clientMutationId,
-					method: requested,
-					input: queued.map((text) => ({ type: "text", text })),
-					executionState: "accepted",
-					projectionState: "pending",
-				},
-			];
-			throw new Error("connection lost");
-		};
-		await type(tree, "/drain-as-steer");
-		await press(tree, "Drain queue");
-		const sent = hub.requests.filter((entry) => entry.method === "turn/drainAsSteer");
-		expect(sent.map((entry) => entry.params)).toMatchObject([{ expectedQueueRevision: 0, input: [] }]);
-		act(() =>
-			hub.notify({
-				method: "evener/thread/resync",
-				params: { ref, threadId: served.id },
-			} as AnyNotification),
-		);
-		await settle();
-		expect(lastRow(tree)).toContain("check the logs");
-		expect(lastGhost(tree)).toEqual(["steering"]);
-		expect(field(tree)?.props.value).toBe("");
-		expect(actionErrors(tree)).toEqual([]);
-		expect(saysSteerFailed(tree)).toBe(false);
-	});
-
-	// A drain takes the queue it saw; a message queued after the hub took it
-	// is queued again, with its own Steer now.
-	it("shows a message queued after Steer all now took the queue", async () => {
-		const ref = "ref-queued-after-drain";
-		const served = thread(ref, "active", false, ["check the logs", "and the metrics"]);
-		const { tree, hub } = await mount(served);
-		const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
-		const request = client.request;
-		client.request = async (requested, params) => {
-			const answer = await request(requested, params);
-			if (requested === "turn/drainAsSteer")
-				hub.notify({
-					method: "thread/queueChanged",
-					params: { threadId: served.id, ref, queue: queueState([], 1) },
-				} as AnyNotification);
-			return answer;
-		};
-		await steerFromQueue(tree, ref, "Steer all now");
-		await settle();
-		expect(lastGhost(tree)).toEqual(["steering"]);
-		act(() =>
-			hub.notify({
-				method: "thread/queueChanged",
-				params: { threadId: served.id, ref, queue: { ...queueState(["one more thing"], 2), ids: ["queue_9"] } },
-			} as AnyNotification),
-		);
-		await settle();
-		expect(rowsWithGhost(tree, "steering")[0]).toContain("check the logs");
-		expect(lastRow(tree)).toContain("one more thing");
-		expect(lastGhost(tree)).toEqual(["queued"]);
-		expect(pressable(tree, "Steer now")).toBeDefined();
-	});
-
-	// A message with no text (an image) steers under its preview, so the
-	// ghost of Steer all now still names every message it took.
-	it("names an image-only message by its preview in Steer all now's ghost", async () => {
-		const ref = "ref-drain-preview";
-		const served = thread(ref, "active", false, ["check the logs", ""]);
-		const evener = (served as unknown as { evener: { queue: ReturnType<typeof queueState> } }).evener;
-		evener.queue = { ...evener.queue, preview: ["check the logs", "[image]"] };
-		const { tree, hub } = await mount(served);
-		const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
-		const request = client.request;
-		client.request = async (requested, params) => {
-			if (requested !== "turn/drainAsSteer") return request(requested, params);
-			// The hub never answers: record the request and leave it there.
-			hub.requests.push({ method: requested, params });
-			return new Promise(() => undefined);
-		};
-		await steerFromQueue(tree, ref, "Steer all now");
-		await settle();
-		const [ghost] = rowsWithGhost(tree, "sending");
-		expect(ghost).toContain("check the logs");
-		expect(ghost).toContain("[image]");
-	});
-
-	// A steer the hub refuses names the message it was for, says it was a
-	// steer, and offers only Discard: the message may still be queued.
-	it.each(STEERS_FROM_QUEUE)("names the message when the hub refuses %s", async (label, status, method, queued) => {
-		const ref = `ref-refused-${label}`;
-		const { tree, hub } = await mount(thread(ref, status, false, [...queued]));
-		const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
-		const request = client.request;
-		client.request = async (requested, params) => {
-			if (requested !== method) return request(requested, params);
-			hub.requests.push({ method: requested, params });
-			throw new WireError("queue entry changed", -32013, {
-				evenerErrorInfo: "conflict",
-				clientMutationId: params.clientMutationId,
-				mutationOutcome: "notAccepted",
-				retryDisposition: "none",
-			});
-		};
-		await steerFromQueue(tree, ref, label);
-		await settle();
-		const refused = transcriptList(tree)
-			.findAll((node) => String(node.type) === "Item")
-			.find((row) => markers(row, "ghost").includes("refused"));
-		if (!refused) throw new Error("no refused ghost");
-		// The hub's reason, beside the message it was for.
-		expect(textOf(refused)).toContain("queue entry changed");
-		expect(textOf(refused)).toContain("check the logs");
-		const offered = refused
-			.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityRole === "button")
-			.map((node) => node.props.accessibilityLabel);
-		expect(offered).toContain("Discard");
-		expect(offered).not.toContain("Edit");
-	});
-
-	// They take no room from the transcript, so nothing folds while you type.
-	it("keeps a queued message and its Steer now while you type", async () => {
-		const { tree, hub } = await mount(thread("ref-steer-typing", "active", false, ["check the logs"]));
-		typeInComposer(tree);
-		expect(lastRow(tree)).toContain("check the logs");
-		expect(pressable(tree, "1 queued")).toBeUndefined();
-		await press(tree, "Steer now");
-		expect(hub.requests.filter((request) => request.method === "turn/promoteQueuedAsSteer")).toHaveLength(1);
-		act(() => keyboard.hide());
-	});
-
-	it("sends nothing when the message left the queue before the press (Review Focus 2)", async () => {
-		const served = thread("ref-steer-stale", "active", false, ["check the logs"]);
-		const { tree, hub } = await mount(served);
-		const stalePress = pressable(tree, "Steer now")?.props.onPress as () => void;
-		expect(stalePress).toBeDefined();
-		act(() =>
-			hub.notify({
-				method: "thread/queueChanged",
-				params: { threadId: served.id, ref: "ref-steer-stale", queue: queueState([], 1) },
-			} as AnyNotification),
-		);
-		act(() => stalePress());
-		await settle();
-		expect(hub.requests.filter((request) => request.method.startsWith("turn/"))).toEqual([]);
-	});
-
-	it("clears a cancelled message on the hub's own queue frame, even when the read after it fails", async () => {
-		const served = thread("ref-cancel-frame", "idle", false, ["drop this"]);
-		const { tree, hub } = await mount(served);
-		// The read after the cancel fails; the hub still reports its queue.
-		const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
-		const request = client.request;
-		client.request = async (method, params) => {
-			if (method === "thread/read") throw new Error("read failed");
-			const answer = await request(method, params);
-			if (method !== "turn/cancelQueued") return answer;
-			hub.notify({
-				method: "thread/queueChanged",
-				params: { threadId: served.id, ref: "ref-cancel-frame", queue: queueState([], 1) },
-			} as AnyNotification);
-			// A cancel's receipt names no turn and says the entry is removed,
-			// and its answer echoes what it took out of the queue.
-			const { turnId: _turnId, ...receipt } = (answer as { receipt: Record<string, unknown> }).receipt;
-			return { receipt: { ...receipt, projectionState: "removed" }, removedText: "drop this" };
-		};
-		await press(tree, "Cancel");
-		expect(hub.requests.map((entry) => entry.method)).toContain("turn/cancelQueued");
-		expect(renderedText(tree)).not.toContain("drop this");
-		expect(toasts(tree)).toEqual([]);
-	});
-
-	it("holds a queue a Stop parked, and Send now releases it (Review Focus 3)", async () => {
-		const { tree, hub } = await mount(thread("ref-held", "idle", false, ["after the stop"]));
-		expect(ghostStates(tree)).toEqual(["held"]);
-		await press(tree, "Send now");
-		const promote = hub.requests.filter((request) => request.method === "turn/promoteQueuedAsSteer");
-		expect(promote.map((request) => request.params)).toMatchObject([{ index: 0, expectedEntryId: "queue_1" }]);
-	});
-
-	it("offers Steer all now only while the hub is there to take it", async () => {
-		const { tree } = await mount(thread("ref-steer-all", "active", false, ["one", "two"]));
-		const host = () => queueHosts.get(sheetKey("hub-1", "ref-steer-all"));
-		expect(host()?.steerAll).toBeDefined();
-		harness.connection = { ...harness.connection, state: "connecting" };
-		const route = {
-			key: "conversation-ref-steer-all",
-			name: "Conversation",
-			params: { hubId: "hub-1", ref: "ref-steer-all", title: "Session" },
-		};
-		act(() =>
-			tree.update(
-				<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />,
-			),
-		);
-		await settle();
-		expect(host()?.ghosts).toHaveLength(2);
-		expect(host()?.steerAll).toBeUndefined();
-	});
-
-	it("shows what the Queue sheet hands back on the session, once the sheet has closed", async () => {
-		const { tree } = await mount(thread("ref-sheet-toast", "active", false, ["one"]));
-		const host = queueHosts.get(sheetKey("hub-1", "ref-sheet-toast"));
-		act(() => host?.showOnSession({ text: "Moved to your message, but it's still queued." }));
-		expect(renderedText(tree)).toContain("Moved to your message, but it's still queued.");
-	});
-
-	it("shows three queued messages and opens the rest in the Queue sheet", async () => {
-		vi.mocked(navigation.navigate).mockClear();
-		const { tree, hub } = await mount(thread("ref-four", "active", false, ["one", "two", "three", "four"]));
-		const text = renderedText(tree);
-		for (const shown of ["one", "two", "three"]) expect(text).toContain(shown);
-		expect(text).not.toContain("four");
-		expect(lastRow(tree)).toBe("1 more queued");
-		act(() => pressable(tree, "1 more queued")?.props.onPress());
-		expect(navigation.navigate).toHaveBeenCalledWith("QueueSheet", { hubId: "hub-1", ref: "ref-four" });
-		const host = queueHosts.get(sheetKey("hub-1", "ref-four"));
-		expect(host?.ghosts.map((ghost) => ghost.text)).toEqual(["one", "two", "three", "four"]);
-		const fourth = host?.ghosts[3];
-		if (!host || !fourth) throw new Error("no fourth queued message in the host");
-		await act(async () => {
-			await host.act(fourth, "cancel");
-		});
-		const cancel = hub.requests.filter((request) => request.method === "turn/cancelQueued");
-		expect(cancel.map((request) => request.params)).toMatchObject([{ index: 3, expectedEntryId: "queue_4" }]);
-	});
-});
-
-describe("the bottom bar (spec 8.1, the prototype's .bottom)", () => {
-	// The bar's own host view, not the BarFrame element that carries its props.
-	const bar = (tree: ReactTestRenderer) =>
-		tree.root.find((node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar");
-	const homeIndicator = () => useSafeAreaInsets().bottom;
-	/** The room the bar reserves: the home indicator less its trim, so the
-	 * composer sits close to the bottom edge (BarFrame INDICATOR_TRIM). */
-	const room = () => indicatorRoom(homeIndicator());
-
-	it("runs to the screen's bottom edge under a hairline, and keeps the composer above the home indicator", async () => {
-		const { tree } = await mount(thread("ref-bar", "active"));
-		// The screen leaves the bottom safe area to the bar, which paints it.
-		const [screen] = tree.root.findAll((node) => String(node.type) === "SafeAreaView");
-		expect(screen?.props.edges).not.toContain("bottom");
-		expect(flatStyle(bar(tree))).toMatchObject({ borderTopWidth: 0.5, paddingBottom: room() });
-		// The tray and the composer ride in it, so the bar's padding lifts them
-		// clear of the home indicator.
-		expect(
-			bar(tree).findAll((node) => node.props.accessibilityLabel === "Message" && node.props.multiline),
-		).toHaveLength(1);
-		expect(bar(tree).findAll((node) => node.props.accessibilityLabel === "Stop")).not.toHaveLength(0);
-	});
-
-	it("drops the home indicator's room while the keyboard is up, so the composer sits on the keyboard", async () => {
-		const { tree } = await mount(thread("ref-bar-keyboard", "active"));
-		act(() => keyboard.show());
-		expect(flatStyle(bar(tree)).paddingBottom).toBe(0);
-		act(() => keyboard.hide());
-		expect(flatStyle(bar(tree)).paddingBottom).toBe(room());
-	});
-
-	it("lays the bar over the transcript's end, so the transcript runs under it", async () => {
-		const { tree } = await mount(thread("ref-bar-over", "active"));
-		expect(flatStyle(bar(tree))).toMatchObject({ position: "absolute", left: 0, right: 0, bottom: 0 });
-	});
-
-	const barLaysOut = (tree: ReactTestRenderer, height: number) =>
-		act(() => bar(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 600, width: 390, height } } }));
-	const transcript = (tree: ReactTestRenderer) =>
-		tree.root.find((node) => node.props.maintainVisibleContentPosition && node.props.contentContainerStyle);
-	const moves = () => flatListCalls.filter((call) => call.method !== "scrollToIndex");
-
-	it("keeps the transcript's end clear of the bar as an inset, so its content size ignores the bar", async () => {
-		const { tree } = await mount(thread("ref-bar-end", "active"));
-		barLaysOut(tree, 180);
-		// iOS: the bar is a content inset past the 60pt end room, which stays
-		// the content's own padding.
-		expect(transcript(tree).props.contentInset).toEqual({ bottom: 180 });
-		expect(transcript(tree).props.contentContainerStyle.paddingBottom).toBe(60);
-		expect(transcript(tree).props.scrollIndicatorInsets).toEqual({ bottom: 180 });
-		// Next, a toast and "↓ new" float 10pt above the bar.
-		expect(
-			flatStyle(tree.root.findByType(FloatingStack).findAll((node) => String(node.type) === "View")[0]),
-		).toMatchObject({ bottom: 180 + 10 });
-	});
-
-	it("keeps a follower at the end as the bar grows and shrinks, the keyboard's drop included", async () => {
-		const { tree } = await mount(thread("ref-bar-follow", "active"));
-		barLaysOut(tree, 180);
-		flatListCalls.length = 0;
-		barLaysOut(tree, 260);
-		expect(moves().map((call) => call.method)).toEqual(["scrollToEnd"]);
-		flatListCalls.length = 0;
-		// Keyboard up: the bar drops the home indicator's room.
-		act(() => keyboard.show());
-		barLaysOut(tree, 226);
-		expect(moves().map((call) => call.method)).toEqual(["scrollToEnd"]);
-		act(() => keyboard.hide());
-	});
-
-	it("pads the transcript's end by the bar on Android, and keeps a follower at the end as the bar changes", async () => {
-		const platform = Platform as { OS: string };
-		platform.OS = "android";
-		try {
-			const { tree } = await mount(thread("ref-bar-follow-android", "active"));
-			barLaysOut(tree, 180);
-			expect(transcript(tree).props.contentInset).toBeUndefined();
-			expect(transcript(tree).props.contentContainerStyle.paddingBottom).toBe(180 + 60);
-			flatListCalls.length = 0;
-			barLaysOut(tree, 260);
-			expect(transcript(tree).props.contentContainerStyle.paddingBottom).toBe(260 + 60);
-			expect(moves().map((call) => call.method)).toEqual(["scrollToEnd"]);
-		} finally {
-			platform.OS = "ios";
-		}
-	});
-
-	it("never moves a reader mid-list, or one resting at the end without following, as the bar changes", async () => {
-		const { tree } = await mount(thread("ref-bar-reader", "active"));
-		barLaysOut(tree, 180);
-		const at = (y: number) => ({
-			nativeEvent: {
-				contentOffset: { y },
-				contentSize: { height: 4_000 },
-				layoutMeasurement: { height: 600 },
-				contentInset: { bottom: 180 },
-			},
-		});
-		act(() => transcriptList(tree).props.onScrollBeginDrag(at(1_000)));
-		act(() => transcriptList(tree).props.onScroll(at(1_000)));
-		act(() => transcriptList(tree).props.onScrollEndDrag(at(1_000)));
-		flatListCalls.length = 0;
-		barLaysOut(tree, 260);
-		barLaysOut(tree, 120);
-		expect(moves()).toEqual([]);
-		// The app lands the list at the end (a restore), with no finger: not following.
-		act(() => transcriptList(tree).props.onScroll(at(4_000 - 600 + 180)));
-		flatListCalls.length = 0;
-		barLaysOut(tree, 260);
-		expect(moves()).toEqual([]);
-	});
-
-	it("holds a question dock too", async () => {
-		const { tree } = await mount(thread("ref-bar-question", "awaiting", true));
-		expect(bar(tree).findAll((node) => node.props.testID === "question-dock")).toHaveLength(1);
-	});
-});
-
-describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
-	function withApproval(ref: string): Thread {
-		const served = thread(ref, "active");
-		(served as unknown as { evener: Record<string, unknown> }).evener.pendingEscalations = [
-			{
-				threadId: served.id,
-				ref,
-				escalationId: "esc-1",
-				mode: "workspace-write",
-				tool: "write_file",
-				kind: "file_tool",
-				deniedPath: "/Users/jesse/sites/docs/index.html",
-			},
-		];
-		return served;
-	}
-
-	it("says how many more wait, and the next takes the dock once the first is settled", async () => {
-		const ref = "ref-approval-two";
-		const served = withApproval(ref);
-		const evener = (served as unknown as { evener: { pendingEscalations: Record<string, unknown>[] } }).evener;
-		evener.pendingEscalations.push({
-			...evener.pendingEscalations[0],
-			escalationId: "esc-2",
-			tool: "read_file",
-			mode: "restricted",
-			deniedPath: "/Users/jesse/notes/todo.md",
-		});
-		const { tree, hub } = await mount(served);
-		expect(hasTestID(tree, "approval-dock")).toBe(true);
-		const waiting = tree.root.findAllByProps({ testID: "approval-more-waiting" });
-		expect(waiting.map((node) => textOf(node))).toEqual([expect.stringMatching(/\b1\b/)]);
-		const firstBody = dockBody(tree, "approval-dock").scroller;
-		await press(tree, "Allow this file only");
-		act(() =>
-			hub.notify({
-				method: "evener/sandbox/escalation/resolved",
-				params: { threadId: served.id, ref, escalationId: "esc-1" },
-			} as unknown as AnyNotification),
-		);
-		await settle();
-		const text = renderedText(tree).replaceAll("\u200b", "");
-		expect(text).toContain("read_file  /Users/jesse/notes/todo.md");
-		expect(hasTestID(tree, "approval-more-waiting")).toBe(false);
-		expect(pressable(tree, "Allow this file only")?.props.accessibilityState).toMatchObject({ disabled: false });
-		// The next approval gets a fresh dock (keyed by escalationId), so its
-		// body opens at its top, whatever the last one was scrolled to.
-		expect(dockBody(tree, "approval-dock").scroller).not.toBe(firstBody);
-	});
-
-	it("shows the dock in the tray's place, and never the composer", async () => {
-		const { tree } = await mount(withApproval("ref-approval"));
-		expect(hasTestID(tree, "approval-dock")).toBe(true);
-		expect(pressable(tree, "Stop")).toBeUndefined();
-		expect(field(tree)).toBeUndefined();
-	});
-
-	it("puts a long approval's target in the dock's scroller, and Allow and Deny outside it", async () => {
-		const served = withApproval("ref-approval-long");
-		const deniedPath = `/home/jesse/sites/${"docs/reference/wire/".repeat(6)}index.html`;
-		const [escalation] = (served as unknown as { evener: { pendingEscalations: Record<string, unknown>[] } }).evener
-			.pendingEscalations;
-		if (!escalation) throw new Error("no escalation");
-		escalation.deniedPath = deniedPath;
-		escalation.partiallyRan = true;
-		const { tree } = await mount(served);
-		const body = dockBody(tree, "approval-dock");
-		expect(textOf(body.scroller).replaceAll("\u200b", "")).toContain(deniedPath);
-		for (const label of ["Allow this file only", "Deny"]) expect(body.holds(label)).toBe(false);
-	});
-
-	it("keeps Allow and Deny while the keyboard is up", async () => {
-		const { tree } = await mount(withApproval("ref-approval-keyboard"));
-		act(() => keyboard.show());
-		expect(pressable(tree, "Allow this file only")).toBeDefined();
-		expect(pressable(tree, "Deny")).toBeDefined();
-		expect(pressable(tree, "Show options")).toBeUndefined();
-		act(() => keyboard.hide());
-	});
-
-	it("wires only the approval dock's slot to shrink", async () => {
-		const { tree } = await mount(withApproval("ref-approval-room"));
-		expectOnlyTheDockSlotShrinks(tree, "approval-dock");
-	});
-
-	it("keeps showing what waits while the hub is away, without Allow or Deny", async () => {
-		const { tree } = await mount(withApproval("ref-approval-away"));
-		harness.connection = { ...harness.connection, state: "connecting" };
-		const route = {
-			key: "conversation-ref-approval-away",
-			name: "Conversation",
-			params: { hubId: "hub-1", ref: "ref-approval-away", title: "Session" },
-		};
-		act(() =>
-			tree.update(
-				<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />,
-			),
-		);
-		await settle();
-		const text = renderedText(tree).replaceAll("\u200b", "");
-		expect(hasTestID(tree, "approval-dock")).toBe(true);
-		expect(text).toContain("write_file  /Users/jesse/sites/docs/index.html");
-		expect(pressable(tree, "Allow this file only")).toBeUndefined();
-		expect(pressable(tree, "Deny")).toBeUndefined();
-		expect(field(tree)).toBeUndefined();
-	});
-
-	it("allows the one file, and says so", async () => {
-		const { tree, hub } = await mount(withApproval("ref-approval-allow"));
-		playedHaptics.length = 0;
-		await press(tree, "Allow this file only");
-		// Spec 16.6: success on approval allowed.
-		expect(playedHaptics).toEqual(["notification:success"]);
-		const resolves = hub.requests.filter((request) => request.method === "evener/sandbox/escalation/resolve");
-		expect(resolves.map((request) => request.params)).toEqual([
-			{ ref: "ref-approval-allow", escalationId: "esc-1", approve: true },
-		]);
-		expect(toasts(tree)).toEqual(["approval:allowed"]);
-	});
-
-	it("denies without a haptic: spec 16.6 plays success only for allowed", async () => {
-		const { tree } = await mount(withApproval("ref-approval-deny"));
-		playedHaptics.length = 0;
-		await press(tree, "Deny");
-		expect(toasts(tree)).toEqual(["approval:denied"]);
-		expect(playedHaptics).toEqual([]);
-	});
-});
-
-it("offers no Retry that couldn't send: a question still waits on the failed turn", async () => {
-	const served = thread("ref-retry-question", "idle", true);
-	// A per-test turn: spreading the shared QUESTION_TURN keeps its question
-	// while this test owns the failed status, so it never mutates the fixture
-	// the other question tests read.
-	(served as unknown as { turns: unknown[] }).turns = [
-		{ ...QUESTION_TURN, status: "failed", error: { message: "go test exited 1" } },
-	];
-	const { tree } = await mount(served);
-	expect(renderedText(tree)).toContain("go test exited 1");
-	expect(pressable(tree, "Retry")).toBeUndefined();
-});
-
-it("puts a quote held for this session into the draft when it comes back to the front, once", async () => {
-	// Quoting focuses the field on the next frame.
-	vi.stubGlobal("requestAnimationFrame", (frame: () => void) => {
-		frame();
-		return 0;
-	});
-	const { tree } = await mount(thread("ref-quote", "idle"));
-	await type(tree, "keep this");
-	const [route] = navigationState.state.routes;
-	if (!route) throw new Error("no route");
-	const rerender = async () => {
-		act(() => tree.update(<ConversationScreen route={route as never} navigation={navigation} />));
-		await settle();
-	};
-	// The Reader over this session holds a quote, and another session's.
-	navigationState.state = { index: 1, routes: [route, { key: "reader", name: "Reader" }] };
-	await rerender();
-	holdQuote("hub-1", "ref-other", "not for this session");
-	holdQuote("hub-1", "ref-quote", "The goal is green.\nThen ship it.");
-	navigationState.state = { index: 0, routes: [route] };
-	await rerender();
-	const quoted = "keep this\n\n> The goal is green.\n> Then ship it.\n\n";
-	expect(field(tree)?.props.value).toBe(quoted);
-	navigationState.state = { index: 1, routes: [route, { key: "reader", name: "Reader" }] };
-	await rerender();
-	navigationState.state = { index: 0, routes: [route] };
-	await rerender();
-	expect(field(tree)?.props.value).toBe(quoted);
-	expect(takeQuote("hub-1", "ref-other")).toBe("not for this session");
-});
-
-it("leaves the shared question fixture as the other question tests expect it", () => {
-	const turn = (
-		thread("ref-fixture-intact", "idle", true) as unknown as { turns: { status: string; error?: unknown }[] }
-	).turns[0];
-	expect(turn.status).toBe("completed");
-	expect(turn.error).toBeUndefined();
-});
-
-describe("Commands and skills (spec 8.5, ruling 15)", () => {
-	// Choosing focuses the field on the next frame; these tests run it at once.
-	beforeEach(() => {
-		vi.stubGlobal("requestAnimationFrame", (frame: (time: number) => void) => {
-			frame(0);
-			return 0;
-		});
-		vi.mocked(navigation.navigate).mockClear();
-	});
-	afterEach(() => {
-		unmountMountedTrees();
-		vi.unstubAllGlobals();
-	});
-
-	it("opens the sheet for a slash typed into an empty draft, and keeps the slash out", async () => {
-		const { tree } = await mount(thread("ref-slash", "idle"));
-		await type(tree, "/");
-		expect(navigation.navigate).toHaveBeenCalledWith("CommandsSheet", { hubId: "hub-1", ref: "ref-slash" });
-		expect(field(tree)?.props.value).toBe("");
-	});
-
-	it("keeps a slash typed after other words", async () => {
-		const { tree } = await mount(thread("ref-slash-later", "idle"));
-		await type(tree, "a");
-		await type(tree, "a/");
-		expect(navigation.navigate).not.toHaveBeenCalledWith("CommandsSheet", expect.anything());
-		expect(field(tree)?.props.value).toBe("a/");
-	});
-
-	it("opens the sheet from +", async () => {
-		const { tree } = await mount(thread("ref-plus", "idle"));
-		vi.mocked(ActionSheetIOS.showActionSheetWithOptions).mockClear();
-		act(() => pressable(tree, "Add")?.props.onPress());
-		const [options, choose] = vi.mocked(ActionSheetIOS.showActionSheetWithOptions).mock.calls[0] as [
-			{ options: string[] },
-			(index: number) => void,
-		];
-		act(() => choose(options.options.indexOf("Commands and skills")));
-		expect(navigation.navigate).toHaveBeenCalledWith("CommandsSheet", { hubId: "hub-1", ref: "ref-plus" });
-	});
-
-	it("puts the chosen command at the start of the draft", async () => {
-		const { tree } = await mount(thread("ref-choose", "idle"));
-		await type(tree, "hello");
-		const host = commandHosts.get(sheetKey("hub-1", "ref-choose"));
-		expect(host?.session.capabilities).toMatchObject({ send: true });
-		act(() => host?.choose("/goal"));
-		await settle();
-		expect(field(tree)?.props.value).toBe("/goal hello");
-	});
-});
-
 /** Chooses an item in the ⋯ menu the screen set last. */
 function chooseMenu(label: string) {
 	const calls = vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][];
@@ -4128,1619 +2374,3 @@ function chooseMenu(label: string) {
 	if (!found) throw new Error(`no ${label} in the header menu`);
 	act(() => found.onPress());
 }
-
-describe("Find in session (spec 8.7, ruling 29)", () => {
-	const palette = paletteFor("light");
-
-	function findTurns(ref: string): Thread {
-		const served = thread(ref, "idle");
-		(served as unknown as { turns: unknown[] }).turns = [
-			askReplyTurn("turn_1", "Fix the flaky Settle test", "The race is in settle."),
-			askReplyTurn("turn_2", "Anything else?", "Nothing else."),
-		];
-		return served;
-	}
-
-	function findField(tree: ReactTestRenderer) {
-		return tree.root
-			.findAll((node) => String(node.type) === "TextInput")
-			.find((node) => node.props.accessibilityLabel === "Find in session");
-	}
-
-	async function search(tree: ReactTestRenderer, query: string) {
-		const input = findField(tree);
-		if (!input) throw new Error("no find field");
-		act(() => input.props.onChangeText(query));
-		await settle();
-	}
-
-	const findScrolls = () =>
-		flatListCalls
-			.filter((call) => call.method === "scrollToIndex")
-			.map((call) => call.args as { index: number; viewPosition?: number })
-			.filter((args) => args.viewPosition === 0.3)
-			.map((args) => args.index);
-
-	/** The words of the rows washed as the current match: your messages'
-	 * text and the agent's markdown. */
-	const washed = (tree: ReactTestRenderer) =>
-		tree.root
-			.findAll((node) => String(node.type) === "View" && node.props.style?.backgroundColor === palette.accentBg)
-			.map((node) =>
-				node
-					.findAll((child) => String(child.type) === "Text" || String(child.type) === "EnrichedMarkdownText")
-					.map((child) => (String(child.type) === "Text" ? textOf(child) : String(child.props.markdown)))
-					.join(" "),
-			);
-
-	it("opens only the find bar, and no sheet over it", async () => {
-		const { tree } = await mount(findTurns("ref-find-only"));
-		vi.mocked(navigation.navigate).mockClear();
-		chooseMenu("Find in session");
-		await settle();
-		expect(findField(tree)).toBeDefined();
-		expect(navigation.navigate).not.toHaveBeenCalled();
-	});
-
-	it("puts the find bar where the chips were, and Done brings them back", async () => {
-		const { tree } = await mount(findTurns("ref-find-open"));
-		expect(findField(tree)).toBeUndefined();
-		chooseMenu("Find in session");
-		await settle();
-		expect(findField(tree)?.props.autoFocus).toBe(true);
-		act(() => pressable(tree, "Done")?.props.onPress());
-		await settle();
-		expect(findField(tree)).toBeUndefined();
-	});
-
-	it("shows the newest match first, then steps older and newer, washing the current row", async () => {
-		const { tree } = await mount(findTurns("ref-find-step"));
-		chooseMenu("Find in session");
-		flatListCalls.length = 0;
-		await search(tree, "settle");
-		// Rows: ask 1, reply 1, ask 2, reply 2. Both matches are in turn 1.
-		expect(findMatches(tree)).toEqual({ position: 2, count: 2 });
-		expect(findScrolls()).toEqual([1]);
-		expect(washed(tree).join(" ")).toContain("The race is in settle.");
-		await press(tree, "Older match");
-		expect(findMatches(tree)).toEqual({ position: 1, count: 2 });
-		expect(findScrolls()).toEqual([1, 0]);
-		expect(washed(tree).join(" ")).toContain("Fix the flaky Settle test");
-		await press(tree, "Newer match");
-		expect(findMatches(tree)).toEqual({ position: 2, count: 2 });
-		act(() => pressable(tree, "Done")?.props.onPress());
-		await settle();
-		expect(washed(tree)).toEqual([]);
-	});
-
-	describe("a match the list hasn't rendered yet", () => {
-		// Each retry waits a frame. The frames queue here and run when a test
-		// says, so a test can act between one try and the next.
-		let frames = new Map<number, (time: number) => void>();
-		let nextFrame = 0;
-		beforeEach(() => {
-			frames = new Map();
-			vi.stubGlobal("requestAnimationFrame", (frame: (time: number) => void) => {
-				nextFrame += 1;
-				frames.set(nextFrame, frame);
-				return nextFrame;
-			});
-			vi.stubGlobal("cancelAnimationFrame", (id: number) => void frames.delete(id));
-		});
-		afterEach(() => {
-			unmountMountedTrees();
-			flatListScrollFailures.remaining = 0;
-			vi.unstubAllGlobals();
-		});
-
-		/** Runs the frames waiting now; any they ask for wait for the next call. */
-		async function oneFrame() {
-			const waiting = [...frames.values()];
-			frames.clear();
-			act(() => {
-				for (const frame of waiting) frame(0);
-			});
-			await settle();
-		}
-
-		/** Runs the waiting frames, and any they ask for, until none wait. */
-		async function runFrames() {
-			while (frames.size > 0) await oneFrame();
-		}
-
-		/** Lays out the transcript cell at `index`, so the list has measured it. */
-		function measureRow(tree: ReactTestRenderer, index: number) {
-			const item = transcriptList(tree).findAll((node) => String(node.type) === "Item")[index];
-			const cell = item?.findAll((node) => String(node.type) === "View" && node.props.onLayout)[0];
-			if (!cell) throw new Error(`no cell at ${index}`);
-			act(() => cell.props.onLayout({ nativeEvent: { layout: { x: 0, y: index * 80, width: 390, height: 80 } } }));
-		}
-
-		it("keeps moving toward it until the list reaches it", async () => {
-			const { tree } = await mount(findTurns("ref-find-far"));
-			chooseMenu("Find in session");
-			flatListCalls.length = 0;
-			flatListScrollFailures.remaining = 2;
-			await search(tree, "race");
-			await runFrames();
-			// Two misses, each followed by a move near the row, then the jump lands.
-			expect(findScrolls()).toEqual([1, 1, 1]);
-			expect(flatListCalls.filter((call) => call.method === "scrollToOffset")).toHaveLength(2);
-			expect(flatListScrollFailures.remaining).toBe(0);
-		});
-
-		it("stops after a few tries when the list never gets closer", async () => {
-			const { tree } = await mount(findTurns("ref-find-stuck"));
-			chooseMenu("Find in session");
-			flatListCalls.length = 0;
-			flatListScrollFailures.remaining = 10;
-			await search(tree, "race");
-			await runFrames();
-			expect(findScrolls()).toEqual([1, 1, 1, 1]);
-		});
-
-		it("tries again for as long as each try measures rows closer to it", async () => {
-			const { tree } = await mount(findTurns("ref-find-closer"));
-			chooseMenu("Find in session");
-			flatListCalls.length = 0;
-			flatListScrollFailures.remaining = 10;
-			// "Nothing else." is the last row, index 3.
-			await search(tree, "nothing");
-			await oneFrame();
-			// A row before the match renders on the way: the budget starts over.
-			measureRow(tree, 0);
-			await runFrames();
-			expect(findScrolls()).toEqual([3, 3, 3, 3, 3, 3]);
-		});
-
-		it("scrolls no further once Done closes find", async () => {
-			const { tree } = await mount(findTurns("ref-find-done"));
-			chooseMenu("Find in session");
-			flatListCalls.length = 0;
-			flatListScrollFailures.remaining = 1;
-			await search(tree, "race");
-			act(() => pressable(tree, "Done")?.props.onPress());
-			await settle();
-			await runFrames();
-			expect(findScrolls()).toEqual([1]);
-		});
-
-		it("leaves a new search its own tries when the words change mid-way", async () => {
-			const { tree } = await mount(findTurns("ref-find-requery"));
-			chooseMenu("Find in session");
-			flatListCalls.length = 0;
-			flatListScrollFailures.remaining = 10;
-			await search(tree, "race");
-			// "Fix the flaky Settle test" is row 0.
-			await search(tree, "flaky");
-			await runFrames();
-			expect(findScrolls()).toEqual([1, 0, 0, 0, 0]);
-		});
-	});
-
-	it("tells VoiceOver the count a search settles on, and nothing on the way", async () => {
-		const { tree } = await mount(findTurns("ref-find-announce"));
-		chooseMenu("Find in session");
-		// Where the bar says you are at each announcement.
-		const announced: ReturnType<typeof findMatches>[] = [];
-		const announce = vi.spyOn(AccessibilityInfo, "announceForAccessibility").mockImplementation(() => {
-			announced.push(findMatches(tree));
-		});
-		try {
-			await search(tree, "settle");
-			await search(tree, "settle test");
-			expect(announced).toEqual([
-				{ position: 2, count: 2 },
-				{ position: 1, count: 1 },
-			]);
-		} finally {
-			announce.mockRestore();
-		}
-	});
-
-	it("says so when nothing matches", async () => {
-		const { tree } = await mount(findTurns("ref-find-none"));
-		chooseMenu("Find in session");
-		await search(tree, "nowhere");
-		expect(findShows(tree, 0, 0)).toBe(true);
-	});
-
-	it("reaches back through older history for an older match", async () => {
-		const { tree, hub } = await mount(findTurns("ref-find-older"), {
-			olderCursor: "cursor-1",
-			olderTurns: [askReplyTurn("turn_0", "Is settle flaky?", "Sometimes.")],
-		});
-		chooseMenu("Find in session");
-		await search(tree, "settle");
-		expect(findMatches(tree)).toEqual({ position: 2, count: 2 });
-		await press(tree, "Older match");
-		await press(tree, "Older match");
-		expect(
-			hub.requests.filter((request) => request.method === "thread/turns/list").map((request) => request.params.cursor),
-		).toEqual(["cursor-1"]);
-		expect(washed(tree).join(" ")).toContain("Is settle flaky?");
-		expect(findMatches(tree)).toEqual({ position: 1, count: 3 });
-	});
-
-	describe("following the live end while find pages older history", () => {
-		// Whether new content pulls the list to its end. The size keeps the
-		// unmeasured test list (a 0pt viewport at offset 0) at its end.
-		const followsTheEnd = (tree: ReactTestRenderer) => {
-			flatListCalls.length = 0;
-			act(() => transcriptList(tree).props.onContentSizeChange(390, 0));
-			return flatListCalls.some((call) => call.method === "scrollToEnd");
-		};
-		const unrelated = [askReplyTurn("turn_0", "Unrelated?", "Yes.")];
-
-		it("leaves the end while a page is on its way, and follows again when find closes", async () => {
-			let release = () => {};
-			const olderPage = new Promise<void>((resolve) => {
-				release = resolve;
-			});
-			const { tree, hub } = await mount(findTurns("ref-find-close"), {
-				olderCursor: "cursor-1",
-				olderTurns: unrelated,
-				olderPage,
-			});
-			chooseMenu("Find in session");
-			await search(tree, "nowhere");
-			expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toHaveLength(1);
-			expect(followsTheEnd(tree)).toBe(false);
-			act(() => pressable(tree, "Done")?.props.onPress());
-			await settle();
-			expect(followsTheEnd(tree)).toBe(true);
-			release();
-			await settle();
-		});
-
-		it("stays off the end when find closes after the list moved away from it", async () => {
-			let release = () => {};
-			const olderPage = new Promise<void>((resolve) => {
-				release = resolve;
-			});
-			const { tree } = await mount(findTurns("ref-find-moved"), {
-				olderCursor: "cursor-1",
-				olderTurns: unrelated,
-				olderPage,
-			});
-			chooseMenu("Find in session");
-			await search(tree, "nowhere");
-			act(() =>
-				transcriptList(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }),
-			);
-			act(() => transcriptList(tree).props.onContentSizeChange(390, 4_000));
-			scrollTo(tree, 1_000);
-			act(() => pressable(tree, "Done")?.props.onPress());
-			await settle();
-			expect(followsTheEnd(tree)).toBe(false);
-			release();
-			await settle();
-		});
-
-		it("follows again when a search reaches the start of history with no match", async () => {
-			const { tree, hub } = await mount(findTurns("ref-find-miss"), {
-				olderCursor: "cursor-1",
-				olderTurns: unrelated,
-			});
-			chooseMenu("Find in session");
-			await search(tree, "nowhere");
-			expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toHaveLength(1);
-			expect(followsTheEnd(tree)).toBe(true);
-		});
-
-		it("stays with a match it paged back to", async () => {
-			const { tree, hub } = await mount(findTurns("ref-find-paged-match"), {
-				olderCursor: "cursor-1",
-				olderTurns: [askReplyTurn("turn_0", "Is it flaky?", "Sometimes.")],
-			});
-			chooseMenu("Find in session");
-			flatListCalls.length = 0;
-			await search(tree, "Is it flaky");
-			expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toHaveLength(1);
-			expect(flatListCalls.filter((call) => call.method === "scrollToIndex")).not.toEqual([]);
-			expect(followsTheEnd(tree)).toBe(false);
-		});
-
-		it("asks for no page when the match is already loaded", async () => {
-			const { tree, hub } = await mount(findTurns("ref-find-loaded"), { olderCursor: "cursor-1" });
-			chooseMenu("Find in session");
-			await search(tree, "settle");
-			expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toEqual([]);
-		});
-	});
-
-	it("says there are no older matches once history ends", async () => {
-		const { tree, hub } = await mount(findTurns("ref-find-end"), { olderCursor: "cursor-1" });
-		chooseMenu("Find in session");
-		await search(tree, "settle");
-		expect(hasTestID(tree, "find-bar:exhausted")).toBe(false);
-		await press(tree, "Older match");
-		await press(tree, "Older match");
-		expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toHaveLength(1);
-		// History has ended: the bar says so in place of a match.
-		expect(hasTestID(tree, "find-bar:exhausted")).toBe(true);
-		expect(findBar(tree).props.searchingOlder).toBe(false);
-		expect(washed(tree).join(" ")).toContain("Fix the flaky Settle test");
-	});
-});
-
-describe("document chips under the agent's messages (spec 8.2)", () => {
-	const PLAN_PATH = "docs/superpowers/plans/settle-race.md";
-	const WROTE_AT = "2026-09-26T11:39:00.000Z";
-
-	function namedAfterWriting(ref: string): Thread {
-		const served = thread(ref, "idle");
-		(served as unknown as { cwd: string }).cwd = "/home/jesse/git/evener";
-		(served as unknown as { turns: unknown[] }).turns = [
-			{
-				id: "t1",
-				status: "completed",
-				itemsView: "default",
-				items: [
-					{
-						id: "write-1",
-						turnId: "t1",
-						type: "commandExecution",
-						toolName: "write_file",
-						status: "completed",
-						// A wire Thread's times are epoch milliseconds; the reducer's
-						// epochMsToISO hands documentReferences the ISO string.
-						completedAt: Date.parse(WROTE_AT),
-						argumentsJson: JSON.stringify({ file_path: `/home/jesse/git/evener/${PLAN_PATH}`, content: "# Plan" }),
-					},
-					{
-						id: "said-1",
-						turnId: "t1",
-						type: "agentMessage",
-						status: "completed",
-						text: `The plan is in \`${PLAN_PATH}\`.`,
-					},
-				],
-			},
-		];
-		return served;
-	}
-
-	it("puts a chip under a message that names a file the session wrote, and opens it in the Reader", async () => {
-		vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("# Fix the settle race\n"));
-		vi.mocked(navigation.navigate).mockClear();
-		const { tree } = await mount(namedAfterWriting("ref-chips"));
-		await settle();
-		const chip = tree.root.findAll(
-			(node) => String(node.type) === "Pressable" && String(node.props.accessibilityLabel).startsWith("Plan, "),
-		)[0];
-		if (!chip) throw new Error("no document chip");
-		expect(renderedText(tree)).toContain("settle-race.md");
-		act(() => chip.props.onPress());
-		expect(navigation.navigate).toHaveBeenCalledWith("Reader", {
-			hubId: "hub-1",
-			sessionRef: "ref-chips",
-			path: PLAN_PATH,
-			reference: {
-				cwd: "/home/jesse/git/evener",
-				path: "docs/superpowers/plans/settle-race.md",
-				provenance: "relative",
-				readTarget: "/home/jesse/git/evener/docs/superpowers/plans/settle-race.md",
-			},
-			sessionTitle: "Session",
-			updatedAt: WROTE_AT,
-		});
-	});
-
-	it("counts the session's documents on a Files chip, dotted while one is new, which opens Files", async () => {
-		vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("# Fix the settle race\n"));
-		vi.mocked(navigation.navigate).mockClear();
-		const { tree } = await mount(namedAfterWriting("ref-files"));
-		const files = pressable(tree, "Files, 1, new or changed");
-		if (!files) throw new Error("no Files chip");
-		act(() => files.props.onPress());
-		expect(navigation.navigate).toHaveBeenCalledWith("FilesSheet", {
-			hubId: "hub-1",
-			ref: "ref-files",
-			title: "Session",
-			cwd: "/home/jesse/git/evener",
-			documents: [{ path: PLAN_PATH, kind: "Plan", updatedAt: WROTE_AT }],
-		});
-	});
-});
-
-describe("moving between sessions (spec 8.3, 13.2)", () => {
-	const at = (minute: number) => new Date(Date.UTC(2026, 8, 26, 12, minute)).toISOString();
-	const failing = fleetSession("local:fail", {
-		title: "Fix retry loop",
-		state: "errored",
-		updated_at: at(5),
-		turn_ended_at: at(5),
-	});
-	const asking = fleetSession("local:ask", {
-		title: "Pick a name",
-		state: "awaiting",
-		ask_pending: true,
-		updated_at: at(3),
-	});
-	beforeEach(() => {
-		fleet.live = [failing];
-		fleet.needsYou = [failing, asking];
-		vi.mocked(navigation.push).mockClear();
-		vi.mocked(navigation.replace).mockClear();
-		vi.mocked(navigation.goBack).mockClear();
-		vi.mocked(ActionSheetIOS.showActionSheetWithOptions).mockClear();
-		alerts.recent = [];
-		alerts.nextUsed.mockClear();
-	});
-
-	/** The Back the screen set last, rendered as the header renders it. */
-	function back() {
-		const calls = vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][];
-		const options = calls.map(([options]) => options).findLast((options) => options.headerLeft);
-		if (!options?.headerLeft) throw new Error("no headerLeft");
-		const header = render(<>{options.headerLeft({ canGoBack: true })}</>);
-		return header.root.findAll((node) => String(node.type) === "Pressable")[0];
-	}
-
-	const capsule = (tree: ReactTestRenderer) => pressable(tree, "Next, Fix retry loop");
-
-	it("counts the others that need you on Back, which goes back", async () => {
-		await mount(thread("ref-back", "idle"));
-		const button = back();
-		expect(button.props.accessibilityLabel).toBe("Back, 2 others need you");
-		act(() => button.props.onPress());
-		expect(navigation.goBack).toHaveBeenCalledTimes(1);
-	});
-
-	it("never counts this session, and shows no Next when nobody else needs you", async () => {
-		fleet.live = [];
-		fleet.needsYou = [fleetSession("ref-alone", { state: "errored", updated_at: at(1) })];
-		const { tree } = await mount(thread("ref-alone", "idle"));
-		// No count of others: nobody else needs you.
-		expect(back().props.accessibilityLabel).not.toMatch(/\d/);
-		expect(tree.root.findByType(FloatingStack).props.next).toBeFalsy();
-	});
-
-	it("opens the first session that needs you from Next, marked seen", async () => {
-		const { tree, hub } = await mount(thread("ref-next", "idle"));
-		const next = capsule(tree);
-		if (!next) throw new Error("no Next capsule");
-		playedHaptics.length = 0;
-		await act(async () => next.props.onPress());
-		await settle();
-		// Spec 16.6: a selection tick on a lateral session move.
-		expect(playedHaptics).toEqual(["selection"]);
-		expect(navigation.push).toHaveBeenCalledWith("Conversation", {
-			hubId: "hub-1",
-			ref: "local:fail",
-			title: "Fix retry loop",
-			openedBy: "next",
-		});
-		expect(navigation.replace).not.toHaveBeenCalled();
-		expect(
-			hub.requests.filter((request) => request.method === "evener/session/seen/set").map((request) => request.params),
-		).toEqual([{ sessions: [{ ref: "local:fail", seenThrough: Date.parse(at(5)) }] }]);
-	});
-
-	it("replaces a session Next opened, so Back still lands where you started", async () => {
-		const { tree } = await mount(thread("ref-next-again", "idle"), { openedBy: "next" });
-		act(() => capsule(tree)?.props.onPress());
-		expect(navigation.replace).toHaveBeenCalledWith("Conversation", {
-			hubId: "hub-1",
-			ref: "local:fail",
-			title: "Fix retry loop",
-			openedBy: "next",
-		});
-		expect(navigation.push).not.toHaveBeenCalled();
-	});
-
-	it("lists everyone who needs you on a hold, and opens the one you choose", async () => {
-		const { tree } = await mount(thread("ref-hold", "idle"));
-		act(() => capsule(tree)?.props.onLongPress());
-		const [options, choose] = vi.mocked(ActionSheetIOS.showActionSheetWithOptions).mock.calls[0] as [
-			{ options: string[]; cancelButtonIndex: number },
-			(index: number) => void,
-		];
-		expect(options).toMatchObject({ options: ["Fix retry loop", "Pick a name", "Cancel"], cancelButtonIndex: 2 });
-		act(() => choose(1));
-		expect(navigation.push).toHaveBeenCalledWith("Conversation", {
-			hubId: "hub-1",
-			ref: "local:ask",
-			title: "Pick a name",
-			openedBy: "next",
-		});
-		act(() => choose(2));
-		expect(navigation.push).toHaveBeenCalledTimes(1);
-	});
-
-	it("serves what alerted you first, on Next and on its list, and tells alerts it moved you on (spec 8.3)", async () => {
-		alerts.recent = ["local:ask"];
-		const { tree } = await mount(thread("ref-alerted", "idle"));
-		const next = pressable(tree, "Next, Pick a name");
-		if (!next) throw new Error("no Next capsule for the session that alerted");
-		act(() => next.props.onLongPress());
-		const [options, choose] = vi.mocked(ActionSheetIOS.showActionSheetWithOptions).mock.calls[0] as [
-			{ options: string[] },
-			(index: number) => void,
-		];
-		expect(options.options).toEqual(["Pick a name", "Fix retry loop", "Cancel"]);
-		act(() => choose(2));
-		expect(alerts.nextUsed).not.toHaveBeenCalled();
-		act(() => choose(1));
-		expect(alerts.nextUsed).toHaveBeenCalledTimes(1);
-		await act(async () => next.props.onPress());
-		expect(alerts.nextUsed).toHaveBeenCalledTimes(2);
-		expect(navigation.push).toHaveBeenLastCalledWith("Conversation", {
-			hubId: "hub-1",
-			ref: "local:ask",
-			title: "Pick a name",
-			openedBy: "next",
-		});
-	});
-
-	it("stacks a toast above Next, in the one column over the transcript's end, so neither covers the other", async () => {
-		const { tree } = await mount(thread("ref-stacked", "active"));
-		await press(tree, "Stop");
-		expect(toasts(tree)).toEqual(["stop:stopped"]);
-		const next = capsule(tree);
-		if (!next) throw new Error("no Next capsule");
-		const stack = tree.root.findByType(FloatingStack);
-		const toast = stack.findByType(Toast);
-		expect(toast.props.toast).toMatchObject({ kind: "stop:stopped" });
-		expect(stack.props.next).toBeTruthy();
-		// Nothing new arrived below, so there is no pill to stack.
-		expect(stack.props.pill).toBeNull();
-		expect(stack.findAll((node) => node === next)).toHaveLength(1);
-		// The toast has no other place on the screen.
-		expect(tree.root.findAllByType(Toast)).toHaveLength(1);
-	});
-
-	it("keeps a fixed 60pt of room at the transcript's end, whatever floats over it", async () => {
-		const served = thread("ref-inset", "active");
-		const { tree, hub } = await mount(served);
-		const list = () =>
-			tree.root.find((node) => node.props.maintainVisibleContentPosition && node.props.contentContainerStyle);
-		const bottom = () => list().props.contentContainerStyle.paddingBottom;
-		// Who needs you changes, as fleet polling finds: Next goes, then comes.
-		let sequence = 0;
-		async function needsYou(sessions: typeof fleet.needsYou) {
-			fleet.needsYou = sessions;
-			fleet.live = sessions;
-			sequence += 1;
-			fleet.revision = sequence + 1;
-			act(() =>
-				hub.notify({
-					method: "evener/navigation/invalidated",
-					params: {
-						generationId: "generation-test",
-						sequence,
-						targets: [
-							{ kind: "section", section: "needs_you", revision: sequence + 1 },
-							{ kind: "section", section: "live", revision: sequence + 1 },
-						],
-					},
-				} as AnyNotification),
-			);
-			await settle();
-		}
-		await needsYou([]);
-		expect(capsule(tree)).toBeUndefined();
-		expect(bottom()).toBe(60);
-		await needsYou([failing]);
-		expect(capsule(tree)).toBeDefined();
-		expect(bottom()).toBe(60);
-		// A toast joins it.
-		await press(tree, "Stop");
-		expect(toasts(tree)).toEqual(["stop:stopped"]);
-		expect(bottom()).toBe(60);
-		// Away from the end, with rows the list didn't hold then, the pill joins too.
-		act(() =>
-			list().props.onScroll({
-				nativeEvent: { contentOffset: { y: 100 }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
-			}),
-		);
-		expect(bottom()).toBe(60);
-	});
-
-	it("shows no Next while this session asks you something", async () => {
-		const { tree } = await mount(thread("ref-asks", "awaiting", true));
-		expect(capsule(tree)).toBeUndefined();
-		expect(back().props.accessibilityLabel).toBe("Back, 2 others need you");
-	});
-
-	it("steps Next aside while you type, and brings it back when the keyboard lowers", async () => {
-		const { tree } = await mount(thread("ref-next-typing", "idle"));
-		expect(capsule(tree)).toBeDefined();
-		typeInComposer(tree);
-		expect(capsule(tree)).toBeUndefined();
-		act(() => keyboard.hide());
-		expect(capsule(tree)).toBeDefined();
-	});
-
-	it("shows no Next while the find bar is open", async () => {
-		const { tree } = await mount(thread("ref-finding", "idle"));
-		expect(capsule(tree)).toBeDefined();
-		chooseMenu("Find in session");
-		expect(capsule(tree)).toBeUndefined();
-	});
-
-	describe("swiping the title through Live order (spec 6, ruling 30)", () => {
-		const working = fleetSession("ref-title", { title: "Session", state: "active", updated_at: at(4) });
-		const quiet = fleetSession("local:quiet", {
-			title: "Old spike",
-			state: "idle",
-			dormant: true,
-			updated_at: at(1),
-			turn_ended_at: at(1),
-		});
-		// Live order: failing, asking (Needs you), this one (Working), quiet
-		// (Idle).
-		beforeEach(() => {
-			fleet.live = [failing, asking, working, quiet];
-		});
-
-		/** The title the screen set last, rendered as the header renders it. */
-		function headerTitle() {
-			const calls = vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][];
-			const options = calls.map(([options]) => options).findLast((options) => options.headerTitle);
-			if (typeof options?.headerTitle !== "function") throw new Error("no headerTitle");
-			return render(<>{options.headerTitle({ children: "Session" })}</>);
-		}
-
-		/** Pans the title the screen set last, as far and as fast as given. */
-		function panTitle(translationX: number, velocityX = 0, success = true) {
-			const title = headerTitle();
-			const pan = title.root.findByType("GestureDetector" as never).props.gesture as PanGestureMock;
-			act(() => pan.handlers.onEnd?.({ translationX, velocityX }, success));
-		}
-
-		it("replaces this session with the next one on a pan to the left, sliding in as a push does, marked seen", async () => {
-			const { hub } = await mount(thread("ref-title", "active"));
-			panTitle(-80);
-			await settle();
-			expect(navigation.replace).toHaveBeenCalledWith("Conversation", {
-				hubId: "hub-1",
-				ref: "local:quiet",
-				title: "Old spike",
-				slideFrom: "right",
-			});
-			expect(navigation.push).not.toHaveBeenCalled();
-			expect(
-				hub.requests.filter((request) => request.method === "evener/session/seen/set").map((request) => request.params),
-			).toEqual([{ sessions: [{ ref: "local:quiet", seenThrough: Date.parse(at(1)) }] }]);
-		});
-
-		it("replaces it with the previous one on a pan to the right, sliding in from the left", async () => {
-			await mount(thread("ref-title", "active"));
-			panTitle(30, 900);
-			expect(navigation.replace).toHaveBeenCalledWith("Conversation", {
-				hubId: "hub-1",
-				ref: "local:ask",
-				title: "Pick a name",
-				slideFrom: "left",
-			});
-		});
-
-		it("keeps Next's mark, so Next from the new session still replaces it (ruling 2)", async () => {
-			await mount(thread("ref-title", "active"), { openedBy: "next" });
-			panTitle(-80);
-			expect(navigation.replace).toHaveBeenCalledWith("Conversation", {
-				hubId: "hub-1",
-				ref: "local:quiet",
-				title: "Old spike",
-				openedBy: "next",
-				slideFrom: "right",
-			});
-		});
-
-		it("stays put past either end of Live order, and on a pan too short or slow", async () => {
-			await mount(thread("ref-title", "active"));
-			panTitle(30, 100);
-			fleet.live = [working];
-			fleet.needsYou = [];
-			const { tree } = await mount(thread("ref-title", "active"));
-			expect(tree.root.findByType(FloatingStack).props.next).toBeFalsy();
-			panTitle(-80);
-			panTitle(80);
-			expect(navigation.replace).not.toHaveBeenCalled();
-		});
-
-		it("offers VoiceOver the sessions on either side, and only those there are", async () => {
-			const actions = () =>
-				headerTitle()
-					.root.find((node) => node.props.accessibilityRole === "button" && node.props.accessibilityActions)
-					.props.accessibilityActions.map((action: { name: string }) => action.name);
-			await mount(thread("ref-title", "active"));
-			expect(actions()).toEqual(["previous", "next"]);
-			fleet.live = [failing, asking, working];
-			await mount(thread("ref-title", "active"));
-			expect(actions()).toEqual(["previous"]);
-		});
-
-		it("goes nowhere on a pan the system cancelled", async () => {
-			await mount(thread("ref-title", "active"));
-			panTitle(-200, -2000, false);
-			expect(navigation.replace).not.toHaveBeenCalled();
-		});
-	});
-
-	it("marks a turn that ends while you watch seen through the hub's own turn end", async () => {
-		fleet.live = [failing, fleetSession("ref-watching", { state: "working", updated_at: at(1), turn_ended_at: at(1) })];
-		const served = thread("ref-watching", "active");
-		const { hub } = await mount(served);
-		const seenMarks = () =>
-			hub.requests.filter((request) => request.method === "evener/session/seen/set").map((request) => request.params);
-		expect(seenMarks()).toEqual([]);
-		// The turn ends: the daemon says so, and the hub stamps the turn end
-		// on the session's Live row and says Live changed.
-		fleet.live = [
-			failing,
-			fleetSession("ref-watching", { state: "idle", updated_at: at(7), turn_ended_at: at(7), unseen: true }),
-		];
-		fleet.revision = 2;
-		act(() => {
-			hub.notify({
-				method: "thread/status/changed",
-				params: { threadId: served.id, ref: "ref-watching", status: { type: "idle" } },
-			} as AnyNotification);
-			hub.notify({
-				method: "evener/navigation/invalidated",
-				params: {
-					generationId: "generation-test",
-					sequence: 1,
-					targets: [{ kind: "section", section: "live", revision: 2 }],
-				},
-			} as AnyNotification);
-		});
-		await settle();
-		expect(seenMarks()).toEqual([{ sessions: [{ ref: "ref-watching", seenThrough: Date.parse(at(7)) }] }]);
-	});
-
-	// The hub calls its own machine "this host" in the manifest
-	// (cmd/evener-hub/web_api_tree.go); the Session sheet names it for the
-	// hub, as Hub > Hosts does, with its connection dot (spec 8.6, audit N6).
-	it("names the session's own-machine host for the hub in the Session sheet, with its dot", async () => {
-		fleet.sources = [{ id: "local", label: "this host" }];
-		await mount(thread("ref-host", "idle"));
-		const sheet = render(
-			<SessionInfoSheet
-				route={
-					{
-						key: "session-info",
-						name: "SessionInfoSheet",
-						params: { hubId: "hub-1", ref: "ref-host" },
-					} as unknown as ComponentProps<typeof SessionInfoSheet>["route"]
-				}
-				navigation={navigation as unknown as ComponentProps<typeof SessionInfoSheet>["navigation"]}
-			/>,
-		);
-		expect(renderedText(sheet)).toContain("Work hub");
-		expect(renderedText(sheet)).not.toContain("this host");
-		expect(sheet.root.findAll((node) => node.props.accessibilityLabel === "Work hub, connected")).not.toEqual([]);
-	});
-});
-
-describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
-	const COORDINATOR = { ref: "local:coord", threadId: "thread-local:coord", title: "Get PR 2138 Test Clean" };
-	const RUNNING_SINCE = new Date(Date.now() - 4 * 60_000).toISOString();
-
-	function subagentTree(over: Record<string, unknown> = {}, revision = 1) {
-		return {
-			revision,
-			root: {
-				kind: "session",
-				// The activity context names the coordinator's thread.
-				sessionId: COORDINATOR.threadId,
-				ref: COORDINATOR.ref,
-				label: COORDINATOR.title,
-				aggregate: "working",
-				counts: { active: 1, failed: 0, completed: 0, complete: true },
-				branch: {},
-				entries: [
-					{
-						kind: "delegate",
-						delegate: {
-							delegateId: "d-fix",
-							childSessionId: "fix",
-							childRef: "local:fix",
-							type: "delegate",
-							description: "Fix race in tree settle",
-							branch: {},
-							runStartedAt: RUNNING_SINCE,
-							// A delegate's update lands only with a newer projection revision.
-							projectionRevision: revision,
-							...over,
-						},
-					},
-				],
-			},
-		};
-	}
-
-	/** The coordinator's thread, as the phone reads it without following it.
-	 * `id` models a coordinator that restarted under a new thread. */
-	function coordinator(stopSubagent: boolean, id = COORDINATOR.threadId) {
-		const served = thread(COORDINATOR.ref, "active");
-		(served as unknown as { id: string }).id = id;
-		(served as unknown as { evener: { capabilities: Record<string, boolean> } }).evener.capabilities = {
-			...CAPABILITIES,
-			...(stopSubagent ? { stopSubagent: true } : {}),
-		};
-		return served;
-	}
-
-	/** The subagent's own thread: a running one is the hub's read-only alias,
-	 * every capability false (the Go encoder writes each key); a finished one
-	 * reads as a past session. */
-	function subagent(running: boolean) {
-		const served = thread("local:fix", running ? "active" : "idle");
-		const evener = (served as unknown as { evener: Record<string, unknown> }).evener;
-		evener.capabilities = running
-			? Object.fromEntries(Object.keys(CAPABILITIES).map((key) => [key, false]))
-			: { ...CAPABILITIES, steer: false, interrupt: false };
-		return served;
-	}
-
-	async function mountSubagent(
-		served: Thread,
-		{ stopSubagent = false, jobs = subagentTree(), coordinatorId = COORDINATOR.threadId } = {},
-	) {
-		coordinatorHub.tree = jobs;
-		otherThreads.set(COORDINATOR.ref, coordinator(stopSubagent, coordinatorId));
-		const hub = hubClient(served);
-		harness.connection = {
-			...screenConnection(hub.client, "ready"),
-			profiles: [{ id: "hub-1", name: "Work hub", origin: "https://hub.test" }],
-			error: null,
-			disconnect: () => {},
-		};
-		const route = {
-			key: "subagent-local:fix",
-			name: "Subagent",
-			params: { hubId: "hub-1", ref: "local:fix", title: "Fix race in tree settle", coordinator: COORDINATOR },
-		};
-		navigationState.state = {
-			index: 2,
-			routes: [
-				{ key: "board", name: "Sessions" },
-				{
-					key: "coord",
-					name: "Conversation",
-					params: { hubId: "hub-1", ref: COORDINATOR.ref, title: COORDINATOR.title },
-				},
-				route,
-			] as never,
-		};
-		const tree = render(<SubagentScreen route={route as never} navigation={navigation as never} />);
-		await settle();
-		return { tree, hub };
-	}
-
-	const jobReads = (hub: ReturnType<typeof hubClient>) =>
-		hub.requests.filter((request) => request.method === "evener/thread/delegates/list").length;
-
-	beforeEach(() => {
-		vi.mocked(navigation.navigate).mockClear();
-		vi.mocked(navigation.pop).mockClear();
-		vi.mocked(navigation.push).mockClear();
-		// The per-hub stop requests are one instance for the app's life.
-		forgetStopRequestsForHub("hub-1");
-	});
-
-	it("times a running subagent's state line by its run, as its row does", async () => {
-		// Its own turn started two minutes ago (a steer, say), but it has run
-		// four: one number per subagent everywhere (ruling on the device pass).
-		vi.mocked(navigation.setOptions).mockClear();
-		const served = subagent(true);
-		(served as unknown as { evener: Record<string, unknown> }).evener.activeTurnStartedAt = Date.now() - 2 * 60_000;
-		await mountSubagent(served);
-		const calls = vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][];
-		const options = calls.map(([options]) => options).findLast((options) => options.headerTitle);
-		if (typeof options?.headerTitle !== "function") throw new Error("no headerTitle");
-		const title = render(<>{options.headerTitle({ children: "Fix race in tree settle" })}</>);
-		expect(renderedText(title)).toContain("Working · 4m");
-		expect(renderedText(title)).not.toContain("Working · 2m");
-		// Session info times it the same way.
-		const runMs = sessionInfoHosts.get(sheetKey("hub-1", "local:fix"))?.runMs(Date.now()) ?? null;
-		expect(runMs === null ? "" : compactDuration(runMs)).toBe("4m");
-	});
-
-	it("times a still-working subagent by its turn once its row has ended", async () => {
-		// The row reads done a moment before the session itself stops: the row's
-		// time since it ended is no Working time.
-		vi.mocked(navigation.setOptions).mockClear();
-		const served = subagent(true);
-		(served as unknown as { evener: Record<string, unknown> }).evener.activeTurnStartedAt = Date.now() - 2 * 60_000;
-		await mountSubagent(served, {
-			jobs: subagentTree({ terminal: true, outcome: "completed", runEndedAt: new Date().toISOString() }),
-		});
-		const calls = vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][];
-		const options = calls.map(([options]) => options).findLast((options) => options.headerTitle);
-		if (typeof options?.headerTitle !== "function") throw new Error("no headerTitle");
-		const title = render(<>{options.headerTitle({ children: "Fix race in tree settle" })}</>);
-		expect(renderedText(title)).toContain("Working · 2m");
-	});
-
-	it("takes back the row it reported when its panel goes away", async () => {
-		// A screen that stops showing the panel shows no subagent's time.
-		await mountSubagent(subagent(true));
-		const reported: (string | null)[] = [];
-		const panel = render(
-			<SubagentPanel
-				hubId="hub-1"
-				ref="local:fix"
-				coordinator={COORDINATOR}
-				inFront
-				barShown={false}
-				showToast={() => {}}
-				onRow={(row) => void reported.push(row?.ref ?? null)}
-				navigation={navigation as never}
-			/>,
-		);
-		await settle();
-		expect(reported.at(-1)).toBe("local:fix");
-		act(() => panel.unmount());
-		expect(reported.at(-1)).toBeNull();
-	});
-
-	it("holds Ask coordinator to stop it where a running subagent's composer would be", async () => {
-		const { tree } = await mountSubagent(subagent(true));
-		expect(field(tree)).toBeUndefined();
-		expect(pressable(tree, "Ask coordinator to stop it")).toBeDefined();
-		expect(pressable(tree, "Open coordinator")).toBeDefined();
-		expect(pressable(tree, "Stop")).toBeUndefined();
-		// The bar says what you can do; the footer adds nothing.
-		expect(hasTestID(tree, "sending-unavailable")).toBe(false);
-		for (const words of ["Retry", "Refresh", "Reconnect", "From the coordinator", "Talk to it through its coordinator"])
-			expect(renderedText(tree)).not.toContain(words);
-		act(() => pressable(tree, "Ask coordinator to stop it")?.props.onPress());
-		expect(navigation.navigate).toHaveBeenCalledWith("StopSubagentSheet", {
-			hubId: "hub-1",
-			coordinator: COORDINATOR,
-			ref: "local:fix",
-		});
-	});
-
-	it("says Stop requested while a request you sent is pending", async () => {
-		const { tree } = await mountSubagent(subagent(true));
-		const [row] = flattenSubagents(subagentTree() as never);
-		if (!row) throw new Error("no row");
-		act(() => stopRequests("hub-1").request(COORDINATOR.ref, row, Date.now()));
-		await settle();
-		expect(hasTestID(tree, "subagent-stop-requested")).toBe(true);
-		expect(pressable(tree, "Ask coordinator to stop it")).toBeUndefined();
-		expect(pressable(tree, "Open coordinator")).toBeDefined();
-	});
-
-	it("offers Stop subagent itself when the coordinator can stop one directly (S6), after you confirm", async () => {
-		const { tree, hub } = await mountSubagent(subagent(true), { stopSubagent: true });
-		expect(pressable(tree, "Ask coordinator to stop it")).toBeUndefined();
-		act(() => pressable(tree, "Stop subagent")?.props.onPress());
-		const confirm = alertRequests.at(-1);
-		expect(confirm?.title).toBe("Stop “Fix race in tree settle”?");
-		expect(hub.requests.filter((request) => request.method === "evener/delegate/stop")).toEqual([]);
-		await act(async () => confirm?.buttons?.find((button) => button.text === "Stop")?.onPress?.());
-		await settle();
-		expect(
-			hub.requests.filter((request) => request.method === "evener/delegate/stop").map((request) => request.params),
-		).toEqual([{ ref: COORDINATOR.ref, threadId: COORDINATOR.threadId, delegateId: "d-fix" }]);
-		expect(hasTestID(tree, "subagent-stop-requested")).toBe(true);
-		const [stoppedRow] = flattenSubagents(subagentTree() as never);
-		if (!stoppedRow) throw new Error("no row");
-		expect(stopRequests("hub-1").direct(stoppedRow)).toBe(true);
-	});
-
-	it("keeps another root's colliding stop evidence separate from the actual direct stop target", async () => {
-		const [current] = flattenSubagents(subagentTree() as never);
-		if (!current) throw new Error("no row");
-		const other = {
-			...current,
-			ref: "remote:other-child",
-			delegate: {
-				...current.delegate,
-				childRef: "remote:other-child",
-				rootRef: "remote:other-root",
-			},
-		};
-		stopRequests("hub-1").request("remote:other-root", other, 1000, { direct: true });
-		const { tree, hub } = await mountSubagent(subagent(true), { stopSubagent: true });
-		expect(pressable(tree, "Stop subagent")).toBeDefined();
-		act(() => pressable(tree, "Stop subagent")?.props.onPress());
-		await act(async () =>
-			alertRequests
-				.at(-1)
-				?.buttons?.find((button) => button.text === "Stop")
-				?.onPress?.(),
-		);
-		await settle();
-		expect(
-			hub.requests.filter((request) => request.method === "evener/delegate/stop").map((request) => request.params),
-		).toEqual([{ ref: COORDINATOR.ref, threadId: COORDINATOR.threadId, delegateId: "d-fix" }]);
-		expect(stopRequests("hub-1").view(other)).toBe("requested");
-		expect(stopRequests("hub-1").direct(current)).toBe(true);
-	});
-
-	it("stops through the coordinator's thread as it reads now, after a restart gave it a new one", async () => {
-		const { tree, hub } = await mountSubagent(subagent(true), { stopSubagent: true });
-		// The coordinator restarts under a new thread while this screen is open.
-		const restarted = coordinator(true);
-		(restarted as unknown as { id: string }).id = "thread-restarted";
-		otherThreads.set(COORDINATOR.ref, restarted);
-		act(() => pressable(tree, "Stop subagent")?.props.onPress());
-		await act(async () =>
-			alertRequests
-				.at(-1)
-				?.buttons?.find((button) => button.text === "Stop")
-				?.onPress?.(),
-		);
-		await settle();
-		expect(
-			hub.requests.filter((request) => request.method === "evener/delegate/stop").map((request) => request.params),
-		).toEqual([{ ref: COORDINATOR.ref, threadId: "thread-restarted", delegateId: "d-fix" }]);
-	});
-
-	it("reads the tree under the coordinator's thread as it reads now, after a restart gave it a new one", async () => {
-		// The screen opened with the route's thread, but the coordinator has
-		// since restarted under a new one: its tree comes back under that new
-		// thread, so the panel must ask for it by the thread it reads now.
-		forgetSubagentTrees("hub-1");
-		const restarted = { ...subagentTree(), root: { ...subagentTree().root, sessionId: "thread-restarted" } };
-		const { tree } = await mountSubagent(subagent(true), { jobs: restarted, coordinatorId: "thread-restarted" });
-		expect(pressable(tree, "Ask coordinator to stop it")).toBeDefined();
-	});
-
-	it("tells its screen the coordinator's thread it reads now, for the transcript's finished rows (#3326 review)", async () => {
-		// The screen holds the same tree for its transcript's finished subagent
-		// rows, and a tree asked for under the route's old thread is refused.
-		forgetSubagentTrees("hub-1");
-		const restarted = { ...subagentTree(), root: { ...subagentTree().root, sessionId: "thread-restarted" } };
-		await mountSubagent(subagent(true), { jobs: restarted, coordinatorId: "thread-restarted" });
-		const reported: string[] = [];
-		const panel = render(
-			<SubagentPanel
-				hubId="hub-1"
-				ref="local:fix"
-				coordinator={COORDINATOR}
-				inFront
-				barShown={false}
-				showToast={() => {}}
-				onTreeThread={(threadId) => void reported.push(threadId)}
-				navigation={navigation as never}
-			/>,
-		);
-		await settle();
-		expect(reported.at(-1)).toBe("thread-restarted");
-		act(() => panel.unmount());
-	});
-
-	it("falls back to asking the coordinator when the hub doesn't know the direct stop", async () => {
-		coordinatorHub.stop = () => {
-			throw new WireError("method not found", -32601);
-		};
-		const { tree } = await mountSubagent(subagent(true), { stopSubagent: true });
-		act(() => pressable(tree, "Stop subagent")?.props.onPress());
-		await act(async () =>
-			alertRequests
-				.at(-1)
-				?.buttons?.find((button) => button.text === "Stop")
-				?.onPress?.(),
-		);
-		await settle();
-		expect(pressable(tree, "Ask coordinator to stop it")).toBeDefined();
-	});
-
-	it("reads the tree again when the direct stop names a subagent the hub no longer has", async () => {
-		coordinatorHub.stop = () => {
-			throw new WireError("delegate not found", -32603, { evenerErrorInfo: "resourceNotFound" });
-		};
-		const { tree, hub } = await mountSubagent(subagent(true), { stopSubagent: true });
-		const before = jobReads(hub);
-		act(() => pressable(tree, "Stop subagent")?.props.onPress());
-		await act(async () =>
-			alertRequests
-				.at(-1)
-				?.buttons?.find((button) => button.text === "Stop")
-				?.onPress?.(),
-		);
-		await settle();
-		expect(jobReads(hub)).toBeGreaterThan(before);
-		expect(hasTestID(tree, "subagent-stop-requested")).toBe(false);
-	});
-
-	it("reads the tree again when the direct stop finds it already finishing", async () => {
-		coordinatorHub.stop = () => ({ outcome: "notRunning" });
-		const { tree, hub } = await mountSubagent(subagent(true), { stopSubagent: true });
-		const before = jobReads(hub);
-		act(() => pressable(tree, "Stop subagent")?.props.onPress());
-		await act(async () =>
-			alertRequests
-				.at(-1)
-				?.buttons?.find((button) => button.text === "Stop")
-				?.onPress?.(),
-		);
-		await settle();
-		expect(jobReads(hub)).toBeGreaterThan(before);
-		expect(hasTestID(tree, "subagent-stop-requested")).toBe(false);
-	});
-
-	it("offers no direct stop from a connection that has gone", async () => {
-		const { tree } = await mountSubagent(subagent(true), { stopSubagent: true });
-		expect(pressable(tree, "Stop subagent")).toBeDefined();
-		harness.connection = { ...harness.connection, state: "reconnecting" };
-		const route = {
-			key: "subagent-local:fix",
-			name: "Subagent",
-			params: { hubId: "hub-1", ref: "local:fix", title: "Fix race in tree settle", coordinator: COORDINATOR },
-		};
-		act(() => tree.update(<SubagentScreen route={route as never} navigation={navigation as never} />));
-		await settle();
-		expect(pressable(tree, "Stop subagent")).toBeUndefined();
-	});
-
-	it("tries the direct stop again on a new connection after one hub didn't know it", async () => {
-		coordinatorHub.stop = () => {
-			throw new WireError("method not found", -32601);
-		};
-		const { tree } = await mountSubagent(subagent(true), { stopSubagent: true });
-		act(() => pressable(tree, "Stop subagent")?.props.onPress());
-		await act(async () =>
-			alertRequests
-				.at(-1)
-				?.buttons?.find((button) => button.text === "Stop")
-				?.onPress?.(),
-		);
-		await settle();
-		expect(pressable(tree, "Stop subagent")).toBeUndefined();
-		const route = {
-			key: "subagent-local:fix",
-			name: "Subagent",
-			params: { hubId: "hub-1", ref: "local:fix", title: "Fix race in tree settle", coordinator: COORDINATOR },
-		};
-		const upgraded = hubClient(subagent(true));
-		harness.connection = { ...harness.connection, client: upgraded.client };
-		act(() => tree.update(<SubagentScreen route={route as never} navigation={navigation as never} />));
-		await settle();
-		expect(pressable(tree, "Stop subagent")).toBeDefined();
-	});
-
-	it("asks the coordinator when its thread can't be read to learn whether a direct stop works", async () => {
-		coordinatorHub.readFails = COORDINATOR.ref;
-		const { tree } = await mountSubagent(subagent(true), { stopSubagent: true });
-		expect(pressable(tree, "Ask coordinator to stop it")).toBeDefined();
-		expect(pressable(tree, "Stop subagent")).toBeUndefined();
-	});
-
-	it("gives a finished subagent the composer back, which sends to it", async () => {
-		const { tree, hub } = await mountSubagent(subagent(false), {
-			jobs: subagentTree({ terminal: true, outcome: "completed", runEndedAt: new Date().toISOString() }),
-		});
-		expect(pressable(tree, "Open coordinator")).toBeUndefined();
-		await type(tree, "Try the other lock order");
-		await press(tree, "Send");
-		const sent = hub.requests.find((request) => request.method === "turn/start");
-		expect(sent?.params).toMatchObject({
-			ref: "local:fix",
-			input: [{ type: "text", text: "Try the other lock order" }],
-		});
-	});
-
-	it("goes back to the coordinator from Open coordinator", async () => {
-		const { tree } = await mountSubagent(subagent(true));
-		act(() => pressable(tree, "Open coordinator")?.props.onPress());
-		expect(navigation.pop).toHaveBeenCalledWith(1);
-	});
-
-	it("reads the coordinator's tree again when this subagent's status changes", async () => {
-		const { hub } = await mountSubagent(subagent(true));
-		const before = jobReads(hub);
-		act(() => hub.notify(activityChangedNotification({ ...COORDINATOR, sessionId: "fix" })));
-		await settle();
-		expect(jobReads(hub)).toBeGreaterThan(before);
-	});
-
-	it("opens its coordinator's Agents list from its own Agents chip", async () => {
-		const served = subagent(true);
-		(served as unknown as { evener: Record<string, unknown> }).evener.diagnostics = {
-			delegates: [
-				{
-					delegateId: "d-child",
-					ownerSessionId: "fix",
-					rootSessionId: "coord",
-					childSessionId: "child",
-					transcriptRef: "local:child",
-					type: "subagent",
-					lifecycle: "running",
-					phase: "running",
-					status: "running",
-					resumable: false,
-					needsAttention: false,
-					projectionRevision: 1,
-				},
-			],
-		};
-		const { tree } = await mountSubagent(served);
-		act(() => pressable(tree, "Agents, 1")?.props.onPress());
-		expect(navigation.navigate).toHaveBeenCalledWith("Activity", { hubId: "hub-1", ...COORDINATOR, kind: "agents" });
-	});
-
-	it("opens a document it names in the Reader on its own ref, where its review goes (ruling 16)", async () => {
-		vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("# Fix the settle race\n"));
-		const served = subagent(false);
-		(served as unknown as { cwd: string }).cwd = "/home/jesse/git/evener";
-		(served as unknown as { turns: unknown[] }).turns = [
-			{
-				id: "t1",
-				status: "completed",
-				itemsView: "default",
-				items: [
-					{
-						id: "said-1",
-						turnId: "t1",
-						type: "agentMessage",
-						status: "completed",
-						text: "The plan is in `docs/superpowers/plans/settle-race.md`.",
-					},
-				],
-			},
-		];
-		const { tree } = await mountSubagent(served, {
-			jobs: subagentTree({ terminal: true, outcome: "completed", runEndedAt: new Date().toISOString() }),
-		});
-		const chip = tree.root.findAll(
-			(node) => String(node.type) === "Pressable" && String(node.props.accessibilityLabel).startsWith("Plan, "),
-		)[0];
-		if (!chip) throw new Error("no document chip");
-		act(() => chip.props.onPress());
-		expect(navigation.navigate).toHaveBeenCalledWith("Reader", {
-			hubId: "hub-1",
-			sessionRef: "local:fix",
-			path: "docs/superpowers/plans/settle-race.md",
-			reference: {
-				cwd: "/home/jesse/git/evener",
-				path: "docs/superpowers/plans/settle-race.md",
-				provenance: "relative",
-				readTarget: "/home/jesse/git/evener/docs/superpowers/plans/settle-race.md",
-			},
-			sessionTitle: "Fix race in tree settle",
-		});
-	});
-
-	// G13: a finished subagent's row shows its report's opening line, read
-	// from the coordinator's tree, which the screen holds and the list's rows
-	// read. The tree lands after the rows first render, so the rows must
-	// render again when it does.
-	it("shows a finished subagent's report once the coordinator's tree arrives", async () => {
-		forgetSubagentTrees("hub-1");
-		const actual = subagentOutcomesDelegatesResponse();
-		const reported = actual.delegates.find((row) => row.delegateId === "dlg_reported");
-		if (!reported) throw new Error("missing real producer report");
-		coordinatorHub.delegates = {
-			...actual,
-			context: { ...actual.context, ref: COORDINATOR.ref, rootRef: COORDINATOR.ref, sessionId: COORDINATOR.threadId },
-			delegates: [{ ...reported, ownerRef: COORDINATOR.ref, rootRef: COORDINATOR.ref, childRef: "local:fix" }],
-		};
-		const endedAt = reported.runEndedAt;
-		coordinatorHub.tree = subagentTree({
-			terminal: true,
-			outcome: "completed",
-			packetKind: "reported",
-			message: "Fixed the race: settle now waits for the drain.",
-			runEndedAt: endedAt,
-		});
-		const served = thread(COORDINATOR.ref, "idle");
-		(served as unknown as { turns: unknown[] }).turns = [
-			{
-				id: "t1",
-				status: "completed",
-				itemsView: "default",
-				items: [
-					{
-						id: "call-d",
-						turnId: "t1",
-						type: "commandExecution",
-						toolName: "delegate",
-						status: "completed",
-						argumentsJson: JSON.stringify({ description: "Fix race in tree settle" }),
-					},
-				],
-			},
-		];
-		(served as unknown as { evener: Record<string, unknown> }).evener.diagnostics = {
-			delegates: [
-				{
-					delegateId: reported.delegateId,
-					runGeneration: reported.runGeneration,
-					ownerSessionId: "coord",
-					rootSessionId: "coord",
-					childSessionId: "fix",
-					transcriptRef: "local:fix",
-					originItemId: "call-d",
-					description: "Fix race in tree settle",
-					type: "subagent",
-					lifecycle: "idle",
-					phase: "idle",
-					status: "idle",
-					outcome: "completed",
-					terminal: true,
-					runEndedAt: endedAt,
-					resumable: true,
-					needsAttention: false,
-					projectionRevision: 1,
-				},
-			],
-		};
-		const { tree } = await mount(served);
-		await settle();
-		expect(renderedText(tree)).toContain("Fixed the race: settle now waits for the drain.");
-	});
-
-	it("opens a subagent row in a coordinator's transcript as that subagent's own session, under this one", async () => {
-		const served = thread(COORDINATOR.ref, "active");
-		(served as unknown as { turns: unknown[] }).turns = [
-			{
-				id: "t1",
-				status: "inProgress",
-				itemsView: "default",
-				items: [
-					{
-						id: "call-d",
-						turnId: "t1",
-						type: "commandExecution",
-						toolName: "delegate",
-						status: "inProgress",
-						argumentsJson: JSON.stringify({ description: "Fix race in tree settle" }),
-					},
-				],
-			},
-		];
-		(served as unknown as { evener: Record<string, unknown> }).evener.diagnostics = {
-			delegates: [
-				{
-					delegateId: "d-fix",
-					ownerSessionId: "coord",
-					rootSessionId: "coord",
-					childSessionId: "fix",
-					transcriptRef: "local:fix",
-					originItemId: "call-d",
-					description: "Fix race in tree settle",
-					type: "subagent",
-					lifecycle: "running",
-					phase: "running",
-					status: "running",
-					resumable: false,
-					needsAttention: false,
-					projectionRevision: 1,
-				},
-			],
-		};
-		const { tree } = await mount(served);
-		const row = tree.root.findAll(
-			(node) =>
-				String(node.type) === "Pressable" &&
-				String(node.props.accessibilityLabel).startsWith("Fix race in tree settle, "),
-		)[0];
-		if (!row) throw new Error("no subagent row");
-		act(() => row.props.onPress());
-		expect(navigation.push).toHaveBeenCalledWith("Subagent", {
-			hubId: "hub-1",
-			ref: "local:fix",
-			title: "Fix race in tree settle",
-			coordinator: { ref: COORDINATOR.ref, threadId: COORDINATOR.threadId, title: "Session" },
-		});
-	});
-
-	it("opens a subagent's own subagent under the coordinator's thread as it reads now (#3326 RoboRev)", async () => {
-		// The coordinator restarted since this screen opened: the screen it
-		// pushes asks for the coordinator's tree under the thread it runs now.
-		forgetSubagentTrees("hub-1");
-		const served = subagent(false);
-		(served as unknown as { turns: unknown[] }).turns = [
-			{
-				id: "t1",
-				status: "completed",
-				itemsView: "default",
-				items: [
-					{
-						id: "call-n",
-						turnId: "t1",
-						type: "commandExecution",
-						toolName: "delegate",
-						status: "completed",
-						argumentsJson: JSON.stringify({ description: "Check drain ordering" }),
-					},
-				],
-			},
-		];
-		(served as unknown as { evener: Record<string, unknown> }).evener.diagnostics = {
-			delegates: [
-				{
-					delegateId: "d-nested",
-					ownerSessionId: "fix",
-					rootSessionId: "coord",
-					childSessionId: "nested",
-					transcriptRef: "local:nested",
-					originItemId: "call-n",
-					description: "Check drain ordering",
-					type: "subagent",
-					lifecycle: "running",
-					phase: "running",
-					status: "running",
-					resumable: false,
-					needsAttention: false,
-					projectionRevision: 1,
-				},
-			],
-		};
-		const restarted = { ...subagentTree(), root: { ...subagentTree().root, sessionId: "thread-restarted" } };
-		const { tree } = await mountSubagent(served, { jobs: restarted, coordinatorId: "thread-restarted" });
-		const row = tree.root.findAll(
-			(node) =>
-				String(node.type) === "Pressable" && String(node.props.accessibilityLabel).startsWith("Check drain ordering, "),
-		)[0];
-		if (!row) throw new Error("no subagent row");
-		act(() => row.props.onPress());
-		expect(navigation.push).toHaveBeenCalledWith("Subagent", {
-			hubId: "hub-1",
-			ref: "local:nested",
-			title: "Check drain ordering",
-			coordinator: { ...COORDINATOR, threadId: "thread-restarted" },
-		});
-	});
-
-	it("shows the toast once when the subagent stops at your request", async () => {
-		const { tree, hub } = await mountSubagent(subagent(true));
-		const [row] = flattenSubagents(subagentTree() as never);
-		if (!row) throw new Error("no row");
-		act(() => stopRequests("hub-1").request(COORDINATOR.ref, row, Date.now()));
-		coordinatorHub.tree = subagentTree(
-			{ terminal: true, outcome: "cancelled", runEndedAt: new Date().toISOString() },
-			2,
-		);
-		act(() => hub.notify(activityChangedNotification({ ...COORDINATOR, sessionId: "fix" })));
-		await settle();
-		const toasts = () => tree.root.findAllByType(Toast).map((toast) => toast.props.toast?.text);
-		expect(toasts()).toContain("“Fix race in tree settle” stopped");
-	});
-});
-
-describe("Send while offline (phase 6, spec 8.5)", () => {
-	type Route = ConversationScreenProps["route"];
-	/** The connection drops, or comes back with the same client. */
-	async function reach(tree: ReactTestRenderer, route: Route, live: boolean) {
-		harness.connection = live
-			? { ...harness.connection, state: "ready", downSince: null }
-			: { ...harness.connection, ...droppedConnection(harness.connection) };
-		act(() => tree.update(<ConversationScreen route={route} navigation={navigation} />));
-		await settle();
-	}
-	const outbox = (ref: string) => getNativeMutationRuntime().storage.listOutbox(nativeMutationTargetKey("hub-1", ref));
-
-	it("keeps a message sent offline, and sends it exactly once when the connection returns", async () => {
-		const ref = "ref-train";
-		const { tree, hub, route } = await mount(thread(ref, "idle"));
-		await reach(tree, route, false);
-		await type(tree, "sent on the train");
-		playedHaptics.length = 0;
-		await press(tree, "Send when you're back online");
-		expect(field(tree)?.props.value).toBe("");
-		expect((await outbox(ref)).map((record) => [record.method, record.state])).toEqual([["turn/queue", "submitting"]]);
-		expect(ghostStates(tree)).toEqual(["sending"]);
-		expect(playedHaptics).toEqual(["impact:light"]);
-		expect(hub.mutations()).toEqual([]);
-
-		await reach(tree, route, true);
-		await vi.waitFor(() => expect(hub.mutations()).toEqual(["turn/queue"]));
-		const sent = hub.requests.find((request) => request.method === "turn/queue");
-		expect(sent?.params.input).toEqual([{ type: "text", text: "sent on the train" }]);
-		await settle();
-		expect(hub.mutations()).toEqual(["turn/queue"]);
-	});
-
-	it("keeps Send off, and the draft, for a session this phone hasn't read since launch", async () => {
-		const read = await mount(thread("ref-read", "idle"));
-		await reach(read.tree, read.route, false);
-		const ref = "ref-never-read";
-		const route = {
-			key: `conversation-${ref}`,
-			name: "Conversation",
-			params: { hubId: "hub-1", ref, title: "Session" },
-		} as unknown as Route;
-		navigationState.state = { index: 0, routes: [route] };
-		const tree = render(<ConversationScreen route={route} navigation={navigation} />);
-		await settle();
-		await type(tree, "not yet");
-		expect(pressable(tree, "Send when you're back online")?.props.accessibilityState).toMatchObject({
-			disabled: true,
-		});
-		expect(field(tree)?.props.value).toBe("not yet");
-		expect(await outbox(ref)).toEqual([]);
-	});
-
-	it("answers a question offline, and sends the answer once when the connection returns", async () => {
-		const ref = "ref-question-offline";
-		const { tree, hub, route } = await mount(thread(ref, "awaiting", true));
-		await reach(tree, route, false);
-		await press(tree, "Drop them");
-		await press(tree, "Send answer when you're back online");
-		const records = await outbox(ref);
-		expect(records).toHaveLength(1);
-		expect((records[0]?.payload as { input: unknown }).input).toEqual([
-			{ type: "text", text: '[answers]\n1. [Choice] \u2192 "Drop them"' },
-		]);
-		// The batch is answered: the dock gives way.
-		expect(pressable(tree, "Send answer when you're back online")).toBeUndefined();
-
-		await reach(tree, route, true);
-		await vi.waitFor(() => expect(hub.mutations()).toHaveLength(1));
-		await settle();
-		// Queued, it runs as your next turn: the daemon runs queued input
-		// ahead of everything else while awaiting, superseding the question
-		// as an online answer's turn/start does.
-		expect(hub.mutations()).toEqual(["turn/queue"]);
-		expect(hub.requests.find((request) => request.method === "turn/queue")?.params.input).toEqual([
-			{ type: "text", text: '[answers]\n1. [Choice] \u2192 "Drop them"' },
-		]);
-	});
-
-	it("offers no Send offline where the session can't take it when it arrives", async () => {
-		const ref = "ref-cannot-queue";
-		const served = thread(ref, "awaiting", true);
-		const evener = (served as unknown as { evener: { capabilities: Record<string, unknown> } }).evener;
-		evener.capabilities = { ...evener.capabilities, queue: false };
-		const { tree, route } = await mount(served);
-		await reach(tree, route, false);
-		// Nothing there can act, so nothing offers to (Calm).
-		for (const label of ["Drop them", "Send answer when you're back online"])
-			expect(pressable(tree, label)?.props.accessibilityState).toMatchObject({ disabled: true });
-		expect(await outbox(ref)).toEqual([]);
-	});
-
-	it("shows a held message refused once a restarted session answers it, with Discard", async () => {
-		const ref = "ref-restarted";
-		const { tree, hub, route } = await mount(thread(ref, "idle"));
-		await reach(tree, route, false);
-		await type(tree, "for the old instance");
-		await press(tree, "Send when you're back online");
-		const request = hub.client.request;
-		hub.client.request = async (method: string, params: Record<string, unknown>) => {
-			if (method !== "turn/queue") return request(method, params);
-			hub.requests.push({ method, params });
-			// The daemon's answer to a stale fence (MutationNotAccepted).
-			throw new WireError("thread instance is stale", -32013, {
-				evenerErrorInfo: "conflict",
-				clientMutationId: params.clientMutationId,
-				mutationOutcome: "notAccepted",
-				retryDisposition: "none",
-			});
-		};
-		await reach(tree, route, true);
-		await vi.waitFor(() => expect(renderedText(tree)).toContain("Couldn't send this · thread instance is stale"));
-		expect(hub.mutations()).toEqual(["turn/queue"]);
-		expect(pressable(tree, "Discard")).toBeDefined();
-	});
-});
-
-it("clears the lost send's outbox row with one Discard on the draft ghost", async () => {
-	const ref = "ref-draft-lost";
-	const key = nativeMutationTargetKey("hub-1", ref);
-	const runtime = getNativeMutationRuntime();
-	// The draft kept a send the outbox also holds, and the outbox couldn't
-	// confirm its outcome: ghosts() shows one ghost, the draft's, standing in for
-	// the blockedUnknown row. Seed that exact pair before mounting.
-	nativeDrafts().write({ hubId: "hub-1", sessionRef: ref }, { draft: "", unconfirmed: "lost send" });
-	const { clientMutationId } = await runtime.storage.enqueueIntent({
-		targetRef: key,
-		method: "turn/start",
-		payload: { ref, input: [{ type: "text", text: "lost send" }] },
-		attachments: [],
-		optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "lost send" }] },
-	});
-	await runtime.storage.markAttempted(clientMutationId);
-	await runtime.storage.markUnknown(clientMutationId, "blockedUnknown", { onlyAttempted: true });
-
-	const { tree } = await mount(thread(ref, "idle"));
-	await vi.waitFor(() => expect(ghostStates(tree)).toEqual(["unconfirmed"]));
-	await press(tree, "Discard");
-
-	// One Discard clears both: the draft's uncertainty and the row it stood in
-	// for, which otherwise returns as its own ghost.
-	await vi.waitFor(async () => expect(await runtime.storage.listOutbox(key)).toEqual([]));
-	await settle();
-	expect(ghostStates(tree)).toEqual([]);
-});

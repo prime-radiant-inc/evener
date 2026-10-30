@@ -32,10 +32,7 @@ func TestResumeRequestForConfigDoesNotSweepThePastIndex(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 
 	// A second session lands on disk AFTER the index was built — the
 	// situation whose full-Rebuild cost the resume window used to pay.

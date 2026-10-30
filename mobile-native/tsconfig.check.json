@@ -4,12 +4,13 @@
     // The native typecheck gate catches an unused import or local (issue
     // #3053), the way the web frontend's Biome gate catches noUnusedImports.
     // tsc reports both under noUnusedLocals, so this one option closes the gap
-    // for mobile-native/src and the shared mobile/src. The existing violations
+    // for mobile-native/src. The existing violations
     // were swept clean, so the gate stays green.
     "noUnusedLocals": true,
     "paths": {
       "@evener/appwire-client": ["../appwire-client/typescript/index.ts"],
       "@evener/appwire-client/docContent": ["../appwire-client/typescript/docContent.ts"],
+      "@evener/appwire-client/hubOrigin": ["../appwire-client/typescript/hubOrigin.ts"],
       "@evener/appwire-client/pairing": ["../appwire-client/typescript/pairing.ts"],
       "@evener/appwire-client/state/navigation": ["../appwire-client/typescript/state/navigation/index.ts"],
       "@evener/appwire-client/state/credentials": ["../appwire-client/typescript/state/credentials/index.ts"],
@@ -26,5 +27,5 @@
       "zustand/*": ["./node_modules/zustand/*"]
     }
   },
-  "include": ["**/*", "../mobile/src"]
+  "include": ["**/*"]
 }

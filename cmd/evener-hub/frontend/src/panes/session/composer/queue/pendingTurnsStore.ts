@@ -8,6 +8,7 @@ import {
   type MutationPersistenceSnapshot,
   type MutationProjectionRefresh,
   outboxEntriesByState,
+  ownPendingTurnInput,
   type PendingTurnsDraftPort,
   type PendingTurnsThreadsPort,
   recoveryEntries,
@@ -20,27 +21,43 @@ import type {
   MutationAttachment,
   MutationOutboxRecord,
   MutationRecoveryRecord,
+  MutationStopBarrier,
 } from "../../../../stores/mutationOutbox";
+import type { MutationRecoveryResendResult } from "../../../../stores/mutationOutboxIndexedDB";
 import { clearProjectionWorkForTests, trackProjectionWork } from "../../../../stores/projectionWork";
 import {
   type ComposerMutationRoute,
   discardRecoveryMutation,
+  editQueuedMutation,
   type InputAttachment,
+  installQueuedMutationProjection,
   installResumeOnlyProjection,
   notifyReadyForMutationDispatch,
+  preserveRecoveryMutation,
   readMutationPersistence,
+  removeQueuedMutation,
   resendRecoveryMutation,
   retryBlockedMutation,
+  setPendingProjectionLoaded,
   subscribeMutationPersistence,
   threadsStore,
   transientRefusalRetryPending,
   updateRecoveryMutation,
+  useEditableQueuedMutationEntries,
   useThreadsStore,
 } from "../../../../stores/threads";
 import { clearDraft, readComposerDraft, readDraftRevision } from "../draft";
 import type { PendingMethod, PendingTurnEntry } from "./pendingReconcile";
 
 export type { PendingMethod, PendingTurnEntry } from "./pendingReconcile";
+
+// Presentation ownership only. The durable selector includes Remove-only
+// promotion and empty drain commands, not just messages with editable input.
+// Do not filter the underlying pending projection used by submission routing.
+export function useQueueStripMutationIds(ref: string): ReadonlySet<string> {
+  const records = useEditableQueuedMutationEntries(ref);
+  return useMemo(() => new Set(records.map((record) => record.clientMutationId)), [records]);
+}
 
 // The client-swap safety, reconciliation and submission bookkeeping now live
 // in the package's pending-turns projection store
@@ -62,6 +79,12 @@ const pendingTurnsStore = createPendingTurnsStore<MutationAttachment>({
   threads: threadsPort,
   draft: draftPort,
   identity: { isOwnMutationRecord },
+});
+
+installQueuedMutationProjection({
+  subscribe: pendingTurnsStore.subscribe,
+  getOutbox: () => pendingTurnsStore.getState().outbox,
+  refresh: refreshPendingTurnsProjection,
 });
 
 // The refs whose durable outbox this projection has actually read and
@@ -102,6 +125,11 @@ installResumeOnlyProjection({
     outboxEntriesByState(pendingTurnsStore.getState().outbox, ref, "submitting").some(
       (record) => record.method !== "turn/start",
     ),
+  // Retry's shared eligibility decision applies ownPendingTurnInput itself;
+  // the seam hands it the same projected entries a render reads.
+  pendingTurnEntries: (ref) => pendingTurnsStore.pendingTurnEntries(ref),
+  beginSubmission: (ref) => pendingTurnsStore.beginSubmission(ref),
+  endSubmission: (ref) => pendingTurnsStore.endSubmission(ref),
 });
 
 // The durable-read fence a refresh's targets are decided through, and the
@@ -131,9 +159,13 @@ export function refreshPendingTurnsProjection(ref?: string): Promise<boolean> {
 function invalidateProjectionLoaded(ref?: string): void {
   if (ref !== undefined) {
     loadedRefs.delete(ref);
+    setPendingProjectionLoaded(ref, false);
     return;
   }
-  for (const target of threadsStore.getState().threads.keys()) loadedRefs.delete(target);
+  for (const target of threadsStore.getState().threads.keys()) {
+    loadedRefs.delete(target);
+    setPendingProjectionLoaded(target, false);
+  }
 }
 
 async function readProjectionIntoStore(ref?: string): Promise<boolean> {
@@ -200,6 +232,7 @@ function markProjectionLoaded(
   const mark = (target: string): void => {
     if (!refresh.stillOwns(target) || loadedRefs.has(target)) return;
     loadedRefs.add(target);
+    setPendingProjectionLoaded(target, true);
     loaded.push(target);
   };
   if (ref !== undefined) {
@@ -333,6 +366,10 @@ type ThreadsPortModel = ReturnType<typeof threadsPort.getThreadModel>;
 // unrelated writes.
 export function usePendingTurnEntries(ref: string, method?: PendingMethod): PendingTurnEntry[] {
   useEffect(() => {
+    // The end-cap passes "" when its caller has no session ref. There is no
+    // durable outbox for an empty ref, and refreshing it would send
+    // listOutbox("")/listOptimistic("")/listRecovery("") to storage for nothing.
+    if (ref === "") return;
     void refreshPendingTurnsProjection(ref);
   }, [ref]);
 
@@ -381,6 +418,27 @@ export function usePendingTurnEntries(ref: string, method?: PendingMethod): Pend
   }, [ref, method]);
 
   return useSyncExternalStore(subscribe, getSnapshot);
+}
+
+// Retry's reactive pending inputs for the shared decision: the projected
+// entries and whether the ref's durable read has answered. One subscription
+// serves both questions. `loaded` is published by the projection when the
+// ref's durable read resolves (and drops when a newer read invalidates it), so
+// the action re-renders across the transition; an unloaded read is unknown,
+// not empty, so the decision stays closed.
+export function useRetryPendingProjection(ref: string): { loaded: boolean; entries: PendingTurnEntry[] } {
+  const entries = usePendingTurnEntries(ref);
+  const loaded = useThreadsStore((state) => state.pendingProjectionLoadedRefs.has(ref));
+  return { loaded, entries };
+}
+
+// Retry's reactive outbox answer as a boolean. The shared decision reads the
+// entries through useRetryPendingProjection; this keeps the narrower
+// loaded/unresolved answer for callers that only ask whether this client has
+// unresolved input.
+export function useRetryPendingState(ref: string): { loaded: boolean; unresolved: boolean } {
+  const { loaded, entries } = useRetryPendingProjection(ref);
+  return { loaded, unresolved: ownPendingTurnInput(entries) };
 }
 
 // The same projection read from the stores as they are now, not as a component
@@ -471,7 +529,13 @@ export function updateRecoveryPendingTurn(
   skillNames?: readonly string[],
   commandNames?: readonly string[],
   mentions?: readonly ComposerMention[],
-): Promise<boolean> {
+  consumeRecoveryIds?: readonly string[],
+  localDraftRevisionId?: string,
+  expectedCompositionRevision?: number,
+  expectedRecoveryRevisions?: Readonly<Record<string, number>>,
+  compositionOwnerId?: string,
+  composerText?: string,
+): ReturnType<typeof updateRecoveryMutation> {
   // Composer serializes edits before resending. A committed edit must release
   // that chain even when the recovery tray cannot refresh yet.
   return trackProjectionWork(
@@ -484,9 +548,45 @@ export function updateRecoveryPendingTurn(
         skillNames,
         commandNames,
         mentions,
+        consumeRecoveryIds,
+        localDraftRevisionId,
+        expectedCompositionRevision,
+        expectedRecoveryRevisions,
+        compositionOwnerId,
+        composerText,
       );
       void refreshPendingTurnsProjection(ref);
       return updated;
+    })(),
+  );
+}
+
+export function preserveRecoveryPendingTurn(
+  base: MutationRecoveryRecord,
+  ref: string,
+  text: string,
+  attachments: InputAttachment[],
+  skillNames?: readonly string[],
+  commandNames?: readonly string[],
+  mentions?: readonly ComposerMention[],
+  compositionOwnerId?: string,
+  localDraftRevisionId?: string,
+): ReturnType<typeof preserveRecoveryMutation> {
+  return trackProjectionWork(
+    (async () => {
+      const preserved = await preserveRecoveryMutation(
+        base,
+        ref,
+        text,
+        attachments,
+        skillNames,
+        commandNames,
+        mentions,
+        compositionOwnerId,
+        localDraftRevisionId,
+      );
+      void refreshPendingTurnsProjection(ref);
+      return preserved;
     })(),
   );
 }
@@ -495,8 +595,22 @@ export function discardRecoveryPendingTurn(
   clientMutationId: string,
   ref: string,
   shouldDiscard?: () => boolean,
+  expectedCompositionRevision?: number,
 ): Promise<boolean> {
-  return mutateThenRefresh(ref, () => discardRecoveryMutation(clientMutationId, ref, shouldDiscard));
+  return mutateThenRefresh(ref, () =>
+    discardRecoveryMutation(clientMutationId, ref, shouldDiscard, expectedCompositionRevision),
+  );
+}
+
+export function editQueuedPendingTurn(
+  clientMutationId: string,
+  ref: string,
+): Promise<MutationRecoveryRecord | undefined> {
+  return mutateThenRefresh(ref, () => editQueuedMutation(clientMutationId, ref));
+}
+
+export function removeQueuedPendingTurn(clientMutationId: string, ref: string): Promise<boolean> {
+  return mutateThenRefresh(ref, () => removeQueuedMutation(clientMutationId, ref));
 }
 
 export function resendRecoveryPendingTurn(
@@ -508,12 +622,15 @@ export function resendRecoveryPendingTurn(
   skillNames?: readonly string[],
   commandNames?: readonly string[],
   mentions?: readonly ComposerMention[],
-): Promise<boolean> {
+  barrierRead?: Promise<MutationStopBarrier>,
+  expectedRecoveryRevisions?: Readonly<Record<string, number>>,
+  compositionOwnerId?: string,
+): Promise<MutationRecoveryResendResult> {
   // Resend publishes its committed handoff directly. Reading the recovery
   // tray again cannot hold up a submission that already has a durable owner.
   return trackProjectionWork(
     (async () => {
-      const record = await resendRecoveryMutation(
+      const result = await resendRecoveryMutation(
         clientMutationId,
         ref,
         route,
@@ -522,9 +639,12 @@ export function resendRecoveryPendingTurn(
         skillNames,
         commandNames,
         mentions,
+        barrierRead,
+        expectedRecoveryRevisions,
+        compositionOwnerId,
       );
       void refreshPendingTurnsProjection(ref);
-      return record !== undefined;
+      return result;
     })(),
   );
 }
@@ -534,6 +654,7 @@ export function resetPendingTurnsStoreForTests(): void {
   // The epoch bump already voids anything still running against the previous
   // test's storage, so it is not this test's projection work to wait for.
   clearProjectionWorkForTests();
+  for (const ref of loadedRefs) setPendingProjectionLoaded(ref, false);
   loadedRefs.clear();
   pendingTurnsStore.setState({
     outbox: new Map(),

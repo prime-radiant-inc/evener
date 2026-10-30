@@ -82,9 +82,7 @@ func TestLaunchRefreshBroadcastsAuthUpdated(t *testing.T) {
 	t.Cleanup(hub.Close)
 	client := dialHubRPC(t, hub)
 	t.Cleanup(func() { client.Close() })
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	mustInitializeHubClient(t, client)
 	var resp appwire.ModelListResponse
 	if err := client.Request(context.Background(), appwire.MethodModelList, appwire.ModelListParams{}, &resp); err != nil {
 		t.Fatalf("model/list: %v", err)
@@ -95,11 +93,33 @@ func TestLaunchRefreshBroadcastsAuthUpdated(t *testing.T) {
 	if err := client.Request(context.Background(), appwire.MethodModelList, appwire.ModelListParams{}, &resp); err != nil {
 		t.Fatalf("model/list: %v", err)
 	}
-	// The no-data form: no provider and no originating client, so every
-	// client reads it as a change it did not make and re-reads.
+	// Catalog-only publication: no provider and no originating client, plus the
+	// explicit reason that distinguishes a model-list change from a credential
+	// or instance change sharing the empty-payload shape.
 	got := waitForAuthUpdated(t, client)
 	if got.Provider != "" || got.ActiveSource != "" || got.OriginClientId != "" {
 		t.Fatalf("auth/updated = %+v, want the no-data form", got)
+	}
+	if got.Reason != "models_changed" {
+		t.Fatalf("auth/updated reason = %q, want the catalog-only reason models_changed", got.Reason)
+	}
+}
+
+// A credential write and a provider-instance change keep the empty reason:
+// consumers must still treat them as real changes, not catalog publication.
+func TestOrdinaryAuthAndInstanceBroadcastsCarryNoCatalogReason(t *testing.T) {
+	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{})
+	t.Cleanup(hub.Close)
+	client := dialHubRPC(t, hub)
+	t.Cleanup(func() { client.Close() })
+	mustInitializeHubClient(t, client)
+	notifyInstanceUpdated(web.appRPC, "tab-1")
+	if got := waitForAuthUpdated(t, client); got.Reason != "" || got.OriginClientId != "tab-1" {
+		t.Fatalf("instance broadcast = %+v, want the ordinary change form with no catalog reason", got)
+	}
+	notifyAuthUpdated(web.appRPC, "openai", "store", "tab-1")
+	if got := waitForAuthUpdated(t, client); got.Reason != "" || got.Provider != "openai" || got.ActiveSource != "store" {
+		t.Fatalf("credential broadcast = %+v, want the ordinary change form with no catalog reason", got)
 	}
 }
 

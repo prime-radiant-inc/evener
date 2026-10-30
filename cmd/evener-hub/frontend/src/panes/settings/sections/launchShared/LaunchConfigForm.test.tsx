@@ -4,12 +4,12 @@ import type {
   LaunchOption,
   PathValidateResponse,
 } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { connectionStore } from "../../../../stores/connection";
+import { resetConnectionStoreForTests } from "../../../../stores/connection";
 import { resetExtensionsStoreForTests } from "../../../../stores/extensions";
+import { connectReadyFakeClient } from "../../../../testing/connectionTestUtils";
 import { Toast } from "../../../../widgets";
 import { resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { toastKinds } from "../../../../widgets/toast/toastTestUtils";
@@ -28,18 +28,9 @@ function saveStatus(): HTMLElement {
   return screen.getByTestId("launch-config-status");
 }
 
-// The path-kind rows render PathField, whose completion loader is the
-// extensions store's own completePaths - so opening one needs a connected
-// client behind it.
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  return fake;
-}
-
 beforeEach(() => {
   vi.useRealTimers();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetExtensionsStoreForTests();
 });
 
@@ -286,7 +277,7 @@ describe("validation blocks save", () => {
   // same value was typed into a text box.
   test("an invalid path-kind scalar shows an inline error and does not call onSave", async () => {
     const user = userEvent.setup();
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/paths/complete", () => ({ data: ["/tmp/not-real.jsonl"] }));
     const validatePath = vi.fn().mockResolvedValue({ path: "", valid: false, error: "validator-refusal" });
     const onSave = vi.fn().mockResolvedValue(RESOLVED);
@@ -311,7 +302,7 @@ describe("validation blocks save", () => {
 
   test("a picked path-kind value reaches onSave once it validates", async () => {
     const user = userEvent.setup();
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/paths/complete", () => ({ data: ["/tmp/trace.jsonl"] }));
     const onSave = vi.fn().mockResolvedValue(RESOLVED);
     render(

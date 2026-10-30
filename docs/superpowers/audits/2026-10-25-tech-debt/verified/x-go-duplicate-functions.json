@@ -1,0 +1,142 @@
+[
+ {
+  "id": "x-go-duplicate-functions-1",
+  "verdict": "partial",
+  "severity": "high",
+  "note": "Core confirmed: temp+rename recipe duplicated with fixed '.tmp' names (rendezvous.go:96, session_queue_persist.go:71 confirmed, afero WriteFile(tmp) with no symlink protection) vs CreateTemp (app_host_manage.go:914, :2912 both CreateTemp in same dir, same shape; llm/registry/write.go:219 documents the planted-symlink rationale). Counts are inflated: 22 non-test files have Rename plus CreateTemp or '.tmp' (not 34), 10 use '.tmp' (not 11).",
+  "revised_fix_plan": "Plan is sound but keep execsupport/fsatomic free of an afero dependency (execsupport go.mod only requires x/sync); expose a small FS interface or keep afero-based sites (rendezvous, queue persist, hostops, hubcore state_file) on a thin adapter. Migrate fixed-name sites first (they gain the symlink protection, a real fix), then app_host_manage twins. Decide per store whether fsync is wanted."
+ },
+ {
+  "id": "x-go-duplicate-functions-2",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Verified identical ENOSYS/ENOTSUP/EINVAL predicate in server/thread_clear_journal.go:155, auth/openai/storage.go:229, agent/session_client_mutation_persist.go:423, agent/internal/worktree/sync_unix.go:36, inline in hubendpoint/runtime.go:196, plus fsdurability and wrappers deletionSyncUnsupported (state_file.go:127) and hubTOMLSyncUnsupported (app_host_manage.go:1054). Wrappers are one-line pass-throughs.",
+  "revised_fix_plan": ""
+ },
+ {
+  "id": "x-go-duplicate-functions-3",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "durabilityRetryBackoff and shellFinalizeBackoff byte-identical (confirmed); sshconn nextBackoff saturates (confirmed). But relayRetryBackoff is a stateful Next()/Reset() type with a zero-start rule and locks.go:353 is an inline loop with fixed 200ms cap, so they are not drop-in 'Next(delay, limit)' replacements. Real duplication is 2 identical + 2-3 near.",
+  "revised_fix_plan": "Dedupe the two identical agent functions into one agent-local helper or use sshconn's saturating form via a small shared func; leave relayRetryBackoff and locks.go unless trivially expressible. Low value; do not create a new package for it alone."
+ },
+ {
+  "id": "x-go-duplicate-functions-4",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Three sleeps exist with the described d<=0 differences (llm.DefaultSleep llm/retry_util.go:17 returns nil; ctxSleep auth/openai/device.go:301 checks ctx.Err(); sshconn waitSleep has an injectable o.sleep seam and no d<=0 guard). Names in original attribution are mixed up but semantics claim holds. sshconn's cannot simply be deleted because of the seam.",
+  "revised_fix_plan": "Fold into a shared Sleep only if finding 3 creates a backoff package anyway; otherwise skip."
+ },
+ {
+  "id": "x-go-duplicate-functions-5",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Ellipsis inconsistency confirmed ('\u2026' vs '...'). Byte-slicing mid-rune confirmed at contextmgr/context_manager.go:2561 and :2614, fork_summarize.go:104, cmd/evener/run.go:574, app_search.go:263, agent/prompt_data.go:212 (6 sites). But hooks.go:565 and apptranscript.go:412 slice []rune and are rune-safe, so '~10 cut mid-rune' is overstated to about 6. truncateActivityText is a pass-through (jobs_activity.go:109) with 35 textual references. runetrim.Cut is byte-safe but under agent/internal. Severity high overstated: model-facing history text and CLI args, no crash.",
+  "revised_fix_plan": "Fix the 6 byte-slice sites with a rune-safe cut first (TDD multibyte test each), then consolidate into a shared package; delete truncateActivityText wrapper. Do not unify ellipsis choice across wire-visible UI strings without checking tests/clients that expect '\u2026'."
+ },
+ {
+  "id": "x-go-duplicate-functions-6",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Signature drift confirmed (pathUnder(p, dir) in sandbox/gitdir.go:627 and execenv/securepath.go:497 vs pathUnder(dir, path) in project_resolver.go:302; pathWithin(path, dir) session_tools_worktree.go:1685 vs pathWithin(path, root) session_scratch.go:213; withinRoot(root,target) fspaths/paths.go:124 area; pathWithinDir(dir,candidate) plugins/marketplaces.go:1459). The HasPrefix(root+sep) bug at root '/' is real only for execenv/local.go:3491 pathWithinRoot; project_resolver withinRoot handles trailing separator. No actual swapped-argument call bug was demonstrated, so 'silently invert containment' is speculative. The '12 inline HasPrefix checks' was not independently confirmed.",
+  "revised_fix_plan": "Consolidate in one shared pathutil.Within(root, path); migrate security-relevant sandbox/execenv first with an edge table including root '/'. Treat the root '/' fix in local.go:3491 as the only behavior change."
+ },
+ {
+  "id": "x-go-duplicate-functions-7",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "resolveClean in identifier/git.go:85 and agent/execenv/gitpath.go:275 are byte-identical (confirmed) and the latter carries the 'Compatibility wrapper retaining the old local normalization seam' comment. canonicalOrClean exists at session_tools_worktree.go (call sites seen) but its body not verified identical. The 'five deepest-ancestor variants with different dangling rules' were not verified and unifying security-sensitive walkers is risky.",
+  "revised_fix_plan": "Only export identifier.ResolveClean and delete the execenv copy (and canonicalOrClean if identical). Defer walker unification; needs separate design with Jesse."
+ },
+ {
+  "id": "x-go-duplicate-functions-8",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Three hub copies verbatim confirmed (app_dirs.go:22, fspaths/app_paths.go:35, :156). The others are legitimately different: llm.ExpandTilde requires '~'+separator and uses os.UserHomeDir; sandbox/policy.go:264 joins a relative entry onto a passed home; tildeHome/tildeCollapse are display collapse with different rules. A single ExpandHome across all 7 would change behavior.",
+  "revised_fix_plan": "Extract one expandHome in fspaths for the three hub copies only; leave llm, sandbox and the two collapse functions."
+ },
+ {
+  "id": "x-go-duplicate-functions-9",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "36 DisallowUnknownFields sites in non-test code and many copies of the single-value decode confirmed (llm/apilog/codec.go:303, hubapi/navigation_delta.go:59, appwire/keybindings.go:158, transcript_display.go:306 all check trailing data with different messages). However appwire/types.go:2366 decodeStrictJSON is only called from UnmarshalJSON methods (3 callers), where encoding/json has already validated the whole input as one value, so the missing trailing check cannot admit trailing data; the 'two same-named variants disagree' impact is not a real bug. Remaining drift is error wording only.",
+  "revised_fix_plan": "If consolidated, do it as a mechanical helper with a sentinel error; do not change appwire/types.go:2366. Low priority."
+ },
+ {
+  "id": "x-go-duplicate-functions-10",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Generic clonePointer confirmed in llm/registry/load.go:622, appwire/clone.go:125, cmd/evener-hub/navigation_projection.go:1887, and clonePtr in agent/internal/jobstore/event_clone.go:32 (4 copies). Remaining claims (8 monomorphic clones, 5 recursive any-clones with differing cases) were not verified one by one.",
+  "revised_fix_plan": "Consolidate the 4 generic pointer clones into one; leave recursive JSON clones alone unless aliasing bug is shown."
+ },
+ {
+  "id": "x-go-duplicate-functions-11",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Duplicates exist: appendUnique in llm/providers/responses/request.go:212, sandbox/gitdir.go:599; appendUniqueString in doctor/audit.go:1192, hubcore/favorite_authority.go:321; appendUniqueStrings and hasString in agent/subagents.go:359-363 (hasString has 12 non-test callers); minInt/maxInt in apply_patch.go:599,606. Pure mechanical noise, not drift; some variants may drop empties so not all are slices.Contains.",
+  "revised_fix_plan": "Replace hasString/minInt/maxInt with slices.Contains/min/max; inspect each appendUnique for empty-handling before swapping. Skip the sortedKeys sweep."
+ },
+ {
+  "id": "x-go-duplicate-functions-12",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Wrappers confirmed, but 'one production caller each' is wrong: mainRootFromGitdirPointer and parseGitdirPointer in agent/execenv/gitpath.go:247,255 have zero non-test callers (1 test reference each), i.e. dead except tests. pointerTarget is identical in identifier/git.go:123 and execenv/project_resolver.go:207. openAIStateDirFromEnvMap->FromLookup->cmdutil.StateRootFromLookup chain confirmed (one non-test caller each). shouldResumeAfterTurnStartError->shouldResumeAfterSessionUnavailable->isSessionUnavailableError chain confirmed (app_compact.go:12-18).",
+  "revised_fix_plan": "Delete the two dead gitpath wrappers and their test references, inline the trivial chains. Export one pointerTarget from identifier."
+ },
+ {
+  "id": "x-go-duplicate-functions-13",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Semantic difference confirmed (envvars/firstnonempty.go trims; firstLocalNonEmpty at local_daemon.go:1464 compares exactly). Caller count wrong: 22 occurrences include 9 in test files; production is 7 in local_daemon.go plus 1 in source.go.",
+  "revised_fix_plan": "Switch to envvars.FirstNonEmpty or cmp.Or after checking intent; ~8 production sites."
+ },
+ {
+  "id": "x-go-duplicate-functions-14",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Duplication plausible: agent/transcript_render.go:1975 comment 'Mirrors doctor.oneLine' and apptranscript.go:409 'keep it in step with the hub's helper' confirmed. Same-named collapseWhitespace differs (memory_page.go:219 Fields-join which trims, breaker.go:554 rune loop). Cosmetic.",
+  "revised_fix_plan": "Remove the keep-in-sync mirrors only where an importable home exists; otherwise leave."
+ },
+ {
+  "id": "x-go-duplicate-functions-15",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "processAlive (hubcore/roster_unix.go:19) and pidAlive (scratch/pid_unix.go) both treat EPERM as alive (errors.Is vs ==), documented; groupAlive in cmd/evener-dev/webgate_unix.go:8 is Kill(-pgid,0)==nil so EPERM is dead. Group vs pid probes are different questions, so the EPERM difference may be intentional there.",
+  "revised_fix_plan": "Consolidate the two pid probes into execsupport/procgroup; leave groupAlive unless EPERM behavior is judged a bug."
+ },
+ {
+  "id": "x-go-duplicate-functions-16",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "envLookup (spawn.go, last wins), envToMap (skips no '=') and envVars (sandbox/env_floor.go:335, keeps entries without '=') confirmed and differ in no-'=' handling. Overlay-loop triplication not verified. Medium risk for small gain.",
+  "revised_fix_plan": "Only unify after pinning duplicate-key tests; low priority."
+ },
+ {
+  "id": "x-go-duplicate-functions-17",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Confirmed inline rand.Read+hex with error ignored (session_escalation.go:338, session_queue.go:454) or time-based fallback (cmd/evener-hub/main.go:92) and artifactstore/store.go:51 returning the error. past.go:165 is an int64 seed, not a hex ID. crypto/rand.Read does not fail on supported Go, so fallbacks are dead. Trivial.",
+  "revised_fix_plan": "Optional; drop the dead fallbacks in place without a new package."
+ },
+ {
+  "id": "x-go-duplicate-functions-18",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "HubTokenAuthorized (httpguard.go:70) returns true for empty expected, tokensEqual (hubedge/auth_token.go:132) false for empty, AuthGuard treats empty token as disabled (confirmed). These serve different guards (hubedge also accepts a cookie), so the conflicting empty semantics are intentional per guard; sharing only a BearerToken parser would save ~5 lines.",
+  "revised_fix_plan": "Skip, or share only the bearer-header parse."
+ },
+ {
+  "id": "x-go-duplicate-functions-19",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Counts: 112 non-test os.IsNotExist vs 177 fs/os.ErrNotExist references (claimed 106/159). Stat-wrapper duplicates not individually opened. Mechanical sweep with little payoff.",
+  "revised_fix_plan": "Optional lint rule; do not hand-sweep 112 sites."
+ },
+ {
+  "id": "x-go-duplicate-functions-20",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "appwire/types.go:4703 and :4728 confirm BearerTokenAge and index Size are preformatted server strings; humanBytes (job_output_digest.go:40), fileAgeHuman (web_settings.go:50), hubcore.AgeString (tree.go:482) are different formats for different surfaces (model-facing vs UI). Moving formatting to the TS client is a wire/product change.",
+  "revised_fix_plan": "Discuss with Jesse before any wire change; otherwise no action."
+ }
+]

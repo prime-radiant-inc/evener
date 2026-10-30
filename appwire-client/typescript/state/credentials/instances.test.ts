@@ -3,13 +3,14 @@ import { CONNECTION_REPLACED_ERROR } from "../../credentialLabels";
 import { errorText, friendlyErrorMessage, sessionActionError, WireError } from "../../errors";
 import { deferred } from "../../testing/deferred";
 import { FakeClient } from "../../testing/fakeClient";
-import type { AuthStatusResponse, InstanceEntry, InstanceListResponse } from "../../types.gen";
+import type { AuthStatusResponse, InstanceEntry, InstanceListResponse, MethodName } from "../../types.gen";
 import {
+  type CredentialInstancesState,
   createCredentialInstancesStore,
-  foreignListingChange,
   isStaleListingRefusal,
   staleListingHeld,
 } from "./instances";
+import { foreignListingChange } from "./listing";
 
 const WORK: InstanceEntry = {
   name: "work",
@@ -253,22 +254,31 @@ describe("listing reads and writes", () => {
     });
   });
 
-  test("a superseded instance write schedules the core's own reconcile read", async () => {
+  test.each<[string, MethodName, (state: CredentialInstancesState) => Promise<boolean>]>([
+    [
+      "create",
+      "evener/instance/create",
+      (s: CredentialInstancesState) => s.create({ name: "work", base: "anthropic" }),
+    ],
+    ["edit", "evener/instance/edit", (s: CredentialInstancesState) => s.edit({ name: "work", baseUrl: "https://a" })],
+    ["remove", "evener/instance/remove", (s: CredentialInstancesState) => s.remove("work")],
+    ["setDefault", "evener/instance/setDefault", (s: CredentialInstancesState) => s.setDefault("work")],
+  ])("a superseded instance %s schedules the core's own reconcile read", async (_label, method, issue) => {
     vi.useFakeTimers();
     const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
     const fake = new FakeClient("ready");
     const readAnswer = deferred<InstanceListResponse>();
     fake.on("evener/instance/list", () => (listReads(fake) === 1 ? LISTING : readAnswer.promise));
     const write = deferred<InstanceListResponse>();
-    fake.on("evener/instance/remove", () => write.promise);
+    fake.on(method, () => write.promise);
     store.connectionChanged(fake, "ready");
     await store.getState().fetch();
 
-    const remove = store.getState().remove("work");
+    const issued = issue(store.getState());
     // A read starts after the write and supersedes its answer.
     const read = store.getState().fetch();
     write.resolve(LISTING);
-    expect(await remove).toBe(false);
+    expect(await issued).toBe(false);
     const reads = listReads(fake);
     readAnswer.resolve(LISTING);
     await read;
@@ -276,6 +286,20 @@ describe("listing reads and writes", () => {
     // screen that issued the write and then unmounted cannot strand it.
     await vi.advanceTimersByTimeAsync(300);
     expect(listReads(fake)).toBe(reads + 1);
+  });
+
+  test("a login completion the hub discarded unchecked wrote nothing, so it schedules no listing read", async () => {
+    vi.useFakeTimers();
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const fake = readyClient();
+    fake.on("evener/auth/login/complete", () => ({ status: SIGNED_IN, restart: true }));
+    store.connectionChanged(fake, "ready");
+    await store.getState().fetch();
+    const reads = listReads(fake);
+
+    await store.getState().loginComplete("work", "flow-1", "https://example.test/callback?code=fixture");
+    await vi.advanceTimersByTimeAsync(300);
+    expect(listReads(fake)).toBe(reads);
   });
 
   test("a write from a replaced connection's listing is refused with the shared words until this connection reads", async () => {
@@ -350,6 +374,52 @@ describe("connection changes", () => {
     store.connectionChanged(readyClient(), "ready");
     await vi.advanceTimersByTimeAsync(300);
     expect(listReads(fake)).toBe(0);
+  });
+});
+
+describe("queued refresh provenance", () => {
+  test("an explicit read coalesces the store's queued self refresh and keeps its mark", async () => {
+    vi.useFakeTimers();
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const fake = readyClient();
+    fake.on("evener/auth/apiKey/set", () => SIGNED_IN);
+    store.connectionChanged(fake, "ready");
+    await store.getState().fetch();
+    const selfBefore = store.getState().selfRefresh;
+
+    // A landed credential write queues the store's own post-write refresh.
+    await store.getState().setApiKey("work", API_KEY);
+    const reads = listReads(fake);
+    // The caller's awaited read folds that queued read into itself: one read,
+    // carrying the self mark the queued read would have carried.
+    expect(await store.getState().fetch()).toBe(true);
+    expect(listReads(fake)).toBe(reads + 1);
+    // readListing stamps the mark on both its loading and landed transitions.
+    expect(store.getState().selfRefresh).toBe(selfBefore + 2);
+    // The debounce leaves no second, unowned listing update behind.
+    await vi.advanceTimersByTimeAsync(300);
+    expect(listReads(fake)).toBe(reads + 1);
+  });
+
+  test("an explicit read leaves a queued foreign refresh armed and unmarked", async () => {
+    vi.useFakeTimers();
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const fake = readyClient();
+    store.connectionChanged(fake, "ready");
+    await store.getState().fetch();
+    const selfBefore = store.getState().selfRefresh;
+
+    // Another client's change queues an unmarked refresh.
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "other", activeSource: "store" } });
+    const reads = listReads(fake);
+    expect(await store.getState().fetch()).toBe(true);
+    // The caller's read is not presented as the store's own refresh...
+    expect(store.getState().selfRefresh).toBe(selfBefore);
+    expect(listReads(fake)).toBe(reads + 1);
+    // ...and consuming it would have lost the foreign change's own read.
+    await vi.advanceTimersByTimeAsync(300);
+    expect(listReads(fake)).toBe(reads + 2);
+    expect(store.getState().selfRefresh).toBe(selfBefore);
   });
 });
 

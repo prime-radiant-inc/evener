@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"sync"
 	"testing"
 	"time"
@@ -52,8 +53,10 @@ func TestManagerInputActorRetryAndPendingQuestion(t *testing.T) {
 func TestManagerInputNotificationDoesNotAnswerPendingQuestion(t *testing.T) {
 	adapter := newMessagingAdapter("WORKER-BRIEF")
 	adapter.script("root",
-		func(llm.Request) llm.Response { return toolCallResponse(askUserCall("ask1", askUserArgsValid())) },
-		func(llm.Request) llm.Response { return finalResponse("answer accepted") },
+		func(llm.Request) llm.Response {
+			return agenttest.ToolCallResponse(askUserCall("ask1", askUserArgsValid()))
+		},
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("answer accepted") },
 	)
 	root := newMessagingRoot(t, adapter, nil)
 	ctx := context.Background()

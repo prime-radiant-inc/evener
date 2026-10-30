@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+
+	"primeradiant.com/evener/identifier"
 )
 
 // hasSeq reports whether args contains seq as a contiguous subsequence — the way
@@ -56,8 +58,8 @@ func devShmMainCheckout(t *testing.T) string {
 		t.Skipf("this host offers no writable /dev/shm: %v", err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
-	root = resolveCleanPath(root)
-	if !pathUnder(root, "/dev/shm") {
+	root = identifier.ResolveClean(root)
+	if !identifier.PathUnder(root, "/dev/shm") {
 		// /dev/shm is a symlink here (to /run/shm, say): --dev does not
 		// shadow the resolved path, so there is no /dev/shm workspace to test.
 		t.Skipf("/dev/shm resolves to %q on this host; no /dev/shm-based workspace exists", root)
@@ -77,8 +79,8 @@ func tmpMainCheckout(t *testing.T) string {
 		t.Skipf("this host offers no writable /tmp for the workspace: %v", err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
-	root = resolveCleanPath(root)
-	if !pathUnder(root, "/tmp") {
+	root = identifier.ResolveClean(root)
+	if !identifier.PathUnder(root, "/tmp") {
 		// /tmp is a symlink here (to /var/tmp, say): the sandbox's /tmp
 		// tmpfs does not shadow the resolved path, so there is no /tmp-based
 		// workspace this host can offer.

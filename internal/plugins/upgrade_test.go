@@ -11,9 +11,7 @@ import (
 )
 
 func TestUpgrade_NewShaDirOldRemains(t *testing.T) {
-	if !gitAvailable() {
-		t.Skip("git not available")
-	}
+	skipWithoutGit(t)
 	// A marketplace whose plugin source is a github/url git repo (so it has a sha).
 	pluginRepo := filepath.Join(t.TempDir(), "pluginrepo")
 	writePlugin(t, pluginRepo, "widget", nil)
@@ -57,9 +55,7 @@ func TestUpgrade_NewShaDirOldRemains(t *testing.T) {
 }
 
 func TestUpgrade_NoOpKeepsLiveDir(t *testing.T) {
-	if !gitAvailable() {
-		t.Skip("git not available")
-	}
+	skipWithoutGit(t)
 	pluginRepo := filepath.Join(t.TempDir(), "pluginrepo")
 	writePlugin(t, pluginRepo, "widget", nil)
 	makeGitRepo(t, pluginRepo, "extra.txt", "v1")
@@ -75,9 +71,7 @@ func TestUpgrade_NoOpKeepsLiveDir(t *testing.T) {
 	makeGitRepo(t, mktRepo, "README.md", "x")
 
 	m := NewManager(t.TempDir())
-	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
-		t.Fatalf("AddMarketplace: %v", err)
-	}
+	mustAddMarketplace(context.Background(), t, m, "", Source{Kind: SourceURL, URL: mktRepo})
 	first, err := m.Install(context.Background(), "widget", "acme")
 	if err != nil {
 		t.Fatalf("Install: %v", err)
@@ -100,9 +94,7 @@ func TestUpgrade_NoOpKeepsLiveDir(t *testing.T) {
 }
 
 func TestUpgrade_ManifestLessPlugin_FallbackAppliedToNewShaDir(t *testing.T) {
-	if !gitAvailable() {
-		t.Skip("git not available")
-	}
+	skipWithoutGit(t)
 	pluginRepo := filepath.Join(t.TempDir(), "pluginrepo")
 	makeGitRepo(t, pluginRepo, "extra.txt", "v1")
 
@@ -117,9 +109,7 @@ func TestUpgrade_ManifestLessPlugin_FallbackAppliedToNewShaDir(t *testing.T) {
 	makeGitRepo(t, mktRepo, "README.md", "x")
 
 	m := NewManager(t.TempDir())
-	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
-		t.Fatalf("AddMarketplace: %v", err)
-	}
+	mustAddMarketplace(context.Background(), t, m, "", Source{Kind: SourceURL, URL: mktRepo})
 	first, err := m.Install(context.Background(), "bare-mcp", "acme")
 	if err != nil {
 		t.Fatalf("Install: %v", err)

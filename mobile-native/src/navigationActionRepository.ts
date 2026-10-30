@@ -8,7 +8,9 @@ import {
 	type SessionDeleteParams,
 	type SessionPinAssignParams,
 	type SessionPinUnpinParams,
+	sameJsonValue,
 } from "@evener/appwire-client";
+import { cloneJson, hasExactKeys, isNonBlankText } from "./checkpointRecord";
 import { decodeSessionDeletionResult, localSessionId, type SessionDeletionResult } from "./sessionDeletionResult";
 
 export type NavigationOperation =
@@ -49,16 +51,13 @@ function record(value: unknown): Record<string, unknown> {
 	return value;
 }
 function keys(value: Record<string, unknown>, required: string[], optional: string[] = []) {
-	valid(
-		required.every((key) => Object.hasOwn(value, key)) &&
-			Object.keys(value).every((key) => required.includes(key) || optional.includes(key)),
-	);
+	valid(hasExactKeys(value, required, optional));
 }
-function text(value: unknown): value is string {
-	return typeof value === "string" && value.trim().length > 0;
-}
+const text = isNonBlankText;
+/** A category's name is at most this many code points, the journal's own bound. */
+export const CATEGORY_NAME_MAX_CODE_POINTS = 80;
 function name(value: unknown) {
-	return text(value) && Array.from(value.trim()).length <= 80;
+	return text(value) && Array.from(value.trim()).length <= CATEGORY_NAME_MAX_CODE_POINTS;
 }
 function validateOperation(value: unknown): NavigationOperation {
 	const operation = record(value);
@@ -144,17 +143,13 @@ function validateCheckpoint(value: unknown): NavigationActionCheckpoint {
 	}
 	return value as NavigationActionCheckpoint;
 }
-function clone<T>(value: T): T {
-	return JSON.parse(JSON.stringify(value)) as T;
-}
-const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
 export function nativeNavigationActions(hubId: string, backend: NavigationActionBackend): NavigationActionStorage {
 	valid(text(hubId));
 	const key = `evener.native.navigation-action.${hubId}`;
 	const load = (): NavigationActionCheckpoint | null => {
 		const raw = backend.get(key);
-		return raw === null || raw === undefined ? null : clone(validateCheckpoint(raw));
+		return raw === null || raw === undefined ? null : cloneJson(validateCheckpoint(raw));
 	};
 	return {
 		load,
@@ -163,30 +158,30 @@ export function nativeNavigationActions(hubId: string, backend: NavigationAction
 			valid(load() === null);
 			const id = backend.createId();
 			valid(text(id));
-			const checkpoint = { id, operation: clone(operation), receipt: null };
+			const checkpoint = { id, operation: cloneJson(operation), receipt: null };
 			// Calls stay synchronous so admission cannot yield between checking and saving.
-			backend.set(key, clone(checkpoint));
-			return clone(checkpoint);
+			backend.set(key, cloneJson(checkpoint));
+			return cloneJson(checkpoint);
 		},
 		acknowledge(checkpoint, receipt, deletion) {
 			validateCheckpoint(checkpoint);
 			valid(validateReceipt(receipt) !== null);
 			const current = load();
-			valid(current !== null && equal(current, checkpoint));
+			valid(current !== null && sameJsonValue(current, checkpoint));
 			const next = {
 				...current,
-				receipt: clone(receipt),
-				...(deletion ? { deletion: clone(deletion) } : {}),
+				receipt: cloneJson(receipt),
+				...(deletion ? { deletion: cloneJson(deletion) } : {}),
 			};
 			validateCheckpoint(next);
-			backend.set(key, clone(next));
-			return clone(next);
+			backend.set(key, cloneJson(next));
+			return cloneJson(next);
 		},
 		finish(checkpoint) {
 			validateCheckpoint(checkpoint);
 			const current = load();
-			if (current === null || !equal(current, checkpoint)) return false;
-			return backend.deleteIf(key, clone(current));
+			if (current === null || !sameJsonValue(current, checkpoint)) return false;
+			return backend.deleteIf(key, cloneJson(current));
 		},
 	};
 }

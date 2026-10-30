@@ -15,6 +15,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/internal/mcp"
 	"primeradiant.com/evener/agent/internal/tool"
@@ -361,11 +362,11 @@ func TestLive_Hooks_CommandExecution(t *testing.T) {
 	})
 
 	// --- SessionStart ---
-	startResult := runner.RunSessionStart(context.Background(), hooks.Input{
+	startResult := runner.RunSessionStartFor(context.Background(), hooks.Input{
 		SessionID:     "live-test",
 		CWD:           dir,
 		HookEventName: "SessionStart",
-	})
+	}, plugin.SessionStartKindStartup)
 	// session-start.sh outputs additionalContext (model context), not systemMessage (user-visible).
 	// additionalContext routes to ModelContext.
 	if len(startResult.ModelContext) == 0 {
@@ -518,10 +519,6 @@ func TestLive_Session_WithPlugin(t *testing.T) {
 	workDir := t.TempDir()
 	workDir, _ = filepath.EvalSymlinks(workDir)
 
-	// Create settings file
-	mkdir(t, workDir, ".claude")
-	writeFile(t, workDir, ".claude/live-test.local.md", "---\nstrict: true\n---\nTest config.")
-
 	client := liveRegistryClient(t)
 
 	sess, err := NewSession(client, NewOpenAIProfile(integrationTestModel), execenv.NewLocalExecutionEnvironment(workDir), SessionConfig{
@@ -581,15 +578,6 @@ func TestLive_Session_WithPlugin(t *testing.T) {
 	// Verify hook runner is set up
 	if sess.hookRunner == nil {
 		t.Fatal("hooks.Runner should not be nil")
-	}
-
-	// Verify settings loadable from this workDir
-	settings, err := plugin.LoadSettings(workDir, "live-test")
-	if err != nil {
-		t.Fatalf("plugin.LoadSettings: %v", err)
-	}
-	if settings == nil || settings.Frontmatter["strict"] != true {
-		t.Error("settings not loaded correctly")
 	}
 
 	// Process a simple input through the session.
@@ -715,12 +703,12 @@ func TestLive_Session_PluginAgentsInSystemPrompt(t *testing.T) {
 					}
 				}
 				if !strings.Contains(sysPrompt, "live-test:analyzer") {
-					return finalResponse("FAIL: missing live-test:analyzer")
+					return agenttest.FinalResponse("FAIL: missing live-test:analyzer")
 				}
 				if !strings.Contains(sysPrompt, "live-test:writer") {
-					return finalResponse("FAIL: missing live-test:writer")
+					return agenttest.FinalResponse("FAIL: missing live-test:writer")
 				}
-				return finalResponse("PASS: plugin agents in system prompt")
+				return agenttest.FinalResponse("PASS: plugin agents in system prompt")
 			},
 		},
 	}
@@ -737,10 +725,7 @@ func TestLive_Session_PluginAgentsInSystemPrompt(t *testing.T) {
 	}
 
 	// Drain events
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) // TRIPWIRE: real LLM session turn; only fires on a genuine hang.
 	defer cancel()
@@ -867,10 +852,7 @@ func TestLive_Session_RealSuperpowersPlugin(t *testing.T) {
 	}
 
 	// Drain events
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	// Verify skills were loaded
 	tddKey := "superpowers:test-driven-development"

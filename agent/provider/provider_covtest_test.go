@@ -7,9 +7,6 @@ import (
 
 func TestCovOpenAIProfileCapabilities(t *testing.T) {
 	p := NewOpenAIProfile("gpt-5.5")
-	if !p.SupportsStreaming() {
-		t.Fatal("SupportsStreaming() = false, want true for the OpenAI surface")
-	}
 	if !p.SupportsWebSearch() {
 		t.Fatal("SupportsWebSearch() = false, want the openai provider-level capability")
 	}

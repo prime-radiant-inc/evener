@@ -1,13 +1,14 @@
 import type { HostRow, LaunchConfigResolved } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { installLocalStorage } from "../../../storageTestUtils";
-import { connectionStore } from "../../../stores/connection";
+import { resetConnectionStoreForTests } from "../../../stores/connection";
 import { hostsStore } from "../../../stores/hosts";
 import { resetLaunchConfigHostStoresForTests } from "../../../stores/launchConfig";
 import { resetSettingsHostForTests, setSettingsHost } from "../../../stores/settingsHost";
+import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { HostScopedSurface } from "./hostScopedSurface";
 import { RepositoryConfigSection } from "./inrepo";
@@ -50,12 +51,6 @@ function hostRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
   };
 }
 
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  return fake;
-}
-
 function resolvedWithRepo(repo: LaunchConfigResolved["repo"]): LaunchConfigResolved {
   return { effective: {}, layers: {}, provenance: {}, repo };
 }
@@ -69,7 +64,7 @@ function controllerLaunchCalls(fake: FakeClient): string[] {
 }
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetLaunchConfigHostStoresForTests();
   resetToastStoreForTests();
   hostsStore.getState().resetForTests();
@@ -82,7 +77,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   resetLaunchConfigHostStoresForTests();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   window.history.pushState({}, "", "/");
   vi.useRealTimers();
   vi.unstubAllGlobals();
@@ -90,7 +85,7 @@ afterEach(() => {
 
 test("with this hub selected the section issues the plain launch calls and never the proxy", async () => {
   localStorage.setItem("lastCwd", "/repo");
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/launch/resolve", () =>
     resolvedWithRepo({ path: ".evener/launch.toml", trust: "trusted", hash: "controller-hash" }),
@@ -110,7 +105,7 @@ test("with this hub selected the section issues the plain launch calls and never
 
 test("selecting a remote host resolves THAT host's in-repo config, never the controller's", async () => {
   localStorage.setItem("lastCwd", "/repo");
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   // The controller's own handlers are booby-trapped: reaching any of them while
   // beta is selected is a host-scoping bug.
@@ -140,7 +135,7 @@ test("selecting a remote host resolves THAT host's in-repo config, never the con
 
 test("trusting a file on a remote host writes through the proxy, never this hub's trustRepo", async () => {
   localStorage.setItem("lastCwd", "/repo");
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/launch/trustRepo", () => {
     throw new Error("a remote selection must not trust a file on this hub");
@@ -172,7 +167,7 @@ test("trusting a file on a remote host writes through the proxy, never this hub'
 });
 
 test("a pending remote approval cannot refresh or change the newly selected local scope", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   let release: (value: LaunchConfigResolved) => void = () => {
     throw new Error("approval not started");
   };
@@ -227,7 +222,7 @@ test("a launch-config change for the selected host re-resolves the in-repo confi
   vi.stubGlobal("jest", { advanceTimersByTime: vi.advanceTimersByTime });
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
   localStorage.setItem("lastCwd", "/repo");
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   let hash = "beta-hash";
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/host/request", (params) => {

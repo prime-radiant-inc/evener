@@ -39,14 +39,10 @@ func TestAskUser_RejectedInterruptUsesDurableBoundary(t *testing.T) {
 	c.Register(&fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return toolCallResponse(ask, cancelCall) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask, cancelCall) },
 		},
 	})
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{StateDir: dir}))
 
 	markerFailure := errors.New("interrupt marker rejected after clean rollback")
 	toolResultsFailure := errors.New("tool results record rejected")
@@ -76,11 +72,7 @@ func TestAskUser_RejectedInterruptUsesDurableBoundary(t *testing.T) {
 
 	meta := sess.Meta()
 	sess.Close()
-	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
-	if err != nil {
-		t.Fatalf("RestoreSessionFromMeta: %v", err)
-	}
-	defer restored.Close()
+	restored := restoreAskSession(t, meta, dir)
 	if got := restored.askPendingCount(); got != 0 {
 		t.Fatalf("restored ask pending count = %d, want 0", got)
 	}
@@ -192,7 +184,7 @@ func TestFoldTail_CanceledAskPairRidingTailDoesNotResurrectAfterRestore(t *testi
 	// pairs (the ask call rides with the assistant turn), but ask_user's
 	// posted ack must NOT ride -- a canceled pair whose write recorded
 	// nothing cannot re-enter the durable transcript through the rewrite.
-	data, err := readTranscriptFull(transcriptPath(sess.stateDir, sess.id), "")
+	data, err := readTranscriptFull(context.Background(), transcriptPath(sess.stateDir, sess.id), "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}
@@ -206,11 +198,7 @@ func TestFoldTail_CanceledAskPairRidingTailDoesNotResurrectAfterRestore(t *testi
 
 	meta := sess.Meta()
 	sess.Close()
-	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
-	if err != nil {
-		t.Fatalf("RestoreSessionFromMeta: %v", err)
-	}
-	defer restored.Close()
+	restored := restoreAskSession(t, meta, dir)
 	if got := restored.askPendingCount(); got != 0 {
 		t.Fatalf("restored ask pending count after fold tail = %d, want 0 (the canceled pair resurrected through the rewrite tail)", got)
 	}
@@ -343,7 +331,7 @@ func TestFoldTail_FailedPairTombstoneKeepsSnapshotPositions(t *testing.T) {
 		t.Fatalf("Compact: %v", err)
 	}
 
-	data, err := readTranscriptFull(transcriptPath(sess.stateDir, sess.id), "")
+	data, err := readTranscriptFull(context.Background(), transcriptPath(sess.stateDir, sess.id), "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}
@@ -357,11 +345,7 @@ func TestFoldTail_FailedPairTombstoneKeepsSnapshotPositions(t *testing.T) {
 
 	meta := sess.Meta()
 	sess.Close()
-	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
-	if err != nil {
-		t.Fatalf("RestoreSessionFromMeta: %v", err)
-	}
-	defer restored.Close()
+	restored := restoreAskSession(t, meta, dir)
 	if got := restored.askPendingCount(); got != 0 {
 		t.Fatalf("restored ask pending count after fold tail = %d, want 0", got)
 	}

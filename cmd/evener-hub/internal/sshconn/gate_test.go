@@ -265,11 +265,11 @@ func TestEnsureDeployHookRunsUnderTheGateBeforeAnyRemoteWrite(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	reg := testRegistry(t, host)
 	fr := &fakeRunner{
-		runFn: cannedRun(map[string][]byte{
+		runFn: cannedRun(map[remoteOp][]byte{
 			// The on-disk build and the running hub are an older revision, so the
 			// ladder decides to deploy this controller's build.
-			"launch-check": []byte(`{"protocol":"evener-appwire-v5","version":"oldsha","launch_flags":["api-log"]}`),
-			"api/health":   []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`),
+			opLaunchCheck: []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v5","version":"oldsha","launch_flags":["api-log"]}`),
+			opHealth:      []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`),
 		}),
 		startFn: goodStartFn(t),
 	}
@@ -311,13 +311,20 @@ type ensureCommandSighting struct {
 // `systemctl restart`.
 func ensureDeployTestHarness(t *testing.T, restartErr error) (*Manager, *hostops.Store, *string, *[]ensureCommandSighting) {
 	t.Helper()
+	return ensureDeployTestHarnessInstalling(t, restartErr, "newsha")
+}
+
+// ensureDeployTestHarnessInstalling is ensureDeployTestHarness for a deploy whose
+// installed executable reports installedVersion when the ladder re-reads it.
+func ensureDeployTestHarnessInstalling(t *testing.T, restartErr error, installedVersion string) (*Manager, *hostops.Store, *string, *[]ensureCommandSighting) {
+	t.Helper()
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	fr := deployRunner(t,
 		func(call int) ([]byte, error) {
 			if call == 0 {
-				return []byte(`{"protocol":"evener-appwire-v4","version":"oldsha","launch_flags":["api-log"]}`), nil
+				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v4","version":"oldsha","launch_flags":["api-log"]}`), nil
 			}
-			return []byte(`{"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"` + installedVersion + `","launch_flags":["api-log"]}`), nil
 		},
 		func(int) ([]byte, error) {
 			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
@@ -326,6 +333,7 @@ func ensureDeployTestHarness(t *testing.T, restartErr error) (*Manager, *hostops
 	store := ensureDeployTestStore(t)
 	var recordID string
 	var seen []ensureCommandSighting
+	modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "newsha")
 	innerRun := fr.runFn
 	fr.runFn = func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 		command := strings.Join(argv, " ")
@@ -451,6 +459,28 @@ func TestEnsureRestartLegFailureFailsTheStillOpenRecord(t *testing.T) {
 	}
 }
 
+// TestEnsureUnstampedDeployFailsTheOpenRecordBeforeTheRestartLeg pins that a
+// deploy leaving a build other than the controller's ends its record failed and
+// never reaches the restart leg the record was kept open for.
+func TestEnsureUnstampedDeployFailsTheOpenRecordBeforeTheRestartLeg(t *testing.T) {
+	m, store, recordID, seen := ensureDeployTestHarnessInstalling(t, nil, "othersha")
+
+	_, err := m.Ensure(context.Background(), "alpha")
+	if !errors.Is(err, ErrDeployUnstamped) {
+		t.Fatalf("Ensure error = %v, want the unstamped-build refusal", err)
+	}
+	if restarts := restartSightings(*seen); len(restarts) != 0 {
+		t.Fatalf("the restart leg ran %d times after a refused deploy", len(restarts))
+	}
+	record, ok := store.Record(*recordID)
+	if !ok {
+		t.Fatal("the Ensure record disappeared")
+	}
+	if record.State != hostops.StateFailed {
+		t.Fatalf("record state = %q, want failed", record.State)
+	}
+}
+
 // ensureRestartTestHarness resumes a recorded replacement. The restart hook
 // creates a real operation record and keeps it open throughout recovery.
 func ensureRestartTestHarness(t *testing.T, restartErr error) (*Manager, *hostops.Store, *string, *[]ensureCommandSighting) {
@@ -458,7 +488,7 @@ func ensureRestartTestHarness(t *testing.T, restartErr error) (*Manager, *hostop
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	fr := deployRunner(t,
 		func(int) ([]byte, error) {
-			return []byte(`{"protocol":"` + appwire.ProtocolVersion + `","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"` + appwire.ProtocolVersion + `","version":"newsha","launch_flags":["api-log"]}`), nil
 		},
 		func(call int) ([]byte, error) {
 			// The pre-decision probe sees the stale process; the probes after
@@ -472,6 +502,7 @@ func ensureRestartTestHarness(t *testing.T, restartErr error) (*Manager, *hostop
 	store := ensureDeployTestStore(t)
 	var recordID string
 	var seen []ensureCommandSighting
+	modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "newsha")
 	innerRun := fr.runFn
 	fr.runFn = func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 		command := strings.Join(argv, " ")
@@ -584,13 +615,14 @@ func TestEnsureRestartOnlyRefusesWithoutARecorder(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	fr := deployRunner(t,
 		func(int) ([]byte, error) {
-			return []byte(`{"protocol":"` + appwire.ProtocolVersion + `","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"` + appwire.ProtocolVersion + `","version":"newsha","launch_flags":["api-log"]}`), nil
 		},
 		func(int) ([]byte, error) {
 			return []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		},
 	)
 	var commands []string
+	modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "newsha")
 	innerRun := fr.runFn
 	fr.runFn = func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 		commands = append(commands, strings.Join(argv, " "))
@@ -622,13 +654,14 @@ func TestEnsureDeployRefusesWithoutARecorder(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	fr := deployRunner(t,
 		func(int) ([]byte, error) {
-			return []byte(`{"protocol":"` + appwire.ProtocolVersion + `","version":"oldsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"` + appwire.ProtocolVersion + `","version":"oldsha","launch_flags":["api-log"]}`), nil
 		},
 		func(int) ([]byte, error) {
 			return []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		},
 	)
 	var commands []string
+	modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "newsha")
 	innerRun := fr.runFn
 	fr.runFn = func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 		commands = append(commands, strings.Join(argv, " "))

@@ -170,6 +170,23 @@ const SANITIZE_CONFIG = {
   // automatic - re-check whether "class"/"align" should stay this
   // permissive at that point.
   ALLOWED_ATTR: ["href", "title", "target", "rel", "class", "align"],
+  // DOMPurify's default scheme allowlist plus `file`. A file:// link is how an
+  // agent names a report it filed beside the session, and dropping the href
+  // leaves a bare anchor that looks like a link and goes nowhere. Keeping the
+  // destination is only half the job: the transcript's own anchor pass decides
+  // which file destinations the hub can actually open and turns those into
+  // document-pane requests. Everything absent here stays refused exactly as
+  // before - javascript:, data:, and every other scheme DOMPurify's default
+  // already rejected are still stripped, which the widget's own tests pin.
+  //
+  // The scheme is allowed for every consumer of this widget, but only the
+  // transcript resolves it. Elsewhere a file:// anchor is a destination the
+  // browser will not follow from an http(s) page, which is honest - it shows
+  // where the link goes - where a stripped href showed nothing. Scoping the
+  // scheme to the transcript needs a caller-supplied link policy on this
+  // widget, which the design system makes Jesse's call, not a local edit.
+  ALLOWED_URI_REGEXP:
+    /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp|matrix|file):|[^a-z]|[a-z+.-]+(?:[^a-z+.\-:]|$))/i,
 };
 
 // One prose slice of a segmented message: the same parse+sanitize pipeline as
@@ -275,9 +292,10 @@ export function Markdown({ source, live = false, ref }: MarkdownProps) {
   // override escapes raw source HTML to text before it's ever markup,
   // every custom renderer escapes its own string interpolations, and
   // DOMPurify.sanitize() re-checks the generated output against a fixed
-  // allowlist as a second, independent layer (its default safe-URI-scheme
-  // filtering for href/src is untouched - SANITIZE_CONFIG never sets
-  // ALLOWED_URI_REGEXP). See this file's own comments above for the rest.
+  // allowlist as a second, independent layer. Its safe-URI-scheme filtering
+  // for href/src still applies: SANITIZE_CONFIG widens that scheme list by
+  // exactly one entry, `file`, and refuses everything else it refused
+  // before. See this file's own comments above for the rest.
   if (!segmented) {
     // biome-ignore lint/security/noDangerouslySetInnerHtml: sanitized via DOMPurify + escaped renderer overrides, see above
     return <div ref={ref} className={CLASS.root} dangerouslySetInnerHTML={{ __html: html }} />;

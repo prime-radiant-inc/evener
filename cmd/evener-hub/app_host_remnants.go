@@ -46,10 +46,6 @@ package hub
 //     and recover attempt records keep their epoch fields as historical data;
 //     the takeover of a timed-out attempt records its fenced-closed mark only,
 //     and the abandoned run may still execute (the accepted residual).
-//   - The store-side compensation record (deploy-pipeline spec §9, S7's
-//     `pendingStoreSync`/`pendingCompensation`): pre-commit compensation stays
-//     the hub.toml rollback (plus the re-read preimage), with no cross-file
-//     intent record.
 //   - `attachUnderGate`'s reservation primitive (S13): the attach fence refusal
 //     is here; the reservation is not.
 //   - The retry/recover UI affordances (S16): the store narrows the union and
@@ -378,6 +374,32 @@ func mintRemnantID() string { return uuid.NewString() }
 // mintAttemptID mints the server-generated attempt id a claim records.
 func mintAttemptID() string { return uuid.NewString() }
 
+// hostInstant renders an instant the way every host record stores it.
+func hostInstant(t time.Time) string { return t.UTC().Format(time.RFC3339) }
+
+// claimTeardownAttempt builds the atomic claim a teardown retry or recover
+// persists under the mutation lock: a fresh open attempt for the remnant, plus
+// the fenced-closed mark of a still-open prior attempt in the same write, so a
+// concurrent claim loses exactly one of the two. The mark is a durable claim
+// marker, not a stop signal: the fencing-epoch takeover (kill/wait plus guard
+// advance) was withdrawn with the crash-fencing program (comp08), so the prior
+// run may still be executing.
+func (m *hubHostManager) claimTeardownAttempt(remnantID string, now time.Time, priorID string, prior HostTeardownAttempt, priorOpen bool) (string, HostTeardownAttempt, hostPersistChange) {
+	attemptID := mintAttemptID()
+	attempt := HostTeardownAttempt{
+		RemnantID:         remnantID,
+		State:             hostAttemptStateOpen,
+		StartedAt:         hostInstant(now),
+		FencingEpochBoot:  m.cfg.bootID,
+		FencingEpochOpSeq: uint64(now.UnixNano()),
+	}
+	change := hostPersistChange{attempt: &pendingHostAttempt{AttemptID: attemptID, Attempt: attempt}}
+	if priorOpen {
+		change.fencedAttempt = &pendingHostAttempt{AttemptID: priorID, Attempt: fencedAttemptRecord(prior, now)}
+	}
+	return attemptID, attempt, change
+}
+
 // mintFinalizingToken mints the opaque attempt token a finalizing claim
 // carries (spec §5: "a finalizing claim carrying the same scoped key plus a
 // server-generated opaque attempt token").
@@ -430,7 +452,7 @@ func newTeardownRemnant(kind, seam string, entry hostreg.Host, mutationKey strin
 		Generation:      entry.Generation,
 		IncarnationID:   entry.IncarnationID,
 		MutationKey:     mutationKey,
-		CommittedAt:     committedAt.UTC().Format(time.RFC3339),
+		CommittedAt:     hostInstant(committedAt),
 		CleanupHandle:   cleanupHandleFor(entry),
 	}
 }
@@ -559,9 +581,9 @@ func (s *hostStore) remnantByID(remnantID string) (HostTeardownRemnant, bool) {
 // ---------------------------------------------------------------------------
 
 // openRemnantID is the manager's remnant fence: the id of the open remnant
-// fencing name, if one does. It is the function cfg.remnantFence is wired to in
-// production (newHubHostManager), so every gate S10/S11 shipped — and every new
-// one this slice adds — reads the real record set.
+// fencing name, if one does. Every gate that consults a remnant — the
+// retention and capacity exemptions, the boot collision rule, deploy, restart,
+// plan, attach, and the re-add, update and remove refusals — reads it here.
 func (m *hubHostManager) openRemnantID(name string) (string, bool) {
 	if strings.TrimSpace(name) == "" {
 		return "", false

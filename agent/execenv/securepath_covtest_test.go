@@ -5,32 +5,6 @@ import (
 	"testing"
 )
 
-// TestPathUnder_Branches covers the pathUnder function's branches that are
-// only exercised by the evenerfuzz+linux test build. This test runs on all
-// platforms without a build constraint.
-func TestPathUnder_Branches(t *testing.T) {
-	// rel == "." → true (same path).
-	if !pathUnder("/foo", "/foo") {
-		t.Error("pathUnder(/foo, /foo) = false, want true")
-	}
-	// rel error (mixed relative/absolute) → false.
-	if pathUnder("/absolute", "relative") {
-		t.Error("pathUnder(/absolute, relative) = true, want false")
-	}
-	// child → true.
-	if !pathUnder("/foo/bar", "/foo") {
-		t.Error("pathUnder(/foo/bar, /foo) = false, want true")
-	}
-	// parent → false.
-	if pathUnder("/foo", "/foo/bar") {
-		t.Error("pathUnder(/foo, /foo/bar) = true, want false")
-	}
-	// sibling → false.
-	if pathUnder("/foo/baz", "/foo/bar") {
-		t.Error("pathUnder(/foo/baz, /foo/bar) = true, want false")
-	}
-}
-
 // TestSplitLeaf covers splitLeaf for various inputs.
 func TestSplitLeaf(t *testing.T) {
 	cases := []struct {

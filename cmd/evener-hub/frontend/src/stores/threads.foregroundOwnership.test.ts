@@ -1,28 +1,33 @@
+import { type TestThreadOverrides, testThread } from "../threadTestUtils";
 import "fake-indexeddb/auto";
 import {
-  type QueueState,
+  buildEntityView,
+  hydrateThread,
+  parseActivityTree,
   RequestTimeoutError,
-  type Thread,
-  type ThreadCapabilities,
   type ThreadModel,
   type ThreadReadResponse,
 } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
+import { subagentOutcomesResponse } from "@evener/appwire-client/testing/subagentWireFixtures";
+import { act, cleanup, render, waitFor } from "@testing-library/react";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { createElement } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { connectionStore } from "./connection";
+import { projectComicDelegates } from "../comic/delegates";
+import { type ComicSubchatState, useComicSubchats } from "../comic/useComicSubchats";
+import { resetTranscriptPagingForTests } from "../panes/session/transcript/useTranscript";
+import { connectReadyFakeClient } from "../testing/connectionTestUtils";
+import { connectionStore, resetConnectionStoreForTests } from "./connection";
+import { setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { SessionEntryCache } from "./sessionEntryCache";
-import {
-  installHydrationRetrySchedulerForTests,
-  resetThreadsStoreForTests,
-  setProductionEntryCacheForTests,
-  threadsStore,
-} from "./threads";
+import { installHydrationRetrySchedulerForTests, resetThreadsStoreForTests, threadsStore } from "./threads";
+import { useThreadModel } from "./useThreadModel";
 
 let cache: SessionEntryCache;
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   cache = new SessionEntryCache({
     indexedDB: new IDBFactory(),
@@ -40,69 +45,20 @@ beforeEach(() => {
   });
 });
 afterEach(() => {
+  cleanup();
+  resetTranscriptPagingForTests();
   resetThreadsStoreForTests();
   restoreHydrationRetryScheduler?.();
   restoreHydrationRetryScheduler = null;
   cache.close();
   vi.restoreAllMocks();
 });
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  fake.on("thread/unsubscribe", () => ({}));
-  connectionStore.getState().connect(fake);
-  return fake;
-}
+const connectFakeClient = () => connectReadyFakeClient((fake) => fake.on("thread/unsubscribe", () => ({})));
+
 async function flushUntil(done: () => boolean, maxTurns = 20): Promise<void> {
   for (let i = 0; i < maxTurns && !done(); i += 1) await Promise.resolve();
 }
 const settleCallerContinuations = nextMacrotask;
-
-const CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
-
-type TestThreadOverrides = Omit<Partial<Thread>, "evener"> & {
-  evener?: Omit<Thread["evener"], "queue"> & { queue: Partial<QueueState> };
-};
-
-function testThread(ref: string, overrides: TestThreadOverrides = {}): Thread {
-  const { evener, ...threadOverrides } = overrides;
-  const threadID = threadOverrides.id ?? `thr_${ref}`;
-  return {
-    id: threadID,
-    sessionId: `sess_${ref}`,
-    preview: "test",
-    ephemeral: false,
-    modelProvider: "anthropic/claude-sonnet-4-5",
-    createdAt: 1000,
-    updatedAt: 1000,
-    status: { type: "idle" },
-    cwd: "/tmp/project",
-    cliVersion: "1.0.0",
-    source: "evener",
-    evener: {
-      ref,
-      instanceId: threadID,
-      mutationStateAuthoritative: true,
-      capabilities: CAPABILITIES,
-      ...evener,
-      queue: { revision: 0, ...evener?.queue },
-    },
-    ...threadOverrides,
-  };
-}
 
 function readResponse(ref: string, overrides: TestThreadOverrides = {}): ThreadReadResponse {
   return { thread: testThread(ref, overrides) };
@@ -116,6 +72,62 @@ interface ScheduledHydrationRetry {
 
 let scheduledHydrationRetries: ScheduledHydrationRetry[] = [];
 let restoreHydrationRetryScheduler: (() => void) | null = null;
+
+test("collapsing a Comic child retains an independent foreground hydration owner", async () => {
+  const root = "local:root";
+  const model = hydrateThread(readResponse(root, { sessionId: "root" }), root, 0);
+  const entities = buildEntityView({
+    sessionRef: root,
+    tree: parseActivityTree(subagentOutcomesResponse().data) ?? undefined,
+    turns: [],
+    stale: false,
+    ended: false,
+  });
+  const strip = projectComicDelegates(model, entities)[0]!;
+  const fake = connectFakeClient();
+  let reject!: (error: Error) => void;
+  let reads = 0;
+  fake.on("thread/read", (params) => {
+    reads++;
+    if (reads === 1)
+      return new Promise<ThreadReadResponse>((_resolve, fail) => {
+        reject = fail;
+      });
+    return readResponse(params.ref!, {
+      turns: [{ id: "recovered-child", status: "completed", itemsView: "full", items: [] }],
+    });
+  });
+  let state!: ComicSubchatState;
+  let independent: ThreadModel | undefined;
+  function Comic() {
+    const subchats = useComicSubchats(root, undefined);
+    state = subchats.state;
+    return subchats.lifetimes;
+  }
+  function Independent() {
+    independent = useThreadModel(strip.childRef);
+    return null;
+  }
+  const comic = render(createElement(Comic));
+  act(() => state.expand([], strip));
+  await waitFor(() => expect(reads).toBe(1));
+  const other = render(createElement(Independent));
+  act(() => state.collapse([strip.key]));
+  await act(async () => reject(new RequestTimeoutError("DELAYED_FIXTURE")));
+  await waitFor(() => expect(scheduledHydrationRetries).toHaveLength(1));
+  expect(scheduledHydrationRetries[0]?.cancelled).toBe(false);
+  expect(fake.calls.filter((call) => call.method === "thread/unsubscribe")).toHaveLength(0);
+  await act(async () => runScheduledHydrationRetry());
+  await waitFor(() => expect(independent?.turns[0]?.id).toBe("recovered-child"));
+  expect(reads).toBe(2);
+  expect(state.expandedPaths).toHaveLength(0);
+  expect(state.readers.size).toBe(0);
+  expect(fake.calls.some((call) => call.method === "turn/start" || call.method === "thread/resume")).toBe(false);
+  comic.unmount();
+  expect(threadsStore.getState().threads.has(strip.childRef)).toBe(true);
+  other.unmount();
+  await waitFor(() => expect(threadsStore.getState().threads.has(strip.childRef)).toBe(false));
+});
 
 // runScheduledHydrationRetry invokes exactly one scheduled retry, proving first
 // that it exists and was not cancelled - a cancelled entry that still fires

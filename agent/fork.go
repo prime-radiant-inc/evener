@@ -1,12 +1,10 @@
 package agent
 
 import (
-	"bufio"
-	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/spf13/afero"
@@ -79,7 +77,8 @@ func forkSessionAtUserTurnFS(fs afero.Fs, stateDir, parentID string, divergenceT
 		return "", "", fmt.Errorf("%w: divergenceTurn must be >= 1, got %d", ErrDivergencePositionOutOfRange, divergenceTurn)
 	}
 
-	parentHeader, allEntries, err := readForkParent(fs, stateDir, parentID, 10*1024*1024)
+	deps := defaultForkDeps()
+	parentHeader, allEntries, err := readForkParent(fs, stateDir, parentID, deps.maxScanToken)
 	if err != nil {
 		return "", "", err
 	}
@@ -95,14 +94,6 @@ func forkSessionAtUserTurnFS(fs afero.Fs, stateDir, parentID string, divergenceT
 	parentMeta, err := schema.LoadSessionMetaWithFS(fs, stateDir, parentID)
 	if err != nil {
 		return "", "", fmt.Errorf("load parent session meta: %w", err)
-	}
-
-	deps := forkSessionDeps{
-		newWriter: func(fs afero.Fs, path string, header transcript.Header) (forkTranscriptWriter, error) {
-			return transcript.NewWriterWithFS(fs, path, header)
-		},
-		saveMeta:     schema.SaveSessionMetaWithFS,
-		maxScanToken: 10 * 1024 * 1024,
 	}
 
 	// The child gets only the prefix before the divergence turn, with nil
@@ -125,13 +116,17 @@ func forkSessionAtUserTurnFS(fs afero.Fs, stateDir, parentID string, divergenceT
 }
 
 func forkSessionFS(fs afero.Fs, stateDir, parentID string, divergenceTurn int, editedMessage, parentForkLabel string) (string, error) {
-	return forkSessionWithDeps(fs, stateDir, parentID, divergenceTurn, editedMessage, parentForkLabel, forkSessionDeps{
+	return forkSessionWithDeps(fs, stateDir, parentID, divergenceTurn, editedMessage, parentForkLabel, defaultForkDeps())
+}
+
+func defaultForkDeps() forkSessionDeps {
+	return forkSessionDeps{
 		newWriter: func(fs afero.Fs, path string, header transcript.Header) (forkTranscriptWriter, error) {
 			return transcript.NewWriterWithFS(fs, path, header)
 		},
 		saveMeta:     schema.SaveSessionMetaWithFS,
-		maxScanToken: 10 * 1024 * 1024,
-	})
+		maxScanToken: transcript.DefaultMaxLineBytes,
+	}
 }
 
 type forkTranscriptWriter interface {
@@ -195,7 +190,7 @@ func readForkParent(fs afero.Fs, stateDir, parentID string, maxScanToken int) (t
 	if err := schema.ValidateSessionID(parentID); err != nil {
 		return transcript.Header{}, nil, err
 	}
-	transcriptPath := filepath.Join(stateDir, sessionsSubdir, parentID+".transcript.jsonl")
+	transcriptPath := schema.SessionTranscriptPath(stateDir, parentID)
 
 	// Read the raw transcript lines so we can replay entry lines into the child.
 	f, err := fs.Open(transcriptPath)
@@ -207,55 +202,15 @@ func readForkParent(fs afero.Fs, stateDir, parentID string, maxScanToken int) (t
 	}
 	defer func() { _ = f.Close() }() // read-only handle; close error is immaterial
 
-	if maxScanToken <= 0 {
-		maxScanToken = 10 * 1024 * 1024
-	}
-	reader := bufio.NewReaderSize(f, min(64*1024, maxScanToken))
-
-	// The first non-empty complete line is the header.
-	var parentHeader transcript.Header
-	for {
-		line, complete, _, readErr := transcript.ReadLine(reader, maxScanToken)
-		if readErr != nil {
-			return transcript.Header{}, nil, fmt.Errorf("reading parent transcript header: %w", readErr)
-		}
-		if !complete {
-			return transcript.Header{}, nil, errors.New("parent transcript is empty")
-		}
-		line = bytes.TrimSpace(line)
-		if len(line) == 0 {
-			continue
-		}
-		parentHeader, err = transcript.DecodeHeader(line)
-		if err != nil {
-			return transcript.Header{}, nil, fmt.Errorf("parsing parent transcript header: %w", err)
-		}
-		break
-	}
-
-	// Collect all entry lines from the parent transcript.
 	var allEntries []transcript.Entry
-	for {
-		line, complete, _, readErr := transcript.ReadLine(reader, maxScanToken)
-		if readErr != nil {
-			return transcript.Header{}, nil, fmt.Errorf("reading parent transcript entries: %w", readErr)
-		}
-		if !complete {
-			break
-		}
-		line = bytes.TrimSpace(line)
-		if len(line) == 0 {
-			continue
-		}
-
-		entry, err := transcript.DecodeEntry(line)
-		if err != nil {
-			return transcript.Header{}, nil, fmt.Errorf("parsing parent transcript entry: %w", err)
-		}
-
+	result, err := transcript.Scan(context.Background(), f, maxScanToken, func(_ []byte, entry transcript.Entry) error {
 		allEntries = append(allEntries, entry)
+		return nil
+	})
+	if err != nil {
+		return transcript.Header{}, nil, fmt.Errorf("reading parent transcript: %w", err)
 	}
-	return parentHeader, allEntries, nil
+	return result.Header, allEntries, nil
 }
 
 // writeForkChild writes the child transcript (prefix entries plus, when
@@ -291,7 +246,7 @@ func writeForkChildWithConfig(fs afero.Fs, stateDir, parentID string, parentHead
 		ParentToolCallID: parentHeader.ParentToolCallID,
 	}
 
-	childTranscriptPath := filepath.Join(stateDir, sessionsSubdir, childID+".transcript.jsonl")
+	childTranscriptPath := schema.SessionTranscriptPath(stateDir, childID)
 	tw, err := deps.newWriter(fs, childTranscriptPath, childHeader)
 	if err != nil {
 		return "", fmt.Errorf("create child transcript: %w", err)
@@ -311,6 +266,7 @@ func writeForkChildWithConfig(fs afero.Fs, stateDir, parentID string, parentHead
 	// Replay prefix entries into the child transcript.
 	for _, entry := range prefixEntries {
 		// A copy keeps the identity it was recorded with.
+		entry.Turn.Authorship = inheritedTranscriptAuthorship(entry.Turn.Authorship)
 		if _, err := tw.Record(entry.Turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: transcript.PlaceVerbatim}); err != nil {
 			return "", fmt.Errorf("append prefix turn to child transcript: %w", err)
 		}
@@ -326,6 +282,7 @@ func writeForkChildWithConfig(fs afero.Fs, stateDir, parentID string, parentHead
 	// divergence fork (aside forks pass nil and copy the tip verbatim).
 	if editedMessage != nil {
 		editedTurn := schema.NewTurn(schema.TurnUserInput, llm.User(*editedMessage))
+		editedTurn.Authorship = humanTranscriptAuthorship()
 		// Written with no session to run it: a delivery turn of its own.
 		if _, err := tw.Record(editedTurn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: transcript.PlaceDelivery}); err != nil {
 			return "", fmt.Errorf("append edited turn to child transcript: %w", err)
@@ -344,22 +301,28 @@ func writeForkChildWithConfig(fs afero.Fs, stateDir, parentID string, parentHead
 	}
 	// A fork or aside is a new ordinary session, not a resumed Manager.
 	childConfig.Manager = false
+	// A fork child is written as a root, so it keeps a restricted root parent's
+	// memory-save verdict but never inherits a delegate parent's save-tool
+	// removal: the child registers the save tools when it launches. An aside
+	// config that disables memory keeps the skill hidden immediately.
+	memorySaveUnavailable := childConfig.DisableMemory || (parentMeta.MemorySaveUnavailable && !parentMeta.IsSubagent)
 	childMeta := schema.SessionMeta{
-		ID:                 childID,
-		WorkspaceID:        childID,
-		ProfileID:          parentMeta.ProfileID,
-		Model:              parentMeta.Model,
-		CheapModel:         parentMeta.CheapModel,
-		Config:             childConfig,
-		EnvInfo:            parentMeta.EnvInfo,
-		CreatedAt:          now,
-		UpdatedAt:          now,
-		TurnCount:          modelResponses,
-		AcceptedInputTurns: acceptedInputTurns,
-		OriginalPrompt:     parentMeta.OriginalPrompt,
-		ParentSessionID:    parentID,
-		DivergenceTurn:     divergenceTurn,
-		ForkLabel:          "", // child carries no fork label; parent gets it
+		ID:                    childID,
+		WorkspaceID:           childID,
+		ProfileID:             parentMeta.ProfileID,
+		Model:                 parentMeta.Model,
+		CheapModel:            parentMeta.CheapModel,
+		Config:                childConfig,
+		EnvInfo:               parentMeta.EnvInfo,
+		CreatedAt:             now,
+		UpdatedAt:             now,
+		TurnCount:             modelResponses,
+		AcceptedInputTurns:    acceptedInputTurns,
+		OriginalPrompt:        parentMeta.OriginalPrompt,
+		ParentSessionID:       parentID,
+		DivergenceTurn:        divergenceTurn,
+		ForkLabel:             "", // child carries no fork label; parent gets it
+		MemorySaveUnavailable: memorySaveUnavailable,
 	}
 
 	if err := deps.saveMeta(fs, stateDir, childMeta); err != nil {

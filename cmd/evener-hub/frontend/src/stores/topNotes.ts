@@ -1,6 +1,6 @@
+import { canWriteSharedNotes } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import { canWriteHumanNote } from "./humanNoteDrafts";
 import { openConversationRefs, registerPanelStoreEvictor } from "./panelStoreEviction";
 import { threadsStore } from "./threads";
 
@@ -87,7 +87,7 @@ export const topNotesStore = createStore<TopNotesStoreState>((set, get) => ({
     // props can lag a pane-reuse or remount boundary, but the request's
     // era must not.
     const model = threadsStore.getState().threads.get(ref);
-    const request: PendingTopNotesFocus = { originReadOnly: !canWriteHumanNote(model), paneId: paneId ?? null };
+    const request: PendingTopNotesFocus = { originReadOnly: !canWriteSharedNotes(model), paneId: paneId ?? null };
     set((state) => {
       const nextExpanded = new Map(state.expanded);
       nextExpanded.set(ref, true);
@@ -141,7 +141,7 @@ threadsStore.subscribe(() => {
   const threads = threadsStore.getState().threads;
   let next: Map<string, PendingTopNotesFocus> | null = null;
   for (const [ref, request] of pending) {
-    if (request.originReadOnly || canWriteHumanNote(threads.get(ref))) continue;
+    if (request.originReadOnly || canWriteSharedNotes(threads.get(ref))) continue;
     next ??= new Map(pending);
     next.delete(ref);
   }

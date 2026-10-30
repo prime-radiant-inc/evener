@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/llm"
 )
 
@@ -30,9 +31,9 @@ const stableSupervisionRefusalHeldWindow = 100 * time.Millisecond
 // has a child session and controller to render.
 func stableSupervisionReportFixture(t *testing.T) (*Session, *subagent) {
 	t.Helper()
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("warm result") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 	}
 	root := restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)

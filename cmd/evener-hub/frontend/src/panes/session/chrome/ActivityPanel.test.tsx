@@ -6,7 +6,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { JobsTab } from "../../../shell/activitybar/JobsTab";
 import { deriveScope } from "../../../shell/statusbar/statusScope";
 import { activityPanelStore } from "../../../stores/activityPanel";
-import { connectionStore } from "../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
 import { navigationStore } from "../../../stores/navigation/store";
 import { sessionActivitySnapshot } from "../../../stores/sessionActivity";
 import {
@@ -25,7 +25,7 @@ const ref = "remote:owner";
 const model = (r = ref) => hydrateThread(activityThread(r), r, 0);
 afterEach(() => {
   cleanup();
-  connectionStore.setState({ client: null, state: "idle" });
+  resetConnectionStoreForTests();
   activityPanelStore.getState().resetForTests();
   vi.restoreAllMocks();
   vi.useRealTimers();
@@ -55,7 +55,7 @@ test("closed trigger counts subagents at every depth while an open recursive tre
   const mounted = render(
     <>
       <ActivityPanel sessionRef={ref} model={model()} />
-      <JobsTab scope={deriveScope(navigationStore.getState(), ref, null, null)} />
+      <JobsTab now={0} scope={deriveScope(navigationStore.getState(), ref, null, null)} />
     </>,
   );
   await screen.findByRole("button", { name: "Activity · 9 active" });

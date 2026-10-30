@@ -4,10 +4,10 @@ import (
 	"context"
 	"sync"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -78,7 +78,7 @@ func TestSession_ContextStrategy_SpyHooks(t *testing.T) {
 			},
 			// Round 2: model gives a final text response.
 			func(req llm.Request) llm.Response {
-				return finalResponse("done")
+				return agenttest.FinalResponse("done")
 			},
 		},
 	}
@@ -92,9 +92,7 @@ func TestSession_ContextStrategy_SpyHooks(t *testing.T) {
 	}
 	defer sess.Close()
 
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 
 	out, err := sess.ProcessInput(ctx, "hi", nil)
 	if err != nil {

@@ -223,3 +223,80 @@ func TestCheckShortPrefixIsStale(t *testing.T) {
 		t.Fatal("UpdateAvailable = false for a 4-char prefix of the latest commit, want true (too short to prove currency)")
 	}
 }
+
+func TestCheckRejectsUnusableRepoURL(t *testing.T) {
+	t.Parallel()
+	if _, err := Check(t.Context(), CheckOptions{Channel: "snapshot", RepoURL: "https://github.com/onlyowner"}); err == nil {
+		t.Fatal("a repo URL without owner/repo was accepted")
+	}
+	if _, _, err := repoOwnerName("://"); err == nil {
+		t.Fatal("an unparseable repo URL was accepted")
+	}
+	if _, _, err := repoOwnerName("https://github.com/owner/repo/extra"); err == nil {
+		t.Fatal("a repo URL with extra path elements was accepted")
+	}
+}
+
+func TestCheckReleaseRefusesBrokenCommitLookups(t *testing.T) {
+	t.Parallel()
+	sha, _ := json.Marshal(map[string]string{"sha": ""})
+	tag, _ := json.Marshal(map[string]string{"tag_name": "v0.2.0"})
+	paths := map[string]string{
+		"/repos/prime-radiant-inc/evener/releases/latest": string(tag),
+		"/repos/prime-radiant-inc/evener/commits/v0.2.0":  string(sha),
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if body, ok := paths[r.URL.Path]; ok {
+			_, _ = w.Write([]byte(body))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(server.Close)
+	if _, err := Check(t.Context(), CheckOptions{Channel: "release", CurrentSHA: "0123456", APIURL: server.URL}); err == nil {
+		t.Fatal("a tag whose commit lookup 404s resolved to a commit")
+	}
+	if _, err := Check(t.Context(), CheckOptions{Channel: "release", CurrentSHA: "0123456", APIURL: server.URL}); err == nil {
+		t.Fatal("a tag that resolves to no commit succeeded")
+	}
+}
+
+func TestCheckReleaseRefusesUndecodableBodies(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("not json"))
+	}))
+	t.Cleanup(server.Close)
+	if _, err := Check(t.Context(), CheckOptions{Channel: "release", CurrentSHA: "0123456", APIURL: server.URL}); err == nil {
+		t.Fatal("a latest-release body that does not decode succeeded")
+	}
+}
+
+// errBody fails every read, standing in for a connection that dies mid-body.
+type errBody struct{}
+
+func (errBody) Read([]byte) (int, error) { return 0, errors.New("body went away") }
+func (errBody) Close() error             { return nil }
+
+// failingTransport answers one 200 whose body cannot be read.
+type failingTransport struct{}
+
+func (failingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: http.StatusOK, Body: errBody{}, Header: http.Header{}}, nil
+}
+
+func TestHTTPGetSurfacesTransportFailures(t *testing.T) {
+	t.Parallel()
+	if _, err := httpGet(t.Context(), http.DefaultClient, "://missing-scheme", "text/plain"); err == nil {
+		t.Fatal("a request that cannot be built succeeded")
+	}
+	closed := httptest.NewServer(http.NotFoundHandler())
+	closed.Close()
+	if _, err := httpGet(t.Context(), http.DefaultClient, closed.URL, "text/plain"); err == nil {
+		t.Fatal("a request to a dead server succeeded")
+	}
+	client := &http.Client{Transport: failingTransport{}}
+	if _, err := httpGet(t.Context(), client, "http://updates.example/version.txt", "text/plain"); err == nil {
+		t.Fatal("a body that cannot be read succeeded")
+	}
+}

@@ -12,9 +12,8 @@ import (
 )
 
 type delegatePreparedEnvironment struct {
-	env              execenv.ExecutionEnvironment
-	ownsFresh        bool
-	stableController bool
+	env       execenv.ExecutionEnvironment
+	ownsFresh bool
 }
 
 type delegateSandboxErrorClass string
@@ -505,7 +504,7 @@ func (s *Session) restoreDelegateSandboxFloor(descriptor *delegatestore.Descript
 	// persist and no resume to re-apply it to — and the descriptor keeps the empty
 	// snapshot the create path wrote, which is exactly what re-derives this same
 	// floor against the host the next resume actually runs on.
-	if snapshot := stableDelegateSandboxSnapshot(policy); snapshot != nil && descriptor.Sandbox == nil {
+	if snapshot := delegateSandboxSnapshot(policy); snapshot != nil && descriptor.Sandbox == nil {
 		descriptor.Sandbox = snapshot
 		descriptor.Config.Sandbox = snapshot.Mode
 		descriptor.Config.SandboxNet = nil
@@ -716,57 +715,4 @@ func sandboxSnapshotFromInputs(in sandbox.SandboxPolicy) *delegatestore.SandboxS
 		snap.Network = &n
 	}
 	return snap
-}
-
-// cloneSandboxSnapshot deep-copies a persisted snapshot so a resumed-turn
-// descriptor does not alias the previous descriptor's slices (mirroring the other
-// resume-path clones in resumedDelegateRestoreDescriptor). nil stays nil.
-//
-//nolint:unused // retained for the tagged sandbox descriptor round-trip fuzz owner.
-func cloneSandboxSnapshot(in *delegatestore.SandboxSnapshot) *delegatestore.SandboxSnapshot {
-	if in == nil {
-		return nil
-	}
-	out := &delegatestore.SandboxSnapshot{
-		Mode:               in.Mode,
-		WriteBlocked:       in.WriteBlocked,
-		DenylistAdd:        append([]string(nil), in.DenylistAdd...),
-		DenylistRemove:     append([]string(nil), in.DenylistRemove...),
-		ExtraWritableRoots: append([]string(nil), in.ExtraWritableRoots...),
-		ExtraReadRoots:     append([]string(nil), in.ExtraReadRoots...),
-	}
-	if in.Network != nil {
-		n := *in.Network
-		out.Network = &n
-	}
-	return out
-}
-
-// sandboxPolicyFromSnapshot rebuilds the backend-independent policy REQUEST from a
-// persisted snapshot for re-resolution on restore. ok is false when the mode name
-// is unparseable (a corrupt/hand-edited descriptor), which the restore path treats
-// as not-resumable rather than resuming with a guessed policy.
-//
-//nolint:unused // retained for the tagged sandbox descriptor round-trip fuzz owner.
-func sandboxPolicyFromSnapshot(snap *delegatestore.SandboxSnapshot) (sandbox.SandboxPolicy, bool) {
-	if snap == nil {
-		return sandbox.SandboxPolicy{}, false
-	}
-	mode, err := sandbox.ParseMode(snap.Mode)
-	if err != nil {
-		return sandbox.SandboxPolicy{}, false
-	}
-	pol := sandbox.SandboxPolicy{
-		Mode:               mode,
-		WriteBlocked:       snap.WriteBlocked,
-		DenylistAdd:        append([]string(nil), snap.DenylistAdd...),
-		DenylistRemove:     append([]string(nil), snap.DenylistRemove...),
-		ExtraWritableRoots: append([]string(nil), snap.ExtraWritableRoots...),
-		ExtraReadRoots:     append([]string(nil), snap.ExtraReadRoots...),
-	}
-	if snap.Network != nil {
-		n := *snap.Network
-		pol.Network = &n
-	}
-	return pol, true
 }

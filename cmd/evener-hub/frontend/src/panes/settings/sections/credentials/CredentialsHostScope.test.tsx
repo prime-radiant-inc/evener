@@ -5,7 +5,7 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { resetAuthStatusesStoreForTests } from "../../../../stores/authStatuses";
-import { connectionStore } from "../../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../../stores/connection";
 import {
   credentialsStore,
   fetchHost,
@@ -17,6 +17,7 @@ import {
 import { hostsStore } from "../../../../stores/hosts";
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import { resetSettingsHostForTests, settingsHostStore } from "../../../../stores/settingsHost";
+import { connectReadyFakeClient } from "../../../../testing/connectionTestUtils";
 import { emptyStateReasons } from "../../../../widgets/emptystate/emptyStateTestUtils";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { shownReasons, statusReasons } from "../reasonTestUtils";
@@ -127,12 +128,6 @@ function codexHostRequest(poll: () => { state: string }): (params: HostRequestPa
   };
 }
 
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  return fake;
-}
-
 // A read whose answer this test releases itself, so the state under test is the
 // one while that answer is still out.
 function deferred<T>() {
@@ -168,7 +163,7 @@ async function renderSettledScope(): Promise<HTMLSelectElement> {
 beforeEach(() => {
   vi.stubGlobal("jest", { advanceTimersByTime: vi.advanceTimersByTime });
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetCredentialsStoreForTests();
   resetHostInstancesForTests();
   resetToastStoreForTests();
@@ -183,14 +178,14 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   window.history.pushState({}, "", "/");
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
 test("defaults to this hub and reads the controller's own listing without any proxied call", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/host/request", () => {
@@ -205,7 +200,7 @@ test("defaults to this hub and reads the controller's own listing without any pr
 });
 
 test("offers this hub plus every configured remote host", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({
     hosts: [hostRow({ name: "beta", attached: true }), hostRow({ name: "gamma", attached: false })],
@@ -225,7 +220,7 @@ test("offers this hub plus every configured remote host", async () => {
 });
 
 test("selecting a remote host shows THAT host's own providers read-only, never the controller's", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/host/request", (params) => {
@@ -248,7 +243,7 @@ test("selecting a remote host shows THAT host's own providers read-only, never t
 });
 
 test("a remote host's listing is read-only - it offers no per-instance actions", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/host/request", () => HOST_LIST);
@@ -264,7 +259,7 @@ test("a remote host's listing is read-only - it offers no per-instance actions",
 });
 
 test("a remote read in flight shows the host's own loading state, never the controller's rows", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   const release = deferRequest<unknown>(fake, "evener/host/request");
@@ -285,7 +280,7 @@ test("a remote read in flight shows the host's own loading state, never the cont
 });
 
 test("an unattached host's own refusal is shown honestly, not this hub's listing", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: false })] }));
   fake.on("evener/host/request", () => {
@@ -310,7 +305,7 @@ test.each([
   ["a hub-reported WireError", new WireError("remote providers.toml is being rewritten", -32000)],
   ["a client-side failure", new Error("AppwireClient internal detail")],
 ])("a remote host's failed read from %s shows that error's friendly form", async (_name, err) => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/host/request", () => {
@@ -328,7 +323,7 @@ test.each([
 });
 
 test("a host that is no longer configured says so instead of falling back to this hub", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/host/request", () => HOST_LIST);
@@ -348,7 +343,7 @@ test("a host that is no longer configured says so instead of falling back to thi
 });
 
 test("switching back to this hub restores the controller's own listing", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/host/request", () => HOST_LIST);
@@ -369,7 +364,7 @@ test("switching back to this hub restores the controller's own listing", async (
 // partition is where a remote host's rows live, and the controller's listing
 // keeps its own identity across the switch (stores/credentials.ts's split).
 test("a remote selection leaves the controller's own store untouched", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/host/request", () => HOST_LIST);
@@ -393,7 +388,7 @@ test("a remote selection leaves the controller's own store untouched", async () 
 // hub's credential store). Routing those writes to the selected host is a
 // separate unit; until it lands, the guard is that none are sent.
 test("a remote selection issues no controller-scoped credential write", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/host/request", () => HOST_LIST);
@@ -418,7 +413,7 @@ test("a remote selection issues no controller-scoped credential write", async ()
 // instances. A remote host's instance with the same name is another credential
 // on another machine, so the error this hub found never marks it (#3539).
 test("this hub's credential error never marks a remote host's same-named row", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   // Beta's own instance, named like this hub's.
@@ -457,7 +452,7 @@ test("this hub's credential error never marks a remote host's same-named row", a
 // reconnect or a client swap left the partition exactly where the transition put
 // it and nothing ever re-read the host.
 test("a connection transition re-reads the selected host's own listing", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/host/request", () => HOST_LIST);
@@ -487,7 +482,7 @@ test("a connection transition re-reads the selected host's own listing", async (
 // - which reads as "never read" being false and "empty" being true, and the
 // panel claimed "No provider instances" although nothing had ever answered.
 test("a transition that orphans the first read never reads as 'no instances'", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   // The first read never answers; the connection is replaced underneath it.
@@ -514,7 +509,7 @@ test("a transition that orphans the first read never reads as 'no instances'", a
 // when the host has already refused. The skeleton is for the state it was written
 // for: nothing (and no failure) yet.
 test("an error without a successful read shows no loading skeleton", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: false })] }));
   fake.on("evener/host/request", () => {
@@ -535,7 +530,7 @@ test("an error without a successful read shows no loading skeleton", async () =>
 // retried, so an offline host that fails and later attaches stayed failed with no
 // retry control. The attachment change is the trigger.
 test("an attachment transition retries a failed remote read", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: false })] }));
   let attached = false;
@@ -568,7 +563,7 @@ test("an attachment transition retries a failed remote read", async () => {
 // ---------------------------------------------------------------------------
 
 test("offers 'Sign in on host' for a remote host's Codex instance, and never for this hub", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on(
@@ -591,7 +586,7 @@ test("offers 'Sign in on host' for a remote host's Codex instance, and never for
 });
 
 test("'Sign in on host' drives device/start and device/poll through evener/host/request for the selected host, showing the code and the URL, and stops polling on success", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on(
@@ -652,7 +647,7 @@ test("'Sign in on host' drives device/start and device/poll through evener/host/
 // DeviceStart (auth/openai/device.go's issuer-404 path is what sets
 // `fallback`), so pointing the operator at it would be a dead end.
 test("a host that offers no device flow surfaces a named failure that points at the host-side CLI, never a dead-end env var", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/host/request", (params) => {
@@ -677,7 +672,7 @@ test("a host that offers no device flow surfaces a named failure that points at 
 });
 
 test("a refused remote device/start surfaces the host's own failure, never a silent wait", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/host/request", (params) => {
@@ -702,7 +697,7 @@ test("a refused remote device/start surfaces the host's own failure, never a sil
 // and re-registered under the same name could render the previous
 // registration's rows - here, while the new host's own read is still out.
 test("a host re-registered under the same name never shows the previous host's rows", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", address: "a.example", attached: true })] }));
   fake.on("evener/host/request", () => HOST_LIST);
@@ -735,7 +730,7 @@ test("a host re-registered under the same name never shows the previous host's r
 // displayable (verified requires an identity) and the registry's own answer
 // replaces it immediately. The read waits for the registry instead.
 test("a fresh deep-link does not read the remote host until the registry names it", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   const registry = deferRequest<unknown>(fake, "evener/host/list");
   fake.on("evener/host/request", () => HOST_LIST);
@@ -766,7 +761,7 @@ test("a fresh deep-link does not read the remote host until the registry names i
 // so the pane says exactly that and offers the registry's own read to retry - it
 // does not read a host whose registration it cannot check.
 test("a registry read that fails shows the honest unverifiable state", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => {
     throw new WireError("registry unavailable", -32000);
@@ -788,7 +783,7 @@ test("a registry read that fails shows the honest unverifiable state", async () 
 // The unverifiable state is not a dead end: the registry's own read (Retry)
 // restores the check, and the listing is shown once it lands.
 test("the unverifiable state's retry re-reads the registry and restores verification", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   let registryDown = true;
   fake.on("evener/host/list", () => {
@@ -814,7 +809,7 @@ test("the unverifiable state's retry re-reads the registry and restores verifica
 // host's listing follows from the recovery effect in useHostInstances - the
 // retry must not issue a second read alongside it.
 test("a pane retry that recovers the registry reads the host exactly once", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   let registryDown = true;
   fake.on("evener/host/list", () => {
@@ -840,7 +835,7 @@ test("a pane retry that recovers the registry reads the host exactly once", asyn
 // all. The pane unmounts the remote view (it says the host is no longer
 // configured), and the retry must not have issued a read after that unmount.
 test("a recovery whose registry no longer names the host issues no read", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   let registryDown = true;
   fake.on("evener/host/list", () => {
@@ -864,7 +859,7 @@ test("a recovery whose registry no longer names the host issues no read", async 
 // the same registration under one connection still cause exactly one read - a
 // registry answer that advances no revision re-reads nothing.
 test("a repeated ready snapshot of the same registration causes no second read", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/host/request", () => HOST_LIST);
@@ -890,7 +885,7 @@ test("a repeated ready snapshot of the same registration causes no second read",
 // consulted and failed. It used to: both shared revision 0, so the pane showed
 // the listing and its `unverifiable` state was suppressed.
 test("a listing read before the registry ever answered is not verified when the registry fails", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => {
     throw new WireError("registry unavailable", -32000);
@@ -912,7 +907,7 @@ test("a listing read before the registry ever answered is not verified when the 
 // healthy, so `unverifiable` is false, and the error branch offered no retry at
 // all. It offers one now, and it re-reads the host.
 test("a failed remote read offers a retry that re-reads the host", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   let hostUp = false;
@@ -936,7 +931,7 @@ test("a failed remote read offers a retry that re-reads the host", async () => {
 // phase alone is the wrong key for "unverifiable", and the banner must not sit
 // beside a listing the registry did name.
 test("a retained identity keeps a verified listing shown when the registry later fails", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/host/request", () => HOST_LIST);
@@ -957,7 +952,7 @@ test("a retained identity keeps a verified listing shown when the registry later
 // partially loaded remote provider config read as a complete listing. They belong
 // on the host partition and on the read-only remote view.
 test("a remote answer's diagnostics are shown on the read-only remote view", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/host/request", () => ({
@@ -982,7 +977,7 @@ test("a remote answer's diagnostics are shown on the read-only remote view", asy
 // action below it is, so the flow's state is cleared with the host it belonged
 // to and nothing of it is rendered, driven, or reported under another.
 test("a picker change while device/start is outstanding never renders or polls the host that took over", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({
     hosts: [hostRow({ name: "beta", attached: true }), hostRow({ name: "gamma", attached: true })],
@@ -1031,7 +1026,7 @@ test("a picker change while device/start is outstanding never renders or polls t
 // M (roborev), the same seam on the failure path: a start failure names the host
 // it happened on, so it cannot stay on screen under another host's selection.
 test("a sign-in failure naming the old host does not survive a host change", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({
     hosts: [hostRow({ name: "beta", attached: true }), hostRow({ name: "gamma", attached: true })],
@@ -1062,7 +1057,7 @@ test("a sign-in failure naming the old host does not survive a host change", asy
 // A restart clears the editor it is replacing now, and a new dialog is opened
 // only by a start that actually succeeded.
 test("a failed 'Start again' clears the expired dialog instead of leaving it standing", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   let restartFails = false;
@@ -1098,7 +1093,7 @@ test("a failed 'Start again' clears the expired dialog instead of leaving it sta
 // L1, the other half of the same rule: a restart that DOES succeed opens the new
 // flow's dialog rather than leaving the pane with no editor at all.
 test("a successful 'Start again' opens the new flow's dialog", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   let restarted = false;
@@ -1138,7 +1133,7 @@ test("a successful 'Start again' opens the new flow's dialog", async () => {
 // scheme - whose only outcome is the host's refusal - and withholds it from an
 // instance signed in through Codex OAuth on another base, which the host accepts.
 test("'Sign in on host' follows the instance's auth scheme, not its provider id", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/host/request", () => ({
@@ -1190,7 +1185,7 @@ test("'Sign in on host' follows the instance's auth scheme, not its provider id"
 // `fallback` cannot open a browser on that host either, so it is the same failure
 // - and it must clear the expired editor it replaced just the same.
 test("a restart the host answers with fallback clears the expired dialog", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   let restarted = false;
@@ -1225,7 +1220,7 @@ test("a restart the host answers with fallback clears the expired dialog", async
 // it must not unmount an editor that is mid-flow: the unmount would cancel the
 // poll with it, and the sign-in the user is completing would vanish from the pane.
 test("a host coming back online does not restart the sign-in it is not part of", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: false })] }));
   fake.on(
@@ -1268,7 +1263,7 @@ test("a host coming back online does not restart the sign-in it is not part of",
 // generation decides now: only the newest start may open an editor or name a
 // failure, and a superseded flow is never mounted, polled, or reported.
 test("a superseded sign-in start never replaces the newer one, and its flow is never polled", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   const codexRows = {
@@ -1356,7 +1351,7 @@ test("a superseded sign-in start never replaces the newer one, and its flow is n
 // replace the name outright, so the instance rides a visually-hidden suffix
 // inside the button instead.
 test("the sign-in button's accessible name contains its visible label, not just the instance", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/host/request", () => CODEX_HOST_LIST);

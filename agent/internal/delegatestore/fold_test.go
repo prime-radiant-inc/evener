@@ -291,7 +291,7 @@ func TestApplyStoppedDeliverySuppressesCoveredOwnerWithoutDelivery(t *testing.T)
 	}
 }
 
-func TestFoldUsesOneAggregatePerStableDelegate(t *testing.T) {
+func TestFoldUsesOneAggregatePerDelegate(t *testing.T) {
 	events := sequence(
 		createdEvent("dlg_alpha", ""),
 		startedEvent("dlg_alpha", 1, TriggerOwnerInput),
@@ -445,6 +445,73 @@ func TestApplyResumabilityClosureIsMonotonic(t *testing.T) {
 	}
 	if got := stateJSON(t, state); got != want {
 		t.Fatalf("state mutated after second closure:\n got %s\nwant %s", got, want)
+	}
+}
+
+// TestFoldClosedPhaseIsNeverResumable pins the invariant retirement's owner
+// scan relies on when it drops its own closed-phase guard: every transition
+// into PhaseClosed requires Resumable false, so Resumable alone proves a
+// delegate is not closed.
+func TestFoldClosedPhaseIsNeverResumable(t *testing.T) {
+	t.Parallel()
+	closedResumability := func(id string) Event {
+		return Event{
+			Kind:               EventDelegateResumabilityClosed,
+			DelegateID:         id,
+			ResumabilityClosed: &ResumabilityClosed{Reason: "test-closure"},
+		}
+	}
+	nonResumableCreated := func(id string) Event {
+		event := createdEvent(id, "")
+		event.Created.Descriptor.Resumable = false
+		return event
+	}
+	assertInvariant := func(name string, state State) {
+		t.Helper()
+		for id, aggregate := range state {
+			if aggregate != nil && aggregate.Phase == PhaseClosed && aggregate.Resumable {
+				t.Fatalf("%s: delegate %q is closed and resumable", name, id)
+			}
+		}
+	}
+
+	assertInvariant("created not resumable", applyEvents(t, nonResumableCreated("dlg_alpha")))
+	assertInvariant("closed while idle", applyEvents(t,
+		createdEvent("dlg_alpha", ""),
+		closedResumability("dlg_alpha"),
+	))
+	assertInvariant("closed while running then finished", applyEvents(t,
+		createdEvent("dlg_alpha", ""),
+		startedEvent("dlg_alpha", 1, TriggerInitial),
+		closedResumability("dlg_alpha"),
+		preparedEvent("dlg_alpha", 1, reportedPacket("done")),
+		finishedEvent("dlg_alpha", 1, OutcomeCompleted, DispositionReported, "dlg_alpha/delivery/1", nil),
+	))
+
+	stopped := applyEvents(t,
+		createdEvent("dlg_alpha", ""),
+		closedResumability("dlg_alpha"),
+		stopRequestedEvent("dlg_alpha"),
+	)
+	assertInvariant("subtree stop requested after closure", stopped)
+	if err := Apply(stopped, Event{
+		Kind:                 EventDelegateSubtreeStopCompleted,
+		DelegateID:           "dlg_alpha",
+		SubtreeStopCompleted: &SubtreeStopCompleted{RequestSeq: stopped["dlg_alpha"].PendingStopSeq},
+	}); err != nil {
+		t.Fatalf("Apply subtree stop completion: %v", err)
+	}
+	assertInvariant("subtree stop completed after closure", stopped)
+
+	resumable := applyEvents(t,
+		createdEvent("dlg_alpha", ""),
+		startedEvent("dlg_alpha", 1, TriggerInitial),
+		preparedEvent("dlg_alpha", 1, reportedPacket("done")),
+		finishedEvent("dlg_alpha", 1, OutcomeCompleted, DispositionReported, "dlg_alpha/delivery/1", nil),
+	)
+	assertInvariant("resumable finished", resumable)
+	if aggregate := resumable["dlg_alpha"]; !aggregate.Resumable || aggregate.Phase != PhaseIdle {
+		t.Fatalf("resumable finish = resumable:%t phase:%s, want resumable idle", aggregate.Resumable, aggregate.Phase)
 	}
 }
 

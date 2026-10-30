@@ -24,7 +24,6 @@ vi.mock("@react-navigation/native", async () => {
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -48,6 +47,7 @@ async function mount(fleet: ScriptedFleet, options: { ready?: boolean; focus?: s
 				applicable: true,
 			})) as never,
 		}),
+		currentIncarnation: async () => null,
 		awaitRestart: async () => true,
 	});
 	await updates.runCheck();
@@ -207,7 +207,7 @@ it("says why the hub's hosts didn't load when its first answer is a refusal", as
 
 it("reads the live sessions again when the connection comes back", async () => {
 	const fleet = scriptedFleet([hostRow("paradise-park")], [liveSession("paradise-park:a", "paradise-park")]);
-	const answer = fleet.client.request;
+	const answer = fleet.client.request.bind(fleet.client);
 	let down = true;
 	fleet.client.request = (async (method: string, params: unknown) => {
 		if (down && method === "evener/navigation/read") throw new WireError("not connected", -32000);

@@ -1,0 +1,142 @@
+[
+ {
+  "id": "appwire-ts-state-testing-1",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Duplicate confirmed (immutable.ts:14-27 vs plainObject.ts:21-37; equalJSON used at merge.ts:57,60,99, launchConfig.ts:218-301, qualify-package.mjs:613). Differences (holes, cross-realm, NaN via Object.is) are unreachable for JSON-decoded nav and launch-config data, so the 'can disagree' impact is theoretical. Severity lowered. Plan must also update qualify-package.mjs:613 and README, since equalJSON is published from the nav barrel (public API removal needs Jesse's OK)."
+ },
+ {
+  "id": "appwire-ts-state-testing-2",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "1298 lines, 616 comment lines, closure 351-1297, 'if (!applied) scheduleRefetch(); return applied;' at 1107,1120,1135,1150, resetForTests only used at instances.test.ts:402,407,611,681 (verified by repo-wide grep; other resetForTests hits are unrelated stores). But the plan contradicts itself: it says keep instances.test.ts unchanged yet delete resetForTests, whose tests live there. 'High' is overstated: the module is dense but not shown to be causing bugs. The closure shares requestVersion/connection/localMutations state, so the module split is the risky part.",
+  "revised_fix_plan": "Do the low-risk parts first, in separate commits: (a) delete resetForTests and its interface docs, rewriting instances.test.ts:402-411,611,681 to build fresh stores (the reset-semantics describe at 402 goes away with the API); (b) collapse the four applied/scheduleRefetch tails into one helper; (c) trim narrating comments. Only split echo markers / refreshModels into siblings if a seam with an explicit state-passing interface is demonstrated; pure listing helpers (listState, listingOf, listingChanged, foreignListingChange) are safe to move."
+ },
+ {
+  "id": "appwire-ts-state-testing-3",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "reconnectPredicate.test.ts:1-14 quotes the #1558 'neither can adopt the other' decision; authStatuses.ts:24 does use createStoreLifecycle; instances.connectionChanged (1251-1281) is keyed on client change plus state, with a client swap, stale-listing marking and listener move that the lifecycle (source vs identity model) does not have. The claim that the 2025-era measurement is stale and that adoption is -150 net is speculation; no re-measurement shown. This reverses a deliberate recorded decision, so it is a discussion item, not a finding to schedule.",
+  "revised_fix_plan": "Raise with Jesse only after finding 2 lands; re-measure adoption then. No code change until that."
+ },
+ {
+  "id": "appwire-ts-state-testing-4",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Verified: four *_REFETCH_DEBOUNCE_MS = 250 (marketplaces.ts:91, plugins.ts:76, launchLayer.ts:59, authStatuses.ts:48) plus a private one at instances.ts:317; PluginsClient/LaunchLayerClient/MarketplacesClient identical (plugins.ts:27, launchLayer.ts:31, marketplaces.ts:33); store interfaces redeclare start/reset/dispose already in HostLifecycle (storeLifecycle.ts:144-159); 'outrun read ... none of the three' comment in plugins.ts:151, launchLayer.ts:95/119, marketplaces.ts:343. Note per-store docs on start() differ (which notification), so keep those. Exported constants are imported by mobile tests (useAuthStatuses.test.ts:2, PluginsPage.test.tsx:25), so keep names or update those."
+ },
+ {
+  "id": "appwire-ts-state-testing-5",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Verified: extensions/index.ts:7-13 and credentials/index.ts use export *; nav index.ts:20-26 forbids it; createKeyedRevision/createListRevision/readRevisioned/writeRevisioned/attachLifecycle have zero uses in cmd/ and mobile-native/src; createStoreLifecycle only appears in frontend stores/connection.ts (comment). qualify-package.mjs:700-728 and README pin them. Removing public API needs Jesse's approval (stated in plan). Also note the barrel-style claim is a tsx/CJS hazard that has not bitten these two barrels, so the case for the change is API hygiene, not a bug."
+ },
+ {
+  "id": "appwire-ts-state-testing-6",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Verified at marketplaces.ts:230 (publishMarketplaceSnapshot), 303-309 (mutate onAnswer), 318-323 (onFailure, which also folds retire and a different epoch check), 348-352 (fetch). Three copies of the snapshot+retireCatalogsAbsentFrom step. isMarketplaceEntry (127-143) is a documented trust-boundary check, so leave it. Small; the helper only needs to cover the publish step."
+ },
+ {
+  "id": "appwire-ts-state-testing-7",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "store.ts:171-176 duplicates codec.ts:61 isRecord (plus string/bool/count); isNavigationManifest (178-203) is a weaker copy of codec manifestMetadata (codec.ts:558-583: key whitelists, 64-source bound). But systemEventCopy.ts does NOT define isRecord (grep shows only memoryContext.ts:37, codec.ts:61, reducer.ts:1373). The store checks guard data typed unknown from ResourceState (types.ts:187) and one failure path (store.ts:779) records a protocolError; deleting the checks changes that behavior and 'type ResourceState.data per kind' is a larger refactor than -60 lines. store.test.ts has malformed-manifest tests (e.g. 2441) to check first.",
+  "revised_fix_plan": "Step 1 only: replace the local record/string/bool/count guards with shared ones (isPlainObject from plainObject.ts, export count/bool from codec if needed) and the other two isRecord definitions with isPlainObject. Leave isNavigationManifest unless ResourceState is typed per kind in a separate, discussed change."
+ },
+ {
+  "id": "appwire-ts-state-testing-8",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Same-family duplicates verified: pendingMethod (pendingEntries.ts:46-53) and PENDING_TURN_METHODS (58-64) encode one mapping twice; REMOVABLE_MESSAGE_METHODS (queuedMessages.ts:36-42) repeats the same five; canEditQueuedMessage (68-70) inlines three. But RETRY_SAFE_MUTATION_METHODS (dispatcher.ts:313), native DIRECT_FALLBACK_METHODS (4 verbs) and web COMPOSER_ROUTE_METHODS (4 routes, already a single typed record with a comment) are different subsets with different meanings, not copies of one vocabulary. Real win is within pendingEntries/queuedMessages only.",
+  "revised_fix_plan": "Derive pendingMethod, PENDING_TURN_METHODS and REMOVABLE_MESSAGE_METHODS from one PendingMethod record in pendingEntries.ts; leave the dispatcher retry list and the app-side route maps alone (they are intentionally different sets)."
+ },
+ {
+  "id": "appwire-ts-state-testing-9",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Verified: testing/deferred.ts and macrotask.ts exist; 47 importers of deferred and 10 of macrotask; local copies at documentReadDemand.test.ts:15, state/navigation/store.test.ts:68 (also a 64-microtask flush), hubUpdate.test.ts:77, taskPanelState.test.ts:300, marketplaces.test.ts:435, backgroundDemand.test.ts:151. Repo-wide grep finds ~48 local 'function/const deferred' definitions outside testing/deferred.ts, incl. mobile newSession.test.ts:10. Some local variants omit reject; safe to swap."
+ },
+ {
+  "id": "appwire-ts-state-testing-10",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Overstated. Full ThreadModel literals exist in only two test files (deriveAskQuestions.test.ts:55, transcriptProjector.test.ts:31) plus reducer.ts hydrate; threadUsage/askDock/askShared tests use minimal 'as unknown as ThreadModel' casts, a different problem. state/mutation/testing.ts is NOT shipped: tsconfig.build.json lists files explicitly and omits it, so the 'shipped state/ tree' claim is wrong. Its 'capabilities: {} as ...' cast is real (line 31).",
+  "revised_fix_plan": "Optionally dedupe the two full literals onto state/mutation/testing.ts threadModel (or a testing/threadModel.ts if native tests need it); no relocation needed for shipping reasons."
+ },
+ {
+  "id": "appwire-ts-state-testing-11",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Pattern verified (JSON.parse of ?raw per call, find-by-case, throw 'no X case in PATH') in notificationWireFixtures.ts:53-61, memoryContextWireFixtures.ts:42-47, systemEventWireFixtures.ts:47-52, toolWireFixtures.ts:23,117, subagentWireFixtures.ts:22-59, hubWireFixtures.ts:36-47; regenerate hint differs (memoryContext uses go test -update-wire at line 6, others make fuzz-goldens). Union copy confirmed (MemoryContextWireCase has 12 members). Each loader is 50-120 lines and the repeated part is ~5 lines; hubWire has different logic. A missing case throws at call time, so drift is only 'new Go case untestable', not wrong behavior. Benefit is modest.",
+  "revised_fix_plan": "Only unify the regenerate hint and add one test per case union asserting it equals the fixture's case list; skip the shared recordedFixture helper unless a loader is added."
+ },
+ {
+  "id": "appwire-ts-state-testing-12",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "testing/navigation.ts is 325 lines; wireSnapshot comment (95-97) says it mirrors the server's normalization; 43 files import it; siblings are recorded from Go (agent/testdata has memorycontextwire, notificationwire, subagentwire, systemeventwire, toolwire, no navigation fixture). Large, staged, needs Jesse's discussion as the plan says."
+ },
+ {
+  "id": "appwire-ts-state-testing-13",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "fakeClient.test.ts is 604 lines with 43 tests across 8 describes (lifecycle 378-604 are self-tests of the fake); phrase assertions at 280 (toThrow 'Stop canceled this pending action'), 323 and 551 (toMatch messages). FakeClient is imported by ~300 files. This is mock-testing in the sense of Jesse's rules and violates the no-phrase-assertions rule."
+ },
+ {
+  "id": "appwire-ts-state-testing-14",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Verified phrase assertions at submission.test.ts:33, backgroundDemand.test.ts:145 (string occurs 5 times; source store.ts:421,430), codec.test.ts:1572, merge.test.ts:341, store.test.ts:1350, hubWriteGate.test.ts:114 (message toBe(HUB_WRITE_BUSY) though HubWriteBusyError exists), goConstants.test.ts:36. Violates AGENTS.md 'Never assert on phrasing'. Fix: assert error class/code; export NavigationProtocolError only if needed."
+ },
+ {
+  "id": "appwire-ts-state-testing-15",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "publicExports.test.ts has @ts-expect-error at 66,68 (#1431) and retiredValueAliases at 206. The typeof-function loop (138) is not a pure tautology (it fails at runtime if an export is undefined), so keep it unless covered elsewhere. Negative-alias list is the clear history-encoding part.",
+  "revised_fix_plan": "Delete only the retired-alias assertions (206-236) and the two ts-expect-error locks; keep positive surface checks. Needs Jesse's OK."
+ },
+ {
+  "id": "appwire-ts-state-testing-16",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Counts verified: storeLifecycle.ts 222/338, instances.ts 616/1298, outbox.ts 166/428, dispatcher.ts 134/388 comment lines; state non-test 2764/9222 by my regex. Stale pointers verified: fakeClient.ts:2 cites ../../stores/threads.test.ts which does not exist (only threads.*.test.ts split files); tokenFlood.ts:5 cites tokenFlood.test.ts (real file is frontend panes/session/tokenFlood.test.tsx); history lines at notifications.ts:58 (kata 4j2t), fakeClient.ts:361 ('as this fake used to'), mutationOutboxStorageConformance.ts:9. Mostly cosmetic and many comments document real invariants, so ~-1000 lines is aggressive and severity is low. Fold into touched files rather than a mass sweep."
+ },
+ {
+  "id": "appwire-ts-state-testing-17",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "fakeClient.ts:53 DEFAULT_INITIALIZE_RESPONSE (all false, sourceId 'fake', 0.0.0) vs fakeSocket.ts:15 FAKE_INITIALIZE_RESULT (all true, 'fake-source', 0.0.0-test); same 12 feature keys. Tests assert the exact values (fakeClient.test.ts:13 area) so merging must keep both defaults via a parameter."
+ },
+ {
+  "id": "appwire-ts-state-testing-18",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "reducerHooks.ts says no production path calls appendChunk; repo-wide grep: callers are chunkview.test.ts, currentTranscript.test.ts, frontend reasoningFormat.test.ts:3,67 and tokenFlood.bench.ts comments only; frontend StreamingText.tsx only mentions it in a comment. The plan omits reasoningFormat.test.ts. resetForTests is test-only on instances.ts and taskPanelState.ts:65,241 (other resetForTests in frontend hosts/topNotes are separate stores)."
+ },
+ {
+  "id": "appwire-ts-state-testing-19",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "tokenFlood.bench.ts 317 lines, testing/tokenFlood.ts 336 lines; vite.config.ts:268-272 excludes *.bench.ts; harness importers: bench, frontend tokenFlood.test.tsx, reasoningFormat.test.ts; report at docs/superpowers/plans/wave4-report.md exists. Ask Jesse."
+ },
+ {
+  "id": "appwire-ts-state-testing-20",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Conformance hooks verified (mutationOutboxStorageConformance.ts:35-47, 324-342, 400-405; implemented in frontend mutationOutboxIndexedDB.conformance.test.ts:35,59 and mobile mutationOutboxStorage.conformance.test.ts:41,50). But hasContradictoryAttemptEvidence (queuedMessages.ts:52-54) is not purely legacy: records.ts:97-111 documents attempted as a live field with unresolvedAttempts as its counted form, so the dual read is current-model. Only the strip hooks and legacy contracts are removable, and only if no field data has the old shape. Location queuedMessages.ts:36 cited is the REMOVABLE set, not the evidence check.",
+  "revised_fix_plan": "Ask Jesse about a storage schema floor; if one exists, remove only the two strip hooks, their contracts and the host fixtures. Keep the dual-field read."
+ },
+ {
+  "id": "appwire-ts-state-testing-21",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Nav barrel claim verified: README.md:514-515 says the barrel 're-exports the nine modules whole' while index.ts:20-26 forbids export * and lists names explicitly. MutationOutboxStorage count: README.md:575 says '14 calls'; the interface (outbox.ts:85-170) declares 15 methods, not 13 as the finding guessed, though the README may count only the calls this layer and dispatcher make. Intro length claim not verified. Fix the barrel sentence; check the count against actual callers."
+ },
+ {
+  "id": "appwire-ts-state-testing-22",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "versionedChannel.ts:24-31 makeSourceId (randomUUID then Math.random fallback, no getRandomValues branch) and transcriptRepository.ts:105-118 PAGE_LIFETIME_NONCE (randomUUID, getRandomValues hex, Math.random) both hand-roll what createSecureUUID(browserRandomSource()) (secureUUID.ts:34-62, browserRandomSource.ts:11) provides. Id format changes (hex or insecure-prefixed fallback); check nothing parses ids before switching."
+ }
+]

@@ -8,6 +8,7 @@ import {
   type Virtualizer,
 } from "@tanstack/react-virtual";
 import { type ReactNode, type Ref, useCallback, useImperativeHandle, useLayoutEffect, useReducer, useRef } from "react";
+import { flushSync } from "react-dom";
 import { requireClass } from "../internal/requireClass";
 import styles from "./virtuallist.module.css";
 
@@ -201,6 +202,7 @@ export function VirtualList({
   const measuredHeightsRef = useRef(new WeakMap<Element, number>());
   const publishOffsetRef = useRef<((offset: number, isScrolling: boolean) => void) | null>(null);
   const backwardMovementRef = useRef(false);
+  const pendingMeasurementsRef = useRef<Set<HTMLDivElement> | null>(null);
 
   // Equal-estimate measurements and same-range rectangles do not notify the
   // core. Record actual observations and request their missing React commit.
@@ -356,17 +358,47 @@ export function VirtualList({
   // remembered/estimated one, so a row whose real height equals its estimate
   // never enters it, and a stale zero from a prior element survives a remount
   // until the ResizeObserver reports again. Neither is measurement readiness.
-  // The moment the virtualizer takes ownership of the current node is the ref
-  // callback below, which runs measureElement on it; stamping
-  // `data-measured` there marks exactly that ownership. A freshly rendered row
-  // whose element has not yet been handed to the virtualizer carries no mark.
+  // Ref attachment must not measure synchronously: collapsing short rows can
+  // mount another window, whose refs notify React inside the same nested commit
+  // chain. Drain each window after the commit, but commit its corrected sizer
+  // before the browser delivers scroll/resize observations. New refs join the
+  // next microtask, not this measurement stack.
   const measureRef = useCallback(
     (node: HTMLDivElement | null) => {
-      virtualizer.measureElement(node);
-      if (node !== null) node.setAttribute("data-measured", "");
+      if (node === null) {
+        virtualizer.measureElement(null);
+        return;
+      }
+      const pending = pendingMeasurementsRef.current;
+      if (pending) {
+        pending.add(node);
+        return;
+      }
+      const batch = new Set([node]);
+      pendingMeasurementsRef.current = batch;
+      queueMicrotask(() => {
+        if (pendingMeasurementsRef.current !== batch) return;
+        pendingMeasurementsRef.current = null;
+        const port = scrollRef.current;
+        if (!port) return;
+        flushSync(() => {
+          virtualizer.measureElement(null);
+          for (const row of batch) {
+            if (!row.isConnected || row.parentElement !== port.firstElementChild) continue;
+            virtualizer.measureElement(row);
+            row.setAttribute("data-measured", "");
+          }
+        });
+      });
     },
     [virtualizer],
   );
+  useLayoutEffect(() => {
+    if (!dynamic) return;
+    return () => {
+      pendingMeasurementsRef.current = null;
+    };
+  }, [dynamic]);
 
   useImperativeHandle(
     ref,

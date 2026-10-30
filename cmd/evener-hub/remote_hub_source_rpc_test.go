@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,7 +13,6 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
-	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/appitempaging"
 )
@@ -254,18 +252,9 @@ func TestHubRPCThreadReadServesRemoteHubSource(t *testing.T) {
 		return remote, nil
 	})
 
-	srv := httptest.NewUnstartedServer(nil)
-	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
-	web.sources.Add(source)
-	srv.Config.Handler = web.Handler()
-	srv.Start()
-	defer srv.Close()
+	srv := newWebSourceTestServer(t, source)
 
-	client := dialHubRPC(t, srv)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, srv)
 
 	resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "h1:t1", IncludeTurns: true})
 	if err != nil {
@@ -307,18 +296,9 @@ func TestHubRPCThreadShutdownForwardsToRemoteHost(t *testing.T) {
 		return remote, nil
 	})
 
-	srv := httptest.NewUnstartedServer(nil)
-	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
-	web.sources.Add(source)
-	srv.Config.Handler = web.Handler()
-	srv.Start()
-	defer srv.Close()
+	srv := newWebSourceTestServer(t, source)
 
-	rpc := dialHubRPC(t, srv)
-	defer rpc.Close()
-	if _, err := rpc.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	rpc := dialHubRPCInitialized(t, srv)
 
 	if err := rpc.ThreadShutdown(context.Background(), appwire.ThreadShutdownParams{Ref: "h1:t1"}); err != nil {
 		t.Fatalf("ThreadShutdown on remote ref: %v", err)
@@ -377,18 +357,9 @@ func TestHubRPCThreadReadSubscribeServesRemoteSnapshot(t *testing.T) {
 		return remote, nil
 	})
 
-	srv := httptest.NewUnstartedServer(nil)
-	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
-	web.sources.Add(source)
-	srv.Config.Handler = web.Handler()
-	srv.Start()
-	defer srv.Close()
+	srv := newWebSourceTestServer(t, source)
 
-	client := dialHubRPC(t, srv)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, srv)
 
 	resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
 		Ref:          "h1:t1",
@@ -440,18 +411,9 @@ func TestHubRPCThreadReadSubscribeStartsRemoteRelay(t *testing.T) {
 		return remote, nil
 	})
 
-	srv := httptest.NewUnstartedServer(nil)
-	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
-	web.sources.Add(source)
-	srv.Config.Handler = web.Handler()
-	srv.Start()
-	defer srv.Close()
+	srv := newWebSourceTestServer(t, source)
 
-	client := dialHubRPC(t, srv)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, srv)
 
 	resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
 		Ref:       "h1:t1",
@@ -510,18 +472,9 @@ func TestHubRPCThreadReadSubscribeDeliversMaskedRemoteStatus(t *testing.T) {
 		return remote, nil
 	})
 
-	srv := httptest.NewUnstartedServer(nil)
-	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
-	web.sources.Add(source)
-	srv.Config.Handler = web.Handler()
-	srv.Start()
-	defer srv.Close()
+	srv := newWebSourceTestServer(t, source)
 
-	client := dialHubRPC(t, srv)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, srv)
 	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
 		Ref:       "h1:t1",
 		Subscribe: true,
@@ -569,10 +522,10 @@ func TestHubRPCThreadReadSubscribeDeliversMaskedRemoteStatus(t *testing.T) {
 			if status.Capabilities == nil {
 				t.Fatal("relayed status capabilities = nil, want the read path's masked set")
 			}
-			// The daemon claims Shutdown as well, so this pins both halves of the
-			// mask: qualified shared input and shutdown survive, while
-			// unqualified mutations such as interrupt and fork remain absent.
-			if want := (appwire.ThreadCapabilities{Send: true, Queue: true, Steer: true, SkillInput: true, Shutdown: true}); *status.Capabilities != want {
+			// The peer advertises every hub-level feature, so the daemon's own
+			// claim survives intact except for the fields the effective policy
+			// still masks (PageBefore) and the ones this claim does not include.
+			if want := daemonSet; *status.Capabilities != want {
 				t.Fatalf("relayed status capabilities = %+v, want %+v", *status.Capabilities, want)
 			}
 			return
@@ -594,7 +547,11 @@ func scriptedRemoteThreadT1With(caps appwire.ThreadCapabilities) func(string, js
 	return func(method string, _ json.RawMessage) any {
 		switch method {
 		case appwire.MethodInitialize:
-			return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"}
+			return appwire.InitializeResponse{
+				ProtocolVersion: appwire.ProtocolVersion,
+				SourceID:        "local",
+				Features:        allRemoteThreadFeatures(),
+			}
 		case appwire.MethodThreadRead:
 			return appwire.ThreadReadResponse{Thread: appwire.Thread{
 				ID:     "t1",
@@ -644,18 +601,9 @@ func TestHubRPCThreadReadPagesSizeTruncatedCompleteRemotePage(t *testing.T) {
 		return client, nil
 	})
 
-	srv := httptest.NewUnstartedServer(nil)
-	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
-	web.sources.Add(source)
-	srv.Config.Handler = web.Handler()
-	srv.Start()
-	defer srv.Close()
+	srv := newWebSourceTestServer(t, source)
 
-	rpc := dialHubRPC(t, srv)
-	defer rpc.Close()
-	if _, err := rpc.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	rpc := dialHubRPCInitialized(t, srv)
 
 	read, err := rpc.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "h1:t1", IncludeTurns: true, ItemsView: "fragment"})
 	if err != nil {
@@ -730,18 +678,9 @@ func TestHubRPCThreadReadDoesNotEnrichRemoteFilesAsLocal(t *testing.T) {
 		return client, nil
 	})
 
-	srv := httptest.NewUnstartedServer(nil)
-	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
-	web.sources.Add(source)
-	srv.Config.Handler = web.Handler()
-	srv.Start()
-	defer srv.Close()
+	srv := newWebSourceTestServer(t, source)
 
-	rpc := dialHubRPC(t, srv)
-	defer rpc.Close()
-	if _, err := rpc.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	rpc := dialHubRPCInitialized(t, srv)
 
 	resp, err := rpc.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "h1:t1", IncludeTurns: true, ItemsView: "fragment"})
 	if err != nil {
@@ -799,18 +738,9 @@ func TestHubRPCThreadReadDoesNotStampRemoteImageURLs(t *testing.T) {
 		return client, nil
 	})
 
-	srv := httptest.NewUnstartedServer(nil)
-	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
-	web.sources.Add(source)
-	srv.Config.Handler = web.Handler()
-	srv.Start()
-	defer srv.Close()
+	srv := newWebSourceTestServer(t, source)
 
-	rpc := dialHubRPC(t, srv)
-	defer rpc.Close()
-	if _, err := rpc.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	rpc := dialHubRPCInitialized(t, srv)
 
 	resp, err := rpc.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "h1:t1", IncludeTurns: true, ItemsView: "fragment"})
 	if err != nil {
@@ -894,18 +824,9 @@ func TestHubRPCThreadReadRewritesRemoteImageRoutes(t *testing.T) {
 		return client, nil
 	})
 
-	srv := httptest.NewUnstartedServer(nil)
-	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
-	web.sources.Add(source)
-	srv.Config.Handler = web.Handler()
-	srv.Start()
-	defer srv.Close()
+	srv := newWebSourceTestServer(t, source)
 
-	rpc := dialHubRPC(t, srv)
-	defer rpc.Close()
-	if _, err := rpc.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	rpc := dialHubRPCInitialized(t, srv)
 
 	resp, err := rpc.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "h1:t1", IncludeTurns: true, ItemsView: "fragment"})
 	if err != nil {
@@ -992,18 +913,9 @@ func TestHubRPCSubagentPreviewRewritesRemoteImageRoutes(t *testing.T) {
 		return client, nil
 	})
 
-	srv := httptest.NewUnstartedServer(nil)
-	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
-	web.sources.Add(source)
-	srv.Config.Handler = web.Handler()
-	srv.Start()
-	defer srv.Close()
+	srv := newWebSourceTestServer(t, source)
 
-	rpc := dialHubRPC(t, srv)
-	defer rpc.Close()
-	if _, err := rpc.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	rpc := dialHubRPCInitialized(t, srv)
 
 	var preview appwire.EvenerSubagentPreviewResponse
 	if err := rpc.Request(context.Background(), appwire.MethodEvenerSubagentPreview, appwire.EvenerSubagentPreviewParams{Ref: "h1:t1"}, &preview); err != nil {
@@ -1062,18 +974,9 @@ func TestHubRPCThreadListKeepsRemoteProjectIdentity(t *testing.T) {
 		return client, nil
 	})
 
-	srv := httptest.NewUnstartedServer(nil)
-	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
-	web.sources.Add(source)
-	srv.Config.Handler = web.Handler()
-	srv.Start()
-	defer srv.Close()
+	srv := newWebSourceTestServer(t, source)
 
-	rpc := dialHubRPC(t, srv)
-	defer rpc.Close()
-	if _, err := rpc.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	rpc := dialHubRPCInitialized(t, srv)
 
 	resp, err := rpc.ThreadList(context.Background(), appwire.ThreadListParams{})
 	if err != nil {
@@ -1126,18 +1029,9 @@ func TestHubRPCThreadReadBoundsRemoteItemPage(t *testing.T) {
 		return client, nil
 	})
 
-	srv := httptest.NewUnstartedServer(nil)
-	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
-	web.sources.Add(source)
-	srv.Config.Handler = web.Handler()
-	srv.Start()
-	defer srv.Close()
+	srv := newWebSourceTestServer(t, source)
 
-	rpc := dialHubRPC(t, srv)
-	defer rpc.Close()
-	if _, err := rpc.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	rpc := dialHubRPCInitialized(t, srv)
 
 	resp, err := rpc.ThreadRead(context.Background(), appwire.ThreadReadParams{
 		Ref:          "h1:t1",

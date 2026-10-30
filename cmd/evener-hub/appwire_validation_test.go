@@ -3,6 +3,7 @@ package hub
 import (
 	"testing"
 
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
@@ -38,15 +39,7 @@ func TestValidateAppWireInputItemsRejectsTooManyImages(t *testing.T) {
 func TestTranscriptJSONLMaxLineCoversMaxImagePayload(t *testing.T) {
 	encodedImageBytes := ((hubcore.SendMaxImageBytes + 2) / 3) * 4
 	encodedPayloadBytes := hubcore.SendMaxImageItems*encodedImageBytes + 1024*1024
-	if transcriptJSONLMaxLineBytes < encodedPayloadBytes {
-		t.Fatalf("transcriptJSONLMaxLineBytes=%d, want at least %d", transcriptJSONLMaxLineBytes, encodedPayloadBytes)
-	}
-}
-
-func TestSendMaxRequestBytesCoversMaxImagePayload(t *testing.T) {
-	encodedImageBytes := ((hubcore.SendMaxImageBytes + 2) / 3) * 4
-	encodedPayloadBytes := hubcore.SendMaxImageItems*encodedImageBytes + 1024*1024
-	if hubcore.SendMaxRequestBytes < encodedPayloadBytes {
-		t.Fatalf("hubcore.SendMaxRequestBytes=%d, want at least %d", hubcore.SendMaxRequestBytes, encodedPayloadBytes)
+	if transcript.DefaultMaxLineBytes < encodedPayloadBytes {
+		t.Fatalf("transcript.DefaultMaxLineBytes=%d, want at least %d", transcript.DefaultMaxLineBytes, encodedPayloadBytes)
 	}
 }

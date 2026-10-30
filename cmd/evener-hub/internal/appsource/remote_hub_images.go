@@ -129,7 +129,7 @@ func HostQualifiedControllerImageRoute(raw string) bool {
 		return false
 	}
 	ref, err := appwire.ParseRef(route.session)
-	return err == nil && ref.SourceID != "local" && ref.ThreadID != ""
+	return err == nil && ref.SourceID != appwire.LocalSourceID && ref.ThreadID != ""
 }
 
 // isRootRelativeURL reports whether raw resolves against the serving origin

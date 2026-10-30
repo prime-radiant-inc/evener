@@ -13,7 +13,8 @@ func TestManagerInputNeverFallsBackToHumanCallback(t *testing.T) {
 	s := NewServer(ServerConfig{})
 	defer s.Close()
 	s.SetAppIdentity("local", "worker")
-	s.SetStatus(StatusInfo{SessionID: "worker", State: "idle"})
+	s.UpdateSessionInfo("worker", "", "")
+	s.SetState("idle")
 	humanCalls, managerCalls := 0, 0
 	s.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
 		Start: func(appwire.TurnStartParams) (appwire.TurnStartResponse, error) {

@@ -120,6 +120,20 @@ func (k TurnKind) TranscriptOnly() bool {
 	}
 }
 
+// HarnessContext reports whether entries of this kind are context the harness
+// projects into the model conversation rather than conversation a person or the
+// model produced: model-bound, text-only user-role messages that are only ever
+// appended. Consumers that pass conversation through, count it, or label it
+// derive that set here rather than listing the kinds again.
+func (k TurnKind) HarnessContext() bool {
+	switch k {
+	case TurnEnvironment, TurnNotesContext, TurnMemoryContext:
+		return true
+	default:
+		return false
+	}
+}
+
 // TurnSpanKind is the kind of turn an entry opens. It is persisted on the
 // first entry of each turn only.
 type TurnSpanKind string
@@ -422,8 +436,9 @@ type Turn struct {
 	AttentionResolution *AttentionResolutionInfo `json:"attention_resolution,omitempty"`
 	// CausalKnown distinguishes a newly recorded, known-empty origin from an
 	// unstamped older entry whose ancestry is unknown. Do not infer one from nil.
-	Causal      *provenance.Causal `json:"causal,omitempty"`
-	CausalKnown bool               `json:"causal_known,omitempty"`
+	Causal      *provenance.Causal    `json:"causal,omitempty"`
+	CausalKnown bool                  `json:"causal_known,omitempty"`
+	Authorship  *TranscriptAuthorship `json:"authorship,omitempty"`
 	// ClientMutationID identifies retry-safe client-authored input. StableTurnID
 	// preserves the logical turn identity across live events and transcript
 	// recovery for both client input and daemon goal continuations.

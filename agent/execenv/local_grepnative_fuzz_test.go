@@ -92,7 +92,7 @@ func egrep_effMax(maxResults int) int {
 }
 
 // FuzzEgrepGrepNative drives grepNative — the native (ripgrep-absent) text
-// search in agent/execenv/local.go — over a fuzzed tree of files, a fuzzed
+// search in agent/execenv/local_search.go — over a fuzzed tree of files, a fuzzed
 // regex, and the full option space (case-insensitivity, glob filter, output
 // mode, maxResults cap). grepNative reads the REAL OS filesystem directly (it
 // does not route through the afero SetFs seam), so the tree is materialized

@@ -2,13 +2,12 @@ package hub
 
 import (
 	"context"
-	"errors"
-	"net/http/httptest"
 	"path/filepath"
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
@@ -20,20 +19,12 @@ func TestHubRPCThreadForkAsideCreatesSideThread(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "project-aside-0000000000")
 	parentID := buildRPCParentSession(t, stateDir)
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past})
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	resp, err := client.ThreadFork(context.Background(), appwire.ThreadForkParams{
+	client := dialHubRPCInitialized(t, hub)
+	resp, err := appwiretest.ThreadFork(context.Background(), client, appwire.ThreadForkParams{
 		Ref:   "local:" + parentID,
 		Aside: true,
 	})
@@ -67,19 +58,11 @@ func TestHubRPCThreadForkAsideRejectsTurnFields(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "project-aside-0000000000")
 	parentID := buildRPCParentSession(t, stateDir)
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past})
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 	err := client.Request(context.Background(), appwire.MethodThreadFork, appwire.ThreadForkParams{
 		Ref:           "local:" + parentID,
 		Aside:         true,
@@ -89,10 +72,7 @@ func TestHubRPCThreadForkAsideRejectsTurnFields(t *testing.T) {
 	if err == nil {
 		t.Fatal("ThreadFork(aside+turn fields) succeeded, want invalid-params rejection")
 	}
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
-		t.Fatalf("error=%v, want InvalidParams wire error", err)
-	}
+	requireWireError(t, err, appwire.CodeInvalidParams)
 }
 
 // TestHubRPCThreadForkAsideUnavailableForNonLocal pins that aside is a
@@ -109,18 +89,9 @@ func TestHubRPCThreadForkAsideUnavailableForNonLocal(t *testing.T) {
 		notifications: make(chan appwire.Notification, 1),
 		canceled:      make(chan struct{}, 1),
 	}
-	srv := httptest.NewUnstartedServer(nil)
-	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
-	web.sources.Add(source)
-	srv.Config.Handler = web.Handler()
-	srv.Start()
-	defer srv.Close()
+	srv := newWebSourceTestServer(t, source)
 
-	client := dialHubRPC(t, srv)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, srv)
 	err := client.Request(context.Background(), appwire.MethodThreadFork, appwire.ThreadForkParams{
 		Ref:   "remote:th_aside",
 		Aside: true,
@@ -131,8 +102,5 @@ func TestHubRPCThreadForkAsideUnavailableForNonLocal(t *testing.T) {
 	if source.forkCalled {
 		t.Fatal("aside reached the non-local source")
 	}
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
-		t.Fatalf("error=%v, want Unavailable wire error", err)
-	}
+	requireWireError(t, err, appwire.CodeUnavailable)
 }

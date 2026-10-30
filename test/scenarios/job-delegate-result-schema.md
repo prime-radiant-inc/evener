@@ -16,10 +16,10 @@ judges outcome.
 
 **Identity and transport.** Stable `delegate` creation is asynchronous
 and returns `delegate_id` / `child_session_id` / `transcript_ref` and no
-`job_id` at all (`agent/session_tools.go#stableDelegateCreateResult`);
+`job_id` at all (`agent/session_tools_delegate.go#delegateCreateResult`);
 passing `max_wait_ms` is rejected outright with
 `invalid_request: delegate creation does not accept max_wait_ms`
-(`agent/session_tools.go#stableDelegateCreateTool`), so there is no
+(`agent/session_tools_delegate.go#delegateCreateTool`), so there is no
 foreground delegate creation to read a result from. Delegate generations
 create no job records ("Durable job records" "Delegate generations never
 create job records."), so `read_transcript(transcript_ref="job:<id>")`
@@ -139,7 +139,7 @@ own `transcript_ref`, the `delegate_send` result, or `delegates.jsonl`.
 - Arm (c): the `delegate_send` result names the SAME `delegate_id` as
   turn 1 and carries no job identity of any kind — the stable result has
   no `job_id`, `started_job_id` or `current_job_id` field to carry one
-  (`agent/session_tools_jobs.go#marshalDelegateSendResult`). Ask for at
+  (`agent/session_tools_delegate_send.go#marshalDelegateSendResult`). Ask for at
   most 60000 ms: `clampJobBlockTimeout` caps any inline wait at
   `maxJobBlockTimeoutMS` (`agent/session_tools_jobs.go#clampJobBlockTimeout`),
   so a larger number silently buys nothing. With the wait satisfied in
@@ -147,7 +147,7 @@ own `transcript_ref`, the `delegate_send` result, or `delegates.jsonl`.
   and `running_in_background` false, and the text the tool printed ends
   with a `[delegate_id <DLG1> · completed · completed]` footer and a
   trailing `structured_result (valid=true): {"verdict":"resumed","count":21}`
-  line (`agent/session_tools_jobs.go#formatDelegateSend`). Those are the
+  line (`agent/session_tools_delegate_send.go#formatDelegateSend`). Those are the
   schema's own top-level keys, which can only appear if the follow-up
   turn inherited the original conversation's `result_schema` — no schema
   was passed on the send.
@@ -174,7 +174,7 @@ own `transcript_ref`, the `delegate_send` result, or `delegates.jsonl`.
   result prints.** `formatDelegateSend` renders the report, a bracket
   footer, warnings and a `structured_result (valid=<bool>)` line — and
   stops; the reason rides only the structured tool state alongside it
-  (`agent/session_tools_jobs.go#delegateSendResult`). So arm (b)'s reason
+  (`agent/session_tools_delegate_send.go#delegateSendResult`). So arm (b)'s reason
   assertion must be read from the terminal notification frame's JSON or
   from `delegates.jsonl`, never from what a send printed. Asking a runner
   for a field the formatter omits is how a card gets an invented answer.
@@ -223,7 +223,7 @@ own `transcript_ref`, the `delegate_send` result, or `delegates.jsonl`.
   guarantee is pinned by
   `agent/delegate_resource_runtime_test.go#TestDelegateResourceRuntime_PositiveWaitCannotSteerAfterIdleToRunningTransition`
   and the tool-facing fields by
-  `agent/delegate_resource_tools_test.go#TestStableDelegateTools_LiveSteerRejectsIgnoredWait`,
+  `agent/delegate_resource_tools_test.go#TestDelegateTools_LiveSteerRejectsIgnoredWait`,
   which asserts the positive-wait running-target refusal (`call.IsError` and
   `call.Output == "target_busy"`).
   By contrast, a zero/omitted-wait send to a running delegate may live-steer:

@@ -11,6 +11,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/llm"
 )
 
@@ -75,7 +76,7 @@ func loopDetectionSession(t *testing.T, window int, present []string, reads []st
 			}
 		})
 	}
-	steps = append(steps, func(req llm.Request) llm.Response { return finalResponse("done") })
+	steps = append(steps, func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") })
 	c.Register(&fakeAdapter{name: "openai", steps: steps})
 
 	enableLoop := true

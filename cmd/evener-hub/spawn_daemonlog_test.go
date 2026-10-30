@@ -49,7 +49,7 @@ func TestSpawnedDaemonOutputStaysOutOfTheHubLog(t *testing.T) {
 	writeFakeEvener(t, bin, registeringFakeEvener(runDir, "033z7k96Nj0LLiLImAqa9s", "daemon says this on stdout", "daemon says this on stderr"))
 
 	var hubLog bytes.Buffer
-	entry, err := spawnDaemon(context.Background(), bin, runDir, hubcore.SpawnRequest{}, 60*time.Second, &hubLog)
+	entry, err := spawnDaemonWithProviderConfig(context.Background(), bin, runDir, hubcore.SpawnRequest{}, 60*time.Second, &hubLog, nil)
 	if err != nil {
 		t.Fatalf("spawnDaemon: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestSpawnBannerNamesTheDaemonLogFile(t *testing.T) {
 	writeFakeEvener(t, bin, registeringFakeEvener(runDir, "033z7k96Nj0LLiLImAqa9s", "out", "err"))
 
 	var hubLog bytes.Buffer
-	entry, err := spawnDaemon(context.Background(), bin, runDir, hubcore.SpawnRequest{}, 60*time.Second, &hubLog)
+	entry, err := spawnDaemonWithProviderConfig(context.Background(), bin, runDir, hubcore.SpawnRequest{}, 60*time.Second, &hubLog, nil)
 	if err != nil {
 		t.Fatalf("spawnDaemon: %v", err)
 	}
@@ -317,7 +317,7 @@ func TestSpawnFailsWhenTheDaemonLogCannotBeOpened(t *testing.T) {
 	writeFakeEvener(t, bin, "#!/bin/sh\ntouch "+ran+"\n")
 
 	var hubLog bytes.Buffer
-	_, err := spawnDaemon(context.Background(), bin, runDir, hubcore.SpawnRequest{}, 60*time.Second, &hubLog)
+	_, err := spawnDaemonWithProviderConfig(context.Background(), bin, runDir, hubcore.SpawnRequest{}, 60*time.Second, &hubLog, nil)
 	if err == nil {
 		t.Fatal("spawn succeeded with an unopenable daemon log")
 	}
@@ -372,7 +372,7 @@ func TestFailedLaunchLeavesNoPendingDaemonLogBehind(t *testing.T) {
 			}
 
 			var hubLog bytes.Buffer
-			_, err := spawnDaemon(context.Background(), bin, runDir, hubcore.SpawnRequest{}, 60*time.Second, &hubLog)
+			_, err := spawnDaemonWithProviderConfig(context.Background(), bin, runDir, hubcore.SpawnRequest{}, 60*time.Second, &hubLog, nil)
 			if err == nil {
 				t.Fatal("spawn should have failed")
 			}
@@ -404,7 +404,7 @@ func TestAdoptedDaemonLogSurvivesTheLaunchThatMadeIt(t *testing.T) {
 	writeFakeEvener(t, bin, registeringFakeEvener(runDir, "033z7k96Nj0LLiLImAqa9s", "out", "daemon says this on stderr"))
 
 	var hubLog bytes.Buffer
-	if _, err := spawnDaemon(context.Background(), bin, runDir, hubcore.SpawnRequest{}, 60*time.Second, &hubLog); err != nil {
+	if _, err := spawnDaemonWithProviderConfig(context.Background(), bin, runDir, hubcore.SpawnRequest{}, 60*time.Second, &hubLog, nil); err != nil {
 		t.Fatalf("spawnDaemon: %v", err)
 	}
 	logPath := filepath.Join(runDir, "logs", "daemon-033z7k96Nj0LLiLImAqa9s.log")
@@ -607,7 +607,7 @@ func TestResumingASessionBoundsTheHistoryItsLogCarriesIn(t *testing.T) {
 //
 // This runs the production handle lifecycle: the hub opens the log, the child
 // inherits a descriptor of its own, and the hub drops its own the moment the
-// child is started (SpawnDaemon, ResumeDaemon) while the daemon writes on past
+// child is started (spawnDaemonWithProviderConfig, resumeDaemon) while the daemon writes on past
 // the cap. Every byte this run wrote has to be in the file.
 func TestATrimNeverCutsTheRunItOpenedFor(t *testing.T) {
 	t.Parallel()

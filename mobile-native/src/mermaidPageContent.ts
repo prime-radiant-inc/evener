@@ -3,7 +3,7 @@
 // and DOMPurify into one self-contained HTML page emitted as
 // src/generated/mermaidPage.ts. This file is never imported by the app itself;
 // it exists so the bootstrap is real, typechecked, lintable TypeScript.
-import DOMPurify from "dompurify";
+import DOMPurify, { type Config } from "dompurify";
 import mermaid from "mermaid";
 
 declare global {
@@ -13,9 +13,8 @@ declare global {
 }
 
 // The forbid list is not a literal here: the generator
-// (scripts/build-mermaid-page.mts) imports MERMAID_FORBID_TAGS from the web
-// security module (cmd/evener-hub/frontend/src/widgets/mermaid/security.ts -
-// the one source) and substitutes it into this bundle via esbuild's define, so
+// (scripts/build-mermaid-page.mts) imports MERMAID_FORBID_TAGS from the AppWire
+// package (the one source, shared with the web sanitizer) and substitutes it into this bundle via esbuild's define, so
 // the two frontends cannot drift. Resource-bearing and navigational tags are
 // forbidden at BOTH layers here too — mermaid's own sanitize (dompurifyConfig
 // below) and this post-render pass. The render-time network fetch (mermaid's
@@ -23,16 +22,10 @@ declare global {
 // post-render pass covers markup passed through labels.
 declare const MERMAID_FORBID_TAGS: readonly string[];
 
-// Same profile config as the web sanitizer (MERMAID_SANITIZE_CONFIG in the
-// module above): html + svg + svgFilters keeps mermaid's <foreignObject> label
-// XHTML, "role" keeps role="graphics-document document" for screen readers.
-const MERMAID_SANITIZE_CONFIG = {
-	USE_PROFILES: { html: true, svg: true, svgFilters: true },
-	ADD_TAGS: ["foreignObject"],
-	HTML_INTEGRATION_POINTS: { foreignobject: true },
-	ADD_ATTR: ["role"],
-	FORBID_TAGS: [...MERMAID_FORBID_TAGS],
-};
+// The sanitize config is the package's MERMAID_SANITIZE_CONFIG, substituted by
+// the generator like the forbid list, so the page and the web sanitizer cannot
+// drift.
+declare const MERMAID_SANITIZE_CONFIG: Config;
 
 interface RenderMessage {
 	type: "render";

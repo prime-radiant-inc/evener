@@ -155,7 +155,7 @@ func lcycRunDrain(t *testing.T, sess *Session, ops []lcycDrainOp) string {
 			// append went around it, so an image-only entry is still reachable.
 			// A blank-or-whitespace-only, image-less entry has no representation
 			// at this layer either: appwire.NormalizeMutationInput drops a
-			// text item whose TrimSpace is empty, and clientMutationQueue then
+			// text item whose TrimSpace is empty, and AcceptClientMutationQueue then
 			// rejects the resulting empty input exactly as EnqueueWithImages
 			// does ("input is required") — so it is skipped, matching
 			// lcycCheckDrain's own driveAdded predicate below.
@@ -164,7 +164,7 @@ func lcycRunDrain(t *testing.T, sess *Session, ops []lcycDrainOp) string {
 				closing := sess.closingOrClosedLocked()
 				sess.mu.Unlock()
 				if !closing {
-					if _, err := sess.clientMutationQueue(appwire.TurnQueueParams{
+					if _, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{
 						Ref:              sess.ID(),
 						ClientMutationID: "lcyc_" + newQueueEntryID(),
 						Input:            clientMutationInput(op.text, lcycImages(op.images), nil),
@@ -311,7 +311,7 @@ func FuzzLcyc_DiscardRestoredCandidate(f *testing.F) {
 		parent := safzNewParent(t, clk, 2, nil, &agenttest.DenyEnv{WorkDir: t.TempDir()})
 
 		for i := 0; i < nChildren; i++ {
-			if _, err := parent.spawnAgent(context.Background(), "child task", "", "", 0, "", "", nil, nil); err != nil {
+			if res := parent.createDelegate(context.Background(), delegateArgs{Task: "child task"}); res.Err != nil {
 				break // allowance exhausted; the teardown oracle still runs
 			}
 		}
@@ -377,7 +377,7 @@ func lcycDecodeReserve(data []byte) lcycReserveSpec {
 // endedAt per record so the eviction sort is a total order and thus
 // deterministic).
 func lcycBuildManager(spec lcycReserveSpec) *subagentManager {
-	m := newSubagentManager(nil, 0)
+	m := newSubagentManager(0)
 	m.maxRetainedTerminal = spec.cap
 	base := time.Unix(1000, 0)
 	for i, ss := range spec.subs {
@@ -534,8 +534,8 @@ func lcycDecodeInit(data []byte) (specs []lcycPluginSpec, kind plugin.SessionSta
 		plugin.SessionStartKindClear, plugin.SessionStartKindCompact, "",
 	}
 	kind = kinds[r.intn(len(kinds))]
-	// A collide bit forces two dirs to share a name so LoadAll's duplicate-name
-	// error branch is reachable.
+	// A collide bit forces two dirs to share a name so the duplicate-name skip
+	// branch is reachable.
 	collide := r.intn(3) == 0
 	for i := 0; i < n; i++ {
 		name := fmt.Sprintf("lcyc-plugin-%d", i)

@@ -6,7 +6,7 @@
 // them from the sheet's context.
 import type { AppwireClient, LaunchConfigLayer } from "@evener/appwire-client";
 import { useStore } from "zustand";
-import type { NewSessionService } from "../../../mobile/src/services/newSession";
+import type { NewSessionService } from "../conversation/services/newSession";
 import type { NewSessionStore } from "./newSessionContext";
 import { useHostRead, useHubRevision } from "./useHostRead";
 

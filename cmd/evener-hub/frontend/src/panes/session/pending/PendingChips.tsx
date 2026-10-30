@@ -19,7 +19,7 @@ import { useMemo } from "react";
 import { useThreadsStore } from "../../../stores/threads";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import type { PendingTurnEntry } from "../composer/queue/pendingReconcile";
-import { usePendingTurnEntries } from "../composer/queue/pendingTurnsStore";
+import { usePendingTurnEntries, useQueueStripMutationIds } from "../composer/queue/pendingTurnsStore";
 import { pendingEntryPreview } from "../composer/queue/queueDisplay";
 import styles from "./pendingchips.module.css";
 
@@ -39,6 +39,7 @@ const CLASS = {
 
 export function PendingChips({ sessionRef }: { sessionRef: string }): JSX.Element | null {
   const entries = usePendingTurnEntries(sessionRef);
+  const queueStripIds = useQueueStripMutationIds(sessionRef);
   const refusedId = useThreadsStore((state) => state.transientRefusalPaces.get(sessionRef)?.clientMutationId);
   // Filter to the sends this strip owns - steer/drain/promote ghosts render
   // in the transcript's trailing row (steering-ghost spec) and QueueStrip
@@ -46,7 +47,10 @@ export function PendingChips({ sessionRef }: { sessionRef: string }): JSX.Elemen
   // conveys the still-in-flight state the dimmed chip already hints at.
   // Memoized against the store-stable entries array so an unrelated re-render
   // does not rebuild the list.
-  const optimistic = useMemo(() => entries.filter(isOptimistic), [entries]);
+  const optimistic = useMemo(
+    () => entries.filter((entry) => isOptimistic(entry) && !queueStripIds.has(entry.id)),
+    [entries, queueStripIds],
+  );
 
   if (optimistic.length === 0) return null;
 

@@ -17,7 +17,6 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -298,7 +297,7 @@ func TestPastThreadSkillLoaderIgnoresMalformedPluginComponents(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := writeThreadSkillPlugin(t, t.TempDir(), "malformed-plugin", "valid-skill", "valid value")
 			tc.setup(t, dir)
-			if _, err := plugin.Load(dir); err == nil {
+			if instance, err := plugin.Load(dir); err == nil && len(instance.SkippedComponents) == 0 {
 				t.Fatal("full plugin loader unexpectedly accepted malformed component")
 			}
 			got := discoverPastThreadSkills(hubcore.PastEntry{Meta: schema.SessionMeta{Config: schema.ConfigSnapshot{PluginDirs: []string{dir}}}})
@@ -451,10 +450,7 @@ func seedPastSessionWithSkillFixtures(t *testing.T) (hubcore.WebConfig, hubcore.
 		t.Fatal(err)
 	}
 	indexPastTranscriptForTest(t, stateDir, sessionID)
-	idx := hubcore.NewPastIndex(filepath.Join(root, "state", "projects", "*"))
-	if _, err := idx.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	idx := newRebuiltPastIndex(t, filepath.Join(root, "state", "projects", "*"))
 	entry, ok := idx.Find(sessionID)
 	if !ok {
 		t.Fatal("past entry not found")
@@ -506,18 +502,7 @@ func skillDescription(skills []appwire.EvenerSkillInfo, name string) string {
 	return ""
 }
 
-func TestHubThreadReadStableDelegateDoesNotExtractActivationID(t *testing.T) {
-	raw := json.RawMessage(`{"job_id":"job_retired_activation","delegate_id":"dlg_stable","status":"running"}`)
-	item := appwire.ThreadItem{Type: "commandExecution", ToolName: "delegate", Raw: bytes.Clone(raw), Status: appwire.TurnStatusInProgress}
-	got := reconcileDelegateThreadItemForTest(item, agent.HistoricalJobRecord{
-		JobID: "job_retired_activation", DelegateID: "dlg_stable", Type: "delegate", Status: "completed", OutputBytes: 99,
-	})
-	if !bytes.Equal(got.Raw, raw) || got.Status != item.Status {
-		t.Fatalf("thread read extracted/reconciled retired activation id: got raw=%s status=%s", got.Raw, got.Status)
-	}
-}
-
-func TestHubThreadReadStableDelegateIsReadOnly(t *testing.T) {
+func TestHubThreadReadDelegateIsReadOnly(t *testing.T) {
 	cfg, params := seedBoundedPastThread(t)
 	sessionID := strings.TrimPrefix(params.Ref, "local:")
 	entry, ok := cfg.Past.Find(sessionID)
@@ -689,67 +674,7 @@ func TestPastEntryThreadStampsInstanceID(t *testing.T) {
 	}
 }
 
-func TestThreadReadDoesNotReconcileStableDelegateFromActivationJob(t *testing.T) {
-	raw := json.RawMessage(`{"job_id":"job_A","delegate_id":"dlg_A","status":"running","task":"inspect billing","transcript_ref":"local:child"}`)
-	item := appwire.ThreadItem{Type: "commandExecution", ID: "item_delegate", CallID: "call_delegate", ToolName: "delegate", Raw: raw, Status: appwire.TurnStatusCompleted}
-	rec := agent.HistoricalJobRecord{JobID: "job_A", DelegateID: "dlg_A", Type: "delegate", Status: "completed", Task: "inspect billing", TranscriptRef: "local:child", OriginToolCallID: "call_delegate", OutputBytes: 42}
-
-	got := reconcileDelegateThreadItemForTest(item, rec)
-	if got.Status != item.Status || !bytes.Equal(got.Raw, raw) {
-		t.Fatalf("activation job mutated stable delegate transcript item: status=%q raw=%s", got.Status, got.Raw)
-	}
-}
-
-func TestHistoricalDelegateActivationExhaustionDoesNotRewriteStableTranscript(t *testing.T) {
-	raw := json.RawMessage(`{"job_id":"job_exhausted","delegate_id":"dlg_exhausted","status":"running","task":"bounded work","transcript_ref":"local:child-exhausted"}`)
-	item := appwire.ThreadItem{
-		Type:     "commandExecution",
-		ID:       "item_delegate",
-		CallID:   "call_delegate",
-		ToolName: "delegate",
-		Raw:      raw,
-		Status:   appwire.TurnStatusInProgress,
-	}
-	rec := agent.HistoricalJobRecord{
-		JobID:         "job_exhausted",
-		DelegateID:    "dlg_exhausted",
-		Type:          "delegate",
-		Status:        "exhausted",
-		Reason:        "tool_round_budget_exhausted",
-		Task:          "bounded work",
-		TranscriptRef: "local:child-exhausted",
-	}
-
-	got := reconcileDelegateThreadItemForTest(item, rec)
-	if got.Status != item.Status || !bytes.Equal(got.Raw, raw) {
-		t.Fatalf("activation exhaustion mutated stable delegate transcript item: status=%q raw=%s", got.Status, got.Raw)
-	}
-}
-
-func TestThreadReadLeavesDelegateRawUnchangedWithoutJobstoreRecord(t *testing.T) {
-	raw := json.RawMessage(`{"job_id":"job_missing","delegate_id":"dlg_A","status":"running"}`)
-	item := appwire.ThreadItem{Type: "commandExecution", ID: "item_delegate", CallID: "call_delegate", ToolName: "delegate", Raw: raw, Status: appwire.TurnStatusInProgress}
-	thread := appwire.Thread{Turns: []appwire.Turn{{ID: "turn_1", Items: []appwire.ThreadItem{item}}}}
-
-	got := reconcileDelegateThreadItems(thread, map[string]agent.HistoricalJobRecord{})
-	gotItem := got.Turns[0].Items[0]
-	if gotItem.Status != appwire.TurnStatusInProgress || string(gotItem.Raw) != string(raw) {
-		t.Fatalf("item changed without jobstore record: status=%q raw=%s", gotItem.Status, gotItem.Raw)
-	}
-}
-
-func TestThreadReadReconciliationIgnoresMismatchedJobID(t *testing.T) {
-	raw := json.RawMessage(`{"job_id":"job_A","status":"running"}`)
-	item := appwire.ThreadItem{Type: "commandExecution", ID: "item_delegate", CallID: "call_delegate", ToolName: "delegate", Raw: raw, Status: appwire.TurnStatusInProgress}
-	rec := agent.HistoricalJobRecord{JobID: "job_B", Type: "delegate", Status: "completed"}
-
-	got := reconcileDelegateThreadItemForTest(item, rec)
-	if got.Status != appwire.TurnStatusInProgress || string(got.Raw) != string(raw) {
-		t.Fatalf("mismatched job id reconciled: status=%q raw=%s", got.Status, got.Raw)
-	}
-}
-
-func TestPastThreadReadDoesNotReconcileStableDelegateFromActivationJob(t *testing.T) {
+func TestPastThreadReadDoesNotReconcileDelegateFromActivationJob(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "project-repo-0000000000")
 	parentID := "02wMz5Txv1C3Hut0M8GCeB"
@@ -798,10 +723,7 @@ func TestPastThreadReadDoesNotReconcileStableDelegateFromActivationJob(t *testin
 	}
 	writeHistoricalJobLog(t, filepath.Join(stateDir, "sessions", parentID, "jobs.jsonl"), now, "job_A")
 
-	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := idx.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	idx := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	thread, ok := requirePastThreadForRead(t, hubcore.WebConfig{Past: idx}, appwire.ThreadReadParams{Ref: "local:" + parentID, IncludeTurns: true})
 	if !ok {
 		t.Fatal("past thread not found")
@@ -859,10 +781,7 @@ func TestPastThreadReadProjectsThinkingFromTranscript(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := idx.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	idx := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	thread, ok := requirePastThreadForRead(t, hubcore.WebConfig{Past: idx}, appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true})
 	if !ok {
 		t.Fatal("past thread not found")
@@ -929,10 +848,7 @@ func TestPastThreadReadProjectsToolResultOutputImages(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := idx.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	idx := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	thread, ok := requirePastThreadForRead(t, hubcore.WebConfig{Past: idx}, appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true})
 	if !ok {
 		t.Fatal("past thread not found")
@@ -1133,7 +1049,7 @@ func TestPastEntryThread_CarriesCostTotal(t *testing.T) {
 //
 // The short-circuit is scoped to Name only, not Preview: Preview is this
 // wire object's own full-text field (unaffected, still the raw-ID fallback,
-// matching the live-thread path in appwire_runtime.go and the TUI's own
+// matching the live-thread path in server/appwire_thread_projection.go and the TUI's own
 // Name-then-Preview-then-SessionID chain), and SessionDisplayName itself
 // stays untouched because eight other callers want its bare-ID last resort
 // (see nodeTitle's doc comment).
@@ -1188,10 +1104,7 @@ func runningSubagentProjectionConfigWithState(t *testing.T, childState string) (
 			t.Fatal(err)
 		}
 	}
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	var states map[string]string
 	if childState != "" {
 		states = map[string]string{childID: childState}
@@ -1308,10 +1221,7 @@ func seedBoundedPastThread(t *testing.T) (hubcore.WebConfig, appwire.ThreadReadP
 		t.Fatal(err)
 	}
 	indexPastTranscriptForTest(t, stateDir, sessionID)
-	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := idx.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	idx := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	return hubcore.WebConfig{Past: idx}, appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true, ItemLimit: 40}
 }
 
@@ -1344,10 +1254,7 @@ func TestPastEntryThreadAdvertisesResumableCapabilities(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := idx.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	idx := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	entry, ok := idx.Find(sessionID)
 	if !ok {
 		t.Fatal("past entry not found")
@@ -1502,10 +1409,7 @@ func TestPastThreadTranscriptReadersPropagateUnsupportedFormat(t *testing.T) {
 // source's caller out of local session state.
 func TestPastThreadForRead_PastGateMisses(t *testing.T) {
 	cfg, sessionID, _ := seedPastSessionWithTasks(t, nil)
-	emptyIndex := hubcore.NewPastIndex(filepath.Join(t.TempDir(), "projects", "*"))
-	if _, err := emptyIndex.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	emptyIndex := newRebuiltPastIndex(t, filepath.Join(t.TempDir(), "projects", "*"))
 
 	for _, tc := range []struct {
 		name   string
@@ -1967,10 +1871,7 @@ func seedPastItemPagingThread(t *testing.T) (hubcore.WebConfig, hubcore.PastEntr
 		t.Fatal(err)
 	}
 	indexPastTranscriptForTest(t, stateDir, sessionID)
-	index := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := index.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	index := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	entry, ok := index.Find(sessionID)
 	if !ok {
 		t.Fatal("past item-paging entry not found")
@@ -2185,11 +2086,7 @@ func TestThreadReadPastSessionSkipsFullTurnProjection(t *testing.T) {
 
 	wire := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
 	defer wire.Close()
-	client := dialHubRPC(t, wire)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, wire)
 	read, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
 		Ref: ref, IncludeTurns: true, ItemsView: "full", ItemLimit: 40,
 	})

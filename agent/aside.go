@@ -9,7 +9,6 @@ import (
 	"github.com/spf13/afero"
 
 	"primeradiant.com/evener/agent/schema"
-	"primeradiant.com/evener/agent/transcript"
 )
 
 // AsideSession creates a new session branched from a parent session at its
@@ -26,10 +25,6 @@ func AsideSession(stateDir, parentID string) (string, error) {
 	return asideSessionFSWithConfig(afero.NewOsFs(), stateDir, parentID, nil)
 }
 
-func asideSessionFS(fs afero.Fs, stateDir, parentID string) (string, error) {
-	return asideSessionFSWithConfig(fs, stateDir, parentID, nil)
-}
-
 // AsideSessionWithConfig creates a full-tip child with config already selected
 // for that child. The final snapshot is supplied to the child writer before its
 // transcript and metadata are published, so a restart cannot observe a stale
@@ -39,7 +34,8 @@ func AsideSessionWithConfig(stateDir, parentID string, config schema.ConfigSnaps
 }
 
 func asideSessionFSWithConfig(fs afero.Fs, stateDir, parentID string, config *schema.ConfigSnapshot) (string, error) {
-	parentHeader, allEntries, err := readForkParent(fs, stateDir, parentID, 10*1024*1024)
+	deps := defaultForkDeps()
+	parentHeader, allEntries, err := readForkParent(fs, stateDir, parentID, deps.maxScanToken)
 	if err != nil {
 		return "", err
 	}
@@ -50,13 +46,6 @@ func asideSessionFSWithConfig(fs afero.Fs, stateDir, parentID string, config *sc
 		return "", fmt.Errorf("load parent session meta: %w", err)
 	}
 
-	deps := forkSessionDeps{
-		newWriter: func(fs afero.Fs, path string, header transcript.Header) (forkTranscriptWriter, error) {
-			return transcript.NewWriterWithFS(fs, path, header)
-		},
-		saveMeta:     schema.SaveSessionMetaWithFS,
-		maxScanToken: 10 * 1024 * 1024,
-	}
 	// The child shares the parent's full transcript, so the first turn unique
 	// to this branch is one past the parent's tip.
 	return writeForkChildWithConfig(fs, stateDir, parentID, parentHeader, parentMeta, allEntries, len(allEntries)+1, nil, config, deps)
@@ -72,11 +61,11 @@ func RemoveSessionArtifacts(stateDir, sessionID string) error {
 	if err := schema.ValidateSessionID(sessionID); err != nil {
 		return err
 	}
-	base := filepath.Join(stateDir, "sessions")
+	base := schema.SessionsDir(stateDir)
 	// .meta.json.lock is included: SaveSessionMeta creates it, and a rolled-back
 	// child (which never launched, so no writer can hold it) would otherwise
 	// leave a permanent empty lock file in the sessions directory.
-	for _, suffix := range []string{".meta.json", ".meta.json.lock", ".transcript.jsonl", ".api.jsonl", ".log.jsonl"} {
+	for _, suffix := range schema.SessionArtifactSuffixes {
 		if err := os.Remove(filepath.Join(base, sessionID+suffix)); err != nil && !os.IsNotExist(err) {
 			return err
 		}

@@ -45,6 +45,7 @@ import { installShareIntake } from "./src/share/shareIntakeHost";
 import { CommandsSheet } from "./src/session/CommandsSheet";
 import { NotesSheet } from "./src/session/NotesSheet";
 import { SessionInfoSheet } from "./src/session/SessionInfoSheet";
+import { NativeConversationSessionsProvider } from "./src/session/NativeConversationSessionsProvider";
 import { SHEET_ROUTES } from "./src/sheet/sheetRoutes";
 import { QueueSheet } from "./src/QueueSheet";
 import { CommentSheet } from "./src/reader/CommentSheet";
@@ -85,9 +86,11 @@ export default function App() {
 					<DisplayProvider value={displayPreferences}>
 						<ConnectionProvider>
 							<NativePreferencesProvider>
-								<AlertsProvider>
-									<Navigation />
-								</AlertsProvider>
+								<NativeConversationSessionsProvider>
+									<AlertsProvider>
+										<Navigation />
+									</AlertsProvider>
+								</NativeConversationSessionsProvider>
 							</NativePreferencesProvider>
 						</ConnectionProvider>
 					</DisplayProvider>

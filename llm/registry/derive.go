@@ -40,6 +40,18 @@ func derive(c *Caps, m *Model, in deriveInput, prov map[string]string) {
 			prov["ReasoningControls"], prov["EffortValues"] = provDerived, provDerived
 		}
 	}
+	// A row that states the no-effort verdict takes no effort parameter,
+	// whichever layer stated it, so it publishes no ladder. The controls are
+	// deliberately left alone: they are the evidence the thinking-shape
+	// derivation below reads, and rejecting an effort parameter says nothing
+	// about supporting budget thinking. EffortCapable answers the request-side
+	// question instead.
+	if !reasoningOff && BoolValue(c.EffortParameterUnsupported) {
+		if len(c.EffortValues) > 0 {
+			c.EffortValues = []string{}
+			prov["EffortValues"] = provDerived
+		}
+	}
 
 	// 1. Effort control pass-through. Capture the pre-augmentation state:
 	// the google shape check below must not mistake an effort control this
@@ -185,10 +197,37 @@ func (c Caps) EffortOffCapable() bool {
 // registry; the protocol builder then writes it only for a level an
 // EffortValues ladder vouches for (llm.VouchedEffort).
 func (c Caps) EffortCapable() bool {
+	// A row that states the no-effort verdict takes no effort parameter,
+	// whatever its controls say: the controls are capability evidence that
+	// thinking-shape derivation still needs, not a promise the wire accepts a
+	// level.
+	if BoolValue(c.EffortParameterUnsupported) {
+		return false
+	}
 	if slices.Contains(c.ReasoningControls, "effort") {
 		return true
 	}
 	return len(c.ReasoningControls) == 0 && c.Reasoning == nil
+}
+
+// ReasoningEnabled reports whether a row reasons at all, which is a different
+// question from whether its wire accepts an effort name: a toggle-only row and
+// a row stating EffortParameterUnsupported both reason without taking a level.
+func (c Caps) ReasoningEnabled() bool {
+	return c.Reasoning == nil || *c.Reasoning
+}
+
+// RequestEffortCapable reports whether a caller may put an effort on the
+// request for this row. That is broader than EffortCapable: a budget-shaped row
+// sizes its numeric budget from the effort even though no effort name reaches
+// the wire, so a caller that wants the budget still needs to set one. A row
+// that only toggles reasoning does not qualify, because nothing consumes the
+// level.
+func (c Caps) RequestEffortCapable() bool {
+	if !c.ReasoningEnabled() {
+		return false
+	}
+	return c.EffortCapable() || slices.Contains(c.ReasoningControls, "budget_tokens")
 }
 
 // AcceptsModality reports whether the row declares an input modality. The

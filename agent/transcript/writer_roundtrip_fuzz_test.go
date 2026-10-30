@@ -82,7 +82,7 @@ func assertSeqsStrictlyIncreasing(t *testing.T, path string) {
 		t.Fatalf("read back transcript: %v", err)
 	}
 	scanner := bufio.NewScanner(bytes.NewReader(data))
-	scanner.Buffer(make([]byte, 0, 64*1024), transcriptJSONLMaxLineBytes)
+	scanner.Buffer(make([]byte, 0, 64*1024), DefaultMaxLineBytes)
 	first := true
 	prevSeq := -1
 	for scanner.Scan() {

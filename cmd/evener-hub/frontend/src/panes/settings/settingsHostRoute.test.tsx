@@ -1,5 +1,6 @@
 import type { HostRow } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { LOCAL_HOST } from "@evener/appwire-client";
+import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
@@ -7,12 +8,12 @@ import { resetChromeStoreForTests } from "../../shell/chromeStore";
 import { navigate } from "../../shell/routing";
 import { resetWorkspaceStoreForTests } from "../../shell/workspace";
 import { installLocalStorage } from "../../storageTestUtils";
-import { connectionStore } from "../../stores/connection";
+import { resetConnectionStoreForTests } from "../../stores/connection";
 import { resetCredentialsStoreForTests, resetHostInstancesForTests } from "../../stores/credentials";
-import { LOCAL_HOST } from "../../stores/hostRouting";
 import { hostsStore } from "../../stores/hosts";
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
 import { resetSettingsHostForTests, settingsHostStore } from "../../stores/settingsHost";
+import { connectReadyFakeClient } from "../../testing/connectionTestUtils";
 import Settings from "./Settings";
 
 test.each(["display", "general", "plugins", "inrepo", "unrecognized"])(
@@ -85,12 +86,11 @@ function hostRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
 // A connected hub whose host registry lists beta and whose beta partition
 // answers the picker's and the remote view's reads.
 function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta" })] }));
-  fake.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
-  fake.on("evener/host/request", () => ({ instances: [], availableProviders: [] }));
-  connectionStore.getState().connect(fake);
-  return fake;
+  return connectReadyFakeClient((fake) => {
+    fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta" })] }));
+    fake.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
+    fake.on("evener/host/request", () => ({ instances: [], availableProviders: [] }));
+  });
 }
 
 // Renders Settings on ?host=beta and waits for both of its mount reads to land:
@@ -105,7 +105,7 @@ async function renderSettledOnBeta(): Promise<ReturnType<typeof render>> {
 
 beforeEach(() => {
   stubMatchMedia(false);
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetCredentialsStoreForTests();
   resetHostInstancesForTests();
   hostsStore.getState().resetForTests();
@@ -121,7 +121,7 @@ afterEach(() => {
   resetPrefsStoreForTests();
   resetWorkspaceStoreForTests();
   resetChromeStoreForTests();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetCredentialsStoreForTests();
   resetSettingsHostForTests();
 });

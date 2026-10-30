@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { KeyboardAvoidingView, Platform, ScrollView, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { LaunchOption } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 import { HoldingModal } from "./alerts/HoldingModal";
 import { LaunchModelPicker } from "./LaunchModelPicker";
 import { addFallback, assertLaunchListCurrent, collectFallbacks } from "./launchLists";

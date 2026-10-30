@@ -74,6 +74,14 @@ An established mismatch enters existing incompatibility recovery; it does not
 bypass deployment-source validation, deployment-disabled settings, or explicit
 deployment guarantees.
 
+**Amendment (2026-10-22).** A pre-v7 server refuses a newer client with an
+`InvalidRequest` whose message names the client's protocol and the older protocol
+it wants. That exact sentence, matched with `CodeInvalidRequest` and both versions
+well formed, is positive live protocol evidence for that older server; it is the
+only shape those binaries can send. Every other generic `InvalidRequest` still
+does not establish incompatibility. A live protocol that is newer than the
+controller's is refused rather than downgraded: the controller must be updated.
+
 ## Preservation and recovery
 
 - A successful compatible Connect leaves the remote executable, running hub,

@@ -1,0 +1,164 @@
+[
+ {
+  "id": "hub-sshconn-1",
+  "title": "Superseded port-based restart/health path survives only to be tested",
+  "category": "dead-code",
+  "verdict": "confirmed",
+  "severity": "high",
+  "note": "Reproduced with my own name-based reachability pass over non-test sshconn files: 30 unreachable funcs, 342 lines (detectSupervisor version.go:476, detectSupervisorsFrom :290, pickSupervisor :321, waitHealthy :1040, waitForHealthyHub :1071, hubAnswerProvesReplacement :1135, probeListeners :740, hubListenerAddrs :786, listenerOwnsAddr :819, findHubPID :860, waitPortClear :886, portCleared :959, recoverHubArgv :1213, hostAddr :71, hostAddrFor :64, hubPort :105, argvHubPort :116, deploySelected deploy.go:1063, revalidateOwnedEndpoint ownership.go:206, sameProcessAs manager.go:466, setPendingRestart :3688, setPendingStart :3697). It also finds more dead: describeHubIdentity, hubHealthRemote, parseHubHealth, parseHubHealthBuild, loopbackAddr, hostIsIPv4/6, listenerAddrRemote. ValidateHubAddrShape (version.go:83) has zero callers repo-wide. Live path confirmed: restartHub (version.go:520) -> restartHubWithStartProof (:532) -> recoverSelectedRestart/prepareSelectedRestart. Corrections: ListenerProbeRemote is used by three test files, not one (app_host_deploy_e2e_test.go:806,859; app_host_deploy_safety_test.go:317,324; app_host_pipeline_container_e2e_test.go:911). restartBare/stopAndRelaunch are defined only in legacy_restart_test.go (144 lines, zero Test funcs), so that whole file is a test-only reimplementation of the dead path. setPendingRestart/Start have 15 test references across 7 test files; version_test.go is 3,811 lines.",
+  "revised_fix_plan": "Delete the 30 funcs in the same PR, then rerun the reachability pass until empty. Delete legacy_restart_test.go outright. Inline sshconn.ListenerProbeRemote's three test-file uses (or keep one unexported probe string in a hub test helper) and drop the export. For tests of the other deleted funcs, name the surviving live-path test in the PR. Seed pendingRestarts in tests through recordDeployment or one small test helper. Needs Jesse's go-ahead (deletes implementations)."
+ },
+ {
+  "id": "hub-sshconn-2",
+  "title": "Attach/publish/announce state machine implemented three times (Ensure, AttachUnderGate, reconnectOnce)",
+  "category": "duplication",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Structure confirmed: Ensure (manager.go:553-825), AttachUnderGate (:916-1033), reconnectOnce (:2766-2863) each run ensureOnce -> isClosed/isLost -> SameRegistration recheck (:739,:999,:2803) -> publishChannel -> afterPublish -> second death check -> detach/attach events; the baseCtx.Err()!=nil && !isTerminal -> ErrManagerClosed mapping is pasted at :628-ish, :970, :2840. Ensure has 16 lock.Unlock() and 8 ch.Close() calls in 270 lines. Overstated as pure duplication though: the tails differ for real reasons. reconnectOnce owns the host (defer Unlock, closes the channel under the lock, clearChannel on lost-after-publish and returns true to retry); Ensure/AttachUnderGate give the slot back to the predecessor via lostAfterPublish (:1170) and close outside the lock; AttachUnderGate runs under the caller's hold and closes stale itself. Ensure also has the extra post-startSupervise checks the others lack. A single helper with an outcome enum must encode those differences, so the -150..-250 net estimate is optimistic (I expect -60 to -120) and concurrency risk is real.",
+  "revised_fix_plan": "Extract only the genuinely identical pieces first: mapAttemptErr(ctx,err) for the Close-vs-terminal mapping, and a validatePublishable(name,host,ch) (closed/lost/SameRegistration) helper returning a small reason enum. Leave each caller's tail policy inline. Add a table test per outcome before touching Ensure. Do after finding 1 and as its own PR; reconsider the full publishAttached helper only if the small extraction leaves obvious residue."
+ },
+ {
+  "id": "hub-sshconn-3",
+  "title": "ensureOnce is a 351-line ladder and operations.go re-implements its deploy and restart legs",
+  "category": "complexity",
+  "verdict": "confirmed",
+  "severity": "high",
+  "note": "ensureOnce is manager.go:1857-2207 (351 lines). Deploy leg respelled in operations.go:145-181 (deploySelectedWithSupersession, acknowledgeDeployment, setResolvedTarget, reReadLaunchContract, deployedBuildNotStamped, clearPendingRestart) vs manager.go:2037-2092. Correction: finishEnsureOp has 6 call sites (manager.go:2051,2075,2081,2090,2153,2158), 15 mentions; the 'if finishEnsureOp != nil' guards inside the deploy block are redundant since the hook's finish was just assigned. The restart leg in restartForOperation (operations.go:253-376) actually twins restartHubWithStartProof (version.go:532-556: prepareSelectedRestart, store pending under m.mu, restartPreparedSelectedPending) more than ensureOnce itself. Possible latent defect worth a test, not proven: when deploy and restart are both planned, validateStartupContract / validateExecutable failures (manager.go:~2095-2105) return without calling finishEnsureOp, leaving the durable record open.",
+  "revised_fix_plan": "Split ensureOnce into named phases and make DeployForOperation/restartForOperation call the same runDeployLeg/runRestartLeg, using a deferred finish with a named return instead of 6 inline guarded calls. Also fold restartHubWithStartProof's prepare+store block and restartForOperation's into one prepareAndStoreRestart. Start with a red test for the open-record-on-validation-failure case to decide whether it is a bug. Sequence after findings 1, 9, 10; size -150 to -300."
+ },
+ {
+  "id": "hub-sshconn-4",
+  "title": "manager.go is a 3,965-line grab bag with seven per-host maps",
+  "category": "architecture",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "manager.go is 3,965 lines, 1,773 comment lines. Struct has exactly seven name-keyed maps (supervisors, announced, locks, chans, resolvedTargets, pendingRestarts, ownerWitnesses; manager.go:418-447); clearHostCaches (:1834) deletes three of them by hand. Type homes confirmed: Manager :380, hostLockGate :3012, pendingRestartState :486/pendingRestart :3569, Channel :3776. Real but zero-LOC navigability work with merge-conflict cost against in-flight PRs; severity lowered.",
+  "revised_fix_plan": "Do the file split after findings 1, 2, 3, 10 land so it moves less code. Fold resolvedTargets/pendingRestarts/ownerWitnesses into one per-host recovery record only if finding 10's helpers make it fall out."
+ },
+ {
+  "id": "hub-sshconn-5",
+  "title": "Narrating and review-history comments, dangling function references, RoundN-named tests",
+  "category": "slop",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Confirmed: 'round eleven' version.go:427,663; 'round thirteen' deploy.go:296,307,402,566,589; 'round-6' manager.go:2712; 04a/04b in manager.go:26-28, operations.go:3, errors.go:49 (7 hits); ~40 '\u00a7'/'spec 04'/'08b' tokens; 3,493 comment lines of 11,410; Round-named test mentions 59 lines; round11/12/13 + deploy_round8/10 = 1,785 lines. Dangling names: markDevDeployed (deploy.go:363) and recoverRestart (manager.go:1945) have no definition anywhere. Corrections: restartBare is NOT nonexistent, it is defined in legacy_restart_test.go:23 (test-only), so TestRound13RestartBare... names a test-only helper (it goes away with finding 1). 'Uncommitted awk' overstated: the ownerEnvironmentRemote awk (ownership.go:270-322) has header comments at 273-277 and END-block comments; ownership_stopped.go is 346 lines with 12 comment lines, which is the better example.",
+  "revised_fix_plan": "Comment/test-name sweep after structural PRs. Delete history phrases, replace spec tokens with doc paths, shrink the Ensure/UpdateHost/AttachUnderGate essays to the invariant, add why-comments to ownership_stopped.go awk. Rename round tests by behavior only when the file is touched by another change."
+ },
+ {
+  "id": "hub-sshconn-6",
+  "title": "Registration identity comparison open-coded six times despite hostreg.SameRegistration",
+  "category": "duplication",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Verified six open-coded Equal+Generation+IncarnationID+PresenceEpoch sites: selected_restart.go:189, ownership.go:212 and :226, ownership_darwin_remote.go:190, ownership_listener.go:25, deploy.go:1121; deploy.go:1240 and :1255 mix hostreg.SameRegistration with a separate PresenceEpoch check. hostreg.SameRegistration (hostreg.go:846) omits PresenceEpoch exactly as claimed.",
+  "revised_fix_plan": "Add hostreg.SameRegistrationAndPresence (do not change SameRegistration semantics; its other callers do not carry the epoch) with a hostreg test, then replace the eight sshconn sites. Land hostreg first."
+ },
+ {
+  "id": "hub-sshconn-7",
+  "title": "Four-key owner environment allowlist spelled in eight places across shell, awk and Go",
+  "category": "duplication",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "The allowlist literal appears in 8 places, one more than listed: ownership.go:303 (awk), :351 (ownerEnvKeys), :459 (grep -E), ownership_stopped.go:205, ownership_darwin_remote.go:20 (launchctl awk, missing from the report), :70 (Go switch), :376 (ps awk), selected_restart.go:489 (4 printf blocks). Go consumers already use ownerEnvKeys (ownership.go:341,355, systemd_environment.go:80, ownership_stopped.go:276), so the Go switch at darwin_remote:70 is the only real Go duplicate. Generating awk/grep/shell snippets from the slice adds templating to quote-sensitive safety shell with roughly zero net LOC, and the key set is fixed and rarely changes.",
+  "revised_fix_plan": "Replace the darwin switch with slices.Contains(ownerEnvKeys, key). Add one test asserting every remote snippet constant/builder mentions every ownerEnvKeys entry. No snippet code generation."
+ },
+ {
+  "id": "hub-sshconn-8",
+  "title": "Process-evidence capture re-implemented per OS and per recovery flow, with divergent lsof cwd parsing",
+  "category": "duplication",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Divergence confirmed: ownership_darwin_remote.go:212-219 keeps the LAST 'n/' line of lsof -Fn output; retained_darwin_remote.go:78-87 returns errOwnerEvidence on a second 'n/' line. Same generation->checkHubOwner->recoverHubArgvRaw->cwd->env chain in resolveLinuxOwner (ownership.go:106), resolveDarwinOwner (darwin_remote:145), the inline linux revalidation in reinstallRetainedTarget (deploy.go:1269-1337, ~70 lines) and revalidateRetainedDarwin. readlink /proc/<pid>/cwd in three places (ownership.go:121, ownership_systemd_remote.go:67, deploy.go:1287). The proposed per-OS processEvidence reader and -200..-300 lines is speculative: resolve builds evidence, revalidate compares against a prior with different error mapping, so only the probe steps are shared.",
+  "revised_fix_plan": "Step 1: red test with two lsof 'n/' lines to settle one rule (strict refuse is the safer fence) with Jesse. Step 2: extract darwinProcessCwd(ctx,host,pid) and linuxProcessCwd(ctx,host,pid) used by all sites. Step 3: move the inline linux retained revalidation out of reinstallRetainedTarget into revalidateRetainedLinux next to revalidateRetainedDarwin. Expect -60 to -100, not -300."
+ },
+ {
+  "id": "hub-sshconn-9",
+  "title": "Deploy-selection pass-through wrapper ladder, optional-via-variadic params and a 143-line closure",
+  "category": "complexity",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Verified: deploySelected (deploy.go:1063) -> deploySelectedWithAuthority (:1067) -> deploySelectedWithSupersession (:1071, 153 lines to :1223). deploySelected is dead (finding 1), so the live ladder is two wrappers deep plus deployForOperation->WithSupersession (operations.go:141). Variadics journals[0] (operations.go:117), retainedTarget[0] (deploy.go:392,477,540,544) are optional-arg abuse; recorders ...func is looped over, not first-only. deploy() ends with two identical returns (deploy.go:407 inside the ownExecutableCannotServe branch after its check, and :409). DeployForOperation has one non-test caller assigned to a function field (app_host_manage.go:1526).",
+  "revised_fix_plan": "After finding 1, collapse to deploySelected(ctx, host, facts, deployOpts{realEndpointAuthority, supersede, recorders, retainedTarget *string}); replace the two variadics with a pointer/struct field; delete the redundant final return in deploy(); turn checkRetained/beforeWrite into methods on a small retainedDeploy value. Signature change of DeployForOperation (journals) needs Jesse's OK. -60 net."
+ },
+ {
+  "id": "hub-sshconn-10",
+  "title": "pendingRestartState is a 13-field boolean mode bag mutated through 15 scattered lock-and-store writes",
+  "category": "complexity",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Struct has 13 fields (manager.go:486-513). Direct m.pendingRestarts[...] = writes: 17 (deploy.go 3, operations.go 4, selected_restart.go 1, manager.go 6, version.go 3), two of them in dead setPendingRestart/Start (manager.go:3691,3703), leaving the claimed 15. Rollback-to-previous is pasted at version.go:1661, operations.go:350, deploy.go:1197. pending.command == \"\" is read ~10 times (manager.go:2259,3582,3619,3647; operations.go:149,304; selected_restart.go:325; deploy.go:1202; version.go:1700,1703). command is set in production only alongside selected (selected_restart.go:18,55) or from version.go:1700-1706, so it is a 'command prepared' marker. The enum redesign (deployOnly/deployThenRestart/restart/start) is speculative and touches the recovery contract.",
+  "revised_fix_plan": "Do only the store/restore helpers (storePendingRestart, restoreWithPrevious) and route the live writes through them after finding 1. Defer any kind enum until the ensureOnce split; if pursued, first write the table test of reachable boolean combinations. Size about -30, not -60."
+ },
+ {
+  "id": "hub-sshconn-11",
+  "title": "Error taxonomy: exported alias twins, hand-kept terminal list, ErrSSHAuth doc contradicts code",
+  "category": "inconsistency",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Seven alias twins confirmed (ErrExecutableMissing preflight.go:424; ErrControllerDirty/RunTargetUnservable/DeployArtifactUnusable/DeployUnstamped/OwnExecutableCannotServe/DeployDisabled manager.go:2937-2985). isTerminal is already one 19-entry list (manager.go:2895-2925); moving it is cosmetic. 'Doc contradicts code' is overstated: errors.go:17-31 says the manager classifies none as ErrSSHAuth in production then states the one exception (a failed Start with an ssh marker), which matches isSSHAuthFailure (preflight.go:540-552) and sshRunFailure (:521). Deleting ErrSSHAuth is NOT behavior-neutral: sshRunFailure wraps ErrSSHAuth without ErrSSHStart, and appsource/remote_hub_source.go:386-390 maps only ErrSSHStart to SessionUnavailable, so folding changes how auth failures surface (product decision). The 'unrelated' ErrHostAddr in cmd/evener-hub/config.go:599 is actually used alongside the sshconn one (app_host_manage.go:2391, app_host_attach.go:293).",
+  "revised_fix_plan": "Export the seven sentinels directly and delete the private twins and alias block (~-50). Leave ErrSSHAuth, its marker machinery and isTerminal alone unless Jesse decides auth failures should read as unavailability. Optional table test classifying each sentinel."
+ },
+ {
+  "id": "hub-sshconn-12",
+  "title": "Dead or never-set public surface and test seams inside Options and Manager",
+  "category": "dead-code",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Confirmed: Options.EnsureDeploy (manager.go:168) never read (New copies nothing; wiring is SetEnsureDeployHook :3264); HandshakeIfAttached (:1131) only called from manager_test.go:3555 (hubcore/config.go:163 says so); EnsureDeployHook/EnsureRestartHook identical types (:3255,:3223). main.go:592 sets 7 Options fields. AfterUpdateHostSwap is used by hub tests app_host_gate_release_test.go:108 and app_host_manage_update_test.go:538. Exaggerated: about 20 exported Options fields, not 30; tuning knobs like BackoffBase are used by hub tests (app_host_restart_recovery_test.go:1322), so removing them has hub-test cost.",
+  "revised_fix_plan": "Delete Options.EnsureDeploy and HandshakeIfAttached (and its test); merge the two hook types into one EnsureHook. Leave tuning knobs unless Jesse asks."
+ },
+ {
+  "id": "hub-sshconn-13",
+  "title": "Small helpers reinvented or duplicated (exit-1 probe, pid-gone, equalStrings, dirty suffix, live-channel, launch flag)",
+  "category": "duplication",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Mostly true with smaller counts: exit-code-1 check at 3 sites (deploy.go:1228,1263; preflight.go:443), identical 'test -x ... exit 0 else exit 1' shell twice (deploy.go:1226,1261); pidGoneMarker compared inline at deploy.go:1335, selected_restart.go:217, retained_darwin_remote.go:32 beside waitProcessExit's switch (version.go:942); isNumericUID used by numericPID (version.go:220-247) with 7 callers; requiredLaunchFlag duplicated at preflight.go:22 and spawn.go:1146 (launchcheck copy not verified); execRunner.Run (runner.go:103) only forwards to runOneShot; isDirtyVersion exists at manager.go:3380. equalStrings (ownership_darwin_remote.go:379, single caller selected_restart.go:173) NUL-join conflation cannot occur on K=V env strings, so it is style, not a latent bug.",
+  "revised_fix_plan": "Fold each cleanup into the PR touching that file: exitedWith(err,1), executableTestRemote, processGone helper, slices.Equal, rename isNumericUID, inline runOneShot. Skip the buildinfo move unless the dirty rule changes."
+ },
+ {
+  "id": "hub-sshconn-14",
+  "title": "Dead Preflight fields and an environment probe that only feeds them",
+  "category": "dead-code",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "No reader of Preflight.ConfigRoot/StateRoot outside manager_test.go:157-161 (the StateRoot hits elsewhere are unrelated registry methods). UnameOS/UnameMachine are set at preflight.go:231,242 and used only locally for error text, so they can be locals. Overstated impact: the env probe (preflight.go:253) must stay because Home (deploy.go:677,937) comes from it, so no SSH round trip is saved; the win is dropping 4 fields, resolveRoots (:147-160) and the cmdutil/userdirs imports, plus resolveRoots tests (preflight_test.go:131-153), about -40, not -70.",
+  "revised_fix_plan": "Drop ConfigRoot, StateRoot, UnameOS, UnameMachine fields and resolveRoots; keep a HOME-only probe (could shrink envProbeScript but fake runners key on its text, check fakes_test.go). Update doc.go:7."
+ },
+ {
+  "id": "hub-sshconn-15",
+  "title": "Single-embedder indirection for deploy remedies (DeployHelp and three library-default variants)",
+  "category": "slop",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "deployRemedy (manager.go:3471) plus deployHelp (:3483, 'set Options.BuildSource'), installerRemedy (:3492, 'use the atomic push path or Options.BuildBinary') and unstampedRemedy (:3502). preflight_test.go:325 asserts the 'set Options.BuildSource' phrase (violates the no-phrasing rule). Caution: many sshconn tests run with empty DeployHelp, so removing defaults leaves format strings with a trailing empty clause; adjust those messages when deleting.",
+  "revised_fix_plan": "Delete the three defaults, read opts.DeployHelp directly, fix the format strings, drop the phrase assertion; fold into the comment sweep."
+ },
+ {
+  "id": "hub-sshconn-16",
+  "title": "Defensive m.reg == nil guards in 11 places",
+  "category": "slop",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "11 guards confirmed (operations.go:50,205; manager.go:558,932,1143,1306,1463,1558,1596,1687,1814). Production always passes hostreg.NewSeeded (main.go:560). But the nil registry is a deliberate failure-injection seam in 7 tests, not 2: detach_host_test.go:76, update_host_test.go:149 and five hub tests (app_host_manage_test.go:1201,1725,1808,2305; app_host_records_test.go:191); app_host_manage_test.go:1199 comments it as 'the one seam that fails between the durable write and the live insert'. Deleting the guards would panic those tests and require a different injection.",
+  "revised_fix_plan": "Low priority. If done, require non-nil in New and replace the 7 tests' failure injection with a closed or read-only registry. Needs Jesse's approval (constructor contract)."
+ },
+ {
+  "id": "hub-sshconn-17",
+  "title": "Stale file:line anchors and mismatched comments in code and product docs",
+  "category": "doc-drift",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "docs/product/friction.md:887 anchors Ensure at manager.go#L537 (actual :553), :1048 bootstrapHub #L2182 (actual :2210), :1050 relaunchCommand #L1689 (actual version.go:1562). version.go:132 loopbackAddr comment cites cmd/evener-hub/attach.go loopbackAddr, which does not exist (and loopbackAddr itself is dead per finding 1). preflight.go:71 doc says osArchTargetsSupported, func is targetSupported. runner.go:68 cites spawn.go:378-381 for 'NOT CommandContext' but those lines are buildSpawnArgs.",
+  "revised_fix_plan": "Replace line anchors with symbol references in friction.md and code comments in the same change; fix the two wrong comments. Skip the install.sh-parsing test (fragile for little gain) unless Jesse wants it."
+ },
+ {
+  "id": "hub-sshconn-18",
+  "title": "Test suite is 32.6k lines, pins dead code, and has 50+ error-phrase assertions",
+  "category": "test-debt",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "93 test files, 32,626 lines; version_test.go 3,811. Counted 63 strings.Contains(err.Error(), ...) assertions (more than the 50 claimed) out of 950 strings.Contains in sshconn tests (many on command text, which is fine). Examples: deploy_help_test.go:19,22, gate_test.go:291 'operation store is not configured', round12_test.go:388 'still running', round13 and deploy_round10_test.go:274 'create install target', preflight_test.go:325. Round-named files total 1,785 lines. legacy_restart_test.go (144 lines) is test-only code for the dead path. Violates AGENTS.md 'never assert on phrasing'.",
+  "revised_fix_plan": "With finding 1 delete legacy-path tests and legacy_restart_test.go; convert phrase checks to errors.Is on sentinels or recorded runner commands; fold round-named tests into topical files on touch. For each deleted test name the surviving live-path test in the PR."
+ }
+]

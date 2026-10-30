@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,20 +10,20 @@ import (
 )
 
 // delegateArtifactsSubdir names the per-delegation artifacts directory inside
-// the delegate's own session state directory.
+// the delegate's own session state directory. The layout itself lives in
+// schema.SessionArtifactsDir; this name lets the tests spell a subdirectory
+// without importing the schema package's layout a second time.
 const delegateArtifactsSubdir = "artifacts"
 
 // delegateSessionDir returns the delegation's own session state directory,
 // <stateDir>/sessions/<childSessionID>, which holds the child's job store and
 // the artifacts subdirectory.
 func delegateSessionDir(stateDir, childSessionID string) (string, error) {
-	if strings.TrimSpace(stateDir) == "" {
-		return "", errors.New("delegate artifacts dir requires a durable state directory")
+	dir, err := schema.SessionDir(stateDir, childSessionID)
+	if err != nil {
+		return "", fmt.Errorf("delegate artifacts dir: %w", err)
 	}
-	if err := schema.ValidateSessionID(childSessionID); err != nil {
-		return "", err
-	}
-	return filepath.Join(stateDir, sessionsSubdir, childSessionID), nil
+	return dir, nil
 }
 
 // delegateArtifactsDir returns the durable per-delegation artifacts directory:
@@ -36,11 +35,11 @@ func delegateSessionDir(stateDir, childSessionID string) (string, error) {
 // state does and is removed with it. The session id is validated before it is
 // joined to any path.
 func delegateArtifactsDir(stateDir, childSessionID string) (string, error) {
-	base, err := delegateSessionDir(stateDir, childSessionID)
+	dir, err := schema.SessionArtifactsDir(stateDir, childSessionID)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("delegate artifacts dir: %w", err)
 	}
-	return filepath.Join(base, delegateArtifactsSubdir), nil
+	return dir, nil
 }
 
 // ensureDelegateArtifactsDir creates the delegate's artifacts directory and

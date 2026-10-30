@@ -36,16 +36,84 @@ func allRemoteThreadCapabilities() appwire.ThreadCapabilities {
 	}
 }
 
+// allForwardedFeatures is the handshake feature set a peer advertises when this
+// source may forward every action whose hub-level feature it names.
+func allForwardedFeatures() appwire.FeatureSet {
+	return appwire.FeatureSet{
+		TurnStart:      true,
+		TurnSteer:      true,
+		ThreadClear:    true,
+		ThreadShutdown: true,
+		ForkFromTurn:   true,
+	}
+}
+
+// forwardedThreadCapabilitiesForTests is the effective policy over a peer that
+// advertises every hub-level feature.
+func forwardedThreadCapabilitiesForTests() appwire.ThreadCapabilities {
+	return forwardedRemoteThreadCapabilities(allForwardedFeatures())
+}
+
 // maskedRemoteThreadCapabilities is the set a remote thread may advertise for the
-// full daemon claim: the remote's own flags intersected with the actions this
-// source forwards. Shared input and Shutdown are enabled; unrelated actions
-// remain masked.
-var maskedRemoteThreadCapabilities = appwire.ThreadCapabilities{Send: true, Steer: true, Queue: true, SkillInput: true, CommandInput: true, Shutdown: true}
+// full daemon claim: the remote's own flags intersected with the effective
+// forwarded set for a fully featured peer.
+var maskedRemoteThreadCapabilities = forwardedThreadCapabilitiesForTests()
+
+// The policy is the one place that decides which remote actions this controller
+// may advertise. A peer that disclaims a hub-level feature keeps that action
+// masked; a healthy peer gets every action the controller forwards, minus
+// PageBefore. Protocol compatibility is an attach precondition, not an input.
+func TestForwardedRemoteThreadCapabilitiesPolicy(t *testing.T) {
+	t.Run("hub features gate the actions they name", func(t *testing.T) {
+		got := forwardedRemoteThreadCapabilities(appwire.FeatureSet{ThreadShutdown: true})
+		want := appwire.ThreadCapabilities{
+			Interrupt:         true,
+			Compact:           true,
+			Shutdown:          true,
+			ChangeModel:       true,
+			ChangeVisionModel: true,
+			Queue:             true,
+			Goal:              true,
+			SharedNotes:       true,
+			Rename:            true,
+			SkillInput:        true,
+			CommandInput:      true,
+			StopSubagent:      true,
+		}
+		if got != want {
+			t.Fatalf("effective capabilities = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("healthy peer advertises every forwarded action", func(t *testing.T) {
+		got := forwardedThreadCapabilitiesForTests()
+		want := appwire.ThreadCapabilities{
+			Send:              true,
+			Steer:             true,
+			Interrupt:         true,
+			Compact:           true,
+			Clear:             true,
+			ForkFromTurn:      true,
+			Shutdown:          true,
+			ChangeModel:       true,
+			ChangeVisionModel: true,
+			Queue:             true,
+			Goal:              true,
+			SharedNotes:       true,
+			Rename:            true,
+			SkillInput:        true,
+			CommandInput:      true,
+			StopSubagent:      true,
+		}
+		if got != want {
+			t.Fatalf("effective capabilities = %+v, want %+v", got, want)
+		}
+	})
+}
 
 // A remote hub reports the capability set of its OWN session daemon. Those flags
 // describe what the remote daemon can do, not what the controller can forward, so
-// the mask must drop every action this source cannot carry. Shared input and
-// Shutdown survive; unrelated staged actions remain masked.
+// the mask drops every action the effective host policy does not name.
 func TestRemoteHubFromRemoteThreadMasksUnforwardedCapabilities(t *testing.T) {
 	source := NewRemoteHubSource("host", nil, nil)
 	thread, err := source.fromRemoteThread(appwire.Thread{
@@ -56,12 +124,12 @@ func TestRemoteHubFromRemoteThreadMasksUnforwardedCapabilities(t *testing.T) {
 			InstanceID:   "inst-1",
 			Capabilities: allRemoteThreadCapabilities(),
 		},
-	})
+	}, forwardedThreadCapabilitiesForTests())
 	if err != nil {
 		t.Fatalf("fromRemoteThread: %v", err)
 	}
 	want := maskedRemoteThreadCapabilities
-	if got := maskRemoteThreadCapabilities(allRemoteThreadCapabilities()); got != want {
+	if got := maskRemoteThreadCapabilities(allRemoteThreadCapabilities(), forwardedThreadCapabilitiesForTests()); got != want {
 		t.Fatalf("masked capabilities = %+v, want %+v", got, want)
 	}
 	if thread.Evener.Capabilities != want {
@@ -81,14 +149,10 @@ func TestRemoteHubFromRemoteThreadMasksUnforwardedCapabilities(t *testing.T) {
 }
 
 // Every capability a remote thread is allowed to advertise must have a working
-// method behind it. The methods below are the 05c/05d work: component 05c
-// implements the turn mutations and lifecycle verbs in remote_hub_mutations.go,
-// and a capability is re-enabled only once remoteForwardedThreadCapabilities
-// names it. Shutdown is named today; every other staged action stays masked until
-// 05d's host capability probe answers what the host supports. Enumerating the
-// promise here means a field cannot be flipped on while its method still fails
-// closed, and a future capability field cannot be added without deciding which
-// method answers for it.
+// method behind it. Enumerating the promise here means a field cannot be
+// advertised by the effective policy while its method still fails closed, and a
+// future capability field cannot be added without deciding which method answers
+// for it.
 func TestRemoteHubCapabilitiesMatchForwardedMethods(t *testing.T) {
 	ctx := context.Background()
 	// A connector that always fails: every method below must reach the forward
@@ -178,7 +242,7 @@ func TestRemoteHubCapabilitiesMatchForwardedMethods(t *testing.T) {
 		}},
 	}
 
-	masked := maskRemoteThreadCapabilities(allRemoteThreadCapabilities())
+	masked := maskRemoteThreadCapabilities(allRemoteThreadCapabilities(), forwardedThreadCapabilitiesForTests())
 	enumerated := make(map[string]bool, len(cases))
 	for _, tc := range cases {
 		if enumerated[tc.field] {
@@ -199,7 +263,7 @@ func TestRemoteHubCapabilitiesMatchForwardedMethods(t *testing.T) {
 			t.Errorf("capability %s is not a field of appwire.ThreadCapabilities", tc.field)
 			continue
 		}
-		// Only the actions remoteForwardedThreadCapabilities names may be
+		// Only the actions the effective host policy names may be
 		// advertised. The expectation is read from that set rather than restated as
 		// a literal here, so enabling another action cannot leave this test agreeing
 		// with a stale copy of it.
@@ -307,7 +371,7 @@ func TestRemoteHubFromRemoteThreadTranslates(t *testing.T) {
 			ParentRef:  "local:owner",
 			InstanceID: "inst-1",
 		},
-	})
+	}, forwardedThreadCapabilitiesForTests())
 	if err != nil {
 		t.Fatalf("fromRemoteThread: %v", err)
 	}
@@ -327,7 +391,7 @@ func TestRemoteHubFromRemoteThreadTranslates(t *testing.T) {
 
 func TestRemoteHubFromRemoteThreadNestedRefRefused(t *testing.T) {
 	source := NewRemoteHubSource("host", nil, nil)
-	_, err := source.fromRemoteThread(appwire.Thread{Evener: appwire.EvenerThread{Ref: "other:X"}})
+	_, err := source.fromRemoteThread(appwire.Thread{Evener: appwire.EvenerThread{Ref: "other:X"}}, forwardedThreadCapabilitiesForTests())
 	if err == nil {
 		t.Fatal("fromRemoteThread accepted a nested remote ref")
 	}
@@ -357,7 +421,7 @@ func TestRemoteHubFromRemoteThreadTranslatesNestedDiagnosticRefs(t *testing.T) {
 				},
 			},
 		},
-	})
+	}, forwardedThreadCapabilitiesForTests())
 	if err != nil {
 		t.Fatalf("fromRemoteThread: %v", err)
 	}
@@ -402,7 +466,7 @@ func TestRemoteHubFromRemoteThreadTranslatesPendingEscalationRefs(t *testing.T) 
 				{ThreadID: "th_5", Ref: "other:th_5", EscalationID: "esc_5"},
 			},
 		},
-	})
+	}, forwardedThreadCapabilitiesForTests())
 	if err != nil {
 		t.Fatalf("fromRemoteThread: %v", err)
 	}
@@ -640,7 +704,7 @@ func TestRemoteHubJobsGetTranslatesTypedJobRefs(t *testing.T) {
 				t.Fatal(err)
 			}
 			response.Data.TranscriptRef = transcriptRef
-			if err := source.translateOut(&response); err != nil {
+			if err := source.translateOutWithForwarded(&response, appwire.ThreadCapabilities{}); err != nil {
 				t.Fatal(err)
 			}
 			wantOwner, err := source.fromRemoteRefString("local:sess_1")

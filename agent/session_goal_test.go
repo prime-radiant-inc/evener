@@ -11,6 +11,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/goal"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -426,7 +427,7 @@ func compactSession(t *testing.T) *Session {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return finalResponse("forced summary") },
+		func(req llm.Request) llm.Response { return agenttest.FinalResponse("forced summary") },
 	}})
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
@@ -544,7 +545,7 @@ func TestProcessInputDelegatesAsUserInput(t *testing.T) {
 	c.Register(&fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("all done") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("all done") },
 		},
 	})
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})

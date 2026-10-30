@@ -73,7 +73,7 @@ Every other Claude hook capability — new events, the `http`/`mcp_tool`/`agent`
 ### Evener code anchors
 
 - `agent/plugin/hooks.go` defines the hook event enum, the `validHookEvents` set (the 9 evener fires), the `recognizedClaudeEvents` set (every Claude event name), the `hookEventTier`/`EventTier` tier registry, `RegisteredHook` (matcher, type, command/prompt, timeout, model, plugin name/dir, the official handler fields `Args`/`Shell`/`If`/`Async`/`AsyncRewake`/`StatusMessage`, source metadata `SourcePath`/`Event`/`GroupIndex`/`HandlerIndex`, and `UnknownFields`), and the parser `parsePluginHooksDiag` (which returns the supported hooks map plus the `unsupported` and `unknown` event sets).
-- `agent/plugin/plugin.go` defines `Instance` with `Hooks`, `UnsupportedHooks`, and `UnknownHooks`, and the `Load`/`LoadAll` entry points that read each plugin's manifest hooks, manifest-referenced hook path, or default `<dir>/hooks/hooks.json`.
+- `agent/plugin/plugin.go` defines `Instance` with `Hooks`, `UnsupportedHooks`, and `UnknownHooks`, and the `Load`/`LoadAllFailSoft` entry points that read each plugin's manifest hooks, manifest-referenced hook path, or default `<dir>/hooks/hooks.json`.
 - `agent/internal/hooks/matcher.go` implements `matchTarget` (empty/star, exact/pipe-list, RE2 regex).
 - `agent/internal/hooks/exitcode.go` implements `exitBehavior` (the central exit-code table for the fired events).
 - `agent/internal/hooks/hooks.go` defines `Input` (the JSON piped to command hooks), `executeCommandHook` (exec-form + shell selection + env), `parseHookOutput`/`parsedHookOutput` (output parsing with `additionalContext` routed separately), `MatchHooks` (matcher dispatch + invalid-regex diagnostic), `runAll`/`runHook`, and the per-event runner methods.

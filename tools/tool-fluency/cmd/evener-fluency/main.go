@@ -1094,7 +1094,7 @@ var runnerProbeSandboxHost = func() sandbox.HostFacts { return sandbox.RealProbe
 // than a silent native run.
 //
 // --sandbox-net is validated even when the mode is off, matching the production
-// CLI (cmd/evener configureSandbox parses the net flag before its off
+// CLI (cmdutil.ConfigureSandbox parses the net flag before its off
 // short-circuit); the net decision is only APPLIED when the mode is non-off.
 func parseSandboxFlags(modeName, netName string) (sandbox.Mode, bool, error) {
 	name := strings.TrimSpace(modeName)
@@ -1105,67 +1105,11 @@ func parseSandboxFlags(modeName, netName string) (sandbox.Mode, bool, error) {
 	if err != nil {
 		return sandbox.ModeOff, false, err
 	}
-	net, err := parseLiveSandboxNet(netName)
+	net, err := cmdutil.ParseSandboxNet(netName)
 	if err != nil {
 		return sandbox.ModeOff, false, err
 	}
 	return mode, net, nil
-}
-
-// configureLiveSandbox records the validated --sandbox / --sandbox-net decision
-// on the session config's carrier fields. Off (the flag default) leaves the
-// carrier zero, so a default live run is byte-identical to today; a non-off mode
-// records the mode + network so provisionLiveSandbox can enforce it.
-func configureLiveSandbox(cfg runConfig, sessCfg *agent.SessionConfig) error {
-	mode, net, err := parseSandboxFlags(cfg.sandbox, cfg.sandboxNet)
-	if err != nil {
-		return err
-	}
-	if mode == sandbox.ModeOff {
-		return nil
-	}
-	sessCfg.Sandbox = mode.String()
-	sessCfg.SandboxNet = &net
-	return nil
-}
-
-// parseLiveSandboxNet maps the --sandbox-net value to a boolean (on = egress
-// allowed). Empty defaults to on, matching the CLI's flag default.
-func parseLiveSandboxNet(v string) (bool, error) {
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "on", "":
-		return true, nil
-	case "off":
-		return false, nil
-	default:
-		return false, fmt.Errorf("invalid --sandbox-net %q (want on or off)", v)
-	}
-}
-
-// provisionLiveSandbox engages enforcement on a fresh live run's execution
-// environment from its configured mode. Off returns immediately WITHOUT probing
-// the host, so an unsandboxed run stays byte-identical to today. It reuses the
-// existing sandbox capability (resolve against freshly-probed host facts, then
-// EnableSandbox) exactly as the production CLI does.
-func provisionLiveSandbox(env *execenv.LocalExecutionEnvironment, sessCfg *agent.SessionConfig, cwd string) error {
-	if sandbox.ModeIsOff(sessCfg.Sandbox) {
-		return nil
-	}
-	return provisionLiveSandboxWithHost(env, sessCfg, cwd, runnerProbeSandboxHost())
-}
-
-// provisionLiveSandboxWithHost is provisionLiveSandbox with the host facts
-// supplied by the caller, so a test can drive the exact resolve+enforce path
-// without a live backend. It fails closed: a mode the host cannot enforce
-// surfaces the resolver's *sandbox.RefusalError BEFORE any session or provider
-// call, and EnableSandbox leaves the env unsandboxed on every failure path.
-func provisionLiveSandboxWithHost(env *execenv.LocalExecutionEnvironment, sessCfg *agent.SessionConfig, cwd string, host sandbox.HostFacts) error {
-	infra := agent.SessionInfraRoots(*sessCfg, env)
-	rp, err := sandbox.ResolveNamed(sessCfg.Sandbox, sessCfg.SandboxNet, host, cwd, infra)
-	if err != nil {
-		return err
-	}
-	return env.EnableSandbox(rp)
 }
 
 func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *probeResult, stdout, stderr *bytes.Buffer) error {
@@ -1193,7 +1137,7 @@ func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *prob
 	if err != nil {
 		return err
 	}
-	profile, err = runnerApplyFastCheapModel(profile, cfg.fastCheapModel, client)
+	profile, err = cmdutil.ApplyFastCheapModel(profile, cfg.fastCheapModel, client)
 	if err != nil {
 		return err
 	}
@@ -1207,19 +1151,16 @@ func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *prob
 	if effort.Set {
 		sessCfg.ReasoningEffort = effort.Value
 	}
-	if err := configureLiveSandbox(cfg, &sessCfg); err != nil {
+	if err := cmdutil.ConfigureSandbox(&sessCfg, cfg.sandbox, cfg.sandboxNet); err != nil {
 		return err
 	}
 	env := execenv.NewLocalExecutionEnvironment(res.WorkDir)
-	// The session's ID names its scratch tree, so it is picked before the
-	// sandbox mints the scratch; runProbe removes the tree after the probe.
-	if err := agent.PickFreshSessionID(env, &sessCfg); err != nil {
-		return err
-	}
-	// Engage enforcement before the session exists so a declared mode the host
-	// cannot serve fails closed here, before any provider call, rather than
-	// silently running the worker native and unsandboxed.
-	if err := provisionLiveSandbox(env, &sessCfg, res.WorkDir); err != nil {
+	// Pick the session's ID (it names its scratch tree; runProbe removes the
+	// tree after the probe) and engage enforcement before the session exists so
+	// a declared mode the host cannot serve fails closed here, before any
+	// provider call, rather than silently running the worker native and
+	// unsandboxed.
+	if err := cmdutil.ProvisionSandbox(env, &sessCfg, res.WorkDir, runnerProbeSandboxHost); err != nil {
 		return err
 	}
 	sess, err := runnerNewSession(client, profile, env, sessCfg)
@@ -1354,20 +1295,6 @@ func runnerInitialProfile(client *llm.Client, modelRef cmdutil.ModelRef) (*provi
 	return provider.WithAllowedDecisions(raw, cmdutil.ParseAllowedDecisions(envvars.EVENERAllowedDecisions.Getenv())), nil
 }
 
-func runnerApplyFastCheapModel(profile *provider.Profile, raw string, client *llm.Client) (*provider.Profile, error) {
-	if profile == nil || strings.TrimSpace(raw) == "" {
-		return profile, nil
-	}
-	raw = strings.TrimSpace(raw)
-	if cheapProvider, model, ok := strings.Cut(raw, "/"); ok && cheapProvider != "" && model != "" && cheapProvider != profile.ID() {
-		if !client.HasProvider(cheapProvider) {
-			return nil, fmt.Errorf("--fast-cheap-model provider %q is not configured or has no credential (active provider %q); available providers: %s",
-				cheapProvider, profile.ID(), strings.Join(client.ProviderNames(), ", "))
-		}
-	}
-	return provider.WithCheapModel(profile, raw), nil
-}
-
 func unavailableFinding(probe probeFile, available map[string]bool) *finding {
 	name := strings.TrimSpace(probe.Skip["if_unavailable"])
 	if name == "" {
@@ -1389,13 +1316,13 @@ func unavailableFinding(probe probeFile, available map[string]bool) *finding {
 // transcript through this enumeration; the phase metrics read the root
 // session's transcript directly.
 func walkTranscripts(stateDir string, opts doctor.TranscriptOpts, fn func(doctor.TranscriptResult) error) error {
-	matches, err := filepath.Glob(filepath.Join(stateDir, "sessions", "*.transcript.jsonl"))
+	matches, err := filepath.Glob(filepath.Join(schema.SessionsDir(stateDir), "*"+schema.SessionTranscriptSuffix))
 	if err != nil {
 		return err
 	}
 	sort.Strings(matches)
 	for _, path := range matches {
-		id, ok := strings.CutSuffix(filepath.Base(path), ".transcript.jsonl")
+		id, ok := strings.CutSuffix(filepath.Base(path), schema.SessionTranscriptSuffix)
 		if !ok || id == "" {
 			continue
 		}
@@ -1558,7 +1485,7 @@ func allTranscriptToolCounts(stateDir string) (map[string]int, error) {
 var runnerReadTranscript = doctor.Transcript
 
 func rootSessionID(stateDir string) (string, error) {
-	matches, err := filepath.Glob(filepath.Join(stateDir, "sessions", "*.meta.json"))
+	matches, err := filepath.Glob(filepath.Join(schema.SessionsDir(stateDir), "*"+schema.SessionMetaSuffix))
 	if err != nil {
 		return "", err
 	}

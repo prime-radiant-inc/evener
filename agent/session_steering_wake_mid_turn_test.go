@@ -73,7 +73,7 @@ func TestSteeringArrivingMidTurnIsDeliveredByTheWakeAfterABareTextEnd(t *testing
 			}
 			// The redelivery turn (ProcessPendingUserInput's carrier): end
 			// cleanly so the test can inspect what it delivered.
-			return communicateResponse(true, "done")
+			return agenttest.CommunicateResponse(true, "done")
 		},
 	}
 	client := llm.NewClient()
@@ -151,7 +151,7 @@ func TestSteeringArrivingMidTurnIsDeliveredByTheWakeAfterABareTextEnd(t *testing
 		t.Fatalf("delivered steering count = %d, want 1", got)
 	}
 
-	data, err := readTranscriptFull(transcriptPath(sess.stateDir, sess.id), "")
+	data, err := readTranscriptFull(context.Background(), transcriptPath(sess.stateDir, sess.id), "")
 	if err != nil {
 		t.Fatalf("read persisted transcript: %v", err)
 	}

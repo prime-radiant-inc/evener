@@ -328,7 +328,7 @@ func favoriteStoreRow(t *testing.T, store *FavoriteStore, key ArchiveKey) (int, 
 
 func favoriteSessionAuthoritiesFromMetas(t *testing.T, metas []schema.SessionMeta, complete bool) []FavoriteSessionAuthority {
 	t.Helper()
-	topLevel := TopLevelSessionIDs(metas)
+	roots := NewRootIndex(metas)
 	out := make([]FavoriteSessionAuthority, 0, len(metas))
 	for _, meta := range metas {
 		aliases := []string{meta.ID}
@@ -339,11 +339,10 @@ func favoriteSessionAuthoritiesFromMetas(t *testing.T, metas []schema.SessionMet
 		if complete {
 			quality = FavoriteAuthorityComplete
 		}
-		_, isTopLevel := topLevel[meta.ID]
 		out = append(out, FavoriteSessionAuthority{
 			ID:       meta.ID,
 			Aliases:  aliases,
-			TopLevel: isTopLevel,
+			TopLevel: roots.TopLevel(meta.ID),
 			Lineage:  quality,
 			Source:   quality,
 		})

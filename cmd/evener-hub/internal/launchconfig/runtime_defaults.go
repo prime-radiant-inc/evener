@@ -3,6 +3,8 @@ package launchconfig
 import (
 	"maps"
 	"strings"
+
+	"primeradiant.com/evener/appwire"
 )
 
 // Runtime-default sources for provenance: a value the layered files did not
@@ -36,7 +38,7 @@ const (
 func ApplyEnvDefaults(resolved Resolved, getenv func(string) string, schema []LaunchOption) Resolved {
 	out := resolved
 	// Only Provenance is deep-copied: this function writes new entries into it
-	// (set/LayerEnv), so the caller's map must not be aliased. The Effective
+	// (markDefault), so the caller's map must not be aliased. The Effective
 	// layer is not mutated — only its scalar fields are assigned, which copies
 	// the value, not the slice/map headers — so sharing the input's slice and
 	// map headers (SkillsDirs, MCPs, Env, etc.) is safe as long as nothing
@@ -47,38 +49,13 @@ func ApplyEnvDefaults(resolved Resolved, getenv func(string) string, schema []La
 	} else {
 		out.Provenance = cloneProvenance(resolved.Provenance)
 	}
-	set := func(field string, name LayerName) {
-		if _, taken := out.Provenance[field]; !taken {
-			out.Provenance[field] = name
-		}
-	}
 
 	for _, opt := range schema {
 		if opt.EnvFallback == nil {
 			continue
 		}
-		// All env-fallback fields are string scalars, so a single read of the
-		// env var (keyed by opt.EnvFallback.Name) covers every case. The switch
-		// only selects which effective field to check-and-set.
-		if v := strings.TrimSpace(getenv(opt.EnvFallback.Name)); v != "" {
-			switch opt.WireField {
-			case "model":
-				if strings.TrimSpace(out.Effective.Model) == "" {
-					out.Effective.Model = v
-					set(opt.Field, LayerEnv)
-				}
-			case "reasoningEffort":
-				if strings.TrimSpace(out.Effective.ReasoningEffort) == "" {
-					out.Effective.ReasoningEffort = v
-					set(opt.Field, LayerEnv)
-				}
-			case "openAIResponsesContinuation":
-				if strings.TrimSpace(out.Effective.OpenAIResponsesContinuation) == "" {
-					out.Effective.OpenAIResponsesContinuation = v
-					set(opt.Field, LayerEnv)
-				}
-			}
-		}
+		// All env-fallback fields are string scalars.
+		defaultString(&out, opt, strings.TrimSpace(getenv(opt.EnvFallback.Name)), LayerEnv)
 	}
 	return out
 }
@@ -102,95 +79,87 @@ func ApplyEnvDefaults(resolved Resolved, getenv func(string) string, schema []La
 // spawn path uses ApplyEnvDefaults only (see its doc comment).
 func ApplyRuntimeDefaults(resolved Resolved, getenv func(string) string, schema []LaunchOption) Resolved {
 	out := ApplyEnvDefaults(resolved, getenv, schema)
-	set := func(field string) {
-		if _, taken := out.Provenance[field]; !taken {
-			out.Provenance[field] = LayerBuiltin
-		}
-	}
 
 	for _, opt := range schema {
-		switch opt.WireField {
-		case "agent":
-			if strings.TrimSpace(out.Effective.Agent) == "" && opt.BuiltinDefault != "" {
-				out.Effective.Agent = opt.BuiltinDefault
-				set(opt.Field)
-			}
-		case "providerIdleTimeout":
-			if strings.TrimSpace(out.Effective.ProviderIdleTimeout) == "" && opt.BuiltinDefault != "" {
-				out.Effective.ProviderIdleTimeout = opt.BuiltinDefault
-				set(opt.Field)
-			}
-		case "contextStrategy":
-			if strings.TrimSpace(out.Effective.ContextStrategy) == "" && opt.BuiltinDefault != "" {
-				out.Effective.ContextStrategy = opt.BuiltinDefault
-				set(opt.Field)
-			}
-		case "sandbox":
-			if strings.TrimSpace(out.Effective.Sandbox) == "" && opt.BuiltinDefault != "" {
-				out.Effective.Sandbox = opt.BuiltinDefault
-				set(opt.Field)
-			}
-		case "sandboxNet":
-			if out.Effective.SandboxNet == nil && opt.BuiltinDefaultBool != nil {
-				v := *opt.BuiltinDefaultBool
-				out.Effective.SandboxNet = &v
-				set(opt.Field)
-			}
-		case "openAIResponsesContinuation":
-			if strings.TrimSpace(out.Effective.OpenAIResponsesContinuation) == "" && opt.BuiltinDefault != "" {
-				out.Effective.OpenAIResponsesContinuation = opt.BuiltinDefault
-				set(opt.Field)
-			}
-		case "maxRounds":
-			if out.Effective.MaxRounds == nil && opt.BuiltinDefaultInt != nil {
-				v := *opt.BuiltinDefaultInt
-				out.Effective.MaxRounds = &v
-				set(opt.Field)
-			}
-		case "maxSubagentDepth":
-			if out.Effective.MaxSubagentDepth == nil && opt.BuiltinDefaultInt != nil {
-				v := *opt.BuiltinDefaultInt
-				out.Effective.MaxSubagentDepth = &v
-				set(opt.Field)
-			}
-		case "maxConcurrentDelegateTurns":
-			if out.Effective.MaxConcurrentDelegateTurns == nil && opt.BuiltinDefaultInt != nil {
-				v := *opt.BuiltinDefaultInt
-				out.Effective.MaxConcurrentDelegateTurns = &v
-				set(opt.Field)
-			}
-		case "maxRetainedTerminal":
-			if out.Effective.MaxRetainedTerminal == nil && opt.BuiltinDefaultInt != nil {
-				v := *opt.BuiltinDefaultInt
-				out.Effective.MaxRetainedTerminal = &v
-				set(opt.Field)
-			}
-		case "appReplaySize":
-			if out.Effective.AppReplaySize == nil && opt.BuiltinDefaultInt != nil {
-				v := *opt.BuiltinDefaultInt
-				out.Effective.AppReplaySize = &v
-				set(opt.Field)
-			}
-		case "verbose":
-			if out.Effective.Verbose == nil && opt.BuiltinDefaultBool != nil {
-				v := *opt.BuiltinDefaultBool
-				out.Effective.Verbose = &v
-				set(opt.Field)
-			}
-		case "apiLog":
-			if out.Effective.APILog == nil && opt.BuiltinDefaultBool != nil {
-				v := *opt.BuiltinDefaultBool
-				out.Effective.APILog = &v
-				set(opt.Field)
-			}
-		case "exportATIFProviderHandles":
-			if strings.TrimSpace(out.Effective.ExportATIFProviderHandles) == "" && opt.BuiltinDefault != "" {
-				out.Effective.ExportATIFProviderHandles = opt.BuiltinDefault
-				set(opt.Field)
-			}
-		}
+		defaultString(&out, opt, opt.BuiltinDefault, LayerBuiltin)
+		defaultIntPtr(&out, opt, opt.BuiltinDefaultInt)
+		defaultBoolPtr(&out, opt, opt.BuiltinDefaultBool)
 	}
 	return out
+}
+
+// stringFields, intFields and boolFields map a schema row's WireField to the
+// Layer field a runtime default fills. A row whose WireField is absent (a
+// dynamic default such as fast_cheap_model) has no static value to apply.
+var (
+	stringFields = map[string]func(*Layer) *string{
+		"model":                       func(l *Layer) *string { return &l.Model },
+		"reasoningEffort":             func(l *Layer) *string { return &l.ReasoningEffort },
+		"agent":                       func(l *Layer) *string { return &l.Agent },
+		"providerIdleTimeout":         func(l *Layer) *string { return &l.ProviderIdleTimeout },
+		"contextStrategy":             func(l *Layer) *string { return &l.ContextStrategy },
+		"sandbox":                     func(l *Layer) *string { return &l.Sandbox },
+		"openAIResponsesContinuation": func(l *Layer) *string { return &l.OpenAIResponsesContinuation },
+		"exportATIFProviderHandles":   func(l *Layer) *string { return &l.ExportATIFProviderHandles },
+	}
+	intFields = map[string]func(*Layer) **int{
+		"maxRounds":                  func(l *Layer) **int { return &l.MaxRounds },
+		"maxSubagentDepth":           func(l *Layer) **int { return &l.MaxSubagentDepth },
+		"maxConcurrentDelegateTurns": func(l *Layer) **int { return &l.MaxConcurrentDelegateTurns },
+		"maxRetainedTerminal":        func(l *Layer) **int { return &l.MaxRetainedTerminal },
+		"appReplaySize":              func(l *Layer) **int { return &l.AppReplaySize },
+	}
+	boolFields = map[string]func(*Layer) **bool{
+		"sandboxNet": func(l *Layer) **bool { return &l.SandboxNet },
+		"verbose":    func(l *Layer) **bool { return &l.Verbose },
+		"apiLog":     func(l *Layer) **bool { return &l.APILog },
+	}
+)
+
+// markDefault records source as the field's provenance unless a layer already
+// owns it.
+func markDefault(out *Resolved, field string, source LayerName) {
+	if _, taken := out.Provenance[field]; !taken {
+		out.Provenance[field] = source
+	}
+}
+
+// defaultString fills a still-blank string field of the effective layer.
+func defaultString(out *Resolved, opt LaunchOption, value string, source LayerName) {
+	field, ok := stringFields[opt.WireField]
+	if !ok || value == "" {
+		return
+	}
+	if dst := field(&out.Effective); strings.TrimSpace(*dst) == "" {
+		*dst = value
+		markDefault(out, opt.Field, source)
+	}
+}
+
+// defaultIntPtr fills a still-unset int field of the effective layer with a
+// builtin default.
+func defaultIntPtr(out *Resolved, opt LaunchOption, value *int) {
+	field, ok := intFields[opt.WireField]
+	if !ok || value == nil {
+		return
+	}
+	if dst := field(&out.Effective); *dst == nil {
+		*dst = appwire.ClonePointer(value)
+		markDefault(out, opt.Field, LayerBuiltin)
+	}
+}
+
+// defaultBoolPtr fills a still-unset bool field of the effective layer with a
+// builtin default.
+func defaultBoolPtr(out *Resolved, opt LaunchOption, value *bool) {
+	field, ok := boolFields[opt.WireField]
+	if !ok || value == nil {
+		return
+	}
+	if dst := field(&out.Effective); *dst == nil {
+		*dst = appwire.ClonePointer(value)
+		markDefault(out, opt.Field, LayerBuiltin)
+	}
 }
 
 func cloneProvenance(p map[string]LayerName) map[string]LayerName {

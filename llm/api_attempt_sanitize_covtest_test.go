@@ -38,7 +38,7 @@ func TestCovNewAPILogCredentialMaterialStructuralHeaderNameFalse(t *testing.T) {
 }
 
 // TestCovNewAPILogCredentialMaterialStructuralQueryNameFalse covers the
-// !structural path for query names (api_attempt_sanitize.go line 60).
+// !structural path for query names.
 func TestCovNewAPILogCredentialMaterialStructuralQueryNameFalse(t *testing.T) {
 	// "custom_param" is not in commonCredentialQueryNames.
 	material := NewAPILogCredentialMaterial(nil, []string{"custom_param"}, "credential-secret")
@@ -65,8 +65,7 @@ func TestCovNewAPILogCredentialMaterialStructuralQueryNameFalse(t *testing.T) {
 }
 
 // TestCovStructuredCredentialHeaderValuesCookieDecoded covers the
-// decoded != unquoted path in structuredCredentialHeaderValues
-// (api_attempt_sanitize.go line 171-172). A cookie value with
+// decoded != unquoted path in structuredCredentialHeaderValues. A cookie value with
 // percent-encoding produces a decoded form different from the unquoted form.
 func TestCovStructuredCredentialHeaderValuesCookieDecoded(t *testing.T) {
 	// Cookie value with percent-encoded content: session=%41%42
@@ -79,7 +78,7 @@ func TestCovStructuredCredentialHeaderValuesCookieDecoded(t *testing.T) {
 }
 
 // TestCovSanitizeRequestForAPILogHostCredential covers the path where the
-// Host header is a credential (api_attempt_sanitize.go line 194).
+// Host header is a credential.
 func TestCovSanitizeRequestForAPILogHostCredential(t *testing.T) {
 	req, err := http.NewRequest(http.MethodGet, "https://provider.test", nil)
 	if err != nil {
@@ -97,7 +96,7 @@ func TestCovSanitizeRequestForAPILogHostCredential(t *testing.T) {
 }
 
 // TestCovSanitizeRequestForAPILogHostInHeader covers the strings.EqualFold(name,
-// "Host") skip in the header loop (api_attempt_sanitize.go line 194). Setting
+// "Host") skip in the header loop. Setting
 // "Host" directly in req.Header should be skipped by the sanitizer; the Host
 // in the output comes from req.Host (set by the URL), not req.Header["Host"].
 func TestCovSanitizeRequestForAPILogHostInHeader(t *testing.T) {

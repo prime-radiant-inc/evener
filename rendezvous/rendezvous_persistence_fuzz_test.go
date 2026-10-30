@@ -14,36 +14,13 @@ import (
 	"github.com/spf13/afero"
 )
 
-// FuzzRendezvousPersistence is the differential that proves the afero filesystem
-// seam changes nothing: the same program of rendezvous operations (Write /
-// Remove / List), replayed through two filesystems whose ONLY difference is the
-// injected afero.Fs — one an OS filesystem sandboxed under a t.TempDir
-// (afero.NewBasePathFs over afero.NewOsFs), the other a pure in-memory
-// afero.NewMemMapFs — must produce byte-identical persisted files and identical
-// error and List outcomes after every op.
-//
-// This is both (a) the behavior guard for the seam refactor (production defaults
-// to afero.NewOsFs(), which forwards every call to the os package, so if the
-// MemMapFs path ever diverges from the OsFs path the refactor is unsound) and
-// (b) a pure in-memory persistence fuzzer that drives writeFS/removeFS/listFS
-// with zero real-disk dependency in the mem lane.
+// FuzzRendezvousPersistence replays a program of Write / Remove / List
+// operations against a real directory and checks List against a model of what
+// the program has written: the last Write per pid wins, Remove deletes it, and
+// every Write is visible to the next List.
 //
 // Entries carry their own StartedAt timestamp (Write mints no time of its own),
-// so the program supplies deterministic timestamps directly and no clock seam is
-// needed for parity.
-//
-// Oracle checked after EVERY operation:
-//   - error parity: an op errors on the OS lane iff it errors on the mem lane.
-//   - byte-identical persistence: every file under the rendezvous dir (name +
-//     bytes) is identical across the two filesystems.
-//   - List parity: List returns the identical entry slice (marshaled) on both.
-//
-// SAFETY: the OS lane writes only under a t.TempDir sandbox (BasePathFs pins
-// every path beneath it); the mem lane never touches disk. Every op targets a
-// single fixed rendezvous directory that is always a real directory, so no path
-// component is ever a file — the one construction where MemMapFs's lenient
-// MkdirAll/Rename semantics would legitimately diverge from the OS and would be a
-// modeled-out quirk rather than a product bug. No network, no subprocess.
+// so the program supplies deterministic timestamps directly.
 func FuzzRendezvousPersistence(f *testing.F) {
 	exerciseRendezvousBranches(f)
 
@@ -54,9 +31,8 @@ func FuzzRendezvousPersistence(f *testing.F) {
 	f.Add([]byte{})
 
 	f.Fuzz(func(t *testing.T, program []byte) {
-		const dir = "/run"
-		osFs := afero.NewBasePathFs(afero.NewOsFs(), t.TempDir())
-		memFs := afero.NewMemMapFs()
+		dir := filepath.Join(t.TempDir(), "run")
+		model := map[int]Entry{}
 
 		r := &opReader{b: program}
 		const maxOps = 128
@@ -65,55 +41,53 @@ func FuzzRendezvousPersistence(f *testing.F) {
 			switch r.next() % opCount {
 			case opWrite:
 				entry := r.entry()
-				_, errOS := writeFS(osFs, dir, entry)
-				_, errMem := writeFS(memFs, dir, entry)
-				requireErrParity(t, "Write", errOS, errMem)
+				if _, err := Write(dir, entry); err != nil {
+					t.Fatalf("Write: %v", err)
+				}
+				model[entry.PID] = entry
 			case opRemove:
 				pid := r.pid()
-				errOS := removeFS(osFs, dir, pid)
-				errMem := removeFS(memFs, dir, pid)
-				requireErrParity(t, "Remove", errOS, errMem)
-			case opList:
-				osEntries, errOS := listFS(osFs, dir)
-				memEntries, errMem := listFS(memFs, dir)
-				requireErrParity(t, "List", errOS, errMem)
-				if !bytes.Equal(marshal(t, osEntries), marshal(t, memEntries)) {
-					t.Fatalf("List diverges across filesystems:\n os =%s\n mem=%s",
-						marshal(t, osEntries), marshal(t, memEntries))
+				if err := Remove(dir, pid); err != nil {
+					t.Fatalf("Remove: %v", err)
 				}
+				delete(model, pid)
+			case opList:
+				requireListMatchesModel(t, dir, model)
 			}
-
-			requireSameDir(t, osFs, memFs, dir)
 		}
-
-		// Final full-directory + List comparison after the whole program.
-		requireSameDir(t, osFs, memFs, dir)
-		osEntries, err := listFS(osFs, dir)
-		if err != nil {
-			t.Fatalf("final List (os) failed: %v", err)
-		}
-		memEntries, err := listFS(memFs, dir)
-		if err != nil {
-			t.Fatalf("final List (mem) failed: %v", err)
-		}
-		if !bytes.Equal(marshal(t, osEntries), marshal(t, memEntries)) {
-			t.Fatalf("final List diverges across filesystems")
-		}
+		requireListMatchesModel(t, dir, model)
 	})
+}
+
+func requireListMatchesModel(t *testing.T, dir string, model map[int]Entry) {
+	t.Helper()
+	got, err := List(dir)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	var want []Entry
+	for _, e := range model {
+		want = append(want, e)
+	}
+	byPID := func(entries []Entry) {
+		sort.Slice(entries, func(i, j int) bool { return entries[i].PID < entries[j].PID })
+	}
+	byPID(got)
+	byPID(want)
+	if !bytes.Equal(marshal(t, got), marshal(t, want)) {
+		t.Fatalf("List diverges from model:\n got =%s\n want=%s", marshal(t, got), marshal(t, want))
+	}
 }
 
 func exerciseRendezvousBranches(t testing.TB) {
 	t.Helper()
 
 	t.Setenv("XDG_STATE_HOME", "")
-	if got := defaultDir(func() (string, error) { return "", os.ErrNotExist }); got != filepath.Join(".", ".local", "state", "evener", "run") {
-		t.Fatalf("DefaultDir fallback = %q", got)
-	}
 	home := filepath.Join(string(filepath.Separator), "home", "test")
-	if got := defaultDir(func() (string, error) { return home, nil }); got != filepath.Join(home, ".local", "state", "evener", "run") {
-		t.Fatalf("DefaultDir home = %q", got)
+	t.Setenv("HOME", home)
+	if got, err := DefaultDir(); err != nil || got != filepath.Join(home, ".local", "state", "evener", "run") {
+		t.Fatalf("DefaultDir home = %q, %v", got, err)
 	}
-	_ = DefaultDir()
 
 	dir := t.TempDir()
 	entry := Entry{PID: 42, Address: "local"}
@@ -129,17 +103,6 @@ func exerciseRendezvousBranches(t testing.TB) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("public Remove left %q: %v", path, err)
-	}
-
-	assertWriteError(t, "create rendezvous dir", &rendezvousFaultFS{Fs: afero.NewMemMapFs(), op: "mkdir"})
-	assertWriteError(t, "secure rendezvous dir", &rendezvousFaultFS{Fs: afero.NewMemMapFs(), op: "chmod-dir"})
-	assertWriteError(t, "write tmp", &rendezvousFaultFS{Fs: afero.NewMemMapFs(), op: "open-tmp"})
-	assertWriteError(t, "secure tmp", &rendezvousFaultFS{Fs: afero.NewMemMapFs(), op: "chmod-tmp"})
-	assertWriteError(t, "rename", &rendezvousFaultFS{Fs: afero.NewMemMapFs(), op: "rename"})
-
-	fs := afero.NewMemMapFs()
-	if _, err := writeFSWithMarshal(fs, "/run", entry, func(any) ([]byte, error) { return nil, os.ErrInvalid }); err == nil || !strings.Contains(err.Error(), "marshal entry") {
-		t.Fatalf("marshal error = %v", err)
 	}
 
 	removeFault := &rendezvousFaultFS{Fs: afero.NewMemMapFs(), op: "remove"}
@@ -166,45 +129,9 @@ func exerciseRendezvousBranches(t testing.TB) {
 	}
 }
 
-func assertWriteError(t testing.TB, label string, fs afero.Fs) {
-	t.Helper()
-	_, err := writeFS(fs, "/run", Entry{PID: 42})
-	if err == nil || !strings.Contains(err.Error(), label) {
-		t.Fatalf("%s error = %v", label, err)
-	}
-}
-
 type rendezvousFaultFS struct {
 	afero.Fs
 	op string
-}
-
-func (fs *rendezvousFaultFS) MkdirAll(path string, perm os.FileMode) error {
-	if fs.op == "mkdir" {
-		return os.ErrPermission
-	}
-	return fs.Fs.MkdirAll(path, perm)
-}
-
-func (fs *rendezvousFaultFS) Chmod(name string, mode os.FileMode) error {
-	if fs.op == "chmod-dir" || fs.op == "chmod-tmp" && strings.HasSuffix(name, ".tmp") {
-		return os.ErrPermission
-	}
-	return fs.Fs.Chmod(name, mode)
-}
-
-func (fs *rendezvousFaultFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
-	if fs.op == "open-tmp" && strings.HasSuffix(name, ".tmp") {
-		return nil, os.ErrPermission
-	}
-	return fs.Fs.OpenFile(name, flag, perm)
-}
-
-func (fs *rendezvousFaultFS) Rename(oldname, newname string) error {
-	if fs.op == "rename" {
-		return os.ErrPermission
-	}
-	return fs.Fs.Rename(oldname, newname)
 }
 
 func (fs *rendezvousFaultFS) Remove(name string) error {
@@ -270,69 +197,6 @@ func (r *opReader) entry() Entry {
 func drawString(b byte) string {
 	tokens := []string{"", "openai", "anthropic", "gpt-5.5", "sess-1", "tok"}
 	return tokens[int(b)%len(tokens)]
-}
-
-// requireErrParity fails unless both lanes agree on whether the op errored.
-func requireErrParity(t *testing.T, op string, errOS, errMem error) {
-	t.Helper()
-	if (errOS == nil) != (errMem == nil) {
-		t.Fatalf("%s error parity broken: os=%v mem=%v", op, errOS, errMem)
-	}
-}
-
-// requireSameDir asserts the two filesystems hold the identical set of files
-// (by name) with byte-identical contents under dir.
-func requireSameDir(t *testing.T, osFs, memFs afero.Fs, dir string) {
-	t.Helper()
-	osSnap := dirSnapshot(t, osFs, dir)
-	memSnap := dirSnapshot(t, memFs, dir)
-	if len(osSnap) != len(memSnap) {
-		t.Fatalf("directory file set diverges: os=%v mem=%v", keys(osSnap), keys(memSnap))
-	}
-	for name, osData := range osSnap {
-		memData, ok := memSnap[name]
-		if !ok {
-			t.Fatalf("file %q present on os lane, missing on mem lane", name)
-		}
-		if !bytes.Equal(osData, memData) {
-			t.Fatalf("file %q bytes diverge:\n os =%s\n mem=%s", name, osData, memData)
-		}
-	}
-}
-
-// dirSnapshot reads every regular file directly under dir into a name→bytes map.
-// A missing directory yields an empty map (both lanes start empty).
-func dirSnapshot(t *testing.T, fs afero.Fs, dir string) map[string][]byte {
-	t.Helper()
-	infos, err := afero.ReadDir(fs, dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return map[string][]byte{}
-		}
-		t.Fatalf("snapshot ReadDir: %v", err)
-	}
-	out := make(map[string][]byte, len(infos))
-	for _, info := range infos {
-		if info.IsDir() {
-			continue
-		}
-		data, err := afero.ReadFile(fs, dir+"/"+info.Name())
-		if err != nil {
-			t.Fatalf("snapshot ReadFile %q: %v", info.Name(), err)
-		}
-		out[info.Name()] = data
-	}
-	return out
-}
-
-// keys returns the sorted file names of a snapshot for legible failure output.
-func keys(m map[string][]byte) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
 }
 
 // marshal serializes a slice of entries for cross-lane comparison.

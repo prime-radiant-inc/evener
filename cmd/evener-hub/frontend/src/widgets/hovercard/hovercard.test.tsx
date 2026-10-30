@@ -1,10 +1,13 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { createPortal } from "react-dom";
+import { createRoot } from "react-dom/client";
 import { afterEach, expect, test, vi } from "vitest";
 import { HoverCard as FromBarrel } from "..";
+import { appendPopout } from "../internal/popoutTestUtils";
 import { HoverCard, LONG_PRESS_MS } from ".";
 import { installHoverlessMatchMedia } from "./hovercardTestUtils";
-import { POINTER_CLICK_WINDOW_MS } from "./useFloatingLabel";
+import { POINTER_CLICK_WINDOW_MS, SHOW_DELAY_MS } from "./useFloatingLabel";
 
 afterEach(() => {
   cleanup();
@@ -116,6 +119,41 @@ test("mounting under an already-focused external target opens the card", () => {
   view.rerender(<Fixture showCard />);
   const card = screen.getByRole("tooltip");
   expect(row.getAttribute("aria-describedby")).toBe(card.id);
+});
+
+// The same mount-time branch in a popout: the opener document's activeElement
+// is the iframe, so asking it could never find the row that already has focus
+// in the popout.
+test("mounting under an already-focused target inside a popout opens the card there", () => {
+  const { frame, doc } = appendPopout();
+  const rowTarget = () => doc.querySelector<HTMLElement>('[data-testid="popout-row"]');
+  function Fixture({ showCard }: { showCard: boolean }) {
+    return (
+      <div role="treeitem" tabIndex={0} data-testid="popout-row">
+        {showCard && (
+          <HoverCard label={<div>Project prime-radiant</div>} focusTarget={rowTarget}>
+            <button type="button">Row action</button>
+          </HoverCard>
+        )}
+      </div>
+    );
+  }
+  const view = render(createPortal(<Fixture showCard={false} />, doc.body));
+  try {
+    const row = rowTarget();
+    if (!row) throw new Error("popout row missing");
+    act(() => row.focus());
+    expect(doc.activeElement).toBe(row);
+
+    view.rerender(createPortal(<Fixture showCard />, doc.body));
+    const card = doc.querySelector('[role="tooltip"]');
+    expect(card).not.toBeNull();
+    expect(card?.parentElement).toBe(doc.body);
+    expect(row.getAttribute("aria-describedby")).toBe(card?.getAttribute("id"));
+  } finally {
+    view.unmount();
+    frame.remove();
+  }
 });
 
 test("a hoverless tap activates the row and opens no card", () => {
@@ -1031,5 +1069,305 @@ test("unmounting during the press disposes the pending gesture listeners", () =>
     expect(screen.queryByRole("tooltip")).toBeNull();
   } finally {
     tally.restore();
+  }
+});
+
+// --- popout realm (Dockview) ---------------------------------------------
+// A Dockview popout is a separate Window with its own Document and its own
+// constructors. jsdom's only real second realm is an iframe (a document from
+// createHTMLDocument shares the opener's constructors and cannot catch a realm
+// defect), so these cases render the card through a portal into the iframe's
+// body: every element's ownerDocument is the popout document.
+
+test("a long-press card in a popout document portals its bubble there and dismisses on a pointerdown in that document", () => {
+  vi.useFakeTimers();
+  installHoverlessMatchMedia();
+  const { frame, doc } = appendPopout();
+  const view = render(
+    createPortal(
+      <HoverCard label={<div>Project prime-radiant</div>} longPressEnabled>
+        <button type="button">Fix flaky test</button>
+      </HoverCard>,
+      doc.body,
+    ),
+  );
+  try {
+    const trigger = doc.querySelector("button")!;
+    fireEvent.pointerDown(trigger, { button: 0, clientX: 10, clientY: 10 });
+    act(() => vi.advanceTimersByTime(LONG_PRESS_MS));
+
+    const bubble = doc.querySelector('[role="tooltip"]');
+    expect(bubble).not.toBeNull();
+    expect(bubble?.parentElement).toBe(doc.body);
+    expect(document.body.contains(bubble)).toBe(false);
+
+    fireEvent.pointerDown(doc.body);
+
+    expect(doc.querySelector('[role="tooltip"]')).toBeNull();
+  } finally {
+    view.unmount();
+    frame.remove();
+  }
+});
+
+test("places a popout card from the popout window's own viewport, not the opener's", () => {
+  vi.useFakeTimers();
+  const { frame, doc, win } = appendPopout();
+  const CARD_WIDTH = 240;
+  const CARD_HEIGHT = 96;
+  // Deliberately different from the opener's 1024x768. 600x150 makes both
+  // axes observable: 600 - 240 - 8 = 352 left, and a trigger at top 50 has
+  // no room either side of it in a 150px-tall viewport, so the card clamps
+  // to the 8px edge margin (the opener's 768px height would place it below
+  // at 78px instead).
+  const POPOUT_WIDTH = 600;
+  const POPOUT_HEIGHT = 150;
+  Object.defineProperty(win, "innerWidth", { configurable: true, value: POPOUT_WIDTH });
+  Object.defineProperty(win, "innerHeight", { configurable: true, value: POPOUT_HEIGHT });
+
+  const htmlProto = win.HTMLElement.prototype;
+  const originalOffsetWidth = Object.getOwnPropertyDescriptor(htmlProto, "offsetWidth");
+  const originalOffsetHeight = Object.getOwnPropertyDescriptor(htmlProto, "offsetHeight");
+  const isBubble = (el: Element) => el.getAttribute("role") === "tooltip";
+  Object.defineProperty(htmlProto, "offsetWidth", {
+    configurable: true,
+    get(this: HTMLElement) {
+      return isBubble(this) ? CARD_WIDTH : 0;
+    },
+  });
+  Object.defineProperty(htmlProto, "offsetHeight", {
+    configurable: true,
+    get(this: HTMLElement) {
+      return isBubble(this) ? CARD_HEIGHT : 0;
+    },
+  });
+
+  const view = render(
+    createPortal(
+      <HoverCard label={<div>Project prime-radiant</div>}>
+        <button type="button">Fix flaky test</button>
+      </HoverCard>,
+      doc.body,
+    ),
+  );
+  try {
+    const trigger = doc.querySelector("button")!;
+    // The wrapper span is what the card measures as its anchor; jsdom lays
+    // nothing out, so supply the rect.
+    (trigger.parentElement as HTMLElement).getBoundingClientRect = () => new DOMRect(950, 50, 40, 20);
+
+    fireEvent.focus(trigger);
+    act(() => vi.advanceTimersByTime(300));
+
+    // Fall back to the opener's document so the pre-fix run reports the math
+    // defect (the placement computed from the wrong viewport) rather than
+    // just the missing portal.
+    const bubble = (doc.querySelector('[role="tooltip"]') ??
+      document.querySelector('[role="tooltip"]')) as HTMLElement | null;
+    expect(bubble).not.toBeNull();
+    expect(bubble?.style.left).toBe(`${POPOUT_WIDTH - CARD_WIDTH - 8}px`);
+    expect(bubble?.style.top).toBe("8px");
+    expect(bubble?.parentElement).toBe(doc.body);
+  } finally {
+    restoreOwnProperty(htmlProto, "offsetWidth", originalOffsetWidth);
+    restoreOwnProperty(htmlProto, "offsetHeight", originalOffsetHeight);
+    view.unmount();
+    frame.remove();
+  }
+});
+
+// Dockview can move a mounted card between windows without a render. A visible
+// bubble has to follow: it belongs to the document its trigger is in now.
+test("a visible card follows a move into another document", async () => {
+  vi.useFakeTimers();
+  installHoverlessMatchMedia();
+  const { frame, doc, win } = appendPopout();
+  Object.defineProperty(win, "innerWidth", { configurable: true, value: 600 });
+  Object.defineProperty(win, "innerHeight", { configurable: true, value: 150 });
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  try {
+    act(() =>
+      root.render(
+        <HoverCard label={<div>Project prime-radiant</div>} longPressEnabled>
+          <button type="button">Fix flaky test</button>
+        </HoverCard>,
+      ),
+    );
+    const trigger = host.querySelector("button");
+    if (!trigger) throw new Error("hovercard trigger missing");
+    fireEvent.pointerDown(trigger, { pointerId: 4, pointerType: "touch", button: 0, clientX: 10, clientY: 10 });
+    act(() => vi.advanceTimersByTime(LONG_PRESS_MS));
+    expect(document.querySelector('[role="tooltip"]')).not.toBeNull();
+
+    act(() => {
+      doc.body.appendChild(host);
+    });
+    await act(async () => {});
+
+    const bubble = doc.querySelector('[role="tooltip"]');
+    expect(bubble).not.toBeNull();
+    expect(bubble?.parentElement).toBe(doc.body);
+    expect(document.querySelector('[role="tooltip"]')).toBeNull();
+  } finally {
+    act(() => root.unmount());
+    frame.remove();
+    host.remove();
+  }
+});
+
+// The shared pointer tracker is acquired per document. After a move, a tap in
+// the destination document must still read as a tap: otherwise the focus it
+// takes is treated as keyboard focus and a hoverless card pops up unasked.
+test("a hoverless tap after adoption is still a tap, not keyboard focus", async () => {
+  vi.useFakeTimers();
+  installHoverlessMatchMedia();
+  const { frame, doc } = appendPopout();
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  try {
+    act(() =>
+      root.render(
+        <HoverCard label={<div>Project prime-radiant</div>} longPressEnabled>
+          <button type="button">Fix flaky test</button>
+        </HoverCard>,
+      ),
+    );
+    act(() => {
+      doc.body.appendChild(host);
+    });
+    await act(async () => {});
+
+    const trigger = doc.querySelector("button");
+    if (!trigger) throw new Error("popout trigger missing");
+    fireEvent.pointerDown(trigger, { pointerId: 7, pointerType: "touch", button: 0 });
+    fireEvent.pointerUp(trigger, { pointerId: 7, pointerType: "touch", button: 0 });
+    fireEvent.focus(trigger);
+    act(() => vi.advanceTimersByTime(SHOW_DELAY_MS));
+
+    expect(doc.querySelector('[role="tooltip"]')).toBeNull();
+  } finally {
+    act(() => root.unmount());
+    frame.remove();
+    host.remove();
+  }
+});
+
+// A card can mount in a popout in the same instant as the tap that focused its
+// row. Its mount-time focus check has to read that popout's pointer tracker,
+// not the opener's, or the tap reads as keyboard focus and the card opens.
+test("a card mounted in a popout by a tap does not open on that tap's focus", async () => {
+  vi.useFakeTimers();
+  installHoverlessMatchMedia();
+  const { frame, doc } = appendPopout();
+  const firstHost = document.createElement("div");
+  const secondHost = document.createElement("div");
+  doc.body.append(firstHost, secondHost);
+  const firstRoot = createRoot(firstHost);
+  const secondRoot = createRoot(secondHost);
+  try {
+    // One card already owns this document's pointer tracker.
+    act(() =>
+      firstRoot.render(
+        <HoverCard label={<div>first</div>} longPressEnabled>
+          <button type="button">First</button>
+        </HoverCard>,
+      ),
+    );
+    const outside = doc.createElement("div");
+    doc.body.append(outside);
+    fireEvent.pointerDown(outside, { pointerId: 9, pointerType: "touch", button: 0 });
+    fireEvent.pointerUp(outside, { pointerId: 9, pointerType: "touch", button: 0 });
+    const row = doc.createElement("div");
+    row.tabIndex = 0;
+    row.setAttribute("data-testid", "tap-row");
+    doc.body.append(row);
+    act(() => row.focus());
+
+    act(() =>
+      secondRoot.render(
+        <HoverCard
+          label={<div>second</div>}
+          focusTarget={() => doc.querySelector<HTMLElement>('[data-testid="tap-row"]')}
+          longPressEnabled
+        >
+          <button type="button">Second</button>
+        </HoverCard>,
+      ),
+    );
+    act(() => vi.advanceTimersByTime(SHOW_DELAY_MS));
+
+    expect(doc.querySelector('[role="tooltip"]')).toBeNull();
+  } finally {
+    act(() => firstRoot.unmount());
+    act(() => secondRoot.unmount());
+    frame.remove();
+  }
+});
+
+// A long press can outlive a document move. Its cancellation pair has to move
+// with the card, or a scroll in the destination window never ends the press
+// and the timer opens a card the person scrolled away from.
+test("a scroll in the destination window cancels a press that crossed a move", async () => {
+  vi.useFakeTimers();
+  installHoverlessMatchMedia();
+  const { frame, doc, win } = appendPopout();
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  try {
+    act(() =>
+      root.render(
+        <HoverCard label={<div>Project prime-radiant</div>} longPressEnabled>
+          <button type="button">Fix flaky test</button>
+        </HoverCard>,
+      ),
+    );
+    const trigger = host.querySelector("button");
+    if (!trigger) throw new Error("hovercard trigger missing");
+    fireEvent.pointerDown(trigger, { pointerId: 5, pointerType: "touch", button: 0, clientX: 5, clientY: 5 });
+
+    act(() => {
+      doc.body.appendChild(host);
+    });
+    await act(async () => {});
+
+    act(() => win.dispatchEvent(new win.Event("scroll")));
+    act(() => vi.advanceTimersByTime(LONG_PRESS_MS));
+
+    expect(doc.querySelector('[role="tooltip"]')).toBeNull();
+  } finally {
+    act(() => root.unmount());
+    frame.remove();
+    host.remove();
+  }
+});
+
+// A card mounted directly in a popout resolves its document after mount. Its
+// very first press must already arm cancellation in that document.
+test("the first press after mounting in a popout is cancelled by a scroll there", async () => {
+  vi.useFakeTimers();
+  installHoverlessMatchMedia();
+  const { frame, doc, win } = appendPopout();
+  const view = render(
+    createPortal(
+      <HoverCard label={<div>Project prime-radiant</div>} longPressEnabled>
+        <button type="button">Fix flaky test</button>
+      </HoverCard>,
+      doc.body,
+    ),
+  );
+  try {
+    const trigger = doc.querySelector("button");
+    if (!trigger) throw new Error("popout trigger missing");
+    fireEvent.pointerDown(trigger, { pointerId: 6, pointerType: "touch", button: 0 });
+    act(() => win.dispatchEvent(new win.Event("scroll")));
+    act(() => vi.advanceTimersByTime(LONG_PRESS_MS));
+    expect(doc.querySelector('[role="tooltip"]')).toBeNull();
+  } finally {
+    view.unmount();
+    frame.remove();
   }
 });

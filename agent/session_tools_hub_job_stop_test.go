@@ -148,7 +148,7 @@ func TestManagerStopOwnedDelegateAlreadySettled(t *testing.T) {
 	const id = "dlg_already_settled"
 	descriptor := stableReadonlyDescriptor(s, id)
 	started := time.Unix(10, 0).UTC()
-	finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{result: "done", communicated: true, descriptor: descriptor, startedAt: started, latestActivityAt: started, endedAt: time.Unix(11, 0).UTC()})
+	finish := delegateFinishFromRun(delegateTerminalRunInputs{result: "done", communicated: true, descriptor: descriptor, startedAt: started, latestActivityAt: started, endedAt: time.Unix(11, 0).UTC()})
 	seedStableReadonlyFinish(t, s, id, descriptor, started, finish, true)
 	before := s.delegateController.Snapshot().rows
 	for range 2 {

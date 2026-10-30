@@ -42,7 +42,7 @@ func TestManagerObservationRecordedCompletionCut(t *testing.T) {
 	sources.Add(source)
 	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), HubID: "hub-test"}
 	server := appserver.NewServer(appserver.ServerConfig{})
-	owner := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelayFunctions(server, cfg, sources), server: server}
+	owner := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelay(server, cfg, sources), server: server}
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, owner.Read)
 	binding := &boundSessionOperations{owner: owner, local: source, binding: appwire.SessionBinding{Ref: ref, InstanceID: instance, HubID: "hub-test", BindingID: "binding"}}
 	for _, invalid := range []string{"unknown", "assistant.tool"} {
@@ -160,7 +160,7 @@ func TestManagerWatchRebindCancellationAndHubRestart(t *testing.T) {
 	sources.Add(source)
 	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), HubID: "hub-test"}
 	server := appserver.NewServer(appserver.ServerConfig{})
-	owner := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelayFunctions(server, cfg, sources), server: server}
+	owner := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelay(server, cfg, sources), server: server}
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, owner.Read)
 	binding := &boundSessionOperations{owner: owner, local: source, binding: appwire.SessionBinding{Ref: ref, InstanceID: instance, HubID: "hub-test", BindingID: "binding"}}
 	readFirst := func(updates <-chan appwire.SessionWatchUpdate) appwire.SessionWatchUpdate {
@@ -213,7 +213,7 @@ func TestManagerWatchRebindCancellationAndHubRestart(t *testing.T) {
 	// A new hub owner opens its own subscription after the old one closes.
 	cancelSecond()
 	awaitClosed(rebound)
-	restarted := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelayFunctions(server, cfg, sources), server: server}
+	restarted := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelay(server, cfg, sources), server: server}
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, restarted.Read)
 	restartedBinding := &boundSessionOperations{owner: restarted, local: source, binding: binding.binding}
 	thirdCtx, cancelThird := context.WithCancel(ctx)

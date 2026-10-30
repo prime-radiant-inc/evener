@@ -17,16 +17,26 @@ func TestSessionToolsRemoteQualifiedInputCapabilities(t *testing.T) {
 	full.CommandInput = true
 	want := appwire.ThreadCapabilities{
 		Send: true, Queue: true, Steer: true, SkillInput: true,
-		CommandInput: true, Shutdown: true,
+		CommandInput: true, Shutdown: true, Interrupt: true, Compact: true,
+		Clear: true, ForkFromTurn: true, ChangeModel: true, ChangeVisionModel: true,
+		Goal: true, SharedNotes: true, Rename: true, StopSubagent: true,
 	}
-	if got := maskRemoteThreadCapabilities(full); got != want {
+	if got := maskRemoteThreadCapabilities(full, forwardedRemoteThreadCapabilities(appwire.FeatureSet{TurnStart: true, TurnSteer: true, ThreadClear: true, ForkFromTurn: true, ThreadShutdown: true})); got != want {
 		t.Fatalf("qualified input mask = %+v, want %+v", got, want)
+	}
+	wantWithoutFeatures := appwire.ThreadCapabilities{
+		Interrupt: true, Compact: true, ChangeModel: true, ChangeVisionModel: true,
+		Queue: true, Goal: true, SharedNotes: true, Rename: true,
+		SkillInput: true, CommandInput: true, StopSubagent: true,
+	}
+	if got := maskRemoteThreadCapabilities(full, forwardedRemoteThreadCapabilities(appwire.FeatureSet{})); got != wantWithoutFeatures {
+		t.Fatalf("negotiated feature refusal not preserved: got %+v, want %+v", got, wantWithoutFeatures)
 	}
 	full.Steer = false
 	full.SkillInput = false
 	want.Steer = false
 	want.SkillInput = false
-	if got := maskRemoteThreadCapabilities(full); got != want {
+	if got := maskRemoteThreadCapabilities(full, forwardedRemoteThreadCapabilities(appwire.FeatureSet{TurnStart: true, TurnSteer: true, ThreadClear: true, ForkFromTurn: true, ThreadShutdown: true})); got != want {
 		t.Fatalf("host refusal not preserved: got %+v, want %+v", got, want)
 	}
 }
@@ -81,7 +91,7 @@ func TestRemoteHubCapabilitiesInputPreservesSourceAndInstance(t *testing.T) {
 	thread, err := source.fromRemoteThread(appwire.Thread{
 		ID: "same-bare-id", Source: "local",
 		Evener: appwire.EvenerThread{Ref: "local:same-bare-id", InstanceID: "instance-b", Capabilities: allRemoteThreadCapabilities()},
-	})
+	}, forwardedRemoteThreadCapabilities(appwire.FeatureSet{TurnStart: true, TurnSteer: true, ThreadClear: true, ForkFromTurn: true, ThreadShutdown: true}))
 	if err != nil {
 		t.Fatal(err)
 	}

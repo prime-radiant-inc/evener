@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/llm"
 )
@@ -61,12 +62,12 @@ func (a *deferredHeadAdapter) Complete(ctx context.Context, req llm.Request) (ll
 		case <-ctx.Done():
 			return llm.Response{}, ctx.Err()
 		}
-		response = toolCallResponse(communicateCall("child_first", "FIRST_GENERATION_DONE"))
+		response = agenttest.ToolCallResponse(communicateCall("child_first", "FIRST_GENERATION_DONE"))
 	case !root:
-		response = toolCallResponse(communicateCall("child_second", "SECOND_GENERATION_DONE"))
+		response = agenttest.ToolCallResponse(communicateCall("child_second", "SECOND_GENERATION_DONE"))
 	case call == 1:
 		args, _ := json.Marshal(map[string]any{"prompt": "Do the first part."})
-		response = toolCallResponse(llm.ToolCallData{ID: "create", Name: "delegate", Arguments: args, Type: "function"})
+		response = agenttest.ToolCallResponse(llm.ToolCallData{ID: "create", Name: "delegate", Arguments: args, Type: "function"})
 	case call == 2:
 		delegateID := deferredHeadDelegateID.FindString(deferredHeadToolResults(req.Messages))
 		if delegateID == "" {
@@ -76,7 +77,7 @@ func (a *deferredHeadAdapter) Complete(ctx context.Context, req llm.Request) (ll
 		a.delegateID = delegateID
 		a.mu.Unlock()
 		args, _ := json.Marshal(map[string]any{"to": delegateID, "message": "Do the second part.", "max_wait_ms": 60_000})
-		response = toolCallResponse(llm.ToolCallData{ID: "send", Name: "delegate_send", Arguments: args, Type: "function"})
+		response = agenttest.ToolCallResponse(llm.ToolCallData{ID: "send", Name: "delegate_send", Arguments: args, Type: "function"})
 	default:
 		a.mu.Lock()
 		if a.sendResult == "" {
@@ -84,7 +85,7 @@ func (a *deferredHeadAdapter) Complete(ctx context.Context, req llm.Request) (ll
 			a.nextRequest = deferredHeadToolResults(req.Messages) + messagesText(req.Messages)
 		}
 		a.mu.Unlock()
-		response = finalResponse("Root done.")
+		response = agenttest.FinalResponse("Root done.")
 	}
 	response.Provider = a.Name()
 	response.Model = req.Model
@@ -164,8 +165,7 @@ func TestDelegateSendWaitAnswersWhileAnEarlierResultIsDeferred(t *testing.T) {
 
 	// TRIPWIRE: half the send's max_wait_ms. Every step is a scripted in-process
 	// answer, so the turn ends within a second unless the send sits out its wait.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "start", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}

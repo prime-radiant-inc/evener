@@ -33,7 +33,7 @@ import {
 import type { AnyNotification, ConnectionState, InstanceListResponse } from "@evener/appwire-client";
 import { setTimeout as wait } from "node:timers/promises";
 import { expect, onTestFinished, vi } from "vitest";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 import { ComposerFocus } from "./session/composerFocus";
 import { shrinkingScroller } from "./session/dockCard";
 import { isStep } from "./session/transcriptRows";
@@ -380,9 +380,19 @@ export interface PanGestureMock {
 	};
 }
 
-/** react-native-gesture-handler's GestureDetector and Gesture.Pan for
- * vitest: the detector is a host element carrying its gesture, and the pan
- * a PanGestureMock whose builder methods return it. */
+/** A Gesture.LongPress() builder in the same shape: settings land in `config`
+ * and the hold's callback in `handlers.onStart`, which a test fires by hand
+ * to hold the message open. */
+export interface LongPressGestureMock {
+	config: Record<string, unknown>;
+	handlers: {
+		onStart?(): void;
+	};
+}
+
+/** react-native-gesture-handler's GestureDetector, Gesture.Pan and
+ * Gesture.LongPress for vitest: the detector is a host element carrying its
+ * gesture, and each gesture a mock whose builder methods return it. */
 export function gestureDetectorModuleMock() {
 	const pan = (): PanGestureMock => {
 		const gesture = { config: {}, handlers: {} } as PanGestureMock;
@@ -411,11 +421,29 @@ export function gestureDetectorModuleMock() {
 		});
 		return builder;
 	};
+	const longPress = (): LongPressGestureMock => {
+		const gesture = { config: {}, handlers: {} } as LongPressGestureMock;
+		const builder = Object.assign(gesture, {
+			minDuration: (duration: number) => {
+				gesture.config.minDurationMs = duration;
+				return builder;
+			},
+			runOnJS: (value: unknown) => {
+				gesture.config.runOnJS = value;
+				return builder;
+			},
+			onStart: (handler: LongPressGestureMock["handlers"]["onStart"]) => {
+				gesture.handlers.onStart = handler;
+				return builder;
+			},
+		});
+		return builder;
+	};
 	return {
 		__esModule: true,
 		GestureDetector: (props: { gesture: unknown; children?: ReactNode }) =>
 			createElement("GestureDetector", props, props.children),
-		Gesture: { Pan: pan },
+		Gesture: { Pan: pan, LongPress: longPress },
 	};
 }
 

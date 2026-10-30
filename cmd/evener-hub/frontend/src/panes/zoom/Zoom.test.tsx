@@ -1,5 +1,6 @@
 import type { SessionActivityContext, ThreadReadResponse } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
+import { keyID } from "@evener/appwire-client/state/navigation";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
@@ -9,7 +10,9 @@ import { useStore } from "zustand";
 import { accessibleName } from "../../accessibleNameTestUtils";
 import { chromeStore } from "../../shell/chromeStore";
 import { ClientProvider } from "../../shell/clientContext";
+import { NeedsYouProvider } from "../../shell/NeedsYouProvider";
 import { conversationPaneLifetime } from "../../shell/paneLifetime";
+import { installFocusedScope, summaryOf } from "../../shell/statusbar/scopeTestUtils";
 import {
   consumePaneFocus,
   type OpenPaneRecord,
@@ -18,7 +21,8 @@ import {
   workspaceStore,
 } from "../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
+import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import {
   activityContext,
   activityDelegate,
@@ -26,6 +30,7 @@ import {
   activityThread,
 } from "../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
+import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import { emptyStateReasons } from "../../widgets/emptystate/emptyStateTestUtils";
 import { readDraft } from "../session/composer/draft";
 import { replaceEditorText } from "../session/testing/editor";
@@ -44,19 +49,24 @@ import "./index";
 let height: PropertyDescriptor | undefined;
 beforeEach(() => {
   installLocalStorage(new MemoryStorage());
-  connectionStore.setState({ state: "idle", client: null, serverInfo: undefined });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
+  resetNavigationStoreForTests();
   resetTranscriptPagingForTests();
+  resetNavigationStoreForTests();
   resetWorkspaceStoreForTests();
   resetTranscriptViewRegistryForTests();
+  resetTranscriptDisplayStoreForTests();
   height = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
   Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, value: 500 });
 });
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  resetNavigationStoreForTests();
   resetWorkspaceStoreForTests();
-  connectionStore.setState({ state: "idle", client: null });
+  resetConnectionStoreForTests();
+  resetNavigationStoreForTests();
   if (height) Object.defineProperty(HTMLElement.prototype, "offsetHeight", height);
   else Reflect.deleteProperty(HTMLElement.prototype, "offsetHeight");
 });
@@ -187,6 +197,38 @@ function mount(fake: FakeClient) {
     </ClientProvider>,
   );
 }
+
+const NEEDS_YOU_PAGE_KEY = { kind: "section", section: "needs_you", offset: 0, limit: 50 } as const;
+
+function installNeedsYouRows(refs: string[]): void {
+  const rows = refs.map((ref) => ({
+    ref,
+    host_id: "local",
+    session_id: ref,
+    title: ref,
+    project: "Proj",
+    state: "awaiting",
+    kind: "session",
+    live: true,
+    children: [],
+  }));
+  const resources = new Map(navigationStore.getState().resources);
+  resources.set(keyID(NEEDS_YOU_PAGE_KEY), {
+    key: NEEDS_YOU_PAGE_KEY,
+    data: { generation_id: "g", revision: 1, sessions: rows, remaining: 0, truncated: false },
+    loadedRevision: 1,
+    targetRevision: null,
+    forceToken: 0,
+    etag: '"test"',
+    loading: false,
+    stale: false,
+    error: null,
+    generationID: "g",
+  });
+  const visibleResourceKeys = new Set(navigationStore.getState().visibleResourceKeys);
+  visibleResourceKeys.add(keyID(NEEDS_YOU_PAGE_KEY));
+  navigationStore.setState({ mode: "v3", resources, visibleResourceKeys });
+}
 function columnRefs() {
   return screen.queryAllByTestId("cascade-column").map((column) => column.getAttribute("data-scope-ref"));
 }
@@ -209,6 +251,52 @@ function inspectedCascade() {
   recordCascadeOrigin(inspector, source);
   return { source, inspector };
 }
+
+test.each(["loading", "deleted"])("a %s nested seat keeps its presentation return control", async (state) => {
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+  const { fake, response } = fixture();
+  const pending = deferred<ThreadReadResponse>();
+  fake.on("thread/read", ({ ref, requestGeneration }) => {
+    if (ref === "child") {
+      if (state === "loading") return pending.promise;
+      throw new WireError("child deleted", -32001, {
+        evenerErrorInfo: "actionUnavailable",
+        mutationOutcome: "targetDeleted",
+        retryDisposition: "none",
+      });
+    }
+    return { ...response(ref!), requestGeneration };
+  });
+  transcriptDisplayStore.getState().setPresentation("desktop", "comic");
+  mount(fake);
+  await waitFor(() =>
+    expect(document.querySelector('[data-comic-session="root"] [data-comic-text]')?.textContent).toBe(
+      "root content old-root",
+    ),
+  );
+  if (state === "deleted") await waitFor(() => expect(threadsStore.getState().deletedRefs.has("child")).toBe(true));
+  const pane = currentPane();
+  const lifetime = conversationPaneLifetime(pane);
+  const source = lifetime.composers.get("child");
+  expect(source).toBeDefined();
+  const url = window.location.href;
+  const child = cascadeScope("child", "cascade-column");
+  fireEvent.click(within(child).getByRole("button", { name: "Verbosity" }));
+  await act(async () => fireEvent.click(screen.getByRole("radio", { name: "Standard" })));
+  expect(transcriptDisplayStore.getState().presentation.desktop).toBe("standard");
+  expect(currentPane()).toBe(pane);
+  expect(conversationPaneLifetime(currentPane()).composers.get("child")).toBe(source);
+  expect(window.location.href).toBe(url);
+  expect(cascadeScope("child", "cascade-column").querySelector("[data-comic-font]")).toBeNull();
+  expect(within(cascadeScope("child", "cascade-column")).getByRole("button", { name: "Verbosity" })).toBeTruthy();
+});
 
 test("genuine cascade column movement supersedes reflow without Return or neighboring movement", async () => {
   const { fake, response } = fixture();
@@ -298,6 +386,138 @@ test("root and child render through real conversation readers inside one scaffol
   expect(screen.getAllByRole("textbox")).toHaveLength(2);
   expect(screen.getByRole("button", { name: "Return to previous view" })).toBeTruthy();
   expect(fake.calls.filter((call) => /send|resume|steer|interrupt/.test(call.method))).toHaveLength(0);
+});
+
+test("only the focused leaf offers attention navigation", async () => {
+  const { fake } = fixture();
+  installNeedsYouRows(["child", "local:target"]);
+  const mounted = render(
+    <ClientProvider client={fake}>
+      <NeedsYouProvider>
+        <CommittedZoom />
+      </NeedsYouProvider>
+    </ClientProvider>,
+  );
+  await screen.findByText("child content child-id");
+
+  expect(document.querySelectorAll('[data-testid="next-needs-you"]')).toHaveLength(1);
+  const control = screen.getByTestId("next-needs-you");
+  const leaf = control.closest('[data-testid="cascade-column"]');
+  expect(leaf?.getAttribute("data-leaf")).toBe("true");
+  expect(leaf?.getAttribute("data-scope-ref")).toBe("child");
+  // The leaf seat itself reports focused=false: the control is granted by the
+  // active keyboard-scroll leaf and the exact focused ref, not the broad seat.
+  expect(leaf?.querySelector('[role="textbox"]')).toBeTruthy();
+
+  const root = screen
+    .getAllByTestId("cascade-column")
+    .find((column) => column.getAttribute("data-scope-ref") === "root");
+  expect(root).toBeTruthy();
+  expect(root?.querySelector('[role="textbox"]')).toBeTruthy();
+  expect(root?.querySelector('[data-testid="next-needs-you"]')).toBeNull();
+  mounted.unmount();
+});
+
+test("an unloaded scope uses its navigation title through column, spine and pop", async () => {
+  const navigationTitle = "nav-4212-root";
+  const liveTitle = "model-4212-root";
+  installFocusedScope("child", summaryOf({ ref: "root", title: navigationTitle }));
+  const { fake, response } = fixture();
+  const held = deferred<ThreadReadResponse>();
+  const rootRead = response("root");
+  const namedRoot = { ...rootRead, thread: { ...rootRead.thread, name: liveTitle } };
+  fake.on("thread/read", async ({ ref, requestGeneration, includeTurns }) => {
+    if (!ref) throw new Error("thread/read requires ref");
+    const read = ref === "root" ? await held.promise : response(ref);
+    return { ...read, requestGeneration, thread: includeTurns === false ? { ...read.thread, turns: [] } : read.thread };
+  });
+  mount(fake);
+  try {
+    await screen.findByText("child content child-id");
+    expect(threadsStore.getState().threads.has("root")).toBe(false);
+    const rootColumn = cascadeScope("root", "cascade-column");
+    const crumb = screen
+      .getByRole("navigation", { name: "Scope" })
+      .querySelector('[data-session-navigation-ref="root"]');
+    expect(crumb?.textContent).toBe(navigationTitle);
+    expect.soft(within(rootColumn).getByRole("heading", { level: 3 }).textContent).toBe(navigationTitle);
+    expect.soft(rootColumn.getAttribute("aria-label")).toBe(navigationTitle);
+
+    act(() =>
+      enterAgentCascade(activityDelegate({ ownerRef: "child", childRef: "grandchild", delegateId: "d2" }), "cascade"),
+    );
+    await screen.findByText("grandchild content grandchild-id");
+    expect(threadsStore.getState().threads.has("root")).toBe(false);
+    const spine = cascadeScope("root", "cascade-spine");
+    const pop = spine.querySelector<HTMLButtonElement>("button[aria-label]");
+    if (!pop) throw new Error("Missing spine pop control");
+    expect.soft(pop.textContent).toBe(navigationTitle);
+    expect.soft(accessibleName(pop)).toContain(navigationTitle);
+    expect.soft(spine.getAttribute("aria-label")).toBe(navigationTitle);
+    act(() => fireEvent.click(pop));
+    expect(currentParams().ref).toBe("root");
+    expect(currentParams().edges).toEqual([]);
+    expect(columnRefs()).toEqual(["root"]);
+    expect
+      .soft(within(cascadeScope("root", "cascade-column")).getByRole("heading", { level: 3 }).textContent)
+      .toBe(navigationTitle);
+  } finally {
+    await act(async () => held.resolve(namedRoot));
+  }
+  await screen.findByText("root content old-root");
+  expect(within(cascadeScope("root", "cascade-column")).getByRole("heading", { level: 3 }).textContent).toBe(liveTitle);
+  expect(currentParams().ref).toBe("root");
+});
+
+test("a rebound scope rejects its stale model name and transcript until a matching image recovers", async () => {
+  const navigationTitle = "nav-4212-rebound";
+  const staleTitle = "model-4212-stale";
+  const liveTitle = "model-4212-recovered";
+  installFocusedScope("child", summaryOf({ ref: "root", title: navigationTitle }));
+  const { fake, response, identities } = fixture();
+  const held = deferred<ThreadReadResponse>();
+  let holdRoot = false;
+  fake.on("thread/read", async ({ ref, requestGeneration, includeTurns }) => {
+    if (!ref) throw new Error("thread/read requires ref");
+    const read = ref === "root" && holdRoot ? await held.promise : response(ref);
+    return {
+      ...read,
+      requestGeneration,
+      thread: {
+        ...read.thread,
+        name: ref === "root" && !holdRoot ? staleTitle : read.thread.name,
+        turns: includeTurns === false ? [] : read.thread.turns,
+      },
+    };
+  });
+  mount(fake);
+  await screen.findByText("root content old-root");
+  await screen.findByText("child content child-id");
+  const childView = retainedTranscriptReadView(conversationPaneLifetime(currentPane()), "child", "cascade");
+  holdRoot = true;
+  identities.set("root", "new-root");
+  try {
+    act(() =>
+      fake.emitNotification(
+        activityChangedNotification({ ref: "root", threadId: "wire-old-root", sessionId: "old-root" }, ["summary"]),
+      ),
+    );
+    await waitFor(() => expect(currentParams().ref).toBe("root"));
+    expect(threadsStore.getState().threads.get("root")).toMatchObject({ name: staleTitle, imageSessionId: "old-root" });
+    const rootColumn = cascadeScope("root", "cascade-column");
+    expect.soft(within(rootColumn).getByRole("heading", { level: 3 }).textContent).toBe(navigationTitle);
+    expect.soft(rootColumn.getAttribute("aria-label")).toBe(navigationTitle);
+    expect(screen.queryByText("root content old-root")).toBeNull();
+    expect(screen.queryByText("child content child-id")).toBeNull();
+    expect(childView.alive).toBe(false);
+    expect(retainedTranscriptReadView(conversationPaneLifetime(currentPane()), "root", "session").readable).toBe(false);
+  } finally {
+    const read = response("root");
+    await act(async () => held.resolve({ ...read, thread: { ...read.thread, name: liveTitle } }));
+  }
+  await screen.findByText("root content new-root");
+  expect(within(cascadeScope("root", "cascade-column")).getByRole("heading", { level: 3 }).textContent).toBe(liveTitle);
+  expect(currentParams().ref).toBe("root");
 });
 
 test("separated Zoom Return closes inspection and focuses its surviving source", async () => {
@@ -1049,7 +1269,7 @@ test("a live origin replaced before its first summary resolves still retires sta
   expect(screen.getByRole("button", { name: "Return to previous view" })).toBeTruthy();
 });
 
-// AppShell.test.tsx's installMobileViewport, verbatim: the mobile query
+// appShellTestUtils.tsx's installMobileViewport, verbatim: the mobile query
 // matches, every other query (the reduced-motion read included) does not.
 function installMobileViewport(): void {
   vi.stubGlobal(

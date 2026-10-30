@@ -64,7 +64,6 @@ func (s *Server) SetSessionTools(current func() *agent.Session) {
 			return appwire.Unavailable("runtime hub binding limit reached")
 		}
 		clients.clients[binding.HubID] = &runtimeHubClient{current: current, session: session, binding: binding, client: client, ctx: lifetime, cancel: cancel}
-		clients.revision++
 		session.HubBindingChanged()
 		return nil
 	})
@@ -78,7 +77,6 @@ type runtimeHubClients struct {
 	mu       sync.Mutex
 	clients  map[string]*runtimeHubClient
 	selected string
-	revision uint64
 }
 
 func (c *runtimeHubClients) close() {

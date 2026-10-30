@@ -1,7 +1,7 @@
 # Execution support
 
 `primeradiant.com/evener/execsupport` contains the shared low-level helpers
-used by Evener's root, agent, and LLM modules:
+used by Evener's root, agent, auth, and LLM modules:
 
 - `valueexpr` evaluates configuration value expressions and command-backed
   values.
@@ -9,6 +9,12 @@ used by Evener's root, agent, and LLM modules:
 - `orphanpipe` handles subprocess pipe-drain results, with test fixtures in
   `orphanpipe/orphanpipetest`.
 - `shellquote` renders POSIX shell words.
+- `fsatomic` publishes a file atomically and durably (temp file, fsync,
+  rename, directory fsync), has a `WriteWithoutSync` variant for derived data a
+  crash may lose (caches, indexes), and owns the one predicate for "this
+  filesystem cannot sync" and the one directory sync.
+- `componentlog` builds the component-tagged `*slog.Logger` daemons use for
+  stderr diagnostics (`[component] message key=value ...`, one line per record).
 - `syncio` wraps an io.Writer so concurrent writes from different goroutines
   serialize onto it instead of racing.
 

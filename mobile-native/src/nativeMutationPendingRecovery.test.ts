@@ -25,20 +25,12 @@ import type { Thread, ThreadReadResponse } from "@evener/appwire-client";
 import type { SqliteSync } from "./sqliteSync";
 import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
 import { NativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
-import { createConversationMutationPendingPort } from "../../mobile/src/state/conversationMutation";
-import { createConversationStore } from "../../mobile/src/state/conversation";
+import { createConversationMutationPendingPort } from "./conversation/state/conversationMutation";
+import { createConversationStore } from "./conversation/state/conversation";
 import { projectConversation, type MobileConversation } from "./projectedRows";
 
 const expoSQLite = vi.hoisted(() => ({ openDatabaseSync: vi.fn() }));
 vi.mock("expo-sqlite", () => expoSQLite);
-// A deterministic, unique id per call: IDs must be unique per test without
-// depending on Math.random (which could collide and flake).
-const uuidCounter = vi.hoisted(() => ({ next: 0 }));
-vi.mock("expo-crypto", () => ({
-	randomUUID: () => `test-uuid-${++uuidCounter.next}`,
-	getRandomValues: (array: Uint8Array) => array,
-}));
-
 let database: SqliteDoubleDatabase | undefined;
 // Every runtime a test creates, stopped before its database closes so no
 // timer or dispatch chain outlives the test.

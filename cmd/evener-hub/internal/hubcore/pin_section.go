@@ -14,9 +14,9 @@ import (
 
 	"github.com/spf13/afero"
 	"golang.org/x/text/cases"
-	_ "modernc.org/sqlite" // registers the "sqlite" driver for database/sql
-
-	"primeradiant.com/evener/hubapi"
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
+	"primeradiant.com/evener/appwire"
 )
 
 const PinSectionNameMaxRunes = 80
@@ -67,7 +67,7 @@ func pinKeyLabel(source, sessionID string) string {
 	if source == "" {
 		return sessionID
 	}
-	return hubapi.Ref{HostID: source, SessionID: sessionID}.String()
+	return appwire.Ref{SourceID: source, ThreadID: sessionID}.String()
 }
 
 // SessionPinIdentity maps a session identity — a bare session ID, a
@@ -76,11 +76,11 @@ func pinKeyLabel(source, sessionID string) string {
 // controller's own session; any other host keeps its name, so one source's
 // identity can never address another source's row that shares its bare ID.
 func SessionPinIdentity(identity string) ArchiveKey {
-	ref, err := hubapi.ParseRef(identity)
+	ref, err := appwire.ParseRef(identity)
 	if err != nil {
 		return SessionPinKey("", identity)
 	}
-	return SessionPinKey(ref.HostID, ref.SessionID)
+	return SessionPinKey(ref.SourceID, ref.ThreadID)
 }
 
 // PinSectionStore persists named pin sections and their session assignments in
@@ -239,6 +239,58 @@ GROUP BY s.id, s.name, s.name_key, s.created_at, s.updated_at
 	return out, rows.Err()
 }
 
+// errRetryWrite is returned by a writeTx body to ask for another attempt
+// without it being a SQLite lock error.
+var errRetryWrite = errors.New("retry pin write")
+
+// pinWrite is the outcome of a section or assignment write.
+type pinWrite struct {
+	section PinSection
+	changed bool
+}
+
+// writeTx runs fn in one transaction and commits it. A SQLite lock error, or
+// fn returning errRetryWrite, rolls back and retries on a fresh connection (the
+// retries begin IMMEDIATE, see openWriteAttempt); any other error is returned
+// as is. label names the write in the retry-limit error.
+func writeTx[T any](s *PinSectionStore, label string, fn func(tx *sql.Tx) (T, error)) (T, error) {
+	var zero T
+	for attempt := range 8 {
+		db, err := s.openWriteAttempt(attempt)
+		if err != nil {
+			return zero, err
+		}
+		out, err := runTx(db, fn)
+		_ = db.Close()
+		if err == nil {
+			return out, nil
+		}
+		if errors.Is(err, errRetryWrite) || isSQLiteRetryable(err) {
+			continue
+		}
+		return zero, err
+	}
+	return zero, fmt.Errorf("%s: retry limit reached", label)
+}
+
+func runTx[T any](db *sql.DB, fn func(tx *sql.Tx) (T, error)) (T, error) {
+	var zero T
+	tx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		return zero, err
+	}
+	out, err := fn(tx)
+	if err != nil {
+		_ = tx.Rollback()
+		return zero, err
+	}
+	if err := tx.Commit(); err != nil {
+		_ = tx.Rollback()
+		return zero, err
+	}
+	return out, nil
+}
+
 // Assign moves the (source, sessionID) pin to sectionID, updating assigned_at
 // only when the section actually changes. Source normalizes the same way the
 // decision stores' does: absent/"local" is the controller's own session.
@@ -247,69 +299,34 @@ func (s *PinSectionStore) Assign(sectionID, source, sessionID string, now time.T
 		return PinSection{}, false, nil
 	}
 	source = NormalizeDecisionSource(source)
-	for attempt := range 8 {
-		db, err := s.openWriteAttempt(attempt)
-		if err != nil {
-			return PinSection{}, false, err
-		}
-		tx, err := db.BeginTx(context.Background(), nil)
-		if err != nil {
-			_ = db.Close()
-			if isSQLiteRetryable(err) {
-				continue
-			}
-			return PinSection{}, false, err
-		}
+	out, err := writeTx(s, "assign "+pinKeyLabel(source, sessionID), func(tx *sql.Tx) (pinWrite, error) {
 		section, ok, err := sectionByIDTx(tx, sectionID)
 		if err != nil {
-			_ = tx.Rollback()
-			_ = db.Close()
-			if isSQLiteRetryable(err) {
-				continue
-			}
-			return PinSection{}, false, err
+			return pinWrite{}, err
 		}
 		if !ok {
-			_ = tx.Rollback()
-			_ = db.Close()
-			return PinSection{}, false, ErrPinSectionNotFound
+			return pinWrite{}, ErrPinSectionNotFound
 		}
 		changed, err := upsertSessionPinTx(tx, source, sessionID, sectionID, now)
 		if err != nil {
-			_ = tx.Rollback()
-			_ = db.Close()
-			if isSQLiteRetryable(err) {
-				continue
-			}
-			return PinSection{}, false, err
+			return pinWrite{}, err
 		}
 		section.MemberCount, err = sessionPinCountTx(tx, section.ID)
 		if err != nil {
-			_ = tx.Rollback()
-			_ = db.Close()
-			if isSQLiteRetryable(err) {
-				continue
-			}
-			return PinSection{}, false, err
+			return pinWrite{}, err
 		}
 		if pinSectionBeforeAssignmentCommitHook != nil {
 			pinSectionBeforeAssignmentCommitHook()
 		}
-		if err := tx.Commit(); err != nil {
-			_ = tx.Rollback()
-			_ = db.Close()
-			if isSQLiteRetryable(err) {
-				continue
-			}
-			return PinSection{}, false, err
-		}
-		_ = db.Close()
-		if changed {
-			s.fireChange()
-		}
-		return section, changed, nil
+		return pinWrite{section, changed}, nil
+	})
+	if err != nil {
+		return PinSection{}, false, err
 	}
-	return PinSection{}, false, fmt.Errorf("assign %s: retry limit reached", pinKeyLabel(source, sessionID))
+	if out.changed {
+		s.fireChange()
+	}
+	return out.section, out.changed, nil
 }
 
 // CreateOrReuseAndAssign creates a section when needed, reuses an existing
@@ -324,64 +341,34 @@ func (s *PinSectionStore) CreateOrReuseAndAssign(name, source, sessionID string,
 		return PinSection{}, false, err
 	}
 	source = NormalizeDecisionSource(source)
-	for attempt := range 8 {
-		db, err := s.openWriteAttempt(attempt)
-		if err != nil {
-			return PinSection{}, false, err
-		}
-		tx, err := db.BeginTx(context.Background(), nil)
-		if err != nil {
-			_ = db.Close()
-			if isSQLiteRetryable(err) {
-				continue
-			}
-			return PinSection{}, false, err
-		}
+	out, err := writeTx(s, fmt.Sprintf("create or reuse pin section %q", display), func(tx *sql.Tx) (pinWrite, error) {
 		section, created, err := ensureSectionTx(tx, display, key, now)
 		if err != nil {
-			_ = tx.Rollback()
-			_ = db.Close()
-			if isSQLiteUniqueNameConflict(err) || isSQLiteRetryable(err) {
-				continue
+			if isSQLiteUniqueNameConflict(err) {
+				return pinWrite{}, errRetryWrite
 			}
-			return PinSection{}, false, err
+			return pinWrite{}, err
 		}
 		changed, err := upsertSessionPinTx(tx, source, sessionID, section.ID, now)
 		if err != nil {
-			_ = tx.Rollback()
-			_ = db.Close()
-			if isSQLiteRetryable(err) {
-				continue
-			}
-			return PinSection{}, false, err
+			return pinWrite{}, err
 		}
 		section.MemberCount, err = sessionPinCountTx(tx, section.ID)
 		if err != nil {
-			_ = tx.Rollback()
-			_ = db.Close()
-			if isSQLiteRetryable(err) {
-				continue
-			}
-			return PinSection{}, false, err
+			return pinWrite{}, err
 		}
 		if pinSectionBeforeAssignmentCommitHook != nil {
 			pinSectionBeforeAssignmentCommitHook()
 		}
-		if err := tx.Commit(); err != nil {
-			_ = tx.Rollback()
-			_ = db.Close()
-			if isSQLiteRetryable(err) {
-				continue
-			}
-			return PinSection{}, false, err
-		}
-		_ = db.Close()
-		if created || changed {
-			s.fireChange()
-		}
-		return section, created || changed, nil
+		return pinWrite{section, created || changed}, nil
+	})
+	if err != nil {
+		return PinSection{}, false, err
 	}
-	return PinSection{}, false, fmt.Errorf("create or reuse pin section %q: retry limit reached", display)
+	if out.changed {
+		s.fireChange()
+	}
+	return out.section, out.changed, nil
 }
 
 // Unpin removes one session's assignment while leaving its section intact.
@@ -398,100 +385,51 @@ func (s *PinSectionStore) Rename(sectionID, name string, now time.Time) (PinSect
 	if err != nil {
 		return PinSection{}, false, err
 	}
-	for attempt := range 8 {
-		db, err := s.openWriteAttempt(attempt)
-		if err != nil {
-			return PinSection{}, false, err
-		}
-		tx, err := db.BeginTx(context.Background(), nil)
-		if err != nil {
-			_ = db.Close()
-			if isSQLiteRetryable(err) {
-				continue
-			}
-			return PinSection{}, false, err
-		}
+	out, err := writeTx(s, "rename pin section "+sectionID, func(tx *sql.Tx) (pinWrite, error) {
 		section, ok, err := sectionByIDTx(tx, sectionID)
 		if err != nil {
-			_ = tx.Rollback()
-			_ = db.Close()
-			if isSQLiteRetryable(err) {
-				continue
-			}
-			return PinSection{}, false, err
+			return pinWrite{}, err
 		}
 		if !ok {
-			_ = tx.Rollback()
-			_ = db.Close()
-			return PinSection{}, false, ErrPinSectionNotFound
+			return pinWrite{}, ErrPinSectionNotFound
 		}
 		section.MemberCount, err = sessionPinCountTx(tx, section.ID)
 		if err != nil {
-			_ = tx.Rollback()
-			_ = db.Close()
-			if isSQLiteRetryable(err) {
-				continue
-			}
-			return PinSection{}, false, err
+			return pinWrite{}, err
 		}
 		if section.Name == display {
-			_ = tx.Rollback()
-			_ = db.Close()
-			return section, false, nil
+			return pinWrite{section, false}, nil
 		}
 		otherID, found, err := sectionIDByKeyTx(tx, key)
 		if err != nil {
-			_ = tx.Rollback()
-			_ = db.Close()
-			if isSQLiteRetryable(err) {
-				continue
-			}
-			return PinSection{}, false, err
+			return pinWrite{}, err
 		}
 		if found && otherID != sectionID {
-			_ = tx.Rollback()
-			_ = db.Close()
-			return PinSection{}, false, ErrPinSectionConflict
+			return pinWrite{}, ErrPinSectionConflict
 		}
 		if _, err := tx.ExecContext(context.Background(), `UPDATE pin_section SET name = ?, name_key = ?, updated_at = ? WHERE id = ?`, display, key, now.Unix(), sectionID); err != nil {
-			_ = tx.Rollback()
-			_ = db.Close()
-			if isSQLiteRetryable(err) {
-				continue
+			if !isSQLiteRetryable(err) && isSQLiteUniqueNameConflict(err) {
+				return pinWrite{}, ErrPinSectionConflict
 			}
-			if isSQLiteUniqueNameConflict(err) {
-				return PinSection{}, false, ErrPinSectionConflict
-			}
-			return PinSection{}, false, err
+			return pinWrite{}, err
 		}
 		updated, ok, err := sectionByIDTx(tx, sectionID)
 		if err != nil {
-			_ = tx.Rollback()
-			_ = db.Close()
-			if isSQLiteRetryable(err) {
-				continue
-			}
-			return PinSection{}, false, err
+			return pinWrite{}, err
 		}
 		if !ok {
-			_ = tx.Rollback()
-			_ = db.Close()
-			return PinSection{}, false, ErrPinSectionNotFound
+			return pinWrite{}, ErrPinSectionNotFound
 		}
 		updated.MemberCount = section.MemberCount
-		if err := tx.Commit(); err != nil {
-			_ = tx.Rollback()
-			_ = db.Close()
-			if isSQLiteRetryable(err) {
-				continue
-			}
-			return PinSection{}, false, err
-		}
-		_ = db.Close()
-		s.fireChange()
-		return updated, true, nil
+		return pinWrite{updated, true}, nil
+	})
+	if err != nil {
+		return PinSection{}, false, err
 	}
-	return PinSection{}, false, fmt.Errorf("rename pin section %s: retry limit reached", sectionID)
+	if out.changed {
+		s.fireChange()
+	}
+	return out.section, out.changed, nil
 }
 
 // DeleteSection removes a section and cascades all of its assignments.
@@ -499,63 +437,28 @@ func (s *PinSectionStore) DeleteSection(sectionID string) (memberCount int, chan
 	if s == nil || s.dbPath == "" {
 		return 0, false, nil
 	}
-	for attempt := range 8 {
-		db, err := s.openWriteAttempt(attempt)
-		if err != nil {
-			return 0, false, err
-		}
-		tx, err := db.BeginTx(context.Background(), nil)
-		if err != nil {
-			_ = db.Close()
-			if isSQLiteRetryable(err) {
-				continue
-			}
-			return 0, false, err
-		}
+	memberCount, err = writeTx(s, "delete pin section "+sectionID, func(tx *sql.Tx) (int, error) {
 		section, ok, err := sectionByIDTx(tx, sectionID)
 		if err != nil {
-			_ = tx.Rollback()
-			_ = db.Close()
-			if isSQLiteRetryable(err) {
-				continue
-			}
-			return 0, false, err
+			return 0, err
 		}
 		if !ok {
-			_ = tx.Rollback()
-			_ = db.Close()
-			return 0, false, ErrPinSectionNotFound
+			return 0, ErrPinSectionNotFound
 		}
-		memberCount, err = sessionPinCountTx(tx, sectionID)
+		count, err := sessionPinCountTx(tx, sectionID)
 		if err != nil {
-			_ = tx.Rollback()
-			_ = db.Close()
-			if isSQLiteRetryable(err) {
-				continue
-			}
-			return 0, false, err
+			return 0, err
 		}
 		if _, err := tx.ExecContext(context.Background(), `DELETE FROM pin_section WHERE id = ?`, section.ID); err != nil {
-			_ = tx.Rollback()
-			_ = db.Close()
-			if isSQLiteRetryable(err) {
-				continue
-			}
-			return 0, false, err
+			return 0, err
 		}
-		if err := tx.Commit(); err != nil {
-			_ = tx.Rollback()
-			_ = db.Close()
-			if isSQLiteRetryable(err) {
-				continue
-			}
-			return 0, false, err
-		}
-		_ = db.Close()
-		s.fireChange()
-		return memberCount, true, nil
+		return count, nil
+	})
+	if err != nil {
+		return 0, false, err
 	}
-	return 0, false, fmt.Errorf("delete pin section %s: retry limit reached", sectionID)
+	s.fireChange()
+	return memberCount, true, nil
 }
 
 // DeleteSession removes a single (source, session ID) assignment.
@@ -564,52 +467,21 @@ func (s *PinSectionStore) DeleteSession(source, sessionID string) (bool, error) 
 		return false, nil
 	}
 	source = NormalizeDecisionSource(source)
-	for attempt := range 8 {
-		db, err := s.openWriteAttempt(attempt)
-		if err != nil {
-			return false, err
-		}
-		tx, err := db.BeginTx(context.Background(), nil)
-		if err != nil {
-			_ = db.Close()
-			if isSQLiteRetryable(err) {
-				continue
-			}
-			return false, err
-		}
+	removed, err := writeTx(s, "delete session pin "+pinKeyLabel(source, sessionID), func(tx *sql.Tx) (bool, error) {
 		res, err := tx.ExecContext(context.Background(), `DELETE FROM session_pin WHERE source = ? AND session_id = ?`, source, sessionID)
 		if err != nil {
-			_ = tx.Rollback()
-			_ = db.Close()
-			if isSQLiteRetryable(err) {
-				continue
-			}
 			return false, err
 		}
 		rows, err := res.RowsAffected()
-		if err != nil {
-			_ = tx.Rollback()
-			_ = db.Close()
-			if isSQLiteRetryable(err) {
-				continue
-			}
-			return false, err
-		}
-		if err := tx.Commit(); err != nil {
-			_ = tx.Rollback()
-			_ = db.Close()
-			if isSQLiteRetryable(err) {
-				continue
-			}
-			return false, err
-		}
-		_ = db.Close()
-		if rows > 0 {
-			s.fireChange()
-		}
-		return rows > 0, nil
+		return rows > 0, err
+	})
+	if err != nil {
+		return false, err
 	}
-	return false, fmt.Errorf("delete session pin %s: retry limit reached", pinKeyLabel(source, sessionID))
+	if removed {
+		s.fireChange()
+	}
+	return removed, nil
 }
 
 // Assignments returns every durable session-to-section mapping, keyed by the
@@ -735,12 +607,20 @@ func newPinSectionID() (string, error) {
 	return hex.EncodeToString(raw[:]), nil
 }
 
+// isSQLiteRetryable reports a lock conflict another connection can clear:
+// SQLITE_BUSY, SQLITE_LOCKED, or an extended code of either (such as
+// SQLITE_BUSY_SNAPSHOT, which busy_timeout does not wait out). The primary
+// result code is the low byte of the extended code.
 func isSQLiteRetryable(err error) bool {
-	if err == nil {
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) {
 		return false
 	}
-	s := strings.ToLower(err.Error())
-	return strings.Contains(s, "database is locked") || strings.Contains(s, "sqlite_busy") || strings.Contains(s, "sqlite_locked") || strings.Contains(s, "busy")
+	switch sqliteErr.Code() & 0xff {
+	case sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED:
+		return true
+	}
+	return false
 }
 
 func isSQLiteUniqueNameConflict(err error) bool {

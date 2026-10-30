@@ -424,6 +424,23 @@ func TestManagerWatchUnknownCausalityReplay(t *testing.T) {
 	}
 }
 
+func (jm *jobManager) endHubWatches(reason string) error {
+	jm.mu.Lock()
+	ids := []string{}
+	for _, cfg := range jm.watches {
+		if cfg.hubRef != "" {
+			ids = append(ids, cfg.watchID)
+		}
+	}
+	jm.mu.Unlock()
+	for _, id := range ids {
+		if err := jm.endHubWatch(id, reason, nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func TestManagerWatchRebindAndDisable(t *testing.T) {
 	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
 	jm := root.jobManager

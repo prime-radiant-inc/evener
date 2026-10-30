@@ -1,7 +1,7 @@
 // DelegateStatusBody is the expanded body for a `job_status` tool call
 // targeting a stable delegate (dlg_*). It parses the tool's structured state
-// (item.raw, the stableDelegateStatusResult from
-// agent/session_tools_jobs.go's projectStableDelegateStatus) and renders it
+// (item.raw, the delegateStatusResult from
+// agent/session_tools_jobs.go's projectDelegateStatus) and renders it
 // as a structured card — not raw JSON — following the design system's
 // information architecture: identity, lifecycle meta, mandate as markdown,
 // environment, config, available tools, footer with transcript ref + copy.
@@ -56,7 +56,7 @@ const CLASS = {
   footerSpacer: requireClass(styles.footerSpacer, "delegateStatus.module.css", "footerSpacer"),
 };
 
-// The shape of stableDelegateStatusResult (agent/session_tools_jobs.go).
+// The shape of delegateStatusResult (agent/session_tools_jobs.go).
 // Fields are optional because item.raw may be undefined or partial on
 // older stored transcripts predating a field's addition.
 interface DelegateStatusState {
@@ -138,7 +138,7 @@ function normalizeDelegateStatus(raw: Record<string, unknown>): DelegateStatusSt
 function isDelegateStatus(raw: unknown): raw is DelegateStatusState {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return false;
   const obj = raw as Record<string, unknown>;
-  // The stableDelegateStatusResult always carries type "delegate", id, and
+  // The delegateStatusResult always carries type "delegate", id, and
   // status. Require all three so a malformed or partial raw (e.g. a shell
   // job's state, or a stored transcript predating the struct) falls back
   // to HeadClippedOutputBody instead of crashing during rendering.
@@ -284,7 +284,7 @@ export function DelegateStatusBody({ item, sessionRef }: ToolRenderProps) {
   // satisfy React's rules-of-hooks (hooks must be unconditional).
   const renderCtx = useTranscriptRenderContext();
 
-  // item.raw carries the stableDelegateStatusResult struct (the State field
+  // item.raw carries the delegateStatusResult struct (the State field
   // of tool.StateResult). Fall back to HeadClippedOutputBody when it isn't
   // a delegate status — a job_status call targeting a shell job, or a
   // stored transcript predating the structured state.

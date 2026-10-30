@@ -253,17 +253,6 @@ func (p *Profile) ProjectDocFiles() []string {
 	return append([]string{}, p.docFiles...)
 }
 
-// SupportsParallelToolCalls reports whether the model may emit multiple tool
-// calls in a single response. Every protocol the agent drives does.
-func (p *Profile) SupportsParallelToolCalls() bool { return true }
-
-// SupportsStreaming reports whether the model streams. Every protocol the
-// agent drives does.
-func (p *Profile) SupportsStreaming() bool { return true }
-
-// DefaultCommandTimeoutMS is the default shell command timeout.
-func (p *Profile) DefaultCommandTimeoutMS() int { return 120_000 }
-
 // ContextWindowSize is the row's window, or 0 when unknown (spec §7.3). The
 // context manager budgets an unknown window against a conservative assumed
 // window instead of running without one (issue #4564); callers that need the
@@ -380,7 +369,7 @@ func (p *Profile) AcceptsImageInput() bool {
 // wire. Unlike an image — the one user-message shape every protocol vouches
 // for — a document needs the protocol check too: the Responses builder writes
 // input_file and the Anthropic builder writes a document content block, while
-// the Google builder rejects the kind and chat strips it
+// Google writes inlineData/fileData and chat strips it
 // (llm.DeliversUserMessageDocuments). Renamed profiles do not count, for the
 // same reason as AcceptsImageInput.
 func (p *Profile) AcceptsDocumentInput() bool {

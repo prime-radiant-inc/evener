@@ -5,7 +5,7 @@
 // - onToggleArchive error catch (207-208)
 // - onDelete error catch (221-222) + skipped warning (216-218)
 
-import type { NavigationSessionLocation, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
+import type { NavigationSessionLocation, Thread, ThreadReadResponse } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
@@ -14,31 +14,18 @@ import type { ComponentProps } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { ClientProvider } from "../../../shell/clientContext";
 import { resetWorkspaceStoreForTests } from "../../../shell/workspace";
-import { connectionStore } from "../../../stores/connection";
+import { setCacheChannelFactoryForTests } from "../../../stores/cacheLifetime";
+import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
 import * as navigationModule from "../../../stores/navigation/store";
 import { navigationStore, resetNavigationStoreForTests } from "../../../stores/navigation/store";
-import { resetThreadsStoreForTests, setCacheChannelFactoryForTests, threadsStore } from "../../../stores/threads";
+import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
+import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
+import { ALL_CAPABILITIES as CAPABILITIES } from "../../../threadTestUtils";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import "../../sessionPanels";
 import { flushPendingTurnsProjectionForTests } from "../composer/queue/testing/flushPendingTurnsProjection";
 import { SessionChrome as SessionChromeView } from "./SessionChrome";
-
-const CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
 
 function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
   return {
@@ -121,10 +108,9 @@ function SessionChrome(props: ComponentProps<typeof SessionChromeView>) {
 }
 
 function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  chromeClient = fake;
-  connectionStore.getState().connect(fake);
-  return fake;
+  return connectReadyFakeClient((fake) => {
+    chromeClient = fake;
+  });
 }
 
 // We can't easily spy on the toast store from outside, so we mount Toast
@@ -141,7 +127,7 @@ function renderWithToast(ui: React.ReactElement) {
 
 beforeEach(() => {
   chromeClient = new FakeClient("ready");
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
   resetNavigationStoreForTests();

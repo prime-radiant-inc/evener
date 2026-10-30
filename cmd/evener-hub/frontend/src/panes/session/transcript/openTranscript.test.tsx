@@ -1,9 +1,16 @@
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { render, screen } from "@testing-library/react";
 import { beforeAll, beforeEach, expect, test } from "vitest";
-import { recordConversationOpenParent, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
+import { captureAttentionPlacement, presentAttentionTarget } from "../../../shell/attentionPlacement";
+import { conversationPaneLifetime } from "../../../shell/paneLifetime";
+import {
+  conversationOpenParentRef,
+  recordConversationOpenParent,
+  resetWorkspaceStoreForTests,
+  workspaceStore,
+} from "../../../shell/workspace";
 import { navigationStore } from "../../../stores/navigation/store";
-import { OpenTranscriptButton, openTranscript } from "./openTranscript";
+import { conversationContextIncludes, OpenTranscriptButton, openTranscript } from "./openTranscript";
 
 beforeAll(async () => {
   await import("../");
@@ -208,6 +215,120 @@ test("keeps a job ref on the job-log transcript pane with its owner context", ()
   openTranscript("job:job-1", "local:owner");
   expect(transcriptPanes("job:job-1")).toHaveLength(1);
   expect(workspaceStore.getState().focusedPaneId).toBe(first[0]?.id);
+});
+
+test("session opener prefers a presented duplicate and leaves parked parent metadata unchanged", () => {
+  const parkedId = workspaceStore.getState().openPane("session", { ref: "local:child" });
+  const parked = sessionPane("local:child");
+  if (!parked) throw new Error("missing source session");
+  recordConversationOpenParent(parked, "local:old-parent");
+  const entry = captureAttentionPlacement();
+  if (!entry) throw new Error("missing attention source");
+  presentAttentionTarget("local:away");
+  const presentedId = workspaceStore.getState().openPane("session", { ref: "local:child" });
+  const presented = workspaceStore.getState().panes.find((pane) => pane.id === presentedId);
+  if (!presented) throw new Error("missing presented duplicate");
+
+  openTranscript("local:child", "local:new-parent");
+
+  expect(workspaceStore.getState().focusedPaneId).toBe(presentedId);
+  expect(conversationOpenParentRef(presented)).toBe("local:new-parent");
+  expect(conversationOpenParentRef(parked)).toBe("local:old-parent");
+  expect(workspaceStore.getState().panes).toContain(entry.pane);
+  expect(parkedId).not.toBe(presentedId);
+});
+
+test("session opener creates a presented pane when only a parked match exists", () => {
+  const parkedId = workspaceStore.getState().openPane("session", { ref: "local:child" });
+  const parked = sessionPane("local:child");
+  if (!parked) throw new Error("missing source session");
+  recordConversationOpenParent(parked, "local:old-parent");
+  const lifetime = conversationPaneLifetime(parked);
+  const entry = captureAttentionPlacement();
+  if (!entry) throw new Error("missing attention source");
+  presentAttentionTarget("local:away");
+
+  openTranscript("local:child", "local:new-parent");
+
+  const opened = workspaceStore
+    .getState()
+    .panes.find(
+      (pane) =>
+        pane.type === "session" && (pane.params as { ref?: unknown }).ref === "local:child" && pane.slot !== "parked",
+    );
+  if (!opened) throw new Error("missing fresh presented session");
+  expect(opened.id).not.toBe(parkedId);
+  expect(workspaceStore.getState().focusedPaneId).toBe(opened.id);
+  expect(conversationOpenParentRef(opened)).toBe("local:new-parent");
+  expect(conversationOpenParentRef(parked)).toBe("local:old-parent");
+  expect(conversationPaneLifetime(parked)).toBe(lifetime);
+  expect(lifetime.alive).toBe(true);
+  expect(workspaceStore.getState().panes).toContain(entry.pane);
+});
+
+test("job opener reuses presented duplicate without closing parked variants", () => {
+  const parkedId = workspaceStore.getState().openPane("transcript", { ref: "job:job-1", parentRef: "local:old" });
+  const parked = workspaceStore.getState().panes.find((pane) => pane.id === parkedId);
+  if (!parked) throw new Error("missing job transcript");
+  const lifetime = conversationPaneLifetime(parked);
+  const entry = captureAttentionPlacement();
+  if (!entry) throw new Error("missing attention source");
+  presentAttentionTarget("local:away");
+  const presentedId = workspaceStore.getState().openPane("transcript", { ref: "job:job-1", parentRef: "local:new" });
+
+  openTranscript("job:job-1", "local:new");
+
+  expect(workspaceStore.getState().focusedPaneId).toBe(presentedId);
+  expect(transcriptPanes("job:job-1").map((pane) => pane.id)).toContain(parkedId);
+  expect(workspaceStore.getState().panes.find((pane) => pane.id === parkedId)).toBe(parked);
+  expect(conversationPaneLifetime(parked)).toBe(lifetime);
+  expect(lifetime.alive).toBe(true);
+  expect(workspaceStore.getState().panes).toContain(entry.pane);
+});
+
+test("job opener creates a fresh presented transcript when only parked variants exist", () => {
+  const parkedId = workspaceStore.getState().openPane("transcript", { ref: "job:job-1", parentRef: "local:old" });
+  const parked = workspaceStore.getState().panes.find((pane) => pane.id === parkedId);
+  if (!parked) throw new Error("missing job transcript");
+  const lifetime = conversationPaneLifetime(parked);
+  const entry = captureAttentionPlacement();
+  if (!entry) throw new Error("missing attention source");
+  presentAttentionTarget("local:away");
+
+  openTranscript("job:job-1", "local:new");
+
+  const opened = transcriptPanes("job:job-1").find((pane) => pane.slot !== "parked");
+  if (!opened) throw new Error("missing fresh presented job transcript");
+  expect(opened.id).not.toBe(parkedId);
+  expect(opened.params).toEqual({ ref: "job:job-1", parentRef: "local:new" });
+  expect(transcriptPanes("job:job-1").map((pane) => pane.id)).toContain(parkedId);
+  expect(conversationPaneLifetime(parked)).toBe(lifetime);
+  expect(lifetime.alive).toBe(true);
+  expect(workspaceStore.getState().panes).toContain(entry.pane);
+});
+
+test("parent context lookup prefers a presented same-ref holder over retained context", () => {
+  const parkedId = workspaceStore.getState().openPane("session", { ref: "local:parent" });
+  const parked = sessionPane("local:parent");
+  if (!parked) throw new Error("missing parked parent context");
+  recordConversationOpenParent(parked, "local:old-root");
+  const entry = captureAttentionPlacement();
+  if (!entry) throw new Error("missing attention source");
+  presentAttentionTarget("local:away");
+  const presentedId = workspaceStore.getState().openPane("session", { ref: "local:parent" });
+  const presented = workspaceStore.getState().panes.find((pane) => pane.id === presentedId);
+  if (!presented) throw new Error("missing presented parent duplicate");
+  recordConversationOpenParent(presented, "local:new-root");
+
+  expect(conversationContextIncludes("local:parent", "local:new-root")).toBe(true);
+  expect(conversationContextIncludes("local:parent", "local:old-root")).toBe(false);
+
+  openTranscript("local:child", "local:parent");
+
+  expect(sessionPane("local:child")?.slot).toBe("secondary");
+  expect(workspaceStore.getState().panes.find((pane) => pane.id === parkedId)).toBe(parked);
+  expect(workspaceStore.getState().panes).toContain(entry.pane);
+  expect(presented.id).toBe(presentedId);
 });
 
 test("the row button names the conversation it opens for a session ref", () => {

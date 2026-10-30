@@ -1,6 +1,16 @@
 import "fake-indexeddb/auto";
-import type { NavigationReadParams, NavigationReadResponse, NavigationSessionSummary } from "@evener/appwire-client";
-import { keyID, type ResourceKey, type ResourceState } from "@evener/appwire-client/state/navigation";
+import type {
+  NavigationReadParams,
+  NavigationReadResponse,
+  NavigationSessionSummary,
+  NavigationSnapshot,
+} from "@evener/appwire-client";
+import {
+  keyID,
+  normalizedGraphFromSnapshot,
+  type ResourceKey,
+  type ResourceState,
+} from "@evener/appwire-client/state/navigation";
 import { currentRead } from "@evener/appwire-client/testing/currentTranscript";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
@@ -9,9 +19,10 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { startBackgroundTranscripts } from "../../stores/backgroundTranscripts";
 import { connectionStore } from "../../stores/connection";
+import { setProductionEntryCacheForTests } from "../../stores/entryTranscriptRoutes";
 import { initNavigation, navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { SessionEntryCache } from "../../stores/sessionEntryCache";
-import { resetThreadsStoreForTests, setProductionEntryCacheForTests } from "../../stores/threads";
+import { resetThreadsStoreForTests } from "../../stores/threads";
 import { ClientProvider } from "../clientContext";
 import { Rail } from "./Rail";
 
@@ -26,10 +37,24 @@ const row = (ref: string) => ({
   live: true,
   children: [],
 });
-function resource(key: ResourceKey, refs: string[], remaining: number): ResourceState {
+function resource(key: Extract<ResourceKey, { kind: "section" }>, refs: string[], remaining: number): ResourceState {
+  const data = { generation_id: "g1", revision: 1, sessions: refs.map(row), remaining, truncated: remaining > 0 };
+  const params: NavigationReadParams = {
+    resource: "section",
+    section: key.section,
+    offset: key.offset,
+    limit: key.limit,
+    representationVersion: 3,
+  };
   return {
     key,
-    data: { generation_id: "g1", revision: 1, sessions: refs.map(row), remaining, truncated: remaining > 0 },
+    data,
+    normalized: {
+      key,
+      graph: normalizedGraphFromSnapshot(wireSnapshot(params, data).data as NavigationSnapshot),
+      version: { generationId: "g1", revision: 1, etag: "e" },
+      presence: "present",
+    },
     loadedRevision: 1,
     targetRevision: 1,
     forceToken: 0,

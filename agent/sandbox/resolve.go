@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"primeradiant.com/evener/identifier"
 )
 
 var resolveAbs = filepath.Abs
@@ -239,7 +241,7 @@ func (rp ResolvedPolicy) FileToolCanRead(path string) bool {
 	if !rp.FileToolConfined() {
 		return true
 	}
-	// Containment is lexical (pathUnder) and both sides must be absolute:
+	// Containment is lexical (identifier.PathUnder) and both sides must be absolute:
 	// a relative path cannot be proved inside any root, and a relative
 	// root grants nothing.
 	if !filepath.IsAbs(path) {
@@ -252,7 +254,7 @@ func (rp ResolvedPolicy) FileToolCanRead(path string) bool {
 		return true
 	}
 	for _, root := range rp.FileTool.ReadRoots {
-		if filepath.IsAbs(root) && pathUnder(path, root) {
+		if filepath.IsAbs(root) && identifier.PathUnder(path, root) {
 			return true
 		}
 	}
@@ -280,7 +282,7 @@ func (rp ResolvedPolicy) masks(path string, live bool) bool {
 		return false
 	}
 	for _, root := range rp.UnmaskedRoots {
-		if pathUnder(path, root) {
+		if identifier.PathUnder(path, root) {
 			return insideGitDir(path, root) || (live && rp.maskOverlapsCarveOut(root))
 		}
 	}
@@ -725,7 +727,7 @@ func cacheRootsFor(mode Mode, host HostFacts, worktree string) []string {
 			// storage it names. Spellings are compared exactly; a worktree
 			// matched only by letter case on a case-insensitive Linux volume
 			// is the known Low tracked in #4306.
-			return pathUnder(r, worktree) || pathUnder(rr, worktree) || linksThroughPrivateMount(r)
+			return identifier.PathUnder(r, worktree) || identifier.PathUnder(rr, worktree) || linksThroughPrivateMount(r)
 		})
 		return dedupeRoots(roots)
 	default:
@@ -753,7 +755,7 @@ func cacheRootsFor(mode Mode, host HostFacts, worktree string) []string {
 // that friction case is tracked as a known Low in #4306, alongside the same
 // limit for carve-outs, rather than handled by identity checks here.
 func dropCacheRootsSharingWriteRoots(cacheRoots, writeRoots []string) []string {
-	within := func(c, w string) bool { return c == w || pathUnder(c, w) }
+	within := func(c, w string) bool { return c == w || identifier.PathUnder(c, w) }
 	return slices.DeleteFunc(cacheRoots, func(c string) bool {
 		rc := physicalLanding(c)
 		return slices.ContainsFunc(writeRoots, func(w string) bool {
@@ -768,7 +770,7 @@ func dropCacheRootsSharingWriteRoots(cacheRoots, writeRoots []string) []string {
 // each spawn its own copy of (a private /tmp and a minimal /dev), where host
 // symlinks are not visible.
 func inPrivateMount(p string) bool {
-	return pathUnder(p, "/tmp") || pathUnder(p, "/dev")
+	return identifier.PathUnder(p, "/tmp") || identifier.PathUnder(p, "/dev")
 }
 
 // linksThroughPrivateMount reports whether resolving p follows a symlink that
@@ -1193,9 +1195,9 @@ func unmaskedContentRoots(candidates, masked, configMasks, writeRoots []string, 
 	for _, root := range guardedHostRoots(candidates, home, worktree) {
 		switch {
 		case isUnderAnyRoot(root, defaultPseudoFSPaths),
-			slices.ContainsFunc(masked, func(m string) bool { return pathUnder(m, root) }),
-			slices.ContainsFunc(masked, func(m string) bool { return pathUnder(root, m) && !slices.Contains(configMasks, m) }),
-			slices.ContainsFunc(writeRoots, func(w string) bool { return pathUnder(w, root) || pathUnder(root, w) }):
+			slices.ContainsFunc(masked, func(m string) bool { return identifier.PathUnder(m, root) }),
+			slices.ContainsFunc(masked, func(m string) bool { return identifier.PathUnder(root, m) && !slices.Contains(configMasks, m) }),
+			slices.ContainsFunc(writeRoots, func(w string) bool { return identifier.PathUnder(w, root) || identifier.PathUnder(root, w) }):
 			continue
 		}
 		// Resolved once: every check below, the pinned location and the
@@ -1203,7 +1205,7 @@ func unmaskedContentRoots(candidates, masked, configMasks, writeRoots []string, 
 		// cannot slip a different location in.
 		// One not created yet resolves to where creating it would land.
 		resolved := resolveExistingPrefix(root)
-		if slices.ContainsFunc(writeRoots, func(w string) bool { return pathUnder(w, resolved) || pathUnder(resolved, w) }) ||
+		if slices.ContainsFunc(writeRoots, func(w string) bool { return identifier.PathUnder(w, resolved) || identifier.PathUnder(resolved, w) }) ||
 			carveOutEscapes(resolved, root, masked) {
 			continue
 		}
@@ -1218,7 +1220,7 @@ func unmaskedContentRoots(candidates, masked, configMasks, writeRoots []string, 
 		// the skills dir) would make its secrets readable through the carve-out.
 		if slices.ContainsFunc(masked, func(m string) bool {
 			rm, merr := filepath.EvalSymlinks(m)
-			return merr == nil && (pathUnder(rm, root) || pathUnder(rm, resolved))
+			return merr == nil && (identifier.PathUnder(rm, root) || identifier.PathUnder(rm, resolved))
 		}) {
 			continue
 		}
@@ -1313,7 +1315,7 @@ func carveOutEscapes(resolved, root string, masked []string) bool {
 	}
 	// A resolution at or above any mask would re-grant that mask whole.
 	for _, m := range masked {
-		if pathUnder(m, resolved) {
+		if identifier.PathUnder(m, resolved) {
 			return true
 		}
 	}
@@ -1321,7 +1323,7 @@ func carveOutEscapes(resolved, root string, masked []string) bool {
 	// (withResolvedMasks lists both), are the mask it is carved from.
 	var own []string
 	for _, m := range masked {
-		if pathUnder(root, m) {
+		if identifier.PathUnder(root, m) {
 			own = append(own, resolveExistingPrefix(m))
 		}
 	}
@@ -1332,10 +1334,10 @@ func carveOutEscapes(resolved, root string, masked []string) bool {
 		return slices.Contains(own, resolveExistingPrefix(m))
 	}
 	for _, m := range masked {
-		if !pathUnder(root, m) && isOwn(m) {
+		if !identifier.PathUnder(root, m) && isOwn(m) {
 			continue
 		}
-		if pathUnder(root, m) {
+		if identifier.PathUnder(root, m) {
 			// The mask the root is carved from: the root must resolve to its own
 			// place inside it, so a symlink at or below the mask cannot redirect
 			// the re-grant to the config root or the store's metadata.
@@ -1345,10 +1347,10 @@ func carveOutEscapes(resolved, root string, masked []string) bool {
 			}
 			continue
 		}
-		if pathUnder(resolved, m) {
+		if identifier.PathUnder(resolved, m) {
 			return true
 		}
-		if pathUnder(resolved, resolveExistingPrefix(m)) {
+		if identifier.PathUnder(resolved, resolveExistingPrefix(m)) {
 			return true
 		}
 	}

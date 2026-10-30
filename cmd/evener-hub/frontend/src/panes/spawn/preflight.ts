@@ -1,17 +1,15 @@
 // preflight is the working-directory preflight seam (floor §1.13): validate
-// the cwd via appwire "evener/path/validate" and create it via appwire
-// "evener/dirs/create".
-// T1 defines the signatures + a minimal working body; T2 wires them into the
-// real submission flow and adds the "doesn't exist yet -> offer to create"
-// discrimination (the offer-create outcome + the in-form Create&start dialog,
-// spawn.js:527-566).
+// the cwd via appwire "evener/path/validate". Creating it is the launch-config
+// store's createDirectory.
+// A cwd that does not exist yet is not a failure: the outcome offers the
+// in-form Create&start dialog instead.
 import type { AppwireClientLike } from "@evener/appwire-client";
-import { hostRequest } from "../../stores/hostRouting";
+import { hostRequest } from "@evener/appwire-client";
 
 export type PreflightOutcome =
   | { kind: "ok" }
-  | { kind: "abort"; message: string } // deterministic "not fixable" (spawn.js:582-588)
-  | { kind: "offer-create"; path: string }; // in-form Create&start dialog (spawn.js:527-566)
+  | { kind: "abort"; message: string } // deterministic "not fixable"
+  | { kind: "offer-create"; path: string }; // in-form Create&start dialog
 
 // The validator's own literal error strings for a cwd that can never be fixed
 // by creating a directory (floor §1.13): an empty path, a non-absolute path,
@@ -40,11 +38,7 @@ export async function preflightDir(
     return { kind: "offer-create", path };
   } catch {
     // Fail OPEN: if the CHECK itself fails (RPC down, etc.), never block the
-    // spawn - let submission proceed (spawn.js:573-580).
+    // spawn - let submission proceed.
     return { kind: "ok" };
   }
-}
-
-export async function createDir(client: AppwireClientLike, path: string, host: string = "local"): Promise<void> {
-  await hostRequest(client, host, "evener/dirs/create", { path });
 }

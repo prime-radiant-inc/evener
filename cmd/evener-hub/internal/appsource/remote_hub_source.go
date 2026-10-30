@@ -1,20 +1,15 @@
 package appsource
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net"
-	"os"
 	"reflect"
 	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"primeradiant.com/evener/appwire"
@@ -39,9 +34,8 @@ type RemoteHubClientFunc func(ctx context.Context, host string) (*appwire.Client
 //
 // This is components 05a-05d: the read path (ID, ListThreads, ReadThread,
 // ListTurns, ListModels, and the item-mode paging seam) plus registration,
-// subscription fan-out, the turn/thread lifecycle mutations (including
-// mutation-unknown mapping) that live in remote_hub_mutations.go, and the
-// capability probe in remote_hub_probe.go.
+// subscription fan-out, and the turn/thread lifecycle mutations (including
+// mutation-unknown mapping) that live in remote_hub_mutations.go.
 //
 // The client is never cached here: every request re-invokes the connector, so a
 // component-04 reconnect that swaps the underlying client is picked up
@@ -84,18 +78,6 @@ type RemoteHubSource struct {
 	// predecessor's unsubscribe for the same remote thread. subMu is always
 	// taken inside it, never the other way around.
 	remoteMu sync.Mutex
-	// facts supplies captured connection metadata and platform facts without
-	// reinitializing the channel (see HostFacts).
-	facts HostFactsFunc
-	// handshake is the optional component-04 attach-handshake seam: the
-	// InitializeResponse the live channel captured at attach, reached by host name
-	// (SetHostHandshake, backed by the remoteHostHandshakeForChannel closure over
-	// sshconn.Manager.ChannelIfAttached with the client-identity guard at the call
-	// site). The probe reads ProtocolVersion/SourceID/Features from it; HubVersion
-	// stays preflight-owned. nil leaves those to the facts seam (tests); it is
-	// never dialed for.
-	handshake HostHandshakeFunc
-
 	// online is the optional availability signal: it reports whether the
 	// remote host currently has a live channel. nil means online (the pre-06
 	// default); the setter is called once at registration.
@@ -116,12 +98,6 @@ type RemoteHubSource struct {
 	// stalled consumer cannot stall thread routing; this counter makes the
 	// tradeoff observable.
 	hostNotifyDropped atomic.Int64
-
-	// probeMu guards probe (the last successful probe, cached against the
-	// client it ran on) and facts (the preflight seam HostCapabilities reads
-	// while probing). It is never held across a wire call.
-	probeMu sync.Mutex
-	probe   *remoteHubProbe
 }
 
 var (
@@ -158,31 +134,6 @@ func (s *RemoteHubSource) ID() string { return s.id }
 // already enriched its own replies.
 func (s *RemoteHubSource) EnrichThreadFileBackedImages() bool { return false }
 
-// SetHostFacts installs the component-04 preflight facts seam used by the
-// capability probe. It is optional and expected to be called once at
-// registration before the source serves. With no facts seam a probe leaves
-// ProtocolVersion, HubVersion, OS, Arch, and Features zero-valued.
-//
-// The write is guarded by probeMu, the same lock HostCapabilities reads the
-// seam under, so a caller that installs facts while a probe is in flight does
-// not race the read.
-func (s *RemoteHubSource) SetHostFacts(fn HostFactsFunc) {
-	s.probeMu.Lock()
-	defer s.probeMu.Unlock()
-	s.facts = fn
-}
-
-// SetHostHandshake installs the component-04 attach-handshake seam the capability
-// probe reads (see HostHandshakeFunc). It is optional and expected to be called
-// once at registration before the source serves; the write is guarded by probeMu,
-// the same lock the probe reads the seam under. With no handshake seam installed
-// the preflight-owned fields come from SetHostFacts instead.
-func (s *RemoteHubSource) SetHostHandshake(fn HostHandshakeFunc) {
-	s.probeMu.Lock()
-	defer s.probeMu.Unlock()
-	s.handshake = fn
-}
-
 // SetHostClientIfAttached installs the non-dialing, attached-only client lookup
 // (backed by sshconn.Manager.ClientIfAttached) that every call this source serves
 // resolves through. It is expected to be called once at registration before the
@@ -203,7 +154,7 @@ func (s *RemoteHubSource) SetHostOnline(fn func() bool) { s.online = fn }
 // SetHostNotificationFilter installs the optional publish-time method filter
 // for host-level notification consumers: only methods it accepts are published
 // to them (nil accepts every notification). It is expected to be called once at
-// registration before the source serves, like SetHostFacts and SetHostOnline.
+// registration before the source serves, like SetHostOnline.
 func (s *RemoteHubSource) SetHostNotificationFilter(fn func(method string) bool) {
 	s.subMu.Lock()
 	s.hostFilter = fn
@@ -266,15 +217,15 @@ func (s *RemoteHubSource) resolveClient(ctx context.Context) (*appwire.Client, e
 		if client, ok := s.clientIfAttached(s.id); ok && client != nil {
 			return client, nil
 		}
-		return nil, appwire.SessionUnavailable("remote hub unavailable: " + s.id)
+		return nil, remoteHubUnavailable(s.id, "")
 	}
 	return s.client(ctx, s.id)
 }
 
 // callOn forwards one request on an already-resolved client and translates any
-// refs in the response. The capability probe uses it so every wire call runs on
-// the exact client its cache was keyed against, not on whatever client the
-// connector returns between calls.
+// refs in the response. Callers use it so every wire call of one operation
+// runs on the exact client they resolved, not on whatever client the connector
+// returns between calls.
 func (s *RemoteHubSource) callOn(ctx context.Context, client *appwire.Client, method string, params any, out any) error {
 	if err := ctx.Err(); err != nil {
 		return s.mapCallError(err)
@@ -285,7 +236,7 @@ func (s *RemoteHubSource) callOn(ctx context.Context, client *appwire.Client, me
 		}
 		return s.mapCallError(err)
 	}
-	return s.translateOut(out)
+	return s.translateOut(client, out)
 }
 
 type managerInputCallerKey struct{}
@@ -350,7 +301,7 @@ func (s *RemoteHubSource) mapCallError(err error) error {
 	if !appwire.IsTransportFailure(err) {
 		return err
 	}
-	return appwire.SessionUnavailable("remote hub unavailable: " + s.id + ": " + wire.Message)
+	return remoteHubUnavailable(s.id, wire.Message)
 }
 
 // mapConnectError mirrors localDaemonDialError for the attach step: a timeout
@@ -389,9 +340,9 @@ func (s *RemoteHubSource) MapAttachError(err error) error {
 // stays raw; every transport-shaped failure names the host so the fleet view
 // and the auto-resume gate can attribute it.
 //
-// A write-side connection failure counts as transport loss, which is what makes
-// io.ErrClosedPipe, os.ErrClosed, net.ErrClosed, and appwire.ErrStreamClosed
-// listed here (round eight). The send path reports them when the stream's write
+// A write-side connection failure counts as transport loss, which is why
+// isTransportLoss lists io.ErrClosedPipe, os.ErrClosed, net.ErrClosed, and
+// appwire.ErrStreamClosed. The send path reports them when the stream's write
 // side is already gone — a partial write onto a connection the peer has torn
 // down, or the first write after this end closed it — and they are deliberately
 // not distinguishable from the read-side failures around it: like io.EOF or
@@ -420,7 +371,7 @@ func (s *RemoteHubSource) transportUnavailable(err error) error {
 	// other terminal classes are deliberately not matched: they name a host that
 	// will never attach and must stay raw so recovery is not retried forever.
 	if errors.Is(err, sshconn.ErrSSHStart) {
-		return appwire.SessionUnavailable("remote hub unavailable: " + s.id + ": " + err.Error())
+		return remoteHubUnavailable(s.id, err.Error())
 	}
 	// A failed hub restart is transient as well: sshconn stays disconnected and
 	// retries the restart on the next Ensure (ErrRestart is not terminal), so it
@@ -428,26 +379,11 @@ func (s *RemoteHubSource) transportUnavailable(err error) error {
 	// recovery/auto-resume gate that saw the raw error could not attribute the
 	// outage, so it maps like the other transient attach failures.
 	if errors.Is(err, sshconn.ErrRestart) {
-		return appwire.SessionUnavailable("remote hub unavailable: " + s.id + ": " + err.Error())
+		return remoteHubUnavailable(s.id, err.Error())
 	}
-	if errors.Is(err, syscall.ECONNREFUSED) ||
-		errors.Is(err, syscall.ECONNRESET) ||
-		errors.Is(err, syscall.EPIPE) ||
-		errors.Is(err, io.ErrClosedPipe) ||
-		errors.Is(err, appwire.ErrStreamClosed) ||
-		errors.Is(err, os.ErrClosed) ||
-		errors.Is(err, net.ErrClosed) ||
-		errors.Is(err, io.EOF) ||
-		errors.Is(err, io.ErrUnexpectedEOF) ||
-		errors.Is(err, context.DeadlineExceeded) {
-		return appwire.SessionUnavailable("remote hub unavailable: " + s.id + ": " + err.Error())
-	}
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Timeout() {
-		return appwire.SessionUnavailable("remote hub unavailable: " + s.id + ": " + err.Error())
-	}
-	if remoteHubTransportText(strings.ToLower(err.Error())) {
-		return appwire.SessionUnavailable("remote hub unavailable: " + s.id + ": " + err.Error())
+	if isTransportLoss(err) ||
+		remoteHubTransportText(strings.ToLower(err.Error())) {
+		return remoteHubUnavailable(s.id, err.Error())
 	}
 	return err
 }
@@ -459,19 +395,16 @@ func (s *RemoteHubSource) transportUnavailable(err error) error {
 // reclassified as host unavailability.
 func remoteHubTransportText(lower string) bool {
 	switch {
-	case containsWord(lower, "eof"),
+	case isTransportLossText(lower),
+		containsWord(lower, "eof"),
 		strings.Contains(lower, "connection refused"),
-		strings.Contains(lower, "connection reset"),
-		strings.Contains(lower, "broken pipe"),
 		strings.Contains(lower, "closed pipe"),
 		// os.ErrClosed's text: the descriptor this end writes to is gone, the
 		// same class of failure as net.ErrClosed's "use of closed network
 		// connection" below. transportUnavailable checks errors.Is(err,
 		// os.ErrClosed) first, so this text fallback covers only the shapes a
 		// transport library wraps without exposing the sentinel.
-		strings.Contains(lower, "file already closed"),
-		strings.Contains(lower, "use of closed network connection"),
-		strings.Contains(lower, "i/o timeout"):
+		strings.Contains(lower, "file already closed"):
 		return true
 	default:
 		return false
@@ -1054,7 +987,7 @@ func validateRemotePageCursor(next string, candidates []appitempaging.Transcript
 //     rotate or re-cache the retained window under a live controller cursor;
 //   - the page must make strict backward progress past the boundary the remote was
 //     asked to continue from. Items the remote re-reports at or above that boundary
-//     are dropped rather than re-served, exactly as localDaemonCandidatesBefore
+//     are dropped rather than re-served, exactly as the local engine
 //     drops them, and a page with nothing older is stale: a repeated page would
 //     otherwise be cached and mint a controller cursor that never advances.
 func validateRemoteContinuationPage(
@@ -1081,7 +1014,7 @@ func validateRemoteContinuationPage(
 	}
 	older := make([]appitempaging.TranscriptItemCandidate, 0, len(candidates))
 	for _, candidate := range candidates {
-		if remotePositionCompare(candidate.Position, before) >= 0 {
+		if appitempaging.ComparePosition(candidate.Position, before) >= 0 {
 			continue
 		}
 		older = append(older, candidate)
@@ -1142,7 +1075,7 @@ func remoteContiguousPrefix(state remoteItemPagingState) []appitempaging.Transcr
 	upper := state.spans[index].upper
 	prefix := len(state.candidates)
 	for position, candidate := range state.candidates {
-		if remotePositionCompare(candidate.Position, upper) > 0 {
+		if appitempaging.ComparePosition(candidate.Position, upper) > 0 {
 			prefix = position
 			break
 		}
@@ -1154,7 +1087,7 @@ func remoteContiguousPrefix(state remoteItemPagingState) []appitempaging.Transcr
 // -1 when no recorded run does.
 func remoteSpanContaining(spans []remoteItemSpan, position appwire.ThreadItemPosition) int {
 	for index, span := range spans {
-		if remotePositionCompare(span.lower, position) <= 0 && remotePositionCompare(position, span.upper) <= 0 {
+		if appitempaging.ComparePosition(span.lower, position) <= 0 && appitempaging.ComparePosition(position, span.upper) <= 0 {
 			return index
 		}
 	}
@@ -1163,7 +1096,7 @@ func remoteSpanContaining(spans []remoteItemSpan, position appwire.ThreadItemPos
 
 // remoteSpanContains reports whether an observed run covers position.
 func remoteSpanContains(span remoteItemSpan, position appwire.ThreadItemPosition) bool {
-	return remotePositionCompare(span.lower, position) <= 0 && remotePositionCompare(position, span.upper) <= 0
+	return appitempaging.ComparePosition(span.lower, position) <= 0 && appitempaging.ComparePosition(position, span.upper) <= 0
 }
 
 // remoteCandidateAt returns the window's candidate at position, if it holds one.
@@ -1186,27 +1119,6 @@ func remoteItemPageHead(candidates []appitempaging.TranscriptItemCandidate) (app
 	return candidates[len(candidates)-1].Position, true
 }
 
-// remotePositionCompare orders two positions the way the paging package does:
-// negative when a is older, zero when equal, positive when newer.
-func remotePositionCompare(a, b appwire.ThreadItemPosition) int {
-	return cmp.Or(cmp.Compare(a.Entry, b.Entry), cmp.Compare(a.Item, b.Item), cmp.Compare(a.Sub, b.Sub))
-}
-
-// remoteCandidatesBefore keeps only the candidates strictly older than before,
-// for clipping a remote before page to the boundary it was fetched with.
-func remoteCandidatesBefore(candidates []appitempaging.TranscriptItemCandidate, before appwire.ThreadItemPosition) []appitempaging.TranscriptItemCandidate {
-	// Allocate rather than reuse the backing array: the caller still reads the
-	// original page for the contradiction check, and aliasing the two would let
-	// the clip overwrite it.
-	older := make([]appitempaging.TranscriptItemCandidate, 0, len(candidates))
-	for _, candidate := range candidates {
-		if remotePositionCompare(candidate.Position, before) < 0 {
-			older = append(older, candidate)
-		}
-	}
-	return older
-}
-
 // remoteItemPageIdentity chooses the controller-owned identity for a fresh
 // remote page. The incarnation is reused while the page's newest position is
 // not older than the retained one AND the page does not contradict the retained
@@ -1226,7 +1138,7 @@ func (s *RemoteHubSource) remoteItemPageIdentity(key string, candidates []appite
 	if !hasHead {
 		return s.mintRemoteItemIdentity(key), appwire.ThreadItemPosition{}, false
 	}
-	if state, ok := s.itemPaging.peek(key); ok && state.hasHead && remotePositionCompare(head, state.head) >= 0 {
+	if state, ok := s.itemPaging.peek(key); ok && state.hasHead && appitempaging.ComparePosition(head, state.head) >= 0 {
 		if _, compatible := remoteMergeCandidates(state.candidates, candidates); compatible {
 			return state.identity, head, true
 		}
@@ -1280,7 +1192,7 @@ func remoteMergeCandidates(retained, observed []appitempaging.TranscriptItemCand
 	if !overlap {
 		retainedNewest := retained[len(retained)-1]
 		observedOldest := observed[0]
-		if remotePositionCompare(retainedNewest.Position, observedOldest.Position) < 0 &&
+		if appitempaging.ComparePosition(retainedNewest.Position, observedOldest.Position) < 0 &&
 			remoteForwardMergeCutsItems(retainedNewest, observedOldest) {
 			// Either fragment is cut mid-turn: items between the two pages exist and
 			// were never returned, so the union cannot be served soundly.
@@ -1288,7 +1200,7 @@ func remoteMergeCandidates(retained, observed []appitempaging.TranscriptItemCand
 		}
 	}
 	slices.SortFunc(merged, func(a, b appitempaging.TranscriptItemCandidate) int {
-		return remotePositionCompare(a.Position, b.Position)
+		return appitempaging.ComparePosition(a.Position, b.Position)
 	})
 	return merged, true
 }
@@ -1371,7 +1283,7 @@ func remoteItemSpansAfterObserving(
 	merged := make([]remoteItemSpan, 0, len(remaining)+1)
 	inserted := false
 	for _, span := range remaining {
-		if !inserted && remotePositionCompare(frontier.upper, span.lower) < 0 {
+		if !inserted && appitempaging.ComparePosition(frontier.upper, span.lower) < 0 {
 			merged = append(merged, frontier)
 			inserted = true
 		}
@@ -1395,10 +1307,10 @@ func remoteItemSpanJoins(
 		return true
 	}
 	older, newer := run, span
-	if remotePositionCompare(span.upper, run.lower) < 0 {
+	if appitempaging.ComparePosition(span.upper, run.lower) < 0 {
 		older, newer = span, run
 	}
-	if remotePositionCompare(older.upper, newer.lower) >= 0 {
+	if appitempaging.ComparePosition(older.upper, newer.lower) >= 0 {
 		return true
 	}
 	if !remotePositionsAdjacent(older.upper, newer.lower) {
@@ -1411,10 +1323,10 @@ func remoteItemSpanJoins(
 // remoteItemSpanUnion returns the smallest run covering both.
 func remoteItemSpanUnion(left, right remoteItemSpan) remoteItemSpan {
 	lower, upper := left.lower, left.upper
-	if remotePositionCompare(right.lower, lower) < 0 {
+	if appitempaging.ComparePosition(right.lower, lower) < 0 {
 		lower = right.lower
 	}
-	if remotePositionCompare(right.upper, upper) > 0 {
+	if appitempaging.ComparePosition(right.upper, upper) > 0 {
 		upper = right.upper
 	}
 	return remoteItemSpan{lower: lower, upper: upper}
@@ -1672,7 +1584,7 @@ func (s *RemoteHubSource) recordRemoteBeforePage(
 		}
 		return ItemCandidateResult{Identity: s.mintRemoteItemIdentity(key), Exhausted: true, History: history}, nil
 	}
-	older := remoteCandidatesBefore(page, before)
+	older := appitempaging.CandidatesBefore(page, before, len(page))
 	if len(older) == 0 {
 		// Only the boundary item came back. Nothing is served, but a contradiction
 		// on that item is still a rewrite under the retained identity: rotate so
@@ -1914,15 +1826,7 @@ func callerContextEnded(err error) bool {
 // operator reading a hub log can tell a lost response from a caller-side
 // context end.
 func (s *RemoteHubSource) hubAdminMutationOutcomeUnknown(reason string) appwire.WireError {
-	return appwire.WireError{
-		Code:    appwire.CodeInternalError,
-		Message: reason + ": " + s.id,
-		Data: appwire.ErrorData{
-			EvenerErrorInfo:  appwire.ErrorMutationOutcomeUnknown,
-			MutationOutcome:  appwire.MutationOutcomeUnknown,
-			RetryDisposition: appwire.RetryDispositionBlocked,
-		},
-	}
+	return mutationOutcomeUnknown(reason+": "+s.id, "", appwire.RetryDispositionBlocked)
 }
 
 // remoteHubHostSubscription is one host-level notification consumer, e.g. the
@@ -2072,4 +1976,13 @@ func (s *RemoteHubSource) unregisterHostSubscription(sub *remoteHubHostSubscript
 	s.subMu.Lock()
 	delete(s.hostSubs, sub)
 	s.subMu.Unlock()
+}
+
+// HostFacts combines the connection's captured handshake metadata with host
+// platform facts. The connection manager produces it without reinitializing.
+type HostFacts struct {
+	ProtocolVersion string
+	HubVersion      string
+	OS, Arch        string
+	Features        appwire.FeatureSet
 }

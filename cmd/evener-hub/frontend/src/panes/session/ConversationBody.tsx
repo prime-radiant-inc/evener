@@ -1,12 +1,16 @@
 import { configFingerprint, formatQuoteBlock, projectThread, resolveEffectiveConfig } from "@evener/appwire-client";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
-import { paneToURL, refParam } from "../../shell/routing";
+import { ComicConversationBody } from "../../comic/ComicConversationBody";
+import { focusedSessionRef } from "../../shell/focusedSession";
+import { navigate, paneToURL, refParam } from "../../shell/routing";
+import { cadenceStateFor } from "../../shell/sessionStatus";
 import { workspaceStore } from "../../shell/workspace";
-import { connectionStore } from "../../stores/connection";
 import { controlsFor, recoveryFence } from "../../stores/liveControls";
-import { hasQueuedNonSend, ownerRetainedRef, threadsStore, useThreadsStore } from "../../stores/threads";
-import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
+import { ownerRetainedRef } from "../../stores/recoveryFence";
+import { threadsStore, useThreadsStore } from "../../stores/threads";
+import { transcriptDisplayStore, useTranscriptDisplayStore } from "../../stores/transcriptDisplay";
+import { useThreadClaim } from "../../stores/useThreadModel";
 import { Button, Cadence, EmptyState, InlineNotice, type VirtualListHandle, VisuallyHidden } from "../../widgets";
 import { zoomPaneCoversConversation } from "../zoom/cascadeCoverage";
 import { SessionChrome } from "./chrome/SessionChrome";
@@ -14,12 +18,16 @@ import { TopNotesPanel } from "./chrome/TopNotesPanel";
 import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
 import { AskDock, AskDockAnnouncements, useAskDockActivationEpoch, useAskDockPending } from "./composer/askDock";
 import { Composer } from "./composer/Composer";
-import { carryComposerDraft } from "./composer/draft";
-import { useBlockedMutationEntries, usePendingTurnEntries } from "./composer/queue/pendingTurnsStore";
+import {
+  useBlockedMutationEntries,
+  usePendingTurnEntries,
+  useQueueStripMutationIds,
+} from "./composer/queue/pendingTurnsStore";
 import { requestQuoteInsert } from "./composer/quoteInsert";
 import type { ComposerSourceState } from "./composer/sourceState";
-import { cadenceStateForStatus, NOW_TICK_MS, SessionNowContext, useNowTick } from "./liveness";
+import { NOW_TICK_MS, SessionNowContext, useNowTick } from "./liveness";
 import { useMarkSessionSeenOnOpen } from "./markSeen";
+import { NextNeedsYou } from "./NextNeedsYou";
 import { PendingChips } from "./pending/PendingChips";
 import styles from "./session.module.css";
 import { LivenessLine } from "./transcript/flow/LivenessLine";
@@ -37,10 +45,12 @@ import {
   transcriptRowsForProjection,
   transcriptSourceTurnRowIndexesForRows,
 } from "./transcript/TranscriptBody";
-import { SandboxEscalationRail } from "./transcript/tools/sandboxEscalation";
+import { TranscriptDetailControl } from "./transcript/TranscriptDetailControl";
+import { SandboxEscalationOwner, SandboxEscalationRail } from "./transcript/tools/sandboxEscalation";
 import type { TranscriptReadView } from "./transcript/transcriptReadView";
 import { isDormantTranscript } from "./transcript/transcriptVisibility";
 import { useTranscript } from "./transcript/useTranscript";
+import { useConversationIdentity } from "./useConversationIdentity";
 
 // A conversation rendered in a seat. The session pane is one seat; a drilled
 // cascade column is another. The seat supplies what the conversation cannot
@@ -62,6 +72,8 @@ export interface ConversationSeat {
   viewFallbackId: string;
   // Whether the seat's frame is focused: pane focus, or a readable column.
   focused: boolean;
+  // Seat-level policy for mount autofocus, independent of the shared editor.
+  mountAutofocus?: boolean;
   // A resumed conversation continues under a new ref. A pane replaces its
   // route; a cascade column lets its own reconciliation replace the scope in
   // place. The draft always carries to the resumed identity first. The
@@ -116,42 +128,11 @@ export function ConversationBody({
   seat: ConversationSeat;
   render: (parts: ConversationParts) => React.ReactNode;
 }) {
-  const blockedMutations = useBlockedMutationEntries(ref);
-
-  // One ensureThread(ref) claim on mount, one matching releaseThread(ref) on
-  // unmount — the threads store owns hydration, retries and re-subscription
-  // from there; the claim, not this effect, is what the store converges on.
-  useEffect(() => {
-    let started = false;
-    const tryStart = () => {
-      if (started || connectionStore.getState().state !== "ready") return;
-      started = true;
-      threadsStore
-        .getState()
-        .ensureThread(ref)
-        .catch(() => {});
-    };
-    tryStart();
-    const unsubscribe = connectionStore.subscribe(tryStart);
-    return () => {
-      unsubscribe();
-      if (started) threadsStore.getState().releaseThread(ref);
-    };
-  }, [ref]);
+  useThreadClaim(ref);
 
   // Opening a conversation marks its session seen on the hub, so the
   // session's blue dot clears on the phone too.
   useMarkSessionSeenOnOpen(ref);
-
-  const { model, hasOlder, loadOlder, loadingOlder, loadOlderReportingError, olderError, cancelOlder } = useTranscript(
-    ref,
-    seat.readView,
-  );
-  const deletedRef = useThreadsStore((s) => s.deletedRefs.has(ref));
-  const restartPending = useThreadsStore((s) => s.restartBlockingObligations.has(ref));
-  const stopping = useThreadsStore((s) => s.stoppingRefs.has(ref));
-  const mutationStateAuthoritative = useThreadsStore((s) => s.mutationAuthorityRefs.has(ref));
-  const reconciliationFailed = useThreadsStore((s) => s.mutationReconciliationFailures.has(ref));
 
   // Identity follow-up for a store-driven resume: the transcript is already
   // hydrated under the new ref (the driver's refreshThread). The draft
@@ -164,15 +145,75 @@ export function ConversationBody({
   // retained view of `ref` still has to follow: an inactive view reads the
   // surviving entry on its next mount instead of reopening on the superseded
   // identity.
-  const resumedIdentity = useThreadsStore((s) => s.resumedIdentities.get(ref));
-  useEffect(() => {
-    if (resumedIdentity === undefined) return;
-    carryComposerDraft(ref, resumedIdentity);
-    const applied = seat.onResumedIdentity?.(resumedIdentity);
-    if (applied !== false && !otherRetainedViewOf(ref, seat.viewFallbackId)) {
-      threadsStore.getState().clearResumedIdentity(ref);
-    }
-  }, [resumedIdentity, ref, seat]);
+  useConversationIdentity(ref, {
+    replace: (resumedRef) => seat.onResumedIdentity?.(resumedRef) !== false,
+    hasOtherReaders: (sourceRef) => otherRetainedViewOf(sourceRef, seat.viewFallbackId),
+  });
+
+  const presentation = useTranscriptDisplayStore((state) => state.presentation[state.viewport]);
+  const renderParts = (parts: ConversationParts) =>
+    render({
+      ...parts,
+      footer:
+        parts.state !== "live" && seat.sessionMenu ? (
+          <UnavailablePresentationControl />
+        ) : presentation === "comic" && parts.state === "live" ? (
+          <>
+            <ConversationRecoveryNotices sessionRef={ref} />
+            {parts.footer}
+          </>
+        ) : (
+          parts.footer
+        ),
+    });
+  return (
+    <SandboxEscalationOwner key={ref} sessionRef={ref}>
+      {presentation === "comic" ? (
+        <ComicConversationBody ref={ref} seat={seat} render={renderParts} />
+      ) : (
+        <StandardConversationBody ref={ref} seat={seat} render={renderParts} />
+      )}
+    </SandboxEscalationOwner>
+  );
+}
+
+function UnavailablePresentationControl() {
+  const [open, setOpen] = useState(false);
+  const layout = useTranscriptDisplayStore((state) => state.viewport);
+  return (
+    <>
+      <Button variant="quiet" onClick={() => setOpen(true)}>
+        Verbosity
+      </Button>
+      <TranscriptDetailControl
+        open={open}
+        onClose={() => setOpen(false)}
+        layout={layout}
+        onEditHubDefaults={() => {
+          const url = paneToURL("settings", { section: "transcript" });
+          if (url !== null) navigate(url);
+        }}
+      />
+    </>
+  );
+}
+
+function StandardConversationBody({
+  ref,
+  seat,
+  render,
+}: {
+  ref: string;
+  seat: ConversationSeat;
+  render(parts: ConversationParts): React.ReactNode;
+}) {
+  const { model, hasOlder, loadOlder, loadingOlder, loadOlderReportingError, olderError, cancelOlder } = useTranscript(
+    ref,
+    seat.readView,
+  );
+  const deletedRef = useThreadsStore((s) => s.deletedRefs.has(ref));
+  const restartPending = useThreadsStore((s) => s.restartBlockingObligations.has(ref));
+  const mutationStateAuthoritative = useThreadsStore((s) => s.mutationAuthorityRefs.has(ref));
 
   const frameTimes = useThreadsStore((s) => s.frameTimes.get(ref) ?? EMPTY_FRAME_TIMES);
   const now = useNowTick(NOW_TICK_MS);
@@ -180,8 +221,39 @@ export function ConversationBody({
   // transcript's trailing row below (scrollable content, not the footer).
   const askPending = useAskDockPending(ref);
   const askEpoch = useAskDockActivationEpoch(ref);
+  const approvalPending = (model?.pendingEscalations.length ?? 0) > 0;
+  // Editing is an in-progress IME composition, reported by the composer.
+  // Editor focus never hides the floating control: a session open autofocuses
+  // the composer. Draft content alone never hides it either.
+  const [editingState, setEditingState] = useState<{ ref: string; value: boolean }>({ ref, value: false });
+  const editing = editingState.ref === ref && editingState.value;
+  const handleEditingChange = useCallback((value: boolean) => setEditingState({ ref, value }), [ref]);
+  const [overlayHeight, setOverlayHeight] = useState(0);
+  const handleOverlayHeightChange = useCallback(
+    (height: number) => setOverlayHeight((current) => (current === height ? current : Math.max(0, height))),
+    [],
+  );
+  // Only the actual focused conversation participates: a session pane, or a
+  // cascade's active leaf (its keyboard-scroll pane id plus the exact focused
+  // ref). A parent column's broad seat.focused value never grants it.
+  const attentionOwner = useStore(workspaceStore, (state) => {
+    const focusedPane = state.panes.find((item) => item.id === state.focusedPaneId);
+    if (!focusedPane || focusedPane.id !== seat.keyboardScrollPaneId) return false;
+    if (focusedPane.type === "session") return refParam(focusedPane.params) === ref;
+    return focusedSessionRef() === ref;
+  });
+  useEffect(() => {
+    if (!attentionOwner) setOverlayHeight(0);
+  }, [attentionOwner]);
+  const attentionHidden = editing || askPending || approvalPending;
+  // Production panes borrow the shell's shared owner; a bare conversation
+  // fixture outside AppShell has no floating control.
+  const attentionOverlay = attentionOwner ? (
+    <NextNeedsYou sessionRef={ref} viewId={seat.readView?.id ?? seat.viewFallbackId} hidden={attentionHidden} />
+  ) : undefined;
   const pendingEntries = usePendingTurnEntries(ref);
-  const heldSteers = useMemo(() => heldSteerEntries(pendingEntries), [pendingEntries]);
+  const queueStripIds = useQueueStripMutationIds(ref);
+  const heldSteers = useMemo(() => heldSteerEntries(pendingEntries, queueStripIds), [pendingEntries, queueStripIds]);
   // Spec §1's live gate, complete: the read-only status family, plus the two
   // fence marks that can hold a session read-only while its status still
   // reads active/idle.
@@ -193,13 +265,16 @@ export function ConversationBody({
   const heldEpoch = useHeldSteerEpoch(ref, heldSteers, heldSurfaceLive);
   const heldVisible = heldSurfaceLive && heldSteers.length > 0;
   const trailingRow =
-    askPending || heldVisible
+    askPending || heldVisible || overlayHeight > 0
       ? {
           id: "live-edge",
           content: (
             <>
               {askPending && <AskDock ref={ref} paneId={seat.viewFallbackId} />}
               {heldVisible && <HeldSteerStack ref={ref} />}
+              {overlayHeight > 0 && (
+                <div data-testid="transcript-end-clearance" aria-hidden="true" style={{ height: overlayHeight }} />
+              )}
             </>
           ),
         }
@@ -281,22 +356,8 @@ export function ConversationBody({
   );
 
   const recoveryOwnerRef = ownerRetainedRef(model, mutationStateAuthoritative);
-  // Neither face of the fence that Send now drives needs the notice; the
-  // shapes that remain are ones Send cannot drive.
-  const fence = recoveryFence(ref, model, restartPending, {
-    uncertainMessages: blockedMutations.length > 0,
-    stopInFlight: stopping,
-    queuedNonSend: hasQueuedNonSend(ref),
-    mutationStateAuthoritative,
-  });
-  const showRestartNotice =
-    model.status.type === "restartRequired" ||
-    (restartPending && !fence.sendDriven) ||
-    (blockedMutations.length > 0 &&
-      (model.status.type === "notLoaded" || !mutationStateAuthoritative) &&
-      !fence.sendDriven);
 
-  const cadence = <Cadence state={cadenceStateForStatus(model.status.type)} frameTimes={frameTimes} now={now} />;
+  const cadence = <Cadence state={cadenceStateFor(model.status.type)} frameTimes={frameTimes} now={now} />;
 
   const transcriptContent = (
     <div className={styles.transcript} ref={transcriptContainerRef}>
@@ -348,6 +409,8 @@ export function ConversationBody({
             onClick={flow.jumpToBottom}
           />
         }
+        attentionOverlay={attentionOverlay}
+        onOverlayHeightChange={handleOverlayHeightChange}
         listRef={virtualListRef}
         onMeasurementsChange={flow.restoreViewAnchorAfterMeasurement}
         trailingContent={showColdStartSkeleton && <ColdStartSkeleton />}
@@ -364,6 +427,13 @@ export function ConversationBody({
   );
   const transcript = <SessionNowContext.Provider value={now}>{transcriptContent}</SessionNowContext.Provider>;
 
+  const attentionDock =
+    showDormantSurface && attentionOverlay !== undefined ? (
+      <div className={styles.attentionDock} data-testid="attention-dock">
+        {attentionOverlay}
+      </div>
+    ) : null;
+
   const content = (
     <div className={styles.contentColumn}>
       <TopNotesPanel sessionRef={ref} model={model} sourcePaneId={seat.viewFallbackId} />
@@ -371,7 +441,14 @@ export function ConversationBody({
       {/* The held-steer ghosts' ONE live region, same rule as the ask
           dock's: outside the virtual list, live-gated per spec §1. */}
       {heldSurfaceLive && <HeldSteerAnnouncements ref={ref} />}
-      {showDormantSurface ? dormantSurface : transcript}
+      {showDormantSurface ? (
+        <>
+          {dormantSurface}
+          {attentionDock}
+        </>
+      ) : (
+        transcript
+      )}
     </div>
   );
 
@@ -390,13 +467,7 @@ export function ConversationBody({
           retry={model.modelRetry}
           primaryModel={model.model}
         />
-        {showRestartNotice && (
-          <RestartRequiredNotice
-            sessionRef={ref}
-            ownerRef={recoveryOwnerRef}
-            resumeRequired={model.status.type !== "restartRequired" && !recoveryOwnerRef}
-          />
-        )}
+        <ConversationRecoveryNotices sessionRef={ref} />
         {/* Recovery keeps the composer and its menu mounted. Retain the
             fallback only for other local snapshots with no Send surface;
             owner-retained sessions direct recovery to their owner. */}
@@ -408,20 +479,48 @@ export function ConversationBody({
           seat.sessionMenu && (
             <SessionChrome ref={ref} paneId={seat.viewFallbackId} placement="menu" discoverActivity />
           )}
-        {reconciliationFailed && (
-          <InlineNotice live="alert" data-testid="message-recovery-pending">
-            Message recovery has not completed. Sending will resume after recovery succeeds.
-          </InlineNotice>
-        )}
         <PendingChips sessionRef={ref} />
         {seat.composerSource && (
-          <Composer ref={ref} paneId={seat.viewFallbackId} source={seat.composerSource} focused={seat.focused} />
+          <Composer
+            ref={ref}
+            paneId={seat.viewFallbackId}
+            source={seat.composerSource}
+            focused={seat.focused}
+            mountAutofocus={seat.mountAutofocus}
+            onEditingChange={handleEditingChange}
+          />
         )}
       </div>
     </div>
   );
 
   return render({ state: "live", content, footer, cadence });
+}
+
+function ConversationRecoveryNotices({ sessionRef }: { sessionRef: string }) {
+  const model = useThreadsStore((state) => state.threads.get(sessionRef));
+  const restartPending = useThreadsStore((state) => state.restartBlockingObligations.has(sessionRef));
+  const authoritative = useThreadsStore((state) => state.mutationAuthorityRefs.has(sessionRef));
+  const reconciliationFailed = useThreadsStore((state) => state.mutationReconciliationFailures.has(sessionRef));
+  const blocked = useBlockedMutationEntries(sessionRef);
+  if (!model) return null;
+  // Send recovers ordinary stopped sessions. Only version mismatch and owner-retained
+  // uncertainty need a separate explanation in either presentation.
+  const ownerRef = ownerRetainedRef(model, authoritative);
+  const fence = recoveryFence(model, restartPending, { uncertainMessages: blocked.length > 0 });
+  const showRestartNotice =
+    model.status.type === "restartRequired" ||
+    (ownerRef !== undefined && (restartPending || blocked.length > 0) && !fence.sendDriven);
+  return (
+    <>
+      {showRestartNotice && <RestartRequiredNotice sessionRef={sessionRef} ownerRef={ownerRef} />}
+      {reconciliationFailed && (
+        <InlineNotice live="alert" data-testid="message-recovery-pending">
+          Message recovery has not completed. Sending will resume after recovery succeeds.
+        </InlineNotice>
+      )}
+    </>
+  );
 }
 
 const EMPTY_FRAME_TIMES: number[] = [];
@@ -453,25 +552,13 @@ const DEGRADED_VERSION_EMPTY_HINT =
 // via the useToasts() singleton; the resume the Send-resumes face drives
 // keeps no inline sequence of its own — the store owns the one resume
 // sequence.
-function RestartRequiredNotice({
-  sessionRef,
-  resumeRequired = false,
-  ownerRef,
-}: {
-  sessionRef: string;
-  resumeRequired?: boolean;
-  ownerRef?: string;
-}) {
+function RestartRequiredNotice({ sessionRef, ownerRef }: { sessionRef: string; ownerRef?: string }) {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const refresh = async () => {
     setRefreshing(true);
     setError(null);
     try {
-      if (resumeRequired) {
-        await threadsStore.getState().resumeSession(sessionRef);
-        return;
-      }
       await threadsStore.getState().refreshThread(sessionRef);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -480,19 +567,14 @@ function RestartRequiredNotice({
     }
   };
   return (
-    <div
-      role="alert"
-      data-reason={ownerRef ? "owner-retained" : resumeRequired ? "resume-required" : "version-mismatch"}
-    >
+    <div role="alert" data-reason={ownerRef ? "owner-retained" : "version-mismatch"}>
       {ownerRef
         ? "This session is retained by its owning session. Its uncertain messages cannot be checked here until the owner releases it."
-        : resumeRequired
-          ? "Resume this session before continuing. Any uncertain messages will be checked before sending."
-          : DEGRADED_VERSION_NOTICE}
+        : DEGRADED_VERSION_NOTICE}
       {ownerRef && <a href={paneToURL("session", { ref: ownerRef }) ?? undefined}>Open owning session</a>}
-      {(resumeRequired || ownerRef) && (
+      {ownerRef && (
         <Button disabled={refreshing} onClick={() => void refresh()}>
-          {resumeRequired ? "Resume session" : "Refresh session"}
+          Refresh session
         </Button>
       )}
       {error && <span>{error}</span>}

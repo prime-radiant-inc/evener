@@ -149,7 +149,7 @@ func TestTaskAggregateMalformedPersistedStoreMatchesLiveAndColdUnknown(t *testin
 	if err := os.WriteFile(tasksPath, []byte("{malformed task JSON"), 0o644); err != nil {
 		t.Fatalf("write malformed task store: %v", err)
 	}
-	sess, err = agent.RestoreSessionFromMeta(client, profile, environment, meta, stateDir)
+	sess, err = agent.RestoreSessionFromMetaWithConfig(client, profile, environment, meta, agent.RestoreSessionConfig{StateDir: stateDir})
 	if err != nil {
 		t.Fatalf("restore session with malformed task store: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestTaskAggregateMalformedPersistedStoreMatchesLiveAndColdUnknown(t *testin
 	// present zero aggregate.
 	live := server.NewServer(server.ServerConfig{})
 	live.SetAppIdentity("local", sess.ID())
-	live.SetStatus(server.StatusInfo{SessionID: sess.ID(), State: "idle", Model: sess.Profile().Model(), Profile: sess.Profile().ID(), WorkingDir: workDir})
+	seedDaemonStatus(live, server.StatusInfo{SessionID: sess.ID(), State: "idle", Model: sess.Profile().Model(), Profile: sess.Profile().ID(), WorkingDir: workDir})
 	live.SetThreadEnvelopeSource(sessionTaskEnvelopeSource{sess: sess})
 	live.RefreshThreadEnvelope()
 	conn := live.AppServer().NewConnection("test")
@@ -173,10 +173,7 @@ func TestTaskAggregateMalformedPersistedStoreMatchesLiveAndColdUnknown(t *testin
 		t.Fatalf("live thread/read result=%T", response.Response.Result)
 	}
 
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatalf("rebuild past index: %v", err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	coldRead, found, err := pastThreadForRead(context.Background(), hubcore.WebConfig{Past: past}, appwire.ThreadReadParams{Ref: "local:" + sess.ID()})
 	if err != nil || !found {
 		t.Fatalf("cold thread/read: found=%v err=%v", found, err)

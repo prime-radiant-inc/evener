@@ -420,9 +420,9 @@ func TestServerAppWireThreadClearJournalKeepsOneRecordPerRef(t *testing.T) {
 	}
 
 	srv.mu.RLock()
-	_, oldHeld := srv.clearRecords["clear-1"]
-	newRecord, newHeld := srv.clearRecords["clear-2"]
-	total := len(srv.clearRecords)
+	_, oldHeld := srv.clearJournal.records["clear-1"]
+	newRecord, newHeld := srv.clearJournal.records["clear-2"]
+	total := len(srv.clearJournal.records)
 	srv.mu.RUnlock()
 	if oldHeld {
 		t.Fatal("superseded clear record survived a newer clear of the same ref")
@@ -526,7 +526,7 @@ func TestServerAppWireThreadClearFailureReleasesGateAndReservation(t *testing.T)
 	requireMutationErrorData(t, err, "clear-fails", appwire.MutationOutcomeNotAccepted)
 
 	srv.mu.RLock()
-	_, held := srv.clearRecords["clear-fails"]
+	_, held := srv.clearJournal.records["clear-fails"]
 	srv.mu.RUnlock()
 	if held {
 		t.Fatal("failed clear left its reservation in clearRecords")
@@ -554,12 +554,16 @@ func TestServerAppWireThreadClearRestoresReservationWhenRollbackPersistFails(t *
 	stateDir := t.TempDir()
 	srv := NewServer(ServerConfig{StateDir: stateDir})
 	srv.SetAppIdentity("local", "old")
-	// Occupying the journal's temp path with a directory makes the rollback
-	// persist fail without any production fault seam. The callback installs
-	// the fault after the reservation has already been persisted.
-	journalTmp := threadClearJournalPath(stateDir) + ".tmp"
+	// Replacing the journal file with a directory makes the rollback persist
+	// fail without any production fault seam (a rename cannot replace a
+	// directory). The callback installs the fault after the reservation has
+	// already been persisted.
+	journalPath := threadClearJournalPath(stateDir)
 	srv.SetClearFunc(func(context.Context, appwire.ThreadClearParams) error {
-		if err := os.Mkdir(journalTmp, 0o700); err != nil {
+		if err := os.Remove(journalPath); err != nil {
+			t.Fatalf("remove journal: %v", err)
+		}
+		if err := os.Mkdir(journalPath, 0o700); err != nil {
 			t.Fatalf("install journal write fault: %v", err)
 		}
 		return errors.New("replacement provisioning failed")
@@ -571,13 +575,13 @@ func TestServerAppWireThreadClearRestoresReservationWhenRollbackPersistFails(t *
 	requireMutationErrorData(t, err, "clear-wedged", appwire.MutationOutcomeUnknown)
 
 	srv.mu.RLock()
-	record, held := srv.clearRecords["clear-wedged"]
+	record, held := srv.clearJournal.records["clear-wedged"]
 	srv.mu.RUnlock()
 	if !held || record.State != threadClearReserved {
 		t.Fatalf("clearRecords after unpersistable rollback = (%#v, %t), want the reserved record restored", record, held)
 	}
 
-	if err := os.Remove(journalTmp); err != nil {
+	if err := os.Remove(journalPath); err != nil {
 		t.Fatalf("clear journal write fault: %v", err)
 	}
 	setReplacingClearFunc(srv, "new")

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/llm"
 )
 
@@ -19,7 +20,7 @@ func newDisposeCloseTestSession(t *testing.T) *Session {
 	c.Register(&fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("done") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
 		},
 	})
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})

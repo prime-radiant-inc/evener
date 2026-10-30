@@ -1,7 +1,7 @@
 import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeAll, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { useStore } from "zustand";
 import { MotionProvider } from "../../motion";
 import { SessionChrome } from "../../panes/session/chrome/SessionChrome";
@@ -14,13 +14,14 @@ import type { SessionZoomParams } from "../../panes/zoom/intent";
 import Zoom from "../../panes/zoom/Zoom";
 import "../../panes/zoom";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { sessionActivitySnapshot } from "../../stores/sessionActivity";
 import {
   activityClient,
   activityContext,
   activityDelegate,
   activitySummary,
+  activityWatch,
 } from "../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
@@ -71,11 +72,72 @@ const mount = (mobile = false) =>
   );
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   resetDisclosureStoreForTests();
   resetWorkspaceStoreForTests();
   resetActivitySidebarStoreForTests();
-  connectionStore.setState({ client: null, state: "idle" });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
+});
+
+test("one visible-sidebar clock advances activity rows and expanded watch details without new reads", async () => {
+  const now = Date.parse("2026-10-05T00:00:00Z");
+  const client = activityClient();
+  client.on("evener/thread/watches/list", ({ ref: requestedRef, scope }) => ({
+    context: activityContext(requestedRef),
+    scope: scope ?? "session",
+    watches: [
+      activityWatch({
+        createdAt: "2026-10-04T23:55:00Z",
+        deliveries: 1,
+        deliveryTimes: ["2026-10-04T23:55:00Z"],
+        cadence: [{ kind: "every", seconds: 300 }],
+      }),
+    ],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  installFocusedScope(ref);
+  vi.useFakeTimers({ now, toFake: ["Date"] });
+  const intervals = vi.spyOn(globalThis, "setInterval");
+  activitySidebarStore.getState().openWith("watches");
+  const mounted = mount();
+  const watch = await screen.findByText("watch_raw");
+  const summary = watch.closest("summary");
+  if (!summary) throw new Error("Watch summary missing");
+  act(() => fireEvent.click(summary));
+  await screen.findByTestId("watch-facts");
+  const time = summary.querySelector("time");
+  expect(time?.dateTime).toBe("2026-10-04T23:55:00Z");
+  const beforeTime = time?.textContent;
+  const beforeFacts = screen.getByTestId("watch-facts").textContent;
+  const readsBeforeTick = client.calls.length;
+  act(() => {
+    vi.setSystemTime(now + 60_000);
+    const tick = intervals.mock.calls.find(([, delay]) => delay === 30_000)?.[0];
+    if (typeof tick === "function") Function.prototype.call.call(tick, undefined);
+  });
+  expect(time?.dateTime).toBe("2026-10-04T23:55:00Z");
+  expect(time?.textContent).not.toBe(beforeTime);
+  expect(screen.getByTestId("watch-facts").textContent).not.toBe(beforeFacts);
+  expect(client.calls.length).toBe(readsBeforeTick);
+  expect(intervals.mock.calls.filter(([, delay]) => delay === 30_000)).toHaveLength(1);
+  act(() => activitySidebarStore.getState().setTab("agents"));
+  await screen.findByRole("button", { name: /inspect/ });
+  const readsBeforeClose = client.calls.filter((call) => call.method !== "thread/unsubscribe").length;
+  expect(intervals.mock.calls.filter(([, delay]) => delay === 30_000)).toHaveLength(1);
+  const clears = vi.spyOn(globalThis, "clearInterval");
+  const clockCall = intervals.mock.calls.findIndex(([, delay]) => delay === 30_000);
+  const activeClockID = intervals.mock.results[clockCall]?.value;
+  act(() => mounted.unmount());
+  expect(screen.queryByTestId("activity-sidebar")).toBeNull();
+  expect(clears.mock.calls.flat()).toContain(activeClockID);
+  act(() => {
+    vi.setSystemTime(now + 30_000);
+    const tick = intervals.mock.calls.find(([, delay]) => delay === 30_000)?.[0];
+    if (typeof tick === "function") Function.prototype.call.call(tick, undefined);
+  });
+  expect(client.calls.filter((call) => call.method !== "thread/unsubscribe").length).toBe(readsBeforeClose);
 });
 
 test("closed sidebar owns no read and an open tab observes only its own collection", async () => {

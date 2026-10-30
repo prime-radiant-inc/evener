@@ -13,6 +13,7 @@
 import type { ThreadModel } from "@evener/appwire-client";
 import { useMemo, useState } from "react";
 import { useStore } from "zustand";
+import { attentionEntryOwnsReader } from "../../shell/attentionHistory";
 import { conversationPaneLifetime } from "../../shell/paneLifetime";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { navigate, paneToURL, refParam } from "../../shell/routing";
@@ -22,6 +23,7 @@ import { useIsMobile } from "../../shell/useIsMobile";
 import { workspaceStore } from "../../shell/workspace";
 import { useNavigationStore } from "../../stores/navigation/store";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
+import { useTranscriptDisplayStore } from "../../stores/transcriptDisplay";
 import { Button, EmptyState, InlineNotice, Loader, PaneScaffold } from "../../widgets";
 import { ConversationBody, type ConversationSeat } from "./ConversationBody";
 import { RepoLocation } from "./composer/RepoLocation";
@@ -66,6 +68,7 @@ function SessionForceStopRecovery({ sessionRef }: { sessionRef: string }) {
 export default function Session({ params, paneId, focused: paneFocused }: PaneProps<SessionPaneParams>) {
   const { ref } = params;
   const isMobile = useIsMobile();
+  const presentation = useTranscriptDisplayStore((state) => state.presentation[state.viewport]);
   const pane = useStore(workspaceStore, (state) =>
     state.panes.find((record) => record.id === paneId && record.type === "session" && refParam(record.params) === ref),
   );
@@ -125,6 +128,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
           ),
       viewFallbackId: paneId,
       focused: paneFocused,
+      mountAutofocus: !attentionEntryOwnsReader(paneId, ref),
       // A resumed conversation replaces this pane's route so the workspace
       // opens the resumed session rather than leaving a stale identity.
       onResumedIdentity: (resumedRef) => {
@@ -154,6 +158,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
               focused={paneFocused}
               scaffoldMarker={`session:${ref}`}
               title={title}
+              footer={footer}
               edgeFooter={edgeFooter}
             >
               <EmptyState
@@ -176,6 +181,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
               focused={paneFocused}
               scaffoldMarker={`session:${ref}`}
               title={title}
+              footer={footer}
               edgeFooter={edgeFooter}
             >
               <div className={styles.loading}>
@@ -196,9 +202,10 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
           <PaneScaffold
             paneId={paneId}
             focused={paneFocused}
-            focusSelector='[data-composer] [role="textbox"]'
+            focusSelector='[data-composer] [role="textbox"], [data-comic-composer] [role="textbox"]'
             scaffoldMarker={`session:${ref}`}
             title={title}
+            bodyScroll={presentation !== "comic"}
             cadence={cadence}
             footer={footer}
             edgeFooter={edgeFooter}

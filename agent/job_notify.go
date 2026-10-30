@@ -82,7 +82,7 @@ func jobNotificationFromRecord(rec *jobstore.JobRecord) jobNotification {
 // jobFinishedEventIdentity stamps a job.notification watch's default (thin)
 // jobNotification with the concrete completed job's identity, read straight
 // off the triggering EventJobFinished payload rather than a store record — a
-// self/parent-target watch fires under jm.mu (job_watch.go's onSessionEvent),
+// self/parent-target watch fires under jm.mu (onSessionEvent),
 // where a jobNotificationFromRecord-style store read would deadlock against
 // jm.liveJobRecords. jobs.go's emitJobFinished builds that payload from the
 // same job record jobNotificationFromRecord reads at terminal-flush time and
@@ -176,8 +176,8 @@ func notificationTranscriptRef(n jobNotification) string {
 // attribute value, close the opening tag early, terminate the block via a
 // literal </job-notification>, or forge a second block. & is escaped first so
 // the other entities are not themselves escaped a second time.
-// NotificationCard's decodeEntities (cmd/evener-hub/frontend) is the paired
-// decoder.
+// decodeNotificationAttributeEntities in the shared TypeScript parser is the
+// paired decoder.
 func escapeNotificationText(s string) string {
 	s = strings.ToValidUTF8(s, "\uFFFD")
 	s = strings.ReplaceAll(s, "&", "&amp;")
@@ -188,15 +188,13 @@ func escapeNotificationText(s string) string {
 }
 
 // escapeNotificationBody makes text safe to interpolate into the body of a
-// <job-notification> wrapper, escaping only the characters that could
-// prematurely terminate the block (a literal </job-notification> substring).
-// Invalid UTF-8 is normalized to U+FFFD via strings.ToValidUTF8. Unlike
-// escapeNotificationText (used for attribute values), this function does NOT
-// escape & > or " because body text is not inside a quoted attribute wrapper.
-// The only structural hazard is a literal < which could forge a new tag or
-// prematurely close </job-notification>.
+// notification wrapper. Escape & first to preserve literal entity text, then
+// < to prevent forged tags. The shared TypeScript decodeNotificationEntities
+// decodes exactly those two entities once. Quotes and > stay literal because
+// body text is not inside a quoted attribute. Invalid UTF-8 becomes U+FFFD.
 func escapeNotificationBody(s string) string {
 	s = strings.ToValidUTF8(s, "\uFFFD")
+	s = strings.ReplaceAll(s, "&", "&amp;")
 	s = strings.ReplaceAll(s, "<", "&lt;")
 	return s
 }

@@ -30,44 +30,84 @@ func managerReadDefinition(def llm.ToolDefinition, ordinary bool) llm.ToolDefini
 	}
 	hub := map[string]any{"type": "object", "additionalProperties": false}
 	if def.Name == "job_list" {
-		hub["properties"] = map[string]any{
-			"mode": map[string]any{"type": "string", "enum": []string{"discovery", "tasks", "activity"}},
-			"ref":  map[string]any{"type": "string"}, "resource": map[string]any{"type": "string", "enum": []string{"summary", "delegates", "jobs", "watches"}},
-			"scope": map[string]any{"type": "string"}, "offset": map[string]any{"type": "integer"}, "snapshot": map[string]any{"type": "string"},
-			"cursor":           map[string]any{"type": "string"},
-			"limit":            map[string]any{"type": "integer"},
-			"sortKey":          map[string]any{"type": "string"},
-			"sortDirection":    map[string]any{"type": "string"},
-			"searchTerm":       map[string]any{"type": "string"},
-			"statuses":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			"sourceIds":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			"includeSubagents": map[string]any{"type": "boolean"},
-			"statusOnly":       map[string]any{"type": "boolean"},
-		}
-		hub["required"] = []string{"mode"}
+		hub = map[string]any{"type": "object", "anyOf": []any{
+			map[string]any{"type": "object", "additionalProperties": false, "required": []string{"mode"}, "properties": map[string]any{
+				"mode":             map[string]any{"type": "string", "enum": []string{"discovery"}},
+				"cursor":           map[string]any{"type": "string"},
+				"limit":            map[string]any{"type": "integer"},
+				"sortKey":          map[string]any{"type": "string"},
+				"sortDirection":    map[string]any{"type": "string"},
+				"searchTerm":       map[string]any{"type": "string"},
+				"statuses":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				"sourceIds":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				"includeSubagents": map[string]any{"type": "boolean"},
+				"statusOnly":       map[string]any{"type": "boolean"},
+			}},
+			map[string]any{"type": "object", "additionalProperties": false, "required": []string{"mode", "ref"}, "properties": map[string]any{
+				"mode":     map[string]any{"type": "string", "enum": []string{"tasks"}},
+				"ref":      map[string]any{"type": "string"},
+				"offset":   map[string]any{"type": "integer"},
+				"limit":    map[string]any{"type": "integer"},
+				"snapshot": map[string]any{"type": "string"},
+			}},
+			map[string]any{"type": "object", "additionalProperties": false, "required": []string{"mode", "ref", "resource"}, "properties": map[string]any{
+				"mode":     map[string]any{"type": "string", "enum": []string{"activity"}},
+				"ref":      map[string]any{"type": "string"},
+				"resource": map[string]any{"type": "string", "enum": []string{"summary", "delegates", "jobs", "watches"}},
+				"scope":    map[string]any{"type": "string"},
+				"cursor":   map[string]any{"type": "string"},
+				"limit":    map[string]any{"type": "integer"},
+			}},
+		}}
 		def.Description += " Manager hub discovery lists source-qualified sessions and sources, including empty hosts. Set hub.mode to discovery. Do not combine hub with ordinary job filters."
 	} else if def.Name == "model_list" {
 		hub["properties"] = map[string]any{"host": map[string]any{"type": "string"}, "cwd": map[string]any{"type": "string"}, "refresh": map[string]any{"type": "boolean"}}
 		hub["required"] = []string{"host"}
 		def.Description += " Manager hub models lists the selected host's available models and diagnostics. refresh waits for a fresh catalog."
 	} else {
-		hub["properties"] = map[string]any{"ref": map[string]any{"type": "string"}, "jobId": map[string]any{"type": "string"}, "cursor": map[string]any{"type": "string"}, "itemLimit": map[string]any{"type": "integer"}, "maxBytes": map[string]any{"type": "integer"}, "beforeBytes": map[string]any{"type": "integer"}}
-		hub["required"] = []string{"ref"}
+		if def.Name == "read_transcript" {
+			// The decoder treats these explicit zero values like omitted fields.
+			// Keep those calls valid without allowing nonzero cross-branch bounds.
+			hub = map[string]any{"type": "object", "anyOf": []any{
+				map[string]any{"type": "object", "additionalProperties": false, "required": []string{"ref"}, "properties": map[string]any{
+					"ref":       map[string]any{"type": "string"},
+					"jobId":     map[string]any{"type": "string", "enum": []string{""}},
+					"cursor":    map[string]any{"type": "string"},
+					"itemLimit": map[string]any{"type": "integer"},
+					"maxBytes":  map[string]any{"type": "integer", "enum": []int{0}},
+				}},
+				map[string]any{"type": "object", "additionalProperties": false, "required": []string{"ref", "jobId"}, "properties": map[string]any{
+					"ref":         map[string]any{"type": "string"},
+					"jobId":       map[string]any{"type": "string", "minLength": 1},
+					"maxBytes":    map[string]any{"type": "integer"},
+					"beforeBytes": map[string]any{"type": "integer"},
+					"cursor":      map[string]any{"type": "string", "enum": []string{""}},
+					"itemLimit":   map[string]any{"type": "integer", "enum": []int{0}},
+				}},
+			}}
+		} else {
+			hub["properties"] = map[string]any{"ref": map[string]any{"type": "string"}, "jobId": map[string]any{"type": "string"}}
+			hub["required"] = []string{"ref"}
+		}
 		def.Description += " Manager hub reads a canonical owner ref. jobId selects job metadata in job_status, or bounded job output in read_transcript. read_transcript without jobId pages session history with cursor. Local JSONL, expansion, artifacts, and range arguments do not apply."
 	}
 	props["hub"] = hub
 	required := params["required"]
 	delete(params, "required")
 	if ordinary {
-		ordinaryBranch := map[string]any{"not": map[string]any{"required": []string{"hub"}}}
+		ordinaryBranch := map[string]any{"type": "object", "not": map[string]any{"type": "object", "required": []string{"hub"}}}
 		if required != nil {
 			ordinaryBranch["required"] = required
 		}
-		managerBranch := map[string]any{"required": []string{"hub"}, "properties": map[string]any{"hub": map[string]any{}, "intent": map[string]any{}}, "additionalProperties": false}
+		managerBranch := map[string]any{"type": "object", "required": []string{"hub"}, "properties": map[string]any{"hub": hub, "intent": map[string]any{"type": "string"}}, "additionalProperties": false}
 		params["anyOf"] = []any{managerBranch, ordinaryBranch}
 	} else {
 		params["required"] = []string{"hub"}
 	}
+	// Strictification requires every property, breaking optional arguments and
+	// mutually exclusive ordinary/Manager branches. Keep the validated schema.
+	strictFalse := false
+	def.Strict = &strictFalse
 	def.Parameters = params
 	return def
 }
@@ -168,13 +208,15 @@ func managerDelegateDefinition(def llm.ToolDefinition, ordinary bool) llm.ToolDe
 	params["required"] = []string{"prompt"}
 	if ordinary {
 		params["anyOf"] = []any{
-			map[string]any{"not": map[string]any{"required": []string{"hub"}}},
-			map[string]any{"required": []string{"hub"}, "properties": map[string]any{"hub": map[string]any{}, "prompt": map[string]any{}, "intent": map[string]any{}}, "additionalProperties": false},
+			map[string]any{"type": "object", "not": map[string]any{"type": "object", "required": []string{"hub"}}},
+			map[string]any{"type": "object", "required": []string{"hub"}, "properties": map[string]any{"hub": props["hub"], "prompt": props["prompt"], "intent": map[string]any{"type": "string"}}, "additionalProperties": false},
 		}
 	} else {
 		params["required"] = []string{"prompt", "hub"}
 	}
 	def.Description += " In a Manager session, hub={cwd,model,watch} creates an independent local top-level session, attaches the requested watch and reads its initial state before sending prompt. Creation, watch and input are reported separately. A failed watch leaves the created session empty; an unknown launch is never retried. Hub results are not owned delegate reports. Remote creation is not supported."
+	strictFalse := false
+	def.Strict = &strictFalse
 	def.Parameters = params
 	return def
 }
@@ -398,7 +440,7 @@ func managerSendDefinition(def llm.ToolDefinition, ordinary bool) llm.ToolDefini
 			"expected_instance_id": map[string]any{"type": "string"},
 		},
 		"required": []string{"to", "input_mode", "client_mutation_id", "expected_instance_id"},
-		"oneOf":    []any{map[string]any{"required": []string{"message"}}, map[string]any{"required": []string{"input"}}},
+		"oneOf":    []any{map[string]any{"type": "object", "required": []string{"message"}}, map[string]any{"type": "object", "required": []string{"input"}}},
 	}
 	def.Description += " To send to a session on your Manager hub, set to to its canonical source-qualified ref and supply input_mode, client_mutation_id, expected_instance_id, and exactly one of message or typed input. The result is a human input receipt, not an owned delegate report. A notification does not answer a pending question."
 	if ordinary {
@@ -414,13 +456,15 @@ func managerSendDefinition(def llm.ToolDefinition, ordinary bool) llm.ToolDefini
 		properties["to"] = map[string]any{"type": "string", "description": "An owned delegate_id (`dlg_...`) for ordinary messages, or a canonical source-qualified session ref with input_mode for Manager input."}
 		ordinarySchema["required"] = []string{"to"}
 		ordinarySchema["anyOf"] = []any{
-			map[string]any{"required": []string{"message"}, "not": map[string]any{"anyOf": []any{map[string]any{"required": []string{"input_mode"}}, map[string]any{"required": []string{"input"}}, map[string]any{"required": []string{"client_mutation_id"}}, map[string]any{"required": []string{"expected_instance_id"}}}}},
-			map[string]any{"required": manager["required"], "oneOf": manager["oneOf"], "not": map[string]any{"required": []string{"max_wait_ms"}}},
+			map[string]any{"type": "object", "required": []string{"message"}, "not": map[string]any{"type": "object", "anyOf": []any{map[string]any{"type": "object", "required": []string{"input_mode"}}, map[string]any{"type": "object", "required": []string{"input"}}, map[string]any{"type": "object", "required": []string{"client_mutation_id"}}, map[string]any{"type": "object", "required": []string{"expected_instance_id"}}}}},
+			map[string]any{"type": "object", "required": manager["required"], "oneOf": manager["oneOf"], "not": map[string]any{"type": "object", "required": []string{"max_wait_ms"}}},
 		}
 		def.Parameters = ordinarySchema
 	} else {
 		def.Parameters = manager
 	}
+	strictFalse := false
+	def.Strict = &strictFalse
 	return def
 }
 
@@ -457,9 +501,11 @@ func (s *Session) composeHubInputTools() {
 		return
 	}
 	registered := tool.RegisteredTool{}
+	strictFalse := false
 	registered.Definition = llm.ToolDefinition{
 		Name: control, Description: "Apply one typed human session control on the Manager hub. Returns the existing owner's result and authenticated Manager attribution.",
 		Parameters: managerControlSchema(),
+		Strict:     &strictFalse,
 	}
 	registered.Exec = func(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 		for key := range args {
@@ -604,6 +650,9 @@ func (s *Session) invokeHubRead(ctx context.Context, name string, args map[strin
 			if err := decoder.Decode(&page); err != nil {
 				return nil, appwire.InvalidParams(err.Error())
 			}
+			if _, err := appwire.ParseRef(page.Ref); err != nil {
+				return nil, appwire.InvalidParams(err.Error())
+			}
 			request.Tasks = &page.SessionTasksRequest
 		case "activity":
 			var page struct {
@@ -611,6 +660,9 @@ func (s *Session) invokeHubRead(ctx context.Context, name string, args map[strin
 				appwire.SessionActivityRequest
 			}
 			if err := decoder.Decode(&page); err != nil {
+				return nil, appwire.InvalidParams(err.Error())
+			}
+			if _, err := appwire.ParseRef(page.Ref); err != nil {
 				return nil, appwire.InvalidParams(err.Error())
 			}
 			request.Activity = &page.SessionActivityRequest

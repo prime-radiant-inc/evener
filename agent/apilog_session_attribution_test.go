@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
@@ -507,8 +508,8 @@ func newModelSwitchAttributionSession(t *testing.T, client *llm.Client, stateDir
 // TestModelSwitchLiveListingAttribution pins issue #754: resolveModelSwitchTarget
 // (agent/session_set_model.go), used by SetModel and by both
 // resolveModelSwitchTarget call sites inside selectSubagentModel — the plain
-// explicit-override path (subagent_model_selection.go:117) and the
-// plugin-agent-resolution-failed fallback path (subagent_model_selection.go:74)
+// explicit-override path and the
+// plugin-agent-resolution-failed fallback path
 // — lists the switch target's instance with a bare context.Background() even
 // though every call site runs on an already-existing session with a real
 // s.id in scope. Same unattributed-API-log defect
@@ -792,7 +793,7 @@ func TestPluginAgentModelListingAttributionThroughTurn(t *testing.T) {
 		},
 		steps: []func(req llm.Request) llm.Response{
 			func(llm.Request) llm.Response {
-				return toolCallResponse(llm.ToolCallData{
+				return agenttest.ToolCallResponse(llm.ToolCallData{
 					ID:        "delegate_call",
 					Name:      "delegate",
 					Type:      "function",
@@ -801,7 +802,7 @@ func TestPluginAgentModelListingAttributionThroughTurn(t *testing.T) {
 			},
 			func(req llm.Request) llm.Response {
 				delegateResult = requestToolResult(req, "delegate_call")
-				return toolCallResponse(communicateCall("c1", "done"))
+				return agenttest.ToolCallResponse(communicateCall("c1", "done"))
 			},
 		},
 	}
@@ -837,9 +838,7 @@ func TestPluginAgentModelListingAttributionThroughTurn(t *testing.T) {
 	}
 
 	listingsBefore := listings.Load()
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hand the review to the reviewer agent", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}

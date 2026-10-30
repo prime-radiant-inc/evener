@@ -53,7 +53,6 @@ vi.mock("react-native", async () => ({
 		},
 	},
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 const TOKEN = "s3cret-pairing-token";
 const LINK = `https://magic-kingdom:9180/auth/${TOKEN}`;

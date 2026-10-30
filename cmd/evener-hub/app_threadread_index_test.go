@@ -62,10 +62,7 @@ func seedIndexedPastSession(t *testing.T, entries ...schema.Turn) (hubcore.WebCo
 	if _, err := os.Stat(filepath.Join(transcriptindex.DirFor(path), "CURRENT")); err != nil {
 		t.Fatal("seeded session's sidecar did not build")
 	}
-	index := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := index.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	index := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	entry, ok := index.Find(sessionID)
 	if !ok {
 		t.Fatal("seeded past session not found")

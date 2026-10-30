@@ -27,11 +27,7 @@ func forkOriginalWithTwoChildren() []schema.SessionMeta {
 func TestRootIndexAgreesWithTreeOnForkOriginalWithSeveralChildren(t *testing.T) {
 	metas := forkOriginalWithTwoChildren()
 	roots := NewRootIndex(metas)
-	topLevel := TopLevelSessionIDs(metas)
 	for id, want := range map[string]bool{"01ORIG": false, "01KIDA": true, "01KIDB": true} {
-		if _, got := topLevel[id]; got != want {
-			t.Errorf("TopLevelSessionIDs has %s = %v, want %v", id, got, want)
-		}
 		if got := roots.TopLevel(id); got != want {
 			t.Errorf("TopLevel(%s) = %v, want %v", id, got, want)
 		}

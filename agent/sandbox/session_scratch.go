@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"primeradiant.com/evener/identifier"
 )
 
 var (
@@ -192,7 +194,7 @@ func validSessionScratchBase(candidate, workspaceRoot string) (string, bool) {
 		return "", false
 	}
 	absolute, err := filepath.Abs(candidate)
-	if err != nil || pathWithin(absolute, workspaceRoot) {
+	if err != nil || identifier.PathUnder(absolute, workspaceRoot) {
 		return "", false
 	}
 	info, err := os.Stat(absolute)
@@ -200,7 +202,7 @@ func validSessionScratchBase(candidate, workspaceRoot string) (string, bool) {
 		return "", false
 	}
 	canonical, err := filepath.EvalSymlinks(absolute)
-	if err != nil || pathWithin(canonical, workspaceRoot) {
+	if err != nil || identifier.PathUnder(canonical, workspaceRoot) {
 		return "", false
 	}
 	return canonical, true
@@ -208,19 +210,6 @@ func validSessionScratchBase(candidate, workspaceRoot string) (string, bool) {
 
 func noSessionScratchBaseError(workspaceRoot string) error {
 	return fmt.Errorf("sandbox: no session scratch base outside workspace %q", workspaceRoot)
-}
-
-func pathWithin(path, root string) bool {
-	if strings.TrimSpace(root) == "" {
-		return false
-	}
-	path = filepath.Clean(path)
-	root = filepath.Clean(root)
-	rel, err := filepath.Rel(root, path)
-	if err != nil || filepath.IsAbs(rel) {
-		return false
-	}
-	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
 // Cleanup releases the liveness lease and removes only the exact, prefix-owned

@@ -2,44 +2,11 @@ package launchconfig
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
+
+	"primeradiant.com/evener/gittest"
 )
-
-// runGit runs a git command in dir with a fixed identity, failing the test on
-// error.
-func runGit(t *testing.T, dir string, args ...string) string {
-	t.Helper()
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
-		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
-		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t",
-	)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %v: %v\n%s", args, err, out)
-	}
-	return strings.TrimSpace(string(out))
-}
-
-// newLinkedWorktree builds an origin-less main repo with one commit and a
-// linked worktree, returning their absolute paths.
-func newLinkedWorktree(t *testing.T) (main, wt string) {
-	t.Helper()
-	base := t.TempDir()
-	main = filepath.Join(base, "main")
-	runGit(t, base, "init", "-q", "main")
-	runGit(t, main, "commit", "-q", "--allow-empty", "-m", "init")
-	wt = filepath.Join(base, "wt")
-	runGit(t, main, "worktree", "add", "-q", wt, "-b", "feat")
-	return main, wt
-}
 
 // TestPathsFor_MetaAndLegacyProjectKeyedByStableRoot proves the fix for the
 // hub-side half of
@@ -50,7 +17,7 @@ func newLinkedWorktree(t *testing.T) (main, wt string) {
 // linked worktrees, while Repo/Project config content stays keyed off the
 // active cwd (the checked-out worktree).
 func checkPathsFor_MetaAndLegacyProjectKeyedByStableRoot(t *testing.T) {
-	main, wt := newLinkedWorktree(t)
+	main, wt := gittest.NewLinkedWorktree(t)
 	stateRoot := t.TempDir()
 
 	mainPaths, err := PathsFor(stateRoot, main)
@@ -103,7 +70,7 @@ func TestPathsFor_NonGitSymlinkPreservesOriginalIdentityPath(t *testing.T) {
 // resolved from a linked worktree of the same repo, because trust is TOFU'd
 // against the content hash + stable identity, not the raw cwd.
 func checkResolve_TrustFromMainRootAppliesInLinkedWorktree(t *testing.T) {
-	main, wt := newLinkedWorktree(t)
+	main, wt := gittest.NewLinkedWorktree(t)
 	stateRoot := t.TempDir()
 
 	raw := `skills_dirs = ["sub"]`

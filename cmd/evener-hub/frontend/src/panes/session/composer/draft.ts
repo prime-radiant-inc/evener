@@ -19,6 +19,7 @@
 // canonical skill selections survive a reload next to its text. The v1 key
 // held plain text only; see readComposerDraft for the approved transition.
 import { canonicalSkillNames } from "@evener/appwire-client";
+import { createSecureUUID } from "../../../stores/secureUUID";
 import { patchSelectionText, type SkillEditorValue } from "./skillDocument";
 
 const STORAGE_PREFIX = "evener.composer.draft.v1.";
@@ -31,6 +32,9 @@ const draftRevisions = new Map<string, number>();
 // input items after the ordinary text/attachment items, and a chip change is
 // a draft edit even when the text is byte-identical.
 export interface ComposerDraft extends SkillEditorValue {
+  // Exact identity for this persisted structured snapshot. Older records have
+  // no identity and keep their existing recovery behavior.
+  revisionId?: string;
   // Wall-clock stamp of the last write, so two refs' drafts can be ordered when
   // one is carried to the other (see carryComposerDraft). Absent on records an
   // older build wrote.
@@ -65,6 +69,7 @@ function isStoredComposerDraft(value: unknown): value is ComposerDraft {
     (record.commandNames === undefined ||
       (Array.isArray(record.commandNames) && record.commandNames.every((name) => typeof name === "string"))) &&
     (record.editedAt === undefined || typeof record.editedAt === "number") &&
+    (record.revisionId === undefined || typeof record.revisionId === "string") &&
     (record.mentions === undefined ||
       (Array.isArray(record.mentions) &&
         record.mentions.every(
@@ -88,6 +93,12 @@ function isStoredComposerDraft(value: unknown): value is ComposerDraft {
 // value is never JSON-decoded to guess selections and no slash mention in it
 // is ever inferred as a selection - an old draft is exactly the text it was.
 export function readComposerDraft(ref: string): ComposerDraft {
+  const { revisionId: _revisionId, ...draft } = readComposerDraftSnapshot(ref);
+  return draft;
+}
+
+// Recovery ownership needs content and identity from the same stored snapshot.
+export function readComposerDraftSnapshot(ref: string): ComposerDraft {
   try {
     const structured = localStorage.getItem(composerDraftStorageKey(ref));
     if (structured !== null) {
@@ -107,6 +118,7 @@ export function readComposerDraft(ref: string): ComposerDraft {
           skillNames: canonicalSkillNames(parsed.skillNames),
           ...(parsed.commandNames ? { commandNames: canonicalSkillNames(parsed.commandNames) } : {}),
           ...(parsed.mentions ? { mentions: parsed.mentions } : {}),
+          ...(parsed.revisionId ? { revisionId: parsed.revisionId } : {}),
         };
       }
     }
@@ -154,22 +166,37 @@ export function readDraftEditedAt(ref: string): number {
 // staged next to its own visible `/<name>` reference, so a record with names
 // and no text is not something the composer produces; one that arrives from an
 // older build is normalized on restore rather than trusted here.
-export function writeComposerDraft(ref: string, value: ComposerDraft): void {
+export function writeComposerDraft(ref: string, value: ComposerDraft): string | undefined {
   markDraftEdited(ref);
   try {
     if (isBlankDraft(value)) {
       localStorage.removeItem(composerDraftStorageKey(ref));
       localStorage.removeItem(draftStorageKey(ref));
+      return undefined;
     } else {
       // The one choke point every persisted draft edit goes through, so the stamp
       // is the draft's actual last-write time.
-      localStorage.setItem(composerDraftStorageKey(ref), JSON.stringify({ ...value, editedAt: Date.now() }));
-      localStorage.removeItem(draftStorageKey(ref));
+      const revisionId = createSecureUUID();
+      localStorage.setItem(
+        composerDraftStorageKey(ref),
+        JSON.stringify({ ...value, revisionId, editedAt: Date.now() }),
+      );
+      try {
+        localStorage.removeItem(draftStorageKey(ref));
+      } catch {
+        // The structured snapshot is committed and takes precedence on read.
+      }
+      return revisionId;
     }
   } catch {
     // Best-effort: a full quota or Safari private-mode must never be fatal
     // to the composer itself, only to draft persistence across reloads.
+    return undefined;
   }
+}
+
+export function readComposerDraftRevisionId(ref: string): string | undefined {
+  return readComposerDraftSnapshot(ref).revisionId;
 }
 
 // Explicit atoms follow their visible labels across text edits. Names-only
@@ -220,4 +247,12 @@ export function clearPersistedDraft(ref: string): void {
   } catch {
     // See writeComposerDraft's own comment.
   }
+}
+
+// A recovery continuation may clear only the precise local snapshot its
+// transaction incorporated. A replacement edit writes a new ID first.
+export function clearPersistedDraftIfRevisionMatches(ref: string, revisionId: string): boolean {
+  if (readComposerDraftRevisionId(ref) !== revisionId) return false;
+  clearPersistedDraft(ref);
+  return true;
 }

@@ -74,7 +74,7 @@ func TestManagerCreationReturnsPersistedMutationIdentity(t *testing.T) {
 			if _, err := root.ProcessInput(t.Context(), "create-input", nil); err != nil {
 				t.Fatal(err)
 			}
-			data, err := readTranscriptFull(transcriptPath(root.stateDir, root.ID()), "")
+			data, err := readTranscriptFull(t.Context(), transcriptPath(root.stateDir, root.ID()), "")
 			if err != nil {
 				t.Fatal(err)
 			}

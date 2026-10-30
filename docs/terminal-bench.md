@@ -129,7 +129,7 @@ works for embedding Python in bash over SSH.
 ## Workflow: Iterating on prompts
 
 ### 1. Edit prompt locally
-Edit `agent/prompts/base.md` in the evener repo.
+Edit `agent/prompts/system.md.tmpl` in the evener repo.
 
 ### 2. Build and test locally (quick iteration)
 ```bash

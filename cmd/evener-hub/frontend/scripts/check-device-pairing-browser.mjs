@@ -1,16 +1,16 @@
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
-import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import WebSocket from "ws";
 import jsQR from "jsqr";
+import WebSocket from "ws";
 import { applyViewport, connectOnlyPage, evaluate, navigateTo } from "./browserGuardCdp.mjs";
 import { startBrowserGuard, waitForBrowserReady } from "./browserGuardProcess.mjs";
-import { buildNativePairingCheck } from "./playdateNativeCheck.mjs";
 import { loadPairingModules } from "./pairingModules.mjs";
+import { buildNativePairingCheck } from "./playdateNativeCheck.mjs";
 
 const frontend = fileURLToPath(new URL("..", import.meta.url));
 const endpoint = process.env.EVENER_PAIRING_E2E_URL;
@@ -27,22 +27,31 @@ execFileSync("make", ["-f", "check/Makefile", "build/check/receiver"], {
   },
 });
 const runFile = promisify(execFile);
-const modules = await loadPairingModules();
-const { AppwireClient } = await modules.ssrLoadModule(
-  fileURLToPath(new URL("../../../../appwire-client/typescript/client.ts", import.meta.url)),
-);
-const pairing = await modules.ssrLoadModule(
-  fileURLToPath(new URL("../../../../appwire-client/typescript/pairing.ts", import.meta.url)),
-);
-const guard = await startBrowserGuard({
-  frontend,
-  profilePrefix: "devicepairingguard-",
-  chromeArgs: ["--mute-audio"],
-  viteConfigFile: "scripts/device-pairing.vite.config.mjs",
-});
-const secret = "3a".repeat(32);
+const inheritedGuardCache = process.env.BROWSER_GUARD_VITE_CACHE_DIR;
+let guardCache;
+let modules;
+let guard;
 let page;
 try {
+  // The guard's Vite server is a second dep-cache writer. Give it the caller's
+  // cache when one is set, else a per-run temp directory, so a read-only
+  // checkout does not need .vite-cache.
+  guardCache = inheritedGuardCache || mkdtempSync(path.join(tmpdir(), "evener-pairing-guard-"));
+  if (!inheritedGuardCache) process.env.BROWSER_GUARD_VITE_CACHE_DIR = guardCache;
+  modules = await loadPairingModules();
+  const { AppwireClient } = await modules.ssrLoadModule(
+    fileURLToPath(new URL("../../../../appwire-client/typescript/client.ts", import.meta.url)),
+  );
+  const pairing = await modules.ssrLoadModule(
+    fileURLToPath(new URL("../../../../appwire-client/typescript/pairing.ts", import.meta.url)),
+  );
+  guard = await startBrowserGuard({
+    frontend,
+    profilePrefix: "devicepairingguard-",
+    chromeArgs: ["--mute-audio"],
+    viteConfigFile: "scripts/device-pairing.vite.config.mjs",
+  });
+  const secret = "3a".repeat(32);
   page = await connectOnlyPage(await waitForBrowserReady(guard));
   const { send } = page;
   const wait = async (text) => evaluate(send, `window.devicePairingGuard.waitFor(${JSON.stringify(text)})`);
@@ -57,7 +66,9 @@ try {
   const decodeSound = async () => {
     const samples = await evaluate(send, "window.devicePairingGuard.samples[0]");
     const pcm = Buffer.alloc(samples.length * 2);
-    samples.forEach((v, i) => pcm.writeInt16LE(Math.round(v * 32767), i * 2));
+    samples.forEach((v, i) => {
+      pcm.writeInt16LE(Math.round(v * 32767), i * 2);
+    });
     const fields = execFileSync(native.binary, ["decode-invitation", secret, "00".repeat(8)], {
       input: pcm,
       encoding: "utf8",
@@ -142,18 +153,23 @@ try {
       const rival = pairing.createPairingClaim(invite, new Uint8Array(32).fill(0x3b));
       assert.equal((await claim(rival.publicKey, longClientName)).state, "pending");
       await wait(`Codes match — approve ${rival.comparison}`);
-      const claimFits = await evaluate(send, `(() => {
+      const claimFits = await evaluate(
+        send,
+        `(() => {
         const claim = Array.from(document.querySelectorAll('strong')).find(node => node.textContent === ${JSON.stringify(longClientName)});
         if (!claim) throw new Error('Missing long device label');
         const parent = claim.parentElement.getBoundingClientRect();
         const range = document.createRange();
         range.selectNodeContents(claim);
         return Array.from(range.getClientRects()).every(rect => rect.left >= parent.left && rect.right <= parent.right);
-      })()`);
+      })()`,
+      );
       assert.equal(claimFits, true, "long device label and fingerprint stay visible within the pane");
       // Exercise the rendered destination's layout with a supported long DNS
       // name, then restore the actual invitation before testing approval.
-      const destinationFits = await evaluate(send, `(() => {
+      const destinationFits = await evaluate(
+        send,
+        `(() => {
         const destination = Array.from(document.querySelectorAll('strong')).find(node => node.textContent === 'http://100.64.1.2:9180');
         if (!destination) throw new Error('Missing pairing destination');
         const original = destination.textContent;
@@ -162,15 +178,19 @@ try {
         const fits = Array.from(destination.getClientRects()).every(rect => rect.left >= parent.left && rect.right <= parent.right);
         destination.textContent = original;
         return fits;
-      })()`);
+      })()`,
+      );
       assert.equal(destinationFits, true, "long pairing destination wraps within its pane");
     }
     assert.equal(await evaluate(send, "document.documentElement.scrollWidth<=innerWidth"), true);
     assert.equal(
-      await evaluate(send, `Array.from(document.querySelectorAll('button')).every(button => {
+      await evaluate(
+        send,
+        `Array.from(document.querySelectorAll('button')).every(button => {
         const rect = button.getBoundingClientRect();
         return rect.left >= 0 && rect.right <= innerWidth;
-      })`),
+      })`,
+      ),
       true,
       "pairing controls fit the viewport",
     );
@@ -191,7 +211,7 @@ try {
     });
     assert.ok(opened.startsWith(`100.64.1.2 9180 /rpc ${tailnet ? 1 : 0} 0 `));
     const authenticated = new AppwireClient({
-      url: endpoint.replace(/^http/, "ws") + "/rpc",
+      url: `${endpoint.replace(/^http/, "ws")}/rpc`,
       socketFactory: (url) => new WebSocket(url, { headers: { Authorization: `Bearer ${target.token}` } }),
     });
     try {
@@ -224,14 +244,17 @@ try {
   await wait("Create invitation");
   const phoneOrigin = "https://phone-hub.example.test:9443";
   assert.equal(await evaluate(send, "document.querySelector('input').value"), "http://100.64.1.2:9180");
-  await evaluate(send, `(() => {
+  await evaluate(
+    send,
+    `(() => {
     const address = document.querySelector('input');
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(address, ${JSON.stringify(phoneOrigin)});
     address.dispatchEvent(new Event('input', {bubbles: true}));
     const transport = document.querySelector('select');
     transport.value = 'direct';
     transport.dispatchEvent(new Event('change', {bubbles: true}));
-  })()`);
+  })()`,
+  );
   await click("Create invitation");
   await wait("Device pairing invitation QR code");
   const pixels = await evaluate(send, "window.devicePairingGuard.invitationPixels()");
@@ -269,10 +292,16 @@ try {
     token: "synthetic-pairing-token",
   });
   await wait("Use another Hub address");
-  console.log("PASS edited phone destination -> displayed QR -> real Hub approval survives lost browser acknowledgement and immediate close");
+  console.log(
+    "PASS edited phone destination -> displayed QR -> real Hub approval survives lost browser acknowledgement and immediate close",
+  );
 } finally {
-  page?.close();
-  await guard.cleanup();
-  await modules.close();
-  native.cleanup();
+  try {
+    page?.close();
+    await guard?.cleanup();
+    await modules?.close();
+    native.cleanup();
+  } finally {
+    if (guardCache && !inheritedGuardCache) rmSync(guardCache, { recursive: true, force: true });
+  }
 }

@@ -13,7 +13,11 @@ import (
 func Example() {
 	svc := openai.NewService(openai.DefaultConfig(), nil)
 
-	stateDir := openai.DefaultStateDir()
+	stateDir, err := openai.DefaultStateDir()
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
 	const instanceName = "openai"
 
 	// Inspecting the stored record directly distinguishes "never logged in"

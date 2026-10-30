@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/afero"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
@@ -37,7 +38,7 @@ func (a *executionAdapter) Complete(ctx context.Context, req llm.Request) (llm.R
 		step, a.steps = a.steps[0], a.steps[1:]
 	}
 	a.mu.Unlock()
-	resp, err := communicateResponse(true, "done"), error(nil)
+	resp, err := agenttest.CommunicateResponse(true, "done"), error(nil)
 	if step != nil {
 		resp, err = step(ctx)
 	}

@@ -298,6 +298,71 @@ func newClientMutationRequest(method, id string, payload any) (clientMutationReq
 	}, nil
 }
 
+// clientMutationSpec names what differs between the retry-safe input
+// mutations; acceptClientMutation owns everything they share.
+type clientMutationSpec struct {
+	actor  schema.SessionActor
+	method string
+	id     string
+	// payload is hashed to recognise a retry. Pass a pointer to the params so
+	// the input normalization below is part of what is hashed.
+	payload any
+	// input, when non-nil, is normalized in place before the request is built.
+	input         *[]appwire.InputItem
+	preconditions clientMutationPreconditions
+	// allowDuringInterrupt lets the mutation proceed while a Stop's interrupt
+	// fence is pending; every other mutation is refused until it finalizes.
+	allowDuringInterrupt bool
+}
+
+// acceptClientMutation durably accepts or replays one client-authored input
+// mutation: it holds the retirement lease, normalizes input, journals the
+// request, refuses it under a pending interrupt, and maps a journaled
+// rejection to its wire error. The caller reads lookup.Disposition to choose
+// between its fresh and replay results.
+func (s *Session) acceptClientMutation(spec clientMutationSpec, prepare, effect clientMutationEffect) (clientMutationLookup, error) {
+	release, err := s.beginRetirementMutation("input")
+	if err != nil {
+		return clientMutationLookup{}, err
+	}
+	defer release()
+	if spec.input != nil {
+		input, err := appwire.NormalizeMutationInput(*spec.input)
+		if err != nil {
+			return clientMutationLookup{}, appwire.InvalidParams(err.Error())
+		}
+		*spec.input = input.Items
+	}
+	if err := s.ensureClientMutationStore(); err != nil {
+		return clientMutationLookup{}, err
+	}
+	request, err := newClientMutationRequest(spec.method, spec.id, spec.payload)
+	if err != nil {
+		return clientMutationLookup{}, err
+	}
+	if spec.actor.Kind != "" {
+		if err := validateSessionActor(spec.actor); err != nil {
+			return clientMutationLookup{}, err
+		}
+		request.Actor = spec.actor
+	}
+	request.Preconditions = spec.preconditions
+	lookup, err := s.clientMutations.executeAtomic(request, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
+		if snapshot.InterruptFence != nil && !spec.allowDuringInterrupt {
+			rejectClientMutation(record, appwire.Conflict("turn interrupt is pending"))
+			return nil
+		}
+		return prepare(snapshot, record)
+	}, effect)
+	if err != nil {
+		return clientMutationLookup{}, err
+	}
+	if lookup.Record.OperationState == clientMutationOperationRejected {
+		return clientMutationLookup{}, clientMutationRejectionError(lookup.Record)
+	}
+	return lookup, nil
+}
+
 // AcceptClientMutationStart durably owns a complete start intent before
 // notifying the lifecycle runner. A lost response or refused wake leaves the
 // accepted pending execution in the journal, and an identical retry returns
@@ -310,31 +375,14 @@ func (s *Session) AcceptClientMutationStartAs(params appwire.TurnStartParams, ac
 	if err := validateSessionActor(actor); err != nil {
 		return appwire.TurnStartResponse{}, err
 	}
-	release, err := s.beginRetirementMutation("input")
-	if err != nil {
-		return appwire.TurnStartResponse{}, err
-	}
-	defer release()
-	input, err := appwire.NormalizeMutationInput(params.Input)
-	if err != nil {
-		return appwire.TurnStartResponse{}, appwire.InvalidParams(err.Error())
-	}
-	params.Input = input.Items
-	if err := s.ensureClientMutationStore(); err != nil {
-		return appwire.TurnStartResponse{}, err
-	}
-	request, err := newClientMutationRequest(clientMutationMethodStart, params.ClientMutationID, params)
-	if err != nil {
-		return appwire.TurnStartResponse{}, err
-	}
-	request.Actor = actor
-
 	var response appwire.TurnStartResponse
-	lookup, err := s.clientMutations.executeAtomic(request, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
-		if snapshot.InterruptFence != nil {
-			rejectClientMutation(record, appwire.Conflict("turn interrupt is pending"))
-			return nil
-		}
+	lookup, err := s.acceptClientMutation(clientMutationSpec{
+		actor:   actor,
+		method:  clientMutationMethodStart,
+		id:      params.ClientMutationID,
+		payload: &params,
+		input:   &params.Input,
+	}, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
 		if len(params.Input) == 0 {
 			rejectClientMutation(record, appwire.InvalidParams("input is required"))
 			return nil
@@ -415,9 +463,6 @@ func (s *Session) AcceptClientMutationStartAs(params appwire.TurnStartParams, ac
 	if err != nil {
 		return appwire.TurnStartResponse{}, err
 	}
-	if lookup.Record.OperationState == clientMutationOperationRejected {
-		return appwire.TurnStartResponse{}, clientMutationRejectionError(lookup.Record)
-	}
 	// Only a FRESH application unparks: a replayed accept re-runs no effect
 	// callback, so it releases no QueueHeld, and a Stop that landed after the
 	// original must keep the rail parked.
@@ -425,11 +470,9 @@ func (s *Session) AcceptClientMutationStartAs(params appwire.TurnStartParams, ac
 		s.unparkRootDelegateAttention()
 	}
 	if lookup.Disposition == clientMutationDispositionReplayed {
-		if err := replayClientMutationResult(lookup.Record, &response); err != nil {
+		if err := replayClientMutation(lookup.Record, &response, &response.Receipt); err != nil {
 			return appwire.TurnStartResponse{}, err
 		}
-		response.Receipt.Disposition = appwire.MutationDispositionReplayed
-		response.Receipt.ProjectionState = lookup.Record.ProjectionState
 	}
 	if pending, ok := s.clientMutations.snapshot().PendingExecutions[params.ClientMutationID]; ok && pending.ExecutionState == "accepted" {
 		s.wakeClientMutationStart()
@@ -831,32 +874,19 @@ func (s *Session) ProcessClientMutationStart(ctx context.Context, onRunnable fun
 	// turn and wired cancellation to an id that will never run.
 	//
 	// The claim's own refusal is decided before its commit, so a poisoning can
-	// still land between the two. The announcement is therefore made under the
-	// transcript's write door rather than after a check outside it: a poisoning
-	// append records the poison while holding that door, so the announce is
-	// ordered against every poisoning -- either it is already visible and
-	// nothing is announced, or it lands after the announce and the turn meets
-	// the ordinary mid-run refusal, with the claim handed back below.
-	announceRefusal := s.attachedTranscript().WhileHealthy(func() {
+	// still land between the two; announceClaimedInput orders the announce
+	// against it.
+	if err := s.announceClaimedInput(func() {
 		if onRunnable != nil {
 			onRunnable(claimed.StableTurnID, ClientMutationStartClaimed)
 		}
-	})
-	if announceRefusal != nil {
-		if giveBackErr := s.returnUnrunStartClaim(claimed); giveBackErr != nil {
-			return "", false, errors.Join(errWhileHealthyRefuses(announceRefusal), fmt.Errorf("return claimed input: %w", giveBackErr))
-		}
-		return "", false, errWhileHealthyRefuses(announceRefusal)
+	}, func() error { return s.returnUnrunStartClaim(claimed) }); err != nil {
+		return "", false, err
 	}
 	if s.cfg.testOnly.clientMutationStartAnnounced != nil {
 		s.cfg.testOnly.clientMutationStartAnnounced()
 	}
-	ctx = withQueuedClientMutation(ctx, claimed)
-	// Prepare the claimed input's skill selection at actual consumption: one
-	// atomic group tied to this input's durable identity, all-or-nothing
-	// before any dependent work dispatches.
-	ctx = s.contextWithSelectedSkills(ctx, claimed)
-	result, err := s.ProcessInputKind(ctx, claimed.Text, claimed.Images, EntryUserInput)
+	result, err := s.ProcessInputKind(s.claimedInputContext(ctx, claimed), claimed.Text, claimed.Images, EntryUserInput)
 	// The claim above spends a turn of the budget and the turn loop's gate can
 	// refuse after it, when poisoning lands in between. Give the claim back
 	// rather than leave it spent on a turn that never ran.
@@ -955,7 +985,7 @@ func (s *Session) ProcessClientMutationStart(ctx context.Context, onRunnable fun
 // inside the serialized callback that reads the snapshot. This function is where
 // that constraint is written down rather than left as an anonymous condition.
 //
-// The daemon's own answer (server/appwire_runtime.go's appStatus) is this same
+// The daemon's own answer (server/appwire_thread_projection.go's appStatus) is this same
 // predicate projected onto what the daemon can see. They are deliberately the
 // same shape: the status the wire publishes, the capabilities published beside
 // it, and the precondition that decides whether Stop lands must not be able to
@@ -1138,8 +1168,8 @@ func (s *Session) InterruptClientMutation(
 	s.clientMutations.clearInterruptCallbackCompleted(params.ClientMutationID)
 	s.steeringMarked(recordedIDs)
 	if returnedClaim {
-		// The durable queue grew a claimed-but-unrun message back. QueueDepth,
-		// QueuePreview and WireState read the process-local copy, so without this
+		// The durable queue grew a claimed-but-unrun message back. QueueDepth
+		// and WireState read the process-local copy, so without this
 		// the message is durably present and invisible. No wake: this Stop parks
 		// the queue, so the returned message waits for the user's next run.
 		s.reflectDurableInputQueue()

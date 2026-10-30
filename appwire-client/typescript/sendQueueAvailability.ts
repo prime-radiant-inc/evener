@@ -1,7 +1,6 @@
 // deriveSendQueueAvailability computes whether the composer's Send and
 // Queue actions are currently available, ported from the legacy composer's
-// send-vs-queue capability precedence (parity-m5-composer.md §A, lines
-// 64-71, citing cmd/evener-hub/assets/renderer.js:479-513):
+// send-vs-queue capability precedence:
 //
 //   1. ended/closed              -> send=false, queue=false (tier 6 first)
 //   2. [DROPPED - see below]
@@ -25,7 +24,7 @@
 // announces (kata 06t8), so the two always describe the same moment - and for
 // that fresh set, this table already computes exactly what reading it would.
 // The hub advertises Send as "no turn in flight" and Queue as harness support
-// (server/appwire_runtime.go's appCapabilities); tiers 4 and 5 are that pair
+// (server/appwire_thread_projection.go's appCapabilities); tiers 4 and 5 are that pair
 // with the status supplying the "turn in flight" half, and tier 3 reads the
 // harness-support bit for whether a queue is wired at all. A tier 2 would
 // restate the table, not correct it.
@@ -37,10 +36,8 @@
 // not caught up with. Both reads are the same rule: the bit is the harness's,
 // the status is the client's.
 //
-// The active tier checks `statusType === "active"` ALONE - verified directly
-// against the cited renderer.js:479-513 (updateThreadState's sendBtn
-// branches), which key only on the `state` string and `this.liveSendCap`/
-// `this.liveQueueCap`; nowhere in that chain does it read activeTurnId.
+// The active tier checks `statusType === "active"` ALONE; the capability flags
+// and the status string are the only inputs, and nothing reads activeTurnId.
 // Folding an activeTurnId check into THIS gate would add a real race this
 // store must not have: thread/status/changed (which flips
 // ThreadModel.status.type to "active") and turn/started (which populates

@@ -1,13 +1,14 @@
-import type { ThreadCapabilities, ThreadModel, ThreadReadResponse } from "@evener/appwire-client";
+import type { Task, ThreadModel, ThreadReadResponse } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { activityClient } from "../../stores/sessionActivityTestUtils";
 import { tasksPanelStore } from "../../stores/tasksPanel";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
+import { ALL_CAPABILITIES as CAPABILITIES } from "../../threadTestUtils";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
 import { emptyStateReasons } from "../../widgets/emptystate/emptyStateTestUtils";
 import { NOW_TICK_MS } from "../session/liveness";
@@ -15,7 +16,7 @@ import { sessionPanelTitle } from "./index";
 import { SessionPanelPane } from "./SessionPanelPane";
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetDisclosureStoreForTests();
   // This suite mounts the pane without the app shell that wires the stores.
@@ -35,22 +36,6 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.useRealTimers();
 });
-
-const CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
 
 function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
   return {
@@ -97,7 +82,7 @@ function connectFakeClient(): FakeClient {
   return fake;
 }
 
-const RETAINED_TASKS = [
+const RETAINED_TASKS: Task[] = [
   {
     id: 1,
     type: "implement",

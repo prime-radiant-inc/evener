@@ -1,3 +1,5 @@
+import { sameJsonValue } from "@evener/appwire-client";
+import { hasExactKeys, isNonBlankText } from "./checkpointRecord";
 import type { NavigationActionBackend } from "./navigationActionRepository";
 
 export interface ForkTarget {
@@ -20,17 +22,10 @@ function valid(value: unknown): asserts value {
 	if (!value) throw Error("Invalid fork recovery record.");
 }
 function record(value: unknown, required: string[], optional: string[] = []) {
-	valid(value !== null && typeof value === "object" && !Array.isArray(value));
-	const result = value as Record<string, unknown>;
-	valid(
-		required.every((key) => Object.hasOwn(result, key)) &&
-			Object.keys(result).every((key) => required.includes(key) || optional.includes(key)),
-	);
-	return result;
+	valid(hasExactKeys(value, required, optional));
+	return value as Record<string, unknown>;
 }
-function text(value: unknown): value is string {
-	return typeof value === "string" && value.trim().length > 0;
-}
+const text = isNonBlankText;
 export function decodeForkTarget(value: unknown): ForkTarget {
 	const r = record(value, ["instanceId", "entryIndex", "preview"]);
 	valid(
@@ -65,7 +60,6 @@ function decode(value: unknown, parentRef: string): ForkCheckpoint {
 	}
 	return result;
 }
-const equal = (a: ForkCheckpoint, b: ForkCheckpoint) => JSON.stringify(a) === JSON.stringify(b);
 
 /** Acknowledgement and composer preparation survive screen and connection loss. */
 export function forkCheckpoints(hubId: string, parentRef: string, backend: NavigationActionBackend) {
@@ -78,7 +72,7 @@ export function forkCheckpoints(hubId: string, parentRef: string, backend: Navig
 	const requireCurrent = (expected: ForkCheckpoint) => {
 		const checked = decode(expected, parentRef),
 			current = load();
-		if (!current || !equal(current, checked)) throw Error("The saved fork request changed.");
+		if (!current || !sameJsonValue(current, checked)) throw Error("The saved fork request changed.");
 		return current;
 	};
 	const save = (value: ForkCheckpoint) => {
@@ -106,7 +100,7 @@ export function forkCheckpoints(hubId: string, parentRef: string, backend: Navig
 		removeIf(expected: ForkCheckpoint) {
 			const checked = decode(expected, parentRef),
 				current = load();
-			return !!current && equal(current, checked) && backend.deleteIf(key, current);
+			return !!current && sameJsonValue(current, checked) && backend.deleteIf(key, current);
 		},
 	};
 }

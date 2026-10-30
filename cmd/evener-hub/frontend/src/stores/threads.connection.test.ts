@@ -1,21 +1,18 @@
-import type {
-  ConnectionState,
-  QueueState,
-  Thread,
-  ThreadCapabilities,
-  ThreadReadResponse,
-} from "@evener/appwire-client";
+import type { ConnectionState, ThreadReadResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { connectionStore, useConnectionStore } from "./connection";
+import { connectFakeClient } from "../testing/connectionTestUtils";
+import { type TestThreadOverrides, testThread } from "../threadTestUtils";
+import { connectionStore, resetConnectionStoreForTests, useConnectionStore } from "./connection";
+import { setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { SessionEntryCache } from "./sessionEntryCache";
-import { resetThreadsStoreForTests, setProductionEntryCacheForTests } from "./threads";
+import { resetThreadsStoreForTests } from "./threads";
 
 let cache: SessionEntryCache;
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   cache = new SessionEntryCache({
     indexedDB: new IDBFactory(),
@@ -31,64 +28,8 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-const CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
-
-type TestThreadOverrides = Omit<Partial<Thread>, "evener"> & {
-  evener?: Omit<Thread["evener"], "queue"> & { queue: Partial<QueueState> };
-};
-
-function testThread(ref: string, overrides: TestThreadOverrides = {}): Thread {
-  const { evener, ...threadOverrides } = overrides;
-  const threadID = threadOverrides.id ?? `thr_${ref}`;
-  return {
-    id: threadID,
-    sessionId: `sess_${ref}`,
-    preview: "test",
-    ephemeral: false,
-    modelProvider: "anthropic/claude-sonnet-4-5",
-    createdAt: 1000,
-    updatedAt: 1000,
-    status: { type: "idle" },
-    cwd: "/tmp/project",
-    cliVersion: "1.0.0",
-    source: "evener",
-    evener: {
-      ref,
-      instanceId: threadID,
-      mutationStateAuthoritative: true,
-      capabilities: CAPABILITIES,
-      ...evener,
-      queue: { revision: 0, ...evener?.queue },
-    },
-    ...threadOverrides,
-  };
-}
-
 function readResponse(ref: string, overrides: TestThreadOverrides = {}): ThreadReadResponse {
   return { thread: testThread(ref, overrides) };
-}
-
-// connectFakeClient wires a fresh FakeClient through useConnectionStore's
-// locked connect(client) entry point — the same path threads.ts's
-// requireClient() rides to reach the client (see connection.ts).
-function connectFakeClient(state: ConnectionState = "ready"): FakeClient {
-  const fake = new FakeClient(state);
-  connectionStore.getState().connect(fake);
-  return fake;
 }
 
 describe("FakeClient", () => {

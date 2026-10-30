@@ -100,6 +100,27 @@ it("lists each pinned category as its header, then its sessions as quiet still r
 	expect(items[1]).toMatchObject({ item: { state: "working" } });
 });
 
+it.each([
+	[true, true],
+	[false, false],
+	[undefined, false],
+] as const)("preserves a running pinned session's archived flag %s as %s (issue #4476)", (archived, expected) => {
+	const summary = { ...row("local:work"), state: "active", archived };
+	const items = pinnedItems(
+		[{ id: "pins-1", name: "Mine", count: 1 }],
+		{ "pins-1": { loaded: true, rows: [summary] } },
+		() => false,
+		(source) => ({ row: source, state: "working" }),
+	);
+	expect(items[1]).toMatchObject({
+		kind: "row",
+		item: { row: summary, state: "working" },
+		archived: expected,
+		variant: "quiet",
+		moving: false,
+	});
+});
+
 it("says how to pin to an empty category only once its page has loaded, and nothing while it is folded", () => {
 	const empty = { id: "pins-2", name: "Empty", count: 0 };
 	const classify = (summary: NavigationSessionSummary): ClassifiedRow => ({ row: summary, state: "idle" });

@@ -19,14 +19,9 @@
 // default to a browser global, so this module names no DOM type and a host
 // that has no siblings or no lifecycle passes nothing and gets nothing.
 //
-// Native has no outbox and no durable record of its own yet. Its
-// ConversationMutationState (mobile/src/state/conversation.ts) is a different
-// thing entirely — UI ownership bookkeeping for the one mutation in flight:
-// which action it was, whether it is pending or failed, the draft to restore,
-// and two monotonic tokens the store uses to ignore stale completions. It
-// carries no clientMutationId, no targetRef, no payload, no sequence and no
-// persisted state, so nothing here aliases it; D25d is where native gains
-// records and this class is what notices them.
+// Native has no outbox and no durable record of its own yet; nothing here
+// aliases its in-flight UI state, and D25d is where native gains records and
+// this class is what notices them.
 import type { AppwireClientLike } from "../../clientLike";
 import type {
   MutationAttachmentRef,
@@ -114,8 +109,8 @@ export interface MutationOutboxStorage<A extends MutationAttachmentRef = Mutatio
   nextDispatchable(targetRef: string): Promise<MutationOutboxRecord<A> | undefined>;
   markAttempted(clientMutationId: string): Promise<boolean>;
   // Rolls the refused attempt's pre-transport evidence back after the hub
-  // authoritatively refused the attempt in band without queueing it (#4342's
-  // connectionBackpressure). Resolves to true only when the row returns to
+  // authoritatively refused the attempt in band without queueing it
+  // (connectionBackpressure). Resolves to true only when the row returns to
   // its never-attempted dispatchable shape, so each host's reconnect
   // reconcile onlyAttempted-guarded park skips it and the ordinary flush
   // rediscovers it. Evidence of an earlier or concurrent unresolved attempt
@@ -161,14 +156,14 @@ export interface MutationOutboxStorage<A extends MutationAttachmentRef = Mutatio
 // the others a record just landed. Structural, so a BroadcastChannel satisfies
 // it and a host with no siblings passes nothing.
 //
-// Deliberately NOT the frontend's `stores/versionedChannel.ts` helper (#3619):
+// Deliberately NOT the frontend's `stores/versionedChannel.ts` helper:
 // that helper's envelope requires a sourceId, so adopting it would change this
 // source-less wakeup wire — and mid-deploy a new receiver would reject old
 // tabs' sends — while the policies that differ (validation, own-source
 // skipping, lifetime/epoch gates) are the bulk of the code. A transport-only
 // core is possible (an injected factory needs no DOM naming), but it would
 // share only the lifecycle sliver while this module keeps its own start/stop
-// gating and lifecycle listeners; #3619 records the trade-off.
+// gating and lifecycle listeners.
 export interface MutationOutboxChannel {
   postMessage(message: unknown): void;
   close(): void;

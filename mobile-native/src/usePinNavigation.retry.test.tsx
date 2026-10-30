@@ -7,7 +7,7 @@
 // app's failed reads use.
 import { act } from "react-test-renderer";
 import { afterEach, expect, it, vi } from "vitest";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { reconnectDelay } from "./hubConnection";
 import { usePinNavigation } from "./usePinNavigation";
@@ -36,7 +36,6 @@ vi.mock("expo-sqlite/kv-store", () => ({
 		getAllKeysSync: () => [...kv.keys()],
 	},
 }));
-vi.mock("expo-crypto", () => ({ randomUUID: () => "uuid" }));
 vi.mock("./ConnectionProvider", () => ({ useConnection: () => harness.connection }));
 vi.mock("@react-navigation/native", () => ({ useIsFocused: () => true }));
 

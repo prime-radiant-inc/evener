@@ -129,13 +129,14 @@ function geometryExpr(jobId) {
     const body = document.querySelector(${q(viewport)});
     if (!body || rows.length !== 1) return null;
     const node = rows[0], r = node.getBoundingClientRect(), v = body.getBoundingClientRect();
-    // A plain ListRow with no trailing slot ends in its meta line.
-    const glyph = node.querySelector('[aria-hidden="true"]'), meta = node.querySelector(':scope > :last-child');
+    const glyph = node.querySelector('[aria-hidden="true"]');
+    const quietText = node.querySelector('[data-activity-meta], time[data-activity-time]');
+    if (!glyph || !quietText) throw new Error('terminal row lacks its glyph or quiet text');
     const first = [...body.querySelectorAll('[data-activity-anchor]')].find(n => n.getBoundingClientRect().bottom > v.top);
-    return { anchor: node.dataset.activityAnchor, text: node.textContent, offset: r.top - v.top,
+    return { anchor: node.dataset.activityAnchor, text: node.textContent, status: node.getAttribute('aria-description'), offset: r.top - v.top,
       row: {top:r.top,bottom:r.bottom,height:r.height}, viewport: {top:v.top,bottom:v.bottom,height:v.height},
       visible: r.bottom > v.top && r.top < v.bottom, scrollTop: body.scrollTop,
-      glyphColor: getComputedStyle(glyph).color, metaColor: getComputedStyle(meta).color,
+      glyphColor: getComputedStyle(glyph).color, metaColor: getComputedStyle(quietText).color,
       firstAnchor: first?.dataset.activityAnchor, count: rows.length };
   })()`;
 }
@@ -145,7 +146,7 @@ async function quiet(jobId, wording, visible = true) {
   assert.equal(state.count, 1);
   assert.equal(state.anchor, anchor(jobId));
   assert.equal(state.glyphColor, state.metaColor, "terminal glyph uses ordinary quiet text color");
-  assert.ok(state.text.includes(wording), `truthful outcome ${wording}: ${state.text}`);
+  assert.equal(state.status, wording, `truthful outcome ${wording}: ${state.text}`);
   if (visible) assert.ok(state.visible, "later-page row intersects the real activity viewport");
   return state;
 }
@@ -473,7 +474,9 @@ async function runOutputPagingJourney(fixture) {
   await wait(`document.querySelector(${q(row(fixture.outputJobId))}) !== null`, 'separate real output owner is listed');
   await driver.click(row(fixture.outputJobId));
   await latest('SPLIT_é_');
-  const initialGeometry = await state();
+  // The latest page lands on the wire before the list renders it and scrolls to
+  // its end; a wheel sent before that is undone by the pending restoration.
+  const initialGeometry = await wait(`(() => { const value=${stateExpr}; return value?.first && value.following ? value : null; })()`, 'opening latest renders its visible rows at the real bottom');
   const firstHistory = await backward();
   assert.ok(page(firstHistory).offsetBytes < page(outputCalls()[0]).offsetBytes);
   assert.equal(initialGeometry.following,true,'opening latest follows the real bottom');

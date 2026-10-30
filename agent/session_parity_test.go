@@ -13,6 +13,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/llm"
@@ -87,7 +88,7 @@ func TestParity_SimpleFileCreation(t *testing.T) {
 					}
 				},
 				func(req llm.Request) llm.Response {
-					return finalResponse("done")
+					return agenttest.FinalResponse("done")
 				},
 			}
 			sess, _ := newParitySession(t, pc, steps)
@@ -156,7 +157,7 @@ func TestParity_ReadFileThenEdit(t *testing.T) {
 							}
 						},
 						func(req llm.Request) llm.Response {
-							return finalResponse("done")
+							return agenttest.FinalResponse("done")
 						},
 					}
 					sess, _ := newParitySession(t, pc, steps)
@@ -205,7 +206,7 @@ func TestParity_ShellCommandExecution(t *testing.T) {
 					}
 				},
 				func(req llm.Request) llm.Response {
-					return finalResponse("done")
+					return agenttest.FinalResponse("done")
 				},
 			}
 			sess, f := newParitySession(t, pc, steps)
@@ -257,7 +258,7 @@ func TestParity_ShellBackgroundLaunch(t *testing.T) {
 					}
 				},
 				func(req llm.Request) llm.Response {
-					return finalResponse("timed out")
+					return agenttest.FinalResponse("timed out")
 				},
 			}
 			sess, f := newParitySession(t, pc, steps)
@@ -326,7 +327,7 @@ func TestParity_GrepAndGlob(t *testing.T) {
 					}
 				},
 				func(req llm.Request) llm.Response {
-					return finalResponse("done")
+					return agenttest.FinalResponse("done")
 				},
 			}
 			sess, fa := newParitySession(t, pc, steps)
@@ -406,7 +407,7 @@ func TestParity_ParallelToolCalls(t *testing.T) {
 					}
 				},
 				func(req llm.Request) llm.Response {
-					return finalResponse("done")
+					return agenttest.FinalResponse("done")
 				},
 			}
 			sess, f := newParitySession(t, pc, steps)
@@ -468,11 +469,11 @@ func TestParity_ErrorRecovery(t *testing.T) {
 					for _, m := range req.Messages {
 						for _, p := range m.Content {
 							if p.Kind == llm.ContentToolResult && p.ToolResult != nil && p.ToolResult.IsError {
-								return finalResponse("handled error")
+								return agenttest.FinalResponse("handled error")
 							}
 						}
 					}
-					return finalResponse("no error seen")
+					return agenttest.FinalResponse("no error seen")
 				},
 			}
 			sess, _ := newParitySession(t, pc, steps)
@@ -525,7 +526,7 @@ func TestParity_LoopDetectionWarning(t *testing.T) {
 			}
 			// Final response to end the session.
 			steps = append(steps, func(req llm.Request) llm.Response {
-				return finalResponse("done")
+				return agenttest.FinalResponse("done")
 			})
 
 			sess, _ := newParitySessionWithConfig(t, pc, steps, SessionConfig{LoopDetectionWindow: 3, MaxToolRoundsPerInput: 8})
@@ -585,12 +586,12 @@ func TestParity_SteeringMidTask(t *testing.T) {
 						if m.Role == llm.RoleUser {
 							for _, p := range m.Content {
 								if p.Kind == llm.ContentText && strings.Contains(p.Text, "steer me") {
-									return finalResponse("steered")
+									return agenttest.FinalResponse("steered")
 								}
 							}
 						}
 					}
-					return finalResponse("not steered")
+					return agenttest.FinalResponse("not steered")
 				},
 			}
 			sess, _ := newParitySession(t, pc, steps)
@@ -659,7 +660,7 @@ func TestParity_MultiFileEdit(t *testing.T) {
 				},
 				// Round 3: Done.
 				func(req llm.Request) llm.Response {
-					return finalResponse("done")
+					return agenttest.FinalResponse("done")
 				},
 			}
 
@@ -718,7 +719,7 @@ func TestParity_ToolOutputTruncation(t *testing.T) {
 					}}
 				},
 				func(req llm.Request) llm.Response {
-					return finalResponse("done")
+					return agenttest.FinalResponse("done")
 				},
 			}
 			sess, f := newParitySession(t, pc, steps)
@@ -769,10 +770,10 @@ func TestParity_ReasoningEffort(t *testing.T) {
 			t.Parallel()
 			steps := []func(llm.Request) llm.Response{
 				func(req llm.Request) llm.Response {
-					return finalResponse("first")
+					return agenttest.FinalResponse("first")
 				},
 				func(req llm.Request) llm.Response {
-					return finalResponse("second")
+					return agenttest.FinalResponse("second")
 				},
 			}
 			sess, f := newParitySession(t, pc, steps)
@@ -810,19 +811,19 @@ func TestParity_SubagentNoMCPInheritance(t *testing.T) {
 	pc := providerCases[0]
 	steps := []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response {
-			return finalResponse("subagent done")
+			return agenttest.FinalResponse("subagent done")
 		},
 		func(req llm.Request) llm.Response {
-			return finalResponse("subagent done")
+			return agenttest.FinalResponse("subagent done")
 		},
 	}
-	sess, _ := newParitySession(t, pc, steps)
+	sess, _ := newParitySessionWithConfig(t, pc, steps, SessionConfig{StateDir: t.TempDir()})
 	defer sess.Close()
 
 	sess.cfg.MCPConfigFiles = []string{"/fake/mcp.json"}
 	sess.cfg.MCPInline = []string{"test:echo hello"}
 
-	agentID := spawnRuntimeAgent(t, sess, "check mcp", "", 0, "", "", nil)
+	agentID := spawnRuntimeAgent(t, sess, delegateArgs{Task: "check mcp"})
 	sub := sess.getSub(agentID)
 	if sub == nil {
 		t.Fatal("subagent not found")

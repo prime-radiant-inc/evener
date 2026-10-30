@@ -68,7 +68,7 @@ var daemonProcessCommand = func(binary string, args, env []string) *exec.Cmd {
 	return cmd
 }
 
-// HubSpawner fulfills the hubcore.Spawner interface using SpawnDaemon.
+// HubSpawner fulfills the hubcore.Spawner interface using spawnDaemonWithProviderConfig.
 type HubSpawner struct {
 	Cfg                 Config
 	EvenerBinary        string // path to the evener binary; "" → "evener" on PATH
@@ -434,22 +434,13 @@ func buildResumeArgs(req hubcore.ResumeRequest) []string {
 	return args
 }
 
-// SpawnDaemon launches a `evener serve` subprocess from the given hubcore.SpawnRequest,
-// then waits up to timeout for its rendezvous file to appear.
+// spawnDaemonWithProviderConfig launches a `evener serve` subprocess from the
+// given hubcore.SpawnRequest, then waits up to timeout for its rendezvous file
+// to appear. hubLog is the hub's own stderr in production.
 //
 // Returns the rendezvous Entry on success, or error on timeout / spawn failure.
-// Caller does NOT manage the subprocess lifecycle — the spawned daemon
+// Caller does NOT manage the subprocess lifecycle: the spawned daemon
 // runs independently and lives until killed or sent /shutdown.
-func SpawnDaemon(ctx context.Context, evenerBinary string, runDir string, req hubcore.SpawnRequest, timeout time.Duration) (rendezvous.Entry, error) {
-	return spawnDaemon(ctx, evenerBinary, runDir, req, timeout, os.Stderr)
-}
-
-// spawnDaemon is SpawnDaemon against a caller-supplied hub log, which is the
-// hub's own stderr in production.
-func spawnDaemon(ctx context.Context, evenerBinary string, runDir string, req hubcore.SpawnRequest, timeout time.Duration, hubLog io.Writer) (rendezvous.Entry, error) {
-	return spawnDaemonWithProviderConfig(ctx, evenerBinary, runDir, req, timeout, hubLog, nil)
-}
-
 func spawnDaemonWithProviderConfig(ctx context.Context, evenerBinary string, runDir string, req hubcore.SpawnRequest, timeout time.Duration, hubLog io.Writer, providerConfig *childProviderConfig) (entry rendezvous.Entry, launchErr error) {
 	ctx, trace := withThreadLifecycleLog(ctx, "spawn", "", hubLog)
 	daemonStarted := time.Now()
@@ -553,18 +544,6 @@ func WithStartedAfter(t time.Time) WaitOption {
 	return func(c *waitConfig) { c.startedAfter = t }
 }
 
-// ResumeDaemon launches `evener serve --resume <sessionID>` and waits for
-// rendezvous. Returns the resumed daemon's rendezvous Entry.
-//
-// Note: resume PRESERVES the existing session_id. The daemon restores via
-// RestoreSessionFromMetaWithConfig, which keeps the persisted meta.ID
-// (immutable across restart), so the returned Entry.SessionID is the same
-// id the session had before it exited. (A fresh session_id is minted only
-// by /clear, which is a distinct operation.)
-func ResumeDaemon(ctx context.Context, evenerBinary, runDir string, req hubcore.ResumeRequest, timeout time.Duration) (rendezvous.Entry, error) {
-	return resumeDaemon(ctx, evenerBinary, runDir, req, timeout, os.Stderr)
-}
-
 // resumeChild is the process-launch boundary. The launcher retains the exact
 // child's kill/wait handles; cancellation never rediscovers a PID to signal.
 type resumeChild struct {
@@ -612,8 +591,15 @@ func reapResumeChild(child resumeChild, reaped <-chan struct{}, active *hubcore.
 	return nil
 }
 
-// resumeDaemon is ResumeDaemon against a caller-supplied hub log, which is the
-// hub's own stderr in production.
+// resumeDaemon launches `evener serve --resume <sessionID>` and waits for
+// rendezvous. Returns the resumed daemon's rendezvous Entry.
+//
+// Note: resume PRESERVES the existing session_id. The daemon restores via
+// RestoreSessionFromMetaWithConfig, which keeps the persisted meta.ID
+// (immutable across restart), so the returned Entry.SessionID is the same
+// id the session had before it exited. (A fresh session_id is minted only
+// by /clear, which is a distinct operation.) hubLog is the hub's own stderr
+// in production.
 func resumeDaemon(ctx context.Context, evenerBinary, runDir string, req hubcore.ResumeRequest, timeout time.Duration, hubLog io.Writer) (rendezvous.Entry, error) {
 	return resumeDaemonWithProviderConfig(ctx, evenerBinary, runDir, req, timeout, hubLog, nil)
 }
@@ -854,7 +840,7 @@ func resolveStateDirForProject(project identifier.Project, workDir string, env m
 		_, stateDir, err := resolveEvenerStateDirWithProject(workDir, override, stateHome)
 		return stateDir, err
 	}
-	return agent.RuntimeDirForProjectWithStateHome(project, strings.TrimSpace(stateHome)), nil
+	return agent.RuntimeDirForProjectWithStateHome(project, strings.TrimSpace(stateHome))
 }
 
 func resolveEvenerStateDirWithStateHome(workDir, override, stateHome string) (string, error) {
@@ -882,19 +868,6 @@ func resolveEvenerStateDirWithProject(workDir, override, stateHome string) (iden
 		return identifier.Project{}, "", fmt.Errorf("resolve project state: %w", err)
 	}
 	return project, stateDir, nil
-}
-
-// resolveGateCredentialForSpawn is the gate's judgment of a named launch. A
-// Codex id the bundled roster rejects is not this gate's refusal: the child
-// applies the instance's live roster before resolving the model, so the gate
-// falls back to the instance's own transport and leaves the model verdict to
-// the child.
-func resolveGateCredentialForSpawn(r *registry.Registry, name, model string) (registry.Resolved, error) {
-	res, err := r.ResolveGateCredential(name, model)
-	if err != nil && model != "" && errors.Is(err, registry.ErrCodexModelNotListed) {
-		return r.ResolveGateCredentialCandidate(name, model)
-	}
-	return res, err
 }
 
 // validateProviderCredentials refuses a launch whose target has no
@@ -939,7 +912,7 @@ func validateProviderCredentials(provider, model string, reg *hubcore.ProviderRe
 		// rather than a credential message for a launch that never happens.
 		// An unlisted Codex id has no row to judge: the child owns that
 		// verdict against the instance's live roster.
-		res, err := resolveGateCredentialForSpawn(r, name, model)
+		res, err := r.ResolveGateCredential(name, model)
 		if err != nil {
 			return wireRefusal(appwire.HubLaunchError, err)
 		}
@@ -969,7 +942,7 @@ func validateProviderCredentials(provider, model string, reg *hubcore.ProviderRe
 		// refusal, before the spawn — not a bare-launch scheme to offer a
 		// credential remedy against. An unlisted Codex id is left to the
 		// child's live-roster resolution.
-		res, err := resolveGateCredentialForSpawn(r, name, model)
+		res, err := r.ResolveGateCredential(name, model)
 		if err != nil {
 			return wireRefusal(appwire.HubLaunchError, err)
 		}
@@ -1157,28 +1130,41 @@ const requiredLaunchFlag = "api-log"
 // advertise requiredLaunchFlag.
 var errLaunchFlagUnadvertised = errors.New("evener launch-check did not advertise the --" + requiredLaunchFlag + " flag")
 
-func validateEvenerLaunchContract(ctx context.Context, evenerBinary, model string, env []string) error {
+// runEvenerLaunchCheck runs `evener launch-check` under the launch-check
+// budget and returns its output. Any way the check ends without answering is
+// already a hub launch refusal: stopped by the budget or the caller, or exited
+// non-zero with its output (secrets redacted) as the diagnostic.
+func runEvenerLaunchCheck(ctx context.Context, evenerBinary string, env []string, extraArgs ...string) ([]byte, error) {
 	if evenerBinary == "" {
 		evenerBinary = "evener"
 	}
-	args := []string{"launch-check", "--protocol", appwire.ProtocolVersion, "--json"}
-	if strings.TrimSpace(model) != "" {
-		args = append(args, "--model", model)
-	}
 	checkCtx, cancel := context.WithTimeout(ctx, evenerLaunchCheckTimeout)
 	defer cancel()
+	args := append([]string{"launch-check", "--protocol", appwire.ProtocolVersion, "--json"}, extraArgs...)
 	cmd := exec.CommandContext(checkCtx, evenerBinary, args...)
 	cmd.Env = env
 	out, err := runLaunchCheck(cmd)
 	if checkCtx.Err() != nil {
-		return launchCheckWaitError(checkCtx)
+		return nil, launchCheckWaitError(checkCtx)
 	}
 	if err != nil {
 		msg := strings.TrimSpace(redactEnvSecrets(string(out), env))
 		if msg == "" {
 			msg = err.Error()
 		}
-		return launchRefusal(fmt.Errorf("%w: %s", errLaunchCheckFailed, msg))
+		return nil, launchRefusal(fmt.Errorf("%w: %s", errLaunchCheckFailed, msg))
+	}
+	return out, nil
+}
+
+func validateEvenerLaunchContract(ctx context.Context, evenerBinary, model string, env []string) error {
+	var extraArgs []string
+	if strings.TrimSpace(model) != "" {
+		extraArgs = []string{"--model", model}
+	}
+	out, err := runEvenerLaunchCheck(ctx, evenerBinary, env, extraArgs...)
+	if err != nil {
+		return err
 	}
 	var resp struct {
 		Protocol    string   `json:"protocol"`
@@ -1197,23 +1183,9 @@ func validateEvenerLaunchContract(ctx context.Context, evenerBinary, model strin
 }
 
 func listEvenerLaunchModelContract(ctx context.Context, evenerBinary string, env []string) (appwire.ModelListResponse, error) {
-	if evenerBinary == "" {
-		evenerBinary = "evener"
-	}
-	checkCtx, cancel := context.WithTimeout(ctx, evenerLaunchCheckTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(checkCtx, evenerBinary, "launch-check", "--protocol", appwire.ProtocolVersion, "--json", "--models")
-	cmd.Env = env
-	out, err := runLaunchCheck(cmd)
-	if checkCtx.Err() != nil {
-		return appwire.ModelListResponse{}, launchCheckWaitError(checkCtx)
-	}
+	out, err := runEvenerLaunchCheck(ctx, evenerBinary, env, "--models")
 	if err != nil {
-		msg := strings.TrimSpace(redactEnvSecrets(string(out), env))
-		if msg == "" {
-			msg = err.Error()
-		}
-		return appwire.ModelListResponse{}, launchRefusal(fmt.Errorf("%w: %s", errLaunchCheckFailed, msg))
+		return appwire.ModelListResponse{}, err
 	}
 	var resp struct {
 		Protocol    string                        `json:"protocol"`
@@ -1233,7 +1205,11 @@ func listEvenerLaunchModelContract(ctx context.Context, evenerBinary string, env
 		if provider == "" || name == "" {
 			continue
 		}
-		models = append(models, appwire.ModelDescriptor{Provider: provider, Model: name, Warnings: append([]string(nil), model.Warnings...)})
+		models = append(models, appwire.ModelDescriptor{
+			Provider: provider, Model: name,
+			Warnings:        append([]string(nil), model.Warnings...),
+			InstanceDefault: model.InstanceDefault,
+		})
 	}
 	diagnostics := make([]appwire.ModelListDiagnostic, 0, len(resp.Diagnostics))
 	for _, diag := range resp.Diagnostics {

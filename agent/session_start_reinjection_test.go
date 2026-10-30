@@ -1,13 +1,14 @@
 package agent
 
 import (
-	"path/filepath"
+	"context"
 	"strings"
 	"testing"
 
 	"github.com/spf13/afero"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/sessionlog"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
@@ -18,7 +19,7 @@ import (
 // written by a session's SessionStart dispatch.
 func sessionStartHookDispatchEntry(t *testing.T, stateDir, sessionID string) sessionlog.SessionLogEntry {
 	t.Helper()
-	log := mustNewSessionLog(t, filepath.Join(stateDir, sessionsSubdir, sessionID+".log.jsonl"))
+	log := mustNewSessionLog(t, schema.SessionLogPath(stateDir, sessionID))
 	var found []sessionlog.SessionLogEntry
 	for _, e := range log.Entries() {
 		if e.Action == "session_start_hooks" {
@@ -52,10 +53,7 @@ func TestSessionStartDispatchOnFreshSessionIsNotFlaggedAsReinjection(t *testing.
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 	defer sess.Close()
 
 	entry := sessionStartHookDispatchEntry(t, dir, sess.ID())
@@ -83,7 +81,7 @@ func TestSessionStartDispatchIntoRestoredHistoryIsFlaggedAsReinjection(t *testin
 	t.Parallel()
 	stateDir := t.TempDir()
 	adapter := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return finalResponse("done") },
+		func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
 	}}
 	client := llm.NewClient()
 	client.Register(adapter)
@@ -111,10 +109,7 @@ func TestSessionStartDispatchIntoRestoredHistoryIsFlaggedAsReinjection(t *testin
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
 	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 	defer sess.Close()
 
 	// Resume SessionStart hooks are deferred until the first user turn.
@@ -142,7 +137,7 @@ func TestSessionStartDispatchAfterEmptyRestoreIsNotFlaggedAsReinjection(t *testi
 	t.Parallel()
 	stateDir := t.TempDir()
 	adapter := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return finalResponse("done") },
+		func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
 	}}
 	client := llm.NewClient()
 	client.Register(adapter)
@@ -163,16 +158,13 @@ func TestSessionStartDispatchAfterEmptyRestoreIsNotFlaggedAsReinjection(t *testi
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
 	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 	defer sess.Close()
 
 	if _, err := sess.ProcessInput(t.Context(), "first user task", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
-	data, err := readTranscriptFull(sess.TranscriptPath(), "")
+	data, err := readTranscriptFull(context.Background(), sess.TranscriptPath(), "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}
@@ -214,7 +206,7 @@ func TestSessionStartDispatchOnNotesContextOnlyHistoryIsNotFlaggedAsReinjection(
 	t.Parallel()
 	stateDir := t.TempDir()
 	adapter := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return finalResponse("done") },
+		func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
 	}}
 	client := llm.NewClient()
 	client.Register(adapter)
@@ -238,10 +230,7 @@ func TestSessionStartDispatchOnNotesContextOnlyHistoryIsNotFlaggedAsReinjection(
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
 	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 	defer sess.Close()
 
 	// Resume SessionStart hooks are deferred until the first user turn.

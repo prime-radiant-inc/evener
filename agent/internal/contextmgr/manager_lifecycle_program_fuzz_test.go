@@ -332,7 +332,7 @@ func cmgpCheckPureManagerHelpers(t *testing.T, token string, history []schema.Tu
 		{"communicate", "body", `{}`},
 		{"other", "body", `{}`},
 	} {
-		if got := summarizeToolResult(tc.name, tc.content, json.RawMessage(tc.args)); got == "" {
+		if got := summarizeToolResult(tc.name, tc.content, false, json.RawMessage(tc.args)); got == "" {
 			t.Fatalf("empty summary for %s", tc.name)
 		}
 	}
@@ -360,7 +360,7 @@ func cmgpCheckSummarizerBehavior(t *testing.T, ctx context.Context, token string
 		schema.NewTurn(schema.TurnUserInput, llm.User("tail user "+token)),
 	}
 	cm := NewManager(profile, client, cheapmodel.New(client))
-	result, err := cm.summarizeWithLLMSteered(ctx, input, 2, "retain "+token)
+	result, err := cm.summarizeFold(ctx, input, 2, "retain "+token, nil)
 	if err != nil || len(result) != 3 || result[0].Kind != schema.TurnSummary || result[1].Message.Text() != input[len(input)-2].Message.Text() || result[2].Message.Text() != input[len(input)-1].Message.Text() {
 		t.Fatalf("scripted summary result = %#v, err=%v", cmgpKinds(result), err)
 	}
@@ -375,11 +375,11 @@ func cmgpCheckSummarizerBehavior(t *testing.T, ctx context.Context, token string
 		schema.NewTurn(schema.TurnUserInput, llm.User("unsafe")),
 		schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("unsafe", "shell", "output", false)),
 	}
-	unchanged, err := cm.summarizeWithLLMSteered(ctx, unsafe, 1, "")
+	unchanged, err := cm.summarizeFold(ctx, unsafe, 1, "", nil)
 	if err != nil || len(unchanged) != len(unsafe) || unchanged[0].Kind != schema.TurnUserInput {
 		t.Fatalf("unsafe summary cutoff = %#v, err=%v", cmgpKinds(unchanged), err)
 	}
-	if _, err := NewManager(&provider.Profile{}, client, cheapmodel.New(client)).summarizeWithLLMSteered(ctx, input, 2, ""); err == nil {
+	if _, err := NewManager(&provider.Profile{}, client, cheapmodel.New(client)).summarizeFold(ctx, input, 2, "", nil); err == nil {
 		t.Fatal("summary without a model unexpectedly succeeded")
 	}
 
@@ -390,7 +390,7 @@ func cmgpCheckSummarizerBehavior(t *testing.T, ctx context.Context, token string
 		return llm.Response{Message: llm.Assistant("## Progress\nfallback " + token)}, nil
 	}}
 	fallbackCM := NewManager(profile, cmgpClient(fallbackActive, fallbackCheap), cheapmodel.New(cmgpClient(fallbackActive, fallbackCheap)))
-	if got, err := fallbackCM.summarizeWithLLMSteered(ctx, input, 2, ""); err != nil || len(got) == 0 || got[0].Kind != schema.TurnSummary || len(fallbackCheap.requests) != 1 || len(fallbackActive.requests) != 1 {
+	if got, err := fallbackCM.summarizeFold(ctx, input, 2, "", nil); err != nil || len(got) == 0 || got[0].Kind != schema.TurnSummary || len(fallbackCheap.requests) != 1 || len(fallbackActive.requests) != 1 {
 		t.Fatalf("summary fallback = head:%v cheap:%d active:%d err:%v", cmgpHeadKind(got), len(fallbackCheap.requests), len(fallbackActive.requests), err)
 	}
 	stopCheap := &cmgpAdapter{name: "anthropic", respond: func(llm.Request) (llm.Response, error) {
@@ -399,7 +399,7 @@ func cmgpCheckSummarizerBehavior(t *testing.T, ctx context.Context, token string
 	stopActive := &cmgpAdapter{name: "openai", respond: func(llm.Request) (llm.Response, error) {
 		return llm.Response{Message: llm.Assistant("should not run")}, nil
 	}}
-	if _, err := NewManager(profile, cmgpClient(stopActive, stopCheap), cheapmodel.New(cmgpClient(stopActive, stopCheap))).summarizeWithLLMSteered(ctx, input, 2, ""); err == nil || len(stopActive.requests) != 0 {
+	if _, err := NewManager(profile, cmgpClient(stopActive, stopCheap), cheapmodel.New(cmgpClient(stopActive, stopCheap))).summarizeFold(ctx, input, 2, "", nil); err == nil || len(stopActive.requests) != 0 {
 		t.Fatalf("non-fallback summary error used active route: err=%v active=%d", err, len(stopActive.requests))
 	}
 }
@@ -431,7 +431,6 @@ func cmgpRunStrategyContracts(t *testing.T, program []byte) {
 	history := cmgpHistory(token)
 
 	cmgpCheckCompactAndCheckpointStrategies(t, ctx, token, profile, client, history)
-	cmgpCheckMemoryStrategies(t, ctx, token, profile, client, history)
 	cmgpCheckSessionLogAndOODAStrategies(t, ctx, token, profile, client, history)
 	cmgpCheckForkSummarize(t, ctx, token, profile, client, history)
 }
@@ -446,112 +445,6 @@ func cmgpCheckCompactAndCheckpointStrategies(t *testing.T, ctx context.Context, 
 	compactHistory := append([]schema.Turn(nil), history...)
 	if err := compact.ManageContext(ctx, &compactHistory, 0, cmgpNoopEmit); err != nil {
 		t.Fatalf("compact ManageContext: %v", err)
-	}
-
-	if err := (&CheckpointPredStrategy{}).ManageContext(ctx, &compactHistory, 0, cmgpNoopEmit); err != nil {
-		t.Fatalf("nil checkpoint strategy: %v", err)
-	}
-	zeroCheckpoint := NewCheckpointPredStrategy(NewManager(&provider.Profile{}, nil, cheapmodel.New(nil)))
-	if err := zeroCheckpoint.ManageContext(ctx, &compactHistory, 0, cmgpNoopEmit); err != nil {
-		t.Fatalf("zero-window checkpoint strategy: %v", err)
-	}
-	predCM := NewManager(profile, client, cheapmodel.New(client))
-	cmgpAggressiveThresholds(predCM)
-	pred := NewCheckpointPredStrategy(predCM)
-	if pred.Name() != "checkpoint-pred" || len(pred.Tools()) != 0 || pred.AfterAction(ctx, history, client) != nil {
-		t.Fatal("checkpoint-pred strategy contract changed")
-	}
-	predHistory := cmgpHistory(token + "-pred")
-	var predEvents cmgpEventLog
-	if err := pred.ManageContext(ctx, &predHistory, 0, predEvents.emit); err != nil {
-		t.Fatalf("checkpoint-pred ManageContext: %v", err)
-	}
-	if !predEvents.hasLayer("checkpoint_pred") || len(predHistory) == 0 || predHistory[0].Kind != schema.TurnCheckpoint {
-		t.Fatalf("predictive checkpoint did not compact: layers=%v head=%v", predEvents.layers, cmgpHeadKind(predHistory))
-	}
-
-	if err := (&ObsMaskStrategy{}).ManageContext(ctx, &compactHistory, 0, cmgpNoopEmit); err != nil {
-		t.Fatalf("nil observation-mask strategy: %v", err)
-	}
-	zeroObs := NewObsMaskStrategy(NewManager(&provider.Profile{}, nil, cheapmodel.New(nil)))
-	if err := zeroObs.ManageContext(ctx, &compactHistory, 0, cmgpNoopEmit); err != nil {
-		t.Fatalf("zero-window observation-mask strategy: %v", err)
-	}
-	obsCM := NewManager(profile, client, cheapmodel.New(client))
-	cmgpAggressiveThresholds(obsCM)
-	obs := NewObsMaskStrategy(obsCM)
-	if obs.Name() != "obs-mask" || len(obs.Tools()) != 0 || obs.AfterAction(ctx, history, client) != nil {
-		t.Fatal("observation-mask strategy contract changed")
-	}
-	obsHistory := cmgpHistory(token + "-obs")
-	var obsEvents cmgpEventLog
-	if err := obs.ManageContext(ctx, &obsHistory, 0, obsEvents.emit); err != nil {
-		t.Fatalf("observation-mask ManageContext: %v", err)
-	}
-	if !obsEvents.hasLayer("aggressive_obs_mask") || !obsEvents.hasLayer("checkpoint") {
-		t.Fatalf("observation-mask layers = %v", obsEvents.layers)
-	}
-}
-
-func cmgpCheckMemoryStrategies(t *testing.T, ctx context.Context, token string, profile *provider.Profile, client *llm.Client, history []schema.Turn) {
-	t.Helper()
-	if err := NewMemoryCrystalsStrategy(nil).AfterAction(ctx, history, client); err != nil {
-		t.Fatalf("nil memory-crystal strategy: %v", err)
-	}
-	mem := NewMemoryCrystalsStrategy(NewManager(profile, client, cheapmodel.New(client)))
-	if mem.Name() != "memory-crystals" || len(mem.Tools()) != 0 {
-		t.Fatal("memory-crystal strategy contract changed")
-	}
-	if err := mem.AfterAction(ctx, history[:2], client); err != nil {
-		t.Fatalf("memory crystals non-third action: %v", err)
-	}
-	if err := mem.AfterAction(ctx, history[:3], client); err != nil || len(mem.crystals) != 1 {
-		t.Fatalf("memory crystals action = crystals:%d err:%v", len(mem.crystals), err)
-	}
-	memHistory := append([]schema.Turn(nil), history[:4]...)
-	memHistory = append(memHistory, schema.NewTurn(schema.TurnSteering, llm.User("[MEMORY CRYSTALS] stale")))
-	if err := mem.ManageContext(ctx, &memHistory, 0, cmgpNoopEmit); err != nil {
-		t.Fatalf("memory crystals ManageContext: %v", err)
-	}
-	if cmgpMarkerCount(memHistory, "[MEMORY CRYSTALS]") != 1 {
-		t.Fatalf("memory crystal marker count = %d", cmgpMarkerCount(memHistory, "[MEMORY CRYSTALS]"))
-	}
-	badClient := cmgpClient(&cmgpAdapter{name: "openai", respond: func(llm.Request) (llm.Response, error) {
-		return llm.Response{}, errors.New("crystal failure")
-	}}, nil)
-	badMem := NewMemoryCrystalsStrategy(NewManager(profile, badClient, cheapmodel.New(badClient)))
-	// A failed crystallization is surfaced to the caller as a strategy error
-	// (the session reports it as a warning and keeps the turn alive) and banks
-	// no crystal. Surfacing it is the CORE-10 contract: swallowing the failure
-	// as a silent nil is the defect this oracle used to pin.
-	if err := badMem.AfterAction(ctx, history[:3], badClient); err == nil || !strings.Contains(err.Error(), "crystal failure") || len(badMem.crystals) != 0 {
-		t.Fatalf("failed crystal action = crystals:%d err:%v", len(badMem.crystals), err)
-	}
-
-	if err := NewRecursiveDistillStrategy(nil).AfterAction(ctx, history, client); err != nil {
-		t.Fatalf("nil recursive-distill strategy: %v", err)
-	}
-	distill := NewRecursiveDistillStrategy(NewManager(profile, client, cheapmodel.New(client)))
-	if distill.Name() != "recursive-distill" || len(distill.Tools()) != 0 {
-		t.Fatal("recursive-distill strategy contract changed")
-	}
-	longHistory := cmgpLongHistory(token, 10)
-	if err := distill.AfterAction(ctx, longHistory, client); err != nil || len(distill.microSummaries) != 1 {
-		t.Fatalf("recursive micro distill = micros:%d err:%v", len(distill.microSummaries), err)
-	}
-	if _, err := distill.microSummarize(ctx, longHistory); err != nil {
-		t.Fatalf("recursive direct micro summary: %v", err)
-	}
-	if _, err := distill.macroSummarize(ctx, []string{"one", "two"}); err != nil {
-		t.Fatalf("recursive direct macro summary: %v", err)
-	}
-	distillHistory := append([]schema.Turn(nil), history[:4]...)
-	distillHistory = append(distillHistory, schema.NewTurn(schema.TurnSteering, llm.User("[DISTILLED MEMORY] stale")))
-	if err := distill.ManageContext(ctx, &distillHistory, 0, cmgpNoopEmit); err != nil {
-		t.Fatalf("recursive ManageContext: %v", err)
-	}
-	if cmgpMarkerCount(distillHistory, "[DISTILLED MEMORY]") != 1 {
-		t.Fatalf("distilled marker count = %d", cmgpMarkerCount(distillHistory, "[DISTILLED MEMORY]"))
 	}
 }
 
@@ -771,14 +664,6 @@ func (e *cmgpEventLog) hasLayer(want string) bool {
 }
 
 func cmgpNoopEmit(events.EventKind, events.EventData) {}
-
-func cmgpAggressiveThresholds(cm *Manager) {
-	cm.ObservationMaskThreshold = 0.0001
-	cm.ThinkingClearThreshold = 0.0001
-	cm.CheckpointThreshold = 0.0001
-	cm.SummarizeThreshold = 2
-	cm.PreserveRecentTurns = 2
-}
 
 func cmgpToken(program []byte) string {
 	if len(program) == 0 {

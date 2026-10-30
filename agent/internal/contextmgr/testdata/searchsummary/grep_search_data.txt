@@ -1,0 +1,22 @@
+success
+[grep: "p" → 2 matches]
+success_empty
+[grep: "p" → 0 matches]
+success_marker_filename
+[grep: "p" → 1 matches]
+success_full_park_body
+[grep: "p" → 1 matches; The failures so far:; 1. FAILURE_SENTINEL; 2. FAILURE_SENTINEL]
+error_similar_words
+[grep: "p" → 1 matches]
+error_missing_delimiter
+[grep: "p" → 2 matches]
+error_embedded_marker
+[grep: "p" → 1 matches]
+error_later_marker
+[grep: "p" → 2 matches]
+error_leading_space
+[grep: "p" → 1 matches]
+error_marker_in_note
+[grep: "p" → 1 matches; NOTE_SENTINEL evener did not execute this call: SENTINEL]
+error_wrong_case
+[grep: "p" → 1 matches]

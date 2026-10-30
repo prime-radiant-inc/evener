@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"primeradiant.com/evener/gittest"
 )
 
 // A relative source is copied from the marketplace clone, and its sha is the
@@ -14,8 +16,8 @@ func TestFetchPluginSource_RelativeCopiesFromMarketplace(t *testing.T) {
 	// a plugin living at <mktRoot>/plugins/widget
 	writePlugin(t, filepath.Join(mktRoot, "plugins", "widget"), "widget", nil)
 	makeGitRepo(t, mktRoot, "README.md", "mkt")
-	gitIn(t, mktRoot, "commit", "--allow-empty", "-qm", "elsewhere")
-	folderTree := gitIn(t, mktRoot, "rev-parse", "HEAD:plugins/widget")
+	gittest.Run(t, mktRoot, "commit", "--allow-empty", "-qm", "elsewhere")
+	folderTree := gittest.Run(t, mktRoot, "rev-parse", "HEAD:plugins/widget")
 
 	dst := filepath.Join(t.TempDir(), "out")
 	sha, err := fetchPluginSource(context.Background(),

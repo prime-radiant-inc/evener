@@ -15,6 +15,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/plugin"
@@ -40,10 +41,7 @@ func TestSession_SetReasoningEffort_FlushesMeta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 	defer sess.Close()
 
 	sessID := sess.ID()
@@ -73,10 +71,7 @@ func TestSession_SetModel_FlushesMeta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 	defer sess.Close()
 
 	sessID := sess.ID()
@@ -103,10 +98,7 @@ func TestSession_SetModel_NoOpAfterClose(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 	sessID := sess.ID()
 	sess.Close()
 
@@ -152,7 +144,7 @@ func TestSession_NaturalCompletion_LoadsOnlyProfileDocs(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return finalResponse("ok")
+				return agenttest.FinalResponse("ok")
 			},
 		},
 	}
@@ -202,7 +194,7 @@ func TestSession_NaturalCompletion_LoadsOnlyProfileDocs_Anthropic(t *testing.T) 
 		name: "anthropic",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return finalResponse("ok")
+				return agenttest.FinalResponse("ok")
 			},
 		},
 	}
@@ -287,7 +279,7 @@ func TestSession_NaturalCompletion_LoadsOnlyProfileDocs_Gemini(t *testing.T) {
 		name: "google",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return finalResponse("ok")
+				return agenttest.FinalResponse("ok")
 			},
 		},
 	}
@@ -337,7 +329,7 @@ func TestSession_SystemPromptFile_OverridesBasePrompt(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return finalResponse("ok")
+				return agenttest.FinalResponse("ok")
 			},
 		},
 	}
@@ -478,9 +470,9 @@ func TestSession_ToolLoop_ExecutesToolsAndContinues(t *testing.T) {
 					}
 				}
 				if !foundTool {
-					return finalResponse("missing tool result")
+					return agenttest.FinalResponse("missing tool result")
 				}
-				return finalResponse("ok")
+				return agenttest.FinalResponse("ok")
 			},
 		},
 	}
@@ -553,7 +545,7 @@ func TestSession_PreCompactHookOnlyRunsWhenCompactionEmits(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return finalResponse("done") },
+		func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
 	}})
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
@@ -566,7 +558,7 @@ func TestSession_PreCompactHookOnlyRunsWhenCompactionEmits(t *testing.T) {
 
 	runner := hooks.NewRunner(nil, "")
 	runner.SetEventCallback(func(kind events.EventKind, data events.EventData) {
-		sess.emit(kind, data)
+		sess.emit(data)
 	})
 	runner.Add(plugin.HookPreCompact, plugin.RegisteredHook{
 		Matcher: "*",
@@ -580,8 +572,7 @@ func TestSession_PreCompactHookOnlyRunsWhenCompactionEmits(t *testing.T) {
 	// is wired through a real (non-mocked) hooks.Runner; this case asserts
 	// the hook must NOT fire without a compaction boundary, so no hook
 	// subprocess actually runs here. Only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -600,7 +591,7 @@ func TestSession_PreCompactHookRunsAtCompactionBoundary(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return finalResponse("done") },
+		func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
 	}})
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
@@ -613,7 +604,7 @@ func TestSession_PreCompactHookRunsAtCompactionBoundary(t *testing.T) {
 
 	runner := hooks.NewRunner(nil, "")
 	runner.SetEventCallback(func(kind events.EventKind, data events.EventData) {
-		sess.emit(kind, data)
+		sess.emit(data)
 	})
 	runner.Add(plugin.HookPreCompact, plugin.RegisteredHook{
 		Matcher: "*",
@@ -627,8 +618,7 @@ func TestSession_PreCompactHookRunsAtCompactionBoundary(t *testing.T) {
 	// is a real `echo` subprocess that actually fires at the compaction
 	// boundary (asserted via countHookStarts below); only fires on a
 	// genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -820,8 +810,8 @@ func TestSession_DistinctCompactionsQueueOneTranscriptReminderEach(t *testing.T)
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return finalResponse("first summary") },
-		func(req llm.Request) llm.Response { return finalResponse("second summary") },
+		func(req llm.Request) llm.Response { return agenttest.FinalResponse("first summary") },
+		func(req llm.Request) llm.Response { return agenttest.FinalResponse("second summary") },
 	}})
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
@@ -876,7 +866,7 @@ func TestSession_ObservationMaskOnlyQueuesNoTranscriptReminder(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, ContextStrategy: "obs-mask"})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, ContextStrategy: "session-log"})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -969,7 +959,7 @@ func TestSession_NotificationHookRunsOnWarning(t *testing.T) {
 	})
 	sess.hookRunner = runner
 
-	sess.emit(events.EventWarning, events.WarningData{Message: "heads up"})
+	sess.emit(events.WarningData{Message: "heads up"})
 	if _, err := os.Stat(marker); err != nil {
 		t.Fatalf("Notification hook did not run: %v", err)
 	}
@@ -998,10 +988,11 @@ func TestSession_SubagentStopHookRunsWhenSubagentFinishes(t *testing.T) {
 
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return finalResponse("subagent done") },
+		func(req llm.Request) llm.Response { return agenttest.FinalResponse("subagent done") },
 	}})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxSubagentDepth: 1,
+		StateDir:         t.TempDir(),
 		PluginDirs:       []string{plugin},
 	})
 	if err != nil {
@@ -1010,22 +1001,10 @@ func TestSession_SubagentStopHookRunsWhenSubagentFinishes(t *testing.T) {
 	defer sess.Close()
 
 	// This fixture intentionally requires its SubagentStop hook to mutate the
-	// shared workspace, so declare a mutating child scope instead of asking the
-	// read-only explorer floor to permit the write.
-	result, err := sess.spawnAgent(context.Background(), "inspect", "", "", 1, "explorer", "", nil, []string{"write_file"})
-	if err != nil {
-		t.Fatalf("spawnAgent: %v", err)
-	}
-	var spawned struct {
-		AgentID string `json:"agent_id"`
-	}
-	if err := json.Unmarshal([]byte(result.(string)), &spawned); err != nil {
-		t.Fatalf("spawn result: %v", err)
-	}
-	if spawned.AgentID == "" {
-		t.Fatalf("spawn result missing agent_id: %s", result)
-	}
-	waitForRuntimeSubagent(t, sess, spawned.AgentID)
+	// shared workspace, so it runs under the mutating default agent rather than
+	// the read-only explorer floor.
+	agentID := spawnRuntimeAgent(t, sess, delegateArgs{Task: "inspect"})
+	waitForRuntimeSubagent(t, sess, agentID)
 	if _, err := os.Stat(marker); err != nil {
 		t.Fatalf("SubagentStop hook did not run: %v", err)
 	}
@@ -1057,7 +1036,7 @@ func TestSession_ToolOutputTruncation_OverridesLimitsAndKeepsShellJSONValid(t *t
 				}
 			},
 			func(req llm.Request) llm.Response {
-				return finalResponse("ok")
+				return agenttest.FinalResponse("ok")
 			},
 		},
 	}
@@ -1134,7 +1113,7 @@ func TestSession_ToolOutputTruncation_LineLimitPreservesStreamingShellJSON(t *te
 					},
 				}
 			},
-			func(req llm.Request) llm.Response { return finalResponse("ok") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
 		},
 	}
 	c.Register(f)
@@ -1213,7 +1192,7 @@ func TestSession_ParallelToolCalls_RunConcurrentlyWhenSupported(t *testing.T) {
 				}
 			},
 			func(req llm.Request) llm.Response {
-				return finalResponse("ok")
+				return agenttest.FinalResponse("ok")
 			},
 		},
 	}
@@ -1301,7 +1280,7 @@ func TestSession_ParallelToolCalls_NonReadOnlyToolsSerialize(t *testing.T) {
 				}
 			},
 			func(req llm.Request) llm.Response {
-				return finalResponse("ok")
+				return agenttest.FinalResponse("ok")
 			},
 		},
 	}
@@ -1397,7 +1376,7 @@ func TestSession_UserInstructionOverride_AppendedLastToSystemPrompt(t *testing.T
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("ok") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
 		},
 	}
 	c.Register(f)
@@ -1434,7 +1413,7 @@ func TestSession_SubagentUserInstructionOverride_AppendedLastToSystemPrompt(t *t
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("ok") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
 		},
 	}
 	c.Register(f)
@@ -1491,7 +1470,7 @@ func TestSession_CustomRegisteredTool_AppearsInSystemPrompt(t *testing.T) {
 			if !found {
 				t.Error("custom tool not in request tools")
 			}
-			return finalResponse("done")
+			return agenttest.FinalResponse("done")
 		},
 	}}
 	c.Register(f)
@@ -1545,7 +1524,7 @@ func TestSession_ToolCallEnd_UsesOutputKeyOnSuccess(t *testing.T) {
 				}
 			},
 			func(req llm.Request) llm.Response {
-				return finalResponse("done")
+				return agenttest.FinalResponse("done")
 			},
 		},
 	}
@@ -1626,7 +1605,7 @@ func TestSession_ToolCallEnd_UsesErrorKeyOnFailure(t *testing.T) {
 				}
 			},
 			func(req llm.Request) llm.Response {
-				return finalResponse("done")
+				return agenttest.FinalResponse("done")
 			},
 		},
 	}
@@ -1719,7 +1698,7 @@ func TestSession_ToolCallEnd_PrevalOnlyOnUnknownTool(t *testing.T) {
 				}
 			},
 			func(req llm.Request) llm.Response {
-				return finalResponse("done")
+				return agenttest.FinalResponse("done")
 			},
 		},
 	}
@@ -1779,11 +1758,11 @@ func TestSession_SetModel_TakesEffectOnNextCall(t *testing.T) {
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
 				capturedModel = req.Model
-				return finalResponse("ok")
+				return agenttest.FinalResponse("ok")
 			},
 			func(req llm.Request) llm.Response {
 				capturedModel = req.Model
-				return finalResponse("ok")
+				return agenttest.FinalResponse("ok")
 			},
 		},
 	}
@@ -1853,7 +1832,7 @@ func TestSession_SetModel_UpdatesContextManager(t *testing.T) {
 				})
 			},
 			func(req llm.Request) llm.Response {
-				return finalResponse("ok")
+				return agenttest.FinalResponse("ok")
 			},
 		},
 	})
@@ -1896,7 +1875,7 @@ func TestSession_SystemPromptAsUser_CombinesIntoOneMessage(t *testing.T) {
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("ok") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
 		},
 	}
 	c.Register(f)
@@ -1967,7 +1946,7 @@ func TestSession_SystemPromptAsUserPreservesImageParts(t *testing.T) {
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("ok") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
 		},
 	}
 	c.Register(f)
@@ -2055,7 +2034,7 @@ func TestSession_ProjectDocsCachedAtInit(t *testing.T) {
 			if strings.Contains(sys, "New agent instructions") {
 				t.Error("project docs should be cached at init, not reloaded per round")
 			}
-			return finalResponse("done")
+			return agenttest.FinalResponse("done")
 		},
 	}}
 	c.Register(f)
@@ -2138,5 +2117,32 @@ func TestPluginSelectionSnapshotRoundTrip(t *testing.T) {
 		if !slices.Equal(want, got) {
 			t.Fatalf("PluginDirs round trip = %v, want %v", got, want)
 		}
+	}
+}
+
+// TestSessionCommandTimeoutDefaultAndExplicit pins that an unset foreground
+// wait gets the stock default and that an explicit value, including one equal
+// to a former internal default, is kept as given.
+func TestSessionCommandTimeoutDefaultAndExplicit(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		cfg  int
+		want int
+	}{
+		{"unset gets stock default", 0, 120_000},
+		{"explicit 10000 is kept", 10_000, 10_000},
+		{"explicit other is kept", 45_000, 45_000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := newSession(t, withConfig(SessionConfig{DefaultCommandTimeoutMS: tc.cfg}))
+			s.mu.Lock()
+			got := s.cfg.DefaultCommandTimeoutMS
+			s.mu.Unlock()
+			if got != tc.want {
+				t.Fatalf("DefaultCommandTimeoutMS = %d, want %d", got, tc.want)
+			}
+		})
 	}
 }

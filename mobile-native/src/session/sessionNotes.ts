@@ -7,7 +7,7 @@
 // on this phone, under evener.native.note-draft.<hubId>, until it does
 // (Review Focus 5).
 import type { NotesHumanSetResponse, ThreadModel } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 import type { SyncStringStorage } from "../syncStringStorage";
 
 /** The daemon clamps a note to 1,000 runes (agent/session_notes.go:29); the
@@ -52,16 +52,6 @@ export function notesBarPreview(
 	if (only) return { glyph: "link", text: only.label?.trim() || only.url };
 	if (count > 1) return { glyph: "link", text: linkCount(count) };
 	return null;
-}
-
-/** Whether this phone may change your note: the web's canWriteHumanNote
- * (cmd/evener-hub/frontend/src/stores/humanNoteDrafts.ts). */
-export function canWriteHumanNote(session: Pick<ThreadModel, "status" | "resumeRequired" | "capabilities">): boolean {
-	return (
-		session.capabilities.sharedNotes === true &&
-		session.resumeRequired !== true &&
-		!["ended", "closed", "notLoaded", "restartRequired"].includes(session.status.type)
-	);
 }
 
 export type NotePhase = "clean" | "editing" | "scheduled" | "saving" | "saved" | "failed";
@@ -118,7 +108,7 @@ export interface NotesControllerOptions {
 	savedNote(): string;
 	/** Whether a turn is running, read at each save. */
 	working(): boolean;
-	/** Whether the session takes notes now (canWriteHumanNote), read at each
+	/** Whether the session takes notes now (canWriteSharedNotes), read at each
 	 * save. While it doesn't, nothing is sent and the note stays on this
 	 * phone. */
 	writable(): boolean;
@@ -357,7 +347,7 @@ export class NotesController {
 				this.publish({ ...this.state, phase: caughtUp ? "clean" : "editing" });
 			}
 			// An unchanged note projects "removed" and wakes no one
-			// (agent/session_notes_rpc.go).
+			// (agent/session_notes_mutations.go).
 			return { saved: true, woke: !working && response.receipt.projectionState === "pending" };
 		} catch {
 			this.storeDraft(this.state.text);

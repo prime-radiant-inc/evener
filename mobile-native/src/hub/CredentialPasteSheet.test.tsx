@@ -34,7 +34,6 @@ vi.mock("react-native", async () => ({
 	},
 }));
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 function control(tree: ReactTestRenderer, label: string) {
 	return tree.root.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === label)[0];

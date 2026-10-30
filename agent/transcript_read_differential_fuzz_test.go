@@ -3,10 +3,12 @@
 package agent
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/fuzz/schemagen"
 )
 
@@ -29,13 +31,13 @@ func FuzzTranscriptReadersAgree(f *testing.F) {
 			t.Fatalf("write transcript: %v", err)
 		}
 
-		full, fullErr := readTranscriptFull(path, "")
+		full, fullErr := readTranscriptFull(context.Background(), path, "")
 		if fullErr != nil {
 			return // no valid header line: outside the agreement domain
 		}
 
 		// Gate A: the lenient scanner readers must agree on header + entries.
-		lh, lentries, _, lerr := readTranscript(path, "")
+		lh, lentries, _, lerr := readTranscript(context.Background(), path, "")
 		if lerr != nil {
 			t.Fatalf("readTranscriptFull accepted the file but readTranscript rejected it: %v\n  transcript=%s", lerr, raw)
 		}
@@ -47,7 +49,7 @@ func FuzzTranscriptReadersAgree(f *testing.F) {
 		if full.Skipped != 0 {
 			return
 		}
-		strict, strictErr := readStrictChildTranscript(path, "", full.Header.SessionID, transcriptJSONLMaxLineBytes)
+		strict, strictErr := readStrictChildTranscript(path, "", full.Header.SessionID, transcript.DefaultMaxLineBytes)
 		if strictErr != nil {
 			t.Fatalf("full reader saw a clean transcript (0 skipped) but strict reader rejected it: %v\n  transcript=%s", strictErr, raw)
 		}

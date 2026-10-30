@@ -2,6 +2,7 @@ import { type ComposerSourceState, createComposerSourceState } from "../panes/se
 import type { TranscriptReadView } from "../panes/session/transcript/transcriptReadView";
 import type { JobLogReader } from "../panes/transcript/jobLogReader";
 import { parseZoomParams } from "../panes/zoom/intent";
+import { createSecureUUID } from "../stores/secureUUID";
 import { refParam } from "./routing";
 import { type OpenPaneRecord, onPaneRetype, workspaceStore } from "./workspace";
 
@@ -10,6 +11,7 @@ export interface PaneLifetime {
   readonly serial: number;
   readonly sourceRef: string;
   readonly sourceType: "session" | "transcript";
+  readonly compositionOwnerId: string;
   readonly alive: boolean;
   readonly composer: ComposerSourceState | null;
   readonly composers: Map<string, ComposerSourceState>;
@@ -37,6 +39,7 @@ export function conversationPaneLifetime(pane: OpenPaneRecord): PaneLifetime {
   const lifetime: PaneLifetime = {
     paneId: pane.id,
     serial: ++nextSerial,
+    compositionOwnerId: createSecureUUID(),
     get sourceRef() {
       return sourceRef;
     },
@@ -52,7 +55,7 @@ export function conversationPaneLifetime(pane: OpenPaneRecord): PaneLifetime {
       if (!alive || sourceType !== "session") return null;
       let state = lifetime.composers.get(sourceRef);
       if (state === undefined) {
-        state = createComposerSourceState(sourceRef);
+        state = createComposerSourceState(sourceRef, lifetime.compositionOwnerId);
         lifetime.composers.set(sourceRef, state);
       }
       return state;
@@ -83,6 +86,12 @@ export function conversationPaneLifetime(pane: OpenPaneRecord): PaneLifetime {
   };
   lifetimes.set(pane, lifetime);
   return lifetime;
+}
+
+/** The lifetime this pane already owns, without creating one: callers that only
+ * read identity (a pending navigation's fence) must not mint lifetimes. */
+export function existingConversationPaneLifetime(pane: OpenPaneRecord): PaneLifetime | null {
+  return lifetimes.get(pane) ?? null;
 }
 
 export function disposeConversationPaneLifetime(pane: OpenPaneRecord): void {

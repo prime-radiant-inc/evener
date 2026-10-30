@@ -24,11 +24,7 @@ import { reloadPage } from "../../../../shell/pageReload";
 import { Button, Dialog } from "../../../../widgets";
 import { isStaleConnectDialogChunkError, loadConnectDialog } from "../../../spawn/connectDialogChunk";
 
-type ConnectProviderDialogComponent = (props: {
-  onClose(): void;
-  onConnected(name?: string): void;
-  completionLabel: string;
-}) => JSX.Element;
+type ConnectProviderDialogComponent = (props: { onClose(): void; onConnected(name?: string): void }) => JSX.Element;
 export type ConnectProviderDialogChunk = LazyExoticComponent<ConnectProviderDialogComponent>;
 
 function lazyConnectProviderDialog(cacheBust = false): ConnectProviderDialogChunk {

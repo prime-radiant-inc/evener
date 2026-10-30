@@ -21,6 +21,7 @@ import type {
   ThreadItemPosition,
   ThreadStatus,
   ThreadTurnsListResponse,
+  TranscriptAuthorship,
 } from "./types.gen";
 
 // A single image handle on an item: `src` is the already-resolved fetch URL
@@ -29,7 +30,7 @@ import type {
 // through UNRESOLVED alongside it — restoring the provenance a renderer
 // needs to caption an image (or, later, group it by where it came from)
 // instead of the reducer collapsing every image down to whichever field won
-// that fallback and discarding the rest (kata byq2). source only ever comes
+// that fallback and discarding the rest. source only ever comes
 // from an OutputImage (a tool result); an InputItem (a user-sent or steered
 // image) has no such field and never populates it.
 export interface ItemImage {
@@ -40,6 +41,7 @@ export interface ItemImage {
 }
 
 export interface ItemModel {
+  authorship?: TranscriptAuthorship;
   id: string;
   turnId: string;
   // Stable identity across historical/live projections. Display ids can be
@@ -75,7 +77,7 @@ export interface ItemModel {
   // systemMessage item is ("system_prompt", "compaction", "skill_activated",
   // …; appwire.ThreadItemEventKind* on the Go side). The transcript renderer
   // classifies scaffold/system items off this typed field instead of guessing
-  // from the item's char count (kata ckgw). Empty/undefined for non-system
+  // from the item's char count. Empty/undefined for non-system
   // items and for a system item projected by a daemon predating a given kind.
   eventKind?: string;
   // The wire's steering kind (events.SteeringKind* on the Go side): what the
@@ -99,7 +101,7 @@ export interface ItemModel {
   // item/completed and the snapshot/reload paths (both fold through
   // reducer's wireItemToModel).
   error?: string;
-  // Wire ThreadItem.prevalOnly (kata hgm1): true when `error` came from the
+  // Wire ThreadItem.prevalOnly: true when `error` came from the
   // daemon rejecting the call before it ever reached the tool's real
   // execution (an unknown tool name, or arguments still failing schema
   // validation after repair) - a malformed request the model made, not a
@@ -175,7 +177,7 @@ export interface TurnModel {
 // wire. apptranscript.PreludeTurn's system-prompt scaffold and appprojector's
 // bundled SESSION_START-time announcements (plugin loads, prompt-loaded
 // notices) both use it, so a transcript whose only turn is this one has never
-// had a real turn: the session is dormant (kata bz2z). It is also the one turn
+// had a real turn: the session is dormant. It is also the one turn
 // id that fixes its own POSITION - reducer.ts and the hub's snapshot reduction
 // (server/appwire_turns.go) both place it at the front of the transcript
 // however late its first frame arrives. Real turns always use "turn_N"
@@ -331,7 +333,7 @@ export interface ThreadModel {
   visionModel: string;
   askPending: boolean;
   // Surface-on-entry snapshot of blocked sandbox-exemption approval cards
-  // (M7) — appwire/types.go's ThreadEvener.PendingEscalations doc comment: "a
+  // (M7) — appwire/types_thread.go's ThreadEvener.PendingEscalations doc comment: "a
   // HUMAN-CLIENT field only ... never part of the model's transcript or any
   // model-visible projection." THREAD-level, never a turn item; always an
   // array (hydrateThread defaults an absent wire value to []).
@@ -387,7 +389,7 @@ export interface ThreadModel {
   // reasoning, tool call) - see reducer.ts's applyNotification.
   modelRetry?: ModelRetryState;
   // Wave 5 T1: the following are all sourced from thread.evener
-  // (appwire/types.go's EvenerThread, lines 223-274) and are SNAPSHOT-ONLY -
+  // (appwire/types_thread.go's EvenerThread) and are SNAPSHOT-ONLY -
   // hydrateThread populates them, and applyNotification updates them ONLY
   // where a real notification actually carries the field (see each field's
   // own note below); everything else here is stale until the next
@@ -395,12 +397,12 @@ export interface ThreadModel {
   // wire-candidate yet.
   // Not snapshot-only, unlike its neighbours here: thread/status/changed
   // carries the set that goes with the status it announces, and the reducer
-  // applies it (kata 06t8). It has to, because the hub derives send/steer/
+  // applies it. It has to, because the hub derives send/steer/
   // queue FROM whether a turn is in flight - a set cut before the turn
   // describes a session that no longer exists by the time the composer reads
   // it back. Absent on a status frame still means "no update".
   capabilities: ThreadCapabilities;
-  // Which frame last WROTE capabilities, for kata 5gdv. The symptom there is a
+  // Which frame last WROTE capabilities. The symptom is a
   // working session drawn with no Stop, reported from live use and not
   // reproduced in three live measurements -- so the set itself is not enough
   // evidence: what matters is where it came from and what the thread looked
@@ -500,6 +502,12 @@ export interface ThreadModel {
   // location cluster and doc-pane cwd-relativization. Snapshot-only - a
   // reconnect re-hydrates them; nothing pushes them live.
   cwd: string;
+  // The session's retained artifacts directory on the hub that serves it
+  // (wire Thread.evener.artifactsDir), absent when no local path names one. A
+  // file: link is openable through the doc pane only when it resolves inside
+  // cwd or inside this directory, so a link's destination is checked against
+  // both rather than guessed at.
+  artifactsDir?: string;
   gitBranch?: string;
   projectPath?: string;
   // When the session began and when its state was last written, as ISO

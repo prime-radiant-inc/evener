@@ -1,6 +1,7 @@
 // What takes the composer's place when a session can't take a message yet
-// (ruling 20): one that runs an older Evener and needs a restart, or one that
-// is paused. Plain text on the page with its one button beneath; no box.
+// (ruling 20): one that runs an older Evener and needs a restart. A
+// recovery-fenced session keeps its composer, because Send is how it resumes.
+// Plain text on the page with its one button beneath; no box.
 import { Pressable, Text, View } from "react-native";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 
@@ -10,7 +11,6 @@ const COPY = {
 		button: "Restart session",
 		busy: "Restarting…",
 	},
-	paused: { text: "This session is paused.", button: "Resume", busy: "Resume" },
 } as const;
 
 export function SessionNotice({
@@ -20,7 +20,7 @@ export function SessionNotice({
 	error = null,
 	onPress,
 }: {
-	kind: "restartNeeded" | "paused";
+	kind: "restartNeeded";
 	busy: boolean;
 	/** Nothing could act on the press, such as while the hub is away. */
 	disabled?: boolean;

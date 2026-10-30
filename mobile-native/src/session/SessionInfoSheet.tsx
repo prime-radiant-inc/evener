@@ -7,7 +7,7 @@ import { useNavigation } from "@react-navigation/native";
 import type { NativeStackNavigationProp, NativeStackScreenProps } from "@react-navigation/native-stack";
 import { SymbolView } from "expo-symbols";
 import { useState } from "react";
-import { Alert, Pressable, Text, TextInput, View } from "react-native";
+import { Pressable, Text, TextInput, View } from "react-native";
 import { taskSettledCount } from "@evener/appwire-client";
 import { markFor } from "../board/StateMark";
 import { copyText } from "../clipboard";
@@ -22,6 +22,7 @@ import { useSheet } from "../sheet/useSheet";
 import { sheetHosts, sheetKey, useSheetHost } from "../sheet/sheetHosts";
 import { Toast, type ToastController, type ToastMessage, useToast } from "../Toast";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
+import { confirmShutDown } from "./confirmShutDown";
 import { wrapAfterSlashes } from "./format";
 import { MODEL_ACTIONS } from "./ModelSheet";
 import {
@@ -38,7 +39,6 @@ import {
 	whereFacts,
 } from "./sessionFacts";
 import { SHUT_DOWN, sessionStateLine } from "./sessionState";
-import { destructiveButton } from "../haptics";
 
 export type SessionInfoAction = "aside" | "fork" | "compact" | "pin" | "archive" | "shutDown" | "delete";
 
@@ -64,15 +64,6 @@ export interface SessionInfoHost {
 }
 
 export const sessionInfoHosts = sheetHosts<SessionInfoHost>();
-
-/** Asks before shutting a session down. The ⋯ menu and this sheet ask the
- * same question. */
-export function confirmShutDown(shutDown: () => void): void {
-	Alert.alert("Shut down this session?", "It stops now and keeps its history. Sending a message resumes it.", [
-		{ text: "Cancel", style: "cancel" },
-		destructiveButton("Shut down", () => shutDown()),
-	]);
-}
 
 const GOAL_STATUS: Record<string, string> = { active: "Active", complete: "Complete", blocked: "Blocked" };
 

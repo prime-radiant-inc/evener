@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/llm"
@@ -92,36 +93,17 @@ func TestS5Cov_ResolveLiveModelProfile_NilGuards(t *testing.T) {
 
 func TestS5Cov_EnrichDiagnosticData(t *testing.T) {
 	t.Parallel()
-	// Warning value + pointer.
-	w := enrichDiagnosticData(events.EventWarning, events.WarningData{Message: "rate limit hit"})
+	w := enrichDiagnosticData(events.WarningData{Message: "rate limit hit"})
 	if wd, ok := w.(events.WarningData); !ok || wd.Source == "" {
-		t.Errorf("warning value not enriched: %#v", w)
+		t.Errorf("warning not enriched: %#v", w)
 	}
-	wp := enrichDiagnosticData(events.EventWarning, &events.WarningData{Message: "rate limit hit"})
-	if wpd, ok := wp.(*events.WarningData); !ok || wpd.Source == "" {
-		t.Errorf("warning pointer not enriched: %#v", wp)
-	}
-	// Nil pointer passes through untouched.
-	var nilW *events.WarningData
-	if got := enrichDiagnosticData(events.EventWarning, nilW); got != events.EventData(nilW) {
-		t.Error("nil warning pointer should pass through")
-	}
-	// Error value + pointer.
-	e := enrichDiagnosticData(events.EventError, events.ErrorData{Error: "rendezvous lost"})
+	e := enrichDiagnosticData(events.ErrorData{Error: "rendezvous lost"})
 	if ed, ok := e.(events.ErrorData); !ok || ed.Source == "" {
-		t.Errorf("error value not enriched: %#v", e)
+		t.Errorf("error not enriched: %#v", e)
 	}
-	ep := enrichDiagnosticData(events.EventError, &events.ErrorData{Error: "rendezvous lost"})
-	if epd, ok := ep.(*events.ErrorData); !ok || epd.Source == "" {
-		t.Errorf("error pointer not enriched: %#v", ep)
-	}
-	var nilE *events.ErrorData
-	if got := enrichDiagnosticData(events.EventError, nilE); got != events.EventData(nilE) {
-		t.Error("nil error pointer should pass through")
-	}
-	// Unhandled kind returns data unchanged.
-	if got := enrichDiagnosticData(events.EventContextCompaction, events.WarningData{Message: "x"}); got == nil {
-		t.Error("unhandled kind should return data unchanged")
+	// Payloads that carry no diagnostic fields pass through unchanged.
+	if _, ok := enrichDiagnosticData(events.ContextCompactionData{}).(events.ContextCompactionData); !ok {
+		t.Error("non-diagnostic payload should return unchanged")
 	}
 }
 
@@ -164,3 +146,11 @@ func TestS5Cov_ProviderCauseFromError_SignInRequired(t *testing.T) {
 type stubError string
 
 func (e stubError) Error() string { return string(e) }
+
+func TestSummarizeTaskPromptKeepsRunesWhole(t *testing.T) {
+	t.Parallel()
+	got := summarizeTaskPrompt("a" + strings.Repeat("世", 100))
+	if !utf8.ValidString(got) {
+		t.Fatalf("summarizeTaskPrompt split a rune: %q", got)
+	}
+}

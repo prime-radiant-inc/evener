@@ -1,0 +1,155 @@
+[
+ {
+  "id": "hub-hubcore-1",
+  "title": "Giant buildTreeAtWithProjects",
+  "verdict": "confirmed",
+  "severity": "high",
+  "note": "Opened tree.go: function spans 921-1754 (833 lines). All 13 named closures have exactly one call site (grep count 1 each); stateFor has 4. Overlays repeated at 1345 (buildNode), ~1612 and ~1706-1721 (NeedsYou) with node.State=st and Kind=\"session\" re-set after liveFieldsFor. Real, worth a PR series."
+ },
+ {
+  "id": "hub-hubcore-2",
+  "title": "LiveEntry/ProbeResult twin structs",
+  "verdict": "confirmed",
+  "severity": "high",
+  "note": "roster.go:120-150 and prober.go:195-224 confirm paraphrased 'mirrors LiveEntry.X' comments and LiveEntryThreadFacts as a 16-field hand copy (comment cites #2638). Exact shared-field count (~25) and 158 NewRosterWithEntries uses not re-counted. Embedding changes composite literals across tests, so the sweep cost is real."
+ },
+ {
+  "id": "hub-hubcore-3",
+  "title": "PinSectionStore retry loop x5",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Five identical 'for attempt := range 8' loops at pin_section.go:250/327/401/502/567 and 27 isSQLiteRetryable mentions confirmed; pin_section*_test.go total 2,682 lines vs 752 source; 12 Contains(err.Error(),\"locked\") in nonretry test confirmed. BUT the evidence that string matching is redundant with busy_timeout is wrong: sqlite_dsn.go:26-31 documents SQLITE_BUSY_SNAPSHOT which busy_timeout does not cover, so retry is legitimately needed. writeTx extraction is right; the retry classification should move to errors.As on the driver code only if the modernc error type exposes BUSY/LOCKED/BUSY_SNAPSHOT codes (verify first). Downgraded: duplication, not a bug source.",
+  "revised_fix_plan": "Extract writeTx(label, fn) owning the attempt loop; keep retry semantics (including BUSY_SNAPSHOT) unchanged in the first PR. Replace substring matching with errors.As on the driver error code in a second, separately tested step, only after confirming the driver exposes extended codes. Collapse tests into a writeTx table."
+ },
+ {
+  "id": "hub-hubcore-4",
+  "title": "Four SQLite store skeletons / half-fake fs",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "archive.go:55-72 comment admits sql.Open ignores the injected fs. SetFs on SQL stores: no non-test production callers (grep of cmd/evener-hub non-test files finds none); test uses in coverage_edges_test (6), external_edges_test (12), pin_section tests. Note Roster.SetFs and PastIndex.SetFs also exist with the same lack of production callers; consider them in the same sweep. Skeleton duplication across archive/favorite/session_seen/pin_section is real."
+ },
+ {
+  "id": "hub-hubcore-5",
+  "title": "Keybindings/TranscriptDisplay copies, missing ErrWriteApplied",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Verified: keybindingsSnapshotObjectFields (keybindings_store.go:264) and transcriptDisplaySnapshotObjectFields (transcript_display_store.go:341) are copy pairs; KeybindingsPostRenameError.Unwrap returns []error{e.Err, ErrWriteApplied} (line 47) while TranscriptDisplayPostApplyError.Unwrap returns only e.Err (line 48). The 'latent bug' is overstated: app_rpc_transcript_display.go:34 explicitly handles the typed error (broadcast + data payload), so no client is left stale today; it is an inconsistency. deletionSyncUnsupported is used by state_file.go (5 refs) plus deletion tests. The ForTest constructors are called from package hub tests (app_rpc_keybindings_test.go, app_rpc_transcript_display_test.go), so step 3 (in-package tests / export_test.go) cannot work across packages.",
+  "revised_fix_plan": "Steps 1, 2 (still red-test first; frame as consistency), 4, 5 stand. Step 3: keep the cross-package constructors or move them to the existing hubtest-style helper package; do not use export_test.go. Step 6 needs Jesse's call (error text)."
+ },
+ {
+  "id": "hub-hubcore-6",
+  "title": "Roster fingerprint hand-written",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "rosterFingerprint is roster.go:472-679 (207 lines) per awk of function end; past_root_fingerprint.go is 152 lines with the reflect-based guard approach. Fix plan is sound but invalidation-gate risk is medium; golden pairs first as proposed."
+ },
+ {
+  "id": "hub-hubcore-7",
+  "title": "Dead and test-only production surface",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Confirmed: proxy.go referenced only by proxy_test.go/coverage_edges_test.go (NewRESTProxy); SendMaxRequestBytes in types.go, used only by appwire_validation_test.go and cov_web_tree_session_fuzz_test.go; FavoriteCandidates/TopLevelSessionIDs has only comment references outside its definition (tree.go:672; favorite_authority.go:25 is a doc comment), so it is test-only too; MarkSeen/MarkUnread: production uses only MarkBatch (app_session_seen.go:64) but MarkSeen has test uses in 4 files incl. cmd/evener-hub; DeriveAttentionFromRoots has one internal caller (attention.go:75). PastIndex.SetOnChange has no production caller (main.go:1418 only SetOnRootChange) confirmed. Corrections: Store/StoreSnapshot/StoreSnapshotData are used by many cmd/evener-hub tests (app_archive_test, project_delete_test, app_host_manage_wiring_test, attention_remote_notify_test, host_routing_origin_test, navigation_pin_subagent_test), so migration cost is larger than 150-300 lines. Removing PastIndex onChange changes Rebuild's bool return (past.go:568, consumed by project_delete.go:568 'rebuilt'), and 9 past tests use SetOnChange; the return must be redefined as rootChanged-only. SetSearchProbeForTest/SeedForTest are used from package hub tests, so they cannot go to export_test.go.",
+  "revised_fix_plan": "PR1: delete proxy.go (+tests), SendMaxRequestBytes (+2 test refs). PR2: delete FavoriteCandidates, MarkSeen/MarkUnread (migrate tests to MarkBatch). Also delete TopLevelSessionIDs (test-only) if its 3 tests are migrated. PR3: migrate StoreSnapshot/StoreSnapshotData callers to StoreWalkSnapshot only if the hub-side test fixtures stay readable; otherwise leave. PR4: remove PastIndex onChange/fingerprint after redefining Rebuild's bool as root-change-only and updating project_delete's consumer. Keep cross-package test seams in a non-_test helper."
+ },
+ {
+  "id": "hub-hubcore-8",
+  "title": "PastIndex god object",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "past.go is 1730 lines (confirmed). The proposed work is file moves with ~0 net change; that is organization, not drag causing bugs. Worth doing opportunistically with finding 7 PR4, not as its own priority. ftsMirror ownership refactor is the only risky piece; skip until needed."
+ },
+ {
+  "id": "hub-hubcore-9",
+  "title": "Two Ref types / literal local",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Grammar divergence confirmed: hubapi/refs.go refPattern allows ':' and splits at first colon; appwire/refs.go refPartPattern excludes ':' and checks both parts. 15 '\"local\"' literals in non-test hubcore confirmed by per-file count (archive 2, deletion_store 2, pin_section 3, favorite_authority 2, roster 5, tree 1). No demonstrated wrong-key bug, impact is potential. hubapi.Ref is documented as the opaque hub session ref used for URL paths (PathEscaped), so removing it from hubcore may conflict with its role as the web/URL ref; this is a grammar decision for Jesse. The local-literal constant is the safe, immediate part.",
+  "revised_fix_plan": "Step 1: add appwire.LocalSourceID (or hubcore const) and replace literals. Step 2: write a red test that pins the a:b:c divergence and ask Jesse which grammar wins before consolidating."
+ },
+ {
+  "id": "hub-hubcore-10",
+  "title": "WebConfig dependency bag",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "config.go WebConfig has 84 exported fields (counted); 1307 'WebConfig{' literals in tests; RelayLifecycleHooks has 11 func fields (config.go:28-40); main.go:670 builds the throwaway WebConfig{Past,Archive,Roster}. Plan is appropriately incremental; risk is test churn."
+ },
+ {
+  "id": "hub-hubcore-11",
+  "title": "resumelocks.go four machines",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "File is 1009 lines (confirmed). I did not verify the four-state-machine characterization or lock-ordering invariants; a mechanical split is plausible but the benefit is organizational and the risk is lock-ordering mistakes. Treat as optional."
+ },
+ {
+  "id": "hub-hubcore-12",
+  "title": "Roster.refresh decision tree / dual subagent derivation",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "refresh is roster.go:770-1148 (~378 lines to refreshOwnership at 1149, larger than claimed 211; the finding's count may refer to a sub-part). ReadSpawnedThread (roster.go:1570-1596) maps delegate.Lifecycle to ThreadStatus* and filters Lifecycle==\"closed\", while prober.go:131 derives via idleStableDelegateChildIDs: dual derivation confirmed. BUT the plan to delete roster_other.go is wrong: it is the !linux&&!darwin implementation of processAlive/processIdentity and CI runs 'GOOS=windows make vet' (.github/workflows/ci.yml:186), so removing it would break the windows vet lane.",
+  "revised_fix_plan": "Keep roster_other.go (reword its history comment only). Do the classifyMissedProbe extraction and one shared subagentStatesFromDelegates with characterization tests first."
+ },
+ {
+  "id": "hub-hubcore-13",
+  "title": "Crash-skip rule x4",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "root_index.go:57 and :79, tree.go:958 (comment says 'same rule Roster.SubagentState applies'), roster.go subagentOwnerLocked (~1285) each implement it. Small but real."
+ },
+ {
+  "id": "hub-hubcore-14",
+  "title": "favoriteLive duplicates Live",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "tree.go:1745 'favoriteLive := liveNodes' and Live: liveNodes confirmed; SnapshotContext clones both (tree.go:68). Production never mutates Live (grep). But navigation_projection.go:670-684 second walk matters for fixture/deserialized trees lacking allCurrent (TierRows fallback), and navigation tests likely build such trees; deleting it requires fixture migration. allCurrent is always populated by production builds (tree.go:1529).",
+  "revised_fix_plan": "Delete favoriteLive (use Live) first. Handle the TierRows fallback and navigation second walk only after auditing navigation test fixtures; consolidate clone helpers separately."
+ },
+ {
+  "id": "hub-hubcore-15",
+  "title": "ProviderRegistry parked in hubcore",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "registry.go is 727 lines and imports auth/openai, internal/credentials, llm/registry (confirmed). Consumer claim (only app_auth/app_instances) not re-verified. Plan correctly defers (b) to Jesse; move is optional."
+ },
+ {
+  "id": "hub-hubcore-16",
+  "title": "Terminal job status and unix helpers",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "prober.go:331-338 and app_threadread.go:1699-1706 have the identical seven strings; agent/internal/jobstore/record.go:42-49 IsTerminal covers the same seven constants. Unix* helpers have 9 external non-test uses; pin_section.go repeats time.Unix(x,0).UTC() at 234,235,638,675,676,689,690. Note appwire is the right home only if its package is allowed to own job-status vocabulary; check whether appwire already defines job status constants."
+ },
+ {
+  "id": "hub-hubcore-17",
+  "title": "String-typed vocabularies",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "tree.go:446 doc says \"session\" | \"fork\" while nodeKind (603) returns \"subagent\"; NormalizeState (tree.go:576-600) has duplicate arms (NotLoaded and default; 'errored' and 'ended' pass-throughs). Typed constants are cosmetic; the doc fix and arm collapse are free."
+ },
+ {
+  "id": "hub-hubcore-18",
+  "title": "favorite_authority redundant branch",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "favorite_authority.go:~200-212: the 'if ClaimKey == \"\" { add; break }' branch adds the same value as the following line. I traced the rule: ambiguous iff any key empty or keys differ. Copy at LocalSessionDecisionAliases (append([]string(nil), ...)) is read-only use, confirmed needless. appendUniqueString wraps slices.Contains (line 321). Trivial."
+ },
+ {
+  "id": "hub-hubcore-19",
+  "title": "Coverage-chasing tests",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "26,165 test lines vs 13,452 source lines confirmed (1.95x). archive_test.go:241 asserts 'unable to open database file' and pin_section_coverage_test.go:80 asserts 'driver not registered' (error-text oracle forbidden by AGENTS.md/testing.md). My regex finds 49 source-line-number comments in hubcore tests, not 78 (the audit may count a wider pattern). 12 'locked' Contains confirmed. Plan to rewrite alongside refactors is right; a standalone sweep is not."
+ },
+ {
+  "id": "hub-hubcore-20",
+  "title": "History/issue-ID comments",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Spot-checked: roster_other.go 'as it always has', tree.go NormalizeState '(spec v5)', prober.go '(#2638)'. The 3,339/13,452 comment totals and 53 tag count were not re-derived. Valid but low; rides along with other changes."
+ },
+ {
+  "id": "hub-hubcore-21",
+  "title": "Catch-all package",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "proxy.go is dead (see 7). Other claims (hostplan consumers, types.go limits use) not fully verified. Low value as a separate item; fold into finding 7 PR1 and optional moves."
+ }
+]

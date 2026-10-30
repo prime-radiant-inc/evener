@@ -37,7 +37,7 @@ function displayOf(key: string): string {
 }
 
 // The compact form's glyphs, matching the command palette's own help rows
-// (shell/palette/CommandPalette.tsx's HELP_ROWS use these same literals).
+// (shell/palette/helpRows.tsx's HELP_ROWS use these same literals).
 // Mod goes through displayOf so the platform split stays in one place; any
 // key with no glyph here renders verbatim, exactly as the bordered form does.
 const GLYPH: Record<string, string> = {

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"strings"
 	"testing"
@@ -29,8 +31,8 @@ func TestHubMobilePairingUsesExplicitSafeOrigin(t *testing.T) {
 
 func TestHubMobilePairingConfiguredBaseURLTakesPrecedence(t *testing.T) {
 	web := NewWebServer(hubcore.WebConfig{
-		AuthToken:     "mobile-secret",
-		MobileBaseURL: "https://hub.example.test:9443",
+		AuthToken: "mobile-secret",
+		PublicURL: "https://hub.example.test:9443",
 	})
 
 	response, err := dispatchMobilePairing(t, web, appwire.MobilePairingParams{
@@ -41,6 +43,18 @@ func TestHubMobilePairingConfiguredBaseURLTakesPrecedence(t *testing.T) {
 	}
 	if response.AuthURL != "https://hub.example.test:9443/auth/mobile-secret" {
 		t.Fatalf("auth URL = %q", response.AuthURL)
+	}
+}
+
+func TestPublicURLMobilePairingCanonicalOrigin(t *testing.T) {
+	for _, tc := range []struct{ raw, want string }{
+		{"HTTPS://BÜCHER.EXAMPLE:443/", "https://xn--bcher-kva.example"},
+		{"https://[2001:DB8::20]:443/", "https://[2001:db8::20]"},
+	} {
+		response, err := mobilePairing(hubcore.WebConfig{AuthToken: "synthetic-token", PublicURL: tc.raw}, appwire.MobilePairingParams{})
+		if err != nil || response.AuthURL != tc.want+"/auth/synthetic-token" {
+			t.Fatalf("origin %q: URL %q, err %v", tc.raw, response.AuthURL, err)
+		}
 	}
 }
 
@@ -153,8 +167,8 @@ func TestHubMobilePairingRejectsUnsafeOriginWithoutLeakingToken(t *testing.T) {
 
 func TestHubMobilePairingRejectsUnsafeConfiguredBaseURL(t *testing.T) {
 	web := NewWebServer(hubcore.WebConfig{
-		AuthToken:     "mobile-secret",
-		MobileBaseURL: "http://127.0.0.1:9180",
+		AuthToken: "mobile-secret",
+		PublicURL: "http://127.0.0.1:9180",
 	})
 
 	_, err := dispatchMobilePairing(t, web, appwire.MobilePairingParams{
@@ -166,6 +180,36 @@ func TestHubMobilePairingRejectsUnsafeConfiguredBaseURL(t *testing.T) {
 	}
 	if wireErr.Code != appwire.CodeConflict {
 		t.Fatalf("error code = %d, want %d (%v)", wireErr.Code, appwire.CodeConflict, wireErr)
+	}
+}
+
+func TestPublicURLUnsafeInvitationDoesNotDisableDirectHub(t *testing.T) {
+	web := NewWebServer(hubcore.WebConfig{AuthToken: "synthetic-token", PublicURL: "http://127.0.0.1:9180"})
+	server := httptest.NewServer(web.Handler())
+	defer server.Close()
+	response, err := http.Get(server.URL + "/api/debug/subscriptions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("uncredentialed direct request status %d", response.StatusCode)
+	}
+	request, err := http.NewRequest(http.MethodGet, server.URL+"/api/debug/subscriptions", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer synthetic-token")
+	response, err = server.Client().Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("authenticated direct request status %d", response.StatusCode)
+	}
+	if _, err := mobilePairing(hubcore.WebConfig{AuthToken: "synthetic-token", PublicURL: "http://127.0.0.1:9180"}, appwire.MobilePairingParams{}); err == nil {
+		t.Fatal("unsafe mobile origin permitted")
 	}
 }
 
@@ -220,20 +264,20 @@ func TestSafeMobileOriginRejectsNonPortableAddresses(t *testing.T) {
 }
 
 func TestSafeMobileOriginAllowsOrdinaryHTTPSDNSNameWithoutResolution(t *testing.T) {
-	for _, origin := range []string{
-		"https://unresolvable.example.test:9443",
-		"https://bücher.example:9443",
-		"https://notlocalhost",
-		"https://foo_bar.example:9443",
-		"https://-foo.example:9443",
-		"https://foo-.example:9443",
-		"https://123.example:9443",
-		"https://hub123:9443",
-		"https://hub.0xgg:9443",
+	for _, tc := range []struct{ origin, want string }{
+		{"https://unresolvable.example.test:9443", "https://unresolvable.example.test:9443"},
+		{"https://bücher.example:9443", "https://xn--bcher-kva.example:9443"},
+		{"https://notlocalhost", "https://notlocalhost"},
+		{"https://foo_bar.example:9443", "https://foo_bar.example:9443"},
+		{"https://-foo.example:9443", "https://-foo.example:9443"},
+		{"https://foo-.example:9443", "https://foo-.example:9443"},
+		{"https://123.example:9443", "https://123.example:9443"},
+		{"https://hub123:9443", "https://hub123:9443"},
+		{"https://hub.0xgg:9443", "https://hub.0xgg:9443"},
 	} {
-		t.Run(origin, func(t *testing.T) {
-			if got, ok := safeMobileOrigin(origin); !ok || got != origin {
-				t.Fatalf("safeMobileOrigin(%q) = %q, %v; want unchanged origin", origin, got, ok)
+		t.Run(tc.origin, func(t *testing.T) {
+			if got, ok := safeMobileOrigin(tc.origin); !ok || got != tc.want {
+				t.Fatalf("safeMobileOrigin(%q) = %q, %v; want %q", tc.origin, got, ok, tc.want)
 			}
 		})
 	}

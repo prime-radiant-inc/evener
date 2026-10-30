@@ -210,12 +210,7 @@ func TestHostSettingsUIDisposableHostE2E(t *testing.T) {
 	}
 	goos, goarch := hostTarget(t, host)
 
-	provider, err := fakellm.New()
-	if err != nil {
-		t.Fatalf("start fake provider: %v", err)
-	}
-	t.Cleanup(provider.Close)
-
+	provider := newFakeLLMProvider(t)
 	runID := hostDeployRunID()
 	hostDir := home + "/" + hostSettingsUIDirPrefix + "-" + runID
 	cfgRoot := hostDir + "/evener"

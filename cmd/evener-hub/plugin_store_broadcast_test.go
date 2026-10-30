@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/appserver"
@@ -216,8 +217,7 @@ func TestRegisterPluginHandlers_MarketplaceEditBroadcastsExactlyOnce(t *testing.
 }
 
 // TestNewHubAppServer_NilPluginManagerFallbackBroadcasts proves the
-// nil-cfg.PluginManager fallback in newHubAppServerWithNavigationAndTrace
-// (app_rpc.go:519-523) wires wirePluginStoreBroadcast just like newWebServer's
+// nil-cfg.PluginManager fallback in newHubAppServerWithNavigationAndTrace wires wirePluginStoreBroadcast just like newWebServer's
 // own cfg.PluginManager path does. Every other test in this file either
 // injects its own Manager or drives NewWebServer, which pre-sets
 // cfg.PluginManager before this constructor ever runs
@@ -234,13 +234,8 @@ func TestNewHubAppServer_NilPluginManagerFallbackBroadcasts(t *testing.T) {
 	server := newHubAppServer(hubcore.WebConfig{PluginRoot: t.TempDir()}, appsource.NewRegistry())
 	hub := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	if _, err := client.MarketplaceAdd(context.Background(), appwire.MarketplaceAddParams{
+	client := dialHubRPCInitialized(t, hub)
+	if _, err := appwiretest.MarketplaceAdd(context.Background(), client, appwire.MarketplaceAddParams{
 		Source: appwire.MarketplaceSourceInput{Kind: "directory", Path: dir},
 	}); err != nil {
 		t.Fatalf("MarketplaceAdd: %v", err)
@@ -272,13 +267,8 @@ func TestNewWebServer_WiresPluginStoreBroadcastToItsOwnServer(t *testing.T) {
 		PluginRoot: t.TempDir(),
 	})
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	if _, err := client.MarketplaceAdd(context.Background(), appwire.MarketplaceAddParams{
+	client := dialHubRPCInitialized(t, hub)
+	if _, err := appwiretest.MarketplaceAdd(context.Background(), client, appwire.MarketplaceAddParams{
 		Source: appwire.MarketplaceSourceInput{Kind: "directory", Path: dir},
 	}); err != nil {
 		t.Fatalf("MarketplaceAdd: %v", err)

@@ -137,8 +137,11 @@ Seven successful visible checker calls used export-style environment setup that
 the narrow application oracle does not credit. Those checks prove execution,
 not memory application or benefit. Recall, correction, reliability and savings
 remain unproved. Initial verifier diagnostics and the exact live wire tool
-advertisement were not retained. Collector completion/duration fields are not
-valid outcome evidence; actual terminal events and elapsed timings are used.
+advertisement were not retained. The retained run predates the collector
+`completed` assignment, so its constant false values are not evidence.
+`completed` records whether the latest observed session-input boundary was
+successful; it is not task outcome evidence, and duration is timing, not
+outcome. Actual terminal events and elapsed timings are used.
 Infrastructure-stop diagnostic retention also remains limited. Historical invalid
 attempts remain in retained reports, not evidence of a valid comparison. Any
 later live run needs fresh controller authorization and valid executed held-out
@@ -437,7 +440,7 @@ The state vocabulary is fixed and shared by the web rail and
 AppWire: `idle`, `active`, `awaiting`, `warning`, `errored`,
 `ended`, `notLoaded` (`hubcore.NormalizeState`,
 `cmd/evener-hub/internal/hubcore/tree.go#NormalizeState`, normalizing
-`appwire.ThreadStatus*`, `appwire/types.go:138-145`). A running turn is
+`appwire.ThreadStatus*`, `appwire/types_protocol.go`). A running turn is
 **`active`**, never `processing` — `processing` is not a wire value at
 all, and `test/scenarios/scenario_docs_test.go`'s
 `TestScenarioDocsUseCanonicalActiveState` fails the build on any card
@@ -495,7 +498,7 @@ the SPA shell and `/s/<id>/images/<sha>`, and every other sub-path
 returns 404.
 
 Steer, queue, and drain-as-steer likewise use `turn/steer`,
-`turn/queue`, and `turn/drainAsSteer` (`appwire/types.go:24,26-27`).
+`turn/queue`, and `turn/drainAsSteer` (`appwire/types_protocol.go`).
 A scenario that needs the *user-visible* behaviour should drive the composer
 in a browser; a wire-contract or gating assertion should drive AppWire
 directly.
@@ -526,7 +529,7 @@ Notifications for other threads arrive interleaved with your responses,
 so match on `id` rather than reading the next frame and hoping.
 
 Navigation reads use the same socket and method catalog. The
-[navigation capability and request types](../../appwire/types.go) use
+[navigation capability and request types](../../appwire/types_session.go) use
 representation version 3 independently of the connection protocol version.
 Send `evener/navigation/read` with one of these parameter shapes:
 
@@ -860,7 +863,7 @@ rendered and was reconciled" from "pending chip never rendered." A chip
 that is still present after the settle window is the failure signal:
 reconciliation is driven by the `clientMutationId` coming back on
 `thread/queueChanged`, `evener/steering/injected`, `item/*` or `turn/*`
-(`stores/threads.ts:797-810`), so a stuck chip means the ack never
+(the notification handling in `stores/threads.ts`), so a stuck chip means the ack never
 arrived.
 
 ### Probing without a renderer handle

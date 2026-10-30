@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import type {
   NavigationManifest,
   NavigationProjectResource,
+  NavigationReadParams,
   NavigationSessionSummary,
   NavigationSnapshot,
 } from "@evener/appwire-client";
@@ -32,22 +33,24 @@ import {
   refreshLoadedArchivedLists,
   resetArchivedListStoreForTests,
 } from "../../stores/archivedList";
-import { connectionStore } from "../../stores/connection";
+import { setCacheChannelFactoryForTests } from "../../stores/cacheLifetime";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
-import { resetThreadsStoreForTests, setCacheChannelFactoryForTests, threadsStore } from "../../stores/threads";
+import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import { hoverForTooltip } from "../../widgets/tooltip/tooltipTestUtils";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
 import { ClientProvider } from "../clientContext";
 import { registerPaneForTests } from "../paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
-import { adaptNavigationResources, archiveSessionIdentity, Rail } from "./Rail";
+import { archiveSessionIdentity, Rail } from "./Rail";
 import railStyles from "./Rail.module.css";
 import { EXPANSION_STORAGE_KEY } from "./railExpansion";
 import * as railNodeExports from "./railNodes";
 import { projectNodes } from "./railNodes";
 import { RailRenderObserver } from "./railRenderObserver";
+import { adaptNavigationResources } from "./railResources";
 
 function summary(overrides: Partial<NavigationSessionSummary> = {}): NavigationSessionSummary {
   return {
@@ -80,7 +83,74 @@ function emptyManifest(): NavigationManifest {
     catalogs: { projects: { count: 0 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
   });
 }
+// The read parameters that address `key`, so wireSnapshot can build the graph
+// the hub would have sent for it.
+function readParamsFor(key: ResourceKey): NavigationReadParams {
+  const v3 = { representationVersion: 3 as const };
+  switch (key.kind) {
+    case "manifest":
+      return { resource: "manifest", ...v3 };
+    case "section":
+      return { resource: "section", ...v3, section: key.section, offset: key.offset, limit: key.limit };
+    case "pin_catalog":
+      return { resource: "pin_catalog", ...v3, offset: key.offset, limit: key.limit };
+    case "pin_section":
+      return { resource: "pin_section", ...v3, sectionId: key.sectionId, offset: key.offset, limit: key.limit };
+    case "catalog":
+      return { resource: "catalog", ...v3, catalog: key.catalog, offset: key.offset, limit: key.limit };
+    case "project":
+      return {
+        resource: "project",
+        ...v3,
+        projectKey: key.projectKey,
+        ...(key.catalog ? { catalog: key.catalog } : {}),
+      };
+    case "project_page":
+      return {
+        resource: "project_page",
+        projectKey: key.projectKey,
+        ...(key.catalog ? { catalog: key.catalog } : {}),
+        tier: key.tier,
+        offset: key.offset,
+        limit: key.limit,
+        ...v3,
+      };
+    case "location":
+      return { resource: "location", ...v3, ref: key.ref };
+  }
+}
+
+// wireSnapshot leaves a project's per-tier remaining counts at zero; the seeded
+// data's counts are what the hub would have sent.
+function projectRemaining(metadata: NavigationSnapshot["metadata"], data: unknown): NavigationSnapshot["metadata"] {
+  const tiers = data as Partial<Record<"current" | "recent" | "archived", { remaining?: number }>>;
+  return {
+    ...(metadata as Record<string, unknown>),
+    current_remaining: tiers.current?.remaining ?? 0,
+    recent_remaining: tiers.recent?.remaining ?? 0,
+    archived_remaining: tiers.archived?.remaining ?? 0,
+  };
+}
+
+// A resource as the navigation store holds it after a decoded snapshot: the
+// seeded data plus the normalized graph the rail reads.
 function resource<T>(key: ResourceKey, data: T): ResourceState<T> {
+  const state = rawResource(key, data);
+  // A failed or gone read carries no data and, as in the store, no graph.
+  if (key.kind === "manifest" || data === null) return state;
+  const wire = wireSnapshot(readParamsFor(key), data).data as NavigationSnapshot;
+  const snapshot = key.kind === "project" ? { ...wire, metadata: projectRemaining(wire.metadata, data) } : wire;
+  return {
+    ...state,
+    normalized: {
+      key,
+      graph: normalizedGraphFromSnapshot(snapshot),
+      version: { generationId: "g1", revision: 1, etag: "e" },
+      presence: "present",
+    },
+  };
+}
+function rawResource<T>(key: ResourceKey, data: T): ResourceState<T> {
   return {
     key,
     data,
@@ -268,7 +338,7 @@ function stubScrollIntoView(): () => void {
 }
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetNavigationStoreForTests();
   resetNavigationStoreForTests();
   resetToastStoreForTests();
@@ -277,7 +347,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   vi.unstubAllGlobals();
 });
 
@@ -2467,6 +2537,20 @@ describe("resource-backed Rail", () => {
     expect(loadProject).toHaveBeenCalledWith("p");
   });
 
+  test("a resource with data and no graph renders no rows", () => {
+    // The store attaches a graph to every resource it publishes with data, so
+    // data alone is not a source of rows.
+    const liveRows = sectionResource("live", [summary({ title: "Ungraphed live row" })]);
+    const catalog = catalogResource([{ key: "p", name: "Ungraphed project", session_count: 1 }]);
+    installState([
+      { ...liveRows, normalized: undefined },
+      { ...catalog, normalized: undefined },
+    ]);
+    render(<Rail />);
+    expect(screen.queryByText("Ungraphed live row")).toBeNull();
+    expect(screen.queryByText("Ungraphed project")).toBeNull();
+  });
+
   test("an unrelated live session update does not reinvoke an unchanged errored project row", () => {
     const observer = vi.fn();
     const catalog = catalogResource([{ key: "p", name: "Retry project", session_count: 1 }]);
@@ -2487,7 +2571,10 @@ describe("resource-backed Rail", () => {
       navigationStore.setState({ resources });
     });
 
-    expect(observer).toHaveBeenCalledWith("navigation:live:local:sibling");
+    // A graph-backed row is identified by its entity key, so the sibling is
+    // found by what it shows rather than by a row id.
+    expect(screen.getByText("Sibling session")).toBeTruthy();
+    expect(observer).toHaveBeenCalled();
     expect(observer).not.toHaveBeenCalledWith("projectnode:p");
   });
 });

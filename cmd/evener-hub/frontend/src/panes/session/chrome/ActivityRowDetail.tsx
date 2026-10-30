@@ -15,12 +15,15 @@ import {
   type ActivityWatchRow,
   activityDelegateDiagnostics,
   activityDelegateState,
+  compactDuration,
   decodeJobOutputText,
   delegateTiming,
   findEntityView,
   formatClockTime,
   jobCommandLabel,
+  parseAnsiLines,
   parseJobOutputPage,
+  parseTimestampMs,
   splitMandate,
   watchDeliveryInstants,
   watchFacts,
@@ -32,12 +35,11 @@ import { useNavigationStore } from "../../../stores/navigation/store";
 import { threadsStore, useThreadsStore } from "../../../stores/threads";
 import { useEntityViews } from "../../../transcriptDisplay/entityViews";
 import { Disclosure, Markdown, MarkdownBubble } from "../../../widgets";
-import { parseAnsiLines } from "../../../widgets/codeblock/ansi";
 import { AnsiLineContent } from "../../../widgets/codeblock/ansiLine";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { navigationSummaryFor } from "../threadTitle";
 import { EntityRef } from "../transcript/EntityRef";
-import { delegateName, formatQuietAge, jobStatusDisplay, quietAnchorMillis } from "./activityFormat";
+import { delegateName, jobStatusDisplay, quietAnchorMillis } from "./activityFormat";
 import styles from "./activitypanel.module.css";
 import { useTreeNow } from "./treeNow";
 
@@ -196,12 +198,6 @@ function ActivityWatchTimeline({ watch, now }: { watch: SessionWatch; now: numbe
   );
 }
 
-function parseMillis(value: string | undefined): number | undefined {
-  if (!value) return undefined;
-  const parsed = Date.parse(value);
-  return Number.isNaN(parsed) ? undefined : parsed;
-}
-
 // detailSubject projects both row kinds onto one shape so the meta line has a
 // single code path: the quiet age already measured against the ticking `now`
 // (never the snapshot's frozen number, which a quiet subject emits no frames
@@ -228,8 +224,8 @@ function subjectOf(row: ActivityJobRow | ActivityDelegateRow, now: number): Deta
       outputBytes: job.outputBytes,
       quietForMs: now - quietAnchorMillis(job),
     };
-    const start = parseMillis(job.startedAt);
-    const end = parseMillis(job.endedAt);
+    const start = parseTimestampMs(job.startedAt);
+    const end = parseTimestampMs(job.endedAt);
     if (start !== undefined && end !== undefined) subject.durationMs = end - start;
     if (job.exitCode !== undefined) subject.exitCode = job.exitCode;
     return subject;
@@ -260,7 +256,7 @@ function metaText(row: ActivityJobRow | ActivityDelegateRow, now: number): strin
   if (row.live) {
     const segments: string[] = [
       subject.quietForMs !== undefined
-        ? `${jobStatusDisplay(subject.status, subject.reason)} ${formatQuietAge(subject.quietForMs)}`
+        ? `${jobStatusDisplay(subject.status, subject.reason)} ${compactDuration(subject.quietForMs)}`
         : jobStatusDisplay(subject.status, subject.reason),
       bytes,
     ];

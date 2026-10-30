@@ -1,9 +1,12 @@
 import { type ReactNode, useCallback, useEffect, useRef } from "react";
 import { requireClass } from "../internal/requireClass";
+import { watchViewport } from "../internal/viewportWatch";
 import type { SideAnchor } from "./computePosition";
 import { describeChild, FloatingBubblePortal, useFloatingBubble } from "./floatingBubble";
 import styles from "./hovercard.module.css";
 import { isHoverless, POINTER_CLICK_WINDOW_MS } from "./useFloatingLabel";
+
+export { POINTER_CLICK_WINDOW_MS };
 
 /** How long a finger must rest on a long-press-enabled trigger on a hoverless device
  * before its card opens. A shorter hold than this is a tap and activates the
@@ -52,6 +55,7 @@ export function HoverCard({ label, children, focusTarget, longPressEnabled, side
     triggerProps,
     setBubbleRef,
     bubbleStyle,
+    bubbleContainer,
     bubbleID,
     describedBy,
     showImmediately,
@@ -111,15 +115,25 @@ export function HoverCard({ label, children, focusTarget, longPressEnabled, side
   // pair exists only for as long as the gesture does: an idle trigger owns none,
   // so the count does not grow with the number of mounted cards. The
   // pending/visible floating-label dismissal is the shared hook's own pair.
-  const armGestureListeners = useCallback(() => {
-    if (gestureListenersRef.current !== null) return;
-    window.addEventListener("scroll", abortPress, true);
-    window.addEventListener("resize", abortPress);
-    gestureListenersRef.current = () => {
-      window.removeEventListener("scroll", abortPress, true);
-      window.removeEventListener("resize", abortPress);
-    };
-  }, [abortPress]);
+  const armGestureListeners = useCallback(
+    (doc: Document) => {
+      if (gestureListenersRef.current !== null) return;
+      // The trigger's own window: a Dockview popout resizes and scrolls its own
+      // window, and the opener's never sees either.
+      gestureListenersRef.current = watchViewport(doc, abortPress);
+    },
+    [abortPress],
+  );
+
+  // A press can outlive a document move: Dockview relocates the mounted card
+  // while the timer runs, and the cancellation pair has to travel with it or a
+  // scroll in the destination window never ends the press.
+  const ownerDocument = bubbleContainer.ownerDocument;
+  useEffect(() => {
+    if (gestureListenersRef.current === null) return;
+    disposeGestureListeners();
+    armGestureListeners(ownerDocument);
+  }, [armGestureListeners, disposeGestureListeners, ownerDocument]);
 
   // Turning long-press mode off mid-gesture clears the press and its listeners.
   useEffect(() => {
@@ -133,9 +147,9 @@ export function HoverCard({ label, children, focusTarget, longPressEnabled, side
       swallowClickRef.current = false;
       dismiss();
     };
-    document.addEventListener("pointerdown", handleOutsidePointer, true);
-    return () => document.removeEventListener("pointerdown", handleOutsidePointer, true);
-  }, [dismiss, longPressEnabled, visible, wrapperRef]);
+    ownerDocument.addEventListener("pointerdown", handleOutsidePointer, true);
+    return () => ownerDocument.removeEventListener("pointerdown", handleOutsidePointer, true);
+  }, [dismiss, longPressEnabled, ownerDocument, visible, wrapperRef]);
 
   useEffect(() => {
     if (!visible) swallowClickRef.current = false;
@@ -170,7 +184,9 @@ export function HoverCard({ label, children, focusTarget, longPressEnabled, side
         clearSwallowBackstop();
         longPressStartRef.current = { x: event.clientX, y: event.clientY, pointerId: event.pointerId };
         clearTimeout(longPressTimerRef.current);
-        armGestureListeners();
+        // The pressed element's own document: right even on the first press
+        // after mounting directly in a popout, before any render settled state.
+        armGestureListeners(event.currentTarget.ownerDocument);
         longPressTimerRef.current = setTimeout(() => {
           longPressTimerRef.current = undefined;
           swallowClickRef.current = true;
@@ -229,6 +245,7 @@ export function HoverCard({ label, children, focusTarget, longPressEnabled, side
         className={CLASS.bubble}
         style={bubbleStyle}
         setRef={setBubbleRef}
+        container={bubbleContainer}
         longPressEnabled={longPressEnabled}
       >
         {label}

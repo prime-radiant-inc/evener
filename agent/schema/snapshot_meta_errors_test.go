@@ -13,7 +13,7 @@ import (
 // fixture yields only the valid meta through it.
 func TestListSessionMetasWithErrors_ReportsCorruptMeta(t *testing.T) {
 	dir := t.TempDir()
-	sessionsDir := filepath.Join(dir, sessionsSubdir)
+	sessionsDir := filepath.Join(dir, SessionsSubdir)
 	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestListSessionMetasWithErrors_ReportsCorruptMeta(t *testing.T) {
 // keeps rejecting it and never follows the link.
 func TestListSessionMetasWithErrors_ReportsNonRegularMeta(t *testing.T) {
 	dir := t.TempDir()
-	sessionsDir := filepath.Join(dir, sessionsSubdir)
+	sessionsDir := filepath.Join(dir, SessionsSubdir)
 	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}

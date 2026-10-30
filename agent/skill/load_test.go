@@ -228,59 +228,14 @@ func TestSkillLoadDoesNotRetargetDeletedSource(t *testing.T) {
 	}
 }
 
-func TestSkillLoadBodyRejectsChangedDeclaredName(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "SKILL.md")
-	original := []byte("---\nname: original\ndescription: original description\n---\noriginal body\n")
-	descriptor := parseLoadFixture(t, path, original)
-	changed := []byte("---\nname: replacement\ndescription: replacement description\n---\nreplacement body\n")
-	writeLoadFixture(t, path, changed)
-
-	if body, err := LoadSkillBody(descriptor.Meta); err == nil {
-		t.Fatalf("LoadSkillBody() accepted changed declared name with body %q", body)
+// loadSkillBody loads meta through Load under its own name and returns the
+// instruction body.
+func loadSkillBody(meta SkillMeta) (string, error) {
+	loaded, _, err := Load(Descriptor{CatalogName: meta.Name, Meta: meta})
+	if err != nil {
+		return "", err
 	}
-}
-
-func TestSkillLoadResolveContentUsesCurrentValidation(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "SKILL.md")
-	original := []byte("---\nname: original\ndescription: original description\n---\noriginal body\n")
-	descriptor := parseLoadFixture(t, path, original)
-	invalid := []byte("---\nname: original\ndescription: invalid current control\nuser-invocable: yes\n---\ninvalid body\n")
-	writeLoadFixture(t, path, invalid)
-
-	body, err := ResolveSkillContent(map[string]SkillMeta{"plugin:original": descriptor.Meta}, "plugin:original")
-	if err == nil || body != "" {
-		t.Fatalf("ResolveSkillContent() = %q, %v; want validation error and no body", body, err)
-	}
-}
-
-func TestSkillLoadWrappersEnforceSuppliedDeclaredName(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "SKILL.md")
-	data := []byte("---\nname: probe\ndescription: identity fixture\n---\nPROBE_BODY_2d61\n")
-	descriptor := parseLoadFixture(t, path, data)
-
-	t.Run("missing name", func(t *testing.T) {
-		if body, err := LoadSkillBody(SkillMeta{SkillFile: path}); err == nil {
-			t.Fatalf("LoadSkillBody() accepted missing supplied name with body %q", body)
-		}
-	})
-
-	t.Run("metadata cannot override supplied name", func(t *testing.T) {
-		meta := descriptor.Meta
-		meta.Name = "supplied-wrong"
-		if body, err := ResolveSkillContent(map[string]SkillMeta{"plugin:probe": meta}, "plugin:probe"); err == nil {
-			t.Fatalf("ResolveSkillContent() accepted metadata-reinferred name with body %q", body)
-		}
-	})
-
-	t.Run("qualified key cannot become declared suffix", func(t *testing.T) {
-		meta := SkillMeta{Name: "plugin:probe", SkillFile: path}
-		if body, err := ResolveSkillContent(map[string]SkillMeta{"plugin:probe": meta}, "plugin:probe"); err == nil {
-			t.Fatalf("ResolveSkillContent() accepted suffix-reinferred name with body %q", body)
-		}
-	})
+	return loaded.Body, nil
 }
 
 func parseLoadFixture(t *testing.T, path string, data []byte) Descriptor {

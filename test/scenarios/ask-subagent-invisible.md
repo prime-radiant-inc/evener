@@ -27,10 +27,10 @@ delegation-only tools for a coordinator.
 
 1. Spawn a **root** session and have it delegate a task whose whole job is to try to call
    `ask_user` and report what happened. Creation is asynchronous and rejects `max_wait_ms`
-   outright (`agent/session_tools.go#stableDelegateCreateTool`), so the root ends its turn
+   outright (`agent/session_tools_delegate.go#delegateCreateTool`), so the root ends its turn
    and reports once the delegate's terminal notification wakes it — no poll loop, and no
    `job_id` to capture, because creation returns none
-   (`agent/session_tools.go#stableDelegateCreateResult`):
+   (`agent/session_tools_delegate.go#delegateCreateResult`):
    ```bash
    tmpdir=$(mktemp -d -t evener-e2e-ask-subagent-XXXXX)
    prompt="Call the delegate tool exactly once, with NO max_wait_ms, and this task: \"Immediately try calling a tool named ask_user, with header Confirm, question Should we proceed, and two options Yes and No. If that tool is unavailable, unknown, or absent from your tool list, call communicate with the exact text: ASK_USER_UNAVAILABLE. If it somehow succeeds, call communicate with the exact text: ASK_USER_SUCCEEDED.\" Report the delegate_id and end your turn. When the delegate's terminal notification arrives, tell me the delegate_id and the final message from the delegate, and end your turn."
@@ -83,22 +83,16 @@ delegation-only tools for a coordinator.
    either. That `additionalProperties: false` is advisory, not enforced: `DefDelegate`
    ships `Strict: &strictFalse`, so an unknown key is not rejected by schema validation —
    what actually fires for `max_wait_ms` is evener's own `invalid_request` check in
-   `agent/session_tools.go#stableDelegateCreateTool`. There is no
+   `agent/session_tools_delegate.go#delegateCreateTool`. There is no
    `grant_tools` property, and the delegate tool's Go handler
-   (`agent/session_tools.go#stableDelegateCreateTool`) never reads one from `args`. The one
-   live call that could pass the `grantTools []string` parameter,
-   `agent/subagents.go#Session.prepareStableDelegateRun`, hard-codes `nil` for it in its
-   `prepareSubagentRunFromSelection` call (`agent/subagents.go:548-550`). The
-   protected-grant rejection (`ask_user is root-only and cannot be granted
-   to subagents`, `agent/subagents.go:757`, off the `protectedGrantTools` gate list at
-   `:233-243`) is real and load-bearing, but today it is exercised only by
-   calling `Session.spawnAgent`/`prepareSubagentRun` (`agent/subagents.go:469,501` — neither
-   has a non-test caller) directly at the Go level — which is
-   exactly what `agent/subagents_test.go`'s `TestGrantToolsCannotRegrantAskUser` and
-   `TestGrantToolsAskUserAliasNeverSilentlyGranted` do. Run those as the check for this part
-   instead of inventing a live step that would silently no-op:
+   (`agent/session_tools_delegate.go#delegateCreateTool`) never reads one from `args`, so no
+   live step can request a grant. The registry-level guarantee that a delegate never holds
+   `ask_user` is asserted on the real create path by
+   `TestDelegateForkContext_OptInHistory` and
+   `TestDelegateForkContext_ColdResumePreservesSnapshot`. Run those as the check for this
+   part instead of inventing a live step that would silently no-op:
    ```bash
-   go test ./agent/ -run 'TestGrantToolsCannotRegrantAskUser|TestGrantToolsAskUserAliasNeverSilentlyGranted' -v
+   go test ./agent/ -run 'TestDelegateForkContext_OptInHistory|TestDelegateForkContext_ColdResumePreservesSnapshot' -v
    ```
 
 ## Expected
@@ -111,8 +105,7 @@ delegation-only tools for a coordinator.
   even construct a call the provider will accept for an undeclared tool). If it is instead
   `ASK_USER_SUCCEEDED`, that is an active regression: stop and file a kata immediately
   rather than continuing.
-- Step 5: both Go tests pass, and `TestGrantToolsCannotRegrantAskUser` in particular asserts
-  the exact string `ask_user is root-only and cannot be granted to subagents`.
+- Step 5: both Go tests pass; each asserts the created delegate's registry has no `ask_user`.
 - Falsification: if a delegate can call or see `ask_user`, root-only gating is broken.
 
 ## Cleanup

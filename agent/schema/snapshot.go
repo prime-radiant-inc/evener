@@ -191,6 +191,13 @@ type SessionMeta struct {
 	// IsSubagent is true on sessions spawned as a subagent (i.e. the session
 	// has a parent spawn). Written by the spawn path at session initialisation.
 	IsSubagent bool `json:"is_subagent,omitempty"`
+	// MemorySaveUnavailable records that this session's registry cannot serve
+	// the memory save tools, so a skill advertisement omits gardening-memory
+	// even when the source catalog offers it. It is recomputed on every meta
+	// save. False is the backward-compatible value for every meta written
+	// before the field existed; a delegate or disabled session is still
+	// identified by IsSubagent and Config.DisableMemory.
+	MemorySaveUnavailable bool `json:"memory_save_unavailable,omitempty"`
 	// Origin marks how the session was launched: "test" for agentic-testing
 	// runs (set via EVENER_SESSION_ORIGIN), empty for normal sessions. The hub
 	// classifies an all-"test" project into the "Test runs" group.
@@ -338,13 +345,36 @@ func SessionDisplayName(meta SessionMeta) string {
 	return strings.TrimSpace(meta.ID)
 }
 
-const sessionsSubdir = "sessions"
+// SessionDir returns a session's own state directory,
+// <stateDir>/sessions/<sessionID>. The session ID is validated before it is
+// joined to any path, so a malformed id never reaches the filesystem.
+func SessionDir(stateDir, sessionID string) (string, error) {
+	if strings.TrimSpace(stateDir) == "" {
+		return "", errors.New("session directory requires a durable state directory")
+	}
+	if err := ValidateSessionID(sessionID); err != nil {
+		return "", err
+	}
+	return filepath.Join(stateDir, SessionsSubdir, sessionID), nil
+}
+
+// SessionArtifactsDir returns the directory a session's retained artifacts
+// live in, <stateDir>/sessions/<sessionID>/artifacts. It is the one place the
+// layout is spelled: the delegate runtime creates it, the hub serves it as a
+// document root, and the thread snapshot advertises it.
+func SessionArtifactsDir(stateDir, sessionID string) (string, error) {
+	dir, err := SessionDir(stateDir, sessionID)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "artifacts"), nil
+}
 
 // SessionMetaTombstoneSuffix names the marker TombstoneSessionMeta leaves beside
 // a removed session so a writer that acquires the meta lock afterwards refuses
 // to recreate it. It is deliberately not a *.meta.json suffix, so the directory
 // scanners ignore it.
-const SessionMetaTombstoneSuffix = ".meta.json.deleted"
+const SessionMetaTombstoneSuffix = SessionMetaSuffix + ".deleted"
 
 // ErrSessionDeleted reports a write attempted against a session that has been
 // deleted (tombstoned). The write is dropped, not retried: the session no longer
@@ -376,7 +406,7 @@ func TombstoneSessionMeta(dir, id string) error {
 	lock.Lock()
 	defer lock.Unlock()
 	err := withExistingSessionsDirLock(sessionMetaFS, dir, id, func() error {
-		tombstone := filepath.Join(dir, sessionsSubdir, id+SessionMetaTombstoneSuffix)
+		tombstone := filepath.Join(dir, SessionsSubdir, id+SessionMetaTombstoneSuffix)
 		if err := afero.WriteFile(sessionMetaFS, tombstone, nil, 0o600); err != nil {
 			if os.IsNotExist(err) {
 				return errSessionsDirAbsent
@@ -406,7 +436,7 @@ func UntombstoneSessionMeta(dir, id string) error {
 	lock.Lock()
 	defer lock.Unlock()
 	err := withExistingSessionsDirLock(sessionMetaFS, dir, id, func() error {
-		tombstone := filepath.Join(dir, sessionsSubdir, id+SessionMetaTombstoneSuffix)
+		tombstone := filepath.Join(dir, SessionsSubdir, id+SessionMetaTombstoneSuffix)
 		if err := sessionMetaFS.Remove(tombstone); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("remove session tombstone: %w", err)
 		}
@@ -432,7 +462,7 @@ func UntombstoneSessionMeta(dir, id string) error {
 // divergence — a readable regular file named "sessions", which opens fine
 // but lists as ENOTDIR — yields "no session here" on both paths anyway.
 func SessionsDirListable(fs afero.Fs, dir string) bool {
-	f, err := fs.Open(filepath.Join(dir, sessionsSubdir))
+	f, err := fs.Open(SessionsDir(dir))
 	if err == nil {
 		_ = f.Close()
 		return true
@@ -547,7 +577,7 @@ func saveSessionMetaLocked(fs afero.Fs, dir string, meta SessionMeta) error {
 // so a caller that reads the current meta before mutating it cannot race a
 // writer in another process.
 func withSessionMetaCrossProcessLock(fs afero.Fs, dir, id string, fn func() error) error {
-	sessDir := filepath.Join(dir, sessionsSubdir)
+	sessDir := SessionsDir(dir)
 	if err := fs.MkdirAll(sessDir, 0o755); err != nil {
 		return fmt.Errorf("create sessions dir: %w", err)
 	}
@@ -587,7 +617,7 @@ func writeSessionMetaLocked(fs afero.Fs, dir string, meta SessionMeta) error {
 	// A deleted session's tombstone is written under this same lock; refuse to
 	// recreate the metadata so an in-flight out-of-process autosave cannot
 	// resurrect a session the hub just deleted.
-	if exists, err := afero.Exists(fs, filepath.Join(dir, sessionsSubdir, meta.ID+SessionMetaTombstoneSuffix)); err != nil {
+	if exists, err := afero.Exists(fs, filepath.Join(dir, SessionsSubdir, meta.ID+SessionMetaTombstoneSuffix)); err != nil {
 		return err
 	} else if exists {
 		return ErrSessionDeleted
@@ -610,7 +640,7 @@ func writeSessionMetaLocked(fs afero.Fs, dir string, meta SessionMeta) error {
 		return fmt.Errorf("marshal session meta: %w", err)
 	}
 
-	target := filepath.Join(dir, sessionsSubdir, meta.ID+".meta.json")
+	target := SessionMetaPath(dir, meta.ID)
 	tmp := target + ".tmp"
 
 	if err := afero.WriteFile(fs, tmp, data, 0o644); err != nil {
@@ -655,7 +685,7 @@ func loadSessionMetaFS(fs afero.Fs, dir, id string) (SessionMeta, error) {
 	if err := ValidateSessionID(id); err != nil {
 		return SessionMeta{}, err
 	}
-	path := filepath.Join(dir, sessionsSubdir, id+".meta.json")
+	path := SessionMetaPath(dir, id)
 	// Finding 3: validate intermediate path components (e.g. sessions/) for
 	// symlinks. A symlinked sessions/ directory pointing outside the state
 	// root would surface metadata from an untrusted location. The leaf
@@ -817,7 +847,7 @@ func wrapperSourceIsOS(w afero.Fs) bool {
 // listSessionMetasFSWithErrors is the filesystem seam beneath ListSessionMetas
 // and ListSessionMetasWithErrors.
 func listSessionMetasFSWithErrors(fs afero.Fs, dir string) ([]SessionMeta, []SessionMetaLoadError, error) {
-	sessDir := filepath.Join(dir, sessionsSubdir)
+	sessDir := SessionsDir(dir)
 	entries, err := afero.ReadDir(fs, sessDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -829,10 +859,10 @@ func listSessionMetasFSWithErrors(fs afero.Fs, dir string) ([]SessionMeta, []Ses
 	var metas []SessionMeta
 	var failures []SessionMetaLoadError
 	for _, e := range entries {
-		if !strings.HasSuffix(e.Name(), ".meta.json") {
+		if !strings.HasSuffix(e.Name(), SessionMetaSuffix) {
 			continue
 		}
-		id := strings.TrimSuffix(e.Name(), ".meta.json")
+		id := strings.TrimSuffix(e.Name(), SessionMetaSuffix)
 		// A filename that is not a valid session identity is not a session this
 		// sweep can name or address, so both listings skip it.
 		if identifier.ValidateSessionID(id) != nil {

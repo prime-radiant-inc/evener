@@ -53,7 +53,7 @@ func settingsHubOverview(cfg hubcore.WebConfig) *appwire.SettingsHubOverview {
 		BuildChannel:   buildinfo.BuildChannel(),
 		ListenAddr:     cfg.HubAddr,
 		RunDir:         cfg.RunDir,
-		SpawnTimeout:   settingsSpawnTimeoutDisplay,
+		SpawnTimeout:   cfg.SpawnTimeout.String(),
 		BearerTokenAge: bearerTokenAge,
 		PastIndex:      pastIndex,
 		// Milliseconds, zero included: "disabled" and "not yet reported" must

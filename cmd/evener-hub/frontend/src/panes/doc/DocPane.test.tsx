@@ -3,8 +3,8 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Thread, ThreadReadResponse } from "@evener/appwire-client";
-import { bindFilePath, DOC_FILE_MAX_BYTES } from "@evener/appwire-client/docContent";
+import type { Thread, ThreadModel, ThreadReadResponse } from "@evener/appwire-client";
+import { bindArtifactPath, bindFilePath, DOC_FILE_MAX_BYTES } from "@evener/appwire-client/docContent";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -20,7 +20,7 @@ import {
   useWorkspaceStore,
   workspaceStore,
 } from "../../shell/workspace";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { readModuleCss } from "../../styles/cssBlock";
 import DocPane from "./DocPane";
@@ -93,7 +93,7 @@ afterAll(
   }),
 );
 beforeEach(async () => {
-  connectionStore.setState({ state: "idle", client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
   cwd = "/work/a";
@@ -127,7 +127,7 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   cleanup();
-  connectionStore.setState({ state: "idle", client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   vi.useRealTimers();
   vi.restoreAllMocks();
@@ -166,7 +166,7 @@ async function publishCWD(next: string) {
 }
 
 test("the doc pane's markdown body text reads at the prose step, pinned on the pane's own host element", () => {
-  const css = readModuleCss(import.meta.url, "docpane.module.css").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readModuleCss(import.meta.url, "docpane.module.css");
   expect(css.match(/--prose-font-size/g)).toHaveLength(1);
   expect(css).toMatch(/\.markdown\s*\{[^}]*--prose-font-size:\s*var\(--font-size-prose\);/);
 });
@@ -502,3 +502,188 @@ test("unbound restored read waits for ready before one owning lease and releases
   await waitFor(() => expect(client.calls.filter((call) => call.method === "thread/unsubscribe")).toHaveLength(1));
   expect(threadsStore.getState().threads.has(ref)).toBe(false);
 });
+
+// A workspace restored from a saved layout rebuilds a document pane from its
+// params alone, with no in-memory reference. An artifacts document must still
+// name the file it read: its path relative to the artifacts root, plus the
+// root it came from, and the pane rebinds against the directory the thread
+// snapshot advertises.
+test("a restored artifacts document reads the same retained file again", async () => {
+  const artifactsDir = "/state/projects/example/sessions/sess_owner/artifacts";
+  client.on("thread/read", (params) => ({
+    thread: { ...thread(cwd), evener: { ...thread(cwd).evener, artifactsDir } },
+    requestGeneration: params.requestGeneration,
+  }));
+  respond("retained report body");
+  const relativePath = "docs-quality-repairs.md";
+  workspaceStore.getState().openPane("doc", {
+    session: ref,
+    path: relativePath,
+    root: "artifacts",
+    artifactTarget: `${artifactsDir}/${relativePath}`,
+    kind: "file",
+  });
+  const pane = workspaceStore.getState().panes.find((candidate) => candidate.type === "doc");
+  if (!pane) throw new Error("expected a document pane");
+  render(
+    <PaneVisibilityContext value={true}>
+      <DocPane params={pane.params as DocParams} paneId={pane.id} focused={false} />
+    </PaneVisibilityContext>,
+  );
+  await screen.findByText("retained report body");
+  const read = requests.map((url) => url.searchParams.get("path"));
+  expect(read).toEqual([`${artifactsDir}/${relativePath}`]);
+});
+
+// A saved artifacts pane records the concrete file it opened. A stable ref can
+// outlive the session it named (Clear moves the ref to a new session), and
+// that session may hold a different report of the same name. Restoring must
+// read the recorded target or refuse, never silently show the replacement.
+test("a restored artifacts document does not adopt a replacement session's same-named file", async () => {
+  const oldDir = "/state/projects/example/sessions/sess_owner/artifacts";
+  const newDir = "/state/projects/example/sessions/sess_replacement/artifacts";
+  client.on("thread/read", (params) => ({
+    thread: { ...thread(cwd), evener: { ...thread(cwd).evener, artifactsDir: newDir } },
+    requestGeneration: params.requestGeneration,
+  }));
+  respond("replacement report body");
+  workspaceStore.getState().openPane("doc", {
+    session: ref,
+    path: "report.md",
+    root: "artifacts",
+    artifactTarget: `${oldDir}/report.md`,
+    kind: "file",
+  });
+  const pane = workspaceStore.getState().panes.find((candidate) => candidate.type === "doc");
+  if (!pane) throw new Error("expected a document pane");
+  render(
+    <PaneVisibilityContext value={true}>
+      <DocPane params={pane.params as DocParams} paneId={pane.id} focused={false} />
+    </PaneVisibilityContext>,
+  );
+  // The pane must settle on the structural unavailable state rather than sit on
+  // a skeleton: the snapshot has arrived and does not contain the target. The
+  // assertion is the marker, not the copy.
+  await waitFor(() => expect(screen.getByTestId("empty-state").getAttribute("data-reason")).toBe("unavailable"));
+  expect(requests.map((url) => url.searchParams.get("path"))).not.toContain(`${newDir}/report.md`);
+  expect(screen.queryByText("replacement report body")).toBeNull();
+});
+
+// Two same-named reports in different sessions are different documents. The
+// document identity includes the concrete target, so opening the second must
+// not match (and overwrite) the first pane's saved reference.
+test("same-named reports in different artifact directories are different documents", () => {
+  const sourcePaneId = workspaceStore.getState().openPane("session", { ref });
+  const first = bindArtifactPath("/state/a/sessions/s1/artifacts/report.md", "/state/a/sessions/s1/artifacts");
+  const second = bindArtifactPath("/state/b/sessions/s2/artifacts/report.md", "/state/b/sessions/s2/artifacts");
+  if (!first || !second) throw new Error("expected artifact references");
+  act(() => openDocBeside({ session: ref, sourcePaneId, reference: first }));
+  const firstDocument = workspaceStore.getState().panes.find((candidate) => candidate.type === "doc");
+  if (!firstDocument) throw new Error("expected the first document");
+  act(() => openDocBeside({ session: ref, sourcePaneId, reference: second }));
+  // The first pane keeps the document it opened. Matching on session, name and
+  // root alone would have reused that pane and overwritten its saved target.
+  expect((firstDocument.params as DocParams).artifactTarget).toBe("/state/a/sessions/s1/artifacts/report.md");
+  expect(documentPaneState(firstDocument)?.reference.readTarget).toBe("/state/a/sessions/s1/artifacts/report.md");
+  const targets = workspaceStore
+    .getState()
+    .panes.filter((candidate) => candidate.type === "doc")
+    .map((document) => (document.params as DocParams).artifactTarget);
+  expect(targets).toEqual(["/state/a/sessions/s1/artifacts/report.md", "/state/b/sessions/s2/artifacts/report.md"]);
+});
+
+// A completed snapshot may advertise no artifacts root at all, which is a
+// supported answer for a session this hub serves none for. A restored artifacts
+// pane must say the file is unavailable then, not wait on a skeleton for a read
+// that will never run.
+test("a restored artifacts document says unavailable when the snapshot advertises no root", async () => {
+  client.on("thread/read", (params) => ({
+    thread: thread(cwd),
+    requestGeneration: params.requestGeneration,
+  }));
+  respond("should not be read");
+  workspaceStore.getState().openPane("doc", {
+    session: ref,
+    path: "report.md",
+    root: "artifacts",
+    artifactTarget: "/state/a/sessions/s1/artifacts/report.md",
+    kind: "file",
+  });
+  const pane = workspaceStore.getState().panes.find((candidate) => candidate.type === "doc");
+  if (!pane) throw new Error("expected a document pane");
+  render(
+    <PaneVisibilityContext value={true}>
+      <DocPane params={pane.params as DocParams} paneId={pane.id} focused={false} />
+    </PaneVisibilityContext>,
+  );
+  await waitFor(() => expect(screen.getByTestId("empty-state").getAttribute("data-reason")).toBe("unavailable"));
+  expect(requests.map((url) => url.searchParams.get("path"))).not.toContain("/state/a/sessions/s1/artifacts/report.md");
+});
+
+// A cached shell publishes before the authoritative read and carries no
+// artifacts root yet. The pane must stay pending while that is true, not tell
+// the user the report is gone.
+test("a restored artifacts document stays pending while the thread is a cached shell", async () => {
+  // A shell model carries no artifacts root, and its authoritative read has
+  // not landed. That absence must not read as rejection while the shell stands.
+  client.on("thread/read", () => new Promise(() => {}));
+  await act(async () => {
+    threadsStore.setState((state) => ({
+      threads: new Map(state.threads).set(ref, hydrateThreadForTest(cwd)),
+      cacheLifetimes: new Map(state.cacheLifetimes).set(ref, { shell: true }),
+    }));
+  });
+  respond("not read");
+  workspaceStore.getState().openPane("doc", {
+    session: ref,
+    path: "report.md",
+    root: "artifacts",
+    artifactTarget: "/state/a/sessions/s1/artifacts/report.md",
+    kind: "file",
+  });
+  const pane = workspaceStore.getState().panes.find((candidate) => candidate.type === "doc");
+  if (!pane) throw new Error("expected a document pane");
+  render(
+    <PaneVisibilityContext value={true}>
+      <DocPane params={pane.params as DocParams} paneId={pane.id} focused={false} />
+    </PaneVisibilityContext>,
+  );
+  expect(screen.queryByTestId("empty-state")).toBeNull();
+});
+
+// hydrateThreadForTest builds the model a cached shell publishes: no
+// artifacts root, and nothing authoritative behind it yet.
+function hydrateThreadForTest(at: string): ThreadModel {
+  const wire = thread(at);
+  return {
+    ref,
+    threadId: wire.id,
+    name: wire.name ?? "",
+    status: wire.status,
+    modelProvider: wire.modelProvider,
+    model: wire.modelProvider,
+    visionModel: "",
+    askPending: false,
+    pendingEscalations: [],
+    turns: [],
+    queue: null,
+    tasks: null,
+    jobsUpdatedAt: null,
+    jobsTreeRevision: null,
+    lastFrameAt: 0,
+    capabilities: wire.evener.capabilities,
+    goal: null,
+    humanNote: "",
+    agentNote: "",
+    sessionUrls: [],
+    contextUsed: 0,
+    contextWindow: 0,
+    contextPressure: 0,
+    contextAssumed: false,
+    usage: null,
+    workMillis: 0,
+    reasoningEffortLevels: [],
+    supportsReasoning: false,
+    cwd: at,
+  } as ThreadModel;
+}

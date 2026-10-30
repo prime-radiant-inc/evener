@@ -75,8 +75,7 @@ func TestSession_ExcludesConfiguredCredentialFromResponseEndpointArtifacts(t *te
 	// TRIPWIRE: the adapter talks to an in-process httptest.Server on
 	// localhost with a scripted single-round response; this normally
 	// completes in well under a second. 30s only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if output, err := sess.ProcessInput(ctx, "reply once", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	} else if output != "done" {
@@ -84,13 +83,13 @@ func TestSession_ExcludesConfiguredCredentialFromResponseEndpointArtifacts(t *te
 	}
 	sess.Close()
 
-	transcriptPath := filepath.Join(stateDir, sessionsSubdir, sess.ID()+".transcript.jsonl")
+	transcriptPath := schema.SessionTranscriptPath(stateDir, sess.ID())
 	transcriptBytes, err := os.ReadFile(transcriptPath)
 	if err != nil {
 		t.Fatalf("ReadFile transcript: %v", err)
 	}
 	assertEndpointSentinelsAbsent(t, "transcript", transcriptBytes, credential)
-	_, entries, _, err := readTranscript(transcriptPath, "")
+	_, entries, _, err := readTranscript(context.Background(), transcriptPath, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}

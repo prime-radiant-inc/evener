@@ -24,6 +24,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/identifier"
 )
 
 const delegateSalvagedDraftNote = "partial draft salvaged in the child transcript — resume it with delegate_send rather than re-dispatching"
@@ -84,7 +85,6 @@ var rootOnlyWorktreeTools = []string{"manage_worktree"}
 type subagent struct {
 	id   string
 	sess *Session
-	emit func(events.EventKind, events.EventData)
 
 	mu                    sync.Mutex
 	running               bool
@@ -101,7 +101,7 @@ type subagent struct {
 	nudgeEnabled          bool                      // true for default subagents that should be nudged to communicate
 	cancel                context.CancelFunc        // cancels the current run's context
 	cancelRequested       bool                      // set by requestRunCancel (either caller), so finalize maps a context.Canceled run to cancelled
-	userStopRequested     bool                      // set by requestRunCancel(true): S6's direct user stop (StopDelegateRun), read by stableDelegateFinish so only this path reports "Stopped by the user."
+	userStopRequested     bool                      // set by requestRunCancel(true): S6's direct user stop (StopDelegateRun), read by buildDelegateFinish so only this path reports "Stopped by the user."
 	settlementClaimed     bool                      // cancellation admission closes after the run's final pre-settlement check
 	agentType             string                    // plugin agent type name; empty for default subagents
 	createdAt             time.Time                 // set once at spawn; never reset on resume
@@ -161,12 +161,6 @@ type preparedSubagentRun struct {
 	isolation          string
 	resultSchema       map[string]any
 	explicitToolGrants []string
-	// treeSlot is the tree-counter reservation claimed by prepareSubagentRun for
-	// this spawn's running delegate turn (spec §4). Ownership transfers to the
-	// delegate runningJob at attach; if the prepared run is discarded before
-	// attach (an error path, or the legacy in-process spawn that mints no
-	// delegate job), the reservation is released so the slot is not leaked.
-	treeSlot *treeReservation
 }
 
 // endEnvironmentScratch settles the scratch an environment owns when the
@@ -335,7 +329,7 @@ func disposeUnadoptedSubagentSession(sess *Session) {
 	// stream, so a cleanup failure can still be surfaced as a warning.
 	if sess != nil {
 		if err := removeDelegateArtifacts(sess.stateDir, sess.id); err != nil {
-			sess.emit(events.EventWarning, events.WarningData{Message: "delegate artifacts directory cleanup failed: " + err.Error()})
+			sess.emit(events.WarningData{Message: "delegate artifacts directory cleanup failed: " + err.Error()})
 		}
 		// The child never became a delegate, so the scratch it was given — named
 		// or not — holds nothing anyone will come back for: remove it rather than
@@ -394,10 +388,6 @@ func removeStrings(items, removals []string) []string {
 func rootOnlySubagentTools() []string {
 	all := appendUniqueStrings(append([]string(nil), rootOnlyJobPresenceTools...), rootOnlyJobControlTools...)
 	return appendUniqueStrings(all, rootOnlyWorktreeTools...)
-}
-
-func isRootOnlyJobPresenceTool(name string) bool {
-	return hasString(rootOnlyJobPresenceTools, name)
 }
 
 func isRootOnlySubagentTool(name string) bool {
@@ -497,7 +487,7 @@ func frozenSubagentToolNames(allTools bool, allowed, denied []string) []string {
 	}
 }
 
-func stableDelegateToolNameCeiling(reg *tool.Registry, resultToolName string, allTools bool, allowed, denied []string, canDelegate bool, isolation string) []string {
+func delegateToolNameCeiling(reg *tool.Registry, resultToolName string, allTools bool, allowed, denied []string, canDelegate bool, isolation string) []string {
 	if reg == nil {
 		return nil
 	}
@@ -545,7 +535,7 @@ func stableDelegateToolNameCeiling(reg *tool.Registry, resultToolName string, al
 	return names
 }
 
-func frozenStableDelegateSandboxMatches(env execenv.ExecutionEnvironment, want *delegatestore.SandboxSnapshot) bool {
+func frozenDelegateSandboxMatches(env execenv.ExecutionEnvironment, want *delegatestore.SandboxSnapshot) bool {
 	got := sandboxSnapshotFromEnv(env)
 	if got == nil || want == nil {
 		return got == nil && want == nil
@@ -573,21 +563,6 @@ func localEnvPolicyName(env execenv.ExecutionEnvironment) string {
 		return "core_only"
 	default:
 		return "default"
-	}
-}
-
-func localEnvPolicyFromName(name string) (execenv.EnvVarPolicy, bool) {
-	switch strings.TrimSpace(name) {
-	case "all":
-		return execenv.EnvPolicyAll, true
-	case "none":
-		return execenv.EnvPolicyNone, true
-	case "core_only":
-		return execenv.EnvPolicyCoreOnly, true
-	case "default":
-		return execenv.EnvPolicyDefault, true
-	default:
-		return execenv.EnvPolicyDefault, false
 	}
 }
 
@@ -668,7 +643,7 @@ func (s *Session) liveShellsUnderTree(path string) []string {
 func (s *Session) collectLiveShellsUnderTree(target string, out *[]string) {
 	if s.jobManager != nil {
 		for _, h := range s.jobManager.liveShellHandles() {
-			if pathEqualOrUnder(canonicalOrClean(h.dir), target) {
+			if identifier.PathUnder(canonicalOrClean(h.dir), target) {
 				*out = append(*out, h.handle)
 			}
 		}
@@ -724,65 +699,7 @@ func (s *Session) sharedWorkspaceDelegateWarning(requestedIsolation string) stri
 	return ""
 }
 
-func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string, maxTurns int, agentType string, reasoningEffort string, parentTasks []taskpkg.TaskTemplate, grantTools []string) (any, error) {
-	selection, err := s.selectSubagentModel(ctx, model, agentType)
-	if err != nil {
-		return "", err
-	}
-	if selection.warning != nil {
-		s.emitDiagnosticWarning(*selection.warning)
-	}
-	prepared, err := s.prepareSubagentRunWithModelSelection(
-		ctx, task, workingDir, maxTurns, agentType, reasoningEffort,
-		parentTasks, grantTools, selection,
-	)
-	if err != nil {
-		return "", err
-	}
-	// The legacy in-process spawn mints no delegate job, so no runningJob takes
-	// ownership of the slot prepareSubagentRun reserved and no finalize/abandon
-	// path can release it. The tree counter bounds delegate turns (spec §4); this
-	// in-process turn is not one, so return the slot rather than leak it.
-	releasePreparedTreeSlot(prepared)
-	if hook := s.cfg.testOnly.subagentAfterPrepare; hook != nil {
-		hook(s)
-	}
-	if err := s.trackAndLaunchPreparedSubagent(prepared); err != nil {
-		prepared.disposeUnadopted()
-		return "", err
-	}
-
-	b, _ := json.Marshal(map[string]any{"agent_id": prepared.sub.id, "status": string(SubagentRunning)})
-	return string(b), nil
-}
-
-func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDir string, maxTurns int, agentType string, reasoningEffort string, parentTasks []taskpkg.TaskTemplate, grantTools []string) (*preparedSubagentRun, error) {
-	selection, err := s.selectSubagentModel(ctx, model, agentType)
-	if err != nil {
-		return nil, err
-	}
-	return s.prepareSubagentRunWithModelSelection(
-		ctx, task, workingDir, maxTurns, agentType, reasoningEffort,
-		parentTasks, grantTools, selection,
-	)
-}
-
-func (s *Session) prepareSubagentRunWithModelSelection(
-	ctx context.Context,
-	task, workingDir string,
-	maxTurns int,
-	agentType, reasoningEffort string,
-	parentTasks []taskpkg.TaskTemplate,
-	grantTools []string,
-	selection subagentModelSelection,
-) (*preparedSubagentRun, error) {
-	return s.prepareSubagentRunFromSelection(
-		ctx, task, workingDir, maxTurns, agentType, reasoningEffort,
-		parentTasks, grantTools, selection, nil, nil,
-	)
-}
-
-func (s *Session) prepareStableDelegateRun(ctx context.Context, descriptor delegatestore.Descriptor, watchParent bool, selection subagentModelSelection, inheritedContext []transcript.Entry) (*preparedSubagentRun, error) {
+func (s *Session) prepareDelegateRun(ctx context.Context, descriptor delegatestore.Descriptor, watchParent bool, selection subagentModelSelection, inheritedContext []transcript.Entry) (*preparedSubagentRun, error) {
 	if selection.profile == nil || selection.profile.ID() != descriptor.ResolvedProfileID || selection.profile.Model() != descriptor.ResolvedModel {
 		actual := "<nil>"
 		if selection.profile != nil {
@@ -888,6 +805,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 	subCfg.spawn.parentWatchGranted = false
 	if frozen != nil {
 		subCfg.spawn.rolePromptOverride = ""
+		subCfg.spawn.activatedSkillNames = nil
 		subCfg.spawn.activatedSkillBodies = nil
 		subCfg.spawn.frozenSkillMetadata = nil
 		subCfg.spawn.allowedToolNames = nil
@@ -921,35 +839,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 		subCfg.spawn.sharedTaskStore = nil
 		subCfg.spawn.sharedTaskStoreOwnerSessionID = ""
 	}
-	if callID, ok := ctx.Value(ctxToolCallID).(string); ok {
-		subCfg.spawn.parentToolCallID = callID
-	}
-	if itemID, ok := ctx.Value(ctxToolItemID).(string); ok {
-		subCfg.spawn.parentItemID = itemID
-	}
-	if delegateID, ok := ctx.Value(ctxParentDelegateID).(string); ok {
-		subCfg.spawn.parentDelegateID = delegateID
-		subCfg.spawn.owningDelegateID = delegateID
-		if s.jobManager != nil {
-			subCfg.spawn.forwardJobEvent = s.jobManager.forwardEvent
-		}
-	}
-	if childSessionID, ok := ctx.Value(delegateChildSessionIDContextKey{}).(string); ok {
-		subCfg.spawn.sessionID = childSessionID
-	}
-	if isolation, ok := ctx.Value(ctxIsolation).(string); ok {
-		subCfg.spawn.isolation = isolation
-	}
-	// The granted delegation_allowance (validated by createDelegate against this
-	// session's own allowance) shapes the child's grant capability. The delegate
-	// path always sets it (0 = leaf); other spawn paths leave it at the inherited
-	// default.
-	if grantedAllowance, ok := ctx.Value(ctxDelegationAllowance).(int); ok {
-		subCfg.spawn.delegationAllowance = grantedAllowance
-	}
-	if watchParent, ok := ctx.Value(ctxWatchParent).(bool); ok && watchParent {
-		subCfg.spawn.parentWatchGranted = true
-	}
+	s.applyCallerContext(ctx, &subCfg)
 	childCanDelegate := subCfg.spawn.delegationAllowance > 0
 	if schema, ok := ctx.Value(ctxCommunicateOutputSchema).(map[string]any); ok && len(schema) > 0 {
 		subCfg.spawn.communicateOutputSchema = schema
@@ -966,169 +856,19 @@ func (s *Session) prepareSubagentRunFromSelection(
 	}
 	canonicalGrantTools := s.canonicalizeToolNames(grantTools)
 
-	// Determine agent name and role prompt for the subagent.
-	// Named agents use their own SystemPrompt; unnamed agents get the "subagent" persona.
-	var agentName string
-	var rolePrompt string
-	if frozen != nil {
-		agentName = frozen.Config.AgentName
-		rolePrompt = frozen.FrozenRolePrompt
-	} else if agent != nil && strings.TrimSpace(agent.SystemPrompt) != "" {
-		agentName = agent.Name
-		rolePrompt = agent.SystemPrompt
-	} else if agent == nil && childCanDelegate {
-		agentName = "subagent"
-		rolePrompt = defaultDelegatingSubagentInstructions
-	} else if subagentAgent, ok := s.pluginAgents["subagent"]; ok {
-		agentName = "subagent"
-		rolePrompt = subagentAgent.SystemPrompt
-	} else {
-		agentName = "subagent"
-		rolePrompt = defaultSubagentInstructions
-	}
-	subCfg.AgentName = agentName // ensure subagent gets its own tasks, not parent's
-
-	if frozen != nil {
-		subCfg.spawn.rolePromptOverride = rolePrompt
-	} else if (agent != nil && strings.TrimSpace(agent.SystemPrompt) != "" && agent.PluginName != "builtin") ||
-		(agent == nil && childCanDelegate) {
-		subCfg.spawn.rolePromptOverride = rolePrompt
-	}
-	var activatedSkillNames []string
-	var activatedSkillBodies []string
-	if frozen != nil {
-		var err error
-		// Frozen restoration uses the saved names/bodies exactly — never a
-		// disk reload of legacy frozen bytes. The typed metadata is optional:
-		// a legacy descriptor without it keeps unknown provenance.
-		activatedSkillBodies, err = restoreFrozenSkillBodies(frozen.FrozenSkillNames, frozen.FrozenSkillBodies)
-		if err != nil {
-			return nil, err
-		}
-		activatedSkillNames = append([]string(nil), frozen.FrozenSkillNames...)
-		subCfg.spawn.activatedSkillBodies = append([]string(nil), activatedSkillBodies...)
-		subCfg.spawn.frozenSkillMetadata = append([]schema.FrozenSkillPreload(nil), frozen.FrozenSkillMetadata...)
-	} else if agent != nil && len(agent.Skills) > 0 {
-		for _, skillName := range agent.Skills {
-			// Fresh role preloads use the shared loader/renderer: the
-			// permanent prompt carries the complete rendered document, and
-			// the typed preload metadata freezes its provenance for the
-			// delegate's lifetime.
-			invocationID, err := s.mintSkillOperationID()
-			if err != nil {
-				// Persisting the operation identity is not a skill-resolution
-				// failure: continuing here starts the delegate WITHOUT the
-				// configured role preloads, silently, so the parent must see it.
-				return nil, fmt.Errorf("persisting the skill operation identity for role preload %q: %w", skillName, err)
-			}
-			batch, err := s.prepareSkillActivations(ctx, []skillInvocation{{
-				Name: skillName, Route: "role_preload",
-				InvocationID: invocationID, AtomicGroupID: invocationID,
-			}})
-			if fault := s.subagentPrepareFault("skill_resolve"); fault != nil {
-				err = fault
-			}
-			if err != nil || len(batch.Items) == 0 {
-				continue
-			}
-			item := batch.Items[0]
-			if strings.TrimSpace(item.Rendered.Content) != "" {
-				subCfg.spawn.activatedSkillBodies = append(subCfg.spawn.activatedSkillBodies, item.Rendered.Content)
-				activatedSkillNames = append(activatedSkillNames, item.Loaded.Descriptor.CatalogName)
-				activatedSkillBodies = append(activatedSkillBodies, item.Rendered.Content)
-				subCfg.spawn.frozenSkillMetadata = append(subCfg.spawn.frozenSkillMetadata, frozenPreloadRecord(item))
-			}
-		}
+	agentName, rolePrompt := s.applyChildRole(&subCfg, agent, frozen, childCanDelegate)
+	if err := s.applyChildSkillPreloads(ctx, &subCfg, agent, frozen); err != nil {
+		return nil, err
 	}
 
-	var allTools bool
-	var allowedTools, deniedTools []string
-	if frozen != nil {
-		// The ceiling was captured at creation, when baseSubagentToolPolicy had
-		// already added the intrinsic tools, so a restore honors it instead of
-		// re-applying the current policy: the frozen ceiling is authoritative,
-		// and a descriptor written before an intrinsic tool existed keeps that
-		// older set by design (widening it here is what the session-init ceiling
-		// comment forbids). Fresh spawns carry every intrinsic tool.
-		allowedTools = append([]string(nil), frozen.ToolNameCeiling...)
-		subCfg.spawn.toolNameCeiling = append([]string(nil), allowedTools...)
-	} else {
-		// The policy follows the CHILD's granted allowance, not this session's:
-		// a leaf loses the delegation tools it cannot use, while the intrinsic
-		// job tools stay — they act on the leaf's own jobs, not the parent's.
-		allTools, allowedTools, deniedTools = baseSubagentToolPolicy(agent, childCanDelegate)
-	}
-	if frozen == nil && len(canonicalGrantTools) > 0 {
-		currentTools := s.reg.RegisteredNames()
-		for _, toolName := range canonicalGrantTools {
-			if isProtectedGrantTool(toolName) {
-				return nil, fmt.Errorf("%s is root-only and cannot be granted to subagents", toolName)
-			}
-			if isRootOnlySubagentTool(toolName) {
-				return nil, fmt.Errorf("cannot grant tool %q via grant_tools: delegation tools are enabled by the delegate tool's delegation_allowance parameter, not grant_tools", toolName)
-			}
-			baseHasTool := allTools ||
-				hasString(allowedTools, toolName) ||
-				(len(allowedTools) == 0 && !hasString(deniedTools, toolName))
-			if baseHasTool {
-				continue
-			}
-			if !currentTools[toolName] {
-				return nil, fmt.Errorf("cannot grant tool %q: it is not currently callable in this session", toolName)
-			}
-			if len(allowedTools) > 0 {
-				allowedTools = appendUniqueStrings(allowedTools, toolName)
-			}
-		}
-	}
-	if frozen == nil && !allTools {
-		allowedTools = ensureRecoveryReader(allowedTools, s.reg)
+	allTools, allowedTools, deniedTools, err := s.applyChildToolPolicy(&subCfg, agent, frozen, childCanDelegate, canonicalGrantTools)
+	if err != nil {
+		return nil, err
 	}
 
-	if frozen != nil {
-		// The descriptor's ceiling was captured from the effective parent registry
-		// before CommitStart. NewSession intersects it with the complete registry the
-		// child can build, including intrinsic recovery tools, before caching tools.
-	} else if allTools {
-		// Leave the registry unrestricted for explicit all-tools agents.
-	} else if len(allowedTools) > 0 {
-		subCfg.spawn.allowedToolNames = append([]string(nil), allowedTools...)
-	} else {
-		subCfg.spawn.deniedToolNames = append([]string(nil), deniedTools...)
-	}
-	// Frozen descriptors remember old allowances, never a live parent's revoked
-	// native capability. Apply this on all construction paths, even all-tools.
-	subCfg.spawn.deniedToolNames = appendUniqueStrings(subCfg.spawn.deniedToolNames, s.unavailableMemoryToolNames()...)
-
-	var reqSandbox *sandbox.SandboxPolicy
-	if v, ok := ctx.Value(ctxDelegateSandboxPolicy).(*sandbox.SandboxPolicy); ok {
-		reqSandbox = v
-	}
-	if reqSandbox == nil && subagentToolScopeIsReadOnly(allTools, allowedTools) {
-		var sandboxErr error
-		reqSandbox, sandboxErr = s.readOnlyDelegateSandbox()
-		if sandboxErr != nil {
-			return nil, fmt.Errorf("read-only delegate sandbox: %w", sandboxErr)
-		}
-	}
-	preparedEnv, hasPreparedEnv := ctx.Value(delegatePreparedEnvironmentContextKey{}).(delegatePreparedEnvironment)
-	subEnv := preparedEnv.env
-	ownsFreshEnv := preparedEnv.ownsFresh
-	if !hasPreparedEnv {
-		var err error
-		subEnv, ownsFreshEnv, err = s.prepareSubagentEnvironmentFor(workingDir, reqSandbox, subCfg.spawn.sessionID)
-		if err != nil {
-			return nil, err
-		}
-	}
-	if frozen != nil {
-		if subEnv == nil || subEnv.WorkingDirectory() != frozen.WorkingDir || localEnvPolicyName(subEnv) != frozen.LocalEnvPolicy || !frozenStableDelegateSandboxMatches(subEnv, frozen.Sandbox) {
-			actualWorkingDir := ""
-			if subEnv != nil {
-				actualWorkingDir = subEnv.WorkingDirectory()
-			}
-			return nil, fmt.Errorf("committed delegate environment is unavailable: cwd %q/%q policy %q/%q", actualWorkingDir, frozen.WorkingDir, localEnvPolicyName(subEnv), frozen.LocalEnvPolicy)
-		}
+	subEnv, ownsFreshEnv, hasPreparedEnv, err := s.prepareChildEnvironment(ctx, workingDir, subCfg.spawn.sessionID, allTools, allowedTools, frozen)
+	if err != nil {
+		return nil, err
 	}
 
 	if schema := subCfg.spawn.communicateOutputSchema; len(schema) > 0 {
@@ -1143,7 +883,6 @@ func (s *Session) prepareSubagentRunFromSelection(
 		childClient = factory()
 	}
 	var subSess *Session
-	var err error
 	if fault := s.subagentPrepareFault("new_session"); fault != nil {
 		err = fault
 	} else {
@@ -1181,79 +920,9 @@ func (s *Session) prepareSubagentRunFromSelection(
 		}
 	}
 
-	// Populate default tasks from agent definition + parent tasks.
-	var defaultTasks []taskpkg.TaskTemplate
-	if frozen != nil {
-		defaultTasks = append(defaultTasks, frozen.TaskTemplates...)
-	} else if agent != nil {
-		defaultTasks = agent.Tasks
-	}
-	if len(defaultTasks) > 0 {
-		subStore := subSess.getOrCreateTaskStore()
-		populateErr := subStore.MutateAndPublish(func(epoch, revision uint64) error {
-			err := subStore.PopulateFromTemplates(defaultTasks, parentTasks)
-			if fault := s.subagentPrepareFault("task_populate"); fault != nil {
-				err = fault
-			}
-			if err != nil {
-				return err
-			}
-			summary := taskpkg.Summarize(subStore.View())
-			subSess.emit(events.EventTaskUpdated, taskUpdatedData(summary, subSess.taskStoreOwnerSessionID(), epoch, revision))
-			return nil
-		})
-		if err := populateErr; err != nil {
-			// Non-fatal: surface as a warning so the spawn still proceeds but the
-			// failure is observable instead of silently swallowed.
-			s.emit(events.EventWarning, warningDataFromError("failed to populate subagent tasks from templates", err))
-		}
-		// Inject the first task's prompt as a steering message.
-		if current, ok := subStore.CurrentInProgress(); ok {
-			if err := subSess.SteerKind(formatCurrentTaskSteering(current, subSess.canInstructTool("task_list")), events.SteeringKindCurrentTask); err != nil {
-				disposeUnadopted()
-				return nil, err
-			}
-		}
-	}
-
-	// Enforce the retained-terminal cap before tracking. Done AFTER NewSession so
-	// the child is fully built, but a failure must not leak it: dispose the created
-	// session and any unadopted fresh environment before returning.
-	// On success, GC-evicted records are closed here, OUTSIDE the manager mutex.
-	if !preparedEnv.stableController {
-		var evicted []*subagent
-		if reserve := s.cfg.testOnly.subagentReserveSlot; reserve != nil {
-			evicted, err = reserve(s)
-		} else {
-			evicted, err = s.subagents.reserveSlot()
-		}
-		if err != nil {
-			disposeUnadopted()
-			return nil, err
-		}
-		for _, ev := range evicted {
-			teardownChildSession(context.Background(), ev.sess)
-		}
-	}
-
-	// Reserve a tree-counter slot for this spawn's running delegate turn (spec §4).
-	// At capacity the spawn does not launch: dispose the freshly built child and
-	// any unadopted environment (the same cleanup as the retained-cap path), then
-	// surface the tree_at_capacity error to the tool call. Ownership of the reservation
-	// transfers to the delegate runningJob at attach; an unattached prepared run
-	// releases it (releasePreparedTreeSlot).
-	var treeSlot *treeReservation
-	var ok bool
-	if !preparedEnv.stableController {
-		if reserve := s.cfg.testOnly.subagentReserveTreeSlot; reserve != nil {
-			treeSlot, ok = reserve(s)
-		} else {
-			treeSlot, ok = s.reserveTreeSlot(slotKindJob)
-		}
-		if !ok {
-			disposeUnadopted()
-			return nil, s.treeCapacityErrorFor()
-		}
+	if err := s.seedChildTasks(subSess, agent, frozen, parentTasks, subCfg.spawn.sharedTaskStore); err != nil {
+		disposeUnadopted()
+		return nil, err
 	}
 
 	now := s.sclock().Now()
@@ -1264,7 +933,6 @@ func (s *Session) prepareSubagentRunFromSelection(
 	sub := &subagent{
 		id:           subSess.id,
 		sess:         subSess,
-		emit:         s.emit,
 		running:      true,
 		status:       SubagentRunning,
 		done:         make(chan struct{}),
@@ -1314,15 +982,14 @@ func (s *Session) prepareSubagentRunFromSelection(
 		reasoningEffort:    reasoningEffort,
 		frozenRolePrompt:   rolePrompt,
 		frozenToolNames:    frozenSubagentToolNames(allTools, allowedTools, deniedTools),
-		frozenSkillNames:   append([]string(nil), activatedSkillNames...),
-		frozenSkillBodies:  append([]string(nil), activatedSkillBodies...),
+		frozenSkillNames:   append([]string(nil), subCfg.spawn.activatedSkillNames...),
+		frozenSkillBodies:  append([]string(nil), subCfg.spawn.activatedSkillBodies...),
 		workingDir:         subEnv.WorkingDirectory(),
 		localEnvPolicy:     localEnvPolicyName(subEnv),
 		sandboxSnapshot:    sandboxSnapshotFromEnv(subEnv),
 		isolation:          subCfg.spawn.isolation,
 		resultSchema:       cloneMap(subCfg.spawn.communicateOutputSchema),
 		explicitToolGrants: append([]string(nil), canonicalGrantTools...),
-		treeSlot:           treeSlot,
 	}
 	if frozen != nil {
 		prepared.task = frozen.Task
@@ -1346,21 +1013,273 @@ func (s *Session) prepareSubagentRunFromSelection(
 	return prepared, nil
 }
 
-func (s *Session) trackAndLaunchPreparedSubagent(prepared *preparedSubagentRun) error {
-	if prepared == nil || prepared.sub == nil {
-		return errors.New("subagent run is not prepared")
+// applyCallerContext folds what the delegating tool call carries on its context
+// (origin ids, the delegate lineage, isolation, the granted allowance, the
+// parent watch) into the child's spawn configuration.
+func (s *Session) applyCallerContext(ctx context.Context, subCfg *SessionConfig) {
+	if callID, ok := ctx.Value(ctxToolCallID).(string); ok {
+		subCfg.spawn.parentToolCallID = callID
 	}
-	s.mu.Lock()
-	if s.closingOrClosedLocked() {
-		s.mu.Unlock()
-		prepared.runCancel()
-		return errors.New("session is closed")
+	if itemID, ok := ctx.Value(ctxToolItemID).(string); ok {
+		subCfg.spawn.parentItemID = itemID
 	}
-	s.subagents.track(prepared.sub)
-	s.sendersWG.Add(1)
-	s.mu.Unlock()
+	if delegateID, ok := ctx.Value(ctxParentDelegateID).(string); ok {
+		subCfg.spawn.parentDelegateID = delegateID
+		subCfg.spawn.owningDelegateID = delegateID
+		if s.jobManager != nil {
+			subCfg.spawn.forwardJobEvent = s.jobManager.forwardEvent
+		}
+	}
+	if childSessionID, ok := ctx.Value(delegateChildSessionIDContextKey{}).(string); ok {
+		subCfg.spawn.sessionID = childSessionID
+	}
+	if isolation, ok := ctx.Value(ctxIsolation).(string); ok {
+		subCfg.spawn.isolation = isolation
+	}
+	// The granted delegation_allowance (validated by createDelegate against this
+	// session's own allowance) shapes the child's grant capability. The delegate
+	// path always sets it (0 = leaf); other spawn paths leave it at the inherited
+	// default.
+	if grantedAllowance, ok := ctx.Value(ctxDelegationAllowance).(int); ok {
+		subCfg.spawn.delegationAllowance = grantedAllowance
+	}
+	if watchParent, ok := ctx.Value(ctxWatchParent).(bool); ok && watchParent {
+		subCfg.spawn.parentWatchGranted = true
+	}
+}
 
-	s.launchSubagentRun(prepared.runCtx, prepared.sub, prepared.runCancel, prepared.input, s.activeCausalProvenance())
+// applyChildRole picks the child's agent name and role prompt, and sets the
+// role prompt override when the role does not come from the built-in default.
+func (s *Session) applyChildRole(subCfg *SessionConfig, agent *plugin.Agent, frozen *delegatestore.Descriptor, childCanDelegate bool) (string, string) {
+	// Determine agent name and role prompt for the subagent.
+	// Named agents use their own SystemPrompt; unnamed agents get the "subagent" persona.
+	var agentName string
+	var rolePrompt string
+	if frozen != nil {
+		agentName = frozen.Config.AgentName
+		rolePrompt = frozen.FrozenRolePrompt
+	} else if agent != nil && strings.TrimSpace(agent.SystemPrompt) != "" {
+		agentName = agent.Name
+		rolePrompt = agent.SystemPrompt
+	} else if agent == nil && childCanDelegate {
+		agentName = "subagent"
+		rolePrompt = defaultDelegatingSubagentInstructions
+	} else if subagentAgent, ok := s.pluginAgents["subagent"]; ok {
+		agentName = "subagent"
+		rolePrompt = subagentAgent.SystemPrompt
+	} else {
+		agentName = "subagent"
+		rolePrompt = defaultSubagentInstructions
+	}
+	subCfg.AgentName = agentName // ensure subagent gets its own tasks, not parent's
+
+	if frozen != nil {
+		subCfg.spawn.rolePromptOverride = rolePrompt
+	} else if (agent != nil && strings.TrimSpace(agent.SystemPrompt) != "" && agent.PluginName != "builtin") ||
+		(agent == nil && childCanDelegate) {
+		subCfg.spawn.rolePromptOverride = rolePrompt
+	}
+	return agentName, rolePrompt
+}
+
+// applyChildSkillPreloads sets the skills preloaded into the child's permanent
+// prompt: the descriptor's saved ones on a restore, the role's own on a fresh
+// spawn.
+func (s *Session) applyChildSkillPreloads(ctx context.Context, subCfg *SessionConfig, agent *plugin.Agent, frozen *delegatestore.Descriptor) error {
+	if frozen != nil {
+		// Frozen restoration uses the saved names/bodies exactly — never a
+		// disk reload of legacy frozen bytes. The typed metadata is optional:
+		// a legacy descriptor without it keeps unknown provenance.
+		bodies, err := restoreFrozenSkillBodies(frozen.FrozenSkillNames, frozen.FrozenSkillBodies)
+		if err != nil {
+			return err
+		}
+		subCfg.spawn.activatedSkillNames = append([]string(nil), frozen.FrozenSkillNames...)
+		subCfg.spawn.activatedSkillBodies = bodies
+		subCfg.spawn.frozenSkillMetadata = append([]schema.FrozenSkillPreload(nil), frozen.FrozenSkillMetadata...)
+	} else if agent != nil && len(agent.Skills) > 0 {
+		// A delegate parent's preload slices are shared with this spawn by the
+		// struct copy above. Clone them before appending so concurrent sibling
+		// spawns cannot write through the same spare capacity.
+		subCfg.spawn.activatedSkillNames = append([]string(nil), subCfg.spawn.activatedSkillNames...)
+		subCfg.spawn.activatedSkillBodies = append([]string(nil), subCfg.spawn.activatedSkillBodies...)
+		subCfg.spawn.frozenSkillMetadata = append([]schema.FrozenSkillPreload(nil), subCfg.spawn.frozenSkillMetadata...)
+		for _, skillName := range agent.Skills {
+			// Fresh role preloads use the shared loader/renderer: the
+			// permanent prompt carries the complete rendered document, and
+			// the typed preload metadata freezes its provenance for the
+			// delegate's lifetime.
+			invocationID, err := s.mintSkillOperationID()
+			if err != nil {
+				// Persisting the operation identity is not a skill-resolution
+				// failure: continuing here starts the delegate WITHOUT the
+				// configured role preloads, silently, so the parent must see it.
+				return fmt.Errorf("persisting the skill operation identity for role preload %q: %w", skillName, err)
+			}
+			batch, err := s.prepareSkillActivations(ctx, []skillInvocation{{
+				Name: skillName, Route: "role_preload",
+				InvocationID: invocationID, AtomicGroupID: invocationID,
+			}})
+			if fault := s.subagentPrepareFault("skill_resolve"); fault != nil {
+				err = fault
+			}
+			if err != nil || len(batch.Items) == 0 {
+				continue
+			}
+			item := batch.Items[0]
+			if strings.TrimSpace(item.Rendered.Content) != "" {
+				subCfg.spawn.activatedSkillNames = append(subCfg.spawn.activatedSkillNames, item.Loaded.Descriptor.CatalogName)
+				subCfg.spawn.activatedSkillBodies = append(subCfg.spawn.activatedSkillBodies, item.Rendered.Content)
+				subCfg.spawn.frozenSkillMetadata = append(subCfg.spawn.frozenSkillMetadata, frozenPreloadRecord(item))
+			}
+		}
+	}
+	return nil
+}
+
+// applyChildToolPolicy resolves the child's tool ceiling, including explicit
+// grants, and records it in the child's spawn configuration.
+func (s *Session) applyChildToolPolicy(subCfg *SessionConfig, agent *plugin.Agent, frozen *delegatestore.Descriptor, childCanDelegate bool, canonicalGrantTools []string) (bool, []string, []string, error) {
+	var allTools bool
+	var allowedTools, deniedTools []string
+	if frozen != nil {
+		// The ceiling was captured at creation, when baseSubagentToolPolicy had
+		// already added the intrinsic tools, so a restore honors it instead of
+		// re-applying the current policy: the frozen ceiling is authoritative,
+		// and a descriptor written before an intrinsic tool existed keeps that
+		// older set by design (widening it here is what the session-init ceiling
+		// comment forbids). Fresh spawns carry every intrinsic tool.
+		allowedTools = append([]string(nil), frozen.ToolNameCeiling...)
+		subCfg.spawn.toolNameCeiling = append([]string(nil), allowedTools...)
+	} else {
+		// The policy follows the CHILD's granted allowance, not this session's:
+		// a leaf loses the delegation tools it cannot use, while the intrinsic
+		// job tools stay — they act on the leaf's own jobs, not the parent's.
+		allTools, allowedTools, deniedTools = baseSubagentToolPolicy(agent, childCanDelegate)
+	}
+	if frozen == nil && len(canonicalGrantTools) > 0 {
+		currentTools := s.reg.RegisteredNames()
+		for _, toolName := range canonicalGrantTools {
+			if isProtectedGrantTool(toolName) {
+				return false, nil, nil, fmt.Errorf("%s is root-only and cannot be granted to subagents", toolName)
+			}
+			if isRootOnlySubagentTool(toolName) {
+				return false, nil, nil, fmt.Errorf("cannot grant tool %q via grant_tools: delegation tools are enabled by the delegate tool's delegation_allowance parameter, not grant_tools", toolName)
+			}
+			baseHasTool := allTools ||
+				hasString(allowedTools, toolName) ||
+				(len(allowedTools) == 0 && !hasString(deniedTools, toolName))
+			if baseHasTool {
+				continue
+			}
+			if !currentTools[toolName] {
+				return false, nil, nil, fmt.Errorf("cannot grant tool %q: it is not currently callable in this session", toolName)
+			}
+			if len(allowedTools) > 0 {
+				allowedTools = appendUniqueStrings(allowedTools, toolName)
+			}
+		}
+	}
+	if frozen == nil && !allTools {
+		allowedTools = ensureRecoveryReader(allowedTools, s.reg)
+	}
+
+	if frozen != nil {
+		// The descriptor's ceiling was captured from the effective parent registry
+		// before CommitStart. NewSession intersects it with the complete registry the
+		// child can build, including intrinsic recovery tools, before caching tools.
+	} else if allTools {
+		// Leave the registry unrestricted for explicit all-tools agents.
+	} else if len(allowedTools) > 0 {
+		subCfg.spawn.allowedToolNames = append([]string(nil), allowedTools...)
+	} else {
+		subCfg.spawn.deniedToolNames = append([]string(nil), deniedTools...)
+	}
+	// Frozen descriptors remember old allowances, never a live parent's revoked
+	// native capability. Apply this on all construction paths, even all-tools.
+	subCfg.spawn.deniedToolNames = appendUniqueStrings(subCfg.spawn.deniedToolNames, s.unavailableMemoryToolNames()...)
+	return allTools, allowedTools, deniedTools, nil
+}
+
+// prepareChildEnvironment returns the environment the child runs on: the one
+// the caller prepared, or a fresh one. A restore checks that it matches the
+// committed descriptor.
+func (s *Session) prepareChildEnvironment(ctx context.Context, workingDir, sessionID string, allTools bool, allowedTools []string, frozen *delegatestore.Descriptor) (execenv.ExecutionEnvironment, bool, bool, error) {
+	var reqSandbox *sandbox.SandboxPolicy
+	if v, ok := ctx.Value(ctxDelegateSandboxPolicy).(*sandbox.SandboxPolicy); ok {
+		reqSandbox = v
+	}
+	if reqSandbox == nil && subagentToolScopeIsReadOnly(allTools, allowedTools) {
+		var sandboxErr error
+		reqSandbox, sandboxErr = s.readOnlyDelegateSandbox()
+		if sandboxErr != nil {
+			return nil, false, false, fmt.Errorf("read-only delegate sandbox: %w", sandboxErr)
+		}
+	}
+	preparedEnv, hasPreparedEnv := ctx.Value(delegatePreparedEnvironmentContextKey{}).(delegatePreparedEnvironment)
+	subEnv := preparedEnv.env
+	ownsFreshEnv := preparedEnv.ownsFresh
+	if !hasPreparedEnv {
+		var err error
+		subEnv, ownsFreshEnv, err = s.prepareSubagentEnvironmentFor(workingDir, reqSandbox, sessionID)
+		if err != nil {
+			return nil, false, false, err
+		}
+	}
+	if frozen != nil {
+		if subEnv == nil || subEnv.WorkingDirectory() != frozen.WorkingDir || localEnvPolicyName(subEnv) != frozen.LocalEnvPolicy || !frozenDelegateSandboxMatches(subEnv, frozen.Sandbox) {
+			actualWorkingDir := ""
+			if subEnv != nil {
+				actualWorkingDir = subEnv.WorkingDirectory()
+			}
+			return nil, false, false, fmt.Errorf("committed delegate environment is unavailable: cwd %q/%q policy %q/%q", actualWorkingDir, frozen.WorkingDir, localEnvPolicyName(subEnv), frozen.LocalEnvPolicy)
+		}
+	}
+	return subEnv, ownsFreshEnv, hasPreparedEnv, nil
+}
+
+// seedChildTasks populates the child's task list from its role's templates and
+// the parent's tasks, then queues the child's first plan announcement.
+func (s *Session) seedChildTasks(subSess *Session, agent *plugin.Agent, frozen *delegatestore.Descriptor, parentTasks []taskpkg.TaskTemplate, sharedTaskStore *taskpkg.TaskStore) error {
+	// Populate default tasks from agent definition + parent tasks.
+	var defaultTasks []taskpkg.TaskTemplate
+	if frozen != nil {
+		defaultTasks = append(defaultTasks, frozen.TaskTemplates...)
+	} else if agent != nil {
+		defaultTasks = agent.Tasks
+	}
+	if len(defaultTasks) > 0 {
+		subStore := subSess.getOrCreateTaskStore()
+		populateErr := subStore.MutateAndPublish(func(epoch, revision uint64) error {
+			err := subStore.PopulateFromTemplates(defaultTasks, parentTasks)
+			if fault := s.subagentPrepareFault("task_populate"); fault != nil {
+				err = fault
+			}
+			if err != nil {
+				return err
+			}
+			summary := taskpkg.Summarize(subStore.View())
+			subSess.emit(taskUpdatedData(summary, subSess.taskStoreOwnerSessionID(), epoch, revision))
+			return nil
+		})
+		if err := populateErr; err != nil {
+			// Non-fatal: surface as a warning so the spawn still proceeds but the
+			// failure is observable instead of silently swallowed.
+			s.emit(warningDataFromError("failed to populate subagent tasks from templates", err))
+		}
+		// A shared store is the parent's list, not this child's plan. Announcing
+		// it would push every parent step and prompt into a leaf delegate's
+		// first request, so that mode keeps its single current-task reminder.
+		if sharedTaskStore == nil {
+			if err := steerDelegatePlan(subSess, subStore); err != nil {
+				return err
+			}
+		} else if current, ok := subStore.CurrentInProgress(); ok {
+			if err := subSess.SteerKind(formatCurrentTaskSteering(current, subSess.canInstructTool("task_list")), events.SteeringKindCurrentTask); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
@@ -1426,57 +1345,6 @@ func (s *Session) hasSalvageFromFinalRound() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.salvagedTurnRound != 0 && s.salvagedTurnRound == s.totalRounds
-}
-
-func (s *Session) sendInput(ctx context.Context, agentID string, input string) (any, error) {
-	_ = ctx
-	sub := s.getSub(agentID)
-	if sub == nil {
-		return "", fmt.Errorf("unknown agent_id: %s", agentID)
-	}
-	if _, err := s.startOrSteerSubagentRun(sub, input); err != nil {
-		return "", err
-	}
-	return "ok", nil
-}
-
-func (s *Session) startOrSteerSubagentRun(sub *subagent, input string) (bool, error) {
-	sub.mu.Lock()
-	if sub.finalizing || (sub.fatalRunGated && (sub.running || sub.driving)) {
-		sub.mu.Unlock()
-		return false, fmt.Errorf("target_busy: delegate %q is completing its current run; retry", sub.id)
-	}
-	if sub.running || sub.driving {
-		subSess := sub.sess
-		sub.mu.Unlock()
-		// Inject as steering message into the in-flight session. A mid-drive child
-		// (sub.driving) is in flight just like a running one: the drive turn absorbs
-		// the steered input at its tool-round boundary (spec §3, A7 steer-into-drive)
-		// rather than launching a second concurrent run.
-		return false, subSess.SteerKind(input, events.SteeringKindAgentMessage)
-	}
-
-	// Agent is idle — start a new ProcessInput round. Enroll the resumed run in
-	// sendersWG under s.mu (gated on closing) so it joins the same teardown
-	// barrier as the initial spawn.
-	runCtx, runCancel := context.WithCancel(context.Background())
-	resumeTime := s.sclock().Now()
-	s.mu.Lock()
-	if s.closingOrClosedLocked() {
-		s.mu.Unlock()
-		sub.mu.Unlock()
-		runCancel()
-		return false, errors.New("session is closed")
-	}
-	s.sendersWG.Add(1)
-	s.mu.Unlock()
-
-	sub.fatalRunGated = false
-	resetSubagentForRunLocked(sub, runCancel, resumeTime)
-	sub.mu.Unlock()
-
-	s.launchSubagentRun(runCtx, sub, runCancel, input, s.activeCausalProvenance())
-	return true, nil
 }
 
 // trySetDisposeGate arms the dispose gate on a quiescent retained child, but only
@@ -1611,7 +1479,7 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 		_, err := childSess.ProcessInputKind(driveCtx, "", nil, EntryNotification)
 		if err != nil {
 			if cleanupErr := sub.gateFatalRun(err); cleanupErr != nil {
-				childSess.emit(events.EventWarning, warningDataFromError("delegate owned-work cleanup incomplete", cleanupErr))
+				childSess.emit(warningDataFromError("delegate owned-work cleanup incomplete", cleanupErr))
 			}
 		}
 	}()
@@ -1636,13 +1504,7 @@ func (s *Session) redriveChildIfAttentionRemains(driveCtx context.Context, sub *
 	if sub.fatalRunGatedSnapshot() {
 		return
 	}
-	stopGated := s.childStopGated(childSess.id)
-	if hook := s.cfg.testOnly.subagentStopGated; hook != nil {
-		if stopped, handled := hook(s, childSess.id); handled {
-			stopGated = stopped
-		}
-	}
-	if stopGated {
+	if s.childStopGated(childSess.id) {
 		return
 	}
 	if childSess.peekNotifications() > 0 || (childSess.jobManager != nil && childSess.jobManager.hasPendingWatchSends()) {
@@ -1719,28 +1581,6 @@ func (s *Session) launchSubagentRun(runCtx context.Context, sub *subagent, runCa
 		defer runCancel()
 		sub.run(runCtx, input, inputProvenance)
 	}()
-}
-
-func (s *Session) cancelAgent(agentID string) (any, error) {
-	sub := s.getSub(agentID)
-	if sub == nil {
-		return "", fmt.Errorf("unknown agent_id: %s", agentID)
-	}
-	done, err := sub.requestRunCancel(false)
-	if err != nil {
-		return "", fmt.Errorf("agent %s is %w", agentID, err)
-	}
-	select {
-	case <-done:
-	case <-s.sclock().After(5 * time.Second):
-		return "", fmt.Errorf("timed out cancelling subagent %s", agentID)
-	}
-	sub.mu.Lock()
-	result := sub.resultSnapshotLocked()
-	sub.resultConsumed = true
-	sub.mu.Unlock()
-	b, _ := json.Marshal(result)
-	return string(b), nil
 }
 
 func (s *Session) getSub(agentID string) *subagent {
@@ -1894,7 +1734,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			if err != nil {
 				err = a.gateFatalRunError(err)
 			}
-			finish = a.stableDelegateFinish(res, err)
+			finish = a.buildDelegateFinish(res, err)
 			break
 		}
 		settlementClaim, continueRun, settleErr := a.sess.delegateController.BeginRunFinalization(lease, settlementMode, err)
@@ -1903,13 +1743,13 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 				err = errors.Join(err, settleErr)
 			}
 			if settlementMode == delegateSettlementTerminal {
-				if stableDelegateFatalRun(err) {
+				if delegateFatalRun(err) {
 					err = a.gateFatalRunError(err)
 				}
 			} else if err != nil {
 				err = a.gateFatalRunError(err)
 			}
-			finish = a.stableDelegateFinish(res, err)
+			finish = a.buildDelegateFinish(res, err)
 			break
 		}
 		if continueRun {
@@ -1933,23 +1773,23 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			err = errors.Join(err, attentionErr)
 		}
 		if settlementClaim.mode == delegateSettlementTerminal {
-			if stableDelegateFatalRun(err) {
+			if delegateFatalRun(err) {
 				err = a.gateFatalRunError(err)
 			}
-			finish = a.stableDelegateFinish(res, err)
+			finish = a.buildDelegateFinish(res, err)
 			break
 		}
 		if attentionErr != nil {
 			if err != nil {
 				err = a.gateFatalRunError(err)
 			}
-			finish = a.stableDelegateFinish(res, err)
+			finish = a.buildDelegateFinish(res, err)
 			break
 		}
 		if err != nil {
 			err = a.gateFatalRunError(err)
 		}
-		finish = a.stableDelegateFinish(res, err)
+		finish = a.buildDelegateFinish(res, err)
 		decision, decisionErr := a.sess.delegateController.completionDecision(lease)
 		if decisionErr != nil {
 			err = errors.Join(err, decisionErr)
@@ -1973,7 +1813,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			if err != nil {
 				err = a.gateFatalRunError(err)
 			}
-			finish = a.stableDelegateFinish(res, err)
+			finish = a.buildDelegateFinish(res, err)
 		}
 		break
 	}
@@ -2029,7 +1869,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			finishErr = executeErr
 		}
 		if finishErr != nil {
-			a.sess.emit(events.EventWarning, warningDataFromError("delegate generation settlement incomplete", finishErr))
+			a.sess.emit(warningDataFromError("delegate generation settlement incomplete", finishErr))
 		}
 	}
 	if restoreParentDriveNotify != nil {
@@ -2056,13 +1896,13 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	// drive that may never come.
 	if stableRun {
 		if pending, pendingErr := a.sess.pendingDelegateAttentionIDs(); pendingErr != nil {
-			a.sess.emit(events.EventWarning, warningDataFromError("inspect remaining delegate attention", pendingErr))
+			a.sess.emit(warningDataFromError("inspect remaining delegate attention", pendingErr))
 		} else if len(pending) != 0 {
 			if armErr := a.sess.armDelegateAttention(pending[0]); armErr != nil {
-				a.sess.emit(events.EventWarning, warningDataFromError("rearm remaining delegate attention", armErr))
+				a.sess.emit(warningDataFromError("rearm remaining delegate attention", armErr))
 			}
 		} else if clearErr := a.sess.delegateController.clearResolvedDelegateAttention(a.sess.owningDelegateID); clearErr != nil {
-			a.sess.emit(events.EventWarning, warningDataFromError("clear resolved delegate attention", clearErr))
+			a.sess.emit(warningDataFromError("clear resolved delegate attention", clearErr))
 		}
 	}
 	if done != nil {
@@ -2094,7 +1934,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 // ahead of the result.
 func (a *subagent) announceFinishedGeneration(lease delegateLease, announcements delegateMutationPlans) {
 	if err := a.sess.executeDelegateMutationPlans(announcements); err != nil {
-		a.sess.emit(events.EventWarning, warningDataFromError("delegate result delivery incomplete", err))
+		a.sess.emit(warningDataFromError("delegate result delivery incomplete", err))
 	}
 	if hook := a.sess.cfg.testOnly.subagentBeforeGenerationReleased; hook != nil {
 		hook(a, lease)
@@ -2183,20 +2023,20 @@ func delegateSettlementModeForRun(err error, cancelRequested bool) delegateSettl
 	return classifyRunEnd(err, cancelRequested).mode
 }
 
-func stableDelegateFatalRun(err error) bool {
+func delegateFatalRun(err error) bool {
 	return classifyRunEnd(err, false).fatal
 }
 
-func stableDelegateFinish(sess *Session, result string, runErr error) delegateFinish {
+func buildDelegateFinish(sess *Session, result string, runErr error) delegateFinish {
 	inputs := delegateTerminalRunInputs{session: sess, result: result, runErr: runErr}
 	inputs.captureCommunicateReport(sess)
-	finish := stableDelegateFinishFromRun(inputs)
+	finish := delegateFinishFromRun(inputs)
 	return finish
 }
 
-func (a *subagent) stableDelegateFinish(result string, runErr error) delegateFinish {
+func (a *subagent) buildDelegateFinish(result string, runErr error) delegateFinish {
 	if a == nil || a.sess == nil {
-		return stableDelegateFinish(nil, result, runErr)
+		return buildDelegateFinish(nil, result, runErr)
 	}
 	endedAt := a.sess.sclock().Now()
 	a.mu.Lock()
@@ -2233,14 +2073,14 @@ func (a *subagent) stableDelegateFinish(result string, runErr error) delegateFin
 		}
 		controller.mu.Unlock()
 	}
-	inputs.worktree = reporter.stableDelegateWorktreeReport(descriptor)
+	inputs.worktree = reporter.descriptorWorktreeReport(descriptor)
 	// SessionScratchDir is a reporting-only accessor (never provisions), so this
 	// is safe to read even on an externally cancelled run — it costs nothing and
 	// carries no side effect, matching the worktree report above.
 	if le, ok := a.sess.currentEnv().(*execenv.LocalExecutionEnvironment); ok {
 		inputs.scratchPath = le.SessionScratchDir()
 	}
-	finish := stableDelegateFinishFromRun(inputs)
+	finish := delegateFinishFromRun(inputs)
 	if finish.outcome == delegatestore.OutcomeFailed && a.sess.hasSalvageFromFinalRound() && finish.packet != nil {
 		finish.packet.Warnings = appendUniqueStrings(finish.packet.Warnings, delegateSalvagedDraftNote)
 	}
@@ -2324,9 +2164,9 @@ type delegateTerminalWorktreeReport struct {
 	Dirty   bool   `json:"dirty"`
 }
 
-// stableDelegateFinishFromRun constructs the one immutable packet used by
+// delegateFinishFromRun constructs the one immutable packet used by
 // settlement, crash replay, and owner delivery.
-func stableDelegateFinishFromRun(inputs delegateTerminalRunInputs) delegateFinish {
+func delegateFinishFromRun(inputs delegateTerminalRunInputs) delegateFinish {
 	message := strings.TrimSpace(inputs.result)
 	if message == "" && inputs.runErr != nil {
 		message = inputs.runErr.Error()

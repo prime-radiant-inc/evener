@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/envvars/userdirs"
 )
 
 func TestWrite_CreatesFileWithExpectedShape(t *testing.T) {
@@ -184,19 +186,28 @@ func TestList_SkipsCorruptFiles(t *testing.T) {
 func TestDefaultDir_RespectsHome(t *testing.T) {
 	t.Setenv("HOME", "/tmp/fakehome")
 	t.Setenv("XDG_STATE_HOME", "")
-	got := DefaultDir()
+	got, err := DefaultDir()
 	want := "/tmp/fakehome/.local/state/evener/run"
-	if got != want {
-		t.Fatalf("DefaultDir: got %q, want %q", got, want)
+	if err != nil || got != want {
+		t.Fatalf("DefaultDir: got %q, %v, want %q", got, err, want)
 	}
 }
 
 func TestDefaultDir_RespectsXDGStateHome(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", "/srv/evener-state")
-	got := DefaultDir()
+	got, err := DefaultDir()
 	want := "/srv/evener-state/evener/run"
-	if got != want {
-		t.Fatalf("DefaultDir: got %q, want %q", got, want)
+	if err != nil || got != want {
+		t.Fatalf("DefaultDir: got %q, %v, want %q", got, err, want)
+	}
+}
+
+func TestDefaultDir_NoHomeNoXDGIsAnError(t *testing.T) {
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	got, err := DefaultDir()
+	if !errors.Is(err, userdirs.ErrNoStateHome) || got != "" {
+		t.Fatalf("DefaultDir: got %q, %v, want ErrNoStateHome", got, err)
 	}
 }
 
@@ -236,20 +247,27 @@ func TestWrite_NestedDirParentIsFile(t *testing.T) {
 	}
 }
 
-func TestWrite_TmpPathIsDirectory(t *testing.T) {
-	// Pre-create the temporary file path as a directory so WriteFile fails.
+func TestWrite_DoesNotFollowSymlinkPlantedAtTempName(t *testing.T) {
 	dir := t.TempDir()
-	entry := Entry{PID: 1, Address: "127.0.0.1:1"}
-	tmp := filepath.Join(dir, "1.json.tmp")
-	if err := os.Mkdir(tmp, 0o755); err != nil {
+	victim := filepath.Join(dir, "victim")
+	if err := os.WriteFile(victim, []byte("untouched"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := Write(dir, entry)
-	if err == nil {
-		t.Fatal("expected error when tmp path is a directory")
+	if err := os.Symlink(victim, filepath.Join(dir, "1.json.tmp")); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "write tmp") {
-		t.Fatalf("expected error from the WriteFile branch, got %v", err)
+	path, err := Write(dir, Entry{PID: 1, Address: "127.0.0.1:1"})
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if got, _ := os.ReadFile(victim); string(got) != "untouched" {
+		t.Fatalf("write followed the planted symlink: victim = %q", got)
+	}
+	if entries, err := List(dir); err != nil || len(entries) != 1 || entries[0].PID != 1 {
+		t.Fatalf("List = %v, %v; want the written entry", entries, err)
+	}
+	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("entry file mode = %v, %v; want 0600", info, err)
 	}
 }
 
@@ -265,8 +283,8 @@ func TestWrite_TargetIsDirectory(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when target path is a directory")
 	}
-	if !strings.Contains(err.Error(), "rename") {
-		t.Fatalf("expected error from the Rename branch, got %v", err)
+	if leftovers, _ := filepath.Glob(filepath.Join(dir, "1.json.tmp*")); len(leftovers) != 0 {
+		t.Fatalf("failed Write left temp files behind: %v", leftovers)
 	}
 }
 

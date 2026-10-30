@@ -31,6 +31,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -143,9 +144,9 @@ func (c skillGuardLLMCall) allText() string {
 // skill-context carriers appended by skill.Render. History replays earlier
 // inputs verbatim, so searching the whole request would count later turns too.
 func (c skillGuardLLMCall) lastUserText() string {
-	for i := len(c.Messages) - 1; i >= 0; i-- {
-		if c.Messages[i].Role == "user" && !c.Messages[i].skillContextOnly() {
-			return c.Messages[i].text()
+	for _, message := range slices.Backward(c.Messages) {
+		if message.Role == "user" && !message.skillContextOnly() {
+			return message.text()
 		}
 	}
 	return ""
@@ -252,13 +253,13 @@ type skillGuardDurableInputItem struct {
 }
 
 type skillGuardDurableRecord struct {
-	ClientMutationID string                       `json:"clientMutationId"`
+	ClientMutationID string                       `json:"clientMutationId"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field clientMutationId.
 	Method           string                       `json:"method"`
 	State            string                       `json:"state"`
-	RecoveryKind     string                       `json:"recoveryKind"`
-	RecoveryReason   string                       `json:"recoveryReason"`
-	ComposerText     string                       `json:"composerText"`
-	TargetRef        string                       `json:"targetRef"`
+	RecoveryKind     string                       `json:"recoveryKind"`   //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field recoveryKind.
+	RecoveryReason   string                       `json:"recoveryReason"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field recoveryReason.
+	ComposerText     string                       `json:"composerText"`   //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field composerText.
+	TargetRef        string                       `json:"targetRef"`      //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field targetRef.
 	Input            []skillGuardDurableInputItem `json:"input"`
 }
 
@@ -274,8 +275,8 @@ type skillGuardComposerSnapshot struct {
 	Text         string                 `json:"text"`
 	Placeholder  string                 `json:"placeholder"`
 	Chips        []string               `json:"chips"`
-	RemoveLabels []string               `json:"removeLabels"`
-	ChipDetails  []skillGuardChipDetail `json:"chipDetails"`
+	RemoveLabels []string               `json:"removeLabels"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field removeLabels.
+	ChipDetails  []skillGuardChipDetail `json:"chipDetails"`  //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field chipDetails.
 	Tiles        int                    `json:"tiles"`
 }
 
@@ -329,10 +330,7 @@ func TestSkillComposerBrowser(t *testing.T) {
 	if err := roster.RefreshAndWait(ctx); err != nil {
 		t.Fatalf("roster refresh: %v", err)
 	}
-	past := hubcore.NewPastIndex(filepath.Join(fixture.stateRoot, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatalf("past index rebuild: %v", err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(fixture.stateRoot, "projects", "*"))
 	tokenBytes := make([]byte, 16)
 	if _, err := rand.Read(tokenBytes); err != nil {
 		t.Fatalf("mint auth token: %v", err)
@@ -527,12 +525,12 @@ func skillGuardSetup(t *testing.T) *skillGuardFixture {
 	}
 	fixture.runDir = filepath.Join(root, "run")
 	fixture.stateRoot = filepath.Join(root, "state")
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		name := "alpha"
 		if i == 1 {
 			name = "beta"
 		}
-		fixture.workDir[i] = filepath.Join(root, fmt.Sprintf("helper-%s", name), "work")
+		fixture.workDir[i] = filepath.Join(root, "helper-"+name, "work")
 		// Valid project ids keep the past index honest (testing.md's
 		// "Seeding Hub Fixtures"): a hand-written dir name is silently skipped.
 		fixture.stateDir[i] = hubtest.ProjectDir(t, filepath.Join(fixture.stateRoot, "projects"), name)
@@ -638,12 +636,13 @@ func skillGuardSessionRef(entry rendezvous.Entry) string {
 }
 
 type skillGuardHelper struct {
-	cmd      *exec.Cmd
-	logPath  string
-	control  string
-	stopOnce sync.Once
-	waitOnce sync.Once
-	waitDone chan error
+	cmd            *exec.Cmd
+	logPath        string
+	control        string
+	stopOnce       sync.Once
+	waitOnce       sync.Once
+	waitDone       chan error
+	productionWait bool
 }
 
 // wait returns the one shared cmd.Wait result. A raw second cmd.Wait fails
@@ -654,7 +653,16 @@ func (h *skillGuardHelper) wait() <-chan error {
 	h.waitOnce.Do(func() {
 		h.waitDone = make(chan error, 1)
 		go func() {
-			h.waitDone <- h.cmd.Wait()
+			if h.productionWait {
+				// HubSpawner owns cmd.Wait. Observe its reaping, as the onboarding
+				// guard does, rather than racing it with a second Wait call.
+				for h.cmd.Process != nil && !errors.Is(h.cmd.Process.Signal(syscall.Signal(0)), os.ErrProcessDone) {
+					time.Sleep(10 * time.Millisecond)
+				}
+				h.waitDone <- nil
+			} else {
+				h.waitDone <- h.cmd.Wait()
+			}
 			// Close after the one send: the first receiver gets the real
 			// error, every later receiver (the cleanup fallback) gets the
 			// zero value immediately instead of blocking forever on a drained
@@ -712,13 +720,51 @@ func skillGuardStartHelper(t *testing.T, fixture *skillGuardFixture, index int) 
 	if index == 1 {
 		name = "beta"
 	}
+	cmd, helper := skillGuardHelperCommand(t, fixture, index, name, nil, os.Environ())
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start helper %s: %v", name, err)
+	}
+	skillGuardHelperMu.Lock()
+	skillGuardHelpers[index] = helper
+	skillGuardHelperMu.Unlock()
+
+	// Wait for this helper's own real rendezvous registration, never first-found.
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		entries, err := rendezvous.List(fixture.runDir)
+		if err == nil {
+			for _, e := range entries {
+				if e.PID == cmd.Process.Pid && e.Address != "" && e.SessionID != "" {
+					return e
+				}
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("helper %s never registered its rendezvous entry (log: %s)", name, helper.logPath)
+	return rendezvous.Entry{}
+}
+
+// skillGuardHelperCommand prepares one generation; the caller starts it. A
+// production launch keeps resolved args/env and HubSpawner's sole Wait owner.
+func skillGuardHelperCommand(t *testing.T, fixture *skillGuardFixture, index int, name string, serveArgs, env []string) (*exec.Cmd, *skillGuardHelper) {
+	t.Helper()
+	control, requestLog := fixture.control[index], fixture.requestLog[index]
+	if len(serveArgs) > 0 {
+		control = filepath.Join(fixture.artifact, name+"-control.jsonl")
+		requestLog = filepath.Join(fixture.artifact, name+"-requests.jsonl")
+		if err := os.WriteFile(control, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	cfgPath := filepath.Join(fixture.artifact, fmt.Sprintf("helper-%s-config.json", name))
-	cfg, err := json.Marshal(map[string]string{
+	cfg, err := json.Marshal(map[string]any{
 		"workDir":     fixture.workDir[index],
 		"stateDir":    fixture.stateDir[index],
 		"runDir":      fixture.runDir,
-		"requestLog":  fixture.requestLog[index],
-		"controlPath": fixture.control[index],
+		"requestLog":  requestLog,
+		"controlPath": control,
+		"serveArgs":   serveArgs,
 	})
 	if err != nil {
 		t.Fatalf("marshal helper config: %v", err)
@@ -734,15 +780,8 @@ func skillGuardStartHelper(t *testing.T, fixture *skillGuardFixture, index int) 
 	cmd := exec.Command(fixture.helperBin, "-test.run", "^TestSkillBrowserDaemonHelper$", "-skill-browser-config="+cfgPath)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
-	cmd.Env = os.Environ()
-	if err := cmd.Start(); err != nil {
-		logFile.Close()
-		t.Fatalf("start helper %s: %v", name, err)
-	}
-	skillGuardHelperMu.Lock()
-	skillGuardHelpers[index] = &skillGuardHelper{cmd: cmd, logPath: logPath, control: fixture.control[index]}
-	helper := skillGuardHelpers[index]
-	skillGuardHelperMu.Unlock()
+	cmd.Env = env
+	helper := &skillGuardHelper{cmd: cmd, logPath: logPath, control: control, productionWait: len(serveArgs) > 0}
 	// Failure paths that abort before the explicit stop loop must not leak the
 	// helper daemon: cleanup stops it too (a no-op when the explicit stop
 	// already ran) before the log is closed.
@@ -752,23 +791,7 @@ func skillGuardStartHelper(t *testing.T, fixture *skillGuardFixture, index int) 
 		}
 		_ = logFile.Close()
 	})
-
-	// Wait for this helper's own rendezvous registration (real registration,
-	// not a synthetic one).
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		entries, err := rendezvous.List(fixture.runDir)
-		if err == nil {
-			for _, e := range entries {
-				if e.PID == cmd.Process.Pid && e.Address != "" && e.SessionID != "" {
-					return e
-				}
-			}
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	t.Fatalf("helper %s never registered its rendezvous entry (log: %s)", name, logPath)
-	return rendezvous.Entry{}
+	return cmd, helper
 }
 
 func skillGuardStopHelper(t *testing.T, index int) {
@@ -875,8 +898,7 @@ func (c *skillGuardChoreography) run(milestones string) error {
 // handleMilestone reacts to one driver milestone with the real-world fixture
 // event only the Go owner can produce.
 func (c *skillGuardChoreography) handleMilestone(m skillGuardMilestone) {
-	switch m.Milestone {
-	case "fail-queued":
+	if m.Milestone == "fail-queued" {
 		if c.failSeen {
 			return
 		}
@@ -1048,7 +1070,7 @@ func skillGuardReadRequests(t *testing.T, path string) []skillGuardRequestRecord
 		t.Fatalf("read request log %s: %v", path, err)
 	}
 	var out []skillGuardRequestRecord
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -1080,7 +1102,7 @@ func skillGuardReadMilestones(t *testing.T, path string) []skillGuardMilestone {
 		t.Fatalf("read milestones %s: %v", path, err)
 	}
 	var out []skillGuardMilestone
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -1153,8 +1175,7 @@ func skillGuardAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 				continue
 			}
 			deliveries++
-			for j := len(rec.Request.Messages) - 1; j >= 0; j-- {
-				message := rec.Request.Messages[j]
+			for _, message := range slices.Backward(rec.Request.Messages) {
 				if message.Role != "user" {
 					continue
 				}
@@ -1251,9 +1272,9 @@ func skillGuardAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 
 	// Accessible chip labels.
 	var labels struct {
-		ChipText     []string               `json:"chipText"`
-		RemoveLabels []string               `json:"removeLabels"`
-		ChipDetails  []skillGuardChipDetail `json:"chipDetails"`
+		ChipText     []string               `json:"chipText"`     //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field chipText.
+		RemoveLabels []string               `json:"removeLabels"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field removeLabels.
+		ChipDetails  []skillGuardChipDetail `json:"chipDetails"`  //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field chipDetails.
 		Prose        string                 `json:"prose"`
 	}
 	if !skillGuardMilestoneDetail(t, milestones, "chip-labels", &labels) {
@@ -1351,7 +1372,7 @@ func skillGuardAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 		for _, entry := range remountDetail.Storage {
 			var record struct {
 				Text       string   `json:"text"`
-				SkillNames []string `json:"skillNames"`
+				SkillNames []string `json:"skillNames"` //nolint:tagliatelle // Matches the persisted browser composer draft field skillNames.
 			}
 			if err := json.Unmarshal([]byte(entry.Value), &record); err != nil {
 				continue
@@ -1616,7 +1637,7 @@ func skillGuardRequireTranscriptInput(t *testing.T, stateDir, prose string, name
 		if err != nil {
 			continue
 		}
-		for _, line := range strings.Split(string(data), "\n") {
+		for line := range strings.SplitSeq(string(data), "\n") {
 			if !strings.Contains(line, prose) || !strings.Contains(line, "skill_state") {
 				continue
 			}
@@ -1680,7 +1701,7 @@ func skillGuardCountTranscriptInputs(t *testing.T, stateDir, prose string) (int,
 		if err != nil {
 			continue
 		}
-		for _, line := range strings.Split(string(data), "\n") {
+		for line := range strings.SplitSeq(string(data), "\n") {
 			// The transcript's durable line shape is {"kind":"entry",
 			// "turn":{"kind":"USER_INPUT","message":{"content":[{"text":…}]}}}
 			// (agent/session transcript records); only USER_INPUT turns are

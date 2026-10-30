@@ -433,10 +433,6 @@ func appendColdDelegateAttentionMessageDurablyWithOpen(path, expectedSessionID, 
 	return true, nil
 }
 
-func appendColdAttentionResolution(path, expectedSessionID string, ids []string, disposition delegateAttentionResolution) (err error) {
-	return appendColdAttentionResolutionWithOpen(path, expectedSessionID, ids, disposition, transcript.OpenWriterForSession)
-}
-
 func appendColdAttentionResolutionWithOpen(path, expectedSessionID string, ids []string, disposition delegateAttentionResolution, open delegateAttentionWriterOpener) (err error) {
 	return appendColdAttentionResolutionForGenerationWithOpen(path, expectedSessionID, ids, disposition, 0, open)
 }
@@ -448,12 +444,22 @@ func appendColdAttentionResolutionForGenerationWithOpen(path, expectedSessionID 
 	if open == nil {
 		return errors.New("cold attention resolution writer opener is nil")
 	}
-	preflight, err := readDelegateAttentionFold(path, expectedSessionID)
-	if err != nil {
-		return err
-	}
-	if err := validateDelegateAttentionResolutions(preflight, ids, disposition, resumeGeneration); err != nil {
-		return err
+	// The discard-unless-resolved mode takes its concrete resolution from the
+	// transcript it is about to write, so its one fold read is the writer's own
+	// (below). Every other request keeps the cheap preflight refusal before a
+	// writer is opened.
+	if disposition == delegateAttentionDiscardUnlessResolved {
+		if err := validateDiscardUnlessResolvedShape(disposition, ids, resumeGeneration); err != nil {
+			return err
+		}
+	} else {
+		preflight, err := readDelegateAttentionFold(path, expectedSessionID)
+		if err != nil {
+			return err
+		}
+		if err := validateDelegateAttentionResolutions(preflight, ids, disposition, resumeGeneration); err != nil {
+			return err
+		}
 	}
 	if len(ids) == 0 {
 		return nil
@@ -464,6 +470,10 @@ func appendColdAttentionResolutionForGenerationWithOpen(path, expectedSessionID 
 	}
 	defer func() { err = errors.Join(err, writer.Close()) }()
 	fold, err := foldDelegateAttention(entries)
+	if err != nil {
+		return err
+	}
+	disposition, resumeGeneration, err = discardUnlessResolvedResolution(fold, ids, disposition, resumeGeneration)
 	if err != nil {
 		return err
 	}
@@ -493,6 +503,37 @@ func delegateAttentionResolutionTurnForGeneration(attentionID string, dispositio
 		ResumeGeneration: resumeGeneration,
 	}
 	return turn
+}
+
+// discardUnlessResolvedResolution maps the discard-unless-resolved mode to the
+// concrete resolution its fold decides: the transcript's own recorded
+// disposition and resume generation when it has one, and a discard with no
+// resume generation otherwise. Every other disposition passes through. It runs
+// on the same fold the caller validates and appends against, so the mode never
+// leaves a check/append gap.
+func discardUnlessResolvedResolution(fold delegateAttentionFold, ids []string, disposition delegateAttentionResolution, resumeGeneration uint64) (delegateAttentionResolution, uint64, error) {
+	if disposition != delegateAttentionDiscardUnlessResolved {
+		return disposition, resumeGeneration, nil
+	}
+	if err := validateDiscardUnlessResolvedShape(disposition, ids, resumeGeneration); err != nil {
+		return "", 0, err
+	}
+	if recorded, resolved := fold.resolutions[ids[0]]; resolved {
+		return recorded, fold.resumeGenerations[ids[0]], nil
+	}
+	return delegateAttentionDiscarded, 0, nil
+}
+
+var errDiscardUnlessResolvedShape = errors.New("discard-unless-resolved resolution requires one attention ID and no resume generation")
+
+// validateDiscardUnlessResolvedShape keeps the resolver mode's "one attention
+// ID, no resume generation" rule in one place. A non-mode disposition passes
+// through to validateDelegateAttentionResolutions.
+func validateDiscardUnlessResolvedShape(disposition delegateAttentionResolution, ids []string, resumeGeneration uint64) error {
+	if disposition == delegateAttentionDiscardUnlessResolved && (len(ids) != 1 || resumeGeneration != 0) {
+		return errDiscardUnlessResolvedShape
+	}
+	return nil
 }
 
 // appendDelegateNotificationDurably appends one private, model-bound attention
@@ -902,10 +943,7 @@ func (s *Session) beginRootDelegateAttentionTurn() []string {
 		return nil
 	}
 	s.rootAttentionWake = false
-	if s.rootAttentionRetry.active {
-		s.rootAttentionRetry.generation++
-		s.rootAttentionRetry.active = false
-	}
+	s.rootAttentionRetry.disarmIfArmed()
 	s.attentionMu.Unlock()
 	sort.Strings(ids)
 	return ids
@@ -1027,7 +1065,7 @@ func (s *Session) finishRootDelegateAttentionTurn(ids []string, turnErr error) e
 func (s *Session) announceRootAttentionPaused(turnErr error) {
 	summary := llm.ProviderFailureSummary(turnErr)
 	slog.Warn("background updates paused", "session", s.ID(), "failure", summary)
-	s.emit(events.EventWarning, events.WarningData{
+	s.emit(events.WarningData{
 		Message: rootAttentionPausedMessage(turnErr),
 		Source:  string(diagnostic.SourceEvener),
 		Title:   "Background updates paused",
@@ -1224,13 +1262,7 @@ func (s *Session) scheduleRootAttentionRetryLocked() {
 	if s.rootAttentionRetry.active || s.rootAttentionWake || len(s.rootAttentionWakeIDs) == 0 {
 		return
 	}
-	delay := s.rootAttentionRetry.delay
-	if delay <= 0 {
-		delay = jobNotificationRetryInitialDelay
-	}
-	s.rootAttentionRetry.active = true
-	s.rootAttentionRetry.generation++
-	generation := s.rootAttentionRetry.generation
+	delay, generation := s.rootAttentionRetry.arm()
 	s.sclock().AfterFunc(delay, func() {
 		// The rail parks with the durable holds, so read them before any
 		// lock: a firing under a standing hold disarms without a wake, and
@@ -1247,7 +1279,7 @@ func (s *Session) scheduleRootAttentionRetryLocked() {
 			// resetRootAttentionRetryLocked or a newer schedule, and re-arming
 			// it would resurrect a stale wake the owner already settled.
 			s.attentionMu.Lock()
-			if s.rootAttentionRetry.generation == generation {
+			if !s.rootAttentionRetry.superseded(generation) {
 				s.rootAttentionRetry.active = false
 				s.scheduleRootAttentionRetryLocked()
 			}
@@ -1256,11 +1288,10 @@ func (s *Session) scheduleRootAttentionRetryLocked() {
 		}
 		defer release()
 		s.attentionMu.Lock()
-		if s.rootAttentionRetry.generation != generation {
+		if !s.rootAttentionRetry.fire(generation) {
 			s.attentionMu.Unlock()
 			return
 		}
-		s.rootAttentionRetry.active = false
 		if parkedAtFire {
 			s.attentionMu.Unlock()
 			return
@@ -1270,11 +1301,7 @@ func (s *Session) scheduleRootAttentionRetryLocked() {
 		if shouldWake {
 			s.rootAttentionWake = true
 		}
-		if pending {
-			s.rootAttentionRetry.delay = min(delay*2, jobNotificationRetryMaxDelay)
-		} else {
-			s.rootAttentionRetry.delay = jobNotificationRetryInitialDelay
-		}
+		s.rootAttentionRetry.settle(pending, delay, jobNotificationRetryMaxDelay)
 		s.attentionMu.Unlock()
 		// The seam fires for a callback that passed every early return above --
 		// live generation, rail not parked -- whether or not it then notifies. It
@@ -1291,9 +1318,7 @@ func (s *Session) scheduleRootAttentionRetryLocked() {
 }
 
 func (s *Session) resetRootAttentionRetryLocked() {
-	s.rootAttentionRetry.generation++
-	s.rootAttentionRetry.active = false
-	s.rootAttentionRetry.delay = jobNotificationRetryInitialDelay
+	s.rootAttentionRetry.reset()
 }
 
 // parkRootDelegateAttention silences the root attention rail when a Stop is
@@ -1356,20 +1381,13 @@ func (s *Session) scheduleDelegateAttentionArmRetryLocked() {
 	if s.delegateAttentionArmRetry.active || len(s.delegateAttentionArmIDs) == 0 {
 		return
 	}
-	delay := s.delegateAttentionArmRetry.delay
-	if delay <= 0 {
-		delay = jobNotificationRetryInitialDelay
-	}
-	s.delegateAttentionArmRetry.active = true
-	s.delegateAttentionArmRetry.generation++
-	generation := s.delegateAttentionArmRetry.generation
+	delay, generation := s.delegateAttentionArmRetry.arm()
 	s.sclock().AfterFunc(delay, func() {
 		s.attentionMu.Lock()
-		if s.delegateAttentionArmRetry.generation != generation {
+		if !s.delegateAttentionArmRetry.fire(generation) {
 			s.attentionMu.Unlock()
 			return
 		}
-		s.delegateAttentionArmRetry.active = false
 		ids := make([]string, 0, len(s.delegateAttentionArmIDs))
 		for id := range s.delegateAttentionArmIDs {
 			ids = append(ids, id)
@@ -1390,7 +1408,7 @@ func (s *Session) scheduleDelegateAttentionArmRetryLocked() {
 		if len(s.delegateAttentionArmIDs) == 0 {
 			s.resetDelegateAttentionArmRetryLocked()
 		} else {
-			s.delegateAttentionArmRetry.delay = min(delay*2, jobNotificationRetryMaxDelay)
+			s.delegateAttentionArmRetry.settle(true, delay, jobNotificationRetryMaxDelay)
 			s.scheduleDelegateAttentionArmRetryLocked()
 		}
 		s.attentionMu.Unlock()
@@ -1398,12 +1416,10 @@ func (s *Session) scheduleDelegateAttentionArmRetryLocked() {
 }
 
 func (s *Session) resetDelegateAttentionArmRetryLocked() {
-	s.delegateAttentionArmRetry.generation++
-	s.delegateAttentionArmRetry.active = false
-	s.delegateAttentionArmRetry.delay = jobNotificationRetryInitialDelay
+	s.delegateAttentionArmRetry.reset()
 }
 
-func (s *Session) scheduleStableDelegateAttentionRetry() {
+func (s *Session) scheduleDelegateAttentionRetry() {
 	if s == nil {
 		return
 	}
@@ -1412,22 +1428,15 @@ func (s *Session) scheduleStableDelegateAttentionRetry() {
 		s.attentionMu.Unlock()
 		return
 	}
-	delay := s.stableAttentionRetry.delay
-	if delay <= 0 {
-		delay = jobNotificationRetryInitialDelay
-	}
+	delay, generation := s.stableAttentionRetry.arm()
 	s.stableAttentionRetry.delay = delay
-	s.stableAttentionRetry.active = true
-	s.stableAttentionRetry.generation++
-	generation := s.stableAttentionRetry.generation
 	s.attentionMu.Unlock()
 	s.sclock().AfterFunc(delay, func() {
 		s.attentionMu.Lock()
-		if s.stableAttentionRetry.generation != generation {
+		if !s.stableAttentionRetry.fire(generation) {
 			s.attentionMu.Unlock()
 			return
 		}
-		s.stableAttentionRetry.active = false
 		s.attentionMu.Unlock()
 
 		runnable := s.delegateController != nil && s.delegateController.hasRunnableDelegateAttention()
@@ -1442,35 +1451,29 @@ func (s *Session) scheduleStableDelegateAttentionRetry() {
 		// initial delay forever. The backoff doubles the current delay, not
 		// the one this retry was armed with, so a reset that landed while it
 		// was armed holds.
-		if pending || runnable {
-			s.stableAttentionRetry.delay = min(s.stableAttentionRetry.delay*2, jobNotificationRetryMaxDelay)
-		} else {
-			s.stableAttentionRetry.delay = jobNotificationRetryInitialDelay
-		}
+		s.stableAttentionRetry.settle(pending || runnable, s.stableAttentionRetry.delay, jobNotificationRetryMaxDelay)
 		s.attentionMu.Unlock()
 		if pending {
-			s.scheduleStableDelegateAttentionRetry()
+			s.scheduleDelegateAttentionRetry()
 		}
 	})
 }
 
-func (s *Session) resetStableDelegateAttentionRetry() {
+func (s *Session) resetDelegateAttentionRetry() {
 	if s == nil {
 		return
 	}
 	s.attentionMu.Lock()
-	s.stableAttentionRetry.generation++
-	s.stableAttentionRetry.active = false
-	s.stableAttentionRetry.delay = jobNotificationRetryInitialDelay
+	s.stableAttentionRetry.reset()
 	s.attentionMu.Unlock()
 }
 
-// resetStableDelegateAttentionRetryDelay ends a backoff episode whose work
+// resetDelegateAttentionRetryDelay ends a backoff episode whose work
 // succeeded, so the next failure retries from the initial delay. It leaves an
 // armed retry in place, since other delegates' work may still need it; that
 // retry fires at the delay it was armed with and backs off from the reset
 // delay.
-func (s *Session) resetStableDelegateAttentionRetryDelay() {
+func (s *Session) resetDelegateAttentionRetryDelay() {
 	s.attentionMu.Lock()
 	s.stableAttentionRetry.delay = jobNotificationRetryInitialDelay
 	s.attentionMu.Unlock()
@@ -1755,6 +1758,10 @@ func (s *Session) resolveAttentionDurablyForGeneration(ids []string, disposition
 	}
 	path := transcriptPath(stateDir, sessionID)
 	fold, err := s.attentionFoldCursor.read(path, sessionID)
+	if err != nil {
+		return err
+	}
+	disposition, resumeGeneration, err = discardUnlessResolvedResolution(fold, ids, disposition, resumeGeneration)
 	if err != nil {
 		return err
 	}

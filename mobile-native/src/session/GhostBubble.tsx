@@ -3,7 +3,7 @@
 // right-aligned, dashed and unfilled, with what it is waiting for beneath it
 // and the actions it offers as text buttons. Tapping the bubble opens the
 // rest of its actions, and a queued or held message swipes left to cancel.
-import type { ReactNode } from "react";
+import { type ReactNode, useLayoutEffect, useRef } from "react";
 import { ActionSheetIOS, Alert, Platform, Pressable, Text, View } from "react-native";
 import { SwipeRow } from "../board/SwipeRow";
 import { useReadingType } from "../display/displayContext";
@@ -11,11 +11,13 @@ import { allowFontScaling, useColors, useTextScale } from "../ui";
 import type { Ghost, GhostAction } from "./ghosts";
 import { destructiveButton, haptic } from "../haptics";
 
-const BUTTON_LABELS: Record<GhostAction, string> = {
+type ButtonAction = GhostAction | "remove";
+const BUTTON_LABELS: Record<ButtonAction, string> = {
 	steerNow: "Steer now",
 	sendNow: "Send now",
 	edit: "Edit",
 	cancel: "Cancel",
+	remove: "Remove",
 	check: "Check",
 	discard: "Discard",
 };
@@ -41,21 +43,54 @@ export interface GhostBubbleProps {
 	/** What the bubble sits on: the transcript's page, or a sheet's canvas.
 	 * A swipe paints it under the unfilled bubble. */
 	backdrop: GhostBackdrop;
+	/** How far the bubble's row starts from the screen's left edge: the
+	 * horizontal padding of the list or sheet that holds it. The swipe row
+	 * measures the screen's edge band from that edge, so a padded caller trims
+	 * only the rest. */
+	edgeInset: number;
 	onAction(action: GhostAction): void;
 }
 
-export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, backdrop, onAction }: GhostBubbleProps) {
+export function GhostBubble({
+	ghost,
+	disabled,
+	canEdit,
+	editHint,
+	attachments,
+	backdrop,
+	edgeInset,
+	onAction,
+}: GhostBubbleProps) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const reading = useReadingType();
-	const editBlocked = ghost.origin.kind !== "queue" && !canEdit;
+	// Local merge readiness is projected from the same durable inputs for the
+	// transcript and sheet. canEdit remains the rejected/uncertain restore guard.
+	const editBlocked = ghost.origin.kind !== "queue" && !ghost.localQueued && !canEdit;
+	const removalLabel = ghost.localQueued ? BUTTON_LABELS.remove : BUTTON_LABELS.cancel;
 	const offersEdit = ghost.buttons.includes("edit") || ghost.menu.includes("edit");
 	const menu = ghost.menu.filter((action) => !(action === "edit" && editBlocked));
+	// Native menus can stay open while storage or composer readiness changes.
+	// Their callbacks, like an already revealed swipe action, use the latest
+	// committed row and become inert when that row leaves the surface.
+	const currentAction = useRef<((action: GhostAction) => void) | null>(null);
+	useLayoutEffect(() => {
+		currentAction.current = (action) => {
+			if (disabled || (action === "edit" && editBlocked)) return;
+			if (ghost.buttons.includes(action) || ghost.menu.includes(action)) onAction(action);
+		};
+		return () => {
+			currentAction.current = null;
+		};
+	}, [ghost, disabled, editBlocked, onAction]);
+	const run = (action: GhostAction) => currentAction.current?.(action);
 	// The bubble is a control only while tapping it opens something.
 	const opensMenu = !disabled && menu.length > 0;
 	function openMenu() {
 		if (!opensMenu) return;
-		const labels = menu.map((action) => MENU_LABELS[action]);
+		const label = (action: GhostAction) =>
+			action === "cancel" && ghost.localQueued ? removalLabel : MENU_LABELS[action];
+		const labels = menu.map(label);
 		const destructive = menu.indexOf("cancel");
 		if (Platform.OS === "ios")
 			ActionSheetIOS.showActionSheetWithOptions(
@@ -68,7 +103,7 @@ export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, b
 					const action = menu[index];
 					// Spec 16.6: the destructive choice is its own confirmation.
 					if (index === destructive) haptic("rigid");
-					if (action) onAction(action);
+					if (action) run(action);
 				},
 			);
 		// The caption titles it; the message itself, however long, reads
@@ -77,8 +112,8 @@ export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, b
 			Alert.alert(ghost.caption, ghost.text, [
 				...menu.map((action) =>
 					action === "cancel"
-						? destructiveButton(MENU_LABELS[action], () => onAction(action))
-						: { text: MENU_LABELS[action], onPress: () => onAction(action) },
+						? destructiveButton(label(action), () => run(action))
+						: { text: MENU_LABELS[action], onPress: () => run(action) },
 				),
 				{ text: "Cancel", style: "cancel" as const },
 			]);
@@ -138,9 +173,9 @@ export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, b
 					{ghost.buttons.map((action) => (
 						<GhostButton
 							key={action}
-							action={action}
+							action={action === "cancel" && ghost.localQueued ? "remove" : action}
 							disabled={disabled || (action === "edit" && editBlocked)}
-							onPress={() => onAction(action)}
+							onPress={() => run(action)}
 						/>
 					))}
 				</View>
@@ -154,9 +189,10 @@ export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, b
 	const cancels = ghost.buttons.includes("cancel") || ghost.menu.includes("cancel");
 	return cancels ? (
 		<SwipeRow
-			destructive={{ key: "cancel", label: BUTTON_LABELS.cancel, run: () => onAction("cancel") }}
+			destructive={{ key: "cancel", label: removalLabel, run: () => run("cancel") }}
 			backdrop={palette[backdrop]}
 			enabled={!disabled}
+			edgeInset={edgeInset}
 		>
 			{bubble}
 		</SwipeRow>
@@ -167,10 +203,10 @@ export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, b
 
 /** One of a ghost's text buttons: accent, or quiet when it takes the message
  * away. Disabled, it dims and does nothing. */
-function GhostButton({ action, disabled, onPress }: { action: GhostAction; disabled: boolean; onPress(): void }) {
+function GhostButton({ action, disabled, onPress }: { action: ButtonAction; disabled: boolean; onPress(): void }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
-	const quiet = action === "discard" || action === "cancel";
+	const quiet = action === "discard" || action === "cancel" || action === "remove";
 	return (
 		<Pressable
 			accessibilityRole="button"

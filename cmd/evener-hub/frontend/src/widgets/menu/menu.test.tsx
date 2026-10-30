@@ -1,10 +1,13 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { createPortal } from "react-dom";
+import { createRoot } from "react-dom/client";
 import { expect, test, vi } from "vitest";
 import { Dialog } from "../dialog";
+import { appendPopout } from "../internal/popoutTestUtils";
 import { Menu, type MenuItem } from "./index";
 
 function items(overrides?: Partial<Record<string, Partial<MenuItem>>>): MenuItem[] {
@@ -424,4 +427,190 @@ test("End/Home skip separators at the edges", async () => {
   // A is the ONLY actionable item: Home, End, and ArrowDown all land on it.
   await user.keyboard("{End}");
   expect(screen.getByRole("menuitem", { name: "A" }).tabIndex).toBe(0);
+});
+
+// --- popout realm (Dockview) ---------------------------------------------
+// A Dockview popout is a separate Window with its own Document and its own
+// constructors, so a widget mounted there must resolve THAT document/window,
+// never the opener's module-scope globals. jsdom's only real second realm is
+// an iframe: createHTMLDocument() shares the opener's constructors, so it
+// cannot catch a realm defect. Rendering through a portal into the iframe's
+// body makes every element's ownerDocument the popout document.
+
+test("a menu mounted in a popout document portals its panel into that document's body, not the opener's", () => {
+  const { frame, doc } = appendPopout();
+  const view = render(createPortal(<Menu trigger="Actions" items={items()} />, doc.body));
+  try {
+    fireEvent.click(doc.querySelector("button")!);
+    const panel = doc.querySelector('[role="menu"]');
+    expect(panel).not.toBeNull();
+    // FocusScope renders the panel's own wrapper div directly into the body.
+    expect(panel?.parentElement?.parentElement).toBe(doc.body);
+    expect(doc.body.contains(panel)).toBe(true);
+    expect(document.body.contains(panel)).toBe(false);
+  } finally {
+    view.unmount();
+    frame.remove();
+  }
+});
+
+test("a mousedown in the popout document closes a menu opened there", () => {
+  const { frame, doc } = appendPopout();
+  const view = render(createPortal(<Menu trigger="Actions" items={items()} />, doc.body));
+  try {
+    fireEvent.click(doc.querySelector("button")!);
+    expect(doc.querySelector('[role="menu"]')).not.toBeNull();
+
+    fireEvent.mouseDown(doc);
+
+    expect(doc.querySelector('[role="menu"]')).toBeNull();
+  } finally {
+    view.unmount();
+    frame.remove();
+  }
+});
+
+test("a scroll on the popout window closes a menu opened there", () => {
+  const { frame, doc, win } = appendPopout();
+  const view = render(createPortal(<Menu trigger="Actions" items={items()} />, doc.body));
+  try {
+    fireEvent.click(doc.querySelector("button")!);
+    expect(doc.querySelector('[role="menu"]')).not.toBeNull();
+
+    fireEvent.scroll(win);
+
+    expect(doc.querySelector('[role="menu"]')).toBeNull();
+  } finally {
+    view.unmount();
+    frame.remove();
+  }
+});
+
+// The realm-safe element test: this scroll's target is an iframe-realm
+// element, which the opener's `instanceof Element` rejects.
+test("a scroll inside the trigger's own popout container closes the menu", () => {
+  const { frame, doc } = appendPopout();
+  const view = render(
+    createPortal(
+      <div data-testid="popout-scroller">
+        <Menu trigger="Actions" items={items()} />
+      </div>,
+      doc.body,
+    ),
+  );
+  try {
+    fireEvent.click(doc.querySelector("button")!);
+    expect(doc.querySelector('[role="menu"]')).not.toBeNull();
+
+    fireEvent.scroll(doc.querySelector('[data-testid="popout-scroller"]')!);
+
+    expect(doc.querySelector('[role="menu"]')).toBeNull();
+  } finally {
+    view.unmount();
+    frame.remove();
+  }
+});
+
+test("a scroll in an unrelated popout container leaves the menu open", () => {
+  const { frame, doc } = appendPopout();
+  const view = render(
+    createPortal(
+      <div>
+        <Menu trigger="Actions" items={items()} />
+        <div data-testid="popout-unrelated-scroller" />
+      </div>,
+      doc.body,
+    ),
+  );
+  try {
+    fireEvent.click(doc.querySelector("button")!);
+    expect(doc.querySelector('[role="menu"]')).not.toBeNull();
+
+    fireEvent.scroll(doc.querySelector('[data-testid="popout-unrelated-scroller"]')!);
+
+    expect(doc.querySelector('[role="menu"]')).not.toBeNull();
+  } finally {
+    view.unmount();
+    frame.remove();
+  }
+});
+
+// Menu placement has always flipped and clamped against a viewport. In a
+// popout that has to be the popout's own viewport: a 600x150 window places a
+// menu near its bottom-right corner very differently from the opener's.
+test("places a popout menu from the popout window's own viewport", () => {
+  const { frame, doc, win } = appendPopout();
+  Object.defineProperty(win, "innerWidth", { configurable: true, value: 600 });
+  Object.defineProperty(win, "innerHeight", { configurable: true, value: 150 });
+  const rect = (left: number, top: number, width: number, height: number): DOMRect =>
+    ({
+      left,
+      top,
+      right: left + width,
+      bottom: top + height,
+      width,
+      height,
+      x: left,
+      y: top,
+      toJSON: () => ({}),
+    }) as DOMRect;
+  vi.spyOn(win.HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return rect(450, 20, 140, 125);
+    if (this.tagName === "UL") return rect(0, 0, 200, 120);
+    return rect(0, 0, 0, 0);
+  });
+  const view = render(createPortal(<Menu trigger="Actions" items={items()} />, doc.body));
+  try {
+    const trigger = doc.querySelector("button");
+    if (!trigger) throw new Error("popout trigger missing");
+    fireEvent.click(trigger);
+    const panel = doc.querySelector<HTMLElement>('[role="menu"]');
+    if (!panel) throw new Error("popout menu missing");
+    // 450 + 200 overflows 600, so it right-aligns to 590 - 200 = 390; opening
+    // below (149 + 120) overflows 150 and above does not fit either, so the
+    // clamp pins it to 150 - 120 - 8 = 22.
+    expect(panel.style.left).toBe("390px");
+    expect(panel.style.top).toBe("22px");
+  } finally {
+    view.unmount();
+    frame.remove();
+  }
+});
+
+// A menu moved while closed has no observer running. Opening it must resolve
+// the new document on that first commit, not after: the panel's own focus
+// handling would otherwise run in the document it left.
+test("a menu moved while closed opens in its new document", async () => {
+  const { frame, doc } = appendPopout();
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  let openerFocus = 0;
+  const countFocus = () => {
+    openerFocus += 1;
+  };
+  document.addEventListener("focusin", countFocus, true);
+  try {
+    act(() => root.render(<Menu trigger="Actions" items={items()} />));
+    act(() => {
+      doc.body.appendChild(host);
+    });
+    await act(async () => {});
+
+    const trigger = doc.querySelector("button");
+    if (!trigger) throw new Error("popout trigger missing");
+    act(() => {
+      fireEvent.click(trigger);
+    });
+
+    const panel = doc.querySelector('[role="menu"]');
+    expect(panel).not.toBeNull();
+    expect(document.querySelector('[role="menu"]')).toBeNull();
+    expect(openerFocus).toBe(0);
+  } finally {
+    document.removeEventListener("focusin", countFocus, true);
+    act(() => root.unmount());
+    frame.remove();
+    host.remove();
+  }
 });

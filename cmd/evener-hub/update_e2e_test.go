@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 )
 
 // TestUpdateApplyEndToEnd builds this branch's own evener binary as a
@@ -72,7 +73,7 @@ api_key  = "fakellm-not-a-secret"
 	defer cancel()
 	client := stack.dialRPC(ctx, t)
 
-	resp, err := client.UpdateApply(ctx, appwire.UpdateApplyParams{Channel: "snapshot"})
+	resp, err := appwiretest.UpdateApply(ctx, client, appwire.UpdateApplyParams{Channel: "snapshot"})
 	if err != nil {
 		t.Fatalf("UpdateApply: %v", err)
 	}

@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
+	"slices"
 )
 
 const (
@@ -889,6 +891,63 @@ func ErrorDataOf(data any) (ErrorData, bool) {
 	return field.Interface().(ErrorData), true
 }
 
+// DecodedErrorData is the standard data an error's Data carries in whichever
+// shape it arrived: ErrorData itself, a struct embedding it, or the generic map
+// a wire client decodes JSON into. Fields a map lacks or holds as another type
+// read as empty.
+func DecodedErrorData(data any) (ErrorData, bool) {
+	if typed, ok := ErrorDataOf(data); ok {
+		return typed, true
+	}
+	fields, ok := data.(map[string]any)
+	if !ok {
+		return ErrorData{}, false
+	}
+	text := func(key string) string {
+		value, _ := fields[key].(string)
+		return value
+	}
+	return ErrorData{
+		EvenerErrorInfo:  ErrorInfo(text("evenerErrorInfo")),
+		ClientMutationID: text("clientMutationId"),
+		MutationOutcome:  MutationOutcome(text("mutationOutcome")),
+		RetryDisposition: RetryDisposition(text("retryDisposition")),
+		Cause:            text("cause"),
+	}, true
+}
+
+// WithMutation stamps the mutation the error belongs to: its clientMutationId,
+// and the outcome and retry disposition when they are not empty. Data stays in
+// its shape, plain ErrorData or the generic map a wire client decodes, and
+// every other field is kept; the original data is not modified. ok is false,
+// with the error unchanged, for any other shape.
+func (e WireError) WithMutation(clientMutationID string, outcome MutationOutcome, disposition RetryDisposition) (WireError, bool) {
+	switch data := e.Data.(type) {
+	case ErrorData:
+		data.ClientMutationID = clientMutationID
+		if outcome != "" {
+			data.MutationOutcome = outcome
+		}
+		if disposition != "" {
+			data.RetryDisposition = disposition
+		}
+		e.Data = data
+	case map[string]any:
+		updated := maps.Clone(data)
+		updated["clientMutationId"] = clientMutationID
+		if outcome != "" {
+			updated["mutationOutcome"] = string(outcome)
+		}
+		if disposition != "" {
+			updated["retryDisposition"] = string(disposition)
+		}
+		e.Data = updated
+	default:
+		return e, false
+	}
+	return e, true
+}
+
 // markedNotAccepted is a copy of data with its ErrorData marked: data itself
 // when it is one, or the ErrorData a struct embeds. The error data types embed
 // ErrorData by value, and Data holds them by value, so reaching the embedded
@@ -981,32 +1040,32 @@ func backpressureRefusal(clientMutationID, message string, retry RetryDispositio
 	return wire
 }
 
-// retrySafeMutationMethods is the wire contract the hub and the shared
+// RetrySafeMutationMethods is the wire contract the hub and the shared
 // TypeScript dispatcher both hold for which mutation requests are safe to
 // resend unchanged: each carries a clientMutationId, and the ClientMutationID
 // dedup on admission makes a raced resend a replay no-op. The hub refuses
-// only these in band for backpressure; the dispatcher holds the same set
-// (RETRY_SAFE_MUTATION_METHODS, appwire-client/typescript/state/mutation/
-// dispatcher.ts), and TestRetrySafeMutationMethodsMatchSharedDispatcher pins
-// the two equal. thread/start is deliberately absent: it can refuse after
-// the session has spawned (#3184), so a resend is not always safe.
-var retrySafeMutationMethods = map[string]bool{
-	MethodTurnStart:                true,
-	MethodTurnSteer:                true,
-	MethodTurnInterrupt:            true,
-	MethodTurnQueue:                true,
-	MethodTurnDrainAsSteer:         true,
-	MethodTurnPromoteQueuedAsSteer: true,
-	MethodTurnCancelQueued:         true,
-	MethodThreadClear:              true,
-	MethodNotesHumanSet:            true,
+// only these in band for backpressure; the TypeScript generator emits the
+// same list as RETRY_SAFE_MUTATION_METHODS for the dispatcher. thread/start
+// is deliberately absent: it can refuse after the session has spawned
+// (#3184), so a resend is not always safe.
+var RetrySafeMutationMethods = []string{
+	MethodTurnStart,
+	MethodTurnSteer,
+	MethodTurnInterrupt,
+	MethodTurnQueue,
+	MethodTurnDrainAsSteer,
+	MethodTurnPromoteQueuedAsSteer,
+	MethodTurnCancelQueued,
+	MethodThreadClear,
+	MethodNotesHumanSet,
+	MethodUrlsRemove,
 }
 
 // RetrySafeMutationMethod reports whether name is a retry-safe mutation
 // method: one whose request the hub may refuse in band for backpressure, and
 // one a client may resend unchanged.
 func RetrySafeMutationMethod(name string) bool {
-	return retrySafeMutationMethods[name]
+	return slices.Contains(RetrySafeMutationMethods, name)
 }
 
 func Unavailable(message string) WireError {

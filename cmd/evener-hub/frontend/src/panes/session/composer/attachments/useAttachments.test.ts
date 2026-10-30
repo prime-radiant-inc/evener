@@ -278,6 +278,65 @@ test("reset invalidates a pending encode failure without stripping replacement t
   expect(onRejected).not.toHaveBeenCalled();
 });
 
+test("a rejected pending encode strips its remapped marker, not a literal marker", async () => {
+  const gate = installControlledImageStub();
+  const editor = makeFakeEditor();
+  const onRejected = vi.fn();
+  const { result } = renderHook(() => useAttachments(editor));
+  act(() => result.current.ingestFiles([makeFile("pending.png")], onRejected));
+  const pending = result.current.items[0];
+  if (!pending) throw new Error("missing pending image fixture");
+  editor.write("[image 2]\n\n[image 1]", 20);
+  act(() =>
+    result.current.replaceWithSettled([
+      { ...pending, marker: 2 },
+      { marker: 1, name: "recovered.png", mediaType: "image/png", data: "AQID", pending: false },
+    ]),
+  );
+
+  await act(async () => {
+    gate.reject();
+    await flush();
+  });
+
+  expect(editor.getText()).toBe("\n\n[image 1]");
+  expect(result.current.items).toEqual([
+    { marker: 1, name: "recovered.png", mediaType: "image/png", data: "AQID", pending: false },
+  ]);
+  expect(onRejected).toHaveBeenCalledTimes(1);
+  expect(result.current.hasPending).toBe(false);
+});
+
+test("removing a remapped pending encode prevents its later completion from resurrecting it", async () => {
+  const gate = installControlledImageStub();
+  const editor = makeFakeEditor();
+  const onRejected = vi.fn();
+  const { result } = renderHook(() => useAttachments(editor));
+  act(() => result.current.ingestFiles([makeFile("pending.png")], onRejected));
+  const pending = result.current.items[0];
+  if (!pending) throw new Error("missing pending image fixture");
+  editor.write("[image 2]\n\n[image 1]", 20);
+  act(() =>
+    result.current.replaceWithSettled([
+      { ...pending, marker: 2 },
+      { marker: 1, name: "recovered.png", mediaType: "image/png", data: "AQID", pending: false },
+    ]),
+  );
+
+  act(() => result.current.removeItem(2));
+  await act(async () => {
+    gate.resolve();
+    await flush();
+  });
+
+  expect(editor.getText()).toBe("\n\n[image 1]");
+  expect(result.current.items).toEqual([
+    { marker: 1, name: "recovered.png", mediaType: "image/png", data: "AQID", pending: false },
+  ]);
+  expect(onRejected).not.toHaveBeenCalled();
+  expect(result.current.hasPending).toBe(false);
+});
+
 test("ingesting an image synchronously splices its marker into the editor text and flags the item pending", async () => {
   const editor = makeFakeEditor("hello", 5);
   const { result } = renderHook(() => useAttachments(editor));

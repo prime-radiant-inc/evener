@@ -30,7 +30,7 @@ import (
 //   - MainRootFromGitdirPointer answers only for the layout it documents: the
 //     pointer's parent directory must be named "worktrees". Anything else must
 //     be refused rather than guessed at.
-//   - isSubmoduleGitDirShape terminates on every input. It walks parents until
+//   - IsSubmoduleGitDirShape terminates on every input. It walks parents until
 //     the path stops changing, which is the kind of loop that hangs on an input
 //     nobody tried by hand.
 func FuzzGitPointerParsing(f *testing.F) {
@@ -59,12 +59,12 @@ func FuzzGitPointerParsing(f *testing.F) {
 
 		absAncestor := filepath.IsAbs(ancestor)
 
-		if resolved, ok := pointerTarget(content, ancestor); ok {
+		if resolved, ok := PointerTarget(content, ancestor); ok {
 			if resolved != filepath.Clean(resolved) {
-				t.Fatalf("pointerTarget(%q, %q) = %q, which is not cleaned", content, ancestor, resolved)
+				t.Fatalf("PointerTarget(%q, %q) = %q, which is not cleaned", content, ancestor, resolved)
 			}
 			if absAncestor && !filepath.IsAbs(resolved) {
-				t.Fatalf("pointerTarget(%q, %q) = %q, not absolute despite an absolute ancestor", content, ancestor, resolved)
+				t.Fatalf("PointerTarget(%q, %q) = %q, not absolute despite an absolute ancestor", content, ancestor, resolved)
 			}
 		}
 
@@ -79,7 +79,7 @@ func FuzzGitPointerParsing(f *testing.F) {
 				t.Fatalf("MainRootFromGitdirPointer(%q, %q) returned degenerate root %q", content, ancestor, root)
 			}
 			// It answers only for the documented layout: <root>/.git/worktrees/<name>.
-			gitdir, _ := pointerTarget(content, ancestor)
+			gitdir, _ := PointerTarget(content, ancestor)
 			if filepath.Base(filepath.Dir(gitdir)) != "worktrees" {
 				t.Fatalf("MainRootFromGitdirPointer accepted %q whose parent is not \"worktrees\"", gitdir)
 			}
@@ -96,7 +96,7 @@ func FuzzGitPointerParsing(f *testing.F) {
 
 		// Termination oracle: the walk must stop for any path, including ones
 		// that are already roots or that Dir() maps to themselves.
-		_ = isSubmoduleGitDirShape(content)
-		_ = isSubmoduleGitDirShape(ancestor)
+		_ = IsSubmoduleGitDirShape(content)
+		_ = IsSubmoduleGitDirShape(ancestor)
 	})
 }

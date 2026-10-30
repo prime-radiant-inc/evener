@@ -12,6 +12,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
@@ -123,7 +124,7 @@ func newOwnedJobDrainFixture(t *testing.T) *ownedJobDrainFixture {
 		name: "openai",
 		steps: []func(llm.Request) llm.Response{
 			func(llm.Request) llm.Response {
-				return toolCallResponse(llm.ToolCallData{
+				return agenttest.ToolCallResponse(llm.ToolCallData{
 					ID:        "owned-shell",
 					Name:      "shell",
 					Arguments: json.RawMessage(`{"command":"owned shell","mode":"background"}`),
@@ -132,15 +133,15 @@ func newOwnedJobDrainFixture(t *testing.T) *ownedJobDrainFixture {
 			},
 			func(llm.Request) llm.Response {
 				close(idleReported)
-				return finalResponse("waiting for owned shell")
+				return agenttest.FinalResponse("waiting for owned shell")
 			},
 			func(llm.Request) llm.Response {
 				close(shellHandled)
-				return finalResponse("owned shell handled")
+				return agenttest.FinalResponse("owned shell handled")
 			},
 			func(llm.Request) llm.Response {
 				close(freshHandled)
-				return finalResponse("fresh notification handled")
+				return agenttest.FinalResponse("fresh notification handled")
 			},
 		},
 	}
@@ -233,7 +234,7 @@ func liveOwnedShellJobID(t *testing.T, manager *jobManager) string {
 	return shellJobID
 }
 
-func loadStableDelegateTerminalPacket(t *testing.T, owner *Session, delegateID string) delegatestore.TerminalPacket {
+func loadDelegateTerminalPacket(t *testing.T, owner *Session, delegateID string) delegatestore.TerminalPacket {
 	t.Helper()
 	events, err := owner.delegateController.store.Load()
 	if err != nil {
@@ -585,7 +586,7 @@ func TestSubagentRunPreservesStructuredResultAcrossLateNotification(t *testing.T
 	if !ok || liveStructured["summary"] != "late structured overwrite" {
 		t.Fatalf("live child structured result = %#v, want the late notification overwrite", child.sess.CommunicateStructured())
 	}
-	packet := loadStableDelegateTerminalPacket(t, parent, result.DelegateID)
+	packet := loadDelegateTerminalPacket(t, parent, result.DelegateID)
 	var structured map[string]any
 	err = json.Unmarshal(packet.StructuredResult, &structured)
 	if err != nil || structured["summary"] != "original structured result" {
@@ -707,7 +708,7 @@ func TestSubagentFatalRunStopsOwnedShellAndGatesNotificationDrive(t *testing.T) 
 		name: "openai",
 		steps: []func(llm.Request) (llm.Response, error){
 			func(llm.Request) (llm.Response, error) {
-				return toolCallResponse(llm.ToolCallData{
+				return agenttest.ToolCallResponse(llm.ToolCallData{
 					ID:        "fatal-owned-shell",
 					Name:      "shell",
 					Arguments: json.RawMessage(`{"command":"fatal owned shell","mode":"background"}`),
@@ -720,7 +721,7 @@ func TestSubagentFatalRunStopsOwnedShellAndGatesNotificationDrive(t *testing.T) 
 				return llm.Response{}, fatalErr
 			},
 			func(llm.Request) (llm.Response, error) {
-				return finalResponse("explicit resume succeeded"), nil
+				return agenttest.FinalResponse("explicit resume succeeded"), nil
 			},
 		},
 	}
@@ -806,7 +807,7 @@ func TestSubagentFatalRunStopsOwnedShellAndGatesNotificationDrive(t *testing.T) 
 	if aggregate.LatestOutcome == nil || aggregate.LatestOutcome.Status != delegatestore.OutcomeFailed || aggregate.LatestOutcome.Reason != "run_error" {
 		t.Fatalf("stable delegate outcome = %#v, want failed with reason run_error", aggregate.LatestOutcome)
 	}
-	packet := loadStableDelegateTerminalPacket(t, parent, result.DelegateID)
+	packet := loadDelegateTerminalPacket(t, parent, result.DelegateID)
 	var message string
 	if err := json.Unmarshal(packet.Message, &message); err != nil || !strings.Contains(message, fatalErr.Error()) {
 		t.Fatalf("stable terminal message = %q (error %v), want original fatal error", message, err)
@@ -864,13 +865,13 @@ func TestIdleFatalGatedWatchSendDropsAndDoesNotPinDrain(t *testing.T) {
 				return llm.Response{}, fatalErr
 			},
 			func(llm.Request) (llm.Response, error) {
-				return finalResponse("failed delegate notification handled"), nil
+				return agenttest.FinalResponse("failed delegate notification handled"), nil
 			},
 			func(llm.Request) (llm.Response, error) {
-				return finalResponse("dropped watch diagnostic handled"), nil
+				return agenttest.FinalResponse("dropped watch diagnostic handled"), nil
 			},
 			func(llm.Request) (llm.Response, error) {
-				return finalResponse("explicit recovery completed"), nil
+				return agenttest.FinalResponse("explicit recovery completed"), nil
 			},
 		},
 	}
@@ -1017,10 +1018,10 @@ func TestSubagentFatalDriveTurnStopsOwnedShellAndSuppressesRedrive(t *testing.T)
 		name: "openai",
 		steps: []func(llm.Request) (llm.Response, error){
 			func(llm.Request) (llm.Response, error) {
-				return finalResponse("idle before notification"), nil
+				return agenttest.FinalResponse("idle before notification"), nil
 			},
 			func(llm.Request) (llm.Response, error) {
-				return toolCallResponse(llm.ToolCallData{
+				return agenttest.ToolCallResponse(llm.ToolCallData{
 					ID:        "fatal-drive-shell",
 					Name:      "shell",
 					Arguments: json.RawMessage(`{"command":"fatal drive shell","mode":"background"}`),
@@ -1252,7 +1253,7 @@ func (f *ownedJobDrainFixture) requireHandledResult(t *testing.T, wantRequests i
 	if aggregate.LatestOutcome == nil || aggregate.LatestOutcome.Status != delegatestore.OutcomeCompleted {
 		t.Fatalf("stable delegate aggregate = %#v, want completed outcome", aggregate)
 	}
-	packet := loadStableDelegateTerminalPacket(t, f.parent, f.result.DelegateID)
+	packet := loadDelegateTerminalPacket(t, f.parent, f.result.DelegateID)
 	var message string
 	if err := json.Unmarshal(packet.Message, &message); err != nil {
 		t.Fatalf("decode canonical terminal message: %v", err)
@@ -1568,7 +1569,7 @@ func waitForOwnedShellFinalized(t *testing.T, jm *jobManager, jobID string) {
 // tail is about to announce, the delegate is refused an attention wake; the
 // parent then holds the original generation's delivery ahead of the
 // successor's, and sees the original idle before the successor runs.
-func TestStableDelegateAttentionSuccessorFollowsItsPredecessorsResult(t *testing.T) {
+func TestDelegateAttentionSuccessorFollowsItsPredecessorsResult(t *testing.T) {
 	t.Parallel()
 	fixture := newOwnedJobDrainFixture(t)
 	delegateID := fixture.result.DelegateID

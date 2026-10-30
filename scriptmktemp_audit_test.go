@@ -209,11 +209,6 @@ var recursiveDeleteAllowedLines = map[string]int{
 	// expansion (`rm -rf "\$dir"`) to reach the reader verbatim. Nothing
 	// runs it; a human reviews each entry and removes it by hand (kata gmpr).
 	"scripts/ops/report-tmp-debris.sh": 1,
-	// A sourced operator library that must return, never exit, so it cannot
-	// adopt scratch_dir. Its mint is a bare mktemp; what keeps the delete safe
-	// is the cleanup guard beside it, which refuses to run when the root
-	// variable is empty or unset.
-	"scripts/lib/live-eval-isolation.sh": 1,
 	// Per-scenario corpus scratch reclaimed inside the provider loop; the
 	// suite-level guard cannot express "remove this one, keep the rest".
 	"scripts/fuzz/fuzz-drive.sh": 2,

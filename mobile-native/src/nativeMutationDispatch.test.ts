@@ -18,9 +18,8 @@ import { afterEach, expect, test, vi } from "vitest";
 import { WireError } from "@evener/appwire-client";
 import type { AppwireClientLike, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { createConversationService } from "../../mobile/src/services/conversation";
-import { createConversationStore } from "../../mobile/src/state/conversation";
-import { createActivityStore } from "../../mobile/src/state/activity";
+import { createConversationService } from "./conversation/services/conversation";
+import { createConversationStore, type ConversationPendingSubmission } from "./conversation/state/conversation";
 import { DraftDocument } from "./draftDocument";
 import { DraftRepository } from "./draftRepository";
 import { createDurableSubmitter, createNativeMutationHost } from "./nativeMutationHost";
@@ -34,11 +33,6 @@ import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.te
 
 const expoSQLite = vi.hoisted(() => ({ openDatabaseSync: vi.fn() }));
 vi.mock("expo-sqlite", () => expoSQLite);
-vi.mock("expo-crypto", () => ({
-	randomUUID: () => "test-uuid",
-	getRandomValues: (array: Uint8Array) => array,
-}));
-
 const ALL_TRUE_CAPS: ThreadCapabilities = {
 	send: true,
 	steer: true,
@@ -146,7 +140,7 @@ async function open(
 ) {
 	client.on("thread/read", () => ({ thread: makeThread() }) as ThreadReadResponse);
 	await host.start();
-	await store.getState().openProjected(service, createActivityStore().getState(), "ref-1");
+	await store.getState().openProjected(service, "ref-1");
 }
 
 test("a rejected production send is admitted durably and lands a recovery row the panel surfaces", async () => {
@@ -237,6 +231,43 @@ test("a durable send clears the composer's durable unconfirmed draft at enqueue,
 	await runtime.stop();
 });
 
+test("the store records the durable row id the runtime admitted on the in-flight marker", async () => {
+	const { runtime, client, host, service, store, targetKey } = compose({
+		createMutationId: () => "durable-row-42",
+	});
+	let releaseTurn: ((value: unknown) => void) | undefined;
+	client.on(
+		"turn/start",
+		() =>
+			new Promise((resolve) => {
+				releaseTurn = resolve;
+			}) as never,
+	);
+	await open(host, client, store, service);
+
+	const markers: ConversationPendingSubmission[] = [];
+	const unsubscribe = store.subscribe((state) => {
+		if (state.pendingSubmission !== null) markers.push(state.pendingSubmission);
+	});
+	store.getState().setDraft("my message");
+	await store.getState().send(service, [{ type: "text", text: "my message" }]);
+
+	// The row the production runtime committed is the identity the store
+	// recorded on the in-flight marker.
+	const [row] = (await runtime.read(targetKey)).outbox;
+	expect(row?.clientMutationId).toBe("durable-row-42");
+	const admittedId = row!.clientMutationId;
+	expect(markers).toContainEqual({ kind: "send", admittedMutationId: admittedId });
+	// It still settles on admission, and the durable path invents no receipt.
+	expect(store.getState().pendingSubmission).toBeNull();
+	expect(store.getState().failedSubmission).toBeNull();
+	expect(store.getState().lastAcceptedMutation).toEqual({ kind: "send" });
+
+	releaseTurn?.(appliedReceipt({ clientMutationId: admittedId }));
+	await runtime.stop();
+	unsubscribe();
+});
+
 test("a failed host startup keeps the registration so a later admission still dispatches", async () => {
 	// The runtime's first start attempt fails (an unavailable timer port); the
 	// host registration must survive it, or the next admission would be
@@ -258,7 +289,7 @@ test("a failed host startup keeps the registration so a later admission still di
 	// retried start has a bound client to dispatch for.
 	expect(host.beginRead("ref-1")).toBeDefined();
 
-	await store.getState().openProjected(service, createActivityStore().getState(), "ref-1");
+	await store.getState().openProjected(service, "ref-1");
 	store.getState().setDraft("retry after failure");
 	await store.getState().send(service, [{ type: "text", text: "retry after failure" }]);
 

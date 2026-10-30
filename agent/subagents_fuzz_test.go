@@ -43,8 +43,8 @@ func safzResolveProfile(ref string) (*provider.Profile, error) {
 }
 
 // safzSkillBody is the on-disk SKILL.md a parent registers so the agent-skill
-// population branch (ResolveSkillContent -> a non-empty body -> frozen skill
-// descriptor) is reachable; without a real body ResolveSkillContent returns ""
+// population branch (a skill with a non-empty body -> frozen skill
+// descriptor) is reachable; without a real body no frozen skill is built
 // and the branch is skipped.
 const safzSkillBody = `---
 name: safz-skill
@@ -102,6 +102,7 @@ func safzNewParent(t *testing.T, clk *agenttest.FakeClock, maxDepth int, childSc
 	})
 	cfg := SessionConfig{
 		MaxSubagentDepth:      maxDepth,
+		StateDir:              t.TempDir(),
 		clock:                 clk,
 		MaxToolRoundsPerInput: 6,
 		LLMSleep:              func(context.Context, time.Duration) error { return nil },
@@ -116,9 +117,10 @@ func safzNewParent(t *testing.T, clk *agenttest.FakeClock, maxDepth int, childSc
 			ScriptedAdapter: &agenttest.ScriptedAdapter{Provider: "openai", Responder: newChildResponder(childScript)},
 			models:          []registry.Model{{ID: "gpt-5"}, {ID: "gpt-5.2"}, {ID: "gpt-5.3"}},
 		})
+		registerTestSessionNamer(cc)
 		return cc
 	}
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), env, cfg)
+	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), env, cfg)
 	if err != nil {
 		t.Fatalf("safzNewParent: NewSession: %v", err)
 	}

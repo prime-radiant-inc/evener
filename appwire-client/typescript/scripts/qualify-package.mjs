@@ -143,6 +143,13 @@ assert.equal(client.hasErrorText({ error: "  " }), false);
 assert.equal(client.isNonZeroExit({ exitCode: 0 }), false);
 assert.equal(client.isInProgressStatus("inProgress"), true);
 assert.equal(client.parseJobOutputPage(null), null);
+assert.equal(client.parseAnsiLines("\\u001b[31mred")[0][0].text, "red");
+assert.equal(client.MERMAID_FORBID_TAGS.includes("img"), true);
+assert.deepEqual(client.MERMAID_SANITIZE_CONFIG.FORBID_TAGS, [...client.MERMAID_FORBID_TAGS]);
+assert.equal(client.fenceTokenTerminated("~~~mermaid\\nx\\n~~~"), true);
+assert.equal(client.isMermaidCodeToken({ type: "code", lang: "mermaid" }), true);
+assert.equal(client.mermaidText({ type: "code", text: "x" }), "x\\n");
+assert.equal(client.MERMAID_FENCE.test("~~~mermaid"), true);
 assert.equal(client.SYSTEM_PRELUDE_TURN_ID, "turn_system");
 assert.equal(client.pendingTextJoined(["a", "b"]), "ab");
 assert.equal(client.notificationRoutingKey({ method: "evener/x", params: {} }), null);
@@ -174,7 +181,6 @@ assert.equal(client.formatTokenCount(41200), "41.2K");
 assert.equal(client.formatDurationMs(1500), "1.5s");
 assert.equal(client.formatCharCount(2500), "2.5K chars");
 assert.equal(client.formatClockTime(undefined), undefined);
-assert.equal(client.formatClockTimeSeconds("not a timestamp"), undefined);
 assert.equal(client.formatElapsed(65000), "1m05s");
 assert.equal(client.firstLine("\\n  hello  \\n", 20), "hello");
 assert.deepEqual(client.splitMandate("first\\n\\nrest"), { first: "first", rest: "rest" });
@@ -228,6 +234,8 @@ assert.equal(client.canReadSharedNotes({ capabilities: { sharedNotes: true } }),
 assert.equal(client.canReadSharedNotes({ capabilities: { sharedNotes: false } }), false);
 assert.equal(client.canReadSharedNotes({ capabilities: {} }), false);
 assert.equal(client.canReadSharedNotes(undefined), false);
+assert.equal(client.canWriteSharedNotes({ capabilities: { sharedNotes: true }, status: { type: "idle" } }), true);
+assert.equal(client.canWriteSharedNotes(undefined), false);
 assert.equal(client.marketplaceSourceLabel({ kind: "github", repo: "acme/plugins" }), "github: acme/plugins");
 assert.equal(client.marketplaceSourceLabel({ kind: "git-subdir", url: "https://example.com/x.git", path: "sub" }), "https://example.com/x.git (sub)");
 assert.equal(client.humanizeState("awaiting", true), "question waiting");
@@ -482,6 +490,14 @@ const restored: DevicePairingInvitation = decodeInvitation(wire); void restored;
       cjsTypeUses: `const bytes: Uint8Array = client.encodeInvitation({invitation:"01".repeat(24),origin:"http://hub.local:9180",tailnet:true,expiresAt:0}); void bytes;`,
       smoke: `assert.equal(client.decodeInvitation(client.encodeInvitation({invitation:"01".repeat(24),origin:"http://hub.local:9180",tailnet:true,expiresAt:0})).origin, "http://hub.local:9180");`,
     },
+    "./hubOrigin": {
+      esmTypeUses: `const origin: string = parseHubOrigin("https://hub.example:443/");
+const code: HubOriginCode = "path"; void origin; void code;`,
+      cjsTypeUses: `const error: client.HubOriginError = new client.HubOriginError("path", "path"); void error;`,
+      smoke: `assert.equal(client.parseHubOrigin("https://HUB.example:443/"), "https://hub.example");
+assert.equal(client.hubRPCURL("http://[::ffff:127.0.0.1]"), "ws://[::ffff:7f00:1]/rpc");
+assert.equal(new client.HubOriginError("path", "path").code, "path");`,
+    },
     "./docContent": {
       esmTypeUses: `const read: (session: string, path: string, port: DocPort) => Promise<DocFileContent> = readDocFile;
 const cap: number = DOC_FILE_MAX_BYTES; void read; void cap;`,
@@ -689,9 +705,7 @@ const marketplaces: MarketplacesStore = createMarketplacesStore(marketplacesClie
 const entry: MarketplaceCatalogEntry = { status: "loading" }; void marketplaces; void entry;
 const pluginsClient: PluginsClient = marketplacesClient;
 const plugins: PluginsStore = createPluginsStore(pluginsClient, createHubWriteGate());
-const revision: ListRevision = createListRevision(); void plugins; void revision;
-const keyed: KeyedRevision = createKeyedRevision(); void keyed.issue("acme");
-const lifecycle: StoreLifecycle<PluginsState> = createStoreLifecycle(pluginsClient, { method: "evener/plugin/updated", debounceMs: 250, store: () => plugins, refetch: (state) => state.fetchPlugins(), wantsList: (state) => state.plugins !== null }); void lifecycle;
+void plugins;
 const layerClient: LaunchLayerClient = marketplacesClient;
 const layer: LaunchLayerStore = createLaunchLayerStore(layerClient); void layer;`,
       cjsTypeUses: `const marketplacesState: client.MarketplacesState = client.createMarketplacesStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }, client.createHubWriteGate()).getState(); void marketplacesState;
@@ -705,26 +719,12 @@ const layerState: client.LaunchLayerState = client.createLaunchLayerStore({ requ
       // top-level await, and a failure inside exits the consumer non-zero.
       smoke: `const offline = { request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined };
 const marketplacesStore = client.createMarketplacesStore(offline, client.createHubWriteGate());
-assert.equal(client.MARKETPLACE_REFETCH_DEBOUNCE_MS, 250);
+assert.equal(client.REFETCH_DEBOUNCE_MS, 250);
 const pluginsStore = client.createPluginsStore(offline, client.createHubWriteGate());
-assert.equal(client.PLUGIN_REFETCH_DEBOUNCE_MS, 250);
 assert.equal(pluginsStore.getState().pluginRevision, 0);
 pluginsStore.connectionChanged(offline, "ready");
-const keyed = client.createKeyedRevision();
-const keyedRevision = keyed.issue("acme");
-keyed.retire("acme");
-assert.equal(keyed.current("acme", keyedRevision), false);
 const layerStore = client.createLaunchLayerStore(offline);
-assert.equal(client.LAUNCH_LAYER_REFETCH_DEBOUNCE_MS, 250);
 assert.equal(layerStore.getState().launchLayer, null);
-const listRevision = client.createListRevision();
-const first = listRevision.next();
-listRevision.fence();
-let fencedAnswerPublished = false;
-listRevision.publish(first, () => {
-  fencedAnswerPublished = true;
-});
-assert.equal(fencedAnswerPublished, false);
 marketplacesStore
   .getState()
   .fetchMarketplaces()
@@ -788,6 +788,7 @@ const outboxState: MutationOutboxState = outboxRecord.state;
 const recoveryKind: MutationRecoveryKind = recoveryRecord.recoveryKind;
 const storage: ClientIdentityStorage = { getItem: () => null, setItem: () => undefined };
 const pendingMethod: PendingMethod = "send";
+const pendingVerb: ComposerVerb = pendingMethod;
 const pendingState: PendingTurnState = "submitting";
 const pendingEntry: PendingTurnEntry = { id: "cmid", ref: "ref", method: pendingMethod, text: "hi", imageCount: 0, skillNames: [], state: pendingState, source: "outbox", fromThisClient: true };
 const secureRandomSource: SecureRandomSource = { getRandomValues: (array) => array };
@@ -832,7 +833,7 @@ const dispatcherOptions: MutationDispatcherOptions = { getClient: () => null };
 const requiredRefDispatcherOptions: MutationDispatcherOptions = { getClient: (targetRef: string) => { void targetRef; return null; } };
 const dispatcher: MutationDispatcher = new MutationDispatcher(outboxStorage, dispatcherOptions);
 void intent; void record; void optimisticRecord; void recoveryRecord; void outboxState; void recoveryKind; void storage;
-void pendingEntry; void identity; void pendingTurnsState; void submittedDraft; void secureRandomSource; void outbox; void reason; void dispatcher; void requiredRefDispatcherOptions; void readyClient;`,
+void pendingVerb; void pendingEntry; void identity; void pendingTurnsState; void submittedDraft; void secureRandomSource; void outbox; void reason; void dispatcher; void requiredRefDispatcherOptions; void readyClient;`,
       cjsTypeUses: `const storage: client.ClientIdentityStorage = { getItem: () => null, setItem: () => undefined }; void storage;
 const pendingEntry: client.PendingTurnEntry = { id: "cmid", ref: "ref", method: "send", text: "hi", imageCount: 0, skillNames: [], state: "submitting", source: "outbox", fromThisClient: true }; void pendingEntry;
 const secureRandomSource: client.SecureRandomSource = { getRandomValues: (array) => array }; void secureRandomSource;
@@ -873,6 +874,9 @@ assert.notEqual(identityB.ownClientId(), firstId);
 assert.equal(identityA.isOwnMutationRecord({ originClientId: firstId }), true);
 assert.equal(identityA.isOwnMutationRecord({ originClientId: "someone-else" }), false);
 assert.equal(identityA.isOwnMutationRecord({}), true);
+assert.equal(client.composerVerb(client.COMPOSER_METHODS.drain), "drain");
+assert.equal(client.DIRECT_FALLBACK_METHODS.has(client.COMPOSER_METHODS.promote), false);
+assert.equal(client.PENDING_TURN_METHODS.length, Object.keys(client.COMPOSER_METHODS).length);
 const noRandomSourceIdentity = client.createClientIdentity({ getItem: () => null, setItem: () => undefined }, {});
 assert.equal(typeof noRandomSourceIdentity.ownClientId(), "string");
 assert.equal(client.createSecureUUID({ randomUUID: () => "native-id", getRandomValues: (array) => array }), "native-id");
@@ -1011,8 +1015,24 @@ memoryOutbox
   // it (declaration-reachability.mjs). A module no published specifier reaches
   // fails right here.
   const reachable = reachableModules(entryDeclarations, installedDist);
+  // The state stores are built over these modules, so tsc must ship them, but
+  // they are not part of any published surface. Listing one here is the
+  // decision that it stays internal; an entry a specifier starts to re-export,
+  // or one the build stops shipping, fails below so the list cannot go stale.
+  const internalModules = [
+    "state/extensions/keyedRevision",
+    "state/extensions/listRevision",
+    "state/extensions/storeLifecycle",
+  ];
+  for (const module of internalModules) {
+    assert(shippedModules.includes(module), `internal module is not shipped: ${module}`);
+    assert(!reachable.has(module), `internal module is re-exported by a published specifier: ${module}`);
+  }
   for (const module of shippedModules)
-    assert(reachable.has(module), `shipped module unreachable from every published specifier: ${module}`);
+    assert(
+      reachable.has(module) || internalModules.includes(module),
+      `shipped module unreachable from every published specifier: ${module}`,
+    );
   // One ESM declaration consumer, one CommonJS declaration consumer and one
   // runtime presence check in each module form, per published specifier. Each
   // type is named only as an `import type` specifier, the one position that

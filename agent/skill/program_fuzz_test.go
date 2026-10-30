@@ -11,13 +11,14 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/frontmatter"
 )
 
 // FuzzSkillDiscoveryProgram drives the complete local-skill lifecycle through
 // a real temporary filesystem: root-to-cwd discovery, ordered extra-directory
-// shadowing, content resolution, and bundled-skill extraction/caching. The
+// shadowing, and bundled-skill caching. The
 // execution-environment boundary is a scripted FakeEnv, so Git root lookup is
 // deterministic and never launches Git. It does not contact a provider, start
 // a process, or touch files outside t.TempDir and the package-owned temporary
@@ -87,79 +88,48 @@ func FuzzSkillDiscoveryProgram(f *testing.F) {
 		if _, ok := parseSkillFile(filepath.Join(direct, "missing", "SKILL.md")); ok {
 			t.Fatal("missing SKILL.md parsed successfully")
 		}
-		if _, err := LoadSkillBody(SkillMeta{SkillFile: filepath.Join(direct, "missing", "SKILL.md")}); err == nil {
+		if _, err := loadSkillBody(SkillMeta{SkillFile: filepath.Join(direct, "missing", "SKILL.md")}); err == nil {
 			t.Fatal("LoadSkillBody missing file succeeded")
 		}
-		if _, err := LoadSkillBody(SkillMeta{SkillFile: invalidPath}); err == nil {
+		if _, err := loadSkillBody(SkillMeta{SkillFile: invalidPath}); err == nil {
 			t.Fatal("LoadSkillBody invalid frontmatter succeeded")
 		}
 		if meta, ok := parseSkillFile(rawPath); ok {
 			// LoadSkillBody validates the recorded identity against the file's
 			// declared identity, so it must be handed the meta discovery recorded
 			// (carrying the declared name), never a bare path.
-			if _, err := LoadSkillBody(meta); err != nil {
+			if _, err := loadSkillBody(meta); err != nil {
 				t.Fatalf("LoadSkillBody rejected a skill parseSkillFile accepted: %v", err)
 			}
 		}
 
 		env := &agenttest.FakeEnv{WorkDir: cwd, GitRoot: root}
-		skills := DiscoverSkills(env, extraFirst, filepath.Join(root, "missing-extra"), extraLast)
+		skills := skillProgramDiscover(t, env, extraFirst, filepath.Join(root, "missing-extra"), extraLast)
 		skillProgramAssertDiscovered(t, skills, "shared", extraLastShared, extraLast)
 		skillProgramAssertDiscovered(t, skills, "root-only", rootOnly, rootSkills)
 		skillProgramAssertDiscovered(t, skills, "project-only", projectOnly, projectSkills)
 		skillProgramAssertDiscovered(t, skills, "cwd-only", cwdOnly, cwdSkills)
 		skillProgramAssertDiscovered(t, skills, "extra-only", extraOnly, extraLast)
 		if len(skills) != 5 {
-			t.Fatalf("DiscoverSkills names = %v, want five expected skills", skillProgramNames(skills))
-		}
-
-		// Exact lookup returns the last extra directory's shadow, while a
-		// namespaced map key exercises the unnamespaced fallback path.
-		exact, err := ResolveSkillContent(skills, "shared")
-		if err != nil {
-			t.Fatalf("ResolveSkillContent exact: %v", err)
-		}
-		if want := skillProgramBody(t, extraLastShared); exact != want {
-			t.Fatalf("ResolveSkillContent exact = %q, want %q", exact, want)
-		}
-		namespaced := map[string]SkillMeta{"plugin:alias": skills["shared"]}
-		fallback, err := ResolveSkillContent(namespaced, "alias")
-		if err != nil || fallback != exact {
-			t.Fatalf("ResolveSkillContent fallback = %q, %v, want %q", fallback, err, exact)
-		}
-		if unknown, err := ResolveSkillContent(skills, "not-present"); err != nil || unknown != "" {
-			t.Fatalf("ResolveSkillContent unknown = %q, %v", unknown, err)
+			t.Fatalf("Discover names = %v, want five expected skills", skillProgramNames(skills))
 		}
 
 		// A no-Git fake keeps discovery local to cwd; the fake's failure result is
 		// the only command behavior involved.
-		local := DiscoverSkills(&agenttest.FakeEnv{WorkDir: cwd}, filepath.Join(root, "missing-extra"))
+		local := skillProgramDiscover(t, &agenttest.FakeEnv{WorkDir: cwd}, filepath.Join(root, "missing-extra"))
 		skillProgramAssertDiscovered(t, local, "shared", cwdShared, cwdSkills)
 		skillProgramAssertDiscovered(t, local, "cwd-only", cwdOnly, cwdSkills)
 		if len(local) != 2 {
 			t.Fatalf("local-only skills = %v, want nested skills", skillProgramNames(local))
 		}
-		if got := DiscoverSkills(nil); got != nil {
-			t.Fatalf("DiscoverSkills(nil) = %v, want nil", got)
+		if got := skillProgramDiscover(t, nil); len(got) != 0 {
+			t.Fatalf("Discover(nil env) = %v, want no skills", got)
 		}
-		if got := DiscoverSkills(&agenttest.FakeEnv{WorkDir: " \t "}); got != nil {
-			t.Fatalf("DiscoverSkills blank cwd = %v, want nil", got)
+		if got := skillProgramDiscover(t, &agenttest.FakeEnv{WorkDir: " \t "}); len(got) != 0 {
+			t.Fatalf("Discover blank cwd = %v, want no skills", got)
 		}
-		if got := DiscoverSkills(&agenttest.FakeEnv{WorkDir: filepath.Join(root, "does-not-exist")}); len(got) != 0 {
-			t.Fatalf("DiscoverSkills absent cwd = %v, want no skills", got)
-		}
-
-		// ExtractEmbeddedSkills is caller-owned, unlike the cached variants
-		// below. It can therefore be removed at the end of this fuzzer call.
-		extracted, err := ExtractEmbeddedSkills()
-		if err != nil {
-			t.Fatalf("ExtractEmbeddedSkills: %v", err)
-		}
-		defer os.RemoveAll(extracted)
-		extractedSkills := map[string]SkillMeta{}
-		ScanSkillsDir(extracted, extractedSkills)
-		if len(extractedSkills) == 0 {
-			t.Fatal("ExtractEmbeddedSkills produced no discoverable skills")
+		if got := skillProgramDiscover(t, &agenttest.FakeEnv{WorkDir: filepath.Join(root, "does-not-exist")}); len(got) != 0 {
+			t.Fatalf("Discover absent cwd = %v, want no skills", got)
 		}
 
 		firstDir, err := EmbeddedSkillsDir()
@@ -174,25 +144,16 @@ func FuzzSkillDiscoveryProgram(f *testing.F) {
 			t.Fatalf("EmbeddedSkillsDir output = %q, %v", firstDir, err)
 		}
 
-		firstCache, err := EmbeddedSkills()
-		if err != nil || len(firstCache) == 0 {
-			t.Fatalf("EmbeddedSkills first = %v entries, %v", len(firstCache), err)
+		cachedSkills := map[string]SkillMeta{}
+		ScanSkillsDir(firstDir, cachedSkills)
+		if len(cachedSkills) == 0 {
+			t.Fatal("EmbeddedSkillsDir holds no discoverable skills")
 		}
-		var cachedName string
-		for cachedName = range firstCache {
+		for cachedName, cachedMeta := range cachedSkills {
+			if _, err := loadSkillBody(cachedMeta); err != nil {
+				t.Fatalf("Load bundled %q: %v", cachedName, err)
+			}
 			break
-		}
-		cachedMeta := firstCache[cachedName]
-		if _, err := LoadSkillBody(cachedMeta); err != nil {
-			t.Fatalf("LoadSkillBody bundled %q: %v", cachedName, err)
-		}
-		delete(firstCache, cachedName)
-		secondCache, err := EmbeddedSkills()
-		if err != nil {
-			t.Fatalf("EmbeddedSkills cached: %v", err)
-		}
-		if _, ok := secondCache[cachedName]; !ok {
-			t.Fatalf("EmbeddedSkills returned cache alias for %q", cachedName)
 		}
 
 		original := map[string]SkillMeta{"copy": {Name: "copy", Description: "copy", SkillFile: rawPath}}
@@ -233,14 +194,37 @@ func FuzzSkillDiscoveryProgram(f *testing.F) {
 		// its process root (Windows) fails closed instead, so its harness case
 		// asserts only the reported publish failure above.
 		if !processCopyRootRefused(os.TempDir()) {
-			processSkills, err := EmbeddedSkills()
-			if err != nil || len(processSkills) == 0 {
-				t.Fatalf("EmbeddedSkills publish failure = %d entries, %v", len(processSkills), err)
+			processDir, err := EmbeddedSkillsDir()
+			if err != nil {
+				t.Fatalf("EmbeddedSkillsDir publish failure: %v", err)
+			}
+			processSkills := map[string]SkillMeta{}
+			ScanSkillsDir(processDir, processSkills)
+			if len(processSkills) == 0 {
+				t.Fatalf("EmbeddedSkillsDir publish failure holds no skills in %q", processDir)
 			}
 		}
 
 		skillProgramAssertExtractionFailures(t)
 	})
+}
+
+// skillProgramDiscover returns the available skills Discover finds outside the
+// bundled set, keyed by catalog name.
+func skillProgramDiscover(t *testing.T, env execenv.ExecutionEnvironment, extraDirs ...string) map[string]SkillMeta {
+	t.Helper()
+	bundledDir, err := EmbeddedSkillsDir()
+	if err != nil {
+		t.Fatalf("EmbeddedSkillsDir: %v", err)
+	}
+	out := map[string]SkillMeta{}
+	for name, d := range Discover(env, DiscoverOptions{ExtraDirs: extraDirs}).Entries {
+		if d.Unavailable || strings.HasPrefix(d.Meta.SkillFile, bundledDir+string(filepath.Separator)) {
+			continue
+		}
+		out[name] = d.Meta
+	}
+	return out
 }
 
 func skillProgramLimit(s string) string {
@@ -295,12 +279,12 @@ func skillProgramAssertDiscovered(t *testing.T, skills map[string]SkillMeta, nam
 	if meta.Name != name || meta.Dir != filepath.Join(expectedDir, name) || meta.SkillFile != filepath.Join(expectedDir, name, "SKILL.md") {
 		t.Fatalf("discovered %q metadata = %#v", name, meta)
 	}
-	body, err := LoadSkillBody(meta)
+	body, err := loadSkillBody(meta)
 	if err != nil {
-		t.Fatalf("LoadSkillBody(%q): %v", name, err)
+		t.Fatalf("loadSkillBody(%q): %v", name, err)
 	}
 	if want := skillProgramBody(t, document); body != want {
-		t.Fatalf("LoadSkillBody(%q) = %q, want %q", name, body, want)
+		t.Fatalf("loadSkillBody(%q) = %q, want %q", name, body, want)
 	}
 	if strings.TrimSpace(meta.Description) == "" {
 		t.Fatalf("discovered %q blank description", name)

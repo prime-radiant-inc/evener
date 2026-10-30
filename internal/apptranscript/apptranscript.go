@@ -1,8 +1,6 @@
 package apptranscript
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -32,6 +30,7 @@ import (
 type ToolCallRegistry struct {
 	Names             map[string]string
 	CommRawArgs       map[string]string
+	CommAuthorship    map[string]*schema.TranscriptAuthorship
 	LastAssistantText string
 	// LastAssistantTurnID is the logical turn ID of the ASSISTANT record that
 	// set LastAssistantText. The healed-communicate echo check scopes by turn
@@ -45,7 +44,7 @@ type ToolCallRegistry struct {
 // NewToolCallRegistry returns a ready-to-use ToolCallRegistry with both maps
 // initialized.
 func NewToolCallRegistry() *ToolCallRegistry {
-	return &ToolCallRegistry{Names: map[string]string{}, CommRawArgs: map[string]string{}}
+	return &ToolCallRegistry{Names: map[string]string{}, CommRawArgs: map[string]string{}, CommAuthorship: map[string]*schema.TranscriptAuthorship{}}
 }
 
 // EntryProjector converts one already-decoded transcript turn into AppWire
@@ -211,35 +210,6 @@ func NormalizeCommunicateArguments(raw json.RawMessage) json.RawMessage {
 func EchoesAssistantText(shown, message string) bool {
 	shown = strings.TrimSpace(shown)
 	return shown != "" && shown == strings.TrimSpace(message)
-}
-
-// ToolIntentFromArguments extracts a compact tool-call description from the
-// "intent" field, falling back to "purpose" — the field's name before the
-// 2026-08-29 rename (7512a736e) — so transcripts recorded before that
-// rename still surface the tool-intent line on reload (issue #709). This is
-// a reader-side rule: the model-facing tool schema and every write path
-// still emit "intent" exclusively. Every other transcript/projector reader
-// that extracts this field applies the same rule independently rather than
-// sharing this function — agent/transcript_render.go's toolIntent,
-// agent/doctor's toolIntentFromArguments, and the TUI's toolsummary and
-// msgrender packages — since each lives in a different Go module or is a
-// standalone binary that cannot import this one.
-func ToolIntentFromArguments(raw json.RawMessage) string {
-	var args map[string]any
-	if len(raw) == 0 || json.Unmarshal(raw, &args) != nil {
-		return ""
-	}
-	if value, ok := args["intent"].(string); ok {
-		if trimmed := strings.TrimSpace(value); trimmed != "" {
-			return trimmed
-		}
-	}
-	if value, ok := args["purpose"].(string); ok {
-		if trimmed := strings.TrimSpace(value); trimmed != "" {
-			return trimmed
-		}
-	}
-	return ""
 }
 
 // ExitCodeFromToolState extracts a shell tool call's process exit code from
@@ -458,9 +428,18 @@ func ProjectEntryParts(turnID string, entryIndex int, turn schema.Turn, reg *Too
 		if reg.Names == nil {
 			reg.Names = map[string]string{}
 		}
-		items = projectIdentityAssistant(turnID, entryIndex, turn, reg.Names, &parts)
+		items = projectIdentityAssistant(turnID, entryIndex, turn, reg, &parts)
+		for i := range items {
+			items[i].Authorship = ProjectAuthorship(turn.Authorship)
+		}
 		return items, parts
 	case schema.TurnCommunicate:
+		// Ordinary forks retain the dedicated delivery. Only context-only
+		// copies that omit it need reconstruction from the call and result.
+		if reg != nil && turn.Communicate != nil {
+			delete(reg.CommRawArgs, turn.Communicate.CallID)
+			delete(reg.CommAuthorship, turn.Communicate.CallID)
+		}
 		if item, ok := CommunicateItem(turnID, entryIndex, turn); ok {
 			return []appwire.ThreadItem{item}, []int{0}
 		}
@@ -482,6 +461,13 @@ func ProjectEntryParts(turnID string, entryIndex int, turn schema.Turn, reg *Too
 // one item per content part (assistant and tool results) record each item's
 // part index in it.
 func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRegistry, imageProjector ImageProjector, outputImageProjector OutputImageProjector, parts *[]int) (out []appwire.ThreadItem) {
+	defer func() {
+		if turn.Kind != schema.TurnTool && turn.Kind != schema.TurnToolResults {
+			for i := range out {
+				out[i].Authorship = ProjectAuthorship(turn.Authorship)
+			}
+		}
+	}()
 	// A persisted message has the entry's recorded instant, not a duration.
 	defer func() {
 		if turn.Timestamp.IsZero() {
@@ -506,6 +492,9 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 	}
 	if reg.CommRawArgs == nil {
 		reg.CommRawArgs = map[string]string{}
+	}
+	if reg.CommAuthorship == nil {
+		reg.CommAuthorship = map[string]*schema.TranscriptAuthorship{}
 	}
 	if invariant.Enabled {
 		// Every item ProjectTurn emits belongs to the turn it was asked to
@@ -755,6 +744,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 					// This makes live and reload agree: both defer, both render
 					// the same item at the result turn.
 					reg.CommRawArgs[part.ToolCall.ID] = part.ToolCall.SentArguments()
+					reg.CommAuthorship[part.ToolCall.ID] = turn.Authorship.Clone()
 					continue
 				}
 				items = append(items, toolCallItem(turnID, turnIndex, i, turn))
@@ -783,6 +773,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 				name = reg.Names[part.ToolResult.ToolCallID]
 			}
 			if name == "communicate" {
+				first := len(items)
 				// A rejected communicate (IsError=true, PrevalOnly=true) was
 				// never executed — live suppresses it entirely (no
 				// EventCommunicate). Render the raw bytes as a tool/error item,
@@ -797,6 +788,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 							Type:          "commandExecution",
 							ID:            fmt.Sprintf("item_tool_result_%d_%d", turnIndex, i),
 							TurnID:        turnID,
+							RoundID:       turn.RoundID,
 							ToolName:      "communicate",
 							CallID:        part.ToolResult.ToolCallID,
 							ArgumentsJSON: rawArgs,
@@ -832,12 +824,13 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 						msg := CommunicateMessageFromArguments(normalized)
 						if msg != "" && (turnID != reg.LastAssistantTurnID || !EchoesAssistantText(reg.LastAssistantText, msg)) {
 							items = append(items, appwire.ThreadItem{
-								Type:   "agentMessage",
-								ID:     fmt.Sprintf("item_assistant_%d_%d", turnIndex, i),
-								TurnID: turnID,
-								CallID: part.ToolResult.ToolCallID,
-								Text:   msg,
-								Status: appwire.TurnStatusCompleted,
+								Type:    "agentMessage",
+								ID:      fmt.Sprintf("item_assistant_%d_%d", turnIndex, i),
+								TurnID:  turnID,
+								RoundID: turn.RoundID,
+								CallID:  part.ToolResult.ToolCallID,
+								Text:    msg,
+								Status:  appwire.TurnStatusCompleted,
 							})
 							recordPart(parts, i)
 						} else if msg == "" && strings.TrimSpace(rawArgs) != "" {
@@ -850,17 +843,22 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 							// bytes the model sent instead of dropping the call
 							// silently.
 							items = append(items, appwire.ThreadItem{
-								Type:   "agentMessage",
-								ID:     fmt.Sprintf("item_assistant_%d_%d", turnIndex, i),
-								TurnID: turnID,
-								CallID: part.ToolResult.ToolCallID,
-								Text:   communicateRawFallbackText(rawArgs),
-								Status: appwire.TurnStatusCompleted,
+								Type:    "agentMessage",
+								ID:      fmt.Sprintf("item_assistant_%d_%d", turnIndex, i),
+								TurnID:  turnID,
+								RoundID: turn.RoundID,
+								CallID:  part.ToolResult.ToolCallID,
+								Text:    communicateRawFallbackText(rawArgs),
+								Status:  appwire.TurnStatusCompleted,
 							})
 							recordPart(parts, i)
 						}
 					}
 				}
+				for j := first; j < len(items); j++ {
+					items[j].Authorship = ProjectAuthorship(reg.CommAuthorship[part.ToolResult.ToolCallID])
+				}
+				delete(reg.CommAuthorship, part.ToolResult.ToolCallID)
 				delete(reg.Names, part.ToolResult.ToolCallID)
 				delete(reg.CommRawArgs, part.ToolResult.ToolCallID)
 				continue
@@ -917,10 +915,13 @@ func answerObservation(turnID string, turn schema.Turn) *appwire.SessionObservat
 // displays it: one agentMessage per maximal run of consecutive text parts,
 // keyed by the run's first part, and one reasoning item for the whole entry,
 // keyed by its first thinking part. A communicate call projects nothing: its
-// COMMUNICATE entry carries the delivered message. Every item names the
-// entry's round.
-func projectIdentityAssistant(turnID string, turnIndex int, turn schema.Turn, toolNames map[string]string, parts *[]int) []appwire.ThreadItem {
+// COMMUNICATE entry carries the delivered message and consumes any pending
+// reconstruction. Inherited calls without that entry defer to their result,
+// because delegate context copies exclude transcript-only entries. Every item
+// names the entry's round.
+func projectIdentityAssistant(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRegistry, parts *[]int) []appwire.ThreadItem {
 	var items []appwire.ThreadItem
+	var lastAssistantText string
 	reasoningPart, reasoningText := identityReasoning(turn.Message.Content)
 	var run strings.Builder
 	runStart := -1
@@ -940,6 +941,7 @@ func projectIdentityAssistant(turnID string, turnIndex int, turn schema.Turn, to
 			}
 			items = append(items, item)
 			recordPart(parts, runStart)
+			lastAssistantText = strings.TrimSpace(run.String())
 		}
 		run.Reset()
 		runStart = -1
@@ -975,8 +977,18 @@ func projectIdentityAssistant(turnID string, turnIndex int, turn schema.Turn, to
 			if part.ToolCall == nil {
 				continue
 			}
-			toolNames[part.ToolCall.ID] = part.ToolCall.Name
+			reg.Names[part.ToolCall.ID] = part.ToolCall.Name
 			if part.ToolCall.Name == "communicate" {
+				if turn.Authorship != nil && turn.Authorship.Inherited {
+					if reg.CommRawArgs == nil {
+						reg.CommRawArgs = map[string]string{}
+					}
+					if reg.CommAuthorship == nil {
+						reg.CommAuthorship = map[string]*schema.TranscriptAuthorship{}
+					}
+					reg.CommRawArgs[part.ToolCall.ID] = part.ToolCall.SentArguments()
+					reg.CommAuthorship[part.ToolCall.ID] = turn.Authorship.Clone()
+				}
 				continue
 			}
 			items = append(items, toolCallItem(turnID, turnIndex, i, turn))
@@ -984,6 +996,9 @@ func projectIdentityAssistant(turnID string, turnIndex int, turn schema.Turn, to
 		}
 	}
 	flushRun()
+	if lastAssistantText != "" {
+		reg.LastAssistantText, reg.LastAssistantTurnID = lastAssistantText, turnID
+	}
 	for i := range items {
 		items[i].RoundID = turn.RoundID
 	}
@@ -1060,7 +1075,7 @@ func toolCallItem(turnID string, turnIndex, part int, turn schema.Turn) appwire.
 	// oversized valid JSON has RawArguments="" and would otherwise show
 	// intent on reload.
 	if call.RawArguments == "" && argrepair.ValidateRawArguments(call.Arguments) == nil {
-		description = ToolIntentFromArguments(call.Arguments)
+		description = schema.ToolIntent(call.Arguments)
 	}
 	item := appwire.ThreadItem{
 		Type:          "commandExecution",
@@ -1357,40 +1372,11 @@ func scanSemanticTranscriptContext(ctx context.Context, path string, maxLineByte
 		return transcript.Header{}, fmt.Errorf("open transcript: %w", err)
 	}
 	defer f.Close() //nolint:errcheck // read-only file; close error is not actionable
-	if maxLineBytes <= 0 {
-		maxLineBytes = 128 << 20
-	}
-	reader := bufio.NewReaderSize(f, 64*1024)
-	if err := ctx.Err(); err != nil {
-		return transcript.Header{}, err
-	}
-	header, err := transcript.ReadHeader(ctx, reader, maxLineBytes)
-	if err != nil {
-		return transcript.Header{}, err
-	}
-	for {
-		if err := ctx.Err(); err != nil {
-			return transcript.Header{}, err
+	result, err := transcript.Scan(ctx, f, maxLineBytes, func(line []byte, _ transcript.Entry) error {
+		if visit == nil {
+			return nil
 		}
-		line, complete, _, readErr := transcript.ReadLine(reader, maxLineBytes)
-		if readErr != nil {
-			return transcript.Header{}, readErr
-		}
-		if !complete {
-			break
-		}
-		line = bytes.TrimSpace(line)
-		if len(line) == 0 {
-			continue
-		}
-		if _, err := transcript.DecodeEntry(line); err != nil {
-			return transcript.Header{}, fmt.Errorf("parse transcript entry: %w", err)
-		}
-		if visit != nil {
-			if err := visit(json.RawMessage(append([]byte(nil), line...))); err != nil {
-				return transcript.Header{}, err
-			}
-		}
-	}
-	return header, nil
+		return visit(json.RawMessage(line))
+	})
+	return result.Header, err
 }

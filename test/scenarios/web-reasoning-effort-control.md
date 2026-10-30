@@ -23,7 +23,7 @@ handle, and the effort control is no longer read-only — see Sharp edges.
 - A session on a reasoning-capable model with a known ladder (e.g.
   `openai/gpt-5.5`), idle. Confirm the ladder over the wire before asserting
   on the UI: `thread/read`'s `reasoningEffortLevels` /
-  `supportsReasoning` (`appwire/types.go:347-349`).
+  `supportsReasoning` (`appwire/types_thread.go#EvenerThread`).
 - A real SPA bundle. A checkout that has never run `make build-web` ships a
   one-line `frontend/dist/PLACEHOLDER` and serves no app at all (rebuild
   matrix item 3 in the runbook).
@@ -74,7 +74,7 @@ handle, and the effort control is no longer read-only — see Sharp edges.
   stale until a reload, or `readout` and `selectValue` disagree.
 - **Step 2** (AC 6, web cold attach): `readout`, `selectValue` and `model` are
   all correct on first paint — the effort snapshot rides in on `thread/read`
-  (`appwire/types.go:347-349`), not on a later notification. Falsification:
+  (`appwire/types_thread.go#EvenerThread`), not on a later notification. Falsification:
   the readout shows `(default)` for a session that has an explicit effort
   set, or the control is missing entirely on a reasoning-capable model.
 - **Step 3**: on a non-reasoning model the control renders nothing —

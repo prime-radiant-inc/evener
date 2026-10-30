@@ -104,7 +104,7 @@ func SelectCandidates(candidates []TranscriptItemCandidate, before *appwire.Thre
 			return nil, false, err
 		}
 		hi = 0
-		for hi < len(candidates) && comparePosition(candidates[hi].Position, *before) < 0 {
+		for hi < len(candidates) && ComparePosition(candidates[hi].Position, *before) < 0 {
 			hi++
 		}
 	}
@@ -131,7 +131,9 @@ func RegroupTurnFragments(candidates []TranscriptItemCandidate) ([]appwire.Turn,
 	turns := make([]appwire.Turn, 0, len(candidates))
 	for i := 0; i < len(candidates); {
 		first := candidates[i]
-		turn := cloneTurnWithoutItems(first.Turn)
+		source := first.Turn
+		source.Items = nil
+		turn := appwire.CloneTurn(source)
 		turn.ID = first.TurnID
 		turn.ItemsView = appwire.TurnItemsViewFragment
 		turn.HasEarlierItems = false
@@ -139,7 +141,7 @@ func RegroupTurnFragments(candidates []TranscriptItemCandidate) ([]appwire.Turn,
 		j := i
 		for j < len(candidates) && candidates[j].TurnID == first.TurnID {
 			candidate := candidates[j]
-			turn.Items = append(turn.Items, cloneThreadItem(candidate.Item))
+			turn.Items = append(turn.Items, appwire.CloneThreadItem(candidate.Item))
 			turn.HasEarlierItems = turn.HasEarlierItems || candidate.HasEarlierItems
 			turn.HasLaterItems = turn.HasLaterItems || candidate.HasLaterItems
 			j++
@@ -184,15 +186,11 @@ func validateCandidates(candidates []TranscriptItemCandidate) error {
 			return fmt.Errorf("candidate %d repeats transcript key", i)
 		}
 		seenKeys[candidate.Item.TranscriptKey] = struct{}{}
-		if i > 0 && comparePosition(candidates[i-1].Position, candidate.Position) >= 0 {
+		if i > 0 && ComparePosition(candidates[i-1].Position, candidate.Position) >= 0 {
 			return fmt.Errorf("candidate positions are not strictly increasing at %d", i)
 		}
 	}
 	return nil
-}
-
-func comparePosition(a, b appwire.ThreadItemPosition) int {
-	return ComparePosition(a, b)
 }
 
 // ComparePosition orders every part of an atomic transcript item position.
@@ -200,25 +198,18 @@ func ComparePosition(a, b appwire.ThreadItemPosition) int {
 	return cmp.Or(cmp.Compare(a.Entry, b.Entry), cmp.Compare(a.Item, b.Item), cmp.Compare(a.Sub, b.Sub))
 }
 
-func cloneTurnWithoutItems(turn appwire.Turn) appwire.Turn {
-	turn.Items = nil
-	return turn
-}
-
-func cloneThreadItem(item appwire.ThreadItem) appwire.ThreadItem {
-	cloned := item
-	if item.Position != nil {
-		position := *item.Position
-		cloned.Position = &position
+// CandidatesBefore returns the newest limit candidates strictly older than
+// before. The result never aliases candidates, so callers can keep reading the
+// original window.
+func CandidatesBefore(candidates []TranscriptItemCandidate, before appwire.ThreadItemPosition, limit int) []TranscriptItemCandidate {
+	older := make([]TranscriptItemCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if ComparePosition(candidate.Position, before) < 0 {
+			older = append(older, candidate)
+		}
 	}
-	if item.Images != nil {
-		cloned.Images = make([]appwire.InputItem, len(item.Images))
-		copy(cloned.Images, item.Images)
+	if len(older) > limit {
+		older = older[len(older)-limit:]
 	}
-	cloned.OutputImages = appwire.CloneOutputImages(item.OutputImages)
-	if item.Raw != nil {
-		cloned.Raw = make([]byte, len(item.Raw))
-		copy(cloned.Raw, item.Raw)
-	}
-	return cloned
+	return older
 }

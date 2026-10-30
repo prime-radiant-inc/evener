@@ -5,7 +5,13 @@ import { Pressable, Text, View } from "react-native";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import type { SubagentLine } from "./subagentLine";
 
-export function SubagentRow({ line, onOpen }: { line: SubagentLine; onOpen?: (ref: string, title: string) => void }) {
+export function SubagentRow({
+	line,
+	onOpen,
+}: {
+	line: SubagentLine;
+	onOpen?: (ref: string, title: string, runStartedAt?: string) => void;
+}) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const rail = line.state === "running" ? palette.alive : line.state === "failed" ? palette.danger : palette.edgeStrong;
@@ -58,7 +64,7 @@ export function SubagentRow({ line, onOpen }: { line: SubagentLine; onOpen?: (re
 			accessibilityRole="button"
 			accessibilityLabel={`${line.title}, ${line.stateText}${line.activity ? `, ${line.activity}` : ""}`}
 			accessibilityHint="Opens the subagent"
-			onPress={() => onOpen(ref, line.title)}
+			onPress={() => onOpen(ref, line.title, line.runStartedAt)}
 			style={{ minHeight: 44, justifyContent: "center" }}
 		>
 			{body}

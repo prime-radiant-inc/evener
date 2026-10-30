@@ -61,8 +61,6 @@ export interface ModelSwitchTriggerProps {
    * caller whose own write fails surfaces that its own way (parity-m5-composer
    * §H: no rollback of an already-closed picker). */
   onPick: (entry: ModelCatalogEntry) => void;
-  /** A new completion opens a fresh catalog scoped to the actual instance. */
-  connectionRequest?: { name?: string };
   /** Opens the caller's existing connection settings flow when catalogue
    * recovery needs more than a read retry. Omitted where that connection is
    * not editable from this surface, such as a remote host. */
@@ -97,7 +95,6 @@ export function ModelSwitchTrigger({
   value,
   loadCatalog,
   onPick,
-  connectionRequest,
   onOpenConnection,
   refreshKey,
   disabled = false,
@@ -110,8 +107,6 @@ export function ModelSwitchTrigger({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
-  const [providerFilter, setProviderFilter] = useState<string>();
-  const handledConnection = useRef(connectionRequest);
   const triggerRef = useRef<HTMLButtonElement>(null);
   // Generation guard for the catalog load below: every open - and every
   // loader-identity change under an OPEN picker (Spawn recreates loadCatalog
@@ -207,16 +202,6 @@ export function ModelSwitchTrigger({
       void startLoad(loadGenerationRef.current, loadCatalog, refreshed || undefined);
     }
   }, [loadCatalog, refreshKey, open, listShown, startLoad]);
-  useEffect(() => {
-    if (!connectionRequest || handledConnection.current === connectionRequest) return;
-    handledConnection.current = connectionRequest;
-    setProviderFilter(connectionRequest.name);
-    setCatalog(null);
-    setOpen(true);
-    loadedLoaderRef.current = loadCatalog;
-    void startLoad(++loadGenerationRef.current, loadCatalog, true);
-  }, [connectionRequest, loadCatalog, startLoad]);
-
   function closePicker(): void {
     setOpen(false);
     if (!isMobile) triggerRef.current?.focus();
@@ -245,37 +230,18 @@ export function ModelSwitchTrigger({
     onOpenConnection?.();
   }
 
-  const filteredCatalog =
-    catalog && providerFilter
-      ? {
-          ...catalog,
-          models: catalog.models.filter((entry) => entry.provider === providerFilter),
-          recent: catalog.recent.filter((entry) => entry.provider === providerFilter),
-          diagnostics: catalog.diagnostics?.filter((entry) => !entry.provider || entry.provider === providerFilter),
-        }
-      : catalog;
   const recoveryAvailable =
     !loading &&
     (error !== null ||
-      (filteredCatalog?.diagnostics?.length ?? 0) > 0 ||
-      (filteredCatalog !== null && filteredCatalog.models.length === 0 && filteredCatalog.recent.length === 0));
+      (catalog?.diagnostics?.length ?? 0) > 0 ||
+      (catalog !== null && catalog.models.length === 0 && catalog.recent.length === 0));
   const panel = (
     <>
-      {providerFilter && (
-        <div>
-          <p className={CLASS.value} title={providerFilter}>
-            Models from {providerFilter}
-          </p>
-          <Button variant="quiet" onClick={() => setProviderFilter(undefined)}>
-            Show all models
-          </Button>
-        </div>
-      )}
       <ModelCatalogPanel
         loading={loading}
         error={error}
-        catalog={filteredCatalog}
-        value={providerFilter ? "" : value}
+        catalog={catalog}
+        value={value}
         onPick={handlePick}
         variant={isMobile ? "sheet" : "default"}
       />
@@ -305,10 +271,7 @@ export function ModelSwitchTrigger({
       title={label}
       onClick={() => {
         if (open) closePicker();
-        else {
-          setProviderFilter(undefined);
-          openPicker();
-        }
+        else openPicker();
       }}
       disabled={disabled}
     >

@@ -7,8 +7,26 @@
 // history and notifying same-tab listeners is still "URL glue", just not a
 // pure function.
 
-import { isLocalHost, normalizeHost } from "../stores/hostRouting";
+import { isLocalHost, normalizeHost } from "@evener/appwire-client";
+import { createSecureUUID } from "../stores/secureUUID";
 import type { PaneTypeId } from "./paneRegistry";
+
+const ROUTE_ENTRY_KEY = "__evenerRouteEntry";
+// A history entry can also be owned by an attention hop (see attentionHistory):
+// its own reader/placement pair outranks ordinary route placement while the
+// entry is current.
+export const ATTENTION_ENTRY_STATE_KEY = "__evenerAttention";
+
+function attentionBound(state: unknown): boolean {
+  return !!state && typeof state === "object" && !!(state as Record<string, unknown>)[ATTENTION_ENTRY_STATE_KEY];
+}
+
+/** The per-entry identity for an app-built history entry, if this state has one. */
+export function routeHistoryEntryId(state: unknown): string | null {
+  if (!state || typeof state !== "object") return null;
+  const id = (state as Record<string, unknown>)[ROUTE_ENTRY_KEY];
+  return typeof id === "string" ? id : null;
+}
 
 /** A non-empty string field of a params bag, or null for anything else - the
  * field reader refParam and the workspace store's pane readings share. */
@@ -151,6 +169,21 @@ function splitURL(target: string): { path: string; search: string; hash: string 
  * two modules importing each other. */
 export const HOST_QUERY_PARAM = "host";
 
+type RouteHistoryObserver = (
+  previousState: unknown,
+  nextState: unknown,
+  previousURL: string,
+  nextURL: string,
+  transition: "push" | "replace",
+) => void;
+const routeHistoryObservers = new Set<RouteHistoryObserver>();
+
+/** Observe accepted app history changes without becoming a second navigation authority. */
+export function observeRouteHistory(observer: RouteHistoryObserver): () => void {
+  routeHistoryObservers.add(observer);
+  return () => routeHistoryObservers.delete(observer);
+}
+
 /** isSettingsPath answers whether a pathname names a settings route - the routes
  * urlToPane resolves as "settings", aliases included. The selected host belongs
  * to those routes and to no others: they are the only ones that may carry a host,
@@ -196,7 +229,7 @@ function withSettingsHost(target: string): string {
   if (!isSettingsPath(window.location.pathname)) return target;
   const params = new URLSearchParams(search);
   if (params.has(HOST_QUERY_PARAM)) return target;
-  // The current host goes through the ONE spelling rule (hostRouting.ts's
+  // The current host goes through the ONE spelling rule (appwire-client hostRouting.ts's
   // normalizeHost, the same one the store's own URL reading uses): an absent,
   // empty, or `local` current host normalizes to the local hub, which is nothing
   // to carry - so the target keeps the canonical hostless local URL instead of
@@ -223,12 +256,37 @@ function withSettingsHost(target: string): string {
 // A settings target also carries the host the address bar already names (see
 // withSettingsHost) unless `carrySettingsHost: false` says the caller is
 // deliberately choosing a URL without it.
-export function navigate(pathname: string, options: { replace?: boolean; carrySettingsHost?: boolean } = {}): void {
+export function navigate(
+  pathname: string,
+  options: {
+    replace?: boolean;
+    carrySettingsHost?: boolean;
+    attentionEntry?: { generation: string; id: string };
+    ordinary?: boolean;
+  } = {},
+): void {
   const target = options.carrySettingsHost === false ? pathname : withSettingsHost(pathname);
   const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-  if (current === target) return;
-  if (options.replace) window.history.replaceState({}, "", target);
-  else window.history.pushState({}, "", target);
+  const sameURL = current === target;
+  // An explicit ordinary activation (a rail press, say) at an attention-owned
+  // URL has to leave that binding behind: the target names the same URL, so a
+  // silent return would leave the attention placement in charge and the press
+  // would do nothing. Replace rather than push - the URL is already right.
+  const leavesAttention = sameURL && options.ordinary === true && attentionBound(window.history.state);
+  if (sameURL && !options.attentionEntry && !leavesAttention) return;
+  const priorState = window.history.state && typeof window.history.state === "object" ? window.history.state : {};
+  const state = {
+    ...(options.attentionEntry ? { ...priorState, __evenerAttention: options.attentionEntry } : {}),
+    // Guarded: an ordinary HTTP origin outside localhost is not a secure
+    // context, and crypto.randomUUID() does not exist there.
+    [ROUTE_ENTRY_KEY]: createSecureUUID(),
+  };
+  const replace = options.replace === true || leavesAttention;
+  if (replace) window.history.replaceState(state, "", target);
+  else window.history.pushState(state, "", target);
+  for (const observer of routeHistoryObservers) {
+    observer(priorState, state, current, target, replace ? "replace" : "push");
+  }
   // Mirror the settings selection onto the route the app just chose, before any
   // listener runs: an app-built navigation drops a remote selection it leaves
   // behind and adopts the one its target names, so no host-scoped pane ever
@@ -241,4 +299,10 @@ export function navigate(pathname: string, options: { replace?: boolean; carrySe
     settingsHostRouteSync(path, search);
   }
   window.dispatchEvent(new PopStateEvent("popstate"));
+}
+
+/** Ordinary live navigation stays on the normal route/history path. */
+export function openSessionRoute(ref: string): void {
+  const url = paneToURL("session", { ref });
+  if (url) navigate(url, { ordinary: true });
 }

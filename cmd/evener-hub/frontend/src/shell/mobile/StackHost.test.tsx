@@ -14,7 +14,7 @@ import "../../panes/transcript";
 import { cascadeClient, cascadeContext } from "../../panes/zoom/cascadeTestUtils";
 import type { SessionZoomParams } from "../../panes/zoom/intent";
 import "../../panes/zoom";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import {
   activityClient,
   activityContext,
@@ -22,7 +22,10 @@ import {
   activityDetailsThread,
   activitySummary,
 } from "../../stores/sessionActivityTestUtils";
+import { readModuleCss } from "../../styles/cssBlock";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
+import { openAttentionSession } from "../attentionHistory";
+import { captureAttentionPlacement, presentAttentionTarget, restoreAttentionPlacement } from "../attentionPlacement";
 import { chromeStore, resetChromeStoreForTests } from "../chromeStore";
 import { ClientProvider } from "../clientContext";
 import { type PaneProps, registerPaneForTests } from "../paneRegistry";
@@ -36,6 +39,92 @@ import {
   workspaceStore,
 } from "../workspace";
 import { StackHost, setLastPopstateWasTrustedForTests } from "./StackHost";
+
+test("ordinary mobile Back skips attention parked records", async () => {
+  const x = workspaceStore.getState().openPane("doc", { ref: "independent" });
+  const host = await act(async () => render(<StackHost routeDeferred />));
+  await act(async () => workspaceStore.getState().openPane("session", { ref: "local:a" }));
+  const origin = captureAttentionPlacement();
+  if (!origin) throw new Error("missing phone origin");
+  await act(async () => presentAttentionTarget("local:b"));
+  expect(origin.pane.slot).toBe("parked");
+  await userEvent.click(screen.getByRole("button", { name: "Back" }));
+  expect(workspaceStore.getState().focusedPaneId).toBe(x);
+  expect(workspaceStore.getState().panes).toContain(origin.pane);
+  await act(async () => {
+    expect(restoreAttentionPlacement(origin)).toBe(true);
+  });
+  expect(workspaceStore.getState().focusedPaneId).toBe(origin.pane.id);
+  host.unmount();
+});
+
+// A cascade opened over the attention target is a local step. Its Back belongs
+// to the phone's own stack, not to the attention entry the target owns: the
+// entry has no URL for a cascade, so attention Back would jump past the target
+// to the entry's source.
+test("toolbar Back from a cascade over the attention target returns to the target", async () => {
+  window.history.replaceState({}, "", "/s/local%3Aa");
+  const a = workspaceStore.getState().openPane("session", { ref: "local:a" });
+  const host = await act(async () => render(<StackHost />));
+  await act(async () => workspaceStore.getState().focusPane(a));
+  await act(async () => {
+    openAttentionSession("local:b");
+  });
+  const b = workspaceStore.getState().mainPane();
+  if (!b) throw new Error("attention hop did not place its destination");
+  act(() => {
+    presentAttentionTarget("local:b");
+  });
+  await act(async () => {
+    openAttentionSession("local:c");
+  });
+  const back = new Promise<void>((resolve) => window.addEventListener("popstate", () => resolve(), { once: true }));
+  await act(async () => {
+    window.history.back();
+    await back;
+  });
+  await act(async () => workspaceStore.getState().focusPane(b.id));
+
+  const inspector = await act(async () =>
+    workspaceStore
+      .getState()
+      .openPane(
+        "sessionZoom",
+        { ref: "local:leaf", source: { type: "session", params: { ref: "local:b" } }, edges: [] },
+        { slot: "secondary" },
+      ),
+  );
+  await act(async () => workspaceStore.getState().focusPane(inspector));
+
+  // Attention Back traverses the browser history to the entry's source, past
+  // the target. A cascade opened over the target is a local step, so Back must
+  // not take that step at all.
+  const traverse = vi.spyOn(window.history, "back");
+  await userEvent.click(screen.getByRole("button", { name: "Back" }));
+  expect(traverse).not.toHaveBeenCalled();
+  traverse.mockRestore();
+  host.unmount();
+});
+
+test("ordinary focus after an attention hop publishes its own session URL", async () => {
+  window.history.replaceState({}, "", "/s/local%3Aa");
+  const origin = workspaceStore.getState().openPane("session", { ref: "local:a" });
+  const independent = workspaceStore.getState().openPane("session", { ref: "local:x" }, { slot: "secondary" });
+  const host = await act(async () => render(<StackHost />));
+  await act(async () => workspaceStore.getState().focusPane(origin));
+  await act(async () => {
+    openAttentionSession("local:b");
+  });
+  const destination = workspaceStore.getState().mainPane()?.id;
+  if (!destination) throw new Error("attention hop did not place its destination");
+  expect(workspaceStore.getState().focusedPaneId).toBe(destination);
+  expect(window.location.pathname).toBe("/s/local%3Ab");
+
+  await act(async () => workspaceStore.getState().focusPane(independent));
+
+  expect(window.location.pathname).toBe("/s/local%3Ax");
+  host.unmount();
+});
 
 // Fixture pane type for the bulk of this file's tests - non-singleton, so
 // "doc"/{ref} with different refs are distinct panes (same dedup rule
@@ -200,7 +289,7 @@ async function warmPane(open: () => void, findLandmark: (timeout: number) => Pro
 beforeEach(() => {
   resetWorkspaceStoreForTests();
   resetActivitySidebarStoreForTests();
-  connectionStore.setState({ client: null, state: "idle" });
+  resetConnectionStoreForTests();
   resetChromeStoreForTests();
   setLastPopstateWasTrustedForTests(false);
 });
@@ -373,7 +462,7 @@ test("at the mobile boundary an ordinary Agents row retains the existing convers
   } finally {
     cleanup();
     restoreViewport();
-    connectionStore.setState({ client: null, state: "idle" });
+    resetConnectionStoreForTests();
   }
 });
 
@@ -477,7 +566,7 @@ test("a restored cascade renders only its selected reader on mobile and restores
     else Reflect.deleteProperty(HTMLElement.prototype, "offsetHeight");
     if (original) window.matchMedia = original;
     else Reflect.deleteProperty(window, "matchMedia");
-    connectionStore.setState({ client: null, state: "idle" });
+    resetConnectionStoreForTests();
   }
 });
 
@@ -1470,8 +1559,7 @@ test("mounting already at the focused pane's own URL does not dispatch a redunda
 // the inset cannot false-positive the match.
 
 test("the host lifts nothing off the bottom edge - docked chrome owns the bottom inset", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "StackHost.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readModuleCss(import.meta.url, "StackHost.module.css");
   expect(css).not.toContain("env(safe-area-inset-bottom)");
   const hostRule = css.match(/\.host \{([^}]*)\}/)?.[1] ?? "";
   expect(hostRule).not.toContain("padding-bottom");

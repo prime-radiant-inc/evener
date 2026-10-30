@@ -15,8 +15,13 @@ import { sheetHosts, sheetKey, useSheetHost } from "./sheet/sheetHosts";
 import { Toast, type ToastMessage, useToast } from "./Toast";
 import { Button } from "./sheet/Grouped";
 
+/** The sheet's content padding: each message's swipe row starts at the
+ * screen's left edge plus this, so its band trims only the screen's 24pt. */
+const QUEUE_SHEET_GUTTER_PT = 16;
+
 export interface QueueHost {
-	/** The session's queued messages, every one of them. */
+	/** ghosts(..., local).filter(isQueuedGhost), with current durable records
+	 * and merge readiness, including every local waiting/held message. */
 	ghosts: readonly Ghost[];
 	disabled: boolean;
 	/** Runs one ghost's action on the live queue, and says what to tell you. */
@@ -63,9 +68,9 @@ export function QueueSheet({ route }: NativeStackScreenProps<Routes, "QueueSheet
 			done={{ onPress: () => sheet.finish() }}
 			accessory={<Toast toast={toast.toast} dismiss={toast.dismiss} />}
 		>
-			<ScrollView contentContainerStyle={{ padding: 16, gap: 12 }}>
-				{/* Every ghost here is queued, and a queued message's Edit merges
-				into whatever is typed, so the composer never blocks it. */}
+			<ScrollView contentContainerStyle={{ padding: QUEUE_SHEET_GUTTER_PT, gap: 12 }}>
+				{/* Daemon queue editing keeps its existing text-only policy. Local
+				Edit readiness is projected once, shared with the transcript. */}
 				{host?.ghosts.map((ghost) => (
 					<GhostBubble
 						key={ghost.key}
@@ -74,6 +79,7 @@ export function QueueSheet({ route }: NativeStackScreenProps<Routes, "QueueSheet
 						canEdit
 						editHint={null}
 						backdrop="canvas"
+						edgeInset={QUEUE_SHEET_GUTTER_PT}
 						onAction={(action) => run(ghost, action)}
 					/>
 				))}

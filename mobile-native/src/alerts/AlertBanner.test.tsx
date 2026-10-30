@@ -47,7 +47,6 @@ vi.mock("react-native", async () => {
 		},
 	};
 });
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 import { AlertBanner, bannerLabel } from "./AlertBanner";
 

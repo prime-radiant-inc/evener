@@ -746,7 +746,7 @@ func TestDelegateAttention_RecoveryStopWaitsForOldRunnerBeforeReuse(t *testing.T
 		releaseSuccessorOnce.Do(func() { close(releaseSuccessor) })
 	})
 
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	adapter := &fakeErrAdapter{
 		name: "openai",
 		steps: []func(llm.Request) (llm.Response, error){
@@ -758,7 +758,7 @@ func TestDelegateAttention_RecoveryStopWaitsForOldRunnerBeforeReuse(t *testing.T
 			func(llm.Request) (llm.Response, error) {
 				close(successorEntered)
 				<-releaseSuccessor
-				return finalResponse("successor completed after recovery"), nil
+				return agenttest.FinalResponse("successor completed after recovery"), nil
 			},
 		},
 	}
@@ -1368,7 +1368,7 @@ func TestDelegateAttention_PublicTranscriptReadsExcludePrivateResolutionMetadata
 		t.Fatalf("close transcript: %v", err)
 	}
 
-	rawValue, err := readRaw(path, "", "local:"+sessionID, "")
+	rawValue, err := readRaw(context.Background(), path, "", "local:"+sessionID, "")
 	if err != nil {
 		t.Fatalf("read raw transcript: %v", err)
 	}
@@ -1377,7 +1377,7 @@ func TestDelegateAttention_PublicTranscriptReadsExcludePrivateResolutionMetadata
 		t.Fatalf("raw transcript type = %T", rawValue)
 	}
 	pin := 1
-	expandedValue, err := readMarkdownPage(path, "", "local:"+sessionID, schema.SessionMeta{}, "", &pin, 0, maxExpansionBytes)
+	expandedValue, err := readMarkdownPage(context.Background(), path, "", "local:"+sessionID, schema.SessionMeta{}, "", &pin, 0, maxExpansionBytes)
 	if err != nil {
 		t.Fatalf("expand transcript turn: %v", err)
 	}
@@ -1385,7 +1385,7 @@ func TestDelegateAttention_PublicTranscriptReadsExcludePrivateResolutionMetadata
 	if !ok || expanded.Expansion == nil {
 		t.Fatalf("expanded transcript = %#v", expandedValue)
 	}
-	outlineValue, err := readOutline(path, "", "local:"+sessionID, "")
+	outlineValue, err := readOutline(context.Background(), path, "", "local:"+sessionID, "")
 	if err != nil {
 		t.Fatalf("read transcript outline: %v", err)
 	}
@@ -1429,19 +1429,19 @@ func TestDelegateAttention_PublicTranscriptReadsExcludePrivateResolutionMetadata
 		t.Fatalf("provider history dropped delegate packet content: %s", providerJSON)
 	}
 
-	privateSnippets, opened := contentSnippets(stateDir, sessionID, "Attention resolved.", "attention resolved.")
+	privateSnippets, opened := contentSnippets(context.Background(), stateDir, sessionID, "Attention resolved.", "attention resolved.")
 	if !opened {
 		t.Fatal("find_session_transcripts content scan did not open the real transcript")
 	}
 	if len(privateSnippets) != 0 {
 		t.Fatalf("find_session_transcripts exposed the private resolution marker: %#v", privateSnippets)
 	}
-	visibleSnippets, opened := contentSnippets(stateDir, sessionID, "visible result", "visible result")
+	visibleSnippets, opened := contentSnippets(context.Background(), stateDir, sessionID, "visible result", "visible result")
 	if !opened || len(visibleSnippets) != 1 || visibleSnippets[0].Seq != 1 {
 		t.Fatalf("find_session_transcripts visible tool-result query = opened %v, snippets %#v", opened, visibleSnippets)
 	}
 
-	rawWindowValue, err := readRaw(path, "", "local:"+sessionID, "last:2")
+	rawWindowValue, err := readRaw(context.Background(), path, "", "local:"+sessionID, "last:2")
 	if err != nil {
 		t.Fatalf("read ranged raw transcript: %v", err)
 	}
@@ -1459,7 +1459,7 @@ func TestDelegateAttention_PublicTranscriptReadsExcludePrivateResolutionMetadata
 		t.Fatalf("ranged public JSONL kinds = %#v, want %#v", windowKinds, want)
 	}
 
-	markdownWindowValue, err := readMarkdownPage(path, "", "local:"+sessionID, schema.SessionMeta{}, "last:2", nil, 0, 0)
+	markdownWindowValue, err := readMarkdownPage(context.Background(), path, "", "local:"+sessionID, schema.SessionMeta{}, "last:2", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("read ranged markdown transcript: %v", err)
 	}
@@ -1468,7 +1468,7 @@ func TestDelegateAttention_PublicTranscriptReadsExcludePrivateResolutionMetadata
 		t.Fatalf("ranged markdown split the public tool round: %s", markdownWindow.Content)
 	}
 
-	outlineWindowValue, err := readOutline(path, "", "local:"+sessionID, "last:2")
+	outlineWindowValue, err := readOutline(context.Background(), path, "", "local:"+sessionID, "last:2")
 	if err != nil {
 		t.Fatalf("read ranged outline transcript: %v", err)
 	}
@@ -1499,12 +1499,12 @@ func TestDelegateAttention_PublicTranscriptReadsExcludePrivateResolutionMetadata
 	if err := findWriter.Close(); err != nil {
 		t.Fatalf("close searchable transcript: %v", err)
 	}
-	findSnippets, opened := contentSnippets(stateDir, findSessionID, "later public match", "later public match")
+	findSnippets, opened := contentSnippets(context.Background(), stateDir, findSessionID, "later public match", "later public match")
 	if !opened || len(findSnippets) != 1 || findSnippets[0].Seq != 1 {
 		t.Fatalf("public find sequence = opened %v snippets %#v, want public seq 1", opened, findSnippets)
 	}
 	findPin := findSnippets[0].Seq
-	findExpansionValue, err := readMarkdownPage(findPath, "", "local:"+findSessionID, schema.SessionMeta{}, "", &findPin, 0, maxExpansionBytes)
+	findExpansionValue, err := readMarkdownPage(context.Background(), findPath, "", "local:"+findSessionID, schema.SessionMeta{}, "", &findPin, 0, maxExpansionBytes)
 	if err != nil {
 		t.Fatalf("expand public find sequence: %v", err)
 	}
@@ -1539,13 +1539,13 @@ func TestDelegateAttention_PublicJSONLPreservesExactToolResultNumbers(t *testing
 		t.Fatalf("close transcript: %v", err)
 	}
 
-	rawValue, err := readRaw(path, "", "local:"+sessionID, "")
+	rawValue, err := readRaw(context.Background(), path, "", "local:"+sessionID, "")
 	if err != nil {
 		t.Fatalf("read raw transcript: %v", err)
 	}
 	raw := rawValue.(readRawEnvelope)
 	pin := 0
-	expandedValue, err := readMarkdownPage(path, "", "local:"+sessionID, schema.SessionMeta{}, "", &pin, 0, maxExpansionBytes)
+	expandedValue, err := readMarkdownPage(context.Background(), path, "", "local:"+sessionID, schema.SessionMeta{}, "", &pin, 0, maxExpansionBytes)
 	if err != nil {
 		t.Fatalf("expand transcript turn: %v", err)
 	}
@@ -1649,7 +1649,7 @@ func TestDelegateAttention_RestartFoldIsProviderFreeAndReadOnly(t *testing.T) {
 	if !bytes.Equal(after, before) || afterInfo.Size() != beforeInfo.Size() || !afterInfo.ModTime().Equal(beforeInfo.ModTime()) {
 		t.Fatalf("cold fold mutated transcript: before=%d/%s after=%d/%s", beforeInfo.Size(), beforeInfo.ModTime(), afterInfo.Size(), afterInfo.ModTime())
 	}
-	missing := filepath.Join(stateDir, sessionsSubdir, "missing.transcript.jsonl")
+	missing := filepath.Join(stateDir, schema.SessionsSubdir, "missing.transcript.jsonl")
 	if fold, err := readDelegateAttentionFold(missing, "missing"); err != nil || len(fold.pendingIDs()) != 0 {
 		t.Fatalf("missing transcript fold = %#v, %v", fold, err)
 	}
@@ -2234,7 +2234,7 @@ func TestDelegateAttention_PostAckArmReadFailureRetriesExactID(t *testing.T) {
 		withDir(stateDir),
 		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, clock: clock}),
 		withSteps(func(llm.Request) llm.Response {
-			return communicateResponse(true, "retried exact attention")
+			return agenttest.CommunicateResponse(true, "retried exact attention")
 		}),
 	)
 	c := root.delegateController
@@ -2356,7 +2356,7 @@ func TestDelegateAttention_ColdPostAckReadFailureRetriesExactID(t *testing.T) {
 }
 
 func TestDelegateAttention_SettledResidentChildStartsExactAttentionGeneration(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	attentionEntered := make(chan struct{})
 	releaseAttention := make(chan struct{})
 	var releaseOnce sync.Once
@@ -2364,12 +2364,12 @@ func TestDelegateAttention_SettledResidentChildStartsExactAttentionGeneration(t 
 	attentionContent := `<job-notification event="watch_send">drive exact attention</job-notification>`
 	attentionSeen := false
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return communicateResponse(true, "initial run complete") },
+		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "initial run complete") },
 		func(request llm.Request) llm.Response {
 			attentionSeen = requestContainsText(request, attentionContent)
 			close(attentionEntered)
 			<-releaseAttention
-			return communicateResponse(true, "attention handled")
+			return agenttest.CommunicateResponse(true, "attention handled")
 		},
 	}
 	root := restoreSupervisionRoot(t, fixture, nil)
@@ -2498,7 +2498,7 @@ func TestDelegateAttention_RestoreSessionStartCountsColdReplayAppend(t *testing.
 	if !ok {
 		t.Fatal("restored session emitted no SESSION_START")
 	}
-	_, entries, _, err := readTranscript(path, "")
+	_, entries, _, err := readTranscript(context.Background(), path, "")
 	if err != nil {
 		t.Fatalf("read restored transcript: %v", err)
 	}
@@ -2947,7 +2947,7 @@ func TestRootDelegateAttention_SuccessfulNotificationConsumesExactIDs(t *testing
 		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
 		withSteps(func(req llm.Request) llm.Response {
 			requestSawAttention = requestContainsText(req, content)
-			return toolCallResponse(communicateCall("root-attention-consumed", "completion received"))
+			return agenttest.ToolCallResponse(communicateCall("root-attention-consumed", "completion received"))
 		}),
 	)
 	if _, err := root.appendDelegateNotificationDurably(attentionID, content); err != nil {
@@ -3015,12 +3015,12 @@ func TestRootDelegateAttention_MidTurnArmedAttentionConsumedWithoutRedundantWake
 				if midTurnAppendErr == nil {
 					midTurnArmErr = root.armDelegateAttention(secondID)
 				}
-				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{}`), Type: "function"})
+				return agenttest.ToolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{}`), Type: "function"})
 			},
 			func(req llm.Request) llm.Response {
 				calls++
 				roundTwoSawBoth = requestContainsText(req, firstContent) && requestContainsText(req, secondContent)
-				return toolCallResponse(communicateCall("mid-turn-complete", "both deliveries handled"))
+				return agenttest.ToolCallResponse(communicateCall("mid-turn-complete", "both deliveries handled"))
 			},
 		),
 	)
@@ -3096,12 +3096,12 @@ func TestRootDelegateAttention_PostBuildArmedAttentionStaysPendingForWake(t *tes
 				if lateAppendErr == nil {
 					lateArmErr = root.armDelegateAttention(lateID)
 				}
-				return toolCallResponse(communicateCall("unseen-turn-complete", "first handled"))
+				return agenttest.ToolCallResponse(communicateCall("unseen-turn-complete", "first handled"))
 			},
 			func(req llm.Request) llm.Response {
 				calls++
 				wakeSawLate = requestContainsText(req, lateContent)
-				return toolCallResponse(communicateCall("unseen-wake-complete", "late handled"))
+				return agenttest.ToolCallResponse(communicateCall("unseen-wake-complete", "late handled"))
 			},
 		),
 	)
@@ -3178,12 +3178,12 @@ func TestRootDelegateAttention_EmptySnapshotNotificationTurnConsumesCoveredDeliv
 				if appendErr == nil {
 					armErr = root.armDelegateAttention(attentionID)
 				}
-				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{}`), Type: "function"})
+				return agenttest.ToolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{}`), Type: "function"})
 			},
 			func(req llm.Request) llm.Response {
 				calls++
 				roundTwoSaw = requestContainsText(req, content)
-				return toolCallResponse(communicateCall("empty-snap-complete", "steering and delivery handled"))
+				return agenttest.ToolCallResponse(communicateCall("empty-snap-complete", "steering and delivery handled"))
 			},
 		),
 	)
@@ -3244,17 +3244,17 @@ func TestRootDelegateAttention_UserTurnConsumesCoveredMidTurnDelivery(t *testing
 				if appendErr == nil {
 					armErr = root.armDelegateAttention(attentionID)
 				}
-				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{}`), Type: "function"})
+				return agenttest.ToolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{}`), Type: "function"})
 			},
 			func(req llm.Request) llm.Response {
 				roundTwoSaw = requestContainsText(req, content)
-				return toolCallResponse(communicateCall("user-turn-complete", "question answered and delivery handled"))
+				return agenttest.ToolCallResponse(communicateCall("user-turn-complete", "question answered and delivery handled"))
 			},
 			// A third call would be the drain selector's backstop notification
 			// turn — the failure mode this test exists to rule out.
 			func(llm.Request) llm.Response {
 				thirdRan = true
-				return toolCallResponse(communicateCall("backstop-complete", "should not run"))
+				return agenttest.ToolCallResponse(communicateCall("backstop-complete", "should not run"))
 			},
 		),
 	)
@@ -3310,12 +3310,12 @@ func TestRootDelegateAttention_UserTurnConsumesAttentionArmedBeforeTurn(t *testi
 			func(req llm.Request) llm.Response {
 				requests++
 				sawIt = requestContainsText(req, content)
-				return toolCallResponse(communicateCall("user-turn-complete", "answered"))
+				return agenttest.ToolCallResponse(communicateCall("user-turn-complete", "answered"))
 			},
 			// A second request would be the notification turn #4247 removes.
 			func(llm.Request) llm.Response {
 				requests++
-				return toolCallResponse(communicateCall("notification-turn", "should not run"))
+				return agenttest.ToolCallResponse(communicateCall("notification-turn", "should not run"))
 			},
 		),
 	)
@@ -3368,12 +3368,12 @@ func TestRootDelegateAttention_PreArmedAttentionNotPresentedKeepsItsNotification
 			func(llm.Request) llm.Response {
 				requests++
 				_, appendErr = root.appendDelegateNotificationDurably(attentionID, content)
-				return toolCallResponse(communicateCall("user-turn-complete", "answered"))
+				return agenttest.ToolCallResponse(communicateCall("user-turn-complete", "answered"))
 			},
 			func(req llm.Request) llm.Response {
 				requests++
 				notificationSaw = requestContainsText(req, content)
-				return toolCallResponse(communicateCall("notification-turn", "handled"))
+				return agenttest.ToolCallResponse(communicateCall("notification-turn", "handled"))
 			},
 		),
 	)
@@ -3656,13 +3656,13 @@ func TestRootDelegateAttention_EmptySnapshotCoverageFailureWarnsAndRetries(t *te
 				if err := root.armDelegateAttention(attentionID); err != nil {
 					t.Errorf("mid-turn arm: %v", err)
 				}
-				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{}`), Type: "function"})
+				return agenttest.ToolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{}`), Type: "function"})
 			},
 			func(llm.Request) llm.Response {
-				return toolCallResponse(communicateCall("empty-fail-turn", "steering handled"))
+				return agenttest.ToolCallResponse(communicateCall("empty-fail-turn", "steering handled"))
 			},
 			func(llm.Request) llm.Response {
-				return toolCallResponse(communicateCall("empty-fail-retry", "delivery consumed by the paced retry wake"))
+				return agenttest.ToolCallResponse(communicateCall("empty-fail-retry", "delivery consumed by the paced retry wake"))
 			},
 		),
 	)
@@ -3769,16 +3769,16 @@ func TestRootDelegateAttention_CoveredResolutionFailureDoesNotFailUserTurn(t *te
 				if err := root.armDelegateAttention(attentionID); err != nil {
 					t.Errorf("mid-turn arm: %v", err)
 				}
-				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{}`), Type: "function"})
+				return agenttest.ToolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{}`), Type: "function"})
 			},
 			func(llm.Request) llm.Response {
-				return toolCallResponse(communicateCall("resolution-failure-turn", "answer stands"))
+				return agenttest.ToolCallResponse(communicateCall("resolution-failure-turn", "answer stands"))
 			},
 			// The armed wake's follow-up notification turn, which the failed
 			// coverage resolution left the item pending for.
 			func(req llm.Request) llm.Response {
 				wakeTurnSaw = requestContainsText(req, content)
-				return toolCallResponse(communicateCall("resolution-failure-wake", "delivery consumed by the wake"))
+				return agenttest.ToolCallResponse(communicateCall("resolution-failure-wake", "delivery consumed by the wake"))
 			},
 		),
 	)
@@ -3908,12 +3908,12 @@ func TestRootDelegateAttention_FailedEmptyCoverageTurnRefiresViaArmKick(t *testi
 				if err := root.armDelegateAttention(attentionID); err != nil {
 					t.Errorf("mid-turn arm: %v", err)
 				}
-				return toolCallResponse(communicateCall("refire-covering", "covered mid-turn"))
+				return agenttest.ToolCallResponse(communicateCall("refire-covering", "covered mid-turn"))
 			},
 			// The turn driven by the arm's kick. Its begin snapshot is
 			// non-empty, so the finish path resolves and consumes.
 			func(llm.Request) llm.Response {
-				return toolCallResponse(communicateCall("refire-consumer", "consumed by the arm kick turn"))
+				return agenttest.ToolCallResponse(communicateCall("refire-consumer", "consumed by the arm kick turn"))
 			},
 		),
 	)
@@ -3968,10 +3968,10 @@ func TestRootDelegateAttention_FailedConsumptionRemainsPendingAndRearms(t *testi
 		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, clock: clock}),
 		withSteps(
 			func(llm.Request) llm.Response {
-				return toolCallResponse(communicateCall("root-attention-first", "first attempt"))
+				return agenttest.ToolCallResponse(communicateCall("root-attention-first", "first attempt"))
 			},
 			func(llm.Request) llm.Response {
-				return toolCallResponse(communicateCall("root-attention-retry", "retry complete"))
+				return agenttest.ToolCallResponse(communicateCall("root-attention-retry", "retry complete"))
 			},
 		),
 	)
@@ -4027,7 +4027,7 @@ func TestRootDelegateAttention_FailedConsumptionRemainsPendingAndRearms(t *testi
 func TestRootDelegateAttention_RestoreRearmsPendingIDsWithoutProviderCall(t *testing.T) {
 	stateDir := t.TempDir()
 	rootID := identifier.MustNewSessionID()
-	if err := os.MkdirAll(filepath.Join(stateDir, sessionsSubdir), 0o755); err != nil {
+	if err := os.MkdirAll(schema.SessionsDir(stateDir), 0o755); err != nil {
 		t.Fatalf("mkdir sessions: %v", err)
 	}
 	const attentionID = "delegate:dlg_restore/delivery/1"
@@ -4070,7 +4070,7 @@ func TestRootDelegateAttention_RestoreRearmsPendingIDsWithoutProviderCall(t *tes
 }
 
 func TestDelegateAttention_RestartRearmsColdChildAndDrainsExactAttention(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	const (
 		owedID            = "watch:restart-attention:owed"
 		owedContent       = `<job-notification event="watch_send">recover consumed owed generation</job-notification>`
@@ -4160,16 +4160,16 @@ func TestDelegateAttention_RestartRearmsColdChildAndDrainsExactAttention(t *test
 			attentionSeen = requestContainsText(request, owedContent)
 			close(attentionEntered)
 			<-releaseAttention
-			return communicateResponse(true, "recovered owed generation handled")
+			return agenttest.CommunicateResponse(true, "recovered owed generation handled")
 		},
 		func(request llm.Request) llm.Response {
 			if !requestContainsText(request, remainingContent) {
 				t.Errorf("successor attention request omitted remaining unresolved input")
 			}
-			return communicateResponse(true, "remaining attention handled")
+			return agenttest.CommunicateResponse(true, "remaining attention handled")
 		},
 		func(llm.Request) llm.Response {
-			return communicateResponse(true, "root drained recovered completions")
+			return agenttest.CommunicateResponse(true, "root drained recovered completions")
 		},
 	}
 	root := restoreSupervisionRoot(t, fixture, nil)
@@ -4213,7 +4213,7 @@ func TestDelegateAttention_RestartRearmsColdChildAndDrainsExactAttention(t *test
 	waitForStableSupervisionRun(t, root, fixture.childID)
 
 	t.Run("rejects exact non-attention generation", func(t *testing.T) {
-		fixture := newColdStableDelegateFixture(t, "")
+		fixture := newColdDelegateFixture(t, "")
 		const attentionID = "watch:restart-attention:trigger-conflict"
 		childPath := transcriptPath(fixture.stateDir, fixture.childID)
 		if appended, err := appendColdDelegateNotificationDurablyWithOpen(childPath, fixture.childID, attentionID, "trigger conflict", time.Unix(1_700_000_400, 0).UTC(), transcript.OpenWriterForSession); err != nil || !appended {
@@ -4281,7 +4281,7 @@ func TestDelegateAttention_RestartRearmsColdChildAndDrainsExactAttention(t *test
 }
 
 func TestDelegateAttention_PrelaunchRecoveryDoesNotWaitForUnlaunchedRunner(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
 	if err != nil {
 		t.Fatalf("restore root: %v", err)
@@ -4314,12 +4314,13 @@ func TestDelegateAttention_PrelaunchRecoveryDoesNotWaitForUnlaunchedRunner(t *te
 	}
 
 	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "start successor", 0)
-	if outcome.result.Err == nil || !strings.Contains(outcome.result.Err.Error(), "store is closed") {
+	if !errors.Is(outcome.result.Err, delegatestore.ErrStoreClosed) {
 		t.Fatalf("prelaunch double failure = %#v, want durable store failure", outcome.result)
 	}
-	if got := len(fixture.adapter.Requests()); got != 0 {
-		t.Fatalf("prelaunch failure reached provider %d times", got)
-	}
+	// The failed send returned before launchSubagentRun, so no runner exists for
+	// the generation. The provider is not a witness for that: releasing the
+	// failed start re-drives the child's owed attention, and that notification
+	// turn legitimately calls the provider on its own schedule.
 
 	reopened, err := delegatestore.Open(delegateResourceStorePath(fixture.stateDir, fixture.meta.ID))
 	if err != nil {
@@ -4742,7 +4743,7 @@ func (file *attentionFailNextSyncFile) Sync() error {
 	return file.File.Sync()
 }
 
-func TestStableDelegateAttention_ReachableColdOwnerRetainsAttentionAfterRestoreFailure(t *testing.T) {
+func TestDelegateAttention_ReachableColdOwnerRetainsAttentionAfterRestoreFailure(t *testing.T) {
 	c, journalPath := newDelegateControllerTestHarness(t, 2, 1)
 	seedStableAttentionRepairDelegate(t, c, "dlg_owner", "", true)
 	const attentionID = "delegate:reachable-owner"
@@ -4751,7 +4752,7 @@ func TestStableDelegateAttention_ReachableColdOwnerRetainsAttentionAfterRestoreF
 	writeEmptyAttentionTranscript(t, transcriptPath(c.stateDir, "root-session"), "root-session")
 	copyDelegateJournalForBootstrap(t, c, journalPath)
 
-	metaPath := filepath.Join(c.stateDir, sessionsSubdir, "child-dlg_owner.meta.json")
+	metaPath := filepath.Join(c.stateDir, schema.SessionsSubdir, "child-dlg_owner.meta.json")
 	fresh := newAttentionRepairRoot(c.stateDir, nil)
 	fresh.cfg.testOnly.delegateRestoreReadFile = func(path string) ([]byte, error) {
 		if path == metaPath {
@@ -4778,7 +4779,7 @@ func TestStableDelegateAttention_ReachableColdOwnerRetainsAttentionAfterRestoreF
 	}
 }
 
-func TestStableDelegateAttention_UnreachableOwnerTransfersToNearestReachableAncestor(t *testing.T) {
+func TestDelegateAttention_UnreachableOwnerTransfersToNearestReachableAncestor(t *testing.T) {
 	c, journalPath := newDelegateControllerTestHarness(t, 3, 1)
 	seedStableAttentionRepairDelegate(t, c, "dlg_parent", "", true)
 	seedStableAttentionRepairDelegate(t, c, "dlg_child", "dlg_parent", false)
@@ -4818,7 +4819,7 @@ func TestStableDelegateAttention_UnreachableOwnerTransfersToNearestReachableAnce
 	}
 }
 
-func TestStableDelegateAttention_AncestorFsyncPrecedesChildDiscard(t *testing.T) {
+func TestDelegateAttention_AncestorFsyncPrecedesChildDiscard(t *testing.T) {
 	c, journalPath := newDelegateControllerTestHarness(t, 3, 1)
 	seedStableAttentionRepairDelegate(t, c, "dlg_parent", "", true)
 	seedStableAttentionRepairDelegate(t, c, "dlg_child", "dlg_parent", false)
@@ -4846,7 +4847,7 @@ func TestStableDelegateAttention_AncestorFsyncPrecedesChildDiscard(t *testing.T)
 	}
 }
 
-func TestStableDelegateAttention_ConsumedEntryIsNeverEscalated(t *testing.T) {
+func TestDelegateAttention_ConsumedEntryIsNeverEscalated(t *testing.T) {
 	c, journalPath := newDelegateControllerTestHarness(t, 3, 1)
 	seedStableAttentionRepairDelegate(t, c, "dlg_parent", "", true)
 	seedStableAttentionRepairDelegate(t, c, "dlg_child", "dlg_parent", false)
@@ -4882,7 +4883,7 @@ func TestStableDelegateAttention_ConsumedEntryIsNeverEscalated(t *testing.T) {
 	}
 }
 
-func TestStableDelegateAttention_StartupRepairUsesNoProvider(t *testing.T) {
+func TestDelegateAttention_StartupRepairUsesNoProvider(t *testing.T) {
 	c, journalPath := newDelegateControllerTestHarness(t, 2, 1)
 	seedStableAttentionRepairDelegate(t, c, "dlg_child", "", false)
 	const attentionID = "delegate:provider-free-transfer"

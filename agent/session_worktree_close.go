@@ -71,7 +71,7 @@ func (s *Session) disposeDelegateLanesAtClose(ctx context.Context) {
 			}
 			continue
 		}
-		note, wasKept := s.disposeOneStableDelegateLane(budgetCtx, local, delegate)
+		note, wasKept := s.disposeOneDelegateLane(budgetCtx, local, delegate)
 		// The budget can expire inside a git operation after the top-of-loop
 		// check. Route that lane through the same non-expiring safety tail as all
 		// later lanes so an interrupted lock query or unlock never strands it
@@ -87,30 +87,44 @@ func (s *Session) disposeDelegateLanesAtClose(ctx context.Context) {
 		}
 	}
 	if len(kept) > 0 {
-		s.emit(events.EventWarning, events.WarningData{
+		s.emit(events.WarningData{
 			Message: "kept " + strconv.Itoa(len(kept)) + " isolation worktree lane(s) not collected automatically (unmerged or squash-merged), dirty, or unverifiable at session close: " + strings.Join(kept, "; "),
 		})
 	}
 	if len(tail) > 0 {
-		s.emit(events.EventWarning, events.WarningData{
+		s.emit(events.WarningData{
 			Message: "close budget exhausted; " + strconv.Itoa(len(tail)) + " isolation worktree lane(s) touched+unlocked without disposal (evaluation skipped, left resumable for prune): " + strings.Join(tail, "; "),
 		})
 		if len(tail) > laneTailWarnThreshold {
-			s.emit(events.EventWarning, events.WarningData{
+			s.emit(events.WarningData{
 				Message: "delegate lane close tail of " + strconv.Itoa(len(tail)) + " lane(s) exceeded threshold " + strconv.Itoa(laneTailWarnThreshold) + ": this session leaked more isolation lanes than a bounded close pass can collect",
 			})
 		}
 	}
 }
 
-// disposeOneStableDelegateLane applies the existing close-time D0 and lock
+// disposeOneDelegateLane applies the existing close-time D0 and lock
 // rules, then fsyncs stable resumability closure before the first destructive
 // worktree operation. A closure failure leaves the lane intact.
-func (s *Session) disposeOneStableDelegateLane(ctx context.Context, local *execenv.LocalExecutionEnvironment, delegate stableDelegateWorktreeSnapshot) (note string, kept bool) {
+func (s *Session) disposeOneDelegateLane(ctx context.Context, local *execenv.LocalExecutionEnvironment, delegate delegateWorktreeSnapshot) (note string, kept bool) {
 	lane := isolationLane{delegateID: delegate.delegateID, path: delegate.descriptor.WorkingDir}
 	lanePath := filepath.Clean(lane.path)
 	if lanePath == "" || lanePath == "." {
 		return "", false
+	}
+	// A mid-tree delegate session closes while the shared controller is still
+	// live: fence its lane's subtree so a descendant cold restore cannot install
+	// into the lane this close is about to unlock and remove. The root close has
+	// already set c.closing, which refuses every admission on its own.
+	switch s.delegateController.beginSubtreeLaneHandoff(lane.delegateID) {
+	case laneHandoffAcquired:
+		defer s.delegateController.endSubtreeLaneHandoff(lane.delegateID)
+	case laneHandoffAlreadyCovered:
+		// Closing or an ancestor's handoff already fences this lane's whole
+		// subtree, so this disposal can proceed without a second fence.
+	default:
+		// Work is in flight in this lane's own subtree; retain it (and its lock).
+		return lane.delegateID + " at " + lanePath + " (descendant admission in flight; retained)", true
 	}
 	if _, err := os.Stat(filepath.Join(lanePath, ".git")); err != nil {
 		return "", false
@@ -159,7 +173,7 @@ func (s *Session) disposeOneStableDelegateLane(ctx context.Context, local *exece
 
 	_, _, plans, closeErr := s.delegateController.closeStableWorktreeResumability(s, lane.delegateID, stableWorktreeDisposalReason, true)
 	if closeErr != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate lane resumability closure failed for %s: %v", lane.delegateID, closeErr)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("delegate lane resumability closure failed for %s: %v", lane.delegateID, closeErr)})
 		return lane.delegateID + " at " + lanePath + " (resumability closure failed; retained intact)", true
 	}
 	s.delegateController.emitDelegateUpdates(plans)
@@ -248,25 +262,12 @@ func closeStopJoinContext(ctx context.Context) (context.Context, context.CancelF
 	stopCtx, cancel := context.WithTimeout(ctx, budget)
 	if bounded {
 		if stopDeadline, ok := stopCtx.Deadline(); ok {
-			if ObserveCloseStopJoin != nil {
-				ObserveCloseStopJoin(stopDeadline, cascadeDeadline)
-			}
 			if ObserveCloseStopJoinBudget != nil {
 				ObserveCloseStopJoinBudget(stopDeadline, cascadeDeadline, cascadeBudget)
 			}
 		}
 	}
 	return stopCtx, cancel
-}
-
-// CloseStopJoinBudget is the rule closeStopJoinContext bounds a stop join by,
-// given what the cascade has left: half of the close-cascade budget when at least
-// that much remains, else half of the remainder, so a nested stop cannot
-// consume the time its parent has left. EXPORTED so the cmd/evener
-// wedged-delegate run tests check the close tree against this rule rather
-// than a copy of it that can drift.
-func CloseStopJoinBudget(remaining time.Duration) time.Duration {
-	return CloseStopJoinBudgetForCascade(remaining, laneClosePassBudget())
 }
 
 // CloseStopJoinBudgetForCascade applies the stop-join split using the immutable
@@ -283,18 +284,12 @@ func closeStopJoinBudget(remaining, cascadeBudget time.Duration) time.Duration {
 	return budget
 }
 
-// ObserveCloseStopJoin sees every stop join closeStopJoinContext bounds under
-// a cascade deadline -- the stop's own deadline and the cascade's -- when set.
-// It is EXPORTED for cmd/evener's wedged-delegate run tests, which check the
-// close tree's wiring -- that the hopeless stop join is bounded to its half of
-// the budget rather than the whole cascade -- off these two deadlines instead
-// of off wall-clock time, which host load can stretch past any ceiling. Nil in
-// production; the same convention as the close-cascade budget.
-var ObserveCloseStopJoin func(stopDeadline, cascadeDeadline time.Time)
-
 // ObserveCloseStopJoinBudget is the context-independent observation seam for
-// callers that need the exact immutable cascade budget used by a stop join.
-// ObserveCloseStopJoin remains unchanged for compatibility.
+// cmd/evener's wedged-delegate run tests. It sees every stop join
+// closeStopJoinContext bounds under a cascade deadline: the stop's own deadline,
+// the cascade's, and the exact immutable cascade budget. They check the close
+// tree's wiring off these values instead of wall-clock time, which host load can
+// stretch past any ceiling. Nil in production.
 var ObserveCloseStopJoinBudget func(stopDeadline, cascadeDeadline time.Time, cascadeBudget time.Duration)
 
 // touchUnlockLaneTail runs the budget-exempt tail for a lane the close pass could
@@ -302,10 +297,26 @@ var ObserveCloseStopJoinBudget func(stopDeadline, cascadeDeadline time.Time, cas
 // sidecar (so P3's grace keys on a fresh mtime) and release the disposer's own
 // lock — two cheap constant-cost ops, no predicate evaluation and no remove. It
 // uses a non-expiring background git runner precisely because the budget is
-// already spent, so a lane is never left locked. Returns a human-readable note
-// for the aggregated tail warning, or "" for a lane not ours to touch.
+// already spent. The lock is kept when an admission is in flight in the lane's
+// subtree, because unlocking would expose the installing runtime to a later
+// prune; the retention is reported in the tail warning. Returns a
+// human-readable note for the aggregated tail warning, or "" for a lane not
+// ours to touch.
 func (s *Session) touchUnlockLaneTail(local *execenv.LocalExecutionEnvironment, lane isolationLane) string {
 	lanePath := filepath.Clean(lane.path)
+	if s.delegateController != nil {
+		switch s.delegateController.beginSubtreeLaneHandoff(lane.delegateID) {
+		case laneHandoffAcquired:
+			defer s.delegateController.endSubtreeLaneHandoff(lane.delegateID)
+		case laneHandoffAlreadyCovered:
+			// Closing or an ancestor's handoff already fences this lane.
+		default:
+			// An admission is in flight in this lane's subtree. Unlocking here
+			// would expose the lane to a later prune while its runtime is still
+			// installing; keep the lock and report the retention.
+			return lane.delegateID + " at " + lanePath + " (descendant admission in flight; lock retained)"
+		}
+	}
 	if _, err := os.Stat(filepath.Join(lanePath, ".git")); err != nil {
 		return ""
 	}
@@ -433,7 +444,7 @@ func (s *Session) disposeUnchangedLaneMechanics(run worktree.GitRunner, st workt
 		// future caller's omission) must not delete the sidecar and strand the
 		// real branch behind it. Touch nothing; the lane stays exactly as it
 		// is, like a lane whose lock could not be released.
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate lane %s reached disposal without a resolved branch; left untouched", lane.delegateID)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("delegate lane %s reached disposal without a resolved branch; left untouched", lane.delegateID)})
 		return laneDeclined, "its branch was never resolved"
 	}
 	lanePath := filepath.Clean(lane.path)
@@ -472,7 +483,7 @@ func (s *Session) disposeUnchangedLaneMechanics(run worktree.GitRunner, st workt
 			case downgradeRelockKeep:
 				marker := worktree.FormatDelegateMarker(lane.delegateID, s.id)
 				if _, lockErr := run("worktree", "lock", "--reason", marker, lanePath); lockErr != nil {
-					s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate lane %s kept after eviction but its lock could not be re-acquired at %s: %v", lane.delegateID, lanePath, lockErr)})
+					s.emit(events.WarningData{Message: fmt.Sprintf("delegate lane %s kept after eviction but its lock could not be re-acquired at %s: %v", lane.delegateID, lanePath, lockErr)})
 				}
 				return laneKeptDirty, lane.delegateID + " at " + lanePath + " (dirty at removal; re-locked)"
 			default: // downgradeUnlockKeep
@@ -485,7 +496,7 @@ func (s *Session) disposeUnchangedLaneMechanics(run worktree.GitRunner, st workt
 	// Delete the branch (unchanged lane: tip == base, no work lost) and the
 	// sidecar. Best-effort — the lane is already unrevivable.
 	if _, err := run("branch", "-D", lane.branch); err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate lane branch delete failed for %s: %v", lane.delegateID, err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("delegate lane branch delete failed for %s: %v", lane.delegateID, err)})
 	}
 	_ = worktree.DeleteSidecar(metaDir, lane.delegateID)
 	return laneDisposed, ""
@@ -563,12 +574,12 @@ func (s *Session) unlockOwnManagedWorktreeAtClose(closeCtx context.Context) {
 	projectDir := filepath.Join(st.worktreeRoot, st.project.ID)
 	porcelain, err := readWorktreePorcelain(run)
 	if err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("unlocking own worktree locks under %s at close failed: %v", projectDir, err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("unlocking own worktree locks under %s at close failed: %v", projectDir, err)})
 		return
 	}
 	for _, e := range managedPorcelainEntries(porcelain, projectDir) {
 		if err := s.releaseOwnWorktreeLock(run, e.Path, e.Locked, e.LockReason); err != nil {
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("unlocking own worktree %s at close failed: %v", e.Path, err)})
+			s.emit(events.WarningData{Message: fmt.Sprintf("unlocking own worktree %s at close failed: %v", e.Path, err)})
 		}
 	}
 }

@@ -7,6 +7,10 @@ health, and subscription-debug surfaces.
 
 - Deep-linkable page routes include `/`, `/new`, `/s/:ref`, `/thread/:ref`,
   `/settings`, `/settings/:section`, and `/credentials`.
+- **Comic** is a whole-conversation presentation selected in **Verbosity**.
+  It retains the ordinary `/s/:ref` route, encoding the complete qualified
+  AppWire ref as one URL component, and shares workspace navigation and connection
+  ownership. See [Comic Chat](product/comic-chat.md).
 - `/s/:ref/images/:sha` serves session images through the
   [session route handler](../cmd/evener-hub/web_workspace.go).
 - `/doc/file` serves one session document in two representations: `format=raw`
@@ -55,6 +59,20 @@ different machines distinct. The
 [navigation projection](../cmd/evener-hub/navigation_projection.go) owns the
 bounded resources and project tiers used by the client.
 
+For a session absent from the navigation index, the
+[navigation service](../cmd/evener-hub/navigation_service.go) resolves its
+placement through an indexed top-level row. A local session's current identity
+can resolve to its stable workspace row, including after the daemon exits.
+Child and fork locations retain their requested identity and nested placement.
+
+For a remote alias, one bounded location read asks the owning source for its
+top-level placement. The controller preserves the source qualifier and uses its
+own indexed root and revision; it never substitutes a local session with the
+same ID. Source failure or a resolved remote root absent from the controller's
+index returns unavailable, allowing a later refresh to recover. An absent
+source or a source-confirmed missing session retains the gone outcome. Indexed
+locations require no additional source read.
+
 Project favorites use `evener/favorite/set`. Session pins use
 `evener/session-pin/assign` and `evener/session-pin/unpin` with the navigation pin
 catalog. A project deletion uses `evener/project/delete`, which validates its
@@ -72,6 +90,22 @@ counterparts. In particular, live diagnostics bypass saved delegate-journal and
 child attention-transcript reconstruction. Absent live fields retain their
 saved fallbacks, and saved turns are projected only when requested and the live
 read supplied none. Remote reads never merge this hub's local saved state.
+
+When a local read fails because daemon ownership may have changed, the
+[thread read handler](../cmd/evener-hub/app_rpc.go) refreshes discovery. If that
+refresh establishes a usable local route, the same request retries its live
+read once. A child discovered by this refresh can therefore return its live
+boot generation and deliver later child-qualified events on the first
+subscribed read. Clients need neither a second read nor a periodic roster tick.
+
+The retry reuses deletion-fenced source resolution and the existing subscription
+admission and snapshot-to-live handoff. A descendant retains its own admission
+and delivery identity even though it shares its owner's upstream connection.
+Cancellation and deletion retain their typed outcomes. Incompatible owners
+remain restart-required, and an unavailable owner retains the original read's
+saved-history fallback eligibility, including when the one retry fails. This
+recovery never launches or resumes a daemon, replays mutations, or retries a
+remote ref against local saved state.
 
 The [hub relay](../cmd/evener-hub/app_relay.go) shares one canonical upstream
 connection across a session and its descendant routes. The
@@ -112,6 +146,26 @@ daemon descriptor. Archived reads reload session metadata from disk rather than
 using the navigation index's cached directory. Remote text reads route through
 the owning host with the captured absolute file target.
 
+An absolute path may also name a file in the session's retained artifacts
+directory, `<stateDir>/sessions/<sessionID>/artifacts`. Agents file reports
+there and link them by `file://` URL, so the transcript turns such a link into a
+document read. The artifacts directory is a second boundary beside the current
+directory, never a widening of it: both are resolved by the same containment
+check, and the read opens through whichever root accepted the path. A relative
+path resolves against the current directory only, and a path outside both roots
+is refused. A delegate's artifacts resolve through the live entry that reports
+it as a running subagent, since they sit under its owner's project state
+directory.
+
+`Thread.evener.artifactsDir` announces that directory for a local session, so a
+client can tell an openable `file://` link from one the hub would refuse without
+guessing. It is empty for a remote thread, an unknown ref, or a hub serving no
+state directory. Clients bind a link through the shared resolver
+([docContent.ts](../appwire-client/typescript/docContent.ts)), which tries the
+working directory and then the artifacts root, so the web transcript and the
+phone's Reader offer the same document for the same link. A link that names no
+root is left an ordinary link rather than promising a read the hub would refuse.
+
 A missing archived metadata file returns `ResourceNotFound` (HTTP 404). Other
 metadata read or decode failures return `SessionUnavailable` (HTTP 503), so the
 shared document read owner keeps its paced retry demand instead of treating a
@@ -131,8 +185,9 @@ status, so failed image loads keep paced retries.
 `/doc/file?format=download` is the one representation that does not stop at the
 pane cap: the body is the file itself, with its type from its extension and its
 own name in `Content-Disposition`. It shares the raw read's containment rules
-(the path must resolve inside the session's folder, and the open goes through
-that folder's root) and refuses a non-regular file. The body is served as
+(the path must resolve inside the session's folder or its retained artifacts
+directory, and the open goes through whichever of those roots accepted it) and
+refuses a non-regular file. The body is served as
 content, so `HEAD` and `Range` work and an interrupted transfer resumes. Its
 type table is the whole answer: an extension it does not list is
 `application/octet-stream`, never a type borrowed from the host's mime tables.

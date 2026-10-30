@@ -1,5 +1,17 @@
-import { type ComposerMention, canonicalSkillNames } from "@evener/appwire-client";
+import {
+  type ComposerMention,
+  canonicalSkillNames,
+  completeSkillReferenceAt,
+  reconcileComposerMentions,
+} from "@evener/appwire-client";
 import { type Node as ProseMirrorNode, Schema } from "prosemirror-model";
+
+export {
+  completeSkillReferenceAt,
+  isSkillTokenCharacter,
+  sharedPrefixLength,
+  sharedSuffixLength,
+} from "@evener/appwire-client";
 
 export interface SkillEditorValue {
   text: string;
@@ -41,38 +53,6 @@ export const skillSchema = new Schema({
     },
   },
 });
-
-// A namespace or path continuation cannot turn a prefix into an active skill.
-const tokenCharacter = /[\p{L}\p{N}_./:-]/u;
-
-// Punctuation that ends a sentence rather than continuing a name: `/review.` and
-// `/review:` are complete references, while `/plugin:hidden` still prefers the
-// longer name because its colon is followed by a token character.
-const sentenceTerminator = /[.:]/;
-
-/** Whether a character continues a skill token rather than bounding one. */
-export function isSkillTokenCharacter(character: string): boolean {
-  return tokenCharacter.test(character);
-}
-
-/**
- * The name `text` spells as a complete reference at `offset`, if any. `names`
- * must be longest-first so a longer canonical name wins over its own prefix.
- * This is the single definition of "complete reference": the document parser
- * and the editor both read it, so an atom can never outlive the text rule.
- */
-export function completeSkillReferenceAt(text: string, offset: number, names: readonly string[]): string | undefined {
-  if (text[offset] !== "/" || (offset > 0 && tokenCharacter.test(text.charAt(offset - 1)))) return undefined;
-  return names.find((candidate) => {
-    const end = offset + candidate.length + 1;
-    return (
-      text.startsWith(`/${candidate}`, offset) &&
-      (end === text.length ||
-        !tokenCharacter.test(text.charAt(end)) ||
-        (sentenceTerminator.test(text.charAt(end)) && !tokenCharacter.test(text.charAt(end + 1))))
-    );
-  });
-}
 
 /** Only complete visible mentions in skillNames become atoms; never append hidden selections. */
 export function parseSkillDocument(value: SkillEditorValue): ProseMirrorNode {
@@ -129,36 +109,10 @@ export function serializeSkillDocument(doc: ProseMirrorNode): SkillEditorValue {
   };
 }
 
-/** Length of the leading run two serialized values share. */
-export function sharedPrefixLength(before: string, after: string): number {
-  const limit = Math.min(before.length, after.length);
-  let index = 0;
-  while (index < limit && before[index] === after[index]) index++;
-  return index;
-}
-
-/** Length of the trailing run two serialized values share, past `prefix`. */
-export function sharedSuffixLength(before: string, after: string, prefix: number): number {
-  const limit = Math.min(before.length, after.length) - prefix;
-  let count = 0;
-  while (count < limit && before[before.length - 1 - count] === after[after.length - 1 - count]) count++;
-  return count;
-}
-
 /** Shift existing atom identities across a plain-text splice without selecting new prose. */
 export function patchSelectionText(value: SkillEditorValue, text: string): SkillEditorValue {
   if (!value.mentions) return serializeSkillDocument(parseSkillDocument({ ...value, text }));
-  const prefix = sharedPrefixLength(value.text, text);
-  const suffix = sharedSuffixLength(value.text, text, prefix);
-  const oldEnd = value.text.length - suffix;
-  const delta = text.length - value.text.length;
-  const mentions = value.mentions.flatMap((item) =>
-    item.offset + item.name.length + 1 <= prefix
-      ? [item]
-      : item.offset >= oldEnd
-        ? [{ ...item, offset: item.offset + delta }]
-        : [],
-  );
+  const mentions = reconcileComposerMentions(value.text, text, value.mentions);
   return serializeSkillDocument(parseSkillDocument({ ...value, text, mentions }));
 }
 

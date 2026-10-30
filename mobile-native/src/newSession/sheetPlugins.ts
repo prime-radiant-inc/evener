@@ -5,7 +5,9 @@
 import {
 	type AppwireClient,
 	type LaunchConfigLayer,
+	type PluginPreviewLoadState,
 	type PluginPreviewResponse,
+	pluginPreviewReadInputs,
 	type PluginSelectionError,
 	type PluginSelectionState,
 	pluginSelectionFromOverrides,
@@ -13,12 +15,9 @@ import {
 	selectedPluginNames,
 } from "@evener/appwire-client";
 import { useStore } from "zustand";
-import {
-	type PluginPreviewLoadState,
-	usePluginPreview,
-} from "../../../cmd/evener-hub/frontend/src/panes/spawn/usePluginPreview";
 import type { NewSessionStore } from "./newSessionContext";
 import { useHubRevision } from "./useHostRead";
+import { useScopedHostRead } from "./useScopedHostRead";
 
 const PLUGIN_CHANGES = ["evener/plugin/updated", "evener/launch/updated"] as const;
 
@@ -37,14 +36,16 @@ export function useSheetPlugins(
 	const cwd = useStore(store, (form) => form.cwd.trim());
 	const launchOverrides = useStore(store, (form) => form.launchOverrides);
 	const revision = useHubRevision(client, PLUGIN_CHANGES);
-	return usePluginPreview({
-		client: client ?? NO_CLIENT,
-		cwd,
-		host: source,
-		launchOverrides,
-		pluginRevision: revision,
-		enabled: ready && !!client && !!cwd,
-	}).state;
+	return useScopedHostRead(
+		pluginPreviewReadInputs({
+			client: client ?? NO_CLIENT,
+			cwd,
+			host: source,
+			launchOverrides,
+			pluginRevision: revision,
+			enabled: ready && !!client && !!cwd,
+		}),
+	).state;
 }
 
 export interface PluginChoice {

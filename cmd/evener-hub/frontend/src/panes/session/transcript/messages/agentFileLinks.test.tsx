@@ -569,3 +569,113 @@ test("remote generated images retain source binding and the existing image href 
     reference: { readTarget: "/workspace/project/images/diagram.png" },
   });
 });
+
+// An agent files a report in its session's retained artifacts directory and
+// links it by file:// URL, which is what the tool guidance tells it to do. The
+// hub serves that directory from /doc/file, and the thread snapshot names it,
+// so the transcript has to turn the link into a document-pane request instead
+// of leaving a bare anchor the sanitizer stripped.
+const artifactsDir = "/var/state/projects/example/sessions/034MXwo6BpPH0QQCgdICSf/artifacts";
+const artifactsThread: ThreadModel = { ...thread, artifactsDir };
+const reportPath = `${artifactsDir}/docs-quality-repairs.md`;
+const reportParamPath = "docs-quality-repairs.md";
+
+test.each([false, true])("a file URL inside the session artifacts opens as a document (live=%s)", (live) => {
+  render(message(`[Full report and retained evidence](file://${reportPath})`, live, artifactsThread));
+  const link = screen.getByRole("link", { name: "Full report and retained evidence" });
+  const url = new URL(link.getAttribute("href") ?? "", "https://hub.example");
+  expect(url.pathname).toBe("/doc/file");
+  expect(url.searchParams.get("session")).toBe(thread.ref);
+  expect(url.searchParams.get("path")).toBe(reportPath);
+  expect(url.searchParams.get("format")).toBe("raw");
+  expect(fireEvent.click(link)).toBe(false);
+  expect(workspaceStore.getState().panes).toMatchObject([
+    { type: "doc", params: { session: thread.ref, path: reportParamPath, root: "artifacts", kind: "file" } },
+  ]);
+});
+
+test("a file URL inside the session cwd opens as a document too", () => {
+  render(message(`[design](file://${thread.cwd}/docs/design.md)`));
+  const link = screen.getByRole("link", { name: "design" });
+  const url = new URL(link.getAttribute("href") ?? "", "https://hub.example");
+  expect(url.pathname).toBe("/doc/file");
+  expect(url.searchParams.get("path")).toBe(`${thread.cwd}/docs/design.md`);
+  fireEvent.click(link);
+  expect(workspaceStore.getState().panes).toMatchObject([
+    { type: "doc", params: { session: thread.ref, path: "docs/design.md", kind: "file" } },
+  ]);
+});
+
+// The hub refuses any path outside cwd and the artifacts directory, so the
+// transcript must not offer a pane for one: the anchor keeps its destination
+// visible and does nothing more.
+test.each([
+  ["outside both roots", "/etc/passwd"],
+  ["a sibling session's artifacts", "/var/state/projects/example/sessions/OTHER/artifacts/r.md"],
+  ["a traversal out of artifacts", `${artifactsDir}/../delegates.jsonl`],
+])("a file URL naming %s stays a plain link", (_label, target) => {
+  render(message(`[report](file://${target})`, false, artifactsThread));
+  const link = screen.getByRole("link", { name: "report" });
+  expect(link.getAttribute("href")).toBe(`file://${target}`);
+  expect(screen.queryByRole("button")).toBeNull();
+  let prevented = true;
+  document.addEventListener(
+    "click",
+    (event) => {
+      prevented = event.defaultPrevented;
+      event.preventDefault();
+    },
+    { once: true },
+  );
+  fireEvent.click(link);
+  expect(prevented).toBe(false);
+  expect(workspaceStore.getState().panes).toEqual([]);
+});
+
+// A thread snapshot that names no artifacts directory (a remote session) can
+// only bind cwd paths, so an artifacts file URL must not be guessed at.
+test("an artifacts file URL without an advertised directory stays a plain link", () => {
+  render(message(`[report](file://${reportPath})`));
+  const link = screen.getByRole("link", { name: "report" });
+  expect(link.getAttribute("href")).toBe(`file://${reportPath}`);
+  expect(workspaceStore.getState().panes).toEqual([]);
+});
+
+// A malformed or foreign file URL names no path, so it must not bind even when
+// its text looks like it sits under a served root.
+test.each([
+  "file:///var/state/projects/example/sessions/034MXwo6BpPH0QQCgdICSf/artifacts/bad%zz.md",
+  "file://server/share/report.md",
+  "file:relative/report.md",
+])("a malformed file URL %s never opens a document", (target) => {
+  render(message(`[report](${target})`, false, artifactsThread));
+  expect(screen.getByRole("link", { name: "report" })).toBeTruthy();
+  expect(screen.queryByRole("button")).toBeNull();
+  expect(workspaceStore.getState().panes).toEqual([]);
+});
+
+test("a file URL inside the session artifacts has the standard open-beside affordance", () => {
+  render(message(`[Full report and retained evidence](file://${reportPath})`, false, artifactsThread));
+  const open = screen.getByRole("button", { name: "Open beside: docs-quality-repairs.md" });
+  fireEvent.click(open);
+  expect(workspaceStore.getState().panes).toMatchObject([
+    { type: "doc", params: { session: thread.ref, path: reportParamPath, root: "artifacts", kind: "file" } },
+  ]);
+});
+
+// The reference recorded by a live open must say which root it came from, or
+// DocPane rebinds it against the session's working directory once the thread's
+// cwd differs from the artifacts dir, and every later consumer of that
+// reference points into the working tree instead.
+test("opening an artifacts link records a reference that keeps the artifacts root", () => {
+  render(message(`[Full report and retained evidence](file://${reportPath})`, false, artifactsThread));
+  fireEvent.click(screen.getByRole("link", { name: "Full report and retained evidence" }));
+  const pane = workspaceStore.getState().panes.find((candidate) => candidate.type === "doc");
+  if (!pane) throw new Error("expected a document pane");
+  expect(documentPaneState(pane)?.reference).toMatchObject({
+    root: "artifacts",
+    cwd: artifactsDir,
+    path: "docs-quality-repairs.md",
+    readTarget: reportPath,
+  });
+});

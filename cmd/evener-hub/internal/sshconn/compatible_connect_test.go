@@ -22,9 +22,10 @@ func compatibleConnectManager(t *testing.T, fr *fakeRunner, opts Options) (*Mana
 	t.Helper()
 	effects := &connectEffects{}
 	if opts.BuildBinary != nil {
+		build := opts.BuildBinary
 		opts.BuildBinary = func(ctx context.Context, goos, arch, out string) error {
 			effects.builds++
-			return writeStageBinary(ctx, goos, arch, out)
+			return build(ctx, goos, arch, out)
 		}
 	}
 	run := fr.runFn
@@ -65,7 +66,7 @@ func TestEnsureCompatibleBuildDifferenceDoesNotDeploy(t *testing.T) {
 		for _, source := range []string{"configured", "unavailable", "disabled", "cross-platform"} {
 			t.Run(version+"/"+source, func(t *testing.T) {
 				opts := Options{controllerVersionOverride: version, BuildBinary: writeStageBinary}
-				overrides := map[string][]byte{"launch-check": []byte(`{"protocol":"` + appwire.ProtocolVersion + `","version":"remote-build","launch_flags":["api-log"]}`)}
+				overrides := map[remoteOp][]byte{opLaunchCheck: []byte(`{"protocol":"` + appwire.ProtocolVersion + `","version":"remote-build","launch_flags":["api-log"]}`)}
 				switch source {
 				case "unavailable":
 					opts.BuildBinary = nil
@@ -73,7 +74,7 @@ func TestEnsureCompatibleBuildDifferenceDoesNotDeploy(t *testing.T) {
 					opts.DeployDisabled = true
 				case "cross-platform":
 					opts.OwnExecutable = true
-					overrides["uname -s"], overrides["uname -m"] = []byte("Darwin"), []byte("arm64")
+					overrides[opUnameKernel], overrides[opUnameArch] = []byte("Darwin"), []byte("arm64")
 				}
 				fr := &fakeRunner{runFn: cannedRun(overrides), startFn: goodStartFn(t)}
 				m, effects := compatibleConnectManager(t, fr, opts)
@@ -90,7 +91,7 @@ func TestEnsureCompatibleLiveHubWinsOverDiskFacts(t *testing.T) {
 		`malformed-contract`,
 	} {
 		t.Run(launch, func(t *testing.T) {
-			fr := &fakeRunner{runFn: cannedRun(map[string][]byte{"launch-check": []byte(launch)}), startFn: goodStartFn(t)}
+			fr := &fakeRunner{runFn: cannedRun(map[remoteOp][]byte{opLaunchCheck: []byte(launch)}), startFn: goodStartFn(t)}
 			m, effects := compatibleConnectManager(t, fr, Options{DeployDisabled: true})
 			requireReadOnlyConnect(t, m, effects)
 		})
@@ -106,7 +107,7 @@ func TestEnsureCompatibleDiscoveredBridgeSurvivesRejectedLaunchCheck(t *testing.
 		switch {
 		case strings.Contains(command, "launch-check"):
 			if strings.Contains(command, target) {
-				return []byte(`unsupported appwire protocol`), errors.New("exit status 1")
+				return []byte(`unsupported appwire protocol`), exitStatus(t, 1)
 			}
 			return nil, absent
 		case strings.Contains(command, "command -v evener"):
@@ -131,7 +132,7 @@ func TestEnsureCompatibleDiscoveredBridgeSurvivesRejectedLaunchCheck(t *testing.
 }
 
 func TestEnsureAmbiguousInitializeFailureDoesNotDeploy(t *testing.T) {
-	for _, mode := range []string{"invalid-request", "empty-protocol", "omitted-protocol", "malformed", "malformed-frame", "eof", "timeout", "authentication", "transport"} {
+	for _, mode := range []string{"invalid-request", "response-malformed", "empty-protocol", "omitted-protocol", "malformed", "malformed-frame", "eof", "timeout", "authentication", "transport"} {
 		t.Run(mode, func(t *testing.T) {
 			fr := &fakeRunner{runFn: cannedRun(nil)}
 			fr.startFn = func(_ context.Context, _ []string, stderr io.Writer) (Stdio, error) {
@@ -158,6 +159,10 @@ func TestEnsureAmbiguousInitializeFailureDoesNotDeploy(t *testing.T) {
 					switch mode {
 					case "invalid-request":
 						return appwire.ErrorMessage(request.ID, appwire.InvalidRequest("unsupported appwire protocol"))
+					case "response-malformed":
+						// A successful handshake that names no usable protocol is
+						// a malformed response, not proof of an older host.
+						return appwire.ResponseMessage(request.ID, appwire.InitializeResponse{ProtocolVersion: "old-protocol"})
 					case "empty-protocol":
 						return appwire.ResponseMessage(request.ID, map[string]any{"protocolVersion": ""})
 					case "omitted-protocol":
@@ -171,7 +176,7 @@ func TestEnsureAmbiguousInitializeFailureDoesNotDeploy(t *testing.T) {
 			}
 			m, effects := compatibleConnectManager(t, fr, Options{BuildBinary: writeStageBinary, initializeTimeout: 20 * time.Millisecond})
 			ch, err := m.Ensure(t.Context(), "alpha")
-			if ch != nil || err == nil || errors.Is(err, ErrProtocolIncompatible) || m.Attached("alpha") {
+			if ch != nil || err == nil || errors.Is(err, ErrProtocolIncompatible) || errors.Is(err, ErrHostProtocolNewer) || m.Attached("alpha") {
 				t.Fatalf("ambiguous response: channel=%v err=%v", ch, err)
 			}
 			if *effects != (connectEffects{}) {
@@ -184,8 +189,15 @@ func TestEnsureAmbiguousInitializeFailureDoesNotDeploy(t *testing.T) {
 	}
 }
 
-func TestEnsureLiveProtocolMismatchRecovers(t *testing.T) {
-	for _, mode := range []string{"response", "structured", "server"} {
+// legacyIncompatibleRefusal is a captured pre-v7 server's initialize refusal:
+// a frozen peer's wire text, not a copy of this controller's server copy.
+func legacyIncompatibleRefusal(wanted string) appwire.WireError {
+	return appwire.InvalidRequest(
+		`protocol version "` + appwire.ProtocolVersion + `" is incompatible; want "` + wanted + `"`)
+}
+
+func TestEnsureOlderProtocolHostRecovers(t *testing.T) {
+	for _, mode := range []string{"response", "legacy"} {
 		for _, source := range []string{"configured", "disabled", "unavailable"} {
 			t.Run(mode+"/"+source, func(t *testing.T) {
 				fr := deployRunner(t, func(int) ([]byte, error) { return launchContract("controller-build"), nil }, func(call int) ([]byte, error) {
@@ -204,14 +216,9 @@ func TestEnsureLiveProtocolMismatchRecovers(t *testing.T) {
 					return initializeReplyBridge(func(request appwire.Request) appwire.Message {
 						switch mode {
 						case "response":
-							return appwire.ResponseMessage(request.ID, appwire.InitializeResponse{ProtocolVersion: "old-protocol"})
-						case "server":
-							// Exercise the actual server's structured refusal, with an
-							// old client's protocol to produce the opposite mismatch.
-							server := appserver.NewServer(appserver.ServerConfig{})
-							return server.NewConnection("peer").HandleMessage(t.Context(), appwire.RequestMessage(request.ID, appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: "evener-appwire-v6"}))
+							return appwire.ResponseMessage(request.ID, appwire.InitializeResponse{ProtocolVersion: "evener-appwire-v5"})
 						default:
-							return appwire.ErrorMessage(request.ID, appwire.WireError{Code: appwire.CodeInvalidRequest, Data: appwire.ErrorData{EvenerErrorInfo: appwire.ErrorUpgradeRequired}})
+							return appwire.ErrorMessage(request.ID, legacyIncompatibleRefusal("evener-appwire-v5"))
 						}
 					}), nil
 				}
@@ -235,6 +242,206 @@ func TestEnsureLiveProtocolMismatchRecovers(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestEnsureNewerProtocolHostIsNotDowngraded(t *testing.T) {
+	for _, mode := range []string{"structured", "server", "response", "legacy"} {
+		for _, source := range []string{"configured", "disabled", "unavailable"} {
+			t.Run(mode+"/"+source, func(t *testing.T) {
+				fr := deployRunner(t, func(int) ([]byte, error) { return launchContract("controller-build"), nil }, func(call int) ([]byte, error) {
+					started := "2026-01-01T00:00:00Z"
+					if call > 0 {
+						started = "2026-01-02T00:00:00Z"
+					}
+					return []byte(fmt.Sprintf(`{"version":"controller-build","mobile_api_version":1,"hub_addr":"127.0.0.1:9180","started_at":%q}`, started)), nil
+				})
+				attempts := 0
+				fr.startFn = func(context.Context, []string, io.Writer) (Stdio, error) {
+					attempts++
+					return initializeReplyBridge(func(request appwire.Request) appwire.Message {
+						switch mode {
+						case "structured":
+							return appwire.ErrorMessage(request.ID, appwire.WireError{Code: appwire.CodeInvalidRequest, Data: appwire.ErrorData{EvenerErrorInfo: appwire.ErrorUpgradeRequired}})
+						case "server":
+							// The actual server's structured refusal to an older
+							// client is what a newer host sends this controller.
+							server := appserver.NewServer(appserver.ServerConfig{})
+							return server.NewConnection("peer").HandleMessage(t.Context(), appwire.RequestMessage(request.ID, appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: "evener-appwire-v6"}))
+						case "response":
+							return appwire.ResponseMessage(request.ID, appwire.InitializeResponse{ProtocolVersion: "evener-appwire-v99"})
+						default:
+							return appwire.ErrorMessage(request.ID, legacyIncompatibleRefusal("evener-appwire-v99"))
+						}
+					}), nil
+				}
+				opts := Options{controllerVersionOverride: "controller-build", BuildBinary: writeStageBinary}
+				switch source {
+				case "disabled":
+					opts.DeployDisabled = true
+				case "unavailable":
+					opts.BuildBinary = nil
+				}
+				m, effects := compatibleConnectManager(t, fr, opts)
+				ch, err := m.Ensure(t.Context(), "alpha")
+				if ch != nil || !errors.Is(err, ErrHostProtocolNewer) || !isTerminal(err) || *effects != (connectEffects{}) || attempts != 1 || m.Attached("alpha") {
+					t.Fatalf("newer host: ch=%v err=%v terminal=%v attempts=%d effects=%+v", ch, err, isTerminal(err), attempts, effects)
+				}
+			})
+		}
+	}
+}
+
+func TestEnsureAncientDiskAndRunningHubUpgrades(t *testing.T) {
+	diskProtocol, diskVersion := "evener-appwire-v5", "old-build"
+	diskSchema := 0
+	runningVersion := "old-build"
+	fr := deployRunner(t, func(int) ([]byte, error) {
+		return []byte(fmt.Sprintf(`{"hub_endpoint_schema":%d,"protocol":%q,"version":%q,"launch_flags":["api-log"]}`, diskSchema, diskProtocol, diskVersion)), nil
+	}, func(call int) ([]byte, error) {
+		started := "2026-01-01T00:00:00Z"
+		if call > 0 {
+			started = "2026-01-02T00:00:00Z"
+		}
+		return []byte(fmt.Sprintf(`{"version":%q,"mobile_api_version":1,"hub_addr":"127.0.0.1:9180","started_at":%q}`, runningVersion, started)), nil
+	})
+	run := fr.runFn
+	fr.runFn = func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+		out, err := run(ctx, argv, stdin)
+		if err == nil {
+			joined := strings.Join(argv, " ")
+			switch {
+			case strings.Contains(joined, "cat >"):
+				diskProtocol, diskVersion, diskSchema = appwire.ProtocolVersion, "controller-build", 1
+			case strings.Contains(joined, "systemctl restart"):
+				runningVersion = "controller-build"
+			}
+		}
+		return out, err
+	}
+	attempts := 0
+	fr.startFn = func(context.Context, []string, io.Writer) (Stdio, error) {
+		attempts++
+		if attempts > 1 {
+			return newFakeBridge(appwire.ProtocolVersion).stdio, nil
+		}
+		return initializeReplyBridge(func(request appwire.Request) appwire.Message {
+			return appwire.ErrorMessage(request.ID, legacyIncompatibleRefusal("evener-appwire-v5"))
+		}), nil
+	}
+	m, effects := compatibleConnectManager(t, fr, Options{controllerVersionOverride: "controller-build", BuildBinary: writeStageBinary})
+	ch, err := m.Ensure(t.Context(), "alpha")
+	if err != nil || ch == nil || attempts != 2 || effects.builds != 1 || effects.records != 1 || effects.writes != 2 {
+		t.Fatalf("ancient host upgrade: ch=%v err=%v attempts=%d effects=%+v disk=%s/%s running=%s",
+			ch, err, attempts, effects, diskProtocol, diskVersion, runningVersion)
+	}
+	if diskProtocol != appwire.ProtocolVersion || diskVersion != "controller-build" || runningVersion != "controller-build" {
+		t.Fatalf("fixture did not model the upgrade: disk=%s/%s running=%s", diskProtocol, diskVersion, runningVersion)
+	}
+}
+
+func TestEnsureLiveOlderHubWithNewerDiskRefuses(t *testing.T) {
+	fr := deployRunner(t, func(int) ([]byte, error) {
+		return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v99","version":"newer-build","launch_flags":["api-log"]}`), nil
+	}, func(int) ([]byte, error) {
+		return []byte(`{"version":"old-running","mobile_api_version":1,"hub_addr":"127.0.0.1:9180","started_at":"2026-01-01T00:00:00Z"}`), nil
+	})
+	attempts := 0
+	fr.startFn = func(context.Context, []string, io.Writer) (Stdio, error) {
+		attempts++
+		return initializeReplyBridge(func(request appwire.Request) appwire.Message {
+			return appwire.ErrorMessage(request.ID, legacyIncompatibleRefusal("evener-appwire-v5"))
+		}), nil
+	}
+	m, effects := compatibleConnectManager(t, fr, Options{controllerVersionOverride: "controller-build", BuildBinary: writeStageBinary})
+	ch, err := m.Ensure(t.Context(), "alpha")
+	if ch != nil || !errors.Is(err, ErrHostProtocolNewer) || !isTerminal(err) || *effects != (connectEffects{}) || attempts != 1 || m.Attached("alpha") {
+		t.Fatalf("live older hub with newer disk: ch=%v err=%v terminal=%v attempts=%d effects=%+v", ch, err, isTerminal(err), attempts, effects)
+	}
+}
+
+func TestDeployRevalidatesInstalledProtocolBeforeWriting(t *testing.T) {
+	diskProtocol := appwire.ProtocolVersion
+	fr := deployRunner(t, func(int) ([]byte, error) {
+		return []byte(fmt.Sprintf(`{"hub_endpoint_schema":1,"protocol":%q,"version":"controller-build","launch_flags":["api-log"]}`, diskProtocol)), nil
+	}, func(int) ([]byte, error) {
+		return []byte(`{"version":"old-running","mobile_api_version":1,"hub_addr":"127.0.0.1:9180","started_at":"2026-01-01T00:00:00Z"}`), nil
+	})
+	attempts := 0
+	fr.startFn = func(context.Context, []string, io.Writer) (Stdio, error) {
+		attempts++
+		if attempts > 1 {
+			return newFakeBridge(appwire.ProtocolVersion).stdio, nil
+		}
+		return initializeReplyBridge(func(request appwire.Request) appwire.Message {
+			return appwire.ErrorMessage(request.ID, legacyIncompatibleRefusal("evener-appwire-v5"))
+		}), nil
+	}
+	m, effects := compatibleConnectManager(t, fr, Options{
+		controllerVersionOverride: "controller-build",
+		BuildBinary: func(ctx context.Context, goos, goarch, out string) error {
+			// Another controller installs a newer build while this one stages.
+			diskProtocol = "evener-appwire-v99"
+			return writeStageBinary(ctx, goos, goarch, out)
+		},
+	})
+	ch, err := m.Ensure(t.Context(), "alpha")
+	if ch != nil || !errors.Is(err, ErrHostProtocolNewer) || !isTerminal(err) || effects.writes != 0 || effects.builds != 1 {
+		t.Fatalf("pre-write revalidation: ch=%v err=%v terminal=%v effects=%+v", ch, err, isTerminal(err), effects)
+	}
+}
+
+func TestPendingDeploymentReplayFollowsProtocolDirection(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		protocol string
+		version  string
+		want     bool
+	}{
+		{"older", "evener-appwire-v5", "build", true},
+		{"older-different-version", "evener-appwire-v5", "older-build", true},
+		{"unparsable", "incompatible-protocol", "build", true},
+		{"current", appwire.ProtocolVersion, "build", false},
+		{"newer", "evener-appwire-v99", "build", false},
+		{"newer-different-version", "evener-appwire-v99", "newer-build", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pending := pendingRestartState{deployment: true, restart: true, writeAcknowledged: true, expectedVersion: "build"}
+			facts := Preflight{LaunchCheckKnown: true, Protocol: tc.protocol, Version: tc.version}
+			if got := pending.needsDeployment(facts); got != tc.want {
+				t.Fatalf("needsDeployment(%s, %s) = %v, want %v", tc.protocol, tc.version, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPendingDeploymentDoesNotOverwriteNewerDisk(t *testing.T) {
+	diskProtocol, diskVersion := "evener-appwire-v99", "newer-build"
+	fr := deployRunner(t, func(int) ([]byte, error) {
+		return []byte(fmt.Sprintf(`{"hub_endpoint_schema":1,"protocol":%q,"version":%q,"launch_flags":["api-log"]}`, diskProtocol, diskVersion)), nil
+	}, func(int) ([]byte, error) {
+		return nil, errors.New("no listener")
+	})
+	run := fr.runFn
+	fr.runFn = func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+		if strings.Contains(strings.Join(argv, " "), "lsof -ti :9180") {
+			return []byte(noListenerMarker), nil
+		}
+		return run(ctx, argv, stdin)
+	}
+	m, effects := compatibleConnectManager(t, fr, Options{controllerVersionOverride: "controller-build", BuildBinary: writeStageBinary})
+	host, _ := m.reg.Get("alpha")
+	m.mu.Lock()
+	m.pendingRestarts[host.Name] = pendingRestartState{
+		deployment: true, restart: true, writeAcknowledged: true, expectedVersion: "controller-build",
+	}
+	m.mu.Unlock()
+
+	ch, err := m.ensureOnce(t.Context(), host, false)
+	if ch != nil || !errors.Is(err, ErrHostProtocolNewer) || !isTerminal(err) || *effects != (connectEffects{}) ||
+		!m.pendingRestart(host.Name).active() || diskProtocol != "evener-appwire-v99" || diskVersion != "newer-build" {
+		t.Fatalf("newer pending disk: ch=%v err=%v terminal=%v effects=%+v pending=%+v disk=%s/%s",
+			ch, err, isTerminal(err), effects, m.pendingRestart(host.Name), diskProtocol, diskVersion)
 	}
 }
 

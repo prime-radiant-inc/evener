@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+
+	"primeradiant.com/evener/identifier"
 )
 
 // The probe lists the plugin store's installed plugin files and the user skills
@@ -101,7 +103,7 @@ func TestEvenerContentRootsAreReadableThroughTheCredentialMask(t *testing.T) {
 				}
 			}
 			for _, w := range slices.Concat(rp.FileTool.WriteRoots, rp.Spawned.WriteRoots) {
-				if pathUnder(w, store) || pathUnder(store, w) {
+				if identifier.PathUnder(w, store) || identifier.PathUnder(store, w) {
 					t.Errorf("the plugin store must never be writable: write root %q", w)
 				}
 			}

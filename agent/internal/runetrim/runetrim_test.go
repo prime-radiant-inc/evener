@@ -80,3 +80,19 @@ func TestCut(t *testing.T) {
 		}
 	}
 }
+
+func TestOneLine(t *testing.T) {
+	for _, tc := range []struct{ name, in, want string }{
+		{"newline becomes a space", "a\nb", "a b"},
+		{"carriage return is dropped", "a\r\nb", "a b"},
+		{"lone carriage return vanishes", "a\rb", "ab"},
+		{"other whitespace and runes pass through", "a\tb é", "a\tb é"},
+		{"empty", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := OneLine(tc.in); got != tc.want {
+				t.Fatalf("OneLine(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}

@@ -6,10 +6,12 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
+import { chromeStore } from "./chromeStore";
 import {
   focusedActivityScopeRef,
   focusedSessionPaneId,
   focusedSessionRef,
+  modalOpenInFocusedWindows,
   resetFocusedActivityScopeForTests,
   useFocusedActivityScopeRef,
 } from "./focusedSession";
@@ -127,5 +129,48 @@ describe("focusedActivityScopeRef", () => {
     // changes nothing but focusedPaneId; readers must still update.
     act(() => workspaceStore.getState().focusPane(main));
     expect(result.current).toBe("local:a");
+  });
+});
+
+describe("modalOpenInFocusedWindows", () => {
+  function popoutWithDialog(): Document {
+    const popout = document.implementation.createHTMLDocument("popout");
+    const dialog = popout.createElement("div");
+    dialog.setAttribute("aria-modal", "true");
+    popout.body.appendChild(dialog);
+    return popout;
+  }
+
+  afterEach(() => {
+    for (const paneId of [...chromeStore.getState().paneDocuments.keys()]) {
+      chromeStore.getState().setPaneDocumentFor(paneId, null);
+    }
+    for (const dialog of document.querySelectorAll('[aria-modal="true"]')) dialog.remove();
+  });
+
+  test("is false with no dialog anywhere", () => {
+    workspaceStore.getState().openPane("session", { ref: "local:a" });
+    expect(modalOpenInFocusedWindows()).toBe(false);
+  });
+
+  test("sees a dialog in the opener's document", () => {
+    workspaceStore.getState().openPane("session", { ref: "local:a" });
+    const dialog = document.createElement("div");
+    dialog.setAttribute("aria-modal", "true");
+    document.body.appendChild(dialog);
+    expect(modalOpenInFocusedWindows()).toBe(true);
+  });
+
+  test("sees a dialog in the focused reader's popout", () => {
+    const focused = workspaceStore.getState().openPane("session", { ref: "local:a" });
+    chromeStore.getState().setPaneDocumentFor(focused, popoutWithDialog());
+    expect(modalOpenInFocusedWindows()).toBe(true);
+  });
+
+  test("ignores a dialog in a popout the reader has left", () => {
+    const left = workspaceStore.getState().openPane("session", { ref: "local:a" });
+    chromeStore.getState().setPaneDocumentFor(left, popoutWithDialog());
+    workspaceStore.getState().openPane("session", { ref: "local:b" });
+    expect(modalOpenInFocusedWindows()).toBe(false);
   });
 });

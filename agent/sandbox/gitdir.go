@@ -11,10 +11,7 @@ import (
 	"primeradiant.com/evener/identifier"
 )
 
-var (
-	gitWalkDir = filepath.WalkDir
-	gitRel     = filepath.Rel
-)
+var gitWalkDir = filepath.WalkDir
 
 // WorkspaceKind classifies cwd's git layout. The distinction drives gitdir
 // resolution: linked-worktree/submodule git dirs live outside the worktree and
@@ -127,21 +124,12 @@ var gitWritableLeaves = []string{
 // rewritten by a commit, so protecting them cannot regress the commit path.
 var gitProtectedLeaves = []string{"config", "config.worktree", "hooks", "commondir", "gitdir"}
 
-// resolveCleanPath is the package's symlink-resolving path normalizer, shared by
-// the classifier and its tests so expected and actual paths normalize identically.
-func resolveCleanPath(p string) string {
-	if resolved, err := filepath.EvalSymlinks(p); err == nil {
-		return filepath.Clean(resolved)
-	}
-	return filepath.Clean(p)
-}
-
 // ClassifyWorkspace resolves cwd's git layout structurally (reading .git entries
 // directly; it never forks the git binary) into a GitLayout. It returns an error
 // only on an unreadable or unrecognized .git pointer shape — a fail-closed signal
 // the resolver turns into a refusal rather than guessing a grant set.
 func ClassifyWorkspace(cwd string) (GitLayout, error) {
-	cwd = resolveCleanPath(cwd)
+	cwd = identifier.ResolveClean(cwd)
 
 	holder, isDir, ok := findGitEntry(cwd)
 	if !ok {
@@ -153,7 +141,7 @@ func ClassifyWorkspace(cwd string) (GitLayout, error) {
 		// Resolve a symlinked .git to its real target so protected surfaces point
 		// at the real config/hooks (not the symlink) — otherwise a subtractive
 		// backend would deny the symlink while the real config sits writable.
-		gitDir := resolveCleanPath(entry)
+		gitDir := identifier.ResolveClean(entry)
 		layout := newLayout(MainCheckout, holder, gitDir, gitDir)
 		// A symlinked .git entry is itself a redirection surface: repointing it
 		// swaps in an attacker-controlled git dir. Protect the symlink from writes.
@@ -176,7 +164,7 @@ func ClassifyWorkspace(cwd string) (GitLayout, error) {
 	if !filepath.IsAbs(pointer) {
 		pointer = filepath.Join(holder, pointer)
 	}
-	gitDir := resolveCleanPath(pointer)
+	gitDir := identifier.ResolveClean(pointer)
 
 	var layout GitLayout
 	switch {
@@ -252,7 +240,7 @@ func findGitEntry(cwd string) (holder string, isDir, ok bool) {
 func newLayout(kind WorkspaceKind, worktreeRoot, gitDir, commonDir string) GitLayout {
 	l := GitLayout{
 		Kind:         kind,
-		WorktreeRoot: resolveCleanPath(worktreeRoot),
+		WorktreeRoot: identifier.ResolveClean(worktreeRoot),
 		GitDir:       gitDir,
 		CommonDir:    commonDir,
 	}
@@ -437,7 +425,7 @@ func scanConfigIncludes(configFile string, writable []string, seen map[string]bo
 			target = filepath.Join(configDir, target)
 		}
 		target = filepath.Clean(target)
-		if underAnyRoot(target, writable) {
+		if isUnderAnyRoot(target, writable) {
 			out = append(out, target)
 		}
 		sub, err := scanConfigIncludes(target, writable, seen, depth+1)
@@ -579,17 +567,7 @@ func globCouldReachWritable(v, configDir string, writable []string) bool {
 	}
 	dir = filepath.Clean(dir)
 	for _, w := range writable {
-		if dir == w || pathUnder(dir, w) || pathUnder(w, dir) {
-			return true
-		}
-	}
-	return false
-}
-
-// underAnyRoot reports whether p is at or beneath any of roots.
-func underAnyRoot(p string, roots []string) bool {
-	for _, r := range roots {
-		if p == r || pathUnder(p, r) {
+		if dir == w || identifier.PathUnder(dir, w) || identifier.PathUnder(w, dir) {
 			return true
 		}
 	}
@@ -611,7 +589,7 @@ func removeProtectedFromWritable(writable, protected []string) []string {
 	for _, w := range writable {
 		blocked := false
 		for _, p := range protected {
-			if w == p || pathUnder(w, p) {
+			if w == p || identifier.PathUnder(w, p) {
 				blocked = true
 				break
 			}
@@ -621,20 +599,4 @@ func removeProtectedFromWritable(writable, protected []string) []string {
 		}
 	}
 	return out
-}
-
-// pathUnder reports whether p is at or beneath dir.
-func pathUnder(p, dir string) bool {
-	rel, err := gitRel(dir, p)
-	if err != nil {
-		return false
-	}
-	if rel == "." {
-		return true
-	}
-	return rel != ".." && !hasParentPrefix(rel)
-}
-
-func hasParentPrefix(rel string) bool {
-	return rel == ".." || len(rel) >= 3 && rel[0] == '.' && rel[1] == '.' && rel[2] == filepath.Separator
 }

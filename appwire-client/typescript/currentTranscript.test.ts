@@ -1,27 +1,20 @@
 import { describe, expect, it } from "vitest";
 import type { ItemModel } from "./model";
-import {
-  applyNotification,
-  applyReadModel,
-  currentTranscriptState,
-  decodeCurrentTranscriptState,
-  hydrateThread,
-  itemTextPresence,
-  markItemIdentityOnly,
-  markItemTextOmitted,
-  mergeOlderItemPage,
-  threadModelFromCurrentState,
-} from "./reducer";
+import { applyNotification } from "./reducer";
 import { currentRead, textDelta } from "./testing/currentTranscript";
 import { notificationWireItem } from "./testing/notificationWireFixtures";
 import { appendChunk, chunkViewBackingForTests } from "./testing/reducerHooks";
 import { subagentCallItems } from "./testing/subagentWireFixtures";
 import { toolWireItems } from "./testing/toolWireFixtures";
+import { currentTranscriptState, decodeCurrentTranscriptState, threadModelFromCurrentState } from "./transcriptCache";
+import { applyReadModel, hydrateThread, mergeOlderItemPage } from "./transcriptHistory";
+import { itemTextPresence, markItemIdentityOnly, markItemTextOmitted } from "./transcriptItems";
 import {
   type EvenerDelegateInfo,
   THREAD_ITEM_EVENT_KINDS,
   type ThreadItem,
   type ThreadTurnsListResponse,
+  type Turn,
 } from "./types.gen";
 
 function readWithItems(ref: string, items: ThreadItem[]) {
@@ -995,6 +988,169 @@ describe("current transcript checkpoints", () => {
     expect(restored.turnSlots).toBeNull();
     expect(restored.tasks).toBeNull();
     expect(restored.history?.deferredPages).toHaveLength(1);
+  });
+
+  it("round-trips a delegate carrying every generated field", () => {
+    // Required<EvenerDelegateInfo> makes tsc fail this literal when the wire
+    // type gains a field, so the validator cannot drift without a red build.
+    const everyField: Required<EvenerDelegateInfo> = {
+      runGeneration: 2,
+      delegateId: "dlg_full",
+      ownerSessionId: "root",
+      logicalOwnerSessionId: "mid",
+      rootSessionId: "root",
+      childSessionId: "child",
+      transcriptRef: "local:child",
+      parentDelegateId: "dlg_parent",
+      type: "delegate",
+      lifecycle: "ended",
+      phase: "ended",
+      status: "completed",
+      outcome: "completed",
+      reason: "done",
+      error: "none",
+      terminal: true,
+      resumable: true,
+      needsAttention: false,
+      notResumableReason: "n/a",
+      projectionRevision: 3,
+      reportPreview: "report text",
+      reportPreviewTruncated: true,
+      task: "task",
+      description: "description",
+      agentType: "explorer",
+      requestedModel: "fast",
+      resolvedProfileId: "profile",
+      resolvedModel: "model",
+      model: "provider/model",
+      reasoningEffort: "high",
+      originTurnId: "turn_1",
+      originToolCallId: "call_1",
+      originItemId: "item_1",
+      runStartedAt: "2026-10-25T10:00:00Z",
+      runEndedAt: "2026-10-25T10:01:00Z",
+      latestActivityAt: "2026-10-25T10:00:59Z",
+      latestIntent: "Reading the board.",
+      runningForMs: 1,
+      quietForMs: 2,
+      durationMs: 3,
+      packetKind: "communicate",
+      message: { any: "thing" },
+      structuredResult: { any: "result" },
+      structuredResultValid: true,
+      structuredResultReason: "ok",
+      warnings: ["w"],
+      diagnostics: ["d"],
+      exhaustionBudget: "turns",
+      exhaustionLimit: 12,
+      exhaustionResumable: false,
+      delegationAllowance: 2,
+      parentWatchGranted: true,
+      usage: { inputTokens: 1, outputTokens: 2, cacheReadTokens: 3, totalTokens: 6 },
+      worktree: { path: "/tmp/w", branch: "b", headSha: "abc", ahead: 1, dirty: false },
+    };
+    const original = hydrateThread(currentRead("local:every-field"), "local:every-field", 10);
+    original.delegates = [everyField];
+
+    const encoded = currentTranscriptState(original);
+    if (!encoded) throw new Error("populated checkpoint did not encode");
+    const decoded = decodeCurrentTranscriptState(JSON.parse(JSON.stringify(encoded)));
+    if (!decoded) throw new Error("a delegate with every generated field was rejected");
+
+    expect(threadModelFromCurrentState(decoded).delegates?.[0]).toEqual(everyField);
+  });
+
+  it("round-trips a deferred turn carrying every generated field", () => {
+    // Required<> makes tsc fail these literals when the wire types gain a
+    // field, so the deferred-page validators cannot drift without a red build.
+    const everyItemField: Required<ThreadItem> = {
+      type: "toolCall",
+      actor: { kind: "manager", managerRef: "hub:manager" },
+      observation: {
+        ref: "local:observed",
+        instanceId: "observed-instance",
+        generationId: "observed-generation",
+        causalKnown: false,
+      },
+      authorship: {
+        author: {
+          kind: "agent",
+          sessionRef: "local:child",
+          ownerRef: "local:root",
+          delegateId: "dlg_child",
+          delegateName: "Worker",
+        },
+        inherited: true,
+      },
+      id: "item_full",
+      transcriptKey: "key_full",
+      position: { entry: 1, item: 2, sub: 3 },
+      turnId: "turn_full",
+      transcriptEntryIndex: 4,
+      text: "text",
+      delta: "delta",
+      images: [
+        {
+          type: "image",
+          text: "alt",
+          mentions: [{ kind: "file", name: "a.go", offset: 1 }],
+          url: "https://example.test/i.png",
+          mediaType: "image/png",
+          data: "AAAA",
+          name: "i.png",
+          path: "/tmp/i.png",
+          metadata: { k: "v" },
+        },
+      ],
+      toolName: "Read",
+      callId: "call_full",
+      argumentsJson: "{}",
+      description: "description",
+      output: "output",
+      error: "error",
+      outputImages: [
+        { source: "tool", name: "o.png", mediaType: "image/png", size: 5, url: "u", sha: "abc", path: "/tmp/o.png" },
+      ],
+      status: "completed",
+      prevalOnly: true,
+      startedAt: 1,
+      completedAt: 2,
+      durationMs: 3,
+      exitCode: 0,
+      raw: { any: "thing" },
+      eventKind: THREAD_ITEM_EVENT_KINDS[0],
+      source: "source",
+      steeringKind: "interrupt",
+      clientMutationId: "mutation",
+      version: 5,
+      roundId: "round",
+      completedAtEntry: 6,
+    };
+    const everyTurnField: Required<Turn> = {
+      id: "turn_full",
+      items: [everyItemField],
+      itemsView: "full",
+      status: "completed",
+      error: { message: "failed" },
+      version: 7,
+      hasEarlierItems: true,
+      hasLaterItems: false,
+      startedAt: 1,
+      completedAt: 2,
+      durationMs: 3,
+      usage: { inputTokens: 1, outputTokens: 2, cacheReadTokens: 3, totalTokens: 6 },
+      cost: "0.01",
+    };
+    const original = hydrateThread(currentRead("local:every-turn-field"), "local:every-turn-field", 10);
+    if (!original.history) throw new Error("fixture history did not hydrate");
+    original.history = { ...original.history, deferredPages: [{ data: [everyTurnField] }] };
+
+    const encoded = currentTranscriptState(original);
+    if (!encoded) throw new Error("populated checkpoint did not encode");
+    const decoded = decodeCurrentTranscriptState(JSON.parse(JSON.stringify(encoded)));
+    if (!decoded) throw new Error("a turn with every generated field was rejected");
+
+    expect(threadModelFromCurrentState(decoded).history?.deferredPages[0]?.data[0]).toEqual(everyTurnField);
   });
 
   it("keeps omitted text distinct from explicit empty text", () => {

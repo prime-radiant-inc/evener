@@ -165,7 +165,7 @@ func tdrpFixture(t *testing.T, r *tdrpReader) (*toolDeps, *tool.Registry, *agent
 	currentDir := filepath.Join(root, "evener", "projects", trenderCurrentProject)
 	siblingDir := filepath.Join(root, "evener", "projects", trenderOtherProject)
 	for _, dir := range []string{currentDir, siblingDir} {
-		if err := os.MkdirAll(filepath.Join(dir, sessionsSubdir), 0o755); err != nil {
+		if err := os.MkdirAll(schema.SessionsDir(dir), 0o755); err != nil {
 			t.Fatalf("make transcript bucket %q: %v", dir, err)
 		}
 	}
@@ -289,7 +289,7 @@ func tdrpTurns(token string, n int) []schema.Turn {
 
 func tdrpFind(t *testing.T, deps *toolDeps, args map[string]any) findSessionsEnvelope {
 	t.Helper()
-	v, err := execFindSessionTranscripts(deps, args)
+	v, err := execFindSessionTranscripts(context.Background(), deps, args)
 	if err != nil {
 		t.Fatalf("find transcript sessions %v: %v", args, err)
 	}

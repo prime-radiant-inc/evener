@@ -1,0 +1,196 @@
+[
+ {
+  "id": "agent-delegates-1",
+  "title": "Legacy in-process spawn API is dead in production, kept alive by test files",
+  "category": "dead-code",
+  "original_severity": "high",
+  "verdict": "confirmed",
+  "severity": "high",
+  "note": "Confirmed: spawnAgent/sendInput/cancelAgent/startOrSteerSubagentRun/trackAndLaunchPreparedSubagent/prepareSubagentRun(WithModelSelection) have only definitions and comments outside _test.go; 32 test files (not 22) call spawnAgent( or prepareSubagentRun(. Bigger than reported: subagents.go:1231 and :1255 gate reserveSlot and reserveTreeSlot behind !preparedEnv.stableController, and delegate_runtime.go:2662 is the only place stableController is set true. So subagentManager.reserveSlot (the only reader of resultConsumed, subagent_manager.go:363) never runs in production, and the 'retention predicate' question the audit raised is moot: the whole retained-terminal cap in subagent_manager.go (reserveSlot, countsTowardCap, retentionState, maxRetainedTerminal field, ~100 lines) is legacy-only. The production cap is the controller's own maxRetainedTerminal (delegate_tree_reclaim.go:106). prepareSubagentRunFromSelection is shared with prepareStableDelegateRun (subagents.go:806) so it stays.",
+  "revised_fix_plan": "Migrate the 32 test files to delegateRuntime.create / prepareStableDelegateRun harnesses (or delete tests that only exercise the legacy path), then delete spawnAgent, sendInput, startOrSteerSubagentRun, cancelAgent, prepareSubagentRun, prepareSubagentRunWithModelSelection, trackAndLaunchPreparedSubagent, releasePreparedTreeSlot, the subagentAfterPrepare/subagentReserveSlot/subagentReserveTreeSlot hooks, the !stableController branches at subagents.go:1231/1255, subagentManager.reserveSlot/countsTowardCap/retention code, and resultConsumed. No separate retention-predicate commit is needed. Do not reduce coverage of shared helpers: for each deleted test confirm a real-path test covers the same behavior. Fix stale spawnAgent comments in session_config.go/session_init.go/session_tools.go. Update docs/product/subsystems.md only if it names these."
+ },
+ {
+  "id": "agent-delegates-2",
+  "title": "Dead restore side-effect barrier, CloseResumability and inputPersistFailureBatch",
+  "category": "dead-code",
+  "original_severity": "medium",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Confirmed. beginReconstructionSideEffects (subagent_manager.go:158) has //nolint:unused and only test callers (remaining_exact_coverage_fuzz_test.go, subagent_manager_covtest_test.go), so activeRestoreSideEffects is never incremented in production and waitForReconstructionSideEffects (called at session_lifecycle.go:572) never blocks. CloseResumability (delegate_tree_stop.go:575) has zero non-test callers and 18 test references (counted 3+1+2+2+1+4+4+1). inputPersistFailureBatch (delegate_tree_start.go:930) has no caller at all; startInputFailureBatch is the live one. Note testBeforeReconstructionWait (subagent_manager.go:32) and restoreSideEffectsWait var belong to the same dead barrier (overlaps finding 14)."
+ },
+ {
+  "id": "agent-delegates-3",
+  "title": "Production wrappers and seams that exist only for tests",
+  "category": "dead-code",
+  "original_severity": "low",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Confirmed: BeginSettlement (delegate_tree_finish.go:72) and BeginFinalization have no prod caller (BeginSettlement wraps BeginFinalization; only BeginRunFinalization is used at subagents.go:1908). ReportActivity, AuthorizeMutation, completionSnapshot, capacityInUse, noteDelegateAttention, nextIdleDelegateAttention, isRootOnlyJobPresenceTool, delegateSessionDir have definitions only outside tests. SubagentTallyForTest is exported in prod and Session.subagentTallyForTest is read on the SubagentTally path (subagent_tally.go:45). The stableDelegateFinish package func point is weak: it is used by the method's nil-session fallback (subagents.go:2207), so it is not strictly test-only. Low value, safe cleanup."
+ },
+ {
+  "id": "agent-delegates-4",
+  "title": "Untrack-from-stop-state-and-signal snippet copy-pasted",
+  "category": "duplication",
+  "original_severity": "medium",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Core confirmed: 14 'if _, tracked := c.stop.' sites in non-test delegate*.go and 20 signalStopProgressLocked call sites; delegate_delivery.go:321/333/371, delegate_tree_work.go:77/96, delegate_tree_steer.go:295/305, start.go:723/832, finish.go:218/440, delegate_runtime.go:660 are the identical check-delete-signal block. But delegate_tree_steer.go:320 and :333 are 'continue if tracked' guards in dropRuntimeClaimsForMembersLocked, not the untrack block, so ~12 true copies, not 14. The 'likeliest stuck-stop bug' claim is speculative (no drifted copy found; steer already has releaseSteeringClaimLocked/releaseModelClaimLocked helpers). Maps have different key/value types (map[uint64]struct{}, map[delegateWorkToken]string, map[delegateLease]struct{}), so the helper must be generic over key and value and take the stop-map selector. Severity medium: real duplication, no demonstrated bug.",
+  "revised_fix_plan": "Add one small generic helper in delegate_tree_stop.go, e.g. untrackStopLocked[K comparable, V any](c *delegateTreeController, pick func(*delegateStopState) map[K]V, key K), that does nil-check, check-delete, signalStopProgressLocked; replace the ~12 true copies (leave the two continue-guards alone). Existing stop tests guard it; add one table test that each claim type release wakes a waiting stop drain only if no existing test already does."
+ },
+ {
+  "id": "agent-delegates-5",
+  "title": "CommitShellWork has two identical branches",
+  "category": "slop",
+  "original_severity": "low",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Confirmed at delegate_tree_work.go:40-60: the 'c.closing || c.stopCoversLocked' branch and the fall-through run the same statements; the fall-through's own stopCoversLocked check is unreachable (same lock, outer branch already caught it). Replacing with one assignment block and 'return c.closing || covered, nil' is behavior-preserving."
+ },
+ {
+  "id": "agent-delegates-6",
+  "title": "CompleteSteerPersistence copies the steer-admission block",
+  "category": "duplication",
+  "original_severity": "low",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Duplication within CompleteSteerPersistence confirmed (delegate_tree_steer.go:136-150 vs :167-177: activityAt/rearm/productiveActivityAt update copied). But the 'third copy of ReportActivityPhase' claim is overstated: ReportActivityPhase (delegate_runtime.go:199) gates on activityChanged/productiveChanged and a publish interval, while the steer copies unconditionally advance and call rearmQuietCadenceLocked (which self-guards via quietRearmPendingLocked). They are semantically different, so sharing the clock-advance with ReportActivityPhase is not behavior-preserving as written. Severity low: ~25 lines inside one function.",
+  "revised_fix_plan": "Extract a local noteSteerAdmittedLocked(live, entry, carries bool) used by both branches of CompleteSteerPersistence only. Do not try to merge with ReportActivityPhase. Existing steer tests plus one for a steer during a covering stop carrying into the successor generation."
+ },
+ {
+  "id": "agent-delegates-7",
+  "title": "Hand-rolled parent-chain walks with inconsistent cycle protection",
+  "category": "duplication",
+  "original_severity": "low",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Walks confirmed (~10 loops: delegate_tree_attention.go:57,744; controller.go:517,1032; reclaim.go:135,417; stop.go:470; restore.go:573 and nearestReachableAttentionAncestorLocked; delegate_runtime.go:590/1466 single-step). Refuted part: the cycle/hang risk. agent/internal/delegatestore/fold.go:300 rejects delegate_created when the parent does not already exist in state, so a parent cycle (or self-parent) cannot be folded; unguarded loops are safe by the fold invariant. The remaining value is dedup of small loops that each carry a different predicate (fence, depth, restorable, nearest-idle), so a shared iterator saves little and adds a callback seam. Severity low.",
+  "revised_fix_plan": "Optional only: add a tiny ancestorsLocked(startID) iterator and convert callers that are pure walks (delegateDepthLocked, reclamationCoversLocked, ancestorFenceLocked). Skip the visited-set/cycle-fixture work; if desired, put a comment on the fold invariant next to ancestorFenceLocked instead."
+ },
+ {
+  "id": "agent-delegates-8",
+  "title": "delegateTreeController 55-field state machine with per-claim-type protocol",
+  "category": "architecture",
+  "original_severity": "low",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Numbers hold: nextToken++ at 17 sites, evidenceVersion++ at 76 production sites, 18 'defer c.retirementChanged()', 11+ token-keyed maps in delegateStopState. But the finding itself concedes the design is load-bearing and heavily tested, and the proposed generic claimSet[T] across 5-6 PRs is a speculative general seam that conflicts with Jesse's stated preference for deleting/simplifying before adding mechanisms; benefit beyond finding 4's helper is unproven. Not a defect; an architecture observation.",
+  "revised_fix_plan": "Do finding 4's helper only. Revisit claimSet[T] only if a stop-drain bug shows the remaining per-type protocol costs something."
+ },
+ {
+  "id": "agent-delegates-9",
+  "title": "delegateRuntime.send and its failure helpers restate each other",
+  "category": "duplication",
+  "original_severity": "medium",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Confirmed. send spans delegate_runtime.go:1610-1911 (~300 lines). The inline-wait block (WithTimeout, delegateInlineWaitReady observe, waitForDelegateInline, TimedOut) appears at 1888-1905 and in stableSendFailureOutcomeAfterDispatch (~2025-2043). The durableStatus/durableReason overlay appears at ~2036-2044 and again inside stableDelegateFailedSendResult (~2084-2093) (the latter is in a different function than the audit implied). failStableSendStart/stableSendFailureOutcome are one-line wrappers over the *AfterDispatch variants passing nil; 13 call sites in delegate_runtime.go. Race-sensitive, so one extraction per commit."
+ },
+ {
+  "id": "agent-delegates-10",
+  "title": "Hand child to a run sequence repeated three times",
+  "category": "duplication",
+  "original_severity": "low",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "The three sequences are not clean copies. create (delegate_runtime.go:~2318) launches with prepared.runCtx and prepared.input after startDelegateQuietWatchdog; send (~1851-1860) builds a runCtx with delegatePreseededInput, releases a committed-claim, launches then arms the watchdog; launchAcceptedDelegateAttention (~875) uses an attention run context key and a different failure path. The ordering difference (watchdog before vs after launch) and the dropped plans.deliveries in create are real observations but the audit itself says 'probably benign, not proven'; CompleteStartInput's replayed deliveries are for owner replays that a brand-new delegate would not have. Forcing one helper would need many parameters and could make a race-prone area worse. Downgrade.",
+  "revised_fix_plan": "Add a pinning test for the watchdog/launch order in create vs send only if someone edits these; do not introduce a shared startRunForCommittedDelegate helper unless the test shows the divergence is a bug."
+ },
+ {
+  "id": "agent-delegates-11",
+  "title": "Two code paths construct a child Session config from a descriptor (fresh vs restore)",
+  "category": "duplication",
+  "original_severity": "medium",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Real: prepareSubagentRunFromSelection (subagents.go:848-1355, ~500 lines) sets spawn fields imperatively (and already handles a frozen descriptor, so create-with-descriptor and fresh share it), while restoreIdle builds RestoreSessionConfig with a ~40-field spawnConfig (delegate_runtime.go:~2793-2830) and recomputes ceiling, denied tools (s.unavailableMemoryToolNames()), skill bodies, shared task store, result schema. Not proven that they have drifted; no concrete divergence was shown, and the two start from different bases (fresh copies the parent's cfg by struct copy, restore builds from meta), so one constructor is harder than the plan implies. 'High' is not supported by evidence of an actual bug.",
+  "revised_fix_plan": "Write the differential test first (fresh prepare + freeze + restore, compare spawnConfig field by field excluding live pointers). Only if it finds drift, fix as TDD bugs and then extract a shared builder for the descriptor-derived fields (ceiling, denied tools, skills, schema, watch grant, allowance); do not unify the whole config."
+ },
+ {
+  "id": "agent-delegates-12",
+  "title": "Redundant nil defaults and nil-receiver guards",
+  "category": "slop",
+  "original_severity": "low",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Duplicate fallbacks exist (openDelegateTreeController defaults attentionOpen/now at delegate_tree_controller.go:317-332; delegate_delivery.go:518 and delegate_tree_restore.go:762 re-default c.attentionOpen). But tests build bare controllers (&delegateTreeController{} at delegate_delivery_branches_test.go:112,216,315,... and delegate_attention_restore_warning_test.go:132), and several defaults are on snapshot/receiver structs (snapshot.now, receiver.now), not the controller, so they are not simply impossible. 58 'if c == nil' guards across non-test delegate*.go. Removing them means rewriting those tests for ~90 lines of noise; low value and nonzero nil-deref risk.",
+  "revised_fix_plan": "Delete only the two controller-field re-defaults (delivery.go:518, restore.go:762) after changing the bare-controller tests that reach them; leave the rest."
+ },
+ {
+  "id": "agent-delegates-13",
+  "title": "delegate_runtime.go is a 3,568-line grab bag with a process-global ticker registry",
+  "category": "architecture",
+  "original_severity": "medium",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Confirmed: 3,568 lines, 540 comment lines, 86 commits since 2026-08-25; 18 delegateRuntime, 9 delegateTreeController and 40 Session methods in one file; quiet-watch hub uses process-global delegateQuietWatchHubs and delegateQuietWatchTickDone atomic hook (lines 336-371) and the comment at 311 narrates 'Previously each lease armed its own NewTicker'. Doc impact is wider than stated: docs/product/friction.md:620-621 links delegate_runtime.go with line anchors (#L2905, #L3069), docs/product/subsystems.md:155 and session-activity.md:293 link the file, so moving code needs those links updated in the same change.",
+  "revised_fix_plan": "Step 1 pure moves in one PR as proposed (verify with function-set and name-only diff), updating friction.md anchors and subsystems.md S12/session-activity links. Step 2 (hub onto controller, injectable tick, delete history narration) separately."
+ },
+ {
+  "id": "agent-delegates-14",
+  "title": "About 35 test-only hooks live in production types",
+  "category": "inconsistency",
+  "original_severity": "low",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Counted 35 s.cfg.testOnly.* reads over 33 distinct names in the slice (audit said 38). Non-testOnly variants exist (testBeforeReconstructionWait, delegateRestoreBeforeSideEffects, subagentTallyForTest, delegateQuietWatchTickDone). But testBeforeReconstructionWait belongs to the dead barrier in finding 2 and subagentTallyForTest to finding 3, so those go away with those findings rather than being folded. Hooks enabling real-race tests are legitimate. Low and mostly subsumed.",
+  "revised_fix_plan": "Handle via findings 1, 2, 3 (deleting the legacy-path hooks subagentAfterPrepare/subagentReserveSlot/subagentReserveTreeSlot and the dead barrier hook); no standalone consolidation."
+ },
+ {
+  "id": "agent-delegates-15",
+  "title": "Resolve-profile + cross-provider communicate overrides repeated",
+  "category": "duplication",
+  "original_severity": "low",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Two identical explicit-model blocks inside selectSubagentModel (subagent_model_selection.go:70-83 and :112-125) confirmed, plus resolvePluginAgentModel:141 and session.go:1668-1671 with the same resolveProfileForRef + WithCommunicateOverridesFrom shape. job_delegate.go:140-143 uses s.resolveProfile with an ID comparison, a different resolution path, so it is not the same copy; 'five times' is four. Dedup inside selectSubagentModel is clearly safe.",
+  "revised_fix_plan": "Extract resolveExplicitSubagentModel for the two identical blocks in subagent_model_selection.go; optionally a resolveProfileInheritingOverrides used by resolvePluginAgentModel and session.go. Leave job_delegate.go."
+ },
+ {
+  "id": "agent-delegates-16",
+  "title": "Parallel terminal-failure paths outside the finish reducer",
+  "category": "duplication",
+  "original_severity": "low",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Verified: startInputFailureBatch and committedStartFailureBatch (delegate_tree_start.go:943-951) differ only in default strings; inputPersistFailureBatch is dead (finding 2); 'var cancel context.CancelFunc' preamble appears in 8 functions (start.go 4, delegate_runtime.go 2, intents.go 1, restore.go 1). Refuted: FailCommittedStart and FailCommittedRestart are not ~90% the same. Their stopping branches differ materially (FailCommittedStart handles runtimeForClose claiming, a disposition, a typed delegateCommittedStartFailureError and 3 return values; Restart just returns finishStoppedStartLocked's result), and the tail differs (appendResumabilityClosureLocked and plans.updates[0] replacement vs appendLocked). Making Restart the base would be forced. The reducer header (delegate_tree_intents.go:3-30) already says finishers 'still drive their own entry paths', so it does not overclaim.",
+  "revised_fix_plan": "Merge the two batch builders into one parameterised builder (~-8 lines); delete inputPersistFailureBatch via finding 2; optionally a withDeferredCancel helper for the preambles. Leave FailCommittedStart/Restart separate."
+ },
+ {
+  "id": "agent-delegates-17",
+  "title": "Legacy delegate state refuses startup instead of recovering (decision for Jesse)",
+  "category": "compat-legacy",
+  "original_severity": "low",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Confirmed: bootstrapDelegateResources (delegate_runtime.go:3236) calls rejectLegacyDelegateState (agent/delegate_legacy_state.go, 78 lines), which fails with legacy_delegate_state / legacy_delegate_watch_state and 'use a fresh state root'; docs/job-control.md:1432 and :1646 document the flag-day cutover. Tests pin the codes (delegate_resource_bootstrap_test.go:79,118). This is a consequential product choice that conflicts with the recovery-over-lockdown principle in AGENTS.md; it must be raised with Jesse, not changed unilaterally. Lowest-effort option if old roots are gone is deletion; recovery would need design via friction.md."
+ },
+ {
+  "id": "agent-delegates-18",
+  "title": "delegate_artifacts.go thin wrappers plus symlink hardening",
+  "category": "slop",
+  "original_severity": "low",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Facts confirmed (186 lines; delegateArtifactsDir/delegateSessionDir are thin wrappers re-prefixing errors; delegateSessionDir only used by tests; mkdirVerifiedDir and Lstat checks guard planted symlinks; removeDelegateArtifacts ~70 lines). But the claim that the hardening defends nothing is a security judgment: removeDelegateArtifacts ends in os.RemoveAll, and the Lstat checks exist so a symlinked sessions/ or session dir cannot redirect a recursive delete. Tests pin the symlink cases. Simplifying that is a decision for Jesse, not a debt-sweep item.",
+  "revised_fix_plan": "Only delete the dead wrapper delegateSessionDir (and fold delegateArtifactsDir into callers if desired). Leave the symlink hardening unless Jesse says the threat model does not need it."
+ },
+ {
+  "id": "agent-delegates-19",
+  "title": "covtest files with source line numbers, coverage-only tests and phrase assertions",
+  "category": "test-debt",
+  "original_severity": "medium",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Confirmed and slightly larger: 17 *covtest* files in the slice totaling 4,013 lines (audit said 12); 128 comment lines cite source line numbers (audit said 99, e.g. delegate_tree_work_covtest_test.go:10 'covers the closing=true path (lines 22-23)'); 36 strings.Contains(err.Error()) assertions in delegate/subagent tests (audit said 30) of which some check stable codes (invalid_request, legacy_delegate_state) and about 25 check prose such as 'already exists', 'uncommitted changes', 'store is closed', 'decode delegate update message'. TestBeginShellWork_StaleLease asserts only err != nil. 134 test files / 61,718 lines vs 18,170 production lines confirmed. Concern with the plan: deleting 1,500-2,500 test lines reduces coverage, which Jesse's rules rank worse than failing tests.",
+  "revised_fix_plan": "Strip line-number comments; rewrite prose assertions to errors.Is on sentinels or typed errors (add a sentinel only where behavior depends on it); strengthen err != nil tests to assert the sentinel and resulting state; fold covtest tests into their owning test files. Delete a test only when another behavior test covers the same branch; no wholesale -2,500 target."
+ },
+ {
+  "id": "agent-delegates-20",
+  "title": "Comments lead with ticket numbers and spec codes",
+  "category": "slop",
+  "original_severity": "low",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Confirmed with exact counts: 18,170 production lines, 2,641 comment lines (14.5%), 28 '#NNNN' references, 3 'kata tpb0', 3 '(S3)/(S6)' codes; delegate_runtime.go:311 narrates 'Previously each lease armed its own NewTicker'. Opportunistic cleanup only."
+ }
+]

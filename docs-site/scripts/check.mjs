@@ -30,6 +30,9 @@ const LIVING_IN_ARCHIVE = new Set([
   "docs/design/mobile/ios-build-distribution.md",
   "docs/design/mobile/acceptance.md",
   "docs/design/mobile/ios-v1-remaining.md",
+  "docs/design/context.md",
+  "docs/design/stop-cancellation-outbox.md",
+  "docs/subagent-management/11-delegate-resource-model.md",
   "docs/web-ui/design-system.md",
   "docs/web-ui/keybindings.md",
   "docs/web-ui/shared-notes.md",
@@ -62,7 +65,6 @@ const DOC_FILES = [
   "fuzz/README.md",
   "tools/tool-fluency/README.md",
   "tools/prompt-eval/README.md",
-  "tools/prompt-eval/memory-lab/README.md",
 ];
 
 // Generated and installed trees are not sources: `.generated` is restaged from

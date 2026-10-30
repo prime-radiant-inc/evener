@@ -2,15 +2,21 @@ import assert from 'node:assert/strict';
 import { chromium } from '@playwright/test';
 import { join } from 'node:path';
 import { mkdtemp, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { failureRoot } from './diagnostics.mjs';
 
 export async function recordWebFailure(error, phase, details) {
  // The Go driver owns TMPDIR and removes it before the caller can inspect logs.
- const directory=await mkdtemp(join(process.platform==='win32'?tmpdir():'/tmp','evener-web-failure-'));
+ const directory=await mkdtemp(join(failureRoot(),'evener-web-failure-'));
  const file=join(directory,'failure.json');
  await writeFile(file,JSON.stringify({phase,message:error.message,stack:error.stack,details}),{mode:0o600});
  error.diagnosticsPath=file;
  error.tourPhase=`${phase}; private diagnostics: ${file}`;
+}
+
+// Length and containment relations to the requested path, never the text.
+export function pathShape(value,requestedPaths) {
+ if(typeof value!=='string')return {length:null,startsWithRequested:false,endsWithRequested:false,containsRequested:false};
+ return {length:value.length,startsWithRequested:requestedPaths.some(p=>value.startsWith(p)),endsWithRequested:requestedPaths.some(p=>value.endsWith(p)),containsRequested:requestedPaths.some(p=>value.includes(p))};
 }
 
 export function pathValidationTrace(requestedPaths) {
@@ -19,7 +25,7 @@ export function pathValidationTrace(requestedPaths) {
  return {events,
   sent(payload) {
    const frame=parse(payload);if(frame.method!=='evener/path/validate')return;
-   const event={method:frame.method,event:'sent',call:++sequence,timeMS:Date.now(),requested:requestedPaths.includes(frame.params?.path)};
+   const event={method:frame.method,event:'sent',call:++sequence,timeMS:Date.now(),requested:requestedPaths.includes(frame.params?.path),...pathShape(frame.params?.path,requestedPaths)};
    pending.set(frame.id,event);events.push(event);
   },
   received(payload) {
@@ -39,7 +45,8 @@ export function installDirectoryProbe(requestedPaths) {
   const dialog=input?.closest('[role="dialog"]');
   if(identity!==dialog){identity=dialog;generation++;}
   const button=[...(dialog?.querySelectorAll('button')??[])].find(b=>b.textContent.trim()==='Use this folder');
-  const state={generation,present:Boolean(dialog),inputMatches:requestedPaths.includes(input?.value),pending:dialog?.querySelector('[aria-label="Folders"]')?.getAttribute('aria-busy')==='true',edited:Boolean(dialog?.querySelector('[data-state="edited"]')),error:Boolean(dialog?.querySelector('[role="alert"]')),confirmEnabled:Boolean(button&&!button.disabled)};
+  const value=input?.value,shape=typeof value==='string'?{length:value.length,startsWithRequested:requestedPaths.some(p=>value.startsWith(p)),endsWithRequested:requestedPaths.some(p=>value.endsWith(p)),containsRequested:requestedPaths.some(p=>value.includes(p))}:{length:null,startsWithRequested:false,endsWithRequested:false,containsRequested:false};
+  const state={generation,present:Boolean(dialog),inputMatches:requestedPaths.includes(value),inputFocused:Boolean(input)&&document.activeElement===input,selectionLength:input?input.selectionEnd-input.selectionStart:null,inputShape:shape,pending:dialog?.querySelector('[aria-label="Folders"]')?.getAttribute('aria-busy')==='true',edited:Boolean(dialog?.querySelector('[data-state="edited"]')),error:Boolean(dialog?.querySelector('[role="alert"]')),confirmEnabled:Boolean(button&&!button.disabled)};
   const encoded=JSON.stringify(state);if(stage==='mutation'&&encoded===previous)return;previous=encoded;
   events.push({stage,timeMS:Date.now(),prevented,...state});if(events.length>100)events.shift();
  };
@@ -193,8 +200,18 @@ export async function open(options) {
       phase='provider credential';
       await page.getByLabel('API key',{exact:true}).fill(args.credential);
       await page.getByRole('button',{name:'Save and check',exact:true}).click();
+      phase='provider completion';
+      // A successful check closes the guided dialog and returns to the
+      // preserved spawn draft on its own: there is no success continuation, and
+      // no forced model picker. The model choice below is a deliberate
+      // regular-UI action, not a required handoff.
+      await page.getByRole('dialog').waitFor({state:'detached'});
+      const cwd=page.locator('#spawn-cwd');
+      assert.equal(await cwd.getAttribute('data-state'),'chosen');
+      assert.ok((await cwd.getAttribute('aria-label')??'').includes(workspace));
+      assert.equal(await page.getByRole('listbox',{name:'Model',exact:true}).count(),0);
       phase='provider model selection';
-      await page.getByRole('button',{name:'Choose model',exact:true}).click();
+      await page.getByTestId('spawn-model-trigger').click();
       await page.getByRole('combobox',{name:'Model',exact:true}).fill(args.modelID);
       await page.getByRole('listbox',{name:'Model',exact:true}).getByRole('option').first().click();
      } catch(error) {

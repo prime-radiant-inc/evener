@@ -4,7 +4,14 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { resetPendingTurnsStoreForTests } from "../panes/session/composer/queue/pendingTurnsStore";
 import { connectionStore } from "./connection";
-import { controlsFor, pressLocalRecoveryFenced, pressRefusal, recoveryFence } from "./liveControls";
+import {
+  browserSendRecovery,
+  controlsFor,
+  pressLocalRecoveryFenced,
+  pressRefusal,
+  recoveryFence,
+  sendQueueDecisionFor,
+} from "./liveControls";
 import { resetThreadsStoreForTests, threadsStore } from "./threads";
 
 const CAPABILITIES = { send: true, steer: true, interrupt: true, queue: true } as Thread["evener"]["capabilities"];
@@ -91,43 +98,38 @@ test("controlsFor is sessionControls over the model's status, capabilities and q
 // it used to infer: applyThreadResumeRequirement stamps that same shape for a
 // Stop drain, an unconfirmed force-stop exit, and the connection-recovery
 // fence, whose turn/start the hub still refuses.
-test("isResumeOnlyLocal follows the hub's foldable bit, never the inferred shape", () => {
+test("isResumeOnly follows the hub's foldable bit, never the inferred shape", () => {
   const base = { status: { type: "notLoaded" } } as const;
   // resumeRequired set (the hub's fence overlay) but the hub did not stamp the
   // foldable bit: a Stop drain / unconfirmed exit / connection fence, not this.
   const fencedButNotFoldable = { resumeRequired: true, status: { type: "notLoaded" } };
-  expect(recoveryFence("local:s", fencedButNotFoldable, true).resumeOnly).toBe(false);
-  expect(recoveryFence("local:s", { ...base, resumeOnlyFoldable: true }, true).resumeOnly).toBe(true);
-  // A non-local ref is never this shape even when the hub bit is set.
-  expect(recoveryFence("remote:s", { ...base, resumeOnlyFoldable: true }, true).resumeOnly).toBe(false);
+  expect(recoveryFence(fencedButNotFoldable, true).resumeOnly).toBe(false);
+  expect(recoveryFence({ ...base, resumeOnlyFoldable: true }, true).resumeOnly).toBe(true);
 });
 
-// The client's own signals still narrow the FOLD: a delivery-uncertain row, a
-// queued non-send row, and a Stop this page started all keep the resume-only
-// carve-out away. R09 moves the first two under the Send-resumes face (Send is
-// offered; the store's driver resumes), while a draining Stop stays the wire's
-// own fence.
-test("the client signals take a local fence off the fold and split Send from the drain", () => {
+// The client's own signals still narrow the FOLD. Each one moves the session
+// under the Send-resumes face instead: Send stays offered and the store's
+// driver resumes behind the parked rows, waiting out a Stop this page started.
+test("the client signals take a fence off the fold and leave Send as the action", () => {
   const foldable = { resumeOnlyFoldable: true, status: { type: "notLoaded" } } as const;
-  expect(recoveryFence("local:s", foldable, true).resumeOnly).toBe(true);
-  expect(recoveryFence("local:s", foldable, true, { uncertainMessages: true }).resumeOnly).toBe(false);
-  expect(recoveryFence("local:s", foldable, true, { queuedNonSend: true }).resumeOnly).toBe(false);
-  expect(recoveryFence("local:s", foldable, true, { stopInFlight: true }).resumeOnly).toBe(false);
+  expect(recoveryFence(foldable, true).resumeOnly).toBe(true);
+  expect(recoveryFence(foldable, true, { uncertainMessages: true }).resumeOnly).toBe(false);
+  expect(recoveryFence(foldable, true, { queuedNonSend: true }).resumeOnly).toBe(false);
+  expect(recoveryFence(foldable, true, { stopInFlight: true }).resumeOnly).toBe(false);
   // A delivery-uncertain or queued-non-send row is the Send-resumes face: Send
   // is offered and not stillFenced, and the store's driver resumes behind the
   // parked rows.
-  const uncertain = recoveryFence("local:s", foldable, true, { uncertainMessages: true });
+  const uncertain = recoveryFence(foldable, true, { uncertainMessages: true });
   expect(uncertain.sendResumes).toBe(true);
   expect(uncertain.stillFenced).toBe(false);
-  const queued = recoveryFence("local:s", foldable, true, { queuedNonSend: true });
+  const queued = recoveryFence(foldable, true, { queuedNonSend: true });
   expect(queued.sendResumes).toBe(true);
   expect(queued.stillFenced).toBe(false);
-  // A Stop this page started keeps its own fence: Stopping > 0 refuses even
-  // turn/start, so Send is not offered and the stopped-local card stays.
-  const stopped = recoveryFence("local:s", foldable, true, { stopInFlight: true });
-  expect(stopped.sendResumes).toBe(false);
-  expect(stopped.stillFenced).toBe(true);
-  expect(stopped.fencedLocal).toBe(true);
+  // A Stop this page started no longer refuses Send: the press parks its row
+  // and the driver waits the drain out before resuming.
+  const stopped = recoveryFence(foldable, true, { stopInFlight: true });
+  expect(stopped.sendResumes).toBe(true);
+  expect(stopped.stillFenced).toBe(false);
 });
 
 // RoboRev Medium (round 13): the hub's resume-only admission is
@@ -140,33 +142,30 @@ test("the client signals take a local fence off the fold and split Send from the
 // it (invalidateHeldHistoriesForReconnect), so a bit whose shut-down snapshot
 // has ended can no longer mis-route a send. The predicate follows the bit
 // alone, never a status.
-test("isResumeOnlyLocal follows the hub's foldable bit, not the status", () => {
+test("isResumeOnly follows the hub's foldable bit, not the status", () => {
   // A live snapshot the hub legitimately stamped foldable keeps the carve-out:
   // the hub admits the folded send there too.
   const foldableActive = { resumeOnlyFoldable: true, status: { type: "active" } } as const;
-  expect(recoveryFence("local:s", foldableActive, false).resumeOnly).toBe(true);
+  expect(recoveryFence(foldableActive, false).resumeOnly).toBe(true);
   // A bit the off-shut-down transition (or a reconnect) cleared is not this
   // shape, whatever the status - the property the stale-bit defence protects.
   const clearedActive = { resumeOnlyFoldable: false, status: { type: "active" } } as const;
-  expect(recoveryFence("local:s", clearedActive, false).resumeOnly).toBe(false);
+  expect(recoveryFence(clearedActive, false).resumeOnly).toBe(false);
   const clearedStopped = { resumeOnlyFoldable: false, status: { type: "notLoaded" } } as const;
-  expect(recoveryFence("local:s", clearedStopped, false).resumeOnly).toBe(false);
+  expect(recoveryFence(clearedStopped, false).resumeOnly).toBe(false);
 });
 
-// RoboRev Medium (round 8): a Stop this page started is its OWN fence, not only
-// a blocker of the resume-only carve-out. A stale thread refresh can clear
-// restartBlockingObligations while the forceStop RPC is still draining (the hub
-// holds Stopping > 0 and refuses even turn/start there), so stillFenced must
-// hold on stopInFlight alone, independent of restartObligated. The stopped-local
-// follow-up card must stay reachable for the drain's whole window.
-test("an in-flight Stop keeps the fence without the restart obligation", () => {
+// A Stop this page started is its OWN fence, not only a blocker of the
+// resume-only carve-out: a stale thread refresh can clear
+// restartBlockingObligations while the forceStop RPC still drains. The stop
+// therefore keeps the recovery obligation, and Send is the action that rides
+// it out.
+test("an in-flight Stop arms the fence without the restart obligation", () => {
   const foldable = { resumeOnlyFoldable: true, status: { type: "notLoaded" } } as const;
-  const reading = recoveryFence("local:s", foldable, false, { stopInFlight: true });
+  const reading = recoveryFence(foldable, false, { stopInFlight: true });
   expect(reading.resumeOnly).toBe(false);
   expect(reading.stillFenced).toBe(true);
   expect(reading.fencedLocal).toBe(true);
-  // The local-prefix rule is unchanged: a non-local ref is never this fence.
-  expect(recoveryFence("remote:s", foldable, false, { stopInFlight: true }).stillFenced).toBe(false);
 });
 
 // The press fence is method-agnostic, and deliberately so: none of its callers
@@ -255,4 +254,135 @@ test("pressLocalRecoveryFenced keeps its fence while a Stop drains, with no obli
     return { stoppingRefs };
   });
   expect(pressLocalRecoveryFenced(ref)).toBe(false);
+});
+
+type DecisionTarget = Parameters<typeof sendQueueDecisionFor>[0];
+
+function decisionTarget(
+  status: string,
+  {
+    resumeOnlyFoldable = false,
+    send = true,
+    queue = true,
+  }: { resumeOnlyFoldable?: boolean; send?: boolean; queue?: boolean } = {},
+): DecisionTarget {
+  return {
+    status: { type: status },
+    capabilities: { ...CAPABILITIES, send, queue },
+    resumeOnlyFoldable,
+  };
+}
+
+// The browser adapter maps the ONE fence reading to the shared gate's recovery
+// input. Each reading here comes from recoveryFence itself, so the four faces
+// are pinned through the real producer rather than a hand-built shape.
+test("browserSendRecovery maps recoveryFence's four faces", () => {
+  expect(browserSendRecovery(recoveryFence({ status: { type: "notLoaded" } }, true))).toEqual({
+    kind: "send-resumes",
+  });
+  expect(browserSendRecovery(recoveryFence({ status: { type: "notLoaded" }, resumeOnlyFoldable: true }, true))).toEqual(
+    { kind: "folded-resume" },
+  );
+  expect(browserSendRecovery(recoveryFence({ status: { type: "notLoaded" } }, false, { stopInFlight: true }))).toEqual({
+    kind: "blocked",
+  });
+  expect(browserSendRecovery(recoveryFence({ status: { type: "idle" } }, false))).toEqual({ kind: "none" });
+});
+
+// availabilityFor's answers, now read from the shared decision. These are the
+// rows the composer renders from: Send-resumes keeps Send with a parked send,
+// the folded face refuses a second send, blocked refuses both, and the
+// unfenced faces stay the table's plus the browser's shut-down substitution.
+test("sendQueueDecisionFor applies the shared gate to the browser's faces", () => {
+  expect(sendQueueDecisionFor(decisionTarget("notLoaded"), true, true)).toEqual({
+    action: "send",
+    reason: "recovery-send",
+  });
+  expect(sendQueueDecisionFor(decisionTarget("notLoaded", { resumeOnlyFoldable: true }), false, true)).toEqual({
+    action: "send",
+    reason: "resume-folded",
+  });
+  expect(sendQueueDecisionFor(decisionTarget("notLoaded", { resumeOnlyFoldable: true }), true, true)).toEqual({
+    action: "none",
+    reason: "pending-send-in-flight",
+  });
+  expect(sendQueueDecisionFor(decisionTarget("notLoaded"), false, false, { stopInFlight: true })).toEqual({
+    action: "none",
+    reason: "recovery-fenced",
+  });
+  expect(sendQueueDecisionFor(decisionTarget("idle"), false, false)).toEqual({
+    action: "send",
+    reason: "plain-send",
+  });
+  expect(sendQueueDecisionFor(decisionTarget("idle"), true, false)).toEqual({ action: "queue", reason: "queue" });
+  expect(sendQueueDecisionFor(decisionTarget("active"), false, false)).toEqual({
+    action: "queue",
+    reason: "queue",
+  });
+  expect(sendQueueDecisionFor(decisionTarget("ended"), false, false)).toEqual({
+    action: "send",
+    reason: "shut-down-send",
+  });
+});
+
+// The browser policy never yields resume: its two resume routes are the
+// native explicit-resume face (which browserSendRecovery cannot produce) and
+// !connected (which this adapter never passes). Exercise every face, status,
+// capability pair and pending bit to pin the invariant, not one sample row.
+test("a browser send-queue decision is never resume", () => {
+  const statuses = [
+    "idle",
+    "awaiting",
+    "warning",
+    "systemError",
+    "active",
+    "notLoaded",
+    "ended",
+    "closed",
+    "restartRequired",
+    "futureStatus",
+  ];
+  const capabilityPairs = [
+    { send: true, queue: true },
+    { send: true, queue: false },
+    { send: false, queue: true },
+    { send: false, queue: false },
+  ];
+  const signalSets = [{}, { stopInFlight: true }, { uncertainMessages: true }, { queuedNonSend: true }];
+  for (const status of statuses) {
+    for (const capabilities of capabilityPairs) {
+      for (const resumeOnlyFoldable of [false, true]) {
+        for (const restartObligated of [false, true]) {
+          for (const pendingSend of [false, true]) {
+            for (const signals of signalSets) {
+              const target = decisionTarget(status, { ...capabilities, resumeOnlyFoldable });
+              expect(sendQueueDecisionFor(target, pendingSend, restartObligated, signals).action).not.toBe("resume");
+            }
+          }
+        }
+      }
+    }
+  }
+});
+
+// The gate checks restartRequired before every recovery face, so a
+// restartRequired snapshot answers none whatever the fence says. The folded
+// bit on this status is unreachable (the hub never stamps ResumeOnlyFoldable
+// for a restart-required daemon), but the old availabilityFor's folded-resume
+// branch would have answered { canSend: true, canQueue: false } for it; the
+// gate's first row refuses instead.
+test("sendQueueDecisionFor answers restart-required before the recovery face", () => {
+  expect(sendQueueDecisionFor(decisionTarget("restartRequired", { resumeOnlyFoldable: true }), false, false)).toEqual({
+    action: "none",
+    reason: "restart-required",
+  });
+  // The obligation's blocked face loses to the same first row.
+  expect(sendQueueDecisionFor(decisionTarget("restartRequired"), false, true)).toEqual({
+    action: "none",
+    reason: "restart-required",
+  });
+  expect(sendQueueDecisionFor(decisionTarget("restartRequired"), true, true)).toEqual({
+    action: "none",
+    reason: "restart-required",
+  });
 });

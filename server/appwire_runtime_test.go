@@ -35,29 +35,23 @@ func TestAppCapabilities_SteerAdvertisesHarnessSupport(t *testing.T) {
 		name       string
 		state      string
 		processing bool
-		reserved   bool
 		stale      bool
 		setSteer   bool
 		wantSteer  bool
 	}{
-		{"processing with steer handler", "active", true, false, false, true, true},
-		{"reserved idle with steer handler", "idle", false, true, false, true, true},
-		{"stale projected active turn with steer handler", "idle", false, false, true, true, true},
-		{"idle with steer handler", "idle", false, false, false, true, true},
-		{"awaiting with steer handler", "awaiting", false, false, false, true, true},
-		{"closed with steer handler", "closed", false, false, false, true, false},
-		{"processing without steer handler", "active", true, false, false, false, false},
-		{"idle without steer handler", "idle", false, false, false, false, false},
+		{"processing with steer handler", "active", true, false, true, true},
+		{"stale projected active turn with steer handler", "idle", false, true, true, true},
+		{"idle with steer handler", "idle", false, false, true, true},
+		{"awaiting with steer handler", "awaiting", false, false, true, true},
+		{"closed with steer handler", "closed", false, false, true, false},
+		{"processing without steer handler", "active", true, false, false, false},
+		{"idle without steer handler", "idle", false, false, false, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			s := NewServer(ServerConfig{})
 			if tc.setSteer {
 				wireRetrySafeCapabilities(s)
-			}
-			if tc.reserved {
-				s.appActiveTurnID = "turn_reserved"
-				s.appReservedTurnID = "turn_reserved"
 			}
 			if tc.stale {
 				s.appActiveTurnID = "turn_stale"
@@ -247,17 +241,13 @@ func TestAppCapabilities_AdvertisesClearWhenConfiguredAndSettled(t *testing.T) {
 //
 // The status a thread publishes and the capability set published beside it used
 // to be separate expressions over overlapping state: appStatus read `state` and
-// `processing` and never the turn reservation, appCapabilities read `processing`
-// and the reservation and never `state`. Each therefore had a window the other
-// could not see, and in both of them a client was handed one frame describing
-// two different threads:
+// `processing`, appCapabilities read `processing` and never `state`. Each
+// therefore had a window the other could not see, and in it a client was handed
+// one frame describing two different threads:
 //
 //   - state active with the daemon's flag already cleared: status=active beside
 //     steer=false interrupt=false send=true -- a busy composer with nothing on
-//     it, which is exactly kata 06t8's report;
-//   - a turn reserved with the session still idle: status=idle beside
-//     steer=true interrupt=true -- controls offered for a thread the wire calls
-//     settled.
+//     it, which is exactly kata 06t8's report.
 //
 // appCapabilities now derives `active` and `closed` from appStatus's result, so
 // there is one decision and the two cannot drift. This test is the guard on
@@ -271,30 +261,20 @@ func TestAppStatusAndCapabilitiesAreOneDecision(t *testing.T) {
 		name       string
 		state      string
 		processing bool
-		reserved   string
 	}{
-		{"session state active, daemon flag cleared", "active", false, ""},
-		// The two reserved cases are NOT reachable in the shipped daemon:
-		// reserveAppTurnIDForStart is the only writer of appReservedTurnID and
-		// has no non-test callers. They are kept deliberately, and labelled so
-		// nobody reads them as evidence of a live path -- appStatus must stay
-		// correct for the reservation if it is ever wired up, and these are the
-		// only cases that would catch it diverging from appCapabilities again.
-		{"turn reserved, session state still idle (test-only state)", "idle", false, "turn_m2"},
-		{"processing", "active", true, ""},
-		{"idle", "idle", false, ""},
-		{"awaiting", "awaiting", false, ""},
-		{"closed", "closed", false, ""},
-		{"closed with a reservation left behind (test-only state)", "closed", false, "turn_m2"},
+		{"session state active, daemon flag cleared", "active", false},
+		{"processing", "active", true},
+		{"idle", "idle", false},
+		{"awaiting", "awaiting", false},
+		{"closed", "closed", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			s := NewServer(ServerConfig{})
 			wireRetrySafeCapabilities(s)
 			s.SetCancelFunc(func() {})
-			s.appReservedTurnID = tc.reserved
 
-			status := appStatus(tc.state, tc.processing, strings.TrimSpace(tc.reserved) != "")
+			status := appStatus(tc.state, tc.processing)
 			caps := s.appCapabilities(tc.state, tc.processing)
 			working := status == appwire.ThreadStatusActive
 
@@ -600,7 +580,7 @@ func TestThreadListStatusOnlyCarriesProbeDiagnosticsOnly(t *testing.T) {
 
 func TestAppThread_OverlaysPendingAskFunc(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetStatus(StatusInfo{SessionID: "s1", State: "awaiting"})
+	seedStatus(srv, StatusInfo{SessionID: "s1", State: "awaiting"})
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.askPending = true })
 	thread := srv.appThread()
 	if !thread.Evener.AskPending {
@@ -614,7 +594,7 @@ func TestAppThread_OverlaysPendingAskFunc(t *testing.T) {
 // prior thread/model/changed or thread/reasoning-effort/changed notification.
 func TestAppThread_CarriesReasoningInfoFromLiveSessionState(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetStatus(StatusInfo{SessionID: "s1", State: "idle"})
+	seedStatus(srv, StatusInfo{SessionID: "s1", State: "idle"})
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) {
 		e.reasoningEffort = "high"
 		e.reasoningLevels = []string{"low", "medium", "high"}
@@ -635,7 +615,7 @@ func TestAppThread_CarriesReasoningInfoFromLiveSessionState(t *testing.T) {
 
 func TestAppThread_UsesGeneratedSessionNameFromMeta(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetStatus(StatusInfo{
+	seedStatus(srv, StatusInfo{
 		SessionID:  "01TITLE",
 		State:      "idle",
 		WorkingDir: "/tmp/project",

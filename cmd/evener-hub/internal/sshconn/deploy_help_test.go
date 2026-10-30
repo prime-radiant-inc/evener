@@ -103,7 +103,7 @@ func TestInstallerRefusalsKeepTheLibraryRemedy(t *testing.T) {
 // message clause: the terminal refusal a moved channel produces names the
 // path that does carry a provable identity, through the same Options.DeployHelp
 // seam. The refusal's type and terminality are pinned by
-// TestRound8InstallerVersionMismatchIsTerminal; this adds the remedy clause,
+// TestInstallerVersionMismatchIsTerminal; this adds the remedy clause,
 // which is the half an operator acts on.
 func TestInstallerMovedChannelRefusalNamesThePushPath(t *testing.T) {
 	origSHA, origDirty, origChannel := buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel
@@ -120,7 +120,7 @@ func TestInstallerMovedChannelRefusalNamesThePushPath(t *testing.T) {
 		case strings.Contains(joined, "launch-check"):
 			// The installer succeeded but fetched a newer snapshot than this
 			// controller's commit: a moved channel.
-			return []byte(`{"protocol":"evener-appwire-v7","version":"oldersha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldersha","launch_flags":["api-log"]}`), nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
@@ -147,15 +147,16 @@ func unstampedRefusal(t *testing.T, opts Options) error {
 		func(call int) ([]byte, error) {
 			if call == 0 {
 				// The on-disk binary before the deploy.
-				return []byte(`{"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`), nil
+				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`), nil
 			}
 			// The artifact the deploy wrote: right platform, foreign identity.
-			return []byte(`{"protocol":"evener-appwire-v7","version":"othersha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"othersha","launch_flags":["api-log"]}`), nil
 		},
 		func(int) ([]byte, error) {
 			return []byte(`{"version":"othersha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		},
 	)
+	modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "othersha")
 	opts.controllerVersionOverride = "newsha"
 	if opts.sleep == nil {
 		opts.sleep = func(context.Context, time.Duration) error { return nil }
@@ -169,8 +170,8 @@ func unstampedRefusal(t *testing.T, opts Options) error {
 	testRestartRecorder(t, m)
 
 	_, err := m.Ensure(context.Background(), "alpha")
-	if !errors.Is(err, errDeployUnstamped) {
-		t.Fatalf("Ensure err = %v, want errDeployUnstamped", err)
+	if !errors.Is(err, ErrDeployUnstamped) {
+		t.Fatalf("Ensure err = %v, want ErrDeployUnstamped", err)
 	}
 	return err
 }

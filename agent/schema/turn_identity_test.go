@@ -3,7 +3,12 @@ package schema
 import (
 	"bytes"
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -126,9 +131,111 @@ func TestTranscriptOnlyKinds(t *testing.T) {
 			t.Errorf("%s is not transcript-only", kind)
 		}
 	}
-	for _, kind := range []TurnKind{TurnUserInput, TurnSteering, TurnAssistant, TurnTool, TurnToolResults, TurnSystem, TurnCheckpoint, TurnSummary, TurnModelSwitch, TurnFailure, TurnHookCompleted, TurnEnvironment, TurnNotesContext, TurnAttentionResolution} {
+	for _, kind := range []TurnKind{TurnUserInput, TurnSteering, TurnAssistant, TurnTool, TurnToolResults, TurnSystem, TurnCheckpoint, TurnSummary, TurnModelSwitch, TurnFailure, TurnHookCompleted, TurnEnvironment, TurnNotesContext, TurnMemoryContext, TurnAttentionResolution} {
 		if kind.TranscriptOnly() {
 			t.Errorf("%s is transcript-only", kind)
 		}
 	}
+}
+
+// TestHarnessContextKindsAreClassified pins the predicate's true set and
+// requires every TurnKind declared in the schema package to be on one side of
+// it. A kind added to the schema without a decision fails here, so a new
+// harness context kind cannot land while consumers still list the old set by
+// hand.
+func TestHarnessContextKindsAreClassified(t *testing.T) {
+	want := map[TurnKind]bool{
+		TurnEnvironment: true, TurnNotesContext: true, TurnMemoryContext: true,
+		TurnUserInput: false, TurnSteering: false, TurnAssistant: false, TurnTool: false,
+		TurnToolResults: false, TurnSystem: false, TurnCheckpoint: false, TurnSummary: false,
+		TurnModelSwitch: false, TurnFailure: false, TurnHookCompleted: false,
+		TurnAttentionResolution: false, TurnCompletion: false, TurnReopen: false,
+		TurnCommunicate: false, TurnNotice: false,
+	}
+	for kind, classified := range want {
+		if kind.HarnessContext() != classified {
+			t.Errorf("HarnessContext(%s) = %t, want %t", kind, kind.HarnessContext(), classified)
+		}
+	}
+	for _, kind := range declaredTurnKinds(t) {
+		if _, ok := want[kind]; !ok {
+			t.Errorf("TurnKind %s is declared in the schema package but not classified as harness context or not; add it here and to HarnessContext if the harness projects it as context", kind)
+		}
+	}
+}
+
+// declaredTurnKinds returns the value of every TurnKind constant declared in
+// the schema package's non-test files, across every const block. Turn kinds
+// declare their type and string value explicitly; a Turn-prefixed string
+// constant without the type fails rather than escaping the classification.
+func declaredTurnKinds(t *testing.T) []TurnKind {
+	t.Helper()
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read schema package: %v", err)
+	}
+	fset := token.NewFileSet()
+	var kinds []TurnKind
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		for _, decl := range file.Decls {
+			gd, ok := decl.(*ast.GenDecl)
+			if !ok || gd.Tok != token.CONST {
+				continue
+			}
+			for _, spec := range gd.Specs {
+				vs, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				if vs.Type == nil && len(vs.Names) == 1 && len(vs.Values) == 1 && strings.HasPrefix(vs.Names[0].Name, "Turn") {
+					if lit, ok := vs.Values[0].(*ast.BasicLit); ok && lit.Kind == token.STRING {
+						t.Fatalf("%s: Turn-prefixed constant %s declares no TurnKind type; declare it as Name TurnKind = \"VALUE\"", fset.Position(vs.Pos()), vs.Names[0].Name)
+					}
+				}
+				isTurnKind := false
+				var valueExpr ast.Expr
+				if ident, ok := vs.Type.(*ast.Ident); ok && ident.Name == "TurnKind" {
+					isTurnKind = true
+				} else if vs.Type == nil && len(vs.Values) == 1 {
+					// A bare TurnKind conversion is still a TurnKind constant.
+					if call, ok := vs.Values[0].(*ast.CallExpr); ok && len(call.Args) == 1 {
+						if ident, ok := call.Fun.(*ast.Ident); ok && ident.Name == "TurnKind" {
+							isTurnKind = true
+							valueExpr = call.Args[0]
+						}
+					}
+				}
+				if !isTurnKind {
+					continue
+				}
+				if len(vs.Names) != 1 || len(vs.Values) != 1 {
+					t.Fatalf("%s: TurnKind spec must declare exactly one name and one value", fset.Position(vs.Pos()))
+				}
+				if valueExpr == nil {
+					valueExpr = vs.Values[0]
+				}
+				lit, ok := valueExpr.(*ast.BasicLit)
+				if !ok || lit.Kind != token.STRING {
+					t.Fatalf("%s: TurnKind %s must declare its value as a string literal", fset.Position(vs.Pos()), vs.Names[0].Name)
+				}
+				kindValue, err := strconv.Unquote(lit.Value)
+				if err != nil {
+					t.Fatalf("%s: unquote %s: %v", fset.Position(vs.Pos()), vs.Names[0].Name, err)
+				}
+				kinds = append(kinds, TurnKind(kindValue))
+			}
+		}
+	}
+	if len(kinds) == 0 {
+		t.Fatal("no TurnKind constants found in the schema package")
+	}
+	return kinds
 }

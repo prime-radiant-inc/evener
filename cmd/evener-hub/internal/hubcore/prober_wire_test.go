@@ -308,7 +308,7 @@ func TestStatusProberCarriesTaskProgress(t *testing.T) {
 	}
 }
 
-func TestStatusProberProjectsQuiescedStableDelegateAsIdle(t *testing.T) {
+func TestStatusProberProjectsQuiescedDelegateAsIdle(t *testing.T) {
 	// A retained child can still have an active descendant projection even after
 	// its stable delegate run has settled. The stable delegate lifecycle is the
 	// authoritative no-current-run signal for the parent-side projection.
@@ -334,7 +334,7 @@ func TestStatusProberProjectsQuiescedStableDelegateAsIdle(t *testing.T) {
 	}
 }
 
-func TestStatusProberPreservesRunningStableDelegateAsActive(t *testing.T) {
+func TestStatusProberPreservesRunningDelegateAsActive(t *testing.T) {
 	prober, entry := startProbeDaemon(t, probeDaemonConfig{
 		sessionID: "th_wire_running",
 		descendants: map[string]string{

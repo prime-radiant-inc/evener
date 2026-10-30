@@ -2,35 +2,36 @@ package agent
 
 import (
 	"context"
-	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/llm"
 )
 
-// TestW3Init_PrepareSubagentRun_ChildSessionError covers the arm where building
+// TestW3Init_DelegateCreate_ChildSessionError covers the arm where building
 // the child Session fails: the injected child-client factory yields a nil client,
 // so NewSession rejects it.
-func TestW3Init_PrepareSubagentRun_ChildSessionError(t *testing.T) {
+func TestW3Init_DelegateCreate_ChildSessionError(t *testing.T) {
 	t.Parallel()
 	cfg := SessionConfig{
 		MaxSubagentDepth: 1,
+		StateDir:         t.TempDir(),
 		testOnly:         testConfig{childClientFactory: func() *llm.Client { return nil }},
 	}
 	s := newSession(t, withConfig(cfg))
 
-	_, err := s.prepareSubagentRun(context.Background(), "task", "", "", 0, "", "", nil, nil)
-	if err == nil || !strings.Contains(err.Error(), "llm client is nil") {
-		t.Fatalf("err = %v, want nil-client child session error", err)
+	result := s.createDelegate(context.Background(), delegateArgs{Task: "task", DelegationAllowance: new(0)})
+	if result.Err == nil {
+		t.Fatalf("createDelegate succeeded with a nil child client: %+v", result)
 	}
 }
 
-// TestW3Init_PrepareSubagentRun_SkillResolveSkipped covers the arm where a named
+// TestW3Init_DelegateCreate_SkillResolveSkipped covers the arm where a named
 // agent references a skill that cannot be resolved: the unresolved skill is
 // skipped and the spawn still prepares.
-func TestW3Init_PrepareSubagentRun_SkillResolveSkipped(t *testing.T) {
+func TestW3Init_DelegateCreate_SkillResolveSkipped(t *testing.T) {
 	t.Parallel()
 	s := newSession(t)
 	s.pluginAgents["w3agent"] = plugin.Agent{
@@ -40,17 +41,13 @@ func TestW3Init_PrepareSubagentRun_SkillResolveSkipped(t *testing.T) {
 		Skills:       []string{"w3-nonexistent-skill"},
 	}
 
-	prepared, err := s.prepareSubagentRun(context.Background(), "task", "", "", 0, "w3agent", "", nil, nil)
-	if err != nil {
-		t.Fatalf("prepareSubagentRun: %v", err)
-	}
+	prepared := prepareStableChild(t, s, delegateArgs{Task: "task", AgentType: "w3agent"})
 	if prepared == nil || prepared.sub == nil || prepared.sub.sess == nil {
 		t.Fatal("expected a prepared subagent run")
 	}
 	if len(prepared.frozenSkillNames) != 0 {
 		t.Fatalf("frozenSkillNames = %v, want none (unresolved skill skipped)", prepared.frozenSkillNames)
 	}
-	releasePreparedTreeSlot(prepared)
 	prepared.sub.sess.Close()
 }
 
@@ -58,7 +55,7 @@ func TestW3Init_PrepareSubagentRun_SkillResolveSkipped(t *testing.T) {
 // command hook emitting the given JSON, so runSubagentStopHook can be exercised.
 func w3init_stopHookSession(t *testing.T, hookJSON string) *subagent {
 	t.Helper()
-	subSess := newSession(t, withSteps(func(llm.Request) llm.Response { return finalResponse("ok") }))
+	subSess := newSession(t, withSteps(func(llm.Request) llm.Response { return agenttest.FinalResponse("ok") }))
 	runner := hooks.NewRunner(nil, "")
 	runner.Add(plugin.HookSubagentStop, plugin.RegisteredHook{
 		Matcher: "*",

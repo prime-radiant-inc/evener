@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
@@ -212,7 +213,7 @@ func TestConcurrentAliasResumeSpawnsOneCurrentDaemon(t *testing.T) {
 	}
 	done := make(chan error, 2)
 	go func() {
-		_, err := first.ThreadResume(t.Context(), appwire.ThreadResumeParams{Ref: "local:" + stable})
+		_, err := appwiretest.ThreadResume(t.Context(), first, appwire.ThreadResumeParams{Ref: "local:" + stable})
 		done <- err
 	}()
 	select {
@@ -221,7 +222,7 @@ func TestConcurrentAliasResumeSpawnsOneCurrentDaemon(t *testing.T) {
 		t.Fatalf("first resume did not launch: %v", err)
 	}
 	go func() {
-		_, err := second.ThreadResume(t.Context(), appwire.ThreadResumeParams{Ref: "local:" + current})
+		_, err := appwiretest.ThreadResume(t.Context(), second, appwire.ThreadResumeParams{Ref: "local:" + current})
 		done <- err
 	}()
 	close(release)
@@ -244,7 +245,7 @@ func TestConcurrentAliasResumeSpawnsOneCurrentDaemon(t *testing.T) {
 		if err := rendezvous.Remove(cfg.RunDir, 106); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := first.ThreadResume(t.Context(), appwire.ThreadResumeParams{Ref: "local:" + alias}); err != nil {
+		if _, err := appwiretest.ThreadResume(t.Context(), first, appwire.ThreadResumeParams{Ref: "local:" + alias}); err != nil {
 			t.Fatalf("resume after marker removal through %s: %v", alias, err)
 		}
 	}
@@ -608,7 +609,7 @@ func TestResumeTraversesTwoCompletedRecoveryCycles(t *testing.T) {
 		if _, err := client.Initialize(t.Context(), appwire.InitializeParams{}); err != nil {
 			t.Fatal(err)
 		}
-		_, err := client.ThreadResume(t.Context(), appwire.ThreadResumeParams{Ref: "local:" + pair[0]})
+		_, err := appwiretest.ThreadResume(t.Context(), client, appwire.ThreadResumeParams{Ref: "local:" + pair[0]})
 		client.Close()
 		if err != nil {
 			t.Fatal(err)
@@ -622,7 +623,7 @@ func TestResumeTraversesTwoCompletedRecoveryCycles(t *testing.T) {
 	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.ThreadResume(t.Context(), appwire.ThreadResumeParams{Ref: "local:" + a}); err != nil {
+	if _, err := appwiretest.ThreadResume(t.Context(), client, appwire.ThreadResumeParams{Ref: "local:" + a}); err != nil {
 		t.Fatal(err)
 	}
 	if launches != 3 {
@@ -846,7 +847,7 @@ func TestRepeatedRecoveryRetainsCrashMarkersAndPendingGroups(t *testing.T) {
 				t.Fatal(err)
 			}
 			client = connect()
-			if _, err := client.ThreadResume(t.Context(), appwire.ThreadResumeParams{Ref: "local:" + a}); err != nil {
+			if _, err := appwiretest.ThreadResume(t.Context(), client, appwire.ThreadResumeParams{Ref: "local:" + a}); err != nil {
 				t.Fatal(err)
 			}
 			if clear {
@@ -864,11 +865,11 @@ func TestRepeatedRecoveryRetainsCrashMarkersAndPendingGroups(t *testing.T) {
 			}
 			before := cfg.ResumeLocks.RecoveryState(b)
 			if !clear {
-				if _, err := client.ThreadResume(t.Context(), appwire.ThreadResumeParams{Ref: "local:" + a}); err == nil {
+				if _, err := appwiretest.ThreadResume(t.Context(), client, appwire.ThreadResumeParams{Ref: "local:" + a}); err == nil {
 					t.Fatal("stale connection crossed newer stop")
 				}
 				client = connect()
-				if _, err := client.ThreadResume(t.Context(), appwire.ThreadResumeParams{Ref: "local:" + a}); err == nil {
+				if _, err := appwiretest.ThreadResume(t.Context(), client, appwire.ThreadResumeParams{Ref: "local:" + a}); err == nil {
 					t.Error("older alias acknowledged a different pending group")
 				}
 				mu.Lock()
@@ -883,10 +884,10 @@ func TestRepeatedRecoveryRetainsCrashMarkersAndPendingGroups(t *testing.T) {
 				}
 			}
 			client = connect()
-			if _, err := client.ThreadResume(t.Context(), appwire.ThreadResumeParams{Ref: "local:" + b}); err != nil {
+			if _, err := appwiretest.ThreadResume(t.Context(), client, appwire.ThreadResumeParams{Ref: "local:" + b}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := client.ThreadResume(t.Context(), appwire.ThreadResumeParams{Ref: "local:" + a}); err != nil {
+			if _, err := appwiretest.ThreadResume(t.Context(), client, appwire.ThreadResumeParams{Ref: "local:" + a}); err != nil {
 				t.Fatalf("retained crash markers blocked completed alias: %v", err)
 			}
 			mu.Lock()

@@ -18,6 +18,7 @@ import {
   mergeTranscriptTurnVersioned,
   pruneBackgroundHistoryBodies,
   readDisposition,
+  resolvePendingEscalation,
   type SnapshotIdentity,
   type ThreadItem,
   type ThreadItemPosition,
@@ -246,6 +247,15 @@ export interface TranscriptRepositoryBinding {
    */
   historyGeneration?: number;
   /**
+   * The escalation ids this client resolved, owned by whoever replaces the
+   * repository so a replacement inherits them. A resolved escalation never
+   * returns, but the resolving client learns of it from its own acknowledgment,
+   * which the daemon's snapshot cut does not order, so a read issued before the
+   * resolve can still carry the card; every read the repository adopts drops
+   * these. Absent, the repository keeps its own.
+   */
+  resolvedEscalations?: Set<string>;
+  /**
    * A browser-lifetime nonce. The baseline identity is minted from the
    * tab-local connection lifetime and source revision, but that lifetime
    * counter resets with the page: without a per-browser-lifetime nonce a
@@ -307,6 +317,8 @@ export interface TranscriptRepositoryBinding {
   reconcile?: () => void;
   /** Read-only, deadline-owned transport ports for end disposition and final retirement. */
   readHistory?: (held?: SnapshotIdentity, signal?: AbortSignal) => Promise<ThreadReadResponse>;
+  /** Only accepted readHistory responses, never local/cache publication or caller-owned hydration. */
+  onHistoryReadAccepted?: (response: ThreadReadResponse, model: ThreadModel) => void;
   readHistoryPage?: (request: {
     snapshot: SnapshotIdentity;
     cursor: string;
@@ -483,6 +495,7 @@ export class TranscriptRepository {
   // whose demand the eviction policy consults.
   #unregisterPreferred: (() => void) | undefined;
   readonly #endClaims = new Set<string>();
+  readonly #resolvedEscalations: Set<string>;
   #endWork: Promise<void> | undefined;
   #endRetryCancel: (() => void) | undefined;
   #endRetryAttempt = 0;
@@ -497,6 +510,7 @@ export class TranscriptRepository {
     this.#cache = cache;
     this.#admission = binding.admission ?? entryWriteAdmissionFor(cache);
     this.#binding = scalarBinding;
+    this.#resolvedEscalations = binding.resolvedEscalations ?? new Set();
     this.#baselineIdentity = this.#mintBaseline();
     if (binding.isPreferred) {
       this.#unregisterPreferred = cache.registerPreferredHistory(binding.historyKey, binding.isPreferred);
@@ -592,6 +606,24 @@ export class TranscriptRepository {
       invalidated: this.#invalidated,
       disposed: this.#disposed,
     };
+  }
+
+  /**
+   * True while the held view is still the one a completed local open
+   * established: no invalidation (recovery need, seed authority, cache
+   * continuity, invalidation marker, disposal) has overturned it since. A
+   * remount over a still-held view can serve it without a disk
+   * recertification, whose lookup-deadline expiry would discard the loaded
+   * range and fall back to a source read.
+   */
+  holdsEstablishedView(): boolean {
+    return (
+      !this.#recoveryNeeded &&
+      !this.#seedAuthorityInvalid &&
+      !this.#cacheContinuityLost &&
+      !this.#invalidated &&
+      !this.#disposed
+    );
   }
 
   /**
@@ -710,6 +742,9 @@ export class TranscriptRepository {
               )
             : hydrated;
         })();
+    // Local overlay preservation must not turn a rejected server read into
+    // accepted history or recovery authority.
+    if (candidate === before) return false;
     if (request.preserveEnded && before?.overlay) {
       for (const item of Object.values(before.overlay)) {
         if (item.kind !== "notice" && (!item.roundId || !this.#endClaims.has(item.roundId))) continue;
@@ -727,7 +762,6 @@ export class TranscriptRepository {
         );
       }
     }
-    if (candidate === before) return false;
     this.#model = candidate;
     const previousHistory = before?.history;
     const acceptedHistory = candidate.history;
@@ -885,6 +919,12 @@ export class TranscriptRepository {
     }
   }
 
+  #withoutResolvedEscalations(model: ThreadModel): ThreadModel {
+    let kept = model;
+    for (const escalationId of this.#resolvedEscalations) kept = resolvePendingEscalation(kept, escalationId);
+    return kept;
+  }
+
   /** Apply response metadata after the caller's generation and intent fences. */
   acceptResponseFields(fields: Partial<Pick<ThreadModel, "goal" | "humanNote">>): void {
     if (this.#disposed || this.#sealed || !this.#model) return;
@@ -904,6 +944,9 @@ export class TranscriptRepository {
         this.#endClaims.add(notification.params.roundId);
         this.#startEndDisposition();
       }
+    }
+    if (notification.method === "evener/sandbox/escalation/resolved") {
+      this.#resolvedEscalations.add(notification.params.escalationId);
     }
     const previousModel = this.#model;
     const now = this.#now();
@@ -1256,6 +1299,52 @@ export class TranscriptRepository {
     return this.#localOlder?.sourceRevision === this.#sourceRevision ? this.#localOlder.before : undefined;
   }
 
+  /**
+   * The oldest position still missing a real body below a restored window.
+   * Bodies the published model already holds are not debt: pages that loaded
+   * while a restore was in flight provided theirs, so the continuation must
+   * not re-advertise them.
+   */
+  #missingBodyFloor(model: ThreadModel | undefined, windowStart: ThreadItemPosition): ThreadItemPosition | undefined {
+    let floor: ThreadItemPosition | undefined;
+    for (const item of (model?.history?.turns ?? []).flatMap((turn) => turn.items)) {
+      if (!item.position || comparePosition(item.position, windowStart) >= 0) continue;
+      if (!encodeTranscriptItem(item).identityOnly) continue;
+      if (!floor || comparePosition(item.position, floor) < 0) floor = item.position;
+    }
+    return floor;
+  }
+
+  /**
+   * True when every item the retained foreground interval requires is
+   * resident with a real body. The interval runs from the oldest bodied
+   * position this revision published — the floor only ever moves deeper, so
+   * identities above it that lost their bodies (a release reclaimed them,
+   * later updates repopulated only the tail) stay inside the requirement,
+   * while identities below it are older demand, not debt. A settled stall
+   * accepts only on this standard: the latest window alone cannot vouch for
+   * a deeper range.
+   */
+  holdsResidentForegroundRange(): boolean {
+    if (this.#disposed || this.#invalidated) return false;
+    const model = this.#model;
+    const start = this.#foregroundStart;
+    if (!model || !start) return false;
+    const required = (model.history?.turns ?? model.turns)
+      .flatMap((turn) => turn.items)
+      .filter((item) => item.position && comparePosition(item.position, start) >= 0);
+    if (required.length === 0) return false;
+    const displayed = new Map(
+      model.turns.flatMap((turn) => turn.items.map((item) => [item.transcriptKey ?? item.id, item] as const)),
+    );
+    return required.every((item) => {
+      const body = displayed.get(item.transcriptKey ?? item.id);
+      return (
+        body !== undefined && (body.version ?? 0) >= (item.version ?? 0) && !encodeTranscriptItem(body).identityOnly
+      );
+    });
+  }
+
   attachReader(): TranscriptReader {
     let active = true;
     this.#readerCount++;
@@ -1457,9 +1546,15 @@ export class TranscriptRepository {
           if (!restored || !openingCurrent()) {
             return { model: latest ?? this.#model, status: "recovery-needed", boundary: this.#boundary };
           }
-          // A racing accepted model wins by item version; the stale query only fills absent slots.
+          // A racing accepted model wins by item version; the stale query only
+          // fills absent slots. Local older pages and accepted notifications
+          // also replace the model without advancing the read boundary, so
+          // merge whenever the repository's model moved past the opening's
+          // captured cut — a late restore must never discard them.
           latest =
-            this.#boundary > openingCutBoundary ? this.#mergeReaderModels(latest ?? current, restored) : restored;
+            this.#boundary > openingCutBoundary || this.#model !== current
+              ? this.#mergeReaderModels(latest ?? current, restored)
+              : restored;
           const retainedRangeComplete = checkRetainedRange(latest);
           const oldestReturned = boundedRows[0]?.position;
           const certifiedStart = window.coverage[0]?.start;
@@ -1468,14 +1563,17 @@ export class TranscriptRepository {
               ? oldestReturned
               : undefined;
           // Keep the unrestored identities: raw paging uses them to detect
-          // eviction rather than mistaking a short page for exhaustion.
+          // eviction rather than mistaking a short page for exhaustion. The
+          // continuation must describe bodies still missing in the published
+          // model, not the opening's captured cut: local pages that loaded
+          // while this restore was in flight already provided theirs, and
+          // re-advertising loaded history only risks a redundant lookup that
+          // can reconcile the retained range away.
           this.#model = latest;
-          const heldStart = this.#oldestPosition(current);
-          const heldBefore =
-            oldestReturned && heldStart && comparePosition(heldStart, oldestReturned) < 0 ? oldestReturned : undefined;
+          const missingFloor = oldestReturned ? this.#missingBodyFloor(latest, oldestReturned) : undefined;
           this.#localOlder =
-            heldBefore && heldStart
-              ? { before: heldBefore, floor: heldStart, sourceRevision: sourceRevisionAtOpen }
+            missingFloor && oldestReturned
+              ? { before: oldestReturned, floor: missingFloor, sourceRevision: sourceRevisionAtOpen }
               : undefined;
           this.#publish();
           const certifiedSnapshot = window.coverage.at(-1)?.representedSnapshot;
@@ -1516,7 +1614,7 @@ export class TranscriptRepository {
                 ? "stale"
                 : "recovery-needed";
           if (localBefore) this.#localReadContinuation = this.#coverageReadId;
-          const before = heldBefore ?? localBefore;
+          const before = (missingFloor ? oldestReturned : undefined) ?? localBefore;
           return {
             model: latest ?? current,
             status: retainedRangeComplete === false ? "recovery-needed" : status,
@@ -1659,6 +1757,7 @@ export class TranscriptRepository {
         })
       )
         throw new Error("final read was discarded");
+      if (current() && this.#model) this.#binding.onHistoryReadAccepted?.(response, this.#model);
       this.#sealed = true;
       await this.settled(false);
       if (!current()) return { kind: "cancelled" };
@@ -1826,6 +1925,7 @@ export class TranscriptRepository {
       !this.acceptRead(response, { lifetime: this.#binding.lifetime, readId: boundary, boundary, preserveEnded: true })
     )
       throw new Error("end disposition read was discarded");
+    if (current() && this.#model) this.#binding.onHistoryReadAccepted?.(response, this.#model);
     cover(this.#readItems(response));
     const minimum = anchors[0];
     let cursor = response.olderCursor;
@@ -3015,7 +3115,9 @@ export class TranscriptRepository {
 
   #publish(): void {
     this.#reconcileHandoffOverlay();
-    if (this.#model) this.#model = hydratedDisplay(this.#model);
+    // Every publication passes here, so no path (a response-only field update
+    // included) can republish a resolved escalation.
+    if (this.#model) this.#model = this.#withoutResolvedEscalations(hydratedDisplay(this.#model));
     if (this.#readerCount > 0 && this.#model) {
       for (const turn of this.#model.turns) {
         for (const item of turn.items) {

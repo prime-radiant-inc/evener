@@ -9,14 +9,14 @@ import { currentRead } from "@evener/appwire-client/testing/currentTranscript";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { describe, expect, test, vi } from "vitest";
-import { connectionStore } from "./connection";
+import { connectionStore, resetConnectionStoreForTests } from "./connection";
+import { setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { SessionEntryCache } from "./sessionEntryCache";
 import { observeProductionEntryForTests } from "./testing/entryProductionHarness";
 import {
   acquireBackgroundThread,
   installHydrationRetrySchedulerForTests,
   resetThreadsStoreForTests,
-  setProductionEntryCacheForTests,
   settleBackgroundTranscriptsForTests,
   threadsStore,
 } from "./threads";
@@ -88,7 +88,7 @@ describe("background transcript recovery", () => {
     } finally {
       restoreScheduler();
       resetThreadsStoreForTests();
-      connectionStore.setState({ client: null, state: "idle" });
+      resetConnectionStoreForTests();
       cache.close();
     }
   });

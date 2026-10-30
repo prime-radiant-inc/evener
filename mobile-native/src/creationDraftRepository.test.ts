@@ -73,7 +73,7 @@ it("rejects corrupt saved metadata and missing image bytes without overwriting t
 	}
 });
 
-import { type ConversationClientLike, createNewSessionService } from "../../mobile/src/services/newSession";
+import { type ConversationClientLike, createNewSessionService } from "./conversation/services/newSession";
 import { createNewSessionStore } from "./newSession";
 
 it("restores form edits and validates the saved model after binding", async () => {

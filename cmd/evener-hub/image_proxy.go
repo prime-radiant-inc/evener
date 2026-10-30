@@ -66,7 +66,7 @@ func proxyableSessionImage(resp appwire.SessionImageResponse, wantSHA string) bo
 // own state exactly as before.
 func hostQualifiedRouteRef(id string) (appwire.Ref, bool) {
 	ref, err := appwire.ParseRef(id)
-	if err != nil || ref.SourceID == "local" {
+	if err != nil || ref.SourceID == appwire.LocalSourceID {
 		return appwire.Ref{}, false
 	}
 	return ref, true

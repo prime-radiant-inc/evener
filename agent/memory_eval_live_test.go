@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -89,9 +90,9 @@ func memoryEvalSelectSources() (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
-	root := openai.DefaultStateDir()
-	if root == "" {
-		return "", "", errors.New("memory eval auth root unresolved")
+	root, err := openai.DefaultStateDir()
+	if err != nil {
+		return "", "", fmt.Errorf("memory eval auth root unresolved: %w", err)
 	}
 	return config, openai.AuthFilePath(root, "codex-jesse-at-pr"), nil
 }

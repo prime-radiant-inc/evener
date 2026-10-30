@@ -52,20 +52,6 @@ func (c Catalog) ResolveExact(name string) (Descriptor, error) {
 	return Descriptor{}, &ResolutionError{Kind: "unknown", Name: name}
 }
 
-// ResolveSkillContent loads the selected source for existing role preloads.
-// Unknown or ambiguous names retain their existing empty-body behavior.
-func (c Catalog) ResolveSkillContent(name string) (string, error) {
-	d, err := c.Resolve(name)
-	if err != nil {
-		return "", nil //nolint:nilerr // documented seam: unknown or ambiguous names keep the pre-lifecycle empty-body behavior
-	}
-	loaded, _, err := Load(d)
-	if err != nil {
-		return "", err
-	}
-	return loaded.Body, nil
-}
-
 // Resolve returns the exact canonical match first, then a single qualified
 // suffix match; anything else is a typed ResolutionError. A known invalid
 // winner still returns its descriptor so callers can refuse it visibly.

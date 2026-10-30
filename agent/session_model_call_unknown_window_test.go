@@ -8,6 +8,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -104,11 +105,11 @@ func TestUnknownWindowSessionCompactsAndDiscloses(t *testing.T) {
 			// A real fold launches auxiliary calls (session naming rides the
 			// cheap caller) and then the closing round; every remaining step
 			// ends the turn cleanly.
-			func(req llm.Request) llm.Response { return finalResponse("done") },
-			func(req llm.Request) llm.Response { return finalResponse("done") },
-			func(req llm.Request) llm.Response { return finalResponse("done") },
-			func(req llm.Request) llm.Response { return finalResponse("done") },
-			func(req llm.Request) llm.Response { return finalResponse("done") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
 		},
 	})
 	env := execenv.NewLocalExecutionEnvironment(dir)

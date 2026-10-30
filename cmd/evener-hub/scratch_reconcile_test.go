@@ -36,11 +36,11 @@ func TestReconcileArchivedScratchKeepsCancelledWorkForLaterPass(t *testing.T) {
 	cfg := hubcore.WebConfig{Past: past, Archive: archive}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	reconcileArchivedScratch(ctx, cfg, time.Now())
+	reconcileArchivedScratch(ctx, cfg.Past, cfg.Archive, cfg.Roster, time.Now())
 	if _, err := os.Stat(tree); err != nil {
 		t.Fatalf("cancelled reconciliation removed an eligible tree: %v", err)
 	}
-	reconcileArchivedScratch(t.Context(), cfg, time.Now())
+	reconcileArchivedScratch(t.Context(), cfg.Past, cfg.Archive, cfg.Roster, time.Now())
 	if _, err := os.Lstat(tree); !os.IsNotExist(err) {
 		t.Fatalf("later reconciliation left the eligible archived tree: %v", err)
 	}
@@ -97,7 +97,7 @@ func testScratchReconcilerRunCancellation(t *testing.T, cancelAtEntry bool) {
 		return ids
 	}
 	t.Cleanup(func() { scanScratchTreeRootIDs = actualScanner })
-	r := newScratchReconciler(cfg)
+	r := newScratchReconciler(cfg.Past, cfg.Archive, cfg.Roster)
 	done := make(chan struct{})
 	go func() { defer close(done); r.Run(ctx) }()
 	t.Cleanup(func() {
@@ -143,7 +143,7 @@ func testScratchReconcilerRunCancellation(t *testing.T, cancelAtEntry bool) {
 	scanScratchTreeRootIDs = actualScanner
 	nextCtx, stopNext := context.WithCancel(t.Context())
 	defer stopNext()
-	next := newScratchReconciler(cfg)
+	next := newScratchReconciler(cfg.Past, cfg.Archive, cfg.Roster)
 	nextDone := make(chan struct{})
 	go func() { defer close(nextDone); next.Run(nextCtx) }()
 	t.Cleanup(func() {

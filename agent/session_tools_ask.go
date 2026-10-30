@@ -198,7 +198,7 @@ func (s *Session) PendingAskArguments() [][]byte {
 // injectDrainedSteering/injectPostToolSteering run MID-ROUND, well before
 // any such entry, and the server owns the ask boundary: the wire's
 // EvenerThread.AskPending (hydrate) and ThreadStatusChangedParams.AskPending
-// (stamped on every status change, server/appwire_runtime.go's
+// (stamped on every status change, server/appwire_status_stamps.go's
 // stampAskPendingOnStatusChange) are wire-authoritative, and the client
 // trusts that flag rather than re-deriving the boundary itself
 // (appwire-client/typescript/reducer.test.ts's "askPending is
@@ -633,7 +633,8 @@ func turnResolvesAskBoundary(turn schema.Turn, origins map[string]steeringOrigin
 // thing that can call any of them decisive; every other kind is transparent).
 // In particular, a non-carrier TurnFailure is bookkeeping just like
 // TurnCheckpoint, TurnSummary, TurnModelSwitch, TurnHookCompleted,
-// TurnEnvironment, TurnNotesContext, TurnAttentionResolution, or TurnSystem:
+// TurnEnvironment, TurnNotesContext, TurnMemoryContext,
+// TurnAttentionResolution, or TurnSystem:
 // the outer scan also passes through it while looking for the round's real
 // entry.
 // Stopping at the first non-Assistant/ToolResults turn, as this used to,
@@ -697,8 +698,9 @@ func roundEntryResolvesAskBoundary(history []schema.Turn, idx, boundaryStart int
 //     denied or invalid ask_user call is IsError for the same reason and is
 //     excluded the same way.
 //   - Every other kind not covered above (a non-decisive TurnSteering,
-//     TurnCheckpoint, TurnSummary, TurnSystem, TurnEnvironment, a non-carrier
-//     TurnFailure, and the deprecated TurnTool): bookkeeping, not decisive —
+//     TurnCheckpoint, TurnSummary, TurnSystem, TurnEnvironment,
+//     TurnMemoryContext, a non-carrier TurnFailure, and the deprecated
+//     TurnTool): bookkeeping, not decisive —
 //     the scan continues past it. A trailing checkpoint/summary is the
 //     resume anchor ResumeHistory already truncated to, not a new decisive
 //     event.

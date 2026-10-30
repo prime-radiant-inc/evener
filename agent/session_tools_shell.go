@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -405,13 +406,20 @@ func resolveShellWorkingDir(env execenv.ExecutionEnvironment, raw string) (strin
 	abs = filepath.Clean(abs)
 	if rb, ok := env.(execenv.CommandWorkingDirectoryBoundary); ok {
 		if err := rb.EnsureCommandWorkingDirectory(abs); err != nil {
-			return "", fmt.Errorf("cwd %q resolves to %s, which escapes the sandbox: %w", raw, abs, err)
+			return "", fmt.Errorf("cwd %q resolves to %s, which escapes the sandbox: %w; run the command with `cd %s && <command>` instead", raw, abs, err, shellSingleQuote(abs))
 		}
 	}
 	if info, err := os.Stat(abs); err != nil || !info.IsDir() {
 		return "", fmt.Errorf("cwd %q resolves to %s, which does not exist or is not a directory", raw, abs)
 	}
 	return abs, nil
+}
+
+// shellSingleQuote returns s as one literal word for a POSIX shell. The
+// suggested cwd comes from the model, so its bytes must never run as shell
+// syntax when the caller follows the suggestion.
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 type detachedShellToolResult struct {
@@ -439,6 +447,40 @@ func runDetachedShell(ctx context.Context, env execenv.ExecutionEnvironment, s *
 	state := detachedShellToolResult{Type: "shell", Mode: string(shellModeDetached), Status: "started", PID: started.PID}
 	b, _ := json.Marshal(state)
 	return tool.StateResult{Output: string(b), State: state}, nil
+}
+
+// detachSupportedBy reports whether env can disown a command, through the
+// optional execenv.DetachSupportReporter capability. An environment that does
+// not report is treated as unable: the shell schema must not advertise a mode
+// DetachCommand will refuse.
+func detachSupportedBy(env execenv.ExecutionEnvironment) bool {
+	reporter, ok := env.(execenv.DetachSupportReporter)
+	return ok && reporter.DetachSupported()
+}
+
+// shellToolForDiagnostics returns the shell tool whose repair and schema-error
+// prose preparation renders. Validation still uses the registry's compiled
+// schema, so a mode:"detached" call passes preparation and reaches
+// DetachCommand's refusal; this copy only replaces the mode property those
+// diagnostics describe, because they must not list a mode this environment
+// refuses (issue #4422). It preserves the registry's intent parameter, and
+// returns every other tool and every capable environment unchanged.
+func (s *Session) shellToolForDiagnostics(t *tool.RegisteredTool) *tool.RegisteredTool {
+	if t == nil || t.Definition.Name != "shell" || detachSupportedBy(s.currentEnv()) {
+		return t
+	}
+	mode := tool.ShellModeProperty(false)
+	// Two shallow maps are enough: preparation only reads the nested schema
+	// values, and replacing the mode property is the sole difference.
+	properties := make(map[string]any, len(t.Definition.Parameters["properties"].(map[string]any)))
+	maps.Copy(properties, t.Definition.Parameters["properties"].(map[string]any))
+	properties["mode"] = mode
+	params := make(map[string]any, len(t.Definition.Parameters))
+	maps.Copy(params, t.Definition.Parameters)
+	params["properties"] = properties
+	narrowed := *t
+	narrowed.Definition.Parameters = params
+	return &narrowed
 }
 
 func shellBoolArg(args map[string]any, key string) bool {

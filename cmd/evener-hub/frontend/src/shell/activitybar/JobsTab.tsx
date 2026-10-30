@@ -6,17 +6,17 @@ import { activityNodeID, type JobActivityJob } from "@evener/appwire-client";
 import { useSessionActivity } from "../../stores/sessionActivity";
 import { Disclosure, EmptyState, InlineNotice, Skeleton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
-import type { ActivityScope } from "../statusbar/statusScope";
 import { workspaceStore } from "../workspace";
 import { useActivityScrollProgress } from "./ActivityViewport";
 import styles from "./activitybar.module.css";
 import { JobRow } from "./activityRows";
+import type { ActivityTabBodyProps } from "./activityTabs";
 
 const CLASS = {
   stack: requireClass(styles.stack, "activitybar.module.css", "stack"),
 };
 
-export function JobsTab({ scope }: { scope: ActivityScope }) {
+export function JobsTab({ scope, now }: ActivityTabBodyProps) {
   const { snapshot, loadMore } = useSessionActivity(scope.leaf.ref, "session", "jobs");
   const collection = snapshot?.jobs;
   useActivityScrollProgress(
@@ -35,6 +35,7 @@ export function JobsTab({ scope }: { scope: ActivityScope }) {
     <JobRow
       key={activityNodeID({ ...job, kind: "shell" })}
       job={job}
+      now={now}
       onOpen={
         job.transcriptRef
           ? () =>

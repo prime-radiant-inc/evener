@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -68,7 +67,7 @@ func newResponsesAnchorTurn(suffix string, call llm.ToolCallData) schema.Turn {
 
 func readPersistedTranscriptEntries(t *testing.T, stateDir, sessionID string) []transcript.Entry {
 	t.Helper()
-	tw, entries, err := transcript.OpenWriterForSession(filepath.Join(stateDir, sessionsSubdir, sessionID+".transcript.jsonl"), sessionID)
+	tw, entries, err := transcript.OpenWriterForSession(schema.SessionTranscriptPath(stateDir, sessionID), sessionID)
 	if err != nil {
 		t.Fatalf("open transcript: %v", err)
 	}

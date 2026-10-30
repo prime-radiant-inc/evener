@@ -35,6 +35,7 @@ import { openTranscript } from "../panes/session/transcript/openTranscript";
 import Transcript from "../panes/transcript/Transcript";
 import { ClientProvider } from "../shell/clientContext";
 import { DockHost } from "../shell/DockHost";
+import { DockRegion } from "../shell/DockRegion";
 import { workspaceStore } from "../shell/workspace";
 import { connectionStore } from "../stores/connection";
 import { threadsStore } from "../stores/threads";
@@ -50,6 +51,13 @@ import "../styles/tokens.css";
 import "../styles/global.css";
 import { mulberry32 } from "./mulberry32";
 
+const consoleError = console.error;
+const consoleErrors: string[] = [];
+console.error = (...args: unknown[]) => {
+  consoleErrors.push(args.map((arg) => (arg instanceof Error ? arg.stack : String(arg))).join(" "));
+  consoleError.apply(console, args);
+};
+
 window.addEventListener("error", (event) => {
   const target = window as typeof window & { __tsgErrors?: string[] };
   target.__tsgErrors = [...(target.__tsgErrors ?? []), event.error?.stack ?? event.message];
@@ -60,7 +68,7 @@ window.addEventListener("unhandledrejection", (event) => {
 });
 
 function pageErrors(): string[] {
-  return (window as typeof window & { __tsgErrors?: string[] }).__tsgErrors ?? [];
+  return [...((window as typeof window & { __tsgErrors?: string[] }).__tsgErrors ?? []), ...consoleErrors];
 }
 
 function throwOnPageErrors(context: string): void {
@@ -68,11 +76,13 @@ function throwOnPageErrors(context: string): void {
   if (errors.length > 0) throw new Error(`transcriptscrollguard page errors during ${context}: ${errors.join("\n")}`);
 }
 
-const REF =
-  new URLSearchParams(window.location.search).get("dock") === "1"
+const ENDED = new URLSearchParams(window.location.search).get("ended") === "1";
+const REF = ENDED
+  ? "local:transcriptscrollguard-ended"
+  : new URLSearchParams(window.location.search).get("dock") === "1"
     ? "local:transcriptscrollguard-dock"
     : "local:transcriptscrollguard";
-const THREAD_ID = "thr_transcriptscrollguard";
+const THREAD_ID = ENDED ? "thr_transcriptscrollguard_ended" : "thr_transcriptscrollguard";
 
 // The transcript's row heights must be variable AND identical on every run -
 // a guard whose geometry depends on Math.random() cannot be bisected or
@@ -127,7 +137,7 @@ function wireTurn(id: string, userText: string, agentText: string): Turn {
 // paragraphs (~700-1500px) - against the virtualizer's flat 96px estimate,
 // every row measures differently from its estimate in both directions of
 // error, which is what makes an estimate-derived landing land short.
-const INITIAL_TURN_COUNT = 42;
+const INITIAL_TURN_COUNT = ENDED ? 240 : 42;
 const initialTurns: Turn[] = Array.from({ length: INITIAL_TURN_COUNT }, (_, i) => {
   const id = `turn_${i + 1}`;
   const agentParagraphs = i % 6 === 5 ? 14 + Math.floor(rand() * 15) : 1 + Math.floor(rand() * 3);
@@ -157,11 +167,38 @@ const readAdmission = DEFER_READ
     })
   : undefined;
 const OLDER_CURSOR = "cursor_page_1";
-const OLDER_PAGE_TURNS = 12;
+const OLDER_PAGE_TURNS = ENDED ? 20 : 12;
+let releaseOlder: (() => void) | undefined;
+const olderAdmission = ENDED
+  ? new Promise<void>((resolve) => {
+      releaseOlder = resolve;
+    })
+  : undefined;
 let olderPageCalls = 0;
-const olderPageTurns: Turn[] = Array.from({ length: OLDER_PAGE_TURNS }, (_, i) =>
-  wireTurn(`older_${i + 1}`, sentence(4, `older ${i + 1} ask`), paragraphs(4, `older ${i + 1}`)),
-);
+const olderPageTurns: Turn[] = Array.from({ length: OLDER_PAGE_TURNS }, (_, i) => {
+  const id = `${ENDED ? "ended_" : ""}older_${i + 1}`;
+  // Empty and tool-only turns need not produce display rows. The anchor must
+  // survive production projection, not assume a row per model turn.
+  if (ENDED && i < 2) return { id, itemsView: "full", status: "completed", items: [] };
+  if (ENDED && i < 4)
+    return {
+      id,
+      itemsView: "full",
+      status: "completed",
+      items: [
+        {
+          id: `${id}_tool`,
+          turnId: id,
+          type: "commandExecution",
+          text: "",
+          toolName: "read_file",
+          output: "older output",
+          status: "completed",
+        },
+      ],
+    };
+  return wireTurn(id, sentence(4, `older ${i + 1} ask`), paragraphs(ENDED ? 1 + (i % 7) : 4, `older ${i + 1}`));
+});
 
 // Turns appended WHILE the reader is scrolled away: never rendered, so at
 // click time the virtualizer holds only the 96px estimate for them while
@@ -189,13 +226,13 @@ const CAPABILITIES: ThreadCapabilities = {
 
 const THREAD: Thread = {
   id: THREAD_ID,
-  sessionId: "sess_transcriptscrollguard",
+  sessionId: ENDED ? "sess_transcriptscrollguard_ended" : "sess_transcriptscrollguard",
   preview: "transcript scroll guard",
   ephemeral: false,
   modelProvider: "anthropic/claude-sonnet-4-5",
   createdAt: 1000,
   updatedAt: 1000,
-  status: { type: "idle" },
+  status: { type: ENDED ? "ended" : "idle" },
   cwd: "/tmp/project",
   cliVersion: "1.0.0",
   source: "evener",
@@ -244,8 +281,17 @@ fake.on("thread/read", async (params) => {
 fake.on("evener/tasks/list", () => ({ data: [] }));
 fake.on("model/list", () => ({ data: [{ provider: "anthropic", model: "claude-sonnet-4-5" }] }));
 if (PAGED) {
-  fake.on("thread/turns/list", () => {
+  fake.on("thread/turns/list", async (params) => {
     olderPageCalls += 1;
+    if (
+      ENDED &&
+      (params.cursor !== OLDER_CURSOR ||
+        params.itemLimit !== 40 ||
+        olderPageTurns.reduce((count, turn) => count + (turn.items?.length ?? 0), 0) > params.itemLimit)
+    ) {
+      throw new Error("ended fixture requires the production 40-item older page request");
+    }
+    await olderAdmission;
     return { data: olderPageTurns, nextCursor: undefined };
   });
 }
@@ -269,6 +315,9 @@ document.body.style.margin = "0";
 document.body.style.background = "var(--surface-0)";
 rootEl.style.height = "100%";
 
+// This isolated browser origin belongs to this harness. Do not restore a
+// previous dock pass's layout into the ended fixture, or vice versa.
+if (DOCK) localStorage.removeItem("evener.workspace.layout.v2");
 if (DOCK) workspaceStore.getState().openPane("session", { ref: REF });
 else
   workspaceStore.setState({
@@ -304,7 +353,13 @@ root.render(
               Focus observer
             </button>
           </div>
-          <DockHost />
+          {ENDED ? (
+            <div data-testid="ended-dock-region" style={{ height: "100%" }}>
+              <DockRegion />
+            </div>
+          ) : (
+            <DockHost />
+          )}
         </>
       ) : READONLY ? (
         <Transcript params={{ ref: REF }} paneId="transcriptscrollguard" focused={false} />
@@ -359,6 +414,25 @@ function geometryOf(el: HTMLElement): TranscriptGeometry {
   return { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight };
 }
 
+function hasMeasuredRowGeometry(el: HTMLElement): boolean {
+  const sizer = el.firstElementChild;
+  if (!(sizer instanceof HTMLElement)) return false;
+  const rows = [...sizer.querySelectorAll<HTMLElement>(":scope > [data-index]")];
+  if (rows.length === 0) return false;
+  const bounds = sizer.getBoundingClientRect();
+  let previous: DOMRect | undefined;
+  for (const row of rows) {
+    if (!row.hasAttribute("data-measured")) return false;
+    const rect = row.getBoundingClientRect();
+    if (rect.top < bounds.top - 1.5 || rect.bottom > bounds.bottom + 1.5) return false;
+    // Dynamic measurement rounds natural heights up. Adjacent virtual rows
+    // must use those heights, not stationary estimates that overlap or leave gaps.
+    if (previous && !(Math.abs(rect.top - previous.top - Math.ceil(previous.height)) <= 1.5)) return false;
+    previous = rect;
+  }
+  return true;
+}
+
 function pillElement(): HTMLElement | null {
   return document.querySelector<HTMLElement>('[data-testid="new-content-pill"]');
 }
@@ -393,6 +467,7 @@ interface TranscriptScrollMetrics extends TranscriptGeometry {
    * wrong surface.
    */
   paneFooter: boolean;
+  measuredLayout: boolean;
   errors: string[];
 }
 
@@ -410,6 +485,7 @@ function metricsFrom(el: HTMLElement): TranscriptScrollMetrics {
     listCalls: olderPageCalls,
     pagingRow: document.querySelector('[data-testid="load-older-row"]') !== null,
     paneFooter: document.querySelector('[data-testid="pane-footer"]') !== null,
+    measuredLayout: hasMeasuredRowGeometry(el),
     errors: pageErrors(),
   };
 }
@@ -471,18 +547,50 @@ const SETTLE_TRIPWIRE_MS = 15_000;
 // against clears olderCursor and unmounts the row, so waiting on it would spin
 // to the tripwire and report a settle timeout instead of the runner's own
 // "auto-loaded N older page(s)" failure (see createPagedOpenSettleTracker).
-async function waitForPagedOpenSettled(): Promise<TranscriptScrollMetrics> {
-  const tracker = createPagedOpenSettleTracker(INITIAL_TURN_COUNT);
+async function waitForPagedOpenSettled(expectedTurns = INITIAL_TURN_COUNT): Promise<TranscriptScrollMetrics> {
+  const tracker = createPagedOpenSettleTracker(expectedTurns);
   const deadline = performance.now() + SETTLE_TRIPWIRE_MS;
   for (;;) {
     await nextFrame();
     throwOnPageErrors("paged open");
     const el = findScrollElement();
-    const sample = { turns: modelTurnCount, geometry: el === null ? null : geometryOf(el) };
-    if (tracker.observe(sample)) return metrics();
+    const sample = {
+      turns: modelTurnCount,
+      geometry: el === null ? null : geometryOf(el),
+      measuredLayout: el !== null && hasMeasuredRowGeometry(el),
+    };
+    if (tracker.observe({ turns: sample.turns, geometry: sample.measuredLayout ? sample.geometry : null }))
+      return metrics();
     if (performance.now() > deadline) {
       throw new Error(`transcript harness: the paged open never settled; ${JSON.stringify(sample)}`);
     }
+  }
+}
+
+function endedPageState() {
+  const model = threadsStore.getState().threads.get(REF);
+  const ids = model?.turns.map((turn) => turn.id) ?? [];
+  return {
+    status: model?.status.type,
+    turns: ids.length,
+    olderMerged: olderPageTurns.every((turn) => ids.filter((id) => id === turn.id).length === 1),
+    cursorCleared: model !== undefined && model.olderCursor === undefined,
+    listCalls: olderPageCalls,
+    boundaryFallback:
+      document.querySelector('[data-testid="ended-dock-region"] > [data-testid="empty-state"]') !== null,
+    errors: pageErrors(),
+  };
+}
+
+async function waitForEndedPage(merged: boolean) {
+  const deadline = performance.now() + SETTLE_TRIPWIRE_MS;
+  for (;;) {
+    await nextFrame();
+    throwOnPageErrors("ended older page");
+    const state = endedPageState();
+    if (merged ? state.olderMerged && state.cursorCleared : state.listCalls > 0) return state;
+    if (performance.now() > deadline)
+      throw new Error(`ended older page never ${merged ? "merged" : "requested"}: ${JSON.stringify(state)}`);
   }
 }
 
@@ -725,6 +833,9 @@ async function shrinkPortAndSettle(): Promise<
 
 declare global {
   interface Window {
+    endedPageState: typeof endedPageState;
+    waitForEndedPage: typeof waitForEndedPage;
+    releaseEndedOlderPage: () => void;
     releaseTranscriptRead: () => void;
     unmountTranscriptScrollGuardPane: () => void;
     waitForTranscriptSettled: typeof waitForTranscriptSettled;
@@ -740,6 +851,11 @@ declare global {
 
 window.releaseTranscriptRead = () => {
   releaseRead?.();
+};
+window.endedPageState = endedPageState;
+window.waitForEndedPage = waitForEndedPage;
+window.releaseEndedOlderPage = () => {
+  releaseOlder?.();
 };
 // Runner-only probe hook: the non-DOCK harness renders the pane directly rather
 // than through workspaceStore, so this is the only way to take the pane down

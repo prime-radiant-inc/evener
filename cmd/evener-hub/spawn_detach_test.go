@@ -5,6 +5,7 @@ package hub
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -21,7 +22,7 @@ import (
 // A daemon that stays in the hub's process group dies with the hub: Ctrl-C on
 // the hub's terminal delivers SIGINT to the whole foreground process group,
 // closing the terminal hangs up on that same group, and `evener serve` honors
-// both. Spawned daemons are documented to outlive a hub restart (SpawnDaemon),
+// both. Spawned daemons are documented to outlive a hub restart (spawnDaemonWithProviderConfig),
 // so each one must launch detached into a session of its own — observable as
 // the daemon leading both its own session and its own process group.
 func TestSpawnDaemonDetachesFromHubSession(t *testing.T) {
@@ -30,9 +31,9 @@ func TestSpawnDaemonDetachesFromHubSession(t *testing.T) {
 	// launch contract compete with this package's process-heavy parallel tests,
 	// turning scheduler starvation into a false detach failure.
 	bin, runDir := writeDetachFakeDaemon(t)
-	entry, err := SpawnDaemon(context.Background(), bin, runDir, hubcore.SpawnRequest{Env: detachHelperEnv(runDir)}, 5*time.Second)
+	entry, err := spawnDaemonWithProviderConfig(context.Background(), bin, runDir, hubcore.SpawnRequest{Env: detachHelperEnv(runDir)}, 5*time.Second, io.Discard, nil)
 	if err != nil {
-		t.Fatalf("SpawnDaemon: %v", err)
+		t.Fatalf("spawnDaemonWithProviderConfig: %v", err)
 	}
 	reapFakeDaemon(t, entry.PID)
 	assertOwnSessionLeader(t, entry.PID)
@@ -41,14 +42,14 @@ func TestSpawnDaemonDetachesFromHubSession(t *testing.T) {
 // The resume path launches the same long-lived daemon; it must detach too.
 func TestResumeDaemonDetachesFromHubSession(t *testing.T) {
 	// Keep the resume half under the same package-serialization boundary as
-	// SpawnDaemon; the rendezvous is an event, not a parallel-test deadline.
+	// spawnDaemonWithProviderConfig; the rendezvous is an event, not a parallel-test deadline.
 	bin, runDir := writeDetachFakeDaemon(t)
-	entry, err := ResumeDaemon(context.Background(), bin, runDir, hubcore.ResumeRequest{
+	entry, err := resumeDaemon(context.Background(), bin, runDir, hubcore.ResumeRequest{
 		SessionID: hubtest.SessionID(t),
 		Env:       detachHelperEnv(runDir),
-	}, 5*time.Second)
+	}, 5*time.Second, io.Discard)
 	if err != nil {
-		t.Fatalf("ResumeDaemon: %v", err)
+		t.Fatalf("resumeDaemon: %v", err)
 	}
 	reapFakeDaemon(t, entry.PID)
 	assertOwnSessionLeader(t, entry.PID)
@@ -120,7 +121,7 @@ func assertOwnSessionLeader(t *testing.T, pid int) {
 	}
 }
 
-// reapFakeDaemon stops the stand-in daemon. SpawnDaemon/ResumeDaemon already
+// reapFakeDaemon stops the stand-in daemon. spawnDaemonWithProviderConfig/resumeDaemon already
 // run cmd.Wait in a goroutine, so the kill is reaped in-process.
 func reapFakeDaemon(t *testing.T, pid int) {
 	t.Helper()

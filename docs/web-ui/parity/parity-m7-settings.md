@@ -588,12 +588,14 @@ all defined in `assets/plugins.js:8-23` as thin wrappers over `EvenerAppwire.req
       (Local path, with a `.sp-dir-wrap` Browse button + inline autocomplete) —
       `templates/partials/settings/plugins-manager.html:150-170`
 - [ ] Only the field block matching the checked radio is visible, toggled live on `change` —
-      `templates/partials/settings/plugins-manager.html:415-420,438-442`
+      `templates/partials/settings/plugins-manager.html:415-420,438-442`. The React pane also shows
+      an optional Branch or tag field for the git-backed kinds; the old template has none.
 - [ ] Name is optional ("defaults to the marketplace's own name") —
       `templates/partials/settings/plugins-manager.html:172-174`
 - [ ] Submit builds `source` strictly from the checked radio (github→`{kind,repo}`,
       directory→`{kind,path}`, else→`{kind:"url",url}`) — stale text in a hidden field is never
-      sent — `templates/partials/settings/plugins-manager.html:422-427`
+      sent. The React pane also adds the trimmed Branch or tag as `ref` when it is set —
+      `templates/partials/settings/plugins-manager.html:422-427`
 - [ ] Submit calls `marketplaceAdd({name, source})`; success closes form + refreshes list + toasts
       "Added marketplace" (name appended only if non-empty); failure toasts "Add marketplace
       failed: {message}" (no inline field error) —

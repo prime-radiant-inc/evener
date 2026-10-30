@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -44,7 +45,6 @@ var rfzTexts = []string{"", "hello", "edited message", "  ", "line1\nline2", "\x
 // the "unknown context strategy" clean-error return.
 var rfzStrategies = []string{
 	"", "compact", "recall", "session-log", "ooda",
-	"obs-mask", "checkpoint-pred", "memory-crystals", "recursive-distill",
 	"rfz-bogus-strategy",
 }
 
@@ -103,7 +103,7 @@ func FuzzRfzForkSession(f *testing.F) {
 		for i := range kinds {
 			kinds[i] = rfzTurnKinds[r.intn(len(rfzTurnKinds))]
 		}
-		parentPath := filepath.Join(stateDir, sessionsSubdir, parentID+".transcript.jsonl")
+		parentPath := schema.SessionTranscriptPath(stateDir, parentID)
 
 		if mode == 3 {
 			// Corrupt: raw fuzz bytes stand in for the parent transcript, exercising
@@ -175,8 +175,8 @@ func FuzzRfzForkSession(f *testing.F) {
 			t.Fatalf("child meta carries fork label %q; the label belongs on the parent", childMeta.ForkLabel)
 		}
 
-		childPath := filepath.Join(stateDir, sessionsSubdir, childID+".transcript.jsonl")
-		_, entries, _, rerr := readTranscript(childPath, "")
+		childPath := schema.SessionTranscriptPath(stateDir, childID)
+		_, entries, _, rerr := readTranscript(context.Background(), childPath, "")
 		if rerr != nil {
 			t.Fatalf("child transcript unreadable after successful fork: %v", rerr)
 		}
@@ -230,7 +230,7 @@ func FuzzRfzRestoreSessionFromMeta(f *testing.F) {
 		// Optionally seed a (fuzzed, possibly corrupt) transcript at the meta's
 		// path so the history-recovery + ResumeHistory branch runs.
 		if r.intn(2) == 0 && meta.ID != "" {
-			tpath := filepath.Join(stateDir, sessionsSubdir, meta.ID+".transcript.jsonl")
+			tpath := schema.SessionTranscriptPath(stateDir, meta.ID)
 			if err := os.MkdirAll(filepath.Dir(tpath), 0o755); err != nil {
 				t.Fatalf("mkdir sessions: %v", err)
 			}

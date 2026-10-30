@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { render, screen } from "@testing-library/react";
 import DOMPurify from "dompurify";
 import { afterEach, expect, test, vi } from "vitest";
+import { readModuleCss } from "../../styles/cssBlock";
 import codeblockStyles from "../codeblock/codeblock.module.css";
 import { requireClass } from "../internal/requireClass";
 import { Markdown } from "./index";
@@ -166,17 +167,15 @@ test("declares a :focus-visible rule for links, using only tokens", () => {
 });
 
 test("takes its body ink from --markdown-ink, defaulting to --ink-hi", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
   // Comments are stripped before matching: a doc comment in this file quotes
   // the very declaration being asserted, and a sibling contract test once
   // passed against a deleted implementation for exactly that reason.
-  const css = readFileSync(join(here, "markdown.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readModuleCss(import.meta.url, "markdown.module.css");
   expect(css).toContain("color: var(--markdown-ink, var(--ink-hi))");
 });
 
 test("compact bubbles override the Markdown body ink with the quiet token", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "markdown.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readModuleCss(import.meta.url, "markdown.module.css");
   const rule = css.match(/\.markdownBubbleCompact\s*\{[^}]*\}/)?.[0] ?? "";
   expect(rule).toContain("--markdown-ink: var(--ink-mid)");
 });
@@ -192,14 +191,12 @@ test("compact bubbles override the Markdown body ink with the quiet token", () =
 // The root composes with its host: a host's own font-size applies unless the
 // surface pins --prose-font-size (reading surfaces pin it to the prose step).
 test("takes its font-size from --prose-font-size, composing with its host at 1em when unset", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "markdown.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readModuleCss(import.meta.url, "markdown.module.css");
   expect(css).toContain("font-size: var(--prose-font-size, 1em)");
 });
 
 test("inline code is a quiet underline, not a filled chip: no background, no radius, sized relative to the surrounding prose", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "markdown.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readModuleCss(import.meta.url, "markdown.module.css");
   const rule = css.match(/\.inlineCode\s*\{[^}]*\}/)?.[0] ?? "";
   expect(rule).not.toBe("");
   expect(rule).not.toMatch(/background/);
@@ -362,8 +359,7 @@ test("live matches settled on a long CRLF source across tail-growth rerenders (w
 // honored via attribute selectors (so GFM column alignment works without
 // allowing the style attribute through DOMPurify).
 test("the stylesheet styles GFM tables: flat headers, edge borders, align selectors", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "markdown.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readModuleCss(import.meta.url, "markdown.module.css");
   expect(css).toContain(".root :where(table)");
   expect(css).toContain("border-collapse: collapse");
   expect(css).toMatch(/thead th[^{]*\{[^}]*background: transparent/);
@@ -444,3 +440,33 @@ test("live matches settled on a closed-diagram head with a long streaming prose 
   // fell back to the single full parse.
   expect(sanitizeSpy.mock.calls.length).toBe(5);
 });
+
+// A file:// destination is how an agent names a report it filed beside the
+// session. Stripping the href left a bare anchor that looks like a link and
+// goes nowhere; the destination survives here so the transcript's anchor pass
+// can decide whether the hub serves it.
+test("keeps a file: link destination instead of leaving a bare anchor", () => {
+  render(
+    <Markdown source="[Full report and retained evidence](file:///state/projects/p/sessions/s1/artifacts/r.md)" />,
+  );
+  const link = screen.getByRole("link", { name: "Full report and retained evidence" });
+  expect(link.getAttribute("href")).toBe("file:///state/projects/p/sessions/s1/artifacts/r.md");
+  expect(link.getAttribute("target")).toBe("_blank");
+  expect(link.getAttribute("rel")).toBe("noopener noreferrer");
+});
+
+// The scheme list is DOMPurify's own default plus `file`, so a scheme the
+// library already allowed must keep working: matrix: is the one that was
+// dropped once when the list was copied by hand.
+test("keeps a matrix: link, which DOMPurify's default already allowed", () => {
+  render(<Markdown source="[chat](matrix:u/room?action=chat)" />);
+  expect(screen.getByRole("link", { name: "chat" }).getAttribute("href")).toBe("matrix:u/room?action=chat");
+});
+
+test.each(["vbscript:msgbox(1)", "data:text/html,<p>x</p>", "blob:https://x/y", "filex:/a"])(
+  "still refuses the %s scheme",
+  (href) => {
+    render(<Markdown source={`[click me](${href})`} />);
+    expect(screen.getByText("click me").getAttribute("href")).toBeNull();
+  },
+);

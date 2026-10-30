@@ -8,6 +8,11 @@
 import { type AppwireClientLike, createHubUpdateController, type HubUpdateController } from "@evener/appwire-client";
 import { useEffect, useMemo, useState } from "react";
 
+/** A restarted hub that never reconnects must not leave the sheet waiting forever. */
+export const RESTART_DEADLINE_MS = 30_000;
+/** How often the restart wait re-asks while the old process answers. */
+export const RESTART_RECHECK_MS = 1_000;
+
 /** Whether the sheet's connection is ready, and a signal each time it turns
  * ready. The sheet sets it from the connection it renders. */
 export interface Readiness {
@@ -52,28 +57,63 @@ export function createPhoneHubUpdates(
 			if (!client) throw new Error("The hub isn't connected.");
 			return client;
 		},
-		awaitRestart: (previousVersion) =>
+		// The phone has no health fetch of its own; the check's startedAt is
+		// refreshed on every reconnect and is the baseline it uses.
+		currentIncarnation: async () => null,
+		awaitRestart: (previous) =>
 			new Promise<boolean>((resolve) => {
 				let done = false;
+				let timer: ReturnType<typeof setTimeout>;
+				let retry: ReturnType<typeof setTimeout> | undefined;
+				let unsubscribe: () => void = () => {};
 				const finish = (back: boolean) => {
 					if (done) return;
 					done = true;
+					clearTimeout(timer);
+					if (retry) clearTimeout(retry);
 					unsubscribe();
 					endWaits.delete(end);
 					resolve(back);
 				};
 				const end = () => finish(false);
-				// The wait owns the check the return to ready makes (useHubUpdates
-				// skips its own while restarting), so one answer both shows the
-				// hub's version and ends the wait. A check that fails ends it as
-				// not updated: nothing else would ask again while the connection
-				// stays up, and the sheet's next check shows where the hub stands.
-				const unsubscribe = readiness.subscribe(() => {
-					if (!readiness.isReady()) return;
+				const later = () => {
+					if (done || retry) return;
+					retry = setTimeout(() => {
+						retry = undefined;
+						checkNow();
+					}, RESTART_RECHECK_MS);
+				};
+				const checkNow = () => {
+					if (done) return;
+					if (!readiness.isReady()) {
+						later();
+						return;
+					}
 					void controller.runCheck().then(() => {
+						if (done) return;
 						const check = controller.getState().check;
-						finish(check !== null && check.currentVersion !== previousVersion);
+						const sameProcess =
+							previous.incarnation !== null
+								? check?.startedAt === previous.incarnation
+								: check?.currentVersion === previous.version;
+						if (check !== null && !sameProcess) {
+							finish(true);
+							return;
+						}
+						// The old process may still be waiting on the install
+						// lock, and a check can fail while the socket
+						// reconnects again: keep observing until the deadline
+						// instead of declaring a timeout on the first answer.
+						later();
 					});
+				};
+				timer = setTimeout(end, RESTART_DEADLINE_MS);
+				// The wait owns the checks the return to ready makes
+				// (useHubUpdates skips its own while restarting). An
+				// incarnation comparison is what makes a same-version rebuild
+				// visible.
+				unsubscribe = readiness.subscribe(() => {
+					if (readiness.isReady()) checkNow();
 				});
 				endWaits.add(end);
 			}),

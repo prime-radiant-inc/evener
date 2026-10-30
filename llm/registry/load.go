@@ -199,17 +199,22 @@ func defaultConfigRoot(env func(string) (string, bool)) string {
 	return userdirs.ConfigRoot(xdg, func() (string, error) { return home, nil })
 }
 
-// defaultStateRoot mirrors cmdutil.DefaultStateRoot: $XDG_STATE_HOME/evener,
-// else ~/.local/state/evener.
+// defaultStateRoot resolves the registry's state root from its injected
+// environment function (userdirs.StateRoot), so tests do not depend on the
+// process environment. It is empty when neither XDG_STATE_HOME nor HOME is
+// there: a registry with no state root runs from the embedded catalog and has
+// no runtime cache or OAuth records. Callers that need the state root
+// (cmdutil.LoadRegistry) resolve it themselves and report the error.
 func defaultStateRoot(env func(string) (string, bool)) string {
-	if base, ok := env("XDG_STATE_HOME"); ok && base != "" {
-		return filepath.Join(base, "evener")
+	xdg, _ := env("XDG_STATE_HOME")
+	root, err := userdirs.StateRoot(xdg, func() (string, error) {
+		home, _ := env("HOME")
+		return home, nil
+	})
+	if err != nil {
+		return ""
 	}
-	home, _ := env("HOME")
-	if home == "" {
-		home = "."
-	}
-	return filepath.Join(home, ".local", "state", "evener")
+	return root
 }
 
 // Load assembles the registry from the embedded snapshot, the curated
@@ -507,7 +512,7 @@ func (rec *record) keepInheritedRows(patterns []string) {
 		}
 	}
 	for i := range rec.layers {
-		rec.layers[i].rows = keepMatchingRows(rec.layers[i].rows, patterns)
+		rec.layers[i].rows = keepMatchingRows(rec.layers[i].rows, patterns, rec.head.Models)
 	}
 }
 
@@ -581,6 +586,7 @@ func cloneCaps(c Caps) Caps {
 	out.Reasoning = clonePointer(c.Reasoning)
 	out.ReasoningControls = slices.Clone(c.ReasoningControls)
 	out.EffortValues = slices.Clone(c.EffortValues)
+	out.EffortParameterUnsupported = clonePointer(c.EffortParameterUnsupported)
 	out.DefaultEffort = clonePointer(c.DefaultEffort)
 	out.InputModalities = slices.Clone(c.InputModalities)
 	out.KnowledgeCutoff = clonePointer(c.KnowledgeCutoff)
@@ -766,19 +772,30 @@ func (rec *record) fold(src Provider, tag string, presets map[string]Transport) 
 }
 
 // keepMatchingRows returns a fresh map holding only rows's entries whose id
-// matches at least one pattern (nil in, nil out): the caller's map may be
-// shared with a base record, so this never mutates rows in place.
-func keepMatchingRows(rows map[string]Model, patterns []string) map[string]Model {
+// matches at least one pattern (nil in, nil out), plus the glob rows that
+// shape a kept row (a kept id matches the glob), so a narrowed instance keeps
+// the shaping its rows resolve with. The caller's map may be shared with a
+// base record, so this never mutates rows in place.
+func keepMatchingRows(rows map[string]Model, patterns []string, kept map[string]Model) map[string]Model {
 	if rows == nil {
 		return nil
 	}
 	out := make(map[string]Model, len(rows))
 	for id, m := range rows {
-		if matchesAnyGlob(patterns, id) {
+		if matchesAnyGlob(patterns, id) || (isGlob(id) && globShapesAnyKept(id, kept)) {
 			out[id] = m
 		}
 	}
 	return out
+}
+
+func globShapesAnyKept(glob string, kept map[string]Model) bool {
+	for id := range kept {
+		if matchGlob(glob, id) {
+			return true
+		}
+	}
+	return false
 }
 
 // foldModel overlays one layer's row onto the merged row head. Hidden comes
@@ -1236,7 +1253,7 @@ func (r *Registry) maybeStartRefresh(o *options) {
 	if v, _ := o.env("EVENER_OFFLINE"); v == "1" {
 		offline = true
 	}
-	if offline {
+	if offline || o.stateRoot == "" {
 		return
 	}
 	if _, meta, ok := readCache(o.stateRoot); ok && time.Since(meta.FetchedAt) < cacheMaxAge {

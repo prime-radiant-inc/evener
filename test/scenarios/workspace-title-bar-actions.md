@@ -81,7 +81,7 @@ head and runs it as a fresh user turn.
    **There is no REST route for queue.** The old `/s/<id>/queue` shim died
    with the vanilla frontend, and the session REST namespace is gone.
    `turn/queue` lives only on the AppWire WebSocket
-   (`appwire/types.go#MethodTurnQueue`), so this leg needs one of:
+   (`appwire/types_protocol.go#MethodTurnQueue`), so this leg needs one of:
 
    - **[browser-free]** dial `ws://127.0.0.1:$PORT/rpc` with
      `Authorization: Bearer $TOKEN`, `initialize`, then call
@@ -225,7 +225,7 @@ head and runs it as a fresh user turn.
   `The user interrupted the previous turn`,
   `agent/session_lifecycle.go:720`). The turn is reported
   `status=interrupted` on `turn/completed` — the `TurnStatus` enum has no
-  `canceled` value at all (`appwire/types.go:166-171`), so a controller
+  `canceled` value at all (`appwire/types_protocol.go#TurnStatusInProgress`), so a controller
   grepping for that literal will never find it. The session remains alive —
   steps 3-5 below still work on the same SID. Send a follow-up `/send`
   immediately and it must complete normally. Falsification: state stays
@@ -239,8 +239,9 @@ head and runs it as a fresh user turn.
 - **Step 3 (compact)**: hub returns `204 No Content`. The transcript grows by
   one entry of `turn.kind = "CHECKPOINT"` (`agent/schema/turn.go:28`) whose
   text starts with `[CONTEXT CHECKPOINT]`
-  (`agent/internal/contextmgr/context_manager.go:1010`, the final
-  assembly that writes it first — not the old-format reader at `:812`)
+  (`agent/internal/contextmgr/checkpoint.go#formatCheckpoint`, the final
+  assembly that writes it first — not the old-format reader in
+  `agent/internal/contextmgr/checkpoint.go#collectCheckpointData`)
   and includes the prior
   user messages and agent replies summarized. `turn_count` is unchanged. The
   POST is synchronous over the whole compaction, which is **two** layers, not
@@ -296,11 +297,12 @@ find $HOME/.local/state/evener/projects -name "$SID*" -delete
   pre-`0ax1` behaviour of calling `s.Close()`.
 - **Compact is not free, and its checkpoint text depends on the strategy.**
   `Session.Compact` (`agent/session_compaction.go#Compact`) runs
-  `Manager.ForceCompact` (`agent/internal/contextmgr/context_manager.go#ForceCompact`),
+  `Manager.ForceCompact` (`agent/internal/contextmgr/compact.go#ForceCompact`),
   which is Layer 1 (a deterministic checkpoint) **plus** Layer 2 (LLM
   summarization) whenever a client is available. Layer 2 short-circuits on a
-  short history — `summarizeWithLLMSteered` returns the input unchanged when
-  `len(history) <= PreserveRecentTurns` (`:1216-1223`) — which is why this
+  short history — `summarizeFold` returns the input
+  unchanged when the history is no longer than `PreserveRecentTurns`
+  (`agent/internal/contextmgr/summarize_fold.go#summarizeFold`, `:41-43`) — which is why this
   card's two-turn session sees a fast 204 and why a longer one will not.
   Don't generalize the timing. The default strategy is `compact`
   (`agent/session_init.go:52-54`, selected for an empty `ContextStrategy`,

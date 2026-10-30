@@ -107,7 +107,7 @@ func (p *Protocol) listVertexModels(ctx context.Context, res registry.Resolved) 
 			return nil, err
 		}
 		var page vertexPublisherModelsPage
-		err = protocolhttp.Do(ctx, p.call("models.list", "google_models", http.MethodGet, u, nil, llm.Request{Model: "*"}, res), func(r *protocolhttp.Result) (*llm.Response, error) {
+		err = protocolhttp.Do(ctx, p.call("models.list", "google_models", http.MethodGet, u, nil, llm.Request{Model: "*", AdapterTimeout: llm.ModelListingTimeout(ctx)}, res), func(r *protocolhttp.Result) (*llm.Response, error) {
 			if err := json.Unmarshal(r.Body, &page); err != nil {
 				return nil, fmt.Errorf("models.list: %w", err)
 			}

@@ -55,14 +55,15 @@ export function resolveAxis(primary: number, flipped: number, size: number, view
 export function computePopoverPosition(
   triggerRect: DOMRect,
   popupSize: { width: number; height: number },
+  viewport: { width: number; height: number } = { width: window.innerWidth, height: window.innerHeight },
 ): PopoverPosition {
   return {
-    left: resolveAxis(triggerRect.left, triggerRect.right - popupSize.width, popupSize.width, window.innerWidth),
+    left: resolveAxis(triggerRect.left, triggerRect.right - popupSize.width, popupSize.width, viewport.width),
     top: resolveAxis(
       triggerRect.bottom + TRIGGER_GAP,
       triggerRect.top - TRIGGER_GAP - popupSize.height,
       popupSize.height,
-      window.innerHeight,
+      viewport.height,
     ),
   };
 }

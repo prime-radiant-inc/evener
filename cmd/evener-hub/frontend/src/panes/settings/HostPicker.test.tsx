@@ -1,14 +1,13 @@
 import type { HostRow } from "@evener/appwire-client";
+import { HOST_POLL_MS, LOCAL_HOST } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { connectionStore } from "../../stores/connection";
-import { LOCAL_HOST } from "../../stores/hostRouting";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { hostsStore } from "../../stores/hosts";
 import { resetSettingsHostForTests, settingsHostStore } from "../../stores/settingsHost";
 import { HostPicker } from "./HostPicker";
-import { HOST_POLL_MS } from "./sections/hosts";
 
 // The shared picker on the settings route: the local hub plus every configured
 // remote host, writing the one shared selection and the URL.
@@ -33,7 +32,7 @@ function connectFakeClient(hosts: HostRow[]): FakeClient {
 }
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   hostsStore.getState().resetForTests();
   resetSettingsHostForTests();
   // A settings route, so selectHost rewrites the host on the section it is on.
@@ -42,7 +41,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   window.history.pushState({}, "", "/");
 });
 

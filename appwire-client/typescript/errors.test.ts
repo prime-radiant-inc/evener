@@ -2,9 +2,10 @@
 
 import { describe, expect, test } from "vitest";
 import appwireErrorsGo from "../../appwire/errors.go?raw";
-import appwireTypesGo from "../../appwire/types.go?raw";
 import {
   ClientNotReadyError,
+  CODE_INVALID_REQUEST,
+  CODE_UNAVAILABLE,
   ConnectionClosedError,
   ErrorEndpointConflict,
   ErrorInstanceRemoveApplied,
@@ -34,7 +35,17 @@ import {
   WireError,
   wireRejectionPayload,
 } from "./errors";
-import { goConstantValue } from "./testing/goConstants";
+import { goConstantValue, goIntConstantValue } from "./testing/goConstants";
+
+// The wire types live across several appwire/*.go files; the json tags are
+// matched against all of them so a type may move between files.
+const appwireGoSources = Object.values(
+  import.meta.glob<string>(["../../appwire/*.go", "!../../appwire/*_test.go"], {
+    eager: true,
+    query: "?raw",
+    import: "default",
+  }),
+).join("\n");
 
 function decodeUpper(value: unknown): string | undefined {
   return typeof value === "string" ? value.toUpperCase() : undefined;
@@ -87,7 +98,7 @@ test("the host entry's wire spellings are the ones refusals and inputs share", (
   // by the "address" tag. "name" is the field hostEntryField blames for an
   // invalid or reserved host name, so it belongs in the pinned set too.
   for (const name of ["name", "address", "user", "keyPath", "evenerPath", "configPath", "addr", "roots"]) {
-    expect(appwireTypesGo).toMatch(new RegExp(`json:"${name}("|,)`));
+    expect(appwireGoSources).toMatch(new RegExp(`json:"${name}("|,)`));
   }
 });
 
@@ -470,7 +481,7 @@ test("friendlyLaunchErrorMessage masks only the no-diagnosis subset with the gui
 });
 
 test("friendlyLaunchErrorMessage preserves the daemon's own stderr (the hub propagates it on purpose)", () => {
-  // Mirrors cmd/evener-hub/app_rpc_test.go's stderr-propagation fixture: a
+  // Mirrors cmd/evener-hub/app_rpc_thread_start_test.go's stderr-propagation fixture: a
   // daemon that SPAWNED and crashed carries its diagnosis in the message,
   // and 'run evener in the repo' would reproduce the same crash silently.
   const stderr =
@@ -507,12 +518,16 @@ test("friendlyLaunchErrorMessage gives an unknown rejection the same generic sen
   expect(friendlyLaunchErrorMessage(unknown)).toBe(friendlyErrorMessage(unknown));
 });
 
-// The codes are Go ints, which goConstantValue (strings only) doesn't read.
 function code(name: string): number {
-  const value = appwireErrorsGo.match(new RegExp(`\\n\\s*${name}\\s*=\\s*(-?\\d+)`))?.[1];
-  if (value === undefined) throw new Error(`appwire/errors.go has no ${name} constant`);
-  return Number(value);
+  return goIntConstantValue(appwireErrorsGo, name, "appwire/errors.go");
 }
+
+describe("the exported wire codes are bound to appwire/errors.go", () => {
+  test("each constant equals the Go code it names", () => {
+    expect(CODE_INVALID_REQUEST).toBe(code("CodeInvalidRequest"));
+    expect(CODE_UNAVAILABLE).toBe(code("CodeUnavailable"));
+  });
+});
 
 describe("a refusal before running is bound to appwire/errors.go's codes", () => {
   test("a validation refusal or a malformed request ran nothing", () => {

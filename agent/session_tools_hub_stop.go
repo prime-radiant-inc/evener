@@ -20,10 +20,10 @@ func managerStopSchema(base map[string]any) map[string]any {
 	branches := make([]any, 0, len(modes))
 	for _, mode := range modes {
 		names = append(names, mode.name)
-		branches = append(branches, map[string]any{"properties": map[string]any{"mode": map[string]any{"const": mode.name}, "arguments": managerParametersSchema(reflect.TypeOf(mode.params))}, "required": []string{"mode", "arguments"}})
+		branches = append(branches, map[string]any{"type": "object", "properties": map[string]any{"mode": map[string]any{"type": "string", "const": mode.name}, "arguments": managerParametersSchema(reflect.TypeOf(mode.params))}, "required": []string{"mode", "arguments"}})
 	}
 	props["hub"] = map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"mode": map[string]any{"type": "string", "enum": names}, "arguments": map[string]any{"type": "object"}}, "required": []string{"mode", "arguments"}, "oneOf": branches}
-	base["anyOf"] = []any{map[string]any{"required": []string{"target"}, "not": map[string]any{"required": []string{"hub"}}}, map[string]any{"required": []string{"hub"}, "not": map[string]any{"required": []string{"target"}}}}
+	base["anyOf"] = []any{map[string]any{"type": "object", "required": []string{"target"}, "not": map[string]any{"type": "object", "required": []string{"hub"}}}, map[string]any{"type": "object", "required": []string{"hub"}, "not": map[string]any{"type": "object", "required": []string{"target"}}}}
 	delete(base, "required")
 	return base
 }
@@ -43,6 +43,9 @@ func (s *Session) composeHubStopTool() {
 	raw, _ := json.Marshal(registered.Definition.Parameters)
 	_ = json.Unmarshal(raw, &params)
 	registered.Definition.Parameters = managerStopSchema(params)
+	// Requiring every property would require both target and hub, an invalid call.
+	strictFalse := false
+	registered.Definition.Strict = &strictFalse
 	registered.Definition.Description += " With Manager enabled, hub={mode,arguments} selects interrupt, delegate (dlg_ ID, one run only, children survive), owned_delegate (dlg_ ID, recursive owned subtree), job (job_ ID, only that shell job plus immediate children when includeChildren is true), shutdown, or force-stop on a source-qualified session."
 	registered.Schema = nil
 	registered.Execute = nil

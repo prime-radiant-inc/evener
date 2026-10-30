@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+
+	"primeradiant.com/evener/identifier"
 )
 
 // structuralFixture is a complete Git metadata shape made directly under a test
@@ -27,7 +29,7 @@ type structuralFixture struct {
 
 func newStructuralFixture(t TestingT, includeVariant byte) structuralFixture {
 	t.Helper()
-	root := resolveCleanPath(t.TempDir())
+	root := identifier.ResolveClean(t.TempDir())
 	fixture := structuralFixture{
 		root:      root,
 		main:      filepath.Join(root, "main"),
@@ -109,7 +111,7 @@ func (f structuralFixture) workspace(kind WorkspaceKind) string {
 // all git metadata is materialized directly, not through an external command.
 func structuralReRootLanes(t TestingT) (main, laneA, laneB string) {
 	t.Helper()
-	root := resolveCleanPath(t.TempDir())
+	root := identifier.ResolveClean(t.TempDir())
 	main = filepath.Join(root, "main")
 	laneA = filepath.Join(root, "lane-a")
 	laneB = filepath.Join(root, "lane-b")
@@ -167,7 +169,7 @@ func FuzzSandboxStructuralContract(f *testing.F) {
 		}
 		for _, protected := range layout.ProtectedPaths {
 			for _, writable := range layout.WritablePaths {
-				if protected == writable || pathUnder(writable, protected) {
+				if protected == writable || identifier.PathUnder(writable, protected) {
 					t.Fatalf("layout grants protected path %q through writable root %q", protected, writable)
 				}
 			}
@@ -326,13 +328,11 @@ func fuzzSandboxResidualBranches(t *testing.T) {
 	_, _ = faultPolicy.ControlPolicy(root)
 	_, _ = (&Wrapper{policy: faultPolicy}).ReRoot(root)
 	_ = includePathValue("not-a-path-line")
-	oldWalk, oldRel := gitWalkDir, gitRel
+	oldWalk := gitWalkDir
 	_ = os.MkdirAll(filepath.Join(root, "modules"), 0o755)
 	gitWalkDir = func(root string, fn fs.WalkDirFunc) error { return fn(root, nil, errors.New("walk")) }
 	_ = moduleConfigProtections(root)
-	gitRel = func(string, string) (string, error) { return "", errors.New("rel") }
-	_ = pathUnder("/a", "/b")
-	gitWalkDir, gitRel = oldWalk, oldRel
+	gitWalkDir = oldWalk
 	nestedConfig := filepath.Join(root, "nested.conf")
 	if err := os.WriteFile(nestedConfig, []byte("[include]\npath = *.conf\n"), 0o644); err != nil {
 		t.Fatal(err)

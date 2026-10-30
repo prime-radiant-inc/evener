@@ -15,6 +15,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/identifier"
 )
 
 // A read-only session whose worktree lives under /tmp: the /tmp tmpfs shadows the
@@ -176,7 +178,7 @@ func TestBuildBwrapArgvLinkedWorktreeNoDeadPin(t *testing.T) {
 	for i := 0; i+2 < len(args); i++ {
 		if args[i] == "--ro-bind" && args[i+1] == "/dev/null" {
 			target := args[i+2]
-			if pathUnder(target, commonDir) && !isUnderAnyRoot(target, effective) {
+			if identifier.PathUnder(target, commonDir) && !isUnderAnyRoot(target, effective) {
 				t.Errorf("dead pin under read-only common dir would EROFS-abort the sandbox: %q", target)
 			}
 		}
@@ -425,7 +427,7 @@ func TestMaskHandledByNamespaceExemptsOnlyTrulyHiddenPaths(t *testing.T) {
 // /dev/shm itself, granted as the cwd, is shadowed by --dev exactly like a
 // directory beneath it, so it is re-bound read-only after --dev too.
 func TestBuildBwrapArgvReadOnlyRebindsDevShmItself(t *testing.T) {
-	if info, err := os.Stat("/dev/shm"); err != nil || !info.IsDir() || resolveCleanPath("/dev/shm") != "/dev/shm" {
+	if info, err := os.Stat("/dev/shm"); err != nil || !info.IsDir() || identifier.ResolveClean("/dev/shm") != "/dev/shm" {
 		t.Skip("this host has no /dev/shm directory of its own")
 	}
 	net := true
@@ -479,8 +481,8 @@ func TestBuildBwrapArgvScratchTreeFollowsFileToolReads(t *testing.T) {
 		t.Skipf("this host offers no writable /tmp: %v", err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(base) })
-	base = resolveCleanPath(base)
-	if !pathUnder(base, "/tmp") {
+	base = identifier.ResolveClean(base)
+	if !identifier.PathUnder(base, "/tmp") {
 		t.Skipf("/tmp resolves to %q on this host; the private /tmp shadows nothing", base)
 	}
 	tree := filepath.Join(base, sessionScratchTreePrefix+"root")
@@ -785,7 +787,7 @@ func TestLiveCacheRootsDoNotNestUnderARootSpelledInTmp(t *testing.T) {
 	if err := os.Symlink(store, link); err != nil {
 		t.Fatal(err)
 	}
-	if !pathUnder(link, "/tmp") {
+	if !identifier.PathUnder(link, "/tmp") {
 		t.Skip("the test temp dir is not under /tmp here")
 	}
 	rp, _ := overlayFixture(t, HostFacts{Home: t.TempDir(), XDGCacheHome: link, GoCache: gocache})

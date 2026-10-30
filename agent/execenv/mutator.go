@@ -259,48 +259,38 @@ func (e *LocalExecutionEnvironment) ReadFileRaw(path string) ([]byte, error) {
 // ReadFileRawCtx is ReadFileRaw with the caller's context threaded to the
 // read, so a cancelled call ends a read parked on a stream.
 func (e *LocalExecutionEnvironment) ReadFileRawCtx(ctx context.Context, path string) ([]byte, error) {
-	if sfs := e.sandbox(); sfs != nil {
-		defer sfs.release()
-		return sfs.readFileCtx(ctx, "apply_patch", e.resolve(path))
-	}
-	abs := e.resolve(path)
-	if sfs := e.scratchSandboxFor(abs); sfs != nil {
-		defer sfs.release()
-		return sfs.readFileCtx(ctx, "apply_patch", abs)
-	}
-	abs, err := e.resolveWrite(path)
+	t, err := e.fileTarget("apply_patch", path, targetReadRaw)
 	if err != nil {
 		return nil, err
 	}
-	return readFileCappedCtx(ctx, e.filesystem(), abs)
+	defer t.release()
+	if t.sfs != nil {
+		return t.sfs.readFileCtx(ctx, "apply_patch", t.abs)
+	}
+	return readFileCappedCtx(ctx, e.filesystem(), t.abs)
 }
 
 // WriteFileRaw writes data to path, creating missing parents, confined to the
 // active policy (sandboxed: atomic temp+renameat beneath a writable root).
 func (e *LocalExecutionEnvironment) WriteFileRaw(path string, data []byte, perm os.FileMode) error {
-	if sfs := e.sandbox(); sfs != nil {
-		defer sfs.release()
-		if err := e.requireLiveSandboxRootForRelative(sfs, "apply_patch", path); err != nil {
-			return err
-		}
-		return sfs.writeFile("apply_patch", e.resolve(path), data, perm)
-	}
-	abs := e.resolve(path)
-	if sfs := e.scratchSandboxFor(abs); sfs != nil {
-		defer sfs.release()
-		return sfs.writeFile("apply_patch", abs, data, perm)
-	}
-	if err := e.requireLiveWorkingDirForRelative(path); err != nil {
-		return err
-	}
-	abs, err := e.resolveWrite(path)
+	return e.writeFileAs("apply_patch", path, data, perm)
+}
+
+// writeFileAs is the write both WriteFile and WriteFileRaw perform; tool names
+// the caller in a sandbox denial.
+func (e *LocalExecutionEnvironment) writeFileAs(tool, path string, data []byte, perm os.FileMode) error {
+	t, err := e.fileTarget(tool, path, targetWrite)
 	if err != nil {
 		return err
 	}
-	if err := e.filesystem().MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+	defer t.release()
+	if t.sfs != nil {
+		return t.sfs.writeFile(tool, t.abs, data, perm)
+	}
+	if err := e.filesystem().MkdirAll(filepath.Dir(t.abs), 0o755); err != nil {
 		return err
 	}
-	return afero.WriteFile(e.filesystem(), abs, data, perm)
+	return afero.WriteFile(e.filesystem(), t.abs, data, perm)
 }
 
 // RemovePath deletes path best-effort (a missing target is not an error), but an
@@ -308,26 +298,15 @@ func (e *LocalExecutionEnvironment) WriteFileRaw(path string, data []byte, perm 
 // read-only filesystem, a nonempty directory — is surfaced, so a delete that did
 // not happen is never reported as success (issue #2376).
 func (e *LocalExecutionEnvironment) RemovePath(path string) error {
-	if sfs := e.sandbox(); sfs != nil {
-		defer sfs.release()
-		if err := e.requireLiveSandboxRootForRelative(sfs, "apply_patch", path); err != nil {
-			return err
-		}
-		return sfs.remove("apply_patch", e.resolve(path))
-	}
-	abs := e.resolve(path)
-	if sfs := e.scratchSandboxFor(abs); sfs != nil {
-		defer sfs.release()
-		return sfs.remove("apply_patch", abs)
-	}
-	if err := e.requireLiveWorkingDirForRelative(path); err != nil {
-		return err
-	}
-	abs, err := e.resolveWrite(path)
+	t, err := e.fileTarget("apply_patch", path, targetWrite)
 	if err != nil {
 		return err
 	}
-	if err := e.filesystem().Remove(abs); err != nil && !isAbsentRemove(err) {
+	defer t.release()
+	if t.sfs != nil {
+		return t.sfs.remove("apply_patch", t.abs)
+	}
+	if err := e.filesystem().Remove(t.abs); err != nil && !isAbsentRemove(err) {
 		return fmt.Errorf("remove %s: %w", path, err)
 	}
 	return nil

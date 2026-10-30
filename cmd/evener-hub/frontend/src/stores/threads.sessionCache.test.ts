@@ -5,24 +5,29 @@
 // races the spec's scenario 13 concedes — the shared-lookup join (Review
 // Focus 5), the release during the lookup, and the lookup that lost its own
 // deadline race.
+import { connectReadyFakeClient } from "../testing/connectionTestUtils";
+import { type TestThreadOverrides, testThread } from "../threadTestUtils";
 import "fake-indexeddb/auto";
 import type {
   AnyNotification,
   HistoryChanges,
-  QueueState,
   SnapshotIdentity,
-  Thread,
-  ThreadCapabilities,
   ThreadModel,
   ThreadReadResponse,
   Turn,
   TurnModel,
 } from "@evener/appwire-client";
-import { FakeClient, type RequestHandler } from "@evener/appwire-client/testing/fakeClient";
+import type { FakeClient, RequestHandler } from "@evener/appwire-client/testing/fakeClient";
 import { IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readComposerDraft, writeComposerDraft } from "../panes/session/composer/draft";
-import { connectionStore } from "./connection";
+import { setCacheChannelFactoryForTests } from "./cacheLifetime";
+import { resetConnectionStoreForTests } from "./connection";
+import {
+  isEntryTranscriptLocalOpening,
+  productionEntryTranscriptForTests,
+  setProductionEntryCacheForTests,
+} from "./entryTranscriptRoutes";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { settleProjectionWorkForTests } from "./projectionWork";
 import { entryHistoryKey, type TranscriptResolvedIdentity } from "./sessionCacheSchema";
@@ -34,37 +39,13 @@ import {
   backgroundTranscriptSnapshotForTests,
   clearCachedSessions,
   installHydrationRetrySchedulerForTests,
-  isEntryTranscriptLocalOpening,
   markCacheSessionsDeleted,
   pendingThreadHydrationBaseModelsForTests,
   pendingThreadHydrationUpdatesForTests,
-  productionEntryTranscriptForTests,
   resetThreadsStoreForTests,
-  setCacheChannelFactoryForTests,
-  setProductionEntryCacheForTests,
   settleBackgroundTranscriptsForTests,
   threadsStore,
 } from "./threads";
-
-const CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
-
-type TestThreadOverrides = Omit<Partial<Thread>, "evener"> & {
-  evener?: Omit<Thread["evener"], "queue"> & { queue: Partial<QueueState> };
-};
 
 // The response-level overrides a read fixture can carry besides the thread's
 // own fields (threads.test.ts's readResponse shape plus the v6 identity a
@@ -95,33 +76,6 @@ function readResponse(ref: string, overrides: ReadResponseOverrides & TestThread
   };
 }
 
-function testThread(ref: string, overrides: TestThreadOverrides = {}): Thread {
-  const { evener, ...threadOverrides } = overrides;
-  const threadID = threadOverrides.id ?? `thr_${ref}`;
-  return {
-    id: threadID,
-    sessionId: `sess_${ref}`,
-    preview: "test",
-    ephemeral: false,
-    modelProvider: "anthropic/claude-sonnet-4-5",
-    createdAt: 1000,
-    updatedAt: 1000,
-    status: { type: "idle" },
-    cwd: "/tmp/project",
-    cliVersion: "1.0.0",
-    source: "evener",
-    evener: {
-      ref,
-      instanceId: threadID,
-      mutationStateAuthoritative: true,
-      capabilities: CAPABILITIES,
-      ...evener,
-      queue: { revision: 0, ...evener?.queue },
-    },
-    ...threadOverrides,
-  };
-}
-
 // A recorded turn with one positioned item: the anchor the shell's record
 // carries (and what newestItemPosition reads from it) needs a position, and
 // the replay assertion reads the turn id. The shape satisfies both the model
@@ -148,8 +102,7 @@ function turnFixture(id: string, text = "cached turn"): TurnModel & Turn {
 let connectedFakeClient: FakeClient | undefined;
 
 function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
+  const fake = connectReadyFakeClient();
   connectedFakeClient = fake;
   return fake;
 }
@@ -298,7 +251,7 @@ let scheduledHydrationRetries: ScheduledHydrationRetry[] = [];
 let restoreHydrationRetryScheduler: (() => void) | null = null;
 
 beforeEach(async () => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   connectedFakeClient = undefined;
   _pendingReadRef = undefined;

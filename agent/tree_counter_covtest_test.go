@@ -88,10 +88,3 @@ func TestReserveDriveSlot_NilCounter(t *testing.T) {
 		t.Fatal("expected nil slot and ok=true for nil counter")
 	}
 }
-
-// TestReleasePreparedTreeSlot_Nil covers the nil guard (line 204).
-func TestReleasePreparedTreeSlot_Nil(t *testing.T) {
-	t.Parallel()
-	releasePreparedTreeSlot(nil)
-	// Should not panic.
-}

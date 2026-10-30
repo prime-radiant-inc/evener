@@ -1,4 +1,5 @@
 import type {
+  AuthDeviceStartResponse,
   AuthLogoutResponse,
   AuthStatusResponse,
   AuthTestResponse,
@@ -18,9 +19,10 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { captureNewTabs, NEW_TAB_POLICY, openedNewTab } from "../../../../shell/openInNewTab.testSupport";
 import { resetAuthStatusesStoreForTests } from "../../../../stores/authStatuses";
-import { connectionStore } from "../../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
+import { connectReadyFakeClient } from "../../../../testing/connectionTestUtils";
 import { Toast } from "../../../../widgets";
 import { emptyStateReasons } from "../../../../widgets/emptystate/emptyStateTestUtils";
 import { resetToastStoreForTests } from "../../../../widgets/toast/store";
@@ -45,12 +47,6 @@ const testResultShown = (status: string): boolean =>
  * starts work must not drop the keyboard, so the pending/busy state is
  * aria-disabled (Button/Switch swallow the activation themselves). */
 const isRefused = (el: HTMLElement): boolean => el.getAttribute("aria-disabled") === "true";
-
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  return fake;
-}
 
 function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "providerId">): InstanceEntry {
   return {
@@ -105,7 +101,7 @@ async function openSheet(user: ReturnType<typeof userEvent.setup>, name: string)
 }
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetCredentialsStoreForTests();
   resetAuthStatusesStoreForTests();
   resetToastStoreForTests();
@@ -116,13 +112,13 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
 test("Settings Connect provider opens discovery and retains management on cancel", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => LIST);
   render(<CredentialsSection sectionId="credentials" />);
   const user = userEvent.setup();
@@ -138,7 +134,7 @@ test("Settings Connect provider opens discovery and retains management on cancel
 // hub when it announces the credential fixed.
 test("shows a rejected credential as Error until the hub reports it fixed", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   const error = "The provider rejected this credential (HTTP 401). Replace the key or sign in again.";
   fake.on("evener/instance/list", () => LIST);
   let statuses: AuthStatusResponse[] = [
@@ -160,7 +156,7 @@ test("shows a rejected credential as Error until the hub reports it fixed", asyn
 // A listing kept from a replaced connection is another hub's until this one
 // reads its own: the errors read beside it are not shown against it.
 test("shows no credential errors against a listing from a previous connection", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   const error = "The provider rejected this credential (HTTP 401). Replace the key or sign in again.";
   fake.on("evener/instance/list", () => LIST);
   fake.on("evener/auth/list", () => ({
@@ -176,7 +172,7 @@ test("shows no credential errors against a listing from a previous connection", 
 
 describe("initial load", () => {
   test("fetches evener/instance/list on mount and groups rows by providerId", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST);
     render(<CredentialsSection sectionId="credentials" />);
     await screen.findByText("work");
@@ -188,7 +184,7 @@ describe("initial load", () => {
   // The Add dialog labels a provider `name || id`; the list has to call it
   // the same thing, or ProviderDescriptor.name only ever appears in the form.
   test("a group header prints the provider's display name when the registry supplies one", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => ({
       instances: [WORK],
       availableProviders: [
@@ -202,7 +198,7 @@ describe("initial load", () => {
   });
 
   test("a group header falls back to the raw providerId when no descriptor names it", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => ({ instances: [WORK], availableProviders: [] }));
     render(<CredentialsSection sectionId="credentials" />);
     await screen.findByText("work");
@@ -210,14 +206,14 @@ describe("initial load", () => {
   });
 
   test("empty state", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
     render(<CredentialsSection sectionId="credentials" />);
     await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["no-instances"]));
   });
 
   test("load failure shows an error message", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => {
       throw new Error("network down");
     });
@@ -237,7 +233,7 @@ describe("initial load", () => {
     ["a hub-reported WireError", new WireError("providers.toml is being rewritten", -32000)],
     ["a client-side failure", new Error("AppwireClient internal detail")],
   ])("a load failure from %s shows that error's friendly form", async (_name, err) => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => {
       throw err;
     });
@@ -281,7 +277,7 @@ describe("initial load", () => {
 // focus to <body> and the pane is not inside a focus scope, so nothing brought
 // it back: the next Tab started over at the top of the document.
 test("a listing that removes the focused row hands the keyboard back to the pane", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => LIST);
   render(<CredentialsSection sectionId="credentials" />);
   const workRow = await screen.findByRole("button", { name: /work/ });
@@ -300,7 +296,7 @@ test("a listing that removes the focused row hands the keyboard back to the pane
 // keyboard into the pane's first control on mount would be the same defect in
 // reverse.
 test("a cold load of the pane does not move the keyboard", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => LIST);
   render(<CredentialsSection sectionId="credentials" />);
   await screen.findByText("work");
@@ -314,7 +310,7 @@ test("a cold load of the pane does not move the keyboard", async () => {
 // it was written for - nothing to show yet - which is what the connection dialog
 // already does with its own rows.
 test("a background refresh keeps the rows mounted instead of swapping in the skeleton", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => LIST);
   render(<CredentialsSection sectionId="credentials" />);
   await screen.findByRole("button", { name: /work/ });
@@ -343,7 +339,7 @@ test("a background refresh keeps the rows mounted instead of swapping in the ske
 // so the rows it kept are still the user's - the banner explains them rather than
 // replacing them.
 test("a failed refresh keeps the rows and shows the banner", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => LIST);
   render(<CredentialsSection sectionId="credentials" />);
   const workRow = await screen.findByRole("button", { name: /work/ });
@@ -363,7 +359,7 @@ test("a failed refresh keeps the rows and shows the banner", async () => {
 // ...and the keyboard stays where the user put it, since nothing unmounted under
 // it.
 test("a background refresh keeps the keyboard in the pane", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => LIST);
   render(<CredentialsSection sectionId="credentials" />);
   const workRow = await screen.findByRole("button", { name: /work/ });
@@ -394,7 +390,7 @@ test("a background refresh keeps the keyboard in the pane", async () => {
 // screen belong to a connection that is gone they describe a listing this one
 // never read. The management dialog suppresses them for exactly that reason.
 test("a replaced connection's warnings stay hidden until its own listing lands", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => ({ ...LIST, diagnostics: ['providers.toml: unexpected key "type"'] }));
   render(<CredentialsSection sectionId="credentials" />);
   await screen.findByText("work");
@@ -418,7 +414,7 @@ test("a replaced connection's warnings stay hidden until its own listing lands",
 // question for content: a warning describes the listing that produced it, and
 // that is true of a replaced listing that carried no rows at all.
 test("a replaced connection's warnings are hidden even when its listing held no rows", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => ({
     instances: [],
     availableProviders: [],
@@ -441,7 +437,7 @@ test("a replaced connection's warnings are hidden even when its listing held no 
 // full read left) would present those rows as current. The full listing read
 // that lands next is what makes the row a refresh can speak about.
 test("a model refresh while the rows are a replaced connection's does not apply its answer", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   const row = { ...WORK, models: [{ id: "claude-opus-4-6", disabled: false }] };
   fake.on("evener/instance/list", () => ({ instances: [row], availableProviders: [] }));
   render(
@@ -480,7 +476,7 @@ test("a model refresh while the rows are a replaced connection's does not apply 
 
 describe("the detail sheet", () => {
   test("clicking a row opens the inspector; its close button dismisses it", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST);
     render(<CredentialsSection sectionId="credentials" />);
     await screen.findByText("work");
@@ -492,7 +488,7 @@ describe("the detail sheet", () => {
   });
 
   test("opening the API-key editor from the sheet closes the sheet", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST);
     render(<CredentialsSection sectionId="credentials" />);
     await screen.findByText("work");
@@ -504,7 +500,7 @@ describe("the detail sheet", () => {
   });
 
   test("a removed instance's inspector closes itself once the store updates", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST);
     fake.on("evener/instance/remove", (params) => {
       expect(params).toEqual({ name: "personal", originClientId: "test-tab" });
@@ -530,7 +526,7 @@ describe("the detail sheet", () => {
   // so a removal must be confirmed against a listing the store actually
   // applied - never against a response a concurrent read threw away.
   test("a superseded removal reconciles the listing before it is reported", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST);
     const listingsAtRemoval: InstanceEntry[][] = [];
     const onInstanceRemoved = vi.fn(() => {
@@ -581,7 +577,7 @@ describe("the detail sheet", () => {
   // reported as "could not be confirmed" rather than as a failure of the
   // removal itself.
   test("a removal whose reconcile read fails reports the removal it could not confirm", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST);
     const onInstanceRemoved = vi.fn();
     render(
@@ -629,7 +625,7 @@ describe("the detail sheet", () => {
   // The applied path is not automatically a confirmation either: the store's
   // own listing is the applied response, and it must actually have lost the row.
   test("a removal whose applied listing still holds the row is not reported as removed", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST);
     const onInstanceRemoved = vi.fn();
     render(
@@ -661,7 +657,7 @@ describe("the detail sheet", () => {
   // listing, and tells the guided owner the instance is gone - rather than
   // report a failed Remove whose retry targets a missing instance.
   test("an applied removal reported by the hub is reconciled, not failed", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST);
     const HUB_MESSAGE =
       'removing "personal" failed: the instance is still configured, but its stored key could not be restored (restore refused)';
@@ -713,7 +709,7 @@ describe("the detail sheet", () => {
       hasStoredFile: true,
       authModes: ["apiKey"],
     });
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => ({ instances: [STORED], availableProviders: [] }));
     const onInstanceRemoved = vi.fn();
     render(
@@ -761,7 +757,7 @@ describe("the detail sheet", () => {
   // The mirror of the stored-key case: a row the environment really does
   // supply keeps the wording that says access under the name is still active.
   test("a leftover environment-backed row produces the still-supplied wording", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST);
     fake.on("evener/instance/remove", () => ({
       instances: [
@@ -797,7 +793,7 @@ describe("the detail sheet", () => {
 
 describe("credential verification", () => {
   test("sends the exact custom instance name and shows local pending state until the deferred response arrives", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const customName = "OpenAI / team-east:prod";
     const custom = instance({ name: customName, providerId: "openai", authModes: ["apiKey"] });
     const response = deferred<AuthTestResponse>();
@@ -823,7 +819,7 @@ describe("credential verification", () => {
   });
 
   test("suppresses duplicate clicks for one pending instance while another instance stays enabled", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const workResponse = deferred<AuthTestResponse>();
     const personalResponse = deferred<AuthTestResponse>();
     fake.on("evener/instance/list", () => LIST);
@@ -864,7 +860,7 @@ describe("credential verification", () => {
   // The status-to-message table itself is pinned in credentialLabels.test.ts;
   // this is the wiring that renders its result.
   test("renders the safe status and message", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const response = deferred<AuthTestResponse>();
     fake.on("evener/instance/list", () => ({ instances: [WORK], availableProviders: [] }));
     fake.on("evener/auth/test", () => response.promise);
@@ -880,7 +876,7 @@ describe("credential verification", () => {
   });
 
   test("does not render a supplied secret from a response message", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const secret = "sk-live-do-not-render";
     fake.on("evener/instance/list", () => ({ instances: [WORK], availableProviders: [] }));
     fake.on("evener/auth/test", async () => ({ provider: WORK.name, status: "auth_rejected", message: secret }));
@@ -895,7 +891,7 @@ describe("credential verification", () => {
   });
 
   test("does not render a raw RPC error string", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const secret = "raw provider response containing sk-live-do-not-render";
     fake.on("evener/instance/list", () => ({ instances: [WORK], availableProviders: [] }));
     fake.on("evener/auth/test", async () => {
@@ -912,7 +908,7 @@ describe("credential verification", () => {
   });
 
   test("resets pending state and ignores a late result after same-name instance refresh", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     // A destination carries a fingerprint in production unless the hub cannot
     // key one, and this test is about the late result, not a fingerprint
     // refusal: both rows assert their own destination so the probe is sent.
@@ -962,7 +958,7 @@ describe("credential verification", () => {
   // unasserted probe would dial whatever the name resolves to now: the test is
   // refused before any RPC is sent, with an error toast and no pending state.
   test("the test refuses a destination the hub cannot fingerprint", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const unkeyed = instance({
       name: "work",
       providerId: "anthropic",
@@ -989,7 +985,7 @@ describe("credential verification", () => {
   // so the hub can refuse a check whose name has since been re-pointed to an
   // unreviewed endpoint instead of sending the stored credential there.
   test("the test asserts the selected instance's fingerprint", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const WORK_FP = { ...WORK, endpointFingerprint: "fp-work" };
     fake.on("evener/instance/list", () => ({ instances: [WORK_FP], availableProviders: [] }));
     fake.on("evener/auth/test", (params) => {
@@ -1020,7 +1016,7 @@ describe("credential verification", () => {
   // state would sit there, and a late answer would be shown as a result for
   // rows this connection never read.
   test("a client replacement clears a pending credential test and drops its late answer", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const pending = deferred<AuthTestResponse>();
     fake.on("evener/instance/list", () => LIST);
     fake.on("evener/auth/test", () => pending.promise);
@@ -1065,7 +1061,7 @@ describe("credential verification", () => {
   });
 
   test("a refused assertion is reported as a changed connection and re-reads the listing", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const WORK_FP = { ...WORK, endpointFingerprint: "fp-work" };
     let listCalls = 0;
     fake.on("evener/instance/list", () => {
@@ -1120,7 +1116,7 @@ describe("actions refused while the held listing belongs to a replaced connectio
      * read lands, and waits for the marker it clears. */
     release: () => Promise<void>;
   }> {
-    const first = connectFakeClient();
+    const first = connectReadyFakeClient();
     first.on("evener/instance/list", () => LIST);
     let finishRestore!: (value: InstanceListResponse) => void;
     const restore = new Promise<InstanceListResponse>((resolve) => {
@@ -1203,7 +1199,7 @@ describe("actions refused while the held listing belongs to a replaced connectio
   // included: an open sheet over a replaced connection's rows could otherwise
   // flip a model by name against the hub that is there now.
   test("a model toggle from a replaced connection's listing is refused with the change", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const row = { ...WORK, models: [{ id: "claude-opus-4-6", disabled: false }] };
     fake.on("evener/instance/list", () => ({ instances: [row], availableProviders: [] }));
     render(
@@ -1254,7 +1250,7 @@ describe("actions refused while the held listing belongs to a replaced connectio
 
 describe("single-open-editor invariant", () => {
   test("opening the Add form, then Replace key from a row's sheet, replaces it (only one editor open at a time)", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST);
     render(<CredentialsSection sectionId="credentials" fullEditor />);
     await screen.findByText("work");
@@ -1270,7 +1266,7 @@ describe("single-open-editor invariant", () => {
 
   // An open API-key editor stops rendering if its instance disappears.
   test("an API key dialog closes when a refreshed list removes its instance", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST);
     render(<CredentialsSection sectionId="credentials" />);
     await screen.findByText("work");
@@ -1287,7 +1283,7 @@ describe("single-open-editor invariant", () => {
 
 describe("OAuth start branches", () => {
   test("fallback:true opens the redirect (paste-back) editor using loginStart's own flowId/url", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST);
     fake.on("evener/auth/device/start", () => ({
       provider: "personal",
@@ -1319,7 +1315,7 @@ describe("OAuth start branches", () => {
   });
 
   test("fallback:false/absent opens the device-code editor", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST);
     fake.on("evener/auth/device/start", () => ({
       provider: "personal",
@@ -1337,8 +1333,55 @@ describe("OAuth start branches", () => {
     await screen.findByText("ABCD-EFGH");
   });
 
+  test("a restart the user cancels while its start is out does not reopen the editor", async () => {
+    const fake = connectReadyFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    const replacement = deferred<AuthDeviceStartResponse>();
+    let starts = 0;
+    fake.on("evener/auth/device/start", async () => {
+      starts += 1;
+      if (starts > 1) return replacement.promise;
+      return {
+        provider: "personal",
+        flowId: "device-flow",
+        userCode: "ABCD-EFGH",
+        verificationUrl: "https://verify",
+        intervalSeconds: 1,
+      };
+    });
+    fake.on("evener/auth/device/poll", () => ({ state: "restart" }));
+    render(<CredentialsSection sectionId="credentials" />);
+    await screen.findByText("personal");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "personal");
+    // The restart rides the dialog's one-second poll timer, so the fake clock
+    // drives it; a real waitFor races that timer on a loaded runner. The stubbed
+    // `jest` global lets Testing Library's waitFor advance the fake clock.
+    vi.stubGlobal("jest", { advanceTimersByTime: vi.advanceTimersByTime });
+    vi.useFakeTimers();
+    await act(async () => {
+      fireEvent.click(within(inspector).getByRole("button", { name: "Sign in…" }));
+    });
+    await waitFor(() => expect(screen.getByText("ABCD-EFGH")).toBeTruthy());
+    await advanceTime(1000);
+    expect(starts).toBe(2);
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog", { name: "Sign in to personal" })).toBeNull();
+    await act(async () => {
+      replacement.resolve({
+        provider: "personal",
+        flowId: "device-flow-2",
+        userCode: "WXYZ-1234",
+        verificationUrl: "https://verify",
+        intervalSeconds: 5,
+      });
+    });
+    expect(screen.queryByText("WXYZ-1234")).toBeNull();
+  });
+
   test("a deviceStart failure toasts 'Sign-in failed' and opens no editor", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST);
     fake.on("evener/auth/device/start", () => {
       throw new Error("provider unavailable");
@@ -1375,7 +1418,7 @@ describe("OAuth start branches", () => {
   // would keep the same component instance, and therefore its stale local
   // state, across the transition).
   test("abandoning an expired device flow and starting a new one resets to a fresh state, not flow A's leftover 'expired' UI - and flow A's timer stays dead", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST);
     let deviceStartCalls = 0;
     fake.on("evener/auth/device/start", () => {
@@ -1449,7 +1492,7 @@ describe("OAuth start branches", () => {
 
 describe("set default", () => {
   test("calls instanceSetDefault directly with no confirm dialog and no success toast", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST);
     fake.on("evener/instance/setDefault", (params) => {
       expect(params).toEqual({ name: "personal", originClientId: "test-tab" });
@@ -1470,7 +1513,7 @@ describe("set default", () => {
   });
 
   test("a setDefault failure toasts 'Set default failed'", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST);
     fake.on("evener/instance/setDefault", () => {
       throw new Error("boom");
@@ -1494,7 +1537,7 @@ describe("set default", () => {
 
 describe("model live refresh", () => {
   test("opening a sheet does not fetch; the Refresh button does and merges", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST);
     fake.on("evener/instance/refreshModels", (params) => {
       expect(params).toEqual({ name: "work", originClientId: "test-tab" });
@@ -1519,7 +1562,7 @@ describe("model live refresh", () => {
   });
 
   test("an instance with no inventory still offers the Refresh button", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const bare = instance({ name: "work", providerId: "anthropic", authModes: ["apiKey"] });
     fake.on("evener/instance/list", () => ({ instances: [bare], availableProviders: [] }));
     fake.on("evener/instance/refreshModels", (params) => {
@@ -1544,7 +1587,7 @@ describe("model live refresh", () => {
   });
 
   test("two concurrent refreshes each track their own pending state", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST);
     const gates = new Map<string, ReturnType<typeof deferred<InstanceListResponse>>>();
     fake.on("evener/instance/refreshModels", (params: { name: string }) => {
@@ -1581,7 +1624,7 @@ describe("model live refresh", () => {
   });
 
   test("a refresh in flight for another instance does not disable this sheet's button", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST);
     const gate = deferred<InstanceListResponse>();
     fake.on("evener/instance/refreshModels", () => gate.promise);
@@ -1607,7 +1650,7 @@ describe("model live refresh", () => {
   });
 
   test("a refresh failure toasts and keeps the cached rows", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST);
     fake.on("evener/instance/refreshModels", () => {
       throw new Error("boom");
@@ -1631,7 +1674,7 @@ describe("model live refresh", () => {
 
 describe("model toggles", () => {
   test("flipping a switch calls setModelDisabled and applies the returned list", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST);
     fake.on("evener/instance/setModelDisabled", (params) => {
       expect(params).toEqual({ name: "work", model: "claude-opus-4-6", disabled: true, originClientId: "test-tab" });
@@ -1663,7 +1706,7 @@ describe("model toggles", () => {
   });
 
   test("a switch disables while its toggle is in flight", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST);
     let release!: (value: InstanceListResponse) => void;
     fake.on(
@@ -1704,7 +1747,7 @@ describe("model toggles", () => {
   // <body>): the pane's focus recovery then had to put focus back somewhere
   // else, scrolling the sheet to that control - the jump this pins away.
   test("a toggle in flight keeps the keyboard on its switch", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST);
     let release!: (value: InstanceListResponse) => void;
     fake.on(
@@ -1741,7 +1784,7 @@ describe("model toggles", () => {
   // the in-flight state is a refusal, so the button that was clicked keeps the
   // keyboard instead of dropping it to <body> (see widgets/switch).
   test("clicking Test credentials keeps the keyboard on it while its probe is out", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const probe = deferred<AuthTestResponse>();
     fake.on("evener/instance/list", () => LIST);
     fake.on("evener/auth/test", () => probe.promise);
@@ -1766,7 +1809,7 @@ describe("model toggles", () => {
   });
 
   test("clicking Refresh live models keeps the keyboard on it while the read is out", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const row = { ...WORK, models: [{ id: "claude-opus-4-6", disabled: false }] };
     const refresh = deferred<InstanceListResponse>();
     fake.on("evener/instance/list", () => ({ instances: [row], availableProviders: [] }));
@@ -1794,7 +1837,7 @@ describe("model toggles", () => {
   });
 
   test("two clicks in the same tick submit one toggle", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST);
     let writes = 0;
     fake.on(
@@ -1826,7 +1869,7 @@ describe("model toggles", () => {
   });
 
   test("a toggle failure toasts 'Model toggle failed'", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST);
     fake.on("evener/instance/setModelDisabled", () => {
       throw new Error("boom");
@@ -1850,7 +1893,7 @@ describe("model toggles", () => {
 
 describe("Clear / Clear stored key / Remove confirm dialogs", () => {
   test("Clear opens a ConfirmDialog naming the instance; confirming calls authLogout then refreshes", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST);
     fake.on("evener/auth/logout", (params) => {
       expect(params).toEqual({ provider: "work", originClientId: "test-tab" });
@@ -1880,7 +1923,7 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
   });
 
   test("a cleared credential whose listing read is lost is still reported as cleared", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST);
     let logout!: (value: AuthLogoutResponse) => void;
     fake.on(
@@ -1905,7 +1948,7 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
     // Dropped connection during the clear: the logout succeeded, and the
     // follow-up listing read rejecting must not report "Clear failed".
     await act(async () => {
-      connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+      resetConnectionStoreForTests();
     });
     await act(async () => {
       logout({
@@ -1925,7 +1968,7 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
   // from Clear (authLogout), which for a signed-in Codex row would remove
   // the OAuth record instead.
   test("Clear stored key opens a ConfirmDialog naming the instance; confirming calls clearStoredKey then refreshes", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const SHADOWED = instance({
       name: "shadowed",
       providerId: "openai-codex",
@@ -1963,7 +2006,7 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
   // document, not an API key - the confirm dialog and success toast must
   // call it that, mirroring the flow above.
   test("Clear stored credential JSON for a gcp-adc instance opens a ConfirmDialog naming the credential JSON; confirming calls clearStoredKey then refreshes", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const VERTEX = instance({
       name: "vertex",
       providerId: "google-vertex",
@@ -2002,7 +2045,7 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
   });
 
   test("Remove opens a ConfirmDialog; confirming calls instanceRemove", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST);
     fake.on("evener/instance/remove", (params) => {
       expect(params).toEqual({ name: "personal", originClientId: "test-tab" });
@@ -2031,7 +2074,7 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
   // a name that now resolves elsewhere instead of clearing or removing a
   // replacement's credentials/configuration.
   test("Clear sends the endpoint fingerprint of the row the confirm was opened for", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const WORK_FP = { ...WORK, endpointFingerprint: "fp-work" };
     fake.on("evener/instance/list", () => ({ instances: [WORK_FP], availableProviders: [] }));
     fake.on("evener/auth/logout", (params) => {
@@ -2057,7 +2100,7 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
   });
 
   test("Clear stored key sends the endpoint fingerprint of the row the confirm was opened for", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const SHADOWED = instance({
       name: "shadowed",
       providerId: "openai-codex",
@@ -2093,7 +2136,7 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
   });
 
   test("Remove sends the endpoint fingerprint of the row the confirm was opened for", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const PERSONAL_FP = { ...PERSONAL, endpointFingerprint: "fp-personal" };
     fake.on("evener/instance/list", () => ({ instances: [WORK, PERSONAL_FP], availableProviders: [] }));
     fake.on("evener/instance/remove", (params) => {
@@ -2126,7 +2169,7 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
   // listing, and lets the next confirmation capture the refreshed fingerprint -
   // the same recovery the mobile and TUI clients make.
   test("a removal refused for a moved endpoint closes the confirmation, re-reads, and warns", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const PERSONAL_FP = { ...PERSONAL, endpointFingerprint: "fp-old" };
     const PERSONAL_MOVED = { ...PERSONAL, endpointFingerprint: "fp-new" };
     // The first listing is the row the confirmation is opened against; the read
@@ -2186,7 +2229,7 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
   });
 
   test("a clear refused for a moved endpoint closes the confirmation, re-reads, and warns", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const SHADOWED = instance({
       name: "shadowed",
       providerId: "openai-codex",
@@ -2251,7 +2294,7 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
   // vanish would report a removal that did happen as unconfirmed, leaving the
   // sheet open on stale authored state.
   test("removing an instance the environment also supplies confirms on the authored row leaving", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST);
     fake.on("evener/instance/remove", (params) => {
       expect(params).toEqual({ name: "personal", originClientId: "test-tab" });
@@ -2290,7 +2333,7 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
   // out of it, so a confirmed removal clears the selection: the replacement
   // row opens fresh.
   test("a confirmed removal closes the sheet even when the name survives as an environment-supplied row", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => ({ instances: [WORK], availableProviders: [] }));
     fake.on("evener/instance/remove", (params) => {
       expect(params).toEqual({ name: "work", originClientId: "test-tab" });
@@ -2332,7 +2375,7 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
   });
 
   test("cancelling a confirm dialog makes no RPC call and keeps the sheet open", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST);
     const removeCalls: unknown[] = [];
     fake.on("evener/instance/remove", (params) => {
@@ -2351,7 +2394,7 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
   });
 
   test("clear failure shows error toast", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST);
     fake.on("evener/auth/logout", () => {
       throw new Error("logout denied");
@@ -2374,7 +2417,7 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
   });
 
   test("clear stored key failure shows error toast", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const SHADOWED = instance({
       name: "shadowed",
       providerId: "openai-codex",
@@ -2405,7 +2448,7 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
   });
 
   test("remove failure shows error toast", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST);
     fake.on("evener/instance/remove", () => {
       throw new Error("remove denied");
@@ -2434,7 +2477,7 @@ describe("credential dialogs against a moving endpoint", () => {
   // name updates the dialog's live row but not the captured fingerprint, so
   // the already-entered secret cannot be re-targeted to it.
   test("a name that resolves to a different endpoint refuses the save, clears the value, and shows an error", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const WORK_FP = { ...WORK, endpointFingerprint: "fp-original" };
     fake.on("evener/instance/list", () => ({ instances: [WORK_FP], availableProviders: [] }));
     const setKey = vi.fn();
@@ -2464,7 +2507,7 @@ describe("credential dialogs against a moving endpoint", () => {
   });
 
   test("an unchanged destination submits the captured fingerprint", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const WORK_FP = { ...WORK, endpointFingerprint: "fp-original" };
     fake.on("evener/instance/list", () => ({ instances: [WORK_FP], availableProviders: [] }));
     fake.on("evener/auth/apiKey/set", (params) => {
@@ -2498,7 +2541,7 @@ describe("credential dialogs against a moving endpoint", () => {
 // spec §11.3.
 describe("diagnostics and writesRefused", () => {
   test("renders every diagnostics entry from the list response", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => ({
       instances: [],
       availableProviders: [],
@@ -2513,7 +2556,7 @@ describe("diagnostics and writesRefused", () => {
   });
 
   test("no diagnostics banner when the list carries none", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST);
     render(<CredentialsSection sectionId="credentials" />);
     await screen.findByText("work");
@@ -2521,7 +2564,7 @@ describe("diagnostics and writesRefused", () => {
   });
 
   test("writesRefused gates the raw add-instance action, not the guided connector or credential-only actions", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => ({
       instances: [WORK, PERSONAL],
       availableProviders: [],
@@ -2555,7 +2598,7 @@ describe("diagnostics and writesRefused", () => {
   });
 
   test("writesRefused disables the raw add-instance action that authors providers.toml", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => ({ instances: [WORK], availableProviders: [], writesRefused: true }));
     render(<CredentialsSection sectionId="credentials" fullEditor />);
     await screen.findByText("work");
@@ -2564,7 +2607,7 @@ describe("diagnostics and writesRefused", () => {
   });
 
   test("writesRefused leaves the guided connector and the credential-only actions usable", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => ({
       instances: [WORK, PERSONAL],
       availableProviders: [],
@@ -2600,7 +2643,7 @@ describe("diagnostics and writesRefused", () => {
 
 describe("rename from the sheet", () => {
   test("re-selects the instance under its new name so the sheet stays open", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST);
     fake.on("evener/instance/edit", (params) => ({
       instances: [{ ...WORK, name: params.newName ?? WORK.name }, PERSONAL],
@@ -2628,7 +2671,7 @@ describe("rename from the sheet", () => {
   // to the renamed instance and surfaces the hub's own message as a warning
   // rather than a failed save: providers.toml already names the new instance.
   test("a rename error carrying the hub's persisted discriminator is reconciled and warned, not failed", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const HUB_MESSAGE =
       "renamed work to work2, but: OAuth record not read: open /state/auth/work.json: permission denied";
     let renamed = false;
@@ -2666,7 +2709,7 @@ describe("rename from the sheet", () => {
   // unconditionally) closes the sheet on itself the moment it moves, leaving
   // the user with only a toast and no editor.
   test("a persisted rename whose listing omits the new row keeps the sheet open until the listing catches up", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const HUB_MESSAGE =
       "renamed work to work2, but: OAuth record not read: open /state/auth/work.json: permission denied";
     let caughtUp = false;
@@ -2710,7 +2753,7 @@ describe("rename from the sheet", () => {
   // listing's row at the destination is this rename's own, or edits typed for
   // the renamed instance land on a stranger's configuration.
   test("a persisted rename does not adopt an impostor row at the destination name", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const HUB_MESSAGE =
       "renamed work to work2, but: OAuth record not read: open /state/auth/work.json: permission denied";
     // The impostor: an implicit row re-derived under the freed name, with a
@@ -2765,7 +2808,7 @@ describe("rename from the sheet", () => {
   // freed name (renamed onto it, or recreated under it). The identity checks
   // reject it on its own fields, not only on implicitness.
   test("a persisted rename does not adopt a different authored row at the destination name", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const HUB_MESSAGE =
       "renamed work to work2, but: OAuth record not read: open /state/auth/work.json: permission denied";
     const IMPOSTOR = instance({
@@ -2814,7 +2857,7 @@ describe("rename from the sheet", () => {
   // precedent), but resubmitting now would send the completed rename against
   // the old name - gone from the config - so it must refuse before any write.
   test("a persisted rename in the listing gap refuses a second save without a request", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const HUB_MESSAGE =
       "renamed work to work2, but: OAuth record not read: open /state/auth/work.json: permission denied";
     fake.on("evener/instance/list", () => LIST);
@@ -2851,7 +2894,7 @@ describe("rename from the sheet", () => {
   // impostor row. Remove and Clear must refuse rather than mutate the wrong
   // instance, and must work again the instant the real row arrives.
   test("a persisted rename in the listing gap refuses Remove and Clear, and they work once it reconciles", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const HUB_MESSAGE =
       "renamed work to work2, but: OAuth record not read: open /state/auth/work.json: permission denied";
     const IMPOSTOR = instance({
@@ -2906,7 +2949,7 @@ describe("rename from the sheet", () => {
   // A refusal carries no such discriminator, so it stays the plain save failure
   // it was, with the sheet left where it was.
   test("a rename error without the persisted discriminator stays a plain failure", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST);
     fake.on("evener/instance/edit", () => {
       throw new WireError("renaming work was refused: the new name is taken", -32013);
@@ -2930,7 +2973,7 @@ describe("rename from the sheet", () => {
 });
 
 test("open settings adopt provider-file repair and retain rows during invalid edits", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   const error = "providers.toml: invalid fixture edit; active configuration retained";
   let listing: InstanceListResponse = {
     instances: [],

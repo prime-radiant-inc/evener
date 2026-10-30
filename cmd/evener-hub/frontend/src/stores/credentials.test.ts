@@ -12,7 +12,8 @@ import { deferRequest, FakeClient } from "@evener/appwire-client/testing/fakeCli
 import { threadStartedNotification } from "@evener/appwire-client/testing/notifications";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { connectionStore } from "./connection";
+import { connectReadyFakeClient } from "../testing/connectionTestUtils";
+import { connectionStore, resetConnectionStoreForTests } from "./connection";
 import {
   connectionGeneration,
   credentialsStore,
@@ -31,12 +32,6 @@ import {
 } from "./credentials";
 import { hostsStore } from "./hosts";
 import { setMutationClientIdentityForTests } from "./mutationClientIdentity";
-
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  return fake;
-}
 
 const ONE_INSTANCE: InstanceEntry = {
   name: "work",
@@ -63,7 +58,7 @@ const LIST_RESPONSE: InstanceListResponse = {
 };
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetCredentialsStoreForTests();
   resetHostInstancesForTests();
   // The auth mutations carry the page's identity on the wire now, so the
@@ -74,13 +69,13 @@ beforeEach(() => {
 afterEach(() => {
   // Unmount first: a still-mounted hook re-renders on both resets below.
   cleanup();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   hostsStore.getState().resetForTests();
 });
 
 describe("fetch", () => {
   test("a late read cannot overwrite credentials from a newer refresh", async () => {
-    const client = connectFakeClient();
+    const client = connectReadyFakeClient();
     let resolveOld: (value: InstanceListResponse) => void = () => {};
     const oldResponse = new Promise<InstanceListResponse>((resolve) => {
       resolveOld = resolve;
@@ -95,7 +90,7 @@ describe("fetch", () => {
     expect(credentialsStore.getState().instances).toEqual([ONE_INSTANCE]);
   });
   test("disconnecting releases an interrupted fetch and ready reloads the list", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let finishOld!: (value: InstanceListResponse) => void;
     fake.on(
       "evener/instance/list",
@@ -123,7 +118,7 @@ describe("fetch", () => {
   });
 
   test("a replaced connection marks the held listing, and its own read clears it", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     await credentialsStore.getState().fetch();
     expect(credentialsStore.getState().listingFromPreviousConnection).toBe(false);
@@ -141,7 +136,7 @@ describe("fetch", () => {
   });
 
   test("a write issued while the held listing is stale is refused until this connection's read lands", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     await credentialsStore.getState().fetch();
 
@@ -181,7 +176,7 @@ describe("fetch", () => {
   // retry once the client is ready again. Marking it stale refused those
   // actions with a message claiming the connection had been replaced.
   test("a same-client connection-state transition does not mark the held listing stale", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     fake.on("evener/instance/setDefault", () => LIST_RESPONSE);
     await credentialsStore.getState().fetch();
@@ -203,7 +198,7 @@ describe("fetch", () => {
   // from any other failure shows this text, so it must not name the store's
   // internals.
   test("the stale-listing refusal carries the same words every surface shows", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     await credentialsStore.getState().fetch();
 
@@ -249,7 +244,7 @@ describe("fetch", () => {
   });
 
   test("a credential test issued while the held listing is stale is refused with a refusal callers can tell apart", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     await credentialsStore.getState().fetch();
 
@@ -280,7 +275,7 @@ describe("fetch", () => {
   });
 
   test("populates instances/availableProviders/diagnostics/writesRefused from evener/instance/list on success", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => ({
       ...LIST_RESPONSE,
       diagnostics: ['providers.toml: unexpected key "type"'],
@@ -299,7 +294,7 @@ describe("fetch", () => {
   });
 
   test("defaults diagnostics/userLayer/writesRefused when the response omits them", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE); // no diagnostics/userLayer/writesRefused keys
     await credentialsStore.getState().fetch();
     const state = credentialsStore.getState();
@@ -309,7 +304,7 @@ describe("fetch", () => {
   });
 
   test("sets loading true for the duration of the request", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let resolveRequest: (() => void) | undefined;
     fake.on(
       "evener/instance/list",
@@ -327,7 +322,7 @@ describe("fetch", () => {
   });
 
   test("on failure, clears loading and sets error without touching prior instances", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     await credentialsStore.getState().fetch();
 
@@ -346,7 +341,7 @@ describe("mutations returning the updated instance list", () => {
   test.each(["replacement", "reconnect", "same connection"])(
     "a delayed mutation cannot overwrite a %s refresh",
     async (change) => {
-      const old = connectFakeClient();
+      const old = connectReadyFakeClient();
       let finishMutation!: (value: InstanceListResponse) => void;
       old.on(
         "evener/instance/remove",
@@ -357,7 +352,7 @@ describe("mutations returning the updated instance list", () => {
       );
       const mutation = credentialsStore.getState().remove("work");
       await Promise.resolve();
-      const current = change === "replacement" ? connectFakeClient() : old;
+      const current = change === "replacement" ? connectReadyFakeClient() : old;
       if (change === "reconnect") {
         old.emitStateChange("reconnecting");
         old.emitReady();
@@ -382,7 +377,7 @@ describe("mutations returning the updated instance list", () => {
   );
 
   test("concurrent refreshes for different instances each land their own row", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const OTHER: InstanceEntry = { ...ONE_INSTANCE, name: "personal" };
     const workModels = [{ id: "work-live-model" }];
     const personalModels = [{ id: "personal-live-model" }];
@@ -413,7 +408,7 @@ describe("mutations returning the updated instance list", () => {
   });
 
   test("a refresh neither sets nor clears the global fetch spinner", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let finishFetch!: (value: InstanceListResponse) => void;
     fake.on(
       "evener/instance/list",
@@ -436,7 +431,7 @@ describe("mutations returning the updated instance list", () => {
   });
 
   test("a refresh whose answer omits a concurrently removed instance does not resurrect it", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     await credentialsStore.getState().fetch();
     // Order: refresh starts, remove completes (its applyMutation bumps
@@ -463,7 +458,7 @@ describe("mutations returning the updated instance list", () => {
   });
 
   test("a stale full-list fetch keeps newer metadata and refreshed models", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => ({
       instances: [{ ...ONE_INSTANCE, activeSource: "none" }],
       availableProviders: [],
@@ -502,7 +497,7 @@ describe("mutations returning the updated instance list", () => {
   });
 
   test("a stale full-list fetch does not resurrect an instance its answer omits", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const OTHER: InstanceEntry = { ...ONE_INSTANCE, name: "personal" };
     fake.on("evener/instance/list", () => ({ instances: [ONE_INSTANCE, OTHER], availableProviders: [] }));
     await credentialsStore.getState().fetch();
@@ -533,7 +528,7 @@ describe("mutations returning the updated instance list", () => {
   });
 
   test("a stale full-list fetch merges around landed refresh rows instead of wiping them", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const workModels = [{ id: "work-live-model" }];
     let finishFetch!: (value: InstanceListResponse) => void;
     fake.on(
@@ -558,7 +553,7 @@ describe("mutations returning the updated instance list", () => {
   });
 
   test("a refresh that landed before the read began is not newer than the read's answer", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const OTHER: InstanceEntry = { ...ONE_INSTANCE, name: "personal" };
     fake.on("evener/instance/list", () => ({ instances: [ONE_INSTANCE, OTHER], availableProviders: [] }));
     await credentialsStore.getState().fetch();
@@ -611,7 +606,7 @@ describe("mutations returning the updated instance list", () => {
   });
 
   test("a background fetch in flight does not discard a landing refresh", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const workModels = [{ id: "work-live-model" }];
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     await credentialsStore.getState().fetch();
@@ -634,7 +629,7 @@ describe("mutations returning the updated instance list", () => {
   });
 
   test("a newer mutation wins when mutation responses arrive out of order", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let finishOld!: (value: InstanceListResponse) => void;
     fake.on(
       "evener/instance/remove",
@@ -653,7 +648,7 @@ describe("mutations returning the updated instance list", () => {
   });
 
   test("concurrent toggles for different models both land when the later answer omits the earlier write", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const withModels = (models: InstanceEntry["models"]): InstanceListResponse => ({
       instances: [{ ...ONE_INSTANCE, models }],
       availableProviders: [],
@@ -697,7 +692,7 @@ describe("mutations returning the updated instance list", () => {
   });
 
   test("a refresh cannot overwrite a toggle that landed while it was in flight", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const withModels = (models: InstanceEntry["models"]): InstanceListResponse => ({
       instances: [{ ...ONE_INSTANCE, models }],
       availableProviders: [],
@@ -740,7 +735,7 @@ describe("mutations returning the updated instance list", () => {
   });
 
   test("a read cannot revert a toggle that landed while it was in flight", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const withModels = (models: InstanceEntry["models"]): InstanceListResponse => ({
       instances: [{ ...ONE_INSTANCE, models }],
       availableProviders: [],
@@ -787,7 +782,7 @@ describe("mutations returning the updated instance list", () => {
   });
 
   test("a write on another instance does not discard this instance's refresh", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const OTHER: InstanceEntry = { ...ONE_INSTANCE, name: "personal" };
     fake.on("evener/instance/list", () => ({ instances: [ONE_INSTANCE, OTHER], availableProviders: [] }));
     await credentialsStore.getState().fetch();
@@ -820,7 +815,7 @@ describe("mutations returning the updated instance list", () => {
   });
 
   test("refresh bookkeeping does not survive a client change", async () => {
-    const first = connectFakeClient();
+    const first = connectReadyFakeClient();
     const OTHER: InstanceEntry = { ...ONE_INSTANCE, name: "personal" };
     first.on("evener/instance/list", () => ({
       instances: [{ ...ONE_INSTANCE, activeSource: "store" }, OTHER],
@@ -874,7 +869,7 @@ describe("mutations returning the updated instance list", () => {
   });
 
   test("a write landing from a replaced client does not discard the new client's refresh", async () => {
-    const first = connectFakeClient();
+    const first = connectReadyFakeClient();
     first.on("evener/instance/list", () => LIST_RESPONSE);
     await credentialsStore.getState().fetch();
 
@@ -919,7 +914,7 @@ describe("mutations returning the updated instance list", () => {
   });
 
   test("a refresh landing after a newer read does not revert its metadata", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => ({
       instances: [{ ...ONE_INSTANCE, activeSource: "none", models: [{ id: "m1" }] }],
       availableProviders: [],
@@ -962,7 +957,7 @@ describe("mutations returning the updated instance list", () => {
   });
 
   test("a second refresh landing during a write keeps its newer inventory", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const withModels = (models: InstanceEntry["models"]): InstanceListResponse => ({
       instances: [{ ...ONE_INSTANCE, models }],
       availableProviders: [],
@@ -998,7 +993,7 @@ describe("mutations returning the updated instance list", () => {
   });
 
   test("reconnecting lets a refresh stage a row the previous client never had", async () => {
-    const first = connectFakeClient();
+    const first = connectReadyFakeClient();
     first.on("evener/instance/list", () => LIST_RESPONSE);
     await credentialsStore.getState().fetch();
 
@@ -1028,7 +1023,7 @@ describe("mutations returning the updated instance list", () => {
   });
 
   test("a superseded toggle from a replaced client does not touch the new client's listing", async () => {
-    const first = connectFakeClient();
+    const first = connectReadyFakeClient();
     const withModels = (models: InstanceEntry["models"]): InstanceListResponse => ({
       instances: [{ ...ONE_INSTANCE, models }],
       availableProviders: [],
@@ -1062,7 +1057,7 @@ describe("mutations returning the updated instance list", () => {
   });
 
   test("a replaced client's refresh cannot delete the new client's refresh token", async () => {
-    const first = connectFakeClient();
+    const first = connectReadyFakeClient();
     first.on("evener/instance/list", () => LIST_RESPONSE);
     await credentialsStore.getState().fetch();
 
@@ -1105,7 +1100,7 @@ describe("mutations returning the updated instance list", () => {
   });
 
   test("a refresh cannot revert an edit that landed while it was in flight", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     await credentialsStore.getState().fetch();
 
@@ -1134,7 +1129,7 @@ describe("mutations returning the updated instance list", () => {
   });
 
   test("a toggle cannot discard live rows a refresh landed while it was in flight", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const withModels = (models: InstanceEntry["models"]): InstanceListResponse => ({
       instances: [{ ...ONE_INSTANCE, models }],
       availableProviders: [],
@@ -1171,7 +1166,7 @@ describe("mutations returning the updated instance list", () => {
   });
 
   test("a failed mutation releases loading from a superseded read", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let finishRead!: (value: InstanceListResponse) => void;
     fake.on(
       "evener/instance/list",
@@ -1192,7 +1187,7 @@ describe("mutations returning the updated instance list", () => {
   });
 
   test("an authoritative mutation completes loading and supersedes an older read", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let resolveRead: ((response: InstanceListResponse) => void) | undefined;
     fake.on(
       "evener/instance/list",
@@ -1213,7 +1208,7 @@ describe("mutations returning the updated instance list", () => {
   });
 
   test("create() calls evener/instance/create and applies the returned list", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const created: InstanceListResponse = { instances: [ONE_INSTANCE], availableProviders: [] };
     fake.on("evener/instance/create", (params) => {
       expect(params).toEqual({ name: "work", base: "openai-codex", baseUrl: "", originClientId: "test-tab" });
@@ -1224,7 +1219,7 @@ describe("mutations returning the updated instance list", () => {
   });
 
   test("edit() calls evener/instance/edit and applies the returned list", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/edit", (params) => {
       expect(params).toEqual({ name: "work", baseUrl: "https://x", originClientId: "test-tab" });
       return LIST_RESPONSE;
@@ -1238,7 +1233,7 @@ describe("mutations returning the updated instance list", () => {
   // that verdict: a response a newer request superseded is a document the
   // store already threw away.
   test("edit() reports whether the store applied its response", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let finishEdit!: (value: InstanceListResponse) => void;
     fake.on(
       "evener/instance/edit",
@@ -1265,7 +1260,7 @@ describe("mutations returning the updated instance list", () => {
   // callers the same verdict: a response the store discarded must not read as
   // authoritative.
   test("create() and remove() report whether the store applied their response", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     await credentialsStore.getState().fetch();
 
@@ -1315,7 +1310,7 @@ describe("mutations returning the updated instance list", () => {
   });
 
   test("remove() calls evener/instance/remove and applies the returned list", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/remove", (params) => {
       expect(params).toEqual({ name: "work", originClientId: "test-tab" });
       return { instances: [], availableProviders: [] };
@@ -1325,7 +1320,7 @@ describe("mutations returning the updated instance list", () => {
   });
 
   test("setDefault() calls evener/instance/setDefault and applies the returned list", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/setDefault", (params) => {
       expect(params).toEqual({ name: "work", originClientId: "test-tab" });
       return LIST_RESPONSE;
@@ -1335,7 +1330,7 @@ describe("mutations returning the updated instance list", () => {
   });
 
   test("a mutation failure rejects and does not touch stored instances", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/create", () => {
       throw new Error("name already exists");
     });
@@ -1394,7 +1389,7 @@ describe("host-partitioned instance lists (component 07b)", () => {
   });
 
   test("a remote fetchHost partitions its listing and leaves the controller's fields alone", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     await credentialsStore.getState().fetch();
     serveRemoteList(fake, REMOTE_LIST);
@@ -1415,7 +1410,7 @@ describe("host-partitioned instance lists (component 07b)", () => {
   });
 
   test("an evener/auth/updated controller refetch cannot replace a remote host's listing", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     await credentialsStore.getState().fetch();
     serveRemoteList(fake, REMOTE_LIST);
@@ -1434,7 +1429,7 @@ describe("host-partitioned instance lists (component 07b)", () => {
   // OWN partition -- a remote spawn's provider verdict and model catalog read it
   // -- and never the controller's top-level listing.
   test("a wrapped remote config notification refetches that host's partition, not the controller's", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     await credentialsStore.getState().fetch();
     serveRemoteList(fake, REMOTE_LIST);
@@ -1464,7 +1459,7 @@ describe("host-partitioned instance lists (component 07b)", () => {
   });
 
   test("wrapped config notifications refetch each named host independently", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     await credentialsStore.getState().fetch();
     const forwarded: string[] = [];
@@ -1488,7 +1483,7 @@ describe("host-partitioned instance lists (component 07b)", () => {
   });
 
   test("a wrapped host config notification this store cannot act on triggers no refetch", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     await credentialsStore.getState().fetch();
     const requestSpy = vi.fn(() => REMOTE_LIST as unknown as HostForwardedResult);
@@ -1509,7 +1504,7 @@ describe("host-partitioned instance lists (component 07b)", () => {
   });
 
   test("a controller read does not supersede an in-flight remote host read", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let finishRemote: (value: InstanceListResponse) => void = () => {};
     fake.on(
       "evener/host/request",
@@ -1531,7 +1526,7 @@ describe("host-partitioned instance lists (component 07b)", () => {
   });
 
   test("a controller-scoped instance mutation leaves a remote host's listing intact", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     serveRemoteList(fake, REMOTE_LIST);
     await fetchHost("buildbox");
 
@@ -1546,7 +1541,7 @@ describe("host-partitioned instance lists (component 07b)", () => {
   });
 
   test("a failed remote load reports on its own partition and leaves the controller's status alone", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     await credentialsStore.getState().fetch();
     fake.on("evener/host/request", () => {
@@ -1566,7 +1561,7 @@ describe("host-partitioned instance lists (component 07b)", () => {
   });
 
   test("a reconnect releases a remote host's in-flight status without discarding its listing", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     serveRemoteList(fake, REMOTE_LIST);
     await fetchHost("buildbox");
     let finish!: (value: InstanceListResponse) => void;
@@ -1599,7 +1594,7 @@ describe("host-partitioned instance lists (component 07b)", () => {
   // be refused rather than overwriting the newer listing or leaving the
   // partition claiming a load is in flight.
   test("a released host read cannot outlive the transition that replaced it", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let finishReleased!: (value: HostForwardedResult) => void;
     fake.on(
       "evener/host/request",
@@ -1642,7 +1637,7 @@ describe("host-partitioned instance lists (component 07b)", () => {
   // same guard the package's credential instances store puts on its listing
   // reads (appwire-client's instances.ts requestVersion).
   test("an older in-flight remote load cannot overwrite a newer one for the same host", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const answers: Array<(value: HostForwardedResult) => void> = [];
     fake.on(
       "evener/host/request",
@@ -1691,7 +1686,7 @@ describe("host-partitioned instance lists (component 07b)", () => {
   // snapshot before issuing one - otherwise a host the user has already left (or
   // removed) is read through the SSH channel for nothing.
   test("a recovery whose registry no longer names the host issues no read", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const reads: HostRequestParams[] = [];
     fake.on("evener/host/request", (params) => {
       reads.push(params as HostRequestParams);
@@ -1716,7 +1711,7 @@ describe("host-partitioned instance lists (component 07b)", () => {
 
 describe("auth RPCs: thin proxies, no local state mutation", () => {
   test("testCredentials() sends the exact configured instance name and returns the typed safe response", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const response: AuthTestResponse = {
       provider: "custom / team-east",
       status: "success",
@@ -1731,7 +1726,7 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
   });
 
   test("a model refresh cannot revive a pre-auth row after an auth mutation landed", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => ({
       instances: [{ ...ONE_INSTANCE, activeSource: "none" }],
       availableProviders: [],
@@ -1775,7 +1770,7 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
   });
 
   test("setApiKey() calls evener/auth/apiKey/set and returns its response", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/auth/apiKey/set", (params) => {
       expect(params).toEqual({ provider: "work", value: "sk-secret", originClientId: "test-tab" });
       return { provider: "work", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false };
@@ -1787,7 +1782,7 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
   });
 
   test("clearStoredKey() calls evener/auth/apiKey/clear and returns its response", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/auth/apiKey/clear", (params) => {
       expect(params).toEqual({ provider: "work", originClientId: "test-tab" });
       return { provider: "work", supported: true, signedIn: true, activeSource: "oauth", hasStoredOAuth: true };
@@ -1798,7 +1793,7 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
   });
 
   test("logout() calls evener/auth/logout", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/auth/logout", (params) => {
       expect(params).toEqual({ provider: "work", originClientId: "test-tab" });
       return {
@@ -1815,7 +1810,7 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
   // or removing a replacement's credentials/configuration. A caller shown no
   // endpoint sends nothing, rather than an empty-string assertion.
   test("remove() forwards the expected endpoint fingerprint when given one", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/remove", (params) => {
       expect(params).toEqual({ name: "work", expectedEndpointFingerprint: "fp-work", originClientId: "test-tab" });
       return { instances: [], availableProviders: [] };
@@ -1824,7 +1819,7 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
   });
 
   test("clearStoredKey() forwards the expected endpoint fingerprint when given one", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/auth/apiKey/clear", (params) => {
       expect(params).toEqual({ provider: "work", expectedEndpointFingerprint: "fp-work", originClientId: "test-tab" });
       return { provider: "work", supported: true, signedIn: true, activeSource: "oauth", hasStoredOAuth: true };
@@ -1833,7 +1828,7 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
   });
 
   test("logout() forwards the expected endpoint fingerprint when given one", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/auth/logout", (params) => {
       expect(params).toEqual({ provider: "work", expectedEndpointFingerprint: "fp-work", originClientId: "test-tab" });
       return {
@@ -1845,7 +1840,7 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
   });
 
   test("the destructive wrappers omit the fingerprint when none was captured", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/remove", (params) => {
       expect(params).toEqual({ name: "work", originClientId: "test-tab" });
       return { instances: [], availableProviders: [] };
@@ -1868,7 +1863,7 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
   });
 
   test("loginStart() calls evener/auth/login/start", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/auth/login/start", (params) => {
       expect(params).toEqual({ provider: "work" });
       return { provider: "work", flowId: "flow-1", url: "https://auth.example.com/start" };
@@ -1878,7 +1873,7 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
   });
 
   test("loginComplete() calls evener/auth/login/complete", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/auth/login/complete", (params) => {
       expect(params).toEqual({
         provider: "work",
@@ -1895,7 +1890,7 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
   });
 
   test("deviceStart() calls evener/auth/device/start", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/auth/device/start", (params) => {
       expect(params).toEqual({ provider: "work" });
       return {
@@ -1911,7 +1906,7 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
   });
 
   test("devicePoll() calls evener/auth/device/poll", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/auth/device/poll", (params) => {
       expect(params).toEqual({ provider: "work", flowId: "flow-2", originClientId: "test-tab" });
       return { state: "pending" };
@@ -1921,7 +1916,7 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
   });
 
   test("deviceStartOnHost() routes evener/auth/device/start through evener/host/request for the selected host", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const REMOTE_DEVICE_START = {
       provider: "codex",
       flowId: "flow-remote",
@@ -1946,7 +1941,7 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
   });
 
   test("devicePollOnHost() routes evener/auth/device/poll through evener/host/request for the selected host", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const REMOTE_POLL = { state: "authorized" };
     const forwarded: HostRequestParams[] = [];
     fake.on("evener/host/request", (params) => {
@@ -1964,7 +1959,7 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
   });
 
   test("a pending device poll does not discard an in-flight model refresh", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     await credentialsStore.getState().fetch();
 
@@ -1990,7 +1985,7 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
 
 describe("useCredentialsStore", () => {
   test("selector overload returns a derived value reactively", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     const { result } = renderHook(() => useCredentialsStore((s) => s.instances.length));
     expect(result.current).toBe(0);
@@ -2017,7 +2012,7 @@ describe("notification-triggered refetch", () => {
   });
 
   test("evener/auth/updated schedules a debounced fetch, 250ms", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     await credentialsStore.getState().fetch(); // initial load; also wires notification handling
     const updated: InstanceListResponse = {
@@ -2034,7 +2029,7 @@ describe("notification-triggered refetch", () => {
   });
 
   test("wiring attaches as soon as a client connects, with no prior fetch call required", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     fake.emitNotification({ method: "evener/auth/updated", params: {} });
     await vi.advanceTimersByTimeAsync(250);
@@ -2044,9 +2039,9 @@ describe("notification-triggered refetch", () => {
   test.each(["replacement", "reset"])(
     "%s removes old notification subscriptions and scheduled refreshes",
     async (change) => {
-      const old = connectFakeClient();
+      const old = connectReadyFakeClient();
       old.emitNotification({ method: "evener/auth/updated", params: {} });
-      const current = change === "replacement" ? connectFakeClient() : old;
+      const current = change === "replacement" ? connectReadyFakeClient() : old;
       if (change === "reset") {
         resetCredentialsStoreForTests();
         resetHostInstancesForTests();
@@ -2060,7 +2055,7 @@ describe("notification-triggered refetch", () => {
   );
 
   test("an irrelevant notification does not trigger a refetch", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     await credentialsStore.getState().fetch();
     const listSpy = vi.fn(() => LIST_RESPONSE);
@@ -2072,7 +2067,7 @@ describe("notification-triggered refetch", () => {
   });
 
   test("a burst of evener/auth/updated coalesces into exactly one refetch", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     await credentialsStore.getState().fetch();
     const listSpy = vi.fn(() => LIST_RESPONSE);
@@ -2088,7 +2083,7 @@ describe("notification-triggered refetch", () => {
   });
 
   test("a successful save refreshes the listing through the store, and the echo does not refresh again", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     fake.on("evener/auth/apiKey/set", ({ provider }) => ({
       provider,
@@ -2113,7 +2108,7 @@ describe("notification-triggered refetch", () => {
   });
 
   test("a foreign change coalesced into this client's own refresh window keeps the refresh foreign", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     fake.on("evener/auth/apiKey/set", ({ provider }) => ({
       provider,
@@ -2142,7 +2137,7 @@ describe("notification-triggered refetch", () => {
   });
 
   test("a foreign change landing after this client's own request still keeps the refresh foreign", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     fake.on("evener/auth/apiKey/set", ({ provider }) => ({
       provider,
@@ -2172,7 +2167,7 @@ describe("notification-triggered refetch", () => {
   });
 
   test("a refresh serving only this client's own mutation still carries the self mark", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     fake.on("evener/auth/apiKey/set", ({ provider }) => ({
       provider,
@@ -2191,7 +2186,7 @@ describe("notification-triggered refetch", () => {
   });
 
   test("another client's auth change still refetches after a local mutation", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     fake.on("evener/auth/apiKey/set", ({ provider }) => ({
       provider,
@@ -2211,7 +2206,7 @@ describe("notification-triggered refetch", () => {
   });
 
   test("a same-provider notification with no recent local mutation still refetches", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     await credentialsStore.getState().fetch();
     const listSpy = vi.fn(() => LIST_RESPONSE);
@@ -2225,7 +2220,7 @@ describe("notification-triggered refetch", () => {
   });
 
   test("a same-provider change in the echo window after a successful save still refetches", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     fake.on("evener/auth/apiKey/set", ({ provider }) => ({
       provider,
@@ -2252,7 +2247,7 @@ describe("notification-triggered refetch", () => {
   });
 
   test("a slow save's response extends the window for its own late echo", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     let finishSave: ((value: AuthStatusResponse) => void) | undefined;
     fake.on(
@@ -2286,7 +2281,7 @@ describe("notification-triggered refetch", () => {
   });
 
   test("the echo correlation window is bounded", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     fake.on("evener/auth/apiKey/set", ({ provider }) => ({
       provider,
@@ -2310,7 +2305,7 @@ describe("notification-triggered refetch", () => {
   });
 
   test("a failed save does not suppress a later same-provider notification", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     fake.on("evener/auth/apiKey/set", () => {
       throw new Error("hub refused the key");
@@ -2328,7 +2323,7 @@ describe("notification-triggered refetch", () => {
   });
 
   test("a routine pending device poll does not extend the suppression window", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     fake.on("evener/auth/device/poll", () => ({ provider: "work", state: "pending" }));
     await credentialsStore.getState().fetch();
@@ -2344,7 +2339,7 @@ describe("notification-triggered refetch", () => {
   });
 
   test("an authorized device poll refreshes the listing even with no caller left to do it", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     fake.on("evener/auth/device/poll", () => ({ provider: "work", state: "authorized" }));
     await credentialsStore.getState().fetch();
@@ -2359,7 +2354,7 @@ describe("notification-triggered refetch", () => {
   });
 
   test("the echo correlation is consumed, not window-wide", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     fake.on("evener/auth/apiKey/set", ({ provider }) => ({
       provider,
@@ -2384,7 +2379,7 @@ describe("notification-triggered refetch", () => {
   });
 
   test("an echo that names this page is consumed as its own", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     fake.on("evener/auth/apiKey/set", ({ provider }) => ({
       provider,
@@ -2419,7 +2414,7 @@ describe("notification-triggered refetch", () => {
   });
 
   test("an echo that names another client leaves this page's marker alone", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     fake.on("evener/auth/apiKey/set", ({ provider }) => ({
       provider,
@@ -2460,7 +2455,7 @@ describe("notification-triggered refetch", () => {
   });
 
   test("a second same-provider mutation's own echo still carries the self mark", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     fake.on("evener/auth/apiKey/set", ({ provider }) => ({
       provider,
@@ -2496,7 +2491,7 @@ describe("notification-triggered refetch", () => {
   });
 
   test("a same-provider change during a pending device poll is refetched without waiting for the poll", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     let resolvePoll: (value: { provider: string; state: string }) => void = () => {};
     const pollAnswer = new Promise<{ provider: string; state: string }>((resolve) => {
@@ -2523,7 +2518,7 @@ describe("notification-triggered refetch", () => {
   });
 
   test("a same-provider change during an in-flight save is refetched without waiting for the save", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     let rejectSave: (reason: Error) => void = () => {};
     const saveAnswer = new Promise<never>((_resolve, reject) => {
@@ -2547,7 +2542,7 @@ describe("notification-triggered refetch", () => {
   });
 
   test("a marker from a replaced connection cannot suppress a later notification", async () => {
-    const first = connectFakeClient();
+    const first = connectReadyFakeClient();
     first.on("evener/instance/list", () => LIST_RESPONSE);
     first.on("evener/auth/apiKey/set", ({ provider }) => ({
       provider,
@@ -2561,7 +2556,7 @@ describe("notification-triggered refetch", () => {
     // The client is replaced before the mutation's echo can arrive: whatever
     // same-provider notification comes on the NEW connection is not that lost
     // echo, so a surviving marker must not swallow it.
-    const second = connectFakeClient();
+    const second = connectReadyFakeClient();
     const listSpy = vi.fn(() => LIST_RESPONSE);
     second.on("evener/instance/list", listSpy);
     // Let the reconnect's own restore fetch settle before counting.
@@ -2573,7 +2568,7 @@ describe("notification-triggered refetch", () => {
   });
 
   test("a stale save failure from a replaced connection cannot retire the new connection's marker", async () => {
-    const first = connectFakeClient();
+    const first = connectReadyFakeClient();
     first.on("evener/instance/list", () => LIST_RESPONSE);
     let rejectFirst: (reason: Error) => void = () => {};
     const firstSave = new Promise<AuthStatusResponse>((_resolve, reject) => {
@@ -2617,7 +2612,7 @@ describe("notification-triggered refetch", () => {
   });
 
   test("a stale save success from a replaced connection does not schedule a self-marked read", async () => {
-    const first = connectFakeClient();
+    const first = connectReadyFakeClient();
     first.on("evener/instance/list", () => LIST_RESPONSE);
     let resolveFirst: (value: AuthStatusResponse) => void = () => {};
     const firstSave = new Promise<AuthStatusResponse>((resolve) => {
@@ -2628,7 +2623,7 @@ describe("notification-triggered refetch", () => {
 
     const firstPending = credentialsStore.getState().setApiKey("work", "first");
     // The connection is replaced before the first save's success lands.
-    const second = connectFakeClient();
+    const second = connectReadyFakeClient();
     second.on("evener/instance/list", () => LIST_RESPONSE);
     await vi.advanceTimersByTimeAsync(0); // the reconnect's restore fetch settles
     const before = credentialsStore.getState().selfRefresh;
@@ -2644,7 +2639,7 @@ describe("notification-triggered refetch", () => {
   });
 
   test("a background refetch race with no client connected is swallowed, not an unhandled rejection", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     await credentialsStore.getState().fetch();
 
@@ -2654,7 +2649,7 @@ describe("notification-triggered refetch", () => {
     // so the scheduled background call must swallow that rejection itself
     // rather than surfacing an unhandled promise rejection that would fail
     // this test even though nothing here ever awaits it directly.
-    connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+    resetConnectionStoreForTests();
     await vi.advanceTimersByTimeAsync(250);
     // Reaching this line (rather than the test failing on an unhandled
     // rejection) is the real assertion; this just also confirms the failed
@@ -2663,7 +2658,7 @@ describe("notification-triggered refetch", () => {
   });
 
   test("a superseded set-default schedules the store's own listing read", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     await credentialsStore.getState().fetch(); // initial load; also wires notification handling
     const listSpy = vi.fn(() => LIST_RESPONSE);
@@ -2701,7 +2696,7 @@ describe("notification-triggered refetch", () => {
   // snapshot that arrives afterwards - including the registry's FIRST answer -
   // supersedes it, and nothing read under an older one is ever current.
   test("a read records the registry revision it was issued under", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     serveRemoteList(fake, REMOTE_LIST);
     hostsStore.getState().resetForTests();
 
@@ -2756,7 +2751,7 @@ function deferred<T>() {
 
 // (a) The name is re-registered as a different machine.
 test("a re-registered host's rows are withheld and re-read", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   serveRemoteList(fake, REMOTE_LIST);
   hostsStore.setState({ load: { phase: "ready", hosts: [registryRow({ name: "buildbox", address: "a.example" })] } });
 
@@ -2789,7 +2784,7 @@ test("a re-registered host's rows are withheld and re-read", async () => {
 
 // (b) The host is removed and re-added while a consumer is mounted.
 test("a host removed and re-added while mounted is read again", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   let configured = true;
   fake.on("evener/host/request", () => {
     if (!configured) throw new WireError("host buildbox is not configured", -32000);
@@ -2822,13 +2817,13 @@ test("a host removed and re-added while mounted is read again", async () => {
 // (c) The connection's client is replaced while a registry read is in flight.
 // The superseded client's answer must not publish over the replacement's view.
 test("a registry read in flight across a client swap cannot publish the old hub's hosts", async () => {
-  const a = connectFakeClient();
+  const a = connectReadyFakeClient();
   const releaseA = deferRequest<unknown>(a, "evener/host/list");
   const fromA = hostsStore.getState().fetch();
   await Promise.resolve();
 
   // Replaced before A answers, with B's own registry read also still out.
-  const b = connectFakeClient();
+  const b = connectReadyFakeClient();
   const releaseB = deferRequest<unknown>(b, "evener/host/list");
   const fromB = hostsStore.getState().fetch();
   await Promise.resolve();
@@ -2849,7 +2844,7 @@ test("a registry read in flight across a client swap cannot publish the old hub'
 // registry has answered must not be stamped as read under a published snapshot.
 // On main the marker leaked, so that re-read passed for verified.
 test("a replaced client does not carry the previous connection's published marker", async () => {
-  const a = connectFakeClient();
+  const a = connectReadyFakeClient();
   serveRemoteList(a, REMOTE_LIST);
   // The first connection's registry answers, naming the host.
   hostsStore.setState({ load: { phase: "ready", hosts: [registryRow({ name: "buildbox" })] } });
@@ -2893,7 +2888,7 @@ test("a replaced client does not carry the previous connection's published marke
 // snapshot must still publish then, or publishedRevision stays null and the
 // listing is never stamped as read under this connection's registry.
 test("a client swap whose new registry answers on a quiet refresh publishes and re-reads", async () => {
-  const a = connectFakeClient();
+  const a = connectReadyFakeClient();
   serveRemoteList(a, REMOTE_LIST);
   hostsStore.setState({ load: { phase: "ready", hosts: [registryRow({ name: "buildbox" })] } });
 
@@ -2925,7 +2920,7 @@ test("a client swap whose new registry answers on a quiet refresh publishes and 
 // The rule's cost ceiling: an unchanged snapshot advances no revision, so the
 // poll cadence re-reads nothing.
 test("an unchanged registry snapshot never re-reads a host", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   serveRemoteList(fake, REMOTE_LIST);
   const row = registryRow({ name: "buildbox" });
   hostsStore.setState({ load: { phase: "ready", hosts: [row] } });
@@ -2952,7 +2947,7 @@ test("an unchanged registry snapshot never re-reads a host", async () => {
 // reading under an answer that is about to be replaced (one wasted request per
 // deep-link otherwise).
 test("a remote host waits for a registry read that is in flight", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   const registry = deferRequest<unknown>(fake, "evener/host/list");
   serveRemoteList(fake, REMOTE_LIST);
   hostsStore.getState().resetForTests();
@@ -2976,7 +2971,7 @@ test("a remote host waits for a registry read that is in flight", async () => {
 // answer at revision 0". A read taken then cannot be accepted once the registry
 // has been consulted and failed, even though the revision never moved.
 test("a read taken while the registry was idle is not current once the registry has failed", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   serveRemoteList(fake, REMOTE_LIST);
   hostsStore.getState().resetForTests();
 
@@ -2997,7 +2992,7 @@ test("a read taken while the registry was idle is not current once the registry 
 // nothing advanced the revision - but the failure is what held the host's read
 // back, so the host is re-read when the registry recovers.
 test("the registry recovering with an unchanged snapshot re-reads the host", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   let hostUp = false;
   fake.on("evener/host/request", () => {
     if (!hostUp) throw new WireError("host buildbox unreachable", -32000);
@@ -3032,7 +3027,7 @@ test("the registry recovering with an unchanged snapshot re-reads the host", asy
 // have changed with it. The partition is tied to the connection generation it
 // was read under, so a reconnect converges.
 test("a same-client reconnect re-reads a remote host", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   serveRemoteList(fake, REMOTE_LIST);
   hostsStore.setState({ load: { phase: "ready", hosts: [registryRow({ name: "buildbox" })] } });
 
@@ -3060,7 +3055,7 @@ test("a same-client reconnect re-reads a remote host", async () => {
 // load-bearing - a transition must move it, and a write that is not one must
 // not, or an in-flight push would be orphaned by a handshake's own metadata.
 test("connectionGeneration moves on a connection transition and on nothing else", () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   const connected = connectionGeneration();
 
   // A handshake's own fields: the same client and wire state, so not a
@@ -3086,7 +3081,7 @@ test("connectionGeneration moves on a connection transition and on nothing else"
 // taken while the registry was unread must not survive it (an empty first
 // snapshot used to be indistinguishable from "never published").
 test("a read taken while the registry was unread does not survive its first empty answer", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   serveRemoteList(fake, REMOTE_LIST);
   hostsStore.getState().resetForTests();
 
@@ -3105,7 +3100,7 @@ test("a read taken while the registry was unread does not survive its first empt
 // snapshot: it is committed to the partition but never shown, and the read for
 // the current snapshot is what a consumer sees.
 test("an answer issued under an older registry snapshot is never shown", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   hostsStore.setState({ load: { phase: "ready", hosts: [registryRow({ name: "buildbox", address: "a.example" })] } });
   const answers: Array<(value: HostForwardedResult) => void> = [];
   fake.on(

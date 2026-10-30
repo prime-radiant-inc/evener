@@ -12,7 +12,7 @@ import {
 	type SessionSeenMark,
 	WireError,
 } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 import { hubTime } from "./attention";
 import type { SeenMarkers } from "./boardMemory";
 import { perHub } from "./perHub";

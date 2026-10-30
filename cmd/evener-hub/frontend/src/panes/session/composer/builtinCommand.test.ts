@@ -1,27 +1,12 @@
-import { matchBuiltinInvocation, type ThreadCapabilities } from "@evener/appwire-client";
+import { matchBuiltinInvocation } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { buildCommands, type PaletteRunContext, sessionBuiltinCommands } from "../../../shell/palette/commands";
-import { connectionStore } from "../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
+import { ALL_CAPABILITIES as CAPS } from "../../../threadTestUtils";
 import { runBuiltinCommand } from "./builtinCommand";
-
-const CAPS: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
 
 function connectFake(): FakeClient {
   const fake = new FakeClient("ready");
@@ -69,7 +54,7 @@ function allBuiltins() {
 
 beforeEach(() => {
   globalThis.indexedDB = new IDBFactory();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   pushes.length = 0;
 });

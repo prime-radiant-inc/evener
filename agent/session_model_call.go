@@ -111,7 +111,7 @@ func (s *Session) maybeWarnContextUsage(profile *provider.Profile, req llm.Reque
 		title = "Context budget (estimated)"
 		hint = "The model's context window is unknown; usage is measured against a conservative assumed window. Declare context_window in the provider's model row to warn against the real size."
 	}
-	s.emit(events.EventWarning, events.WarningData{
+	s.emit(events.WarningData{
 		Message: msg,
 		// Same reasoning as warnOutputReduction: an informational context
 		// notice, with an explicit neutral title so the classifier's keyword
@@ -218,112 +218,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// snapshots this request consumes live in the fold attempts and in the
 	// HistoryExpand phase below.
 	s.repairOrphanedToolResults(ctx, "before model request")
-	var historyTurns []schema.Turn
-
-	// inFlightFrom is the N4 in-flight-turn boundary paired with the exact
-	// historyTurns this request expands. A winning fold sets both atomically
-	// with its publication; every other path sets them with the consistent
-	// re-snapshot below. baselineSynced records which happened.
-	inFlightFrom := 0
-	baselineSynced := false
-
-	// Apply context management before each LLM request.
-	if s.strategy != nil {
-		// This can race another ForceCompact/ManageContext publisher
-		// (Compact(), applyPendingForceCompact, or the content-filter retry)
-		// the same way those three can race each other -- a competing fold
-		// publishing between this snapshot and this fold's own publish
-		// invalidates the prefix this fold assumed. Retry once against the
-		// current history on conflict.
-		//
-		// historyTurns, preManageLen, and snapRevision are (re-)captured
-		// together under ONE lock at the top of EVERY iteration, including
-		// the first -- mirroring foldWithForceCompact exactly. Capturing
-		// snapRevision separately (say, after maybeElicitNoteBeforeCompaction's
-		// potentially multi-second LLM call, itself after a historyTurns
-		// snapshot taken well before this block) would let a competing publish
-		// land in that gap and bump the revision BEFORE it is read, so the
-		// later equality check in publishFoldedHistory would pass and a stale
-		// fold would clobber the competing publish. Moving
-		// maybeElicitNoteBeforeCompaction inside the loop, after the atomic
-		// capture, is safe: its own "already pinned" guard makes a retry's
-		// second call cheap, and nothing about its ordering relative to the
-		// snapshot matters -- only that snapRevision is paired with the
-		// exact historyTurns being folded.
-		//
-		// If both attempts lose the race, historyTurns is left as the last
-		// attempt's discarded fold result -- the guarded re-snapshot below
-		// (baselineSynced still false) replaces it with the winning
-		// competitor's published state before anything else consumes it;
-		// the round must continue regardless, and the winning fold already
-		// relieved whatever pressure prompted this one.
-		const maxFoldAttempts = 2
-		for range maxFoldAttempts {
-			s.mu.Lock()
-			historyTurns = append([]schema.Turn{}, s.history...)
-			preManageLen := len(historyTurns)
-			snapRevision := s.historyRevision
-			snapAppends := s.persistedAppendLogBase + len(s.persistedAppendLog)
-			s.mu.Unlock()
-
-			// Variant B (forced note): if a compaction is imminent, elicit +
-			// pin a must-keep note from the model BEFORE the fold, so
-			// erosion-prone facts are re-stamped verbatim rather than
-			// decaying through successive summaries.
-			s.maybeElicitNoteBeforeCompaction(ctx, historyTurns, len(sys))
-
-			// This per-request fold is the REQUESTING caller of the pending
-			// AUTOMATIC operation (the one this round's elicitation just
-			// accepted, or one an earlier round deferred): its winning
-			// publication claims exactly that generation, note generation
-			// included — even for an empty note. A FORCED operation is never
-			// captured here; only its round-tail dispatch claims it.
-			compactionCtx, emitFn, commit, foldInjectedCount := s.stageCompactionEffects(ctx, &historyTurns)
-			commit.captured = s.capturableAutomaticCompaction()
-			if err := s.strategy.ManageContext(compactionCtx, &historyTurns, len(sys), emitFn); err != nil {
-				s.emit(events.EventWarning, bareWarningDataFromError("context strategy error", err))
-			}
-			managedLen := len(historyTurns)
-			injectedTurns := foldInjectedCount()
-
-			// publishFoldTransaction commits publish + baseline + note claim
-			// + transcript entries + flush as one transaction (see its
-			// doc). The N4 baseline init/correction runs inside the publish
-			// critical section — publishFoldedHistory's own contract: a
-			// competing fold's atomic publish+shrink pair landing between
-			// this publish and a separate, later baseline write would be
-			// overwritten by round 0's absolute SET or misapplied against
-			// the wrong version. inFlightFrom is captured there too, so the
-			// boundary this request expands with
-			// matches the exact history this fold published.
-			pub, ok, refused := s.publishFoldTransaction(preManageLen, snapRevision, snapAppends, historyTurns, commit, func(published []schema.Turn, restoredAt []int) {
-				if round == 0 {
-					s.turnHistoryBaseline = len(published)
-				} else {
-					s.shrinkTurnHistoryBaseline(preManageLen, managedLen, injectedTurns)
-					s.growTurnHistoryBaseline(restoredAt)
-				}
-				inFlightFrom = s.turnHistoryBaseline
-				baselineSynced = true
-			})
-			if ok {
-				historyTurns = pub
-				break
-			}
-			if refused != nil {
-				// Not a conflict: the transcript refuses every append for
-				// the rest of the session, so a second attempt would spend
-				// another summarizer call to lose the same way. The round
-				// continues unfolded, exactly as it does when both attempts
-				// lose the race.
-				break
-			}
-			// Conflict: loop retries with a fresh, atomically-paired
-			// snapshot. commit is deliberately NOT run — this attempt's
-			// side effects must not take effect for a fold that never
-			// published.
-		}
-	}
+	baselineSynced := s.foldHistoryBeforeRequest(ctx, round, len(sys))
 
 	t.ContextMgmt = time.Since(tPhaseStart)
 
@@ -367,8 +262,8 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// baseline here changes no exemption decision — it only re-pairs the
 	// boundary with the exact history it guards.
 	s.mu.Lock()
-	historyTurns = append([]schema.Turn{}, s.history...)
-	inFlightFrom = s.turnHistoryBaseline
+	historyTurns := append([]schema.Turn{}, s.history...)
+	inFlightFrom := s.turnHistoryBaseline
 	afterSnapshot := s.cfg.testOnly.afterModelHistorySnapshot
 	s.mu.Unlock()
 	if afterSnapshot != nil {
@@ -418,7 +313,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		return profile, sys, history, req, nil, reasoningEffort, err
 	}
 	initialBudget := budget
-	req, fullHistory = s.applyResponsesContinuationAnchorPlanning(ctx, profile, req, historyTurns, profile.SupportsStreaming())
+	req, fullHistory = s.applyResponsesContinuationAnchorPlanning(ctx, profile, req, historyTurns, true)
 	if req, budget, err = budgetModelDispatchRequestWithBudget(profile, req); err != nil {
 		return profile, sys, history, req, fullHistory, reasoningEffort, err
 	}
@@ -465,7 +360,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			return true, budgetErr
 		}
 		req, budget = budgetedReq, budgeted
-		req, fullHistory = s.applyResponsesContinuationAnchorPlanning(ctx, profile, req, historyTurns, profile.SupportsStreaming())
+		req, fullHistory = s.applyResponsesContinuationAnchorPlanning(ctx, profile, req, historyTurns, true)
 		budgetedReq, budgeted, budgetErr = budgetModelDispatchRequestWithBudget(profile, req)
 		if budgetErr != nil {
 			return true, budgetErr
@@ -517,6 +412,108 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// actually carries.
 	s.stagePresentedAttentionCoverage(ctx, presentedTurns)
 	return profile, sys, history, req, fullHistory, reasoningEffort, nil
+}
+
+// foldHistoryBeforeRequest applies context management ahead of a model request
+// and reports whether a winning fold already initialized the N4 in-flight-turn
+// boundary atomically with its publication. sysLen is the system prompt length
+// the fold budgets against. When it reports false (no strategy, or every
+// attempt lost the race or was refused) the caller establishes the boundary
+// with its own history snapshot.
+func (s *Session) foldHistoryBeforeRequest(ctx context.Context, round, sysLen int) (baselineSynced bool) {
+	// Apply context management before each LLM request.
+	if s.strategy != nil {
+		// This can race another ForceCompact/ManageContext publisher
+		// (Compact(), applyPendingForceCompact, or the content-filter retry)
+		// the same way those three can race each other -- a competing fold
+		// publishing between this snapshot and this fold's own publish
+		// invalidates the prefix this fold assumed. Retry once against the
+		// current history on conflict.
+		//
+		// historyTurns, preManageLen, and snapRevision are (re-)captured
+		// together under ONE lock at the top of EVERY iteration, including
+		// the first -- mirroring foldWithForceCompact exactly. Capturing
+		// snapRevision separately (say, after maybeElicitNoteBeforeCompaction's
+		// potentially multi-second LLM call, itself after a historyTurns
+		// snapshot taken well before this block) would let a competing publish
+		// land in that gap and bump the revision BEFORE it is read, so the
+		// later equality check in publishFoldedHistory would pass and a stale
+		// fold would clobber the competing publish. Moving
+		// maybeElicitNoteBeforeCompaction inside the loop, after the atomic
+		// capture, is safe: its own "already pinned" guard makes a retry's
+		// second call cheap, and nothing about its ordering relative to the
+		// snapshot matters -- only that snapRevision is paired with the
+		// exact historyTurns being folded.
+		//
+		// If both attempts lose the race, the guarded re-snapshot in the
+		// caller (baselineSynced still false) takes the winning
+		// competitor's published state before anything else consumes it;
+		// the round must continue regardless, and the winning fold already
+		// relieved whatever pressure prompted this one.
+		const maxFoldAttempts = 2
+		for range maxFoldAttempts {
+			s.mu.Lock()
+			historyTurns := append([]schema.Turn{}, s.history...)
+			preManageLen := len(historyTurns)
+			snapRevision := s.historyRevision
+			snapAppends := s.persistedAppendLogBase + len(s.persistedAppendLog)
+			s.mu.Unlock()
+
+			// Variant B (forced note): if a compaction is imminent, elicit +
+			// pin a must-keep note from the model BEFORE the fold, so
+			// erosion-prone facts are re-stamped verbatim rather than
+			// decaying through successive summaries.
+			s.maybeElicitNoteBeforeCompaction(ctx, historyTurns, sysLen)
+
+			// This per-request fold is the REQUESTING caller of the pending
+			// AUTOMATIC operation (the one this round's elicitation just
+			// accepted, or one an earlier round deferred): its winning
+			// publication claims exactly that generation, note generation
+			// included — even for an empty note. A FORCED operation is never
+			// captured here; only its round-tail dispatch claims it.
+			compactionCtx, emitFn, commit, foldInjectedCount := s.stageCompactionEffects(ctx, &historyTurns)
+			commit.captured = s.capturableAutomaticCompaction()
+			if err := s.strategy.ManageContext(compactionCtx, &historyTurns, sysLen, emitFn); err != nil {
+				s.emit(bareWarningDataFromError("context strategy error", err))
+			}
+			managedLen := len(historyTurns)
+			injectedTurns := foldInjectedCount()
+
+			// publishFoldTransaction commits publish + baseline + note claim
+			// + transcript entries + flush as one transaction (see its
+			// doc). The N4 baseline init/correction runs inside the publish
+			// critical section — publishFoldedHistory's own contract: a
+			// competing fold's atomic publish+shrink pair landing between
+			// this publish and a separate, later baseline write would be
+			// overwritten by round 0's absolute SET or misapplied against
+			// the wrong version.
+			_, ok, refused := s.publishFoldTransaction(preManageLen, snapRevision, snapAppends, historyTurns, commit, func(published []schema.Turn, restoredAt []int) {
+				if round == 0 {
+					s.turnHistoryBaseline = len(published)
+				} else {
+					s.shrinkTurnHistoryBaseline(preManageLen, managedLen, injectedTurns)
+					s.growTurnHistoryBaseline(restoredAt)
+				}
+				baselineSynced = true
+			})
+			if ok {
+				break
+			}
+			if refused != nil {
+				// Not a conflict: the transcript refuses every append for
+				// the rest of the session, so a second attempt would spend
+				// another summarizer call to lose the same way. The round
+				// continues unfolded, exactly as it does when both attempts
+				// lose the race.
+				break
+			}
+			// Conflict: loop retries with a fresh, atomically-paired
+			// snapshot. commit is deliberately NOT run — this attempt's
+			// side effects must not take effect for a fold that never
+			// published.
+		}
+	}
+	return baselineSynced
 }
 
 // shrinkTurnHistoryBaseline adjusts the N4 in-flight-turn boundary down so it
@@ -881,7 +878,7 @@ func (s *Session) handleModelError(ctx context.Context, err error, req llm.Reque
 		// Content filter recovery: compaction often removes the offending content,
 		// allowing the next request to succeed. Try once.
 		*contentFilterRetried = true
-		s.emit(events.EventWarning, bareWarningDataFromError("Content filter hit — compacting context and retrying", err))
+		s.emit(bareWarningDataFromError("Content filter hit — compacting context and retrying", err))
 		// This can race another ForceCompact/ManageContext publisher
 		// (Compact(), applyPendingForceCompact, or the round loop's own
 		// ManageContext); forceCompactForModelRecovery publishes through the
@@ -909,7 +906,7 @@ func (s *Session) handleModelError(ctx context.Context, err error, req llm.Reque
 	// bounded compaction. Retain this compatibility warning for any terminal
 	// context path that reaches this handler without that lifecycle emission.
 	if dec.EmitContextLenWarn && !contextWarningEmitted {
-		s.emit(events.EventWarning, bareWarningDataFromError("Context length exceeded", err))
+		s.emit(bareWarningDataFromError("Context length exceeded", err))
 	}
 	s.terminateGoalOnError(ctx, err)
 	s.finishProcessingAtFailureBoundary(ctx)
@@ -1032,7 +1029,7 @@ func (s *Session) emitAssistantResponse(ctx context.Context, resp llm.Response, 
 	var persistErr error
 	if err := s.withResponseSideEffects(ctx, func() {
 		if !modelResp.StreamedAssistant {
-			s.emit(events.EventAssistantTextStart, events.AssistantTextStartData{
+			s.emit(events.AssistantTextStartData{
 				Model: resp.Model,
 			})
 		}
@@ -1043,7 +1040,7 @@ func (s *Session) emitAssistantResponse(ctx context.Context, resp llm.Response, 
 			}
 		}
 		if !modelResp.StreamedAssistant && strings.TrimSpace(txt) != "" {
-			s.emit(events.EventAssistantTextDelta, events.AssistantTextDeltaData{Delta: txt})
+			s.emit(events.AssistantTextDeltaData{Delta: txt})
 		}
 		textEndData := events.AssistantTextEndData{
 			Text:         txt,
@@ -1055,7 +1052,7 @@ func (s *Session) emitAssistantResponse(ctx context.Context, resp llm.Response, 
 		if reasoning := resp.ReasoningText(); reasoning != "" {
 			textEndData.Reasoning = reasoning
 		}
-		s.emit(events.EventAssistantTextEnd, textEndData)
+		s.emit(textEndData)
 		s.mu.Lock()
 		s.modelResponses++
 		s.mu.Unlock()
@@ -1274,7 +1271,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	// the rebuilt request sends fullHistory, so a delta paired with an empty
 	// one would dispatch a message-less round instead of declining.
 	if err != nil && len(fullHistory) > 0 && shouldRetryResponsesContinuationAsFullHistory(req, err) {
-		s.disableResponsesContinuationForRequest(req, profile.SupportsStreaming())
+		s.disableResponsesContinuationForRequest(req, true)
 		retryReq := responsesContinuationFullHistoryFallbackRequest(profile.Resolved(), req, fullHistory)
 		var budget llm.TokenBudget
 		retryReq, budget, budgetErr := budgetModelDispatchRequestWithBudget(profile, retryReq)
@@ -1288,7 +1285,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 		// already showed. See the matching guard before the fallback loop
 		// below for the full rationale.
 		if _, from := recorder.BestSalvage(); from != nil {
-			s.emit(events.EventAssistantTextReset, events.AssistantTextResetData{})
+			s.emit(events.AssistantTextResetData{})
 		}
 		s.resetCommunicatePreviews(previewCalls)
 		var recoveryRecord groupRecord
@@ -1339,7 +1336,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			// skipped so the rest of the chain still gets its turn.
 			fbProfile, _, resolveErr := s.resolveProfileForRef(profile, fbModel)
 			if resolveErr != nil {
-				s.emit(events.EventWarning, warningDataFromError(
+				s.emit(warningDataFromError(
 					fmt.Sprintf("model_fallbacks entry %q could not be resolved; skipping it", fbModel), resolveErr))
 				continue
 			}
@@ -1368,7 +1365,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			// local flag, so a later fallback that also streams and dies gets
 			// its own reset before the next one runs.
 			if _, from := recorder.BestSalvage(); from != nil {
-				s.emit(events.EventAssistantTextReset, events.AssistantTextResetData{})
+				s.emit(events.AssistantTextResetData{})
 			}
 			s.resetCommunicatePreviews(previewCalls)
 			var fallbackRecord groupRecord
@@ -1417,7 +1414,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	group.SettleResult(callCtx, nil)
 	for _, warning := range modelResp.Response.Warnings {
 		if warning.Code == llm.WarningCodeImageColorUnmanaged {
-			s.emit(events.EventWarning, events.WarningData{
+			s.emit(events.WarningData{
 				Code:    warning.Code,
 				Source:  string(diagnostic.SourceProvider),
 				Message: warning.Message,
@@ -1543,7 +1540,7 @@ func (s *Session) warnOutputReduction(profile *provider.Profile, budget llm.Toke
 	// Web UI renders as an error chip for a routine clamp. FromFields
 	// preserves a supplied title/hint verbatim, so this survives every
 	// re-derivation downstream (sendEvent enrichment, projector projection).
-	s.emit(events.EventWarning, events.WarningData{
+	s.emit(events.WarningData{
 		Message: fmt.Sprintf(
 			"Output allocation reduced for %s/%s: requested=%d admitted=%d",
 			profile.ID(), profile.Model(), budget.RequestedOutput, budget.AdmittedOutput,
@@ -1772,6 +1769,15 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 			continue
 		}
 		inFlight := scope.active() && i >= scope.InFlightFrom
+		if t.Kind == schema.TurnNotesContext && !scope.notesSelfEchoFiltered && isNotesSelfEchoTurn(historyTurns, i) {
+			continue
+		}
+		if t.Kind.HarnessContext() {
+			// Turn-boundary context only ever lands at a turn boundary, so no
+			// mid-tool-round deferral: pass the message straight through.
+			history = append(history, t.Message)
+			continue
+		}
 		switch t.Kind {
 		case schema.TurnSteering:
 			if len(pendingToolCalls) > 0 {
@@ -1779,13 +1785,6 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 			} else {
 				history = append(history, t.Message)
 			}
-		case schema.TurnEnvironment, schema.TurnNotesContext, schema.TurnMemoryContext:
-			if t.Kind == schema.TurnNotesContext && !scope.notesSelfEchoFiltered && isNotesSelfEchoTurn(historyTurns, i) {
-				continue
-			}
-			// Turn-boundary context only ever lands at a turn boundary, so no
-			// mid-tool-round deferral: pass the message straight through.
-			history = append(history, t.Message)
 		case schema.TurnToolResults:
 			// Expand aggregated tool results into individual messages.
 			for _, p := range t.Message.Content {

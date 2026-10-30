@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -322,48 +323,6 @@ func TestLoadPlugin_NonExistentDir(t *testing.T) {
 	}
 }
 
-func TestLoadPlugins_Multiple(t *testing.T) {
-	dir1 := makePluginDir(t, "plugin-a")
-	dir2 := makePluginDir(t, "plugin-b")
-
-	plugins, err := LoadAll([]string{dir1, dir2})
-	if err != nil {
-		t.Fatalf("LoadAll: %v", err)
-	}
-	if len(plugins) != 2 {
-		t.Fatalf("got %d plugins, want 2", len(plugins))
-	}
-	if plugins[0].Manifest.Name != "plugin-a" {
-		t.Errorf("plugins[0].Name = %q, want %q", plugins[0].Manifest.Name, "plugin-a")
-	}
-	if plugins[1].Manifest.Name != "plugin-b" {
-		t.Errorf("plugins[1].Name = %q, want %q", plugins[1].Manifest.Name, "plugin-b")
-	}
-}
-
-func TestLoadPlugins_DuplicateName(t *testing.T) {
-	dir1 := makePluginDir(t, "same-name")
-	dir2 := makePluginDir(t, "same-name")
-
-	_, err := LoadAll([]string{dir1, dir2})
-	if err == nil {
-		t.Fatal("expected error for duplicate plugin name")
-	}
-	if !strings.Contains(err.Error(), "same-name") {
-		t.Errorf("error %q should mention duplicate name", err.Error())
-	}
-}
-
-func TestLoadPlugins_Empty(t *testing.T) {
-	plugins, err := LoadAll(nil)
-	if err != nil {
-		t.Fatalf("LoadAll(nil): %v", err)
-	}
-	if len(plugins) != 0 {
-		t.Errorf("got %d plugins, want 0", len(plugins))
-	}
-}
-
 // --- LoadAllFailSoft (finding #4: a broken/duplicate dir must not brick the
 // whole batch for callers like session init and the hub's command catalog) ---
 
@@ -396,13 +355,20 @@ func TestLoadAllFailSoft_DuplicateNameSkipped(t *testing.T) {
 	}
 }
 
+func TestLoadAllFailSoft_NoDirs(t *testing.T) {
+	plugins, skipped := LoadAllFailSoft(nil)
+	if len(plugins) != 0 || len(skipped) != 0 {
+		t.Fatalf("plugins = %+v, skipped = %+v, want neither", plugins, skipped)
+	}
+}
+
 func TestLoadAllFailSoft_AllHealthyNoneSkipped(t *testing.T) {
 	dir1 := makePluginDir(t, "plugin-a")
 	dir2 := makePluginDir(t, "plugin-b")
 
 	plugins, skipped := LoadAllFailSoft([]string{dir1, dir2})
-	if len(plugins) != 2 {
-		t.Fatalf("got %d plugins, want 2", len(plugins))
+	if len(plugins) != 2 || plugins[0].Manifest.Name != "plugin-a" || plugins[1].Manifest.Name != "plugin-b" {
+		t.Fatalf("plugins = %+v, want plugin-a then plugin-b", plugins)
 	}
 	if len(skipped) != 0 {
 		t.Fatalf("skipped = %+v, want none", skipped)
@@ -761,7 +727,7 @@ func TestLoadPlugin_WithInlineMCPServers(t *testing.T) {
 // TestLoadPlugin_MCPConfigWarn_InlineParseServerMapFails covers the one fatal
 // plugin MCP path: a well-formed inline mcpServers object whose entry fails
 // mcpconfig.ParseServerMap validation (here, an empty server name) used to
-// abort Load entirely (plugin.go:131-134). It must now degrade to a
+// abort Load entirely. It must now degrade to a
 // plugin-level warning: MCPConfigs stays empty for this plugin, but its
 // skills, agents, and hooks still load normally.
 func TestLoadPlugin_MCPConfigWarn_InlineParseServerMapFails(t *testing.T) {
@@ -846,7 +812,7 @@ func TestLoadPlugin_MCPConfig_CommandExpressionRefused(t *testing.T) {
 }
 
 // TestLoadPlugin_MCPConfigWarn_FileParseError covers the previously-swallowed
-// .mcp.json file parse error (plugin.go:121): a malformed .mcp.json file must
+// .mcp.json file parse error: a malformed .mcp.json file must
 // now surface as a warning instead of being silently treated the same as a
 // missing file.
 func TestLoadPlugin_MCPConfigWarn_FileParseError(t *testing.T) {
@@ -871,7 +837,7 @@ func TestLoadPlugin_MCPConfigWarn_FileParseError(t *testing.T) {
 }
 
 // TestLoadPlugin_MCPConfigWarn_MalformedInlineJSON covers the previously-
-// swallowed malformed-inline-JSON case (plugin.go:130): the manifest's
+// swallowed malformed-inline-JSON case: the manifest's
 // mcpServers value is syntactically valid JSON but not an object (a string,
 // here), so unmarshaling it into the server map fails. That must now surface
 // as a warning instead of being silently ignored.
@@ -895,5 +861,77 @@ func TestLoadPlugin_MCPConfigWarn_MalformedInlineJSON(t *testing.T) {
 	}
 	if !strings.Contains(lp.MCPConfigWarnings[0], "badinline") {
 		t.Errorf("warning %q must name the plugin", lp.MCPConfigWarnings[0])
+	}
+}
+
+// A malformed or unreadable command or agent file costs only that file: the
+// plugin's healthy commands, agents and skills keep loading, and each skipped
+// file is reported by kind and path.
+func TestLoad_SkipsAMalformedComponentFileAndKeepsTheRest(t *testing.T) {
+	dir := makePluginDir(t, "partial")
+	writeAgentFile(t, dir, "commands", "good.md", "---\ndescription: works\n---\nrun the good thing\n")
+	writeAgentFile(t, dir, "commands", "bad.md", "---\n: : not valid yaml :\n---\nbody\n")
+	writeAgentFile(t, dir, "agents", "helper.md", "---\nname: helper\ndescription: helps\n---\nbody\n")
+	writeAgentFile(t, dir, "agents", "broken.md", "no frontmatter, so no required fields\n")
+
+	lp, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load must skip a malformed component file, not fail the plugin: %v", err)
+	}
+
+	cmd, err := ResolveCommand(lp.Commands, "partial:good")
+	if err != nil {
+		t.Fatalf("healthy command did not load: %v", err)
+	}
+	if cmd.Body == "" {
+		t.Fatal("healthy command loaded without its body")
+	}
+	if _, err := ResolveCommand(lp.Commands, "partial:bad"); !errors.Is(err, ErrCommandNotFound) {
+		t.Fatalf("malformed command resolved: err = %v", err)
+	}
+	if _, ok := lp.Agents["partial:helper"]; !ok {
+		t.Fatalf("healthy agent did not load: %v", keys(lp.Agents))
+	}
+	if len(lp.Agents) != 1 || len(lp.Commands) != 1 {
+		t.Fatalf("loaded %d agents and %d commands, want only the healthy ones", len(lp.Agents), len(lp.Commands))
+	}
+
+	skipped := map[string]string{}
+	for _, s := range lp.SkippedComponents {
+		skipped[s.Kind+":"+filepath.Base(s.File)] = s.Reason
+	}
+	for _, want := range []string{"command:bad.md", "agent:broken.md"} {
+		if skipped[want] == "" {
+			t.Errorf("SkippedComponents missing %s: %v", want, lp.SkippedComponents)
+		}
+	}
+	if len(skipped) != 2 {
+		t.Errorf("SkippedComponents = %v, want exactly the two bad files", lp.SkippedComponents)
+	}
+}
+
+func TestLoad_SkipsAnUnreadableCommandFileAndKeepsTheRest(t *testing.T) {
+	dir := makePluginDir(t, "unreadable")
+	writeAgentFile(t, dir, "commands", "good.md", "run it\n")
+	writeAgentFile(t, dir, "commands", "locked.md", "never read\n")
+
+	orig := pluginReadFile
+	pluginReadFile = func(path string) ([]byte, error) {
+		if filepath.Base(path) == "locked.md" {
+			return nil, os.ErrPermission
+		}
+		return orig(path)
+	}
+	t.Cleanup(func() { pluginReadFile = orig })
+
+	lp, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load must skip an unreadable command file: %v", err)
+	}
+	if _, err := ResolveCommand(lp.Commands, "unreadable:good"); err != nil {
+		t.Fatalf("healthy command did not load: %v", err)
+	}
+	if len(lp.SkippedComponents) != 1 || filepath.Base(lp.SkippedComponents[0].File) != "locked.md" {
+		t.Fatalf("SkippedComponents = %v, want the unreadable file", lp.SkippedComponents)
 	}
 }

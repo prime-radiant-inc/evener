@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/diagnostic"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
@@ -110,7 +111,8 @@ type AssistantTextResetData struct{}
 // CommunicatePreviewStartData opens a provisional communicate item scoped to a
 // single tool call. It is only committed by the matching successful call.
 type CommunicatePreviewStartData struct {
-	CallID string `json:"call_id"`
+	Authorship *schema.TranscriptAuthorship `json:"authorship,omitempty"`
+	CallID     string                       `json:"call_id"`
 }
 
 // CommunicatePreviewDeltaData carries text for a provisional communicate item.
@@ -357,7 +359,6 @@ const SteeringSourceParent = "parent"
 const (
 	SteeringKindInterrupted        = "interrupted"
 	SteeringKindInterruptedSalvage = "interrupted-salvage"
-	SteeringKindAgentMessage       = "agent-message"
 	SteeringKindHookContext        = "hook-context"
 	SteeringKindPrecompactHook     = "precompact-hook"
 	SteeringKindCompactNudge       = "compact-nudge"
@@ -383,7 +384,6 @@ const (
 var AllSteeringKinds = []string{
 	SteeringKindInterrupted,
 	SteeringKindInterruptedSalvage,
-	SteeringKindAgentMessage,
 	SteeringKindHookContext,
 	SteeringKindPrecompactHook,
 	SteeringKindCompactNudge,
@@ -615,6 +615,10 @@ const WarningCodePluginCompatibility = "plugin_compatibility"
 // WarningCodeSkillDiagnostic identifies a skill-source problem or collision.
 // Healthy skills remain usable; clients retain this warning at ordinary detail.
 const WarningCodeSkillDiagnostic = "skill_diagnostic"
+
+// WarningCodeLegacyDelegateState identifies the notice that a session's job
+// journal holds retired delegate state, which is left in place and ignored.
+const WarningCodeLegacyDelegateState = "legacy_delegate_state"
 
 // WarningCodeMCPReconnected identifies a restored MCP connection. Clients show
 // it as quiet detail; the retried tool call reports its own outcome separately.
@@ -944,7 +948,8 @@ type TurnEndedData struct {
 
 // RoundStartedData is the payload for an EventRoundStarted event.
 type RoundStartedData struct {
-	RoundID string `json:"round_id"`
+	Authorship *schema.TranscriptAuthorship `json:"authorship,omitempty"`
+	RoundID    string                       `json:"round_id"`
 }
 
 // RoundEndedData is the payload for an EventRoundEnded event.

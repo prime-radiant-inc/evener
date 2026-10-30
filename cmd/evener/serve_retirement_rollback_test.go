@@ -162,7 +162,7 @@ func TestServeRetirementCommitFailureRollsBack(t *testing.T) {
 			t.Fatalf("serve exit: %v", err)
 		}
 		if got := state.session(0).State(); got != agent.SessionClosed {
-			t.Fatalf("live session state after a failed commit + shutdown = %q, want %q: a leaked retirement exit reservation makes closeLiveSession return early and the session (its delegates, jobs, worktree locks and transcript flushes) never closes",
+			t.Fatalf("live session state after a failed commit + shutdown = %q, want %q: a leaked retirement exit reservation makes closeForShutdown return early and the session (its delegates, jobs, worktree locks and transcript flushes) never closes",
 				got, agent.SessionClosed)
 		}
 	})

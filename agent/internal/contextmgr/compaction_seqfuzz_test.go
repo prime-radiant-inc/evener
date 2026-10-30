@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -188,7 +189,7 @@ func (m *compactionModel) applyOp(rt *rapid.T, op compactionOp, step int) {
 	case opAddCommunicate:
 		tok := m.nextID("AGENT")
 		id := m.nextID("call")
-		cc := communicateCall(id, tok)
+		cc := agenttest.CommunicateCall(id, tok)
 		m.history = append(m.history,
 			schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{
 				Role:    llm.RoleAssistant,

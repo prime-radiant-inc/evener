@@ -32,7 +32,7 @@ const hostRoutingOrigin = "bridge"
 
 // The shared remote-dispatch seam refuses every remote-originated call the
 // source serves, regardless of attach state: read, mutation, subscription,
-// capability probe, and the admin forward all resolve their client through
+// and the admin forward all resolve their client through
 // resolveClient, so a peer hub cannot ride an already-attached client to reach a
 // second host (component 07, §"Host-routing origin guard"). The scripted client
 // records what actually crossed the wire, so "nothing was sent" is asserted
@@ -61,9 +61,6 @@ func TestRemoteOriginatedDispatchIsRefusedAtTheClientSeam(t *testing.T) {
 
 	err = source.ShutdownThread(ctx, appwire.ThreadShutdownParams{Ref: "alpha:t1"})
 	assertDispatchRefusal(t, "ShutdownThread", err)
-
-	_, err = source.HostCapabilities(ctx)
-	assertDispatchRefusal(t, "HostCapabilities", err)
 
 	_, err = source.SubscribeThread(ctx, appwire.ThreadReadParams{Ref: "alpha:t1"})
 	assertDispatchRefusal(t, "SubscribeThread", err)

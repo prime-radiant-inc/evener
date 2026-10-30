@@ -1,8 +1,11 @@
-import { act, cleanup, renderHook, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
+import { ALL_CAPABILITIES as CAPS } from "../../threadTestUtils";
 import "../../panes/sessionPanels";
-import { WireError } from "@evener/appwire-client";
+import "../../panes/session";
+import { ACTIONS, rebindAction, restoreDefaultBinding, WireError } from "@evener/appwire-client";
 import { resetComposerFocusStoreForTests, useComposerFocusRequest } from "../../panes/session/composer/composerFocus";
 import { resetQuoteInsertStoreForTests, useQuoteInsertRequest } from "../../panes/session/composer/quoteInsert";
 import "../../panes/sessionPanels";
@@ -10,30 +13,35 @@ import type {
   ItemModel,
   NavigationSessionSummary,
   SearchResult,
-  ThreadCapabilities,
   ThreadModel,
   ThreadReadResponse,
   TurnModel,
 } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { manifest } from "@evener/appwire-client/testing/navigation";
 import { wireThread } from "@evener/appwire-client/testing/notifications";
 import { IDBFactory } from "fake-indexeddb";
+import { keybindingsRegistry } from "../../keybindings/appRegistry";
 import { Composer } from "../../panes/session/composer/Composer";
 import { refreshPendingTurnsProjection } from "../../panes/session/composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "../../panes/session/composer/queue/testing/flushPendingTurnsProjection";
 import { createTestComposerSource } from "../../panes/session/testing/composerSource";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { useCommandCatalog } from "../../stores/commandCatalog";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../stores/threads";
-import { chordLabel, Toast } from "../../widgets";
+import { chordLabel, Dialog, Toast } from "../../widgets";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
+import { currentAttentionEntryToken } from "../attentionHistory";
+import { NeedsYouProvider } from "../NeedsYouProvider";
+import { updateNeedsYouPage } from "../needsYouTestUtils";
+import { navigate } from "../routing";
 import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { CommandPalette, commandErrorMessage } from "./CommandPalette";
-import { openPalette, paletteStore } from "./paletteController";
+import { closePalette, openPalette, paletteStore } from "./paletteController";
 import {
   helpChords,
   paletteIndirectRows,
@@ -47,22 +55,6 @@ import {
 beforeAll(() => {
   installLocalStorage(new MemoryStorage());
 });
-
-const CAPS: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
 
 function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
   const { jobsTreeRevision = null, ...rest } = overrides;
@@ -117,7 +109,7 @@ function focusSession(ref: string, overrides: Partial<ThreadModel> = {}): void {
 
 beforeEach(() => {
   paletteStore.setState({ open: false, query: "", openSeq: 0 });
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   useCommandCatalog.setState(useCommandCatalog.getInitialState());
   resetToastStoreForTests();
   resetThreadsStoreForTests();
@@ -140,19 +132,31 @@ afterEach(() => {
 // --- T1 behaviors preserved ---
 
 test("renders no overlay while the palette store is closed", () => {
-  render(<CommandPalette />);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
   expect(screen.queryByRole("dialog")).toBeNull();
 });
 
 test("opens an overlay named 'Command palette' when the store opens", () => {
-  render(<CommandPalette />);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
   act(() => openPalette());
   expect(screen.getByRole("dialog", { name: "Command palette" })).toBeTruthy();
 });
 
 test("Escape closes the overlay when no command is selected", async () => {
   const user = userEvent.setup();
-  render(<CommandPalette />);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
   act(() => openPalette());
   await user.keyboard("{Escape}");
   expect(screen.queryByRole("dialog")).toBeNull();
@@ -218,7 +222,11 @@ function setNeedsYouRows(rows: NavigationSessionSummary[] | null): void {
 
 test("the empty-query view lists needs-you sessions when any exist", () => {
   setNeedsYouRows(needsYouRows());
-  render(<CommandPalette />);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
   act(() => openPalette());
 
   expect(paletteSection("needs-you")).not.toBeNull();
@@ -235,44 +243,625 @@ test("a needs-you row waiting on an approval shows a needs-you dot, not a workin
   setNeedsYouRows(
     needsYouRows().map((row) => (row.ref === "local:ny1" ? { ...row, state: "active", approval_pending: true } : row)),
   );
-  render(<CommandPalette />);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
   act(() => openPalette());
 
   const option = screen.getByRole("option", { name: /Session A/i });
   expect(within(option).getByRole("img", { name: "Needs you" })).toBeTruthy();
 });
 
-test("Enter on a needs-you row opens that session and closes the palette", async () => {
-  const user = userEvent.setup();
+test.each(["Enter", "click"] as const)(
+  "%s on a valid needs-you row closes the palette and opens that session once",
+  async (activation) => {
+    const user = userEvent.setup();
+    setNeedsYouRows(needsYouRows());
+    focusSession("ref_source");
+    const sourcePaneId = workspaceStore.getState().focusedPaneId;
+    render(
+      <NeedsYouProvider>
+        <CommandPalette />
+      </NeedsYouProvider>,
+    );
+    act(() => openPalette());
+    const historyLength = window.history.length;
+    const row = screen.getByRole("option", { name: /Session A/i });
+
+    if (activation === "Enter") await user.keyboard("{Enter}");
+    else await user.click(row);
+
+    await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Any1"));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(window.history.length).toBe(historyLength + 1);
+    expect(currentAttentionEntryToken()).not.toBeNull();
+    expect(
+      workspaceStore.getState().panes.find((pane) => (pane.params as { ref?: unknown }).ref === "ref_source")?.id,
+    ).toBe(sourcePaneId);
+  },
+);
+
+test.each(["Enter", "click"] as const)(
+  "%s on a refreshing needs-you row is refused until the page settles",
+  async (activation) => {
+    const user = userEvent.setup();
+    setNeedsYouRows(needsYouRows());
+    focusSession("ref_source");
+    // The controller publishes this row as selectable:false, refreshState
+    // "refreshing" while its page revalidates.
+    updateNeedsYouPage(0, { stale: true, loading: true });
+    render(
+      <NeedsYouProvider>
+        <CommandPalette />
+      </NeedsYouProvider>,
+    );
+    act(() => openPalette());
+    const historyLength = window.history.length;
+    const refused = screen.getByRole("option", { name: /Session A/i });
+
+    expect(refused.getAttribute("aria-disabled")).toBe("true");
+    expect(refused.getAttribute("data-refresh-state")).toBe("refreshing");
+
+    if (activation === "Enter") await user.keyboard("{Enter}");
+    else await user.click(refused);
+
+    expect(paletteStore.getState().open).toBe(true);
+    expect(screen.getByRole("dialog", { name: "Command palette" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/");
+    expect(window.history.length).toBe(historyLength);
+
+    act(() => updateNeedsYouPage(0, { stale: false, loading: false, error: null }));
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: /Session A/i }).getAttribute("aria-disabled")).toBeNull(),
+    );
+    const settled = screen.getByRole("option", { name: /Session A/i });
+    expect(settled.getAttribute("data-refresh-state")).toBeNull();
+
+    if (activation === "Enter") await user.keyboard("{Enter}");
+    else await user.click(settled);
+
+    await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Any1"));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(window.history.length).toBe(historyLength + 1);
+  },
+);
+
+test("a failed needs-you page is refused in place", () => {
   setNeedsYouRows(needsYouRows());
-  render(<CommandPalette />);
+  updateNeedsYouPage(0, { stale: true, loading: false, error: new Error("refresh failed") });
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
   act(() => openPalette());
+  const refused = screen.getByRole("option", { name: /Session A/i });
 
-  await user.keyboard("{Enter}");
+  expect(refused.getAttribute("aria-disabled")).toBe("true");
+  expect(refused.getAttribute("data-refresh-state")).toBe("failed");
 
-  expect(window.location.pathname).toBe("/s/local%3Any1");
-  expect(screen.queryByRole("dialog")).toBeNull();
+  fireEvent.click(refused);
+  expect(paletteStore.getState().open).toBe(true);
+  expect(window.location.pathname).toBe("/");
+});
+
+test("a page that turns stale before the next paint still refuses activation", () => {
+  setNeedsYouRows(needsYouRows());
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  act(() => openPalette());
+  const row = screen.getByRole("option", { name: /Session A/i });
+  expect(row.getAttribute("aria-disabled")).toBeNull();
+
+  // Keep the page change and the click in one synchronous act: React flushes
+  // act work only when the outer scope exits, so the click still runs the
+  // handler from the pre-update render and must be refused by the live
+  // controller snapshot read.
+  act(() => {
+    updateNeedsYouPage(0, { stale: true, loading: true });
+    fireEvent.click(row);
+  });
+
+  expect(paletteStore.getState().open).toBe(true);
+  expect(window.location.pathname).toBe("/");
+});
+
+test("a newer route wins over a needs-you selection deferred until the real modal closes", async () => {
+  setNeedsYouRows(needsYouRows());
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  await act(async () => {
+    openPalette();
+    await Promise.resolve();
+  });
+  const selected = screen.getByRole("option", { name: /Session A/i });
+  expect(selected.getAttribute("data-kind")).toBe("needsYou");
+  expect(selected.getAttribute("data-ref")).toBe("local:ny1");
+  const historyLength = window.history.length;
+
+  act(() => {
+    fireEvent.click(selected);
+    navigate("/settings");
+  });
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await waitFor(() => expect(window.location.pathname).toBe("/settings"));
+  expect(window.location.pathname).toBe("/settings");
+  expect(window.history.length).toBe(historyLength + 1);
+});
+
+test("an explicitly captured needs-you ref is rejected when its authoritative page turns stale before modal close", async () => {
+  setNeedsYouRows(needsYouRows());
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  await act(async () => {
+    openPalette();
+    await Promise.resolve();
+  });
+  const selected = screen.getByRole("option", { name: /Session A/i });
+  const selectedRef = selected.getAttribute("data-ref");
+  expect(selectedRef).toBe("local:ny1");
+  const historyLength = window.history.length;
+
+  act(() => {
+    fireEvent.click(selected);
+    const resourceKey = keyID({ kind: "section", section: "needs_you", offset: 0, limit: 50 });
+    const resource = navigationStore.getState().resources.get(resourceKey);
+    if (!resource) throw new Error("needs-you selection page missing");
+    navigationStore.setState({
+      resources: new Map(navigationStore.getState().resources).set(resourceKey, { ...resource, stale: true }),
+    });
+  });
+
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(window.location.pathname).toBe("/");
+  expect(window.history.length).toBe(historyLength);
+});
+
+test("a deferred needs-you selection does not survive a later palette activation", async () => {
+  setNeedsYouRows(needsYouRows());
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  await act(async () => {
+    openPalette();
+    await Promise.resolve();
+  });
+  const selected = screen.getByRole("option", { name: /Session A/i });
+  const historyLength = window.history.length;
+
+  act(() => {
+    fireEvent.click(selected);
+    openPalette();
+  });
+  act(() => closePalette());
+
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(window.location.pathname).toBe("/");
+  expect(window.history.length).toBe(historyLength);
+});
+
+let setOtherModalOpen: (open: boolean) => void = () => {};
+function OtherModalHost() {
+  const [otherOpen, setOtherOpen] = useState(false);
+  setOtherModalOpen = setOtherOpen;
+  return (
+    <Dialog open={otherOpen} onClose={() => setOtherOpen(false)} title="Other modal">
+      other
+    </Dialog>
+  );
+}
+
+// React 18 attaches at the app root container, so this document-level bubble
+// listener runs after the palette's click handler and mounts the later modal
+// before the accepted controller's MutationObserver microtask sees the close.
+function openOtherModalAfterClick(): void {
+  const openLater = () => {
+    document.removeEventListener("click", openLater);
+    setOtherModalOpen(true);
+  };
+  document.addEventListener("click", openLater);
+}
+
+// The whole-shell review reported that a pending deferred selection might
+// survive a host transition. A host switch replaces host-scoped panes, which
+// is a workspace write; the deferral already cancels on any such write.
+test("a deferred needs-you selection does not survive a host-transition workspace rewrite", async () => {
+  setNeedsYouRows(needsYouRows());
+  focusSession("ref_source");
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+      <OtherModalHost />
+    </NeedsYouProvider>,
+  );
+  act(() => setOtherModalOpen(true));
+  await act(async () => {
+    await Promise.resolve();
+  });
+  await act(async () => {
+    openPalette();
+    await Promise.resolve();
+  });
+  const historyLength = window.history.length;
+  const selected = screen.getByRole("option", { name: /Session A/i });
+
+  act(() => {
+    fireEvent.click(selected);
+    // Same workspace owner, new host-scoped panes: a host transition's write,
+    // not a viewport variant switch.
+    workspaceStore.setState({
+      panes: [
+        {
+          id: "pane_host_switch",
+          type: "session",
+          params: { ref: "remote:after-host-switch" },
+          slot: "main",
+        },
+      ],
+      focusedPaneId: "pane_host_switch",
+    });
+  });
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(screen.getByRole("dialog", { name: "Other modal" })).toBeTruthy();
+  expect(screen.queryByRole("dialog", { name: "Command palette" })).toBeNull();
+
+  act(() => setOtherModalOpen(false));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(window.location.pathname).toBe("/");
+  expect(window.history.length).toBe(historyLength);
+  expect(currentAttentionEntryToken()).toBeNull();
+  expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "remote:after-host-switch" });
+});
+
+test("the next-needs-you command defers through the same workspace cancellation", async () => {
+  setNeedsYouRows(needsYouRows());
+  focusSession("ref_source");
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+      <OtherModalHost />
+    </NeedsYouProvider>,
+  );
+  act(() => setOtherModalOpen(true));
+  await act(async () => {
+    await Promise.resolve();
+  });
+  await act(async () => {
+    openPalette("/next-needs-you");
+    await Promise.resolve();
+  });
+  const historyLength = window.history.length;
+
+  // The command runs behind the pre-existing dialog, exactly like the row.
+  act(() => {
+    fireEvent.keyDown(screen.getByRole("combobox", { name: "Command palette" }), { key: "Enter" });
+  });
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(screen.queryByRole("dialog", { name: "Command palette" })).toBeNull();
+  expect(screen.getByRole("dialog", { name: "Other modal" })).toBeTruthy();
+  expect(window.location.pathname).toBe("/");
+
+  act(() => {
+    workspaceStore.setState({
+      panes: [
+        {
+          id: "pane_host_switch",
+          type: "session",
+          params: { ref: "remote:after-host-switch" },
+          slot: "main",
+        },
+      ],
+      focusedPaneId: "pane_host_switch",
+    });
+  });
+  act(() => setOtherModalOpen(false));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(window.location.pathname).toBe("/");
+  expect(window.history.length).toBe(historyLength);
+  expect(currentAttentionEntryToken()).toBeNull();
+});
+
+test("a deferred needs-you selection does not survive a later unrelated modal", async () => {
+  setNeedsYouRows(needsYouRows());
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+      <OtherModalHost />
+    </NeedsYouProvider>,
+  );
+  await act(async () => {
+    openPalette();
+    await Promise.resolve();
+  });
+  const selected = screen.getByRole("option", { name: /Session A/i });
+  const historyLength = window.history.length;
+
+  act(() => {
+    openOtherModalAfterClick();
+    fireEvent.click(selected);
+  });
+  // Let the accepted controller observe the palette close while the later
+  // modal is still mounted.
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(screen.getByRole("dialog", { name: "Other modal" })).toBeTruthy();
+  expect(screen.queryByRole("dialog", { name: "Command palette" })).toBeNull();
+
+  act(() => setOtherModalOpen(false));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(window.location.pathname).toBe("/");
+  expect(window.history.length).toBe(historyLength);
+});
+
+test("a needs-you selection made from inside an open dialog survives until that dialog closes", async () => {
+  setNeedsYouRows(needsYouRows());
+  focusSession("ref_source");
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+      <OtherModalHost />
+    </NeedsYouProvider>,
+  );
+  // The user is already inside a dialog when the palette-open chord fires.
+  act(() => setOtherModalOpen(true));
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(screen.getByRole("dialog", { name: "Other modal" })).toBeTruthy();
+  await act(async () => {
+    openPalette();
+    await Promise.resolve();
+  });
+  const historyLength = window.history.length;
+
+  act(() => {
+    fireEvent.click(screen.getByRole("option", { name: /Session A/i }));
+  });
+  // The palette is gone, but the pre-existing dialog is still up: the selection
+  // is legitimately deferred until that dialog closes.
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(screen.getByRole("dialog", { name: "Other modal" })).toBeTruthy();
+  expect(screen.queryByRole("dialog", { name: "Command palette" })).toBeNull();
+  expect(window.location.pathname).toBe("/");
+  expect(window.history.length).toBe(historyLength);
+
+  act(() => setOtherModalOpen(false));
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Any1"));
+  expect(window.history.length).toBe(historyLength + 1);
+  expect(currentAttentionEntryToken()).not.toBeNull();
+});
+
+test("a modal that opens and closes while a selection is pending cancels it without a later resurrection", async () => {
+  setNeedsYouRows(needsYouRows());
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  await act(async () => {
+    openPalette();
+    await Promise.resolve();
+  });
+  const historyLength = window.history.length;
+  const transient = document.createElement("div");
+  transient.setAttribute("role", "dialog");
+  transient.setAttribute("aria-modal", "true");
+
+  act(() => {
+    fireEvent.click(screen.getByRole("option", { name: /Session A/i }));
+    // The later modal opens and closes before the controller's observer runs.
+    document.body.append(transient);
+    transient.remove();
+  });
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(window.location.pathname).toBe("/");
+  expect(window.history.length).toBe(historyLength);
+
+  // A later unrelated controller emission must not fire the cancelled intent.
+  act(() => {
+    const key = { kind: "section", section: "needs_you", offset: 0, limit: 50 } as const;
+    const resource = navigationStore.getState().resources.get(keyID(key));
+    if (!resource) throw new Error("needs-you selection page missing");
+    navigationStore.setState({
+      resources: new Map(navigationStore.getState().resources).set(keyID(key), { ...resource, loading: true }),
+    });
+  });
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(window.location.pathname).toBe("/");
+  expect(window.history.length).toBe(historyLength);
+});
+
+test("an aria-modal that flips true and back while a selection is pending cancels it", async () => {
+  setNeedsYouRows(needsYouRows());
+  focusSession("ref_source");
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+      <OtherModalHost />
+    </NeedsYouProvider>,
+  );
+  act(() => setOtherModalOpen(true));
+  await act(async () => {
+    await Promise.resolve();
+  });
+  await act(async () => {
+    openPalette();
+    await Promise.resolve();
+  });
+  const historyLength = window.history.length;
+  const flip = document.createElement("div");
+  document.body.append(flip);
+
+  try {
+    act(() => {
+      fireEvent.click(screen.getByRole("option", { name: /Session A/i }));
+      // The newer dialog flips aria-modal on and back in place. By the time the
+      // controller's observer runs the element reads "false", and the older
+      // dialog is what still blocks the selection, so only the counter can
+      // record that a newer modal intent came and went.
+      flip.setAttribute("aria-modal", "true");
+      flip.setAttribute("aria-modal", "false");
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByRole("dialog", { name: "Other modal" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/");
+    expect(window.history.length).toBe(historyLength);
+
+    // The older dialog's close must not run the superseded selection.
+    act(() => setOtherModalOpen(false));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(window.location.pathname).toBe("/");
+    expect(window.history.length).toBe(historyLength);
+    expect(currentAttentionEntryToken()).toBeNull();
+  } finally {
+    flip.remove();
+  }
+});
+
+test("a deliberate needs-you selection still opens after the superseding modal closes", async () => {
+  setNeedsYouRows(needsYouRows());
+  focusSession("ref_source");
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+      <OtherModalHost />
+    </NeedsYouProvider>,
+  );
+  await act(async () => {
+    openPalette();
+    await Promise.resolve();
+  });
+  const historyLength = window.history.length;
+
+  act(() => {
+    openOtherModalAfterClick();
+    fireEvent.click(screen.getByRole("option", { name: /Session A/i }));
+  });
+  await act(async () => {
+    await Promise.resolve();
+  });
+  act(() => setOtherModalOpen(false));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(window.location.pathname).toBe("/");
+  expect(window.history.length).toBe(historyLength);
+
+  act(() => openPalette());
+  await act(async () => {
+    fireEvent.click(screen.getByRole("option", { name: /Session B/i }));
+  });
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Any2"));
+  expect(window.history.length).toBe(historyLength + 1);
+  expect(currentAttentionEntryToken()).not.toBeNull();
 });
 
 test("the empty-query view keeps its old (empty) behavior when there are no needs-you sessions", () => {
   setNeedsYouRows(null);
-  render(<CommandPalette />);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
   act(() => openPalette());
 
   expect(screen.queryByRole("option")).toBeNull();
 });
 
+// The manifest count refreshes on its own schedule, so a settled empty page
+// must end demand even while the manifest still reports rows (#4958's
+// zero-row path asked from the count alone).
+test("the empty-query view does not demand a page once a settled page owns completion", async () => {
+  setNeedsYouRows([]);
+  navigationStore.setState({
+    manifest: {
+      key: { kind: "manifest" },
+      data: manifest({
+        sections: { live: { count: 0 }, needs_you: { count: 3 }, pin_sections: { count: 0 } },
+      }),
+      loadedRevision: 1,
+      targetRevision: null,
+      forceToken: 0,
+      etag: "etag",
+      loading: false,
+      stale: false,
+      error: null,
+      generationID: "generation_test",
+    },
+  });
+  const loadSection = vi.fn();
+  navigationStore.setState({ loadSection });
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  await act(async () => {
+    openPalette();
+    await Promise.resolve();
+  });
+  expect(loadSection).not.toHaveBeenCalled();
+});
+
 // --- mode machine ---
 
 test("opening seeded with '/' lands in command-filter mode and lists commands", () => {
-  render(<CommandPalette />);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
   act(() => openPalette("/"));
   expect(screen.getByRole("option", { name: /New session/ })).toBeTruthy();
   expect(screen.getByRole("option", { name: /Open settings/ })).toBeTruthy();
 });
 
 test("a '/set' filter narrows to matching commands and drops non-matches", () => {
-  render(<CommandPalette />);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
   act(() => openPalette("/set"));
   expect(screen.getByRole("option", { name: /Open settings/ })).toBeTruthy();
   expect(screen.queryByRole("option", { name: /New session/ })).toBeNull();
@@ -286,7 +875,11 @@ test("an async catalog refresh rerenders the open session palette - a newly-load
   });
   connectionStore.setState({ client: fake as never });
   focusSession("ref_a", { diagnostics: { plugins: [{ name: "p" }] } });
-  render(<CommandPalette />);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
 
   act(() => openPalette("/review"));
 
@@ -303,7 +896,11 @@ test("the palette scopes catalog commands to active diagnostics without mutating
     ],
   });
   focusSession("ref_a", { diagnostics: { plugins: [{ name: "enabled" }] } });
-  render(<CommandPalette />);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
 
   act(() => openPalette("/review"));
   expect(screen.getByRole("option", { name: /Continue in the composer/ })).toBeTruthy();
@@ -333,7 +930,11 @@ test("the palette scopes catalog commands to active diagnostics without mutating
 
 test("selecting a free-arg APP-GLOBAL command enters args mode with a pill and placeholder, and Esc backs out (does not close)", async () => {
   const user = userEvent.setup();
-  render(<CommandPalette />);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
   act(() => openPalette("/spawn"));
   const filterPlaceholder = screen.getByRole("combobox").getAttribute("placeholder");
   await user.click(screen.getByRole("option", { name: /Start with prompt/ }));
@@ -354,7 +955,11 @@ test("selecting a free-arg APP-GLOBAL command enters args mode with a pill and p
 
 test("running a navigation command closes the palette and navigates", async () => {
   const user = userEvent.setup();
-  render(<CommandPalette />);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
   act(() => openPalette("/new"));
   await user.click(screen.getByRole("option", { name: /New session/ }));
   expect(window.location.pathname).toBe("/new");
@@ -376,7 +981,11 @@ test("a session-scoped built-in (/interrupt) is never listed as a runnable comma
   const fake = new FakeClient("ready");
   connectionStore.getState().connect(fake);
   focusSession("ref_a", { status: { type: "idle" }, activeTurnId: undefined });
-  render(<CommandPalette />);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
   await act(async () => openPalette("/interrupt"));
 
   expect(screen.queryByRole("option", { name: /Interrupt agent/ })).toBeNull();
@@ -387,7 +996,11 @@ test("a session-scoped built-in (/interrupt) is never listed as a runnable comma
 test("with a focused session, activating the handoff row inserts the typed text into that session's composer and closes", async () => {
   const user = userEvent.setup();
   focusSession("ref_a", { diagnostics: { plugins: [{ name: "p" }] } });
-  render(<CommandPalette />);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
   act(() => openPalette("/interrupt"));
 
   await user.click(screen.getByRole("option", { name: /Continue in the composer/ }));
@@ -402,7 +1015,11 @@ test("with a focused session, activating the handoff row inserts the typed text 
 
 test("with NO focused session, the handoff row explains that instead and Enter shows an inline error, not an insert", async () => {
   const user = userEvent.setup();
-  render(<CommandPalette />);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
   act(() => openPalette("/interrupt"));
 
   const row = screen.getByRole("option", { name: /Focus a session to run this command/ });
@@ -419,7 +1036,11 @@ test("the handoff row appears for /model even on an ended session with false cap
     status: { type: "ended" },
     capabilities: { ...CAPS, steer: false, interrupt: false, queue: false },
   });
-  render(<CommandPalette />);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
   act(() => openPalette("/model"));
 
   expect(screen.queryByRole("option", { name: /Switch model/ })).toBeNull();
@@ -451,7 +1072,11 @@ test("a failed auto-resume is attributed to the session, not blamed on the comma
 // actual keydown routing (handleKeyDown). The descriptions are copy, reviewed
 // in the diff; these tests pin which chords the legend teaches.
 async function openHelpFromCommand(user: ReturnType<typeof userEvent.setup>) {
-  render(<CommandPalette />);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
   act(() => openPalette("/help"));
   await user.click(screen.getByRole("option", { name: /Show keyboard shortcuts/ }));
 }
@@ -472,7 +1097,11 @@ test("/help renders through KeyHint, with the platform's own Mod glyph", async (
 
 test("/help pairs each chord with its action as a term and its definition", async () => {
   const user = userEvent.setup();
-  render(<CommandPalette />);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
   act(() => openPalette("/help"));
   await user.click(screen.getByRole("option", { name: /Show keyboard shortcuts/ }));
 
@@ -480,6 +1109,55 @@ test("/help pairs each chord with its action as a term and its definition", asyn
   expect(terms.length).toBeGreaterThan(0);
   expect(screen.getAllByRole("definition")).toHaveLength(terms.length);
   for (const term of terms) expect(term.querySelector("kbd")).not.toBeNull();
+});
+
+test("/help shows a rebound app-global chord and drops an unbound one", async () => {
+  const user = userEvent.setup();
+  await openHelpFromCommand(user);
+  expect(chordCount(["Mod", "I"])).toBe(1);
+  expect(chordCount(["Mod", "J"])).toBe(1);
+
+  act(() => {
+    rebindAction(keybindingsRegistry, ACTIONS.composerFocus, "Control+Shift+Y");
+    rebindAction(keybindingsRegistry, ACTIONS.nextNeedsYou, null);
+  });
+
+  expect(helpChords()).toContain("Ctrl+Shift+Y");
+  expect(chordCount(["Mod", "I"])).toBe(0);
+  expect(chordCount(["Mod", "J"])).toBe(0);
+  act(() => {
+    restoreDefaultBinding(keybindingsRegistry, ACTIONS.composerFocus);
+    restoreDefaultBinding(keybindingsRegistry, ACTIONS.nextNeedsYou);
+  });
+});
+
+test("/help keeps the press boundaries of a multi-press rebinding", async () => {
+  const user = userEvent.setup();
+  await openHelpFromCommand(user);
+
+  act(() => rebindAction(keybindingsRegistry, ACTIONS.composerFocus, "Control+Y Control+W"));
+
+  const term = screen.getAllByRole("term").find((el) => el.textContent === "Ctrl+Y");
+  if (term === undefined) throw new Error("first press is not the term");
+  const definition = term.nextElementSibling;
+  // The second press is its own keycap group, not run on to the first with "+".
+  expect(definition?.querySelectorAll("kbd")).toHaveLength(2);
+  expect(chordCount(["Ctrl", "Y", "Ctrl", "W"])).toBe(0);
+  act(() => restoreDefaultBinding(keybindingsRegistry, ACTIONS.composerFocus));
+});
+
+test("/help updates a sequence with repeated presses when it is rebound live", async () => {
+  const user = userEvent.setup();
+  await openHelpFromCommand(user);
+
+  act(() => rebindAction(keybindingsRegistry, ACTIONS.composerFocus, "Control+Y Control+W Control+W"));
+  act(() => rebindAction(keybindingsRegistry, ACTIONS.composerFocus, "Control+Y Control+W Control+X"));
+
+  const term = screen.getAllByRole("term").find((el) => el.textContent === "Ctrl+Y");
+  if (term === undefined) throw new Error("first press is not the term");
+  const pressed = [...(term.nextElementSibling?.querySelectorAll("kbd") ?? [])].map((kbd) => kbd.textContent);
+  expect(pressed).toEqual(["Ctrl", "W", "Ctrl", "X"]);
+  act(() => restoreDefaultBinding(keybindingsRegistry, ACTIONS.composerFocus));
 });
 
 test("/help lists the UX-fix chords the old table never had", async () => {
@@ -521,7 +1199,11 @@ test("/help lists '/' for both the palette's command filter and the composer's i
 
 test("the help panel is inert: ArrowDown+Enter never fires a hidden registry command (§2.8)", async () => {
   const user = userEvent.setup();
-  render(<CommandPalette />);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
   // No session focused -> command-filter with the empty "/" filter lists the
   // global commands. Showing help must not leave that list navigable
   // underneath, or ArrowDown+Enter fires a hidden one invisibly (with no
@@ -535,7 +1217,11 @@ test("the help panel is inert: ArrowDown+Enter never fires a hidden registry com
 
 test("typing after /help leaves the help panel and returns to a real command list (§2.8)", async () => {
   const user = userEvent.setup();
-  render(<CommandPalette />);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
   act(() => openPalette("/"));
   await user.click(screen.getByRole("option", { name: /Show keyboard shortcuts/ }));
   await user.type(screen.getByRole("combobox"), "settings");
@@ -552,7 +1238,11 @@ test("in-session search scans the focused ThreadModel's turns", async () => {
     turns: [turn([item("i0", "nothing relevant")]), turn([item("i1", "please investigate the frobnitz")])],
   });
 
-  render(<CommandPalette />);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
   act(() => openPalette());
   await user.type(screen.getByRole("combobox"), "frobnitz");
 
@@ -572,7 +1262,11 @@ test("in-session search scans the focused ThreadModel's turns", async () => {
 // search mode, with no "/" prefix required.
 test('typing a bare "?" in search mode opens the keyboard-shortcuts help view', async () => {
   const user = userEvent.setup();
-  render(<CommandPalette />);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
   act(() => openPalette());
 
   await user.type(screen.getByRole("combobox"), "?");
@@ -582,7 +1276,11 @@ test('typing a bare "?" in search mode opens the keyboard-shortcuts help view', 
 
 test('typing past a bare "?" leaves the help view and resumes filtering, same as after /help', async () => {
   const user = userEvent.setup();
-  render(<CommandPalette />);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
   act(() => openPalette());
   await user.type(screen.getByRole("combobox"), "?");
   expect(paletteSection("help")).not.toBeNull();
@@ -615,7 +1313,11 @@ describe("remote search results", () => {
       past: [{ id: "p1", ref: "local:p1", title: "old frobnitz run", project: "old", state: "ended", age: "2h" }],
     });
 
-    render(<CommandPalette />);
+    render(
+      <NeedsYouProvider>
+        <CommandPalette />
+      </NeedsYouProvider>,
+    );
     act(() => openPalette());
     await user.type(screen.getByRole("combobox"), "frobnitz");
 
@@ -651,7 +1353,11 @@ describe("remote search results", () => {
       ],
     });
 
-    render(<CommandPalette />);
+    render(
+      <NeedsYouProvider>
+        <CommandPalette />
+      </NeedsYouProvider>,
+    );
     act(() => openPalette());
     await user.type(screen.getByRole("combobox"), "frobnitz");
 
@@ -685,7 +1391,11 @@ describe("remote search results", () => {
       ],
     });
 
-    render(<CommandPalette />);
+    render(
+      <NeedsYouProvider>
+        <CommandPalette />
+      </NeedsYouProvider>,
+    );
     act(() => openPalette());
     await user.type(screen.getByRole("combobox"), "frobnitz");
     await waitFor(() => expect(paletteIndirectRows()).toHaveLength(1));
@@ -724,7 +1434,11 @@ describe("remote search results", () => {
       ],
     });
 
-    render(<CommandPalette />);
+    render(
+      <NeedsYouProvider>
+        <CommandPalette />
+      </NeedsYouProvider>,
+    );
     act(() => openPalette());
     await user.type(screen.getByRole("combobox"), "frobnitz");
 
@@ -756,7 +1470,11 @@ describe("remote search results", () => {
       ],
     });
 
-    render(<CommandPalette />);
+    render(
+      <NeedsYouProvider>
+        <CommandPalette />
+      </NeedsYouProvider>,
+    );
     act(() => openPalette());
     await user.type(screen.getByRole("combobox"), "frobnitz");
 
@@ -772,7 +1490,11 @@ describe("remote search results", () => {
   // a response the hub cannot produce.
   async function searchLiveRow(user: ReturnType<typeof userEvent.setup>, result: SearchResult, term: string) {
     scriptSearch({ live: [result], past: [] });
-    render(<CommandPalette />);
+    render(
+      <NeedsYouProvider>
+        <CommandPalette />
+      </NeedsYouProvider>,
+    );
     act(() => openPalette());
     await user.type(screen.getByRole("combobox"), term);
     await waitFor(() => expect(paletteSection("live")).not.toBeNull());
@@ -819,7 +1541,11 @@ describe("remote search results", () => {
 
 test("ArrowDown moves the active row (aria-selected) with wraparound", async () => {
   const user = userEvent.setup();
-  render(<CommandPalette />);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
   act(() => openPalette("/"));
   const options = screen.getAllByRole("option");
   expect(options[0]?.getAttribute("aria-selected")).toBe("true");
@@ -830,7 +1556,11 @@ test("ArrowDown moves the active row (aria-selected) with wraparound", async () 
 
 test("Enter on an exact app-global command name runs it", async () => {
   const user = userEvent.setup();
-  render(<CommandPalette />);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
   act(() => openPalette("/settings"));
 
   await user.keyboard("{Enter}");
@@ -843,7 +1573,11 @@ test("Enter on an exact session-scoped command name (/status) hands off to the c
   const user = userEvent.setup();
   const send = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue();
   focusSession("ref_a", { diagnostics: { plugins: [{ name: "p" }] } });
-  render(<CommandPalette />);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
   act(() => openPalette("/status"));
 
   await user.keyboard("{Enter}");
@@ -861,7 +1595,11 @@ test("Enter on a fuzzy near-miss of a session-scoped command name (/stat) still 
   const user = userEvent.setup();
   const send = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue();
   focusSession("ref_a", { diagnostics: { plugins: [{ name: "p" }, { name: "q" }] } });
-  render(<CommandPalette />);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
   act(() => openPalette("/stat"));
 
   await user.keyboard("{Enter}");
@@ -876,7 +1614,11 @@ test("Enter on an unknown slash command sends the raw query - the escape hatch f
   const user = userEvent.setup();
   const send = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue();
   focusSession("ref_a");
-  render(<CommandPalette />);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
   act(() => openPalette("/frobnicate main"));
 
   await user.keyboard("{Enter}");
@@ -902,7 +1644,11 @@ test("Enter on an unknown slash command against a fenced session toasts the refu
   act(() => {
     threadsStore.setState((state) => ({ stoppingRefs: new Set(state.stoppingRefs).add("local:ref_a") }));
   });
-  render(<CommandPalette />);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
   const send = vi.spyOn(threadsStore.getState(), "send");
   act(() => openPalette("/frobnicate main"));
 
@@ -1014,10 +1760,10 @@ test("Enter on an unknown slash command against a Send-resumes fenced session pa
   });
   await flushPendingTurnsProjectionForTests();
   render(
-    <>
+    <NeedsYouProvider>
       <CommandPalette />
       <Toast />
-    </>,
+    </NeedsYouProvider>,
   );
   act(() => openPalette("/frobnicate main"));
   await user.keyboard("{Enter}");
@@ -1091,10 +1837,10 @@ test("a Send-resumes fallthrough whose resume fails parks the row, closes the pa
   });
   await threadsStore.getState().ensureThread(ref);
   render(
-    <>
+    <NeedsYouProvider>
       <CommandPalette />
       <Composer ref={ref} source={createTestComposerSource(ref)} focused={false} />
-    </>,
+    </NeedsYouProvider>,
   );
   act(() => openPalette("/frobnicate main"));
   await user.keyboard("{Enter}");
@@ -1128,7 +1874,11 @@ test("selecting a plugin catalog entry's handoff row inserts the raw typed text 
     commands: [{ name: "review", pluginName: "p", source: "plugin" }],
   });
   focusSession("ref_a", { diagnostics: { plugins: [{ name: "p" }] } });
-  render(<CommandPalette />);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
   act(() => openPalette("/review"));
 
   await user.click(screen.getByRole("option", { name: /Continue in the composer/ }));
@@ -1152,7 +1902,11 @@ test("Enter on a plugin command with arguments hands off the FULL typed text, ar
     commands: [{ name: "review", pluginName: "p", source: "plugin" }],
   });
   focusSession("ref_a", { diagnostics: { plugins: [{ name: "p" }] } });
-  render(<CommandPalette />);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
   act(() => openPalette("/review main"));
 
   await user.keyboard("{Enter}");
@@ -1171,7 +1925,11 @@ test("two catalog entries sharing a name still collapse to ONE handoff row, not 
     ],
   });
   focusSession("ref_a", { diagnostics: { plugins: [{ name: "p" }, { name: "q" }] } });
-  render(<CommandPalette />);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
   act(() => openPalette("/review"));
 
   expect(screen.getAllByRole("option", { name: /Continue in the composer/ })).toHaveLength(1);
@@ -1181,10 +1939,10 @@ test("two catalog entries sharing a name still collapse to ONE handoff row, not 
 // asserted here - just ensures no unmounted-region warnings).
 test("mounting alongside a Toast region does not throw", () => {
   render(
-    <>
+    <NeedsYouProvider>
       <CommandPalette />
       <Toast />
-    </>,
+    </NeedsYouProvider>,
   );
   act(() => openPalette("/"));
   expect(screen.getByRole("dialog")).toBeTruthy();

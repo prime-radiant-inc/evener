@@ -1,5 +1,7 @@
 package appwire
 
+import "primeradiant.com/evener/agent/activitybound"
+
 // DelegateRosterTextMaxRunes caps the brief text a thread/read roster row
 // carries. Clients label a delegate with the first line of its brief; the whole
 // brief is in the activity tree (jobs/list) and the delegate's own transcript.
@@ -17,8 +19,8 @@ func SlimDelegateForRoster(d EvenerDelegateInfo) EvenerDelegateInfo {
 	if d.Description == d.Task {
 		d.Description = ""
 	}
-	d.Task = truncateRosterText(d.Task)
-	d.Description = truncateRosterText(d.Description)
+	d.Task = activitybound.Truncate(d.Task, DelegateRosterTextMaxRunes)
+	d.Description = activitybound.Truncate(d.Description, DelegateRosterTextMaxRunes)
 	d.PacketKind = ""
 	d.Message = nil
 	d.StructuredResult = nil
@@ -26,23 +28,4 @@ func SlimDelegateForRoster(d EvenerDelegateInfo) EvenerDelegateInfo {
 	d.ReportPreviewTruncated = false
 	d.LogicalOwnerSessionID = ""
 	return d
-}
-
-// truncateRosterText cuts s to DelegateRosterTextMaxRunes runes, ellipsis
-// included, walking only as far into s as the cap.
-func truncateRosterText(s string) string {
-	if len(s) <= DelegateRosterTextMaxRunes {
-		return s
-	}
-	cutAt, runes := 0, 0
-	for i := range s {
-		if runes == DelegateRosterTextMaxRunes-1 {
-			cutAt = i
-		}
-		if runes == DelegateRosterTextMaxRunes {
-			return s[:cutAt] + "…"
-		}
-		runes++
-	}
-	return s
 }

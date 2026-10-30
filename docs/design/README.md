@@ -28,6 +28,8 @@ with a status or a "historical design record" note, that note wins.
   request keep those.
 - New records go in the dated `YYYY-MM-DD-name.md` form. Prefer a directory per
   effort when an effort grows past a couple of documents.
+- Screenshots and other evidence images go on the pull request. Commit an
+  image only when a record links to it.
 
 Links inside these records point at paths and line numbers from when they were
 written and are deliberately excluded from `make docs-check`.

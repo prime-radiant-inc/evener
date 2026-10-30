@@ -18,7 +18,7 @@ import (
 // A daemon stamps every status frame with the action set that goes with the
 // status it announces — except its own close, which it cannot describe: what a
 // thread can still be asked to do once its daemon is gone is the hub's answer,
-// not the corpse's (server/appwire_runtime.go's stampCapabilitiesOnStatusChange
+// not the corpse's (server/appwire_status_stamps.go's stampCapabilitiesOnStatusChange
 // and kata 06t8). This is the hub giving that answer on the way past.
 func TestRelayedCloseFrameCarriesTheHubsCapabilitiesForTheEndedThread(t *testing.T) {
 	thread := appwire.Thread{
@@ -378,9 +378,7 @@ func relayedNotificationClient(
 	t.Cleanup(hub.Close)
 	client := dialHubRPC(t, hub)
 	t.Cleanup(func() { _ = client.Close() })
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	mustInitializeHubClient(t, client)
 	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
 		Ref:       thread.Evener.Ref,
 		Subscribe: true,

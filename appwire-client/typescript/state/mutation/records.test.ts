@@ -2,7 +2,13 @@
 
 import { expect, test } from "vitest";
 import type { MutationRecord } from "./records";
-import { acceptedRecord, carriesOptimisticInput, createClientIdentity } from "./records";
+import {
+  acceptedRecord,
+  carriesOptimisticInput,
+  createClientIdentity,
+  retainsAcceptedCopy,
+  settlementRetiresRecovery,
+} from "./records";
 
 function fakeStorage(
   overrides: { getItem?: (key: string) => string | null; setItem?: (key: string, value: string) => void } = {},
@@ -82,6 +88,23 @@ test("carriesOptimisticInput reports an input array and nothing else", () => {
   expect(carriesOptimisticInput(settledSource({ optimisticDisplay: null }))).toBe(false);
   expect(carriesOptimisticInput(settledSource({ optimisticDisplay: undefined }))).toBe(false);
   expect(carriesOptimisticInput(settledSource({ optimisticDisplay: {} }))).toBe(false);
+});
+
+test("retainsAcceptedCopy keeps an input-bearing turn or a note only on a pending receipt", () => {
+  const turn = settledSource();
+  const note = settledSource({ method: "notes/human/set", optimisticDisplay: null });
+  const stop = settledSource({ method: "turn/interrupt", optimisticDisplay: { method: "turn/interrupt" } });
+  expect(retainsAcceptedCopy(turn, "pending")).toBe(true);
+  expect(retainsAcceptedCopy(note, "pending")).toBe(true);
+  expect(retainsAcceptedCopy(stop, "pending")).toBe(false);
+  expect(retainsAcceptedCopy(turn, "applied")).toBe(false);
+  expect(retainsAcceptedCopy(note, "applied")).toBe(false);
+});
+
+test("settlementRetiresRecovery spares a recovery row a composer has edited", () => {
+  expect(settlementRetiresRecovery({})).toBe(true);
+  expect(settlementRetiresRecovery({ compositionRevision: 0 })).toBe(true);
+  expect(settlementRetiresRecovery({ compositionRevision: 1 })).toBe(false);
 });
 
 test("two instances over two storages keep separate identities", () => {

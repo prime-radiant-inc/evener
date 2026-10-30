@@ -104,15 +104,7 @@ func NormalizeProviderHandleMode(mode string) (ProviderHandleMode, error) {
 }
 
 // Convert converts a evener transcript (header + entries) into an ATIF v1.7 trajectory.
-func Convert(header transcript.Header, entries []transcript.Entry) Trajectory {
-	return ConvertWithOptions(header, entries, Options{ProviderHandles: ProviderHandleModeRedacted})
-}
-
-func ConvertWithOptions(header transcript.Header, entries []transcript.Entry, opts Options) Trajectory {
-	return ConvertTranscriptWithOptions(header, entries, opts)
-}
-
-func ConvertTranscriptWithOptions(header transcript.Header, entries []transcript.Entry, opts Options) Trajectory {
+func Convert(header transcript.Header, entries []transcript.Entry, opts Options) Trajectory {
 	opts.ProviderHandles, _ = NormalizeProviderHandleMode(string(opts.ProviderHandles))
 	version := header.BuildVersion
 	if version == "" {
@@ -133,11 +125,22 @@ func ConvertTranscriptWithOptions(header transcript.Header, entries []transcript
 
 	var steps []Step
 	stepID := 1
-	var totalPrompt, totalCompletion, totalCached int
+	var totalPrompt, totalCompletion, totalCached, totalCacheMiss int
 
 	for i := 0; i < len(entries); i++ {
 		entry := entries[i]
 		turn := entry.Turn
+		if turn.OriginalOrdinal != nil {
+			// A compaction fold re-appends copies of the turns recorded during
+			// the fold after its markers. markLastPairOrdinalLocked in
+			// agent/session.go stamps each copy with the ordinal of the entry
+			// it copies, and publishFoldTransaction in
+			// agent/session_compaction.go writes the copies after the markers.
+			// The original is already in this trajectory, and a duplicated
+			// line is not a second step or a second spend —
+			// internal/apptranscript reads the same marker the same way.
+			continue
+		}
 		if turn.Kind.TranscriptOnly() {
 			// Written for the history projection, never conversation: a
 			// trajectory has no step for it.
@@ -182,6 +185,7 @@ func ConvertTranscriptWithOptions(header transcript.Header, entries []transcript
 				totalPrompt += step.Metrics.PromptTokens
 				totalCompletion += step.Metrics.CompletionTokens
 				totalCached += step.Metrics.CachedTokens
+				totalCacheMiss += turn.Usage.InputTokens
 			}
 
 			steps = append(steps, step)
@@ -323,9 +327,27 @@ func ConvertTranscriptWithOptions(header transcript.Header, entries []transcript
 		TotalCompletionTokens: totalCompletion,
 		TotalCachedTokens:     totalCached,
 		TotalSteps:            len(steps),
+		Extra: map[string]any{
+			// The cache-miss component of the prompt total: the definition
+			// total_prompt_tokens carried before it became inclusive.
+			"cache_miss_tokens": totalCacheMiss,
+			"cache_read_tokens": totalCached,
+			// The prompt-side wire volume, now the standard field's value;
+			// kept as the #4562 alias.
+			"prompt_wire_tokens": totalPrompt,
+		},
 	}
 
 	return traj
+}
+
+// optionalInt returns the pointed-to count, or zero when the provider did not
+// report it.
+func optionalInt(v *int) int {
+	if v == nil {
+		return 0
+	}
+	return *v
 }
 
 // convertAssistantTurn extracts text, tool calls, thinking, and metadata from an assistant turn.
@@ -445,12 +467,15 @@ func convertAssistantTurn(turn schema.Turn, stepID int, opts Options) Step {
 
 	// Metrics from usage.
 	if turn.Usage.InputTokens > 0 || turn.Usage.OutputTokens > 0 {
+		cacheRead := optionalInt(turn.Usage.CacheReadTokens)
 		m := &StepMetrics{
-			PromptTokens:     turn.Usage.InputTokens,
+			// ATIF's prompt_tokens is every prompt token for the step, cached
+			// ones included, and cached_tokens is its cache-read subset.
+			// final_metrics.total_prompt_tokens sums this field; the old
+			// cache-miss-only figure is final_metrics.extra.cache_miss_tokens.
+			PromptTokens:     turn.Usage.InputTokens + cacheRead + optionalInt(turn.Usage.CacheWriteTokens) + optionalInt(turn.Usage.CacheWrite1hTokens),
 			CompletionTokens: turn.Usage.OutputTokens,
-		}
-		if turn.Usage.CacheReadTokens != nil {
-			m.CachedTokens = *turn.Usage.CacheReadTokens
+			CachedTokens:     cacheRead,
 		}
 		extra := map[string]any{}
 		if turn.Usage.ReasoningTokens != nil {

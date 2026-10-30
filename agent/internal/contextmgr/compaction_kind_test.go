@@ -58,9 +58,9 @@ func TestSummarizeWithLLM_UsesTurnSummaryKind(t *testing.T) {
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent2")},
 	}
 
-	result, err := cm.summarizeWithLLM(context.Background(), history, 2)
+	result, err := cm.summarizeFold(context.Background(), history, 2, "", nil)
 	if err != nil {
-		t.Fatalf("summarizeWithLLM: %v", err)
+		t.Fatalf("summarizeFold: %v", err)
 	}
 
 	if len(result) < 1 {
@@ -113,8 +113,8 @@ func TestSummarizeWithLLM_RoutesToCheapProvider(t *testing.T) {
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent2")},
 	}
 
-	if _, err := cm.summarizeWithLLM(context.Background(), history, 2); err != nil {
-		t.Fatalf("summarizeWithLLM: %v", err)
+	if _, err := cm.summarizeFold(context.Background(), history, 2, "", nil); err != nil {
+		t.Fatalf("summarizeFold: %v", err)
 	}
 }
 
@@ -212,8 +212,8 @@ func resummarizePrompt(t *testing.T, previous string) string {
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent1")},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent2")},
 	}
-	if _, err := cm.summarizeWithLLM(context.Background(), history, 2); err != nil {
-		t.Fatalf("summarizeWithLLM: %v", err)
+	if _, err := cm.summarizeFold(context.Background(), history, 2, "", nil); err != nil {
+		t.Fatalf("summarizeFold: %v", err)
 	}
 	return prompt
 }

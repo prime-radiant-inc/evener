@@ -85,6 +85,13 @@ mutableCore.subscribe = (listener) =>
 
 export const connectionStore = core as unknown as ConnectionStore;
 
+/** Returns the store to its never-connected state. Tests call this in
+ * beforeEach/afterEach so a client from one test never leaks into the next;
+ * it is built on the wrapped setState above, like every other write. */
+export function resetConnectionStoreForTests(): void {
+  connectionStore.setState({ state: "idle", serverInfo: undefined, features: undefined, client: null });
+}
+
 // The client port every web store that rides this one wiring point shares: the
 // package's adapters all take a `Pick<AppwireClient, "request" | "onNotification">`
 // (keybindingsStore.ts, launchConfig.ts, state/extensions/*), and each store

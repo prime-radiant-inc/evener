@@ -5,12 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"sort"
 	"strings"
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/execsupport/componentlog"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -27,7 +27,7 @@ type StatusProber struct {
 // labelled like every other hub diagnostic (past.go, roster.go) — is a safe
 // destination, unlike the TUI's stderr (issue #783).
 func hubConnectionLogf(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "[hub] "+format+"\n", args...)
+	componentlog.New("hub").Info(fmt.Sprintf(format, args...))
 }
 
 // Probe implements Prober.
@@ -128,9 +128,9 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 	}
 	root := *listedRoot
 
-	idleStableDelegateChildren := idleStableDelegateChildIDs(root.Evener.Diagnostics)
+	delegateStates := subagentStatesFromDelegates(root.Evener.Diagnostics)
 	for _, id := range runningSubagentIDs {
-		if _, quiesced := idleStableDelegateChildren[id]; quiesced {
+		if delegateStates[id] == appwire.ThreadStatusIdle {
 			if runningSubagentStates == nil {
 				runningSubagentStates = make(map[string]string)
 			}
@@ -271,26 +271,37 @@ func statusThreadID(thread appwire.Thread) string {
 	return strings.TrimSpace(thread.ID)
 }
 
-// idleStableDelegateChildIDs identifies retained stable delegates with no
-// current run. Their child thread can retain an older active projection while
-// the runtime is kept for a later resume, so the durable delegate lifecycle is
-// authoritative for the parent-side navigation state.
-func idleStableDelegateChildIDs(diagnostics *appwire.EvenerDiagnostics) map[string]struct{} {
+// subagentStatesFromDelegates maps each retained delegate's child session to
+// the status its durable lifecycle implies: idle, active (awaiting when the
+// delegate needs attention), or "" for a lifecycle the navigation has no
+// status for. Closed delegates are absent. A stable delegate's child thread can
+// retain an older active projection while the runtime is kept for a later
+// resume, so the delegate lifecycle is authoritative for an idle child. It
+// returns nil when there are no diagnostics.
+func subagentStatesFromDelegates(diagnostics *appwire.EvenerDiagnostics) map[string]string {
 	if diagnostics == nil {
 		return nil
 	}
-	var ids map[string]struct{}
+	states := make(map[string]string)
 	for _, delegate := range diagnostics.Delegates {
 		childID := strings.TrimSpace(delegate.ChildSessionID)
-		if childID == "" || strings.TrimSpace(delegate.Lifecycle) != "idle" {
+		lifecycle := strings.TrimSpace(delegate.Lifecycle)
+		if childID == "" || lifecycle == "closed" {
 			continue
 		}
-		if ids == nil {
-			ids = make(map[string]struct{})
+		state := ""
+		switch lifecycle {
+		case "idle":
+			state = appwire.ThreadStatusIdle
+		case "running":
+			state = appwire.ThreadStatusActive
+			if delegate.NeedsAttention {
+				state = appwire.ThreadStatusAwaiting
+			}
 		}
-		ids[childID] = struct{}{}
+		states[childID] = state
 	}
-	return ids
+	return states
 }
 
 func splitNonAgentJobs(diagnostics *appwire.EvenerDiagnostics) ([]appwire.EvenerJobInfo, []appwire.EvenerJobInfo) {

@@ -153,7 +153,7 @@ func TestSession_OpenAIResponsesContinuationPhase12PublicLiveProof(t *testing.T)
 	}
 	closed = true
 
-	transcriptData, err := readTranscriptFull(transcriptPath, "")
+	transcriptData, err := readTranscriptFull(context.Background(), transcriptPath, "")
 	if err != nil {
 		t.Fatalf("read semantic transcript: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestSession_OpenAIResponsesContinuationPhase12PublicLiveProof(t *testing.T)
 		t.Fatalf("semantic transcript contains provider wire evidence: %s", transcriptBytes)
 	}
 
-	sessionAPIPath := filepath.Join(stateDir, sessionsSubdir, sess.id+".api.jsonl")
+	sessionAPIPath := filepath.Join(stateDir, schema.SessionsSubdir, sess.id+".api.jsonl")
 	sessionAttempts, sessionSettlements := phase12ReadCanonicalAPILog(t, sessionAPIPath)
 	deltaAttempt := phase12FindCanonicalAttempt(t, sessionAttempts, llm.HistoryModeResponsesDelta)
 	if deltaAttempt.AttemptGroupID != deltaAssistant.AttemptGroupID {
@@ -187,7 +187,7 @@ func TestSession_OpenAIResponsesContinuationPhase12PublicLiveProof(t *testing.T)
 		t.Fatalf("delta settlement = %+v, attempt = %+v", deltaSettlement, deltaAttempt)
 	}
 
-	shadowAPIPath := filepath.Join(stateDir, sessionsSubdir, shadowSessionID+".api.jsonl")
+	shadowAPIPath := filepath.Join(stateDir, schema.SessionsSubdir, shadowSessionID+".api.jsonl")
 	shadowAttempts, _ := phase12ReadCanonicalAPILog(t, shadowAPIPath)
 	shadowAttempt := phase12FindCanonicalAttempt(t, shadowAttempts, llm.HistoryModeFullHistory)
 

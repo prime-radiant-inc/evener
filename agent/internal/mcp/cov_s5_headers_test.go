@@ -3,6 +3,7 @@ package mcp
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -43,8 +44,8 @@ func TestCov_HTTPClientWithHeaders_InjectsHeaders(t *testing.T) {
 // A sse/http config carrying headers wires the header-injecting client onto the
 // transport (the len(cfg.Headers)>0 branch of transportForConfig).
 func TestCov_TransportForConfig_WithHeaders(t *testing.T) {
-	sse, err := transportForConfig(mcpconfig.ServerConfig{
-		Type: "sse", URL: "http://localhost:9", Headers: map[string]string{"Authorization": "x"}})
+	sse, err := transportForConfigWithEnv(mcpconfig.ServerConfig{
+		Type: "sse", URL: "http://localhost:9", Headers: map[string]string{"Authorization": "x"}}, os.Environ)
 	if err != nil {
 		t.Fatalf("sse with headers: %v", err)
 	}
@@ -53,8 +54,8 @@ func TestCov_TransportForConfig_WithHeaders(t *testing.T) {
 		t.Errorf("sse transport should carry a header-injecting HTTPClient, got %T", sse)
 	}
 
-	httpT, err := transportForConfig(mcpconfig.ServerConfig{
-		Type: "http", URL: "http://localhost:9", Headers: map[string]string{"Authorization": "x"}})
+	httpT, err := transportForConfigWithEnv(mcpconfig.ServerConfig{
+		Type: "http", URL: "http://localhost:9", Headers: map[string]string{"Authorization": "x"}}, os.Environ)
 	if err != nil {
 		t.Fatalf("http with headers: %v", err)
 	}

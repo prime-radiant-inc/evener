@@ -33,6 +33,9 @@ func TestInstallLockHonorsContext(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error acquiring a held lock with an expiring context")
 	}
+	if errors.Is(err, ErrInstallDirReadOnly) {
+		t.Fatalf("contention reported as a read-only install: %v", err)
+	}
 	if elapsed > 30*time.Second {
 		t.Fatalf("lock wait took %v with a 100ms context; acquisition ignores ctx", elapsed)
 	}
@@ -120,6 +123,77 @@ func TestInstallLockAcquiresWhenFree(t *testing.T) {
 		t.Fatalf("acquire free lock: %v", err)
 	}
 	release()
+}
+
+func TestAcquireInstallLockRefusesUnusableParents(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the directory permissions this test relies on")
+	}
+	blocking := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(blocking, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := acquireInstallLockCtx(t.Context(), filepath.Join(blocking, "share"))
+	if err == nil || errors.Is(err, ErrInstallDirReadOnly) {
+		t.Fatalf("a lock parent under a regular file = %v, want an ordinary error", err)
+	}
+
+	readOnly := t.TempDir()
+	if err := os.Chmod(readOnly, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(readOnly, 0o755) })
+	_, err = acquireInstallLockCtx(t.Context(), filepath.Join(readOnly, "share"))
+	if !errors.Is(err, ErrInstallDirReadOnly) {
+		t.Fatalf("a lock parent that cannot be written = %v, want the read-only sentinel", err)
+	}
+}
+
+// A caller that has left must not get an install: staging stops before the
+// first binary is staged, leaving nothing behind.
+func TestInstallStopsForACallerThatLeft(t *testing.T) {
+	t.Parallel()
+	extractDir, shareBin, binDir := installFixture(t, nil)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	_, err := installExtractedBinaries(ctx, extractDir, shareBin, binDir)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want the caller's cancellation", err)
+	}
+	staged, globErr := filepath.Glob(filepath.Join(shareBin, "*.stage"))
+	if globErr != nil {
+		t.Fatal(globErr)
+	}
+	if len(staged) != 0 {
+		t.Fatalf("a cancelled install left staged binaries behind: %v", staged)
+	}
+	if _, err := os.Lstat(filepath.Join(binDir, "evener")); !os.IsNotExist(err) {
+		t.Fatalf("a cancelled install touched the entrypoint: %v", err)
+	}
+}
+
+func TestInstallRefusesAnUnreadableExistingBinary(t *testing.T) {
+	t.Parallel()
+	extractDir, shareBin, binDir := installFixture(t, nil)
+	if err := os.Mkdir(filepath.Join(shareBin, "evener"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := installExtractedBinaries(t.Context(), extractDir, shareBin, binDir)
+	if err == nil {
+		t.Fatal("an existing managed binary that cannot be read was installed over")
+	}
+	staged, globErr := filepath.Glob(filepath.Join(shareBin, "*.stage"))
+	if globErr != nil {
+		t.Fatal(globErr)
+	}
+	if len(staged) != 0 {
+		t.Fatalf("the refused install left staged binaries behind: %v", staged)
+	}
+	if _, err := os.Lstat(filepath.Join(shareBin, "evener")); err != nil {
+		t.Fatalf("the directory standing in for the binary did not survive: %v", err)
+	}
 }
 
 // installFixture lays out an upgrade in progress: the new evener extracted,

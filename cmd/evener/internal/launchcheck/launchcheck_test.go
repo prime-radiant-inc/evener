@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -530,8 +531,9 @@ func TestLaunchCheckModelsServesCommandCredentialedRowsWithoutMinting(t *testing
 	client := launchCheckClient(t, map[string]registry.Provider{
 		"gw": {
 			Base: "openai-compatible", APIKey: "$(gw-mint)",
-			Transport: registry.Transport{BaseURL: "http://127.0.0.1:9/v1"},
-			Models:    map[string]registry.Model{"house-model": {}},
+			Transport:    registry.Transport{BaseURL: "http://127.0.0.1:9/v1"},
+			Models:       map[string]registry.Model{"house-model": {}},
+			DefaultModel: "house-model",
 		},
 	})
 	oldLoad := launchCheckLoadClient
@@ -546,6 +548,9 @@ func TestLaunchCheckModelsServesCommandCredentialedRowsWithoutMinting(t *testing
 	for _, m := range models {
 		if m.Provider == "gw" && m.Model == "house-model" {
 			found = true
+			if m.InstanceDefault {
+				t.Fatal("the mint-free command-credentialed listing has no usable live listing; its rows must stay unmarked")
+			}
 		}
 	}
 	if !found {
@@ -619,5 +624,411 @@ func TestRunLaunchCheckRejectsDisabledCommandCredentialedModel(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "disabled") {
 		t.Fatalf("error=%v, want it to name the disablement", err)
+	}
+}
+
+// markedInstanceDefaults maps "provider/model" to true for every row carrying
+// the instance-default marker.
+func markedInstanceDefaults(rows []launchCheckModel) map[string]bool {
+	marked := map[string]bool{}
+	for _, row := range rows {
+		if row.InstanceDefault {
+			marked[row.Provider+"/"+row.Model] = true
+		}
+	}
+	return marked
+}
+
+// launchCheckModelServer serves the same model ids at every /models endpoint
+// and fails any other path.
+func launchCheckModelServer(t *testing.T, ids ...string) *httptest.Server {
+	t.Helper()
+	data := make([]map[string]string, 0, len(ids))
+	for _, id := range ids {
+		data = append(data, map[string]string{"id": id})
+	}
+	body, err := json.Marshal(map[string]any{"data": data})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/models") {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// The picker learns each instance's configured default from the instance's own
+// usable listing, never from the globally selected instance: here both
+// instances share the ids first and chosen, team defaults to chosen, and the
+// global default is other, whose own default is first.
+func TestLaunchCheckModelsMarksUsableInstanceDefault(t *testing.T) {
+	srv := launchCheckModelServer(t, "first", "chosen")
+	launchCheckRegistry(t, `
+default = "other"
+[providers.team]
+base = "openai-compatible"
+base_url = "`+srv.URL+`/team/v1"
+api_key = "test-key"
+default_model = "chosen"
+[providers.other]
+base = "openai-compatible"
+base_url = "`+srv.URL+`/other/v1"
+api_key = "test-key"
+default_model = "first"
+`)
+
+	var stdout, stderr bytes.Buffer
+	if err := RunLaunchCheck([]string{"--protocol", appwire.ProtocolVersion, "--models", "--json"}, &stdout, &stderr); err != nil {
+		t.Fatalf("runLaunchCheck: %v stderr=%s", err, stderr.String())
+	}
+	var out struct {
+		Models []launchCheckModel `json:"models"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		t.Fatalf("decode stdout %q: %v", stdout.String(), err)
+	}
+	rows := out.Models
+
+	marked := markedInstanceDefaults(rows)
+	want := map[string]bool{"team/chosen": true, "other/first": true}
+	if !reflect.DeepEqual(marked, want) {
+		t.Fatalf("instance defaults = %v, want %v", marked, want)
+	}
+}
+
+// The hub decodes this contract straight into appwire.ModelDescriptor
+// (listEvenerLaunchModelContract in cmd/evener-hub/spawn.go), so the marker
+// must survive that exact decode: a producer-side test against
+// launchCheckModel would still pass if the wire tag stopped matching the
+// camelCase AppWire field.
+func TestLaunchCheckInstanceDefaultSurvivesAppWireDecode(t *testing.T) {
+	srv := launchCheckModelServer(t, "first", "chosen")
+	launchCheckRegistry(t, `
+[providers.team]
+base = "openai-compatible"
+base_url = "`+srv.URL+`/team/v1"
+api_key = "test-key"
+default_model = "chosen"
+`)
+
+	var stdout, stderr bytes.Buffer
+	if err := RunLaunchCheck([]string{"--protocol", appwire.ProtocolVersion, "--models", "--json"}, &stdout, &stderr); err != nil {
+		t.Fatalf("runLaunchCheck: %v stderr=%s", err, stderr.String())
+	}
+	var out struct {
+		Models []appwire.ModelDescriptor `json:"models"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		t.Fatalf("decode stdout %q: %v", stdout.String(), err)
+	}
+	marked := map[string]bool{}
+	for _, model := range out.Models {
+		if model.InstanceDefault {
+			marked[model.Provider+"/"+model.Model] = true
+		}
+	}
+	want := map[string]bool{"team/chosen": true}
+	if !reflect.DeepEqual(marked, want) {
+		t.Fatalf("appwire instance defaults = %v, want %v (models: %+v)", marked, want, out.Models)
+	}
+}
+
+// A default configured on the instance itself and one inherited from the
+// provider catalog are both the instance's usable configured default.
+func TestLaunchCheckModelsMarksInheritedAndOverriddenDefaults(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/models") {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/inherit/"):
+			_, _ = w.Write([]byte(`{"data":[{"id":"gpt-5.6"}]}`))
+		case strings.HasPrefix(r.URL.Path, "/override/"):
+			_, _ = w.Write([]byte(`{"data":[{"id":"chosen"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	launchCheckRegistry(t, `
+[providers.inherit]
+base = "openai"
+base_url = "`+srv.URL+`/inherit/v1"
+api_key = "test-key"
+[providers.override]
+base = "openai"
+base_url = "`+srv.URL+`/override/v1"
+api_key = "test-key"
+default_model = "chosen"
+`)
+
+	models, _, err := launchCheckModels()
+	if err != nil {
+		t.Fatal(err)
+	}
+	marked := markedInstanceDefaults(models)
+	want := map[string]bool{"inherit/gpt-5.6": true, "override/chosen": true}
+	if !reflect.DeepEqual(marked, want) {
+		t.Fatalf("instance defaults = %v, want %v (models: %+v)", marked, want, models)
+	}
+}
+
+// An alias default and a namespaced default are matched by the identity the
+// listing emits, not by stripping or rewriting the configured id.
+func TestLaunchCheckModelsMarksAliasAndNamespacedDefaults(t *testing.T) {
+	srv := launchCheckModelServer(t, "first", "chosen", "vendor/chosen")
+	launchCheckRegistry(t, `
+[providers.aliaser]
+base = "openai-compatible"
+base_url = "`+srv.URL+`/aliaser/v1"
+api_key = "test-key"
+default_model = "house-alias"
+[providers.aliaser.models.house-alias]
+alias_of = "first"
+[providers.aliaser.models.first]
+[providers.namespaced]
+base = "openai-compatible"
+base_url = "`+srv.URL+`/namespaced/v1"
+api_key = "test-key"
+default_model = "vendor/chosen"
+`)
+
+	models, _, err := launchCheckModels()
+	if err != nil {
+		t.Fatal(err)
+	}
+	marked := markedInstanceDefaults(models)
+	want := map[string]bool{"aliaser/house-alias": true, "namespaced/vendor/chosen": true}
+	if !reflect.DeepEqual(marked, want) {
+		t.Fatalf("instance defaults = %v, want %v (models: %+v)", marked, want, models)
+	}
+	if marked["aliaser/first"] {
+		t.Fatalf("the alias target was marked instead of the configured default: %v", marked)
+	}
+}
+
+// A default that is absent from the listing, configured as unavailable, or
+// disabled authorizes no automatic selection.
+func TestLaunchCheckModelsLeavesAbsentAndDisabledDefaultsUnmarked(t *testing.T) {
+	srv := launchCheckModelServer(t, "first", "chosen")
+	launchCheckRegistry(t, `
+[providers.absent]
+base = "openai-compatible"
+base_url = "`+srv.URL+`/absent/v1"
+api_key = "test-key"
+[providers.unavailable]
+base = "openai-compatible"
+base_url = "`+srv.URL+`/unavailable/v1"
+api_key = "test-key"
+default_model = "gone"
+[providers.disabled]
+base = "openai-compatible"
+base_url = "`+srv.URL+`/disabled/v1"
+api_key = "test-key"
+default_model = "chosen"
+[providers.disabled.models.chosen]
+disabled = true
+`)
+
+	models, _, err := launchCheckModels()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if marked := markedInstanceDefaults(models); len(marked) != 0 {
+		t.Fatalf("instance defaults = %v, want none (models: %+v)", marked, models)
+	}
+	for _, m := range models {
+		if m.Provider == "disabled" && m.Model == "chosen" {
+			t.Fatalf("a disabled default was listed: %+v", models)
+		}
+	}
+}
+
+// A static fallback is display-only: it keeps the row visible but never
+// authorizes automatic selection.
+func TestLaunchCheckModelsLeavesStaticFallbackDefaultsUnmarked(t *testing.T) {
+	const models = `
+[providers.emptylive.models.first]
+[providers.emptylive.models.chosen]
+`
+	t.Run("empty live listing", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[]}`))
+		}))
+		t.Cleanup(srv.Close)
+		launchCheckRegistry(t, `
+[providers.emptylive]
+base = "openai-compatible"
+base_url = "`+srv.URL+`/v1"
+api_key = "test-key"
+default_model = "chosen"
+`+models)
+
+		rows, _, err := launchCheckModels()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if marked := markedInstanceDefaults(rows); len(marked) != 0 {
+			t.Fatalf("instance defaults = %v, want none from an unusable live listing (rows: %+v)", marked, rows)
+		}
+		listed := map[string]bool{}
+		for _, row := range rows {
+			if row.Provider == "emptylive" {
+				listed[row.Model] = true
+			}
+		}
+		if !listed["chosen"] || !listed["first"] {
+			t.Fatalf("static fallback rows were not preserved for display: %+v", rows)
+		}
+	})
+
+	t.Run("unsupported listing", func(t *testing.T) {
+		launchCheckRegistry(t, `
+[providers.emptylive]
+base = "openai-compatible"
+base_url = "http://127.0.0.1:9/v1"
+models_endpoint = "-"
+api_key = "test-key"
+default_model = "chosen"
+`+models)
+
+		rows, _, err := launchCheckModels()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if marked := markedInstanceDefaults(rows); len(marked) != 0 {
+			t.Fatalf("instance defaults = %v, want none from an unsupported listing (rows: %+v)", marked, rows)
+		}
+		listed := map[string]bool{}
+		for _, row := range rows {
+			if row.Provider == "emptylive" {
+				listed[row.Model] = true
+			}
+		}
+		if !listed["chosen"] || !listed["first"] {
+			t.Fatalf("static fallback rows were not preserved for display: %+v", rows)
+		}
+	})
+
+	t.Run("failed listing", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, `{"error":"unavailable"}`, http.StatusServiceUnavailable)
+		}))
+		t.Cleanup(srv.Close)
+		launchCheckRegistry(t, `
+[providers.failed]
+base = "openai-compatible"
+base_url = "`+srv.URL+`/v1"
+api_key = "test-key"
+default_model = "chosen"
+`)
+
+		rows, diagnostics, err := launchCheckModels()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if marked := markedInstanceDefaults(rows); len(marked) != 0 {
+			t.Fatalf("instance defaults = %v, want none from a failed listing (rows: %+v)", marked, rows)
+		}
+		found := false
+		for _, diag := range diagnostics {
+			if diag.Provider == "failed" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("diagnostics = %+v, want the failed listing", diagnostics)
+		}
+	})
+}
+
+// A default that names a genuinely hidden chat model is excluded by the
+// registry's hidden policy (distinct from the non-chat identity filter): the
+// hidden row is absent while its visible companion stays listed, and neither
+// carries the marker.
+func TestLaunchCheckModelsLeavesHiddenDefaultUnmarked(t *testing.T) {
+	const (
+		hiddenDefault = "amazon.nova-pro-v1:0"
+		companion     = "anthropic.claude-opus-5"
+	)
+	srv := launchCheckModelServer(t, hiddenDefault, companion)
+	launchCheckRegistry(t, `
+[providers.bed]
+base = "amazon-bedrock"
+base_url = "`+srv.URL+`/v1"
+models_endpoint = "/models"
+api_key = "test-key"
+default_model = "`+hiddenDefault+`"
+`)
+
+	// The fixture's precondition: a chat model the resolved catalog marks
+	// Hidden, beside a visible chat companion.
+	client, err := launchCheckLoadClient("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hidden, err := client.Registry().ResolveInstanceModelFacts("bed", hiddenDefault)
+	if err != nil {
+		t.Fatalf("resolve hidden fixture: %v", err)
+	}
+	if !hidden.Model.Hidden || !registry.IsChatModelID(hiddenDefault) {
+		t.Fatalf("fixture precondition: %q must be a hidden chat model (hidden=%v)", hiddenDefault, hidden.Model.Hidden)
+	}
+	visible, err := client.Registry().ResolveInstanceModelFacts("bed", companion)
+	if err != nil {
+		t.Fatalf("resolve companion fixture: %v", err)
+	}
+	if visible.Model.Hidden || !registry.IsChatModelID(companion) {
+		t.Fatalf("fixture precondition: %q must be a visible chat model (hidden=%v)", companion, visible.Model.Hidden)
+	}
+
+	rows, _, err := launchCheckModels()
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := map[string]bool{}
+	for _, row := range rows {
+		if row.Provider == "bed" {
+			listed[row.Model] = true
+		}
+	}
+	if !listed[companion] {
+		t.Fatalf("visible companion was not listed: %+v", rows)
+	}
+	if listed[hiddenDefault] {
+		t.Fatalf("hidden default was listed: %+v", rows)
+	}
+	if marked := markedInstanceDefaults(rows); len(marked) != 0 {
+		t.Fatalf("instance defaults = %v, want none when the default is hidden (rows: %+v)", marked, rows)
+	}
+}
+
+// A default that names a non-chat row is excluded by the identity filter, not
+// by the hidden policy: it stays absent and unmarked.
+func TestLaunchCheckModelsLeavesNonChatDefaultUnmarked(t *testing.T) {
+	srv := launchCheckModelServer(t, "first", "text-embedding-3-small")
+	launchCheckRegistry(t, `
+[providers.embed]
+base = "openai-compatible"
+base_url = "`+srv.URL+`/v1"
+api_key = "test-key"
+default_model = "text-embedding-3-small"
+`)
+
+	rows, _, err := launchCheckModels()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if marked := markedInstanceDefaults(rows); len(marked) != 0 {
+		t.Fatalf("instance defaults = %v, want none for a non-chat default (rows: %+v)", marked, rows)
 	}
 }

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -23,6 +24,16 @@ const (
 // bookkeeping. A session without it is told to say when the step is complete.
 func formatCurrentTaskSteering(task taskpkg.Task, canUseTaskList bool) string {
 	b := systemReminderBlockBuilder()
+	writeCurrentTaskBlock(b, task)
+	if !canUseTaskList {
+		fmt.Fprintf(b, "Work task %d now, and say so when this step is complete.\n", task.ID)
+	}
+	return finishSystemReminderBlock(b)
+}
+
+// writeCurrentTaskBlock renders one task as the CURRENT-TASK element that both
+// the standalone reminder and the combined startup plan carry.
+func writeCurrentTaskBlock(b *strings.Builder, task taskpkg.Task) {
 	fmt.Fprintf(b, "<CURRENT-TASK id=\"%d\">\n", task.ID)
 	fmt.Fprintf(b, "<TITLE>%s</TITLE>\n", task.Description)
 	if task.Prompt != "" {
@@ -31,17 +42,41 @@ func formatCurrentTaskSteering(task taskpkg.Task, canUseTaskList bool) string {
 		b.WriteString("\n</INSTRUCTIONS>\n")
 	}
 	b.WriteString("</CURRENT-TASK>\n")
-	if !canUseTaskList {
-		fmt.Fprintf(b, "Work task %d now, and say so when this step is complete.\n", task.ID)
-	}
-	return finishSystemReminderBlock(b)
 }
 
 // taskReminderFull generates the full task list for post-compaction injection,
 // wrapped as a SYSTEM-REMINDER so the model treats it as steering rather than
 // conversational content.
 func taskReminderFull(store *taskpkg.TaskStore) string {
-	tasks := store.View()
+	return renderTaskListReminder(store.View(), false)
+}
+
+// taskReminderFullWithPrompts is the plan a delegate receives at spawn: every
+// step's description, status, effort, and prompt. A delegate works a multi-step
+// job, and a later step's instructions often decide what the first step must
+// build, so a step that sees only its own prompt cannot plan for the rest.
+//
+// Why the plan is announced: on a fixture whose later step needed a function
+// only its own prompt named, delegates given the whole plan finished 30 of 30
+// runs and delegates given only their first step finished 22 of 30 (Fisher
+// exact, two-sided p=0.005), using 12% fewer tokens. One model, one fixture —
+// enough to choose this default, not a general claim about task planning.
+func taskReminderFullWithPrompts(tasks []taskpkg.Task) string {
+	return renderTaskListReminder(tasks, true)
+}
+
+// renderTaskListReminder renders tasks as steering. withPrompts adds
+// each task's prompt under its line, which the spawn-time plan needs and the
+// post-compaction reminder does not.
+func renderTaskListReminder(tasks []taskpkg.Task, withPrompts bool) string {
+	return renderTaskListReminderSkippingPrompt(tasks, withPrompts, 0)
+}
+
+// renderTaskListReminderSkippingPrompt is renderTaskListReminder with one
+// task's prompt left out. The startup plan uses it for the task the
+// CURRENT-TASK element in the same message already spells out, so the delegate
+// is not charged for that prompt twice.
+func renderTaskListReminderSkippingPrompt(tasks []taskpkg.Task, withPrompts bool, skipPromptID int) string {
 	if len(tasks) == 0 {
 		return ""
 	}
@@ -57,6 +92,13 @@ func taskReminderFull(store *taskpkg.TaskStore) string {
 			fmt.Fprintf(b, " (depends_on: %v)", t.DependsOn)
 		}
 		b.WriteString("\n")
+		if withPrompts && t.ID != skipPromptID {
+			if prompt := strings.TrimSpace(t.Prompt); prompt != "" {
+				for line := range strings.SplitSeq(prompt, "\n") {
+					fmt.Fprintf(b, "    prompt: %s\n", line)
+				}
+			}
+		}
 		for _, n := range t.Notes {
 			fmt.Fprintf(b, "    note: %s\n", n)
 		}
@@ -73,6 +115,87 @@ func taskReminderForInactivity(store *taskpkg.TaskStore, canUseTaskList bool) st
 		return ""
 	}
 	return formatCurrentTaskSteering(current, canUseTaskList)
+}
+
+// steerDelegatePlan announces a delegate's seeded plan, and the step it should
+// work first. A delegate works the list in order, and a later step's prompt
+// often decides what the first one must build; announcing only the first step
+// makes the rest discoverable solely by asking for them.
+//
+// The step to work first is the first in-progress task, which is not always the
+// first task: a role's workflow can put its own steps before the parent_tasks
+// slot. One message carries both, so a crash cannot leave the plan announced
+// with no step to work.
+func steerDelegatePlan(sess *Session, store *taskpkg.TaskStore) error {
+	// One snapshot serves the plan and the current-step lookup; each store read
+	// clones every task.
+	tasks := store.View()
+	if len(tasks) == 0 {
+		return nil
+	}
+	var current *taskpkg.Task
+	for i := range tasks {
+		if tasks[i].Status == taskpkg.TaskInProgress {
+			current = &tasks[i]
+			break
+		}
+	}
+	skipPromptID := 0
+	if current != nil {
+		skipPromptID = current.ID
+	}
+	plan := renderTaskListReminderSkippingPrompt(tasks, true, skipPromptID)
+	if current != nil {
+		plan = withCurrentStep(plan, *current)
+	}
+	return sess.SteerKind(plan, events.SteeringKindTaskList)
+}
+
+// withCurrentStep adds the step to work now to a rendered plan, inside the same
+// reminder block. A delegate that can use task_list gets no closing
+// instruction: agents close their tasks unprompted.
+func withCurrentStep(plan string, current taskpkg.Task) string {
+	closing := "</SYSTEM-REMINDER>"
+	body := strings.TrimSuffix(plan, closing)
+	var b strings.Builder
+	b.WriteString(body)
+	b.WriteString("\n")
+	writeCurrentTaskBlock(&b, current)
+	b.WriteString(closing)
+	return b.String()
+}
+
+// hasTaskListAnnouncement reports whether this session has already been given a
+// task-list announcement, from either durable record: a delivery recorded in
+// its transcript, or steering still waiting in its queue. A crash can land
+// between the task store write and the steering write, so a non-empty store
+// alone does not prove the delegate was ever told its plan.
+func (s *Session) hasTaskListAnnouncement() bool {
+	s.mu.Lock()
+	for _, message := range s.steeringQueue {
+		if message.Kind == events.SteeringKindTaskList {
+			s.mu.Unlock()
+			return true
+		}
+	}
+	s.mu.Unlock()
+
+	if s.stateDir == "" || s.id == "" {
+		return false
+	}
+	data, err := readTranscriptFull(context.Background(), transcriptPath(s.stateDir, s.id), s.stateDir)
+	if err != nil {
+		// An unreadable transcript cannot prove delivery. Announcing again is
+		// the safer error: a repeated plan wastes context, a lost one costs the
+		// delegate its plan.
+		return false
+	}
+	for _, entry := range data.Entries {
+		if entry.Turn.SteeringKind == events.SteeringKindTaskList {
+			return true
+		}
+	}
+	return false
 }
 
 // taskReminderAllDone signals that the agent has completed all tasks on its

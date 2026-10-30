@@ -1,14 +1,13 @@
+import { appliedReceipt } from "../mutationReceiptTestUtils";
+import { connectFakeClient } from "../testing/connectionTestUtils";
+import { ALL_CAPABILITIES as CAPABILITIES, type TestThreadOverrides, testThread } from "../threadTestUtils";
 import { acquireSessionActivity } from "./sessionActivity";
 import { activitySummary } from "./sessionActivityTestUtils";
 import "fake-indexeddb/auto";
 import type {
   AnyNotification,
-  ConnectionState,
   MethodName,
   MethodTypes,
-  QueueState,
-  Thread,
-  ThreadCapabilities,
   ThreadReadResponse,
   ThreadTurnsListResponse,
   TurnQueueResponse,
@@ -30,8 +29,9 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { resetPendingTurnsStoreForTests } from "../panes/session/composer/queue/pendingTurnsStore";
 import { resetSubagentModuleStoreForTests } from "../panes/session/transcript/tools/subagentModuleStore";
 import { resetWorkspaceStoreForTests } from "../shell/workspace";
-import { connectionStore } from "./connection";
+import { connectionStore, resetConnectionStoreForTests } from "./connection";
 import "./humanNoteDrafts";
+import { setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { SessionEntryCache } from "./sessionEntryCache";
 import { holdNextWriteTransaction } from "./testing/stalledIndexedDB";
@@ -39,7 +39,6 @@ import {
   installHydrationRetrySchedulerForTests,
   resetThreadsStoreForTests,
   setMutationStorageForTests,
-  setProductionEntryCacheForTests,
   threadsStore,
 } from "./threads";
 
@@ -90,53 +89,6 @@ function nextHandledRequest<M extends MethodName>(
 // this task's report - which fires each owner-wait arm and requires the
 // matching test to fail - is what would catch it.
 const settleCallerContinuations = nextMacrotask;
-
-const CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
-
-type TestThreadOverrides = Omit<Partial<Thread>, "evener"> & {
-  evener?: Omit<Thread["evener"], "queue"> & { queue: Partial<QueueState> };
-};
-
-function testThread(ref: string, overrides: TestThreadOverrides = {}): Thread {
-  const { evener, ...threadOverrides } = overrides;
-  const threadID = threadOverrides.id ?? `thr_${ref}`;
-  return {
-    id: threadID,
-    sessionId: `sess_${ref}`,
-    preview: "test",
-    ephemeral: false,
-    modelProvider: "anthropic/claude-sonnet-4-5",
-    createdAt: 1000,
-    updatedAt: 1000,
-    status: { type: "idle" },
-    cwd: "/tmp/project",
-    cliVersion: "1.0.0",
-    source: "evener",
-    evener: {
-      ref,
-      instanceId: threadID,
-      mutationStateAuthoritative: true,
-      capabilities: CAPABILITIES,
-      ...evener,
-      queue: { revision: 0, ...evener?.queue },
-    },
-    ...threadOverrides,
-  };
-}
 
 function readResponse(ref: string, overrides: TestThreadOverrides = {}): ThreadReadResponse {
   return { thread: testThread(ref, overrides) };
@@ -200,15 +152,6 @@ function _sameEpochReconnectFixture() {
   return { authoritativeSnapshot, completion, turnCompleted };
 }
 
-// connectFakeClient wires a fresh FakeClient through useConnectionStore's
-// locked connect(client) entry point — the same path threads.ts's
-// requireClient() rides to reach the client (see connection.ts).
-function connectFakeClient(state: ConnectionState = "ready"): FakeClient {
-  const fake = new FakeClient(state);
-  connectionStore.getState().connect(fake);
-  return fake;
-}
-
 function connectMutationClient(): FakeClient {
   const fake = new FakeClient("ready");
   fake.on("thread/read", (params) => {
@@ -243,12 +186,7 @@ async function flushIndexedDBUntil(done: () => boolean, maxTurns = 30): Promise<
 }
 
 function mutationReceipt(clientMutationId: string, disposition = "applied") {
-  return {
-    clientMutationId,
-    disposition,
-    threadId: "thr_ref_a",
-    projectionState: "reflected",
-  };
+  return appliedReceipt(clientMutationId, "thr_ref_a", { disposition });
 }
 
 // The hydration retry scheduler is injected so every retry in this suite is
@@ -277,7 +215,7 @@ function runScheduledHydrationRetry(index = 0): void {
 }
 
 beforeEach(async () => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   // The store-wide resume-only predicate reads the pending-turns projection
   // (threads.ts's installResumeOnlyProjection), so clear any blockedUnknown
@@ -2481,7 +2419,7 @@ test.each(["output", "metadata"] as const)("fences obsolete job %s after readine
     expect(peer.requests(method)).toEqual([]);
   } finally {
     client.close();
-    connectionStore.setState({ client: null, state: "idle" });
+    resetConnectionStoreForTests();
   }
 });
 
@@ -2493,7 +2431,7 @@ test.each(["output", "metadata"] as const)("fences obsolete job %s after readine
 // on the resumed identity cancels the stale post-resume publish". forceStop
 // closes the window with stoppingRefs; a graceful shutdown must NOT, because
 // that fence also refuses a Send the user makes during the window
-// (isLocalRecoveryFenced and isSendResumesLocal read it). This dispatch-only
+// (isRecoveryFenced and isSendResumes read it). This dispatch-only
 // gate keeps the cancelled row off the wire while leaving every Send face
 // untouched.
 //

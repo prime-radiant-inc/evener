@@ -101,6 +101,169 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("browser conversation presentation", () => {
+  const keys = {
+    desktop: "evener.prefs.conversationPresentation.desktop",
+    mobile: "evener.prefs.conversationPresentation.mobile",
+  };
+
+  test("defaults both layouts to Standard and first Comic choice creates no content override or RPC", async () => {
+    const client = new FakeClient("ready");
+    client.on("evener/settings/transcriptDisplay/get", () => ({
+      desktop: { revision: 1, config: preset("tools") },
+      mobile: { revision: 1, config: preset("intent") },
+    }));
+    connectionStore.getState().connect(client);
+    connectionStore.setState({ features: { ...(await client.connect()).features, transcriptDisplaySettings: true } });
+    await transcriptDisplayStore.getState().refreshHubDefaults();
+    const calls = [...client.calls];
+    const before = transcriptDisplayStore.getState();
+    expect(before.presentation).toEqual({ desktop: "standard", mobile: "standard" });
+    before.setPresentation("desktop", "comic");
+    const after = transcriptDisplayStore.getState();
+    expect(after.presentation).toEqual({ desktop: "comic", mobile: "standard" });
+    expect(after.local).toBe(before.local);
+    expect(after.local).toEqual({});
+    expect(after.hub).toBe(before.hub);
+    expect(after.drafts).toBe(before.drafts);
+    expect(after.draft).toBe(before.draft);
+    expect(storage.getItem(desktopKey)).toBeNull();
+    expect(storage.getItem(mobileKey)).toBeNull();
+    expect(legacyKeys.map((key) => storage.getItem(key))).toEqual(legacyKeys.map(() => null));
+    expect(client.calls).toEqual(calls);
+  });
+
+  test("preserves custom content, advanced settings, and persisted bytes through both modes", () => {
+    const custom = makeTranscriptDisplayConfig(
+      { kind: "custom", toolIntent: false, toolCalls: true, reasoning: true, expandByDefault: true },
+      { roundTimings: true, tokenCounts: true, systemEvents: true, hookExits: "all" },
+    );
+    transcriptDisplayStore.getState().setLocal("desktop", custom);
+    const before = transcriptDisplayStore.getState();
+    const bytes = [desktopKey, mobileKey, ...legacyKeys].map((key) => storage.getItem(key));
+    before.setPresentation("desktop", "comic");
+    transcriptDisplayStore.getState().setPresentation("desktop", "standard");
+    expect(transcriptDisplayStore.getState().local).toBe(before.local);
+    expect(transcriptDisplayStore.getState().effective("desktop")).toEqual(custom);
+    expect([desktopKey, mobileKey, ...legacyKeys].map((key) => storage.getItem(key))).toEqual(bytes);
+  });
+
+  test("persists each viewport independently across reset and initialization", () => {
+    transcriptDisplayStore.getState().setPresentation("mobile", "comic");
+    expect(storage.getItem(keys.mobile)).toBe("comic");
+    expect(storage.getItem(keys.desktop)).toBeNull();
+    resetTranscriptDisplayStoreForTests();
+    initTranscriptDisplay();
+    expect(transcriptDisplayStore.getState().presentation).toEqual({ desktop: "standard", mobile: "comic" });
+    transcriptDisplayStore.getState().setViewport("mobile");
+    expect(transcriptDisplayStore.getState().presentation[transcriptDisplayStore.getState().viewport]).toBe("comic");
+    transcriptDisplayStore.getState().setPresentation("desktop", "comic");
+    transcriptDisplayStore.getState().setPresentation("mobile", "standard");
+    resetTranscriptDisplayStoreForTests();
+    initTranscriptDisplay();
+    expect(transcriptDisplayStore.getState().presentation).toEqual({ desktop: "comic", mobile: "standard" });
+  });
+
+  test.each([null, "", "Comic", '"comic"', "full", '{"presentation":"comic"}'])(
+    "defaults invalid or missing persisted enum %j to Standard",
+    (raw) => {
+      if (raw !== null) storage.setItem(keys.desktop, raw);
+      storage.setItem(keys.mobile, "comic");
+      resetTranscriptDisplayStoreForTests();
+      initTranscriptDisplay();
+      expect(transcriptDisplayStore.getState().presentation).toEqual({ desktop: "standard", mobile: "comic" });
+    },
+  );
+
+  test.each(["throw", "drop"])("keeps mode usable when storage writes %s and clears warning on recovery", (failure) => {
+    const write = vi.spyOn(storage, "setItem").mockImplementation(() => {
+      if (failure === "throw") throw new Error("storage denied");
+    });
+    transcriptDisplayStore.getState().setPresentation("desktop", "comic");
+    expect(transcriptDisplayStore.getState().presentation.desktop).toBe("comic");
+    expect(transcriptDisplayStore.getState().storageWarning).not.toBeNull();
+    expect(transcriptDisplayStore.getState().local).toEqual({});
+    write.mockRestore();
+    transcriptDisplayStore.getState().setPresentation("desktop", "standard");
+    expect(transcriptDisplayStore.getState().storageWarning).toBeNull();
+    expect(storage.getItem(keys.desktop)).toBe("standard");
+  });
+
+  test("hub changes and clearing the standard override leave Comic selected", () => {
+    transcriptDisplayStore.getState().setPresentation("desktop", "comic");
+    transcriptDisplayStore.getState().setLocal("desktop", preset("full"));
+    transcriptDisplayStore.getState().applyHubChange({ layout: "desktop", revision: 1, config: preset("chat") });
+    transcriptDisplayStore.getState().clearLocal("desktop");
+    expect(transcriptDisplayStore.getState().effective("desktop")).toEqual(preset("chat"));
+    expect(transcriptDisplayStore.getState().presentation.desktop).toBe("comic");
+    expect(storage.getItem(keys.desktop)).toBe("comic");
+  });
+
+  test("validates presentation channel messages separately and receives without writes or echo", () => {
+    vi.stubGlobal("BroadcastChannel", FakeBroadcastChannel);
+    resetTranscriptDisplayStoreForTests();
+    initTranscriptDisplay();
+    const active = FakeBroadcastChannel.instances.at(-1);
+    if (!active) throw new Error("channel was not attached");
+    transcriptDisplayStore.getState().setPresentation("desktop", "comic");
+    expect(active.posted).toHaveLength(1);
+    const own = active.posted[0] as Record<string, unknown>;
+    expect(own).toEqual({
+      version: 1,
+      sourceId: expect.any(String),
+      kind: "presentation",
+      layout: "desktop",
+      presentation: "comic",
+    });
+    const remote = { ...own, sourceId: "other-tab", presentation: "standard" };
+    const write = vi.spyOn(storage, "setItem");
+    for (const invalid of [
+      { ...remote, sourceId: own.sourceId },
+      { ...remote, sourceId: 2 },
+      { ...remote, sourceId: "" },
+      { ...remote, version: 2 },
+      { ...remote, kind: "unknown" },
+      { ...remote, layout: "tablet" },
+      { ...remote, presentation: "full" },
+      { ...remote, extra: true },
+    ])
+      active.emit(invalid);
+    expect(transcriptDisplayStore.getState().presentation.desktop).toBe("comic");
+    active.emit(remote);
+    active.emit(remote);
+    expect(transcriptDisplayStore.getState().presentation.desktop).toBe("standard");
+    window.dispatchEvent(new StorageEvent("storage", { key: keys.mobile, newValue: "comic" }));
+    expect(transcriptDisplayStore.getState().presentation.mobile).toBe("comic");
+    expect(transcriptDisplayStore.getState().local).toEqual({});
+    expect(active.posted).toHaveLength(1);
+    expect(write).not.toHaveBeenCalled();
+    resetTranscriptDisplayStoreForTests();
+    active.emit({ ...remote, presentation: "comic" });
+    expect(transcriptDisplayStore.getState().presentation.desktop).toBe("standard");
+  });
+
+  test("uses storage events without a channel, defaults removed or invalid values, and cleans up listeners", () => {
+    vi.stubGlobal("BroadcastChannel", undefined);
+    resetTranscriptDisplayStoreForTests();
+    initTranscriptDisplay();
+    const write = vi.spyOn(storage, "setItem");
+    const receive = (key: string, newValue: string | null) =>
+      window.dispatchEvent(new StorageEvent("storage", { key, newValue }));
+    receive(keys.mobile, "comic");
+    expect(transcriptDisplayStore.getState().presentation).toEqual({ desktop: "standard", mobile: "comic" });
+    receive(keys.mobile, null);
+    expect(transcriptDisplayStore.getState().presentation.mobile).toBe("standard");
+    receive(keys.desktop, "comic");
+    receive(keys.desktop, "invalid");
+    expect(transcriptDisplayStore.getState().presentation.desktop).toBe("standard");
+    expect(transcriptDisplayStore.getState().local).toEqual({});
+    expect(write).not.toHaveBeenCalled();
+    resetTranscriptDisplayStoreForTests();
+    receive(keys.mobile, "comic");
+    expect(transcriptDisplayStore.getState().presentation.mobile).toBe("standard");
+  });
+});
+
 describe("effective transcript display state", () => {
   test("captures both mounted panes before a local publish and coalesces an identical fingerprint", () => {
     const events: string[] = [];
@@ -698,7 +861,7 @@ test("preserves an explicit Tools-equivalent Custom through local and hub persis
   expect(transcriptDisplayStore.getState().hub.desktop?.config.content.kind).toBe("custom");
 });
 
-test("migration runs before local load, keeps old keys, and dual-writes literal booleans", () => {
+test("migration runs before local load and consumes the old keys; later edits never write them", () => {
   storage.setItem("evener.prefs.transcriptRoundTimings", "0");
   storage.setItem("evener.prefs.transcriptTokenCounts", "1");
   storage.setItem("evener.prefs.showCost", "1");
@@ -708,8 +871,7 @@ test("migration runs before local load, keeps old keys, and dual-writes literal 
   expect(transcriptDisplayStore.getState().local.mobile).toEqual(transcriptDisplayStore.getState().local.desktop);
   expect(storage.getItem(desktopKey)).not.toBeNull();
   expect(storage.getItem(mobileKey)).not.toBeNull();
-  expect(storage.getItem("evener.prefs.transcriptRoundTimings")).toBe("0");
-  expect(storage.getItem("evener.prefs.transcriptTokenCounts")).toBe("1");
+  expect(legacyKeys.map((key) => storage.getItem(key))).toEqual(legacyKeys.map(() => null));
 
   const desktopEdited = makeTranscriptDisplayConfig(
     { kind: "preset", level: "full" },
@@ -720,12 +882,11 @@ test("migration runs before local load, keeps old keys, and dual-writes literal 
     { tokenCounts: true, estimatedCost: true, hookExits: "all" },
   );
   transcriptDisplayStore.getState().setLocal("desktop", desktopEdited);
-  expect(legacyKeys.map((key) => storage.getItem(key))).toEqual(["1", "0", "0", "0", "1", "0"]);
   transcriptDisplayStore.getState().setLocal("mobile", mobileEdited);
-  expect(legacyKeys.map((key) => storage.getItem(key))).toEqual(["0", "1", "1", "0", "0", "1"]);
+  expect(legacyKeys.map((key) => storage.getItem(key))).toEqual(legacyKeys.map(() => null));
 });
 
-test("clearLocal removes the persisted key, broadcasts null, follows the hub, and dual-writes its flags", () => {
+test("clearLocal removes the persisted key, broadcasts null, and follows the hub", () => {
   vi.stubGlobal("BroadcastChannel", FakeBroadcastChannel);
   resetTranscriptDisplayStoreForTests();
   initTranscriptDisplay();
@@ -743,7 +904,19 @@ test("clearLocal removes the persisted key, broadcasts null, follows the hub, an
   expect(transcriptDisplayStore.getState().local.desktop).toBeUndefined();
   expect(transcriptDisplayStore.getState().effective("desktop")).toEqual(hub);
   expect(active.posted.at(-1)).toMatchObject({ config: null, fingerprint: null, layout: "desktop" });
-  expect(legacyKeys.map((key) => storage.getItem(key))).toEqual(["1", "0", "0", "0", "1", "0"]);
+  expect(legacyKeys.map((key) => storage.getItem(key))).toEqual(legacyKeys.map(() => null));
+});
+
+test("clearing the only override keeps it cleared across a reload despite old keys", () => {
+  storage.setItem("evener.prefs.showCost", "1");
+  storage.setItem(desktopKey, encodeLocalConfig(preset("full")));
+  resetTranscriptDisplayStoreForTests();
+  initTranscriptDisplay();
+  transcriptDisplayStore.getState().clearLocal("desktop");
+  resetTranscriptDisplayStoreForTests();
+  initTranscriptDisplay();
+  expect(transcriptDisplayStore.getState().local.desktop).toBeUndefined();
+  expect(transcriptDisplayStore.getState().local.mobile).toBeUndefined();
 });
 
 test("keeps an in-memory local change and warns when browser storage is blocked", () => {

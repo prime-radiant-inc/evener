@@ -6,6 +6,7 @@ import { act } from "react-test-renderer";
 import { lexer } from "marked";
 import { threadActivityFixture } from "./subagents/sessionActivityTestUtils";
 import { ConversationScreen } from "./screens";
+import { NativeConversationSessionsProvider } from "./session/NativeConversationSessionsProvider";
 import { TimelineItem } from "./TimelineItem";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as Clipboard from "expo-clipboard";
@@ -206,7 +207,6 @@ vi.mock("@react-navigation/native", async () => {
 	};
 });
 vi.mock("expo-web-browser", () => ({ openBrowserAsync: vi.fn(async () => ({ type: "dismiss" })) }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-gesture-handler", async () =>
 	(await import("./renderNative.testkit")).gestureDetectorModuleMock(),
 );
@@ -214,10 +214,6 @@ vi.mock("react-native-gesture-handler/ReanimatedSwipeable", async () =>
 	(await import("./renderNative.testkit")).gestureHandlerModuleMock(),
 );
 
-vi.mock("expo-crypto", () => ({
-	randomUUID: () => "memoization-test-uuid",
-	getRandomValues: (array: Uint8Array) => array,
-}));
 vi.mock("expo-sqlite", async () => {
 	const { openSqliteSyncDouble } = await import("./sqliteSync.testkit");
 	return {
@@ -363,13 +359,33 @@ it("opens files through actual TimelineItem event props and preserves ordinary r
 	]);
 	expect(Linking.openURL).not.toHaveBeenCalled();
 	expect(text.props.selectable).toBe(false);
-	expect(text.props.contextMenuItems).toBeUndefined();
-	const hold = tree.root.findAll((node) => typeof node.props.onLongPress === "function")[0];
-	act(() => hold.props.onLongPress());
+	// The menu rides on a hold gesture above the prose; see TimelineItem's
+	// guard test for why no wrapper that takes a tap may sit above it.
+	const detector = tree.root.findAllByType("GestureDetector" as never)[0];
+	const hold = detector?.props.gesture as { handlers: { onStart?(): void } } | undefined;
+	act(() => hold?.handlers.onStart?.());
 	const [options, choose] = vi.mocked(ActionSheetIOS.showActionSheetWithOptions).mock.calls.at(-1)!;
 	expect(options.options).toEqual(["Copy", "Select text", "Cancel"]);
 	act(() => choose(options.options.indexOf("Copy")));
 	expect(Clipboard.setStringAsync).toHaveBeenCalledWith(original);
+});
+it("opens a report link filed in the session artifacts instead of the browser", () => {
+	const openFile = vi.fn();
+	const artifactsDir = "/state/projects/p/sessions/s1/artifacts";
+	const original = `[Full report](file://${artifactsDir}/docs-quality-repairs.md)`;
+	const tree = render(
+		<MarkdownResponse markdown={original} fileContext={{ cwd: "/work/a", artifactsDir, openFile }} />,
+	);
+	const url = emittedURLs(prose(tree).props.markdown)[0];
+	act(() => prose(tree).props.onLinkPress({ url }));
+	expect(openFile).toHaveBeenCalledWith({
+		path: "docs-quality-repairs.md",
+		cwd: artifactsDir,
+		readTarget: `${artifactsDir}/docs-quality-repairs.md`,
+		provenance: "absolute",
+		root: "artifacts",
+	});
+	expect(Linking.openURL).not.toHaveBeenCalled();
 });
 it("keeps Copy response and external actions, but rejects unknown generated identifiers", () => {
 	const openFile = vi.fn();
@@ -388,6 +404,56 @@ it("keeps Copy response and external actions, but rejects unknown generated iden
 	expect(alertRequests).toHaveLength(count);
 	expect(openFile).not.toHaveBeenCalled();
 });
+// Copying a retained artifact's folder-relative path would name a different
+// file when pasted beside the session's folder, so the long-press menu names
+// and copies the file the link actually points at.
+// Markdown's autolink form is the other way an agent may name a report. It
+// must open the Reader just as an explicitly labelled link does.
+it("opens an angle-bracketed artifacts autolink when tapped", () => {
+	const artifactsDir = "/state/projects/p/sessions/s1/artifacts";
+	const openFile = vi.fn();
+	const tree = render(
+		<MarkdownResponse
+			markdown={`Report: <file://${artifactsDir}/report.md>`}
+			fileContext={{ cwd: "/work/a", artifactsDir, openFile }}
+		/>,
+	);
+	const text = prose(tree);
+	const url = emittedURLs(text.props.markdown)[0];
+	act(() => text.props.onLinkPress({ url }));
+	expect(openFile).toHaveBeenCalledWith({
+		path: "report.md",
+		cwd: artifactsDir,
+		readTarget: `${artifactsDir}/report.md`,
+		provenance: "absolute",
+		root: "artifacts",
+	});
+	expect(Linking.openURL).not.toHaveBeenCalled();
+});
+
+it("copies an artifacts link's full target, and a folder file's path", () => {
+	const artifactsDir = "/state/projects/p/sessions/s1/artifacts";
+	const openFile = vi.fn();
+	const tree = render(
+		<MarkdownResponse
+			markdown={`[report](file://${artifactsDir}/report.md) and [plan](docs/plan.md)`}
+			fileContext={{ cwd: "/work/a", artifactsDir, openFile }}
+		/>,
+	);
+	const text = prose(tree);
+	const [retained, folder] = emittedURLs(text.props.markdown);
+	act(() => text.props.onLinkLongPress({ url: retained }));
+	const menu = alertRequests.at(-1)!;
+	expect(menu.message).toBe(`${artifactsDir}/report.md`);
+	act(() => menu.buttons?.[1]?.onPress?.());
+	expect(Clipboard.setStringAsync).toHaveBeenCalledWith(`${artifactsDir}/report.md`);
+	act(() => text.props.onLinkLongPress({ url: folder }));
+	const folderMenu = alertRequests.at(-1)!;
+	expect(folderMenu.message).toBe("docs/plan.md");
+	act(() => folderMenu.buttons?.[1]?.onPress?.());
+	expect(Clipboard.setStringAsync).toHaveBeenLastCalledWith("docs/plan.md");
+});
+
 it("retires old render, event and menu callbacks after stream/cwd/context replacement and unmount", () => {
 	const oldOpen = vi.fn(),
 		nextOpen = vi.fn();
@@ -492,7 +558,12 @@ it("navigates Reader from actual owning ConversationScreen even when another con
 	} as ConversationScreenProps["route"];
 	navigationState.state = { index: 0, routes: [route] };
 	vi.mocked(navigation.navigate).mockClear();
-	const tree = render(<ConversationScreen route={route} navigation={navigation} />);
+	const screen = () => (
+		<NativeConversationSessionsProvider>
+			<ConversationScreen route={route} navigation={navigation} />
+		</NativeConversationSessionsProvider>
+	);
+	const tree = render(screen());
 	try {
 		await vi.waitFor(async () => {
 			await act(async () => {
@@ -525,7 +596,7 @@ it("navigates Reader from actual owning ConversationScreen even when another con
 		act(() => oldProps.onLinkLongPress({ url: oldURL }));
 		const retiredMenu = alertRequests.at(-1)!;
 		navigationState.state = { index: 0, routes: [route] };
-		act(() => tree.update(<ConversationScreen route={route} navigation={navigation} />));
+		act(() => tree.update(screen()));
 		served.cwd = "/work/replaced";
 		await act(async () => {
 			client.emitNotification({

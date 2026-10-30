@@ -1,0 +1,143 @@
+{
+ "verdicts": [
+  {
+   "id": "agent-internal-tools-1",
+   "verdict": "partial",
+   "severity": "high",
+   "note": "Core confirmed: explain.go 3638 lines, 1020 comment lines, 88 cite issue/review numbers, 24 of 27 commits are fix/review. The 2446-3358 family (candidateSatisfies, numericExample, snapMultiple...) is reached only from exampleValueFor (explain.go:2379,2398) to synthesize examples. Caveats: schemaOwnKeywordsMatch (2575) is also used by repair.go's null handling, so deleting it breaks repair unless finding 2 lands first. Synthesized examples are scoped fragments (scopedBranchExample, branchValueExample), not whole-call args, so validating them with the root compiled schema needs the example assembled into full args first. t.Schema.Validate is in hand at session_tool_repair.go:193, so a validator func is feasible.",
+   "revised_fix_plan": "Order: finding 6 (behavior-level tests), then finding 2 (repair gets its own accepts-null probe), then replace candidate/numeric synthesis: generate the simplest candidate (const/enum first value, type placeholder), assemble it into full args, validate with the compiled schema func passed into ExplainSchemaError, and omit the Example line when invalid. Delete the 2446-3358 family only after both prior steps. Collapse the three example generators and required-name helpers. Needs Jesse's decision on model-facing text. Product docs do not list coaching behaviors (no match in docs/product), so no subsystems.md edit unless behavior changes."
+  },
+  {
+   "id": "agent-internal-tools-2",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "note": "repair.go schemaAcceptsNull/branchAcceptsNull comment confirmed ('The package resolves no $ref'); explain.go:2570-2575 doc admits repair evaluates anyOf/oneOf/allOf/not itself. Real third evaluator. Not verified that repair is stdlib-only; check imports before choosing the func-probe design."
+  },
+  {
+   "id": "agent-internal-tools-3",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "note": "Non-prod caller counts verified by grep: executeCommandHook P=1 (definition) T=18; Runner.Summary P=0 T=8; RunSessionStart P=1 T=11; NewManagerWithClock only def/comments, T=5; transportForConfig P=1 T=6; mergeEnv P=1 T=5; Unregister P=0 T=2; Restrict P=0 T=4; ApplyPatch P=1 T=45 (not ~few: retargeting is ~45 call sites); truncateChars/HeadCount/Lines each one definition. compileSchemaWith closures used only by package_union_fuzz_test.go:92-93. ParseDocumentResult first param is `_` and has a prod caller session_tools_file.go:75.",
+   "revised_fix_plan": "Same plan, but for ApplyPatch prefer renaming ApplyPatchCtx to ApplyPatch only if the 45 test sites can take a ctx mechanically; otherwise leave ApplyPatch (it is a 3-line convenience) and delete the rest."
+  },
+  {
+   "id": "agent-internal-tools-4",
+   "verdict": "confirmed",
+   "severity": "low",
+   "note": "Chains verified at definitions.go:236-253 and 1198-1204. DefAskUser has P=1 (definition) T=6. However the plain forms (DefDelegate, DefJobWatch, DefDelegateSend, DefCommunicate, DefJobList) have 23 production uses (provider/profile.go) versus 71 test uses, so the diff is mostly mechanical call-site churn for ~-60 lines. Cosmetic, severity lowered."
+  },
+  {
+   "id": "agent-internal-tools-5",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "note": "Cov/covtest glob in the slice totals 4243 lines (mcp has many more cov_* files than the finding lists). explain_covtest_test.go has 33 '(line N)' comments, e.g. 'minLength (line 121-122)', 'empty-enum path (line 143-145)'. Batch-named files verified (cov_s4, cov_w2tail, cov_w3sub). Also agent/internal/contextmgr/context_manager_coverage_test.go cites 'fork_summarize.go:100'."
+  },
+  {
+   "id": "agent-internal-tools-6",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "note": "strings.Contains counts verified: tool 145, tool/repair 267, hooks 66, mcp 21 (some are non-copy uses, so count is an upper bound). explain_covtest_test.go:23-27 asserts an exact sentence; explain_oneof_test.go:70-96 asserts 'is not one of the allowed values', 'oneOf constraint', 'sandbox_net'. Violates AGENTS.md 'Never assert on phrasing'. Some assertions pin real invariants (does not list top-level enum, does not claim 'task' missing), which should be preserved as behavior checks."
+  },
+  {
+   "id": "agent-internal-tools-7",
+   "verdict": "partial",
+   "severity": "low",
+   "note": "tool/package_union_fuzz_test.go (97 lines) does use `_ uint8` and discard results; jobstore version is 248 lines with the same shape. But sessionlog/package_union_fuzz_test.go (25 lines) calls t.Fatal on setup errors, so it is less clearly assertion-free. Branch-poking confirmed for tool and jobstore.",
+   "revised_fix_plan": "Delete or convert tool and jobstore files; inspect sessionlog separately. Fold into finding 5 per-package PRs. Check scripts/fuzz/fuzz-targets.txt for registrations before deleting."
+  },
+  {
+   "id": "agent-internal-tools-8",
+   "verdict": "partial",
+   "severity": "medium",
+   "note": "Linecap doc admits the duplication and the ReadSlice/ErrBufferFull state machine is present in transcript.go:337, jobstore/output.go:1326, retained_output_read.go:356, linecap.go:69, llm/apilog/codec.go:110. But policies differ: jobstore grepReaderLimit marks lines overlong and still emits a match with an overlong flag; retainedLineScanner keeps up to a cap and reports oversized plus byte offsets; linecap drops the line and drains. They are not drop-in. -250 is optimistic.",
+   "revised_fix_plan": "Do only the declared duplicate first: transcript.ReadLine as thin adapter over linecap.ReadLine, pinned by tests for EOF/over-limit/unterminated tail. Evaluate retained and jobstore separately and migrate only if linecap.ReadLine's consumed/terminated returns express their oversized semantics; otherwise leave them."
+  },
+  {
+   "id": "agent-internal-tools-9",
+   "verdict": "partial",
+   "severity": "medium",
+   "note": "Confirmed: frontmatter/frontmatter.go (61 lines) and 303 test lines, sole importer is internal/bundled/bundled_test.go:9, comment at frontmatter.go:25 says it matches agent/internal/frontmatter. Omitted by the audit: the fuzz target is registered in scripts/fuzz/fuzz-targets.txt:191 and scripts/fuzz/fuzz-mutation-score.sh:67, which must be updated in the same change. bundled_test uses Parse (yaml metadata), so replacing it needs a small local helper or yaml.v3 directly (root module already requires yaml.v3).",
+   "revised_fix_plan": "Delete root frontmatter package and tests, remove the two fuzz-script entries, and give bundled_test a local parse helper. Ask Jesse only if he wants a public shared package instead."
+  },
+  {
+   "id": "agent-internal-tools-10",
+   "verdict": "partial",
+   "severity": "low",
+   "note": "Flock hits: 13 non-test files with unix.Flock/syscall.Flock (the 20 includes LockFileEx/windows). Only 4 use O_NOFOLLOW (installid, skill lease, sandbox scratch lock, app_instances_key, plus apilog_open_unix). The 'same sequence' claim holds for installid/lock_unix.go and skill/lease_unix.go, but they differ: lease takes SH or EX, treats ENOLCK/ENOSYS/EOPNOTSUPP as a no-op lease, checks replaced inode; installid chmods 0600. Others (hostlock 36 lines, plugins/locks_unix 24, transcriptindex, selfupdate) are not copies of that sequence. Not verified that an execsupport package exists in both modules. '12 places' and -600 are overstated.",
+   "revised_fix_plan": "Extract a helper only for the 3-4 O_NOFOLLOW+regular-file copies (installid, skill lease, sandbox scratch lock, app_instances_key), with options for shared/exclusive and unsupported-fs fallback; leave the simpler flock users alone. Jesse picks the home package."
+  },
+  {
+   "id": "agent-internal-tools-11",
+   "verdict": "partial",
+   "severity": "low",
+   "note": "Duplicate compile helpers real (registry.go:1115 and llm/generate.go:380-400 share schemaURI and comment; generate has a global RWMutex test hook). But the draft-drift claim is refuted: santhosh-tekuri/jsonschema v5.3.1 compiler.go:90 defaults Draft to latest, which is Draft2020 (draft.go:229), so generate.go's explicit Draft2020 changes nothing. agent/jobs.go:2000 uses a different URI (delegate-result-schema), different purpose, no cache. Impact is small.",
+   "revised_fix_plan": "Optional: one llm.CompileSchema (agent/internal/tool already imports llm) used by both; drop the global hook and closure seams; test failures via malformed schemas. No draft change needed."
+  },
+  {
+   "id": "agent-internal-tools-12",
+   "verdict": "partial",
+   "severity": "low",
+   "note": "Helpers exist at all cited locations, but they are not equivalent: typegen.go:237 cloneSchema is a shallow maps.Copy; subagents.go cloneMap and provider/profile_overrides.go deepCopyJSONMap round-trip through JSON (normalizing numbers to float64, intentionally or not). Only registry.go, llm/registry/load.go, openaichat/strict.go and jobstore/event_clone.go are structural recursive clones.",
+   "revised_fix_plan": "Consolidate only the four structural clones into one leaf helper; leave JSON round-trip and shallow ones. Confirm no caller depends on typed slices passing through shared."
+  },
+  {
+   "id": "agent-internal-tools-13",
+   "verdict": "partial",
+   "severity": "low",
+   "note": "Pattern real but varied: transcript_render.go:1966 and hubcore/tree.go:558 are rune cuts with unicode ellipsis; doctor/transcript.go:459 uses runetrim.Cut (bytes, rune-safe) plus ellipsis; failuremessage.go:71 is byte cut with validity walk; hooks.go:558 is firstLine plus truncation; jobs_activity.go:109 is a pure pass-through. Actionable bug confirmed: contextmgr/fork_summarize.go:104-108 cuts s[:limit] bytes and can split a multibyte rune, feeding the summarizer prompt. Inaccuracy: tool.TruncateRunes also has two uses inside breaker.go (462, 539) besides session_loopdetect.go:68 and memory_page.go:207.",
+   "revised_fix_plan": "Fix the contextmgr cut with runetrim.Cut (red test first). Delete the jobs_activity.go pass-through. Do not build a 9-site migration; optionally add runetrim.Runes and move tool.TruncateRunes there."
+  },
+  {
+   "id": "agent-internal-tools-14",
+   "verdict": "confirmed",
+   "severity": "low",
+   "note": "Counted 21 non-test SYSTEM-REMINDER literals in 5 agent files (task_reminders 11, system_notification 6, session_tools_task 2, session_compaction 1, session_queue 1). system_notification.go:46-65 pass-through and builder pair verified. task_reminders.go:157 uses its own '</SYSTEM-REMINDER>' literal (the finding's backslash was a typo)."
+  },
+  {
+   "id": "agent-internal-tools-15",
+   "verdict": "partial",
+   "severity": "low",
+   "note": "liveeval is test-only (five _test.go importers) and Paths duplicates cmdutil.ProvidersConfigPath, but the duplication is deliberate and documented (paths.go comment). The proposed fix is unsafe: go list shows cmdutil depends on evener/agent, which depends on agent/internal/contextmgr, so contextmgr's eval tests (summarize_obedience_eval_test.go, compaction_comparison_eval_test.go) importing cmdutil would form an import cycle. cmdutil also derives the default root via userdirs.DefaultConfigRoot, not XDG env.",
+   "revised_fix_plan": "Leave as is, or move the tri-state rule into a leaf package (e.g. envvars or userdirs) that both liveeval and cmdutil call. Do not import cmdutil from agent-internal tests."
+  },
+  {
+   "id": "agent-internal-tools-16",
+   "verdict": "partial",
+   "severity": "low",
+   "note": "Three layers verified (commandHookRuntime interface, commandHookProcess func type, commandHookExitCoder interface) and TerminalSequences x3 with 'no delivery-site consumer' comments (hooks.go:312,326,341). But docs/hooks.md:474 documents `terminalSequence` as parsed-but-unconsumed, so removing the parsing changes a documented (if no-op) contract and requires a docs edit; hook JSON containing it must still be accepted.",
+   "revised_fix_plan": "Collapse the runtime seams as planned. For TerminalSequences, drop the result fields and append sites but keep tolerating the input key, and update docs/hooks.md in the same change; confirm with Jesse since it removes a documented field."
+  },
+  {
+   "id": "agent-internal-tools-17",
+   "verdict": "confirmed",
+   "severity": "low",
+   "note": "Counts verified: tool/repair 82, worktree 36, mcp 12, tool 7, hooks 3 matching issue/Task/spec/rev patterns. mcp/manager.go cites 'Task 8' at lines 30, 42, 44, 58; hooks.go:38 'Used by Task 7'; worktree/predicates.go:15 'rev-6 review'."
+  },
+  {
+   "id": "agent-internal-tools-18",
+   "verdict": "partial",
+   "severity": "low",
+   "note": "110 section-number mentions verified (82 'spec \u00a7/\u00a7N' in non-test worktree files) and lockstate.go:3 calls itself 'the normative summary of spec \u00a75'. But the Decide table in lockstate.go is itself the executable source of truth, and docs/developing-evener/worktrees.md already documents sweep and sidecar behavior (lines 36, 81, 180, 233). The gap is the event x state table, not whole rules. Severity lowered.",
+   "revised_fix_plan": "Add the lock-state event table to docs/developing-evener/worktrees.md (+~40 lines), link from the S13 row, reword section-number comments as files are touched."
+  },
+  {
+   "id": "agent-internal-tools-19",
+   "verdict": "partial",
+   "severity": "low",
+   "note": "minInt/maxInt have 7 call sites (not 8); go 1.27 builtins apply. collapseWhitespace (breaker.go:554) equals Fields-join only if followed by TrimSpace (it does not trim). firstNonBlankLine (tool/breaker.go:545) vs hooks.firstLine (hooks.go:558) are in different packages and differ (hooks trims and truncates), so not duplicates. The four appendRequiredField*/removeRequiredField* helpers (registry.go:136-186) are near copies for []string vs []any.",
+   "revised_fix_plan": "Replace minInt/maxInt with builtins; check collapseWhitespace callers' trim behavior before replacing; drop the firstLine claim; fold required-field helpers only if cheap."
+  },
+  {
+   "id": "agent-internal-tools-20",
+   "verdict": "confirmed",
+   "severity": "low",
+   "note": "registry.go is 1200 lines with the listed concerns; normalizeAskUserArgs at 228, truncate* at 948-1041, compile cache at 1100-1160. definitions.go 1389, breaker.go 597, apply_patch.go 671. Pure file split, zero behavior change."
+  },
+  {
+   "id": "agent-internal-tools-21",
+   "verdict": "confirmed",
+   "severity": "low",
+   "note": "Verified: NewManagerWithClock (manager.go:185), productionDial/WithEnv, transportForConfig/WithEnv (785-792), mergeEnv/mergeEnvInto (820-827), conn.now nil falls back to time.Now (manager.go:90-100), dials slice with `i < len(dials)` guard (manager.go:157-161). Only production caller is agent/session_init.go:2598 with dials=nil."
+  }
+ ]
+}

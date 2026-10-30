@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/evener/identifier"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
@@ -409,7 +410,7 @@ func TestSessionActivityArchivedNestedHierarchy(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, ref := range f.refs {
-			if _, err := f.activity.ArchiveSet(f.ctx, appwire.ArchiveParams{Kind: appwire.ArchiveTargetSession, ID: ref, Archived: true}); err != nil {
+			if _, err := appwiretest.ArchiveSet(f.ctx, f.activity, appwire.ArchiveParams{Kind: appwire.ArchiveTargetSession, ID: ref, Archived: true}); err != nil {
 				t.Fatalf("archive %s: %v", ref, err)
 			}
 		}

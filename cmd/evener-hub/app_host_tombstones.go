@@ -15,8 +15,7 @@ package hub
 // bounded newest-first projection of the source's last-known-good rows. It is
 // purged by a re-add or by the retention period (spec §15), and capacity
 // eviction drops the oldest tombstones before either global cap can be
-// exceeded — never a remnant-gated one (S12 wires the real remnant records;
-// today the gate is a documented empty seam).
+// exceeded — never one whose name holds an open teardown remnant.
 
 import (
 	"encoding/json"
@@ -179,7 +178,7 @@ type hostTombstoneStage struct {
 // hostTombstoneCapacityError is the internal shape of spec §15's typed
 // `tombstone-capacity` conflict refusal: the global bound the persist would
 // exceed and the remnant-gated names that blocked every eviction candidate.
-// persistHostsMarked maps it onto appwire's envelope at the single write choke
+// persistHosts maps it onto appwire's envelope at the single write choke
 // point, so every mutation path surfaces the typed refusal.
 type hostTombstoneCapacityError struct {
 	bound         string
@@ -306,7 +305,7 @@ func newHostTombstone(entry hostreg.Host, presenceEpoch uint64, rows []appwire.T
 		Generation:    entry.Generation,
 		IncarnationID: entry.IncarnationID,
 		PresenceEpoch: presenceEpoch,
-		RemovedAt:     removedAt.UTC().Format(time.RFC3339),
+		RemovedAt:     hostInstant(removedAt),
 		Rows:          projected,
 		RowsTruncated: truncated,
 	}

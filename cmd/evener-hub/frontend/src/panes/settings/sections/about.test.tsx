@@ -2,22 +2,16 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { SettingsOverviewResponse } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, expect, test } from "vitest";
-import { connectionStore } from "../../../stores/connection";
+import { resetConnectionStoreForTests } from "../../../stores/connection";
 import { resetSettingsOverviewStoreForTests, settingsOverviewStore } from "../../../stores/settingsOverview";
+import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { AboutSection, MIT_LICENSE_TEXT } from "./about";
 
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  return fake;
-}
-
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetSettingsOverviewStoreForTests();
   resetDisclosureStoreForTests();
 });
@@ -66,7 +60,7 @@ test("the embedded license const matches LICENSES/beautiful-ui.txt on disk, from
 });
 
 test("shows the hub version (and commit) once connected and loaded", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   const response: SettingsOverviewResponse = {
     hub: { version: "1.2.3", commit: "abc1234", daemonIdleTimeoutMillis: 3600000 },
   };
@@ -90,7 +84,7 @@ test("omits version/commit gracefully, with no raw error text, when not connecte
 });
 
 test("a fetch failure shows a friendly message, never the raw error", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/settings/overview", () => {
     throw new Error("raw-overview-failure");
   });

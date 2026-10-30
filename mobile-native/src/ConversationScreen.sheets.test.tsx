@@ -33,6 +33,7 @@ import {
 } from "./renderNative.testkit";
 import { hasTestID, markers, withTestID } from "./markerTestUtils";
 import { ConversationScreen } from "./screens";
+import { NativeConversationSessionsProvider } from "./session/NativeConversationSessionsProvider";
 import { findBar, findMatches, findShows } from "./findBarTestUtils";
 import { forgetHistoryForHub } from "./session/historyMemory";
 import { detailLevels, forgetDetailLevelsForHub } from "./session/nativeDetailLevels";
@@ -103,7 +104,6 @@ vi.mock("react-native-safe-area-context", () => ({
 	SafeAreaProvider: (props: { children?: ReactNode }) => props.children ?? null,
 	useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 0, right: 0 }),
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-gesture-handler", async () =>
 	(await import("./renderNative.testkit")).gestureDetectorModuleMock(),
 );
@@ -126,10 +126,6 @@ vi.mock("@react-navigation/native", async () => {
 vi.mock("expo-clipboard", () => ({
 	setStringAsync: vi.fn(async () => {}),
 	getStringAsync: vi.fn(async () => ""),
-}));
-vi.mock("expo-crypto", () => ({
-	randomUUID: () => "recovery-entry-uuid",
-	getRandomValues: (array: Uint8Array) => array,
 }));
 vi.mock("expo-sqlite", async () => {
 	const { openSqliteSyncDouble } = await import("./sqliteSync.testkit");
@@ -184,6 +180,14 @@ vi.mock("./NativePreferencesProvider", () => ({
 }));
 
 type ConversationScreenProps = ComponentProps<typeof ConversationScreen>;
+
+function SessionScreen(props: ConversationScreenProps) {
+	return (
+		<NativeConversationSessionsProvider>
+			<ConversationScreen {...props} />
+		</NativeConversationSessionsProvider>
+	);
+}
 
 const ref = "local:thread-1";
 const session = { key: `conversation-${ref}`, name: "Conversation" };
@@ -271,7 +275,7 @@ function sessionClient(read: Thread, answers: Answers) {
 }
 
 const screen = () => (
-	<ConversationScreen route={route} navigation={navigation as unknown as ConversationScreenProps["navigation"]} />
+	<SessionScreen route={route} navigation={navigation as unknown as ConversationScreenProps["navigation"]} />
 );
 
 function mount(read: Thread = thread, answers: Answers = {}, connection: Record<string, unknown> = {}) {
@@ -415,7 +419,7 @@ it("keeps its session subscribed while its own sheet covers it", async () => {
 	await act(async () => tree.unmount());
 });
 
-it("follows no session while a screen is pushed over it", async () => {
+it("keeps observing a pushed-over session while its actions stay unfocused", async () => {
 	stack.focused = false;
 	stack.state = {
 		index: 1,
@@ -424,7 +428,9 @@ it("follows no session while a screen is pushed over it", async () => {
 	const { tree, requests } = mount();
 	await settle();
 
-	expect(requests.filter((request) => request.method === "thread/read")).toEqual([]);
+	// Focus is per-view action permission, not canonical data ownership: the
+	// shared entry keeps its one live subscription for the mounted view.
+	expect(subscribedReads(requests).length).toBeGreaterThan(0);
 	await act(async () => tree.unmount());
 });
 
@@ -489,6 +495,46 @@ it("keeps naming the model after a screen pushed over it closes, while the catal
 	act(() => tree.update(screen()));
 	await settle();
 	expect({ reads: modelReads, label: sessionInfoHost().modelLabel }).toEqual({ reads: 2, label: "DeepSeek 4.1 Flash" });
+	await act(async () => tree.unmount());
+});
+
+// A later read can fail while a mounted screen keeps the name it already had:
+// the picker clears its stale choices, but the chip and the Session sheet
+// must not fall back to the raw id. The fleet has no row for this session
+// here, so the catalog name is the only name the screen has.
+it("keeps naming the model from the last successful read after a later read fails (#2988)", async () => {
+	let modelReads = 0;
+	const { tree } = mount(
+		{ ...thread, modelProvider: "lunaroute/deepseek-4.1-flash" },
+		{
+			"model/list": () => {
+				modelReads++;
+				if (modelReads === 1)
+					return { data: [{ provider: "lunaroute", model: "deepseek-4.1-flash", displayName: "DeepSeek 4.1 Flash" }] };
+				throw new Error("The hub couldn't list its models.");
+			},
+		},
+	);
+	await settle();
+	expect(sessionInfoHost().modelLabel).toBe("DeepSeek 4.1 Flash");
+	stack.state = { index: 1, routes: [session, { key: "reader", name: "Reader" }] };
+	act(() => tree.update(screen()));
+	await settle();
+	stack.state = { index: 0, routes: [session] };
+	act(() => tree.update(screen()));
+	await settle();
+	expect(modelReads).toBe(2);
+	// The picker still offers no choices after the failed read.
+	expect(sessionInfoHost().controls?.getSnapshot().catalog).toBeNull();
+	expect(sessionInfoHost().modelLabel).toBe("DeepSeek 4.1 Flash");
+	// The composer's chip is the same label.
+	const field = tree.root.findAll(
+		(node) => String(node.type) === "TextInput" && node.props.accessibilityLabel === "Message",
+	)[0];
+	act(() => field?.props.onFocus());
+	act(() => keyboard.show());
+	expect(renderedText(tree)).toContain("DeepSeek 4.1 Flash");
+	expect(renderedText(tree)).not.toContain("deepseek-4.1-flash");
 	await act(async () => tree.unmount());
 });
 
@@ -1758,7 +1804,7 @@ function boardJourney(answers: Answers) {
 		stack.state = state;
 		const current = state.routes[state.index];
 		return current?.name === "Conversation" ? (
-			<ConversationScreen
+			<SessionScreen
 				key={current.key}
 				route={current as ConversationScreenProps["route"]}
 				navigation={navigation as unknown as ConversationScreenProps["navigation"]}

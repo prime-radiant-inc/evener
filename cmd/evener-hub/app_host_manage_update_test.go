@@ -1120,25 +1120,25 @@ func (s *attachedUpdateStdio) Wait() error {
 }
 
 // attachedUpdateRunner answers the normal preflight as an already-healthy dev
-// hub, then serves initialize over an in-memory stream. It never starts a real
-// process or opens a network listener.
+// hub, then serves initialize over an in-memory stream. Only the environment
+// probe runs a local shell, no SSH process or network listener is started.
 type attachedUpdateRunner struct{}
 
-func (*attachedUpdateRunner) Run(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-	joined := strings.Join(argv, " ")
-	switch {
-	case strings.HasSuffix(joined, "uname -s"):
+func (*attachedUpdateRunner) Run(ctx context.Context, argv []string, _ io.Reader) ([]byte, error) {
+	joined := strings.Join(argv[12:], " ")
+	switch joined {
+	case "uname -s":
 		return []byte("Linux\n"), nil
-	case strings.HasSuffix(joined, "uname -m"):
+	case "uname -m":
 		return []byte("x86_64\n"), nil
-	case strings.Contains(joined, "XDG_STATE_HOME"):
-		return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
-	case strings.HasSuffix(joined, "id -u"):
+	case hostFixtureEnvironmentProbe:
+		return runHostFixtureEnvironmentProbe(ctx, joined, []string{"HOME=/home/dev", "XDG_STATE_HOME=", "XDG_CONFIG_HOME="})
+	case "id -u":
 		return []byte("1000\n"), nil
-	case strings.Contains(joined, "launch-check"):
-		return []byte(`{"protocol":"evener-appwire-v7","version":"dev","launch_flags":["api-log"]}`), nil
-	case strings.Contains(joined, "api/health"):
-		return []byte(`{"version":"dev","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
+	case "evener launch-check --json":
+		return []byte(probeGoodLaunchCheck), nil
+	case "evener hub endpoint --json", "/home/dev/.local/bin/evener hub endpoint --json":
+		return []byte(hostFixtureSelectedEndpoint), nil
 	default:
 		return nil, errors.New("attachedUpdateRunner: unexpected remote command")
 	}

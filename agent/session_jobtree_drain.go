@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/events"
-	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
@@ -297,7 +296,7 @@ func (s *Session) treeHasOutstandingWorkBesidesOwnJobs() (bool, error) {
 	if s.hasPendingDelegateAttentionArmRetry() {
 		return true, nil
 	}
-	if s.hasPendingStableDelegateAttention() {
+	if s.hasPendingDelegateAttention() {
 		return true, nil
 	}
 	for _, sub := range s.liveDirectSubagents() {
@@ -485,8 +484,7 @@ func undisposedBackgroundJobsFinalWarning(jobIDs []string, canDetach bool) strin
 // capability is treated as unable: recommending a call that returns
 // ErrDetachUnsupported is worse than not offering it.
 func (s *Session) detachedShellAvailable() bool {
-	reporter, ok := s.currentEnv().(execenv.DetachSupportReporter)
-	return ok && reporter.DetachSupported()
+	return detachSupportedBy(s.currentEnv())
 }
 
 // describeUndisposedJobs renders the killed-jobs report: id, command text,
@@ -594,7 +592,7 @@ func (s *Session) subtreeHasLiveComponent() (bool, error) {
 	if s.hasPendingDelegateAttentionArmRetry() {
 		return true, nil
 	}
-	if s.hasPendingStableDelegateAttention() {
+	if s.hasPendingDelegateAttention() {
 		return true, nil
 	}
 	for _, sub := range s.liveDirectSubagents() {
@@ -697,7 +695,7 @@ func (s *Session) markDrainAbandonedDelegates(now, drainStartedAt time.Time) {
 		return
 	}
 	rows := make(map[string]delegateSnapshot)
-	for _, visible := range stableDelegateRowsForSession(s, false) {
+	for _, visible := range delegateRowsForSession(s, false) {
 		if childID := visible.snapshot.descriptor.ChildSessionID; childID != "" {
 			rows[childID] = visible.snapshot
 		}
@@ -772,7 +770,7 @@ func (s *Session) childDrainGracePending(childSessionID string) bool {
 	if s == nil || childSessionID == "" {
 		return false
 	}
-	row, ok := s.directStableDelegateForChildSession(childSessionID)
+	row, ok := s.directDelegateForChildSession(childSessionID)
 	if !ok || !row.currentRunOpen {
 		return false
 	}
@@ -856,7 +854,7 @@ func (s *Session) recordDrainAbandonedChild(childSessionID, delegateID string, g
 	if already && previous.delegateID == delegateID && previous.generation == generation {
 		return
 	}
-	s.emit(events.EventWarning, events.WarningData{
+	s.emit(events.WarningData{
 		Message:    fmt.Sprintf("no longer waiting on delegate %s after two drain grace windows with its run still open", delegateID),
 		Source:     "drain",
 		Code:       events.WarningCodeDelegateAbandonedByDrain,
@@ -873,7 +871,7 @@ func (s *Session) childDrainAbandoned(childSessionID string) bool {
 	if s == nil || childSessionID == "" {
 		return false
 	}
-	row, ok := s.directStableDelegateForChildSession(childSessionID)
+	row, ok := s.directDelegateForChildSession(childSessionID)
 	if !ok {
 		return false
 	}
@@ -1104,6 +1102,31 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 	// and skip the kick the wake arrived to trigger. It is consumed once, at the
 	// top of the loop, so a single wake buys exactly one full-rate pass.
 	wakePending := false
+	// rekick runs the one unthrottled kick owed by a pass that skipped its own
+	// kick and is about to trust a verdict assembled without it. Such a verdict
+	// reads pre-flush state (pending delegate deliveries, durable pendings,
+	// forwarded records for unreachable children, watch sends) that the kick
+	// would have made deliverable, so the caller re-runs the pass after it
+	// instead of returning. It fires at most once per verdict: the confirming
+	// pass kicks at full rate, then returns or runs a turn, so verdict timing
+	// for abandonment, grace, and stall paths is unchanged.
+	rekick := func() error {
+		quietPasses = 0
+		return kick(ctx)
+	}
+	// treeMoved takes the wake edge raised since this pass took its own. A
+	// verdict is assembled across sequential reads rather than a snapshot, so a
+	// wake raised meanwhile means the tree moved under it: the caller re-runs
+	// the pass at full kick rate instead of letting Close() cancel work that
+	// armed while the scan ran. This terminates because a wake is only raised by
+	// a real state change, and a quiescent or wedged subtree raises none.
+	treeMoved := func() bool {
+		if !takeDrainWake(wake) {
+			return false
+		}
+		quietPasses = 0
+		return true
+	}
 	for {
 		// Take this pass's wake edge before it reads any state. treeHasOutstandingWork
 		// consults eight independent signals in sequence, so it is not a snapshot, and
@@ -1235,29 +1258,19 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 			// the streak below instead of extending it.
 			prevOutstanding = false
 			// Nothing pending and nothing outstanding anywhere in the subtree — but the
-			// scan above is not a snapshot. A wake raised since this pass took its edge
-			// means the tree moved while the scan ran, so re-run the pass instead of
-			// trusting a verdict assembled across the change. This terminates: a wake
-			// is only raised by a real state change, and a quiescent subtree raises
-			// none, so the confirming pass finds the edge clear and returns.
-			if takeDrainWake(wake) {
-				quietPasses = 0
+			// scan above is not a snapshot: if the tree moved while it ran, re-run the
+			// pass instead of trusting the verdict.
+			if treeMoved() {
 				continue
 			}
 			// The outstanding scan deliberately excludes forwarded records for
 			// unreachable children (see outstandingDrainJobIDsByBackground):
 			// those surface only via renderUnreachableChildPendings inside the
-			// kick. A pass that skipped its kick must therefore run one final
-			// unthrottled kick and re-scan instead of returning on a verdict
-			// the skip may have produced. A confirming full-kick pass that
-			// still sees nothing quiet returns here with skipKick false, so
-			// this fires at most once per quiescence — verdict timing for
-			// abandonment, grace, and stall paths is unchanged.
+			// kick, so a pass that skipped its kick must not return quiescent.
 			if skipKick {
-				if err := kick(ctx); err != nil {
+				if err := rekick(); err != nil {
 					return lastResult, err
 				}
-				quietPasses = 0
 				continue
 			}
 			return lastResult, nil
@@ -1287,26 +1300,16 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 				return lastResult, err
 			}
 			if !live {
-				if takeDrainWake(wake) {
-					// A wake landed mid-pass: the tree moved, so the next pass
-					// re-scans at full kick rate.
-					quietPasses = 0
+				if treeMoved() {
 					continue
 				}
-				// A skipped kick leaves the abandonment verdict below assembled
-				// on pre-flush state (pending delegate deliveries, durable pendings,
-				// watch sends): run one unthrottled kick and re-evaluate on the next
-				// pass instead of abandoning work the kick would have made
-				// deliverable. Fires at most once per abandonment — the confirming
-				// pass kicks at full rate, then returns or runs a turn.
 				if skipKick {
-					if err := kick(ctx); err != nil {
+					if err := rekick(); err != nil {
 						return lastResult, err
 					}
-					quietPasses = 0
 					continue
 				}
-				s.emit(events.EventWarning, events.WarningData{Message: "terminal communicate already ended this run; abandoning undeliverable drain residue so shutdown can proceed"})
+				s.emit(events.WarningData{Message: "terminal communicate already ended this run; abandoning undeliverable drain residue so shutdown can proceed"})
 				return lastResult, nil
 			}
 		}
@@ -1387,8 +1390,7 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 					// wake raised since this pass took its edge means a completion
 					// finalized meanwhile and is deliverable now: re-run the pass
 					// so it is delivered instead of announced.
-					if takeDrainWake(wake) {
-						quietPasses = 0
+					if treeMoved() {
 						continue
 					}
 					canDetach := s.detachedShellAvailable()
@@ -1413,7 +1415,7 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 					deliveredBefore := s.jobNotificationsDelivered()
 					res, perr := process(ctx, "", nil, EntryNotification)
 					if perr != nil {
-						s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf(
+						s.emit(events.WarningData{Message: fmt.Sprintf(
 							"undisposed-background-job announcement turn failed: %v", perr)})
 					} else if res != "" && s.jobNotificationsDelivered() != deliveredBefore {
 						// A completion rode this request: the model answered it,
@@ -1429,24 +1431,16 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 					// other return that lets Close() cancel the subtree: a wake
 					// raised mid-scan means the tree moved, so re-run the pass
 					// rather than killing work that armed while this pass looked.
-					if takeDrainWake(wake) {
-						quietPasses = 0
+					if treeMoved() {
 						continue
 					}
-					// A skipped kick leaves the abandonment verdict below assembled
-					// on pre-flush state (pending delegate deliveries, durable pendings,
-					// watch sends): run one unthrottled kick and re-evaluate on the next
-					// pass instead of abandoning work the kick would have made
-					// deliverable. Fires at most once per abandonment — the confirming
-					// pass kicks at full rate, then returns or runs a turn.
 					if skipKick {
-						if err := kick(ctx); err != nil {
+						if err := rekick(); err != nil {
 							return lastResult, err
 						}
-						quietPasses = 0
 						continue
 					}
-					s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf(
+					s.emit(events.WarningData{Message: fmt.Sprintf(
 						"exiting with %d undisposed background job(s) after two declined announcements; they die with the process: %s",
 						len(undisposed), s.jobManager.describeUndisposedJobs(undisposed))})
 					return lastResult, nil
@@ -1473,14 +1467,13 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 			if stallStart.IsZero() {
 				stallStart = now
 			} else if now.Sub(stallStart) >= DrainStallTimeout {
-				// The stall verdict was assembled across sequential reads, not a
-				// snapshot. A wake raised since this pass took its edge means the
-				// tree moved mid-verdict — the same straddle the quiescence return
-				// guards against — so re-run the pass rather than letting Close()
-				// SIGKILL work that armed while the scan ran. A genuinely wedged
-				// tree raises no wake, so the confirming pass gives up cleanly.
-				if takeDrainWake(wake) {
-					quietPasses = 0
+				if treeMoved() {
+					continue
+				}
+				if skipKick {
+					if err := rekick(); err != nil {
+						return lastResult, err
+					}
 					continue
 				}
 				// The drain is wedged on undelivered work the machinery is not
@@ -1488,20 +1481,7 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 				// abandoned as undisposable) and return the last result with nil error
 				// so cmd/evener/run.go prints the coordinator's last answer and
 				// proceeds to Close(), rather than aborting the run.
-				// A skipped kick leaves the abandonment verdict below assembled
-				// on pre-flush state (pending delegate deliveries, durable pendings,
-				// watch sends): run one unthrottled kick and re-evaluate on the next
-				// pass instead of abandoning work the kick would have made
-				// deliverable. Fires at most once per abandonment — the confirming
-				// pass kicks at full rate, then returns or runs a turn.
-				if skipKick {
-					if err := kick(ctx); err != nil {
-						return lastResult, err
-					}
-					quietPasses = 0
-					continue
-				}
-				s.emit(events.EventWarning, events.WarningData{Message: drainStallGiveUpMessage(
+				s.emit(events.WarningData{Message: drainStallGiveUpMessage(
 					s.subtreeOutstandingDrainJobIDs(), s.subtreeUndisposableStoppedDelegates())})
 				return lastResult, nil
 			}
@@ -1698,7 +1678,7 @@ func (s *Session) kickDriveTreeWith(ctx context.Context, drain func(*Session, co
 // true: DrainJobTree only ever starts once the caller's own turn has already
 // ended (PRI-2441's premise), so the top-level session is never mid-turn here.
 func (s *Session) kickDriveTreeWithFlush(ctx context.Context, drain func(*Session, context.Context) error, flushDeliveries bool) error {
-	s.drivePendingStableDelegateAttention()
+	s.drivePendingDelegateAttention()
 	if flushDeliveries {
 		if err := s.flushPendingDelegateDeliveries(); err != nil {
 			return err
@@ -1746,7 +1726,7 @@ func (s *Session) settlePresentedDelegateUpdates(driven map[string]struct{}) {
 	}
 	if s.hasPendingDelegateUpdateAttention() {
 		if err := s.finishAttentionTurn(nil, nil); err != nil {
-			s.emit(events.EventWarning, warningDataFromError("delegate update consumption failed; left pending for its next generation", err))
+			s.emit(warningDataFromError("delegate update consumption failed; left pending for its next generation", err))
 		}
 	}
 }

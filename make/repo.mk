@@ -52,20 +52,23 @@ hooks:
 refresh-model-catalog:
 	@scripts/ops/refresh-model-catalog.sh
 
-# generate runs the two packages that carry `go generate` directives. appwire
+# generate runs the packages that carry `go generate` directives. appwire
 # produces the AppWire protocol reference and the frontend TypeScript
 # declarations from the catalog in appwire/protocol.go; internal/maketargetsdoc
 # produces the per-family target tables inside docs/developing-evener/'s marked
-# regions from the `##` annotations in these make/*.mk files. lint-generated
+# regions from the `##` annotations in these make/*.mk files;
+# internal/knobtable produces docs/developing-evener/config-knobs.md from the
+# envvars registry and the hub.toml decoder. lint-generated
 # runs this target and diffs all of those outputs, so both are gated for
 # staleness by the required lint gate.
-## Run the appwire and maketargetsdoc `go generate` directives: the AppWire
-## protocol reference and frontend TypeScript declarations from
-## appwire/protocol.go, and the per-family make-target tables in
-## docs/developing-evener/.
+## Run the appwire, maketargetsdoc and knobtable `go generate` directives:
+## the AppWire protocol reference and frontend TypeScript declarations from
+## appwire/protocol.go, the per-family make-target tables in
+## docs/developing-evener/, and the configuration knob table.
 generate:
 	go generate ./appwire/...
 	go generate ./internal/maketargetsdoc/...
+	go generate ./internal/knobtable/...
 
 ## Remove the built binaries from the repo root.
 clean:

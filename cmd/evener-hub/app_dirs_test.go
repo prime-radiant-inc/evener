@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
@@ -18,7 +19,7 @@ func TestHubRPCDirsCreate(t *testing.T) {
 		target := filepath.Join(root, "missing", "nested")
 		client := newDirsCreateClient(t, hubcore.WebConfig{HubStateRoot: t.TempDir()})
 
-		created, err := client.DirsCreate(context.Background(), appwire.DirsCreateParams{
+		created, err := appwiretest.DirsCreate(context.Background(), client, appwire.DirsCreateParams{
 			Path: "  " + filepath.Join(target, "..", "nested") + "  ",
 		})
 		if err != nil {
@@ -31,7 +32,7 @@ func TestHubRPCDirsCreate(t *testing.T) {
 			t.Fatalf("created path stat: info=%v err=%v", info, err)
 		}
 
-		existing, err := client.DirsCreate(context.Background(), appwire.DirsCreateParams{Path: target})
+		existing, err := appwiretest.DirsCreate(context.Background(), client, appwire.DirsCreateParams{Path: target})
 		if err != nil {
 			t.Fatalf("DirsCreate existing: %v", err)
 		}
@@ -46,7 +47,7 @@ func TestHubRPCDirsCreate(t *testing.T) {
 		client := newDirsCreateClient(t, hubcore.WebConfig{HubStateRoot: t.TempDir()})
 
 		want := filepath.Join(home, "nested")
-		got, err := client.DirsCreate(context.Background(), appwire.DirsCreateParams{Path: "~/nested"})
+		got, err := appwiretest.DirsCreate(context.Background(), client, appwire.DirsCreateParams{Path: "~/nested"})
 		if err != nil {
 			t.Fatalf("DirsCreate: %v", err)
 		}
@@ -73,7 +74,7 @@ func TestHubRPCDirsCreate(t *testing.T) {
 			{name: "file", path: file, code: appwire.CodeConflict},
 		} {
 			t.Run(test.name, func(t *testing.T) {
-				_, err := client.DirsCreate(context.Background(), appwire.DirsCreateParams{Path: test.path})
+				_, err := appwiretest.DirsCreate(context.Background(), client, appwire.DirsCreateParams{Path: test.path})
 				assertDirsCreateError(t, err, test.code)
 			})
 		}
@@ -93,7 +94,7 @@ func TestHubRPCDirsCreate(t *testing.T) {
 			},
 		})
 
-		_, err := client.DirsCreate(context.Background(), appwire.DirsCreateParams{Path: target})
+		_, err := appwiretest.DirsCreate(context.Background(), client, appwire.DirsCreateParams{Path: target})
 		assertDirsCreateError(t, err, appwire.CodeInternalError)
 		if !strings.Contains(err.Error(), "mkdir failed") {
 			t.Fatalf("error = %v, want the MkdirAll failure", err)
@@ -113,9 +114,7 @@ func newDirsCreateClient(t *testing.T, cfg hubcore.WebConfig) *appwire.Client {
 	t.Cleanup(hub.Close)
 	client := dialHubRPC(t, hub)
 	t.Cleanup(func() { _ = client.Close() })
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	mustInitializeHubClient(t, client)
 	return client
 }
 

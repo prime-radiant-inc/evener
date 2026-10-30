@@ -39,7 +39,7 @@ export interface MutationAttachmentRef {
 // the daemon. Only an explicit user Retry releases it; no scan, reopen, or
 // reclassification path may move it.
 export type MutationOutboxState = "submitting" | "blockedUnknown" | "canceled";
-export type MutationRecoveryKind = "rejected" | "orphaned";
+export type MutationRecoveryKind = "rejected" | "orphaned" | "editing";
 
 // One submission as the client made it. The attachment type is a parameter so
 // a host can carry its own bytes (the web's Blob) on the same record shape
@@ -70,6 +70,9 @@ export interface MutationIntent<A extends MutationAttachmentRef = MutationAttach
   // records all carry them in the one record they already persist.
   composerText?: string;
   composerMentions?: readonly ComposerMention[];
+  // Native local-draft ownership only. Never copied into the RPC payload;
+  // absent on older rows and on hosts that do not use native draft capture.
+  draftCaptureToken?: string;
   // A transcript action did not consume the composer. Refusal recovery stays
   // explicit rather than replacing even an empty draft. Local only, not RPC.
   preserveComposer?: boolean;
@@ -92,7 +95,7 @@ export interface MutationOutboxRecord<A extends MutationAttachmentRef = Mutation
   extends MutationRecord<A> {
   state: MutationOutboxState;
   attempted?: boolean;
-  // #4342: how many attempts this row has in flight or unresolved - a mark
+  // How many attempts this row has in flight or unresolved - a mark
   // increments, an in-band refusal decrements its own. `attempted` is the
   // boolean the reconcile park and Stop's cancel guard read; this count is
   // what keeps that boolean honest when one row carries more than one
@@ -101,12 +104,12 @@ export interface MutationOutboxRecord<A extends MutationAttachmentRef = Mutation
   // records written before the field existed carry none: a missing count
   // then reads as the attempted boolean's own evidence - one unresolved
   // attempt when true, zero when false - and a record with neither field
-  // (a pre-#936 row, persisted untouched through every later schema
+  // (a row from before this field, persisted untouched through every later schema
   // version) keeps one unresolved attempt as its baseline, because its
   // delivery state from that era is unknown and only an explicit
   // `attempted: false` proves no earlier attempt.
   unresolvedAttempts?: number;
-  // #4342: the ref's stop epoch at enqueue time - the barrier's own read,
+  // The ref's stop epoch at enqueue time - the barrier's own read,
   // stored. A refusal proves the attempt never landed, and a Stop whose
   // cancel scan skipped this attempted row bumped the epoch after this
   // capture - the refusal's rollback then holds the row canceled (released
@@ -127,6 +130,14 @@ export interface MutationOptimisticRecord<A extends MutationAttachmentRef = Muta
 export interface MutationRecoveryRecord<A extends MutationAttachmentRef = MutationAttachmentRef>
   extends MutationOutboxRecord<A> {
   recoveryKind: MutationRecoveryKind;
+  // Composition CAS version; absent on older records and interpreted as zero.
+  compositionRevision?: number;
+  // Composer pane that last wrote this composition. Stable across child
+  // remounts and distinct for every pane; absent on older or native records.
+  compositionOwnerId?: string;
+  // Local browser draft snapshot incorporated into this recovery row. Not an
+  // RPC field; absent on older rows and on native recovery records.
+  localDraftRevisionId?: string;
   // Why the daemon refused, in its own words. Without it a recovery row can
   // only say that something did not happen: a Steer or Stop refused with
   // nothing on screen explaining why. Optional because records written before
@@ -168,19 +179,43 @@ export function acceptedRecord<A extends MutationAttachmentRef = MutationAttachm
     payload: source.payload,
     attachments: source.attachments,
     optimisticDisplay: source.optimisticDisplay,
+    draftCaptureToken: source.draftCaptureToken,
     state: "accepted",
   };
 }
 
-// The "receipt carries input display" half of the rule both adapters use to
-// decide whether a "pending" receipt keeps (or creates) the optimistic copy:
-// the source record's display holds an input array the pending row renders.
-// The receipt's own state (whether it is "pending" at all) is the caller's to
-// check; a host may keep a copy for a reason beyond a display (the web keeps
-// a notes/human/set copy so a retry lookup sees the accepted save as pending).
+// The "receipt carries input display" half of the rule `retainsAcceptedCopy`
+// builds on: the source record's display holds an input array the pending row
+// renders.
 export function carriesOptimisticInput(record: { optimisticDisplay: unknown }): boolean {
   const display = record.optimisticDisplay;
   return display !== null && typeof display === "object" && "input" in display && Array.isArray(display.input);
+}
+
+// Whether a receipt settles a record into an accepted optimistic copy instead
+// of retiring it. A "pending" receipt means accepted but not yet described by
+// authoritative state. The daemon reports pending for exactly the mutations
+// whose acceptance a read cannot yet prove (every input-bearing turn verb and
+// notes/human/set), and the host owes each of them a kept copy until a later
+// read's authoritative ids settle it. For the turn verbs the kept copy is the
+// optimistic display itself; a note carries no display, but its kept copy is
+// what tells humanNoteDrafts' post-retry lookup an accepted save is pending
+// rather than settled elsewhere. A receipt-only control (a Stop) settles
+// terminal at acceptance and keeps no copy. Both adapters call this, so the
+// retention rule cannot drift between them.
+export function retainsAcceptedCopy(
+  source: { optimisticDisplay: unknown; method: string },
+  projectionState: string,
+): boolean {
+  return projectionState === "pending" && (carriesOptimisticInput(source) || source.method === "notes/human/set");
+}
+
+// Whether settling a record also retires its recovery row. A recovery row a
+// composer has edited (compositionRevision above zero) holds the user's
+// unsent text and outlives the settlement; hosts with no composer never write
+// a revision, so every row of theirs settles.
+export function settlementRetiresRecovery(recovery: { compositionRevision?: number }): boolean {
+  return (recovery.compositionRevision ?? 0) === 0;
 }
 
 // --- client provenance -------------------------------------------------------

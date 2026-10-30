@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -57,7 +56,7 @@ func (s *Session) emitWithJobTreeRevision(kind events.EventKind, data events.Eve
 			s.maybeAutoSave()
 		}
 	}
-	s.emitWithProvenance(kind, data, p)
+	s.emitWithProvenance(data, p)
 	if kind == events.EventJobStarted || kind == events.EventJobFinished {
 		s.emitSessionActivityChanged(s.ID(), appwire.SessionActivityResourceJobs)
 	}
@@ -117,6 +116,7 @@ type Session struct {
 	id                     string
 	cfg                    SessionConfig
 	delegateController     *delegateTreeController
+	quietWatch             delegateQuietWatchHost
 	delegateRootSessionID  string
 	owningDelegateID       string
 	ownsDelegateController bool
@@ -137,8 +137,7 @@ type Session struct {
 	// lastDroppedModelFallbacks records the cfg.ModelFallbacks entries dropped
 	// by the most recent SetModel's post-switch revalidation (entries that no
 	// longer validate against the new profile). Nil until a switch drops any.
-	// Surfaced via DroppedModelFallbacksFromLastSwitch for a later marker
-	// warning line; this type does not build that marker itself.
+	// The model-switch marker surfaces it as a warning line.
 	lastDroppedModelFallbacks []string
 	// httpClient issues the web_fetch HTTP GET. Nil means the production default
 	// (http.DefaultClient); tests set it on their own session to serve a fabricated
@@ -168,7 +167,7 @@ type Session struct {
 	// all-"test" project into the "Test runs" group.
 	origin string
 	// strictTranscriptMaxLineBytes caps a child transcript line during resumability
-	// checks. Zero means the production default (transcriptJSONLMaxLineBytes); tests
+	// checks. Zero means the production default (transcript.DefaultMaxLineBytes); tests
 	// set a small value on their own session to exercise the oversized-line path
 	// without mutating a shared global.
 	strictTranscriptMaxLineBytes int
@@ -288,13 +287,30 @@ type Session struct {
 	//
 	// The turn loop (ProcessInput → processOneInput) is the primary owner of
 	// most mutable state. External callers — SetModel/SetReasoningEffort,
-	// Steer/Enqueue/DrainAsSteer, Snapshot/State/DetailedStatus, and Close —
+	// Steer, the client-mutation queue handlers, Snapshot/State/DetailedStatus, and Close —
 	// run on other goroutines and race it, so the primitives below guard the
 	// shared fields. Several collaborators carry their OWN locks and are NOT
 	// covered by mu: contextMgr (contextmgr.Manager.mu), reg (tool.Registry.mu),
 	// subagents (subagentManager.mu / per-child sub.mu), taskStore
 	// (TaskStore.mu — note it may be SHARED with child sessions when
 	// ShareTasksWithChildren is set), and transcript (transcript.Writer.mu).
+	//
+	// LOCK ORDER (outermost first; a lock to the left is taken before any to its
+	// right and never while holding one to its right):
+	//   responseSideEffectsMu > mu          (Close takes both)
+	//   restMu > delegateDeliveryMu > mu
+	//   metaSaveMu > mu                     (maybeAutoSave)
+	//   goalUpdateMu > mu, notesUpdateMu > mu (emit runs after mu is released)
+	// drainAbandonedMu and childCommittedSendMu are leaves: nothing is taken under
+	// them.
+	//
+	// Every field whose comment says "Guarded by mu" (or s.mu) is guarded by mu;
+	// that includes the rest fields restGeneration, restOwedGeneration,
+	// restBeforeInput, quietRestBeforeInput, endReasonBeforeInput and
+	// resumeQuietRest. restMu does not guard those fields: it makes a rest's
+	// transition and its STATUS_SETTLED emit atomic against restGeneration moving.
+	// The group below is the original core set; later fields carry their own
+	// guard in their field comment.
 	//
 	// mu guards: history, state, closing, turns, turnBudgetWarningEmitted,
 	//   modelResponses, totalRounds,
@@ -303,7 +319,7 @@ type Session struct {
 	//   env so the two never observe a torn intermediate state), the mutable
 	//   cfg knobs (ReasoningEffort, command timeouts, MaxToolRoundsPerInput),
 	//   cachedSystemPrompt, cachedToolDefs, the comm communicate-result,
-	//   steeringQueue, activeProvenance, followups, inputQueue,
+	//   steeringQueue, activeProvenance, inputQueue,
 	//   loopDetectionCount, the task* reminder counters, depth, the goalInTurn
 	//   flag and kickFunc callback, the naming name-state, envTracker,
 	//   envContextState, currentRoundRecorder, salvagedTurnRound, and the worktree
@@ -496,7 +512,6 @@ type Session struct {
 	// mu.
 	steeringParked   bool
 	visionTurnOwners []*struct{ _ byte }
-	followups        []string
 
 	// activeProvenance is the causal provenance carried by the input currently
 	// being processed. It is stamped onto every event the turn emits, reset to
@@ -517,7 +532,7 @@ type Session struct {
 	// composer can queue image-bearing messages alongside text.
 	inputQueue []queuedInput
 	// queueEventsMu makes an inputQueue mutation and its EventQueueChanged emit
-	// atomic to external observers (Enqueue/DrainAsSteer/pop/pushQueueHead).
+	// atomic to external observers (the client-mutation queue handlers/pop/pushQueueHead).
 	// LOCK ORDER: queueEventsMu > mu.
 	queueEventsMu sync.Mutex
 	// publishedQueueRevision is guarded by queueEventsMu and prevents a late
@@ -602,7 +617,8 @@ type Session struct {
 	recordedExecutions map[string]bool
 	// roundID names the open model round, "" when none is open; guarded by
 	// mu. See roundIDForModelCall.
-	roundID string
+	roundID         string
+	roundAuthorship *schema.TranscriptAuthorship
 	// lastRoundID is the latest round the session opened, and lastRoundEnded
 	// whether its EventRoundEnded was emitted; guarded by mu.
 	lastRoundID    string
@@ -781,6 +797,9 @@ type Session struct {
 	driveCounter                     *treeCounter      // tree-wide drive-down turn counter, budgeted separately from spawns
 	subagents                        *subagentManager
 	delegateRestoreBeforeSideEffects func(*Session)
+	// delegateRestoreAfterCommit observes a cold attention restore after its
+	// commit and before the owner chain is restored. Test-only.
+	delegateRestoreAfterCommit func(delegateID string)
 	// restoredMetaIsSubagent is set from the persisted meta.IsSubagent flag
 	// during RestoreSessionFromMetaWithConfig, before initSessionState runs. It
 	// exists because cfg.spawn is never persisted (json:"-"): a bare `serve
@@ -829,7 +848,7 @@ type Session struct {
 	notifyWakeHolds    int
 	notifyWakeDeferred bool
 	notifyFunc         func()
-	jobNotifyRetry     notificationRetry
+	jobNotifyRetry     backoffTimer
 	// jobNotifyCallbacks counts in-flight scheduled notification retry
 	// callbacks, including callbacks begun before retirement controller
 	// attachment. Guarded by pendingJobNotifsMu.
@@ -939,6 +958,7 @@ type Session struct {
 	readFilesMu sync.RWMutex
 
 	// SESSION_END deduplication: emitted exactly once across ProcessInput and Close.
+	// Guarded by mu; read and written only in session_end.go.
 	sessionEndEmitted bool
 
 	naming sessionName
@@ -1050,7 +1070,7 @@ type Session struct {
 	// sole durable authority; restart rebuilds this map from that fold.
 	rootAttentionWakeIDs map[string]struct{}
 	rootAttentionWake    bool
-	rootAttentionRetry   notificationRetry
+	rootAttentionRetry   backoffTimer
 	// rootAttentionPaused records that a permanent provider failure deferred
 	// the pending root attention and the session has said so (see
 	// finishRootDelegateAttentionTurn); a delivery or a model switch ends
@@ -1080,7 +1100,7 @@ type Session struct {
 	turnNameRetryMu sync.Mutex
 	// turnNameRetry paces the re-wake for a notification that stood down
 	// unnamed. See scheduleRunningTurnNameRetry (session_active_turn.go).
-	turnNameRetry notificationRetry
+	turnNameRetry backoffTimer
 	// turnNameStoreUnhealthy latches the client-mutation-store failure warning
 	// to once per unhealthy episode. See warnStoreUnhealthyOnce.
 	turnNameStoreUnhealthy bool
@@ -1107,11 +1127,11 @@ type Session struct {
 	delegateAttentionWarnMu   sync.Mutex
 	delegateAttentionWarned   map[delegateAttentionWarning]string
 	delegateAttentionArmIDs   map[string]struct{}
-	delegateAttentionArmRetry notificationRetry
-	stableAttentionRetry      notificationRetry
+	delegateAttentionArmRetry backoffTimer
+	stableAttentionRetry      backoffTimer
 	delegateDeliveryWake      bool
 	delegateDeliveryPumping   bool
-	delegateDeliveryRetry     notificationRetry
+	delegateDeliveryRetry     backoffTimer
 	// transcriptReady records that attachTranscript has run, i.e. that the
 	// session has finished deciding whether it has a transcript at all. Until
 	// then a turn has nowhere to go and is held in pendingTranscriptTurns; a
@@ -1133,23 +1153,16 @@ type sessionDetachedProcess struct {
 	done <-chan struct{}
 }
 
-type notificationRetry struct {
-	active     bool
-	delay      time.Duration
-	generation int
-}
-
 // runningTurnReleaseRetryState paces the re-attempts of a release write the
-// client mutation store refused. It counts attempts where notificationRetry
-// does not, because this loop is finite: see runningTurnReleaseRetryLimit. It
-// needs no `active` flag for the same reason -- every re-attempt is armed by
-// the failure of the one before it, so there is never a second arrival to
+// client mutation store refused. It adds an attempt count to the backoffTimer
+// because this loop is finite: see runningTurnReleaseRetryLimit. Nothing
+// consults the timer's `active` flag -- every re-attempt is armed by the
+// failure of the one before it, so there is never a second arrival to
 // coalesce, and the generation alone strands a timer whose write has since
 // landed.
 type runningTurnReleaseRetryState struct {
-	attempts   int
-	delay      time.Duration
-	generation int
+	attempts int
+	backoffTimer
 }
 
 const (
@@ -1346,7 +1359,7 @@ func (s *Session) SetNotifyFunc(f func()) {
 	// the user, not work in progress, and waking for it at attach would restart
 	// the session and deliver the steer the user just stopped -- the open
 	// steering rail issue #174 closes (issue #146, Option C — park in place).
-	if pending || s.hasRunnableUserSteering() || s.QueueDepth() > 0 || s.hasPendingDelegateDeliveries() || s.pendingRootDelegateAttention() || s.hasPendingStableDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) {
+	if pending || s.hasRunnableUserSteering() || s.QueueDepth() > 0 || s.hasPendingDelegateDeliveries() || s.pendingRootDelegateAttention() || s.hasPendingDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) {
 		f()
 	}
 }
@@ -1385,14 +1398,16 @@ func (s *Session) scheduleJobNotificationRetryLocked() {
 	if s.jobNotifyRetry.active {
 		return
 	}
-	delay := s.jobNotifyRetry.delay
-	if delay <= 0 {
-		delay = jobNotificationRetryInitialDelay
-	}
-	s.jobNotifyRetry.active = true
-	s.jobNotifyRetry.generation++
-	generation := s.jobNotifyRetry.generation
+	delay, generation := s.jobNotifyRetry.arm()
 	s.sclock().AfterFunc(delay, func() {
+		// A reset cannot cancel this one-shot. Reject an already superseded
+		// firing before admission would create a lease and reset idle eligibility.
+		s.pendingJobNotifsMu.Lock()
+		stale := s.jobNotifyRetry.superseded(generation)
+		s.pendingJobNotifsMu.Unlock()
+		if stale {
+			return
+		}
 		release, err := s.beginJobNotifyCallback()
 		if err != nil {
 			// Admission was refused for this one-shot firing (a real TryClaim
@@ -1404,7 +1419,7 @@ func (s *Session) scheduleJobNotificationRetryLocked() {
 			// resetJobNotificationRetry or a newer schedule, and re-arming it
 			// would resurrect a stale wake the owner already settled.
 			s.pendingJobNotifsMu.Lock()
-			if s.jobNotifyRetry.generation == generation {
+			if !s.jobNotifyRetry.superseded(generation) {
 				s.jobNotifyRetry.active = false
 				s.scheduleJobNotificationRetryLocked()
 			}
@@ -1413,18 +1428,13 @@ func (s *Session) scheduleJobNotificationRetryLocked() {
 		}
 		defer release()
 		s.pendingJobNotifsMu.Lock()
-		if s.jobNotifyRetry.generation != generation {
+		// A reset may have landed between the precheck and admission.
+		if !s.jobNotifyRetry.fire(generation) {
 			s.pendingJobNotifsMu.Unlock()
 			return
 		}
-		s.jobNotifyRetry.active = false
 		pending := len(s.pendingJobNotifs) > 0
-		nextDelay := min(delay*2, jobNotificationRetryMaxDelay)
-		if pending {
-			s.jobNotifyRetry.delay = nextDelay
-		} else {
-			s.jobNotifyRetry.delay = jobNotificationRetryInitialDelay
-		}
+		s.jobNotifyRetry.settle(pending, delay, jobNotificationRetryMaxDelay)
 		s.pendingJobNotifsMu.Unlock()
 		if pending {
 			s.notify()
@@ -1438,9 +1448,7 @@ func (s *Session) resetJobNotificationRetry() {
 		s.pendingJobNotifsMu.Unlock()
 		return
 	}
-	s.jobNotifyRetry.generation++
-	s.jobNotifyRetry.active = false
-	s.jobNotifyRetry.delay = jobNotificationRetryInitialDelay
+	s.jobNotifyRetry.reset()
 	s.pendingJobNotifsMu.Unlock()
 }
 
@@ -1571,7 +1579,7 @@ func (s *Session) SetReasoningEffort(effort string) error {
 	s.cfg.ReasoningEffort = llm.NormalizeReasoningEffort(effort)
 	normalized := s.cfg.ReasoningEffort
 	s.mu.Unlock()
-	s.emit(events.EventReasoningEffortChanged, events.ReasoningEffortChangedData{ReasoningEffort: normalized})
+	s.emit(events.ReasoningEffortChangedData{ReasoningEffort: normalized})
 	// Flush meta.json so a daemon crash before the next happy-path turn
 	// boundary doesn't leave on-disk cfg stale. Kata wnfz. maybeAutoSave
 	// re-acquires s.mu via s.Meta(), so the lock must be released first.
@@ -1641,7 +1649,7 @@ func (s *Session) reapplyProviderSpecificTools(oldProfile, newProfile *provider.
 // unrepresentableHistoryKinds), or when the target model fails live
 // membership validation (see validateModelSwitchMembership). On a successful
 // switch, cfg.ModelFallbacks entries that no longer validate against the new
-// profile are dropped; see DroppedModelFallbacksFromLastSwitch.
+// profile are dropped and reported in the model-switch marker.
 func (s *Session) SetModel(model string) error {
 	release, admissionErr := s.beginRetirementMutation("admission")
 	if admissionErr != nil {
@@ -1758,7 +1766,7 @@ func (s *Session) SetModel(model string) error {
 		NewProvider: nextProfile.ID(), NewModel: nextProfile.Model(),
 	}
 	s.recordTurn(marker, marker)
-	s.emit(events.EventModelChanged, events.ModelChangedData{
+	s.emit(events.ModelChangedData{
 		OldProvider:           oldProfile.ID(),
 		OldModel:              oldProfile.Model(),
 		NewProvider:           nextProfile.ID(),
@@ -1855,7 +1863,7 @@ func (s *Session) SetVisionModel(ref string) error {
 	}
 	s.cfg.VisionModel = ref
 	s.mu.Unlock()
-	s.emit(events.EventVisionModelChanged, events.VisionModelChangedData{OldVisionModel: oldCanonical, NewVisionModel: ref})
+	s.emit(events.VisionModelChangedData{OldVisionModel: oldCanonical, NewVisionModel: ref})
 	s.maybeAutoSave()
 	return nil
 }
@@ -1931,16 +1939,6 @@ func buildModelSwitchMarkerText(p modelSwitchMarkerParams) string {
 	return strings.Join(lines, "\n")
 }
 
-// DroppedModelFallbacksFromLastSwitch returns the cfg.ModelFallbacks entries
-// dropped by the most recent SetModel call's post-switch revalidation (nil if
-// none were dropped, or no switch has occurred yet). A later marker (Task 5)
-// surfaces this as a warning line; this method only exposes the names.
-func (s *Session) DroppedModelFallbacksFromLastSwitch() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.lastDroppedModelFallbacks
-}
-
 // Rename sets a user-chosen session title. It records NameSource="user" so the
 // auto-namers (prompt + compaction) will never overwrite it — shouldApplySession
 // NameLocked and shouldNameFromCompaction both reject any source that is not
@@ -1965,7 +1963,7 @@ func (s *Session) Rename(name string) error {
 	s.naming.updated = s.sclock().Now().UTC()
 	s.naming.set = true
 	s.mu.Unlock()
-	s.emit(events.EventSessionNameChanged, events.SessionNameChangedData{Name: name, Source: sessionNameSourceUser})
+	s.emit(events.SessionNameChangedData{Name: name, Source: sessionNameSourceUser})
 	// maybeAutoSave re-acquires s.mu via s.Meta(); must not hold the lock here.
 	s.maybeAutoSave()
 	return nil
@@ -2026,12 +2024,6 @@ func (s *Session) communicatedReply() (string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.comm.reply, s.comm.called
-}
-
-func (s *Session) communicateStructuredResult() (any, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.comm.structured, s.comm.structured != nil
 }
 
 // communicateEndReason is why this input's terminal communicate call ended
@@ -2213,7 +2205,7 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 		if hook := s.cfg.testOnly.beforeEnvironmentEventPublish; hook != nil {
 			hook()
 		}
-		s.emit(events.EventEnvironment, events.EnvironmentData{TurnID: turn.StableTurnID, Text: block})
+		s.emit(events.EnvironmentData{TurnID: turn.StableTurnID, Text: block})
 	}
 	s.attentionMu.Unlock()
 	if committed {
@@ -2228,7 +2220,7 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 	// is on the writer's warning queue; surface it here, outside the door.
 	s.surfaceTranscriptWarnings()
 	if err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
 	return err
 }
@@ -2371,18 +2363,6 @@ func (s *Session) appendTurnWithDurableTranscriptMessage(kind schema.TurnKind, l
 	return s.appendPairedTurnVia(kind, live, persisted, s.writeTranscriptDurableLocked)
 }
 
-// appendTurnWithSyncedTranscriptMessage records a turn a durability owner
-// depends on being both recorded AND synced before it commits state recovery
-// trusts. Its sole production caller is the delegate seed input (preseedInput):
-// the child is adopted and runs on the strength of that seed, and reads it back
-// from a transcript where a retained (unsynced) line is already visible — so
-// the record must be synced, not merely landed (H1). AppendDurable's
-// recorded-or-nil is the wrong door here for the same reason recordTurn's is
-// the wrong door for a skill carrier.
-func (s *Session) appendTurnWithSyncedTranscriptMessage(kind schema.TurnKind, live, persisted llm.Message) error {
-	return s.appendPairedTurnVia(kind, live, persisted, s.writeTranscriptSyncedLocked)
-}
-
 func (s *Session) appendPairedTurnVia(kind schema.TurnKind, live, persisted llm.Message, write func(schema.Turn) error) error {
 	t := schema.NewTurn(kind, live)
 	persistedTurn := t
@@ -2393,7 +2373,7 @@ func (s *Session) appendPairedTurnVia(kind schema.TurnKind, live, persisted llm.
 		func() { s.history = append(s.history, t) },
 	)
 	if err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
 	return err
 }
@@ -2431,7 +2411,7 @@ func (s *Session) recordTurn(live, persisted schema.Turn) transcript.Record {
 	}
 	s.attentionMu.Unlock()
 	if err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
 	s.surfaceTranscriptWarnings()
 	return rec
@@ -2586,7 +2566,7 @@ func (s *Session) drainTranscriptWarnings(sink func(events.WarningData)) {
 // surfaceTranscriptWarnings emits every pending retained-entry diagnostic. Its
 // callers have already released the transcript locks.
 func (s *Session) surfaceTranscriptWarnings() {
-	s.drainTranscriptWarnings(func(w events.WarningData) { s.emit(events.EventWarning, w) })
+	s.drainTranscriptWarnings(func(w events.WarningData) { s.emit(w) })
 	s.announceFailClosed()
 }
 
@@ -2698,6 +2678,7 @@ func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttem
 		ResponseContextMarker:           finalAttempt.ContextMarker,
 		RoundID:                         s.roundIDForModelCall(),
 	}
+	t.Authorship = s.roundTranscriptAuthorship()
 	err := s.appendTurnAfterTranscriptWrite(
 		t,
 		func() error { return s.writeTranscriptDurableLocked(t) },
@@ -2711,7 +2692,7 @@ func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttem
 		},
 	)
 	if err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
 	return err
 }
@@ -2721,7 +2702,7 @@ func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttem
 // The conversation history is already durably recorded by the transcript JSONL.
 func (s *Session) maybeAutoSave() {
 	if err := s.autoSaveMeta(); err != nil {
-		s.emit(events.EventWarning, events.WarningData{
+		s.emit(events.WarningData{
 			Message: fmt.Sprintf("auto-save failed: %v", err),
 		})
 	}
@@ -2766,17 +2747,11 @@ func (s *Session) saveSessionMetaLocked() error {
 	return schema.SaveSessionMeta(s.stateDir, meta)
 }
 
-// sessionsSubdir is the directory, under a session's StateDir, where its
-// per-session files live: the transcript and log JSONL written by package
-// agent, alongside the meta.json/snapshot written by package schema (which
-// keeps its own private copy of this name).
-const sessionsSubdir = "sessions"
-
 // TranscriptPath returns the path to this session's transcript JSONL file,
 // or empty string if state persistence is not enabled.
 func (s *Session) TranscriptPath() string {
 	if s.stateDir == "" {
 		return ""
 	}
-	return filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
+	return schema.SessionTranscriptPath(s.stateDir, s.id)
 }

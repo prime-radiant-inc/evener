@@ -5,7 +5,8 @@
 // lines before the first one. The clients count them the same way
 // (appwire-client/typescript/stepWords.ts searchResultCount), and the
 // recorded tool calls in agent/testdata/toolwire pin both readers to the
-// tools' real output.
+// tools' real output. The head-count character limiter treats the entire notes
+// suffix as atomic: fitting output keeps it, a character cut drops it whole.
 package searchresult
 
 import "strings"

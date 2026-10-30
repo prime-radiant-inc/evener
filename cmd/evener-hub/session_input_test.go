@@ -70,7 +70,8 @@ func TestManagerInputRealHubRuntimePersistsCallerNotTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	managerDaemon.ReplaceAppIdentity(managerIdentity, nil)
-	managerDaemon.SetStatus(daemonserver.StatusInfo{SessionID: managerID, State: "idle"})
+	managerDaemon.UpdateSessionInfo(managerID, "", "")
+	managerDaemon.SetState("idle")
 	managerClients := make(chan appwire.SessionHubClient, 1)
 	managerDaemon.AppServer().InstallSessionTools(func(_ context.Context, binding appwire.SessionBinding, client appwire.SessionHubClient) error {
 		if binding.Ref != managerRef {
@@ -99,7 +100,9 @@ func TestManagerInputRealHubRuntimePersistsCallerNotTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	workerDaemon.ReplaceAppIdentity(workerIdentity, nil)
-	workerDaemon.SetStatus(daemonserver.StatusInfo{SessionID: worker.ID(), State: "idle", WorkingDir: workDir})
+	workerDaemon.UpdateSessionInfo(worker.ID(), "", "")
+	workerDaemon.SetState("idle")
+	workerDaemon.SetWorkingDir(workDir)
 	workerDaemon.SetSessionTools(func() *agent.Session { return worker })
 	workerDaemon.SetRetrySafeTurnFunctions(daemonserver.RetrySafeTurnFunctions{
 		Start: worker.AcceptClientMutationStart,

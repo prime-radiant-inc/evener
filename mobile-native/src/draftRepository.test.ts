@@ -5,8 +5,8 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import type { AskQuestionRef } from "@evener/appwire-client";
 import { boundQuestionText, questionsIdentity } from "./questionAnswers";
 import { boundQuestion, MAX_ITEM_BYTES } from "./projectedRows";
-import { DraftRepository } from "./draftRepository";
-import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
+import { DraftRepository, type DraftRecord } from "./draftRepository";
+import { openSqliteSyncDouble, sqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
 
 let directory: string;
 let database: SqliteDoubleDatabase;
@@ -66,6 +66,112 @@ test("image bytes and draft references survive reopen without following another 
 	]);
 	expect(repository.read({ ...destination, hubId: "hub-b" }).images).toBeUndefined();
 	expect(() => repository.imageInputs({ ...destination, hubId: "hub-b" }, [image])).toThrow();
+});
+
+test("composition metadata and resend acknowledgments survive reopen and empty text cleanup", () => {
+	const record = {
+		draft: "",
+		unconfirmed: null,
+		composer: { skillNames: ["review"], mentions: [{ kind: "skill" as const, name: "review", offset: 0 }] },
+		unconfirmedComposer: { recoveryIds: ["source-a", "source-b"] },
+		recoveryResendAcks: ["mutation-a"],
+	};
+	repository.write(destination, record);
+	database.close();
+	openRepository();
+	expect(repository.read(destination)).toEqual(record);
+	repository.write(destination, { ...record, composer: undefined, unconfirmedComposer: undefined });
+	expect(repository.read(destination)).toEqual({ draft: "", unconfirmed: null, recoveryResendAcks: ["mutation-a"] });
+});
+
+test("completed-command cleanup markers survive reopen without becoming draft indicators", () => {
+	const marker = { draft: "", unconfirmed: null, completedCommandRecoveryIds: ["source-a"] };
+	repository.write(destination, marker);
+	database.close();
+	openRepository();
+	expect(repository.read(destination)).toEqual(marker);
+	expect(repository.refsWithDrafts(destination.hubId)).not.toContain(destination.sessionRef);
+});
+
+test("released recovery exclusions survive reopen without becoming a draft indicator", () => {
+	const released = { draft: "", unconfirmed: null, releasedRecoveryIds: ["source-a"] };
+	repository.write(destination, released);
+	database.close();
+	openRepository();
+	expect(repository.read(destination)).toEqual(released);
+	expect(repository.refsWithDrafts(destination.hubId)).not.toContain(destination.sessionRef);
+});
+
+test("a failed whole-record write preserves prior draft content and completion marker", () => {
+	const prior = {
+		draft: "prior work",
+		unconfirmed: null,
+		completedCommandRecoveryIds: ["already-authorized"],
+	};
+	repository.write(destination, prior);
+	database.exec(
+		"CREATE TRIGGER reject_completion_record BEFORE UPDATE ON drafts BEGIN SELECT RAISE(ABORT, 'write rejected'); END",
+	);
+	expect(() =>
+		repository.write(destination, {
+			draft: "replacement",
+			unconfirmed: "uncertain",
+			completedCommandRecoveryIds: ["new-source"],
+		}),
+	).toThrow();
+	expect(repository.read(destination)).toEqual(prior);
+});
+
+test("adds composition columns to a legacy drafts table and preserves existing prose across reopen", () => {
+	database.exec(`DROP TABLE drafts;
+		CREATE TABLE drafts (hub_id TEXT NOT NULL, session_ref TEXT NOT NULL, draft TEXT NOT NULL, unconfirmed TEXT,
+			PRIMARY KEY (hub_id, session_ref));
+		INSERT INTO drafts (hub_id, session_ref, draft, unconfirmed) VALUES ('hub-a', 'session-1', 'legacy prose', NULL);`);
+	repository = new DraftRepository(sqliteSyncDouble(database));
+	expect(repository.read(destination)).toEqual({ draft: "legacy prose", unconfirmed: null });
+	repository.write(destination, {
+		draft: "legacy prose",
+		unconfirmed: null,
+		composer: { commandNames: ["explain"] },
+	});
+	database.close();
+	openRepository();
+	expect(repository.read(destination)).toEqual({
+		draft: "legacy prose",
+		unconfirmed: null,
+		composer: { commandNames: ["explain"] },
+	});
+});
+
+test("metadata and image bytes roll back together when the draft savepoint fails", () => {
+	const originalImage = { id: "original", marker: 1, mediaType: "image/png" };
+	const addedImage = { id: "added", marker: 2, mediaType: "image/png" };
+	const original = {
+		draft: "original text",
+		unconfirmed: null,
+		images: [originalImage],
+		composer: { skillNames: ["review"] },
+	};
+	repository.write(destination, original, [{ ...originalImage, data: "AQID" }]);
+	database.exec(
+		"CREATE TRIGGER reject_composition BEFORE UPDATE ON drafts BEGIN SELECT RAISE(ABORT, 'checkpoint rejected'); END",
+	);
+	expect(() =>
+		repository.write(
+			destination,
+			{
+				draft: "changed text",
+				unconfirmed: null,
+				images: [addedImage],
+				composer: { commandNames: ["explain"] },
+				recoveryResendAcks: ["mutation-a"],
+			},
+			[{ ...addedImage, data: "BAUG" }],
+		),
+	).toThrow();
+	expect(repository.read(destination)).toEqual(original);
+	expect(repository.imageInputs(destination, [originalImage])[0]?.data).toBe("AQID");
+	expect(() => repository.imageInputs(destination, [addedImage])).toThrow();
 });
 
 test("text edits do not rewrite image bytes and a failed checkpoint rolls back references", () => {
@@ -574,4 +680,49 @@ test("refsWithDrafts names the sessions with typed, unconfirmed or image-only dr
 	expect([...repository.refsWithDrafts("hub-a")].sort()).toEqual(["images-only", "typed", "unconfirmed"]);
 	expect([...repository.refsWithDrafts("hub-b")]).toEqual(["elsewhere"]);
 	expect(repository.refsWithDrafts("hub-c").size).toBe(0);
+});
+
+test("composer-only records survive file reopen and clean up without any acknowledgment fields", () => {
+	const destination = { hubId: "hub-composer", sessionRef: "selection-only" };
+	for (const metadata of [{ skillNames: ["skill"] }, { commandNames: ["command"] }, { recoveryIds: ["source"] }]) {
+		repository.write(destination, { draft: "", unconfirmed: null, composer: metadata });
+		database.close();
+		openRepository();
+		expect(repository.read(destination)).toEqual({ draft: "", unconfirmed: null, composer: metadata });
+		repository.write(destination, { draft: "", unconfirmed: null });
+		database.close();
+		openRepository();
+		expect(
+			database
+				.prepare("SELECT count(*) AS count FROM drafts WHERE hub_id = ? AND session_ref = ?")
+				.get(destination.hubId, destination.sessionRef),
+		).toEqual({ count: 0 });
+	}
+});
+
+test("draft discovery includes selections and recovery ownership on its hub but excludes acknowledgment-only and empty metadata", () => {
+	const hubId = "metadata-hub";
+	for (const [sessionRef, record] of [
+		["skill", { composer: { skillNames: ["s"] } }],
+		["command", { composer: { commandNames: ["c"] } }],
+		["source", { composer: { recoveryIds: ["r"] } }],
+		["unconfirmed-skill", { unconfirmedComposer: { skillNames: ["s"] } }],
+		["unconfirmed-command", { unconfirmedComposer: { commandNames: ["c"] } }],
+		["unconfirmed-source", { unconfirmedComposer: { recoveryIds: ["r"] } }],
+		["ack-only", { recoveryResendAcks: ["ack"] }],
+		["empty", { composer: {}, unconfirmedComposer: {} }],
+		["empty-arrays", { composer: { skillNames: [], commandNames: [], recoveryIds: [], mentions: [] } }],
+	] satisfies [string, Partial<DraftRecord>][]) {
+		repository.write({ hubId, sessionRef }, { draft: "", unconfirmed: null, ...structuredClone(record) });
+	}
+	repository.write(
+		{ hubId: "other-hub", sessionRef: "other" },
+		{ draft: "", unconfirmed: null, composer: { skillNames: ["s"] } },
+	);
+	database.close();
+	openRepository();
+	expect(repository.refsWithDrafts(hubId)).toEqual(
+		new Set(["skill", "command", "source", "unconfirmed-skill", "unconfirmed-command", "unconfirmed-source"]),
+	);
+	expect(repository.refsWithDrafts("other-hub")).toEqual(new Set(["other"]));
 });

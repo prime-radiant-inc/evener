@@ -6,6 +6,7 @@ import {
   globalDefaultHint,
   groupOptions,
   inactivePromptDependent,
+  inputDefaultPlaceholder,
   isCollectionKind,
   isPromptCompositeWireField,
   matchesEnvCredentialError,
@@ -14,6 +15,7 @@ import {
   PROMPT_DEPENDENT_WIRE_FIELDS,
   resolvedDefaultLabel,
   resolvedEmptyChoice,
+  resolvedValue,
   schemaPathKind,
 } from "./launchSchema";
 import type { LaunchConfigLayer, LaunchOption } from "./types.gen";
@@ -199,6 +201,38 @@ describe("resolvedEmptyChoice / emptyChoiceLabel", () => {
     const future = opt({ field: "future", wireField: "future", kind: "select", choices: [{ value: "x", label: "X" }] });
     expect(resolvedEmptyChoice(future, "global")).toEqual({ value: "", label: "(default)" });
     expect(resolvedEmptyChoice(future, "project")).toEqual({ value: "", label: "(use global default)" });
+  });
+});
+
+describe("inputDefaultPlaceholder", () => {
+  const maxRounds = opt({ field: "max_rounds", wireField: "maxRounds", kind: "integer" });
+  const text = opt({ field: "model", wireField: "model", kind: "text" });
+
+  test("is empty when no effective layer value exists", () => {
+    expect(inputDefaultPlaceholder(maxRounds, undefined)).toBe("");
+    expect(inputDefaultPlaceholder(text, {})).toBe("");
+    expect(inputDefaultPlaceholder(text, { model: "   " })).toBe("");
+  });
+
+  test("the unlimited sentinels -1 and 0 read the same, and differently from a limit", () => {
+    const unlimited = inputDefaultPlaceholder(maxRounds, { maxRounds: -1 });
+    expect(inputDefaultPlaceholder(maxRounds, { maxRounds: 0 })).toBe(unlimited);
+    expect(inputDefaultPlaceholder(maxRounds, { maxRounds: 12 })).not.toBe(unlimited);
+    expect(inputDefaultPlaceholder(maxRounds, { maxRounds: 12 })).toContain("12");
+  });
+
+  test("clips a long string and leaves a short one whole", () => {
+    expect(inputDefaultPlaceholder(text, { model: "short" })).toContain("short");
+    const long = "x".repeat(500);
+    expect(inputDefaultPlaceholder(text, { model: long }).length).toBeLessThan(100);
+  });
+});
+
+describe("resolvedValue", () => {
+  test("reads the effective layer by wire field, undefined without one", () => {
+    const o = opt({ field: "sandbox_net", wireField: "sandboxNet", kind: "boolean" });
+    expect(resolvedValue(o, { sandboxNet: false })).toBe(false);
+    expect(resolvedValue(o, undefined)).toBeUndefined();
   });
 });
 

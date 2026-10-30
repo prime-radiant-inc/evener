@@ -51,7 +51,7 @@ func TestServeDrainAbandonsARealStopPendingDelegate(t *testing.T) {
 		steps: []func(llm.Request) llm.Response{
 			func(llm.Request) llm.Response {
 				args, _ := json.Marshal(map[string]any{"file_path": "WEDGED-REAL-SERVE"})
-				return toolCallResponse(llm.ToolCallData{ID: "read-1", Name: "read_file", Arguments: args, Type: "function"})
+				return agenttest.ToolCallResponse(llm.ToolCallData{ID: "read-1", Name: "read_file", Arguments: args, Type: "function"})
 			},
 		},
 	})
@@ -96,7 +96,7 @@ func TestServeDrainAbandonsARealStopPendingDelegate(t *testing.T) {
 	if err := root.executeDelegateMutationPlans(stopPlans); err != nil {
 		t.Fatalf("execute stop plans: %v", err)
 	}
-	row, ok := root.directStableDelegateForChildSession(created.ChildSessionID)
+	row, ok := root.directDelegateForChildSession(created.ChildSessionID)
 	if !ok || row.pendingStopSeq == 0 {
 		t.Fatalf("real stop did not leave pending stop: ok=%v row=%#v", ok, row)
 	}

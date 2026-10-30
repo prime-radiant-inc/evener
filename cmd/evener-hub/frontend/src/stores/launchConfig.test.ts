@@ -1,16 +1,10 @@
 // @vitest-environment node
 
 import type { LaunchConfigLayer, LaunchConfigResolved, LaunchOptionSchemaResponse } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { connectionStore } from "./connection";
+import { connectReadyFakeClient } from "../testing/connectionTestUtils";
+import { resetConnectionStoreForTests } from "./connection";
 import { launchConfigStore, resetLaunchConfigStoreForTests } from "./launchConfig";
-
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  return fake;
-}
 
 const SCHEMA: LaunchOptionSchemaResponse = {
   options: [
@@ -29,12 +23,12 @@ const RESOLVED: LaunchConfigResolved = {
 };
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetLaunchConfigStoreForTests();
 });
 
 afterEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
 });
 
 describe("schema", () => {
@@ -43,7 +37,7 @@ describe("schema", () => {
   });
 
   test("fetches evener/launch/schema and caches the result", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let calls = 0;
     fake.on("evener/launch/schema", () => {
       calls += 1;
@@ -57,7 +51,7 @@ describe("schema", () => {
   });
 
   test("a failed schema fetch is not cached - the next call retries", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let calls = 0;
     fake.on("evener/launch/schema", () => {
       calls += 1;
@@ -71,7 +65,7 @@ describe("schema", () => {
   });
 
   test("two concurrent callers share one in-flight schema request", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let calls = 0;
     let resolveRequest: ((value: LaunchOptionSchemaResponse) => void) | undefined;
     fake.on(
@@ -97,7 +91,7 @@ describe("schema", () => {
 
 describe("getLayer", () => {
   test("calls evener/launch/getLayer with cwd+layer and returns the layer, uncached", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let calls = 0;
     fake.on("evener/launch/getLayer", (params) => {
       calls += 1;
@@ -118,7 +112,7 @@ describe("getLayer", () => {
 
 describe("setLayer", () => {
   test("calls evener/launch/setLayer with cwd+layer+config and returns the resolved config", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/launch/setLayer", (params) => {
       expect(params).toEqual({ cwd: "/", layer: "global", config: LAYER });
       return RESOLVED;
@@ -130,7 +124,7 @@ describe("setLayer", () => {
 
 describe("resolve", () => {
   test("calls evener/launch/resolve with cwd and no overrides by default", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/launch/resolve", (params) => {
       expect(params).toEqual({ cwd: "/repo" });
       return RESOLVED;
@@ -142,7 +136,7 @@ describe("resolve", () => {
 
 describe("trustRepo", () => {
   test("calls evener/launch/trustRepo with cwd+hash and returns the resolved config", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/launch/trustRepo", (params) => {
       expect(params).toEqual({ cwd: "/repo", hash: "abc123" });
       return RESOLVED;
@@ -154,7 +148,7 @@ describe("trustRepo", () => {
 
 describe("validatePath", () => {
   test("calls evener/path/validate with path+kind and returns the response", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/path/validate", (params) => {
       expect(params).toEqual({ path: "/opt/plugins", kind: "dir" });
       return { path: "/opt/plugins", valid: true };
@@ -164,7 +158,7 @@ describe("validatePath", () => {
   });
 
   test("omits kind when not given", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/path/validate", (params) => {
       expect(params).toEqual({ path: "/opt", kind: undefined });
       return { path: "/opt", valid: true };

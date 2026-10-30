@@ -235,7 +235,7 @@ describe("transcript display", () => {
 	it("takes a patch at the current revision and moves that layout's revision on", () => {
 		const demo = setup();
 		const { mobile } = demo.answer("evener/settings/transcriptDisplay/get", {});
-		const config = { ...mobile.config, content: { kind: "preset", level: "full" } };
+		const config = { ...mobile.config, content: { kind: "preset", level: "full" as const } };
 		expect(
 			demo.answer("evener/settings/transcriptDisplay/patch", { layout: "mobile", expectedRevision: 0, config }),
 		).toEqual({ layout: "mobile", revision: 1, config });

@@ -3,8 +3,7 @@ package appwire
 import (
 	"bytes"
 	"encoding/json"
-	"os"
-	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -283,41 +282,20 @@ func TestBackpressureRefusalCarriesTheTransientEnvelope(t *testing.T) {
 	}
 }
 
-// TestRetrySafeMutationMethodsMatchSharedDispatcher pins the Go retry-safe
-// mutation set against the shared TypeScript dispatcher's set
-// (RETRY_SAFE_MUTATION_METHODS, appwire-client/typescript/state/mutation/
-// dispatcher.ts): the hub refuses only methods both sides agree are safe to
-// resend unchanged, so neither set can drift. thread/start is the known
-// exclusion — it can refuse after the session spawned (#3184) — and ping is
-// a connection method, never a mutation.
-func TestRetrySafeMutationMethodsMatchSharedDispatcher(t *testing.T) {
-	source, err := os.ReadFile("../appwire-client/typescript/state/mutation/dispatcher.ts")
-	if err != nil {
-		t.Fatalf("read dispatcher.ts: %v", err)
+// TestRetrySafeMutationMethod pins the retry-safe set the hub refuses in band
+// for backpressure; the TypeScript dispatcher takes the same list from the
+// generated RETRY_SAFE_MUTATION_METHODS. thread/start is the known exclusion
+// (it can refuse after the session spawned, #3184) and ping is a connection
+// method, never a mutation.
+func TestRetrySafeMutationMethod(t *testing.T) {
+	known := map[string]bool{}
+	for _, m := range Methods {
+		known[m.Name] = true
 	}
-	literal := regexp.MustCompile(`(?s)RETRY_SAFE_MUTATION_METHODS[^=]*=\s*new Set\(\[(.*?)\]\)`).
-		FindStringSubmatch(string(source))
-	if literal == nil {
-		t.Fatal("RETRY_SAFE_MUTATION_METHODS set literal not found in dispatcher.ts")
-	}
-	dispatcher := map[string]bool{}
-	for _, name := range regexp.MustCompile(`"([^"]+)"`).FindAllStringSubmatch(literal[1], -1) {
-		dispatcher[name[1]] = true
-	}
-	if len(dispatcher) == 0 {
-		t.Fatal("RETRY_SAFE_MUTATION_METHODS set literal parsed empty")
-	}
-	for name := range retrySafeMutationMethods {
-		if !dispatcher[name] {
-			t.Errorf("Go set has %q, the shared dispatcher's set does not", name)
+	for _, name := range RetrySafeMutationMethods {
+		if !known[name] {
+			t.Errorf("retry-safe method %q is not in the method catalog", name)
 		}
-	}
-	for name := range dispatcher {
-		if !retrySafeMutationMethods[name] {
-			t.Errorf("the shared dispatcher's set has %q, the Go set does not", name)
-		}
-	}
-	for name := range retrySafeMutationMethods {
 		if !RetrySafeMutationMethod(name) {
 			t.Errorf("RetrySafeMutationMethod(%q) = false, want true", name)
 		}
@@ -325,6 +303,75 @@ func TestRetrySafeMutationMethodsMatchSharedDispatcher(t *testing.T) {
 	for _, name := range []string{MethodThreadStart, MethodPing, "turn/bogus", ""} {
 		if RetrySafeMutationMethod(name) {
 			t.Errorf("RetrySafeMutationMethod(%q) = true, want false", name)
+		}
+	}
+}
+
+// Every method ValidateMutationParams requires a clientMutationId for is
+// deduplicated by that id on the daemon, so a resend is a replay no-op and the
+// method is retry-safe.
+func TestMutationsRequiringClientMutationIDAreRetrySafe(t *testing.T) {
+	for method, fields := range mutationRequiredFields {
+		if !slices.Contains(fields, "clientMutationId") {
+			continue
+		}
+		if !RetrySafeMutationMethod(method) {
+			t.Errorf("%q requires clientMutationId but is not retry-safe", method)
+		}
+	}
+}
+
+// A wire client decodes error data as the typed ErrorData on some paths and as
+// a generic map on others, and a typed refusal may embed ErrorData. The
+// decoded read and the mutation stamp treat every such shape alike.
+func TestDecodedErrorDataReadsAndStampsEveryShape(t *testing.T) {
+	typed := ErrorData{EvenerErrorInfo: ErrorSessionUnavailable, ClientMutationID: "m1", Cause: "c"}
+	shapes := map[string]any{
+		"typed": typed,
+		"map": map[string]any{
+			"evenerErrorInfo": string(ErrorSessionUnavailable), "clientMutationId": "m1", "cause": "c",
+		},
+		"embedded": HostFieldErrorData{ErrorData: typed, Field: "address"},
+	}
+	for name, data := range shapes {
+		t.Run(name, func(t *testing.T) {
+			got, ok := DecodedErrorData(data)
+			if !ok || got != typed {
+				t.Fatalf("DecodedErrorData = %+v, %v; want %+v", got, ok, typed)
+			}
+		})
+	}
+	for _, other := range []any{nil, "text", struct{ Name string }{"x"}} {
+		if got, ok := DecodedErrorData(other); ok && got != (ErrorData{}) {
+			t.Fatalf("DecodedErrorData(%#v) = %+v, want none", other, got)
+		}
+	}
+
+	for _, name := range []string{"typed", "map"} {
+		t.Run("stamp "+name, func(t *testing.T) {
+			original := shapes[name]
+			stamped, ok := WireError{Data: original}.WithMutation("m2", MutationOutcomeUnknown, RetryDispositionBlocked)
+			if !ok {
+				t.Fatal("WithMutation refused a shape it stamps")
+			}
+			got, _ := DecodedErrorData(stamped.Data)
+			if got.ClientMutationID != "m2" || got.MutationOutcome != MutationOutcomeUnknown ||
+				got.RetryDisposition != RetryDispositionBlocked || got.EvenerErrorInfo != ErrorSessionUnavailable || got.Cause != "c" {
+				t.Fatalf("stamped = %+v, want the three fields set and the rest kept", got)
+			}
+			if before, _ := DecodedErrorData(original); before.ClientMutationID != "m1" {
+				t.Fatalf("original data was modified: %+v", before)
+			}
+			idOnly, _ := WireError{Data: original}.WithMutation("m3", "", "")
+			got, _ = DecodedErrorData(idOnly.Data)
+			if got.ClientMutationID != "m3" || got.MutationOutcome != "" || got.RetryDisposition != "" {
+				t.Fatalf("id-only stamp = %+v, want only the id changed", got)
+			}
+		})
+	}
+	for _, other := range []any{nil, HostFieldErrorData{ErrorData: typed}, "text"} {
+		if _, ok := (WireError{Data: other}).WithMutation("m2", "", ""); ok {
+			t.Fatalf("WithMutation stamped %#v, want it left alone", other)
 		}
 	}
 }

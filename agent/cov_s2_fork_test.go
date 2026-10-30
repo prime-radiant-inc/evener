@@ -19,7 +19,7 @@ import (
 // transcript.Writer would never emit.
 func s2cov_writeRawTranscript(t *testing.T, stateDir, id string, headerLine string, lines []string) {
 	t.Helper()
-	dir := filepath.Join(stateDir, sessionsSubdir)
+	dir := schema.SessionsDir(stateDir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestS2Cov_ForkSession_EmptyTranscript(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 	id := "01PARENTEMPTY000000000001"
-	dir := filepath.Join(stateDir, sessionsSubdir)
+	dir := schema.SessionsDir(stateDir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -115,8 +115,8 @@ func TestS2Cov_ForkSession_EmptyTranscript(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 	_, err := ForkSession(stateDir, id, 1, "x", "")
-	if err == nil || !strings.Contains(err.Error(), "empty") {
-		t.Fatalf("err = %v, want empty-transcript error", err)
+	if !errors.Is(err, transcript.ErrMissingHeader) {
+		t.Fatalf("err = %v, want ErrMissingHeader", err)
 	}
 }
 
@@ -126,8 +126,9 @@ func TestS2Cov_ForkSession_BadHeader(t *testing.T) {
 	id := "01PARENTBADHDR00000000001"
 	s2cov_writeRawTranscript(t, stateDir, id, `{not json`, []string{s2cov_entryLine(t, schema.TurnUserInput, "x")})
 	_, err := ForkSession(stateDir, id, 1, "x", "")
-	if err == nil || !strings.Contains(err.Error(), "parsing parent transcript header") {
-		t.Fatalf("err = %v, want header parse error", err)
+	var lineErr *transcript.LineError
+	if !errors.As(err, &lineErr) || lineErr.Line != 1 {
+		t.Fatalf("err = %v, want a header-line error", err)
 	}
 }
 

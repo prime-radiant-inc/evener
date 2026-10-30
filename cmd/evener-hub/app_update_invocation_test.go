@@ -115,11 +115,23 @@ func TestHubUpdateApplyResolvesBarePathInvocation(t *testing.T) {
 	}
 }
 
+// resetHubRestartAddr clears the startup address state for tests that assert
+// restart arguments; tests elsewhere in the package start hubs on ephemeral
+// ports and leave the globals set.
+func resetHubRestartAddr(t *testing.T) {
+	t.Helper()
+	addr, ephemeral := hubBoundAddr, hubBindWasEphemeral
+	hubBoundAddr, hubBindWasEphemeral = "", false
+	t.Cleanup(func() { hubBoundAddr, hubBindWasEphemeral = addr, ephemeral })
+}
+
 // TestHubRestartArgsEmptyWhenNoArgs proves the restart never panics when
 // the process was launched with no argv beyond (or an empty) argv[0]:
 // hubProcessArgs()[1:] on an empty slice panics. Fails today at
 // app_update.go's scheduleHubRestart call site.
 func TestHubRestartArgsEmptyWhenNoArgs(t *testing.T) {
+	resetHubRestartAddr(t)
+
 	for _, args := range [][]string{nil, {}, {"/x/evener"}} {
 		if got := hubRestartArgs(args); len(got) != 0 {
 			t.Fatalf("hubRestartArgs(%v) = %v, want empty", args, got)
@@ -127,6 +139,45 @@ func TestHubRestartArgsEmptyWhenNoArgs(t *testing.T) {
 	}
 	if got := hubRestartArgs([]string{"/x/evener", "hub", "-addr", "x"}); len(got) != 3 || got[0] != "hub" {
 		t.Fatalf("hubRestartArgs = %v, want [hub -addr x]", got)
+	}
+}
+
+// TestHubRestartArgsPreservesBoundPort proves an ephemeral-port hub restarts
+// on the address the listener actually bound, so clients reconnect to the
+// port they already know instead of a new random one.
+func TestHubRestartArgsPreservesBoundPort(t *testing.T) {
+	resetHubRestartAddr(t)
+	hubBoundAddr = "127.0.0.1:53421"
+
+	got := hubRestartArgs([]string{"/x/evener", "hub", "-addr", "127.0.0.1:0"})
+	if len(got) != 3 || got[0] != "hub" || got[1] != "-addr" || got[2] != "127.0.0.1:53421" {
+		t.Fatalf("hubRestartArgs = %v, want [hub -addr 127.0.0.1:53421]", got)
+	}
+	got = hubRestartArgs([]string{"/x/evener", "hub", "--addr=127.0.0.1:0"})
+	if len(got) != 2 || got[1] != "--addr=127.0.0.1:53421" {
+		t.Fatalf("equals form = %v, want [hub --addr=127.0.0.1:53421]", got)
+	}
+	got = hubRestartArgs([]string{"/x/evener", "hub", "--addr=127.0.0.1:"})
+	if len(got) != 2 || got[1] != "--addr=127.0.0.1:53421" {
+		t.Fatalf("empty port form = %v, want [hub --addr=127.0.0.1:53421]", got)
+	}
+	got = hubRestartArgs([]string{"/x/evener", "hub", "-addr", "0.0.0.0:9180"})
+	if len(got) != 3 || got[2] != "0.0.0.0:9180" {
+		t.Fatalf("fixed port rewritten: %v", got)
+	}
+}
+
+// TestHubRestartArgsAddsBoundPortForConfigEphemeralAddress proves a hub whose
+// ephemeral address comes from hub.toml, not argv, still restarts on the port
+// it bound: there is no -addr argument to rewrite, so one is supplied.
+func TestHubRestartArgsAddsBoundPortForConfigEphemeralAddress(t *testing.T) {
+	resetHubRestartAddr(t)
+	hubBoundAddr = "127.0.0.1:53421"
+	hubBindWasEphemeral = true
+
+	got := hubRestartArgs([]string{"/x/evener", "hub"})
+	if len(got) != 3 || got[0] != "hub" || got[1] != "-addr" || got[2] != "127.0.0.1:53421" {
+		t.Fatalf("hubRestartArgs = %v, want [hub -addr 127.0.0.1:53421]", got)
 	}
 }
 

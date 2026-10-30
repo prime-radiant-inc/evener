@@ -134,7 +134,36 @@ func DefEditFile() llm.ToolDefinition {
 	}
 }
 
+// DefShell is the fully capable seed form, equivalent to
+// DefShellWithDetach(true). Sessions narrow it for their live environment.
 func DefShell() llm.ToolDefinition {
+	return DefShellWithDetach(true)
+}
+
+// ShellModeProperty returns the shell schema's mode property for an
+// environment whose execenv.DetachSupportReporter reports detachAvailable. When
+// false, the enum omits "detached" and the description says this environment
+// cannot disown a process, so the advertised modes match what DetachCommand
+// accepts.
+func ShellModeProperty(detachAvailable bool) map[string]any {
+	modeEnum := []any{"foreground", "background"}
+	modeDescription := "foreground waits for the command to finish before continuing; background runs a session-owned job in the background and Evener stops it when the session ends"
+	if detachAvailable {
+		modeEnum = append(modeEnum, "detached")
+		modeDescription += "; detached is the only mode that lets a process survive after this Evener session stops — a detached process is not a job: its output is discarded (redirect it to an absolute path the process may write) and it sends no completion notification. A detached command gets no session scratch: $EVENER_SCRATCH_DIR is unset there, so no path it reads or writes may be built from it."
+	} else {
+		modeDescription += ". This environment cannot disown a process, so detached mode is unavailable; nothing can outlive the session."
+	}
+	return map[string]any{
+		"type":        "string",
+		"enum":        modeEnum,
+		"description": modeDescription,
+	}
+}
+
+// DefShellWithDetach returns the shell definition for an environment whose
+// execenv.DetachSupportReporter reports detachAvailable.
+func DefShellWithDetach(detachAvailable bool) llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name: "shell",
 		Description: "Run a shell command and report stdout, stderr, and exit status. " +
@@ -148,12 +177,8 @@ func DefShell() llm.ToolDefinition {
 			"properties": map[string]any{
 				"command":     map[string]any{"type": "string", "description": "The shell command to run (POSIX: Bash with pipefail)."},
 				"description": map[string]any{"type": "string", "description": "Optional human-facing summary of the command, shown on job surfaces."},
-				"mode": map[string]any{
-					"type":        "string",
-					"enum":        []any{"foreground", "background", "detached"},
-					"description": "foreground waits for the command to finish before continuing; background runs a session-owned job in the background and Evener stops it when the session ends; detached is the only mode that lets a process survive after this Evener session stops — a detached process is not a job: its output is discarded (redirect it to an absolute path the process may write) and it sends no completion notification. A detached command gets no session scratch: $EVENER_SCRATCH_DIR is unset there, so no path it reads or writes may be built from it.",
-				},
-				"cwd": map[string]any{"type": "string", "description": "Optional working directory for the command. Relative paths resolve against your current working directory. With sandbox off, paths may be outside it; confined policies require paths inside it. Must already exist. Default: your current working directory."},
+				"mode":        ShellModeProperty(detachAvailable),
+				"cwd":         map[string]any{"type": "string", "description": "Optional working directory for the command. Relative paths resolve against your current working directory. With sandbox off, paths may be outside it; confined policies require paths inside it. Must already exist. Default: your current working directory."},
 			},
 			"required": []string{"command"},
 		},
@@ -256,7 +281,7 @@ func DefDelegateWithResultTool(agentTypes []string, sandboxSchema DelegateSandbo
 				},
 				"task_list": map[string]any{
 					"type":        "array",
-					"description": "Seed the delegate's task list, one item per step, in order. Items fill the role's parent_tasks slot when its default task list has one and follow the role's default tasks otherwise. The first task auto-starts and its prompt is injected into the delegate; the delegate works the list in order and marks each task done. Each item's prompt must define a self-contained step.",
+					"description": "Seed the delegate's task list, one item per step, in order. Items fill the role's parent_tasks slot when its default task list has one and follow the role's default tasks otherwise. The delegate's first turn carries the whole plan — every step's title, status, effort, and prompt — and names the step to work first, so write each prompt as if every worker can read it. The delegate works the list in order and marks each task done. Each item's prompt must define a self-contained step.",
 					"items": map[string]any{
 						"type":                 "object",
 						"additionalProperties": false,

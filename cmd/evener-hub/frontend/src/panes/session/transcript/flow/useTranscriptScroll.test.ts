@@ -14,14 +14,9 @@ import {
   resetTranscriptViewRegistryForTests,
   transitionTranscriptViews,
 } from "./transcriptViewRegistry";
-import {
-  captureTopAnchor,
-  captureTranscriptView,
-  restoreTopAnchor,
-  useTranscriptScroll,
-  useTranscriptViewRegistration,
-  type ViewAnchorPosition,
-} from "./useTranscriptScroll";
+import { useTranscriptScroll } from "./useTranscriptScroll";
+import { useTranscriptViewRegistration } from "./useTranscriptViewRegistration";
+import { captureElementView, captureTopAnchor, restoreTopAnchor, type ViewAnchorPosition } from "./viewAnchor";
 
 // --- fixtures ------------------------------------------------------------
 
@@ -210,7 +205,9 @@ afterEach(() => {
 });
 
 test("fresh end-follow survives a passive backward row measurement", async () => {
-  const scene = mountReaderScene("hook-initial-end-shrink", [6508], { estimate: 6508, viewportHeight: 665 });
+  const scene = await act(async () =>
+    mountReaderScene("hook-initial-end-shrink", [6508], { estimate: 6508, viewportHeight: 665 }),
+  );
   try {
     await act(async () => scene.external.notify());
     await act(async () => scene.frames.release());
@@ -237,16 +234,18 @@ test.each([
 ])(
   "fresh end-follow respects $input movement before a backward measurement commits",
   async ({ input, expected, following }) => {
-    const scene = mountReaderScene(`hook-initial-end-before-commit-${input}`, [6508], {
-      estimate: 96,
-      viewportHeight: 665,
-    });
+    const scene = await act(async () =>
+      mountReaderScene(`hook-initial-end-before-commit-${input}`, [6508], {
+        estimate: 96,
+        viewportHeight: 665,
+      }),
+    );
     try {
       await act(async () => scene.external.notify());
       await act(async () => scene.frames.release());
       expect(scene.port().scrollTop).toBe(5843);
       expect(scene.capture()?.followingBottom).toBe(true);
-      act(() => {
+      await act(async () => {
         scene.geometry.rowHeights[0] = 6490;
         scene.external.notify((target) => target.dataset.index === "0");
         expect(scene.port().scrollTop).toBe(5825);
@@ -272,7 +271,9 @@ test.each([
 );
 
 test("fresh end-follow survives streaming append during a backward row measurement", async () => {
-  const scene = mountReaderScene("hook-initial-end-append", [6508], { estimate: 6508, viewportHeight: 665 });
+  const scene = await act(async () =>
+    mountReaderScene("hook-initial-end-append", [6508], { estimate: 6508, viewportHeight: 665 }),
+  );
   try {
     await act(async () => scene.external.notify());
     await act(async () => scene.frames.release());
@@ -295,7 +296,9 @@ test("fresh end-follow survives streaming append during a backward row measureme
 });
 
 test("genuine wheel admission retires the actual outstanding index writer", async () => {
-  const scene = mountReaderScene("hook-index", [500, 500, 500, 500, 500], { estimate: 500, viewportHeight: 500 });
+  const scene = await act(async () =>
+    mountReaderScene("hook-index", [500, 500, 500, 500, 500], { estimate: 500, viewportHeight: 500 }),
+  );
   try {
     await scene.start(1000);
     await act(async () => scene.listRef.current?.scrollToIndex(4, { align: "start" }));
@@ -318,7 +321,9 @@ test("genuine wheel admission retires the actual outstanding index writer", asyn
 });
 
 test("genuine wheel admission drops queued clamp work without a scroll event", async () => {
-  const scene = mountReaderScene("hook-clamp", [300, 300, 300, 300, 300], { estimate: 300, viewportHeight: 500 });
+  const scene = await act(async () =>
+    mountReaderScene("hook-clamp", [300, 300, 300, 300, 300], { estimate: 300, viewportHeight: 500 }),
+  );
   try {
     await scene.start(1000);
     let scrollEvents = 0;
@@ -341,7 +346,7 @@ test("genuine wheel admission drops queued clamp work without a scroll event", a
 });
 
 test("temporary end clamping during reflow does not replace the restored reading point with bottom-follow", async () => {
-  const scene = mountReaderScene("hook-transient-end", [500, 1600, 1000]);
+  const scene = await act(async () => mountReaderScene("hook-transient-end", [500, 1600, 1000]));
   try {
     await scene.start(1400);
     expect(scene.capture()).toMatchObject({
@@ -372,7 +377,7 @@ test("temporary end clamping during reflow does not replace the restored reading
 test.each(["wheel", "Jump to live"] as const)(
   "%s reaches the true end and keeps following later row growth",
   async (input) => {
-    const scene = mountReaderScene(`hook-real-end-${input}`, [500, 1600, 1000]);
+    const scene = await act(async () => mountReaderScene(`hook-real-end-${input}`, [500, 1600, 1000]));
     try {
       await scene.start(1400);
       expect(scene.capture()?.followingBottom).toBe(false);
@@ -399,7 +404,7 @@ test.each(["wheel", "Jump to live"] as const)(
 );
 
 test("Jump to live confirms its landing while viewport measurement is pending and follows the committed end", async () => {
-  const scene = mountReaderScene("hook-pending-end-jump", [500, 1600, 1000]);
+  const scene = await act(async () => mountReaderScene("hook-pending-end-jump", [500, 1600, 1000]));
   try {
     await scene.start(1400);
     expect(scene.flow().pillVisible).toBe(true);
@@ -425,10 +430,12 @@ test.each(["before", "after"] as const)(
   "backward wheel delivered %s compositor movement survives idle before partial measurement",
   async (delivery) => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    const scene = mountReaderScene(`hook-wheel-${delivery}`, [1600, 500, 500, 500, 500], {
-      estimate: 500,
-      viewportHeight: 400,
-    });
+    const scene = await act(async () =>
+      mountReaderScene(`hook-wheel-${delivery}`, [1600, 500, 500, 500, 500], {
+        estimate: 500,
+        viewportHeight: 400,
+      }),
+    );
     try {
       await scene.start();
       scene.geometry.rowHeights[0] = 1628;
@@ -455,10 +462,12 @@ test.each(["before", "after"] as const)(
 );
 
 test("reader transfer retains admitted movement before the final row measurement", async () => {
-  const scene = mountReaderScene("hook-unmeasured-transfer", [1600, 500, 500, 500, 500], {
-    estimate: 500,
-    viewportHeight: 400,
-  });
+  const scene = await act(async () =>
+    mountReaderScene("hook-unmeasured-transfer", [1600, 500, 500, 500, 500], {
+      estimate: 500,
+      viewportHeight: 400,
+    }),
+  );
   try {
     await scene.start();
     scene.geometry.rowHeights[0] = 1628;
@@ -490,10 +499,12 @@ test.each([
   "real $direction movement arbitration survives a valid commit before later partial measurement",
   async ({ direction, want, top }) => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    const scene = mountReaderScene(`hook-committed-${direction}`, [1600, 500, 500, 500, 500], {
-      estimate: 500,
-      viewportHeight: 400,
-    });
+    const scene = await act(async () =>
+      mountReaderScene(`hook-committed-${direction}`, [1600, 500, 500, 500, 500], {
+        estimate: 500,
+        viewportHeight: 400,
+      }),
+    );
     try {
       await scene.start();
       await act(async () => {
@@ -535,10 +546,12 @@ test.each(["backward", "forward", "index"] as const)(
   "real %s key movement arbitration survives core idle before partial measurement",
   async (direction) => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    const scene = mountReaderScene(`hook-signed-${direction}`, [1600, 500, 500, 500, 500], {
-      estimate: 500,
-      viewportHeight: 400,
-    });
+    const scene = await act(async () =>
+      mountReaderScene(`hook-signed-${direction}`, [1600, 500, 500, 500, 500], {
+        estimate: 500,
+        viewportHeight: 400,
+      }),
+    );
     try {
       await scene.start();
       // A supported absolute request is genuinely outstanding before input.
@@ -594,7 +607,9 @@ test.each([
   { size: 400, want: 900 },
 ])("genuine backward input retains fully-above compensation at $size px", async ({ size, want }) => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-  const scene = mountReaderScene(`above-${size}`, [500, 500, 500, 500, 500], { estimate: 500, viewportHeight: 500 });
+  const scene = await act(async () =>
+    mountReaderScene(`above-${size}`, [500, 500, 500, 500, 500], { estimate: 500, viewportHeight: 500 }),
+  );
   try {
     await scene.start(1200);
     await act(async () => {
@@ -619,10 +634,12 @@ test.each([
 });
 
 test("genuine movement cancels on first equal-estimate geometry without cache membership", async () => {
-  const scene = mountReaderScene(
-    "first-movement",
-    Array.from({ length: 200 }, () => 96),
-    { estimate: 96, viewportHeight: 500 },
+  const scene = await act(async () =>
+    mountReaderScene(
+      "first-movement",
+      Array.from({ length: 200 }, () => 96),
+      { estimate: 96, viewportHeight: 500 },
+    ),
   );
   try {
     await scene.start(4992);
@@ -4176,7 +4193,7 @@ test.each([
       }),
     );
   }
-  const mounted = render(createElement(Reader, { ready: false }));
+  const mounted = await act(async () => render(createElement(Reader, { ready: false })));
   try {
     await act(async () => external.notify());
     expect(ref.current?.getScrollElement()?.scrollTop).toBe(0);
@@ -4184,7 +4201,7 @@ test.each([
     if (outcome === "reader-intent") act(() => view.supersedePositioning());
     if (outcome === "disposed") act(() => view.dispose());
     geometry.rowHeights = [900, 600];
-    mounted.rerender(createElement(Reader, { ready: true }));
+    await act(async () => mounted.rerender(createElement(Reader, { ready: true })));
     await act(async () => external.notify());
     if (outcome === "useful" || outcome === "empty") expect(ref.current?.getScrollElement()?.scrollTop).toBe(0);
     else {
@@ -4211,7 +4228,7 @@ test.each([
   }
 });
 
-function renderRegistrationList() {
+async function renderRegistrationList() {
   const external = installTranscriptGeometry(
     () => ({ width: 500, viewportHeight: 300, rowHeights: [600, 600] }),
     (element) => {
@@ -4221,20 +4238,22 @@ function renderRegistrationList() {
   );
   const ref = createRef<VirtualListHandle>();
   let layout: CommittedVirtualListLayout | undefined;
-  const mounted = render(
-    createElement(
-      "section",
-      { "data-test-registration-list": true },
-      createElement(VirtualList, {
-        ref,
-        count: 2,
-        dynamic: true,
-        estimateSize: () => 600,
-        renderRow: (index) => createElement("div", null, `Message ${index}`),
-        onLayout: (next) => {
-          layout = next;
-        },
-      }),
+  const mounted = await act(async () =>
+    render(
+      createElement(
+        "section",
+        { "data-test-registration-list": true },
+        createElement(VirtualList, {
+          ref,
+          count: 2,
+          dynamic: true,
+          estimateSize: () => 600,
+          renderRow: (index) => createElement("div", null, `Message ${index}`),
+          onLayout: (next) => {
+            layout = next;
+          },
+        }),
+      ),
     ),
   );
   const handle = ref.current;
@@ -4269,7 +4288,7 @@ describe("registered transcript view preservation", () => {
     document.body.append(el);
     focusedDescendant.focus();
 
-    const captured = captureTranscriptView(
+    const captured = captureElementView(
       el,
       () => ({ scrollTop: 950, scrollHeight: 1000, clientHeight: 50 }),
       () => [{ id: "agent-4", sourceIndex: 4, index: 2, offset: 18, height: 96, isMessage: true }],
@@ -4286,7 +4305,7 @@ describe("registered transcript view preservation", () => {
   });
 
   test("restores a surviving focused entry and focuses the stable fallback when it disappears", async () => {
-    const list = renderRegistrationList();
+    const list = await renderRegistrationList();
     try {
       const oldAnchor = document.createElement("div");
       oldAnchor.dataset.viewAnchorId = "tool-old";
@@ -4350,7 +4369,7 @@ describe("registered transcript view preservation", () => {
   });
 
   test("waits for a virtualized source alias and restores the same descendant from Intent to Tools", async () => {
-    const list = renderRegistrationList();
+    const list = await renderRegistrationList();
     try {
       const intentAnchor = document.createElement("div");
       intentAnchor.dataset.viewAnchorId = "intent:tool-1";
@@ -4652,10 +4671,12 @@ describe("native key scrolling that begins a frame later", () => {
 // event.
 describe("a native backward key arms the reading-point rule at keydown", () => {
   test("a row measurement between the key and its smooth scroll leaves the reading point in place", async () => {
-    const scene = mountReaderScene("shift-space-arms-backward", [1600, 1000], {
-      estimate: 500,
-      viewportHeight: 400,
-    });
+    const scene = await act(async () =>
+      mountReaderScene("shift-space-arms-backward", [1600, 1000], {
+        estimate: 500,
+        viewportHeight: 400,
+      }),
+    );
     try {
       await scene.start(900);
       const port = scene.port();

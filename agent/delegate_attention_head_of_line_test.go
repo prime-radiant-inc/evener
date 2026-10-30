@@ -2,9 +2,10 @@ package agent
 
 import (
 	"os"
-	"path/filepath"
 	"slices"
 	"testing"
+
+	"primeradiant.com/evener/agent/schema"
 )
 
 // pickDelegateAttention runs one drive selection and releases its restore
@@ -53,10 +54,10 @@ func TestAFailingDelegateDoesNotStarveItsSiblings(t *testing.T) {
 func TestAFailedRestoreTakesTheDelegatesTurn(t *testing.T) {
 	fenced := newFencedGrandchildAttention(t)
 	root, fixture := fenced.root, fenced.fixture
-	if err := os.Remove(filepath.Join(fixture.stateDir, sessionsSubdir, fenced.grandchildSessionID+".meta.json")); err != nil {
+	if err := os.Remove(schema.SessionMetaPath(fixture.stateDir, fenced.grandchildSessionID)); err != nil {
 		t.Fatalf("remove grandchild session meta: %v", err)
 	}
-	root.drivePendingStableDelegateAttention()
+	root.drivePendingDelegateAttention()
 	c := root.delegateController
 	c.mu.Lock()
 	state := c.attention[fenced.grandchildDelegateID]

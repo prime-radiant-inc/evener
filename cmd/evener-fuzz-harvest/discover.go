@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/envvars/userdirs"
 )
 
 var harvestWalkDir = filepath.WalkDir
@@ -61,7 +61,7 @@ func discoverSources(stateDir string) (recordedSources, error) {
 }
 
 // isPersonalStateDir reports whether dir is the developer's own default
-// evener state root (cmdutil.DefaultStateRoot: $XDG_STATE_HOME/evener, or
+// evener state root (userdirs.DefaultStateRoot: $XDG_STATE_HOME/evener, or
 // ~/.local/state/evener). Such a source must always be shape-scrubbed —
 // --keep-values is ignored for it (decision 6).
 func isPersonalStateDir(dir string) bool {
@@ -69,7 +69,11 @@ func isPersonalStateDir(dir string) bool {
 	if err != nil {
 		return false
 	}
-	def, err := harvestAbs(cmdutil.DefaultStateRoot())
+	root, err := userdirs.DefaultStateRoot()
+	if err != nil {
+		return false // no state root resolves, so no directory is the personal one
+	}
+	def, err := harvestAbs(root)
 	if err != nil {
 		return false
 	}

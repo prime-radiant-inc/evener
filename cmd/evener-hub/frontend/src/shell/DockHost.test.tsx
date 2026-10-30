@@ -17,7 +17,7 @@ import { parseZoomParams, type SessionZoomParams } from "../panes/zoom/intent";
 import "../panes/zoom";
 import { StubResizeObserver } from "../resizeObserverTestUtils";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
-import { connectionStore } from "../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
 import {
   activityClient,
@@ -648,6 +648,10 @@ test("promoting a real delegate conversation keeps both conversation lifetimes, 
   expect(parentComposer?.getSnapshot().text).toBe("retained parent draft");
   expect(within(restoredPanel).getByTestId("transcript-virtual-list").firstElementChild?.scrollTop).toBe(137);
   expect(childScroll.scrollTop).toBe(211);
+  // The reader's own scroll replaces the virtualizer's index target, and that
+  // reconciliation runs a frame later. Let it land inside act here so a slow
+  // CI worker cannot deliver it after the test has finished.
+  await act(async () => {});
 });
 
 // The main group's header is hidden ALWAYS (identity, not count - see
@@ -1255,7 +1259,7 @@ test("job tabs use their own hydrated titles without extra reads or cross-owner 
     expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(0);
   } finally {
     cleanup();
-    connectionStore.setState({ client: null, state: "idle" });
+    resetConnectionStoreForTests();
   }
 });
 
@@ -1401,7 +1405,7 @@ async function mountedSecondaryInspector() {
     mount,
     dispose() {
       cleanup();
-      connectionStore.setState({ client: null, state: "idle" });
+      resetConnectionStoreForTests();
     },
   };
 }
@@ -1835,7 +1839,7 @@ test("secondary inspector boot with failed real fromJSON preserves live records,
     expect(composer.getSnapshot().text).toBe("keep the live source draft");
   } finally {
     cleanup();
-    connectionStore.setState({ client: null, state: "idle" });
+    resetConnectionStoreForTests();
   }
 });
 
@@ -1931,7 +1935,7 @@ test.each([
       expect(screen.getByText(/doc pane: kept-secondary/)).toBeTruthy();
     } finally {
       cleanup();
-      connectionStore.setState({ client: null, state: "idle" });
+      resetConnectionStoreForTests();
     }
   },
 );
@@ -2509,7 +2513,7 @@ test.each([
     } finally {
       cleanup();
       resetActivitySidebarStoreForTests();
-      connectionStore.setState({ client: null, state: "idle" });
+      resetConnectionStoreForTests();
     }
   },
 );
@@ -2543,7 +2547,7 @@ test.each([false, true])(
       } else expect(await screen.findByText("No session open")).toBeTruthy();
     } finally {
       cleanup();
-      connectionStore.setState({ client: null, state: "idle" });
+      resetConnectionStoreForTests();
     }
   },
 );

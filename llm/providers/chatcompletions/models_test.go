@@ -228,6 +228,52 @@ func TestListModelsReadsGatewayDialect(t *testing.T) {
 	}
 }
 
+// TestListModelsGatewayEffortUnsupportedIsToggleOnly pins a model the gateway
+// says takes no effort parameter: the row records the verdict and publishes an
+// empty ladder, so no effort control survives resolution and requests spell no
+// level. Derivation, not the reader, turns the verdict into toggle-only
+// controls, because only it can preserve a numeric budget from another layer.
+func TestListModelsGatewayEffortUnsupportedIsToggleOnly(t *testing.T) {
+	c := listRow(t, `{"id":"toggle-model","supported_parameters":["reasoning"],"client_compat":{"pi":{"supportsReasoningEffort":false,"thinkingLevelMap":{"low":"low","high":"high"}}}}`)
+	if !registry.BoolValue(c.EffortParameterUnsupported) {
+		t.Fatal("the row must record the no-effort verdict")
+	}
+	if len(c.EffortValues) != 0 {
+		t.Fatalf("ladder = %#v, want a published empty list", c.EffortValues)
+	}
+	if c.Reasoning == nil || !*c.Reasoning {
+		t.Fatalf("Reasoning = %v, want true", c.Reasoning)
+	}
+}
+
+// TestApplyThinkingFormat_ToggleOnlyOpenRouterSendsNoEffort pins the OpenRouter
+// dialect's vouch-gate exception against the toggle-only verdict. That branch
+// passes the requested level through unconditionally because OpenRouter
+// normalizes it, but a model the gateway says takes no effort parameter must
+// still get the enable object instead of a level it does not accept.
+func TestApplyThinkingFormat_ToggleOnlyOpenRouterSendsNoEffort(t *testing.T) {
+	high, on := "high", true
+	format := "openrouter"
+	unsupported := true
+	body := map[string]any{}
+	applyThinkingFormat(body, llm.Request{ReasoningEffort: &high}, registry.Caps{
+		Reasoning:                  &on,
+		ReasoningControls:          []string{"toggle"},
+		ThinkingFormat:             &format,
+		EffortParameterUnsupported: &unsupported,
+	})
+	r, _ := body["reasoning"].(map[string]any)
+	if r == nil {
+		t.Fatalf("body = %v, want a reasoning object", body)
+	}
+	if _, has := r["effort"]; has {
+		t.Fatalf("reasoning = %v, a toggle-only row must send no effort", r)
+	}
+	if r["enabled"] != true {
+		t.Fatalf("reasoning = %v, want the enable object", r)
+	}
+}
+
 // TestApplyThinkingFormat_CatalogToggleKeepsOpenRouterEffort pins the other
 // side: a toggle-only ladder the catalog states (86 OpenRouter rows, e.g.
 // anthropic/claude-sonnet-4.5) is not a gateway rejection of effort. OpenRouter
@@ -341,5 +387,15 @@ func TestListModelsReadsGatewayVisionCapability(t *testing.T) {
 	}
 	if c := listRow(t, `{"id":"both-model","architecture":{"input_modalities":["text"]},"capabilities":{"vision":true}}`); c.AcceptsModality("image") || len(c.InputModalities) != 1 {
 		t.Fatalf("architecture.input_modalities must win over capabilities.vision: %+v", c.InputModalities)
+	}
+}
+
+// TestListModelsDecodeFailure pins the listing's decode arm: a 200 body that
+// is not the models JSON shape fails the listing rather than yielding empty
+// rows silently.
+func TestListModelsDecodeFailure(t *testing.T) {
+	srv, _ := server(t, 200, `not json at all`)
+	if _, err := (&Protocol{Client: srv.Client()}).ListModels(context.Background(), liveRes(srv, nil)); err == nil {
+		t.Fatal("an undecodable models listing must fail")
 	}
 }

@@ -23,7 +23,11 @@ import { isMobileViewport } from "./useIsMobile";
 // everything else stacks as tabs in the secondary group to its right. A main
 // pane therefore never shares a tab bar with anything, which is the whole
 // point (Jesse: "there should only ever be one pane in the 'main group'").
-export type PaneSlot = "main" | "secondary";
+export type PaneSlot = "main" | "secondary" | "parked";
+
+export function presentedPanes(panes: readonly OpenPaneRecord[]): OpenPaneRecord[] {
+  return panes.filter((pane) => pane.slot !== "parked");
+}
 
 type PrimaryPaneType = "settings" | "spawn" | "session" | "welcome";
 
@@ -198,7 +202,7 @@ function sameParams(a: unknown, b: unknown): boolean {
 const pendingPaneFocus = new Set<string>();
 
 export function isPaneOpen(state: WorkspaceStoreState, type: PaneTypeId, params: unknown): boolean {
-  return state.panes.some((pane) => pane.type === type && sameParams(pane.params, params));
+  return presentedPanes(state.panes).some((pane) => pane.type === type && sameParams(pane.params, params));
 }
 
 // A transcript names its SUBJECT in `ref`, and a job log's subject is a job
@@ -243,7 +247,7 @@ function paneSessionRef(pane: OpenPaneRecord | undefined): string | null {
 // composer/needs-you chords and must ignore a subagent's companion panel.
 // This one follows those panels and falls back to main.
 export function currentSessionRef(state: WorkspaceStoreState): string | null {
-  const focused = state.panes.find((pane) => pane.id === state.focusedPaneId);
+  const focused = presentedPanes(state.panes).find((pane) => pane.id === state.focusedPaneId);
   return paneSessionRef(focused) ?? paneSessionRef(state.panes.find((pane) => pane.slot === "main"));
 }
 
@@ -506,6 +510,52 @@ function bumpPastRestoredIds(panes: { id: string }[]): void {
   }
 }
 
+// A synchronous save can precede the host effect that removes parked panels.
+// Filter that snapshot only, never replay or mutate the user's live geometry.
+function omitParkedPanels(layout: SerializedDockview, parked: ReadonlySet<string>): void {
+  if (parked.size === 0) return;
+  type Node = SerializedDockview["grid"]["root"];
+  type Group = Exclude<Node["data"], Node[]>;
+  const groups = new Set<string>();
+  function keepGroup(group: Group): boolean {
+    group.views = group.views.filter((id) => !parked.has(id));
+    if (group.activeView && parked.has(group.activeView)) group.activeView = group.views[0];
+    if (group.tabGroups) {
+      group.tabGroups = group.tabGroups.flatMap((tabs) => {
+        const panelIds = tabs.panelIds.filter((id) => !parked.has(id));
+        return panelIds.length ? [{ ...tabs, panelIds }] : [];
+      });
+    }
+    if (group.views.length === 0) return false;
+    groups.add(group.id);
+    return true;
+  }
+  function keepNode(node: Node): boolean {
+    if (!Array.isArray(node.data)) return keepGroup(node.data);
+    node.data = node.data.filter(keepNode);
+    return node.data.length > 0;
+  }
+  if (!keepNode(layout.grid.root)) layout.grid.root = { type: "branch", data: [] };
+  for (const key of ["floatingGroups", "popoutGroups"] as const) {
+    const windows = layout[key];
+    if (!windows) continue;
+    // Mutate the arrays in place to retain each window kind's typed geometry.
+    for (let index = windows.length - 1; index >= 0; index--) {
+      const window = windows[index];
+      if (window && ((window.data && !keepGroup(window.data)) || (window.grid && !keepNode(window.grid.root))))
+        windows.splice(index, 1);
+    }
+  }
+  if (layout.edgeGroups) {
+    for (const key of ["top", "bottom", "left", "right"] as const) {
+      const edge = layout.edgeGroups[key];
+      if (edge?.group && !keepGroup(edge.group as Group)) delete layout.edgeGroups[key];
+    }
+  }
+  for (const id of parked) delete layout.panels[id];
+  if (layout.activeGroup && !groups.has(layout.activeGroup)) layout.activeGroup = groups.values().next().value;
+}
+
 export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
   panes: [],
   focusedPaneId: null,
@@ -521,7 +571,7 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
     const keepFocus = opts?.keepExistingFocus === true;
 
     if (descriptor.singleton) {
-      const existing = state.panes.find((p) => p.type === type);
+      const existing = presentedPanes(state.panes).find((p) => p.type === type);
       if (existing) {
         const paramsChanged = !sameParams(existing.params, params);
         const focusChanged = !keepFocus && state.focusedPaneId !== existing.id;
@@ -534,7 +584,7 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
         return existing.id;
       }
     } else {
-      const existing = state.panes.find((p) => p.type === type && sameParams(p.params, params));
+      const existing = presentedPanes(state.panes).find((p) => p.type === type && sameParams(p.params, params));
       if (existing) {
         if (!keepFocus && state.focusedPaneId !== existing.id) set({ focusedPaneId: existing.id });
         return existing.id;
@@ -572,7 +622,7 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
 
   togglePane(type, params = {}) {
     const state = get();
-    const existing = state.panes.find((pane) => pane.type === type && sameParams(pane.params, params));
+    const existing = presentedPanes(state.panes).find((pane) => pane.type === type && sameParams(pane.params, params));
     if (existing) {
       get().closePane(existing.id);
       cancelPaneFocus(existing.id);
@@ -660,16 +710,23 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
   focusPane(paneId) {
     const state = get();
     if (state.focusedPaneId === paneId) return; // already focused: no-op
-    if (!state.panes.some((p) => p.id === paneId)) return; // unknown id: no-op
+    if (!presentedPanes(state.panes).some((p) => p.id === paneId)) return; // unknown or parked: no-op
     set({ focusedPaneId: paneId });
   },
 
   layoutJSON() {
     if (!dockviewApi) return null;
-    const layout = dockviewApi.toJSON() as {
-      panels?: Record<string, { params?: Record<string, unknown> }>;
+    const layout = dockviewApi.toJSON() as SerializedDockview & {
       conversationParents?: Record<string, string>;
     };
+    omitParkedPanels(
+      layout,
+      new Set(
+        get()
+          .panes.filter((pane) => pane.slot === "parked")
+          .map((pane) => pane.id),
+      ),
+    );
     for (const pane of get().panes) {
       const panel = layout.panels?.[pane.id];
       if (panel) panel.params = { ...panel.params, paneType: pane.type, paneParams: pane.params };
@@ -815,6 +872,41 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
     }
   },
 }));
+
+// Attention alone substitutes a presentation without removing its source from
+// the living-record list. Lifetime disposal remains the removal subscriber's
+// responsibility. A missing historical seat never displaces an ordinary main.
+export function substituteAttentionPane(
+  target: OpenPaneRecord | string,
+  source: OpenPaneRecord | null,
+  slot: Exclude<PaneSlot, "parked">,
+  bind: (pane: OpenPaneRecord) => void,
+): OpenPaneRecord {
+  const state = workspaceStore.getState();
+  // An attention transaction has runtime ownership even before a host mounts.
+  // A later first desktop registration must not cold-restore over its readers.
+  workspaceHasMounted = true;
+  const pane: OpenPaneRecord =
+    typeof target === "string" ? { id: nextPaneId("session"), type: "session", params: { ref: target }, slot } : target;
+  if (source) source.slot = "parked";
+  // A welcome pane in main IS main's empty state (see openPane's placement
+  // rule above): the host installs it after the pane a reader left is closed,
+  // so restoring that reader's main seat displaces the placeholder instead of
+  // stacking beside a screen that says nothing is open. Any other real main
+  // still wins, and the restored reader becomes its secondary.
+  const main = state.mainPane();
+  const displacesWelcome = slot === "main" && main !== null && main !== pane && main.type === "welcome";
+  pane.slot = slot === "main" && main !== null && main !== pane && !displacesWelcome ? "secondary" : slot;
+  // Like retype ownership transfer, install runtime bindings before observers
+  // can capture the newly committed presentation.
+  bind(pane);
+  const kept = displacesWelcome ? state.panes.filter((held) => held.id !== main?.id) : state.panes;
+  workspaceStore.setState({
+    panes: kept.includes(pane) ? [...kept] : [...kept, pane],
+    focusedPaneId: pane.id,
+  });
+  return pane;
+}
 
 // One removal boundary covers close, primary replacement (including duplicate
 // removal), restore, and reset. Host remounts only change focus/API, so retain

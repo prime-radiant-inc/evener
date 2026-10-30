@@ -286,7 +286,12 @@ with the complete current instructions; a deleted or unreadable source
 produces a typed failure. Neither is ever reported as a false delivery.
 Obligations persist across transport retries and restart, and restored
 sessions reconcile receipts so a retained complete body is proven, not
-redelivered or double-reported. A failed reinvocation never erases an earlier
+redelivered or double-reported. A restored session also rechecks its current
+skill availability before accepting a retained body: a skill it can no longer
+follow, such as the bundled `gardening-memory` after `--disable-memory` or a
+removed save tool, records the same typed `policy_denied` failure a fresh
+activation produces, records no successful activation, and leaves the earlier
+body as ordinary history. A failed reinvocation never erases an earlier
 successful record.
 
 ### Explicit selection versus typed inline mentions
@@ -642,6 +647,10 @@ an executable template, package it as a plugin command instead.
 a plugin command of the same bare name; the plugin command stays reachable
 as `/plugin:name`. Within project commands, the directory closest to your
 cwd wins.
+
+Two plugins that define the same bare command name make `/name` ambiguous.
+Evener reports the candidates and does not run either; type `/plugin:name` to
+choose one.
 
 ### Client caveats
 

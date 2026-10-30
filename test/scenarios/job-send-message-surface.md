@@ -14,19 +14,19 @@ again with no job identity: the only identity a send result carries is
 
 **Identity and transport.** Stable `delegate` creation returns
 `delegate_id` / `child_session_id` / `transcript_ref` and no `job_id`
-field at all (`agent/session_tools.go#stableDelegateCreateResult`);
+field at all (`agent/session_tools_delegate.go#delegateCreateResult`);
 passing `max_wait_ms` to creation is rejected outright with
 `invalid_request: delegate creation does not accept max_wait_ms`
-(`agent/session_tools.go#stableDelegateCreateTool`). `delegate_send`'s own
+(`agent/session_tools_delegate.go#delegateCreateTool`). `delegate_send`'s own
 result carries no job field either — `sendMessageResult`
 (`agent/job_delegate.go#sendMessageResult`) and its wire form
-`delegateSendResult` (`agent/session_tools_jobs.go#delegateSendResult`)
+`delegateSendResult` (`agent/session_tools_delegate_send.go#delegateSendResult`)
 have `delegate_id`, `transcript_ref`, `action`, `status`; neither declares
 `job_id`, `started_job_id`, `current_job_id`, or `latest_job_id`, and
 nothing in the tree emits any of those four names on this path. There is
 no per-target handle-type check on `delegate_send` at all — `to` is
 handed straight to `(delegateRuntime).send`
-(`agent/delegate_runtime.go#delegateRuntime.send`), which authorizes
+(`agent/delegate_send.go#delegateRuntime.send`), which authorizes
 through the delegate tree's own id map and never inspects the string's
 shape. A `job_` handle fails only because it is not a key in that map:
 `authorizeMutationLocked` (`agent/delegate_tree_controller.go#delegateTreeController.authorizeMutationLocked`)
@@ -35,11 +35,11 @@ returns `errDelegateNotControllable`
 `not_controllable: delegate`) for ANY unrecognized id, and the resulting
 `sendMessageResult` has `DelegateID` empty
 (`agent/job_delegate.go#sendMessageFailed`), so
-`stableDelegateSendTool` (`agent/session_tools.go#stableDelegateSendTool`)
+`delegateSendTool` (`agent/session_tools_delegate.go#delegateSendTool`)
 returns that bare error with no result JSON at all. The string
 `job_id is a job/turn handle` is real, but it lives only on the internal
 WATCH delivery validator
-(`agent/job_watch.go#validateWatchSendDeliveryTarget`), a different code
+(`agent/watch_config.go#validateWatchSendDeliveryTarget`), a different code
 path `delegate_send` never calls — do not expect it here. A stable
 delegate's `transcript_ref` is a session ref and reads its whole
 conversation; delegates never use `job:` refs

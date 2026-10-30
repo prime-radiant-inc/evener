@@ -73,6 +73,34 @@ export const isEditableTarget: EditableTargetPredicate = (target) => {
   );
 };
 
+// TEXT_INPUT_TYPES are the input types whose Enter is text entry. A select, a
+// checkbox, a file, a range, or a color control has its own native activation
+// and must keep it.
+const TEXT_INPUT_TYPES: ReadonlySet<string> = new Set([
+  "text",
+  "search",
+  "email",
+  "url",
+  "tel",
+  "password",
+  "number",
+  "date",
+  "datetime-local",
+  "month",
+  "time",
+  "week",
+]);
+
+/** isTextEntryTarget is the text-entry subset of isEditableTarget: Enter in a
+ * text field belongs to the form, while a native control keeps its own
+ * activation. */
+export const isTextEntryTarget: EditableTargetPredicate = (target) => {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable || hasEditableContentEditableAncestor(target)) return true;
+  if (target instanceof HTMLTextAreaElement) return true;
+  return target instanceof HTMLInputElement && TEXT_INPUT_TYPES.has(target.type);
+};
+
 /** The DOM half of the shell's old blockedByOpenModal check. The palette is
  * not an [aria-modal] element, so the app wiring (shell/installKeybindings.ts)
  * composes this with a paletteStore.open store check. */

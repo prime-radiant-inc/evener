@@ -17,13 +17,13 @@ import { useStore } from "zustand";
 import { workspaceStore } from "../../../shell/workspace";
 import { transcriptDisplayStore } from "../../../stores/transcriptDisplay";
 import { createTranscriptRenderContext, TranscriptRenderProvider } from "../../../transcriptDisplay/renderContext";
-import { VirtualList, type VirtualListHandle } from "../../../widgets";
+import { type CommittedVirtualListLayout, VirtualList, type VirtualListHandle } from "../../../widgets";
 import { modelLabel } from "../chrome/statusFormat";
 import { exchangeClosersFor } from "./exchangeClosers";
 import { exchangeOpenersFor } from "./exchangeOpeners";
 import { FlowOverlay } from "./flow/FlowOverlay";
 import type { CapturedTranscriptView } from "./flow/transcriptViewRegistry";
-import { useTranscriptViewRegistration } from "./flow/useTranscriptScroll";
+import { useTranscriptViewRegistration } from "./flow/useTranscriptViewRegistration";
 import { ProjectedIntentGroup, TurnBlock } from "./TurnBlock";
 import { foldTurnEntries } from "./toolRuns";
 import type { TranscriptReadView } from "./transcriptReadView";
@@ -314,8 +314,10 @@ export interface TranscriptBodyProps {
   showSeenDividerTurnId?: string;
   loadOlderRow?: ReactNode;
   liveOverlay?: ReactNode;
+  attentionOverlay?: ReactNode;
+  onOverlayHeightChange?: (height: number) => void;
   listRef?: RefObject<VirtualListHandle | null>;
-  onMeasurementsChange?: () => void;
+  onMeasurementsChange?: (layout?: CommittedVirtualListLayout) => void;
   trailingContent?: ReactNode;
   /**
    * An extra row appended AFTER the last transcript row, inside the virtual
@@ -351,6 +353,8 @@ export function TranscriptBody({
   showSeenDividerTurnId,
   loadOlderRow,
   liveOverlay,
+  attentionOverlay,
+  onOverlayHeightChange,
   listRef,
   onMeasurementsChange,
   trailingContent,
@@ -510,7 +514,11 @@ export function TranscriptBody({
             viewRegistration.restoreAfterMeasurement();
           }
         }}
-        onLayout={viewRegistration.restoreAfterLayout}
+        onLayout={(layout) => {
+          viewRegistration.restoreAfterLayout(layout);
+          if (onMeasurementsChange && !viewRegistration.isPlacementPending() && layout.isCurrent())
+            onMeasurementsChange(layout);
+        }}
       />
     </section>
   );
@@ -528,7 +536,12 @@ export function TranscriptBody({
     let transcriptContent: ReactNode;
     if (surface === "live") {
       transcriptContent = (
-        <FlowOverlay top={loadOlderRow} pill={liveOverlay}>
+        <FlowOverlay
+          top={loadOlderRow}
+          pill={liveOverlay}
+          attentionOverlay={attentionOverlay}
+          onOverlayHeightChange={onOverlayHeightChange}
+        >
           <div className={styles.transcriptContent}>
             {list}
             {trailingContent}

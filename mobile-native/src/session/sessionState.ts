@@ -4,9 +4,9 @@
 // never unread, so one whose turn ended is Idle, with no dot.
 import { summaryTally } from "../subagents/subagentModel";
 import type { ThreadModel, SessionActivityCounts } from "@evener/appwire-client";
-import { taskSettledCount } from "@evener/appwire-client";
+import { attentionState, compactDuration, taskSettledCount } from "@evener/appwire-client";
 import { type BoardState, hubTime } from "../board/attention";
-import { compactDuration, timeAgo } from "./format";
+import { timeAgo } from "./format";
 import type { TrayLine } from "./trayLine";
 
 export interface SessionStateLine {
@@ -40,21 +40,29 @@ export function sessionStateLine(
 	live?: TrayLine | null,
 ): SessionStateLine {
 	const type = session.status.type;
-	// This follows the Board's own attention order (board/attention.ts's
-	// boardState, which matches the hub's NeedsYouBand) exactly, so the two
-	// surfaces never disagree about the same session: failed, restart needed,
-	// warning and "already shut down" are checked before a pending question
-	// or approval, so a stale escalation on any of those never masks them.
-	if (type === "systemError") return { state: "failed", text: "Failed" };
-	if (type === "restartRequired") return { state: "restartNeeded", text: "Restart needed" };
-	if (type === "warning") return { state: "warning", text: "Warning" };
-	if (SHUT_DOWN.has(type)) return { state: "shutDown", text: "Shut down" };
-	// A question outranks an approval, as on the Board.
-	if (type === "awaiting" && session.askPending) return { state: "question", text: "Asks a question" };
-	if (session.pendingEscalations.length > 0) return { state: "approval", text: "Asks for approval" };
-	// Awaiting without a question: the turn ended on needs_response (#4093).
-	if (type === "awaiting") return { state: "needsYou", text: "Needs you" };
-	if (type === "active") {
+	// The Board's own attention order (attentionState), so the two surfaces
+	// never disagree about the same session.
+	const attention = attentionState(type, {
+		askPending: session.askPending,
+		approvalPending: session.pendingEscalations.length > 0,
+	});
+	switch (attention) {
+		case "failed":
+			return { state: attention, text: "Failed" };
+		case "restartNeeded":
+			return { state: attention, text: "Restart needed" };
+		case "warning":
+			return { state: attention, text: "Warning" };
+		case "shutDown":
+			return { state: attention, text: "Shut down" };
+		case "question":
+			return { state: attention, text: "Asks a question" };
+		case "approval":
+			return { state: attention, text: "Asks for approval" };
+		case "needsYou":
+			return { state: attention, text: "Needs you" };
+	}
+	if (attention === "working") {
 		const started = hubTime(session.activeTurnStartedAt);
 		// The running-turn elapsed, which the session's own clock reports: the
 		// subagent run's time when the screen has one, else the time since the

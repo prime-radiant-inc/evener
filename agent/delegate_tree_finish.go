@@ -214,12 +214,7 @@ func (c *delegateTreeController) finalizationReadyForLeaseLocked(lease delegateL
 
 func (c *delegateTreeController) releaseSettlementClaimLocked(token uint64) {
 	delete(c.settlementClaims, token)
-	if c.stop != nil {
-		if _, tracked := c.stop.settlementClaims[token]; tracked {
-			delete(c.stop.settlementClaims, token)
-			c.signalStopProgressLocked()
-		}
-	}
+	untrackStopLocked(c, func(s *delegateStopState) map[uint64]struct{} { return s.settlementClaims }, token)
 }
 
 func (c *delegateTreeController) releaseSettlementClaimsForLeaseLocked(lease delegateLease) {
@@ -436,12 +431,7 @@ func delegateFinishMetadataEvents(events []delegatestore.Event, lease delegateLe
 
 func (c *delegateTreeController) generationFinishedPlansLocked(lease delegateLease, deliveryID string) (delegateMutationPlans, context.CancelFunc) {
 	c.releaseSettlementClaimsForLeaseLocked(lease)
-	if c.stop != nil {
-		if _, tracked := c.stop.active[lease]; tracked {
-			delete(c.stop.active, lease)
-			c.signalStopProgressLocked()
-		}
-	}
+	untrackStopLocked(c, func(s *delegateStopState) map[delegateLease]struct{} { return s.active }, lease)
 	cancel := c.releaseGenerationLocked(lease)
 	c.evidenceVersion++
 	plan := c.capturedPlanLocked(lease.delegateID)

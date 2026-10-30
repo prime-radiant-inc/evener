@@ -29,7 +29,7 @@ import (
 // ordering; toolDeps adds no behavior of its own.
 type toolDeps struct {
 	// emit publishes a session event (best-effort, same as Session.emit).
-	emit func(kind events.EventKind, data events.EventData)
+	emit func(data events.EventData)
 
 	// deliverCommunicate records a communicate message in the transcript and
 	// then announces it, or reports why it did not (Session.deliverCommunicate).
@@ -449,12 +449,19 @@ func buildProfileToolRegistry(defs []llm.ToolDefinition) *tool.Registry {
 		_ = reg.Register(tool.RegisteredTool{
 			Definition: td,
 			OmitIntent: td.Name == "communicate",
-			Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-				return nil, errors.New("tool executor not wired")
-			},
+			Exec:       profilePlaceholderExecutor,
 		})
 	}
 	return reg
+}
+
+// profilePlaceholderExecutor is the executor buildProfileToolRegistry installs
+// on every profile definition it seeds. registerCoreTools replaces each seeded
+// definition with the real handler; a definition still carrying this executor
+// was never wired. It is a named function, not a closure, so tests can identify
+// it by symbol without invoking a real tool.
+func profilePlaceholderExecutor(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+	return nil, errors.New("tool executor not wired")
 }
 
 func registerMinimalWorktreeTools(reg *tool.Registry, s *Session) error {
@@ -480,7 +487,7 @@ func registerCoreTools(reg *tool.Registry, s *Session) error {
 	if err := registerJobTools(reg, s, deps); err != nil {
 		return err
 	}
-	if err := registerStableDelegateTool(reg, s); err != nil {
+	if err := registerDelegateTool(reg, s); err != nil {
 		return err
 	}
 	if s.modelSnapshot != nil {

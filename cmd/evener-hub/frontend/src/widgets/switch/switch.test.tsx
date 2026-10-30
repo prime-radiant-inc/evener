@@ -5,6 +5,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { expect, test, vi } from "vitest";
+import { readModuleCss } from "../../styles/cssBlock";
 import { Switch } from "./index";
 
 function ControlledSwitch(props: { onChange?: (checked: boolean) => void; disabled?: boolean }) {
@@ -208,8 +209,7 @@ test("the clickable label gets the coarse-pointer touch floor", () => {
 });
 
 test("keeps the native mobile button at the touch floor without enlarging the painted track", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "switch.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readModuleCss(import.meta.url, "switch.module.css");
   expect(css).toMatch(
     /@media \(max-width: 899px\), \(any-pointer: coarse\) \{[\s\S]*?\.control\s*\{[^}]*min-height:\s*var\(--tap-min\)/,
   );

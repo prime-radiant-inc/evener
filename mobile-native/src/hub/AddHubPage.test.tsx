@@ -21,11 +21,9 @@ vi.mock("@react-navigation/native", () => {
 	return { useNavigation: () => navigation };
 });
 vi.mock("expo/fetch", () => ({ fetch: vi.fn() }));
-vi.mock("expo-crypto", () => ({ getRandomBytes: (count: number) => new Uint8Array(count).fill(7) }));
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 it("adds the hub the route names the way to, and leaves closing the sheet to the new selection", async () => {
 	mocks.getStringAsync.mockResolvedValue("https://magic-kingdom:9180/auth/s3cret");

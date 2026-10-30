@@ -10,8 +10,7 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
-// TestSessionJobOutputPage_JobNotFound covers the isJobNotFoundErr branch
-// (jobs_panel.go:50-52): a missing job id returns found=false, no error.
+// TestSessionJobOutputPage_JobNotFound covers the isJobNotFoundErr branch: a missing job id returns found=false, no error.
 func TestSessionJobOutputPage_JobNotFound(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
@@ -55,8 +54,7 @@ func TestSessionJobOutputPage_EmptyThenMissingFile(t *testing.T) {
 	}
 }
 
-// TestSessionJobOutputPage_Success covers the success path
-// (jobs_panel.go:58): a live job with output returns the tail content.
+// TestSessionJobOutputPage_Success covers the success path: a live job with output returns the tail content.
 func TestSessionJobOutputPage_Success(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)

@@ -31,6 +31,7 @@ func TestAppWireArchiveNavigationTicketConvergesWithPublisherBroadcast(t *testin
 		Archive: hubcore.NewArchiveStore(filepath.Join(root, "archive.db")),
 	})
 	web.navigation = newTestNavigationService(t, source)
+	web.appRPC = newHubAppServerWithNavigation(web.cfg, web.sources, web.navigation, web.resolveTopLevelSessionRef)
 
 	// Prime the retained snapshot, then make the real archive handler observe
 	// a changed navigation source. No scheduler or wall-clock synchronization

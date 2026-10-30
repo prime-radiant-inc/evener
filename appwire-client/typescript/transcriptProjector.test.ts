@@ -1120,6 +1120,49 @@ describe("transcript projector", () => {
       "stream:preview",
     ]);
   });
+
+  test("first thought retains its display key across attempt reset and recorded settlement", () => {
+    const thought = (id: string, status = "inProgress") =>
+      threadWith(item(id, "reasoning", { roundId: "r-thought", status, reasoningSummaries: [["A 🧭"]] }));
+    const live = entriesFor(thought("stream:r-thought/0:reasoning"), preset("full"))[0];
+    const reset = entriesFor(thought("stream:r-thought/1:reasoning"), preset("full"))[0];
+    const recorded = entriesFor(thought("item_reasoning_1_0", "completed"), preset("full"))[0];
+    expect([live?.id, reset?.id, recorded?.id]).toEqual([
+      "stream:r-thought/0:reasoning",
+      "stream:r-thought/1:reasoning",
+      "item_reasoning_1_0",
+    ]);
+    expect([live, reset, recorded].map((entry) => entry && entryDisplayKey(entry))).toEqual([
+      "round:r-thought:reasoning",
+      "round:r-thought:reasoning",
+      "round:r-thought:reasoning",
+    ]);
+    const multiple = threadWith(
+      item("item_reasoning_1_0", "reasoning", { roundId: "r-thought" }),
+      item("item_reasoning_1_1", "reasoning", { roundId: "r-thought" }),
+      item("item_assistant_1_0", "agentMessage", { roundId: "r-thought" }),
+    );
+    expect(entriesFor(multiple, preset("full")).map(entryDisplayKey)).toEqual([
+      "round:r-thought:reasoning",
+      "item_reasoning_1_1",
+      "round:r-thought:agentMessage",
+    ]);
+    const contentFree = {
+      ...multiple,
+      turns: [
+        turn(
+          [
+            item("stream:r-thought/0:reasoning", "reasoning", {
+              roundId: "r-thought",
+              status: "inProgress",
+            }),
+          ],
+          { status: "inProgress" },
+        ),
+      ],
+    } as ThreadModel;
+    expect(entriesFor(contentFree, preset("tools")).map(entryDisplayKey)).toEqual(["round:r-thought:reasoning"]);
+  });
 });
 
 // --- automatic memory refresh (eventKind "memory-context") ------------------

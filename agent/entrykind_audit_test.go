@@ -331,11 +331,7 @@ func observeTurnOpeningServed(t *testing.T, kind EntryKind) turnOpeningObservati
 func namingRefusalOnASpawnedChild(t *testing.T) turnNameRefusal {
 	t.Helper()
 	parent := newTestSession(t)
-	prepared, err := parent.prepareSubagentRun(context.Background(), "turn-opening audit probe", "", "", 0, "", "", nil, nil)
-	if err != nil {
-		t.Fatalf("prepareSubagentRun: %v", err)
-	}
-	defer releasePreparedTreeSlot(prepared)
+	prepared := prepareStableChild(t, parent, delegateArgs{Task: "turn-opening audit probe"})
 	child := prepared.sub.sess
 	defer child.Close()
 

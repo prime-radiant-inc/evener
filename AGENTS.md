@@ -122,7 +122,7 @@ directory: `cd cmd/evener-hub/frontend && npm run lint` to check or
 `npm run check` to fix. Before the gate, run
 `cd cmd/evener-hub/frontend && npx biome check --write <touched paths>` on
 touched files under `src/` and on touched files in the AppWire TypeScript
-package. Files outside those two directories, such as the `scripts/layoutguard`
+package. Files outside those two directories, such as the `cmd/evener-hub/frontend/scripts/layoutguard`
 harness HTML, deliberately reproduce component markup that trips a11y lint
 rules, so an explicit-path Biome run over them reports violations the gate does
 not enforce. Do not "fix" those to satisfy an out-of-scope invocation. Use
@@ -174,6 +174,17 @@ say — and never runs `npm ci` itself; it fails loudly and names the command
 instead). Never run `npm ci` through a
 symlinked `node_modules` in any of the three.
 
+## Pinning the JavaScript toolchain
+
+Biome, Vitest (and `@vitest/coverage-v8`), TypeScript, `@types/react` and
+`@types/react-dom` are pinned to exact versions, and every npm tree that
+declares one uses the same version, because the trees compile, format and test
+the same shared client sources. Bump such a package in all trees in one change,
+and keep each `biome.jsonc` `$schema` URL on its tree's Biome version. React
+and `react-dom` are exact in every tree but may differ between trees:
+mobile-native stays on the one version `react-native` ships its renderer for.
+`make lint-js-toolchain-pins` enforces this.
+
 ## Importing the AppWire TypeScript package
 
 The shared client lives at `appwire-client/typescript` and every consumer in
@@ -204,9 +215,21 @@ run load app modules that import the package by name. `npm run check:scripts`
 (part of `make test-native`) resolves those scripts' module graphs without
 loading them, since each opens a socket the moment its body runs.
 
+## Code conventions
+
+- A production symbol needs a production caller. A test-only seam needs a
+  behavior test that cannot reach the failure any other way.
+- Before writing a path, fsync, truncate or clone helper, grep for the shared
+  one and use it.
+- Comments state the invariant. History, review rounds, issue ids and spec
+  section numbers belong in the commit message.
+- No test file or test name carries a sprint, round, pass or
+  coverage-percentage label.
+- New compatibility code names its removal condition in the PR description.
+
 ## Shepherding a PR through RoboRev
 
-- **Simplify-code*
+- **Simplify-code**
   Before submitting a PR, you should always use the /simplify-code skill to
   improve the code quality.
 
@@ -235,14 +258,27 @@ loading them, since each opens a socket the moment its body runs.
   `make test-web` before "fixing" it). When two reviewers conflict, the
   reconciliation usually is that both are right about different cases; pin
   both cases.
-- **Merge the base before asking for approval.** If the repo dismisses stale
-  reviews, a post-approval base merge voids the approval and demands another;
-  merge `origin/main` first so the review and the approval land on the same
-  final head.
-- **Merge approval**
-  If every CI check is green and RoboRev notes only 'low' findings or findings 
-  you have conclusively refuted, you are authorized to admin squash merge to main.
-  Handle those 'low' findings immediately in a fast-follow PR.
+- **Merge through the merge queue.** Main requires one approving review, and
+  RoboRev supplies it: a few minutes after its combined review names the PR's
+  head, the roborev-primeradiant app approves when nothing is medium or above
+  and requests changes otherwise. A push dismisses the approval until the new
+  head is reviewed. Once every CI check is green and RoboRev has approved
+  (`gh pr view <N> --json reviewDecision` says `APPROVED`), add the PR to
+  main's merge queue and wait for the outcome:
+  `scripts/ops/merge-enqueue.sh --pr <N> --wait 570`, repeated while it
+  prints `MERGEQ timeout`. Do not use `gh pr merge --squash` for this: it
+  falls back to auto-merge, which the repo disallows. The queue tests the PR
+  on top of main and the PRs ahead of it and merges it when the required
+  checks pass there, so do not merge `origin/main` into the branch just to
+  catch up. Pushing to a queued PR removes it from the queue. `MERGEQ
+  dropped` means a check failed on the queue's candidate: read it, fix the
+  cause (or, for an unrelated known flake, note it on the PR), and enqueue
+  again. Handle 'low' findings immediately in a fast-follow PR.
+- **Refuted findings.** RoboRev never reads rebuttals, so a PR whose
+  remaining medium-or-above findings you have conclusively refuted on the PR
+  keeps its requested changes. That case alone is an admin merge: merge
+  `origin/main` if behind, wait for every check to be green on that head, then
+  `gh pr merge <N> --repo prime-radiant-inc/evener --squash --admin`.
 
 - **Gates run from the repo root.** `make test-web`'s target lives in the root
   Makefile; running it from `cmd/evener-hub/frontend` dies with "No rule to

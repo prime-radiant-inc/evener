@@ -233,23 +233,14 @@ func TestProfileGetters(t *testing.T) {
 	if p.ToolNameMap() == nil {
 		t.Error("ToolNameMap should not be nil for the openai surface")
 	}
-	if !p.SupportsParallelToolCalls() {
-		t.Error("SupportsParallelToolCalls should be true")
-	}
 	if len(p.ProjectDocFiles()) == 0 {
 		t.Error("ProjectDocFiles should not be empty")
 	}
 	if !p.SupportsReasoning() {
 		t.Error("SupportsReasoning should be true")
 	}
-	if !p.SupportsStreaming() {
-		t.Error("SupportsStreaming should be true")
-	}
 	if !p.SupportsWebSearch() {
 		t.Error("SupportsWebSearch should be true")
-	}
-	if p.DefaultCommandTimeoutMS() != 120000 {
-		t.Errorf("DefaultCommandTimeoutMS = %d", p.DefaultCommandTimeoutMS())
 	}
 	if p.KnowledgeCutoff() == "" {
 		t.Error("KnowledgeCutoff should come from the row")

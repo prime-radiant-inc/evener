@@ -22,12 +22,15 @@ At startup it loads
 `${XDG_STATE_HOME:-$HOME/.local/state}/evener`, and `hub.toml` may override it.
 It creates a fresh 256-bit token when the file is absent. A newly created token
 file is written mode 0600; a non-empty existing file is accepted after
-surrounding whitespace is trimmed, without format or mode enforcement. The hub
-logs an authorization URL:
+surrounding whitespace is trimmed, without format or mode enforcement. With startup
+output directly on an interactive terminal, the hub prints an authorization URL:
 
 ```
-[hub] auth URL (visit once per browser): http://127.0.0.1:9180/auth/<token>
+[hub] Private sign-in link (treat as a password): http://127.0.0.1:9180/auth/<token>
 ```
+
+Routine logs contain only a safe browser address. To request the credential-bearing
+URL explicitly, use `evener hub login-url` with the running hub's config and environment.
 
 A browser authorizes by visiting that URL once; the hub sets a long-lived
 `SameSite=Lax` cookie and slides its expiry forward on each visit. Scripted
@@ -100,8 +103,9 @@ itself is compromised, isolate and recover it before issuing a replacement.
    recorded registration/foreground command. Restore only the restart sources
    you deliberately disabled. The absent token file makes startup generate a
    new 256-bit credential at `<hub_state_root>/auth-token`. Check that it is
-   owned by the service user and mode `0600`. Keep supervisor output private:
-   the hub logs a credential-bearing authorization URL on startup.
+   owned by the service user and mode `0600`. Request the new authorization URL
+   privately with `evener hub login-url` using that service's config and environment.
+   Supervisor output does not contain the private sign-in link.
 5. **Verify revocation before distributing the replacement.** Existing clients
    must disconnect. In a browser still holding only the old cookie, open the
    plain `/api/debug/subscriptions` URL and require HTTP 401. Do not visit the
@@ -165,7 +169,8 @@ unset, the corresponding defaults are under `$HOME/.local/state` and
 - `${XDG_STATE_HOME:-$HOME/.local/state}/evener/projects/*` is durable per-project
   Evener state and saved transcripts.
 - `${XDG_STATE_HOME:-$HOME/.local/state}/evener/index.db` is the hub's SQLite
-  search index.
+  past-session index, including user archive/favorite/pin/seen state. It is not
+  the disposable full-text `search.db` under `hub_state_root`.
 - `${XDG_STATE_HOME:-$HOME/.local/state}/evener/auth-token` is the hub's
   capability token (see Trust Boundary).
 - `${XDG_CONFIG_HOME:-$HOME/.config}/evener/skills` and
@@ -181,6 +186,14 @@ unset, the corresponding defaults are under `$HOME/.local/state` and
 
 Extension discovery and enablement have separate rules. Use [Extensions](extensions.md) to choose a source; `skills_dirs` and `plugin_dirs` add explicit launch sources, while installed plugins have their own enabled-by-default state.
 
+`hub_state_root` requires local storage, enforced by best-effort OS filesystem
+classification. Unknown Linux filesystem types are admitted, not certified.
+Changing this root does not relocate the independently resolved `run_dir`,
+`state_glob`, `past_index_db` or credentials/config stores. Preserve durable
+state and the token before changing it. See [local hub state and manual
+relocation](evener-hub-state.md) for refusal/recovery, the selective offline
+copy procedure, coordinated upgrades and detection/proof limits.
+
 ## Hub config
 
 `${XDG_CONFIG_HOME:-$HOME/.config}/evener/hub.toml` is optional. If it is absent,
@@ -195,6 +208,8 @@ launch files described below.
 Create `hub.toml` when you need to override those paths or the listen
 address. If it already exists, preserve a private copy and edit only the intended fields rather than running this file-creation recipe over it. The shell expands `hub_config` and `hub_state_root` in the heredoc
 before writing the file; TOML itself does not expand shell variables.
+See [hub endpoints](evener-hub-endpoints.md) for listener precedence, port-zero
+binding, public origins, and migration from retired settings.
 
 ```bash
 hub_config="${XDG_CONFIG_HOME:-$HOME/.config}/evener/hub.toml"
@@ -202,6 +217,7 @@ hub_state_root="${XDG_STATE_HOME:-$HOME/.local/state}/evener"
 mkdir -p "$(dirname "$hub_config")"
 cat > "$hub_config" <<EOF
 addr = "127.0.0.1:9180"
+# Optional reverse-proxy origin for pairing: public_url = "https://evener.example.com"
 hub_state_root = "$hub_state_root"
 run_dir = "$hub_state_root/run"
 state_glob = "$hub_state_root/projects/*"
@@ -274,21 +290,22 @@ field is absent.
 | `host_probe_timeout` | `"10s"` | Deadline for one remote-host health probe; also bounds how long a hung remote holds a deploy gate. |
 | `host_min_free_space_bytes` | 512 MiB | Free space each state root needs before the hub reports itself healthy. |
 | `host_tombstone_retention` | `"168h"` | How long a removed host's tombstone is retained before pruning. |
-| `status_poll_interval` | `"2s"` | How often the hub polls session state. |
-| `mobile_base_url` | unset | Default hub address offered to paired phones; otherwise the browser's own origin is used. |
+| `public_url` | unset | HTTP(S) origin advertised for pairing and browser login; otherwise use the observed browser origin for pairing and the bound listener for startup login. |
 
 Write every duration as a TOML string, such as `"30s"` or `"1h"`. A bare integer
 is read by TOML as a nanosecond count, so `spawn_timeout = 30` arms 30ns rather
 than 30 seconds. Some duration fields refuse that form outright
-(`daemon_idle_timeout`, `host_probe_timeout`, and the host receipt and operation
-TTLs). Negative handling then differs by field: a negative
-`daemon_idle_timeout` is rejected, some fields fall back to their default, and
+(`daemon_idle_timeout`, `host_probe_timeout`, and `host_tombstone_retention`).
+Negative handling then differs by field: a negative `daemon_idle_timeout` is rejected, some fields fall back to their default, and
 others keep the negative value. The loader does not validate every duration
 field the same way, so assume a typo can take effect and check the resolved
 value rather than trusting a silent load.
 
-Host receipt and operation retention rows are documented beside the host
-registry in the [subsystem map](product/subsystems.md) rather than here.
+Every other host-record bound (tombstone and receipt counts, sizes and ages,
+operation-store limits, teardown-repair timing) is a built-in default and is not
+configurable. A `hub.toml` that still sets a retired key (one of the `host_*`
+retention or pruning keys, or `status_poll_interval`) starts normally, ignores
+the value, and logs a warning naming the key on every boot while it is present.
 
 ## Launch configuration
 
@@ -367,11 +384,15 @@ chmod 600 "$log_file"
 evener hub --config "$hub_config" 2>&1 | tee -a "$log_file"
 ```
 
-The hub listens on `127.0.0.1:9180` unless `addr` in `hub.toml` says
-otherwise, and logs the authorization URL described under Trust Boundary on
-every start. That URL contains the bearer credential: protect supervisor
-stdout/stderr and this log as secrets, and do not paste them into tickets or
-chat.
+The hub listens on `127.0.0.1:9180` unless a top-level `addr` in `hub.toml`,
+`EVENER_HUB_LISTEN_ADDR`, or `evener hub --addr` overrides it, in that order.
+The hub reports a safe browser address on every start. A private sign-in link
+is printed only when startup output goes directly to an interactive terminal,
+not through `tee` or into supervisor logs. To retrieve it explicitly, set
+`hub_config` to the same path in another terminal, then run
+`evener hub login-url --config "$hub_config"`. That URL contains the bearer
+credential: treat it as a password and do not paste it into logs, tickets, or chat. Keep logs private too;
+diagnostics can contain other sensitive data.
 
 If you manage credentials via environment variables rather than
 `${XDG_CONFIG_HOME:-$HOME/.config}/evener/credentials.toml`, source your env file
@@ -385,7 +406,8 @@ This Bash recipe uses `pipefail` so a hub failure is not hidden by `tee`.
 Production deployments should preferably execute `evener hub --config
 "$hub_config"` directly under a supervisor and let it capture stdout/stderr.
 The hub logs config errors, past-index rebuild errors, roster watch errors,
-child-process launch diagnostics, and the auth URL there.
+child-process launch diagnostics, and the safe browser address there, not the
+private sign-in link.
 
 On macOS, [`scripts/ops/deploy-hub.sh`](../scripts/ops/deploy-hub.sh) builds
 while the old hub remains running, kickstarts its launchd job to replace it,
@@ -395,24 +417,52 @@ then verifies health; see
 The hub acquires a `flock` on `hub.lock` in its state root, so one hub process runs
 per `hub_state_root` — one per user under the default layout.
 
+To inspect that selected instance without starting one, run
+`evener hub endpoint --json --config "$hub_config"` in the same environment.
+Its running report includes the actual bound address and local origin, including
+the chosen port for `addr = "0.0.0.0:0"`. A restart can choose another port:
+rediscover rather than cache the old address. `evener hub attach --stdio` uses
+this discovery for authenticated AppWire; `--hub-url` selects a client origin,
+not a listener or permission to start a hub. See [hub endpoints](evener-hub-endpoints.md).
+
 ### Updating the hub from Settings
 
-Settings → Hub → Updates shows the running build (version, commit, channel),
-a channel selector (release or snapshot), and whether that channel is ahead
-of the running build. "Update and restart" downloads and installs the
-channel's archive with the same code as `evener upgrade`, then, once the
-apply response has been written to the websocket, the hub `exec`s the
-installed binary in place: same PID, same arguments, same
-environment. That is why it works the same under launchd, systemd, or a
-plain shell, and why nothing needs `KeepAlive`. The `hub.lock` flock and the
-listener are released by the exec and re-acquired by the new process; the
-page polls `/api/health` until the new version answers, then reloads.
+Settings → Hub → Updates shows the running build (commit and channel), the
+build on disk, and whether the selected channel is ahead of the on-disk build.
+Install and Restart are separate actions:
+
+- **Install update** downloads and installs the channel's archive with the
+  same code as `evener upgrade`. It does not restart the hub. The section then
+  shows "Installed `<build>`, running `<build>`" until Restart is used.
+- **Restart hub** execs the binary at the hub's launch path in place: same PID,
+  arguments, working directory, environment, and stdio. Before answering, the
+  hub probes that binary with `--version` and refuses a missing, unreadable, or
+  non-Evener target; the running hub stays up on a refusal. On Unix the
+  `hub.lock` flock and listener are released by the exec and re-acquired by
+  the new process. A root-owned installation without a writable lock file is
+  restarted with the final digest check alone.
+- A restart is confirmed by process incarnation (`/api/health` `started_at`),
+  not by version. A rebuild at the same commit still reloads the page.
+- `evener hub restart` runs the same restart from a terminal and waits for the
+  new process to answer. A lost response is ambiguous: the command succeeds
+  only when the new incarnation appears, and fails on a refusal or timeout.
+- `evener/update/apply` remains for older installed clients; the Settings UI
+  no longer calls it.
+- A hub that predates separate restart shows the original combined **Update and
+  restart** action instead.
+- A current hub that reports restart disabled keeps the two-step controls; the
+  combined action is only for a hub whose response has no restart capability
+  field at all.
+- A channel-lookup failure is reported in `checkError` while the local build,
+  incarnation, and restart facts stay populated. Clients older than that field
+  read the answer as "up to date" during the failure; the hub does not
+  negotiate a separate error shape for them.
 
 The install targets the prefix the running hub was launched from (derived
 from its own binary path, e.g. `/usr/local` for a system install), not
 always `~/.local`. The whole operation runs under a 4-minute overall
 deadline (both downloads, verification, install) so a stalled server fails
-the apply instead of blocking later updates. Before
+the install instead of blocking later updates. Before
 extraction, the archive's SHA-256 is checked against the release's
 `checksums.txt` entry (same fail-closed guarantee as `install.sh`); a
 mismatch or missing entry refuses the install. Note the limit: the
@@ -424,10 +474,11 @@ The channel selector has no stored setting. It defaults to the channel the
 running binary was built for, and after an update the installed binary's
 channel becomes the new default.
 
-Dev builds (a worktree `make build-hub`, channel `dev`) are excluded:
-Settings shows a rebuild note instead of the controls, and
-`evener/update/apply` is refused. Use `make build-hub` or
-`scripts/ops/deploy-hub.sh` for those.
+Dev builds (a worktree `make build-hub`, channel `dev`) hide Install, because
+a worktree build must never be silently replaced by a release binary. Restart
+is available so the rebuilt binary can be run without a download.
+`evener/update/apply` is refused on a dev build. Use `make build-hub` or
+`scripts/ops/deploy-hub.sh` for the build.
 
 Running session daemons keep the binary they were spawned from (see the
 [upgrade procedure](#upgrading-and-migrating-safely) below). Shut down the
@@ -445,21 +496,25 @@ that connection; their absence does not trigger deployment.
 flowchart TD
     A[Connect] --> B{Running hub handshake}
     B -->|Compatible| C[Use existing channel and build]
-    B -->|Proven incompatible| D[Install suitable build and verify replacement]
+    B -->|Proven older| D[Install suitable build and verify replacement]
+    B -->|Proven newer| N[Refuse and update the controller]
     B -->|Authentication, transport or malformed response| E[Report connection failure]
     B -->|No hub listening| F{Installed launch contract usable}
     F -->|Yes| G[Start installed build and verify connection]
-    F -->|Verified missing or incompatible| D
+    F -->|Verified missing or older| D
+    F -->|Verified newer| N
     F -->|Malformed or unknown| E
 ```
 
-Connect can still install software on a fresh or incompatible host. A stopped
-compatible installation is started without replacement on an explicit Connect;
-background reconnect does not start a stopped hub. An unclassified handshake
-failure is a connection error, not permission to overwrite the installation.
-The same rule applies to malformed or incomplete cold-start launch metadata.
-Use `--no-deploy` to prohibit both pushes and installer fallback. Explicit Deploy
-retains its plan, confirmation and requested-build checks.
+Connect can still install software on a fresh or older host. A host whose
+protocol is newer than the controller's is refused rather than downgraded: the
+controller must be updated. A stopped compatible installation is started without
+replacement on an explicit Connect; background reconnect does not start a
+stopped hub. An unclassified handshake failure is a connection error, not
+permission to overwrite the installation. The same rule applies to malformed or
+incomplete cold-start launch metadata. Use `--no-deploy` to prohibit both pushes
+and installer fallback. Explicit Deploy retains its plan, confirmation and
+requested-build checks.
 
 The source rules below apply **when installation is required**, not on every
 Connect:
@@ -673,11 +728,11 @@ A live functional check can incur provider charges: authorize the browser, choos
 The documentation site tracks main. Release builds can lag it; snapshot builds follow ongoing development. Record the current version and installation prefix before changing channels. The installation guide owns download procedures; Settings → Hub → Updates owns an installed hub's update flow above.
 
 **Before shutting down an older daemon:** saved session trees containing legacy
-delegate lifecycle or legacy delegate-addressed watch state cannot resume on
-the current runtime. Read [the compatibility warning and fresh-root
-continuation](../UPGRADING.md#before-shutting-down-an-older-session). Preserve
-history and finish essential work first. Layout migration does not repair that
-format, and saved-history visibility is not proof of resumability.
+delegate lifecycle or legacy delegate-addressed watch state resume with that
+state ignored. Read [what is and is not
+resumed](../UPGRADING.md#before-shutting-down-an-older-session). Finish
+essential work first. Layout migration does not convert that format, and
+saved-history visibility is not proof that old delegates continue.
 
 1. Finish work that must not straddle a version change. In each session's actions menu, choose **Shut down** and confirm. This stops the agent process; the composer's **Stop** only interrupts a turn. Verify that the old daemon process has exited before copying state. A hub restart alone does not stop its session daemons.
 2. Inventory effective paths and make a private [backup](security.md#storage-and-backups). Copying live state is not guaranteed consistent.

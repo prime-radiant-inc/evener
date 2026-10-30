@@ -144,7 +144,7 @@ func TestIntg_InitMCP_PluginProvidedServerMerges(t *testing.T) {
 
 // TestIntg_InitMCP_PluginBadInlineMCPServersSurvives covers Task 12: a plugin
 // whose inline mcpServers map has an entry that fails mcpconfig.ParseServerMap
-// (here, an empty server name) used to abort plugin.Load/LoadAll entirely,
+// (here, an empty server name) used to abort plugin.Load entirely,
 // taking the whole session down with it. It must now degrade to a
 // plugin-level warning: NewSession succeeds, the bad plugin contributes no
 // MCP server, and a WARNING event names the plugin.

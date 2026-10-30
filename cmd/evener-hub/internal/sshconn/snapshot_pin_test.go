@@ -37,84 +37,6 @@ func TestSnapshotPinGitSHASourcesFromBuildChannel(t *testing.T) {
 	}
 }
 
-// TestWaitHealthySnapshotPin proves the build-identity half of the probe: with a
-// snapshot pin, a response that reports the expected version but an empty or
-// different backend_git_sha is not yet healthy, so polling continues and the
-// bounded wait fails with ErrRestart rather than attaching to a build the
-// deploy did not produce. A matching SHA is healthy, and no pin at all leaves
-// the version-only rule exactly as it was.
-func TestWaitHealthySnapshotPin(t *testing.T) {
-	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
-	const expectedSHA = "expectedsha"
-
-	cases := []struct {
-		name    string
-		pin     string
-		body    string
-		wantErr bool
-	}{
-		{
-			name:    "an empty backend_git_sha is not healthy for a snapshot pin",
-			pin:     expectedSHA,
-			body:    `{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`,
-			wantErr: true,
-		},
-		{
-			name:    "a different backend_git_sha is not healthy for a snapshot pin",
-			pin:     expectedSHA,
-			body:    `{"version":"newsha","backend_git_sha":"othersha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`,
-			wantErr: true,
-		},
-		{
-			name:    "the expected backend_git_sha is healthy for a snapshot pin",
-			pin:     expectedSHA,
-			body:    `{"version":"newsha","backend_git_sha":"expectedsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`,
-			wantErr: false,
-		},
-		{
-			// No pin: a release or dev controller, whose version alone is the
-			// identity the probe has always used. A body with no backend_git_sha
-			// still verifies.
-			name:    "no pin keeps the version-only rule",
-			pin:     "",
-			body:    `{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`,
-			wantErr: false,
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			probes := 0
-			fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-				if !strings.Contains(strings.Join(argv, " "), "api/health") {
-					return nil, fmt.Errorf("unexpected remote command: %v", argv)
-				}
-				probes++
-				return []byte(tc.body), nil
-			}}
-			m := newTestManager(t, testRegistry(t, host), fr, Options{
-				sleep: func(context.Context, time.Duration) error { return nil },
-			})
-
-			err := m.waitHealthy(context.Background(), host, "newsha", tc.pin, hubIdentity{})
-			if (err != nil) != tc.wantErr {
-				t.Fatalf("waitHealthy = %v, wantErr %v", err, tc.wantErr)
-			}
-			if err != nil && !errors.Is(err, ErrRestart) {
-				t.Fatalf("waitHealthy error = %v, want ErrRestart so the restart is retried", err)
-			}
-			if tc.wantErr {
-				if probes < 2 {
-					t.Fatalf("health probes = %d, want >= 2 (a rejected answer must keep polling)", probes)
-				}
-				if !strings.Contains(err.Error(), "backend_git_sha") {
-					t.Fatalf("error does not name the build identity it rejected: %v", err)
-				}
-			}
-		})
-	}
-}
-
 // TestRestartHubPinsSnapshotBuildFromBuildChannel proves the caller wires the
 // pin in: on the snapshot channel, a restart whose health response reports the
 // expected version but a different commit must fail with ErrRestart instead of
@@ -135,6 +57,7 @@ func TestRestartHubPinsSnapshotBuildFromBuildChannel(t *testing.T) {
 			}
 			return run(ctx, argv, stdin)
 		}
+		modelLegacySelectedProcess(t, fr, host)
 		return newTestManager(t, testRegistry(t, host), fr, Options{
 			controllerVersionOverride: "newsha",
 			sleep:                     func(context.Context, time.Duration) error { return nil },
@@ -196,13 +119,13 @@ func TestFirstAttachBootstrapPinsSnapshotBuild(t *testing.T) {
 					return []byte("x86_64\n"), nil
 				case strings.HasSuffix(joined, "id -u"):
 					return []byte("1000\n"), nil
-				case strings.Contains(joined, "XDG_STATE_HOME"):
+				case argv[len(argv)-1] == envProbeScript:
 					return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 				case strings.Contains(joined, "launch-check"):
 					if !deployed {
-						return []byte(`{"protocol":"evener-appwire-v7","version":"newsha","launch_flags":[]}`), nil
+						return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":[]}`), nil
 					}
-					return []byte(`{"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+					return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
 				case strings.Contains(joined, "cat >"):
 					_, _ = io.Copy(io.Discard, stdin)
 					deployed = true
@@ -227,6 +150,8 @@ func TestFirstAttachBootstrapPinsSnapshotBuild(t *testing.T) {
 					return nil, fmt.Errorf("unexpected remote command: %v", argv)
 				}
 			}, startFn: goodStartFn(t)}
+			fixture := modelLegacySelectedProcess(t, fr, host)
+			fixture.adhoc = true
 			m := newTestManager(t, testRegistry(t, host), fr, Options{
 				controllerVersionOverride: "newsha",
 				BuildBinary:               writeStageBinary,

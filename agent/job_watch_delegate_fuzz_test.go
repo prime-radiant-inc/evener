@@ -18,7 +18,7 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// This file fuzzes the watch-configuration machinery in job_watch.go. The
+// This file fuzzes the watch-configuration machinery. The
 // target drives a real *jobManager and *Session built with package test
 // helpers, so every store, clock, and filesystem effect stays inside a
 // t.TempDir / MemMapFs sandbox — no network, process, or shared disk state.

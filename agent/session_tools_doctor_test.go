@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -19,6 +20,7 @@ import (
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
@@ -630,5 +632,21 @@ func TestDoctorTranscriptTurnNumbersAgreeWithReadTranscript(t *testing.T) {
 		if !strings.Contains(content, fmt.Sprintf("## Turn %d ", *row.Turn)) || !strings.Contains(content, row.Text) {
 			t.Errorf("read_transcript range %s does not show doctor's turn %d (%q):\n%s", window, *row.Turn, row.Text, content)
 		}
+	}
+}
+
+// With no state home and no home directory the state-scoped doctor commands
+// report that, while the plugin check (which reads the config root) still runs.
+func TestDoctorEvener_NoStateHomeOnlyBlocksStateScopedCommands(t *testing.T) {
+	t.Setenv("EVENER_STATE_DIR", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	if _, err := execDoctorEvener(nil, map[string]any{"command": "sessions"}); !errors.Is(err, userdirs.ErrNoStateHome) {
+		t.Fatalf("sessions error = %v, want ErrNoStateHome", err)
+	}
+	if _, err := execDoctorEvener(nil, map[string]any{"command": "plugins"}); errors.Is(err, userdirs.ErrNoStateHome) {
+		t.Fatalf("plugins must not need a state home: %v", err)
 	}
 }

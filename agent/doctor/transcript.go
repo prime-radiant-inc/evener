@@ -1,8 +1,7 @@
 package doctor
 
 import (
-	"bufio"
-	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -28,49 +27,20 @@ type transcriptDoc struct {
 }
 
 func loadTranscript(path string) (transcriptDoc, error) {
-	return loadTranscriptWithMaxLineBytes(path, transcript.DefaultMaxLineBytes)
-}
-
-func loadTranscriptWithMaxLineBytes(path string, maxLineBytes int) (transcriptDoc, error) {
 	file, err := openDoctorTranscriptFile(path)
 	if err != nil {
 		return transcriptDoc{}, fmt.Errorf("read transcript %s: %w", path, err)
 	}
 	defer file.Close() //nolint:errcheck // read-only file
-	reader := bufio.NewReaderSize(file, 64*1024)
 	var doc transcriptDoc
-	headerRead := false
-	lineNumber := 0
-	for {
-		line, complete, _, readErr := transcript.ReadLine(reader, maxLineBytes)
-		if readErr != nil {
-			return transcriptDoc{}, fmt.Errorf("read transcript line %d: %w", lineNumber+1, readErr)
-		}
-		if !complete {
-			break
-		}
-		lineNumber++
-		line = bytes.TrimSpace(line)
-		if len(line) == 0 {
-			continue
-		}
-		if !headerRead {
-			doc.Header, err = transcript.DecodeHeader(line)
-			if err != nil {
-				return transcriptDoc{}, fmt.Errorf("parse transcript header line %d: %w", lineNumber, err)
-			}
-			headerRead = true
-			continue
-		}
-		e, err := transcript.DecodeEntry(line)
-		if err != nil {
-			return transcriptDoc{}, fmt.Errorf("parse transcript entry line %d: %w", lineNumber, err)
-		}
-		doc.Entries = append(doc.Entries, e)
+	result, err := transcript.Scan(context.Background(), file, transcript.DefaultMaxLineBytes, func(_ []byte, entry transcript.Entry) error {
+		doc.Entries = append(doc.Entries, entry)
+		return nil
+	})
+	if err != nil {
+		return transcriptDoc{}, err
 	}
-	if !headerRead {
-		return transcriptDoc{}, fmt.Errorf("%w: missing transcript header", transcript.ErrUnsupportedFormat)
-	}
+	doc.Header = result.Header
 	return doc, nil
 }
 
@@ -296,7 +266,7 @@ func summarizeTurn(e transcript.Entry, resultTool string, textMax int) TurnSumma
 			// placeholder, which can only parse to an empty intent anyway.
 			if part.ToolCall.RawArguments == "" {
 				arguments = strings.TrimSpace(arguments)
-				intent = toolIntentFromArguments(part.ToolCall.Arguments)
+				intent = schema.ToolIntent(part.ToolCall.Arguments)
 			}
 			ts.ToolCalls = append(ts.ToolCalls, ToolCallSummary{
 				Name:       part.ToolCall.Name,
@@ -318,32 +288,6 @@ func summarizeTurn(e transcript.Entry, resultTool string, textMax int) TurnSumma
 	}
 	ts.Text = Truncate(strings.TrimSpace(text.String()), textMax)
 	return ts
-}
-
-// toolIntentFromArguments returns a tool call's stated "intent" argument, or
-// "" if none is present. Falls back to "purpose" -- the field's name before
-// the 2026-08-29 rename (7512a736e) -- so a transcript recorded before that
-// rename still shows its intent line when read back (issue #709). Doctor
-// imports agent/schema and agent/transcript but not the agent package
-// itself (toolIntent's home) or internal/apptranscript, so this mirrors --
-// rather than shares -- the same reader-side rule applied independently in
-// each of those packages.
-func toolIntentFromArguments(raw json.RawMessage) string {
-	var args map[string]any
-	if len(raw) == 0 || json.Unmarshal(raw, &args) != nil {
-		return ""
-	}
-	if v, ok := args["intent"].(string); ok {
-		if s := strings.TrimSpace(v); s != "" {
-			return s
-		}
-	}
-	if v, ok := args["purpose"].(string); ok {
-		if s := strings.TrimSpace(v); s != "" {
-			return s
-		}
-	}
-	return ""
 }
 
 func toolResultContentText(content any) string {
@@ -385,7 +329,7 @@ func RenderTranscript(r TranscriptResult, format string) string {
 				fmt.Fprintf(&b, "  results: %s", names)
 			}
 			if t.Text != "" {
-				fmt.Fprintf(&b, "  %q", oneLine(t.Text))
+				fmt.Fprintf(&b, "  %q", runetrim.OneLine(t.Text))
 			}
 			b.WriteString("\n")
 			continue
@@ -403,14 +347,14 @@ func RenderTranscript(r TranscriptResult, format string) string {
 			if tc.Intent != "" {
 				label += " — intent: " + tc.Intent
 			}
-			fmt.Fprintf(&b, "%s `%s`\n", label, oneLine(tc.ArgPreview))
+			fmt.Fprintf(&b, "%s `%s`\n", label, runetrim.OneLine(tc.ArgPreview))
 		}
 		for _, tr := range t.ToolResults {
 			label := "← " + tr.Name
 			if tr.IsError {
 				label += " (error)"
 			}
-			fmt.Fprintf(&b, "%s `%s`\n", label, oneLine(tr.ContentPreview))
+			fmt.Fprintf(&b, "%s `%s`\n", label, runetrim.OneLine(tr.ContentPreview))
 		}
 		b.WriteString("\n")
 	}
@@ -461,8 +405,4 @@ func Truncate(s string, maxLen int) string {
 		return s
 	}
 	return runetrim.Cut(s, maxLen) + "…"
-}
-
-func oneLine(s string) string {
-	return strings.ReplaceAll(strings.ReplaceAll(s, "\n", " "), "\r", "")
 }

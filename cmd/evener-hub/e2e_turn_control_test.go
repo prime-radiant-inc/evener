@@ -41,19 +41,7 @@ import (
 // no credential, no network (AGENTS.md: evener plumbing gets a scripted
 // provider; only model behaviour stays live).
 func TestE2E_TurnControlReachesTheSession(t *testing.T) {
-	e2ecap.RequireLoopbackBind(t)
-	e2ecap.RequireProcessInspect(t)
-	if testing.Short() {
-		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
-	}
-
-	provider, err := fakellm.New()
-	if err != nil {
-		t.Fatalf("start fake provider: %v", err)
-	}
-	t.Cleanup(provider.Close)
-
-	stack := startHubStack(t, provider)
+	stack, provider := startE2EHubStack(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -189,19 +177,7 @@ func TestE2E_TurnControlReachesTheSession(t *testing.T) {
 // turn_m<n>, so steer and stop came back Conflict("turn is not active") and
 // the composer showed nothing at all.
 func TestE2E_TurnControlReachesAnAgentStartedTurn(t *testing.T) {
-	e2ecap.RequireLoopbackBind(t)
-	e2ecap.RequireProcessInspect(t)
-	if testing.Short() {
-		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
-	}
-
-	provider, err := fakellm.New()
-	if err != nil {
-		t.Fatalf("start fake provider: %v", err)
-	}
-	t.Cleanup(provider.Close)
-
-	stack := startHubStack(t, provider)
+	stack, provider := startE2EHubStack(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -312,19 +288,7 @@ func TestE2E_TurnControlReachesAnAgentStartedTurn(t *testing.T) {
 // boundary lands (kata c2ty keeps that window open deliberately), and steering
 // against that id is the bug, not the test.
 func TestE2E_TurnControlReachesANotificationTurn(t *testing.T) {
-	e2ecap.RequireLoopbackBind(t)
-	e2ecap.RequireProcessInspect(t)
-	if testing.Short() {
-		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
-	}
-
-	provider, err := fakellm.New()
-	if err != nil {
-		t.Fatalf("start fake provider: %v", err)
-	}
-	t.Cleanup(provider.Close)
-
-	stack := startHubStack(t, provider)
+	stack, provider := startE2EHubStack(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -644,6 +608,32 @@ api_key  = "fakellm-not-a-secret"
 `, provider.BaseURL()), "fake/"+fakellm.ModelID)
 }
 
+// newFakeLLMProvider starts a fake LLM provider server closed at test end.
+func newFakeLLMProvider(t *testing.T) *fakellm.Server {
+	t.Helper()
+	provider, err := fakellm.New()
+	if err != nil {
+		t.Fatalf("start fake provider: %v", err)
+	}
+	t.Cleanup(provider.Close)
+	return provider
+}
+
+// startE2EHubStack runs the standard live-stack e2e prologue: the loopback and
+// process-inspection prerequisites, the -short skip, a fake LLM provider
+// closed at test end, and the hub stack over that provider. Tests that need a
+// differently-configured stack or provider build the preamble inline.
+func startE2EHubStack(t *testing.T) (hubStack, *fakellm.Server) {
+	t.Helper()
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
+	if testing.Short() {
+		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
+	}
+	provider := newFakeLLMProvider(t)
+	return startHubStack(t, provider), provider
+}
+
 // startHubStackOnProvider is startHubStack with the provider left to the
 // caller, so a live-model test can point the same stack at a real instance
 // whose credential comes from the environment.
@@ -672,6 +662,17 @@ func startHubStackOnProviderWithEvener(t *testing.T, providersTOML, model, evene
 }
 
 type hubStackOptions struct{ ChildEnv []string }
+
+func browserFixtureEnv(origin string) []string {
+	env := make([]string, 0, len(os.Environ())+1)
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if key != "EVENER_HUB_ADDR" && key != "EVENER_HUB_URL" {
+			env = append(env, entry)
+		}
+	}
+	return append(env, "EVENER_HUB_URL="+origin)
+}
 
 func startHubStackWithOptions(t *testing.T, providersTOML, model, evenerBin string, opts hubStackOptions, extraHubArgs ...string) hubStack {
 	t.Helper()

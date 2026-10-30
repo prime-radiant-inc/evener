@@ -53,6 +53,11 @@ describe("a subagent's row (spec 8.2)", () => {
 		});
 	});
 
+	it("carries its run's start, so its screen can time the run before the tree reports it (#2988)", () => {
+		const started = ago(240_000);
+		expect(subagentLine(row(), [delegate({ runStartedAt: started })], NOW).runStartedAt).toBe(started);
+	});
+
 	it("says it's quiet once no update came for 20 seconds", () => {
 		expect(subagentLine(row(), [delegate({ quietForMs: 300_000 })], NOW).activity).toBe("Quiet 5m");
 	});

@@ -2,12 +2,13 @@ package delegatestore
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 )
 
-// TestApplyNilState covers Apply with a nil state (fold.go:29-30).
+// TestApplyNilState covers Apply with a nil state.
 func TestApplyNilState(t *testing.T) {
 	err := Apply(nil, Event{Kind: EventDelegateCreated, DelegateID: "x", Seq: 1})
 	if err == nil || !strings.Contains(err.Error(), "nil") {
@@ -15,8 +16,7 @@ func TestApplyNilState(t *testing.T) {
 	}
 }
 
-// TestApplyEventUnknownKind covers the default branch of applyEvent
-// (fold.go:88-89).
+// TestApplyEventUnknownKind covers the default branch of applyEvent.
 func TestApplyEventUnknownKind(t *testing.T) {
 	state := make(State)
 	err := Apply(state, Event{Kind: "unknown_kind", DelegateID: "x", Seq: 1})
@@ -26,39 +26,38 @@ func TestApplyEventUnknownKind(t *testing.T) {
 }
 
 // TestApplyCreatedAlreadyExists covers applyCreated when the delegate
-// already exists (fold.go:94-95).
+// already exists.
 func TestApplyCreatedAlreadyExists(t *testing.T) {
 	state := applyEvents(t, createdEvent("dlg_a", ""))
 	err := Apply(state, createdEvent("dlg_a", ""))
-	if err == nil || !strings.Contains(err.Error(), "already exists") {
+	if !errors.Is(err, ErrDelegateExists) {
 		t.Fatalf("expected already-exists error, got %v", err)
 	}
 }
 
 // TestApplyCreatedParentMissing covers applyCreated when the parent does
-// not exist (fold.go:101-102).
+// not exist.
 func TestApplyCreatedParentMissing(t *testing.T) {
 	state := make(State)
 	evt := createdEvent("dlg_child", "dlg_nobody")
 	evt.Seq = 1
 	err := Apply(state, evt)
-	if err == nil || !strings.Contains(err.Error(), "parent") || !strings.Contains(err.Error(), "does not exist") {
+	if !errors.Is(err, ErrDelegateNotFound) {
 		t.Fatalf("expected parent-missing error, got %v", err)
 	}
 }
 
 // TestApplyRunStartedMissingDelegate covers applyRunStarted requireAggregate
-// error (fold.go:119-120).
+// error.
 func TestApplyRunStartedMissingDelegate(t *testing.T) {
 	state := make(State)
 	err := Apply(state, startedEvent("dlg_nobody", 1, TriggerInitial))
-	if err == nil || !strings.Contains(err.Error(), "does not exist") {
+	if !errors.Is(err, ErrDelegateNotFound) {
 		t.Fatalf("expected missing-delegate error, got %v", err)
 	}
 }
 
-// TestApplyRunStartedWrongGeneration covers generation mismatch
-// (fold.go:122-123).
+// TestApplyRunStartedWrongGeneration covers generation mismatch.
 func TestApplyRunStartedWrongGeneration(t *testing.T) {
 	state := applyEvents(t, createdEvent("dlg_a", ""))
 	err := Apply(state, startedEvent("dlg_a", 99, TriggerInitial))
@@ -67,8 +66,7 @@ func TestApplyRunStartedWrongGeneration(t *testing.T) {
 	}
 }
 
-// TestApplyRunStartedNotResumable covers the not-resumable check
-// (fold.go:128-129). A delegate that is resumable but then has resumability
+// TestApplyRunStartedNotResumable covers the not-resumable check. A delegate that is resumable but then has resumability
 // closed (still PhaseIdle) before starting.
 func TestApplyRunStartedNotResumable(t *testing.T) {
 	// Close resumability so delegate is PhaseClosed with Resumable=false.
@@ -85,7 +83,7 @@ func TestApplyRunStartedNotResumable(t *testing.T) {
 	t.Skip("not-resumable check at fold.go:128-129 is unreachable: applyCreated sets Phase=Closed when Resumable=false")
 }
 
-// TestApplyRunStartedPendingStop covers pending stop check (fold.go:131-132).
+// TestApplyRunStartedPendingStop covers pending stop check.
 // Document: unreachable — applySubtreeStopRequested sets Phase=Stopping,
 // so the Phase != PhaseIdle check at line 125 fires first. The pending
 // stop check at line 131 is only reachable when Phase==Idle AND
@@ -94,7 +92,7 @@ func TestApplyRunStartedPendingStop(t *testing.T) {
 	t.Skip("pending stop check at fold.go:131-132 is unreachable: stop request sets Phase=Stopping, so phase check fires first")
 }
 
-// TestApplyRunStartedInvalidTrigger covers invalid trigger (fold.go:134-135).
+// TestApplyRunStartedInvalidTrigger covers invalid trigger.
 func TestApplyRunStartedInvalidTrigger(t *testing.T) {
 	state := applyEvents(t, createdEvent("dlg_a", ""))
 	err := Apply(state, startedEvent("dlg_a", 1, "bogus_trigger"))
@@ -103,7 +101,7 @@ func TestApplyRunStartedInvalidTrigger(t *testing.T) {
 	}
 }
 
-// TestApplyRunStartedZeroStartedAt covers zero start time (fold.go:137-138).
+// TestApplyRunStartedZeroStartedAt covers zero start time.
 func TestApplyRunStartedZeroStartedAt(t *testing.T) {
 	state := applyEvents(t, createdEvent("dlg_a", ""))
 	evt := Event{
@@ -117,7 +115,7 @@ func TestApplyRunStartedZeroStartedAt(t *testing.T) {
 	}
 }
 
-// TestApplyRunStartedNotIdle covers phase-not-idle (fold.go:125-126).
+// TestApplyRunStartedNotIdle covers phase-not-idle.
 func TestApplyRunStartedNotIdle(t *testing.T) {
 	state := applyEvents(t, createdEvent("dlg_a", ""), startedEvent("dlg_a", 1, TriggerInitial))
 	err := Apply(state, startedEvent("dlg_a", 2, TriggerInitial))
@@ -127,7 +125,7 @@ func TestApplyRunStartedNotIdle(t *testing.T) {
 }
 
 // TestApplyTerminalPreparedNotRunning covers PhaseRunning check for
-// terminal prepared when the delegate is not running (fold.go:155-156).
+// terminal prepared when the delegate is not running.
 // After a successful terminal-prepared, Phase=Settling; preparing again
 // with the same generation hits the phase check.
 func TestApplyTerminalPreparedNotRunning(t *testing.T) {
@@ -143,8 +141,7 @@ func TestApplyTerminalPreparedNotRunning(t *testing.T) {
 	}
 }
 
-// TestApplyTerminalPreparedBadPacket covers invalid terminal packet
-// (fold.go:158-159).
+// TestApplyTerminalPreparedBadPacket covers invalid terminal packet.
 func TestApplyTerminalPreparedBadPacket(t *testing.T) {
 	state := applyEvents(t, createdEvent("dlg_a", ""), startedEvent("dlg_a", 1, TriggerInitial))
 	evt := preparedEvent("dlg_a", 1, TerminalPacket{Kind: "bad", Message: json.RawMessage(`"x"`)})
@@ -154,7 +151,7 @@ func TestApplyTerminalPreparedBadPacket(t *testing.T) {
 	}
 }
 
-// TestApplyRunFinishedBadPhase covers phase check (fold.go:172-173).
+// TestApplyRunFinishedBadPhase covers phase check.
 // Document: unreachable — requireExactOpenRun checks CurrentRunOpen before
 // the phase check, and CurrentRunOpen is only true when Phase is Running,
 // Settling, or Stopping, all of which pass the phase check.
@@ -162,8 +159,7 @@ func TestApplyRunFinishedBadPhase(t *testing.T) {
 	t.Skip("phase check at fold.go:172-173 is unreachable: requireExactOpenRun ensures CurrentRunOpen, which is only true for Running/Settling/Stopping phases")
 }
 
-// TestApplyRunFinishedInvalidOutcome covers invalid outcome status
-// (fold.go:175-176).
+// TestApplyRunFinishedInvalidOutcome covers invalid outcome status.
 func TestApplyRunFinishedInvalidOutcome(t *testing.T) {
 	state := applyEvents(t, createdEvent("dlg_a", ""), startedEvent("dlg_a", 1, TriggerInitial))
 	pkt := reportedPacket("ok")
@@ -173,7 +169,7 @@ func TestApplyRunFinishedInvalidOutcome(t *testing.T) {
 	}
 }
 
-// TestApplyRunFinishedZeroEndedAt covers zero end time (fold.go:181-182).
+// TestApplyRunFinishedZeroEndedAt covers zero end time.
 func TestApplyRunFinishedZeroEndedAt(t *testing.T) {
 	state := applyEvents(t, createdEvent("dlg_a", ""), startedEvent("dlg_a", 1, TriggerInitial))
 	pkt := reportedPacket("ok")
@@ -194,8 +190,7 @@ func TestApplyRunFinishedZeroEndedAt(t *testing.T) {
 	}
 }
 
-// TestApplyRunFinishedInvalidDisposition covers invalid disposition
-// (fold.go:184-185).
+// TestApplyRunFinishedInvalidDisposition covers invalid disposition.
 func TestApplyRunFinishedInvalidDisposition(t *testing.T) {
 	state := applyEvents(t, createdEvent("dlg_a", ""), startedEvent("dlg_a", 1, TriggerInitial))
 	pkt := reportedPacket("ok")
@@ -206,7 +201,7 @@ func TestApplyRunFinishedInvalidDisposition(t *testing.T) {
 }
 
 // TestApplyRunFinishedNonExhaustedCarriesExhaustion covers validateOutcome
-// for a non-exhausted outcome carrying exhaustion metadata (fold.go:625-626).
+// for a non-exhausted outcome carrying exhaustion metadata.
 func TestApplyRunFinishedNonExhaustedCarriesExhaustion(t *testing.T) {
 	state := applyEvents(t, createdEvent("dlg_a", ""), startedEvent("dlg_a", 1, TriggerInitial))
 	pkt := reportedPacket("ok")
@@ -229,7 +224,7 @@ func TestApplyRunFinishedNonExhaustedCarriesExhaustion(t *testing.T) {
 }
 
 // TestApplyRunFinishedExhaustedBadReason covers validateOutcome for
-// tool_round budget with wrong reason (fold.go:638-639).
+// tool_round budget with wrong reason.
 func TestApplyRunFinishedExhaustedBadReason(t *testing.T) {
 	state := applyEvents(t, createdEvent("dlg_a", ""), startedEvent("dlg_a", 1, TriggerInitial))
 	pkt := reportedPacket("ok")
@@ -252,7 +247,7 @@ func TestApplyRunFinishedExhaustedBadReason(t *testing.T) {
 }
 
 // TestApplyRunFinishedExhaustedInvalidBudget covers validateOutcome for
-// an unknown exhaustion budget (fold.go:651-652).
+// an unknown exhaustion budget.
 func TestApplyRunFinishedExhaustedInvalidBudget(t *testing.T) {
 	state := applyEvents(t, createdEvent("dlg_a", ""), startedEvent("dlg_a", 1, TriggerInitial))
 	pkt := reportedPacket("ok")
@@ -275,7 +270,7 @@ func TestApplyRunFinishedExhaustedInvalidBudget(t *testing.T) {
 }
 
 // TestApplyRunFinishedStoppingObserverCallback covers the stopping branch
-// observer-callback error (fold.go:195-196).
+// observer-callback error.
 func TestApplyRunFinishedStoppingObserverCallback(t *testing.T) {
 	state := applyEvents(t, createdEvent("dlg_a", ""), startedEvent("dlg_a", 1, TriggerInitial), stopRequestedEvent("dlg_a"))
 	pkt := stoppedPacket()
@@ -317,8 +312,7 @@ func TestApplyRunFinishedCompletedNoAction(t *testing.T) {
 	}
 }
 
-// TestApplyResumabilityClosedEmptyReason covers the empty-reason check
-// (fold.go:243-244).
+// TestApplyResumabilityClosedEmptyReason covers the empty-reason check.
 func TestApplyResumabilityClosedEmptyReason(t *testing.T) {
 	state := applyEvents(t, createdEvent("dlg_a", ""))
 	evt := Event{
@@ -332,8 +326,7 @@ func TestApplyResumabilityClosedEmptyReason(t *testing.T) {
 	}
 }
 
-// TestApplyResumabilityClosedAlreadyClosed covers the already-closed check
-// (fold.go:246-247).
+// TestApplyResumabilityClosedAlreadyClosed covers the already-closed check.
 func TestApplyResumabilityClosedAlreadyClosed(t *testing.T) {
 	state := applyEvents(t, createdEvent("dlg_a", ""))
 	evt1 := Event{
@@ -351,7 +344,7 @@ func TestApplyResumabilityClosedAlreadyClosed(t *testing.T) {
 }
 
 // TestApplySubtreeStopRequestedAlreadyPending covers the pending-stop
-// check (fold.go:274-275).
+// check.
 func TestApplySubtreeStopRequestedAlreadyPending(t *testing.T) {
 	state := applyEvents(t, createdEvent("dlg_a", ""), createdEvent("dlg_b", "dlg_a"), stopRequestedEvent("dlg_a"))
 	// The second stop request must have a non-zero Seq to pass the
@@ -365,7 +358,7 @@ func TestApplySubtreeStopRequestedAlreadyPending(t *testing.T) {
 }
 
 // TestApplySubtreeStopCompletedNoMembers covers the pending-stop-sequence
-// mismatch (fold.go:300-301). The no-members check at fold.go:313-314 is
+// mismatch. The no-members check at fold.go:313-314 is
 // unreachable: if target.PendingStopSeq == RequestSeq, the target itself
 // is always a covered member.
 func TestApplySubtreeStopCompletedNoMembers(t *testing.T) {
@@ -382,8 +375,7 @@ func TestApplySubtreeStopCompletedNoMembers(t *testing.T) {
 	}
 }
 
-// TestApplySubtreeStopCompletedRunStillOpen covers the run-open check
-// (fold.go:308-309).
+// TestApplySubtreeStopCompletedRunStillOpen covers the run-open check.
 func TestApplySubtreeStopCompletedRunStillOpen(t *testing.T) {
 	state := applyEvents(t, createdEvent("dlg_a", ""), startedEvent("dlg_a", 1, TriggerInitial), stopRequestedEvent("dlg_a"))
 	evt := Event{
@@ -398,7 +390,7 @@ func TestApplySubtreeStopCompletedRunStillOpen(t *testing.T) {
 }
 
 // TestValidateFinishPacketBadPacket covers the nil-packet and
-// bad-packet paths in validateFinishPacket (fold.go:523-524, 526-527).
+// bad-packet paths in validateFinishPacket.
 func TestValidateFinishPacketBadPacket(t *testing.T) {
 	aggregate := &Aggregate{DelegateID: "dlg_a", Trigger: TriggerInitial}
 	// Disposition is not CompletedNoAction, so packet is required.
@@ -415,7 +407,7 @@ func TestValidateFinishPacketBadPacket(t *testing.T) {
 }
 
 // TestIsDelegateOrDescendantNilAggregate covers the nil-aggregate return
-// in isDelegateOrDescendant (fold.go:602-603).
+// in isDelegateOrDescendant.
 func TestIsDelegateOrDescendantNilAggregate(t *testing.T) {
 	state := State{"dlg_a": nil}
 	if isDelegateOrDescendant(state, "dlg_a", "dlg_b") {
@@ -423,15 +415,14 @@ func TestIsDelegateOrDescendantNilAggregate(t *testing.T) {
 	}
 }
 
-// TestValidOutcomeStatusDefault covers the default branch
-// (fold.go:618-619).
+// TestValidOutcomeStatusDefault covers the default branch.
 func TestValidOutcomeStatusDefault(t *testing.T) {
 	if validOutcomeStatus("bogus") {
 		t.Fatal("expected bogus status to be invalid")
 	}
 }
 
-// TestFoldSequenceMismatch covers Fold's sequence check (fold.go:17-18).
+// TestFoldSequenceMismatch covers Fold's sequence check.
 func TestFoldSequenceMismatch(t *testing.T) {
 	evt := createdEvent("dlg_a", "")
 	evt.Seq = 99

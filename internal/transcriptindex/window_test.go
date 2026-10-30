@@ -1,6 +1,7 @@
 package transcriptindex
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -196,5 +197,80 @@ func TestInputImagesCarryTheirContentAddress(t *testing.T) {
 		if len(images) != 1 || !reflect.DeepEqual(images[0].Metadata, want) {
 			t.Fatalf("%s: images = %+v, want one carrying %v", name, images, want)
 		}
+	}
+}
+
+func TestAuthorshipCommunicateWindow(t *testing.T) {
+	for _, pending := range []bool{false, true} {
+		source := assistant(call("call", "communicate", `{"message":"delivered"}`))
+		source.Authorship = &schema.TranscriptAuthorship{Author: schema.TranscriptAuthor{Kind: schema.TranscriptAuthorAgent, SessionID: "parent"}, Inherited: true}
+		lines := []fixtureLine{entryLine(user("input")), entryLine(source)}
+		if !pending {
+			lines = append(lines, entryLine(results(result("call", "", "ok"))))
+		}
+		path := writeFixture(t, fixture{name: "authorship", header: transcript.Header{SessionID: "child"}, lines: lines})
+		x := openIndex(t, path, t.TempDir())
+		w, err := x.Latest(1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(w.Candidates) != 1 || !w.HasOlder || w.Candidates[0].Item.Text != "delivered" {
+			t.Fatalf("window=%+v", w)
+		}
+		b, err := json.Marshal(w.Candidates[0].Item)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(b, &fields); err != nil {
+			t.Fatal(err)
+		}
+		if string(fields["authorship"]) != `{"author":{"kind":"agent","sessionRef":"local:parent"},"inherited":true}` {
+			t.Errorf("pending=%v authorship=%s", pending, fields["authorship"])
+		}
+		if w.Candidates[0].Item.CallID != "call" || w.Candidates[0].Item.TranscriptKey == "" {
+			t.Fatal(w.Candidates[0])
+		}
+	}
+}
+
+func TestInheritedCommunicateIndexedWindow(t *testing.T) {
+	source := inRound(inTurn("copied", assistant(call("call_child", "communicate", `{"message":"copied child update"}`))), "round_child")
+	source.Authorship = &schema.TranscriptAuthorship{Author: schema.TranscriptAuthor{Kind: schema.TranscriptAuthorAgent, SessionID: "child", OwnerSessionID: "parent", DelegateID: "dlg_child", DelegateName: "Child"}, Inherited: true}
+	settled := inRound(inTurn("copied", results(result("call_child", "communicate", "ok"))), "round_child")
+	settled.Authorship = &schema.TranscriptAuthorship{Author: schema.TranscriptAuthor{Kind: schema.TranscriptAuthorUnknown}, Inherited: true}
+	path := writeFixture(t, fixture{name: "inherited-communicate", header: transcript.Header{SessionID: "leaf"}, lines: []fixtureLine{
+		entryLine(opens("copied", schema.TurnSpanExecution, user("before call"))), entryLine(source), entryLine(settled),
+	}})
+	x := openIndex(t, path, t.TempDir())
+	w, err := x.Latest(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(w.Candidates) != 1 || w.Candidates[0].Item.Text != "copied child update" {
+		t.Fatalf("missing inherited communicate at result boundary: window=%+v", w)
+	}
+	c := w.Candidates[0]
+	wantAuthor := &appwire.TranscriptAuthorship{Author: appwire.TranscriptAuthor{Kind: appwire.TranscriptAuthorAgent, SessionRef: "local:child", OwnerRef: "local:parent", DelegateID: "dlg_child", DelegateName: "Child"}, Inherited: true}
+	if !w.HasOlder || c.Position != (appwire.ThreadItemPosition{Entry: 3, Item: 0}) || c.Item.ID != "item_assistant_3_0" || c.Item.CallID != "call_child" || c.TurnID != "copied" || !reflect.DeepEqual(c.Item.Authorship, wantAuthor) {
+		t.Fatalf("result identity/author: candidate=%+v item=%+v", c, c.Item)
+	}
+}
+
+// A limit beyond the public page maximum is refused before any read runs,
+// on every item-window entry point.
+func TestWindowReadsRefuseLimitsBeyondThePageMaximum(t *testing.T) {
+	t.Parallel()
+	fx := fixture{name: "limits", header: everything().header, lines: []fixtureLine{entryLine(user("hello"))}}
+	x := openIndex(t, writeFixture(t, fx), t.TempDir())
+	over := appwire.TranscriptItemPageLimit + 1
+	if _, err := x.Latest(over); err == nil {
+		t.Fatal("Latest accepted a limit beyond the page maximum")
+	}
+	if _, _, err := x.LatestSince(over, appwire.SnapshotIdentity{}); err == nil {
+		t.Fatal("LatestSince accepted a limit beyond the page maximum")
+	}
+	if _, err := x.Before(appwire.ThreadItemPosition{}, over); err == nil {
+		t.Fatal("Before accepted a limit beyond the page maximum")
 	}
 }

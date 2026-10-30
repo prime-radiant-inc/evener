@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"primeradiant.com/evener/agent/internal/frontmatter"
@@ -192,33 +191,38 @@ func ParseAgent(data []byte, pluginName string) (Agent, error) {
 }
 
 // discoverPluginAgents scans a plugin's agents directories for .md files
-// and returns agents namespaced as "pluginName:agentName".
-func discoverPluginAgents(pluginDir string, agentsOverride json.RawMessage, pluginName string) (map[string]Agent, error) {
+// and returns agents namespaced as "pluginName:agentName". A file that cannot be
+// read or parsed is skipped and reported, so one bad file leaves the plugin's
+// other agents usable.
+func discoverPluginAgents(pluginDir string, agentsOverride json.RawMessage, pluginName string) (map[string]Agent, []SkippedComponent, error) {
 	var override any
 	if len(agentsOverride) > 0 {
 		if err := json.Unmarshal(agentsOverride, &override); err != nil {
-			return nil, fmt.Errorf("parsing agents override: %w", err)
+			return nil, nil, fmt.Errorf("parsing agents override: %w", err)
 		}
 	}
 
 	files, err := componentMarkdownFiles(resolveComponentDirs(pluginDir, "agents", override))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	agents := map[string]Agent{}
+	var skipped []SkippedComponent
 	for _, file := range files {
 		data, err := pluginReadFile(file)
 		if err != nil {
-			return nil, fmt.Errorf("reading agent file %q: %w", filepath.Base(file), err)
+			skipped = append(skipped, SkippedComponent{Kind: "agent", File: file, Reason: err.Error()})
+			continue
 		}
 		agent, err := ParseAgent(data, pluginName)
 		if err != nil {
-			return nil, fmt.Errorf("parsing agent file %q: %w", filepath.Base(file), err)
+			skipped = append(skipped, SkippedComponent{Kind: "agent", File: file, Reason: err.Error()})
+			continue
 		}
 		key := pluginName + ":" + agent.Name
 		agents[key] = agent
 	}
 
-	return agents, nil
+	return agents, skipped, nil
 }

@@ -1,30 +1,26 @@
 package agent
 
 import (
-	"context"
-	"maps"
 	"os"
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/skill"
 	"primeradiant.com/evener/llm"
 )
 
 const embeddedDoctoringSkill = "doctoring-evener"
 
-func TestExtractEmbeddedSkills_CreatesDir(t *testing.T) {
+func TestEmbeddedSkillsDir_HasSkillDirectories(t *testing.T) {
 	t.Parallel()
-	dir, err := skill.ExtractEmbeddedSkills()
+	dir, err := skill.EmbeddedSkillsDir()
 	if err != nil {
-		t.Fatalf("extractEmbeddedSkills: %v", err)
+		t.Fatalf("EmbeddedSkillsDir: %v", err)
 	}
-	defer os.RemoveAll(dir)
 
-	// Should create a temp directory with skill subdirectories.
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatalf("ReadDir: %v", err)
@@ -34,13 +30,12 @@ func TestExtractEmbeddedSkills_CreatesDir(t *testing.T) {
 	}
 }
 
-func TestExtractEmbeddedSkills_IncludesDoctoringSkill(t *testing.T) {
+func TestEmbeddedSkillsDir_IncludesDoctoringSkill(t *testing.T) {
 	t.Parallel()
-	dir, err := skill.ExtractEmbeddedSkills()
+	dir, err := skill.EmbeddedSkillsDir()
 	if err != nil {
-		t.Fatalf("extractEmbeddedSkills: %v", err)
+		t.Fatalf("EmbeddedSkillsDir: %v", err)
 	}
-	defer os.RemoveAll(dir)
 
 	skills := make(map[string]skill.SkillMeta)
 	skill.ScanSkillsDir(dir, skills)
@@ -53,47 +48,14 @@ func TestExtractEmbeddedSkills_IncludesDoctoringSkill(t *testing.T) {
 	}
 }
 
-func TestExtractEmbeddedSkills_DiscoverableByDiscoverSkills(t *testing.T) {
+func TestDiscover_IncludesEmbeddedSkills(t *testing.T) {
 	t.Parallel()
-	dir, err := skill.ExtractEmbeddedSkills()
-	if err != nil {
-		t.Fatalf("extractEmbeddedSkills: %v", err)
-	}
-	defer os.RemoveAll(dir)
-
-	// The extracted dir should work as an extraDirs argument to DiscoverSkills.
 	root := t.TempDir()
 	markGitRoot(t, root)
 
-	env := execenv.NewLocalExecutionEnvironment(root)
-	skills := skill.DiscoverSkills(env, dir)
-
-	if _, ok := skills[embeddedDoctoringSkill]; !ok {
-		t.Fatalf("expected embedded %q skill from extracted dir, got %v", embeddedDoctoringSkill, builtinSkillNames(skills))
-	}
-}
-
-func TestExtractEmbeddedSkills_FilesystemShadowsEmbedded(t *testing.T) {
-	t.Parallel()
-	dir, err := skill.ExtractEmbeddedSkills()
-	if err != nil {
-		t.Fatalf("extractEmbeddedSkills: %v", err)
-	}
-	defer os.RemoveAll(dir)
-
-	root := t.TempDir()
-	markGitRoot(t, root)
-	writeSkillMD(t, root, embeddedDoctoringSkill,
-		"---\nname: doctoring-evener\ndescription: \"Project doctoring override\"\n---\nCustom doctoring.\n")
-
-	env := execenv.NewLocalExecutionEnvironment(root)
-	skills := make(map[string]skill.SkillMeta)
-	skill.ScanSkillsDir(dir, skills)
-	maps.Copy(skills, skill.DiscoverSkills(env))
-
-	doctoring := skills[embeddedDoctoringSkill]
-	if doctoring.Description != "Project doctoring override" {
-		t.Fatalf("expected project skill to shadow embedded skill, got description %q", doctoring.Description)
+	catalog := skill.Discover(execenv.NewLocalExecutionEnvironment(root), skill.DiscoverOptions{})
+	if _, ok := catalog.Entries[embeddedDoctoringSkill]; !ok {
+		t.Fatalf("expected embedded %q skill in the catalog", embeddedDoctoringSkill)
 	}
 }
 
@@ -133,7 +95,7 @@ func TestEmbeddedSkills_ProjectShadowsEmbedded(t *testing.T) {
 				if len(req.Messages) > 0 && req.Messages[0].Role == llm.RoleSystem {
 					capturedSystem = req.Messages[0].Text()
 				}
-				return toolCallResponse(comm)
+				return agenttest.ToolCallResponse(comm)
 			},
 		},
 	}
@@ -144,9 +106,7 @@ func TestEmbeddedSkills_ProjectShadowsEmbedded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	_, _ = sess.ProcessInput(ctx, "hi", nil)
 	sess.Close()
 
@@ -173,7 +133,7 @@ func TestEmbeddedSkills_UseSkillWithProjectSkill(t *testing.T) {
 	f := &fakeAdapter{
 		name: "anthropic",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return toolCallResponse(skill) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(skill) },
 			func(req llm.Request) llm.Response {
 				for _, msg := range req.Messages {
 					for _, part := range msg.Content {
@@ -186,7 +146,7 @@ func TestEmbeddedSkills_UseSkillWithProjectSkill(t *testing.T) {
 						}
 					}
 				}
-				return toolCallResponse(comm)
+				return agenttest.ToolCallResponse(comm)
 			},
 		},
 	}
@@ -196,9 +156,7 @@ func TestEmbeddedSkills_UseSkillWithProjectSkill(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	_, err = sess.ProcessInput(ctx, "use my skill", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
@@ -225,7 +183,7 @@ func TestEmbeddedSkills_UseSkillUnknownReturnsError(t *testing.T) {
 	f := &fakeAdapter{
 		name: "anthropic",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return toolCallResponse(skill) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(skill) },
 			func(req llm.Request) llm.Response {
 				for _, msg := range req.Messages {
 					for _, part := range msg.Content {
@@ -234,7 +192,7 @@ func TestEmbeddedSkills_UseSkillUnknownReturnsError(t *testing.T) {
 						}
 					}
 				}
-				return toolCallResponse(comm)
+				return agenttest.ToolCallResponse(comm)
 			},
 		},
 	}
@@ -244,9 +202,7 @@ func TestEmbeddedSkills_UseSkillUnknownReturnsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	_, err = sess.ProcessInput(ctx, "check my work", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
@@ -261,11 +217,10 @@ func TestEmbeddedSkills_UseSkillUnknownReturnsError(t *testing.T) {
 func TestEmbeddedSkills_AllSkillsLoadable(t *testing.T) {
 	t.Parallel()
 	// Verify every embedded skill can be discovered and its body loaded.
-	dir, err := skill.ExtractEmbeddedSkills()
+	dir, err := skill.EmbeddedSkillsDir()
 	if err != nil {
-		t.Fatalf("extractEmbeddedSkills: %v", err)
+		t.Fatalf("EmbeddedSkillsDir: %v", err)
 	}
-	defer os.RemoveAll(dir)
 
 	skills := make(map[string]skill.SkillMeta)
 	skill.ScanSkillsDir(dir, skills)
@@ -274,9 +229,9 @@ func TestEmbeddedSkills_AllSkillsLoadable(t *testing.T) {
 		t.Fatal("expected at least one embedded skill")
 	}
 	for name, meta := range skills {
-		body, err := skill.LoadSkillBody(meta)
+		body, err := loadSkillBody(meta)
 		if err != nil {
-			t.Fatalf("LoadSkillBody(%s): %v", name, err)
+			t.Fatalf("Load(%s): %v", name, err)
 		}
 		if strings.TrimSpace(body) == "" {
 			t.Fatalf("embedded skill %q has empty body", name)
