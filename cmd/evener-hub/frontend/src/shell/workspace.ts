@@ -14,7 +14,11 @@ import type { DockviewApi, IDockviewPanel, SerializedDockview } from "dockview-c
 import { useEffect } from "react";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import { readPaneComposerSeatEntry, writePaneComposerSeat } from "../panes/session/composer/draft";
+import {
+  clearPaneComposerSeat,
+  readPaneComposerSeatEntry,
+  writePaneComposerSeat,
+} from "../panes/session/composer/draft";
 import { zoomParamsColumnRefs } from "../panes/zoom/cascadeCoverage";
 import { parseZoomParams } from "../panes/zoom/intent";
 import { createSecureUUID } from "../stores/secureUUID";
@@ -332,6 +336,14 @@ const carriedComposerSeats = new Map<string, string>();
 
 export function carryComposerSeatForPlacement(ref: string, seat: string): void {
   carriedComposerSeats.set(ref, seat);
+}
+
+// A placement that resolves to an ALREADY-OPEN pane consumes the pending
+// carry by cancelling it: the resume transition's own placement is that
+// resolution, and an open destination keeps its own seat, so no later open
+// can inherit the carried authoring seat.
+function cancelCarriedComposerSeat(ref: string): void {
+  carriedComposerSeats.delete(ref);
 }
 
 function placeComposerSeat(params: unknown, panes: readonly OpenPaneRecord[]): string {
@@ -659,6 +671,7 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
         const paramsChanged = !sameParams(existing.params, params);
         const focusChanged = !keepFocus && state.focusedPaneId !== existing.id;
         const ref = isConversationPaneType(type) ? refParam(params) : null;
+        if (ref !== null) cancelCarriedComposerSeat(ref);
         const seatAdded = ref !== null && existing.composerSeatId === undefined;
         if (seatAdded) {
           // Attach in place: object-keyed edges bind to this record.
@@ -682,6 +695,7 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
       if (existing) {
         let panes = state.panes;
         const ref = isConversationPaneType(type) ? refParam(params) : null;
+        if (ref !== null) cancelCarriedComposerSeat(ref);
         if (ref !== null) {
           if (existing.composerSeatId === undefined) {
             // Attach in place: object-keyed edges bind to this record.
@@ -840,8 +854,13 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
       panes: remaining,
       focusedPaneId: state.focusedPaneId === paneId ? null : state.focusedPaneId,
     });
-    // Nothing retires: ownership is derived at read, so a closed pane leaves
-    // no state a later pane could restore through. A reopen mints fresh.
+    // Ownership is derived at read, so a closed pane leaves no in-memory
+    // state a later pane could restore through - but the persisted pane-seat
+    // entry a desktop save may have written dies with the genuine close:
+    // another tab saving the shared layout with this pane id must not
+    // resurrect the closed pane's seat on this tab's reload. Parking and
+    // retyping never come through here, so their entries survive.
+    clearPaneComposerSeat(paneId);
   },
 
   focusPane(paneId) {

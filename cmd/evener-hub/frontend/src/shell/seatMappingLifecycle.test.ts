@@ -32,7 +32,13 @@ import {
   restoreAttentionPlacement,
 } from "./attentionPlacement";
 import { conversationPaneLifetime } from "./paneLifetime";
-import { type OpenPaneRecord, registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
+import {
+  carryComposerSeatForPlacement,
+  type OpenPaneRecord,
+  registerDockviewApi,
+  resetWorkspaceStoreForTests,
+  workspaceStore,
+} from "./workspace";
 import "./AppShell"; // side effect: boot-time pane registrations restoreLayout needs
 
 const sessionPane = (
@@ -141,6 +147,25 @@ describe("the derived seat lifecycle matrix", () => {
       workspaceStore.getState().closePane(firstId as string);
       expect(placedSeatFor("local:a")).not.toBe(first);
     });
+
+    test("a resume carry is cancelled when placement resolves to an already-open pane", () => {
+      // The nested resume target is already open in this tab under its own
+      // seat; the superseded author pane carried its seat for the resumed
+      // ref. The resume transition's own placement resolves to the open
+      // destination, and the carry must die with that resolution - a later
+      // reopen of the conversation must never inherit the authoring seat.
+      const existingId = workspaceStore.getState().openPane("session", { ref: "local:resumed" });
+      const existingSeat = seatOfPane(existingId);
+      expect(existingSeat).toBeDefined();
+      carryComposerSeatForPlacement("local:resumed", "author-seat");
+      expect(workspaceStore.getState().openPane("session", { ref: "local:resumed" })).toBe(existingId);
+      expect(seatOfPane(existingId)).toBe(existingSeat);
+      // Navigate away (the destination closes) and reopen the conversation.
+      workspaceStore.getState().closePane(existingId);
+      const reopened = placedSeatFor("local:resumed");
+      expect(reopened).toBeDefined();
+      expect(reopened).not.toBe("author-seat");
+    });
   });
 
   // --- RELOAD ---------------------------------------------------------------
@@ -155,6 +180,49 @@ describe("the derived seat lifecycle matrix", () => {
       restorePanels({ [id]: sessionPanel(id, "local:a") });
       expect(seatOfPane(id)).toBe(seat);
       expect(readPaneComposerSeatEntry(id)?.seat).toBe(seat);
+    });
+
+    test("a genuine close invalidates the persisted pane-seat entry", () => {
+      // Another tab can save the shared layout naming this pane id for the
+      // same conversation; this tab's reload must not validate a dead entry
+      // and auto-restore the closed pane's rejected work.
+      const id = workspaceStore.getState().openPane("session", { ref: "local:closed" });
+      const seat = seatOfPane(id);
+      writePaneComposerSeat(id, "local:closed", seat as string);
+      workspaceStore.getState().closePane(id);
+      resetWorkspaceStoreForTests();
+      restorePanels({ [id]: sessionPanel(id, "local:closed") });
+      const restored = seatOfPane(id);
+      expect(restored).toBeDefined();
+      expect(restored).not.toBe(seat);
+    });
+
+    test("a parked pane keeps its persisted entry, so a desktop reload restores its seat", () => {
+      // Parking is not a genuine close: the pane keeps its durable record.
+      const id = workspaceStore.getState().openPane("session", { ref: "local:parked-entry" });
+      const seat = seatOfPane(id);
+      writePaneComposerSeat(id, "local:parked-entry", seat as string);
+      const destination = presentAttentionTarget("local:elsewhere");
+      expect(destination).toBeDefined();
+      expect(workspaceStore.getState().panes.find((pane) => pane.id === id)?.slot).toBe("parked");
+      resetWorkspaceStoreForTests();
+      restorePanels({ [id]: sessionPanel(id, "local:parked-entry") });
+      expect(seatOfPane(id)).toBe(seat);
+    });
+
+    test("a retype keeps the persisted entry, so a desktop reload restores its seat", () => {
+      // Retyping is not a genuine close either: the record keeps the entry.
+      const id = workspaceStore.getState().openPane("session", { ref: "local:retyped-entry" });
+      const seat = seatOfPane(id);
+      writePaneComposerSeat(id, "local:retyped-entry", seat as string);
+      const pane = workspaceStore.getState().panes.find((record) => record.id === id);
+      expect(pane).toBeDefined();
+      expect(
+        workspaceStore.getState().retypePane(pane as OpenPaneRecord, "transcript", { ref: "local:retyped-entry" }),
+      ).toBe(true);
+      resetWorkspaceStoreForTests();
+      restorePanels({ [id]: sessionPanel(id, "local:retyped-entry") });
+      expect(seatOfPane(id)).toBe(seat);
     });
 
     test("a mobile-shaped route reconstruction mints a fresh seat: one tap", () => {
