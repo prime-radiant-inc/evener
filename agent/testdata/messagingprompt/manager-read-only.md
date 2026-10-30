@@ -40,7 +40,7 @@ When something is broken, fix it this way:
 4. Fix the cause you confirmed, at its source, with the simplest change that could work. Show it with a test that failed before the fix and passes after it, and run the rest of the suite.
 5. After three fixes that did not work, stop and report what you know: the design may be wrong.
 
-Leave the code you touch better than you found it, and stay on your task. A failing test in code you may change is yours to fix, whoever caused it, and every check stays at least as strict as you found it. When you fix one case, keep the feature's other cases working as they did. When you notice a problem outside your task, including a failing test in code your task keeps you out of, put it in your report with its evidence and keep going.
+Leave the code you touch better than you found it, and stay on your task. A failing test in code you may change is yours to fix, whoever caused it, and every check stays at least as strict as you found it. When a change you are asked to make conflicts with an existing assertion, guarantee, or check, stop and report the conflict rather than weakening the check or editing the assertion to make the change pass. A red test counts only when it fails for the reason you claim: prove the triggering scenario ran. When you fix one case, keep the feature's other cases working as they did. When you notice a problem outside your task, including a failing test in code your task keeps you out of, put it in your report with its evidence and keep going.
 
 If a reviewer has sent the same work back twice and it is still not accepted, stop that loop and report what you know or split the task.
 
@@ -170,42 +170,49 @@ Before you end a turn, check where your answer is. It reaches the person only as
         {
           "additionalProperties": false,
           "properties": {
-            "hub": {},
-            "intent": {}
+            "hub": {
+              "additionalProperties": false,
+              "properties": {
+                "jobId": {
+                  "type": "string"
+                },
+                "ref": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "ref"
+              ],
+              "type": "object"
+            },
+            "intent": {
+              "type": "string"
+            }
           },
           "required": [
             "hub"
-          ]
+          ],
+          "type": "object"
         },
         {
           "not": {
             "required": [
               "hub"
-            ]
+            ],
+            "type": "object"
           },
           "required": [
             "target"
-          ]
+          ],
+          "type": "object"
         }
       ],
       "properties": {
         "hub": {
           "additionalProperties": false,
           "properties": {
-            "beforeBytes": {
-              "type": "integer"
-            },
-            "cursor": {
-              "type": "string"
-            },
-            "itemLimit": {
-              "type": "integer"
-            },
             "jobId": {
               "type": "string"
-            },
-            "maxBytes": {
-              "type": "integer"
             },
             "ref": {
               "type": "string"
@@ -241,91 +248,262 @@ Before you end a turn, check where your answer is. It reaches the person only as
         {
           "additionalProperties": false,
           "properties": {
-            "hub": {},
-            "intent": {}
+            "hub": {
+              "anyOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "cursor": {
+                      "type": "string"
+                    },
+                    "includeSubagents": {
+                      "type": "boolean"
+                    },
+                    "limit": {
+                      "type": "integer"
+                    },
+                    "mode": {
+                      "enum": [
+                        "discovery"
+                      ],
+                      "type": "string"
+                    },
+                    "searchTerm": {
+                      "type": "string"
+                    },
+                    "sortDirection": {
+                      "type": "string"
+                    },
+                    "sortKey": {
+                      "type": "string"
+                    },
+                    "sourceIds": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "statusOnly": {
+                      "type": "boolean"
+                    },
+                    "statuses": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "mode"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "limit": {
+                      "type": "integer"
+                    },
+                    "mode": {
+                      "enum": [
+                        "tasks"
+                      ],
+                      "type": "string"
+                    },
+                    "offset": {
+                      "type": "integer"
+                    },
+                    "ref": {
+                      "type": "string"
+                    },
+                    "snapshot": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "mode",
+                    "ref"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "cursor": {
+                      "type": "string"
+                    },
+                    "limit": {
+                      "type": "integer"
+                    },
+                    "mode": {
+                      "enum": [
+                        "activity"
+                      ],
+                      "type": "string"
+                    },
+                    "ref": {
+                      "type": "string"
+                    },
+                    "resource": {
+                      "enum": [
+                        "summary",
+                        "delegates",
+                        "jobs",
+                        "watches"
+                      ],
+                      "type": "string"
+                    },
+                    "scope": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "mode",
+                    "ref",
+                    "resource"
+                  ],
+                  "type": "object"
+                }
+              ],
+              "type": "object"
+            },
+            "intent": {
+              "type": "string"
+            }
           },
           "required": [
             "hub"
-          ]
+          ],
+          "type": "object"
         },
         {
           "not": {
             "required": [
               "hub"
-            ]
+            ],
+            "type": "object"
           },
-          "required": []
+          "required": [],
+          "type": "object"
         }
       ],
       "properties": {
         "hub": {
-          "additionalProperties": false,
-          "properties": {
-            "cursor": {
-              "type": "string"
-            },
-            "includeSubagents": {
-              "type": "boolean"
-            },
-            "limit": {
-              "type": "integer"
-            },
-            "mode": {
-              "enum": [
-                "discovery",
-                "tasks",
-                "activity"
-              ],
-              "type": "string"
-            },
-            "offset": {
-              "type": "integer"
-            },
-            "ref": {
-              "type": "string"
-            },
-            "resource": {
-              "enum": [
-                "summary",
-                "delegates",
-                "jobs",
-                "watches"
-              ],
-              "type": "string"
-            },
-            "scope": {
-              "type": "string"
-            },
-            "searchTerm": {
-              "type": "string"
-            },
-            "snapshot": {
-              "type": "string"
-            },
-            "sortDirection": {
-              "type": "string"
-            },
-            "sortKey": {
-              "type": "string"
-            },
-            "sourceIds": {
-              "items": {
-                "type": "string"
+          "anyOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "cursor": {
+                  "type": "string"
+                },
+                "includeSubagents": {
+                  "type": "boolean"
+                },
+                "limit": {
+                  "type": "integer"
+                },
+                "mode": {
+                  "enum": [
+                    "discovery"
+                  ],
+                  "type": "string"
+                },
+                "searchTerm": {
+                  "type": "string"
+                },
+                "sortDirection": {
+                  "type": "string"
+                },
+                "sortKey": {
+                  "type": "string"
+                },
+                "sourceIds": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "statusOnly": {
+                  "type": "boolean"
+                },
+                "statuses": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
               },
-              "type": "array"
+              "required": [
+                "mode"
+              ],
+              "type": "object"
             },
-            "statusOnly": {
-              "type": "boolean"
-            },
-            "statuses": {
-              "items": {
-                "type": "string"
+            {
+              "additionalProperties": false,
+              "properties": {
+                "limit": {
+                  "type": "integer"
+                },
+                "mode": {
+                  "enum": [
+                    "tasks"
+                  ],
+                  "type": "string"
+                },
+                "offset": {
+                  "type": "integer"
+                },
+                "ref": {
+                  "type": "string"
+                },
+                "snapshot": {
+                  "type": "string"
+                }
               },
-              "type": "array"
+              "required": [
+                "mode",
+                "ref"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "cursor": {
+                  "type": "string"
+                },
+                "limit": {
+                  "type": "integer"
+                },
+                "mode": {
+                  "enum": [
+                    "activity"
+                  ],
+                  "type": "string"
+                },
+                "ref": {
+                  "type": "string"
+                },
+                "resource": {
+                  "enum": [
+                    "summary",
+                    "delegates",
+                    "jobs",
+                    "watches"
+                  ],
+                  "type": "string"
+                },
+                "scope": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "mode",
+                "ref",
+                "resource"
+              ],
+              "type": "object"
             }
-          },
-          "required": [
-            "mode"
           ],
           "type": "object"
         },

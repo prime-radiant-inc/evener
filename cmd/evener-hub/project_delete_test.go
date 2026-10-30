@@ -20,6 +20,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/transcriptindex"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/rendezvous"
 )
@@ -2010,5 +2011,30 @@ func TestDeletionPreservesSuccessWhenPostCleanupRosterScanFails(t *testing.T) {
 				t.Errorf("artifact was not removed: %v", err)
 			}
 		})
+	}
+}
+
+// A deleted session takes every projection's index sidecar with it, including
+// the ones built by daemons older or newer than this hub.
+func TestProjectDeletionArtifactsRemoveEveryProjectionsIndexSidecar(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "p")
+	writeSession(t, stateDir, webTestSessionID, root)
+	transcriptPath := schema.SessionTranscriptPath(stateDir, webTestSessionID)
+	sidecars := []string{transcriptindex.DirFor(transcriptPath), transcriptPath + ".index", transcriptPath + ".index-0badc0de"}
+	for _, dir := range sidecars {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	web := NewWebServer(hubcore.WebConfig{HubStateRoot: root, StateDir: root, Roster: hubcore.NewRosterWithEntries()})
+
+	if err := web.removeProjectDeletionArtifacts(stateDir, webTestSessionID); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range sidecars {
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Errorf("sidecar %s survived the deletion: %v", dir, err)
+		}
 	}
 }

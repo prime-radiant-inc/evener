@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -237,8 +238,44 @@ func TestCheckRejectsUnusableRepoURL(t *testing.T) {
 	}
 }
 
+// errCommitLookupGone is the sentinel commitLookupGoneTransport returns for
+// the commit-lookup request and nothing else: Check must carry it to the
+// caller, so errors.Is proves the failed lookup propagated rather than being
+// flattened into some other failure.
+var errCommitLookupGone = errors.New("commit lookup failed at the transport")
+
+// commitLookupGoneTransport answers the release-tag lookup with a usable tag
+// and fails the commit lookup itself at the transport, so the only failure
+// Check has to report is the commit lookup's own.
+type commitLookupGoneTransport struct{}
+
+func (commitLookupGoneTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if strings.HasSuffix(req.URL.Path, "/releases/latest") {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"tag_name":"v0.2.0"}`)),
+			Header:     http.Header{},
+		}, nil
+	}
+	return nil, errCommitLookupGone
+}
+
+// TestCheckReleaseRefusesBrokenCommitLookups pins both ways a release
+// channel's commit lookup can break: a lookup that fails outright must
+// surface its own error, and a lookup that answers with no SHA must fail
+// rather than report the channel current.
 func TestCheckReleaseRefusesBrokenCommitLookups(t *testing.T) {
 	t.Parallel()
+	// The tag resolves, but the commit lookup dies at the transport. The
+	// sentinel must reach the caller: no other error distinguishes a failed
+	// check from an up-to-date one.
+	client := &http.Client{Transport: commitLookupGoneTransport{}}
+	_, err := Check(t.Context(), CheckOptions{Channel: "release", CurrentSHA: "0123456", APIURL: "http://updates.example", HTTPClient: client})
+	if !errors.Is(err, errCommitLookupGone) {
+		t.Fatalf("a commit lookup that failed at the transport did not propagate its error: %v", err)
+	}
+	// The lookup answers 200 but carries no SHA: an empty commit cannot
+	// prove the channel points anywhere, so Check must refuse it.
 	sha, _ := json.Marshal(map[string]string{"sha": ""})
 	tag, _ := json.Marshal(map[string]string{"tag_name": "v0.2.0"})
 	paths := map[string]string{
@@ -253,9 +290,6 @@ func TestCheckReleaseRefusesBrokenCommitLookups(t *testing.T) {
 		http.NotFound(w, r)
 	}))
 	t.Cleanup(server.Close)
-	if _, err := Check(t.Context(), CheckOptions{Channel: "release", CurrentSHA: "0123456", APIURL: server.URL}); err == nil {
-		t.Fatal("a tag whose commit lookup 404s resolved to a commit")
-	}
 	if _, err := Check(t.Context(), CheckOptions{Channel: "release", CurrentSHA: "0123456", APIURL: server.URL}); err == nil {
 		t.Fatal("a tag that resolves to no commit succeeded")
 	}

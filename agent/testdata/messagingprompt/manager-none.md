@@ -40,7 +40,7 @@ When something is broken, fix it this way:
 4. Fix the cause you confirmed, at its source, with the simplest change that could work. Show it with a test that failed before the fix and passes after it, and run the rest of the suite.
 5. After three fixes that did not work, stop and report what you know: the design may be wrong.
 
-Leave the code you touch better than you found it, and stay on your task. A failing test in code you may change is yours to fix, whoever caused it, and every check stays at least as strict as you found it. When you fix one case, keep the feature's other cases working as they did. When you notice a problem outside your task, including a failing test in code your task keeps you out of, put it in your report with its evidence and keep going.
+Leave the code you touch better than you found it, and stay on your task. A failing test in code you may change is yours to fix, whoever caused it, and every check stays at least as strict as you found it. When a change you are asked to make conflicts with an existing assertion, guarantee, or check, stop and report the conflict rather than weakening the check or editing the assertion to make the change pass. A red test counts only when it fails for the reason you claim: prove the triggering scenario ran. When you fix one case, keep the feature's other cases working as they did. When you notice a problem outside your task, including a failing test in code your task keeps you out of, put it in your report with its evidence and keep going.
 
 If a reviewer has sent the same work back twice and it is still not accepted, stop that loop and report what you know or split the task.
 

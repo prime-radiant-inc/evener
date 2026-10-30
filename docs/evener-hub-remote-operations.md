@@ -155,7 +155,11 @@ user = "developer"
 roots = ["/srv/projects"]
 ```
 
-Replace these example values with paths and an account on the remote machine. Optional `evener_path`, `config_path`, and `addr` identify a nondefault remote executable, hub config, and listener. `key_path` selects an SSH private-key file; it is a path, never the key contents. Preserve machine-managed host records when editing the file. The exact fields are defined in [HostConfig](../cmd/evener-hub/config.go).
+Replace these example values with paths and an account on the remote machine. Optional `evener_path`, `config_path`, and `addr` identify a nondefault remote executable, hub config, and listener. `key_path` selects an SSH private-key file; it is a path, never the key contents. The exact fields are defined in [HostConfig](../cmd/evener-hub/config.go).
+
+`hub.toml` holds the hosts and your settings. The hub rewrites it in place when a host is added, edited or removed, and comments and formatting are not preserved. The machine records behind those changes (each host's identity and generation, mutation receipts, removal tombstones, and teardown repair) live in the hub's operation store under its state root, so editing `hub.toml` by hand never touches them. A `hub.toml` written by an earlier build that still carries those record sections is moved into the store at the first start, and the original is kept beside it as `hub.toml.pre-records`.
+
+If the operation store cannot be opened, the hub keeps serving the hosts in `hub.toml` and the rest of its work. The hub retries a failed open a few times as it starts. Host add, edit and remove are refused as unavailable while the store is not open, and are taken again when the hub is started with a store that opens. A store file too damaged for its history to be carried over is left exactly as it is; once the file is repaired or removed, the next start opens the store and the host records move into it. Records the store holds in a shape this build cannot read (written by a newer build) pause host changes the same way until a build that reads them runs.
 
 | Hub startup option | Effect |
 | --- | --- |

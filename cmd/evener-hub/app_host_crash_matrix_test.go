@@ -101,10 +101,6 @@ func (h *crashHub) boot(t *testing.T, restart bool) (*hubHostManager, *hostops.S
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	hosts, err := hostreg.NewSeeded(hostRegistryEntries(cfg), hostHighWaterMarks(cfg))
-	if err != nil {
-		t.Fatalf("hostreg.NewSeeded: %v", err)
-	}
 	store, err := hostops.Open(hostops.StorePath(h.stateRoot))
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
@@ -113,6 +109,11 @@ func (h *crashHub) boot(t *testing.T, restart bool) (*hubHostManager, *hostops.S
 		requireSameStoreState(t, h.store, store)
 	}
 	h.store = store
+	doc := hostBootDocument(cfg, legacyRecordsOf(t, h.configPath), store)
+	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
+	if err != nil {
+		t.Fatalf("hostreg.NewSeeded: %v", err)
+	}
 	webCfg := hubcore.WebConfig{RemoteHostOpsStore: store, RemoteHostConfigPath: h.configPath}
 	m := newHubHostManager(appsource.NewRegistry(), nil, webCfg, h.configPath, hosts, func(string, ...any) {})
 	return m, store

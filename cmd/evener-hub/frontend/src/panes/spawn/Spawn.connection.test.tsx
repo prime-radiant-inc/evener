@@ -1,3 +1,4 @@
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import "../session/testing/editorGeometry";
 import type { HostRequestParams, ModelDescriptor, ModelListResponse, ThreadStartParams } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
@@ -11,7 +12,6 @@ import { ownClientId } from "../../stores/mutationClientIdentity";
 import { setDraftField, spawnDraftsStore } from "./spawnDrafts";
 import {
   completionDraft,
-  deferred,
   expectWorkingDir,
   fillPrompt,
   installCanvasStubs,

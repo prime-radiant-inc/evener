@@ -277,7 +277,7 @@ Preserve the existing injectable starting limits where they still apply:
 | Background database work | One bounded batch at a time, fair across ready sessions |
 | Background network hydrations | At most two issued client reads awaiting settlement |
 | Disk cache | 32 MiB aggregate encoded records, 14-day TTL |
-| Local opening wait | Existing 250 ms lookup deadline before ordinary recovery can proceed |
+| Local opening wait | Event race: the local restore against the next tracked hydration settlement, with a 10-second storage backstop of last resort; established remounts race only the stalled-restore window, and a claim's quiet certification takes exclusive opening ownership when it establishes the display |
 
 The former 16 MiB whole-model residency budget and 32 MiB temporary restored
 model are not new storage tiers. Do not recreate them behind the repository.

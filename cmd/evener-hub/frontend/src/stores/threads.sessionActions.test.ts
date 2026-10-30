@@ -1,3 +1,4 @@
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { appliedReceipt } from "../mutationReceiptTestUtils";
 import { connectFakeClient } from "../testing/connectionTestUtils";
 import { ALL_CAPABILITIES as CAPABILITIES, testThread } from "../threadTestUtils";
@@ -36,7 +37,6 @@ import { ConflictError } from "./threadsErrors";
 import {
   clearResponse,
   connectMutationClient,
-  deferred,
   ensureActiveMutationTarget,
   flushIndexedDBUntil,
   flushUntil,

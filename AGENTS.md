@@ -107,6 +107,9 @@ asking Jesse first.
 
 Run `make hooks` once per clone: the pre-commit hook formats staged TypeScript
 with each tree's own Biome and re-stages it (`docs/developing-evener/README.md`).
+The hook skips formatting while a merge is in progress (it prints `merge in
+progress; not formatting`), so run Biome on the touched files yourself before
+committing a merge.
 
 Biome's enforced scope is `cmd/evener-hub/frontend/src` and
 `appwire-client/typescript` (the gate runs `biome ci src
@@ -258,6 +261,14 @@ loading them, since each opens a socket the moment its body runs.
   `make test-web` before "fixing" it). When two reviewers conflict, the
   reconciliation usually is that both are right about different cases; pin
   both cases.
+- **Keep fixes in proportion, and file what you do not fix.** Do not design
+  for rare or future cases nobody reported. Fix a low finding in the same
+  round when the change is small and local. Before enqueuing, file every other
+  real finding you are leaving unfixed as a GitHub issue in this repo, after
+  searching for an existing one: location, trigger, impact, why it was not
+  fixed, and a link to the PR. Refuted findings get the refutation and no
+  issue. This repo is public, so never file the details of an exploitable
+  security problem; raise those with the developer directly.
 - **Merge through the merge queue.** Main requires one approving review, and
   RoboRev supplies it: a few minutes after its combined review names the PR's
   head, the roborev-primeradiant app approves when nothing is medium or above
@@ -271,9 +282,12 @@ loading them, since each opens a socket the moment its body runs.
   on top of main and the PRs ahead of it and merges it when the required
   checks pass there, so do not merge `origin/main` into the branch just to
   catch up. Pushing to a queued PR removes it from the queue. `MERGEQ
-  dropped` means a check failed on the queue's candidate: read it, fix the
-  cause (or, for an unrelated known flake, note it on the PR), and enqueue
-  again. Handle 'low' findings immediately in a fast-follow PR.
+  dropped` means a check failed on the queue's candidate, which is not
+  always your PR: a flaky shared check can drop every PR in the group.
+  Inspect the failed merge-group run to see which candidate failed: when
+  it is another PR's candidate or an unrelated flake, note it on the PR
+  and enqueue again; when it is your candidate, read the failing check,
+  fix the cause, and enqueue again.
 - **Refuted findings.** RoboRev never reads rebuttals, so a PR whose
   remaining medium-or-above findings you have conclusively refuted on the PR
   keeps its requested changes. That case alone is an admin merge: merge

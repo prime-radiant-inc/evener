@@ -134,7 +134,7 @@ func TestHostOperationsHostPinnedShapeAndHistoryReadability(t *testing.T) {
 	store := operationsTestStore(t, []hostreg.Host{removed})
 	seedOperationRecord(t, store, "gone", "op-gone", 4, "inc-gone")
 	m, _, _ := planTestManager(t, "", nil, planSeams{})
-	m.cfg.ops = store
+	m.cfg.ops.Store(store)
 
 	page, err := m.Operations(context.Background(), appwire.HostOperationsParams{Name: "gone"})
 	if err != nil {
@@ -178,7 +178,7 @@ func TestHostOperationsNeverDialsAndRefusesRemoteOrigin(t *testing.T) {
 	store := operationsTestStore(t, []hostreg.Host{entry})
 	seedOperationRecord(t, store, "m4", "op-1", 2, "inc-m4")
 	m, _, _ := planTestManager(t, "", []hostreg.Host{entry}, planSeams{})
-	m.cfg.ops = store
+	m.cfg.ops.Store(store)
 	dialed := false
 	m.cfg.client = func(context.Context, string) (*appwire.Client, error) {
 		dialed = true
@@ -217,7 +217,7 @@ func TestHostOperationsRefusalEnvelopes(t *testing.T) {
 	store := operationsTestStore(t, []hostreg.Host{entry})
 	seedOperationRecord(t, store, "m4", "op-1", 2, "inc-m4")
 	m, _, _ := planTestManager(t, "", []hostreg.Host{entry}, planSeams{})
-	m.cfg.ops = store
+	m.cfg.ops.Store(store)
 
 	staleCursor := base64.RawURLEncoding.EncodeToString([]byte(`{"v":1,"pos":"00000000000000000001","compactSeq":0,"bounds":{},"quarantineEpoch":0}`))
 	stale := wantStaleEntry(t, operationsErr(t, m, appwire.HostOperationsParams{Cursor: staleCursor}))
@@ -249,7 +249,7 @@ func TestHostOperationsRefusalEnvelopes(t *testing.T) {
 		t.Fatalf("MirrorBoundaries: %v", err)
 	}
 	seedOperationRecord(t, big, "host-000", "op-1", 1, "incarnation-host-000")
-	m.cfg.ops = big
+	m.cfg.ops.Store(big)
 	wire = appwire.WireError{}
 	if !errors.As(operationsErr(t, m, appwire.HostOperationsParams{}), &wire) {
 		t.Fatal("over-cap page did not refuse as a wire error")
@@ -298,7 +298,7 @@ func TestHostOperationsCursorInvalidatedEnvelope(t *testing.T) {
 	finishSeed(second) // per-host bound: the first record compacted, compactSeq 1.
 
 	m, _, _ := planTestManager(t, "", []hostreg.Host{entry}, planSeams{})
-	m.cfg.ops = store
+	m.cfg.ops.Store(store)
 	page, err := m.Operations(context.Background(), appwire.HostOperationsParams{Name: "m4", Limit: 1})
 	if err != nil {
 		t.Fatalf("Operations(page 1): %v", err)
@@ -355,7 +355,7 @@ func TestHostOperationsDetailCarriesTheCompactedMarker(t *testing.T) {
 	finishSeedOperation(t, store, seedOperationRecord(t, store, "m4", "op-kept", 2, "inc-m4"))
 
 	m, _, _ := planTestManager(t, "", []hostreg.Host{entry}, planSeams{})
-	m.cfg.ops = store
+	m.cfg.ops.Store(store)
 	compactedID := "00000000000000000001"
 	detail, err := m.Operations(context.Background(), appwire.HostOperationsParams{Name: "m4", ID: compactedID})
 	if err != nil {

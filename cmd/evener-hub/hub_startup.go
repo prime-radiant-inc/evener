@@ -156,6 +156,14 @@ type hubRuntime struct {
 	hostRegistry     *hostreg.Registry
 	sshManager       *sshconn.Manager
 	opsStore         *hostops.Store
+	// opsUnavailable marks a hub whose operation store failed to open: it serves
+	// its hosts and refuses host changes until it is started with a store that
+	// opens. openOps opens the store (a test replaces it).
+	opsUnavailable bool
+	// recordsUnreadable marks a start that could not read hub.toml's record
+	// sections (see hubcore.WebConfig.RemoteHostRecordsUnreadable).
+	recordsUnreadable bool
+	openOps           func() (*hostops.Store, error)
 
 	resumeLocks               *hubcore.ResumeLocks
 	deletionStore             *hubcore.DeletionStore
@@ -467,15 +475,31 @@ func (r *hubRuntime) openDurableState() error {
 // which owns every live SSH channel, so they die with the hub.
 func (r *hubRuntime) connectHosts() (func(), error) {
 	cfg := r.cfg
-	r.hostEntries = hostRegistryEntries(cfg)
+	// The operation store opens first: it holds the machine records the
+	// registry's identities restore from. A store that cannot open does not stop
+	// the hub. The hosts in hub.toml keep serving with the identities minted at
+	// load, host changes refuse until the store opens, and the open is retried
+	// in the background. A corrupt store file takes the custody-first quarantine
+	// when its custody can be shown whole; one whose custody cannot is left as it
+	// is until it is repaired (openHostOpsStore).
+	r.openOpsStore()
+	legacy, err := readLegacyRecords(r.opts.configPath)
+	if err != nil {
+		// The reserved sections an earlier build wrote cannot be read. The hosts
+		// come up with identities minted at load, and the manager keeps host
+		// changes paused instead of moving records it cannot read.
+		r.logf("hub.toml record sections unreadable; hosts keep serving and host changes pause: %v", err)
+		r.recordsUnreadable = true
+	}
+	boot := hostBootDocument(cfg, legacy, r.opsStore)
+	r.hostEntries = boot.Hosts
 	// Config loading already validated these through hostreg.New; build the
 	// real registry used by the SSH manager and handle the (impossible) error
-	// like any other startup failure. The file's retained high-water marks seed
-	// the counters first, so a hub.toml host with no persisted record is minted
-	// above every mark the file carries (registry spec 08 §1) rather than below
+	// like any other startup failure. The retained high-water marks seed the
+	// counters first, so a hub.toml host with no persisted record is minted
+	// above every mark the records carry (registry spec 08 §1) rather than below
 	// a mark another name retained.
-	var err error
-	r.hostRegistry, err = hostreg.NewSeeded(r.hostEntries, hostHighWaterMarks(cfg))
+	r.hostRegistry, err = hostreg.NewSeeded(r.hostEntries, boot.Records.highWaterMarks())
 	if err != nil {
 		return nil, fmt.Errorf("validate hosts: %w", err)
 	}
@@ -515,16 +539,6 @@ func (r *hubRuntime) connectHosts() (func(), error) {
 	}
 	for _, key := range cfg.removedKnobs {
 		r.logf("hub.toml sets %s, which is no longer tunable; the hub ignores it and uses its built-in default", key)
-	}
-	// The operation store opens before the hub serves anything. A corrupt store
-	// file takes §4's custody-first quarantine; a corrupt file whose custody
-	// snapshot is incomplete refuses the boot outright — the hub must never serve
-	// hosts past a fence the quarantine cannot prove.
-	r.opsStore, err = openHostOpsStore(r.hubStateRoot, r.stderr, hostOperationRetention(cfg))
-	if err != nil {
-		closeSSH()
-		r.logf("%v", err)
-		return nil, err
 	}
 	// The operation store loads before the web server is built; a loaded
 	// compensation record whose stash reference is not this hub.toml family's
@@ -632,10 +646,12 @@ func (r *hubRuntime) buildWeb(appwireTrace *appserver.WebSocketTrace) (*WebServe
 		// The one live registry the SSH manager dials through, shared with the
 		// attach handler and the host-management surface, and the selected
 		// hub.toml path the host surface rewrites in place (machine-managed).
-		RemoteHostRegistry:   r.hostRegistry,
-		RemoteHostSSHManager: sshManager,
-		RemoteHostConfigPath: r.opts.configPath,
-		RemoteHostOpsStore:   r.opsStore,
+		RemoteHostRegistry:          r.hostRegistry,
+		RemoteHostSSHManager:        sshManager,
+		RemoteHostConfigPath:        r.opts.configPath,
+		RemoteHostOpsStore:          r.opsStore,
+		RemoteHostOpsUnavailable:    r.opsUnavailable,
+		RemoteHostRecordsUnreadable: r.recordsUnreadable,
 		// This hub's own running identity and the two owner-adjustable
 		// deploy-pipeline knobs: the probe deadline the plan's gated probe
 		// uses, and the minimum free space evener/host/running's health
@@ -880,4 +896,35 @@ func (r *hubRuntime) startBackground(web *WebServer) (context.Context, func()) {
 	// Through deps so hermetic runMain tests stay offline.
 	deps.startLaunchPrefetch(ctx, web, goBackground)
 	return ctx, cleanup
+}
+
+// hostOpsOpenRetryDelays are the waits between the attempts startup makes to
+// open the operation store before it gives up and serves without it.
+var hostOpsOpenRetryDelays = []time.Duration{250 * time.Millisecond, 500 * time.Millisecond, time.Second}
+
+// openOpsStore opens the operation store at startup, retrying a failed open a
+// few times for the transient failures a start can meet. A store that still
+// cannot open does not stop the hub: it serves the hosts in hub.toml and
+// refuses host changes until the hub is started with a store that opens.
+func (r *hubRuntime) openOpsStore() {
+	if r.openOps == nil {
+		r.openOps = func() (*hostops.Store, error) {
+			return openHostOpsStore(r.hubStateRoot, r.stderr, hostOperationRetention(r.cfg))
+		}
+	}
+	store, err := r.openOps()
+	for _, delay := range hostOpsOpenRetryDelays {
+		if err == nil {
+			break
+		}
+		r.logf("host operation store not opened yet; retrying: %v", err)
+		time.Sleep(delay)
+		store, err = r.openOps()
+	}
+	if err != nil {
+		r.opsUnavailable = true
+		r.logf("host operation store unavailable; hosts keep serving and host changes stay paused until the hub is started with a store that opens: %v", err)
+		return
+	}
+	r.opsStore = store
 }

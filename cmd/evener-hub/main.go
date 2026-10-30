@@ -372,12 +372,12 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 // quarantined file and its custody, and stays visible for as long as the
 // custody file keeps the names it closed closed.
 //
-// A corrupt file whose custody snapshot is incomplete — anything that would
-// leave a fence unprovable — fails startup here, never serves: the error aborts
-// the boot rather than leaving host operations unwired. Every other open failure
-// keeps the pre-quarantine disposition: the failure is logged and the hub
-// serves with host operations unwired, because a transient permission or I/O
-// problem is not a fence the hub cannot prove.
+// A corrupt file whose custody snapshot is incomplete, so that the quarantine
+// cannot prove the names it would carry, is returned as an error and left
+// exactly as it is. That is not a reason to stop serving the hosts in hub.toml:
+// the caller serves them with host changes paused and retries the open, which
+// succeeds once the file is repaired. Every other open failure, a transient
+// permission or I/O problem for one, is handled the same way.
 //
 // The opened store also runs §3's boot reap: expired confirmation tokens are
 // dropped at startup, so a restart never leaves an unexpired-looking row behind
@@ -392,13 +392,10 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 // inert, and a crashed probe's temp/target file is a stray nothing else will
 // remove.
 func openHostOpsStore(stateRoot string, stderr io.Writer, retention hostops.RetentionPolicy) (*hostops.Store, error) {
-	store, err := hostops.OpenWithRetention(hostops.StorePath(stateRoot), retention)
+	storePath := hostops.StorePath(stateRoot)
+	store, err := hostops.OpenWithRetention(storePath, retention)
 	if err != nil {
-		if errors.Is(err, hostops.ErrStoreCorrupt) {
-			return nil, fmt.Errorf("host operation store: %w", err)
-		}
-		_, _ = fmt.Fprintf(stderr, "[hub] host operation store not opened, host boundary records will not be mirrored: %v\n", err)
-		return nil, nil
+		return nil, fmt.Errorf("host operation store: %w", err)
 	}
 	if signal := store.Quarantine(); signal != nil {
 		_, _ = fmt.Fprintf(stderr,

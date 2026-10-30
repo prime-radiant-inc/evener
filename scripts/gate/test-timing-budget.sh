@@ -19,6 +19,8 @@
 # Two independent things are checked, both from the same measurement:
 #
 #   - Per-package budget: fail at 1.5x the checked-in budget, warn at 1.1x.
+#     Fail limits (this and the class ceilings below) scale by the run's median
+#     ratio when that is above 1: a uniformly slow runner is not a regression.
 #   - Per-test ceiling, SEGMENTED BY TEST CLASS (testing-budget.json's
 #     perTestCeilingClasses; ruling, 2026-10-13, issue #4601):
 #       * A test named in a class — or a subtest of one (Name/sub) — is compared
@@ -328,6 +330,16 @@ DEFAULT_CEILING = 2.0
 FAIL_RATIO = 1.5
 WARN_RATIO = 1.1
 
+# A slow runner slows every package at once, which no package's code earned. The
+# run's own slowdown is the median measured/budget ratio over the packages whose
+# budget is big enough to be signal (a 2s floor entry is all noise), and only
+# with enough of them for a median to mean "the runner" and not "one package".
+# FAIL verdicts, package ratios and blessed-class ceilings alike, are judged
+# against that slowdown: one package far above its peers still fails, a whole
+# run uniformly above its budgets does not. Warnings stay on the raw ratio.
+SLOWDOWN_MIN_BUDGET = 5.0
+SLOWDOWN_MIN_PACKAGES = 3
+
 # The metric the recorded numbers were blessed under. A budget whose "metric"
 # is not this was measured under the pre-#172 sum-of-test-Elapsed metric, whose
 # numbers are not comparable to the package wall time measured now: comparing
@@ -541,6 +553,22 @@ elif stale_units:
 		"numbers, until #141 re-blesses the baseline for the host class CI uses "
 		f"(a rebaseline records \"metric\": \"{WALL_METRIC}\").")
 
+def runner_slowdown():
+	if stale_units:
+		return 1.0  # Stale-unit ratios are not comparable measurements of the runner.
+	ratios = sorted(sums[pkg] / b for pkg, b in packages.items()
+		if pkg in sums and b >= SLOWDOWN_MIN_BUDGET)
+	if len(ratios) < SLOWDOWN_MIN_PACKAGES:
+		return 1.0
+	mid = len(ratios) // 2
+	median = ratios[mid] if len(ratios) % 2 else (ratios[mid - 1] + ratios[mid]) / 2
+	return max(1.0, median)
+
+slowdown = runner_slowdown()
+if slowdown > WARN_RATIO:
+	lines.append(f"NOTE  this run's packages sit at a median {slowdown:.2f}x of their budgets: "
+		f"the runner is slow, so failure limits below are scaled by {slowdown:.2f}x")
+
 for pkg in sorted(sums):
 	m = sums[pkg]
 	b = packages.get(pkg)
@@ -549,7 +577,7 @@ for pkg in sorted(sums):
 		raise_worst("warn")
 		continue
 	ratio = (m / b) if b > 0 else (float("inf") if m > 0 else 0.0)
-	if ratio > FAIL_RATIO:
+	if ratio / slowdown > FAIL_RATIO:
 		if stale_units:
 			lines.append(f"WARN  {pkg}: {m:.2f}s over stale budget {b:.2f}s "
 				f"({ratio:.2f}x > {FAIL_RATIO}x; not enforced until the #141 rebaseline)")
@@ -577,7 +605,7 @@ for pkg, name, secs in tests:
 		continue
 	if memberships:
 		class_name, class_ceiling = memberships[0]
-		if secs > class_ceiling:
+		if secs > class_ceiling * slowdown:
 			lines.append(f"FAIL  {pkg}: test {name} took {secs:.2f}s, over its {class_ceiling:g}s "
 				f"'{class_name}' class ceiling")
 			raise_worst("fail")
