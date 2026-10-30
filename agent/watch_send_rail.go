@@ -850,7 +850,7 @@ func settleWatchSendLocked(cfg *watchConfig, key jobstore.WatchSendKey, updateSe
 }
 
 func (jm *jobManager) forgetTerminalFlushIfEmptyLocked(cfg *watchConfig) {
-	if cfg == nil || len(cfg.pending) != 0 || jm.terminalFlush == nil {
+	if cfg == nil || cfg.terminalDeliveryPending || len(cfg.pending) != 0 || jm.terminalFlush == nil {
 		return
 	}
 	delete(jm.terminalFlush, cfg)

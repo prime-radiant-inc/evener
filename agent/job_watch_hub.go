@@ -345,8 +345,19 @@ func (jm *jobManager) endHubWatch(watchID, reason string, completion *watchSendD
 		delivery.endNotice = true
 	}
 	delivery.allowAfterTerminalExpiry = true
+	// Keep the terminal eligibility record alive until the final send has had
+	// its chance to enter the shared durable rail, even if prior pending sends
+	// settle concurrently in this unlock-to-record gap.
+	cfg.terminalDeliveryPending = true
 	jm.mu.Unlock()
+	if jm.testOnlyAfterHubWatchDetach != nil {
+		jm.testOnlyAfterHubWatchDetach()
+	}
 	jm.recordWatchSendsAndKick([]watchSendDelivery{delivery})
+	jm.mu.Lock()
+	cfg.terminalDeliveryPending = false
+	jm.forgetTerminalFlushIfEmptyLocked(cfg)
+	jm.mu.Unlock()
 	jm.publishWatchActivity()
 	return nil
 }
@@ -399,6 +410,8 @@ func (s *Session) configureHubWatchRuntime(ctx context.Context, args map[string]
 		return nil, appwire.InvalidRequest("session is not a Manager")
 	}
 	watchCtx, cancel := context.WithCancel(context.Background())
+	stopSetupCancellation := context.AfterFunc(ctx, cancel)
+	defer stopSetupCancellation()
 	updates, err := client.Watch(watchCtx, request)
 	if err != nil {
 		cancel()
@@ -428,6 +441,7 @@ func (s *Session) configureHubWatchRuntime(ctx context.Context, args map[string]
 	if s.installHubWatchSubscription(jm, result.WatchID, cancel) {
 		go s.consumeHubWatch(watchCtx, result.WatchID, request, state.Ref, state.InstanceID, updates, first)
 	}
+	stopSetupCancellation()
 	return marshalWatchResult(result, jobToolResultDefaultMaxChar)
 }
 
