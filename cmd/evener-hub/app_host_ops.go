@@ -275,8 +275,8 @@ func (m *hubHostManager) Plan(ctx context.Context, params appwire.HostPlanParams
 	// compared against is read before the ungated refresh, so an operation that
 	// finishes while the plan is being built is seen.
 	sequenceBefore := uint64(0)
-	if m.cfg.ops != nil {
-		sequenceBefore = m.cfg.ops.Sequence()
+	if m.opsStore() != nil {
+		sequenceBefore = m.opsStore().Sequence()
 	}
 
 	// §6 step 1: refresh the facts with no gate held, on the attached channel.
@@ -443,13 +443,13 @@ func hostBusyWireError(err error) error {
 // one, so it refuses — the honest answer, because a probe without a durable
 // epoch is exactly the unfenced write the spec forbids.
 func (m *hubHostManager) persistProbeEpoch(entry hostreg.Host) (hostops.ProbeEpoch, error) {
-	if m.cfg.ops == nil {
+	if m.opsStore() == nil {
 		return hostops.ProbeEpoch{}, errors.New("the host operation store is not configured")
 	}
 	if strings.TrimSpace(m.cfg.bootID) == "" {
 		return hostops.ProbeEpoch{}, errors.New("this hub carries no boot id, so no probe epoch can be bound")
 	}
-	return m.cfg.ops.PersistProbeEpoch(hostops.ProbeEpochRequest{
+	return m.opsStore().PersistProbeEpoch(hostops.ProbeEpochRequest{
 		Host:          entry.Name,
 		BootID:        m.cfg.bootID,
 		Generation:    entry.Generation,
@@ -463,10 +463,10 @@ func (m *hubHostManager) persistProbeEpoch(entry hostreg.Host) (hostops.ProbeEpo
 // cannot write is logged, not returned: the row left behind is inert and the
 // next boot's reap deletes it.
 func (m *hubHostManager) dropProbeEpoch(name string, epoch hostops.ProbeEpoch) {
-	if m.cfg.ops == nil || epoch.BootID == "" {
+	if m.opsStore() == nil || epoch.BootID == "" {
 		return
 	}
-	if err := m.cfg.ops.DropProbeEpoch(name, epoch.BootID, epoch.OpSeq); err != nil {
+	if err := m.opsStore().DropProbeEpoch(name, epoch.BootID, epoch.OpSeq); err != nil {
 		m.logf("host %q: the probe epoch %s/%d could not be dropped after a refused operation: %v",
 			name, epoch.BootID, epoch.OpSeq, err)
 	}
@@ -517,7 +517,7 @@ func (m *hubHostManager) mintPlannedToken(name string, in planMintInputs) (appwi
 			"host %q's hub.toml entry could not be fingerprinted: the selected hub.toml (%s) does not validate, so nothing about the host's on-disk entry can be bound; fix the file before planning",
 			name, m.cfg.configPath))
 	}
-	if m.cfg.ops == nil {
+	if m.opsStore() == nil {
 		return appwire.HostPlanResult{}, appwire.InternalError("the host operation store is not configured, so no confirmation token can be minted")
 	}
 
@@ -525,7 +525,7 @@ func (m *hubHostManager) mintPlannedToken(name string, in planMintInputs) (appwi
 	// The terminal-operation guard rides the mint's own locked read
 	// (MintTokenIfQuiescent): a scan run here could not see a terminal transition
 	// landing between it and the mint, while the store's guard cannot miss one.
-	token, err := m.cfg.ops.MintTokenIfQuiescent(hostops.MintRequest{
+	token, err := m.opsStore().MintTokenIfQuiescent(hostops.MintRequest{
 		Host:               name,
 		Generation:         in.entry.Generation,
 		IncarnationID:      in.entry.IncarnationID,
@@ -669,14 +669,14 @@ func (m *hubHostManager) Operations(ctx context.Context, params appwire.HostOper
 	if err := guardControllerLocalHosts(ctx); err != nil {
 		return appwire.HostOperationsResponse{}, err
 	}
-	if m.cfg.ops == nil {
+	if m.opsStore() == nil {
 		return appwire.HostOperationsResponse{}, appwire.InternalError("the host operation store is not configured, so no operations can be read")
 	}
 	query, err := operationsQuery(params)
 	if err != nil {
 		return appwire.HostOperationsResponse{}, err
 	}
-	page, err := m.cfg.ops.ReadOperations(query)
+	page, err := m.opsStore().ReadOperations(query)
 	if err != nil {
 		return appwire.HostOperationsResponse{}, operationsRefusal(err)
 	}
