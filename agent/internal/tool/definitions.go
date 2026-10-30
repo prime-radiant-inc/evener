@@ -271,7 +271,7 @@ func DefDelegateWithResultTool(agentTypes []string, sandboxSchema DelegateSandbo
 			"A delegate may itself delegate: by default it gets an allowance one below yours; " +
 			"pass `delegation_allowance` 0 to make it a leaf, or a smaller value to cap its depth. Set watch_parent=true for an observer sidecar: the child can call job_watch(source=\"parent\"). " + ObserverReporting(resultTool) + " For delegate readiness, status, findings, and final reports, ask the " +
 			"delegate to call `" + resultTool + "` with the exact marker/report. Observer readiness results can include `watching:true` and `watches` when the observer installed watches. Use the delegate's output as the evidence for judging the work. " +
-			"A delegate's own background jobs and watches end with its activation: their notifications wake the delegate, not you, so an external wait whose verdict you need (CI, a deploy) runs in your session, not a delegate's. A delegate completion notification may omit the full report; read the delegate's transcript for it before relying on the summary.",
+			"A delegate's shell jobs end with its activation. A watch the delegate registers on its parent lives in the parent's job manager and survives the delegate, so clear it explicitly when observation should stop. Notifications from a delegate's own jobs wake the delegate, not you, so an external wait whose verdict you need (CI, a deploy) runs in your session, not a delegate's. A delegate completion notification may omit the full report; read the delegate's transcript for it before relying on the summary.",
 		Strict: &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",

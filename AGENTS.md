@@ -275,11 +275,12 @@ loading them, since each opens a socket the moment its body runs.
   checks pass there, so do not merge `origin/main` into the branch just to
   catch up. Pushing to a queued PR removes it from the queue. `MERGEQ
   dropped` means a check failed on the queue's candidate, which is not
-  always your PR: a flaky shared check drops every PR in the group,
-  leaving nothing to read or fix on yours. Read your PR's checks first;
-  when nothing failed there, treat the drop as a bystander and enqueue
-  again rather than diagnosing your PR. Handle 'low' findings immediately
-  in a fast-follow PR.
+  always your PR: a flaky shared check can drop every PR in the group.
+  Inspect the failed merge-group run to see which candidate failed: when
+  it is another PR's candidate or an unrelated flake, note it on the PR
+  and enqueue again; when it is your candidate, read the failing check,
+  fix the cause, and enqueue again. Handle 'low' findings immediately in
+  a fast-follow PR.
 - **Refuted findings.** RoboRev never reads rebuttals, so a PR whose
   remaining medium-or-above findings you have conclusively refuted on the PR
   keeps its requested changes. That case alone is an admin merge: merge
