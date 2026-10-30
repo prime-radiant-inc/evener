@@ -75,11 +75,9 @@ var ErrUpdateLogTruncated = errors.New("transcript index update log no longer re
 // repair and answers a retryable state instead of waiting on one here.
 var ErrRebuildRequired = errors.New("transcript index needs a rebuild this handle refuses to run")
 
-// ErrNewerSidecar reports a sidecar whose live build a newer binary wrote:
-// a newer layout, or a newer projection version. An older binary never
-// rebuilds over it, or the two binaries would trade rebuilds of one sidecar
-// for as long as both run; it reads nothing from it until the sidecar's own
-// binary is the one running.
+// ErrNewerSidecar reports a sidecar whose live build a newer binary wrote
+// (a newer layout or projection version); an older binary never rebuilds over
+// it, or the two would trade rebuilds for as long as both run.
 var ErrNewerSidecar = errors.New("transcript index was written by a newer build")
 
 // projectionVersion is the number in a projection identity such as

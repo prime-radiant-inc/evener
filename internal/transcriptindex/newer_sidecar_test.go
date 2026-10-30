@@ -9,16 +9,6 @@ import (
 	"testing"
 )
 
-// currentProjectionVersion is the number in this binary's projection identity.
-func currentProjectionVersion(t testing.TB) int {
-	t.Helper()
-	version, ok := projectionVersion(currentProjection())
-	if !ok {
-		t.Fatalf("projection %q carries no version", currentProjection())
-	}
-	return version
-}
-
 // sidecarWithProjectionVersion builds a healthy sidecar for a one-entry
 // transcript, then stamps its live build as written by a binary whose
 // projection version is the current one plus delta.
@@ -30,7 +20,11 @@ func sidecarWithProjectionVersion(t *testing.T, delta int) (path, dir string) {
 	if err := x.Close(); err != nil {
 		t.Fatal(err)
 	}
-	stamp := "transcript-read-model-v" + strconv.Itoa(currentProjectionVersion(t)+delta) + ":" + schemaID
+	version, ok := projectionVersion(currentProjection())
+	if !ok {
+		t.Fatalf("projection %q carries no version", currentProjection())
+	}
+	stamp := "transcript-read-model-v" + strconv.Itoa(version+delta) + ":" + schemaID
 	rewriteMetaField(t, dir, "projection", strconv.Quote(stamp))
 	return path, dir
 }
@@ -127,6 +121,7 @@ func TestAnOlderOrSameVersionSidecarIsRebuilt(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			path, dir := sidecarWithProjectionVersion(t, delta)
 			if delta == 0 {
+				// Same version, another schema fingerprint: not orderable.
 				rewriteMetaField(t, dir, "projection", strconv.Quote(projectionID+":other-schema"))
 			}
 			x := openIndex(t, path, dir)
