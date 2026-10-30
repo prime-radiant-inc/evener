@@ -152,3 +152,22 @@ func DataURI(mimeType string, data []byte) string {
 	}
 	return fmt.Sprintf("data:%s;base64,%s", mimeType, base64.StdEncoding.EncodeToString(data))
 }
+
+// DocumentFileData returns the payload a document part rides the wire as
+// when it carries bytes: the bytes as a data URI, with a blank media type
+// defaulting to application/pdf as every document-capable builder does.
+// Bytes win when a URL is also set, matching the image helper, so a caller
+// that supplies both never silently switches sources. A document with no
+// bytes returns "" — whether a source URL can ride the wire is per protocol
+// (Anthropic wraps it in a url source, Google in fileData, Responses passes
+// it through, and Chat Completions has no URL file mechanism).
+func DocumentFileData(doc *DocumentData) string {
+	if doc == nil || len(doc.Data) == 0 {
+		return ""
+	}
+	mimeType := strings.TrimSpace(doc.MediaType)
+	if mimeType == "" {
+		mimeType = "application/pdf"
+	}
+	return DataURI(mimeType, doc.Data)
+}
