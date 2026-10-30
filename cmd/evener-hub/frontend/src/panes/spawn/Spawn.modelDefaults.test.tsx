@@ -1,3 +1,4 @@
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import "../session/testing/editorGeometry";
 import type {
   HostRequestParams,
@@ -16,7 +17,6 @@ import { readModuleCss } from "../../styles/cssBlock";
 import { Toast } from "../../widgets";
 import Spawn from "./Spawn";
 import {
-  deferred,
   effortControl,
   effortOptionValues,
   effortSelect,

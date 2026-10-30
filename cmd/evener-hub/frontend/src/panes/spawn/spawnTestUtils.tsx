@@ -181,16 +181,6 @@ export async function visitSpawnURL(url: string): Promise<void> {
   });
 }
 
-export function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (reason: Error) => void;
-  const promise = new Promise<T>((done, fail) => {
-    resolve = done;
-    reject = fail;
-  });
-  return { promise, resolve, reject };
-}
-
 export function completionDraft(cwd: string) {
   const draft = spawnDraftsStore.getState().drafts.get(cwd);
   if (!draft) throw new Error(`missing draft ${cwd}`);
