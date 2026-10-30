@@ -933,4 +933,163 @@ describe("durable minimal handoffs", () => {
 		expect(repository.read(c)).toMatchObject({ draft: "b work" });
 		expect(repository.read(c).releasedRecoveryIds).toEqual(["recovered-a"]);
 	});
+
+	it("a refusal that follows an identity change reroutes what is still incoming", () => {
+		const { repository, ledger, library } = setup();
+		const a = destination("a");
+		const b = destination("b");
+		const c = destination("c");
+		repository.write(a, {
+			draft: "a work",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		repository.write(b, { draft: "b work", unconfirmed: null });
+		repository.write(c, { draft: "c work", unconfirmed: null });
+		let failA = false;
+		const failing = new Proxy(repository, {
+			get(target, property) {
+				const value = Reflect.get(target, property, target);
+				if (property === "read" && typeof value === "function")
+					return (...args: unknown[]) => {
+						if (failA) throw new Error("drafts unavailable");
+						return (value as (...inner: unknown[]) => unknown).apply(target, args);
+					};
+				return typeof value === "function" ? (value as (...inner: unknown[]) => unknown).bind(target) : value;
+			},
+		}) as DraftRepository;
+		const live = new DraftLibrary(
+			() => failing,
+			() => "id-live",
+			() => ledger,
+		);
+		// A -> B is on its way in when B's identity resumes to the occupied C.
+		failA = true;
+		expect(live.handoff(a, b)).toBe(false);
+		failA = false;
+		const restarted = library();
+		expect(restarted.handoff(b, c)).toBe(false);
+		restarted.retryPendingHandoffs();
+		// The refusal followed the identity change, so A's hop followed the
+		// rows: its sources are released at C, never at the old identity.
+		expect(repository.read(c).releasedRecoveryIds).toEqual(["recovered-a"]);
+		expect(repository.read(b).releasedRecoveryIds).toBeUndefined();
+		expect(repository.read(a)).toMatchObject({
+			draft: "a work",
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		expect(restarted.hasPendingHandoff(c)).toBe(false);
+	});
+
+	it("an abandoned open obligation keeps the retry running until its release records", () => {
+		const { repository, ledger } = setup();
+		const a = destination("a");
+		repository.write(a, {
+			draft: "current",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		// A previous process died mid-submission: the obligation is open with
+		// nothing running, and its abandonment write cannot record yet.
+		ledger.beginSubmission("token-abandoned", a, ["recovered-a"]);
+		let failWrites = false;
+		const failingLedger = new Proxy(ledger, {
+			get(target, property) {
+				const value = Reflect.get(target, property, target);
+				if (property === "resolveSubmission" && typeof value === "function" && failWrites)
+					return () => {
+						throw new Error("ledger unavailable");
+					};
+				return typeof value === "function" ? (value as (...inner: unknown[]) => unknown).bind(target) : value;
+			},
+		}) as typeof ledger;
+		const live = new DraftLibrary(
+			() => repository,
+			() => "id-live",
+			() => failingLedger,
+		);
+		failWrites = true;
+		live.retryPendingHandoffs();
+		// The failed abandonment still owes work: the retry predicate must
+		// keep the pass running, not read the abandoned obligation as idle.
+		expect(live.hasUndeliveredCompletions()).toBe(true);
+		failWrites = false;
+		live.retryPendingHandoffs();
+		expect(ledger.outstandingObligations()).toHaveLength(0);
+		expect(live.hasUndeliveredCompletions()).toBe(false);
+	});
+
+	it("a routed completion retries its destination that could not load", async () => {
+		const { repository, ledger } = setup();
+		const a = destination("a");
+		const b = destination("b");
+		repository.write(a, {
+			draft: "current",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		repository.write(b, { draft: "b work", unconfirmed: null });
+		let failObligationReads = true;
+		const failingLedger = new Proxy(ledger, {
+			get(target, property) {
+				const value = Reflect.get(target, property, target);
+				if (property === "obligationById" && typeof value === "function" && failObligationReads)
+					return () => {
+						throw new Error("ledger unavailable");
+					};
+				return typeof value === "function" ? (value as (...inner: unknown[]) => unknown).bind(target) : value;
+			},
+		}) as typeof ledger;
+		const live = new DraftLibrary(
+			() => repository,
+			() => "id-live",
+			() => failingLedger,
+		);
+		const source = live.open(a);
+		let finish!: () => void;
+		const submitted = source.submitBuiltinCommand(
+			() =>
+				new Promise<boolean>((resolve) => {
+					finish = () => resolve(true);
+				}),
+		);
+		// The handoff into occupied B refuses: the delivery rows route the
+		// completion's completed markers to B.
+		expect(live.handoff(a, b)).toBe(false);
+		// The command completes while the ledger's obligation read fails: the
+		// resolution is durable but its delivery is owed.
+		finish();
+		await submitted;
+		expect(ledger.outstandingObligations()).toHaveLength(1);
+		failObligationReads = false;
+		// A fresh process first opens the routed destination while its record
+		// cannot load: the failed load is cached and the delivery defers.
+		let failB = true;
+		const failing = new Proxy(repository, {
+			get(target, property) {
+				const value = Reflect.get(target, property, target);
+				if (property === "read" && typeof value === "function")
+					return (...args: unknown[]) => {
+						const readDestination = args[0] as DraftDestination;
+						if (readDestination.sessionRef === "b" && failB) throw new Error("drafts unavailable");
+						return (value as (...inner: unknown[]) => unknown).apply(target, args);
+					};
+				return typeof value === "function" ? (value as (...inner: unknown[]) => unknown).bind(target) : value;
+			},
+		}) as DraftRepository;
+		let next = 0;
+		const restarted = new DraftLibrary(
+			() => failing,
+			() => `id-restarted-${++next}`,
+			() => ledger,
+		);
+		restarted.retryPendingHandoffs();
+		expect(ledger.outstandingObligations()).toHaveLength(1);
+		// Storage recovers: the pass must reload the destination instead of
+		// reusing the cached unloaded document forever.
+		failB = false;
+		restarted.retryPendingHandoffs();
+		expect(ledger.outstandingObligations()).toHaveLength(0);
+		expect(repository.read(b).completedCommandRecoveryIds).toEqual(["recovered-a"]);
+	});
 });

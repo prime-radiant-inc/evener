@@ -284,6 +284,21 @@ export class DraftRepository {
 		return row === null ? undefined : this.mapTransfer(row);
 	}
 
+	/** Reroute pending hops still on their way into an identity that a
+	 * refusal - not a commit - followed onward: the identity change moved the
+	 * rows even though the composition itself stayed. */
+	rerouteTransfers(reroutes: readonly { transferId: string; to: DraftDestination }[]): void {
+		for (const reroute of reroutes)
+			this.db.runSync(
+				`UPDATE draft_transfer_log SET to_hub_id = ?, to_ref = ?, state_changed_at = ?
+      WHERE transfer_id = ? AND state = 'pending' AND delivered_hash IS NULL`,
+				reroute.to.hubId,
+				reroute.to.sessionRef,
+				this.now(),
+				reroute.transferId,
+			);
+	}
+
 	/** The latest committed hop out of an identity: the forward pointer a
 	 * completion follows toward the record's current owner. A row whose
 	 * transfer never committed moved nothing, so it is not a pointer. */

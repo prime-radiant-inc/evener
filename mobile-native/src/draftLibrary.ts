@@ -26,6 +26,7 @@ export type DraftStorage = Pick<
 	| "outstandingTransfers"
 	| "pendingTransfersTo"
 	| "transferById"
+	| "rerouteTransfers"
 	| "latestCommittedTransferFrom"
 	| "latestCommittedTransferFromCarrying"
 	| "latestTransferCarrying"
@@ -172,7 +173,14 @@ export class DraftLibrary {
 		} catch {
 			return undefined;
 		}
-		return obligations.some((obligation) => clearsCapture(obligation.state));
+		// An open obligation abandoned by a dead process owes its failed
+		// resolution too: the retry pass releases it once the store accepts
+		// writes. Ones still running in this process resolve on their own
+		// transitions and never hold the timer.
+		return obligations.some(
+			(obligation) =>
+				clearsCapture(obligation.state) || (obligation.state === "open" && !captureInFlight(obligation.obligationId)),
+		);
 	}
 
 	/** The recovery ids this identity must not restore: the input of every
@@ -371,6 +379,21 @@ export class DraftLibrary {
 						transferId: transfer.transferId,
 					})),
 				]);
+			// This hop followed an identity change: the rows moved onward even
+			// though the composition itself was refused, so everything still
+			// on its way into the old identity must follow them - the refusal
+			// stays pending until that rerouting persists.
+			this.repository().rerouteTransfers(
+				this.repository()
+					.pendingTransfersTo(transfer.from)
+					.map((incoming) => ({ transferId: incoming.transferId, to: transfer.to })),
+			);
+			const reroutedIn = this.pending.get(this.handoffKey(transfer.from));
+			if (reroutedIn !== undefined) {
+				this.pending.delete(this.handoffKey(transfer.from));
+				if (!this.pending.has(this.handoffKey(transfer.to)))
+					this.pending.set(this.handoffKey(transfer.to), { from: reroutedIn.from, to: transfer.to });
+			}
 			this.repository().forgetTransfer(transfer.transferId);
 			// The same rule as the committed hop's cleanup: a rerouted
 			// incoming intent on this key outlives the refused hop's fallback.
@@ -552,7 +575,14 @@ export class DraftLibrary {
 		if (routed.length === 0) return true;
 		try {
 			for (const destination of routed) {
-				if (!this.open(destination).adoptCompletedCommandRecovery(completion.completedCommandIds)) return false;
+				const document = this.open(destination);
+				let destinationSnapshot = document.getSnapshot();
+				if (!destinationSnapshot.loaded) {
+					document.retry();
+					destinationSnapshot = document.getSnapshot();
+				}
+				if (!destinationSnapshot.loaded) return false;
+				if (!document.adoptCompletedCommandRecovery(completion.completedCommandIds)) return false;
 			}
 			ledger.writeDeliveries(
 				routed.flatMap((destination) =>
