@@ -1,4 +1,5 @@
 import { bindFilePath } from "@evener/appwire-client/docContent";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
@@ -151,18 +152,13 @@ test.each(["standard", "comic"] as const)(
     try {
       assertPreserved(fixture);
     } finally {
-      fixture.unsubscribe();
-      fixture.view.unmount();
-      await fixture.background.release();
+      await disposeFixture(fixture);
     }
   },
 );
 
 test("held lazy desktop preserves source across separate commits", async () => {
-  let resolve!: (module: DockHostModule) => void;
-  const pending = new Promise<DockHostModule>((done) => {
-    resolve = done;
-  });
+  const { promise: pending, resolve } = deferred<DockHostModule>();
   setDockHostImporterForTests(() => pending);
   const fixture = await mountHost(true);
   await act(async () => {
@@ -184,9 +180,7 @@ test("held lazy desktop preserves source across separate commits", async () => {
     expect(duringLoading.foreground).toBe(1);
     assertPreserved(fixture);
   } finally {
-    fixture.unsubscribe();
-    fixture.view.unmount();
-    await fixture.background.release();
+    await disposeFixture(fixture);
   }
 });
 
@@ -201,9 +195,7 @@ test.each(["standard", "comic"] as const)("real phone to desktop preserves %s so
   try {
     assertPreserved(fixture);
   } finally {
-    fixture.unsubscribe();
-    fixture.view.unmount();
-    await fixture.background.release();
+    await disposeFixture(fixture);
   }
 });
 
@@ -262,19 +254,13 @@ test("pre-event media snapshot cannot replace the host before preparation", asyn
   try {
     assertPreserved(fixture);
   } finally {
-    fixture.unsubscribe();
-    fixture.view.unmount();
-    await fixture.background.release();
+    await disposeFixture(fixture);
   }
 });
 
 async function heldDestination() {
-  let resolve!: (module: DockHostModule) => void;
-  let reject!: (reason: Error) => void;
-  const pending = new Promise<DockHostModule>((done, fail) => {
-    resolve = done;
-    reject = fail;
-  });
+  const { promise: pending, resolve, reject: rejectPending } = deferred<DockHostModule>();
+  const reject = (reason: Error): void => rejectPending(reason);
   setDockHostImporterForTests(() => pending);
   const fixture = await mountHost(true);
   const lifetime = conversationPaneLifetime(fixture.pane);
