@@ -278,16 +278,19 @@ func thinkingFromParts(parts []llm.ContentPart) string {
 
 // hasImageOrDocumentContent reports whether the multimodal content form is
 // needed: the plain-text builder silently drops every non-text part, so an
-// image, or a document carrying a payload (llm.DocumentFileData), must ride
-// the array form. An audio part would also be dropped, but no production
-// code sends one, so it never reaches this gate.
+// image, or a document carrying bytes (llm.DocumentFileData), must ride the
+// array form. A URL-only document stays plain — chat has no URL file
+// mechanism — and audio never reaches this gate: no production code sends
+// one.
 func hasImageOrDocumentContent(parts []llm.ContentPart) bool {
 	for _, p := range parts {
 		switch p.Kind {
 		case llm.ContentImage:
 			return true
 		case llm.ContentDocument:
-			return llm.DocumentFileData(p.Document) != ""
+			if llm.DocumentFileData(p.Document) != "" {
+				return true
+			}
 		}
 	}
 	return false
@@ -324,8 +327,10 @@ func buildMultimodalParts(parts []llm.ContentPart, caps registry.Caps) []map[str
 			out = append(out, map[string]any{"type": "image_url", "image_url": urlObj})
 		case llm.ContentDocument:
 			// A document rides the chat wire as a file part whose file_data
-			// carries the bytes as a data URI or the source URL, matching the
-			// Responses protocol's input_file and Anthropic's document block.
+			// carries the bytes as a data URI, matching the Responses
+			// protocol's input_file and Anthropic's document block. A
+			// URL-only document stays with the plain-text form: chat file
+			// parts take base64 data only and have no URL mechanism.
 			fileData := llm.DocumentFileData(p.Document)
 			if fileData == "" {
 				continue

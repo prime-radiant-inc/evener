@@ -102,10 +102,11 @@ func TestNormalizeImageBlock(t *testing.T) {
 	}
 }
 
-// TestDocumentFileData pins the payload rule every document-capable builder
-// shares: bytes ride as an application/pdf data URI (the blank media type
-// defaults to pdf), a URL rides alone, and bytes win when both are set so a
-// caller that supplies both never silently switches sources.
+// TestDocumentFileData pins the payload rule the document builders share:
+// bytes ride as an application/pdf data URI (the blank media type defaults
+// to pdf), and bytes win when both are set so a caller that supplies both
+// never silently switches sources. A document without bytes carries no
+// shared payload — whether its URL rides the wire is per protocol.
 func TestDocumentFileData(t *testing.T) {
 	const pdfDataURI = "data:application/pdf;base64,JVBERi0xLjcgc3R1Yg=="
 	cases := []struct {
@@ -117,7 +118,7 @@ func TestDocumentFileData(t *testing.T) {
 		{"bytes", &DocumentData{Data: []byte("%PDF-1.7 stub"), MediaType: "application/pdf"}, pdfDataURI},
 		{"bytes with a blank media type default to pdf", &DocumentData{Data: []byte("%PDF-1.7 stub")}, pdfDataURI},
 		{"bytes with a padded media type", &DocumentData{Data: []byte("%PDF-1.7 stub"), MediaType: " application/pdf "}, pdfDataURI},
-		{"url", &DocumentData{URL: "https://example.com/doc.pdf"}, "https://example.com/doc.pdf"},
+		{"url only", &DocumentData{URL: "https://example.com/doc.pdf"}, ""},
 		{"bytes win over a url", &DocumentData{Data: []byte("%PDF-1.7 stub"), MediaType: "application/pdf", URL: "https://example.com/doc.pdf"}, pdfDataURI},
 		{"neither payload", &DocumentData{MediaType: "application/pdf"}, ""},
 	}
