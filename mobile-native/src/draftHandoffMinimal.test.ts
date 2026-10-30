@@ -152,6 +152,11 @@ describe("durable minimal handoffs", () => {
 			unconfirmed: null,
 			composer: { recoveryIds: ["recovered-a"] },
 		});
+		repository.write(a, {
+			draft: "current",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
 		const live = library();
 		const source = live.open(a);
 		let finish!: () => void;
@@ -194,6 +199,11 @@ describe("durable minimal handoffs", () => {
 		const a = destination("a");
 		const b = destination("b");
 		const c = destination("c");
+		repository.write(a, {
+			draft: "current",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
 		repository.write(a, {
 			draft: "current",
 			unconfirmed: null,
@@ -350,5 +360,147 @@ describe("durable minimal handoffs", () => {
 			releasedRecoveryIds: ["recovered-a"],
 		});
 		expect(repository.read(a)).toMatchObject({ draft: "work" });
+	});
+
+	it("a settlement defers while its owner cannot load", () => {
+		const { repository, ledger, library } = setup();
+		const a = destination("a");
+		const b = destination("b");
+		repository.write(a, {
+			draft: "work",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		let deliveries = 0;
+		const failingLedger = new Proxy(ledger, {
+			get(target, property) {
+				const value = Reflect.get(target, property, target);
+				if (property === "writeDeliveries" && typeof value === "function")
+					return (...args: unknown[]) => {
+						if (deliveries++ === 0) throw new Error("deliveries write failed");
+						return (value as (...inner: unknown[]) => unknown).apply(target, args);
+					};
+				return typeof value === "function" ? (value as (...inner: unknown[]) => unknown).bind(target) : value;
+			},
+		}) as typeof ledger;
+		const live = new DraftLibrary(
+			() => repository,
+			() => "id-live",
+			() => failingLedger,
+		);
+		expect(live.handoff(a, b)).toBe(true);
+		// The destination keeps real work the marker write must not destroy.
+		repository.write(b, { draft: "kept work", unconfirmed: null });
+		let failedReads = 3;
+		const unreadable = new Proxy(repository, {
+			get(target, property) {
+				const value = Reflect.get(target, property, target);
+				if (property === "read" && typeof value === "function")
+					return (...args: unknown[]) => {
+						const at = args[0] as DraftDestination;
+						if (at.sessionRef === "b" && failedReads-- > 0) throw new Error("database is locked");
+						return (value as (...inner: unknown[]) => unknown).apply(target, args);
+					};
+				return typeof value === "function" ? (value as (...inner: unknown[]) => unknown).bind(target) : value;
+			},
+		}) as typeof repository;
+		const deferred = new DraftLibrary(
+			() => unreadable,
+			() => "id-defer",
+			() => ledger,
+		);
+		deferred.retryPendingHandoffs();
+		// The owner could not load: the settlement defers and the saved draft
+		// survives untouched.
+		expect(repository.outstandingTransfers()).toHaveLength(1);
+		expect(repository.read(b)).toEqual({ draft: "kept work", unconfirmed: null });
+		failedReads = 0;
+		const clean = library();
+		clean.retryPendingHandoffs();
+		expect(repository.outstandingTransfers()).toHaveLength(0);
+		expect(repository.read(b)).toMatchObject({ draft: "kept work", releasedRecoveryIds: ["recovered-a"] });
+	});
+
+	it("a marker save failure retries its durable write past the in-memory copy", () => {
+		const { repository, ledger } = setup();
+		const a = destination("a");
+		const b = destination("b");
+		repository.write(a, {
+			draft: "work",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		let markerWrites = 0;
+		const failing = new Proxy(repository, {
+			get(target, property) {
+				const value = Reflect.get(target, property, target);
+				if (property === "write" && typeof value === "function")
+					return (...args: unknown[]) => {
+						const to = args[0] as DraftDestination;
+						if (to.sessionRef === "b" && markerWrites++ === 0) throw new Error("marker write failed");
+						return (value as (...inner: unknown[]) => unknown).apply(target, args);
+					};
+				return typeof value === "function" ? (value as (...inner: unknown[]) => unknown).bind(target) : value;
+			},
+		}) as typeof repository;
+		const live = new DraftLibrary(
+			() => failing,
+			() => "id-live",
+			() => ledger,
+		);
+		expect(live.handoff(a, b)).toBe(true);
+		expect(repository.outstandingTransfers()).toHaveLength(1);
+		// The same library retries: the destination's live snapshot already
+		// holds the ids from the failed attempt, but they never persisted, so
+		// the settlement must write them durably before settling.
+		live.retryPendingHandoffs();
+		expect(repository.outstandingTransfers()).toHaveLength(0);
+		expect(repository.read(b).releasedRecoveryIds).toEqual(["recovered-a"]);
+	});
+
+	it("capture routing follows commit order, not intent order", async () => {
+		const { repository, ledger, library } = setup();
+		const a = destination("a");
+		const b = destination("b");
+		const c = destination("c");
+		// An older hop out of B is intended first but commits last.
+		repository.write(b, { draft: "b work", unconfirmed: null });
+		const failing = failingTransfers(repository, 1);
+		const first = new DraftLibrary(
+			() => failing,
+			() => "id-first",
+			() => ledger,
+		);
+		expect(first.handoff(b, c)).toBe(false);
+		repository.write(b, { draft: "", unconfirmed: null });
+		// A capture rides a newer hop into B and onward with the older hop's
+		// retry, which commits after it.
+		repository.write(a, {
+			draft: "current",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		const live = library();
+		const source = live.open(a);
+		let finish!: () => void;
+		const submitted = source.submitBuiltinCommand(
+			() =>
+				new Promise<boolean>((resolve) => {
+					finish = () => resolve(true);
+				}),
+		);
+		const token = repository.read(a).unconfirmedCaptureToken;
+		if (token === undefined) throw new Error("missing capture token");
+		expect(live.handoff(a, b)).toBe(true);
+		const restarted = library();
+		restarted.retryPendingHandoffs();
+		finish();
+		await submitted;
+		// The completion follows the last-committed hop carrying the capture.
+		expect(repository.read(c)).toMatchObject({
+			unconfirmed: null,
+			completedCommandRecoveryIds: ["recovered-a"],
+		});
+		expect(ledger.outstandingObligations()).toHaveLength(0);
 	});
 });

@@ -117,6 +117,7 @@ export class DraftRepository {
       state TEXT NOT NULL,
       delivered_hash TEXT,
 	      carried_capture_token TEXT,
+	      commit_sequence INTEGER,
       completed_command_recovery_ids TEXT NOT NULL DEFAULT '[]',
       released_recovery_ids TEXT NOT NULL DEFAULT '[]',
       created_at INTEGER NOT NULL,
@@ -137,9 +138,16 @@ export class DraftRepository {
 			`CREATE INDEX IF NOT EXISTS draft_transfer_log_to
       ON draft_transfer_log (to_hub_id, to_ref, created_at)`,
 		);
+		// Branch-created table: an earlier build of this branch created it
+		// without the carried token or the commit sequence, so add them.
+		const transferColumns = new Set(
+			this.db.getAllSync<{ name: string }>("PRAGMA table_info(draft_transfer_log)").map((column) => column.name),
+		);
+		for (const name of ["carried_capture_token", "commit_sequence"] as const)
+			if (!transferColumns.has(name)) this.db.execSync(`ALTER TABLE draft_transfer_log ADD COLUMN ${name}`);
 		db.execSync(
 			`CREATE INDEX IF NOT EXISTS draft_transfer_log_carried
-      ON draft_transfer_log (carried_capture_token, created_at) WHERE carried_capture_token IS NOT NULL`,
+      ON draft_transfer_log (carried_capture_token, commit_sequence) WHERE carried_capture_token IS NOT NULL`,
 		);
 	}
 
@@ -186,7 +194,7 @@ export class DraftRepository {
 		const row = this.db.getFirstSync<TransferRow>(
 			`SELECT * FROM draft_transfer_log
       WHERE from_hub_id = ? AND from_ref = ? AND delivered_hash IS NOT NULL
-      ORDER BY created_at DESC LIMIT 1`,
+      ORDER BY commit_sequence DESC LIMIT 1`,
 			from.hubId,
 			from.sessionRef,
 		);
@@ -201,7 +209,7 @@ export class DraftRepository {
 		const row = this.db.getFirstSync<TransferRow>(
 			`SELECT * FROM draft_transfer_log
       WHERE carried_capture_token = ? AND delivered_hash IS NOT NULL
-      ORDER BY created_at DESC LIMIT 1`,
+      ORDER BY commit_sequence DESC LIMIT 1`,
 			captureToken,
 		);
 		return row === null ? undefined : this.mapTransfer(row);
@@ -472,6 +480,15 @@ export class DraftRepository {
 					this.now(),
 					evidence.transferId,
 				);
+			// Written inside the same savepoint as the move: a hop intended
+			// earlier can commit later, and capture routing must follow commit
+			// order, never intent order.
+			this.db.runSync(
+				`UPDATE draft_transfer_log SET commit_sequence =
+      (SELECT COALESCE(MAX(commit_sequence), 0) + 1 FROM draft_transfer_log)
+    WHERE transfer_id = ?`,
+				evidence?.transferId ?? "",
+			);
 			this.write(to, record, additions);
 			this.remove(from);
 		});

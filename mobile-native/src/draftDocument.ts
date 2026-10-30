@@ -462,9 +462,13 @@ export class DraftDocument {
 	 * cannot append their stale original composition to an occupied draft. */
 	releaseRecoverySources(ids: readonly string[]): boolean {
 		if (this.forgotten || this.retired || !ids.length) return false;
+		// An unloaded document owns no record to merge into, and a document
+		// with a save error holds merged ids only in memory: neither may take
+		// the already-released early return - the durable write must land.
+		if (!this.snapshot.loaded) return false;
 		const current = this.snapshot.record;
 		const released = [...new Set([...(current.releasedRecoveryIds ?? []), ...ids])];
-		if (released.length === (current.releasedRecoveryIds?.length ?? 0)) return true;
+		if (this.snapshot.error === null && released.length === (current.releasedRecoveryIds?.length ?? 0)) return true;
 		try {
 			this.persist({ ...current, releasedRecoveryIds: released }, true);
 			return true;
@@ -477,9 +481,11 @@ export class DraftDocument {
 	 * composition refuses the draft itself. */
 	adoptCompletedCommandRecovery(ids: readonly string[]): boolean {
 		if (this.forgotten || this.retired || !ids.length) return true;
+		if (!this.snapshot.loaded) return false;
 		const current = this.snapshot.record;
 		const completed = [...new Set([...(current.completedCommandRecoveryIds ?? []), ...ids])];
-		if (completed.length === (current.completedCommandRecoveryIds?.length ?? 0)) return true;
+		if (this.snapshot.error === null && completed.length === (current.completedCommandRecoveryIds?.length ?? 0))
+			return true;
 		try {
 			this.persist({ ...current, completedCommandRecoveryIds: completed }, true);
 			return true;

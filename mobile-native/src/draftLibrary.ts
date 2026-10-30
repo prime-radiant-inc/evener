@@ -319,6 +319,15 @@ export class DraftLibrary {
 		const owner = this.recordOwner(transfer.to);
 		if (owner === undefined) return false;
 		const document = this.open(owner);
+		// An owner that cannot load must not receive markers: persisting an
+		// unloaded document would write its default empty record over the
+		// owner's saved draft and delete its image bytes. Defer instead.
+		let ownerSnapshot = document.getSnapshot();
+		if (!ownerSnapshot.loaded) {
+			document.retry();
+			ownerSnapshot = document.getSnapshot();
+		}
+		if (!ownerSnapshot.loaded) return false;
 		try {
 			// A marker write that did not persist leaves the settlement owed:
 			// the document methods answer false, and the row stays pending so
