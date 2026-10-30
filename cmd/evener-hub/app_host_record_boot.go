@@ -625,6 +625,12 @@ func (m *hubHostManager) bootLegacyRecords(settle bool) bool {
 	if hasFile {
 		collided = m.breakBootTombstoneCollision(fileRecords)
 	}
+	// A finalized marker's teardown handle needs the boundary the older build
+	// mirrors after its hub.toml write; a crash between the two left it missing
+	// or behind, so the mirror is refreshed from the persisted records first.
+	if m.opsStore() != nil && hasFile {
+		m.reconcileGenerationMirror(loaded)
+	}
 	// Boot finalizes each staged-receipt marker by the persisted phase and flags
 	// (spec §5: "Boot finalizes each host entry by the persisted phase and flags
 	// ... and the receipt records `bootRecovered: true`"). A marker is the

@@ -416,17 +416,39 @@ func TestStartupRetriesATransientStoreOpenFailure(t *testing.T) {
 	}
 }
 
-// legacyRemovalCrash runs the previous build's cross-file removal of "m4"
-// against hub.toml and the store, cut at step, and returns the fixture the
+// legacyRemovalCrash leaves the state the previous build's cross-file removal
+// of "m4" left behind when it was cut at step, and returns the fixture the
 // upgrade boots over. "keep" is a second host the hub must go on serving.
+//
+// The removal itself runs against hub.toml; the cross-file half the old build
+// added is staged by hand, exactly as that build wrote it: after the staged
+// write, hub.toml carries the intent naming the row the swap was about to
+// purge; after the purge, an armed compensation record holds the row's
+// preimage beside a stash of the pre-removal hub.toml.
 func legacyRemovalCrash(t *testing.T, step crashStep) *pipelineFixture {
 	t.Helper()
+	var token hostops.Token
 	fixture := newPipelineFixture(t, []hostreg.Host{pipelineEntry("m4", 2), pipelineEntry("keep", 3)}, func(store *hostops.Store) {
-		pipelineToken(t, store, "m4", 2)
+		token = pipelineToken(t, store, "m4", 2)
 	})
 	m := fixture.legacyManager(t)
+	preRemoval := fileBytes(t, fixture.configPath)
 	armCut(m, step)
 	runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), removeRequest(t, m, "m4")) })
+	switch step {
+	case cutStaged:
+		fixture.appendTOML(t, "[pending_store_sync.m4]\ngeneration = 2\ntoken_values = [\""+token.Value+"\"]\n")
+	case cutFlipped:
+		stash := hubTOMLStashPath(fixture.configPath, "legacy-removal-key")
+		if err := os.WriteFile(stash, preRemoval, 0o600); err != nil {
+			t.Fatalf("write the stash: %v", err)
+		}
+		if err := fixture.store.ArmCompensation(hostops.Compensation{
+			Host: "m4", Phase: hostops.CompensationArmed, Rows: []hostops.Token{token}, Stash: stash, Generation: 2,
+		}); err != nil {
+			t.Fatalf("ArmCompensation: %v", err)
+		}
+	}
 	return fixture
 }
 
@@ -1105,5 +1127,28 @@ func TestNoSingleReadFailureAtALegacyBootLosesARecord(t *testing.T) {
 				t.Fatalf("read %d failing: remnant %q was lost", failAt, id)
 			}
 		}
+	}
+}
+
+// TestUpgradeFromAnInterruptedLegacyAddFinalizesWithoutAnOpenRemnant covers an
+// older build that crashed after staging an add in hub.toml and before it
+// mirrored the host's boundary: recovery finalizes the marker, and its teardown
+// handle needs that boundary, so the boundary is refreshed from the persisted
+// records first.
+func TestUpgradeFromAnInterruptedLegacyAddFinalizesWithoutAnOpenRemnant(t *testing.T) {
+	fixture := newPipelineFixture(t, []hostreg.Host{pipelineEntry("keep", 3)}, nil)
+	m := fixture.legacyManager(t)
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() {
+		_, _ = m.AddResult(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "side.example"}, MutationID: "add-side"})
+	})
+
+	restarted := fixture.restart(t)
+
+	if open := mustRecords(t, fixture.store).TeardownRemnants; len(open) != 0 {
+		t.Fatalf("the upgrade left %d open remnant(s) fencing the added host", len(open))
+	}
+	if _, err := restarted.UpdateResult(context.Background(), updateRequest(t, restarted, "side", appwire.HostEntry{Address: "side2.example"})); err != nil {
+		t.Fatalf("the added host cannot be edited after the upgrade: %v", err)
 	}
 }

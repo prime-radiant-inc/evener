@@ -2,15 +2,12 @@ package hub
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"github.com/BurntSushi/toml"
@@ -309,12 +306,6 @@ func hubTOMLHostTables(entries []hostreg.Host) []HostConfig {
 // the target file.
 var hubTOMLSyncDir = fsatomic.SyncDir
 
-// hubTOMLStashSyncDir is the stash write's own directory-sync seam. It starts
-// as the hub.toml seam's value at process start and is separate so a test that
-// swaps hubTOMLSyncDir to drive hub.toml's post-rename failure path leaves the
-// stash write (which runs before the staged write) unaffected.
-var hubTOMLStashSyncDir = hubTOMLSyncDir
-
 // hubTOMLPostRenameError marks a write failure that followed the rename
 // that replaced hub.toml: the new entries are already the file's
 // contents — only the directory sync that makes the rename durable failed. A
@@ -382,14 +373,6 @@ func (m *hubHostManager) persistHosts(entries, known []hostreg.Host, change host
 		return err
 	}
 	m.cfg.store.installRecords(records)
-	if !m.recordsInStore() {
-		// The mirror rides behind the hub.toml commit: hub.toml is the authority
-		// and the two files cannot be one write, so the mirror is written last and
-		// a failure here leaves it behind the file rather than unwinding the
-		// commit. See mirrorBoundaries. A store that holds the records writes the
-		// mirror in the same atomic write as the records.
-		m.mirrorBoundaries(entries, known, records)
-	}
 	return nil
 }
 
@@ -419,91 +402,6 @@ func (m *hubHostManager) adoptSpentCounters(store hostOpsRecordStore) {
 		marks[name] = held
 	}
 	m.cfg.store.setHighWaterMap(marks)
-}
-
-// mirrorBoundaries records the triples the hub.toml write just committed in the
-// operation store's per-host boundary records (registry spec 08 §7: "one record
-// per host name — {generation, incarnationId, presenceEpoch} — written in the
-// same atomic store writes that mirror the generation"). Every live entry's
-// triple and every retained high-water record for a name with no live entry is
-// carried, names whose entry holds no complete identity (a direct writer
-// fixture) are skipped, and the whole set lands in one atomic store write
-// together with the removal markers §4's removed-host ordering reads: every
-// name carrying a removal tombstone is dated, every live name clears any
-// marker it held.
-//
-// A mirror failure is logged, not returned: the hub.toml commit already landed
-// and cannot be unwound, and the state it leaves — the file ahead of the
-// mirror — is exactly what the deploy-pipeline spec §4 boot pass pushes
-// forward. That pass, and the cursor validation that reads the mirror, belong
-// to later slices; until they land the mirror trails the file and nothing
-// reads it.
-func (m *hubHostManager) mirrorBoundaries(entries, known []hostreg.Host, records hostTOMLRecords) {
-	if m.opsStore() == nil || strings.TrimSpace(m.cfg.configPath) == "" {
-		return
-	}
-	// The mirrored triples are the same derivation the file's records come from
-	// (hostFileRecordSet), so the mirror and the file cannot be projected by two
-	// rules that drift apart.
-	_, generations := hostFileRecordSet(entries, records.highWater)
-	boundaries := make(map[string]hostops.Boundary, len(generations))
-	for name, mark := range generations {
-		boundaries[name] = hostops.Boundary{
-			Generation:    mark.Generation,
-			IncarnationID: mark.IncarnationID,
-			PresenceEpoch: mark.PresenceEpoch,
-		}
-	}
-	// The write owns the records of the names it carries and its pre-mutation
-	// snapshot names — the same ownership rule the record tables use. A boundary
-	// under an owned name this write carries no record for (a compensated add,
-	// a name the live registry dropped while the write ran) is pruned in the
-	// same atomic write, so the mirror never keeps a boundary for a host
-	// hub.toml no longer records.
-	owned := make(map[string]struct{}, len(known)+len(entries))
-	for _, e := range known {
-		owned[e.Name] = struct{}{}
-	}
-	for _, e := range entries {
-		owned[e.Name] = struct{}{}
-	}
-	var remove []string
-	for name := range owned {
-		if _, carried := boundaries[name]; !carried {
-			remove = append(remove, name)
-		}
-	}
-	slices.Sort(remove)
-	// The removal markers ride the same write: a tombstoned name is dated from
-	// its own removed_at, a live name clears any marker, and a name the write
-	// cannot classify (a pruned-tombstone high-water record) keeps whatever
-	// marker it had — a removal the store cannot date is never invented, and
-	// one it already knew is never forgotten (deploy pipeline 08b §4's
-	// removed-host horizon).
-	mirror := hostops.HostMirror{Boundaries: boundaries, Remove: remove}
-	for _, entry := range entries {
-		mirror.Live = append(mirror.Live, entry.Name)
-	}
-	for name, tombstone := range records.tombstones {
-		removedAt, err := time.Parse(time.RFC3339, tombstone.RemovedAt)
-		if err != nil {
-			continue
-		}
-		if mirror.Removed == nil {
-			mirror.Removed = map[string]hostops.RemovedHost{}
-		}
-		mirror.Removed[name] = hostops.RemovedHost{
-			RemovedAt:     removedAt,
-			Generation:    tombstone.Generation,
-			IncarnationID: tombstone.IncarnationID,
-		}
-	}
-	if len(mirror.Boundaries) == 0 && len(mirror.Remove) == 0 && len(mirror.Live) == 0 && len(mirror.Removed) == 0 {
-		return
-	}
-	if err := m.opsStore().MirrorHostState(mirror); err != nil {
-		m.logf("host boundary records not mirrored: %v", err)
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -648,20 +546,8 @@ func hubTOMLMirrorCommitTables(cfg Config, entries, known []hostreg.Host, genera
 	return out
 }
 
-// hubTOMLStashPath names one commit's stash: a per-commit file beside hub.toml
-// (registry spec 08 §6: "stashing a durable copy of the prior `hub.toml`
-// bytes"), keyed by the commit's scoped receipt key. A shared name would let a
-// later removal of another host overwrite the restore source an open
-// compensation still names, so the next boot would restore the wrong bytes as
-// that record's pre-mutation state. The compensation record carries the exact
-// path; only a record naming it keeps it from the boot prune.
-func hubTOMLStashPath(configPath, receiptKey string) string {
-	sum := sha256.Sum256([]byte(receiptKey))
-	return fmt.Sprintf("%s.stash.%x", configPath, sum[:8])
-}
-
-// stashKeyHexChars is the fixed width of the per-commit suffix
-// hubTOMLStashPath emits (the first 8 bytes of a SHA-256 digest).
+// stashKeyHexChars is the fixed width of the per-commit suffix an older build's
+// stash names carry (the first 8 bytes of a SHA-256 digest of the receipt key).
 const stashKeyHexChars = 16
 
 // isStashKeyHex reports whether suffix is a per-commit stash name's hex half.
@@ -715,38 +601,10 @@ func validateHostOpsStashReferences(store *hostops.Store, configPath string) err
 	return nil
 }
 
-// writeHubTOMLStash captures the selected hub.toml's current bytes into the
-// stash before a removal's staged write replaces them, so the commit is
-// compensable. It returns the stash reference the compensation record must
-// carry. A hub with no config file has no cross-file commit to compensate and
-// stashes nothing.
-func (m *hubHostManager) writeHubTOMLStash(receiptKey string) (string, error) {
-	path := strings.TrimSpace(m.cfg.configPath)
-	if path == "" {
-		return "", nil
-	}
-	prior, err := configReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		// No file yet: the hub is authoritative in memory and there is no
-		// committed hub.toml bytes a restore would apply.
-		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("stash hub.toml %s: %w", path, err)
-	}
-	stash := hubTOMLStashPath(path, receiptKey)
-	if err := hubTOMLReplaceWithBytes(stash, prior, hubTOMLStashSyncDir); err != nil {
-		return "", fmt.Errorf("stash hub.toml %s: %w", path, err)
-	}
-	return stash, nil
-}
-
 // hubTOMLReplaceWithBytes atomically replaces path with data: a 0600 temp file
 // in the same directory, fsynced, renamed over the target, then the directory
 // synced — the same posture every hub.toml write keeps. sync is the caller's
-// directory-sync seam: the stash keeps its own (hubTOMLStashSyncDir), so a
-// test injecting a hub.toml sync failure drives the writes it names and not the
-// stash beside them.
+// directory-sync seam.
 func hubTOMLReplaceWithBytes(path string, data []byte, sync func(string) error) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("mkdir %s: %w", filepath.Dir(path), err)

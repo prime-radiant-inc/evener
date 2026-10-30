@@ -342,9 +342,6 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 		delete(records.storeSync, change.dropStoreSync)
 		records.droppedStoreSync[change.dropStoreSync] = struct{}{}
 	}
-	if change.storeSync != nil {
-		records.storeSync[change.storeSync.Name] = change.storeSync.Intent
-	}
 	// The boot mirror pass's raises land after the tombstone stage: a raise is
 	// the file's new mark, and the tombstone keeps the identity of the removal
 	// its operation records are marked by.

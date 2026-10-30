@@ -22,7 +22,6 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
@@ -1003,19 +1002,19 @@ rows_truncated = false
 // clears it — a tombstone's removed_at is the horizon anchor, and the store
 // never dates a removal itself.
 func TestHostRemovalMirrorsTheRemovalMarker(t *testing.T) {
-	f := newUpdateFixture(t)
-	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
-	if err != nil {
-		t.Fatalf("hostops.Open: %v", err)
+	configPath := filepath.Join(t.TempDir(), "hub.toml")
+	if err := writeHubTOMLHosts(configPath, []hostreg.Host{{Name: "side", SSH: "side.example"}}); err != nil {
+		t.Fatalf("seed hub.toml: %v", err)
 	}
-	f.m.cfg.ops.Store(store)
+	stateRoot := t.TempDir()
+	m, store := bootOverStore(t, configPath, stateRoot)
 	removedAt := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
-	f.m.cfg.now = func() time.Time { return removedAt }
+	m.cfg.now = func() time.Time { return removedAt }
 
-	if _, err := f.m.Remove(context.Background(), removeRequest(t, f.m, "side")); err != nil {
+	if _, err := m.Remove(context.Background(), removeRequest(t, m, "side")); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
-	tombstone := tombstoneFor(t, f.m, "side")
+	tombstone := tombstoneFor(t, m, "side")
 	markers := store.RemovedHosts()
 	marker, ok := markers["side"]
 	if !ok {
@@ -1028,16 +1027,9 @@ func TestHostRemovalMirrorsTheRemovalMarker(t *testing.T) {
 		t.Fatalf("mirrored removed pair = %d/%s, want the tombstone's own %d/%s",
 			marker.Generation, marker.IncarnationID, tombstone.Generation, tombstone.IncarnationID)
 	}
-	// The name never held an operation record, so §4's rule has nothing to
-	// validate and the store does not mirror a boundary it would discard: the
-	// removal marker is the mirror's durable half here.
-	if _, ok := store.Boundary("side"); ok {
-		t.Fatal("the store mirrored a boundary for a record-less removed host")
-	}
-
 	// A re-add is the live mirror: the marker goes, so no later pass treats the
 	// name as removed.
-	if _, err := f.m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "fresh.example"}}); err != nil {
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "fresh.example"}}); err != nil {
 		t.Fatalf("re-add: %v", err)
 	}
 	if _, ok := store.RemovedHosts()["side"]; ok {
