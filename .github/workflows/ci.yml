@@ -516,9 +516,13 @@ jobs:
           # and every commit title ends "(#N)". The queue branch's own
           # "pr-<N>" anchor names a member whatever the compare returns. gh
           # api prints error bodies on stdout, so every source is filtered
-          # down to bare numbers before it is trusted.
+          # down to bare numbers before it is trusted. A failed compare is
+          # recorded rather than swallowed: the anchor and head-commit
+          # fallbacks can name only one member of a multi-PR group, so a
+          # partial report must not read as complete.
+          compare_status=0
           members="$(gh api "repos/$GITHUB_REPOSITORY/compare/$MG_BASE...$MG_HEAD" \
-            --jq '[.commits[].commit.message | split("\n")[0] | scan("\\(#([0-9]+)\\)$") | .[0]] | unique | .[]' || true)"
+            --jq '[.commits[].commit.message | split("\n")[0] | scan("\\(#([0-9]+)\\)$") | .[0]] | unique | .[]')" || compare_status=$?
           anchor="$(printf '%s' "$MG_HEAD_REF" \
             | sed -nE 's#^refs/heads/gh-readonly-queue/.*/pr-([0-9]+)-.*$#\1#p')"
           prs="$(printf '%s\n%s\n' "$members" "$anchor" | sed -nE '/^[0-9]+$/p' | sort -un)"
@@ -563,11 +567,21 @@ jobs:
           } > "$body"
 
           posted=0
+          failed_posts=0
           for pr in $prs; do
             if gh pr comment "$pr" --repo "$GITHUB_REPOSITORY" --body-file "$body"; then
               posted=$((posted + 1))
             else
+              failed_posts=$((failed_posts + 1))
               echo "Could not comment on #$pr." >&2
             fi
           done
+          # A partially delivered report must not read as success: the job's
+          # own failure is the retryable record that a comment is missing.
+          # An incomplete membership discovery fails the job too, for the
+          # dropped members it could not name.
+          if [ "$failed_posts" -gt 0 ] || [ "$compare_status" -ne 0 ]; then
+            echo "Report delivery incomplete: $failed_posts comment(s) failed, compare_status=$compare_status." >&2
+            exit 1
+          fi
           test "$posted" -gt 0
