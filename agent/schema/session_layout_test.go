@@ -18,6 +18,8 @@ func TestSessionLayoutPaths(t *testing.T) {
 		{"meta", SessionMetaPath(state, "sess_a"), filepath.Join(sessions, "sess_a.meta.json")},
 		{"api log", SessionAPILogPath(state, "sess_a"), filepath.Join(sessions, "sess_a.api.jsonl")},
 		{"event log", SessionLogPath(state, "sess_a"), filepath.Join(sessions, "sess_a.log.jsonl")},
+		{"livelock", SessionLivelockPath(state, "sess_a"), filepath.Join(sessions, "sess_a.livelock")},
+		{"livelock park marker", SessionLivelockParkedPath(state, "sess_a"), filepath.Join(sessions, "sess_a.livelock.parked")},
 	}
 	for _, tc := range tests {
 		if tc.got != tc.want {
@@ -35,6 +37,7 @@ func TestSessionArtifactSuffixesCoverEveryFlatFile(t *testing.T) {
 		SessionTranscriptPath("s", "x"), SessionMetaPath("s", "x"),
 		SessionAPILogPath("s", "x"), SessionLogPath("s", "x"),
 		SessionMetaPath("s", "x") + ".lock",
+		SessionLivelockPath("s", "x"), SessionLivelockParkedPath("s", "x"),
 	} {
 		base := filepath.Base(p)
 		found := false

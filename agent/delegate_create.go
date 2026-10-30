@@ -77,6 +77,13 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	if s == nil || s.delegateController == nil {
 		return delegateStartFailed(errors.New("delegate controller is unavailable"))
 	}
+	// Delegate execution is owner-visible lane work: it waits for the
+	// session's process livelock (review round 3, finding 1), so a session
+	// whose acquisition is still contended cannot create a lane or run a
+	// delegate while a prune holds the root's reclamation claim.
+	if err := s.waitLivelockAcquired(ctx); err != nil {
+		return delegateStartFailed(fmt.Errorf("delegate start waits for the session's process livelock: %w", err))
+	}
 	retirementRelease, retirementErr := s.beginRetirementMutation("delegate")
 	if retirementErr != nil {
 		return delegateStartFailed(retirementErr)

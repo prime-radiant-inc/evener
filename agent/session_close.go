@@ -340,9 +340,9 @@ func (s *Session) releaseForRetirement(ctx context.Context, options closeOptions
 	s.closeEventStream(budgetCtx)
 	// Retirement is non-terminal (docs/daemon-idle-retirement.md): the root
 	// stays resumable and its preserved delegate lanes stay locked, so its
-	// livelock is PARKED — durably absent, which reads as unknown liveness —
-	// never released-in-place, which would read as a proven-dead owner to a
-	// foreign prune (review round 2, finding 3).
+	// livelock is PARKED — the durable park marker beside the kept file reads
+	// as unknown liveness, never as a proven-dead owner, to a foreign prune
+	// (review round 2, finding 3; round 3, findings 3 and 4).
 	s.parkSessionLivelock()
 	return releaseErr
 }

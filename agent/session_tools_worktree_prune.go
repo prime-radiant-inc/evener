@@ -240,6 +240,45 @@ func (s *Session) collectRegisteredLanes(ctx context.Context, run worktree.GitRu
 				continue
 			}
 		}
+		// Serialize the dead-owner reclamation with the owner's startup/resume
+		// for the WHOLE eligibility-and-removal operation (review round 2,
+		// finding 1; round 3, finding 2): the claim is taken BEFORE any
+		// eligibility rung is evaluated and held across the marker release, the
+		// worktree remove and the branch delete, so every rung — cleanliness,
+		// HEAD, merge status — reads state no owner process can change: a
+		// resumer's lane adoption and delegate execution are gated on the very
+		// acquisition this claim holds (waitLivelockAcquired), so an owner that
+		// resumed, committed and even crashed again between the listing and the
+		// claim is detected here, not acted on stale. An owner that resumed and
+		// still holds the flock makes the claim itself fail.
+		//
+		// The claim cannot resurrect a park: a retired root KEEPS its livelock
+		// file (the park is the marker beside it), and the revalidation below
+		// reads that marker — a retirement that committed since the listing
+		// reads preserved, never as the stale death verdict that authorized the
+		// claim.
+		var deadOwnerLivelockRelease func()
+		if deadOwnerMarker != "" {
+			if s.worktreeBeforeDeadOwnerLivelockClaim != nil {
+				s.worktreeBeforeDeadOwnerLivelockClaim(e.Path)
+			}
+			claim, applied, claimErr := schema.AcquireSessionLivelock(s.currentStateDir(), deadOwnerRoot)
+			if claimErr != nil || !applied || claim == nil {
+				skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: "owner resumed since listing"})
+				continue
+			}
+			switch s.deadOwnerRevalidatedUnderClaim(deadOwnerRoot) {
+			case ownerLive:
+				claim()
+				skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: "owner resumed since listing"})
+				continue
+			case ownerUnknown:
+				claim()
+				skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: "owner retired since listing"})
+				continue
+			}
+			deadOwnerLivelockRelease = claim
+		}
 		// Has a sidecar: provenance unknown otherwise, not ours to judge.
 		sc, scErr := worktree.ReadSidecar(metaDir, e.Name)
 		if scErr != nil {
@@ -302,33 +341,7 @@ func (s *Session) collectRegisteredLanes(ctx context.Context, run worktree.GitRu
 		// then took is never unlocked, which would hand this lane's removal to
 		// prune while that session is rooted in it. A lane whose lock is no
 		// longer the one this pass authorized is skipped, not collected.
-		var deadOwnerLivelockRelease func()
 		if staleOwnMarker || deadOwnerMarker != "" {
-			// Serialize the dead-owner reclamation with the owner's
-			// startup/resume (review round 2, finding 1): the dead verdict came
-			// from a probe earlier in this pass, and an owner that resumes in
-			// between adopts the lane's existing marker unchanged
-			// (EvDelegateRevive adopts an own delegate marker), so marker text
-			// can never detect it. Claiming the root's process livelock here
-			// closes the window twice over: the claim only succeeds if the
-			// root is still unhosted at this instant — a resumed owner's
-			// startup takes the livelock before it can host anything — and
-			// the hold across the release-and-collect below means no owner
-			// can start hosting, and no delegate of it can run or commit,
-			// until the branch delete has finished. Contention on the claim
-			// (a resumed owner, or another collector between its own claim and
-			// release) skips the lane for a later pass.
-			if deadOwnerMarker != "" {
-				if s.worktreeBeforeDeadOwnerLivelockClaim != nil {
-					s.worktreeBeforeDeadOwnerLivelockClaim(e.Path)
-				}
-				claim, applied, claimErr := schema.AcquireSessionLivelock(s.currentStateDir(), deadOwnerRoot)
-				if claimErr != nil || !applied || claim == nil {
-					skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: "owner resumed since listing"})
-					continue
-				}
-				deadOwnerLivelockRelease = claim
-			}
 			expected := worktree.FormatSessionMarker(s.id)
 			if deadOwnerMarker != "" {
 				expected = deadOwnerMarker

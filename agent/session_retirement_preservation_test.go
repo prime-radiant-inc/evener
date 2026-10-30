@@ -961,12 +961,19 @@ func TestRetirementTreeSettleDrainsPendingRootAttention(t *testing.T) {
 
 // toleratedRetirementPrimaryAddition reports whether name is a legitimate
 // addition the plan sanctions: process-local lock/temp files, the root scratch
-// manifest (whose revision bumps on adoption), and executed ATIF output.
+// manifest (whose revision bumps on adoption), executed ATIF output, and the
+// durable livelock park marker (issue #5471 rounds 2-3: retirement's park IS
+// committed retirement evidence — the marker beside the kept livelock file is
+// what a foreign probe reads to keep the retired root's preserved lanes; the
+// livelock file itself survives untouched).
 func toleratedRetirementPrimaryAddition(name string) bool {
 	if strings.HasSuffix(name, ".lock") || strings.Contains(name, ".tmp-") {
 		return true
 	}
 	if strings.HasPrefix(filepath.ToSlash(name), "scratch-retention/") {
+		return true
+	}
+	if strings.HasSuffix(name, schema.SessionLivelockParkedSuffix) {
 		return true
 	}
 	return false

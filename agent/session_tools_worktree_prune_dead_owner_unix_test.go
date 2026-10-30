@@ -23,6 +23,13 @@ import (
 	"primeradiant.com/evener/rendezvous"
 )
 
+// livelockContentionWaitBudget bounds the tests' waits for a contended
+// livelock acquisition to land after its contention clears. The retry cadence
+// (25ms doubling to 250ms) makes the real completion one or two wakeups, so
+// this ceiling sits far above the expected time purely as a hang guard — the
+// awaited completion is the acquisition signal itself, never the bound.
+const livelockContentionWaitBudget = 10 * time.Second
+
 // holdLivelock takes the flock a live root session process would hold on its
 // livelock file, returning the release func. The file is created if absent.
 func holdLivelock(t *testing.T, stateDir, sid string) (release func()) {
@@ -419,11 +426,9 @@ func TestSessionLivelockContentionRetriedUntilAcquired(t *testing.T) {
 
 	holder() // the probe's momentary hold clears
 
-	select {
-	case <-signal:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the pending livelock acquisition never landed after contention cleared")
-	}
+	waitForCondition(t, livelockContentionWaitBudget, "the pending livelock acquisition to land after contention cleared", func() bool {
+		return channelClosed(signal)
+	})
 	held, exists, err := schema.SessionLivelockHeld(dir, sid)
 	if err != nil || !exists || !held {
 		t.Fatalf("livelock after retry = (held=%v, exists=%v, err=%v), want held by the running session", held, exists, err)

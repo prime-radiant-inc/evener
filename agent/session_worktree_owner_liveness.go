@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
@@ -109,13 +110,19 @@ func (s *Session) delegateLaneOwnerLiveness(m worktree.Marker) (ownerLiveness, s
 		}
 	}
 	held, exists, err := schema.SessionLivelockHeld(s.currentStateDir(), root)
-	if err == nil {
-		if held {
-			return ownerLive, root
-		}
-		if exists {
-			deadSeen = true
-		}
+	if err == nil && held {
+		return ownerLive, root
+	}
+	// A committed non-terminal retirement supersedes every older crash signal
+	// (review round 3, finding 3). The park marker is written while the flock
+	// is still held, so a parked root may carry both a now-free livelock and a
+	// stale dead rendezvous entry (the roster retains crash entries) and still
+	// be parked-for-resume — preserved, never dead.
+	if parked, perr := schema.SessionLivelockParked(s.currentStateDir(), root); perr == nil && parked {
+		return ownerUnknown, root
+	}
+	if err == nil && exists {
+		deadSeen = true
 	}
 	if deadSeen {
 		return ownerDead, root
@@ -150,6 +157,39 @@ func (s *Session) sessionTreeRootSID(sid string) (string, bool) {
 		owner = meta.ParentSessionID
 	}
 	return "", false
+}
+
+// deadOwnerRevalidatedUnderClaim re-reads the owner state while this session
+// holds the dead owner root's livelock as its reclamation claim (review round
+// 3, finding 2). The claim proves no owner process holds the livelock, and —
+// because a resumer's owner-visible lane work is gated on acquisition
+// (waitLivelockAcquired) — that none can adopt a lane or run a delegate until
+// the claim releases, so the free-file death evidence the listing saw still
+// stands. What a listing cannot prove is that nothing superseded its verdict
+// since: a non-terminal retirement that committed a park (the marker —
+// preserved, not dead), or a serve daemon whose rendezvous entry is live
+// again. Only that superseding evidence is re-read; the livelock probe is
+// skipped because the claim itself holds the flock.
+func (s *Session) deadOwnerRevalidatedUnderClaim(root string) ownerLiveness {
+	if parked, err := schema.SessionLivelockParked(s.currentStateDir(), root); err == nil && parked {
+		return ownerUnknown
+	}
+	if dir, ok := s.worktreeOwnerRendezvousDir(); ok {
+		if entries, err := rendezvous.List(dir); err == nil {
+			for _, e := range entries {
+				if e.PID <= 0 {
+					continue
+				}
+				if e.SessionID != root && e.ThreadID != root && e.InstanceID != root {
+					continue
+				}
+				if processAlive(e.PID) {
+					return ownerLive
+				}
+			}
+		}
+	}
+	return ownerDead
 }
 
 // worktreeOwnerRendezvousDir is the rendezvous run directory the liveness
@@ -193,10 +233,19 @@ const (
 // leave an existing-but-free file behind, which a later prune reads as a
 // proven-dead owner while the session is live. Contention therefore spawns a
 // background re-acquisition loop that persists until the lock lands (or the
-// session's close stops it), closing s.livelockAcquired when it does — the
-// signal a test waits on. A real failure (not contention) still degrades
-// silently: a session that could not take the lock is one whose lanes other
-// sessions keep locked (the safe direction), never one that refuses to start.
+// session's close stops it), closing s.livelockAcquired when it does. A real
+// failure (not contention) still degrades silently: a session that could not
+// take the lock is one whose lanes other sessions keep locked (the safe
+// direction), never one that refuses to start.
+//
+// What contention must never let happen is owner-visible lane work before the
+// lock lands (review round 3, finding 1): a resumed owner that adopts its
+// unchanged delegate marker, or runs a delegate, while a prune holds the
+// root's reclamation claim is racing that prune's removal. The livelockGate
+// armed here is therefore the production waiter's view of the landing —
+// waitLivelockAcquired blocks lane adoption and delegate execution until the
+// acquisition resolves, and is the waiter livelockAcquired's test signal
+// mirrors.
 func (s *Session) acquireSessionLivelock() {
 	if s.isSubagentSession() {
 		return
@@ -205,15 +254,29 @@ func (s *Session) acquireSessionLivelock() {
 	if stateDir == "" {
 		return
 	}
+	s.mu.Lock()
+	if s.livelockGate == nil {
+		s.livelockGate = make(chan struct{})
+	}
+	s.mu.Unlock()
 	release, applied, err := schema.AcquireSessionLivelock(stateDir, s.id)
 	if err == nil && applied && release != nil {
 		s.mu.Lock()
 		s.livelockRelease = release
+		s.closeLivelockGateLocked()
 		s.mu.Unlock()
+		// The resume is live again: drop the park marker a previous
+		// retirement wrote, so a later crash of THIS process leaves honest
+		// residue instead of being preserved forever. Init cannot race this
+		// session's own park (park runs only on the close path, after init).
+		_ = schema.ClearSessionLivelockParked(stateDir, s.id)
 		return
 	}
 	if err == nil || !schema.LivelockContended(err) {
 		abandonSessionLivelock(stateDir, s.id)
+		s.mu.Lock()
+		s.closeLivelockGateLocked()
+		s.mu.Unlock()
 		return
 	}
 	s.mu.Lock()
@@ -227,6 +290,53 @@ func (s *Session) acquireSessionLivelock() {
 	go s.retrySessionLivelock(stateDir)
 }
 
+// waitLivelockAcquired blocks until this session's tree root holds its
+// process livelock — or its acquisition has resolved without one — and is the
+// gate every owner-visible lane operation (resume lane re-lock, delegate
+// creation, delegate revival) passes before touching a lane. A session that
+// has not taken the livelock must not adopt a lane or run a delegate while a
+// prune may hold the root's reclamation claim (review round 3, finding 1).
+// ctx cancellation unblocks the wait with the context's error, so a closing
+// session's gate waiters abort rather than hang: retirement can only start
+// after the restore tail that host the gated operations has completed, so a
+// park never finds a still-blocked waiter of its own session.
+//
+// Subagents share their root's process, so only the root's gate counts; the
+// shared delegate controller names that root. A fixture subagent without a
+// reachable root proceeds ungated.
+func (s *Session) waitLivelockAcquired(ctx context.Context) error {
+	root := s
+	if s.isSubagentSession() {
+		c := s.delegateController
+		if c == nil || c.rootRuntime == nil {
+			return nil
+		}
+		root = c.rootRuntime
+	}
+	root.mu.Lock()
+	gate := root.livelockGate
+	root.mu.Unlock()
+	if gate == nil || channelClosed(gate) {
+		return nil
+	}
+	select {
+	case <-gate:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// closeLivelockGateLocked wakes every livelock-gate waiter: the acquisition
+// resolved (held, or abandoned on a real failure). Guarded by s.mu;
+// livelockGateClosed keeps the single close.
+func (s *Session) closeLivelockGateLocked() {
+	if s.livelockGate != nil && !s.livelockGateClosed {
+		s.livelockGateClosed = true
+		close(s.livelockGate)
+	}
+}
+
 // retrySessionLivelock re-attempts livelock acquisition until it lands or the
 // session's release path stops it. Every holder of a root's livelock is either
 // momentary (a probe, a prune's reclamation hold) or a same-sid process, so
@@ -236,9 +346,13 @@ func (s *Session) retrySessionLivelock(stateDir string) {
 	for {
 		s.mu.Lock()
 		stopped := s.livelockRetryStop
+		seam := s.testOnlyBeforeLivelockRetryAcquire
 		s.mu.Unlock()
 		if stopped {
 			return
+		}
+		if seam != nil {
+			seam()
 		}
 		release, applied, err := schema.AcquireSessionLivelock(stateDir, s.id)
 		if err == nil && applied && release != nil {
@@ -246,12 +360,24 @@ func (s *Session) retrySessionLivelock(stateDir string) {
 			signal := s.livelockAcquired
 			if s.livelockRetryStop {
 				// A close or park completed while this attempt was in flight:
-				// the lock is no longer this session's to hold.
+				// the lock is no longer this session's to hold. The livelock
+				// FILE stays — a parked root keeps it, and the park marker is
+				// what reads it as retired — so this late landing can neither
+				// orphan the file nor resurrect a removed one (review round 3,
+				// finding 4).
 				s.mu.Unlock()
 				release()
 				return
 			}
 			s.livelockRelease = release
+			// The park-marker clear joins the stop re-check's critical
+			// section on purpose: a park sets livelockRetryStop under this
+			// same mutex, so either the park's stop-set precedes this section
+			// — and the attempt aborts above without clearing — or it follows
+			// it, and the marker the park writes lands after this clear. No
+			// interleave leaves a parked root's marker cleared.
+			_ = schema.ClearSessionLivelockParked(stateDir, s.id)
+			s.closeLivelockGateLocked()
 			s.mu.Unlock()
 			if signal != nil {
 				close(signal)
@@ -262,6 +388,9 @@ func (s *Session) retrySessionLivelock(stateDir string) {
 			// A real failure, not contention: degrade silently, exactly like
 			// the non-contended acquisition path.
 			abandonSessionLivelock(stateDir, s.id)
+			s.mu.Lock()
+			s.closeLivelockGateLocked()
+			s.mu.Unlock()
 			return
 		}
 		time.Sleep(interval)
@@ -299,17 +428,27 @@ func (s *Session) releaseSessionLivelock() {
 }
 
 // parkSessionLivelock is releaseForRetirement's variant of the release
-// (review round 2, finding 3): a retired root is parked-for-resume, not dead,
-// and must never read as a dead one to a foreign prune. Stopping the retry
-// loop and releasing the flock is not enough — an existing-but-free livelock
-// file is exactly a crashed owner's signature — so the park also durably
-// REMOVES the file, which answers unknown to every later probe. A replacement
-// process resuming the session id re-creates and re-takes the livelock at
-// init, making the owner live again. The window between the flock release and
-// the file removal is one unlink wide; a crash landing inside it leaves the
-// state a real crash leaves, which is then honestly collectible residue.
+// (review round 2, finding 3; round 3, findings 3 and 4): a retired root is
+// parked-for-resume, not dead, and must never read as a dead one to a foreign
+// prune. The park is a DURABLE MARKER written beside the livelock, in this
+// order:
+//
+//   - halt the re-acquisition loop first: an attempt already in flight
+//     observes the stop at its landing re-check and releases without clearing
+//     the marker this park is about to write; an attempt that landed earlier
+//     cleared the marker before this write, so this write wins;
+//   - write the marker while the flock is still held — the commit point. A
+//     crash before it leaves exactly a real crash's state (honestly
+//     collectible); a crash after it leaves a committed park (preserved);
+//   - release the flock. The livelock FILE stays: the marker supersedes the
+//     free-flock death signature to every later probe, and never removing
+//     the file means no in-flight acquisition attempt can orphan or
+//     resurrect it.
+//
+// A replacement process resuming the session id re-takes the livelock at init
+// and clears the marker, making the owner live again and its later crash
+// honest residue.
 func (s *Session) parkSessionLivelock() {
-	s.releaseSessionLivelock()
 	if s.isSubagentSession() {
 		return
 	}
@@ -317,7 +456,14 @@ func (s *Session) parkSessionLivelock() {
 	if stateDir == "" {
 		return
 	}
-	if err := schema.RemoveSessionLivelock(stateDir, s.id); err != nil {
-		s.emit(events.WarningData{Message: "removing the parked session livelock failed: " + err.Error()})
+	s.mu.Lock()
+	s.livelockRetryStop = true
+	s.mu.Unlock()
+	if err := schema.MarkSessionLivelockParked(stateDir, s.id, time.Now()); err != nil {
+		// Fall through to the release: without the marker, the state left
+		// behind is exactly a real crash's, which is then honestly collectible
+		// rather than silently preserved.
+		s.emit(events.WarningData{Message: "parking the retired session livelock failed: " + err.Error()})
 	}
+	s.releaseSessionLivelock()
 }

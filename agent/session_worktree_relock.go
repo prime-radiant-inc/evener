@@ -48,6 +48,14 @@ const (
 // open timer already scheduled for a top-level session) or explicitly (a
 // dedicated one-shot for a restored subagent coordinator with no P3 pass).
 func (s *Session) resumeReLockOwnLanes() {
+	// Owner-visible lane work waits for the process livelock (review round 3,
+	// finding 1): a resumed session that adopts its lanes before its
+	// acquisition lands races a prune holding the root's reclamation claim.
+	// The wait is cancellable — a closing session aborts the re-lock, and a
+	// blocked one simply re-locks the moment its acquisition lands.
+	if err := s.waitLivelockAcquired(s.sessionContext()); err != nil {
+		return
+	}
 	work, admitted := s.beginEnvWork("resume-lane-relock")
 	if !admitted {
 		return

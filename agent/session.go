@@ -401,7 +401,17 @@ type Session struct {
 	// that could not take the lock. Guarded by s.mu.
 	// livelockRetryStop halts a pending re-acquisition loop at release; guarded
 	// by s.mu. livelockAcquired is closed when a contended acquisition finally
-	// lands — the signal a test waits on; nil unless contention occurred.
+	// lands; nil unless contention occurred. livelockGate is the production
+	// waiter's view of the same landing (review round 3, finding 1): armed for
+	// every root at init, closed the moment acquisition resolves — held, or
+	// abandoned on a real failure — and waited on by every owner-visible lane
+	// operation (resume re-lock, delegate spawn, delegate revival) so a session
+	// that has not taken its livelock cannot adopt a lane or run a delegate
+	// while a prune holds the root's reclamation claim. Guarded by s.mu with
+	// livelockGateClosed marking the one close.
+	// testOnlyBeforeLivelockRetryAcquire is a test-only seam called before each
+	// retry-loop acquisition attempt, so a test can park an attempt across a
+	// retirement. Nil in production.
 	//
 	// worktreeRendezvousDir is a test-only seam overriding the rendezvous run
 	// directory the owner-liveness oracle consults. Empty in production, which
@@ -418,6 +428,9 @@ type Session struct {
 	livelockRelease                      func()
 	livelockRetryStop                    bool
 	livelockAcquired                     chan struct{}
+	livelockGate                         chan struct{}
+	livelockGateClosed                   bool
+	testOnlyBeforeLivelockRetryAcquire   func()
 	worktreeRendezvousDir                string
 
 	// responseSideEffectsMu serializes a response's user-visible side-effect

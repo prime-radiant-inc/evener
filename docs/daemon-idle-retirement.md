@@ -15,11 +15,15 @@ session reopens it. It is deleted when the hub archives or deletes the session.
 
 The same preservation extends to the session's process livelock: retirement
 PARKS it rather than releasing it in place. The retired root is
-parked-for-resume, not dead, so its livelock file is durably removed at
-retirement — a liveness probe then answers *unknown* (absent), never *dead*
-(`developing-evener/worktrees.md`), which keeps the delegate lanes retirement
-preserved locked against a foreign `prune` until the resume; the replacement
-process that restores the session takes the livelock again at init.
+parked-for-resume, not dead, so retirement durably writes a park marker
+(`<id>.livelock.parked`, the commit point of the retirement) beside the
+livelock file and only then releases the flock — the file itself stays. A
+liveness probe then answers *unknown* (parked), never *dead* — even over a
+stale dead rendezvous entry an earlier crash left — which keeps the delegate
+lanes retirement preserved locked against a foreign `prune` until the resume;
+the replacement process that restores the session takes the livelock again at
+init and clears the marker, so a later crash of the resumed process leaves
+honest residue.
 
 ## Configuration
 

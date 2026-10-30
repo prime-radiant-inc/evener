@@ -1,13 +1,14 @@
 package agent
 
-// Retirement vs dead-owner reclamation (issue #5471 review round 2, finding 3):
+// Retirement vs dead-owner reclamation (issue #5471 review rounds 2 and 3):
 // idle retirement is non-terminal and deliberately preserves resumable
 // delegates and their locked worktrees (docs/daemon-idle-retirement.md —
 // "retirement does not sweep them away"). A retired root must therefore never
 // read as a *dead* root to a foreign prune: retirement parks the process
-// livelock durably (the file is removed, which answers unknown, never dead),
-// so the retired owner's lanes survive until it resumes — and the resume
-// re-takes the livelock, making the owner live again.
+// livelock durably — the marker beside the KEPT file is the park, and it
+// answers unknown, never dead — so the retired owner's lanes survive until it
+// resumes; the resume re-takes the livelock and clears the marker, making the
+// owner live again and its later crash honest residue.
 
 import (
 	"context"
@@ -34,10 +35,11 @@ func retiredOwnerSessionConfig(sid string) SessionConfig {
 }
 
 // TestWorktreeRetirementParksLivelockAndKeepsLanes: a retired (non-terminal,
-// resumable) root is not a dead root. Retirement removes the livelock file so
-// a foreign prune answers "unverifiable" instead of dead, the delegate lanes
-// it preserved stay locked, and a later resume of the same session id takes
-// the livelock again — the owner is live once more.
+// resumable) root is not a dead root. Retirement writes the durable park
+// marker beside the kept livelock file, so a foreign prune answers
+// "unverifiable" instead of dead, the delegate lanes it preserved stay
+// locked, and a later resume of the same session id takes the livelock and
+// clears the marker — the owner is live once more.
 func TestWorktreeRetirementParksLivelockAndKeepsLanes(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -58,10 +60,14 @@ func TestWorktreeRetirementParksLivelockAndKeepsLanes(t *testing.T) {
 	// preserves resumable delegates and their locked lanes for the resume.
 	_ = own.releaseRuntime(context.Background(), closeOptions{}, releaseRetirement)
 
-	// The park is durable evidence: no livelock file remains, so the retired
-	// owner can never be read as a crashed-dead one.
-	if _, statErr := os.Stat(schema.SessionLivelockPath(r.stateDir, retiredOwnerSID)); !os.IsNotExist(statErr) {
-		t.Fatalf("retirement left a livelock file (stat err=%v): a free livelock reads as a dead owner", statErr)
+	// The park is durable evidence: the marker sits beside the kept file, so
+	// the retired owner answers unknown even though its flock is now free.
+	parked, err := schema.SessionLivelockParked(r.stateDir, retiredOwnerSID)
+	if err != nil || !parked {
+		t.Fatalf("retirement left no park marker (parked=%v, err=%v): a free livelock without one reads as a dead owner", parked, err)
+	}
+	if _, statErr := os.Stat(schema.SessionLivelockPath(r.stateDir, retiredOwnerSID)); statErr != nil {
+		t.Fatalf("retirement removed the livelock file (stat err=%v): the park is the marker, never the file's absence", statErr)
 	}
 
 	out, err := r.pruneOp(t)
@@ -92,5 +98,8 @@ func TestWorktreeRetirementParksLivelockAndKeepsLanes(t *testing.T) {
 	held, exists, err = schema.SessionLivelockHeld(r.stateDir, retiredOwnerSID)
 	if err != nil || !exists || !held {
 		t.Fatalf("owner livelock after resume = (held=%v, exists=%v, err=%v), want held again", held, exists, err)
+	}
+	if parked, err := schema.SessionLivelockParked(r.stateDir, retiredOwnerSID); err != nil || parked {
+		t.Fatalf("park marker after resume = (present=%v, err=%v), want cleared: a live-again root's crash must be honest residue", parked, err)
 	}
 }

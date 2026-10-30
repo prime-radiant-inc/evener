@@ -768,21 +768,34 @@ sweeps, all through the control env:
      startup/resume: a resumed owner adopts its lane's existing delegate
      marker unchanged (the §7 revival rule), so marker text can never detect
      it — instead `prune` claims the root's process livelock non-blockingly
-     immediately before the marker release and holds it across the release,
-     the worktree remove, and the branch delete. A claim that fails means the
-     owner resumed (or another collector holds the root) and the lane is
-     skipped as `owner resumed since listing`; a claim that succeeds means no
-     process of that tree can start hosting — so no delegate can run or
-     commit — until the collection finishes. Symmetrically, a session's own
+     BEFORE any eligibility rung (the sidecar, cleanliness, HEAD and merge
+     checks all read state under the claim, so a commit that lands between
+     the listing and the claim is seen, not acted on stale) and holds it
+     across the release, the worktree remove, and the branch delete, and the
+     owner state is revalidated under the claim: a retirement that committed
+     a park since the listing is skipped as `owner retired since listing`.
+     A claim that fails means the owner resumed (or another collector holds
+     the root) and the lane is skipped as `owner resumed since listing`; a
+     claim that succeeds means no process of that tree can start hosting —
+     so no delegate can run or commit — until the collection finishes.
+     Symmetrically, a session's own
      livelock acquisition never abandons on contention (a liveness probe's
      momentary take, or another prune's claim): contention defers to a
      background retry that persists until the lock lands or the session
      closes, so a running session can never leave behind an existing-but-free
-     livelock, which is a dead owner's signature. Non-terminal idle retirement
+     livelock, which is a dead owner's signature — and the session's
+     owner-visible lane work (the resume re-lock, delegate creation, delegate
+     revival) is gated on that acquisition landing, so a resumed owner
+     cannot adopt a lane or run a delegate while a prune holds the claim.
+     Non-terminal idle retirement
      is the deliberate exception in the owner's favor: a retired root is
-     parked-for-resume, not dead, so retirement durably removes its livelock
-     file (absent answers unknown to every later probe) and a resuming
-     replacement takes it again — see docs/daemon-idle-retirement.md;
+     parked-for-resume, not dead, so retirement durably writes a park marker
+     (`<id>.livelock.parked`) beside the kept livelock file before releasing
+     it — the marker outranks every earlier crash signal (a stale dead
+     rendezvous entry included) to every later probe, and never removing the
+     file means no in-flight acquisition attempt can orphan or resurrect it —
+     and a resuming replacement takes the lock again and clears the marker —
+     see docs/daemon-idle-retirement.md;
    - no live work under it per this session's `liveWorkUnder` (belt and
      braces alongside the lock);
    - clean per `git -C <path> status --porcelain=v1 --untracked-files=all`;
