@@ -738,6 +738,10 @@ func readLegacyTeardownFences(path string) (map[string]HostTeardownRemnant, map[
 		for key, primitive := range remnantSection.Remnants {
 			var remnant HostTeardownRemnant
 			if metadata.PrimitiveDecode(primitive, &remnant) == nil {
+				if strings.TrimSpace(remnant.Host) == "" {
+					nameless = append(nameless, key)
+					continue
+				}
 				remnants[key] = remnant
 				continue
 			}
