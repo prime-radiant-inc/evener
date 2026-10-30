@@ -1,10 +1,13 @@
 package hubcore
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
@@ -226,6 +229,54 @@ func TestMessageSearchRefreshFailureArms(t *testing.T) {
 		}
 		if len(failures) != 0 {
 			t.Fatalf("failures = %+v, want the busy lock skipped silently", failures)
+		}
+	})
+	t.Run("a sidecar a newer build wrote is skipped without a rebuild", func(t *testing.T) {
+		t.Parallel()
+		index := openTestMessageSearch(t)
+		session, path := newSession(t)
+		dir := transcriptindex.DirFor(path)
+		built, err := transcriptindex.Open(path, dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := built.Close(); err != nil {
+			t.Fatal(err)
+		}
+		current, err := os.ReadFile(filepath.Join(dir, "CURRENT"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		metaPath := filepath.Join(dir, strings.TrimSpace(string(current)), "meta.json")
+		raw, err := os.ReadFile(metaPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			t.Fatal(err)
+		}
+		fields["projection"] = json.RawMessage(`"transcript-read-model-v9999:newer"`)
+		newer, err := json.Marshal(fields)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(metaPath, newer, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		asked := false
+		index.SetRepairAsker(func(string, string) { asked = true })
+
+		failures, err := index.Refresh(context.Background(), []MessageSearchSession{session})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(failures) != 0 || asked {
+			t.Fatalf("failures = %+v, repair asked = %v; want the newer sidecar skipped silently with no repair", failures, asked)
+		}
+		after, err := os.ReadFile(metaPath)
+		if err != nil || !bytes.Equal(after, newer) {
+			t.Fatalf("the newer sidecar's meta changed: %v", err)
 		}
 	})
 	t.Run("unsupported transcript is recorded without a failure", func(t *testing.T) {

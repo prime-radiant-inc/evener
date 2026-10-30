@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -26,7 +27,9 @@ import (
 
 const (
 	// formatVersion is the sidecar's layout. projectionID names the projection
-	// its records reproduce; either changing rebuilds every index.
+	// its records reproduce; either changing rebuilds every older index, and
+	// the number in projectionID orders builds: a binary never rebuilds a
+	// sidecar a newer one wrote (ErrNewerSidecar).
 	formatVersion = 6
 	// Dedicated COMMUNICATE records consume inherited call reconstruction.
 	// Older sidecars can contain duplicate messages from ordinary forks.
@@ -71,6 +74,27 @@ var ErrUpdateLogTruncated = errors.New("transcript index update log no longer re
 // handle refuses to perform one (see OpenRefusing): the caller registers a
 // repair and answers a retryable state instead of waiting on one here.
 var ErrRebuildRequired = errors.New("transcript index needs a rebuild this handle refuses to run")
+
+// ErrNewerSidecar reports a sidecar whose live build a newer binary wrote:
+// a newer layout, or a newer projection version. An older binary never
+// rebuilds over it, or the two binaries would trade rebuilds of one sidecar
+// for as long as both run; it reads nothing from it until the sidecar's own
+// binary is the one running.
+var ErrNewerSidecar = errors.New("transcript index was written by a newer build")
+
+// projectionVersion is the number in a projection identity such as
+// "transcript-read-model-v10:<schema fingerprint>", the order projections
+// are compared in. An identity that carries none (a long-retired form) is
+// not newer than anything.
+func projectionVersion(projection string) (int, bool) {
+	name, _, _ := strings.Cut(projection, ":")
+	i := strings.LastIndex(name, "-v")
+	if i < 0 {
+		return 0, false
+	}
+	version, err := strconv.Atoi(name[i+2:])
+	return version, err == nil
+}
 
 // ErrLockBusy reports that the sidecar's lock is held by another writer and
 // the handle refuses to block on it (see OpenRefusing).
@@ -433,7 +457,12 @@ func (x *Index) locked(exclusive bool, fn func() error) error {
 		return fmt.Errorf("lock transcript index: %w", err)
 	}
 	defer func() { _ = unlockFile(x.lock) }()
-	if err := x.refresh(); err != nil && (!exclusive || x.refusing) {
+	err := x.refresh()
+	if errors.Is(err, ErrNewerSidecar) {
+		// Not a sidecar this binary may rebuild, extending handle or not.
+		return err
+	}
+	if err != nil && (!exclusive || x.refusing) {
 		// Only an extender may rebuild; a reader with no usable index has
 		// nothing to read. A refusing reader names the sidecar a rebuild
 		// would fix as a refusal, so its repair registers immediately — on
@@ -526,6 +555,15 @@ func (x *Index) refresh() error {
 	return nil
 }
 
+// writtenByNewerBuild reports whether a newer binary than this one wrote m: a
+// newer layout or a newer projection version. A projection that differs only
+// in its schema fingerprint cannot be ordered, and rebuilds like an older one.
+func (m meta) writtenByNewerBuild() bool {
+	version, ok := projectionVersion(m.Projection)
+	current, _ := projectionVersion(currentProjection())
+	return m.Format > formatVersion || (ok && version > current)
+}
+
 func (x *Index) readMeta() (meta, error) {
 	var m meta
 	data, err := os.ReadFile(filepath.Join(x.dir, x.build, metaFile))
@@ -536,6 +574,9 @@ func (x *Index) readMeta() (meta, error) {
 		return m, fmt.Errorf("%w: parse meta.json: %w", errCorrupt, err)
 	}
 	if m.Format != formatVersion || m.Projection != currentProjection() {
+		if m.writtenByNewerBuild() {
+			return m, ErrNewerSidecar
+		}
 		return m, errIdentityChanged
 	}
 	return m, nil

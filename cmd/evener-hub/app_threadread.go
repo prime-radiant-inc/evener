@@ -393,6 +393,11 @@ func answerPastTranscriptIndexError(entry hubcore.PastEntry, err error) error {
 		// nothing armed because the hub's background is done: either way
 		// this read answers history-failed, naming the refusal's ordinal.
 		return appwire.TranscriptHistoryFailed(last)
+	case errors.Is(err, transcriptindex.ErrNewerSidecar):
+		// A newer build wrote this sidecar and this binary may not rebuild
+		// it, so no repair is armed: the history is unreadable here until
+		// the sidecar's own build serves it.
+		return appwire.TranscriptHistoryFailed(0)
 	case errors.Is(err, transcriptindex.ErrLockBusy):
 		if transcriptIndexRepairs.inFlight(pastTranscriptPath(entry)) {
 			return appwire.TranscriptIndexRebuilding()
