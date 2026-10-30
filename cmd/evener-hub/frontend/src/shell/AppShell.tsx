@@ -567,7 +567,7 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
   // (shell/palette/commands.ts); same shared-seam precedent as
   // next-needs-you above.
   useEffect(() => {
-    if (isMobile) return undefined;
+    if (!viewportReady || isMobile) return undefined;
     installKeybindings();
     const registry = keybindingsRegistry.getState();
     // Opens (or re-focuses) a live session by URL, then guarantees the session
@@ -622,7 +622,7 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
       liveSessions.dispose();
       for (const dispose of unregister) dispose();
     };
-  }, [isMobile]);
+  }, [isMobile, viewportReady]);
   // Keeps --keyboard-inset current for the mobile .shell rule; see
   // useKeyboardInset.ts's header for the why.
   useKeyboardInset();
@@ -871,8 +871,8 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
             registered and its trigger chords stay inert - RailHost's
             rail.toggle no-registration pattern - and no hold-hint listener
             is ever installed. */}
-          {!isMobile && <CheatsheetOverlay />}
-          {!isMobile && <HoldHints />}
+          {viewportReady && !isMobile && <CheatsheetOverlay />}
+          {viewportReady && !isMobile && <HoldHints />}
           <div className={styles.content}>
             {/* Desktop: the rail sits as a flex sibling of DockHost and
               collapses itself. Mobile (<900px): StackHost owns the whole
@@ -880,7 +880,7 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
               (TreeDrawer's children slot, threaded via railSlot), so the
               flex sibling renders only on desktop. Both hosts read the
               same pane registry and workspace store. */}
-            {!isMobile && route !== null && !singlePane && <RailHost />}
+            {viewportReady && !isMobile && route !== null && !singlePane && <RailHost />}
             {route === null ? (
               <NotFound />
             ) : !viewportReady ? null : isMobile ? (
@@ -899,7 +899,7 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
             {/* Desktop: the activity sidebar is the zoom system's triage surface,
               a right shell region scoped to the session being read. Mobile
               StackHost mounts the same surface as its full-screen overlay. */}
-            {!isMobile && route !== null && <ActivitySidebar />}
+            {viewportReady && !isMobile && route !== null && <ActivitySidebar />}
           </div>
         </div>
       </MotionProvider>

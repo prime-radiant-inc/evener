@@ -564,6 +564,189 @@ test("real Zoom preserves the leaf and retires readable parent ownership on phon
   await parentBackground.release();
 });
 
+function installReaderGeometry() {
+  // Like the Comic reader fixture, supply a measurable viewport and rows.
+  // These short bodies fit one text line, not the viewport's full height.
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+    return this.hasAttribute("data-index") ? 40 : 500;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(760);
+  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(760);
+  vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(500);
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.closest("[data-comic-probe]")) return new DOMRect(0, 0, 760, 24);
+    return new DOMRect(0, 0, 760, this.style.height ? Number.parseFloat(this.style.height) : this.offsetHeight);
+  });
+}
+
+test("saved legacy cascade returned on phone preserves the conversation during desktop reconstruction", async () => {
+  installReaderGeometry();
+  const child = "local:legacy-child";
+  const context = (requested: string) => ({
+    ...activityContext(requested),
+    sessionId: response(requested).thread.sessionId,
+    rootRef: ref,
+    ancestors: requested === child ? [{ ref, sessionId: response().thread.sessionId, title: ref }] : [],
+  });
+  const fixture = await mountHost(false, "comic", (client) => {
+    client.on("evener/thread/activity/read", ({ ref: requested, scope }) => ({
+      ...activitySummary(requested, scope),
+      context: context(requested),
+    }));
+    client.on("evener/thread/delegates/list", ({ ref: requested }) => ({
+      context: context(requested),
+      scope: "session",
+      delegates: [],
+      page: { complete: true, issues: [] },
+    }));
+  });
+  try {
+    await act(async () => {
+      workspaceStore.getState().retypePane(fixture.pane, "sessionZoom", {
+        ref: child,
+        source: { type: "session", params: { ref } },
+        edges: [{ ownerRef: ref, childRef: child, delegateId: "legacy-edge" }],
+      });
+    });
+    expect(screen.getAllByTestId("cascade-column").map((column) => column.getAttribute("data-scope-ref"))).toEqual([
+      ref,
+      child,
+    ]);
+    const layout = workspaceStore.getState().layoutJSON();
+    expect(layout).not.toBeNull();
+    localStorage.setItem("evener.workspace.layout.v2", JSON.stringify(layout));
+    expect(getDockviewApi()?.getPanel(fixture.pane.id)?.params?.paneType).toBe("sessionZoom");
+    await act(async () => {
+      fixture.setMobile(true);
+    });
+    expect(getDockviewApi()).toBeNull();
+    expect(screen.getAllByTestId("cascade-column").map((column) => column.getAttribute("data-scope-ref"))).toEqual([
+      child,
+    ]);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Return to previous view" }));
+    });
+    // Phone selection legitimately retired the root while the child was shown.
+    // Begin this handoff check with a loaded returned root, not its recovery.
+    await act(async () => {
+      await threadsStore.getState().refreshThread(ref);
+      await settleEntryTranscriptForTests(ref);
+    });
+    expect(workspaceStore.getState().panes.find((pane) => pane.id === fixture.pane.id)).toMatchObject({
+      type: "session",
+      params: { ref },
+    });
+    expect(document.querySelector('[data-stacked-pane-type="session"]')).not.toBeNull();
+    expect(snapshot()).toMatchObject({ foreground: 1, sources: sourceIds });
+    fixture.publications.length = 0;
+    fixture.localRead.mockClear();
+    fixture.reads = fixture.client.calls.filter((call) => call.method === "thread/read").length;
+    const bodies: Array<Array<{ id: string; text: string | undefined }>> = [];
+    const ownershipGaps: Array<{ renderedType: unknown; liveType: string | undefined; stack: string | undefined }> = [];
+    const unsubscribeBodies = threadsStore.subscribe(() => {
+      if (snapshot().foreground === 0) {
+        ownershipGaps.push({
+          renderedType: getDockviewApi()?.getPanel(fixture.pane.id)?.params?.paneType,
+          liveType: workspaceStore.getState().panes.find((pane) => pane.id === fixture.pane.id)?.type,
+          stack: new Error().stack,
+        });
+      }
+      bodies.push(
+        threadsStore
+          .getState()
+          .threads.get(ref)
+          ?.turns.flatMap((turn) => turn.items.map(({ id, text }) => ({ id, text }))) ?? [],
+      );
+    });
+    try {
+      await act(async () => {
+        fixture.setMobile(false);
+        await settleEntryTranscriptForTests(ref);
+      });
+      expect(getDockviewApi()?.getPanel(fixture.pane.id)?.params?.paneType).toBe("session");
+      expect(screen.getByText("CLAIM_BODY_A")).toBeDefined();
+      expect(screen.getByText("CLAIM_BODY_B")).toBeDefined();
+      expect(fixture.publications.length).toBeGreaterThan(0);
+      expect.soft(ownershipGaps).toEqual([]);
+      expect.soft(fixture.publications.every((value) => value.foreground > 0)).toBe(true);
+      expect
+        .soft(fixture.publications.map((value) => value.sources))
+        .toEqual(fixture.publications.map(() => sourceIds));
+      expect.soft(bodies).toEqual(bodies.map(() => sourceItems));
+      expect.soft(fixture.client.calls.filter((call) => call.method === "thread/read")).toHaveLength(fixture.reads);
+      expect.soft(fixture.localRead).not.toHaveBeenCalled();
+      expect.soft(snapshot()).toMatchObject({ foreground: 1, sources: sourceIds });
+    } finally {
+      unsubscribeBodies();
+    }
+  } finally {
+    await disposeFixture(fixture);
+  }
+});
+
+test("saved session params cannot acknowledge a different phone conversation during reconstruction", async () => {
+  installReaderGeometry();
+  const fixture = await mountHost(false);
+  expect(screen.getByText("CLAIM_BODY_A")).toBeDefined();
+  expect(screen.getByText("CLAIM_BODY_B")).toBeDefined();
+  const currentRef = "local:phone-replacement";
+  const layout = workspaceStore.getState().layoutJSON();
+  expect(layout).not.toBeNull();
+  localStorage.setItem("evener.workspace.layout.v2", JSON.stringify(layout));
+  await act(async () => {
+    fixture.setMobile(true);
+  });
+  await act(async () => {
+    workspaceStore.getState().retypePane(fixture.pane, "session", { ref: currentRef });
+  });
+  await act(async () => {
+    await settleEntryTranscriptForTests(currentRef);
+  });
+  const currentSnapshot = () => {
+    const model = threadsStore.getState().threads.get(currentRef);
+    return {
+      foreground: foregroundHolds(currentRef),
+      sources: model ? projectComicConversation(model).map((entry) => entry.id) : [],
+      bodies: model?.turns.flatMap((turn) => turn.items.map(({ id, text }) => ({ id, text }))) ?? [],
+    };
+  };
+  await waitFor(() => expect(currentSnapshot()).toEqual({ foreground: 1, sources: sourceIds, bodies: sourceItems }));
+  const background = acquireBackgroundThread(currentRef);
+  await act(async () => {
+    await background.ready;
+    await settleEntryTranscriptForTests(currentRef);
+  });
+  const publications: ReturnType<typeof currentSnapshot>[] = [];
+  const unsubscribe = threadsStore.subscribe(() => publications.push(currentSnapshot()));
+  fixture.localRead.mockClear();
+  const reads = fixture.client.calls.filter((call) => call.method === "thread/read").length;
+  try {
+    await act(async () => {
+      fixture.setMobile(false);
+    });
+    await act(async () => {
+      await settleEntryTranscriptForTests(currentRef);
+    });
+    expect(getDockviewApi()?.getPanel(fixture.pane.id)?.params).toMatchObject({
+      paneType: "session",
+      paneParams: { ref: currentRef },
+    });
+    expect(screen.getByText("CLAIM_BODY_A")).toBeDefined();
+    expect(screen.getByText("CLAIM_BODY_B")).toBeDefined();
+    expect(publications.length).toBeGreaterThan(0);
+    expect.soft(publications.every((value) => value.foreground > 0)).toBe(true);
+    expect.soft(publications.map((value) => value.sources)).toEqual(publications.map(() => sourceIds));
+    expect.soft(publications.map((value) => value.bodies)).toEqual(publications.map(() => sourceItems));
+    expect.soft(fixture.client.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads);
+    expect.soft(fixture.localRead).not.toHaveBeenCalled();
+    expect.soft(currentSnapshot()).toEqual({ foreground: 1, sources: sourceIds, bodies: sourceItems });
+  } finally {
+    unsubscribe();
+    await disposeFixture(fixture);
+    await background.release();
+  }
+});
+
 test("connection loss does not erase a started conversation during replacement", async () => {
   const fixture = await mountHost(false);
   await act(async () => {

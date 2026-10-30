@@ -96,6 +96,11 @@ function PaneHost({ api, params }: IDockviewPanelProps<PanePanelParams>) {
     };
   }, [api]);
 
+  // Saved Dockview contents can lag the live pane after a phone journey.
+  // Do not mount an obsolete reader while reconciliation pushes current params.
+  const live = workspaceStore.getState().panes.find((pane) => pane.id === api.id);
+  if (live?.type !== params.paneType || live.params !== params.paneParams) return <Skeleton />;
+
   // kata fmtz: fallback={null} used to mean a newly-opened pane's content
   // area painted completely blank - not just briefly, but for however long
   // its component's dynamic import took to resolve - while the surrounding
@@ -110,7 +115,11 @@ function PaneHost({ api, params }: IDockviewPanelProps<PanePanelParams>) {
   return (
     <PaneVisibilityContext.Provider value={visible}>
       <Suspense fallback={<Skeleton />}>
-        <ConversationHandoffBoundary generation={conversationHandoffGeneration("desktop")} paneId={api.id}>
+        <ConversationHandoffBoundary
+          generation={conversationHandoffGeneration("desktop")}
+          paneId={api.id}
+          renderedPane={params}
+        >
           <Component params={params.paneParams} paneId={api.id} focused={focused} />
         </ConversationHandoffBoundary>
       </Suspense>
