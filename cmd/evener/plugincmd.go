@@ -446,7 +446,10 @@ func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr 
 			return err
 		}
 		if fs.NArg() < 1 {
-			return errors.New("usage: evener plugin install <plugin>@<marketplace> [--yes]")
+			return errors.New("usage: evener plugin install [--yes] <plugin>@<marketplace>")
+		}
+		if fs.NArg() > 1 {
+			return fmt.Errorf("unexpected argument %q; put options before the spec, e.g. plugin install --yes <plugin>@<marketplace>", fs.Arg(1))
 		}
 		plugin, marketplace, err := splitPluginRef(fs.Arg(0))
 		if err != nil {

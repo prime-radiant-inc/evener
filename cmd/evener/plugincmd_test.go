@@ -727,6 +727,71 @@ func TestPluginInstall_RequiresConfirmation(t *testing.T) {
 	}
 }
 
+// pluginInstallCapture records the spec the install command hands the manager.
+// The embedded interface supplies the methods this path never calls.
+type pluginInstallCapture struct {
+	pluginManager
+	plugin, marketplace string
+	calls               int
+}
+
+func (m *pluginInstallCapture) SeedDefaultMarketplaces(context.Context) (bool, error) {
+	return false, nil
+}
+
+func (m *pluginInstallCapture) Install(_ context.Context, plugin, marketplace string) (plugins.InstallEntry, error) {
+	m.calls++
+	m.plugin, m.marketplace = plugin, marketplace
+	return plugins.InstallEntry{Version: "1.0.0", InstallPath: "/tmp/plugin"}, nil
+}
+
+func captureInstall(t *testing.T) *pluginInstallCapture {
+	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	m := &pluginInstallCapture{}
+	oldManager := newPluginManager
+	newPluginManager = func() pluginManager { return m }
+	t.Cleanup(func() { newPluginManager = oldManager })
+	return m
+}
+
+func TestPluginInstall_YesBeforeSpecInstalls(t *testing.T) {
+	m := captureInstall(t)
+
+	var out, errb bytes.Buffer
+	if err := runPlugin([]string{"install", "--yes", "widget@acme"}, nil, &out, &errb); err != nil {
+		t.Fatalf("install --yes <spec>: %v\n%s", err, errb.String())
+	}
+	if m.calls != 1 || m.plugin != "widget" || m.marketplace != "acme" {
+		t.Fatalf("Install = %d calls (plugin=%q marketplace=%q), want widget@acme once", m.calls, m.plugin, m.marketplace)
+	}
+}
+
+func TestPluginInstallRejectsTrailingArguments(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"option after the spec", []string{"install", "widget@acme", "--yes"}},
+		{"stray argument after the spec", []string{"install", "widget@acme", "stray"}},
+		{"stray argument after a confirmed spec", []string{"install", "--yes", "widget@acme", "stray"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := captureInstall(t)
+
+			var out, errb bytes.Buffer
+			err := runPlugin(tc.args, nil, &out, &errb)
+			if err == nil {
+				t.Fatal("install with a trailing argument should be rejected")
+			}
+			if m.calls != 0 {
+				t.Fatalf("Install called %d times for %v, want 0", m.calls, tc.args)
+			}
+		})
+	}
+}
+
 func TestPluginDoctor_JSON(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	var out, errb bytes.Buffer
