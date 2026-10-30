@@ -93,8 +93,12 @@ func TestRound13DirtyControllerDeployRefusalIsTerminal(t *testing.T) {
 	// reconnect loop would repeat the terminal refusal forever.
 	hostGate := m.hostLock(host.Name)
 	defer m.releaseHostLock(host.Name)
-	if more := m.reconnectOnce(context.Background(), host, hostGate); more {
+	beforeReconnectRuns := len(fr.recordedRuns())
+	if more := m.reconnectOnce(context.Background(), host, hostGate, registeredReconnectLoop(t, m, host, hostGate)); more {
 		t.Fatal("reconnectOnce asked for another attempt, so the supervisor would loop on the terminal refusal")
+	}
+	if len(fr.recordedRuns()) <= beforeReconnectRuns {
+		t.Fatal("eligible reconnect did not reach the external runner")
 	}
 	if builds != 0 {
 		t.Fatalf("build attempts after the supervisor iteration = %d, want 0", builds)

@@ -234,6 +234,8 @@ jobs:
           make tools-golangci
 
       - name: Lint (golangci-lint across all go.work modules)
+        env:
+          LINT_GOLANGCI_VERBOSE: '1'
         run: make lint-golangci
 
       # The tagged compile floors use the same golangci-lint binary, so they
@@ -388,7 +390,12 @@ jobs:
           go-cache-kind: race-${{ matrix.scope }}
 
       - name: Test (race detector — ${{ matrix.scope }})
-        run: make test-race RACE_SCOPE=${{ matrix.scope }}
+        run: |
+          if [ "${{ matrix.scope }}" = agent ]; then
+            flags="$(go env GOFLAGS 2>/dev/null || printf '%s' "${GOFLAGS:-}")"
+            export GOFLAGS="${flags:+$flags }-v"
+          fi
+          make test-race RACE_SCOPE=${{ matrix.scope }}
 
       - uses: ./.github/actions/go-cache-save
 

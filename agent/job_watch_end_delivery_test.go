@@ -62,12 +62,12 @@ func TestWatchBudgetEndPreservesFiringThroughReceiverReopen(t *testing.T) {
 			if firing.DeliveryID == "" || notice.DeliveryID == "" || firing.DeliveryID == notice.DeliveryID || firing.Key == notice.Key {
 				t.Fatalf("firing and notice lost separate immutable identities: firing=%+v notice=%+v", firing, notice)
 			}
-			if !strings.HasPrefix(firing.TriggerReason, "event: ") || notice.TriggerReason != "budget_exhausted" || notice.EndNotice || !notice.CallbackFrame {
+			if firing.TriggerReason != "event: COMMUNICATE" || firing.TriggerIdentity != args.Target || firing.CallbackFrame == send || notice.TriggerReason != "budget_exhausted" || notice.EndNotice || !notice.CallbackFrame {
 				t.Fatalf("incorrect condition/budget callback classification: firing=%+v notice=%+v", firing, notice)
 			}
 			noticeKey := notice.Key
 			noticeKey.ResolvedWatchedIdentity = firing.Key.ResolvedWatchedIdentity
-			if firing.Key.ResolvedWatchedIdentity != runtimeMessageAliasCaller || notice.Key.ResolvedWatchedIdentity != "" || noticeKey != firing.Key || firing.ReceiverSessionID != s.ID() || notice.ReceiverSessionID != s.ID() || notice.CoalescedCount != 0 {
+			if firing.Key.WatchID != cfg.watchID || firing.Key.WatchGeneration != cfg.generation || firing.Key.WatchTarget != args.Target || firing.Key.VisibleSessionID != s.ID() || firing.Key.ResolvedSendTo != runtimeMessageAliasCaller || firing.Key.ResolvedWatchedIdentity != runtimeMessageAliasCaller || notice.Key.ResolvedWatchedIdentity != "" || noticeKey != firing.Key || firing.ReceiverSessionID != s.ID() || notice.ReceiverSessionID != s.ID() || notice.CoalescedCount != 0 {
 				t.Fatal("budget notice changed the watch/receiver binding or coalesced with a condition")
 			}
 			jm.mu.Lock()
@@ -82,29 +82,14 @@ func TestWatchBudgetEndPreservesFiringThroughReceiverReopen(t *testing.T) {
 			if producerRecordCount(t, s) != 0 || len(adapter.requestsFor("root")) != 0 {
 				t.Fatal("unavailable receiver accepted a frame or executed the provider")
 			}
-			if err := jm.closeStoreOnly(); err != nil {
-				t.Fatal(err)
-			}
-			writer, _, err := transcript.OpenWriterForSession(transcriptPath(s.stateDir, s.ID()), s.ID())
-			if err != nil {
-				t.Fatal(err)
-			}
-			s.mu.Lock()
-			s.transcript, s.transcriptReady = writer, true
-			s.mu.Unlock()
-			restored, err := newJobManager(s.stateDir, s.ID(), s.enqueueJobNotificationAndNotify)
-			if err != nil {
-				t.Fatal(err)
-			}
-			restored.clock = s.clock
-			s.jobManager, restored.retirementOwner = restored, s
-			restored.delegateController = s.delegateController
+			repairWatchReceiver(t, s)
+			restored := reopenWatchSource(t, s, jm)
 			restored.dispatchProducedWatchSends()
 			restored.dispatchProducedWatchSends()
-			ids := []string{fmt.Sprintf("watch:%s:%d", firing.DeliveryID, firing.UpdateSeq), fmt.Sprintf("watch:%s:%d", notice.DeliveryID, notice.UpdateSeq)}
+			ids := []string{watchSourceID(firing), watchSourceID(notice)}
 			expected := map[string]string{
-				ids[0]: strings.ReplaceAll(firing.Frame, "delivery_id: "+firing.DeliveryID+"\n", ""),
-				ids[1]: strings.ReplaceAll(notice.Frame, "delivery_id: "+notice.DeliveryID+"\n", ""),
+				ids[0]: watchSourcePayload(firing),
+				ids[1]: watchSourcePayload(notice),
 			}
 			for _, state := range []jobstore.WatchSendState{firing, notice} {
 				requireWatchSettlement(t, restored, state, 1)
@@ -112,23 +97,7 @@ func TestWatchBudgetEndPreservesFiringThroughReceiverReopen(t *testing.T) {
 			if producerRecordCount(t, s) != 2 || restored.hasPendingWatchSends() || len(adapter.requestsFor("root")) != 0 {
 				t.Fatal("reopen did not transfer exactly two frames without executing the provider")
 			}
-			canonical := make(map[string]string)
-			for _, entry := range notificationRawEntries(t, transcriptPath(s.stateDir, s.ID())) {
-				if len(entry.Turn.ObservedNotificationIDs) != 0 {
-					t.Fatal("custody fabricated model observation")
-				}
-				if entry.Turn.AttentionID != "" {
-					want, ok := expected[entry.Turn.AttentionID]
-					if !ok || entry.Turn.Message.Text() != want {
-						t.Fatalf("canonical ID/content differs from source: id=%q content=%q", entry.Turn.AttentionID, entry.Turn.Message.Text())
-					}
-					canonical[entry.Turn.AttentionID] = entry.Turn.Message.Text()
-					delete(expected, entry.Turn.AttentionID)
-				}
-			}
-			if len(expected) != 0 {
-				t.Fatalf("canonical receiver is missing source IDs: %v", expected)
-			}
+			requireWatchDeliveryReceipts(t, s, expected, nil)
 			if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 				t.Fatal(err)
 			}
@@ -136,23 +105,12 @@ func TestWatchBudgetEndPreservesFiringThroughReceiverReopen(t *testing.T) {
 			if len(requests) != 1 {
 				t.Fatalf("provider requests=%d, want 1", len(requests))
 			}
-			for _, id := range ids {
-				matches := 0
-				for _, msg := range requests[0].Messages {
-					if msg.Role == llm.RoleUser && strings.Contains(msg.Text(), canonical[id]) {
-						matches++
-					}
-				}
-				if matches != 1 {
-					t.Fatalf("provider request covers canonical delivery %s in %d user messages, want 1", id, matches)
-				}
-			}
+			requireWatchProviderPayloads(t, requests[0], expected)
 			if !requestMessagesContainText(requests[0].Messages, args.Note) || (send && !requestMessagesContainText(requests[0].Messages, args.Send.Message)) {
 				t.Fatal("provider request lost caller-supplied note or send payload")
 			}
-			for _, id := range ids {
-				assertNotificationObservedOnce(t, transcriptPath(s.stateDir, s.ID()), id)
-			}
+			observations := map[string]int{ids[0]: 1, ids[1]: 1}
+			requireWatchDeliveryReceipts(t, s, expected, observations)
 			pendingIDs, err := s.pendingNotificationIDs()
 			if err != nil || len(pendingIDs) != 0 {
 				t.Fatalf("after response pending IDs=%v error=%v", pendingIDs, err)
@@ -161,7 +119,106 @@ func TestWatchBudgetEndPreservesFiringThroughReceiverReopen(t *testing.T) {
 			if producerRecordCount(t, s) != 2 || len(adapter.requestsFor("root")) != 1 {
 				t.Fatal("post-observation pump duplicated delivery or provider execution")
 			}
-			t.Logf("firing=%s notice=%s: source preserved, reopen custody=2, provider request=1, each observed once", firing.DeliveryID, notice.DeliveryID)
+			// Re-arm the same source through the public configuration path. A new
+			// opaque note/send distinguishes the new episode from retained history.
+			freshArgs := watchArgs{Target: args.Target, Events: []string{"communicate"}, Note: "rearm-custody-d741"}
+			if send {
+				freshArgs.Send = &watchSendArgs{To: runtimeMessageAliasCaller, Message: "rearm-firing-e852"}
+			}
+			freshResult, err := restored.configureWatch(freshArgs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			restored.mu.Lock()
+			_, fresh, freshOK := restored.watchConfigByIDLocked(freshResult.WatchID)
+			_, _, oldLive := restored.watchConfigByIDLocked(res.WatchID)
+			freshOK = freshOK && fresh.watchID != cfg.watchID && fresh.generation != cfg.generation && fresh.generation != "" && fresh.target == args.Target && fresh.conditionFires == 0 && fresh.deliveries == 0 && fresh.eventCount == 0 && fresh.nextUpdateSeq == 0 && !fresh.budgetTripped && len(fresh.pending) == 0
+			restored.mu.Unlock()
+			if !freshOK || oldLive || restored.watchCount() != 1 {
+				t.Fatal("re-arm reused old identity, generation, counters or budget latch")
+			}
+			if err := s.attachedTranscript().Close(); err != nil {
+				t.Fatal(err)
+			}
+			restored.onSessionEvent(events.SessionEvent{SessionID: s.ID(), Kind: events.EventCommunicate, Data: events.CommunicateData{Message: "rearm-event-f963"}})
+			freshRows := producerSourceEvents(t, restored, jobstore.EventWatchSendPending)
+			if len(freshRows) != len(produced)+1 || freshRows[len(freshRows)-1].WatchSend == nil {
+				t.Fatalf("first re-armed condition produced %d source rows, want %d", len(freshRows), len(produced)+1)
+			}
+			freshState := *freshRows[len(freshRows)-1].WatchSend
+			if freshState.DeliveryID == "" || freshState.DeliveryID == firing.DeliveryID || freshState.DeliveryID == notice.DeliveryID || freshState.UpdateSeq != 1 || freshState.Key.WatchID != fresh.watchID || freshState.Key.WatchGeneration != fresh.generation || freshState.Key.WatchTarget != args.Target || freshState.Key.ResolvedWatchedIdentity != args.Target || freshState.Key.VisibleSessionID != s.ID() || freshState.Key.ResolvedSendTo != runtimeMessageAliasCaller || freshState.ReceiverSessionID != s.ID() || freshState.TriggerIdentity != args.Target || freshState.TriggerReason != "event: COMMUNICATE" || freshState.CallbackFrame == send || freshState.EndNotice || freshState.CoalescedCount != 0 {
+				t.Fatalf("first re-armed condition lost fresh source/receiver identity: %+v", freshState)
+			}
+			restored.mu.Lock()
+			freshFires, freshDeliveries, freshPending := fresh.conditionFires, fresh.deliveries, len(fresh.pending)
+			restored.mu.Unlock()
+			if freshFires != 1 || (!send && freshDeliveries != 1) || (send && freshDeliveries != 0) || freshPending != 1 || restored.watchCount() != 1 {
+				t.Fatalf("first re-arm fires=%d deliveries=%d pending=%d live=%d", freshFires, freshDeliveries, freshPending, restored.watchCount())
+			}
+			if !strings.Contains(freshState.Frame, freshArgs.Note) || (send && (freshState.Message != freshArgs.Send.Message || !strings.Contains(freshState.Frame, freshArgs.Send.Message))) {
+				t.Fatal("first re-armed source lost new opaque payload")
+			}
+			requireWatchSettlement(t, restored, freshState, 0)
+			requireWatchDeliveryReceipts(t, s, expected, observations)
+			if producerRecordCount(t, s) != 2 || len(adapter.requestsFor("root")) != 1 {
+				t.Fatal("closed receiver accepted or observed fresh debt")
+			}
+			// Reopen the real source while the real receiver is still unavailable.
+			// Restoring a live config clears it as runtime_lost, but its already
+			// produced first firing must retain the original configuration binding.
+			recovered := reopenWatchSource(t, s, restored)
+			recovered.dispatchProducedWatchSends()
+			requireWatchSettlement(t, recovered, freshState, 0)
+			if !recovered.hasPendingWatchSends() || producerRecordCount(t, s) != 2 || len(adapter.requestsFor("root")) != 1 {
+				t.Fatal("source reopen fabricated custody before receiver repair")
+			}
+			repairWatchReceiver(t, s)
+			recovered.dispatchProducedWatchSends()
+			freshID := watchSourceID(freshState)
+			expected[freshID] = watchSourcePayload(freshState)
+			requireWatchDeliveryReceipts(t, s, expected, observations)
+			custodyEvents := loadJobStoreEvents(t, recovered)
+			for _, state := range []jobstore.WatchSendState{firing, notice, freshState} {
+				for kind, want := range map[jobstore.EventKind]int{jobstore.EventWatchSendDelivered: 1, jobstore.EventWatchSendDropped: 0, jobstore.EventWatchSendEvicted: 0} {
+					if got := countExactWatchSendEvents(custodyEvents, kind, state); got != want {
+						t.Fatalf("delivery=%s update=%d kind=%s records=%d want=%d", state.DeliveryID, state.UpdateSeq, kind, got, want)
+					}
+				}
+			}
+			if recovered.hasPendingWatchSends() || producerRecordCount(t, s) != 3 || len(adapter.requestsFor("root")) != 1 {
+				t.Fatal("fresh source recovery did not transfer exactly one new ID without observation")
+			}
+			if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+				t.Fatal(err)
+			}
+			requests = adapter.requestsFor("root")
+			if len(requests) != 2 {
+				t.Fatalf("provider requests=%d, want 2 after re-arm recovery", len(requests))
+			}
+			if !requestMessagesContainText(requests[1].Messages, freshArgs.Note) || (send && !requestMessagesContainText(requests[1].Messages, freshArgs.Send.Message)) {
+				t.Fatal("re-arm provider request lost caller-supplied note or send payload")
+			}
+			requireWatchProviderPayloads(t, requests[1], expected)
+			observations[ids[0]], observations[ids[1]], observations[freshID] = 2, 2, 1
+			requireWatchDeliveryReceipts(t, s, expected, observations)
+			before := len(loadJobStoreEvents(t, recovered))
+			recovered.dispatchProducedWatchSends()
+			if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+				t.Fatal(err)
+			}
+			requireWatchDeliveryReceipts(t, s, expected, observations)
+			postPumpEvents := loadJobStoreEvents(t, recovered)
+			for _, state := range []jobstore.WatchSendState{firing, notice, freshState} {
+				for kind, want := range map[jobstore.EventKind]int{jobstore.EventWatchSendDelivered: 1, jobstore.EventWatchSendDropped: 0, jobstore.EventWatchSendEvicted: 0} {
+					if got := countExactWatchSendEvents(postPumpEvents, kind, state); got != want {
+						t.Fatalf("delivery=%s update=%d kind=%s records=%d want=%d", state.DeliveryID, state.UpdateSeq, kind, got, want)
+					}
+				}
+			}
+			if len(postPumpEvents) != before || producerRecordCount(t, s) != 3 || len(adapter.requestsFor("root")) != 2 || recovered.hasPendingWatchSends() {
+				t.Fatal("post-rearm pump duplicated source records, custody or provider execution")
+			}
+			t.Logf("old firing=%s notice=%s fresh=%s: recovered exact payloads and IDs, custody/settlement/consumption once each, provider requests=2", firing.DeliveryID, notice.DeliveryID, freshState.DeliveryID)
 		})
 	}
 }
@@ -411,4 +468,92 @@ func TestWatchCanonicalStandaloneBudgetCustody(t *testing.T) {
 	if len(adapter.Requests()) != 1 {
 		t.Fatal("replay duplicated provider execution")
 	}
+}
+
+// Source fields, not the production canonical-ID helper, define the expected IDs.
+func watchSourceID(state jobstore.WatchSendState) string {
+	return fmt.Sprintf("watch:%s:%d", state.DeliveryID, state.UpdateSeq)
+}
+
+func watchSourcePayload(state jobstore.WatchSendState) string {
+	return strings.ReplaceAll(state.Frame, "delivery_id: "+state.DeliveryID+"\n", "")
+}
+
+// Check exact membership as well as per-ID custody, observation and consumption.
+// The provider request is checked separately, so a receipt cannot invent presentation.
+func requireWatchDeliveryReceipts(t *testing.T, s *Session, expected map[string]string, observations map[string]int) {
+	t.Helper()
+	accepted, observed, consumed := map[string]int{}, map[string]int{}, map[string]int{}
+	for _, entry := range notificationRawEntries(t, s.TranscriptPath()) {
+		if id := entry.Turn.AttentionID; id != "" {
+			frame, ok := expected[id]
+			if !ok || frame == "" || entry.Turn.Message.Text() != frame {
+				t.Fatalf("unexpected or changed canonical payload for %s", id)
+			}
+			accepted[id]++
+		}
+		for _, id := range entry.Turn.ObservedNotificationIDs {
+			if _, ok := expected[id]; !ok {
+				t.Fatalf("unexpected observed ID %s", id)
+			}
+			observed[id]++
+		}
+		if r := entry.Turn.AttentionResolution; r != nil && r.Disposition == string(delegateAttentionConsumed) {
+			if _, ok := expected[r.AttentionID]; !ok {
+				t.Fatalf("unexpected consumed ID %s", r.AttentionID)
+			}
+			consumed[r.AttentionID]++
+		}
+	}
+	for id := range expected {
+		wantConsumed := 0
+		if observations[id] > 0 {
+			wantConsumed = 1
+		}
+		if accepted[id] != 1 || observed[id] != observations[id] || consumed[id] != wantConsumed {
+			t.Fatalf("watch %s accepted=%d observed=%d consumed=%d, want 1/%d/%d", id, accepted[id], observed[id], consumed[id], observations[id], wantConsumed)
+		}
+		assertAttentionResponseReceipts(t, s, id, observations[id])
+	}
+}
+
+func requireWatchProviderPayloads(t *testing.T, request llm.Request, expected map[string]string) {
+	t.Helper()
+	for id, frame := range expected {
+		matches := 0
+		for _, message := range request.Messages {
+			if message.Role == llm.RoleUser && frame != "" && strings.Contains(message.Text(), frame) {
+				matches++
+			}
+		}
+		if matches != 1 {
+			t.Fatalf("canonical payload %s appears in %d provider messages, want one", id, matches)
+		}
+	}
+}
+
+func reopenWatchSource(t *testing.T, s *Session, old *jobManager) *jobManager {
+	t.Helper()
+	if err := old.closeStoreOnly(); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := newJobManager(s.stateDir, s.ID(), s.enqueueJobNotificationAndNotify)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored.clock = s.clock
+	s.jobManager, restored.retirementOwner = restored, s
+	restored.delegateController = s.delegateController
+	return restored
+}
+
+func repairWatchReceiver(t *testing.T, s *Session) {
+	t.Helper()
+	writer, _, err := transcript.OpenWriterForSession(transcriptPath(s.stateDir, s.ID()), s.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	s.transcript, s.transcriptReady = writer, true
+	s.mu.Unlock()
 }

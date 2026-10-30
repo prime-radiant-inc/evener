@@ -2050,7 +2050,7 @@ func (jm *jobManager) autoClearWatchOverBudgetNotification(cfg *watchConfig) (jo
 func (jm *jobManager) autoClearWatchOverBudgetNotificationForOwner(cfg *watchConfig, owner string) (jobNotification, bool) {
 	defer jm.publishWatchActivity()
 	jm.mu.Lock()
-	if cfg.callbackBudgetOwner != "" && cfg.callbackBudgetOwner != owner {
+	if cfg == nil || (cfg.callbackBudgetOwner != "" && cfg.callbackBudgetOwner != owner) {
 		jm.mu.Unlock()
 		return jobNotification{}, false
 	}

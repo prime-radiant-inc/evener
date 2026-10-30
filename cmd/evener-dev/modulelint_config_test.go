@@ -1,12 +1,48 @@
 package dev
 
 import (
+	"path/filepath"
 	"reflect"
 	"testing"
 )
 
 func lintEnv(vals map[string]string) func(string) string {
 	return func(name string) string { return vals[name] }
+}
+
+func TestLintGolangciVerbose(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  map[string]string
+		want bool
+	}{
+		{name: "unset"},
+		{name: "empty", env: map[string]string{"LINT_GOLANGCI_VERBOSE": ""}},
+		{name: "zero", env: map[string]string{"LINT_GOLANGCI_VERBOSE": "0"}},
+		{name: "true", env: map[string]string{"LINT_GOLANGCI_VERBOSE": "true"}},
+		{name: "one", env: map[string]string{"LINT_GOLANGCI_VERBOSE": "1"}, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, diag := parseLintConfig(lintEnv(tc.env))
+			if diag != "" {
+				t.Fatalf("parseLintConfig: %s", diag)
+			}
+			if cfg.Verbose != tc.want {
+				t.Errorf("config verbose = %v, want %v", cfg.Verbose, tc.want)
+			}
+			cmd := golangciCmd("agent", cfg.Verbose)
+			want := []string{"golangci-lint", "run", "--allow-parallel-runners", "./..."}
+			if tc.want {
+				want = append(want, "--verbose")
+			}
+			if !reflect.DeepEqual(cmd.Args, want) {
+				t.Errorf("command argv = %q, want %q", cmd.Args, want)
+			}
+			if filepath.Base(cmd.Path) != "golangci-lint" || cmd.Dir != "agent" {
+				t.Errorf("command path/dir = %q/%q", cmd.Path, cmd.Dir)
+			}
+		})
+	}
 }
 
 func TestParseLintConfigDefaults(t *testing.T) {

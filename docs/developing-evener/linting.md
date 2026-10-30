@@ -90,6 +90,16 @@ not `GO_MODULES` — because the fuzz module's ordinary (untagged) Go needs the
 same linting as everything else even though its fuzz targets run through
 `make fuzz`, not the test gate.
 
+`LINT_GOLANGCI_VERBOSE=1 make lint-golangci` adds `--verbose` to the module
+sweep's linter commands; other values leave them unchanged. CI enables this
+on its existing `lint-golangci` step. Failed modules' full output, including
+any verbose phase timings the linter emits, is replayed in the ordinary job
+log. Successful module logs are still discarded. This may help distinguish
+a recurring timeout, but does not promise a timing diagnosis or change the
+limits, concurrency, cache policy or failure verdicts. Verbose output can
+include checkout paths and linter/config details, so inspect it before sharing
+outside the job's usual audience.
+
 It then runs a second, narrower pass: `golangci-lint` with
 `.golangci-appwire.yml` against `./server/...` only. `server/appwire_*.go`
 carries JSON/TOML struct tags in camelCase, the opposite of every other

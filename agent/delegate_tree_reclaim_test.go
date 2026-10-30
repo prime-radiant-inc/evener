@@ -663,21 +663,42 @@ func TestDelegateIdleRelease_ReleasesWholeSubtreeLeafFirst(t *testing.T) {
 func claimSettledIdleSubtree(t *testing.T, tree *delegateTreeController, delegateID string, members ...*Session) *delegateRuntimeReclamationClaim {
 	t.Helper()
 	var claim *delegateRuntimeReclamationClaim
+	var stage, memberID string
+	var owedCount int
+	var owedIDs [8]string
+	var retryable bool
+	defer func() {
+		if t.Failed() && claim == nil {
+			t.Logf("settlement last rejection: stage=%s member=%q owed_count=%d owed_ids=%q retryable=%t", stage, memberID, owedCount, owedIDs[:min(owedCount, len(owedIDs))], retryable)
+		}
+	}()
 	// TRIPWIRE: the owed generations and the finalize tails settle in well
 	// under a second; 15s only bounds a deadlock.
 	waitForCondition(t, 15*time.Second, "subtree of "+delegateID+" to settle with no delegate attention owed", func() bool {
 		for _, member := range members {
+			stage, memberID, owedCount, owedIDs, retryable = "attention", member.id, 0, [8]string{}, false
 			owed, err := member.pendingDelegateAttentionIDs()
 			if err != nil {
+				stage = "attention-error"
 				t.Fatalf("pendingDelegateAttentionIDs(%s): %v", member.id, err)
 			}
-			if len(owed) != 0 || !member.idleReleasePregatesClear() {
+			if len(owed) != 0 {
+				stage, owedCount = "attention-owed", len(owed)
+				for i, id := range owed[:min(len(owed), len(owedIDs))] {
+					owedIDs[i] = id[:min(len(id), 128)]
+				}
+				return false
+			}
+			stage = "pregate"
+			if !member.idleReleasePregatesClear() {
 				return false
 			}
 		}
+		stage, memberID, owedCount, owedIDs, retryable = "claim", "", 0, [8]string{}, false
 		var err error
-		claim, _, err = tree.ClaimIdleRuntimeRelease(delegateID)
+		claim, retryable, err = tree.ClaimIdleRuntimeRelease(delegateID)
 		if err != nil {
+			stage = "claim-error"
 			t.Fatalf("ClaimIdleRuntimeRelease: %v", err)
 		}
 		return claim != nil
