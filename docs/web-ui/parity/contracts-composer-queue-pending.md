@@ -99,8 +99,12 @@ except where a line says so itself.
   conversation under the same restarted id. A route placement does not write a
   pane-id mapping; those are written only when a layout is saved or restored.
   Validated pane seats are reserved across the layout before any ref fallback
-  or fresh seat. Seats do not scope selections, so no selection ever
-  migrates between seats.
+  or fresh seat. Seats do not scope user selections, so no selection ever
+  migrates between seats. A recovery row records the seat that last wrote it
+  as its composition owner, and an empty composer at mount restores only the
+  newest rejected row its own seat owns; explicit queue-strip actions reach
+  every row regardless of owner, and rows recorded before owners existed are
+  never restored automatically.
 
 ### Atomic skill and command selections
 

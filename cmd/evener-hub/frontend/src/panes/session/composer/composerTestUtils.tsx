@@ -14,6 +14,7 @@ import { settleActivityDiscovery } from "../testing/activityDiscovery";
 import { createTestComposerSource } from "../testing/composerSource";
 import { Composer as ComposerView } from "./Composer";
 import { flushPendingTurnsProjectionForTests } from "./queue/testing/flushPendingTurnsProjection";
+import { defaultCompositionOwner } from "./sourceState";
 
 export function Composer(props: React.ComponentProps<typeof ComposerView>) {
   const client = connectionStore.getState().client;
@@ -151,6 +152,7 @@ export async function seedRejectedRecovery(
   ref: string,
   text: string,
   intent: { method?: string; input?: unknown[] } = {},
+  ownerId?: string | null,
 ) {
   const method = intent.method ?? "turn/start";
   const input = intent.input ?? [{ type: "text", text }];
@@ -164,7 +166,7 @@ export async function seedRejectedRecovery(
   });
   const recovered = await storage.transferToRecovery(outbox.clientMutationId, "rejected");
   if (!recovered) throw new Error("failed to seed recovery");
-  return recovered;
+  return stampRecoveryOwner(storage, recovered, ownerId);
 }
 
 // Shaped exactly as composerMutationIntent writes a real submit: the payload
@@ -172,7 +174,11 @@ export async function seedRejectedRecovery(
 // the untranslated composer text rides alongside it. Seeding raw markers into
 // the payload instead would let this fixture pass on a projection that only
 // ever reads the payload back.
-export async function seedRejectedRecoveryWithAttachment(storage: MutationOutboxIndexedDB, ref: string) {
+export async function seedRejectedRecoveryWithAttachment(
+  storage: MutationOutboxIndexedDB,
+  ref: string,
+  ownerId?: string | null,
+) {
   const input = [
     { type: "text" as const, text: "edit me (attached image 1: proof.png)" },
     { type: "image" as const, mediaType: "image/png", data: "AQID", name: "proof.png" },
@@ -196,7 +202,36 @@ export async function seedRejectedRecoveryWithAttachment(storage: MutationOutbox
   });
   const recovered = await storage.transferToRecovery(outbox.clientMutationId, "rejected");
   if (!recovered) throw new Error("failed to seed attachment recovery");
-  return recovered;
+  return stampRecoveryOwner(storage, recovered, ownerId);
+}
+
+// A recovery row a pane wrote in production carries that pane's composer seat
+// as its composition owner. A seeded row defaults to the ref's default
+// composition owner - the seat a default mount's source mints - so a plain
+// seed/restore test round-trips like the pane's own work, while a test that
+// passes an explicit different owner (or omits stamping via transferToRecovery
+// directly) can pin cross-seat and legacy-row behavior.
+export async function stampRecoveryOwner(
+  storage: MutationOutboxIndexedDB,
+  recovered: NonNullable<Awaited<ReturnType<MutationOutboxIndexedDB["transferToRecovery"]>>>,
+  ownerId?: string | null,
+): Promise<NonNullable<Awaited<ReturnType<MutationOutboxIndexedDB["transferToRecovery"]>>>> {
+  if (ownerId === null) return recovered;
+  const owner = ownerId ?? defaultCompositionOwner(recovered.targetRef);
+  const stamped = await storage.updateRecoveryInput(
+    recovered.clientMutationId,
+    recovered.payload.input as never[],
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    0,
+    undefined,
+    owner,
+  );
+  if (!stamped) throw new Error("failed to stamp recovery owner");
+  return stamped;
 }
 
 // --- ask-pending fixture ----------------------------------------------------

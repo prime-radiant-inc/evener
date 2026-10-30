@@ -42,6 +42,7 @@ import { installControlledImageEncoding } from "../testing/imageEncoding";
 import { askDockStore, resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { ackAskUserCall } from "./askDock/askDockTestUtils";
 import { Composer as ComposerView } from "./Composer";
+import { stampRecoveryOwner } from "./composerTestUtils";
 import { readComposerDraft, readDraft, writeComposerDraft } from "./draft";
 import { usePendingTurnEntries } from "./queue";
 import { resetPendingTurnsStoreForTests, subscribeComposerSubmissionCommitted } from "./queue/pendingTurnsStore";
@@ -461,7 +462,9 @@ test.each([
         })
       : null;
     if (original) {
-      await storage.transferToRecovery(original.clientMutationId, "rejected");
+      const seeded = await storage.transferToRecovery(original.clientMutationId, "rejected");
+      if (!seeded) throw new Error("missing recovery fixture");
+      await stampRecoveryOwner(storage, seeded);
       // Automatic restoration must adopt an already-advanced durable revision,
       // not assume zero: Send below persists through that lease.
       const bumped = await storage.updateRecoveryInput(
@@ -472,7 +475,7 @@ test.each([
         undefined,
         undefined,
         undefined,
-        0,
+        1,
       );
       if (!bumped) throw new Error("missing advanced revision fixture");
     }
@@ -561,8 +564,12 @@ test.each([
     attachments: [],
     optimisticDisplay: { method: "turn/start", input },
   });
-  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const seeded = await storage.transferToRecovery(original.clientMutationId, "rejected");
+  if (!seeded) throw new Error("missing recovery fixture");
   const pane: OpenPaneRecord = { id: "session-1", type: "session", params: { ref: "root" }, slot: "main" };
+  // The pane record carries no composer seat, so its id is this pane's
+  // composition owner; the row must be owned by the pane that restores it.
+  await stampRecoveryOwner(storage, seeded, pane.id);
   workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
   const lifetime = conversationPaneLifetime(pane);
   const source = lifetime.composer;
@@ -812,7 +819,9 @@ test.each(["success", "failure"] as const)(
       attachments: [],
       optimisticDisplay: { method: "turn/start", input },
     });
-    await storage.transferToRecovery(original.clientMutationId, "rejected");
+    const seeded = await storage.transferToRecovery(original.clientMutationId, "rejected");
+    if (!seeded) throw new Error("missing recovery fixture");
+    await stampRecoveryOwner(storage, seeded);
     const source = createTestComposerSource("root");
     const fake = await mountComposer("root", skillFocusThread("root"), source);
     await settleActivityDiscovery("root");
@@ -1382,7 +1391,9 @@ test("the composer resends recovered text while recovery projection callbacks ar
     attachments: [],
     optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "recover me" }] },
   });
-  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const seeded = await storage.transferToRecovery(original.clientMutationId, "rejected");
+  if (!seeded) throw new Error("missing recovery fixture");
+  await stampRecoveryOwner(storage, seeded);
   const fake = await mountComposer("ref_a");
   // The steer is awaited where it arrives: the recovery reads held below keep
   // the projection work open, so a flush could not settle until they are
@@ -1435,7 +1446,9 @@ test("rejected inline skill input restores its atoms and resends edited prose wi
     attachments: [],
     optimisticDisplay: { method: "turn/start", input },
   });
-  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const seeded = await storage.transferToRecovery(original.clientMutationId, "rejected");
+  if (!seeded) throw new Error("missing recovery fixture");
+  await stampRecoveryOwner(storage, seeded);
   const fake = await mountComposer("ref_a", {
     evener: {
       ref: "ref_a",

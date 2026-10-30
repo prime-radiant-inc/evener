@@ -68,7 +68,10 @@ command selections, payload input and attachment bytes, and the peer's row is
 left untouched. If the stale row still holds the identical composition, no
 duplicate row is created. The pane then owns the fresh row, so later edits
 update it, Send consumes it, and a reload restores the local composition
-including its images.
+including its images. Two bounds match the platform's existing behavior:
+rows recorded before a resume rewrote the conversation ref do not follow the
+resumed conversation, and keystrokes typed inside a crash window are
+best-effort.
 
 ### Browser seat and selection ownership
 
@@ -80,8 +83,17 @@ conversation mapping; pane-id mappings are written when a layout is saved or
 restored, and each records the conversation it belongs to, so a restarted id
 cannot lend another conversation's seat. Validated pane seats are reserved
 across the whole restored layout before any pane falls back to the ref
-mapping or a fresh seat. Seats do not scope selections; they only keep
-pane identity stable across reloads.
+mapping or a fresh seat. Seats do not scope user selections; they keep pane
+identity stable across reloads and scope automatic restoration: a recovery
+row records the composer seat that last wrote it as its composition owner, and
+an empty composer at mount restores only the newest rejected row its own seat
+owns - the pane's own bounced work, one tap back. Every row stays reachable
+through QueueStrip's explicit Edit, Retry and Send now regardless of owner.
+A pane's own send carries its seat, so the row a refusal bounces from it
+restores to that pane's next mount under the same seat. Rows written before
+composition owners existed carry no seat and are never restored
+automatically; the explicit actions reach them. A fresh pane holds a fresh
+seat, so it never injects another (or a closed) pane's row at mount.
 
 Sending recovery consumes its durable source and creates one fresh outbox
 identity atomically. It never falls back to an ordinary enqueue when the source
