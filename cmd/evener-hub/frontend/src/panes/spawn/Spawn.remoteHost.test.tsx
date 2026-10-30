@@ -1,3 +1,4 @@
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import "../session/testing/editorGeometry";
 import type {
   HostForwardedResult,
@@ -20,7 +21,6 @@ import { loadDefaultsBlob } from "./spawnDefaults";
 import { resetSpawnDraftsForTests, selectSpawnDirectory, setDraftField } from "./spawnDrafts";
 import {
   completionDraft,
-  deferred,
   expectModelReadsDefault,
   expectWorkingDir,
   fillPrompt,

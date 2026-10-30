@@ -1156,3 +1156,22 @@ func TestEvenerDiagnosticsPluginsJSONPresence(t *testing.T) {
 		t.Fatalf("empty plugin inventory round trip = %#v", roundTrip.Plugins)
 	}
 }
+
+// ClientMutationTurnID is a pure
+// format function.
+func TestClientMutationTurnID(t *testing.T) {
+	cases := []struct {
+		seq  uint64
+		want string
+	}{
+		{0, "turn_m0"},
+		{1, "turn_m1"},
+		{42, "turn_m42"},
+		{18446744073709551615, "turn_m18446744073709551615"},
+	}
+	for _, c := range cases {
+		if got := ClientMutationTurnID(c.seq); got != c.want {
+			t.Errorf("ClientMutationTurnID(%d) = %q, want %q", c.seq, got, c.want)
+		}
+	}
+}
