@@ -1,9 +1,14 @@
-import { makeTranscriptDisplayConfig, threadModelFromCache } from "@evener/appwire-client";
-import { render } from "@testing-library/react";
+import "fake-indexeddb/auto";
+import { hydrateThread, makeTranscriptDisplayConfig, threadModelFromCache } from "@evener/appwire-client";
+import { wireThread } from "@evener/appwire-client/testing/notifications";
+import { fireEvent, render } from "@testing-library/react";
 import { Component, type ReactNode } from "react";
 import { expect, test, vi } from "vitest";
+import "../panes/session";
+import { documentPaneState, resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
 import { TranscriptRenderProvider } from "../transcriptDisplay/renderContext";
 import { ComicMarkdown, comicMarkdownPoint } from "./ComicMarkdown";
+import { publishComicPaneCoverage } from "./comicPaneCoverage";
 import { composeComicRows } from "./layout";
 import { projectComicMarkdown } from "./markdown";
 
@@ -51,6 +56,100 @@ test("cached child Markdown acquires source-owned file links when live cwd arriv
   expect(url.searchParams.get("path")).toBe("/actual/child/comic-document-child.md");
   expect(anchor.textContent).toBe("COMIC_DOCUMENT_CHILD");
   rendered.unmount();
+});
+
+test.each(["popout", "redocked"])("%s Comic Markdown retains child file authority across realms", (phase) => {
+  resetWorkspaceStoreForTests();
+  const rootRef = "local:034MXwo6BpPH0QQCgdICSf";
+  const childRef = "remote:034MXwo6BpPH0QQCgdICSg";
+  const child = {
+    ...hydrateThread({ thread: wireThread(childRef) }, childRef, 0),
+    cwd: "/workspace/child",
+  };
+  const ownerId = workspaceStore.getState().openPane("session", { ref: rootRef });
+  const owner = workspaceStore.getState().panes.find((pane) => pane.id === ownerId);
+  if (!owner) throw new Error("missing containing pane");
+  // Supply the mounted reader's coverage, not a mocked opener or enhancer.
+  const retire = publishComicPaneCoverage(owner, rootRef, [childRef]);
+  const decoy = workspaceStore.getState().openPane("session", { ref: childRef });
+  const source = (prefix: string) =>
+    `${prefix}/bare.md and \`${prefix}/code.md\` and [AUTHORED](${prefix}/authored.md)`;
+  const view = (text: string, cwd = child.cwd) => (
+    <TranscriptRenderProvider thread={{ ...child, cwd }} sourcePaneId={ownerId}>
+      {formatted(text)}
+    </TranscriptRenderProvider>
+  );
+  const rendered = render(view(source("before")));
+  const frame = document.createElement("iframe");
+  document.body.append(frame);
+  const foreign = frame.contentDocument;
+  const checkLinks = (prefix: string, cwd: string) => {
+    // The authored anchor is a control: it already works in the old helper.
+    for (const [label, path] of [
+      ["AUTHORED", `${prefix}/authored.md`],
+      [`${prefix}/bare.md`, `${prefix}/bare.md`],
+      [`${prefix}/code.md`, `${prefix}/code.md`],
+    ] as const) {
+      const anchor = [...rendered.container.querySelectorAll("a")].find((link) => link.textContent === label);
+      expect(anchor, `${phase}: missing ${label}`).toBeDefined();
+      if (!anchor) throw new Error(`missing ${label}`);
+      const url = new URL(anchor.href);
+      expect(url.pathname).toBe("/doc/file");
+      expect(url.searchParams.get("session")).toBe(childRef);
+      expect(url.searchParams.get("path")).toBe(`${cwd}/${path}`);
+      expect(url.searchParams.get("format")).toBe("raw");
+      const firstGlyph = label[0];
+      if (firstGlyph === undefined) throw new Error("empty link label");
+      glyph(rendered.container, source(prefix).indexOf(label), anchor, 0, firstGlyph);
+      workspaceStore.getState().focusPane(decoy);
+      expect(fireEvent.click(anchor)).toBe(false);
+      const doc = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+      expect(doc?.params).toEqual({ session: childRef, path, kind: "file" });
+      expect(doc && documentPaneState(doc)?.reference).toMatchObject({ cwd, readTarget: `${cwd}/${path}` });
+      expect(doc && documentPaneState(doc)?.origin).toBe(owner);
+      expect(workspaceStore.getState().focusedPaneId).toBe(doc?.id);
+      if (doc) workspaceStore.getState().closePane(doc.id);
+    }
+    expect(rendered.container.querySelectorAll("a")).toHaveLength(3);
+  };
+  try {
+    if (!foreign) throw new Error("missing popout document");
+    checkLinks("before", child.cwd);
+    const host = rendered.container.querySelector("[data-comic-markdown]");
+    foreign.body.append(foreign.adoptNode(rendered.container));
+    // A real renderer update creates new formatted descendants in the popout.
+    rendered.rerender(view(source("after")));
+    expect(rendered.container.querySelector("[data-comic-markdown]")).toBe(host);
+    const paragraph = rendered.container.querySelector("p");
+    const code = rendered.container.querySelector("code");
+    const authored = [...rendered.container.querySelectorAll("a")].find((a) => a.textContent === "AUTHORED");
+    if (!paragraph || !code || !authored) throw new Error("missing formatted popout content");
+    const authoredText = authored.firstChild;
+    expect(paragraph.ownerDocument).toBe(foreign);
+    expect(paragraph instanceof HTMLElement).toBe(false);
+    expect(authoredText instanceof Text).toBe(false);
+    let cwd = child.cwd;
+    if (phase === "redocked") {
+      document.body.append(document.adoptNode(rendered.container));
+      cwd = "/relocated/child";
+      // Only context changes: the foreign descendants must survive and rebind.
+      rendered.rerender(view(source("after"), cwd));
+      expect(rendered.container.querySelector("p")).toBe(paragraph);
+      expect(rendered.container.querySelector("code")).toBe(code);
+      expect(authored.firstChild).toBe(authoredText);
+      expect(paragraph.ownerDocument).toBe(document);
+      expect(paragraph instanceof HTMLElement).toBe(false);
+      expect(authoredText instanceof Text).toBe(false);
+      expect(host instanceof HTMLElement).toBe(true);
+    }
+    checkLinks("after", cwd);
+  } finally {
+    rendered.unmount();
+    rendered.container.remove();
+    frame.remove();
+    retire();
+    resetWorkspaceStoreForTests();
+  }
 });
 
 function formatted(source: string, live = false) {
