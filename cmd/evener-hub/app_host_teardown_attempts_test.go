@@ -3,6 +3,7 @@ package hub
 import (
 	"cmp"
 	"context"
+	"fmt"
 	"reflect"
 	"slices"
 	"testing"
@@ -64,7 +65,7 @@ func settleRemnantWithPriorTimedOutAttempt(t *testing.T, resolve func(m *hubHost
 		})
 	}
 	slices.SortFunc(out.attempts, func(a, b attemptTransition) int {
-		return cmp.Compare(a.State+a.Boot, b.State+b.Boot)
+		return cmp.Compare(fmt.Sprintf("%+v", a), fmt.Sprintf("%+v", b))
 	})
 	remnant, _ := m.cfg.store.remnantByID(arm.RemnantID)
 	out.remnantOpen = remnant.open()
