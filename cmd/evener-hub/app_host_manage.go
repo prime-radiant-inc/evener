@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sync/atomic"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
@@ -31,6 +32,11 @@ import (
 // pinned by TestHostManageRefusesRemoteOrigin.
 type hubHostManager struct {
 	cfg *hostManagerConfig
+	// hostFileSyncOwed is set when a compensation restored hub.toml and only the
+	// directory sync behind the rename failed. The store keeps the change's
+	// staged records until a sync succeeds, so no later write can discard the
+	// evidence a crash needs to roll the change back.
+	hostFileSyncOwed atomic.Bool
 	// testOnlyParkPostCommit, when non-nil, is called by Update and Remove after
 	// their durable commit, with the mutation mutex released and the per-host
 	// gate reservation still held, and immediately before the post-commit live

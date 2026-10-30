@@ -30,27 +30,27 @@ type ProviderConfig struct {
 // destination passed to ssh (component 04), and User overrides its user.
 // EvenerPath and Roots are advisory inputs to components 04/05.
 type HostConfig struct {
-	Name string `toml:"name"`
-	SSH  string `toml:"ssh"`
+	Name string `toml:"name" json:"name"`
+	SSH  string `toml:"ssh" json:"ssh"`
 	// User, and every field below it, is optional: omitempty is what the
 	// machine-managed hub.toml writer relies on so a rewrite never invents a
 	// key the operator (or the dialog that added the host) did not set. It has
 	// no effect on decoding.
-	User string `toml:"user,omitempty"`
+	User string `toml:"user,omitempty" json:"user,omitempty"`
 	// EvenerPath is the host binary's absolute path, when it is not on PATH.
-	EvenerPath string `toml:"evener_path,omitempty"`
+	EvenerPath string `toml:"evener_path,omitempty" json:"evener_path,omitempty"`
 	// ConfigPath is the host hub's hub.toml, when it is not at the default
 	// location, so the bridge attaches with the host's own configuration.
-	ConfigPath string `toml:"config_path,omitempty"`
+	ConfigPath string `toml:"config_path,omitempty" json:"config_path,omitempty"`
 	// Addr is a listener override only for explicitly authorized fresh bootstrap.
 	// Existing service definitions and selected connection endpoints ignore it.
-	Addr  string   `toml:"addr,omitempty"`
-	Roots []string `toml:"roots,omitempty"`
+	Addr  string   `toml:"addr,omitempty" json:"addr,omitempty"`
+	Roots []string `toml:"roots,omitempty" json:"roots,omitempty"`
 	// KeyPath is the SSH private-key file for this host, when it is not the
 	// user's ssh_config default. The machine-managed hub.toml stores it (the
 	// UI's Add/Edit dialog collects it), so a UI-added host's key path
 	// round-trips through a rewrite (registry spec 08 §6).
-	KeyPath string `toml:"key_path,omitempty"`
+	KeyPath string `toml:"key_path,omitempty" json:"key_path,omitempty"`
 }
 
 // Config is the hub's runtime configuration loaded from hub.toml (see
@@ -404,58 +404,12 @@ func decodeConfig(name, data string) (Config, error) {
 		return cfg, fmt.Errorf("validate hosts: %w", err)
 	}
 	// The machine records are decoded as plain tables, so a record the hub's
-	// writer never emits — an incomplete one, or a live record disagreeing with
-	// the name's high-water triple — is refused here rather than read as one of
-	// its halves (registry spec 08 §6: a reserved value whose shape this build
-	// cannot decode is refused loudly before any rewrite).
-	if err := validateHostRecords(cfg.HostRecords, cfg.Generations); err != nil {
-		return cfg, fmt.Errorf("validate host records: %w", err)
-	}
-	// The mutation receipts are the other machine-managed section this build
-	// decodes: a record whose key or shape this build cannot decode, or whose
-	// fields disagree with its key, is refused loudly before any rewrite
-	// (registry spec 08 §6's reserved-namespace rule) — never read as a
-	// half-understood record, and never dropped by the next rewrite.
-	if err := validateHostMutationReceipts(cfg.MutationReceipts); err != nil {
-		return cfg, fmt.Errorf("validate mutation receipts: %w", err)
-	}
-	// The tombstones and pruned markers are the other machine-managed sections
-	// this build decodes: a record whose shape this build cannot decode, or a
-	// tombstone whose entry/identity fails validation, is refused loudly before
-	// any rewrite (registry spec 08 §6's reserved-namespace rule) — the same
-	// hard startup-error posture the host entries take.
-	if err := validateHostTombstones(cfg.Tombstones, cfg.Generations); err != nil {
-		return cfg, fmt.Errorf("validate tombstones: %w", err)
-	}
-	if err := validatePrunedReceipts(cfg.PrunedReceipts); err != nil {
-		return cfg, fmt.Errorf("validate pruned receipts: %w", err)
-	}
-	// The teardown-repair records (registry spec 08 §5/§6) are the sections this
-	// slice adds: the staged-receipt markers a commit's step-(2) write carries,
-	// the open remnants and typed resolved records their clearances leave, and
-	// the attempt records a retry claims. Each is refused loudly when its shape
-	// is one this build cannot decode, so a marker or remnant that reached the
-	// file from a newer build is a hard startup error rather than a silently
-	// reinterpreted (or dropped) record.
-	if err := validateHostStagedReceipts(cfg.StagedReceipts); err != nil {
-		return cfg, fmt.Errorf("validate staged receipts: %w", err)
-	}
-	if err := validateHostTeardownRemnants(cfg.TeardownRemnants); err != nil {
-		return cfg, fmt.Errorf("validate teardown remnants: %w", err)
-	}
-	if err := validateHostTeardownAttempts(cfg.TeardownAttempts, cfg.TeardownRemnants); err != nil {
-		return cfg, fmt.Errorf("validate teardown attempts: %w", err)
-	}
-	// The cross-file commit intent and the generation-mirror markers are the
-	// deploy pipeline's machine-managed sections (08b §4/§9): a record whose
-	// shape this build cannot decode — an intent without rows or a generation,
-	// a marker without a generation — is refused loudly before any rewrite, the
-	// same reserved-namespace posture the sections above take.
-	if err := validateHostStoreSync(cfg.PendingStoreSync); err != nil {
-		return cfg, fmt.Errorf("validate pending store sync: %w", err)
-	}
-	if err := validateHostMirrorCommits(cfg.MirrorCommits); err != nil {
-		return cfg, fmt.Errorf("validate mirror commits: %w", err)
+	// writer never emits — an incomplete one, a live record disagreeing with
+	// the name's high-water triple, a shape this build cannot decode — is
+	// refused here rather than read as one of its halves, and is never dropped
+	// by the next rewrite.
+	if err := validateHostRecordSet(cfg.recordSet()); err != nil {
+		return cfg, err
 	}
 	// Every field of a reserved record must decode: the two tables are decoded
 	// into typed structs and rebuilt on every rewrite, so a field this build does

@@ -36,10 +36,10 @@ import (
 type HostRecord struct {
 	// IncarnationID is the name's live incarnation id (spec §1): minted on
 	// every add/re-add, never reused.
-	IncarnationID string `toml:"incarnation_id"`
+	IncarnationID string `toml:"incarnation_id" json:"incarnation_id"`
 	// PresenceEpoch is the name's presence counter (spec §1): advanced on
 	// every add, remove, re-add and expiry purge.
-	PresenceEpoch uint64 `toml:"presence_epoch"`
+	PresenceEpoch uint64 `toml:"presence_epoch" json:"presence_epoch"`
 	// The six fields below are the retired crash-fencing bootstrap keys. They
 	// are decoded only so that a hub.toml written by the build that carried the
 	// bootstrap stack still loads: the reserved-record rule refuses a reserved
@@ -51,12 +51,12 @@ type HostRecord struct {
 	// pointers because BurntSushi's omitempty does not omit numeric zeros, so a
 	// stripped zero would otherwise re-emit itself as a fresh key. They go away
 	// with the rest of the fencing removal.
-	RetiredBootstrapAttempted    bool    `toml:"bootstrap_attempted,omitempty"`
-	RetiredHelperInstalled       bool    `toml:"helper_installed,omitempty"`
-	RetiredHelperVersion         *uint64 `toml:"helper_version,omitempty"`
-	RetiredBootstrapEpochBoot    string  `toml:"bootstrap_epoch_boot,omitempty"`
-	RetiredBootstrapEpochOpSeq   *uint64 `toml:"bootstrap_epoch_op_seq,omitempty"`
-	RetiredBootstrapAttemptToken string  `toml:"bootstrap_attempt_token,omitempty"`
+	RetiredBootstrapAttempted    bool    `toml:"bootstrap_attempted,omitempty" json:"-"`
+	RetiredHelperInstalled       bool    `toml:"helper_installed,omitempty" json:"-"`
+	RetiredHelperVersion         *uint64 `toml:"helper_version,omitempty" json:"-"`
+	RetiredBootstrapEpochBoot    string  `toml:"bootstrap_epoch_boot,omitempty" json:"-"`
+	RetiredBootstrapEpochOpSeq   *uint64 `toml:"bootstrap_epoch_op_seq,omitempty" json:"-"`
+	RetiredBootstrapAttemptToken string  `toml:"bootstrap_attempt_token,omitempty" json:"-"`
 }
 
 // withoutRetiredFencingFields returns r with the retired bootstrap keys
@@ -81,11 +81,11 @@ func (r HostRecord) withoutRetiredFencingFields() HostRecord {
 // (the retention slices own that).
 type HostGeneration struct {
 	// Generation is the greatest generation the name has carried.
-	Generation uint64 `toml:"generation"`
+	Generation uint64 `toml:"generation" json:"generation"`
 	// IncarnationID is the incarnation that generation belongs to.
-	IncarnationID string `toml:"incarnation_id"`
+	IncarnationID string `toml:"incarnation_id" json:"incarnation_id"`
 	// PresenceEpoch is the presence epoch recorded with that generation.
-	PresenceEpoch uint64 `toml:"presence_epoch"`
+	PresenceEpoch uint64 `toml:"presence_epoch" json:"presence_epoch"`
 }
 
 // hostRecordFor derives name's live record from a registry entry.

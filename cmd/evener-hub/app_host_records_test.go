@@ -31,10 +31,7 @@ func readHostFileBytes(t *testing.T, path string) []byte {
 // records the file carries, keyed by host name.
 func readHostRecords(t *testing.T, path string) (map[string]HostRecord, map[string]HostGeneration) {
 	t.Helper()
-	cfg, err := LoadConfig(path)
-	if err != nil {
-		t.Fatalf("LoadConfig(%s): %v", path, err)
-	}
+	cfg, _ := readPipelineConfig(t, path)
 	return cfg.HostRecords, cfg.Generations
 }
 
@@ -116,7 +113,7 @@ func TestHubTOMLGenerationsMarkIsNotALiveIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	hosts, err := hostreg.NewSeeded(hostRegistryEntries(cfg), hostHighWaterMarks(cfg))
+	hosts, err := hostreg.NewSeeded(hostRegistryEntries(cfg), cfg.recordSet().highWaterMarks())
 	if err != nil {
 		t.Fatalf("hostreg.NewSeeded: %v", err)
 	}
@@ -167,9 +164,9 @@ func TestHubTOMLRefusesAnOverLongIncarnationID(t *testing.T) {
 
 // TestBoundaryMirrorPrunesARolledBackAdd pins roborev round 2's mirror-pruning
 // finding: an add whose durable write lands and whose live insert then fails is
-// compensated back to the pre-add file contents, and the boundary the failed
-// write mirrored is pruned in that same compensation — the mirror never keeps a
-// boundary for a host hub.toml no longer records.
+// compensated back to the pre-add contents, and the boundary the failed write
+// mirrored is pruned in that same compensation — the mirror never keeps a
+// boundary for a host the records no longer carry.
 func TestBoundaryMirrorPrunesARolledBackAdd(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "hub.toml")
@@ -180,12 +177,6 @@ func TestBoundaryMirrorPrunesARolledBackAdd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
-	// A foreign boundary the failed add does not own must survive the prune.
-	if err := ops.MirrorBoundaries(map[string]hostops.Boundary{
-		"foreign": {Generation: 2, IncarnationID: "inc-foreign", PresenceEpoch: 1},
-	}, nil); err != nil {
-		t.Fatalf("seed the foreign boundary: %v", err)
-	}
 	// A manager with no registry: its AddHost refuses after the durable write,
 	// which is exactly the compensated-add window.
 	manager := sshconn.New(nil, sshconn.Options{})
@@ -195,10 +186,17 @@ func TestBoundaryMirrorPrunesARolledBackAdd(t *testing.T) {
 		t.Fatal("Add over a manager with no registry succeeded, want the live-insert refusal")
 	}
 	if _, ok := ops.Boundary("gone"); ok {
-		t.Fatal("the compensated add left a boundary for a name hub.toml no longer carries")
+		t.Fatal("the compensated add left a boundary for a name the records no longer carry")
 	}
-	if _, ok := ops.Boundary("foreign"); !ok {
-		t.Fatal("the prune dropped a boundary the write did not own")
+	records, err := hostOpsRecordStore{ops: ops}.records()
+	if err != nil {
+		t.Fatalf("read the records: %v", err)
+	}
+	if _, ok := records.HostRecords["gone"]; ok {
+		t.Fatal("the compensated add left a live record for a host that was never added")
+	}
+	if len(records.StagedReceipts) != 0 {
+		t.Fatalf("the compensated add left staged markers: %+v", records.StagedReceipts)
 	}
 }
 
@@ -220,7 +218,7 @@ func TestHostRegistryBootMintsAboveRetainedMarks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	hosts, err := hostreg.NewSeeded(hostRegistryEntries(cfg), hostHighWaterMarks(cfg))
+	hosts, err := hostreg.NewSeeded(hostRegistryEntries(cfg), cfg.recordSet().highWaterMarks())
 	if err != nil {
 		t.Fatalf("hostreg.NewSeeded: %v", err)
 	}

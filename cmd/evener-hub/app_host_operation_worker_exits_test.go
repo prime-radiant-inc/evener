@@ -573,7 +573,7 @@ func TestStartOperationRefusesBeforeTheGate(t *testing.T) {
 	if info, _, code := deployWireInfo(t, err); code != appwire.CodeInvalidParams {
 		t.Errorf("unknown host refusal = (%q, %d), want invalid params", info, code)
 	}
-	m.cfg.ops = nil
+	m.cfg.ops.Store(nil)
 	_, err = m.Deploy(context.Background(), appwire.HostDeployParams{Name: entry.Name, Token: token.Value, OperationID: "op-1"})
 	if info, _, code := deployWireInfo(t, err); code != appwire.CodeInternalError {
 		t.Errorf("missing store refusal = (%q, %d), want internal error", info, code)

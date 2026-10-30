@@ -53,6 +53,32 @@ type hostPersistChange struct {
 	// is a write that carries no marker for its host, and the derivation must
 	// drop the stored one rather than preserve it.
 	dropMarker string
+	// dropTombstone names a host whose removal tombstone this write removes:
+	// the rollback of a removal that never reached hub.toml, which leaves the
+	// host live.
+	dropTombstone string
+	// recordsOnly commits the machine records without rewriting the host list in
+	// hub.toml: boot recovery that settles records must not write the registry's
+	// idea of the hosts over what the file holds now.
+	recordsOnly bool
+	// hostFileFirst writes the host list before the records. Every un-commit
+	// wants it: the host change being taken back already reached hub.toml, so
+	// the file is restored first and the staged records go second; a crash
+	// between leaves the host where it belongs with a staged marker boot rolls
+	// back, instead of a missing host with no marker to say why.
+	hostFileFirst bool
+	// leaveReturningNames keeps the tombstone of a removed name that is live
+	// again, with its history, for the boot collision rule to settle; the
+	// re-add purge that would consume it is skipped.
+	leaveReturningNames bool
+	// restore puts back the history a re-add's staging write purged, when the
+	// re-add is rolled back.
+	restore *HostConsumedRecords
+	// restoreSpent is the generation and presence epoch the rolled-back re-add
+	// spent; the name's high-water mark keeps them above the restored tombstone.
+	restoreSpent HostGeneration
+	// restoreName is the name those counters belong to.
+	restoreName string
 	// storeSync, when set, is the cross-file commit intent this write carries
 	// (deploy-pipeline 08b §9): a removal's staged write stages the exact store
 	// rows it is about to purge. dropStoreSync names a host whose intent this
@@ -63,8 +89,9 @@ type hostPersistChange struct {
 	// highWaterRaises carries the boot mirror pass's raised marks: the
 	// discarded generations §4 preserves as the names' high-water marks. The
 	// derivation merges them after the tombstone stage so a raise wins over the
-	// file's older mark, and a tombstoned name's tombstone is raised with its
-	// [generations] twin (validateHostTombstones requires the pair to agree).
+	// file's older mark; a tombstoned name's tombstone keeps the identity of its
+	// removal (validateHostTombstones asks only that the mark is the same
+	// incarnation at or above it).
 	highWaterRaises map[string]HostGeneration
 }
 

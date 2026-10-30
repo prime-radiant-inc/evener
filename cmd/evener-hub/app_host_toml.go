@@ -158,23 +158,97 @@ func writeHubTOMLHostsRecords(path string, entries, known []hostreg.Host, record
 	} else {
 		doc["teardown_attempts"] = attemptTables
 	}
+	data, err := renderHubTOMLDocument(path, doc)
+	if err != nil {
+		return err
+	}
+	return replaceHubTOML(path, data)
+}
+
+// reservedRecordSections are the hub.toml sections that held the machine
+// records before the operation store took them over. A rewrite that does not
+// carry records drops them.
+var reservedRecordSections = []string{
+	"host_records", "generations", "mutation_receipts", "tombstones", "pruned_receipts",
+	"staged_receipts", "teardown_remnants", "teardown_attempts", "pending_store_sync", "mirror_commits",
+}
+
+// legacyRecordSections names the reserved record sections doc still carries, in
+// the order reservedRecordSections lists them.
+func legacyRecordSections(doc map[string]any) []string {
+	var present []string
+	for _, key := range reservedRecordSections {
+		if _, ok := doc[key]; ok {
+			present = append(present, key)
+		}
+	}
+	return present
+}
+
+// writeHubTOMLHostsOnly rewrites path with entries as its [[hosts]] tables and
+// no machine records: the operator's other keys are preserved exactly as
+// writeHubTOMLHostsRecords preserves them, hand-added entries survive by the
+// same known-snapshot rule, and any reserved record section the file still
+// carries is dropped. A write whose bytes equal the file's changes nothing and
+// touches nothing.
+func writeHubTOMLHostsOnly(path string, entries, known []hostreg.Host) error {
+	if strings.TrimSpace(path) == "" {
+		return nil
+	}
+	doc, raw, err := readHubTOMLDocument(path)
+	if err != nil {
+		return err
+	}
+	var extra []HostConfig
+	if known != nil {
+		fileCfg, err := decodeHubTOMLForRewrite(path, raw)
+		if err != nil {
+			return err
+		}
+		extra = fileOnlyHostEntries(fileCfg, known, entries)
+	}
+	tables := append(hubTOMLHostTables(entries), extra...)
+	if len(tables) == 0 {
+		delete(doc, "hosts")
+	} else {
+		doc["hosts"] = tables
+	}
+	for _, key := range reservedRecordSections {
+		delete(doc, key)
+	}
+	data, err := renderHubTOMLDocument(path, doc)
+	if err != nil {
+		return err
+	}
+	if bytes.Equal(data, raw) {
+		return nil
+	}
+	return replaceHubTOML(path, data)
+}
+
+// renderHubTOMLDocument encodes doc with the machine-managed banner and runs
+// the bytes through the loader's own decode: a rewrite is only as good as its
+// round trip, so a file the hub would refuse at boot can never be written by a
+// mutation.
+func renderHubTOMLDocument(path string, doc map[string]any) ([]byte, error) {
 	var buf bytes.Buffer
 	buf.WriteString(hostTOMLBanner)
 	if err := toml.NewEncoder(&buf).Encode(doc); err != nil {
-		return fmt.Errorf("marshal hub.toml: %w", err)
+		return nil, fmt.Errorf("marshal hub.toml: %w", err)
 	}
 	data := buf.Bytes()
-	// The rewrite is only as good as its round trip: run the bytes through the
-	// loader's own decode before anything lands, so a file the hub would refuse
-	// at boot can never be written by a mutation.
 	if _, err := decodeConfig(path, string(data)); err != nil {
-		return fmt.Errorf("hub.toml rewrite refused: %w", err)
+		return nil, fmt.Errorf("hub.toml rewrite refused: %w", err)
 	}
-	// The replace's rename is the save's commit point: the target file already
-	// holds the new entries once fsatomic reports ErrPublished, so that failure
-	// cannot be returned as though nothing was written. It is wrapped in
-	// hubTOMLPostRenameError, and the callers compensate the live state
-	// (rollbackHubTOML) before reporting the failure.
+	return data, nil
+}
+
+// replaceHubTOML atomically replaces path with data. The replace's rename is
+// the save's commit point: the target file already holds the new entries once
+// fsatomic reports ErrPublished, so that failure cannot be returned as though
+// nothing was written. It is wrapped in hubTOMLPostRenameError, and the callers
+// compensate the live state (rollbackHubTOML) before reporting the failure.
+func replaceHubTOML(path string, data []byte) error {
 	if err := hubTOMLReplaceWithBytes(path, data, hubTOMLSyncDir); err != nil {
 		if errors.Is(err, fsatomic.ErrPublished) {
 			return &hubTOMLPostRenameError{err: err}
@@ -277,20 +351,74 @@ func hubTOMLRenameCommitted(err error) bool {
 // onto its wire envelope here, the one choke point every mutation path runs
 // through.
 func (m *hubHostManager) persistHosts(entries, known []hostreg.Host, change hostPersistChange) error {
+	if m.hostFileSyncOwed.Load() {
+		if err := hubTOMLSyncDir(filepath.Dir(m.cfg.configPath)); err != nil {
+			return fmt.Errorf("the restored host file is not yet durable: %w", err)
+		}
+		m.hostFileSyncOwed.Store(false)
+	}
 	records, err := m.deriveHostTOMLRecords(entries, known, change)
 	if err != nil {
 		return tombstoneCapacityRefusal(err)
 	}
-	if err := m.cfg.records.commit(entries, known, records); err != nil {
+	if store, ok := m.recordStore().(hostOpsRecordStore); ok && change.recordsOnly {
+		err = store.commitRecords(entries, records)
+	} else if ok && change.hostFileFirst {
+		err = store.commitHostFileFirst(entries, known, records, change.dropMarker)
+	} else {
+		err = m.recordStore().commit(entries, known, records)
+	}
+	if err != nil {
+		if change.hostFileFirst && hubTOMLRenameCommitted(err) {
+			// The compensation's rename landed: the file holds the restored
+			// hosts and only its durability is uncertain, so the manager settles
+			// the failed commit's records all the same.
+			m.cfg.store.installRecords(records)
+			m.hostFileSyncOwed.Store(true)
+		}
+		if store, ok := m.recordStore().(hostOpsRecordStore); ok && !change.hostFileFirst && !change.recordsOnly {
+			m.adoptSpentCounters(store)
+		}
 		return err
 	}
 	m.cfg.store.installRecords(records)
-	// The mirror rides behind the hub.toml commit: hub.toml is the authority
-	// and the two files cannot be one write, so the mirror is written last and
-	// a failure here leaves it behind the file rather than unwinding the
-	// commit. See mirrorBoundaries.
-	m.mirrorBoundaries(entries, known, records)
+	if !m.recordsInStore() {
+		// The mirror rides behind the hub.toml commit: hub.toml is the authority
+		// and the two files cannot be one write, so the mirror is written last and
+		// a failure here leaves it behind the file rather than unwinding the
+		// commit. See mirrorBoundaries. A store that holds the records writes the
+		// mirror in the same atomic write as the records.
+		m.mirrorBoundaries(entries, known, records)
+	}
 	return nil
+}
+
+// adoptSpentCounters raises the manager's marks for names with no live record to what the
+// store holds after a refused commit restored its prior family: the counters the
+// refused attempt spent stay spent in the store (keepSpentCounters), and the next
+// write must carry them rather than the lower ones the manager last installed.
+func (m *hubHostManager) adoptSpentCounters(store hostOpsRecordStore) {
+	set, err := store.records()
+	if err != nil {
+		return
+	}
+	marks := m.cfg.store.highWaterSnapshot()
+	for name, stored := range set.Generations {
+		if _, live := set.HostRecords[name]; live {
+			continue
+		}
+		held := marks[name]
+		if stored.Generation <= held.Generation && stored.PresenceEpoch <= held.PresenceEpoch {
+			continue
+		}
+		if held.IncarnationID == "" {
+			held.IncarnationID = stored.IncarnationID
+		}
+		held.Generation = max(held.Generation, stored.Generation)
+		held.PresenceEpoch = max(held.PresenceEpoch, stored.PresenceEpoch)
+		marks[name] = held
+	}
+	m.cfg.store.setHighWaterMap(marks)
 }
 
 // mirrorBoundaries records the triples the hub.toml write just committed in the
@@ -311,7 +439,7 @@ func (m *hubHostManager) persistHosts(entries, known []hostreg.Host, change host
 // to later slices; until they land the mirror trails the file and nothing
 // reads it.
 func (m *hubHostManager) mirrorBoundaries(entries, known []hostreg.Host, records hostTOMLRecords) {
-	if m.cfg.ops == nil || strings.TrimSpace(m.cfg.configPath) == "" {
+	if m.opsStore() == nil || strings.TrimSpace(m.cfg.configPath) == "" {
 		return
 	}
 	// The mirrored triples are the same derivation the file's records come from
@@ -373,7 +501,7 @@ func (m *hubHostManager) mirrorBoundaries(entries, known []hostreg.Host, records
 	if len(mirror.Boundaries) == 0 && len(mirror.Remove) == 0 && len(mirror.Live) == 0 && len(mirror.Removed) == 0 {
 		return
 	}
-	if err := m.cfg.ops.MirrorHostState(mirror); err != nil {
+	if err := m.opsStore().MirrorHostState(mirror); err != nil {
 		m.logf("host boundary records not mirrored: %v", err)
 	}
 }
