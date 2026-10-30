@@ -27,15 +27,12 @@ func DirFor(transcriptPath string) string {
 func SidecarDirs(transcriptPath string) ([]string, error) {
 	parent, prefix := filepath.Dir(transcriptPath), filepath.Base(transcriptPath)+sidecarSuffix
 	entries, err := os.ReadDir(parent)
-	if os.IsNotExist(err) {
-		return nil, nil
-	}
 	if err != nil {
 		return nil, err
 	}
 	var dirs []string
 	for _, entry := range entries {
-		if name := entry.Name(); name == prefix || strings.HasPrefix(name, prefix+"-") {
+		if strings.HasPrefix(entry.Name(), prefix) {
 			dirs = append(dirs, filepath.Join(parent, entry.Name()))
 		}
 	}

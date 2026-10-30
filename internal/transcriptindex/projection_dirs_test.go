@@ -3,7 +3,6 @@ package transcriptindex
 import (
 	"errors"
 	"os"
-	"slices"
 	"strings"
 	"testing"
 )
@@ -88,7 +87,11 @@ func TestSidecarDirsListsEveryProjectionsSidecar(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range dirs {
-		if !slices.Contains(got, want) {
+		found := false
+		for _, g := range got {
+			found = found || g == want
+		}
+		if !found {
 			t.Errorf("SidecarDirs missed %q (got %v)", want, got)
 		}
 	}

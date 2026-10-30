@@ -669,7 +669,7 @@ func (s *WebServer) removeProjectDeletionArtifacts(stateDir, sessionID string) e
 	pastTranscriptIndexes.Forget(transcriptPath)
 	transcriptIndexRepairs.forget(transcriptPath)
 	sidecars, err := transcriptindex.SidecarDirs(transcriptPath)
-	if err != nil {
+	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	for _, sidecar := range sidecars {
