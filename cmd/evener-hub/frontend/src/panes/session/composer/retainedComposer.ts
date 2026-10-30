@@ -1,5 +1,5 @@
 import type { PaneLifetime } from "../../../shell/paneLifetime";
-import { liveComposerSeats, workspaceStore } from "../../../shell/workspace";
+import { coversConversationRef, workspaceStore } from "../../../shell/workspace";
 import { readRefComposerSeat, writeRefComposerSeat } from "./draft";
 import { type ComposerSourceState, createComposerSourceState } from "./sourceState";
 
@@ -22,10 +22,16 @@ export function retainedConversationComposer(lifetime: PaneLifetime, ref: string
   // one is absent or held by no live pane (displaced or closed); a mapping a
   // live pane still holds is that owner's.
   const stored = readRefComposerSeat(ref);
-  if (
-    stored === undefined ||
-    (stored !== lifetime.compositionOwnerId && !liveComposerSeats(workspaceStore.getState().panes).has(stored))
-  ) {
+  // A stored mapping is preserved only when its live holder actually owns
+  // this conversation. A seat that is merely live - held by a cold-restore
+  // collision winner covering a different conversation - would strand this
+  // column's recovery on a seat that never opens it.
+  const storedOwned = () =>
+    stored !== undefined &&
+    workspaceStore
+      .getState()
+      .panes.some((pane) => (pane.composerSeatId ?? pane.id) === stored && coversConversationRef(pane, ref));
+  if (stored === undefined || (stored !== lifetime.compositionOwnerId && !storedOwned())) {
     writeRefComposerSeat(ref, lifetime.compositionOwnerId);
   }
   return composer;

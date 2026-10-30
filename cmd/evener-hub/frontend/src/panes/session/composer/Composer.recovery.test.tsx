@@ -700,6 +700,19 @@ test("this pane's bounced send restores to its next mount under the same seat", 
   expect(textarea().textContent).toBe("my send");
 });
 
+test("mount restore picks the newest rejected row the seat owns", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const seat = "seat-a";
+  await seedRejectedRecovery(storage, "ref_a", "older attempt", {}, seat);
+  await seedRejectedRecovery(storage, "ref_a", "newer attempt", {}, seat);
+  const source = createTestComposerSource("ref_a", seat);
+  await mountComposerWithHandle("ref_a", { status: { type: "idle" } }, { source });
+  // Both rows are this pane's own bounced work; the newest composition is
+  // the work to restore, not the oldest.
+  expect(textarea().textContent).toBe("newer attempt");
+});
+
 test("mount restore leaves an ownerless legacy row to the queue strip", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);

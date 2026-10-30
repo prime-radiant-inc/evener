@@ -12,7 +12,7 @@ import { ClientProvider } from "../../shell/clientContext";
 import { urlToPane } from "../../shell/routing";
 import * as StatusBarModule from "../../shell/statusbar/StatusBar";
 import { resetMobileViewportForTests } from "../../shell/useIsMobile";
-import { resetWorkspaceStoreForTests } from "../../shell/workspace";
+import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { resetActivityPanelStoreForTests } from "../../stores/activityPanel";
 import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
@@ -25,7 +25,7 @@ import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import * as SessionChromeModule from "./chrome/SessionChrome";
 import { resetAskDockStoreForTests } from "./composer/askDock/askDockStore";
 import * as ComposerModule from "./composer/Composer";
-import { readDraft } from "./composer/draft";
+import { readDraft, readRefComposerSeat } from "./composer/draft";
 import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./composer/queue/testing/flushPendingTurnsProjection";
 import "./index";
@@ -324,6 +324,108 @@ test("a fenced remote session's Send drives the resume and then dispatches", asy
   expect(requests.filter(({ method }) => method === "thread/resume")).toHaveLength(1);
   const starts = requests.filter(({ method }) => method === "turn/start");
   expect(starts[0]?.params).toEqual(expect.objectContaining({ ref: resumedRef }));
+});
+
+// A resumed conversation replaces this pane's route. The retargeted rows keep
+// their composition owner - this pane's seat - so the replacement pane must be
+// placed under the SAME seat, or a refusal after the resume bounces a row the
+// authoring composer can never restore.
+test("a resume carries the authoring pane's seat to the resumed conversation", async ({ onTestFinished }) => {
+  onTestFinished(stubSessionSlots);
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
+  const ref = "remote:stable-seat";
+  const resumedRef = "remote:current-seat";
+  const client = new AppwireClient({
+    url: "ws://hub/rpc",
+    socketFactory: () => {
+      const socket = new FakeSocket({ autoInitialize: true });
+      const send = socket.send.bind(socket);
+      socket.send = (raw) => {
+        send(raw);
+        const request = JSON.parse(raw);
+        let result: unknown = {};
+        if (request.id) {
+          switch (request.method) {
+            case "thread/read":
+              result =
+                request.params.ref === resumedRef
+                  ? readResponse(resumedRef, {
+                      status: { type: "idle" },
+                      evener: {
+                        ref: resumedRef,
+                        capabilities: CAPABILITIES,
+                        mutationStateAuthoritative: true,
+                        queue: { revision: 1 },
+                      },
+                    })
+                  : readResponse(ref, {
+                      status: { type: "notLoaded" },
+                      evener: {
+                        ref,
+                        capabilities: CAPABILITIES,
+                        resumeRequired: true,
+                        mutationStateAuthoritative: false,
+                        queue: { revision: 0 },
+                      },
+                    });
+              break;
+            case "thread/resume":
+              result = readResponse(resumedRef, { status: { type: "idle" } });
+              break;
+            case "thread/turns/list":
+              result = { data: [], nextCursor: null };
+              break;
+            case "turn/start":
+              result = {
+                turn: { id: "resumed-turn", status: "inProgress", itemsView: "full" },
+                receipt: {
+                  clientMutationId: request.params.clientMutationId,
+                  disposition: "applied",
+                  threadId: `thr_${resumedRef}`,
+                  projectionState: "reflected",
+                },
+              };
+              break;
+          }
+          socket.receive({ id: request.id, result });
+        }
+      };
+      queueMicrotask(() => socket.open());
+      return socket;
+    },
+  });
+  onTestFinished(() => client.close());
+  connectionStore.getState().connect(client);
+  await client.connect();
+  // The shell's committed record for this pane, carrying its durable seat.
+  const authorSeat = "author-seat";
+  workspaceStore.setState({
+    panes: [{ id: "p1", type: "session", params: { ref }, slot: "main", composerSeatId: authorSeat }],
+    focusedPaneId: "p1",
+  });
+  window.history.replaceState({}, "", `/s/${encodeURIComponent(ref)}`);
+  const subscribe = (notify: () => void) => {
+    window.addEventListener("popstate", notify);
+    return () => window.removeEventListener("popstate", notify);
+  };
+  function RoutedSession() {
+    const pathname = useSyncExternalStore(subscribe, () => window.location.pathname);
+    const route = urlToPane(pathname);
+    if (route?.type !== "session") throw new Error("expected session route");
+    return <Session params={route.params as { ref: string }} paneId="p1" focused={true} />;
+  }
+  render(
+    <ClientProvider client={client}>
+      <RoutedSession />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  await resumeViaSend(ref, "the pressed text");
+  await waitFor(() => expect(window.location.pathname).toBe(`/s/${encodeURIComponent(resumedRef)}`));
+  // The authoring seat must own the resumed conversation's mapping, so the
+  // replacement pane is placed under it and the retargeted rows restore.
+  expect(readRefComposerSeat(resumedRef)).toBe(authorSeat);
 });
 
 // A merely-resumable local session needs no special UI: sending a prompt resumes

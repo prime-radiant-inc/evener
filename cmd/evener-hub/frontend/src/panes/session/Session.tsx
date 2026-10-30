@@ -20,7 +20,7 @@ import { navigate, paneToURL, refParam } from "../../shell/routing";
 import { ForceStopDialog } from "../../shell/sessionMenu/ForceStopDialog";
 import { StatusBar } from "../../shell/statusbar/StatusBar";
 import { useIsMobile } from "../../shell/useIsMobile";
-import { workspaceStore } from "../../shell/workspace";
+import { adoptResumedConversationSeat, workspaceStore } from "../../shell/workspace";
 import { useNavigationStore } from "../../stores/navigation/store";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
 import { useTranscriptDisplayStore } from "../../stores/transcriptDisplay";
@@ -134,6 +134,11 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
       onResumedIdentity: (resumedRef) => {
         const url = paneToURL("session", { ref: resumedRef });
         if (url === null) return false;
+        // Carry this pane's authoring seat to the resumed conversation before
+        // the replacement route's placement reads the mapping: the
+        // retargeted recovery rows keep this seat as their composition owner,
+        // so the replacement pane must be placed under it.
+        adoptResumedConversationSeat(paneId, resumedRef);
         navigate(url, { replace: true });
         return true;
       },

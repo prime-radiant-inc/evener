@@ -213,13 +213,16 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     // composer seat authored is a candidate, so a fresh pane never injects
     // another pane's (or a legacy, ownerless) row. QueueStrip's explicit
     // Edit/Retry/Send-now still reach every row.
-    const record = recoveryEntries.find(
-      (entry) =>
-        entry.recoveryKind === "rejected" &&
-        entry.method !== "turn/interrupt" &&
-        !entry.preserveComposer &&
-        entry.compositionOwnerId === source.compositionOwnerId,
-    );
+    // The entries arrive sorted ascending by intent sequence; a pane that
+    // bounced more than one composition restores the NEWEST one - the user's
+    // latest work - not the oldest.
+    let record: (typeof recoveryEntries)[number] | undefined;
+    for (const entry of recoveryEntries) {
+      if (entry.recoveryKind !== "rejected") continue;
+      if (entry.method === "turn/interrupt" || entry.preserveComposer) continue;
+      if (entry.compositionOwnerId !== source.compositionOwnerId) continue;
+      if (record === undefined || (entry.intentSequence ?? 0) > (record.intentSequence ?? 0)) record = entry;
+    }
     if (!record) return;
     const recovered = recoveryComposerDraft(record);
     const visible = materializeSelectionReferences({ ...recovered, skillNames: restoredSkillNames(recovered) });

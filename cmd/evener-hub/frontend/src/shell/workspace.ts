@@ -19,6 +19,7 @@ import {
   clearRefComposerSeat,
   readPaneComposerSeatEntry,
   readRefComposerSeat,
+  refSeatsHeldBySeat,
   writePaneComposerSeat,
   writeRefComposerSeat,
 } from "../panes/session/composer/draft";
@@ -376,6 +377,52 @@ function conversationPaneRefs(pane: Pick<OpenPaneRecord, "type" | "params">): st
 // drilled onto a deeper leaf.
 function retainsConversationRef(pane: OpenPaneRecord, ref: string): boolean {
   return pane.type === "sessionZoom" && conversationPaneRefs(pane).includes(ref);
+}
+
+// Whether a pane actually covers a conversation for seat-mapping purposes: a
+// conversation pane covers its own ref and, for a cascade, every column the
+// canonical derivation renders. Companion panes (Tasks, Details, Activity)
+// share the ref param but hold no composer seat and never own a mapping.
+export function coversConversationRef(pane: OpenPaneRecord, ref: string): boolean {
+  return isConversationPaneType(pane.type) && (refParam(pane.params) === ref || retainsConversationRef(pane, ref));
+}
+
+// Retire a genuinely removed pane's seat mappings: every conversation the seat
+// owns (by key scan, so popped and lazily discovered columns are reached), not
+// just the pane's current path. A surviving pane that actually covers the
+// conversation keeps it with that owner's seat; otherwise the mapping clears
+// so a reopen gets a fresh seat instead of adopting the removed pane's work.
+function retireSeatMappings(seat: string | undefined, paneId: string, remaining: readonly OpenPaneRecord[]): void {
+  if (seat === undefined) return;
+  clearPaneComposerSeat(paneId);
+  for (const ref of refSeatsHeldBySeat(seat)) {
+    const survivor = remaining.find((pane) => coversConversationRef(pane, ref));
+    if (survivor !== undefined) writeRefComposerSeat(ref, survivor.composerSeatId ?? survivor.id);
+    else clearRefComposerSeat(ref);
+  }
+}
+
+// A resumed conversation replaces the authoring pane's route. The retargeted
+// recovery rows keep their composition owner - the authoring pane's seat - so
+// the resumed conversation's mapping must carry that seat before the
+// replacement pane's placement reads it, or a refusal after the resume can
+// never restore into the authoring composer. A different live pane that
+// actually covers the resumed conversation keeps its own mapping.
+export function adoptResumedConversationSeat(paneId: string, resumedRef: string): void {
+  const state = workspaceStore.getState();
+  const seat = state.panes.find((pane) => pane.id === paneId)?.composerSeatId;
+  if (seat === undefined) return;
+  const established = readRefComposerSeat(resumedRef);
+  if (
+    established !== undefined &&
+    established !== seat &&
+    state.panes.some(
+      (pane) => (pane.composerSeatId ?? pane.id) === established && coversConversationRef(pane, resumedRef),
+    )
+  ) {
+    return;
+  }
+  writeRefComposerSeat(resumedRef, seat);
 }
 
 // The conversation mapping names the pane that currently owns the route. Every
@@ -768,6 +815,7 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
     const main = state.panes.find((pane) => pane.slot === "main") ?? null;
 
     if (main !== null && primaryMatches(main, type, params)) {
+      const removedDuplicates = state.panes.filter((pane) => pane.id !== main.id && primaryMatches(pane, type, params));
       const panes = state.panes.filter((pane) => pane.id === main.id || !primaryMatches(pane, type, params));
       const paramsChanged = !sameParams(main.params, params);
       const duplicatesRemoved = panes.length !== state.panes.length;
@@ -785,6 +833,11 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
       const nextPanes = panes.map((pane) => (pane.id === main.id ? mainWithParams : pane));
       const nextFocusedPaneId = main.id;
       set({ panes: nextPanes, focusedPaneId: nextFocusedPaneId });
+      // A primary replacement removes its duplicates outright: their mappings
+      // retire like any genuine removal, with surviving panes reconciled.
+      for (const removed of removedDuplicates) {
+        retireSeatMappings(removed.composerSeatId ?? retainedComposerSeats.get(removed.id), removed.id, nextPanes);
+      }
       return main.id;
     }
 
@@ -873,6 +926,10 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
     const closed = state.panes.find((pane) => pane.id === paneId);
     if (!closed) return; // already closed: no-op
     const remaining = state.panes.filter((pane) => pane.id !== paneId);
+    // Capture the seat before removal: a pane retyped to a transcript keeps
+    // its seat in reserve, and the panes-change sweep discards the reserve
+    // entry with the removed pane.
+    const closedSeat = closed.composerSeatId ?? retainedComposerSeats.get(closed.id);
     set({
       panes: remaining,
       focusedPaneId: state.focusedPaneId === paneId ? null : state.focusedPaneId,
@@ -882,15 +939,7 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
     // Panes that merely park or survive a reload are never closed, so their
     // mappings keep this guarantee's other side. A conversation another
     // surviving pane covers keeps that owner's seat instead of clearing.
-    const closedSeat = closed.composerSeatId;
-    if (closedSeat === undefined) return;
-    clearPaneComposerSeat(closed.id);
-    for (const ref of conversationPaneRefs(closed)) {
-      if (readRefComposerSeat(ref) !== closedSeat) continue;
-      const survivor = remaining.find((pane) => refParam(pane.params) === ref || retainsConversationRef(pane, ref));
-      if (survivor !== undefined) writeRefComposerSeat(ref, survivor.composerSeatId ?? survivor.id);
-      else clearRefComposerSeat(ref);
-    }
+    retireSeatMappings(closedSeat, closed.id, remaining);
   },
 
   focusPane(paneId) {
@@ -1121,10 +1170,7 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
         for (const ref of conversationPaneRefs(pane)) {
           if (ref === leafRef) continue;
           if (readRefComposerSeat(ref) !== displaced) continue;
-          const survivor = panes.find(
-            (candidate) =>
-              candidate !== pane && (refParam(candidate.params) === ref || retainsConversationRef(candidate, ref)),
-          );
+          const survivor = panes.find((candidate) => candidate !== pane && coversConversationRef(candidate, ref));
           if (survivor === undefined) writeRefComposerSeat(ref, pane.composerSeatId ?? pane.id);
         }
       }

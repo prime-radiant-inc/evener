@@ -2,7 +2,12 @@ import { bindFilePath, parseFileReference } from "@evener/appwire-client/docCont
 import type { DockviewApi } from "dockview-core";
 import { lazy } from "react";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
-import { readRefComposerSeat, writeRefComposerSeat } from "../panes/session/composer/draft";
+import {
+  readPaneComposerSeatEntry,
+  readRefComposerSeat,
+  writePaneComposerSeat,
+  writeRefComposerSeat,
+} from "../panes/session/composer/draft";
 
 import { retainedConversationComposer } from "../panes/session/composer/retainedComposer";
 import { parseZoomParams } from "../panes/zoom/intent";
@@ -71,6 +76,110 @@ beforeAll(() => {
 
 beforeEach(() => {
   resetWorkspaceStoreForTests();
+});
+
+// Closing a cascade pane retires every conversation its seat owns, not just
+// the columns on its current drilled path: a column the cascade popped keeps
+// its mapping under the pane's seat, and a reopen must not adopt its row.
+test("closing a cascade pane retires mappings for every conversation its seat owns", () => {
+  const state = workspaceStore.getState();
+  const pane = {
+    id: "p1",
+    type: "sessionZoom" as const,
+    params: {
+      ref: "local:grandchild",
+      source: { type: "session" as const, params: { ref: "local:owner" } },
+      edges: [{ ownerRef: "local:owner", childRef: "local:child", delegateId: "d1" }],
+    },
+    slot: "main" as const,
+    composerSeatId: "seat-cascade",
+  };
+  workspaceStore.setState({ panes: [pane], focusedPaneId: "p1" });
+  // Every column this pane's seat ever owned, including a popped one and the
+  // current leaf.
+  writeRefComposerSeat("local:owner", "seat-cascade");
+  writeRefComposerSeat("local:child", "seat-cascade");
+  writeRefComposerSeat("local:popped", "seat-cascade");
+  writeRefComposerSeat("local:grandchild", "seat-cascade");
+  // Another pane's conversation mapping is untouched.
+  writeRefComposerSeat("local:foreign", "seat-other");
+
+  state.closePane("p1");
+
+  expect(readRefComposerSeat("local:owner")).toBeUndefined();
+  expect(readRefComposerSeat("local:child")).toBeUndefined();
+  expect(readRefComposerSeat("local:popped")).toBeUndefined();
+  expect(readRefComposerSeat("local:grandchild")).toBeUndefined();
+  expect(readRefComposerSeat("local:foreign")).toBe("seat-other");
+});
+
+// Primary replacement removes duplicate panes outright: a removed duplicate's
+// mappings retire with it, while the surviving primary keeps the conversation.
+test("primary replacement retires the removed duplicate's mappings", () => {
+  const state = workspaceStore.getState();
+  const primary = {
+    id: "p-main",
+    type: "session" as const,
+    params: { ref: "local:shared" },
+    slot: "main" as const,
+    composerSeatId: "seat-primary",
+  };
+  const duplicate = {
+    id: "p-dup",
+    type: "session" as const,
+    params: { ref: "local:shared" },
+    slot: "secondary" as const,
+    composerSeatId: "seat-dup",
+  };
+  workspaceStore.setState({ panes: [primary, duplicate], focusedPaneId: "p-main" });
+  writeRefComposerSeat("local:shared", "seat-primary");
+  writePaneComposerSeat("p-dup", "local:shared", "seat-dup");
+
+  const opened = state.replacePrimary("session", { ref: "local:shared" });
+  expect(opened).toBe("p-main");
+  // The removed duplicate's pane mapping retires; the conversation keeps the
+  // surviving primary's seat.
+  expect(readPaneComposerSeatEntry("p-dup")).toBeUndefined();
+  expect(readRefComposerSeat("local:shared")).toBe("seat-primary");
+});
+
+// A surviving owner must actually cover the conversation: a companion pane
+// (Tasks, Details, Activity) holds no composer seat and must never be written
+// as a conversation's owner.
+test("a companion pane never inherits a closed conversation's seat", () => {
+  const state = workspaceStore.getState();
+  const closed = {
+    id: "p-closed",
+    type: "session" as const,
+    params: { ref: "local:owned" },
+    slot: "secondary" as const,
+    composerSeatId: "seat-closed",
+  };
+  const companion = {
+    id: "p-tasks",
+    type: "sessionTasks" as const,
+    params: { ref: "local:owned" },
+    slot: "secondary" as const,
+  };
+  const survivorCascade = {
+    id: "p-cascade",
+    type: "sessionZoom" as const,
+    params: {
+      ref: "local:leaf",
+      source: { type: "session" as const, params: { ref: "local:owned" } },
+      edges: [{ ownerRef: "local:owned", childRef: "local:leaf", delegateId: "d1" }],
+    },
+    slot: "secondary" as const,
+    composerSeatId: "seat-cascade",
+  };
+  workspaceStore.setState({ panes: [closed, companion, survivorCascade], focusedPaneId: "p-cascade" });
+  writeRefComposerSeat("local:owned", "seat-closed");
+
+  state.closePane("p-closed");
+
+  // The cascade covers the conversation; the Tasks pane must not win the
+  // mapping despite sharing the ref.
+  expect(readRefComposerSeat("local:owned")).toBe("seat-cascade");
 });
 
 // A genuinely closed pane's seat mappings retire with it: reopening the same

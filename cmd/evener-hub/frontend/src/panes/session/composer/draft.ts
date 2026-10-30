@@ -116,6 +116,26 @@ export function writeRefComposerSeat(ref: string, seat: string): void {
   }
 }
 
+// Every conversation mapping naming this seat, enumerated by scanning this
+// tab's mapping keys: a closed pane's seat may own conversations no current
+// derivation can list (a column the pane popped, a conversation the pane's
+// composer created lazily), and retirement must reach them all.
+export function refSeatsHeldBySeat(seat: string): string[] {
+  const held: string[] = [];
+  try {
+    const prefix = `${COMPOSER_SEAT_PREFIX}${encodeURIComponent(ownClientId())}.ref.`;
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (key === null || !key.startsWith(prefix)) continue;
+      if (localStorage.getItem(key) !== seat) continue;
+      held.push(decodeURIComponent(key.slice(prefix.length)));
+    }
+  } catch {
+    // Best-effort, like every other composer persistence.
+  }
+  return held;
+}
+
 // Retirement is the mirror of writeRefComposerSeat: a genuinely closed pane
 // leaves no conversation mapping behind, so a reopened conversation gets a
 // fresh seat instead of silently adopting the closed pane's work.
