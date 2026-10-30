@@ -44,8 +44,14 @@ func TestSessionToolsSelectedHubDoesNotFallBackAfterDisconnect(t *testing.T) {
 	if _, err := clients.Invoke(t.Context(), request); err == nil {
 		t.Fatal("invocation succeeded after selected A disconnected")
 	}
-	if owners["hub-b"].invokes != 0 {
-		t.Fatalf("disconnected selected A fell back to B, B invocation count = %d", owners["hub-b"].invokes)
+	if _, err := clients.State(t.Context()); err == nil {
+		t.Fatal("state read succeeded after selected A disconnected")
+	}
+	if _, err := clients.Watch(t.Context(), appwire.SessionWatchRequest{}); err == nil {
+		t.Fatal("watch succeeded after selected A disconnected")
+	}
+	if b := owners["hub-b"]; b.states != 0 || b.invokes != 0 || b.watches != 0 {
+		t.Fatalf("disconnected selected A fell back to B, B calls state/invoke/watch = %d/%d/%d", b.states, b.invokes, b.watches)
 	}
 
 	// Rebinding A restores service even when B is no longer live.
@@ -71,15 +77,21 @@ func TestSessionToolsSelectedHubDoesNotFallBackAfterDisconnect(t *testing.T) {
 	}
 }
 
-type selectionProbeOwner struct{ invokes int }
+type selectionProbeOwner struct {
+	states  int
+	invokes int
+	watches int
+}
 
-func (*selectionProbeOwner) State(context.Context) (appwire.ManagerView, error) {
+func (o *selectionProbeOwner) State(context.Context) (appwire.ManagerView, error) {
+	o.states++
 	return appwire.ManagerView{Manager: true}, nil
 }
 func (o *selectionProbeOwner) Invoke(context.Context, appwire.SessionOperationRequest) (appwire.SessionOperationResponse, error) {
 	o.invokes++
 	return appwire.SessionOperationResponse{Discover: &appwire.SessionDiscovery{}}, nil
 }
-func (*selectionProbeOwner) Watch(context.Context, appwire.SessionWatchRequest) (<-chan appwire.SessionWatchUpdate, error) {
+func (o *selectionProbeOwner) Watch(context.Context, appwire.SessionWatchRequest) (<-chan appwire.SessionWatchUpdate, error) {
+	o.watches++
 	return nil, nil
 }
