@@ -55,9 +55,12 @@ func TestManagerWatchSetupCancellationStopsBlockedWatchWithoutRegistration(t *te
 		result <- err
 	}()
 	var watchCtx context.Context
+	// TRIPWIRE: local Watch entry takes well under a second; only a wedged setup should reach this bound.
 	awaitWithin(t, 10*time.Second, "client.Watch setup beginning", func() { watchCtx = <-client.watchCtx })
 	cancel()
+	// TRIPWIRE: context cancellation is an in-process signal, normally immediate.
 	awaitWithin(t, 10*time.Second, "blocked Watch context cancellation", func() { <-watchCtx.Done() })
+	// TRIPWIRE: the canceled transport returns locally, far below this deadlock bound.
 	awaitWithin(t, 10*time.Second, "cancelled watch setup returning", func() {
 		err := <-result
 		if !errors.Is(err, context.Canceled) {
@@ -110,12 +113,15 @@ func TestManagerWatchSetupCancellationAfterSnapshotPreventsRegistration(t *testi
 		_, err := root.configureHubWatchRuntime(ctx, map[string]any{"operation": "create", "hub": map[string]any{"ref": "local:worker", "events": []string{"status"}}})
 		result <- err
 	}()
+	// TRIPWIRE: local Watch entry takes well under a second; only a wedged setup should reach this bound.
 	awaitWithin(t, 10*time.Second, "client.Watch setup beginning", func() { <-client.watchCtx })
+	// TRIPWIRE: this in-process channel handoff needs no I/O; the generous bound only catches a deadlock.
 	awaitWithin(t, 10*time.Second, "initial snapshot consumed before registration", func() { <-received })
 	cancel()
 	jm.mu.Unlock()
 	managerLocked = false
 
+	// TRIPWIRE: after unlocking, canceled registration returns locally, well below this deadlock bound.
 	awaitWithin(t, 10*time.Second, "cancelled setup returning", func() {
 		err := <-result
 		if !errors.Is(err, context.Canceled) {
@@ -152,10 +158,12 @@ func TestManagerWatchEstablishedSubscriptionOutlivesToolContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// TRIPWIRE: successful setup already published this signal; the bound only catches a broken handoff.
 	awaitWithin(t, 10*time.Second, "client.Watch subscription start", func() { <-client.watchCtx })
 	cancel()
 	updates <- appwire.SessionWatchUpdate{Event: "status", Metadata: appwire.SessionObservationMetadata{Ref: "local:worker", InstanceID: "worker-instance", GenerationID: "7@worker", EntryID: "after-tool-return", CausalKnown: true}}
 	var token jobNotification
+	// TRIPWIRE: local journal-and-channel delivery normally finishes below a second, with no remote wait.
 	awaitWithin(t, 10*time.Second, "observation after originating tool cancellation", func() { token = <-tokens })
 	if token.WatchSend == nil {
 		t.Fatalf("post-cancellation observation token has no watch send: %#v", token)

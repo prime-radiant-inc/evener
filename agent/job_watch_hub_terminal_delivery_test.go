@@ -59,12 +59,14 @@ func TestHubWatchTerminalDeliverySurvivesPriorLastNoticeSettlement(t *testing.T)
 			} else {
 				go func() { finished <- jm.endHubWatch(watch.WatchID, "target replaced; re-register", nil) }()
 			}
+			// TRIPWIRE: local journal detachment normally finishes below a second; this only catches a deadlock.
 			awaitWithin(t, 10*time.Second, "endHubWatch detachment boundary", func() { <-detached })
 			if err := jm.settleWatchSendDelivered(cfg, prior); err != nil {
 				releaseBoundary()
 				t.Fatal(err)
 			}
 			releaseBoundary()
+			// TRIPWIRE: after releasing the barrier, local final-send recording is sub-second work.
 			awaitWithin(t, 10*time.Second, "endHubWatch final send recording", func() {
 				if err := <-finished; err != nil {
 					t.Errorf("endHubWatch: %v", err)
@@ -73,6 +75,7 @@ func TestHubWatchTerminalDeliverySurvivesPriorLastNoticeSettlement(t *testing.T)
 			jm.testOnlyAfterHubWatchDetach = nil
 
 			var token jobNotification
+			// TRIPWIRE: recording already queued the token; this bound detects a lost delivery, not normal latency.
 			awaitWithin(t, 10*time.Second, "final caller wake token", func() { token = <-tokens })
 			if token.WatchSend == nil {
 				t.Fatalf("queued caller token has no watch send: %#v", token)
