@@ -114,8 +114,16 @@ export class DraftLibrary {
 	retryPendingHandoffs(): void {
 		for (const document of this.allDocuments()) document.flushObligationResolutions();
 		// Hops the drafts store could not even record: the in-memory intent
-		// retries first, recording the durable row once the store answers.
-		for (const { from, to } of [...this.pending.values()]) this.handoff(from, to);
+		// retries first, recording the durable row once the store answers. A
+		// commit earlier in this loop can reroute a later entry to a new
+		// destination: each entry runs only as the map holds it now, never
+		// the stale snapshot this loop was planned from - a changed entry
+		// waits for the next pass.
+		for (const { from, to } of [...this.pending.values()]) {
+			const current = this.pending.get(this.handoffKey(to));
+			if (current === undefined || !sameDestination(current.from, from) || !sameDestination(current.to, to)) continue;
+			this.handoff(from, to);
+		}
 		let transfers: DraftTransfer[];
 		try {
 			transfers = this.repository().outstandingTransfers();

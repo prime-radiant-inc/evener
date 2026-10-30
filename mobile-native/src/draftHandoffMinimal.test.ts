@@ -881,4 +881,56 @@ describe("durable minimal handoffs", () => {
 		expect(repository.read(c).completedCommandRecoveryIds).toEqual(["recovered-a"]);
 		expect(repository.read(b).completedCommandRecoveryIds).toEqual(["recovered-a"]);
 	});
+
+	it("a rerouted fallback intent is never executed at its old destination", () => {
+		const { repository, ledger } = setup();
+		const a = destination("a");
+		const b = destination("b");
+		const c = destination("c");
+		repository.write(a, {
+			draft: "a work",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		repository.write(b, { draft: "b work", unconfirmed: null });
+		let failStore = false;
+		const failing = new Proxy(repository, {
+			get(target, property) {
+				const value = Reflect.get(target, property, target);
+				if (property === "beginTransfer" && typeof value === "function" && failStore)
+					return () => {
+						throw new Error("drafts unavailable");
+					};
+				return typeof value === "function" ? (value as (...inner: unknown[]) => unknown).bind(target) : value;
+			},
+		}) as DraftRepository;
+		let intentIds = 0;
+		const live = new DraftLibrary(
+			() => failing,
+			() => `id-fallback-${++intentIds}`,
+			() => ledger,
+		);
+		// Neither hop can record: both intents live only in memory, and the
+		// retry loop sees them in creation order.
+		failStore = true;
+		expect(live.handoff(b, c)).toBe(false);
+		expect(live.handoff(a, b)).toBe(false);
+		failStore = false;
+		live.retryPendingHandoffs();
+		// B -> C commits and reroutes the A -> B intent onward: the pass must
+		// never execute the stale A -> B entry and strand A's work at the
+		// identity B just left.
+		expect(repository.read(b).draft).toBe("");
+		expect(repository.read(a)).toMatchObject({
+			draft: "a work",
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		expect(live.hasPendingHandoff(c)).toBe(true);
+		// The rerouted intent runs on the next pass, refused at the occupied
+		// C, its cited sources released there.
+		live.retryPendingHandoffs();
+		expect(live.hasPendingHandoff(c)).toBe(false);
+		expect(repository.read(c)).toMatchObject({ draft: "b work" });
+		expect(repository.read(c).releasedRecoveryIds).toEqual(["recovered-a"]);
+	});
 });
