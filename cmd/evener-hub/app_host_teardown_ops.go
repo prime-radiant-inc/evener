@@ -94,6 +94,9 @@ func (m *hubHostManager) TeardownRetry(ctx context.Context, params appwire.HostT
 	if !remnant.open() {
 		return m.alreadyClearedArm(remnant), nil
 	}
+	if err := m.mutationRefusal(); err != nil {
+		return appwire.HostTeardownRetryResult{}, err
+	}
 	name := remnant.Host
 	// Gate first, then the mutation lock (spec §5's fixed order). A held gate —
 	// a live retry attempt holding it, a deploy/restart, an Ensure, a
@@ -256,6 +259,9 @@ func (m *hubHostManager) TeardownRecover(ctx context.Context, params appwire.Hos
 	}
 	if !remnant.open() {
 		return recoveredClearedResult(remnant), nil
+	}
+	if err := m.mutationRefusal(); err != nil {
+		return appwire.HostTeardownRecoverResult{}, err
 	}
 	name := remnant.Host
 	// Gate first: "failing fast with the typed busy error when a retry attempt
@@ -544,18 +550,19 @@ func (m *hubHostManager) runPinnedTeardown(ctx context.Context, remnantID string
 	if !remnant.CleanupHandle.resolvable() {
 		return teardownRunResult{Seam: remnant.Seam}, teardownUnknownKeyRefusal(remnantID)
 	}
-	if err := m.resolveCleanupHandle(remnantID, remnant); err != nil {
-		return teardownRunResult{Seam: remnant.Seam}, err
-	}
 	// The pinned incarnation is the only one this run may touch. A live entry
 	// that is a *different* incarnation means the pinned handles are already
 	// gone — the registry moved on — and re-running the rebind step against the
 	// new incarnation would tear down state the remnant does not own, so the run
 	// is a no-op that still succeeds: there is nothing of the pinned
-	// incarnation left to destroy.
+	// incarnation left to destroy. Its cleanup boundary went with it, so this is
+	// settled before the boundary is required.
 	host, live := m.cfg.hosts.Get(remnant.Host)
 	if live && host.IncarnationID != remnant.IncarnationID {
 		return teardownRunResult{}, nil
+	}
+	if err := m.resolveCleanupHandle(remnantID, remnant); err != nil {
+		return teardownRunResult{Seam: remnant.Seam}, err
 	}
 	if !live {
 		// Nothing live carries the pinned pair (a post-remove remnant, or a
@@ -715,12 +722,12 @@ func (m *hubHostManager) resolveCleanupHandle(remnantID string, remnant HostTear
 		if handle.IncarnationID != remnant.IncarnationID {
 			return teardownUnknownKeyRefusal(remnantID)
 		}
-		if m.cfg.ops == nil {
+		if m.opsStore() == nil {
 			// No operation store is wired (tests, embedders): the handle's own
 			// record is the whole durable handle, and it is complete.
 			return nil
 		}
-		mark, ok := m.cfg.ops.Boundary(remnant.Host)
+		mark, ok := m.opsStore().Boundary(remnant.Host)
 		if !ok {
 			return teardownUnknownKeyRefusal(remnantID)
 		}

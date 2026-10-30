@@ -205,7 +205,7 @@ func (m *hubHostManager) startOperation(ctx context.Context, req operationReques
 	if !ok {
 		return hostops.Record{}, appwire.InvalidParams(fmt.Sprintf("unknown host %q", req.name))
 	}
-	ops := m.cfg.ops
+	ops := m.opsStore()
 	if ops == nil {
 		return hostops.Record{}, appwire.InternalError("the host operation store is not configured, so no operation can be recorded")
 	}
@@ -330,7 +330,7 @@ func (m *hubHostManager) startOperation(ctx context.Context, req operationReques
 // returns the dedup query the atomic write re-runs, and the existing record when
 // the request is a replay.
 func (m *hubHostManager) admitOperation(entry hostreg.Host, req operationRequest, pair hostops.OperationPair) (hostops.OperationDedupQuery, *hostops.Record, error) {
-	ops := m.cfg.ops
+	ops := m.opsStore()
 
 	// (1) Dedup first: a hit returns the record with no token validation and no
 	// consumption, so a lost-response replay succeeds without a fresh token and
@@ -374,7 +374,7 @@ func (m *hubHostManager) operationDedupQuery(entry hostreg.Host, req operationRe
 		// carries; a consumed row names none, which is what makes a retry after
 		// an intervening update replay the newest retained record instead of
 		// opening fresh (§4).
-		if row, ok := m.cfg.ops.OutstandingToken(entry.Name); ok {
+		if row, ok := m.opsStore().OutstandingToken(entry.Name); ok {
 			intended := hostops.OperationPair{Generation: row.Generation, IncarnationID: row.IncarnationID}
 			query.Intended = &intended
 		}
@@ -423,7 +423,7 @@ func (m *hubHostManager) createOperationRecord(req operationRequest, entry hostr
 	var err error
 	switch req.kind {
 	case hostops.KindDeploy:
-		outcome, err = m.cfg.ops.ConsumeTokenAndCreateOperation(hostops.OperationCreateRequest{
+		outcome, err = m.opsStore().ConsumeTokenAndCreateOperation(hostops.OperationCreateRequest{
 			ClientOperationID: req.clientOperationID,
 			Host:              entry.Name,
 			Kind:              hostops.KindDeploy,
@@ -433,7 +433,7 @@ func (m *hubHostManager) createOperationRecord(req operationRequest, entry hostr
 			Dedup:             &query,
 		})
 	case hostops.KindRestart:
-		outcome, err = m.cfg.ops.CreateOperation(hostops.OperationCreateRequest{
+		outcome, err = m.opsStore().CreateOperation(hostops.OperationCreateRequest{
 			ClientOperationID: req.clientOperationID,
 			Host:              entry.Name,
 			Kind:              hostops.KindRestart,
@@ -533,7 +533,7 @@ func (m *hubHostManager) revalidateUnderGate(entry hostreg.Host, req operationRe
 			entry.Name, m.cfg.configPath))
 	}
 	if req.kind == hostops.KindDeploy {
-		ops := m.cfg.ops
+		ops := m.opsStore()
 		token, err := ops.ValidateToken(entry.Name, req.tokenValue)
 		if err != nil {
 			// The token moved while the probe ran (a concurrent plan superseded
@@ -714,10 +714,10 @@ func (m *hubHostManager) ShutdownHostOperations(timeout time.Duration) int {
 // between the record write and the goroutine) and for a worker still parked in
 // an un-cancellable call.
 func (m *hubHostManager) interruptLeftoverOperations() int {
-	if m.cfg.ops == nil {
+	if m.opsStore() == nil {
 		return 0
 	}
-	moved, err := m.cfg.ops.InterruptInFlight(operationsShutdownNote)
+	moved, err := m.opsStore().InterruptInFlight(operationsShutdownNote)
 	if err != nil {
 		m.logf("shutdown: in-flight host operations could not be marked interrupted: %v", err)
 		return 0
@@ -752,7 +752,7 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 	if m.interruptIfShuttingDown(ctx, run.id) {
 		return
 	}
-	if _, err := m.cfg.ops.TransitionToState(run.id, hostops.StateRunning, nil, fmt.Sprintf(
+	if _, err := m.opsStore().TransitionToState(run.id, hostops.StateRunning, nil, fmt.Sprintf(
 		"%s operation for host %q started", work.record.Kind, work.entry.Name)); err != nil {
 		m.logf("operation %s: could not mark running: %v", run.id, err)
 	}
@@ -878,12 +878,12 @@ func (r *opRun) deploy(plan *opPlan, beforeMutation func() error) error {
 	_, afterDeploy, err := m.cfg.deployHost(r.ctx, entry, facts, plan.restartFollows, beforeMutation, &sshconn.DeploymentJournal{
 		OperationID: id,
 		Supersede: func(priorID string) error {
-			prior, found := m.cfg.ops.Record(priorID)
+			prior, found := m.opsStore().Record(priorID)
 			if !found {
 				return hostops.ErrRecordNotFound
 			}
 			note := fmt.Sprintf("supersedes pending intent: priorOperationId=%s host=%q generation=%d incarnationId=%q", prior.ID, prior.Host, prior.Generation, prior.IncarnationID)
-			_, err := m.cfg.ops.AppendProgress(id, note)
+			_, err := m.opsStore().AppendProgress(id, note)
 			return err
 		},
 	})
@@ -1272,7 +1272,7 @@ func (m *hubHostManager) interruptIfShuttingDown(ctx context.Context, id string)
 // terminal path (worker success, worker failure, shutdown, Ensure) goes through
 // here so their records cannot drift apart.
 func (m *hubHostManager) recordTerminal(id string, state hostops.State, ok bool, message string) {
-	if _, err := m.cfg.ops.TransitionToState(id, state, &hostops.Result{
+	if _, err := m.opsStore().TransitionToState(id, state, &hostops.Result{
 		OK: ok, Message: message,
 	}, message); err != nil {
 		m.logf("operation %s: could not record its %s outcome %q: %v", id, state, message, err)
@@ -1299,7 +1299,7 @@ func (m *hubHostManager) failOperation(ctx context.Context, id string, err error
 // recordProgress appends one progress line; a failure to write it is logged,
 // never fatal to the operation.
 func (m *hubHostManager) recordProgress(id, message string) {
-	if _, err := m.cfg.ops.AppendProgress(id, message); err != nil {
+	if _, err := m.opsStore().AppendProgress(id, message); err != nil {
 		m.logf("operation %s: could not append progress %q: %v", id, message, err)
 	}
 }
@@ -1313,7 +1313,7 @@ func (m *hubHostManager) recordProgress(id, message string) {
 // operation"). The returned finish records the step's outcome. A nil hook (no
 // operation store wired) refuses, never running the deploy unrecorded.
 func (m *hubHostManager) EnsureDeploy(host hostreg.Host) (func(error), error) {
-	ops := m.cfg.ops
+	ops := m.opsStore()
 	if ops == nil {
 		return nil, errors.New("the host operation store is not configured, so an Ensure-triggered deploy cannot be recorded; nothing was launched")
 	}
@@ -1355,7 +1355,7 @@ func (m *hubHostManager) EnsureDeploy(host hostreg.Host) (func(error), error) {
 // finish records the leg's outcome. A nil hook (no operation store wired)
 // leaves the attempt unrecorded, which production never does.
 func (m *hubHostManager) EnsureRestart(host hostreg.Host) (func(error), error) {
-	ops := m.cfg.ops
+	ops := m.opsStore()
 	if ops == nil {
 		return nil, errors.New("the host operation store is not configured, so a restart-only Ensure attempt cannot be recorded; nothing was launched")
 	}
@@ -1403,7 +1403,7 @@ func (m *hubHostManager) finishEnsureOperation(id, name string, kind hostops.Kin
 			m.logf("host %q: the gate's holder could not be restored after the Ensure %s %s: %v", name, kind, id, herr)
 		}
 	}()
-	if m.cfg.ops == nil {
+	if m.opsStore() == nil {
 		return
 	}
 	switch {
