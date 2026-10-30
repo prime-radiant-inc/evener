@@ -74,6 +74,59 @@ describe("durable minimal handoffs", () => {
 		expect(restarted.hasPendingHandoff(b)).toBe(false);
 	});
 
+	it("a completion under an uncommitted hop keeps its evidence through the hop's recovery", async () => {
+		const { repository, db, library } = setup();
+		const a = destination("a");
+		const b = destination("b");
+		repository.write(a, {
+			draft: "work",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		const live = library();
+		const source = live.open(a);
+		let finish!: () => void;
+		const submitted = source.submitBuiltinCommand(
+			() =>
+				new Promise<boolean>((resolve) => {
+					finish = () => resolve(true);
+				}),
+		);
+		// The identity change records its hop but cannot commit it, and the
+		// destination's record writes fail: the pending hop's row is the
+		// only route the completion's evidence has to the destination.
+		db.exec(
+			"CREATE TRIGGER reject_b_insert BEFORE INSERT ON drafts WHEN NEW.session_ref = 'b' BEGIN SELECT RAISE(ABORT, 'unavailable'); END",
+		);
+		db.exec(
+			"CREATE TRIGGER reject_b_update BEFORE UPDATE ON drafts WHEN NEW.session_ref = 'b' BEGIN SELECT RAISE(ABORT, 'unavailable'); END",
+		);
+		expect(live.handoff(a, b)).toBe(false);
+		// The running built-in completes while the destination is unavailable.
+		finish();
+		await submitted;
+		// The source screen's cleanup: its target-scoped deletion finds no
+		// rows - they left with the retarget - so it strips the source
+		// record's own marker while the destination still owes the evidence.
+		expect(source.finishCompletedCommandRecovery(["recovered-a"])).toBe(true);
+		// The destination recovers and the hop commits: the executed
+		// command's markers must travel in the hop's own savepoint, not the
+		// marker-free source record, or the input restores at the
+		// destination.
+		db.exec("DROP TRIGGER reject_b_insert");
+		db.exec("DROP TRIGGER reject_b_update");
+		const recovered = library();
+		expect(recovered.handoff(a, b)).toBe(true);
+		expect(repository.read(b)).toMatchObject({
+			unconfirmed: null,
+			completedCommandRecoveryIds: ["recovered-a"],
+		});
+		// The recovered pass settles the hop and delivers the completion it
+		// carried, so nothing remains outstanding.
+		recovered.retryPendingHandoffs();
+		expect(recovered.hasUndeliveredCompletions()).toBe(false);
+	});
+
 	it("a restarted handoff refuses an occupied destination without stranding its cited sources", () => {
 		const { repository, ledger, library } = setup();
 		const a = destination("a");
@@ -301,8 +354,6 @@ describe("durable minimal handoffs", () => {
 		// against the destination its own transfer occupied.
 		expect(live.handoff(a, b)).toBe(true);
 		expect(repository.outstandingTransfers()).toHaveLength(0);
-		const pointer = repository.latestCommittedTransferFrom(a);
-		expect(pointer?.to).toMatchObject({ hubId: "hub", sessionRef: "b" });
 		expect(ledger.deliveries().length).toBeGreaterThan(0);
 	});
 

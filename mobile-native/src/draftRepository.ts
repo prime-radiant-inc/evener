@@ -302,17 +302,6 @@ export class DraftRepository {
 	/** The latest committed hop out of an identity: the forward pointer a
 	 * completion follows toward the record's current owner. A row whose
 	 * transfer never committed moved nothing, so it is not a pointer. */
-	latestCommittedTransferFrom(from: DraftDestination): DraftTransfer | undefined {
-		const row = this.db.getFirstSync<TransferRow>(
-			`SELECT * FROM draft_transfer_log
-      WHERE from_hub_id = ? AND from_ref = ? AND delivered_hash IS NOT NULL
-      ORDER BY commit_sequence DESC LIMIT 1`,
-			from.hubId,
-			from.sessionRef,
-		);
-		return row === null ? undefined : this.mapTransfer(row);
-	}
-
 	/** The latest committed hop whose transferred record carried this capture
 	 * token: while a submission is unresolved its token travels inside the
 	 * record, so this row names where the record went last - regardless of

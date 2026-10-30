@@ -131,17 +131,6 @@ export class DraftSubmissionLedgerSQLite {
 
 	/** The open obligations whose recovery ids this identity must not restore:
 	 * a running command's input is owned by its submission until it settles. */
-	openObligationsForOrigin(origin: DraftDestination): DraftSubmissionObligation[] {
-		return this.#db
-			.getAllSync<ObligationRow>(
-				`SELECT * FROM draft_submission_obligations
-     WHERE hub_id = ? AND session_ref = ? AND state = 'open' ORDER BY created_at, rowid`,
-				origin.hubId,
-				origin.sessionRef,
-			)
-			.map((row) => this.mapObligation(row));
-	}
-
 	obligationById(obligationId: string): DraftSubmissionObligation | undefined {
 		const row = this.#db.getFirstSync<ObligationRow>(
 			"SELECT * FROM draft_submission_obligations WHERE obligation_id = ?",

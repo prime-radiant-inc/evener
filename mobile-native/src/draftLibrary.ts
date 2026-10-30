@@ -27,7 +27,6 @@ export type DraftStorage = Pick<
 	| "pendingTransfersTo"
 	| "transferById"
 	| "rerouteTransfers"
-	| "latestCommittedTransferFrom"
 	| "latestCommittedTransferFromCarrying"
 	| "latestTransferCarrying"
 	| "hasPendingTransferTo"
@@ -272,12 +271,26 @@ export class DraftLibrary {
 			this.refuseHandoff(transfer, source, destination);
 			return false;
 		}
+		// A completion that resolved while this hop could not commit lives
+		// only in its unacknowledged obligation: the source record's own
+		// markers may already have been stripped by the screen cleanup whose
+		// target-scoped deletion found the retargeted rows gone. The hop
+		// preserves that evidence in its own savepoint, written atomically
+		// with the move it evidences - or an unreadable ledger defers the
+		// commit, which never writes without the evidence.
+		const owed = this.resolvedObligationsAt(transfer.from);
+		if (owed === undefined) return false;
+		const completed = [...new Set([...(snapshot.record.completedCommandRecoveryIds ?? []), ...owed.completed])];
+		const released = [...new Set([...releasedSources(snapshot.record), ...owed.released])];
 		// A destination that consumed its composition keeps only its
 		// historical settlement markers. Markers are evidence about work
 		// already done, never work: they must not strand an incoming hop at
 		// a retired identity. The incoming record merges them in, so the
 		// destination still cannot restore what its own commands consumed.
-		const delivered = mergeDispositionMarkers(snapshot.record, current.record);
+		const delivered = mergeDispositionMarkers(
+			completed.length ? { ...snapshot.record, completedCommandRecoveryIds: completed } : snapshot.record,
+			current.record,
+		);
 		// The retry always moves the source's current record: work composed
 		// after the first attempt travels with the hop instead of being
 		// stranded at the old identity, and no stale snapshot is ever
@@ -309,8 +322,8 @@ export class DraftLibrary {
 					transferId: transfer.transferId,
 					deliveredHash: compositionFingerprint(snapshot.record),
 					carriedCaptureToken: snapshot.record.unconfirmedCaptureToken,
-					completedCommandRecoveryIds: snapshot.record.completedCommandRecoveryIds ?? [],
-					releasedRecoveryIds: releasedSources(snapshot.record),
+					completedCommandRecoveryIds: completed,
+					releasedRecoveryIds: released,
 				},
 				reroutes,
 			);
@@ -343,10 +356,42 @@ export class DraftLibrary {
 			...transfer,
 			deliveredHash: compositionFingerprint(snapshot.record),
 			carriedCaptureToken: snapshot.record.unconfirmedCaptureToken ?? null,
-			completedCommandRecoveryIds: snapshot.record.completedCommandRecoveryIds ?? [],
-			releasedRecoveryIds: releasedSources(snapshot.record),
+			completedCommandRecoveryIds: completed,
+			releasedRecoveryIds: released,
 		});
 		return true;
+	}
+
+	/** The completion evidence a hop out of `origin` must carry with its
+	 * commit: the dispositions of resolved obligations originating there
+	 * that still owe their delivery. Their markers may already be gone from
+	 * the source record - a screen cleanup whose target-scoped deletion
+	 * found the retargeted rows gone strips them - so the obligation rows
+	 * are the evidence. A ledger this library does not have owes nothing;
+	 * one that exists but cannot answer is unknown evidence, and unknown
+	 * defers the commit. */
+	private resolvedObligationsAt(origin: DraftDestination): { completed: string[]; released: string[] } | undefined {
+		let ledger: DraftSubmissionLedgerSQLite | undefined;
+		try {
+			ledger = this.submissionLedger?.();
+		} catch {
+			return undefined;
+		}
+		if (ledger === undefined) return { completed: [], released: [] };
+		let obligations: DraftSubmissionObligation[];
+		try {
+			obligations = ledger.outstandingObligations();
+		} catch {
+			return undefined;
+		}
+		const completed: string[] = [];
+		const released: string[] = [];
+		for (const obligation of obligations) {
+			if (!clearsCapture(obligation.state) || !sameDestination(obligation.origin, origin)) continue;
+			completed.push(...obligation.completedCommandIds);
+			released.push(...obligation.releasedRecoveryIds);
+		}
+		return { completed, released };
 	}
 
 	/** An occupied destination is a permanent refusal: nothing moved, so the
@@ -355,17 +400,12 @@ export class DraftLibrary {
 	 * failed release leaves the row pending so the next pass converges it. */
 	private refuseHandoff(transfer: DraftTransfer, source: DraftDocument, destination: DraftDocument): void {
 		const record = source.getSnapshot().record;
-		const cited = [
-			...(record.composer?.recoveryIds ?? []),
-			...(record.unconfirmedComposer?.recoveryIds ?? []),
-			...(record.parkedCompositions ?? []).flatMap((parked) => parked.composer?.recoveryIds ?? []),
-		];
 		// The refusal delivers everything the composition had settled so far -
 		// completed commands and prior releases as much as the still-cited
 		// sources - or the rows a retarget already moved could restore content
 		// an executed command consumed.
 		const completed = [...(record.completedCommandRecoveryIds ?? [])];
-		const released = [...new Set([...(record.releasedRecoveryIds ?? []), ...cited])];
+		const released = releasedSources(record);
 		try {
 			if (completed.length && !destination.adoptCompletedCommandRecovery(completed)) return;
 			if (released.length && !destination.releaseRecoverySources(released)) return;
@@ -528,7 +568,10 @@ export class DraftLibrary {
 		const owner = this.findCaptureOwner(obligation.origin, completion.captureToken);
 		if (owner === undefined) return "unreadable";
 		const outcome = this.deliverCompletionAt(owner, completion);
-		if ((outcome === "delivered" || outcome === "unowned") && !this.deliverRoutedCompletions(owner, completion))
+		if (
+			(outcome === "delivered" || outcome === "unowned") &&
+			!this.deliverRoutedCompletions(owner, obligation.origin, completion)
+		)
 			return "unreadable";
 		if (outcome === "delivered" || outcome === "unowned") {
 			try {
@@ -547,7 +590,11 @@ export class DraftLibrary {
 	 * before the obligation is acknowledged: released rows stay editable,
 	 * completed ones never restore. A delivery that cannot land leaves the
 	 * obligation unacknowledged so the next pass retries it. */
-	private deliverRoutedCompletions(owner: DraftDestination, completion: DraftCompletionDelivery): boolean {
+	private deliverRoutedCompletions(
+		owner: DraftDestination,
+		origin: DraftDestination,
+		completion: DraftCompletionDelivery,
+	): boolean {
 		if (completion.completedCommandIds.length === 0) return true;
 		const ledger = this.availableSubmissionLedger();
 		if (ledger === undefined) return false;
@@ -565,7 +612,23 @@ export class DraftLibrary {
 			// editable there. An owner that cannot be named defers the
 			// acknowledgment rather than guessing.
 			for (const transfer of this.repository().outstandingTransfers()) {
-				if (transfer.deliveredHash === null) continue;
+				if (transfer.deliveredHash === null) {
+					// An uncommitted hop out of the completion's origin has
+					// already taken that identity's recovery rows with it -
+					// the retarget moved them when the hop was recorded. Its
+					// destination must hold the executed command's markers
+					// before the obligation may acknowledge: the source
+					// screen's own cleanup - its target-scoped deletion finds
+					// the retargeted rows gone - strips the source record's
+					// markers, and the recovered hop would otherwise settle
+					// from a marker-free source with the executed input
+					// restorable at the destination. A destination that
+					// cannot take them defers the acknowledgment to the
+					// next pass.
+					if (!sameDestination(transfer.from, origin)) continue;
+					seen.set(transfer.to.hubId + "\u0000" + transfer.to.sessionRef, transfer.to);
+					continue;
+				}
 				const carries = [...transfer.completedCommandRecoveryIds, ...transfer.releasedRecoveryIds].some((recoveryId) =>
 					completion.completedCommandIds.includes(recoveryId),
 				);
