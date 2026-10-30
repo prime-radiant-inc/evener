@@ -878,7 +878,7 @@ aggregate for the frontend, against the checked-in `testing-budget.json`, so a
 timing regression cannot silently erode the suite's runtime. It fails at 1.5x a
 package's checked-in budget and warns at 1.1x, and it applies a per-test ceiling
 segmented by test class. Failure limits, class ceilings included, scale by the
-run's slowdown (the median measured/budget ratio over at least five packages
+run's slowdown (the median measured/budget ratio over at least three packages
 budgeted at 5s or more, when above 1), so a uniformly slow runner does not fail
 the gate while one package far above its peers still does. It reuses `gate-surface-lib.sh`, so it measures the same
 surface `ROOT_FULL=1 make test` proves.

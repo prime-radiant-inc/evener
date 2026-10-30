@@ -338,7 +338,7 @@ WARN_RATIO = 1.1
 # against that slowdown: one package far above its peers still fails, a whole
 # run uniformly above its budgets does not. Warnings stay on the raw ratio.
 SLOWDOWN_MIN_BUDGET = 5.0
-SLOWDOWN_MIN_PACKAGES = 5
+SLOWDOWN_MIN_PACKAGES = 3
 
 # The metric the recorded numbers were blessed under. A budget whose "metric"
 # is not this was measured under the pre-#172 sum-of-test-Elapsed metric, whose

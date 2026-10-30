@@ -1131,3 +1131,17 @@ func TestTimingBudgetIgnoresStaleUnitRatiosWhenScalingCeilings(t *testing.T) {
 		t.Fatalf("a class breach passed because stale package ratios scaled its ceiling: %v\n%s", err, out)
 	}
 }
+
+// The nonroot lane budgets only four packages at 5s or more; a uniformly slow
+// run of just those must still be forgiven.
+func TestTimingBudgetForgivesAUniformlySlowFourPackageLane(t *testing.T) {
+	budget := `{"metric":"package-wall-seconds","perTestCeilingSeconds":3,` +
+		`"perTestCeilingClasses":{"eval harness":{"ceilingSeconds":20,"tests":["TestClassed"]}},` +
+		`"packages":{"agent":130,"agent/execenv":10,"llm":15,"llm/registry":6,"small":2}}`
+	measured := "SUM\tagent\t260.00\nSUM\tagent/execenv\t20.00\nSUM\tllm\t30.00\nSUM\tllm/registry\t12.00\nSUM\tsmall\t1.00\n" +
+		"TEST\tagent\tTestClassed\t39.00\n"
+	out, err := runTimingBudgetCompare(t, measured, budget)
+	if err != nil || strings.Contains(out, "FAIL") {
+		t.Fatalf("a uniformly slow four-package lane failed the strict check: %v\n%s", err, out)
+	}
+}
