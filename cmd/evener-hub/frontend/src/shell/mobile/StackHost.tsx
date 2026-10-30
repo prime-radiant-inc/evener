@@ -217,7 +217,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   useEffect(() => {
     const visible = () => new Set(focusedPane ? [focusedPane.id] : []);
     restrictConversationHandoff(handoffGeneration, visible());
-    return registerConversationHostVisibility(visible);
+    return registerConversationHostVisibility("mobile", visible);
   }, [handoffGeneration, focusedPane]);
   const activityOpen = useActivitySidebarStore((s) => s.open);
   const [panelOpen, setPanelOpen] = useState(false);

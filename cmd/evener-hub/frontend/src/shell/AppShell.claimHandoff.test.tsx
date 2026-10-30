@@ -207,6 +207,46 @@ test.each(["standard", "comic"] as const)("real phone to desktop preserves %s so
   }
 });
 
+test.each([
+  { mobile: false, host: "desktop" },
+  { mobile: true, host: "phone" },
+])("same-batch viewport round trip retains the $host host and balances ownership", async ({ mobile }) => {
+  const fixture = await mountHost(mobile);
+  const desktop = getDockviewApi();
+  const phonePane = document.querySelector("[data-stacked-pane-type]");
+  const observedBodies: Array<Array<{ id: string; text: string | undefined }>> = [];
+  const observeBodies = () => {
+    observedBodies.push(
+      threadsStore
+        .getState()
+        .threads.get(ref)
+        ?.turns.flatMap((turn) => turn.items.map(({ id, text }) => ({ id, text }))) ?? [],
+    );
+  };
+  const unsubscribeBodies = threadsStore.subscribe(observeBodies);
+  try {
+    if (mobile) expect(phonePane).not.toBeNull();
+    else expect(desktop?.getPanel(fixture.pane.id)).toBeDefined();
+    await act(async () => {
+      fixture.setMobile(!mobile);
+      expect(transcriptDisplayStore.getState().viewport).toBe(mobile ? "desktop" : "mobile");
+      expect(snapshot()).toMatchObject({ foreground: 2, sources: sourceIds });
+      observeBodies();
+      fixture.setMobile(mobile);
+      observeBodies();
+      expect(snapshot()).toMatchObject({ foreground: 1, sources: sourceIds });
+    });
+    expect(transcriptDisplayStore.getState().viewport).toBe(mobile ? "mobile" : "desktop");
+    expect(getDockviewApi()).toBe(desktop);
+    expect(document.querySelector("[data-stacked-pane-type]")).toBe(phonePane);
+    expect(observedBodies).toEqual(observedBodies.map(() => sourceItems));
+    assertPreserved(fixture);
+  } finally {
+    unsubscribeBodies();
+    await disposeFixture(fixture);
+  }
+});
+
 test("pre-event media snapshot cannot replace the host before preparation", async () => {
   const fixture = await mountHost(false);
   const desktop = getDockviewApi();

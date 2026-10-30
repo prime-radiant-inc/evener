@@ -16,13 +16,17 @@ const readers = new Set<Reader>();
 const overlaps = new Map<TranscriptReadView, Overlap>();
 let generation = 0;
 let destination: ViewportClass | undefined;
-let visiblePanes: (() => ReadonlySet<string>) | undefined;
+let mountedHost: { viewport: ViewportClass; visiblePanes: () => ReadonlySet<string> } | undefined;
 
 /** The mounted host remains the authority, including detached Dockview tabs. */
-export function registerConversationHostVisibility(read: () => ReadonlySet<string>): () => void {
-  visiblePanes = read;
+export function registerConversationHostVisibility(
+  viewport: ViewportClass,
+  read: () => ReadonlySet<string>,
+): () => void {
+  const host = { viewport, visiblePanes: read };
+  mountedHost = host;
   return () => {
-    if (visiblePanes === read) visiblePanes = undefined;
+    if (mountedHost === host) mountedHost = undefined;
   };
 }
 
@@ -66,15 +70,24 @@ export function registerConversationClaim(ref: string, view: TranscriptReadView)
 export function prepareConversationHandoff(target: ViewportClass): void {
   generation += 1;
   destination = target;
-  const presented = visiblePanes?.();
+  const retainedHost = mountedHost?.viewport === target;
+  const presented = mountedHost?.visiblePanes();
   // A reversal transfers pending ownership, never releases and reacquires it.
   for (const overlap of overlaps.values()) {
     overlap.generation = generation;
     validate(overlap);
   }
   for (const { ref, view } of readers) {
-    if (!view.alive || view.requestedRef !== ref || overlaps.has(view) || (presented && !presented.has(view.paneId)))
+    if (!view.alive || view.requestedRef !== ref) continue;
+    const pending = overlaps.get(view);
+    if (retainedHost) {
+      // A batched round trip can keep this host and its ordinary readers.
+      // Settle against that existing ownership now, without a remount or
+      // incidental render, and do not seed another overlap for the same seat.
+      if (pending?.ref === ref) release(pending);
       continue;
+    }
+    if (pending || (presented && !presented.has(view.paneId))) continue;
     threadsStore
       .getState()
       .ensureThread(ref)

@@ -499,7 +499,7 @@ export function DockHost() {
   useEffect(() => {
     if (!api) return;
     const visible = () => new Set(api.panels.filter((panel) => panel.api.isVisible).map((panel) => panel.id));
-    const unregister = registerConversationHostVisibility(visible);
+    const unregister = registerConversationHostVisibility("desktop", visible);
     const restrict = () => restrictConversationHandoff(handoffGeneration, visible());
     restrict();
     const subscription = api.onDidLayoutChange(restrict);
