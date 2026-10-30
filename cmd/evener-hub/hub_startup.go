@@ -159,7 +159,10 @@ type hubRuntime struct {
 	// its hosts and refuses host changes until it is started with a store that
 	// opens. openOps opens the store (a test replaces it).
 	opsUnavailable bool
-	openOps        func() (*hostops.Store, error)
+	// recordsUnreadable marks a start that could not read hub.toml's record
+	// sections (see hubcore.WebConfig.RemoteHostRecordsUnreadable).
+	recordsUnreadable bool
+	openOps           func() (*hostops.Store, error)
 
 	resumeLocks               *hubcore.ResumeLocks
 	deletionStore             *hubcore.DeletionStore
@@ -479,6 +482,7 @@ func (r *hubRuntime) connectHosts() (func(), error) {
 		// come up with identities minted at load, and the manager keeps host
 		// changes paused instead of moving records it cannot read.
 		r.logf("hub.toml record sections unreadable; hosts keep serving and host changes pause: %v", err)
+		r.recordsUnreadable = true
 	}
 	boot := hostBootDocument(cfg, legacy, r.opsStore)
 	r.hostEntries = boot.Hosts
@@ -633,11 +637,12 @@ func (r *hubRuntime) buildWeb(appwireTrace *appserver.WebSocketTrace) (*WebServe
 		// The one live registry the SSH manager dials through, shared with the
 		// attach handler and the host-management surface, and the selected
 		// hub.toml path the host surface rewrites in place (machine-managed).
-		RemoteHostRegistry:       r.hostRegistry,
-		RemoteHostSSHManager:     sshManager,
-		RemoteHostConfigPath:     r.opts.configPath,
-		RemoteHostOpsStore:       r.opsStore,
-		RemoteHostOpsUnavailable: r.opsUnavailable,
+		RemoteHostRegistry:          r.hostRegistry,
+		RemoteHostSSHManager:        sshManager,
+		RemoteHostConfigPath:        r.opts.configPath,
+		RemoteHostOpsStore:          r.opsStore,
+		RemoteHostOpsUnavailable:    r.opsUnavailable,
+		RemoteHostRecordsUnreadable: r.recordsUnreadable,
 		// This hub's own running identity and the two owner-adjustable
 		// deploy-pipeline knobs: the probe deadline the plan's gated probe
 		// uses, and the minimum free space evener/host/running's health

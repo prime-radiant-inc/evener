@@ -1198,3 +1198,66 @@ func legacyRecordsOf(t *testing.T, path string) hostRecordSet {
 	}
 	return legacy
 }
+
+// TestAnUnreadableRecordSectionKeepsTheReadableTeardownFences covers a hub.toml
+// whose record sections carry a field this build does not decode: nothing moves
+// or is rewritten, but an open teardown remnant still fences its host.
+func TestAnUnreadableRecordSectionKeepsTheReadableTeardownFences(t *testing.T) {
+	configPath, records := legacyHub(t)
+	if len(records.TeardownRemnants) == 0 {
+		t.Fatal("the legacy fixture left no teardown remnant")
+	}
+	original := fileBytes(t, configPath)
+	unreadable := append(append([]byte(nil), original...), []byte("\n[pending_store_sync.keep]\nfield_from_a_newer_build = 1\n")...)
+	if err := os.WriteFile(configPath, unreadable, 0o600); err != nil {
+		t.Fatalf("write the unreadable section: %v", err)
+	}
+
+	m, store := bootOverStore(t, configPath, t.TempDir())
+
+	if _, _, imported := store.HostRecords(); imported {
+		t.Fatal("records moved although a section could not be read")
+	}
+	if !bytes.Equal(fileBytes(t, configPath), unreadable) {
+		t.Fatal("hub.toml was rewritten although a section could not be read")
+	}
+	if m.mutationRefusal() == nil {
+		t.Fatal("host changes are taken while the record sections cannot be read")
+	}
+	if got := m.cfg.store.remnantSnapshot(); len(got) != len(records.TeardownRemnants) {
+		t.Fatalf("the manager fences %d remnant(s), want the %d the file holds", len(got), len(records.TeardownRemnants))
+	}
+}
+
+// TestAStartupThatCouldNotReadTheRecordSectionsSettlesNothing pins that a
+// registry built without the persisted identities (the startup read failed) is
+// never what the records are settled or moved from, even when the manager's own
+// reads succeed.
+func TestAStartupThatCouldNotReadTheRecordSectionsSettlesNothing(t *testing.T) {
+	configPath, _ := legacyHub(t)
+	original := fileBytes(t, configPath)
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	doc := hostBootDocument(mustLoadConfig(t, configPath).Config, hostRecordSet{}, store)
+	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
+	if err != nil {
+		t.Fatalf("hostreg.NewSeeded: %v", err)
+	}
+
+	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: configPath,
+		RemoteHostRecordsUnreadable: true,
+	}, configPath, hosts, t.Logf)
+
+	if _, _, imported := store.HostRecords(); imported {
+		t.Fatal("records moved over a registry built without their identities")
+	}
+	if !bytes.Equal(fileBytes(t, configPath), original) {
+		t.Fatal("hub.toml was rewritten over a registry built without the persisted identities")
+	}
+	if m.mutationRefusal() == nil {
+		t.Fatal("host changes are taken over a registry built without the persisted identities")
+	}
+}

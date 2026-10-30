@@ -714,3 +714,38 @@ func readLegacyRecords(path string) (hostRecordSet, error) {
 	}
 	return decodeLegacyRecords(path, string(raw))
 }
+
+// readLegacyTeardownFences reads the teardown remnants and attempts of the
+// reserved sections one record at a time, ignoring fields this build does not
+// decode and any other record that cannot be read. They fence lifecycle actions
+// on their own, so a record elsewhere in the file that makes the whole set
+// unreadable must not hide them.
+func readLegacyTeardownFences(path string) (map[string]HostTeardownRemnant, map[string]HostTeardownAttempt) {
+	remnants := map[string]HostTeardownRemnant{}
+	attempts := map[string]HostTeardownAttempt{}
+	raw, err := configReadFile(path)
+	if err != nil {
+		return remnants, attempts
+	}
+	var sections struct {
+		Remnants map[string]toml.Primitive `toml:"teardown_remnants"`
+		Attempts map[string]toml.Primitive `toml:"teardown_attempts"`
+	}
+	metadata, err := toml.Decode(string(raw), &sections)
+	if err != nil {
+		return remnants, attempts
+	}
+	for key, primitive := range sections.Remnants {
+		var remnant HostTeardownRemnant
+		if metadata.PrimitiveDecode(primitive, &remnant) == nil {
+			remnants[key] = remnant
+		}
+	}
+	for key, primitive := range sections.Attempts {
+		var attempt HostTeardownAttempt
+		if metadata.PrimitiveDecode(primitive, &attempt) == nil {
+			attempts[key] = attempt
+		}
+	}
+	return remnants, attempts
+}
