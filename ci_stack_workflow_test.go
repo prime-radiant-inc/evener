@@ -35,3 +35,27 @@ func TestCIIncludesNotificationRepairStack(t *testing.T) {
 		t.Errorf("CI permissions = %#v, want contents read only", workflow.Permissions)
 	}
 }
+
+func TestCIJobsUseApprovedRunner(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile(".github/workflows/ci.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow struct {
+		Jobs map[string]struct {
+			RunsOn string `yaml:"runs-on"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(data, &workflow); err != nil {
+		t.Fatal(err)
+	}
+	if len(workflow.Jobs) == 0 {
+		t.Fatal("CI workflow has no jobs")
+	}
+	for name, job := range workflow.Jobs {
+		if job.RunsOn != "ubuntu-24.04" {
+			t.Errorf("CI job %s runs-on = %q, want ubuntu-24.04", name, job.RunsOn)
+		}
+	}
+}

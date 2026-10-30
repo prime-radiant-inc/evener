@@ -2140,6 +2140,10 @@ func TestDelegateResourceSupervision_OrdinaryMissingTerminalCleanupPrecedesPacke
 	}
 	enteredInitialRequest := make(chan struct{})
 	releaseInitialRequest := make(chan struct{})
+	releaseProvider := sync.OnceFunc(func() { close(releaseInitialRequest) })
+	releasePredecessor := make(chan struct{})
+	releaseGeneration := sync.OnceFunc(func() { close(releasePredecessor) })
+	returns := newActivationReturns()
 	bare := func(llm.Request) llm.Response {
 		return llm.Response{Message: llm.Assistant("bare text without communicate")}
 	}
@@ -2147,6 +2151,31 @@ func TestDelegateResourceSupervision_OrdinaryMissingTerminalCleanupPrecedesPacke
 		descriptor.Isolation = "worktree"
 		descriptor.WorkingDir = lane
 	})
+	requireStarts := func(root *Session, want int) {
+		t.Helper()
+		events, err := delegatestore.ReadEvents(delegateResourceStorePath(root.stateDir, root.ID()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var starts []delegatestore.RunStarted
+		for _, event := range events {
+			if event.DelegateID == fixture.delegateID && event.RunStarted != nil {
+				starts = append(starts, *event.RunStarted)
+			}
+		}
+		if len(starts) != want {
+			t.Fatalf("run starts = %+v, want %d", starts, want)
+		}
+		for i, start := range starts {
+			trigger := delegatestore.TriggerOwnerInput
+			if i > 0 {
+				trigger = delegatestore.TriggerAttention
+			}
+			if start.Generation != uint64(i+1) || start.Trigger != trigger {
+				t.Fatalf("run start = %+v, want generation %d trigger %s", start, i+1, trigger)
+			}
+		}
+	}
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
 			close(enteredInitialRequest)
@@ -2161,16 +2190,34 @@ func TestDelegateResourceSupervision_OrdinaryMissingTerminalCleanupPrecedesPacke
 		bare,
 		bare,
 	}
-	finalStatePublished := make(chan struct{})
+	// Both the ordinary error and its retained shell attention publish a result.
+	finalStatePublished := make(chan *subagent, 2)
+	successorReleasing := make(chan struct{}, 2)
 	restore := RestoreSessionConfig{
 		StateDir:    fixture.stateDir,
 		ForceRealIO: true,
 		testOnly: testConfig{
-			skipGitSnapshot:     true,
-			minimalSystemPrompt: true,
-			sandboxProber:       bwrapCapableProber(fixture.workspace),
-			subagentAfterFinalStatePublish: func(*subagent) {
-				close(finalStatePublished)
+			skipGitSnapshot:          true,
+			minimalSystemPrompt:      true,
+			sandboxProber:            bwrapCapableProber(fixture.workspace),
+			subagentActivationReturn: returns.capture,
+			subagentAfterFinalStatePublish: func(sub *subagent) {
+				select {
+				case finalStatePublished <- sub:
+				default:
+					t.Error("unexpected extra final-state publication")
+				}
+			},
+			subagentBeforeGenerationReleased: func(_ *subagent, lease delegateLease) {
+				if lease.generation == 1 {
+					<-releasePredecessor
+					return
+				}
+				select {
+				case successorReleasing <- struct{}{}:
+				default:
+					t.Error("unexpected extra successor release")
+				}
 			},
 		},
 	}
@@ -2178,7 +2225,25 @@ func TestDelegateResourceSupervision_OrdinaryMissingTerminalCleanupPrecedesPacke
 	if err != nil {
 		t.Fatalf("restore ordinary-evidence root: %v", err)
 	}
-	t.Cleanup(root.Close)
+	t.Cleanup(func() {
+		releaseProvider()
+		releaseGeneration()
+		returns.close(t, root)
+		if len(returns.all) != 2 {
+			t.Errorf("drained activations = %d, want 2", len(returns.all))
+		}
+		requireStarts(root, 2)
+		select {
+		case <-finalStatePublished:
+			t.Error("unexpected final-state publication after drain")
+		default:
+		}
+		select {
+		case <-successorReleasing:
+			t.Error("unexpected successor release after drain")
+		default:
+		}
+	})
 	started := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "start ordinary missing-terminal run", 0)
 	if started.result.Err != nil {
 		t.Fatalf("start ordinary missing-terminal delegate: %v", started.result.Err)
@@ -2187,6 +2252,10 @@ func TestDelegateResourceSupervision_OrdinaryMissingTerminalCleanupPrecedesPacke
 	sub := root.subagents.get(fixture.childID)
 	if sub == nil || sub.sess == nil {
 		t.Fatalf("stable child %q was not tracked", fixture.childID)
+	}
+	predecessor := returns.take(t, fixture.childID)
+	if predecessor.delegateID != fixture.delegateID || predecessor.lease.generation != 1 {
+		t.Fatalf("predecessor activation = %+v, want fixture generation 1", predecessor)
 	}
 	root.delegateController.mu.Lock()
 	descriptor := cloneDelegateStartDescriptor(root.delegateController.durable[fixture.delegateID].Descriptor)
@@ -2212,7 +2281,7 @@ func TestDelegateResourceSupervision_OrdinaryMissingTerminalCleanupPrecedesPacke
 			joinOnce.Do(func() { close(joinStarted) })
 		}
 	}
-	close(releaseInitialRequest)
+	releaseProvider()
 	<-executor.signalReturned
 	lateSteer := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "steer after ordinary settlement claim", 0)
 	if !errors.Is(lateSteer.result.Err, errDelegateTargetBusy) {
@@ -2227,7 +2296,9 @@ func TestDelegateResourceSupervision_OrdinaryMissingTerminalCleanupPrecedesPacke
 		<-executor.waitReturned
 		t.Fatal("ordinary missing-terminal run sampled terminal evidence before joining its owned shell")
 	}
-	<-finalStatePublished
+	if published := <-finalStatePublished; published != sub {
+		t.Fatalf("predecessor publication = %p, want %p", published, sub)
+	}
 	<-executor.waitReturned
 	if report := root.stableDelegateWorktreeReport(descriptor); report == nil || !report.Dirty {
 		t.Fatalf("post-cleanup ordinary worktree report = %#v, want dirty", report)
@@ -2237,14 +2308,19 @@ func TestDelegateResourceSupervision_OrdinaryMissingTerminalCleanupPrecedesPacke
 		t.Fatalf("load ordinary terminal packet: %v", err)
 	}
 	var packet *delegatestore.TerminalPacket
+	packets := 0
 	for i := range events {
-		if events[i].DelegateID == fixture.delegateID && events[i].TerminalPrepared != nil {
+		if events[i].DelegateID == fixture.delegateID && events[i].TerminalPrepared != nil && events[i].TerminalPrepared.Generation == predecessor.lease.generation {
 			value := events[i].TerminalPrepared.Packet
 			packet = &value
+			packets++
 		}
 	}
 	if packet == nil {
 		t.Fatal("ordinary missing-terminal generation has no terminal packet")
+	}
+	if packets != 1 {
+		t.Fatalf("predecessor packets = %d, want 1", packets)
 	}
 	var metadata delegateTerminalPacketMetadata
 	if err := json.Unmarshal(packet.Metadata, &metadata); err != nil {
@@ -2252,6 +2328,75 @@ func TestDelegateResourceSupervision_OrdinaryMissingTerminalCleanupPrecedesPacke
 	}
 	if metadata.Worktree == nil || !metadata.Worktree.Dirty {
 		t.Fatalf("ordinary packet sampled worktree before shell cleanup: %#v", metadata.Worktree)
+	}
+	// The real shell completion is in custody, but generation 1 never saw it.
+	records, err := sub.sess.jobManager.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := records[ownedShell.JobID]
+	if record == nil || record.TerminalGen == "" || record.Status != jobstore.StatusCancelled || record.NotifyState != jobstore.NotifyDelivered {
+		t.Fatalf("owned shell completion = %+v, want cancelled and delivered", record)
+	}
+	attentionID := stableShellAttentionID(ownedShell.JobID, record.TerminalGen)
+	if ids := rootAttentionFold(t, sub.sess).pendingIDs(); !slices.Equal(ids, []string{attentionID}) {
+		t.Fatalf("predecessor pending attention = %v, want [%s]", ids, attentionID)
+	}
+	assertAttentionResponseReceipts(t, sub.sess, attentionID, 0)
+	requireStarts(root, 1)
+	predecessorRequests := len(fixture.adapter.Requests())
+	if predecessorRequests != len(fixture.adapter.steps) {
+		t.Fatalf("predecessor requests = %d, want %d", predecessorRequests, len(fixture.adapter.steps))
+	}
+	t.Logf("original cleanup assertions passed, predecessor generation=%d requests=%d attention=%s", predecessor.lease.generation, predecessorRequests, attentionID)
+	releaseGeneration()
+	// This boundary still fires if a faulty callback drops publication 2.
+	waitForTestSignal(t, successorReleasing, "attention successor generation release")
+	successor := returns.take(t, fixture.childID)
+	if successor.delegateID != fixture.delegateID || successor.lease.generation != predecessor.lease.generation+1 {
+		t.Fatalf("successor activation = %+v, want fixture generation %d", successor, predecessor.lease.generation+1)
+	}
+	waitForTestSignal(t, predecessor.returned, "ordinary predecessor activation return")
+	waitForTestSignal(t, successor.returned, "shell attention successor activation return")
+	select {
+	case published := <-finalStatePublished:
+		if published != sub {
+			t.Fatalf("successor publication = %p, want %p", published, sub)
+		}
+	default:
+		t.Fatal("attention successor did not publish final state")
+	}
+	requireStarts(root, 2)
+	requests := fixture.adapter.Requests()
+	if len(requests) != predecessorRequests+1 {
+		t.Fatalf("requests after successor = %d, want %d", len(requests), predecessorRequests+1)
+	}
+	data, err := readTranscriptFull(sub.sess.TranscriptPath(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var frame string
+	custodies := 0
+	for _, entry := range data.Entries {
+		if entry.Turn.AttentionID == attentionID {
+			custodies++
+			frame = entry.Turn.Message.Text()
+		}
+	}
+	if custodies != 1 || frame == "" {
+		t.Fatalf("shell attention custody = %d, want one nonempty frame", custodies)
+	}
+	for i, request := range requests {
+		if requestContainsText(request, frame) != (i == predecessorRequests) || request.SessionID != fixture.childID {
+			t.Fatalf("request %d did not preserve predecessor/successor attention presentation", i)
+		}
+	}
+	assertAttentionResponseReceipts(t, sub.sess, attentionID, 1)
+	if disposition, generation := childAttentionResolution(t, sub, attentionID); disposition != delegateAttentionConsumed || generation != 0 {
+		t.Fatalf("shell attention resolution = %s generation %d, want consumed generation 0", disposition, generation)
+	}
+	if ids := rootAttentionFold(t, sub.sess).pendingIDs(); len(ids) != 0 {
+		t.Fatalf("attention after successor = %v, want none", ids)
 	}
 }
 
