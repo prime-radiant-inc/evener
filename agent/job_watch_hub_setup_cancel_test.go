@@ -44,26 +44,22 @@ func TestManagerWatchSetupCancellationStopsBlockedWatchWithoutRegistration(t *te
 	}
 	root.SetHubClient(client)
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	result := make(chan error, 1)
 	go func() {
 		_, err := root.configureHubWatchRuntime(ctx, map[string]any{"operation": "create", "hub": map[string]any{"ref": "local:worker", "events": []string{"status"}}})
 		result <- err
 	}()
-	watchCtx := <-client.watchCtx // Captures that Watch setup really began.
+	var watchCtx context.Context
+	awaitWithin(t, 10*time.Second, "client.Watch setup beginning", func() { watchCtx = <-client.watchCtx })
 	cancel()
-	select {
-	case <-watchCtx.Done():
-	case <-time.After(time.Second):
-		t.Fatal("Watch setup context did not observe tool cancellation")
-	}
-	select {
-	case err := <-result:
+	awaitWithin(t, 10*time.Second, "blocked Watch context cancellation", func() { <-watchCtx.Done() })
+	awaitWithin(t, 10*time.Second, "cancelled watch setup returning", func() {
+		err := <-result
 		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("setup error = %v, want context.Canceled", err)
+			t.Errorf("setup error = %v, want context.Canceled", err)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("watch setup did not return after cancellation")
-	}
+	})
 	if client.watchCalls != 1 {
 		t.Fatalf("Watch calls = %d, want 1", client.watchCalls)
 	}
@@ -81,21 +77,24 @@ func TestManagerWatchSetupCancellationStopsBlockedWatchWithoutRegistration(t *te
 func TestManagerWatchEstablishedSubscriptionOutlivesToolContext(t *testing.T) {
 	t.Parallel()
 	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
-	updates := make(chan appwire.SessionWatchUpdate, 1)
+	updates := make(chan appwire.SessionWatchUpdate, 2)
 	updates <- appwire.SessionWatchUpdate{Snapshot: &appwire.ThreadReadResponse{BootGeneration: "7@worker", Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: "local:worker", InstanceID: "worker-instance"}}}, Metadata: appwire.SessionObservationMetadata{Ref: "local:worker", InstanceID: "worker-instance", GenerationID: "7@worker"}}
 	client := &managerSetupCancelClient{view: appwire.ManagerView{Ref: "local:manager", InstanceID: "manager-instance", Manager: true}, watchCtx: make(chan context.Context, 1), updates: updates}
 	root.SetHubClient(client)
+	tokens := make(chan jobNotification, 1)
+	root.jobManager.enqueue = func(n jobNotification) { tokens <- n }
 	ctx, cancel := context.WithCancel(context.Background())
 	_, err := root.configureHubWatchRuntime(ctx, map[string]any{"operation": "create", "hub": map[string]any{"ref": "local:worker", "events": []string{"status"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	watchCtx := <-client.watchCtx
+	awaitWithin(t, 10*time.Second, "client.Watch subscription start", func() { <-client.watchCtx })
 	cancel()
-	select {
-	case <-watchCtx.Done():
-		t.Fatal("established subscription inherited tool-context cancellation")
-	default:
+	updates <- appwire.SessionWatchUpdate{Event: "status", Metadata: appwire.SessionObservationMetadata{Ref: "local:worker", InstanceID: "worker-instance", GenerationID: "7@worker", EntryID: "after-tool-return", CausalKnown: true}}
+	var token jobNotification
+	awaitWithin(t, 10*time.Second, "observation after originating tool cancellation", func() { token = <-tokens })
+	if token.WatchSend == nil {
+		t.Fatalf("post-cancellation observation token has no watch send: %#v", token)
 	}
 	jm := root.jobManager
 	jm.mu.Lock()

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -40,6 +41,9 @@ func TestHubWatchTerminalDeliverySurvivesPriorLastNoticeSettlement(t *testing.T)
 
 			detached := make(chan struct{})
 			release := make(chan struct{})
+			var releaseOnce sync.Once
+			releaseBoundary := func() { releaseOnce.Do(func() { close(release) }) }
+			defer releaseBoundary()
 			jm.testOnlyAfterHubWatchDetach = func() {
 				close(detached)
 				<-release
@@ -53,26 +57,25 @@ func TestHubWatchTerminalDeliverySurvivesPriorLastNoticeSettlement(t *testing.T)
 					finished <- jm.onHubObservation(watch.WatchID, appwire.SessionWatchUpdate{Event: "status", Metadata: appwire.SessionObservationMetadata{Ref: "local:worker", InstanceID: "worker-instance", GenerationID: "7@worker", EntryID: "accepted-terminal", CausalKnown: true, EndTurn: true, EndReason: "done", TerminalAccepted: &accepted}})
 				}()
 			} else {
-				go func() { finished <- jm.endHubWatch(watch.WatchID, "manager disabled", nil) }()
+				go func() { finished <- jm.endHubWatch(watch.WatchID, "target replaced; re-register", nil) }()
 			}
-			<-detached // Captures the real endHubWatch detach/final-send interval.
+			awaitWithin(t, 10*time.Second, "endHubWatch detachment boundary", func() { <-detached })
 			if err := jm.settleWatchSendDelivered(cfg, prior); err != nil {
-				close(release)
+				releaseBoundary()
 				t.Fatal(err)
 			}
-			close(release)
-			if err := <-finished; err != nil {
-				t.Fatal(err)
-			}
+			releaseBoundary()
+			awaitWithin(t, 10*time.Second, "endHubWatch final send recording", func() {
+				if err := <-finished; err != nil {
+					t.Errorf("endHubWatch: %v", err)
+				}
+			})
 			jm.testOnlyAfterHubWatchDetach = nil
 
-			select {
-			case token := <-tokens:
-				if token.WatchSend == nil {
-					t.Fatalf("queued caller token has no watch send: %#v", token)
-				}
-			case <-time.After(time.Second):
-				t.Fatal("final caller wake token was not queued")
+			var token jobNotification
+			awaitWithin(t, 10*time.Second, "final caller wake token", func() { token = <-tokens })
+			if token.WatchSend == nil {
+				t.Fatalf("queued caller token has no watch send: %#v", token)
 			}
 			finals := 0
 			for _, event := range loadJobStoreEvents(t, jm) {
@@ -80,12 +83,16 @@ func TestHubWatchTerminalDeliverySurvivesPriorLastNoticeSettlement(t *testing.T)
 				if event.Kind != jobstore.EventWatchSendPending || state == nil {
 					continue
 				}
-				if terminal == "end" && state.EndNotice {
-					finals++
+				if state.DeliveryID != token.WatchSend.DeliveryID || state.Key != token.WatchSend.Key || state.UpdateSeq != token.WatchSend.UpdateSeq || state.DeliveryID == prior.DeliveryID {
+					continue
 				}
-				if terminal == "completion" && state.TriggerReason == "completed: accepted terminal done" {
-					finals++
+				if state.EndNotice != (terminal == "end") {
+					continue
 				}
+				if terminal == "completion" && state.TriggerIdentity != "worker-instance/7@worker/accepted-terminal:status:completed" {
+					continue
+				}
+				finals++
 			}
 			if finals != 1 {
 				t.Fatalf("durable %s notices=%d, want 1", terminal, finals)
