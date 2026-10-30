@@ -449,6 +449,10 @@ test.each(["doc", "sessionTasks"] as const)(
         await import("../panes/doc/DocPane");
       } else workspaceStore.getState().openPane(type, { ref }, { slot: "secondary" });
     });
+    if (type === "doc") {
+      // The registry's lazy import is separate from the direct import above.
+      await act(async () => await vi.dynamicImportSettled());
+    }
     if (type === "doc") expect(screen.getByRole("button", { name: "Reload" })).not.toBeNull();
     // Both loaded panes own an ordinary claim, but neither can adopt a bridge.
     await act(async () => {
