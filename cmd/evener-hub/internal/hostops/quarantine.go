@@ -948,19 +948,42 @@ func custodyForCorruptStore(fs afero.Fs, path string, epoch uint64, now time.Tim
 // reached, and carrying it would leave the replacement unable to allocate.
 const maxPlausibleAllocatorFloor = 1 << 62
 
-// recoverAllocatorFloor reads the allocator high-water mark from a corrupt
-// store file that is still a JSON object, ignoring every other region. It
-// returns zero when the file does not show a plausible value.
+// recoverAllocatorFloor reads the highest allocator id a corrupt store file
+// that is still a JSON object shows: its declared high-water mark and every
+// canonical record or tombstone id, ignoring every other region. It returns
+// zero when the file shows nothing plausible.
 func recoverAllocatorFloor(fs afero.Fs, path string) uint64 {
 	raw, err := afero.ReadFile(fs, path)
 	if err != nil {
 		return 0
 	}
 	var file struct {
-		AllocatorHighWaterMark *uint64 `json:"allocatorHighWaterMark"`
+		AllocatorHighWaterMark *uint64           `json:"allocatorHighWaterMark"`
+		Records                []json.RawMessage `json:"records"`
+		Tombstones             []json.RawMessage `json:"tombstones"`
 	}
-	if json.Unmarshal(raw, &file) != nil || file.AllocatorHighWaterMark == nil || *file.AllocatorHighWaterMark > maxPlausibleAllocatorFloor {
+	if json.Unmarshal(raw, &file) != nil {
 		return 0
 	}
-	return *file.AllocatorHighWaterMark
+	var floor uint64
+	raise := func(n uint64) {
+		if n <= maxPlausibleAllocatorFloor {
+			floor = max(floor, n)
+		}
+	}
+	if file.AllocatorHighWaterMark != nil {
+		raise(*file.AllocatorHighWaterMark)
+	}
+	for _, item := range append(file.Records, file.Tombstones...) {
+		var row struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(item, &row) != nil {
+			continue
+		}
+		if n, err := parseAllocatorID(row.ID); err == nil {
+			raise(n)
+		}
+	}
+	return floor
 }
