@@ -262,6 +262,20 @@ export class DraftRepository {
 			.map((row) => this.mapTransfer(row));
 	}
 
+	/** The hops still on their way into a destination: what a hop out of
+	 * that destination must reroute before it retires the identity. */
+	pendingTransfersTo(to: DraftDestination): DraftTransfer[] {
+		return this.db
+			.getAllSync<TransferRow>(
+				`SELECT * FROM draft_transfer_log
+      WHERE to_hub_id = ? AND to_ref = ? AND state = 'pending' AND delivered_hash IS NULL
+      ORDER BY created_at, rowid`,
+				to.hubId,
+				to.sessionRef,
+			)
+			.map((row) => this.mapTransfer(row));
+	}
+
 	/** The latest committed hop out of an identity: the forward pointer a
 	 * completion follows toward the record's current owner. A row whose
 	 * transfer never committed moved nothing, so it is not a pointer. */
@@ -557,6 +571,7 @@ export class DraftRepository {
 			completedCommandRecoveryIds?: readonly string[];
 			releasedRecoveryIds?: readonly string[];
 		},
+		reroutes: readonly { transferId: string; to: DraftDestination }[] = [],
 	): void {
 		withSavepoint(this.db, "draft_transfer", () => {
 			if (evidence !== undefined)
@@ -580,6 +595,18 @@ export class DraftRepository {
     WHERE transfer_id = ?`,
 				evidence?.transferId ?? "",
 			);
+			// Written inside the same savepoint as the move: a hop still on its
+			// way into the source this hop retires must follow the work onward,
+			// atomically, or it would later deliver into the retired identity.
+			for (const reroute of reroutes)
+				this.db.runSync(
+					`UPDATE draft_transfer_log SET to_hub_id = ?, to_ref = ?, state_changed_at = ?
+      WHERE transfer_id = ? AND state = 'pending' AND delivered_hash IS NULL`,
+					reroute.to.hubId,
+					reroute.to.sessionRef,
+					this.now(),
+					reroute.transferId,
+				);
 			// The record's generation, written in the same savepoint: stamped
 			// when a record first moves, preserved by every later save of that
 			// record and carried by each later hop, so settlement follows the

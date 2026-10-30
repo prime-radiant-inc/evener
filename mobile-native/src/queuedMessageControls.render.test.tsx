@@ -51,6 +51,7 @@ const harness = vi.hoisted(() => ({
 	handoffPendingnessReads: 0,
 	handoffPendingnessReadFailFrom: 0,
 	handoffEdgesReadFailFrom: 0,
+	completionRoutingReadFailure: false,
 	rpcFailure: "" as string,
 	reopenKV: () => {},
 	manipulate: vi.fn(),
@@ -162,6 +163,13 @@ vi.mock("expo-sqlite", async () => {
 					const index = ++harness.handoffPendingnessReads;
 					return index >= harness.handoffPendingnessReadFailFrom;
 				};
+				// Fails the capture-routing read of the transfer log while every
+				// ownership and pendingness read succeeds, so a test can leave a
+				// resolved submission's completion undelivered in isolation.
+				const completionRoutingFails = (sql: unknown) =>
+					harness.completionRoutingReadFailure &&
+					database === "evener-drafts.db" &&
+					String(sql).includes("carried_capture_token");
 				// A stable platform handle delegates to the reopened on-disk database.
 				port = {
 					execSync: (...args: Parameters<SqliteSync["execSync"]>) => {
@@ -175,6 +183,7 @@ vi.mock("expo-sqlite", async () => {
 					getFirstSync: (...args: Parameters<SqliteSync["getFirstSync"]>) => {
 						if (handoffReadFails(args[0])) throw new Error("handoff read failed");
 						if (pendingnessReadFails(args[0])) throw new Error("pendingness read failed");
+						if (completionRoutingFails(args[0])) throw new Error("completion routing read failed");
 						return opened.port.getFirstSync(...args);
 					},
 					getAllSync: (...args: Parameters<SqliteSync["getAllSync"]>) => {
@@ -295,6 +304,7 @@ afterEach(async () => {
 	harness.handoffEdgesReadFailFrom = 0;
 	harness.handoffPendingnessReads = 0;
 	harness.handoffPendingnessReadFailFrom = 0;
+	harness.completionRoutingReadFailure = false;
 	harness.rpcFailure = "";
 	await getNativeMutationRuntime().stop();
 });
@@ -820,6 +830,57 @@ it("actual screen defers restoration while pending handoffs are unreadable", asy
 	expect(f.document.getSnapshot().record).toMatchObject({
 		draft: "pendingness retry source",
 		composer: { recoveryIds: [source.clientMutationId] },
+	});
+});
+
+it("actual screen retries an undelivered completion without user action", async () => {
+	const f = await mount();
+	await f.offline();
+	// A sibling identity holds a submitted message whose capture the handoff
+	// carries into this screen.
+	const sibling = `sibling-of-${f.ref}`;
+	nativeDrafts().write(
+		{ hubId: "hub-1", sessionRef: sibling },
+		{
+			draft: "handoff completion source",
+			unconfirmed: null,
+		},
+	);
+	const siblingDocument = drafts.open({ hubId: "hub-1", sessionRef: sibling });
+	let finish!: (sent: boolean) => void;
+	const submitted = siblingDocument.submit(
+		() =>
+			new Promise<boolean>((resolve) => {
+				finish = resolve;
+			}),
+	);
+	drafts.handoff({ hubId: "hub-1", sessionRef: sibling }, { hubId: "hub-1", sessionRef: f.ref });
+	await settle();
+	// The submission resolves while the transfer log's capture-routing read
+	// fails: the completion is durable but undelivered, so the capture stays
+	// held and Send blocked while every ownership and pendingness read
+	// succeeds - the screen must keep retrying on its own.
+	harness.completionRoutingReadFailure = true;
+	await act(async () => {
+		finish(true);
+		await submitted;
+	});
+	await settle();
+	expect(f.document.getSnapshot().record).toMatchObject({
+		unconfirmed: "handoff completion source",
+		unconfirmedCaptureToken: expect.any(String),
+	});
+	harness.completionRoutingReadFailure = false;
+	// No Retry press, no remount: the screen's own timer re-runs the pass and
+	// the recovered routing delivers the completion, clearing the capture.
+	await act(async () => {
+		await new Promise((resolve) => setTimeout(resolve, 1500));
+	});
+	await settle();
+	expect(f.tree.root.findAllByProps({ accessibilityLabel: "Retry" })).toHaveLength(0);
+	expect(f.document.getSnapshot().record).toMatchObject({
+		unconfirmed: null,
+		unconfirmedCaptureToken: undefined,
 	});
 });
 

@@ -681,4 +681,51 @@ describe("durable minimal handoffs", () => {
 		).toBe("completed");
 		expect(ledger.outstandingObligations()).toHaveLength(0);
 	});
+
+	it("a hop retires its source only after rerouting what is still on its way in", () => {
+		const { repository, ledger, library } = setup();
+		const a = destination("a");
+		const b = destination("b");
+		const c = destination("c");
+		repository.write(a, {
+			draft: "a work",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		repository.write(b, { draft: "b work", unconfirmed: null });
+		let failA = false;
+		const failing = new Proxy(repository, {
+			get(target, property) {
+				const value = Reflect.get(target, property, target);
+				if (property === "read" && typeof value === "function")
+					return (...args: unknown[]) => {
+						if (failA) throw new Error("drafts unavailable");
+						return (value as (...inner: unknown[]) => unknown).apply(target, args);
+					};
+				return typeof value === "function" ? (value as (...inner: unknown[]) => unknown).bind(target) : value;
+			},
+		}) as DraftRepository;
+		const live = new DraftLibrary(
+			() => failing,
+			() => "id-live",
+			() => ledger,
+		);
+		failA = true;
+		expect(live.handoff(a, b)).toBe(false);
+		failA = false;
+		// B moves on while A -> B is still on its way in: A's hop must follow
+		// the work onward, never deliver into the identity B just left.
+		const restarted = library();
+		expect(restarted.handoff(b, c)).toBe(true);
+		restarted.retryPendingHandoffs();
+		expect(repository.read(c)).toMatchObject({ draft: "b work" });
+		// A's work stays with A - refused at the occupied C, released there,
+		// nothing stranded at the retired B.
+		expect(repository.read(b).draft).toBe("");
+		expect(repository.read(a)).toMatchObject({
+			draft: "a work",
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		expect(repository.read(c).releasedRecoveryIds).toEqual(["recovered-a"]);
+	});
 });

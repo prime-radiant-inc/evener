@@ -24,6 +24,7 @@ export type DraftStorage = Pick<
 	| "refsWithDrafts"
 	| "beginTransfer"
 	| "outstandingTransfers"
+	| "pendingTransfersTo"
 	| "latestCommittedTransferFrom"
 	| "latestCommittedTransferFromCarrying"
 	| "latestTransferCarrying"
@@ -138,6 +139,23 @@ export class DraftLibrary {
 		}
 	}
 
+	/** Whether any resolved obligation still owes its completion's delivery:
+	 * true while one exists, false when none does, undefined when the ledger
+	 * cannot answer. Delivery runs in the retry pass, so a screen that sees
+	 * this must keep that pass running - storage recovering alone must
+	 * converge the capture with no user action. */
+	hasUndeliveredCompletions(): boolean | undefined {
+		const ledger = this.availableSubmissionLedger();
+		if (ledger === undefined) return undefined;
+		let obligations: DraftSubmissionObligation[];
+		try {
+			obligations = ledger.outstandingObligations();
+		} catch {
+			return undefined;
+		}
+		return obligations.some((obligation) => clearsCapture(obligation.state));
+	}
+
 	/** The recovery ids this identity must not restore: the input of every
 	 * submission still running - or resolved but not yet delivered - whose
 	 * origin or durable capture sits here.
@@ -237,18 +255,39 @@ export class DraftLibrary {
 			...(snapshot.record.parkedCompositions ?? []).flatMap((parked) => parked.images ?? []),
 		];
 		try {
+			// This hop retires its source: anything still on its way in must
+			// follow the work onward, atomically with the commit, or it would
+			// later deliver into the identity this hop just emptied.
+			const reroutes = this.repository()
+				.pendingTransfersTo(transfer.from)
+				.map((incoming) => ({ transferId: incoming.transferId, to: transfer.to }));
+			const reroutedIn = this.pending.get(this.handoffKey(transfer.from));
 			const additions = images.map((image) => {
 				const data = source.imagePreviews([image])[0]?.data;
 				if (!data) throw new Error("Saved image is unavailable.");
 				return { ...image, data };
 			});
-			this.repository().transfer(transfer.from, transfer.to, snapshot.record, additions, {
-				transferId: transfer.transferId,
-				deliveredHash: compositionFingerprint(snapshot.record),
-				carriedCaptureToken: snapshot.record.unconfirmedCaptureToken,
-				completedCommandRecoveryIds: snapshot.record.completedCommandRecoveryIds ?? [],
-				releasedRecoveryIds: releasedSources(snapshot.record),
-			});
+			this.repository().transfer(
+				transfer.from,
+				transfer.to,
+				snapshot.record,
+				additions,
+				{
+					transferId: transfer.transferId,
+					deliveredHash: compositionFingerprint(snapshot.record),
+					carriedCaptureToken: snapshot.record.unconfirmedCaptureToken,
+					completedCommandRecoveryIds: snapshot.record.completedCommandRecoveryIds ?? [],
+					releasedRecoveryIds: releasedSources(snapshot.record),
+				},
+				reroutes,
+			);
+			// An in-memory intent waiting on the retired destination follows the
+			// same reroute, or its next pass would re-record the old pair.
+			if (reroutedIn !== undefined) {
+				this.pending.delete(this.handoffKey(transfer.from));
+				if (!this.pending.has(this.handoffKey(transfer.to)))
+					this.pending.set(this.handoffKey(transfer.to), { from: reroutedIn.from, to: transfer.to });
+			}
 		} catch {
 			return false;
 		}

@@ -2960,6 +2960,15 @@ function ConversationScreenView({
 				deferUntilOwnershipReads();
 				return;
 			}
+			// A resolved obligation still owing its completion's delivery keeps
+			// its capture held and Send blocked: this effect's retry pass is the
+			// runner that delivers it, so the timer stays armed until the
+			// delivery lands - restoring the storage alone must converge it.
+			const undelivered = drafts.hasUndeliveredCompletions();
+			if (undelivered === undefined || undelivered) {
+				deferUntilOwnershipReads();
+				return;
+			}
 			for (const row of retained.recovery) {
 				if (!current || imageSelection.getSnapshot().busy) return;
 				if (row.recoveryKind === "editing" && !deliberatelyReleased.has(row.clientMutationId))
