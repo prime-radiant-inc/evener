@@ -433,6 +433,8 @@ export class DraftLibrary {
 		const owner = this.findCaptureOwner(obligation.origin, completion.captureToken);
 		if (owner === undefined) return "unreadable";
 		const outcome = this.deliverCompletionAt(owner, completion);
+		if ((outcome === "delivered" || outcome === "unowned") && !this.deliverRoutedCompletions(owner, completion))
+			return "unreadable";
 		if (outcome === "delivered" || outcome === "unowned") {
 			try {
 				ledger.acknowledgeApplied(completion.captureToken);
@@ -441,6 +443,49 @@ export class DraftLibrary {
 			}
 		}
 		return outcome;
+	}
+
+	/** A refused handoff releases the still-cited sources of live submissions
+	 * at the occupied destination - a retarget may have moved their rows
+	 * there. When such a submission completes, its executed input's completed
+	 * markers must reach every destination holding delivery evidence for them
+	 * before the obligation is acknowledged: released rows stay editable,
+	 * completed ones never restore. A delivery that cannot land leaves the
+	 * obligation unacknowledged so the next pass retries it. */
+	private deliverRoutedCompletions(owner: DraftDestination, completion: DraftCompletionDelivery): boolean {
+		if (completion.completedCommandIds.length === 0) return true;
+		const ledger = this.availableSubmissionLedger();
+		if (ledger === undefined) return false;
+		let routed: DraftDestination[];
+		try {
+			const seen = new Map(
+				completion.completedCommandIds
+					.flatMap((recoveryId) => ledger.deliveryDestinations(recoveryId))
+					.map((destination) => [destination.hubId + "\u0000" + destination.sessionRef, destination]),
+			);
+			routed = [...seen.values()].filter((destination) => !sameDestination(destination, owner));
+		} catch {
+			return false;
+		}
+		if (routed.length === 0) return true;
+		try {
+			for (const destination of routed) {
+				if (!this.open(destination).adoptCompletedCommandRecovery(completion.completedCommandIds)) return false;
+			}
+			ledger.writeDeliveries(
+				routed.flatMap((destination) =>
+					completion.completedCommandIds.map((recoveryId) => ({
+						destination,
+						recoveryId,
+						disposition: "completed" as const,
+						transferId: completion.captureToken,
+					})),
+				),
+			);
+		} catch {
+			return false;
+		}
+		return true;
 	}
 
 	/** Merge a completion into the live document at the owner when one is

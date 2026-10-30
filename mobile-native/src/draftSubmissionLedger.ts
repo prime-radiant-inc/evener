@@ -68,6 +68,10 @@ export class DraftSubmissionLedgerSQLite {
       disposition TEXT NOT NULL, transfer_id TEXT NOT NULL,
       PRIMARY KEY (hub_id, session_ref, recovery_id)
     )`);
+		this.#db.execSync(
+			`CREATE INDEX IF NOT EXISTS draft_handoff_deliveries_recovery
+      ON draft_handoff_deliveries (recovery_id)`,
+		);
 	}
 
 	/** Record the submission before transport. Throws when the store cannot
@@ -194,6 +198,17 @@ export class DraftSubmissionLedgerSQLite {
 				disposition: row.disposition as "completed" | "released",
 				transferId: row.transfer_id,
 			}));
+	}
+
+	/** Every destination that holds delivery evidence for a recovery id: the
+	 * routing a refused handoff's rows follow when their submission resolves. */
+	deliveryDestinations(recoveryId: string): { hubId: string; sessionRef: string }[] {
+		return this.#db
+			.getAllSync<{ hub_id: string; session_ref: string }>(
+				"SELECT DISTINCT hub_id, session_ref FROM draft_handoff_deliveries WHERE recovery_id = ?",
+				recoveryId,
+			)
+			.map((row) => ({ hubId: row.hub_id, sessionRef: row.session_ref }));
 	}
 
 	private mapObligation(row: ObligationRow): DraftSubmissionObligation {

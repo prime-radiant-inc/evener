@@ -645,4 +645,40 @@ describe("durable minimal handoffs", () => {
 		expect(ledger.outstandingObligations()).toHaveLength(0);
 		expect(repository.outstandingTransfers()).toHaveLength(0);
 	});
+
+	it("a completion after a refusal reaches the destination that took its rows", async () => {
+		const { repository, ledger, library } = setup();
+		const a = destination("a");
+		const b = destination("b");
+		repository.write(a, {
+			draft: "current",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		repository.write(b, { draft: "b work", unconfirmed: null });
+		const live = library();
+		const source = live.open(a);
+		let finish!: () => void;
+		const submitted = source.submitBuiltinCommand(
+			() =>
+				new Promise<boolean>((resolve) => {
+					finish = () => resolve(true);
+				}),
+		);
+		// The handoff refuses against the occupied B: the composition's cited
+		// sources are released where its rows went, and the hop is forgotten.
+		expect(live.handoff(a, b)).toBe(false);
+		expect(repository.read(b).releasedRecoveryIds).toEqual(["recovered-a"]);
+		finish();
+		await submitted;
+		// The command consumed its input, and the rows live at B: the
+		// completed markers must reach B before the acknowledgment - released
+		// rows stay editable, completed ones never restore.
+		expect(repository.read(b).completedCommandRecoveryIds).toEqual(["recovered-a"]);
+		expect(
+			ledger.deliveries().find((row) => row.destination.sessionRef === "b" && row.recoveryId === "recovered-a")
+				?.disposition,
+		).toBe("completed");
+		expect(ledger.outstandingObligations()).toHaveLength(0);
+	});
 });
