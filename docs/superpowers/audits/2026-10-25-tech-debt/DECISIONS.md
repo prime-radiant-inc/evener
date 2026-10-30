@@ -206,6 +206,17 @@ The local daemon source treats `io.ErrClosedPipe`, `os.ErrClosed` (also inside `
 - W1-20: keep `Server.SetBeforeSubscriptionGate` as a legitimate test seam.
 - W2-14 Q1 and Q2, and W2-08 Q1 and Q4: take the design records' recommendations.
 
+## Wave 2 close and Wave 3 (2026-10-28)
+
+Bot rulings under Jesse's Wave 2 autonomy grant.
+
+- W1-29b: dropped. W2-13 Part B introduces the store record types fresh, and `hostStore` keeps its maps until Part B deletes them.
+- W2-15: stops at the current boundary. Steps 5, 6 and the `hydration.ts` half of step 8 are not done: the 106 functions in `threads.ts` form one strongly connected component, and splitting them needs wide injected hosts. Revisit only with a design that breaks the cycle.
+- W2-11 question 3: cheap step only. Delete the back-fill blocks and add no new interface. Question 4 is moot after W1-60.
+- hub-app-host-15: share the `RemovedRow` field set behind one converter, proven by identical rows.
+- W2-08 questions 1 and 4: no `scratchState` type, and no folding of the `Ctx` and budgeted forms.
+- Docs PRs may land once CI is green.
+
 ## Still open
 
 Nothing.

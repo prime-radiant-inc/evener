@@ -1,3 +1,4 @@
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { ALL_CAPABILITIES as CAPABILITIES } from "../threadTestUtils";
 import "fake-indexeddb/auto";
 import { WireError } from "@evener/appwire-client";
@@ -28,7 +29,6 @@ import {
 import { ConflictError } from "./threadsErrors";
 import {
   connectMutationClient,
-  deferred,
   ensureActiveMutationTarget,
   flushIndexedDBUntil,
   flushMicrotasks,

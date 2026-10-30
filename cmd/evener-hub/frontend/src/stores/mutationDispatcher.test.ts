@@ -1,21 +1,12 @@
 import type { MutationReceipt, ThreadClearResponse, TurnQueueResponse } from "@evener/appwire-client";
 import { RequestTimeoutError, WireError } from "@evener/appwire-client";
 import { MutationDispatcher } from "@evener/appwire-client/state/mutation";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { IDBFactory } from "fake-indexeddb";
 import { describe, expect, test, vi } from "vitest";
 import type { MutationIntent, MutationOutboxRecord } from "./mutationOutbox";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, resolve, reject };
-}
 
 function receipt(clientMutationId: string, disposition = "applied", projectionState = "reflected"): MutationReceipt {
   return {
