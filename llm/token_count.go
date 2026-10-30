@@ -623,19 +623,29 @@ func DeliversToolResultMedia(res registry.Resolved, mediaType string) bool {
 	return false
 }
 
-// DeliversUserMessageDocuments reports whether the row's adapter represents a
-// document part in a user message in a form the model can consume. The OpenAI
-// Responses builder writes input_file (responses/input.go) and the Anthropic
-// builder writes a document content block (anthropic/request.go; the Messages
-// API accepts base64 application/pdf user messages with no beta header, #4209).
-// Google writes inlineData/fileData; chat silently strips the kind. This is a
-// different position from DeliversToolResultMedia: those document-capable
+// DeliversUserMessageDocuments reports whether the row's adapter represents
+// this document part in a user message in a form the model can consume.
+// Inline bytes ride every document-capable wire: the Chat builder writes a
+// file part (chatcompletions/messages.go), the Responses builder writes
+// input_file (responses/input.go), the Anthropic builder writes a document
+// content block (anthropic/request.go; the Messages API accepts base64
+// application/pdf user messages with no beta header, #4209), and Google
+// writes inlineData/fileData. A URL-only document rides Anthropic's url
+// source, Google's fileData, and the Responses builder's pass-through; Chat
+// Completions has no URL file mechanism, so a URL-only or payload-less
+// document is not delivered there. This is a
+// different position from DeliversToolResultMedia: these document-capable
 // protocols still drop tool-result documents to avoid double delivery through
 // the side-channel.
-func DeliversUserMessageDocuments(res registry.Resolved) bool {
+func DeliversUserMessageDocuments(res registry.Resolved, doc *DocumentData) bool {
+	if doc == nil || (len(doc.Data) == 0 && doc.URL == "") {
+		return false
+	}
 	switch res.Protocol {
 	case registry.ProtocolAnthropic, registry.ProtocolOpenAIResponses, registry.ProtocolGoogle:
 		return true
+	case registry.ProtocolOpenAIChat:
+		return len(doc.Data) > 0
 	default:
 		return false
 	}

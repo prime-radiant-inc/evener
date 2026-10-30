@@ -200,17 +200,10 @@ func toResponsesInput(msgs []llm.Message, imageCap string) (instructions string,
 							content = append(content, img)
 						}
 					case llm.ContentDocument:
-						if p.Document == nil {
-							continue
-						}
-						var fileData string
-						if len(p.Document.Data) > 0 {
-							mt := strings.TrimSpace(p.Document.MediaType)
-							if mt == "" {
-								mt = "application/pdf"
-							}
-							fileData = llm.DataURI(mt, p.Document.Data)
-						} else if p.Document.URL != "" {
+						// Bytes ride file_data as a data URI; a source URL
+						// rides file_data unchanged when no bytes are set.
+						fileData := llm.DocumentFileData(p.Document)
+						if fileData == "" && p.Document != nil {
 							fileData = p.Document.URL
 						}
 						if fileData != "" {
