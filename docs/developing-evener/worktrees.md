@@ -272,6 +272,19 @@ These are documented trade-offs, not bugs:
   existed has no record to consult — keeps its lock, and `prune` reports it
   `locked; owner liveness unverifiable` so the deliberate manual unlock stays a
   human decision there. A lane `prune` skips keeps its lock.
+  Two properties keep that reclamation safe against an owner that comes back:
+  the dead verdict and the removal are serialized with the owner's startup —
+  `prune` claims the root's process livelock across the whole release-and-collect
+  (a claim that fails means the owner resumed mid-pass, and the lane is skipped
+  as `owner resumed since listing`; a claim that succeeds means no delegate of
+  that tree can run, or commit, until the branch delete has finished), and a
+  session's own livelock acquisition is never abandoned on contention — a probe's
+  momentary hold or another prune's claim only delays it behind a background
+  retry, so a *running* session cannot end up reading as a free livelock, which
+  is a dead owner's signature. Idle retirement is the deliberate exception on
+  the other side: a retired root is parked-for-resume, not dead, so retirement
+  durably removes its livelock — absent answers unknown, never dead — and a
+  later resume takes it again (see `docs/daemon-idle-retirement.md`).
 - **A session whose working directory is deleted out from under it refuses honestly.**
   If the lane a session is standing in is removed from the main checkout while the
   session keeps running, the session's working directory no longer exists, and every

@@ -13,6 +13,14 @@ independent lifetime — retirement does not sweep them away. Session scratch is
 kept across retirement, with its regenerable caches pruned, and the resumed
 session reopens it. It is deleted when the hub archives or deletes the session.
 
+The same preservation extends to the session's process livelock: retirement
+PARKS it rather than releasing it in place. The retired root is
+parked-for-resume, not dead, so its livelock file is durably removed at
+retirement — a liveness probe then answers *unknown* (absent), never *dead*
+(`developing-evener/worktrees.md`), which keeps the delegate lanes retirement
+preserved locked against a foreign `prune` until the resume; the replacement
+process that restores the session takes the livelock again at init.
+
 ## Configuration
 
 The Hub's timeout lives in `hub.toml`:

@@ -67,3 +67,10 @@ func SessionLivelockHeld(dir, id string) (held, exists bool, err error) {
 		return false, true, lockErr
 	}
 }
+
+// LivelockContended reports whether an AcquireSessionLivelock error is
+// contention with a concurrent holder rather than a real failure, so callers
+// retry instead of abandoning. See the unix arm's doc comment.
+func LivelockContended(err error) bool {
+	return err != nil && errors.Is(err, windows.ERROR_LOCK_VIOLATION)
+}

@@ -388,25 +388,37 @@ type Session struct {
 	// change who holds the lane at the one moment between deciding to release
 	// and releasing. Nil in production.
 	//
+	// worktreeBeforeDeadOwnerLivelockClaim is the dead-owner arm's matching
+	// seam: called immediately before prune claims the dead owner root's
+	// process livelock, so a test can simulate the owner resuming (its
+	// replacement process taking the livelock) in the window between the dead
+	// verdict and the reclamation. Nil in production.
+	//
 	// livelockRelease releases this session's process livelock — the lifetime
 	// flock whose release-by-OS at process death is what lets a later prune
 	// prove a dead owner gone (session_worktree_owner_liveness.go, issue
 	// #5471). Set for root sessions at init; nil for subagents and for sessions
 	// that could not take the lock. Guarded by s.mu.
+	// livelockRetryStop halts a pending re-acquisition loop at release; guarded
+	// by s.mu. livelockAcquired is closed when a contended acquisition finally
+	// lands — the signal a test waits on; nil unless contention occurred.
 	//
 	// worktreeRendezvousDir is a test-only seam overriding the rendezvous run
 	// directory the owner-liveness oracle consults. Empty in production, which
 	// resolves the platform default.
-	worktreeRestoreEnv                  *execenv.LocalExecutionEnvironment
-	worktreeCurrentPath                 string
-	worktreeCurrentManaged              bool
-	worktreeGitVersionOK                bool
-	worktreeLiveWorkStub                func(path string) []string
-	worktreeDisposeBeforeRemove         func(lanePath string)
-	worktreeLaneStat                    func(path string) (os.FileInfo, error)
-	worktreeBeforeStrandedMarkerRelease func(lanePath string)
-	livelockRelease                     func()
-	worktreeRendezvousDir               string
+	worktreeRestoreEnv                   *execenv.LocalExecutionEnvironment
+	worktreeCurrentPath                  string
+	worktreeCurrentManaged               bool
+	worktreeGitVersionOK                 bool
+	worktreeLiveWorkStub                 func(path string) []string
+	worktreeDisposeBeforeRemove          func(lanePath string)
+	worktreeLaneStat                     func(path string) (os.FileInfo, error)
+	worktreeBeforeStrandedMarkerRelease  func(lanePath string)
+	worktreeBeforeDeadOwnerLivelockClaim func(lanePath string)
+	livelockRelease                      func()
+	livelockRetryStop                    bool
+	livelockAcquired                     chan struct{}
+	worktreeRendezvousDir                string
 
 	// responseSideEffectsMu serializes a response's user-visible side-effect
 	// bundle (emit + appendTurn + counter bump) against teardown.

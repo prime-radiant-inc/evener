@@ -1,6 +1,9 @@
 package schema
 
-import "path/filepath"
+import (
+	"os"
+	"path/filepath"
+)
 
 // SessionLivelockSuffix names a root session's process-livelock file beside
 // its meta: <dir>/sessions/<id>.livelock.
@@ -11,6 +14,19 @@ const SessionLivelockSuffix = ".livelock"
 // base SessionsDir uses).
 func SessionLivelockPath(dir, id string) string {
 	return filepath.Join(SessionsDir(dir), id+SessionLivelockSuffix)
+}
+
+// RemoveSessionLivelock deletes the session's livelock file. Retirement parks
+// the root this way (issue #5471): a file that is absent answers unknown to a
+// liveness probe — never dead — so a retired-but-resumable root's lanes stay
+// protected, while a crash leaves the file in place for the OS-released flock
+// to speak. A missing file is already parked: not an error.
+func RemoveSessionLivelock(dir, id string) error {
+	err := os.Remove(SessionLivelockPath(dir, id))
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 // The livelock is the one durable signal that answers "is there a live

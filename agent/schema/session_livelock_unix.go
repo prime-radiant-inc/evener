@@ -69,3 +69,12 @@ func SessionLivelockHeld(dir, id string) (held, exists bool, err error) {
 func errorsIsLockHeld(err error) bool {
 	return errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN)
 }
+
+// LivelockContended reports whether an AcquireSessionLivelock error is
+// contention with a concurrent holder — a probe's momentary take, a prune
+// reclaiming the root's lanes, or a second process on the same session id —
+// rather than a real acquisition failure. Callers use it to retry rather than
+// abandon: a running session must never end up permanently unrepresented.
+func LivelockContended(err error) bool {
+	return err != nil && errorsIsLockHeld(err)
+}

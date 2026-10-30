@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/worktree"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -216,15 +217,18 @@ func (s *Session) collectRegisteredLanes(ctx context.Context, run worktree.GitRu
 		// could keep the lane (dirty, unmerged, in-grace, live work) leaves
 		// the dead owner's lock in place too.
 		deadOwnerMarker := ""
+		deadOwnerRoot := ""
 		if !staleOwnMarker && worktree.Decide(worktree.EvPruneCandidate, lockSt) == worktree.ActSkip {
 			reason := "locked"
 			if e.LockReason != "" {
 				reason = fmt.Sprintf("locked (%s)", e.LockReason)
 			}
 			if policy.reclaimDeadDelegateLanes && e.Locked && lockMarker.DelegateID != "" {
-				switch s.delegateLaneOwnerLiveness(lockMarker) {
+				verdict, root := s.delegateLaneOwnerLiveness(lockMarker)
+				switch verdict {
 				case ownerDead:
 					deadOwnerMarker = worktree.FormatDelegateMarker(lockMarker.DelegateID, lockMarker.SessionID)
+					deadOwnerRoot = root
 				case ownerLive:
 					reason += "; owner session tree is live"
 				default:
@@ -298,17 +302,49 @@ func (s *Session) collectRegisteredLanes(ctx context.Context, run worktree.GitRu
 		// then took is never unlocked, which would hand this lane's removal to
 		// prune while that session is rooted in it. A lane whose lock is no
 		// longer the one this pass authorized is skipped, not collected.
+		var deadOwnerLivelockRelease func()
 		if staleOwnMarker || deadOwnerMarker != "" {
+			// Serialize the dead-owner reclamation with the owner's
+			// startup/resume (review round 2, finding 1): the dead verdict came
+			// from a probe earlier in this pass, and an owner that resumes in
+			// between adopts the lane's existing marker unchanged
+			// (EvDelegateRevive adopts an own delegate marker), so marker text
+			// can never detect it. Claiming the root's process livelock here
+			// closes the window twice over: the claim only succeeds if the
+			// root is still unhosted at this instant — a resumed owner's
+			// startup takes the livelock before it can host anything — and
+			// the hold across the release-and-collect below means no owner
+			// can start hosting, and no delegate of it can run or commit,
+			// until the branch delete has finished. Contention on the claim
+			// (a resumed owner, or another collector between its own claim and
+			// release) skips the lane for a later pass.
+			if deadOwnerMarker != "" {
+				if s.worktreeBeforeDeadOwnerLivelockClaim != nil {
+					s.worktreeBeforeDeadOwnerLivelockClaim(e.Path)
+				}
+				claim, applied, claimErr := schema.AcquireSessionLivelock(s.currentStateDir(), deadOwnerRoot)
+				if claimErr != nil || !applied || claim == nil {
+					skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: "owner resumed since listing"})
+					continue
+				}
+				deadOwnerLivelockRelease = claim
+			}
 			expected := worktree.FormatSessionMarker(s.id)
 			if deadOwnerMarker != "" {
 				expected = deadOwnerMarker
 			}
 			released, relErr := s.releaseStrandedMarker(policy.lockFiles, e.Path, expected)
 			if relErr != nil {
+				if deadOwnerLivelockRelease != nil {
+					deadOwnerLivelockRelease()
+				}
 				skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: "releasing stranded marker: " + relErr.Error()})
 				continue
 			}
 			if !released {
+				if deadOwnerLivelockRelease != nil {
+					deadOwnerLivelockRelease()
+				}
 				skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: "lock changed since listing"})
 				continue
 			}
@@ -324,11 +360,17 @@ func (s *Session) collectRegisteredLanes(ctx context.Context, run worktree.GitRu
 			if deadOwnerMarker != "" {
 				s.restoreStrandedMarker(e.Path, deadOwnerMarker)
 			}
+			if deadOwnerLivelockRelease != nil {
+				deadOwnerLivelockRelease()
+			}
 			if policy.abortOnError {
 				return nil, nil, fmt.Errorf("manage_worktree prune: %w", cErr)
 			}
 			skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: "collect race: " + cErr.Error()})
 			continue
+		}
+		if deadOwnerLivelockRelease != nil {
+			deadOwnerLivelockRelease()
 		}
 		removed = append(removed, WorktreePruneEntry{
 			Name: e.Name, Path: e.Path,
@@ -477,13 +519,6 @@ func laneLockFile(lanePath string) (string, error) {
 		gitdir = filepath.Join(lanePath, gitdir)
 	}
 	return filepath.Join(gitdir, "locked"), nil
-}
-
-// restoreStrandedOwnMarker puts this session's own marker back on a lane whose
-// release was made for a collection that then failed; the own-marker wrapper
-// around restoreStrandedMarker, which carries the protocol.
-func (s *Session) restoreStrandedOwnMarker(lanePath string) {
-	s.restoreStrandedMarker(lanePath, worktree.FormatSessionMarker(s.id))
 }
 
 // restoreStrandedMarker puts marker back on a lane whose release was made for

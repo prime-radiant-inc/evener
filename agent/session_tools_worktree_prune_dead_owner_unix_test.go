@@ -15,8 +15,11 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/internal/worktree"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -287,5 +290,142 @@ func TestWorktreePrune_DeadOwnerReleaseRestoresMarkerOnCollectFailure(t *testing
 	}
 	if !branchExistsInRepo(t, r.mainRoot, deadOwnerDlgID) {
 		t.Error("lane branch was deleted despite the failed collection")
+	}
+}
+
+// TestWorktreePrune_OwnerResumedBeforeClaimKeepsLane (review round 2, finding
+// 1): the owner's replacement process starts MID-PASS — after the dead
+// verdict, before the reclamation — and takes the livelock. The lane's marker
+// is untouched (a resumed owner adopts an own delegate marker unchanged), so
+// only the livelock can detect the revival: the reclamation's claim must fail
+// and the lane must survive, still locked.
+func TestWorktreePrune_OwnerResumedBeforeClaimKeepsLane(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	seedOwnerSessionMeta(t, r.stateDir, deadOwnerRootSID, false, "")
+	seedDeadLivelock(t, r.stateDir, deadOwnerRootSID)
+	path, _ := r.addDelegateLaneFixture(t, deadOwnerDlgID, deadOwnerRootSID)
+	marker := "evener:dlg:" + deadOwnerDlgID + ":" + deadOwnerRootSID
+
+	var release func()
+	r.s.worktreeBeforeDeadOwnerLivelockClaim = func(lanePath string) {
+		// The owner resumes here: its startup takes the livelock. No deferred
+		// release — the hold outlives the callback, like a real process's.
+		release = holdLivelock(t, r.stateDir, deadOwnerRootSID)
+	}
+	t.Cleanup(func() {
+		if release != nil {
+			release()
+		}
+	})
+
+	out, err := r.pruneOp(t)
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if e := findPruneEntry(t, pruneEntries(t, out, "removed"), deadOwnerDlgID); e != nil {
+		t.Fatalf("prune collected the lane of an owner that resumed before the claim: %+v", e)
+	}
+	e := findPruneEntry(t, pruneEntries(t, out, "skipped"), deadOwnerDlgID)
+	if e == nil {
+		t.Fatalf("%s not reported skipped: %+v", deadOwnerDlgID, out)
+	}
+	if reason, _ := e["reason"].(string); reason != "owner resumed since listing" {
+		t.Errorf("reason = %q, want owner resumed since listing", reason)
+	}
+	if !r.delegateLaneLockedViaPorcelain(t, path, marker) {
+		t.Error("the resumed owner's lane lost its lock")
+	}
+	if !branchExistsInRepo(t, r.mainRoot, deadOwnerDlgID) {
+		t.Error("the resumed owner's lane branch was deleted")
+	}
+}
+
+// TestWorktreePrune_DeadOwnerReclaimHoldsRootLivelock pins the serialization
+// mechanism the resumed-owner test depends on: once the reclamation has
+// claimed the dead owner root's process livelock, no resuming owner could
+// take it (and start hosting, and run delegates) until the branch delete
+// completes — so a commit can never land between the disposability check and
+// the branch -D. Asserted at the in-reclamation seam, where the claim is held
+// and the lane is about to be removed.
+func TestWorktreePrune_DeadOwnerReclaimHoldsRootLivelock(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	seedOwnerSessionMeta(t, r.stateDir, deadOwnerRootSID, false, "")
+	seedDeadLivelock(t, r.stateDir, deadOwnerRootSID)
+	path, _ := r.addDelegateLaneFixture(t, deadOwnerDlgID, deadOwnerRootSID)
+
+	pruneHoldsRootLivelock := false
+	r.s.worktreeBeforeStrandedMarkerRelease = func(lanePath string) {
+		f, err := os.OpenFile(schema.SessionLivelockPath(r.stateDir, deadOwnerRootSID), os.O_RDWR, 0o600)
+		if err != nil {
+			return
+		}
+		defer func() { _ = f.Close() }()
+		if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+			pruneHoldsRootLivelock = true // contention: the reclamation holds it
+			return
+		}
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	}
+
+	out, err := r.pruneOp(t)
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if e := findPruneEntry(t, pruneEntries(t, out, "removed"), deadOwnerDlgID); e == nil {
+		t.Fatalf("%s not collected; skipped: %+v", deadOwnerDlgID, pruneEntries(t, out, "skipped"))
+	}
+	if !pruneHoldsRootLivelock {
+		t.Error("the reclamation did not hold the owner root's livelock while it removed the lane")
+	}
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Errorf("lane worktree survived the collection: err=%v", statErr)
+	}
+}
+
+// TestSessionLivelockContentionRetriedUntilAcquired (review round 2, finding
+// 2): a session whose non-blocking livelock acquisition collides with a
+// probe's momentary hold must not end up permanently unrepresented — once the
+// contention clears, the running session holds the livelock, proven by
+// waiting on the acquisition signal, not on a window.
+func TestSessionLivelockContentionRetriedUntilAcquired(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	sid := identifier.MustNewSessionID()
+	if err := os.MkdirAll(schema.SessionsDir(dir), 0o755); err != nil {
+		t.Fatalf("mkdir sessions dir: %v", err)
+	}
+	holder := holdLivelock(t, dir, sid)
+
+	s := newSession(t, withStateDir(dir), withConfig(SessionConfig{
+		MaxSubagentDepth: 1,
+		spawn:            spawnConfig{sessionID: sid},
+		testOnly: testConfig{
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+			noSyncJobStore:      true,
+		},
+	}))
+	if s.ID() != sid {
+		t.Fatalf("fixture session id = %q, want the pre-selected %q", s.ID(), sid)
+	}
+	s.mu.Lock()
+	signal := s.livelockAcquired
+	s.mu.Unlock()
+	if signal == nil {
+		t.Fatal("no re-acquisition pending: contention permanently suppressed the livelock")
+	}
+
+	holder() // the probe's momentary hold clears
+
+	select {
+	case <-signal:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the pending livelock acquisition never landed after contention cleared")
+	}
+	held, exists, err := schema.SessionLivelockHeld(dir, sid)
+	if err != nil || !exists || !held {
+		t.Fatalf("livelock after retry = (held=%v, exists=%v, err=%v), want held by the running session", held, exists, err)
 	}
 }

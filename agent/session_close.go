@@ -338,7 +338,12 @@ func (s *Session) releaseForRetirement(ctx context.Context, options closeOptions
 		releaseErr = errors.Join(releaseErr, fmt.Errorf("close transcript: %w", err))
 	}
 	s.closeEventStream(budgetCtx)
-	s.releaseSessionLivelock()
+	// Retirement is non-terminal (docs/daemon-idle-retirement.md): the root
+	// stays resumable and its preserved delegate lanes stay locked, so its
+	// livelock is PARKED — durably absent, which reads as unknown liveness —
+	// never released-in-place, which would read as a proven-dead owner to a
+	// foreign prune (review round 2, finding 3).
+	s.parkSessionLivelock()
 	return releaseErr
 }
 
