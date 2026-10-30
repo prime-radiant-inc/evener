@@ -79,16 +79,6 @@ export function connectMutationClient(): FakeClient {
   return fake;
 }
 
-export function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, resolve, reject };
-}
-
 // onTurnStart answers turn/start with the standard applied mutation: a fresh
 // in-progress turn_1 and the applied receipt — the handler 33 of this file's
 // tests copy-pasted inline.

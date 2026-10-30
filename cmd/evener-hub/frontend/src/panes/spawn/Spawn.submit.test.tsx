@@ -1,12 +1,12 @@
 import type { ThreadStartParams, ThreadStartResponse } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
 import { toastKinds } from "../../widgets/toast/toastTestUtils";
 import { selectEditorText } from "../session/testing/editor";
 import { selectSpawnDirectory } from "./spawnDrafts";
 import {
-  deferred,
   effortControl,
   effortOptionValues,
   effortSelect,

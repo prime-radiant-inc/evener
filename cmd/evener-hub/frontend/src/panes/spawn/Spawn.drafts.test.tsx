@@ -4,6 +4,7 @@ import type {
   ThreadStartParams,
   ThreadStartResponse,
 } from "@evener/appwire-client";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { expect, test } from "vitest";
 import { ClientProvider } from "../../shell/clientContext";
@@ -15,7 +16,6 @@ import Spawn from "./Spawn";
 import {
   completionDraft,
   completionNavigate,
-  deferred,
   effortControl,
   effortOptionValues,
   expectWorkingDir,
