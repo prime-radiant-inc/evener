@@ -615,7 +615,9 @@ func (m *hubHostManager) bootLegacyRecords(settle bool) bool {
 	// decodeConfig already validated each shape, so they are restored as-is (the
 	// same hard startup-error posture a corrupt host entry takes).
 	m.cfg.store.setRemnantMaps(fileRecords.StagedReceipts, fileRecords.TeardownRemnants, fileRecords.TeardownAttempts)
-	if !settle {
+	if !settle || !readable {
+		// An unreadable file says nothing about which records it holds: settling
+		// over the empty maps above would write them back as the file's records.
 		return readable
 	}
 	collided := false

@@ -1046,3 +1046,64 @@ func TestMigrationWaitsWhenTheRegistryServesAHostTheRestoredFileLacks(t *testing
 		t.Fatal("host changes are taken while the move waits for a registry that matches the file")
 	}
 }
+
+// TestNoSingleReadFailureAtALegacyBootLosesARecord fails each hub.toml read of a
+// legacy boot in turn, with a cross-file intent pending, and requires every
+// receipt the file held to survive a clean boot afterwards: a transient failure
+// of the initial load must pause the boot, not settle it over empty records.
+func TestNoSingleReadFailureAtALegacyBootLosesARecord(t *testing.T) {
+	bootFailingRead := func(t *testing.T, failAt int) (int, hostRecordSet, string, *hostops.Store) {
+		configPath, records := legacyHub(t)
+		body, err := os.OpenFile(configPath, os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			t.Fatalf("open hub.toml: %v", err)
+		}
+		if _, err := body.WriteString("\n[pending_store_sync.keep]\ngeneration = 1\ntoken_values = [\"row-that-was-purged\"]\n"); err != nil {
+			t.Fatalf("append the intent: %v", err)
+		}
+		_ = body.Close()
+		store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+		if err != nil {
+			t.Fatalf("hostops.Open: %v", err)
+		}
+		cfg := mustLoadConfig(t, configPath)
+		doc := hostBootDocument(cfg, store)
+		hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
+		if err != nil {
+			t.Fatalf("hostreg.NewSeeded: %v", err)
+		}
+		previous := configReadFile
+		reads := 0
+		configReadFile = func(path string) ([]byte, error) {
+			reads++
+			if reads == failAt {
+				return nil, errors.New("injected read failure")
+			}
+			return previous(path)
+		}
+		newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+			RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: configPath,
+		}, configPath, hosts, t.Logf)
+		configReadFile = previous
+		return reads, records, configPath, store
+	}
+
+	total, _, _, _ := bootFailingRead(t, 0)
+	for failAt := 1; failAt <= total; failAt++ {
+		_, records, configPath, store := bootFailingRead(t, failAt)
+
+		restartOver(t, configPath, store)
+
+		got := mustRecords(t, store)
+		for key := range records.MutationReceipts {
+			if _, kept := got.MutationReceipts[key]; !kept {
+				t.Fatalf("read %d failing: receipt %q was lost", failAt, key)
+			}
+		}
+		for id := range records.TeardownRemnants {
+			if _, kept := got.TeardownRemnants[id]; !kept {
+				t.Fatalf("read %d failing: remnant %q was lost", failAt, id)
+			}
+		}
+	}
+}

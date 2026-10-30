@@ -446,8 +446,13 @@ func (s hostOpsRecordStore) commit(entries, known []hostreg.Host, records hostTO
 
 // restore puts a prior family back after a commit whose host-set write failed.
 // A failure here is logged: the unwritten host change leaves the staged marker
-// for boot recovery to roll back.
+// for boot recovery to roll back. The counters the refused commit spent for a
+// name with no live record stay spent in its mark (the tombstone keeps its
+// removal's identity beside it).
 func (s hostOpsRecordStore) restore(prior hostops.HostRecords) {
+	if staged, _, _ := s.ops.HostRecords(); len(staged.Generations) != 0 {
+		prior = keepSpentCounters(prior, staged)
+	}
 	mirror := hostops.HostMirror{}
 	if set, err := decodeHostRecords(prior); err == nil {
 		mirror = hostMirrorFor(set, s.ops.Boundaries())
@@ -455,6 +460,40 @@ func (s hostOpsRecordStore) restore(prior hostops.HostRecords) {
 	if err := s.ops.CommitHostRecords(prior, mirror); err != nil && !hostops.RenameLanded(err) {
 		s.log("host records not restored after a refused host-set write: %v", err)
 	}
+}
+
+// keepSpentCounters raises prior's generation marks to the counters staged spent
+// for names prior holds no live record for. A mark that cannot be read, or that
+// would leave the family invalid, is left as it was.
+func keepSpentCounters(prior, staged hostops.HostRecords) hostops.HostRecords {
+	stagedMarks, err := decodeRecordMap[HostGeneration]("generation", staged.Generations)
+	if err != nil {
+		return prior
+	}
+	priorMarks, err := decodeRecordMap[HostGeneration]("generation", prior.Generations)
+	if err != nil {
+		return prior
+	}
+	raised := maps.Clone(prior.Generations)
+	for name, spent := range stagedMarks {
+		held, tombstoned := priorMarks[name]
+		if _, live := prior.Hosts[name]; live || !tombstoned {
+			continue
+		}
+		held.Generation = max(held.Generation, spent.Generation)
+		held.PresenceEpoch = max(held.PresenceEpoch, spent.PresenceEpoch)
+		encoded, err := json.Marshal(held)
+		if err != nil {
+			continue
+		}
+		raised[name] = encoded
+	}
+	candidate := prior
+	candidate.Generations = raised
+	if _, err := decodeHostRecords(candidate); err != nil {
+		return prior
+	}
+	return candidate
 }
 
 // recordSetFor is the record family one commit carries: the identity records

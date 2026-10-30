@@ -1814,3 +1814,45 @@ func TestAnAddPastItsRegistrationIsNotRolledBackByALaterEditOfTheFile(t *testing
 		t.Fatal("recovery rolled back an add whose registration had completed")
 	}
 }
+
+// TestAReAddWhoseHostFileWriteFailsBeforeTheRenameKeepsItsSpentCounters covers a
+// staging write whose records are durable and whose host file write fails before
+// its rename: the records go back to what they were, with the counters the
+// refused attempt spent still spent.
+func TestAReAddWhoseHostFileWriteFailsBeforeTheRenameKeepsItsSpentCounters(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, store := hub.boot(t, false)
+	if _, err := m.RemoveResult(context.Background(), removeRequest(t, m, "side")); err != nil {
+		t.Fatalf("remove side: %v", err)
+	}
+	before := mustRecords(t, store)
+	var spent HostGeneration
+	previous := configReadFile
+	configReadFile = func(path string) ([]byte, error) {
+		if mark := mustRecords(t, store).Generations["side"]; spent.Generation == 0 && mark.Generation > before.Generations["side"].Generation {
+			spent = mark
+			return nil, errors.New("injected read failure")
+		}
+		return previous(path)
+	}
+	t.Cleanup(func() { configReadFile = previous })
+
+	_, err := m.AddResult(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "side", Address: "again.example"}, MutationID: "re-add-side",
+	})
+	configReadFile = previous
+	if err == nil {
+		t.Fatal("the re-add succeeded although its host file write failed")
+	}
+	if spent.Generation == 0 {
+		t.Fatal("the fixture never failed a host file write after the records were durable")
+	}
+
+	after := mustRecords(t, store)
+	if _, tombstoned := after.Tombstones["side"]; !tombstoned {
+		t.Fatal("the refused re-add took the removed host's tombstone with it")
+	}
+	if mark := after.Generations["side"]; mark.Generation < spent.Generation || mark.PresenceEpoch < spent.PresenceEpoch {
+		t.Fatalf("the refused re-add forgot the counters it spent: %+v, it spent %+v", mark, spent)
+	}
+}
