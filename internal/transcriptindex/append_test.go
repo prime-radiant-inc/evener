@@ -469,12 +469,12 @@ func TestCorruptSidecarRebuilds(t *testing.T) {
 				t.Fatal(err)
 			}
 		}},
-		{"older format", func(t *testing.T, dir string) {
+		{"other format", func(t *testing.T, dir string) {
 			data, err := os.ReadFile(filepath.Join(liveBuild(t, dir), metaFile))
 			if err != nil {
 				t.Fatal(err)
 			}
-			data = []byte(string(data[:len(data)-1]) + `,"format":` + strconv.Itoa(formatVersion-1) + `}`)
+			data = []byte(string(data[:len(data)-1]) + `,"format":99}`)
 			if err := os.WriteFile(filepath.Join(liveBuild(t, dir), metaFile), data, 0o600); err != nil {
 				t.Fatal(err)
 			}

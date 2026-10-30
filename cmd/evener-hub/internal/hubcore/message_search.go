@@ -333,11 +333,6 @@ func (x *MessageSearch) Refresh(ctx context.Context, sessions []MessageSearchSes
 				// Contention the refusing read must not wait on: skip
 				// silently, the same way the cursor-stale race does.
 				continue
-			case errors.Is(err, transcriptindex.ErrNewerSidecar):
-				// A newer build wrote this sidecar and this binary may not
-				// rebuild it: skip the session, recording nothing, until the
-				// binaries agree again.
-				continue
 			default:
 				failures = append(failures, MessageSearchFailure{SessionID: session.ID, Err: err})
 				if !known {

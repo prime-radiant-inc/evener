@@ -97,12 +97,6 @@ func captureRepairLog(t *testing.T) func() []string {
 // staleSidecarForTest and the rendezvous-starvation storm's re-staler, so
 // the make-it-refuse mechanism lives exactly once.
 func flipSidecarProjection(path string) (entries uint64, err error) {
-	return rewriteSidecarProjection(path, "transcript-read-model-v6:0000000000000000000000000000000000000000000000000000000000000ff")
-}
-
-// rewriteSidecarProjection stamps the committed build's meta with projection
-// and returns the build's recorded entry count.
-func rewriteSidecarProjection(path, projection string) (entries uint64, err error) {
 	dir := transcriptindex.DirFor(path)
 	current, err := os.ReadFile(filepath.Join(dir, "CURRENT"))
 	if err != nil {
@@ -120,11 +114,7 @@ func rewriteSidecarProjection(path, projection string) (entries uint64, err erro
 	if err := json.Unmarshal(fields["entries"], &entries); err != nil {
 		return 0, err
 	}
-	stamped, err := json.Marshal(projection)
-	if err != nil {
-		return 0, err
-	}
-	fields["projection"] = stamped
+	fields["projection"] = json.RawMessage(`"transcript-read-model-v6:0000000000000000000000000000000000000000000000000000000000000ff"`)
 	rewritten, err := json.Marshal(fields)
 	if err != nil {
 		return 0, err
@@ -655,38 +645,6 @@ func TestALegacyTranscriptAnswersHistoryFailedDirectly(t *testing.T) {
 	// Nothing new is written — no fresh build directory, no CURRENT change —
 	// for a transcript that can never be indexed. The open's directory and
 	// lock file are today's residue.
-	requireUnchangedSidecar(t, transcriptindex.DirFor(path), before)
-}
-
-// A sidecar a newer build wrote is not this binary's to rebuild: the read
-// answers history-failed, no repair is armed, and the sidecar stays exactly as
-// its own build left it, so no cycle of repairs and rebuilds can start.
-func TestANewerSidecarAnswersHistoryFailedWithoutARepair(t *testing.T) {
-	wireRepairsForTest(t)
-	logged := captureRepairLog(t)
-	_, _, calls := installRepairSeam(t)
-	cfg, entry, path := seedIndexedPastSession(t,
-		execution("turn_m1", schema.NewTurn(schema.TurnUserInput, llm.User("question"))),
-	)
-	index, err := transcriptindex.Open(path, transcriptindex.DirFor(path))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := index.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := rewriteSidecarProjection(path, "transcript-read-model-v9999:newer"); err != nil {
-		t.Fatal(err)
-	}
-	before := snapshotSidecarDir(t, transcriptindex.DirFor(path))
-
-	for range 3 {
-		_, err = readStaleSession(t, cfg, entry)
-		requireTranscriptHistoryFailed(t, err, 0)
-	}
-	if got := calls.Load(); got != 0 || len(logged()) != 0 {
-		t.Fatalf("repairs = %d, repair log = %q, want none", got, logged())
-	}
 	requireUnchangedSidecar(t, transcriptindex.DirFor(path), before)
 }
 
