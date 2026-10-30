@@ -107,7 +107,7 @@ func repairStableShellAttentionTarget(target stableShellAttentionBootstrapTarget
 		}
 		attentionID := stableShellAttentionID(record.JobID, record.TerminalGen)
 		content := stableShellAttentionContent(target.storePath, target.descriptor, record)
-		if _, err := appendColdDelegateAttentionMessageDurablyWithOpen(path, sessionID, attentionID, llm.UserMachinery(content), now(), open, jobNotificationFromRecord(record).Provenance); err != nil {
+		if err := appendColdShellAttentionDurablyWithOpen(path, sessionID, attentionID, content, now(), open, jobNotificationFromRecord(record).Provenance); err != nil {
 			return err
 		}
 		if err := store.Append(jobstore.Event{
@@ -120,6 +120,39 @@ func repairStableShellAttentionTarget(target stableShellAttentionBootstrapTarget
 		}
 	}
 	return nil
+}
+
+func appendColdShellAttentionDurablyWithOpen(path, sessionID, attentionID, content string, now time.Time, open delegateAttentionWriterOpener, causal *provenance.Causal) (err error) {
+	preflight, err := readDelegateAttentionFold(path, sessionID)
+	if err != nil {
+		return err
+	}
+	historical := llm.User(content)
+	previous, exists := preflight.turns[attentionID]
+	if !exists || validateDelegateAttentionIdentity(previous, attentionID, historical, nil) != nil {
+		_, err := appendColdDelegateAttentionMessageDurablyWithOpen(path, sessionID, attentionID, llm.UserMachinery(content), now, open, causal)
+		return err
+	}
+	// Older shell bootstrap synced this exact plain-user, nil-provenance
+	// receipt before its separate source ack. Recover custody without rewriting
+	// that evidence or permitting any fresh write in the historical format.
+	writer, entries, err := open(path, sessionID)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, writer.Close()) }()
+	fold, err := foldDelegateAttention(entries)
+	if err != nil {
+		return err
+	}
+	previous, exists = fold.turns[attentionID]
+	if !exists {
+		return fmt.Errorf("historical shell attention %q disappeared before writer open", attentionID)
+	}
+	if err := validateDelegateAttentionIdentity(previous, attentionID, historical, nil); err != nil {
+		return err
+	}
+	return writer.EstablishDurability()
 }
 
 func stableShellAttentionContent(storePath string, descriptor delegatestore.Descriptor, record *jobstore.JobRecord) string {

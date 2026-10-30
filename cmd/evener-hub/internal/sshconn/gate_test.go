@@ -656,7 +656,7 @@ func TestEnsureDeployRefusesWithoutARecorder(t *testing.T) {
 func TestHostGateReleaseGenerations(t *testing.T) {
 	var gate hostLockGate // notification must work without construction
 	previous := gate.releaseGeneration()
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		gate.Lock()
 		if gate.TryLock() {
 			t.Fatal("TryLock acquired a held gate")

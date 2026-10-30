@@ -319,12 +319,13 @@ func TestDrainStallWatchdogSparePendingWatchSend(t *testing.T) {
 // wedge. Its three siblings cover a running managed job, a driving child, and a
 // pending watch send; this is the hasPendingDelegateDeliveries signal.
 func TestDrainStallWatchdogSparePendingDelegateDelivery(t *testing.T) {
-	t.Parallel()
+	// Serial: seedPendingDeliverySource captures process-wide diagnostics.
 	clk := agenttest.NewFakeClock()
 	adapter := &fakeAdapter{name: "openai"}
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{clock: clk}))
+	sess.stopLaneResidueSweepTimer()
 
-	deliveryID := seedPendingDeliverySource(t, sess)
+	deliveryID := seedPendingDeliverySource(t, sess, clk)
 	c := sess.delegateController
 	c.mu.Lock()
 	descriptor := c.durable["dlg_pending"].Descriptor

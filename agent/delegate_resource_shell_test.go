@@ -1,17 +1,21 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/spf13/afero"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/transcript"
@@ -631,5 +635,303 @@ func TestShellReplayPreservesAcceptedMachineryMessage(t *testing.T) {
 	}
 	if countAttentionEntries(t, path, id) != 1 {
 		t.Fatal("integrity refusal appended duplicate")
+	}
+}
+
+func TestShellBootstrapReplaysHistoricalReceiptAfterInterruptedAck(t *testing.T) {
+	setup := func(t *testing.T, withProvenance bool) (coldStableDelegateFixture, stableShellAttentionBootstrapTarget, *jobstore.JobRecord, string) {
+		t.Helper()
+		var descriptor delegatestore.Descriptor
+		fixture := newColdStableDelegateFixtureConfigured(t, "", func(d *delegatestore.Descriptor) {
+			descriptor = cloneDelegateStartDescriptor(*d)
+		})
+		jm, err := newJobManagerNoSync(fixture.stateDir, fixture.childID, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = jm.closeStoreOnly() })
+		jm.parentDelegateID = fixture.delegateID
+		jm.now = func() time.Time { return time.Unix(300, 0).UTC() }
+		if withProvenance {
+			causal := provenance.WithWatch(nil, "opaque-historical-watch-a27f", "opaque-historical-generation-76cb", "opaque-historical-delivery-52a1", fixture.childID, "opaque-historical-origin-038d")
+			jm.currentProvenance = func() *provenance.Causal { return causal }
+		}
+		record, err := jm.createShell(createShellOpts{Command: "true", Description: "opaque-historical-shell-68cf"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		code := 0
+		if err := jm.finalize(record.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
+			t.Fatal(err)
+		}
+		record = loadStableShellRecord(t, jm, record.JobID)
+		if !record.Status.IsTerminal() || record.TerminalGen == "" || record.NotifyState != jobstore.NotifyPending || (record.Provenance != nil) != withProvenance {
+			t.Fatalf("historical source before interrupted ack = %+v", record)
+		}
+		if err := jm.closeStoreOnly(); err != nil {
+			t.Fatal(err)
+		}
+		target := stableShellAttentionBootstrapTarget{delegateID: fixture.delegateID, descriptor: descriptor, storePath: filepath.Join(jobsDir(fixture.stateDir, fixture.childID), "jobs.jsonl")}
+		return fixture, target, record, stableShellAttentionContent(target.storePath, descriptor, record)
+	}
+	assertSource := func(t *testing.T, target stableShellAttentionBootstrapTarget, record *jobstore.JobRecord, want jobstore.NotifyState) {
+		t.Helper()
+		events, err := jobstore.ReadEvents(target.storePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stored := jobstore.Fold(events)[record.JobID]
+		if stored == nil || stored.TerminalGen != record.TerminalGen || stored.NotifyState != want {
+			t.Fatalf("exact historical source = %+v, want %s/%s", stored, record.TerminalGen, want)
+		}
+		delivered := 0
+		for _, event := range events {
+			if event.Kind == jobstore.EventJobNotificationDelivered {
+				if event.JobID != record.JobID || event.TerminalGen != record.TerminalGen {
+					t.Fatalf("acknowledged another source: %+v", event)
+				}
+				delivered++
+			}
+		}
+		if (want == jobstore.NotifyPending && delivered != 0) || (want == jobstore.NotifyDelivered && delivered != 1) {
+			t.Fatalf("source delivered events = %d, want state %s", delivered, want)
+		}
+	}
+	for _, withProvenance := range []bool{false, true} {
+		name := "nil_source_provenance"
+		if withProvenance {
+			name = "watch_source_provenance"
+		}
+		t.Run(name, func(t *testing.T) {
+			fixture, target, record, content := setup(t, withProvenance)
+			path := transcriptPath(fixture.stateDir, fixture.childID)
+			id := stableShellAttentionID(record.JobID, record.TerminalGen)
+			// Execute the old writer operation, stopping before its separate source ack.
+			if appended, err := appendColdDelegateNotificationDurablyWithOpen(path, fixture.childID, id, content, time.Unix(301, 0).UTC(), transcript.OpenWriterForSession); err != nil || !appended {
+				t.Fatalf("old receiver append = %t, %v", appended, err)
+			}
+			accepted := notificationRawEntries(t, path)
+			if len(accepted) != 1 || !accepted[0].MachineryFlagged || !reflect.DeepEqual(accepted[0].Turn.Message, llm.User(content)) || accepted[0].Turn.NotificationProvenance != nil {
+				t.Fatalf("old receipt representation = %+v", accepted)
+			}
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertSource(t, target, record, jobstore.NotifyPending)
+			seen := make(chan struct{})
+			fixture.adapter.steps = []func(llm.Request) llm.Response{
+				func(request llm.Request) llm.Response {
+					if !slices.ContainsFunc(request.Messages, func(message llm.Message) bool {
+						return reflect.DeepEqual(message, llm.User(content))
+					}) {
+						t.Error("child request omitted complete original historical receipt")
+					}
+					if !requestContainsText(request, `<job-notification job_id="`+record.JobID+`"`) || !requestContainsText(request, record.Description) {
+						t.Error("child request omitted input-derived shell identity or payload")
+					}
+					close(seen)
+					return communicateResponse(true, "historical shell completion handled")
+				},
+				func(llm.Request) llm.Response {
+					select {
+					case <-seen:
+					default:
+						t.Error("root completion preceded historical shell observation")
+					}
+					return communicateResponse(true, "historical shell completion drained")
+				},
+			}
+			root := restoreSupervisionRoot(t, fixture, nil)
+			if len(fixture.adapter.Requests()) != 0 {
+				t.Fatal("bootstrap called provider")
+			}
+			for range 2 {
+				assertSource(t, target, record, jobstore.NotifyDelivered)
+				if err := repairStableShellAttentionForBootstrap(root.delegateController); err != nil {
+					t.Fatal(err)
+				}
+				after, err := os.ReadFile(path)
+				if err != nil || !bytes.Equal(after, before) {
+					t.Fatalf("bootstrap changed historical receiver bytes: %v", err)
+				}
+			}
+			if _, err := root.DrainJobTree(context.Background(), drainWakeForTest(root)); err != nil {
+				t.Fatal(err)
+			}
+			waitForStableSupervisionRun(t, root, fixture.childID)
+			assertNotificationObservedOnce(t, path, id)
+			fold, err := readDelegateAttentionFold(path, fixture.childID)
+			if err != nil || fold.resolutions[id] != delegateAttentionConsumed {
+				t.Fatalf("historical receipt resolution = %q, %v", fold.resolutions[id], err)
+			}
+			entries := notificationRawEntries(t, path)
+			if len(entries) == 0 || !reflect.DeepEqual(entries[0], accepted[0]) || countAttentionEntries(t, path, id) != 1 {
+				t.Fatal("continuation rewrote or duplicated historical receipt")
+			}
+			root.delegateController.mu.Lock()
+			aggregate := root.delegateController.durable[fixture.delegateID]
+			completed := aggregate != nil && aggregate.Generation == 1 && !aggregate.CurrentRunOpen && aggregate.LatestOutcome != nil && aggregate.LatestOutcome.Status == delegatestore.OutcomeCompleted && aggregate.LatestPacket != nil && aggregate.LatestPacket.Kind == delegatestore.PacketReported
+			root.delegateController.mu.Unlock()
+			if !completed {
+				t.Fatal("historical shell owner did not complete and report its generation")
+			}
+			assertSource(t, target, record, jobstore.NotifyDelivered)
+		})
+	}
+	seedHistorical := func(t *testing.T, fixture coldStableDelegateFixture, record *jobstore.JobRecord, content string) (string, string, []byte) {
+		t.Helper()
+		path := transcriptPath(fixture.stateDir, fixture.childID)
+		id := stableShellAttentionID(record.JobID, record.TerminalGen)
+		if appended, err := appendColdDelegateNotificationDurablyWithOpen(path, fixture.childID, id, content, time.Unix(301, 0).UTC(), transcript.OpenWriterForSession); err != nil || !appended {
+			t.Fatalf("old receiver append = %t, %v", appended, err)
+		}
+		before, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return path, id, before
+	}
+	assertPendingUnchanged := func(t *testing.T, fixture coldStableDelegateFixture, target stableShellAttentionBootstrapTarget, record *jobstore.JobRecord, path string, before []byte) {
+		t.Helper()
+		after, err := os.ReadFile(path)
+		if err != nil || !bytes.Equal(after, before) {
+			t.Fatalf("refused recovery changed receiver bytes: %v", err)
+		}
+		assertSource(t, target, record, jobstore.NotifyPending)
+		if len(fixture.adapter.Requests()) != 0 {
+			t.Fatal("refused recovery called provider")
+		}
+	}
+	wrongProvenance := provenance.WithWatch(nil, "opaque-wrong-watch-174c", "opaque-wrong-generation-f2a9", "opaque-wrong-delivery-0bc8", "opaque-wrong-receiver-a5d1", "opaque-wrong-origin-e34b")
+	for _, control := range []struct {
+		name   string
+		mutate func(*transcript.Entry)
+	}{
+		{"wrong_payload", func(entry *transcript.Entry) { entry.Turn.Message.Content[0].Text += "x" }},
+		{"extra_content", func(entry *transcript.Entry) {
+			entry.Turn.Message.Content = append(entry.Turn.Message.Content, llm.ContentPart{Kind: llm.ContentText})
+		}},
+		{"message_metadata", func(entry *transcript.Entry) { entry.Turn.Message.Name = "opaque-wrong-name-7a39" }},
+		{"wrong_role", func(entry *transcript.Entry) { entry.Turn.Message.Role = llm.RoleAssistant }},
+		{"wrong_provenance", func(entry *transcript.Entry) { entry.Turn.NotificationProvenance = wrongProvenance }},
+		{"current_missing_provenance", func(entry *transcript.Entry) { entry.Turn.Message.Content[0].Machinery = true }},
+		{"current_wrong_provenance", func(entry *transcript.Entry) {
+			entry.Turn.Message.Content[0].Machinery = true
+			entry.Turn.NotificationProvenance = wrongProvenance
+		}},
+		{"wrong_receiver_header", nil},
+		{"malformed_transcript", nil},
+	} {
+		t.Run("refuse_"+control.name, func(t *testing.T) {
+			fixture, target, record, content := setup(t, true)
+			path, id, before := seedHistorical(t, fixture, record, content)
+			lines := bytes.Split(before, []byte("\n"))
+			switch control.name {
+			case "wrong_receiver_header":
+				var header transcript.Header
+				if err := json.Unmarshal(lines[0], &header); err != nil {
+					t.Fatal(err)
+				}
+				header.SessionID = "opaque-wrong-receiver-f0c2"
+				var err error
+				lines[0], err = json.Marshal(header)
+				if err != nil {
+					t.Fatal(err)
+				}
+			case "malformed_transcript":
+				lines = append(lines[:len(lines)-1], []byte("{malformed"), nil)
+			default:
+				entry := notificationRawEntries(t, path)[0]
+				control.mutate(&entry)
+				var err error
+				lines[1], err = json.Marshal(entry)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			before = bytes.Join(lines, []byte("\n"))
+			if err := os.WriteFile(path, before, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+			if root != nil {
+				t.Cleanup(root.Close)
+			}
+			if err == nil {
+				t.Fatal("root restore accepted conflicting receiver evidence")
+			}
+			assertPendingUnchanged(t, fixture, target, record, path, before)
+			if _, err := appendColdDelegateAttentionMessageDurablyWithOpen(path, fixture.childID, id, llm.User(content), time.Unix(302, 0).UTC(), transcript.OpenWriterForSession); err == nil {
+				t.Fatal("generic validation accepted conflicting receiver evidence")
+			}
+			assertPendingUnchanged(t, fixture, target, record, path, before)
+		})
+	}
+	for _, change := range []string{"absent", "message", "provenance"} {
+		t.Run("changed_at_writer_open_"+change, func(t *testing.T) {
+			fixture, target, record, content := setup(t, true)
+			path, _, before := seedHistorical(t, fixture, record, content)
+			lines := bytes.Split(before, []byte("\n"))
+			if change == "absent" {
+				before = append(append([]byte(nil), lines[0]...), '\n')
+			} else {
+				entry := notificationRawEntries(t, path)[0]
+				if change == "message" {
+					entry.Turn.Message.Name = "opaque-changed-at-open-5c7e"
+				} else {
+					entry.Turn.NotificationProvenance = wrongProvenance
+				}
+				var err error
+				lines[1], err = json.Marshal(entry)
+				if err != nil {
+					t.Fatal(err)
+				}
+				before = bytes.Join(lines, []byte("\n"))
+			}
+			opened := false
+			open := func(path, id string) (*transcript.Writer, []transcript.Entry, error) {
+				opened = true
+				if err := os.WriteFile(path, before, 0o644); err != nil {
+					return nil, nil, err
+				}
+				return transcript.OpenWriterForSession(path, id)
+			}
+			if err := repairStableShellAttentionTarget(target, fixture.stateDir, time.Now, open); err == nil || !opened {
+				t.Fatalf("changed historical receipt at writer open = opened:%t err:%v", opened, err)
+			}
+			assertPendingUnchanged(t, fixture, target, record, path, before)
+		})
+	}
+	for _, boundary := range []string{"sync", "close"} {
+		t.Run("receiver_"+boundary+"_failure_then_retry", func(t *testing.T) {
+			fixture, target, record, content := setup(t, true)
+			path, id, before := seedHistorical(t, fixture, record, content)
+			held := errors.New("historical receiver boundary held")
+			syncs := 0
+			fs := producerQueryFaultFS{Fs: afero.NewOsFs(), syncCount: &syncs}
+			if boundary == "sync" {
+				fs.syncErr = held
+			} else {
+				fs.closeErr = held
+			}
+			open := func(path, id string) (*transcript.Writer, []transcript.Entry, error) {
+				return transcript.OpenWriterForSessionWithFS(fs, path, id)
+			}
+			if err := repairStableShellAttentionTarget(target, fixture.stateDir, time.Now, open); !errors.Is(err, held) || syncs == 0 {
+				t.Fatalf("historical receiver boundary = syncs:%d err:%v", syncs, err)
+			}
+			assertPendingUnchanged(t, fixture, target, record, path, before)
+			for range 2 {
+				if err := repairStableShellAttentionTarget(target, fixture.stateDir, time.Now, transcript.OpenWriterForSession); err != nil {
+					t.Fatal(err)
+				}
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || !bytes.Equal(after, before) || countAttentionEntries(t, path, id) != 1 {
+				t.Fatalf("retry changed historical receipt: %v", err)
+			}
+			assertSource(t, target, record, jobstore.NotifyDelivered)
+		})
 	}
 }

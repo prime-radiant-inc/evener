@@ -2124,6 +2124,12 @@ func TestDelegateResourceSupervision_OrdinaryCleanupFailureIsObservable(t *testi
 	if packet == nil || !strings.Contains(string(packet.Message), cleanupErr) {
 		t.Fatalf("ordinary cleanup-failure packet = %#v, want observable cleanup failure", packet)
 	}
+	sub.mu.Lock()
+	gated := sub.fatalRunGated
+	sub.mu.Unlock()
+	if !gated {
+		t.Fatal("ordinary cleanup failure did not gate automatic attention admission")
+	}
 }
 
 func TestDelegateResourceSupervision_OrdinaryMissingTerminalCleanupPrecedesPacketEvidence(t *testing.T) {

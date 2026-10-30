@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"log"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -515,16 +516,34 @@ func TestCanonicalDeliveryFailedReceiverPreservesSourceFIFO(t *testing.T) {
 
 // seedPendingDeliverySource replaces receiver-queue-only fixtures with an actual
 // journal-backed producer obligation. It deliberately does not run transport.
-func seedPendingDeliverySource(t *testing.T, s *Session) string {
+func seedPendingDeliverySource(t *testing.T, s *Session, clk *agenttest.FakeClock) string {
 	t.Helper()
+	previous := slog.Default()
+	logged := &reclaimLogCapture{Handler: previous.Handler()}
+	previousWriter, previousFlags := log.Writer(), log.Flags()
+	// Do not wrap the default slog handler: SetDefault links it back to log.
+	slog.SetDefault(slog.New(slog.NewMultiHandler(slog.NewTextHandler(os.Stderr, nil), logged)))
+	t.Cleanup(func() {
+		slog.SetDefault(previous)
+		log.SetOutput(previousWriter)
+		log.SetFlags(previousFlags)
+	})
+	snapshot := func() []slog.Record {
+		logged.mu.Lock()
+		defer logged.mu.Unlock()
+		return append([]slog.Record(nil), logged.records...)
+	}
 	c, _ := newDelegateControllerTestHarness(t, 2, 1)
-	seedDelegateControllerIdle(t, c, "dlg_pending", "")
-	seedDelegateControllerDelivery(t, c, "dlg_pending")
-	old := s.delegateController
-	s.delegateController = c
 	c.rootSessionID = s.ID()
-	c.rootRuntime = s
-	t.Cleanup(func() { s.delegateController = old })
+	created := delegateControllerCreatedEvent("dlg_pending", "")
+	created.Created.Descriptor.OwnerSessionID = s.ID()
+	c.mu.Lock()
+	_, err := c.appendLocked(created)
+	c.mu.Unlock()
+	if err != nil {
+		t.Fatalf("seed pending delegate: %v", err)
+	}
+	seedDelegateControllerDelivery(t, c, "dlg_pending")
 	if s.transcript == nil {
 		s.stateDir = c.stateDir
 		writer, err := transcript.NewWriter(transcriptPath(s.stateDir, s.ID()), transcript.Header{SessionID: s.ID()})
@@ -534,5 +553,57 @@ func seedPendingDeliverySource(t *testing.T, s *Session) string {
 		s.attachTranscript(writer)
 		t.Cleanup(func() { _ = writer.Close() })
 	}
+	old := s.delegateController
+	s.delegateController = c
+	c.rootRuntime = s
+	// Close/join before restoring the Session pointer or closing its writer/store.
+	t.Cleanup(func() {
+		defer func() { s.delegateController = old }()
+		before := snapshot()
+		if err := c.Close(context.Background()); err != nil {
+			t.Errorf("temporary controller Close: %v", err)
+		}
+		clk.Drain()
+		clk.Advance(jobNotificationRetryMaxDelay)
+		clk.Drain()
+		c.mu.Lock()
+		closing := c.closing
+		c.mu.Unlock()
+		if !closing || clk.PendingCallbacks() != 0 {
+			t.Errorf("temporary controller closing=%t callbacks=%d, want true/0", closing, clk.PendingCallbacks())
+		}
+		if !reflect.DeepEqual(snapshot(), before) {
+			t.Errorf("temporary controller teardown added diagnostics: before=%d after=%d", len(before), len(snapshot()))
+		}
+		for _, record := range before {
+			attrs := make(map[string]any)
+			var keys []string
+			record.Attrs(func(attr slog.Attr) bool {
+				keys = append(keys, attr.Key)
+				attrs[attr.Key] = attr.Value.Any()
+				return true
+			})
+			sort.Strings(keys)
+			if record.Level != slog.LevelWarn {
+				t.Errorf("unexpected diagnostic level: %v", record.Level)
+			}
+			switch {
+			case reflect.DeepEqual(keys, []string{"action", "delegate", "error", "session"}):
+				cause, ok := attrs["error"].(string)
+				if attrs["action"] != delegateAttentionRestoreLabel || attrs["delegate"] != "dlg_pending" || attrs["session"] != s.ID() || !ok || cause == "" {
+					t.Errorf("unexpected restore diagnostic attributes: %#v", attrs)
+				}
+			case reflect.DeepEqual(keys, []string{"error", "session_id"}):
+				cause, ok := attrs["error"].(error)
+				var pathErr *fs.PathError
+				if !ok || attrs["session_id"] != "child-dlg_pending" || !errors.Is(cause, fs.ErrNotExist) || !errors.As(cause, &pathErr) || pathErr.Path != transcriptPath(c.stateDir, "child-dlg_pending") {
+					t.Errorf("unexpected typed missing-transcript diagnostic: %#v", attrs)
+				}
+			default:
+				t.Errorf("unexpected diagnostic attributes: %#v", attrs)
+			}
+		}
+		t.Logf("temporary controller cleanup before pointer restoration: closing=%t callbacks=%d diagnostics=%d", closing, clk.PendingCallbacks(), len(snapshot()))
+	})
 	return delegateDeliveryID("dlg_pending", 1)
 }

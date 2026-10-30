@@ -39,6 +39,14 @@ a failed delegate-journal commit. A launch claim is not observation and writes
 no consumed marker. The exact child schedules its own leased execution without
 a parent-model turn, and fresh owner work remains admissible after it settles.
 
+Ordinary bare-text or empty-response reporting exhaustion still stops and joins
+owned managed shells before terminal packet evidence is sampled. Successful
+cleanup does not set the fatal automatic-drive gate, so attention arriving after
+the generation's last request remains eligible once that generation is released.
+Cleanup failure retains the joined run error and sets that gate. Genuine fatal
+errors and attention/finalization/settlement infrastructure error gates retain
+their existing refusal and explicit `delegate_send` recovery behavior.
+
 Roots and delegates share receiver-scoped notification readiness
 (`agent/session_notifications.go`). Durable append publishes readiness after
 writer locks are released. Root callbacks use the existing server wake channel
@@ -71,6 +79,15 @@ lifetime: acceptance, successful-response observation and resolution use the
 same admission path without claiming a disk record. Pending notifications
 survive in-process compaction, not restart. Custody still differs from model
 observation, and a failed provider response leaves the notification pending.
+
+Cold shell replay also recognizes the exact historical plain-user completion
+message with nil provenance for the same receiver, job and terminal generation.
+It preserves the original receipt unchanged, revalidates its presence and full
+message after writer open, and requires receiver durability and successful Close
+before acknowledging that source. A record damaged into precisely this old
+representation is indistinguishable from a historical receipt. All other
+message/provenance mismatches still refuse recovery. Fresh writes retain
+Machinery and source provenance, and recovery never invents observation.
 
 The durable path is:
 

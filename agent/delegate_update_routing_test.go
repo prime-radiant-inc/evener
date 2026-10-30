@@ -98,6 +98,11 @@ func TestStableDelegateUpdate_ReleasedAncestorGetsNone(t *testing.T) {
 	t.Parallel()
 	var recorder sessionEventRecorder
 	tree := newRealDelegateTree(t, recorder.record)
+	requireReleasedAncestorUpdateRouting(t, tree, &recorder)
+}
+
+func requireReleasedAncestorUpdateRouting(t *testing.T, tree realDelegateTree, recorder *sessionEventRecorder) {
+	t.Helper()
 	c, middleID := tree.c, tree.parent.ChildSessionID
 	tree.releaseMiddle(t)
 	drainRootDelegateUpdates(tree.s, tree.grandchildID)

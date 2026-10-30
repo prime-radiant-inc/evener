@@ -175,10 +175,12 @@ func TestDrainJobTreeRescansWhenAWakeLandsMidPass(t *testing.T) {
 
 // A producer obligation keeps drain open before receiver custody.
 func TestTreeHasOutstandingWorkCountsPendingDelegateDeliveries(t *testing.T) {
-	t.Parallel()
-	sess := newSession(t)
+	// Serial: seedPendingDeliverySource captures process-wide diagnostics.
+	clk := agenttest.NewFakeClock()
+	sess := newSession(t, withClock(clk))
+	sess.stopLaneResidueSweepTimer()
 
-	seedPendingDeliverySource(t, sess)
+	seedPendingDeliverySource(t, sess, clk)
 
 	outstanding, err := sess.treeHasOutstandingWork()
 	if err != nil {
@@ -208,10 +210,12 @@ func TestTreeHasOutstandingWorkCountsPendingDelegateDeliveries(t *testing.T) {
 // wrongly quiescing (an immediate nil-error return, independent of ctx) or
 // correctly blocking in waitDrainWake until cancel() reaches it.
 func TestDrainJobTreeWaitsWhileSourceDeliveryPending(t *testing.T) {
-	t.Parallel()
-	sess := newSession(t)
+	// Serial: seedPendingDeliverySource captures process-wide diagnostics.
+	clk := agenttest.NewFakeClock()
+	sess := newSession(t, withClock(clk))
+	sess.stopLaneResidueSweepTimer()
 
-	seedPendingDeliverySource(t, sess)
+	seedPendingDeliverySource(t, sess, clk)
 
 	kick := func(context.Context) error { return nil } // deliberately never flushes
 	process := func(context.Context, string, []ImageAttachment, EntryKind) (string, error) {
@@ -242,10 +246,12 @@ func TestDrainJobTreeWaitsWhileSourceDeliveryPending(t *testing.T) {
 
 // The drain replays source obligations rather than popping receiver placeholders.
 func TestKickDriveTreeReplaysPendingDelegateDeliveries(t *testing.T) {
-	t.Parallel()
-	sess := newSession(t)
+	// Serial: seedPendingDeliverySource captures process-wide diagnostics.
+	clk := agenttest.NewFakeClock()
+	sess := newSession(t, withClock(clk))
+	sess.stopLaneResidueSweepTimer()
 
-	seedPendingDeliverySource(t, sess)
+	seedPendingDeliverySource(t, sess, clk)
 
 	err := sess.kickDriveTree(context.Background())
 	if err != nil && !errors.Is(err, errDelegateStaleLease) {
@@ -254,18 +260,31 @@ func TestKickDriveTreeReplaysPendingDelegateDeliveries(t *testing.T) {
 	if sess.hasPendingDelegateDeliveries() {
 		t.Fatal("kickDriveTree did not flush the pending delegate delivery")
 	}
+	// Exercise the real missing-transcript retry before testing its teardown.
+	if got := clk.PendingCallbacks(); got != 1 {
+		t.Fatalf("armed wake retries=%d, want 1", got)
+	}
+	clk.Advance(jobNotificationRetryInitialDelay)
+	clk.Drain()
+	if got := clk.PendingCallbacks(); got != 1 {
+		t.Fatalf("rearmed wake retries=%d, want 1", got)
+	}
+	t.Log("real missing-transcript wake retry fired and rearmed before cleanup")
 }
 
 // Busy receivers may take custody, but only their own turn constructs a request.
 func TestKickDriveTreeAcceptsBusyChildDeliveryWithoutDrivingIt(t *testing.T) {
-	t.Parallel()
-	root := newSession(t)
-	child := newSession(t)
+	// Serial: seedPendingDeliverySource captures process-wide diagnostics.
+	clk := agenttest.NewFakeClock()
+	root := newSession(t, withClock(clk))
+	root.stopLaneResidueSweepTimer()
+	child := newSession(t, withClock(clk))
+	child.stopLaneResidueSweepTimer()
 	sub := &subagent{id: child.ID(), sess: child, running: true}
 	root.subagents.mu.Lock()
 	root.subagents.subs[child.ID()] = sub
 	root.subagents.mu.Unlock()
-	id := seedPendingDeliverySource(t, child)
+	id := seedPendingDeliverySource(t, child, clk)
 	if err := root.kickDriveTree(context.Background()); err != nil {
 		t.Fatal(err)
 	}
