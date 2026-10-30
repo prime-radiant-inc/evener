@@ -267,6 +267,7 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 		records.droppedAttempts = map[string]struct{}{}
 	}
 	prunedBefore := maps.Clone(records.prunedReceipts)
+	receiptsBefore := maps.Clone(records.receipts)
 	attemptsBefore := maps.Clone(records.attempts)
 	for key, receipt := range change.carryReceipts {
 		if _, carried := records.receipts[key]; !carried {
@@ -502,17 +503,29 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 	m.compactTeardownRecords(records, now)
 	if marker, staging := records.stagedReceipts[protectedMarker]; staging && marker.Consumed != nil {
 		// The re-add this write stages consumed receipts, remnants and their
-		// attempts, and may have pushed replay guards out of a full marker set
-		// doing it; rolling it back gives them all back. What an earlier write of
+		// attempts, compacts the name's receipts after the purge, and may have
+		// pushed replay guards out of a full marker set doing it; rolling it back gives them all back. What an earlier write of
 		// this staging already saved stays saved, and the marker's record is
 		// copied before it changes.
 		consumed := *marker.Consumed
+		consumed.Receipts = mergeEvicted(consumed.Receipts, receiptsOfName(removedEntries(receiptsBefore, records.receipts), protectedMarker))
 		consumed.Pruned = mergeEvicted(consumed.Pruned, removedEntries(prunedBefore, records.prunedReceipts))
 		consumed.Attempts = mergeEvicted(consumed.Attempts, removedEntries(attemptsBefore, records.attempts))
 		marker.Consumed = &consumed
 		records.stagedReceipts[protectedMarker] = marker
 	}
 	return records, nil
+}
+
+// receiptsOfName keeps the receipts whose scoped key names the host.
+func receiptsOfName(receipts map[string]HostMutationReceipt, name string) map[string]HostMutationReceipt {
+	kept := map[string]HostMutationReceipt{}
+	for key, receipt := range receipts {
+		if scope, ok := parseHostReceiptScopedKey(key); ok && scope.Name == name {
+			kept[key] = receipt
+		}
+	}
+	return kept
 }
 
 // mergeEvicted returns saved plus evicted as a map of its own, nil when both are

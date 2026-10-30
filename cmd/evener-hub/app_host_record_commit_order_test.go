@@ -2109,3 +2109,60 @@ func TestAReAddAfterTheTombstoneExpiredKeepsItsSpentCountersWhenStagingIsUnconfi
 		t.Fatalf("the refused re-add forgot the counters it spent: %+v, was %+v", after, before.Generations["side"])
 	}
 }
+
+// TestBootRollbackOfAnUnlandedReAddGivesBackReceiptsItsCompactionDeleted pins
+// that the history a re-add's staging write consumed includes what the same
+// write's compaction removed: a removal receipt older than the superseded window
+// is deleted by the staging write, and the rollback returns it with the
+// tombstone it belongs to.
+func TestBootRollbackOfAnUnlandedReAddGivesBackReceiptsItsCompactionDeleted(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	bootLongRetention := func() (*hubHostManager, *hostops.Store) {
+		hub.restartStateRoot(t)
+		store, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+		if err != nil {
+			t.Fatalf("hostops.Open: %v", err)
+		}
+		doc := hostBootDocument(mustLoadConfig(t, hub.configPath), store)
+		hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
+		if err != nil {
+			t.Fatalf("hostreg.NewSeeded: %v", err)
+		}
+		return newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+			RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: hub.configPath,
+			HostTombstoneRetention: 720 * time.Hour,
+		}, hub.configPath, hosts, t.Logf), store
+	}
+	m, store := bootLongRetention()
+	removal, err := m.RemoveResult(context.Background(), removeRequest(t, m, "side"))
+	if err != nil || removal.HostMutationCommittedRemoved == nil {
+		t.Fatalf("Remove(side) = (%+v, %v)", removal, err)
+	}
+	removalKeys := map[string]struct{}{}
+	for key := range mustRecords(t, store).MutationReceipts {
+		if scope, ok := parseHostReceiptScopedKey(key); ok && scope.Name == "side" && scope.Kind == hostMutationRemove {
+			removalKeys[key] = struct{}{}
+		}
+	}
+	if len(removalKeys) == 0 {
+		t.Fatal("the removal left no receipt")
+	}
+	unlanded := fileBytes(t, hub.configPath)
+	m.cfg.now = func() time.Time { return time.Now().Add(8 * 24 * time.Hour) }
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() {
+		_, _ = m.AddResult(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "again.example"}, MutationID: "re-add-side"})
+	})
+	if err := os.WriteFile(hub.configPath, unlanded, 0o600); err != nil {
+		t.Fatalf("put the pre-mutation hub.toml back: %v", err)
+	}
+
+	_, store = bootLongRetention()
+
+	got := mustRecords(t, store).MutationReceipts
+	for key := range removalKeys {
+		if _, kept := got[key]; !kept {
+			t.Fatalf("the rolled-back re-add left the removal receipt %q deleted", key)
+		}
+	}
+}
