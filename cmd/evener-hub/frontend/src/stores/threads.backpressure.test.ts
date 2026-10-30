@@ -1,3 +1,4 @@
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import "fake-indexeddb/auto";
 import { type TurnStartResponse, WireError } from "@evener/appwire-client";
 import { cleanup } from "@testing-library/react";
@@ -25,7 +26,6 @@ import {
 } from "./threads";
 import {
   connectMutationClient,
-  deferred,
   flushIndexedDBUntil,
   mutationReceipt,
   readResponse,

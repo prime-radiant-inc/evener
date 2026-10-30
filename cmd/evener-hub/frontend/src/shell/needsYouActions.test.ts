@@ -1,3 +1,4 @@
+import { deferred } from "@evener/appwire-client/testing/deferred";
 // @vitest-environment jsdom
 
 import type { ThreadModel } from "@evener/appwire-client";
@@ -39,12 +40,6 @@ const seedSectionPage = (offset: number, refs: string[], patch: Partial<Resource
     refs.map((ref) => needsYouRow(ref)),
     patch,
   );
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => (resolve = done));
-  return { promise, resolve };
-}
 
 async function heldNeedsYouPage() {
   const client = new FakeClient("ready");
