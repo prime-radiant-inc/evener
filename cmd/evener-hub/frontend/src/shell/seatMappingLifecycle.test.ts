@@ -169,6 +169,26 @@ describe("the derived seat lifecycle matrix", () => {
       expect(reopenedSeat).not.toBe("author-seat");
     });
 
+    test("a carry naming a seat a live pane holds mints fresh instead", () => {
+      // Pin for placeComposerSeat's live-guard refusal arm. The arm guards
+      // against a carry handing a seat to a second live holder - here a
+      // mismatched carry naming the seat of a live pane for a different
+      // conversation, which is the one shape the public API can construct.
+      // Production never reaches the arm on its own paths (the nested resume
+      // closes the author pane synchronously before placement, the top-level
+      // replacement calls placeComposerSeat with an empty pane list, and
+      // every retain path cancels), so the guard stands as disclosed
+      // defense-in-depth; this pin holds its contract.
+      const liveId = workspaceStore.getState().openPane("session", { ref: "local:guard-holder" });
+      const liveSeat = seatOfPane(liveId);
+      if (!liveSeat) throw new Error("live pane lacks a seat");
+      carryComposerSeatForPlacement("local:guard", liveSeat);
+      const freshId = workspaceStore.getState().openPane("session", { ref: "local:guard" });
+      expect(freshId).not.toBe(liveId);
+      expect(seatOfPane(freshId)).not.toBe(liveSeat);
+      expect(seatOfPane(liveId)).toBe(liveSeat);
+    });
+
     test("a retype onto a seated conversation pane cancels its pending carry", () => {
       // A seated pane retyped onto the carried conversation keeps its own
       // seat; the carry dies with that placement decision.
@@ -186,7 +206,9 @@ describe("the derived seat lifecycle matrix", () => {
 
     test("a desktop layout restore cancels a pending carry for the conversations it places", () => {
       carryComposerSeatForPlacement("local:restore-carried", "author-seat");
-      resetWorkspaceStoreForTests();
+      // Clear only the pane list: resetWorkspaceStoreForTests would clear the
+      // carry map too, leaving restoreLayout's cancel nothing to act on.
+      workspaceStore.setState({ panes: [], focusedPaneId: null });
       restorePanels({ p1: sessionPanel("p1", "local:restore-carried") });
       expect(workspaceStore.getState().panes.find((record) => record.id === "p1")).toBeDefined();
       workspaceStore.getState().closePane("p1");

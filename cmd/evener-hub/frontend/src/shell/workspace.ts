@@ -306,10 +306,11 @@ function nextPaneId(type: PaneTypeId): string {
   return `pane_${type}_${nextPaneSeq}`;
 }
 
-// A conversation pane owns a composer seat (pane identity). The seat, not
-// the pane id, is the durable identity: a mobile reload reconstructs the
-// routed pane under a new id, and this tab's stored mapping hands the same
-// seat back.
+// A conversation pane owns a composer seat (pane identity). The seat rides
+// the pane record and is validated only when a desktop layout restores it
+// under the same pane id and conversation; a mobile reload reconstructs the
+// routed pane under a fresh id and mints a fresh seat, so restoring the
+// previous pane's work there takes one explicit tap.
 function isConversationPaneType(type: PaneTypeId): boolean {
   return type === "session" || type === "sessionZoom";
 }
@@ -377,8 +378,8 @@ function conversationPaneRefs(pane: Pick<OpenPaneRecord, "type" | "params">): st
 
 // A cascade pane keeps every conversation its canonically derived columns
 // cover alive as retained columns. Every column's composer shares the pane's
-// own seat, so the pane still owns those refs' seat mappings even while
-// drilled onto a deeper leaf.
+// own seat through the pane lifetime, even while drilled onto a deeper
+// leaf.
 function retainsConversationRef(pane: OpenPaneRecord, ref: string): boolean {
   return pane.type === "sessionZoom" && conversationPaneRefs(pane).includes(ref);
 }
