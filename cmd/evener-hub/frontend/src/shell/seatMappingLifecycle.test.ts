@@ -32,6 +32,7 @@ import {
   restoreAttentionPlacement,
 } from "./attentionPlacement";
 import { conversationPaneLifetime } from "./paneLifetime";
+import { openTopLevelSession } from "./sessionPlacement";
 import {
   carryComposerSeatForPlacement,
   type OpenPaneRecord,
@@ -146,6 +147,104 @@ describe("the derived seat lifecycle matrix", () => {
       expect(firstId).toBeDefined();
       workspaceStore.getState().closePane(firstId as string);
       expect(placedSeatFor("local:a")).not.toBe(first);
+    });
+
+    test("a resume carry is cancelled when the resumed conversation already occupies main", () => {
+      // The resumed conversation already occupies main under its own seat; the
+      // retired author pane carried its seat for it. The resume resolves to
+      // the occupying pane, and the carry dies with that resolution: a later
+      // new-pane open inherits neither the retired pane's seat (the
+      // auto-restore determinant, pinned in Composer.recovery.test.tsx) nor
+      // its rejected work.
+      const mainId = workspaceStore.getState().replacePrimary("session", { ref: "local:occupied" });
+      const mainSeat = seatOfPane(mainId);
+      if (!mainSeat) throw new Error("main pane lacks a seat");
+      carryComposerSeatForPlacement("local:occupied", "author-seat");
+      expect(workspaceStore.getState().replacePrimary("session", { ref: "local:occupied" })).toBe(mainId);
+      expect(seatOfPane(mainId)).toBe(mainSeat);
+      workspaceStore.getState().closePane(mainId);
+      const reopenedId = workspaceStore.getState().openPane("session", { ref: "local:occupied" });
+      const reopenedSeat = seatOfPane(reopenedId);
+      expect(reopenedSeat).toBeDefined();
+      expect(reopenedSeat).not.toBe("author-seat");
+    });
+
+    test("a retype onto a seated conversation pane cancels its pending carry", () => {
+      // A seated pane retyped onto the carried conversation keeps its own
+      // seat; the carry dies with that placement decision.
+      const otherId = workspaceStore.getState().openPane("session", { ref: "local:retype-other" });
+      expect(seatOfPane(otherId)).toBeDefined();
+      carryComposerSeatForPlacement("local:retype-carried", "author-seat");
+      const pane = workspaceStore.getState().panes.find((record) => record.id === otherId);
+      if (!pane) throw new Error("retype pane missing");
+      expect(workspaceStore.getState().retypePane(pane, "session", { ref: "local:retype-carried" })).toBe(true);
+      expect(workspaceStore.getState().closePane(otherId)).toBeUndefined();
+      const reopened = placedSeatFor("local:retype-carried");
+      expect(reopened).toBeDefined();
+      expect(reopened).not.toBe("author-seat");
+    });
+
+    test("a desktop layout restore cancels a pending carry for the conversations it places", () => {
+      carryComposerSeatForPlacement("local:restore-carried", "author-seat");
+      resetWorkspaceStoreForTests();
+      restorePanels({ p1: sessionPanel("p1", "local:restore-carried") });
+      expect(workspaceStore.getState().panes.find((record) => record.id === "p1")).toBeDefined();
+      workspaceStore.getState().closePane("p1");
+      const reopened = placedSeatFor("local:restore-carried");
+      expect(reopened).toBeDefined();
+      expect(reopened).not.toBe("author-seat");
+    });
+
+    test("re-presenting a parked pane cancels its pending carry", () => {
+      const id = workspaceStore.getState().openPane("session", { ref: "local:parked-carry" });
+      expect(seatOfPane(id)).toBeDefined();
+      const origin = captureAttentionPlacement();
+      expect(origin).not.toBeNull();
+      expect(presentAttentionTarget("local:parked-carry-dest")).not.toBeNull();
+      expect(workspaceStore.getState().panes.find((record) => record.id === id)?.slot).toBe("parked");
+      carryComposerSeatForPlacement("local:parked-carry", "author-seat");
+      // Back navigation re-presents the parked pane.
+      expect(presentAttentionTarget("local:parked-carry")).not.toBeNull();
+      expect(workspaceStore.getState().panes.find((record) => record.id === id)?.slot).not.toBe("parked");
+      workspaceStore.getState().closePane(id);
+      const reopened = placedSeatFor("local:parked-carry");
+      expect(reopened).toBeDefined();
+      expect(reopened).not.toBe("author-seat");
+    });
+
+    test("presenting an already-presented pane cancels its pending carry", () => {
+      const id = workspaceStore.getState().openPane("session", { ref: "local:presented-carry" });
+      expect(seatOfPane(id)).toBeDefined();
+      carryComposerSeatForPlacement("local:presented-carry", "author-seat");
+      // Attention focuses the pane that is already presented; no new pane.
+      expect(presentAttentionTarget("local:presented-carry")?.pane.id).toBe(id);
+      workspaceStore.getState().closePane(id);
+      const reopened = placedSeatFor("local:presented-carry");
+      expect(reopened).toBeDefined();
+      expect(reopened).not.toBe("author-seat");
+    });
+
+    test("a cascade covering the route in main cancels the route's pending carry", () => {
+      setPanes([
+        {
+          id: "p-cascade",
+          type: "sessionZoom",
+          params: {
+            ref: "local:cascade-carry-child",
+            source: { type: "session", params: { ref: "local:cascade-carry" } },
+            edges: [{ ownerRef: "local:cascade-carry", childRef: "local:cascade-carry-child", delegateId: "d1" }],
+          },
+          slot: "main",
+        },
+      ]);
+      carryComposerSeatForPlacement("local:cascade-carry", "author-seat");
+      // The route placement retains the cascade in main and closes the plain
+      // duplicate; the carry dies with that decision.
+      openTopLevelSession("local:cascade-carry");
+      expect(workspaceStore.getState().mainPane()?.type).toBe("sessionZoom");
+      const reopened = placedSeatFor("local:cascade-carry");
+      expect(reopened).toBeDefined();
+      expect(reopened).not.toBe("author-seat");
     });
 
     test("a resume carry is cancelled when placement resolves to an already-open pane", () => {

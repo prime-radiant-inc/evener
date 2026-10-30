@@ -414,6 +414,11 @@ test("a resume carries the authoring pane's seat to the resumed conversation", a
     const pathname = useSyncExternalStore(subscribe, () => window.location.pathname);
     const route = urlToPane(pathname);
     if (route?.type !== "session") throw new Error("expected session route");
+    // Production removes the author pane when the resumed route places a NEW
+    // pane (replacePrimary's new-main arm); this mount renders only the
+    // author pane, and the replacePrimary below plays AppShell's placement,
+    // so the harness never re-commits the author's record in place.
+    if ((route.params as { ref: string }).ref !== ref) return null;
     return <Session params={route.params as { ref: string }} paneId="p1" focused={true} />;
   }
   render(
@@ -424,8 +429,9 @@ test("a resume carries the authoring pane's seat to the resumed conversation", a
   await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
   await resumeViaSend(ref, "the pressed text");
   await waitFor(() => expect(window.location.pathname).toBe(`/s/${encodeURIComponent(resumedRef)}`));
-  // The replacement pane is placed under the authoring seat, so the
-  // retargeted rows restore into it.
+  // AppShell's route placement replaces the removed author pane; the
+  // replacement pane is placed under the authoring seat, so the retargeted
+  // rows restore into it.
   const replacementId = workspaceStore.getState().replacePrimary("session", { ref: resumedRef });
   const replacement = workspaceStore.getState().panes.find((pane) => pane.id === replacementId);
   expect(replacement?.composerSeatId).toBe(authorSeat);

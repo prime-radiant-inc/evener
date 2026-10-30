@@ -342,7 +342,7 @@ export function carryComposerSeatForPlacement(ref: string, seat: string): void {
 // carry by cancelling it: the resume transition's own placement is that
 // resolution, and an open destination keeps its own seat, so no later open
 // can inherit the carried authoring seat.
-function cancelCarriedComposerSeat(ref: string): void {
+export function cancelCarriedComposerSeat(ref: string): void {
   carriedComposerSeats.delete(ref);
 }
 
@@ -769,6 +769,10 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
       const paramsChanged = !sameParams(main.params, params);
       const duplicatesRemoved = panes.length !== state.panes.length;
       const ref = isConversationPaneType(type) ? refParam(params) : null;
+      // Retaining the pane that already occupies main is a placement
+      // decision: the pending carry dies with it, exactly as in openPane's
+      // existing-pane arms, so no later open inherits the retired seat.
+      if (ref !== null) cancelCarriedComposerSeat(ref);
       const seat =
         ref !== null && main.composerSeatId === undefined
           ? placeComposerSeat(params, state.panes)
@@ -815,8 +819,14 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
       // A read-only transcript owns no composer, but the record keeps this
       // pane's seat through the interlude: the seat belongs to the pane
       // lifetime, and the return to a conversation type reuses it.
-    } else if (replacement.composerSeatId === undefined) {
-      replacement.composerSeatId = placeComposerSeat(params, state.panes);
+    } else {
+      // A seated pane retyped onto a conversation keeps its own seat, and a
+      // pending carry for the destination ref dies with that decision.
+      const ref = refParam(params);
+      if (ref !== null) cancelCarriedComposerSeat(ref);
+      if (replacement.composerSeatId === undefined) {
+        replacement.composerSeatId = placeComposerSeat(params, state.panes);
+      }
     }
     const nextPanes = state.panes.map((pane) => (pane === expected ? replacement : pane));
     for (const listener of paneRetypeListeners) listener(expected, replacement);
@@ -1047,9 +1057,14 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
       }
       // Persist each validated pane mapping for the next desktop save: a
       // pane-id mapping belongs to saved desktop geometry and is the only
-      // seat record the derived shape keeps.
+      // seat record the derived shape keeps. A desktop restore is not the
+      // resume transition: any pending carry for a conversation the layout
+      // places dies with the restore's own placement decision.
       for (const { pane, ref } of conversations) {
-        if (ref !== null) writePaneComposerSeat(pane.id, ref, pane.composerSeatId ?? pane.id);
+        if (ref !== null) {
+          cancelCarriedComposerSeat(ref);
+          writePaneComposerSeat(pane.id, ref, pane.composerSeatId ?? pane.id);
+        }
       }
       for (const listener of workspaceRestoreListeners) listener(panes);
       bumpPastRestoredIds(panes);
@@ -1106,8 +1121,15 @@ export function substituteAttentionPane(
   const main = state.mainPane();
   const displacesWelcome = slot === "main" && main !== null && main !== pane && main.type === "welcome";
   pane.slot = slot === "main" && main !== null && main !== pane && !displacesWelcome ? "secondary" : slot;
-  if (isConversationPaneType(pane.type) && pane.composerSeatId === undefined) {
-    pane.composerSeatId = placeComposerSeat(pane.params, state.panes);
+  if (isConversationPaneType(pane.type)) {
+    // Presenting or re-presenting a pane is a placement decision for its
+    // conversation: a pending carry dies with it, and an unseated pane mints
+    // fresh rather than adopting a retired pane's carried seat.
+    const ref = refParam(pane.params);
+    if (ref !== null) cancelCarriedComposerSeat(ref);
+    if (pane.composerSeatId === undefined) {
+      pane.composerSeatId = placeComposerSeat(pane.params, state.panes);
+    }
   }
   // Like retype ownership transfer, install runtime bindings before observers
   // can capture the newly committed presentation.
@@ -1163,5 +1185,6 @@ export function resetWorkspaceStoreForTests(): void {
   nextPaneSeq = 0;
   pendingPaneFocus.clear();
   documentPaneStates.clear();
+  carriedComposerSeats.clear();
   workspaceStore.setState({ panes: [], focusedPaneId: null });
 }
