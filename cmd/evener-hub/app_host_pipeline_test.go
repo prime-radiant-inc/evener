@@ -9,6 +9,7 @@ package hub
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -114,6 +115,14 @@ func (f *pipelineFixture) legacyManager(t *testing.T) *hubHostManager {
 	// The orphan-stash prune a boot with the store runs.
 	m.pruneOrphanHubTOMLStash()
 	return m
+}
+
+// hubTOMLStashPath names the stash an older build wrote for one commit: a
+// per-commit file beside hub.toml keyed by the commit's scoped receipt key. The
+// tests that stage a legacy compensation write their stash under this name.
+func hubTOMLStashPath(configPath, receiptKey string) string {
+	sum := sha256.Sum256([]byte(receiptKey))
+	return fmt.Sprintf("%s.stash.%x", configPath, sum[:8])
 }
 
 // pipelineEntry is one host entry with a complete persisted identity.
@@ -796,35 +805,6 @@ func TestBootCompensationRuntimeLeavesTheRecordWhenTheRestoredFileIsMissing(t *t
 	}
 }
 
-// TestBootIntentSectionRoundTripsThroughTheWriter pins the writer: an intent a
-// write carries lands in hub.toml's [pending_store_sync] table and a later
-// write with the name owned drops it, so the section's shape is the one the
-// loader validates.
-func TestBootIntentSectionRoundTripsThroughTheWriter(t *testing.T) {
-	entry := pipelineEntry("m4", 2)
-	fixture := newPipelineFixture(t, []hostreg.Host{entry}, nil)
-	m := fixture.legacyManager(t)
-	entries := m.cfg.store.snapshot()
-	if err := m.persistHosts(entries, entries, hostPersistChange{storeSync: &pendingHostStoreSync{
-		Name:   "m4",
-		Intent: HostStoreSyncIntent{Generation: 2, TokenValues: []string{"row-value"}},
-	}}); err != nil {
-		t.Fatalf("persistHosts: %v", err)
-	}
-	cfg := loadHubTOMLRecords(t, fixture.configPath)
-	intent, carried := cfg.PendingStoreSync["m4"]
-	if !carried || intent.Generation != 2 || len(intent.TokenValues) != 1 || intent.TokenValues[0] != "row-value" {
-		t.Fatalf("intent after the carrying write = %+v/%v", intent, carried)
-	}
-	if err := m.persistHosts(entries, entries, hostPersistChange{dropStoreSync: "m4"}); err != nil {
-		t.Fatalf("persistHosts(clear): %v", err)
-	}
-	cfg = loadHubTOMLRecords(t, fixture.configPath)
-	if _, carried := cfg.PendingStoreSync["m4"]; carried {
-		t.Fatal("the clearing write left the intent in hub.toml")
-	}
-}
-
 // TestBootMirrorCommitMarkersRoundTripThroughTheWriter pins the marker's
 // derivation: a write carrying a name's generation emits the (G, G) marker, so
 // the mirror write that follows is authorized, and a later boot with the mirror
@@ -1354,6 +1334,14 @@ func TestBootFinalizesTheMarkerWhenTheCompensationClearsWithoutRestoring(t *test
 	if staged.Key == "" {
 		t.Fatal("the staged marker was not captured")
 	}
+	// The old build mirrored the removed incarnation's boundary behind its
+	// commit; the recorded teardown resolves its handle through it.
+	removed := tombstoneFor(t, m, "keep")
+	if err := fixture.store.MirrorBoundaries(map[string]hostops.Boundary{
+		"keep": {Generation: removed.Generation, IncarnationID: removed.IncarnationID, PresenceEpoch: removed.PresenceEpoch},
+	}, nil); err != nil {
+		t.Fatalf("mirror the removed boundary: %v", err)
+	}
 	// The crash state: the commit stands (the purge landed, the commit's
 	// follow-up write cleared the intent), the staged marker is still there (the
 	// crash landed before ClearCompensation/finalizeReceipt), and the record is
@@ -1615,202 +1603,6 @@ func TestValidateHostOpsStashReferencesRefusesAForeignPath(t *testing.T) {
 	}
 	if err := validateHostOpsStashReferences(fixture.store, fixture.configPath); err != nil {
 		t.Fatalf("a per-commit stash path was refused: %v", err)
-	}
-}
-
-// TestCompensationWithAFailedRollbackConvergesTheModelToTheFile pins M2: when
-// the rollback does not land, the store's model converges to the file the
-// write actually left (the failed commit's bytes), so the next mutation's write
-// does not re-emit a live entry beside the committed tombstone and intent.
-func TestCompensationWithAFailedRollbackConvergesTheModelToTheFile(t *testing.T) {
-	entry := pipelineEntry("keep", 2)
-	fixture, _, preRemove := newPipelineRemovalFixture(t, entry, true)
-	m := fixture.legacyManager(t)
-	if _, err := m.Remove(context.Background(), removeRequest(t, m, "keep")); err != nil {
-		t.Fatalf("Remove(keep): %v", err)
-	}
-	// The crash window: the intent and the tombstone are in the file, the record
-	// is armed, and the preimage is captured.
-	token := pipelineToken(t, fixture.store, "keep", 2)
-	fixture.appendTOML(t, "[pending_store_sync.keep]\ngeneration = 2\ntoken_values = [\""+token.Value+"\"]\n")
-	stash := hubTOMLStashPath(fixture.configPath, "mutation-crash/keep/remove/2/inc-keep")
-	if err := os.WriteFile(stash, preRemove, 0o600); err != nil {
-		t.Fatalf("write stash: %v", err)
-	}
-	if err := fixture.store.ArmCompensation(hostops.Compensation{
-		Host: "keep", Phase: hostops.CompensationArmed, Rows: []hostops.Token{token},
-		Stash: stash, Generation: 2,
-	}); err != nil {
-		t.Fatalf("ArmCompensation: %v", err)
-	}
-	// The rollback cannot land (the directory refuses new files), so the model
-	// must converge to the file, not to the pre-mutation set.
-	if err := os.Chmod(fixture.dir, 0o500); err != nil {
-		t.Fatalf("chmod: %v", err)
-	}
-	plan := &hostCommitPlan{Kind: hostMutationRemove, Name: "keep", Key: "test-key", Entry: entry}
-	cause := errors.New("injected commit-step failure")
-	m.cfg.mu.Lock()
-	m.markMutating("keep")
-	if _, err := m.compensateStagedCrossFile(plan, []hostreg.Host{entry}, cause, stash); err == nil {
-		t.Fatal("the compensation reported success")
-	}
-	m.cfg.mu.Unlock()
-	if err := os.Chmod(fixture.dir, 0o700); err != nil {
-		t.Fatalf("chmod back: %v", err)
-	}
-	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "extra", Address: "extra.example"}}); err != nil {
-		t.Fatalf("the next mutation after the failed rollback: %v", err)
-	}
-	cfg, _ := readPipelineConfig(t, fixture.configPath)
-	if _, live := hostEntryNamed(hostRegistryEntries(cfg), "keep"); live {
-		t.Fatal("the next write re-emitted the compensated removal's live entry beside its commit records")
-	}
-	if _, carried := cfg.Tombstones["keep"]; !carried {
-		t.Fatal("the next write dropped the committed removal's tombstone")
-	}
-	if _, carried := cfg.PendingStoreSync["keep"]; !carried {
-		t.Fatal("the next write dropped the open record's intent")
-	}
-}
-
-// TestCompensateStagedCrossFileLeavesAStaleRecordUntouched pins the ownership
-// rule (L6): an open record from an earlier mutation of the same name (another
-// generation, another commit's stash) is not this commit's to clear, and both
-// stashes are left alone.
-func TestCompensateStagedCrossFileLeavesAStaleRecordUntouched(t *testing.T) {
-	entry := pipelineEntry("keep", 2)
-	fixture, token, _ := newPipelineRemovalFixture(t, entry, false)
-	m := fixture.manager(t)
-	stash := hubTOMLStashPath(fixture.configPath, "test-key")
-	if err := os.WriteFile(stash, []byte("# this commit's stash\n"), 0o600); err != nil {
-		t.Fatalf("write stash: %v", err)
-	}
-	staleStash := filepath.Join(fixture.dir, "earlier.stash")
-	if err := os.WriteFile(staleStash, []byte("# an earlier commit's stash\n"), 0o600); err != nil {
-		t.Fatalf("write stale stash: %v", err)
-	}
-	if err := fixture.store.ArmCompensation(hostops.Compensation{
-		Host: "keep", Phase: hostops.CompensationArmed, Rows: []hostops.Token{token},
-		Stash: staleStash, Generation: 7,
-	}); err != nil {
-		t.Fatalf("ArmCompensation: %v", err)
-	}
-	plan := &hostCommitPlan{Kind: hostMutationRemove, Name: "keep", Key: "test-key", Entry: entry}
-	cause := errors.New("injected arm failure")
-	m.cfg.mu.Lock()
-	m.markMutating("keep")
-	if _, err := m.compensateStagedCrossFile(plan, []hostreg.Host{entry}, cause, stash); err == nil {
-		t.Fatal("the compensation reported success")
-	}
-	m.cfg.mu.Unlock()
-	m.cfg.mu.Lock()
-	marked := m.isMutating("keep")
-	m.cfg.mu.Unlock()
-	if marked {
-		t.Fatal("the compensation left the mutation mark set")
-	}
-	record, open := m.opsStore().Compensation("keep")
-	if !open || record.Generation != 7 || record.Stash != staleStash {
-		t.Fatalf("the stale record was touched: %+v/%v, want generation 7 and its own stash", record, open)
-	}
-	if _, err := os.Stat(stash); err != nil {
-		t.Fatalf("this commit's stash was pruned: %v", err)
-	}
-	if _, err := os.Stat(staleStash); err != nil {
-		t.Fatalf("the stale record's stash was pruned: %v", err)
-	}
-}
-
-// TestCompensateStagedCrossFileLeavesTheRecordWhenAStepFails pins §9's live
-// failure posture: when any step of the arm fails the record and its stash are
-// left for the next boot — never a cleared compensation beside a half-restored
-// state — the mutation mark is released on every path, and a retry with the
-// failure gone converges and prunes the stash.
-func TestCompensateStagedCrossFileLeavesTheRecordWhenAStepFails(t *testing.T) {
-	for _, failedStep := range []string{"advance-rows", "reinsert", "advance-clear", "clear"} {
-		t.Run(failedStep, func(t *testing.T) {
-			entry := pipelineEntry("keep", 2)
-			fixture, token, _ := newPipelineRemovalFixture(t, entry, false)
-			m := fixture.manager(t)
-			// Arm the record after construction, so the boot pass cannot resolve
-			// it first: this models the live commit failing mid-flight, which is
-			// the only path that runs this helper.
-			fixture.appendTOML(t, "[pending_store_sync.keep]\ngeneration = 2\ntoken_values = [\""+token.Value+"\"]\n")
-			preRemove, err := os.ReadFile(fixture.configPath)
-			if err != nil {
-				t.Fatalf("read hub.toml: %v", err)
-			}
-			// The stash goes down with the arm, after construction: the boot
-			// prune removes an orphan stash, and no record names this one yet.
-			stash := hubTOMLStashPath(fixture.configPath, "test-key")
-			if err := os.WriteFile(stash, preRemove, 0o600); err != nil {
-				t.Fatalf("write stash: %v", err)
-			}
-			if err := fixture.store.ArmCompensation(hostops.Compensation{
-				Host: "keep", Phase: hostops.CompensationArmed, Rows: []hostops.Token{token},
-				Stash: stash, Generation: 2,
-			}); err != nil {
-				t.Fatalf("ArmCompensation: %v", err)
-			}
-			if _, err := fixture.store.PurgeCompensated("keep", []string{token.Value}); err != nil {
-				t.Fatalf("PurgeCompensated: %v", err)
-			}
-			m.testOnlyFailCompensationStep = func(_ string, step string) error {
-				if step == failedStep {
-					return errors.New("injected step failure")
-				}
-				return nil
-			}
-			plan := &hostCommitPlan{Kind: hostMutationRemove, Name: "keep", Key: "test-key", Entry: entry}
-			cause := errors.New("injected commit-step failure")
-			m.cfg.mu.Lock()
-			m.markMutating("keep")
-			if _, err := m.compensateStagedCrossFile(plan, []hostreg.Host{entry}, cause, stash); err == nil {
-				t.Fatal("the compensation reported success")
-			}
-			m.cfg.mu.Unlock()
-			m.cfg.mu.Lock()
-			marked := m.isMutating("keep")
-			m.cfg.mu.Unlock()
-			if marked {
-				t.Fatal("the compensation left the mutation mark set")
-			}
-			wantPhase := hostops.CompensationHubTOML
-			switch failedStep {
-			case "reinsert":
-				wantPhase = hostops.CompensationRows
-			case "advance-clear":
-				wantPhase = hostops.CompensationRuntime
-			case "clear":
-				wantPhase = hostops.CompensationClear
-			}
-			record, open := m.opsStore().Compensation("keep")
-			if !open || record.Phase != wantPhase {
-				t.Fatalf("record after the failed step = %+v/%v, want it left in %s", record, open, wantPhase)
-			}
-			if _, err := os.Stat(stash); err != nil {
-				t.Fatalf("the failed step pruned the stash: %v", err)
-			}
-			// The retry, with the failure gone, walks the rest of the arm and
-			// clears.
-			m.testOnlyFailCompensationStep = nil
-			m.cfg.mu.Lock()
-			m.markMutating("keep")
-			if _, err := m.compensateStagedCrossFile(plan, []hostreg.Host{entry}, cause, stash); err == nil {
-				t.Fatal("the retried compensation reported success without the cause")
-			}
-			m.cfg.mu.Unlock()
-			if _, open := m.opsStore().Compensation("keep"); open {
-				t.Fatal("the retried compensation did not clear")
-			}
-			if _, err := os.Stat(stash); !os.IsNotExist(err) {
-				t.Fatal("the converged retry left the stash behind")
-			}
-			if _, ok := m.opsStore().OutstandingToken("keep"); !ok {
-				t.Fatal("the retried compensation did not re-insert the purged row")
-			}
-		})
 	}
 }
 

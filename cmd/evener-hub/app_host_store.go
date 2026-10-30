@@ -79,12 +79,9 @@ type hostPersistChange struct {
 	restoreSpent HostGeneration
 	// restoreName is the name those counters belong to.
 	restoreName string
-	// storeSync, when set, is the cross-file commit intent this write carries
-	// (deploy-pipeline 08b §9): a removal's staged write stages the exact store
-	// rows it is about to purge. dropStoreSync names a host whose intent this
-	// write removes — the follow-up write that clears it once the purge landed,
-	// and the compensation that drops it with the restored hub.toml.
-	storeSync     *pendingHostStoreSync
+	// dropStoreSync names a host whose cross-file commit intent this write
+	// removes: the boot write that clears an intent an earlier build left once
+	// its purge has landed.
 	dropStoreSync string
 	// highWaterRaises carries the boot mirror pass's raised marks: the
 	// discarded generations §4 preserves as the names' high-water marks. The
@@ -93,13 +90,6 @@ type hostPersistChange struct {
 	// removal (validateHostTombstones asks only that the mark is the same
 	// incarnation at or above it).
 	highWaterRaises map[string]HostGeneration
-}
-
-// pendingHostStoreSync is one cross-file intent a hub.toml write carries,
-// keyed by the host name the intent is keyed by.
-type pendingHostStoreSync struct {
-	Name   string
-	Intent HostStoreSyncIntent
 }
 
 // pendingHostMarker is the staged-receipt marker one hub.toml write carries,

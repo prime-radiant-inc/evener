@@ -96,11 +96,6 @@ type hostCommitPlan struct {
 	Known   []hostreg.Host
 	// Tombstone rides a removal's own write, exactly as before.
 	Tombstone *hostTombstoneStage
-	// StoreSync rides a removal's own write when it has a token row to purge:
-	// the cross-file commit intent (deploy-pipeline 08b §9) hub.toml's atomic
-	// write carries, so the store purge that applies it is recoverable after a
-	// crash.
-	StoreSync *pendingHostStoreSync
 	// Pinned is the committed teardown target the marker stages before any
 	// teardown executes.
 	Pinned HostPendingTeardown
@@ -146,9 +141,6 @@ func stagedChange(plan *hostCommitPlan, marker HostStagedReceipt) hostPersistCha
 	if plan.Tombstone != nil {
 		change.tombstone = plan.Tombstone
 	}
-	if plan.StoreSync != nil {
-		change.storeSync = plan.StoreSync
-	}
 	return change
 }
 
@@ -188,7 +180,7 @@ func (m *hubHostManager) stageCommit(plan *hostCommitPlan, now time.Time) error 
 // refused mutation) and the provisional receipt survives as a dedup hit.
 func (m *hubHostManager) compensationChange(plan *hostCommitPlan) hostPersistChange {
 	change := hostPersistChange{
-		dropMarker: plan.Name, dropReceipt: plan.Key, dropStoreSync: plan.Name,
+		dropMarker: plan.Name, dropReceipt: plan.Key,
 		hostFileFirst: true,
 	}
 	marker, staged := m.cfg.store.stagedSnapshot()[plan.Name]
