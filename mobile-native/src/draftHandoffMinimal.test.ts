@@ -503,4 +503,146 @@ describe("durable minimal handoffs", () => {
 		});
 		expect(ledger.outstandingObligations()).toHaveLength(0);
 	});
+
+	it("an undelivered completion keeps its capture suppressed until delivery lands", async () => {
+		const { repository, ledger, library } = setup();
+		const a = destination("a");
+		const b = destination("b");
+		repository.write(a, {
+			draft: "current",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		let failLog = false;
+		const failing = new Proxy(repository, {
+			get(target, property) {
+				const value = Reflect.get(target, property, target);
+				if (property === "latestTransferCarrying" && typeof value === "function")
+					return (...args: unknown[]) => {
+						if (failLog) throw new Error("transfer log unavailable");
+						return (value as (...inner: unknown[]) => unknown).apply(target, args);
+					};
+				return typeof value === "function" ? (value as (...inner: unknown[]) => unknown).bind(target) : value;
+			},
+		}) as DraftRepository;
+		const live = new DraftLibrary(
+			() => failing,
+			() => "id-live",
+			() => ledger,
+		);
+		const source = live.open(a);
+		let finish!: () => void;
+		const submitted = source.submitBuiltinCommand(
+			() =>
+				new Promise<boolean>((resolve) => {
+					finish = () => resolve(true);
+				}),
+		);
+		const token = repository.read(a).unconfirmedCaptureToken;
+		if (token === undefined) throw new Error("missing capture token");
+		expect(live.handoff(a, b)).toBe(true);
+		failLog = true;
+		finish();
+		await submitted;
+		// The transfer log is unreadable, so the resolution is durable but its
+		// completion has not delivered. The executed command's sources stay
+		// suppressed at the capture's owner: a resolved obligation is not a
+		// delivered one, and restoration must not run ahead of delivery.
+		const restarted = library();
+		expect(restarted.openObligationRecoveryIds(b)).toEqual(new Set(["recovered-a"]));
+		failLog = false;
+		restarted.retryPendingHandoffs();
+		expect(repository.read(b)).toMatchObject({
+			unconfirmed: null,
+			completedCommandRecoveryIds: ["recovered-a"],
+		});
+		expect(ledger.outstandingObligations()).toHaveLength(0);
+		expect(restarted.openObligationRecoveryIds(b)?.size).toBe(0);
+	});
+
+	it("a settlement follows only the hops that carried its own record", () => {
+		const { repository, library } = setup();
+		const a = destination("a");
+		const b = destination("b");
+		const c = destination("c");
+		// B's own work moves on first: the committed B -> C hop carried B's
+		// record, long before A's ever arrives at B.
+		repository.write(b, {
+			draft: "b work",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-b"] },
+		});
+		expect(library().handoff(b, c)).toBe(true);
+		repository.write(a, {
+			draft: "a work",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		const live = library();
+		expect(live.handoff(a, b)).toBe(true);
+		// The A -> B hop settles at B, the identity holding its record, and
+		// never routes through the earlier B -> C hop, which carried
+		// different work: C keeps only the markers of what it received.
+		expect(repository.read(b)).toMatchObject({
+			draft: "a work",
+			releasedRecoveryIds: ["recovered-a"],
+		});
+		expect(repository.read(c).releasedRecoveryIds).toEqual(["recovered-b"]);
+		expect(live.hasPendingHandoff(b)).toBe(false);
+	});
+
+	it("a migrated transfer log recovers capture ownership for undelivered completions", () => {
+		// An earlier build's schema: no carried token, no commit sequence, no
+		// generation routing. Its committed hop moved a capture A -> B and
+		// never delivered the completion it owes.
+		const legacy = openSqliteSyncDouble();
+		databases.push(legacy.database);
+		legacy.database.exec(`CREATE TABLE drafts (
+      hub_id TEXT NOT NULL, session_ref TEXT NOT NULL, draft TEXT NOT NULL, unconfirmed TEXT,
+      PRIMARY KEY (hub_id, session_ref))`);
+		for (const column of [
+			"composer",
+			"unconfirmed_composer",
+			"parked_composition",
+			"unconfirmed_capture_token",
+			"recovery_resend_acks",
+			"completed_command_recovery_ids",
+			"released_recovery_ids",
+		])
+			legacy.database.exec(`ALTER TABLE drafts ADD COLUMN ${column} TEXT`);
+		legacy.database.exec(`CREATE TABLE draft_transfer_log (
+      transfer_id TEXT PRIMARY KEY, from_hub_id TEXT NOT NULL, from_ref TEXT NOT NULL,
+      to_hub_id TEXT NOT NULL, to_ref TEXT NOT NULL, state TEXT NOT NULL,
+      delivered_hash TEXT, completed_command_recovery_ids TEXT NOT NULL DEFAULT '[]',
+      released_recovery_ids TEXT NOT NULL DEFAULT '[]',
+      created_at INTEGER NOT NULL, state_changed_at INTEGER NOT NULL)`);
+		legacy.database.exec(`INSERT INTO draft_transfer_log
+      (transfer_id, from_hub_id, from_ref, to_hub_id, to_ref, state, delivered_hash, created_at, state_changed_at)
+    VALUES ('transfer-legacy', 'hub', 'a', 'hub', 'b', 'pending', 'hash-legacy', 900, 900)`);
+		legacy.database.exec(`INSERT INTO drafts (hub_id, session_ref, draft, unconfirmed, unconfirmed_capture_token)
+    VALUES ('hub', 'b', 'b work', 'captured', 'token-legacy')`);
+		const repository = new DraftRepository(legacy.port, () => 1000);
+		const { database: ledgerDb, port: ledgerPort } = openSqliteSyncDouble();
+		databases.push(ledgerDb);
+		const ledger = new DraftSubmissionLedgerSQLite(ledgerPort, { now: () => 1000 });
+		ledger.beginSubmission("token-legacy", destination("a"), ["recovered-a"]);
+		ledger.resolveSubmission("token-legacy", "completed", ["recovered-a"], []);
+		const live = new DraftLibrary(
+			() => repository,
+			() => "id-live",
+			() => ledger,
+		);
+		live.retryPendingHandoffs();
+		// The migration recovered the hop's evidence from its endpoint, so
+		// delivery reaches B and applies the completion - instead of reading
+		// the emptied origin as proof the capture is gone and acknowledging
+		// without delivering.
+		expect(repository.read(destination("b"))).toMatchObject({
+			unconfirmed: null,
+			completedCommandRecoveryIds: ["recovered-a"],
+		});
+		expect(repository.read(destination("b")).unconfirmedCaptureToken).toBeUndefined();
+		expect(ledger.outstandingObligations()).toHaveLength(0);
+		expect(repository.outstandingTransfers()).toHaveLength(0);
+	});
 });

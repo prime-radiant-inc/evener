@@ -25,6 +25,7 @@ export type DraftStorage = Pick<
 	| "beginTransfer"
 	| "outstandingTransfers"
 	| "latestCommittedTransferFrom"
+	| "latestCommittedTransferFromCarrying"
 	| "latestTransferCarrying"
 	| "hasPendingTransferTo"
 	| "forgetTransfer"
@@ -138,7 +139,8 @@ export class DraftLibrary {
 	}
 
 	/** The recovery ids this identity must not restore: the input of every
-	 * submission still running whose origin or durable capture sits here.
+	 * submission still running - or resolved but not yet delivered - whose
+	 * origin or durable capture sits here.
 	 * Undefined when ownership cannot be read - unknown is not empty. */
 	openObligationRecoveryIds(endpoint: DraftDestination): ReadonlySet<string> | undefined {
 		const ledger = this.availableSubmissionLedger();
@@ -151,7 +153,10 @@ export class DraftLibrary {
 		}
 		const ids = new Set<string>();
 		for (const obligation of obligations) {
-			if (obligation.state !== "open") continue;
+			// A resolved-but-undelivered completion still owns its capture:
+			// its sources stay suppressed until the delivery lands, applies
+			// its markers and the acknowledgment retires the obligation.
+			if (obligation.state !== "open" && !clearsCapture(obligation.state)) continue;
 			if (sameDestination(obligation.origin, endpoint)) {
 				for (const id of obligation.recoveryIds) ids.add(id);
 				continue;
@@ -167,7 +172,10 @@ export class DraftLibrary {
 		}
 		if (record !== undefined) {
 			for (const obligation of obligations) {
-				if (obligation.state === "open" && record.unconfirmedCaptureToken === obligation.obligationId)
+				if (
+					(obligation.state === "open" || clearsCapture(obligation.state)) &&
+					record.unconfirmedCaptureToken === obligation.obligationId
+				)
 					for (const id of obligation.recoveryIds) ids.add(id);
 			}
 			// A begin that never durably recorded still owns its capture: the
@@ -316,7 +324,7 @@ export class DraftLibrary {
 		if (transfer.deliveredHash === null) return false;
 		// The dispositions belong to the record this row moved: it landed at
 		// the row's destination, and later hops from there carried it onward.
-		const owner = this.recordOwner(transfer.to);
+		const owner = this.recordOwner(transfer.to, transfer.carriedGeneration ?? null);
 		if (owner === undefined) return false;
 		const document = this.open(owner);
 		// An owner that cannot load must not receive markers: persisting an
@@ -364,16 +372,21 @@ export class DraftLibrary {
 		}
 	}
 
-	/** The identity that owns the record that started at `start`: follow the
-	 * latest committed hop out of each identity, at most TRANSFER_WALK_LIMIT
-	 * of them. A hop that never committed moved nothing and is not a pointer.
-	 * Unknown defers - the caller never guesses an owner. */
-	private recordOwner(start: DraftDestination): DraftDestination | undefined {
+	/** The identity that owns the record generation `generation`, starting
+	 * from `start`: follow the committed hops that carried that same
+	 * generation, at most TRANSFER_WALK_LIMIT of them. A hop out of an
+	 * identity that carried other work - earlier or later - moved a
+	 * different record and is not a pointer for this settlement. A row whose
+	 * generation is unrecorded predates generation routing: its destination
+	 * is the last identity it provably reached. Unknown defers - the caller
+	 * never guesses an owner. */
+	private recordOwner(start: DraftDestination, generation: string | null): DraftDestination | undefined {
+		if (generation === null) return start;
 		let at = start;
 		for (let hops = 0; hops < TRANSFER_WALK_LIMIT; hops++) {
 			let next: DraftTransfer | undefined;
 			try {
-				next = this.repository().latestCommittedTransferFrom(at);
+				next = this.repository().latestCommittedTransferFromCarrying(at, generation);
 			} catch {
 				return undefined;
 			}

@@ -60,6 +60,10 @@ export interface DraftTransfer {
 	deliveredHash: string | null;
 	/** The unresolved capture the transferred record carried, if any. */
 	carriedCaptureToken: string | null;
+	/** The record generation the transferred record belongs to: stamped when
+	 * a record first moves and carried by every later hop of the same record,
+	 * so settlement follows the record, not just any hop out of an identity. */
+	carriedGeneration: string | null;
 	completedCommandRecoveryIds: string[];
 	releasedRecoveryIds: string[];
 	createdAt: number;
@@ -99,6 +103,7 @@ export class DraftRepository {
 			["recovery_resend_acks", "TEXT"],
 			["completed_command_recovery_ids", "TEXT"],
 			["released_recovery_ids", "TEXT"],
+			["record_generation", "TEXT"],
 		] as const) {
 			if (!draftColumns.has(name)) db.execSync(`ALTER TABLE drafts ADD COLUMN ${name} ${type}`);
 		}
@@ -118,6 +123,7 @@ export class DraftRepository {
       delivered_hash TEXT,
 	      carried_capture_token TEXT,
 	      commit_sequence INTEGER,
+	      carried_generation TEXT,
       completed_command_recovery_ids TEXT NOT NULL DEFAULT '[]',
       released_recovery_ids TEXT NOT NULL DEFAULT '[]',
       created_at INTEGER NOT NULL,
@@ -143,12 +149,80 @@ export class DraftRepository {
 		const transferColumns = new Set(
 			this.db.getAllSync<{ name: string }>("PRAGMA table_info(draft_transfer_log)").map((column) => column.name),
 		);
-		for (const name of ["carried_capture_token", "commit_sequence"] as const)
+		for (const name of ["carried_capture_token", "commit_sequence", "carried_generation"] as const)
 			if (!transferColumns.has(name)) this.db.execSync(`ALTER TABLE draft_transfer_log ADD COLUMN ${name}`);
 		db.execSync(
 			`CREATE INDEX IF NOT EXISTS draft_transfer_log_carried
       ON draft_transfer_log (carried_capture_token, commit_sequence) WHERE carried_capture_token IS NOT NULL`,
 		);
+		db.execSync(
+			`CREATE INDEX IF NOT EXISTS draft_transfer_log_generation
+      ON draft_transfer_log (from_hub_id, from_ref, carried_generation, commit_sequence)
+      WHERE carried_generation IS NOT NULL`,
+		);
+		// An earlier build recorded neither commit order nor carried evidence.
+		// Recover what the durable rows still prove: commit sequences in
+		// created order, and - for the latest committed arrival at a
+		// destination - the capture token its record still holds plus a
+		// generation that record keeps carrying. Rows whose record a later
+		// arrival replaced are beyond proof; they keep null and never route.
+		const unsequenced = db.getAllSync<{ transfer_id: string }>(
+			`SELECT transfer_id FROM draft_transfer_log
+      WHERE commit_sequence IS NULL AND delivered_hash IS NOT NULL ORDER BY created_at, rowid`,
+		);
+		if (unsequenced.length > 0) {
+			let next =
+				db.getFirstSync<{ top: number }>("SELECT COALESCE(MAX(commit_sequence), 0) AS top FROM draft_transfer_log")
+					?.top ?? 0;
+			for (const row of unsequenced)
+				db.runSync(
+					"UPDATE draft_transfer_log SET commit_sequence = ? WHERE transfer_id = ?",
+					(next = next + 1),
+					row.transfer_id,
+				);
+		}
+		const unrouted = db.getAllSync<{
+			transfer_id: string;
+			to_hub_id: string;
+			to_ref: string;
+			commit_sequence: number;
+		}>(
+			`SELECT transfer_id, to_hub_id, to_ref, commit_sequence FROM draft_transfer_log
+      WHERE carried_generation IS NULL AND delivered_hash IS NOT NULL ORDER BY commit_sequence, rowid`,
+		);
+		for (const row of unrouted) {
+			const later = db.getFirstSync<{ found: number }>(
+				`SELECT COUNT(*) AS found FROM draft_transfer_log
+      WHERE to_hub_id = ? AND to_ref = ? AND delivered_hash IS NOT NULL AND commit_sequence > ?`,
+				row.to_hub_id,
+				row.to_ref,
+				row.commit_sequence,
+			);
+			if (later === null || later.found > 0) continue;
+			const endpoint = db.getFirstSync<{
+				generation: string | null;
+				unconfirmed_capture_token: string | null;
+			}>(
+				"SELECT record_generation AS generation, unconfirmed_capture_token FROM drafts WHERE hub_id = ? AND session_ref = ?",
+				row.to_hub_id,
+				row.to_ref,
+			);
+			if (endpoint === null) continue;
+			const generation = endpoint.generation ?? row.transfer_id;
+			db.runSync(
+				`UPDATE draft_transfer_log SET carried_generation = ?,
+      carried_capture_token = COALESCE(carried_capture_token, ?) WHERE transfer_id = ?`,
+				generation,
+				endpoint.unconfirmed_capture_token,
+				row.transfer_id,
+			);
+			db.runSync(
+				"UPDATE drafts SET record_generation = ? WHERE hub_id = ? AND session_ref = ?",
+				generation,
+				row.to_hub_id,
+				row.to_ref,
+			);
+		}
 	}
 
 	/** Record a handoff hop as intended, before any bytes move. Until the
@@ -174,6 +248,7 @@ export class DraftRepository {
 			state: "pending",
 			deliveredHash: null,
 			carriedCaptureToken: null,
+			carriedGeneration: null,
 			completedCommandRecoveryIds: [],
 			releasedRecoveryIds: [],
 			createdAt: at,
@@ -211,6 +286,22 @@ export class DraftRepository {
       WHERE carried_capture_token = ? AND delivered_hash IS NOT NULL
       ORDER BY commit_sequence DESC LIMIT 1`,
 			captureToken,
+		);
+		return row === null ? undefined : this.mapTransfer(row);
+	}
+
+	/** The latest committed hop out of an identity that carried this record
+	 * generation: the pointer a settlement follows toward the identity that
+	 * owns that record now. A hop that carried other work - however recent -
+	 * moved a different record and is not this one's pointer. */
+	latestCommittedTransferFromCarrying(from: DraftDestination, generation: string): DraftTransfer | undefined {
+		const row = this.db.getFirstSync<TransferRow>(
+			`SELECT * FROM draft_transfer_log
+      WHERE from_hub_id = ? AND from_ref = ? AND carried_generation = ? AND delivered_hash IS NOT NULL
+      ORDER BY commit_sequence DESC LIMIT 1`,
+			from.hubId,
+			from.sessionRef,
+			generation,
 		);
 		return row === null ? undefined : this.mapTransfer(row);
 	}
@@ -489,7 +580,32 @@ export class DraftRepository {
     WHERE transfer_id = ?`,
 				evidence?.transferId ?? "",
 			);
+			// The record's generation, written in the same savepoint: stamped
+			// when a record first moves, preserved by every later save of that
+			// record and carried by each later hop, so settlement follows the
+			// record itself and never other work through the same identity.
+			let generation: string | null = null;
+			if (evidence !== undefined) {
+				const fromRow = this.db.getFirstSync<{ generation: string | null }>(
+					"SELECT record_generation AS generation FROM drafts WHERE hub_id = ? AND session_ref = ?",
+					from.hubId,
+					from.sessionRef,
+				);
+				generation = fromRow?.generation ?? evidence.transferId;
+				this.db.runSync(
+					"UPDATE draft_transfer_log SET carried_generation = ? WHERE transfer_id = ?",
+					generation,
+					evidence.transferId,
+				);
+			}
 			this.write(to, record, additions);
+			if (evidence !== undefined)
+				this.db.runSync(
+					"UPDATE drafts SET record_generation = ? WHERE hub_id = ? AND session_ref = ?",
+					generation,
+					to.hubId,
+					to.sessionRef,
+				);
 			this.remove(from);
 		});
 	}
@@ -596,6 +712,7 @@ export class DraftRepository {
 			state: row.state as DraftTransferState,
 			deliveredHash: row.delivered_hash,
 			carriedCaptureToken: row.carried_capture_token,
+			carriedGeneration: row.carried_generation,
 			completedCommandRecoveryIds: decodeIdList(row.completed_command_recovery_ids),
 			releasedRecoveryIds: decodeIdList(row.released_recovery_ids),
 			createdAt: row.created_at,
@@ -612,6 +729,7 @@ interface TransferRow {
 	state: string;
 	delivered_hash: string | null;
 	carried_capture_token: string | null;
+	carried_generation: string | null;
 	completed_command_recovery_ids: string | null;
 	released_recovery_ids: string | null;
 	created_at: number;
