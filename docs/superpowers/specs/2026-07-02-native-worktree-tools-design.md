@@ -568,6 +568,19 @@ or agent who has verified the owner is dead — or the owner itself resuming
 owner's lock and `force` does not escalate to git's `remove -f -f`
 double-force.
 
+The one exception is the operator-directed orphan arm (#5471): a delegate
+lane's lock belongs to its parent's disposal lifecycle, and when the parent
+session dies without clean closing, that lifecycle can never run — the lane
+stays locked forever, invisible to every bulk operation. `prune` called with
+`orphaned_delegate_days` releases exactly those locks: a delegate marker
+whose parent provably cannot act (the parent's own store closed the
+delegate's resumability, or the parent session is gone or inactive past the
+caller's threshold). The release re-verifies the marker atomically
+(claim-rename, restore on mismatch), removal still requires the ordinary
+unchanged/merged gates, a work-holding lane is unlocked and kept, and a
+resumed delegate re-locks an unlocked lane (the revival row below) — a
+removed lane fails its revival loudly into the construction-failed closure.
+
 **Restores follow the same rule.** Any operation that lands the session's
 env in a managed worktree without going through `switch` — `exit` restoring
 a saved env whose root is itself a managed worktree (the launched-inside
@@ -599,7 +612,7 @@ a bug — report it.
 | delegate revival (`delegate_send` on a kept lane) | lock (`evener:dlg:`) | adopt | refuse revival |
 | disposal, unchanged lane | unlock (vacuous) → remove | unlock → remove | — (the dlg lock is the disposer's) |
 | disposal, changed lane | keep | unlock, keep | — |
-| `prune` candidate | eligible (other conditions apply) | skip when the session occupies the lane; the marker does not block when it does not (crash residue), and is released only where the lane is actually collected | skip |
+| `prune` candidate | eligible (other conditions apply) | skip when the session occupies the lane; the marker does not block when it does not (crash residue), and is released only where the lane is actually collected | skip, except the operator-directed orphan arm (#5471): a delegate marker whose parent provably cannot act is released, then judged by the ordinary gates |
 | hard crash | — | lock stays (stale, diagnosable) | — |
 
 ### `list`
@@ -737,6 +750,19 @@ sweeps, all through the control env:
      skip it was. Only the model-facing `prune` reclaims such a lane; the
      automatic residue sweep leaves it alone, since it can run between a switch
      taking the marker and recording the lane as current;
+	   - the operator-directed orphan arm (#5471) is the one exception to that
+	     locked-marker rule: a `prune` call passing `orphaned_delegate_days`
+	     also releases a foreign delegate marker whose parent provably cannot
+	     act as its disposer — the parent's own store closed the delegate's
+	     resumability, or the parent session is gone or inactive at least that
+	     many days — after the marker and the sidecar name the same delegate.
+	     That release uses the same claim-rename protocol as the stranded own
+	     marker, removal still requires every condition below (live work, clean,
+	     unchanged/merged), and a released lane this pass cannot collect is
+	     reported unlocked and kept — visible to the merge and force paths —
+	     rather than skipped. This session's own delegates are never the arm's
+	     business: their disposer can still act, through `dispose`. The
+	     automatic residue sweep does not arm it;
    - no live work under it per this session's `liveWorkUnder` (belt and
      braces alongside the lock);
    - clean per `git -C <path> status --porcelain=v1 --untracked-files=all`;
@@ -1286,13 +1312,16 @@ ever added, it and `isolation` must be mutually exclusive.)
 6. **Hard parent death** (crash, SIGKILL): no disposal ran; the worktrees
    remain locked with the `evener:dlg:…` reason. `list` shows them; clearing
    the stale lock is the deliberate `git worktree unlock` act described in §5,
-   after which `prune` collects the unchanged/merged ones. This is fail-safe
-   in the same direction as everything else in this spec: crashes never
-   destroy work.
+   after which `prune` collects the unchanged/merged ones — or, in bulk, the
+   orphan arm does both: `prune` with `orphaned_delegate_days` releases these
+   locks itself once the parent is provably gone or long-inactive (§5). This
+   is fail-safe in the same direction as everything else in this spec:
+   crashes never destroy work.
 
 ### Guards
 
-`remove`/`prune` refuse while the delegate's lock is held (§5), and the
+`remove`/`prune` refuse while the delegate's lock is held (§5 — except
+`prune`'s operator-directed orphan arm, #5471), and the
 live-work guard additionally refuses while any of the delegate's jobs are
 running. Because the delegate holds its lock for its entire lifetime, the
 parent cannot `switch` into an isolated delegate's worktree at all while the

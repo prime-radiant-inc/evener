@@ -38,12 +38,22 @@ func (r *wtRepo) listOp(t *testing.T) (map[string]any, error) {
 
 // pruneOp drives the prune operation through the registered tool surface.
 func (r *wtRepo) pruneOp(t *testing.T) (map[string]any, error) {
+	return r.pruneOpArgs(t, nil)
+}
+
+// pruneOpArgs drives the prune operation with extra tool arguments beyond the
+// operation name (the orphan arm's orphaned_delegate_days).
+func (r *wtRepo) pruneOpArgs(t *testing.T, extra map[string]any) (map[string]any, error) {
 	t.Helper()
 	rt := r.s.reg.Get("manage_worktree")
 	if rt == nil {
 		t.Fatal("registry is missing manage_worktree")
 	}
-	out, err := rt.Exec(t.Context(), r.s.currentEnv(), map[string]any{"operation": "prune"})
+	args := map[string]any{"operation": "prune"}
+	for k, v := range extra {
+		args[k] = v
+	}
+	out, err := rt.Exec(t.Context(), r.s.currentEnv(), args)
 	if err != nil {
 		return nil, err
 	}
@@ -234,7 +244,7 @@ func TestWorktreePrune_NotInGitRepo(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir() // not a git repo at all
 	s := newSession(t, withDir(dir))
-	_, err := s.worktreePrune(context.Background())
+	_, err := s.worktreePrune(context.Background(), 0)
 	if err == nil || !strings.Contains(err.Error(), "not in a git repository") {
 		t.Fatalf("prune outside a git repo: err = %v, want the not-in-a-git-repository error", err)
 	}
@@ -1447,7 +1457,7 @@ func TestWorktreePrune_CancelReachesSweeps(t *testing.T) {
 		}
 	}
 
-	if _, err := r.s.worktreePrune(ctx); err != nil {
+	if _, err := r.s.worktreePrune(ctx, 0); err != nil {
 		t.Fatalf("prune: %v", err)
 	}
 	if _, statErr := os.Stat(path); statErr != nil {

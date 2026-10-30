@@ -639,7 +639,7 @@ func worktreeFaultOperationErrorsProgram(t *testing.T, program []byte) {
 		if _, err := s.worktreeList(context.Background()); err == nil {
 			t.Fatal("list outside a repository succeeded")
 		}
-		if _, err := s.worktreePrune(context.Background()); err == nil {
+		if _, err := s.worktreePrune(context.Background(), 0); err == nil {
 			t.Fatal("prune outside a repository succeeded")
 		}
 	})
@@ -1251,7 +1251,7 @@ func worktreeFaultBoundaryHelperProgram(t *testing.T, program []byte) {
 		if _, err := h.s.worktreeList(context.Background()); err == nil {
 			t.Fatal("list accepted a non-local environment")
 		}
-		if _, err := h.s.worktreePrune(context.Background()); err == nil {
+		if _, err := h.s.worktreePrune(context.Background(), 0); err == nil {
 			t.Fatal("prune accepted a non-local environment")
 		}
 		h.s.rollbackFreshDelegateWorktree("delegate", "delegate", filepath.Join(h.root, "delegate"), identifier.Project{})
@@ -1575,7 +1575,7 @@ func worktreeFaultLocalHelperTailProgram(t *testing.T, program []byte) {
 			if _, err := h.s.worktreeList(context.Background()); err == nil {
 				t.Fatal("list accepted an unrootable control sandbox")
 			}
-			if _, err := h.s.worktreePrune(context.Background()); err == nil {
+			if _, err := h.s.worktreePrune(context.Background(), 0); err == nil {
 				t.Fatal("prune accepted an unrootable control sandbox")
 			}
 			if err := h.s.enterWorktree(filepath.Join(h.root, "sandbox-target"), true); err == nil {
