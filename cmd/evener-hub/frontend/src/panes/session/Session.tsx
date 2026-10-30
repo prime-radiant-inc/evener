@@ -20,7 +20,7 @@ import { navigate, paneToURL, refParam } from "../../shell/routing";
 import { ForceStopDialog } from "../../shell/sessionMenu/ForceStopDialog";
 import { StatusBar } from "../../shell/statusbar/StatusBar";
 import { useIsMobile } from "../../shell/useIsMobile";
-import { adoptResumedConversationSeat, workspaceStore } from "../../shell/workspace";
+import { carryComposerSeatForPlacement, workspaceStore } from "../../shell/workspace";
 import { useNavigationStore } from "../../stores/navigation/store";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
 import { useTranscriptDisplayStore } from "../../stores/transcriptDisplay";
@@ -134,11 +134,17 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
       onResumedIdentity: (resumedRef) => {
         const url = paneToURL("session", { ref: resumedRef });
         if (url === null) return false;
-        // Carry this pane's authoring seat to the resumed conversation before
-        // the replacement route's placement reads the mapping: the
-        // retargeted recovery rows keep this seat as their composition owner,
-        // so the replacement pane must be placed under it.
-        adoptResumedConversationSeat(paneId, resumedRef);
+        // Seat-carry: the retargeted rows keep this pane's seat as their
+        // composition owner, so the resumed pane's placement takes it. The
+        // superseded pane closes in the same transition - a main pane is
+        // removed by its own replacement - so the carried seat is never held
+        // live by two panes, and this pane's retained state closing early is
+        // the approved cost of the shape.
+        const pane = workspaceStore.getState().panes.find((record) => record.id === paneId);
+        if (pane) {
+          carryComposerSeatForPlacement(resumedRef, pane.composerSeatId ?? pane.id);
+          if (pane.slot !== "main") workspaceStore.getState().closePane(paneId);
+        }
         navigate(url, { replace: true });
         return true;
       },

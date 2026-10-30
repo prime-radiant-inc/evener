@@ -61,15 +61,11 @@ export function composerDraftStorageKey(ref: string): string {
   return `${STRUCTURED_STORAGE_PREFIX}${ref}`;
 }
 
-// A conversation seat outlives the pane id a mobile reload reallocates. It is
-// stored per tab under both the pane (desktop restore) and the routed ref
-// (mobile route reconstruction); neither belongs to the shared layout.
+// A conversation seat outlives the pane id a mobile reload reallocates - but
+// only the per-pane record below survives a desktop layout save/restore. It
+// belongs to this tab alone and never to the shared layout.
 function paneSeatKey(paneId: string): string {
   return `${COMPOSER_SEAT_PREFIX}${encodeURIComponent(ownClientId())}.pane.${encodeURIComponent(paneId)}`;
-}
-
-function refSeatKey(ref: string): string {
-  return `${COMPOSER_SEAT_PREFIX}${encodeURIComponent(ownClientId())}.ref.${encodeURIComponent(ref)}`;
 }
 
 function storedSeat(key: string): string | undefined {
@@ -98,55 +94,9 @@ export function readPaneComposerSeatEntry(paneId: string): { seat: string; ref: 
   }
 }
 
-// A pane-id seat is only meaningful for the conversation it was saved with.
-// Shared desktop layouts can reuse an id for another conversation (another tab
-// saved it), so the stored record carries the ref and must match.
-export function readRefComposerSeat(ref: string): string | undefined {
-  return storedSeat(refSeatKey(ref));
-}
-
-// Route placement owns the conversation mapping immediately, but a pane-id
-// mapping belongs to saved desktop geometry. Writing it before restoration
-// could overwrite another conversation's saved seat under a restarted id.
-export function writeRefComposerSeat(ref: string, seat: string): void {
-  try {
-    localStorage.setItem(refSeatKey(ref), seat);
-  } catch {
-    // Best-effort, like every other composer persistence.
-  }
-}
-
-// Every conversation mapping naming this seat, enumerated by scanning this
-// tab's mapping keys: a closed pane's seat may own conversations no current
-// derivation can list (a column the pane popped, a conversation the pane's
-// composer created lazily), and retirement must reach them all.
-export function refSeatsHeldBySeat(seat: string): string[] {
-  const held: string[] = [];
-  try {
-    const prefix = `${COMPOSER_SEAT_PREFIX}${encodeURIComponent(ownClientId())}.ref.`;
-    for (let index = 0; index < localStorage.length; index += 1) {
-      const key = localStorage.key(index);
-      if (key === null || !key.startsWith(prefix)) continue;
-      if (localStorage.getItem(key) !== seat) continue;
-      held.push(decodeURIComponent(key.slice(prefix.length)));
-    }
-  } catch {
-    // Best-effort, like every other composer persistence.
-  }
-  return held;
-}
-
-// Retirement is the mirror of writeRefComposerSeat: a genuinely closed pane
-// leaves no conversation mapping behind, so a reopened conversation gets a
-// fresh seat instead of silently adopting the closed pane's work.
-export function clearRefComposerSeat(ref: string): void {
-  try {
-    localStorage.removeItem(refSeatKey(ref));
-  } catch {
-    // Best-effort, like every other composer persistence.
-  }
-}
-
+// Clears a pane-id seat record. A layout save rewrites the entries for the
+// panes it holds, so a cleared entry only matters for panes a save will not
+// revisit.
 export function clearPaneComposerSeat(paneId: string): void {
   try {
     localStorage.removeItem(paneSeatKey(paneId));

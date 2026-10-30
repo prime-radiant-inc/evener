@@ -75,28 +75,27 @@ best-effort.
 
 ### Browser seat and selection ownership
 
-A conversation seat exists as pane identity: it is allocated at
-placement, stored per tab under both the pane id (desktop layout restore) and
-the conversation ref (mobile route reconstruction), and reused when a reload
-restores the same conversation. A route placement writes only the
-conversation mapping; pane-id mappings are written when a layout is saved or
-restored, and each records the conversation it belongs to, so a restarted id
-cannot lend another conversation's seat. Validated pane seats are reserved
-across the whole restored layout before any pane falls back to the ref
-mapping or a fresh seat. Seats do not scope user selections; they keep pane
-identity stable across reloads and scope automatic restoration: a recovery
-row records the composer seat that last wrote it as its composition owner, and
-an empty composer at mount restores only the newest rejected row its own seat
-owns - the pane's own bounced work, one tap back. Every row stays reachable
-through QueueStrip's explicit Edit, Retry and Send now regardless of owner.
-A pane's own send carries its seat, so the row a refusal bounces from it
-restores to that pane's next mount under the same seat. Closing a pane
-retires its seat mappings: reopening the conversation hands the new pane a
-fresh seat instead of the closed pane's, while panes that merely park or
-survive a reload keep theirs. Rows written before
-composition owners existed carry no seat and are never restored
-automatically; the explicit actions reach them. A fresh pane holds a fresh
-seat, so it never injects another (or a closed) pane's row at mount.
+A conversation seat exists as pane identity: placement mints a fresh seat for
+every new pane, and a pane keeps its seat for its whole lifetime - through
+parking, retyping to a transcript and back, and resume round trips on the
+live pane. The seat is stored per tab under the pane id only, and a restored
+layout validates a saved pane's seat against the conversation it names before
+reusing it, so a restarted id cannot lend another conversation's seat; every
+other restored pane mints fresh. There is no maintained conversation
+mapping: a mobile route reconstruction after a reload mints a fresh seat as
+well, so restoring the previous pane's work there takes one tap. Seats do
+not scope user selections; they keep pane identity stable and scope automatic
+restoration: a recovery row records the composer seat that last wrote it as
+its composition owner, and an empty composer at mount restores only the
+newest rejected row its own seat owns - the pane's own bounced work, one tap
+back. Every row stays reachable through QueueStrip's explicit Edit, Retry and
+Send now regardless of owner. A pane's own send carries its seat, so the row
+a refusal bounces from it restores to that pane's next mount under the same
+seat. A resumed nested session carries the authoring pane's seat to its
+replacement pane, so the resumed composer can restore its own work again.
+Rows written before composition owners existed carry no seat and are never
+restored automatically; the explicit actions reach them. A fresh pane holds a
+fresh seat, so it never injects another (or a closed) pane's row at mount.
 
 Sending recovery consumes its durable source and creates one fresh outbox
 identity atomically. It never falls back to an ordinary enqueue when the source

@@ -1,71 +1,71 @@
-// The composer-seat mapping lifecycle matrix.
+// The composer-seat lifecycle matrix, derived shape.
 //
-// Seat-owned restore made the ref/pane seat mappings load-bearing: a pane
-// restores the rejected rows its durable seat owns, so every transition that
-// creates, moves or removes a mapping decides WHOSE WORK RESTORES WHERE. This
-// suite walks every mapping mutation site against the ownership states around
-// it. Each cell asserts the mappings that exist, the mappings that retire, and
-// the restore determinant: the seat a freshly placed pane for a conversation
-// receives (a pane restores exactly the rows owned by that seat - pinned at
-// the composer level in Composer.recovery.test.tsx).
-//
-// Mutation sites covered here: open/placement, close (leaf, cascade, retyped
-// reserve, companion, primary replacement), promote/focus, pop/return retype,
-// resume identity adoption, cold restore (validated, collision, fresh tab),
-// parked panes, and reload. The five review findings this round closed are
-// the cells marked FINDING n; their red-first history lives in the workspace,
-// retainedComposer, Session.resume and Composer.recovery suites.
+// Seat ownership is DERIVED AT READ: the mount-restore predicate consults
+// only the pane's own durable seat (the record's composerSeatId, resolved as
+// the lifetime's compositionOwnerId), and placement mints a fresh seat for
+// every pane. No conversation-ref seat mapping exists; the only persisted
+// seat record is the per-pane entry a desktop layout save writes and a
+// restore validates, which is what keeps a DESKTOP reload restoring this
+// tab's own work. Mobile-shaped route reconstruction (a rebuilt pane under a
+// fresh id, no pane entry) mints fresh: one tap in the queue strip, ruled
+// product behavior. The one exception is the SEAT-CARRY on resume: the pane
+// a resume replaces hands its authoring seat to the resumed pane's
+// placement, and the superseded nested pane closes in the same transition,
+// so a pane's own bounced work still restores after its conversation resumes
+// and two live panes never share a seat.
+
+import { act, screen } from "@testing-library/react";
 import type { DockviewApi } from "dockview-core";
+import { IDBFactory } from "fake-indexeddb";
 import { beforeEach, describe, expect, test } from "vitest";
-import {
-  readPaneComposerSeatEntry,
-  readRefComposerSeat,
-  refSeatsHeldBySeat,
-  writePaneComposerSeat,
-  writeRefComposerSeat,
-} from "../panes/session/composer/draft";
+import { mountComposerWithHandle, seedRejectedRecovery } from "../panes/session/composer/composerTestUtils";
+import { readPaneComposerSeatEntry, writePaneComposerSeat } from "../panes/session/composer/draft";
+import { flushPendingTurnsProjectionForTests } from "../panes/session/composer/queue/testing/flushPendingTurnsProjection";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { setMutationClientIdentityForTests } from "../stores/mutationClientIdentity";
+import { MutationOutboxIndexedDB } from "../stores/mutationOutboxIndexedDB";
+import { setMutationStorageForTests } from "../stores/threads";
 import {
-  adoptResumedConversationSeat,
-  type OpenPaneRecord,
-  registerDockviewApi,
-  resetWorkspaceStoreForTests,
-  workspaceStore,
-} from "./workspace";
+  type AttentionPlacementEntry,
+  captureAttentionPlacement,
+  presentAttentionTarget,
+  restoreAttentionPlacement,
+} from "./attentionPlacement";
+import { conversationPaneLifetime } from "./paneLifetime";
+import { type OpenPaneRecord, registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
 import "./AppShell"; // side effect: boot-time pane registrations restoreLayout needs
 
-const sessionPane = (id: string, ref: string, seat?: string): OpenPaneRecord => ({
+const sessionPane = (
+  id: string,
+  ref: string,
+  slot: "main" | "secondary" | "parked",
+  seat?: string,
+): OpenPaneRecord => ({
   id,
   type: "session",
   params: { ref },
-  slot: "secondary",
+  slot,
   ...(seat === undefined ? {} : { composerSeatId: seat }),
 });
 
-const companionPane = (id: string, ref: string): OpenPaneRecord => ({
-  id,
-  type: "sessionTasks",
-  params: { ref },
-  slot: "secondary",
-});
+function setPanes(panes: OpenPaneRecord[]): void {
+  workspaceStore.setState({ panes, focusedPaneId: panes.find((pane) => pane.slot === "main")?.id ?? null });
+}
 
-// The restore determinant: the seat a pane placed for this conversation now
-// holds. A pane under seat S restores exactly the rejected rows owned by S.
+// The seat a pane placed for this conversation now holds: the restore
+// determinant. A pane under seat S restores exactly the rejected rows owned
+// by S (the ownership predicate, pinned in Composer.recovery.test.tsx).
 function placedSeatFor(ref: string): string | undefined {
   const id = workspaceStore.getState().openPane("session", { ref });
   return workspaceStore.getState().panes.find((pane) => pane.id === id)?.composerSeatId;
 }
 
-function setPanes(panes: OpenPaneRecord[]): void {
-  workspaceStore.setState({
-    panes: panes.map((pane, index) => (index === 0 ? { ...pane, slot: "main" } : pane)),
-    focusedPaneId: panes[0]?.id ?? null,
-  });
+function seatOfPane(id: string): string | undefined {
+  return workspaceStore.getState().panes.find((pane) => pane.id === id)?.composerSeatId;
 }
 
-// The unit-test dockview double from paneRestore.test.ts, duplicated for the
-// cold-restore cells.
+// The unit-test dockview double from paneRestore.test.ts, for the
+// desktop-restore cells.
 class FakeDockviewApi {
   panels: Array<{ id: string; params: unknown }> = [];
   activePanel: { id: string } | undefined = undefined;
@@ -121,194 +121,77 @@ beforeEach(() => {
   resetWorkspaceStoreForTests();
 });
 
-describe("the seat mapping lifecycle matrix", () => {
-  // --- OPEN / PLACEMENT ----------------------------------------------------
-  describe("open and placement", () => {
-    test("an open into an empty workspace mints a seat and writes both mappings", () => {
+describe("the derived seat lifecycle matrix", () => {
+  // --- PLACEMENT ------------------------------------------------------------
+  describe("placement", () => {
+    test("an A-B-A full-replacement reopen never reuses the removed pane's seat", () => {
+      // The removed pane's rejected work must not auto-restore into the
+      // reopening pane: the fresh-pane narrowing, now by construction.
+      const first = placedSeatFor("local:a");
+      workspaceStore.getState().replacePrimary("session", { ref: "local:b" });
+      const reopened = placedSeatFor("local:a");
+      expect(reopened).toBeDefined();
+      expect(reopened).not.toBe(first);
+    });
+
+    test("closing a conversation and reopening hands the new pane a fresh seat", () => {
+      const first = placedSeatFor("local:a");
+      const firstId = workspaceStore.getState().panes.find((pane) => pane.composerSeatId === first)?.id;
+      expect(firstId).toBeDefined();
+      workspaceStore.getState().closePane(firstId as string);
+      expect(placedSeatFor("local:a")).not.toBe(first);
+    });
+  });
+
+  // --- RELOAD ---------------------------------------------------------------
+  describe("reload", () => {
+    test("a desktop reload validates the saved pane entry and reuses this tab's seat", () => {
       const id = workspaceStore.getState().openPane("session", { ref: "local:a" });
-      const pane = workspaceStore.getState().panes.find((record) => record.id === id);
-      expect(pane?.composerSeatId).toBeDefined();
-      expect(readRefComposerSeat("local:a")).toBe(pane?.composerSeatId);
-      // A pane-id mapping belongs to saved desktop geometry, not the open
-      // path: it is written when a layout is saved or restored, never here.
-      expect(readPaneComposerSeatEntry(id)).toBeUndefined();
+      const seat = seatOfPane(id);
+      // The layout save is the one moment a pane id and a conversation are
+      // known to belong together; simulate its persisted pane entry.
+      writePaneComposerSeat(id, "local:a", seat as string);
+      resetWorkspaceStoreForTests();
+      restorePanels({ [id]: sessionPanel(id, "local:a") });
+      expect(seatOfPane(id)).toBe(seat);
+      expect(readPaneComposerSeatEntry(id)?.seat).toBe(seat);
     });
 
-    test("a second pane on the same conversation gets a distinct live-excluded seat", () => {
-      const first = workspaceStore.getState().openPane("session", { ref: "local:a" });
-      const firstSeat = workspaceStore.getState().panes.find((pane) => pane.id === first)?.composerSeatId;
-      workspaceStore.getState().openPane("session", { ref: "local:a" }, { slot: "secondary" });
-      const seats = workspaceStore
-        .getState()
-        .panes.filter((pane) => refSeatOf(pane) === "local:a")
-        .map((pane) => pane.composerSeatId);
-      expect(new Set(seats).size).toBe(seats.length);
-      expect(seats).toContain(firstSeat);
+    test("a mobile-shaped route reconstruction mints a fresh seat: one tap", () => {
+      // The mobile reload rebuilds the routed pane under a new id with no
+      // pane entry of its own: no auto-restore, one tap in the queue strip.
+      // Ruled product behavior.
+      const first = placedSeatFor("local:a");
+      const seat = first;
+      resetWorkspaceStoreForTests();
+      restorePanels({ pMobile: sessionPanel("pMobile", "local:a") });
+      expect(seatOfPane("pMobile")).not.toBe(seat);
     });
 
-    test("closing a conversation and reopening hands the new pane a fresh seat (FINDING 2 core)", () => {
-      const first = workspaceStore.getState().openPane("session", { ref: "local:a" });
-      const firstSeat = workspaceStore.getState().panes.find((pane) => pane.id === first)?.composerSeatId;
-      workspaceStore.getState().closePane(first);
-      expect(placedSeatFor("local:a")).not.toBe(firstSeat);
-    });
-  });
-
-  // --- CLOSE ---------------------------------------------------------------
-  describe("close", () => {
-    test("closing a leaf pane clears its conversation and pane mappings", () => {
-      setPanes([sessionPane("p1", "local:a", "seat-a")]);
-      writeRefComposerSeat("local:a", "seat-a");
-      writePaneComposerSeat("p1", "local:a", "seat-a");
-
-      workspaceStore.getState().closePane("p1");
-
-      expect(readRefComposerSeat("local:a")).toBeUndefined();
-      expect(readPaneComposerSeatEntry("p1")).toBeUndefined();
-      expect(refSeatsHeldBySeat("seat-a")).toEqual([]);
-    });
-
-    test("closing a pane with a surviving pane on the conversation reconciles to the survivor", () => {
-      setPanes([sessionPane("p1", "local:a", "seat-a"), sessionPane("p2", "local:a", "seat-b")]);
-      writeRefComposerSeat("local:a", "seat-a");
-
-      workspaceStore.getState().closePane("p1");
-
-      expect(readRefComposerSeat("local:a")).toBe("seat-b");
-    });
-
-    test("closing a pane with only a companion survivor clears the mapping (FINDING 3)", () => {
-      setPanes([sessionPane("p1", "local:a", "seat-a"), companionPane("p-tasks", "local:a")]);
-      writeRefComposerSeat("local:a", "seat-a");
-
-      workspaceStore.getState().closePane("p1");
-
-      expect(readRefComposerSeat("local:a")).toBeUndefined();
-    });
-
-    test("closing a companion pane touches no mappings", () => {
-      setPanes([sessionPane("p1", "local:a", "seat-a"), companionPane("p-tasks", "local:a")]);
-      writeRefComposerSeat("local:a", "seat-a");
-
-      workspaceStore.getState().closePane("p-tasks");
-
-      expect(readRefComposerSeat("local:a")).toBe("seat-a");
-    });
-
-    test("closing a retyped transcript pane retires its reserved seat's mappings (FINDING 2)", () => {
-      setPanes([sessionPane("p1", "local:a", "seat-a")]);
-      workspaceStore
-        .getState()
-        .retypePane(workspaceStore.getState().panes.find((pane) => pane.id === "p1")!, "transcript", {
-          ref: "local:a",
-          parentRef: "local:a",
-        });
-      writeRefComposerSeat("local:a", "seat-a");
-
-      workspaceStore.getState().closePane("p1");
-
-      expect(readRefComposerSeat("local:a")).toBeUndefined();
-      expect(placedSeatFor("local:a")).not.toBe("seat-a");
-    });
-
-    test("primary replacement retires the removed duplicate's mappings (FINDING 2)", () => {
-      setPanes([sessionPane("p-main", "local:a", "seat-main"), sessionPane("p-dup", "local:a", "seat-dup")]);
-      writePaneComposerSeat("p-dup", "local:a", "seat-dup");
-
-      expect(workspaceStore.getState().replacePrimary("session", { ref: "local:a" })).toBe("p-main");
-
-      expect(readPaneComposerSeatEntry("p-dup")).toBeUndefined();
-      expect(readRefComposerSeat("local:a")).toBe("seat-main");
+    test("two fresh tabs restore one shared layout with distinct seats", () => {
+      restorePanels({ p1: sessionPanel("p1", "local:shared") });
+      const seatA = seatOfPane("p1");
+      setMutationClientIdentityForTests("matrix-tab-b");
+      resetWorkspaceStoreForTests();
+      restorePanels({ p1: sessionPanel("p1", "local:shared") });
+      expect(seatOfPane("p1")).not.toBe(seatA);
+      setMutationClientIdentityForTests("matrix-tab");
     });
   });
 
-  // --- PROMOTE / FOCUS -----------------------------------------------------
-  describe("promote and focus", () => {
-    test("promotion writes the promoted owner's mapping without retiring anything", () => {
-      setPanes([sessionPane("p1", "local:a", "seat-a"), sessionPane("p2", "local:a", "seat-b")]);
-
-      workspaceStore.getState().promotePane("p2");
-
-      expect(readRefComposerSeat("local:a")).toBe("seat-b");
-      // Promotion writes only the conversation mapping; no retirement runs.
-      expect(readPaneComposerSeatEntry("p1")).toBeUndefined();
-    });
-  });
-
-  // --- POP / RETURN (RETYPE) ------------------------------------------------
-  describe("pop and return navigation", () => {
-    test("a retyped transcript pane keeps its seat reserved, and the return reuses it", () => {
-      setPanes([sessionPane("p1", "local:a", "seat-a")]);
-      writeRefComposerSeat("local:a", "seat-a");
-      workspaceStore
-        .getState()
-        .retypePane(workspaceStore.getState().panes.find((pane) => pane.id === "p1")!, "transcript", {
-          ref: "local:a",
-          parentRef: "local:a",
-        });
-      expect(readRefComposerSeat("local:a")).toBe("seat-a");
-
-      // The return to a conversation type retypes back and reuses the seat.
-      workspaceStore
-        .getState()
-        .retypePane(workspaceStore.getState().panes.find((pane) => pane.id === "p1")!, "session", { ref: "local:a" });
-      expect(workspaceStore.getState().panes.find((pane) => pane.id === "p1")?.composerSeatId).toBe("seat-a");
-      expect(readRefComposerSeat("local:a")).toBe("seat-a");
-    });
-  });
-
-  // --- RESUME IDENTITY REPLACEMENT -----------------------------------------
-  describe("resume identity replacement", () => {
-    test("adoption carries the authoring seat to an unowned resumed conversation (FINDING 1)", () => {
-      setPanes([sessionPane("p1", "local:old", "author-seat")]);
-
-      adoptResumedConversationSeat("p1", "local:resumed");
-      // The resumed route replaces the primary pane outright: the
-      // replacement pane's placement reads the adopted mapping and is placed
-      // under the authoring seat, so the retargeted rows restore into it.
-      const replacementId = workspaceStore.getState().replacePrimary("session", { ref: "local:resumed" });
-      expect(replacementId).not.toBe("p1");
-      expect(workspaceStore.getState().panes.find((pane) => pane.id === replacementId)?.composerSeatId).toBe(
-        "author-seat",
-      );
-      expect(readRefComposerSeat("local:resumed")).toBe("author-seat");
-    });
-
-    test("adoption overwrites a mapping no live pane holds", () => {
-      setPanes([sessionPane("p1", "local:old", "author-seat")]);
-      writeRefComposerSeat("local:resumed", "seat-dead");
-
-      adoptResumedConversationSeat("p1", "local:resumed");
-
-      expect(readRefComposerSeat("local:resumed")).toBe("author-seat");
-    });
-
-    test("adoption leaves a live owner covering the resumed conversation alone", () => {
-      setPanes([sessionPane("p1", "local:old", "author-seat"), sessionPane("p2", "local:resumed", "seat-owner")]);
-      writeRefComposerSeat("local:resumed", "seat-owner");
-
-      adoptResumedConversationSeat("p1", "local:resumed");
-
-      expect(readRefComposerSeat("local:resumed")).toBe("seat-owner");
-    });
-  });
-
-  // --- COLD RESTORE --------------------------------------------------------
-  describe("cold restore", () => {
-    test("a validated restore keeps this tab's persisted seat", () => {
-      writeRefComposerSeat("local:a", "tab-seat");
-      writePaneComposerSeat("p1", "local:a", "tab-seat");
-
-      restorePanels({ p1: sessionPanel("p1", "local:a") });
-
-      expect(workspaceStore.getState().panes.find((pane) => pane.id === "p1")?.composerSeatId).toBe("tab-seat");
-    });
-
-    test("a collision replacement carries the cascade's ancestor mappings (FINDING 4 restore half)", () => {
-      writeRefComposerSeat("local:child", "seat-s");
-      writeRefComposerSeat("local:owner", "seat-s");
+  // --- COLLISION ACROSS RELOAD ------------------------------------------------
+  describe("cold-restore collisions", () => {
+    test("a collision-displaced cascade's ancestor columns are one tap after a reload", () => {
+      // The old shared-seat shape: the leaf pane's saved record held seat-s.
+      // (Pre-redesign, persisted ref keys named it for both columns too; the
+      // derived shape has no such keys, and this cell's red run seeded them
+      // through the old API.)
       writePaneComposerSeat("p2", "local:child", "seat-s");
-
+      // A shared layout restores the leaf twice; the displaced cascade keeps
+      // its replacement seat, but nothing maps its ancestor columns to that
+      // seat anymore. Reconstructing an ancestor conversation after the
+      // reload mints fresh: its preserved rows wait in the queue strip, one
+      // explicit tap away. Ruled product behavior.
       restorePanels({
         p1: {
           id: "p1",
@@ -324,72 +207,111 @@ describe("the seat mapping lifecycle matrix", () => {
         },
         p2: sessionPanel("p2", "local:child"),
       });
-
-      const cascade = workspaceStore.getState().panes.find((pane) => pane.id === "p1");
-      expect(cascade?.composerSeatId).not.toBe("seat-s");
-      expect(readRefComposerSeat("local:owner")).toBe(cascade?.composerSeatId);
-      // The phone-reload restore: on a fresh process the cascade is gone, and
-      // a reconstructed route for the ancestor conversation is placed under
-      // the mapping this restore reconciled - so the rows the cascade's
-      // replacement seat owns restore there.
+      const cascade = seatOfPane("p1");
+      const leaf = seatOfPane("p2");
+      expect(cascade).toBeDefined();
+      expect(leaf).toBeDefined();
+      expect(cascade).not.toBe(leaf);
+      // The ancestor conversation reconstructed after the reload: fresh.
       resetWorkspaceStoreForTests();
       restorePanels({ p3: sessionPanel("p3", "local:owner") });
-      expect(workspaceStore.getState().panes.find((pane) => pane.id === "p3")?.composerSeatId).toBe(
-        cascade?.composerSeatId,
-      );
+      expect(seatOfPane("p3")).not.toBe(cascade);
     });
 
-    test("two fresh tabs restoring one shared layout mint distinct seats", () => {
-      restorePanels({ p1: sessionPanel("p1", "local:shared") });
-      const seatA = workspaceStore.getState().panes.find((pane) => pane.id === "p1")?.composerSeatId;
+    test("a validated cascade restore keeps this tab's seat through a deeper shared leaf", () => {
+      // The pane entry a desktop save wrote names the cascade's pane id; the
+      // shared layout may have drilled deeper elsewhere, and continuity
+      // still runs through the cascade path.
+      writePaneComposerSeat("p1", "local:child", "tab-seat");
+      restorePanels({
+        p1: {
+          id: "p1",
+          contentComponent: "default",
+          params: {
+            paneType: "sessionZoom",
+            paneParams: {
+              ref: "local:grandchild",
+              source: { type: "session", params: { ref: "local:owner" } },
+              edges: [
+                { ownerRef: "local:owner", childRef: "local:child", delegateId: "delegate-1" },
+                { ownerRef: "local:child", childRef: "local:grandchild", delegateId: "delegate-2" },
+              ],
+            },
+          },
+        },
+      });
+      expect(seatOfPane("p1")).toBe("tab-seat");
+    });
+  });
 
-      setMutationClientIdentityForTests("matrix-tab-b");
-      resetWorkspaceStoreForTests();
-      restorePanels({ p1: sessionPanel("p1", "local:shared") });
-      const seatB = workspaceStore.getState().panes.find((pane) => pane.id === "p1")?.composerSeatId;
-
-      expect(seatB).not.toBe(seatA);
-      setMutationClientIdentityForTests("matrix-tab");
+  // --- RETYPE (POP/RETURN) ------------------------------------------------------
+  describe("pop and return navigation", () => {
+    test("a retyped transcript pane keeps its seat on the record, and the return reuses it", () => {
+      const id = workspaceStore.getState().openPane("session", { ref: "local:a" });
+      const seat = seatOfPane(id);
+      const pane = workspaceStore.getState().panes.find((record) => record.id === id);
+      if (!pane) throw new Error("missing pane");
+      expect(workspaceStore.getState().retypePane(pane, "transcript", { ref: "local:a", parentRef: "local:a" })).toBe(
+        true,
+      );
+      const retyped = workspaceStore.getState().panes.find((record) => record.id === id);
+      // The record carries the seat through the read-only interlude: a
+      // different pane opening the conversation still cannot take it (the
+      // live-seat rule), and the return to a conversation type reuses it.
+      expect(retyped?.composerSeatId).toBe(seat);
+      expect(placedSeatFor("local:a")).not.toBe(seat);
+      expect(workspaceStore.getState().retypePane(retyped as OpenPaneRecord, "session", { ref: "local:a" })).toBe(true);
+      expect(seatOfPane(id)).toBe(seat);
     });
   });
 
   // --- PARK ----------------------------------------------------------------
   describe("parked panes", () => {
-    test("a parked pane keeps its mappings and covers its conversation as a survivor", () => {
-      const parked = { ...sessionPane("p-parked", "local:a", "seat-parked"), slot: "parked" as const };
-      setPanes([sessionPane("p1", "local:b", "seat-b"), parked]);
-      writeRefComposerSeat("local:a", "seat-parked");
-
-      // Closing an unrelated pane leaves the parked pane's mappings alone.
-      workspaceStore.getState().closePane("p1");
-      expect(readRefComposerSeat("local:a")).toBe("seat-parked");
-
-      // The parked pane also reconciles a closed owner of ITS conversation.
-      setPanes([sessionPane("p-owner", "local:a", "seat-c"), parked]);
-      writeRefComposerSeat("local:a", "seat-c");
-      workspaceStore.getState().closePane("p-owner");
-      expect(readRefComposerSeat("local:a")).toBe("seat-parked");
+    test("a parked pane keeps its seat on the record and covers it while parked", () => {
+      setPanes([
+        sessionPane("p-main", "local:owner", "main", "seat-main"),
+        sessionPane("p-parked", "local:child", "parked", "seat-parked"),
+      ]);
+      // A parked pane is alive: its seat stays occupied, so a different pane
+      // opening its conversation mints fresh rather than sharing.
+      expect(placedSeatFor("local:child")).not.toBe("seat-parked");
+      expect(seatOfPane("p-parked")).toBe("seat-parked");
     });
-  });
 
-  // --- RELOAD --------------------------------------------------------------
-  describe("reload", () => {
-    test("a reload restoring the same layout keeps this tab's seats", () => {
-      writeRefComposerSeat("local:a", "tab-seat");
-      writePaneComposerSeat("p1", "local:a", "tab-seat");
-
-      restorePanels({ p1: sessionPanel("p1", "local:a") });
-      const first = workspaceStore.getState().panes.find((pane) => pane.id === "p1")?.composerSeatId;
-      resetWorkspaceStoreForTests();
-      restorePanels({ p1: sessionPanel("p1", "local:a") });
-      const second = workspaceStore.getState().panes.find((pane) => pane.id === "p1")?.composerSeatId;
-
-      expect(second).toBe(first);
-      expect(second).toBe("tab-seat");
+    // The real park/unpark round trip with a real Composer mount: parking
+    // unmounts the pane (DockHost presents presentedPanes only), the record
+    // and its seat survive, and the remounted pane's composer restores the
+    // rejected work its seat owns.
+    test("a parked pane's own work restores on unpark", async () => {
+      globalThis.indexedDB = new IDBFactory();
+      const storage = new MutationOutboxIndexedDB();
+      setMutationStorageForTests(storage);
+      const id = workspaceStore.getState().openPane("session", { ref: "local:a" });
+      const seat = seatOfPane(id);
+      if (!seat) throw new Error("placed pane lacks a seat");
+      const pane = workspaceStore.getState().panes.find((record) => record.id === id);
+      if (!pane) throw new Error("missing pane record");
+      const source = conversationPaneLifetime(pane).composer;
+      if (!source) throw new Error("pane has no composer source");
+      const first = await mountComposerWithHandle("local:a", { status: { type: "idle" } }, { source });
+      // Park: the pane unmounts, its record and seat stay.
+      const origin = captureAttentionPlacement();
+      expect(origin).not.toBeNull();
+      await act(async () => {
+        expect(presentAttentionTarget("local:b")).not.toBeNull();
+      });
+      first.unmount();
+      // An owned row lands while the pane is parked.
+      await seedRejectedRecovery(storage, "local:a", "parked bounce", {}, seat);
+      await flushPendingTurnsProjectionForTests();
+      // Unpark: the pane is presented again and remounts; its composer
+      // restores the row its durable seat owns.
+      await act(async () => {
+        expect(restoreAttentionPlacement(origin as AttentionPlacementEntry)).toBe(true);
+      });
+      expect(seatOfPane(id)).toBe(seat);
+      await mountComposerWithHandle("local:a", { status: { type: "idle" } }, { source });
+      expect(screen.getByRole("textbox", { name: /^message$/i }).textContent).toBe("parked bounce");
     });
   });
 });
-
-function refSeatOf(pane: OpenPaneRecord): string {
-  return (pane.params as { ref?: unknown }).ref === undefined ? "" : ((pane.params as { ref?: string }).ref ?? "");
-}

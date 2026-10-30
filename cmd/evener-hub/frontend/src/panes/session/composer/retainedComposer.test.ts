@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, test } from "vitest";
 import { conversationPaneLifetime, disposeConversationPaneLifetime } from "../../../shell/paneLifetime";
 import { workspaceStore } from "../../../shell/workspace";
-import { readRefComposerSeat, writeRefComposerSeat } from "./draft";
 import { retainedConversationComposer } from "./retainedComposer";
 
 // Composer retention mirrors retainedTranscriptReadView: a conversation
@@ -46,66 +45,5 @@ describe("retainedConversationComposer", () => {
     disposeConversationPaneLifetime(record);
     expect(kept.alive).toBe(false);
     expect(retainedConversationComposer(lifetime, "local:kept")).toBeUndefined();
-  });
-});
-
-// A column composer writes under its lifetime's seat, so the column's
-// conversation mapping must name that seat: a mapping left absent or on a
-// seat no live pane holds (displaced by a collision, or closed) would hand a
-// reloaded route a fresh seat and restore nothing. A mapping a live pane
-// still holds is that owner's and stays.
-describe("retained column seat mapping reconciliation", () => {
-  test("adopts the lifetime seat when the stored mapping is absent or dead", () => {
-    workspaceStore.setState({ panes: [], focusedPaneId: null });
-    const record = { id: "p1", type: "session" as const, params: { ref: "local:owner" }, slot: "main" as const };
-    workspaceStore.setState({ panes: [record], focusedPaneId: "p1" });
-    const lifetime = conversationPaneLifetime(record);
-
-    writeRefComposerSeat("local:child", "seat-displaced");
-    expect(retainedConversationComposer(lifetime, "local:child")).toBeDefined();
-    expect(readRefComposerSeat("local:child")).toBe(lifetime.compositionOwnerId);
-
-    expect(retainedConversationComposer(lifetime, "local:unset")).toBeDefined();
-    expect(readRefComposerSeat("local:unset")).toBe(lifetime.compositionOwnerId);
-  });
-
-  test("a live mapping whose holder does not own the conversation is reconciled", () => {
-    workspaceStore.setState({ panes: [], focusedPaneId: null });
-    const record = { id: "p1", type: "session" as const, params: { ref: "local:owner" }, slot: "main" as const };
-    // A live pane holding the stored seat but covering a DIFFERENT
-    // conversation: cold-restore collision winners look exactly like this, and
-    // preserving the mapping because the seat is merely live strands this
-    // column's recovery on a seat that will never open this conversation.
-    const holder = {
-      id: "p2",
-      type: "session" as const,
-      params: { ref: "local:elsewhere" },
-      slot: "secondary" as const,
-      composerSeatId: "seat-live-elsewhere",
-    };
-    workspaceStore.setState({ panes: [record, holder], focusedPaneId: "p1" });
-    const lifetime = conversationPaneLifetime(record);
-
-    writeRefComposerSeat("local:child", "seat-live-elsewhere");
-    expect(retainedConversationComposer(lifetime, "local:child")).toBeDefined();
-    expect(readRefComposerSeat("local:child")).toBe(lifetime.compositionOwnerId);
-  });
-
-  test("leaves a mapping a live pane holds to that owner", () => {
-    workspaceStore.setState({ panes: [], focusedPaneId: null });
-    const record = { id: "p1", type: "session" as const, params: { ref: "local:owner" }, slot: "main" as const };
-    const holder = {
-      id: "p2",
-      type: "session" as const,
-      params: { ref: "local:held" },
-      slot: "secondary" as const,
-      composerSeatId: "seat-live",
-    };
-    workspaceStore.setState({ panes: [record, holder], focusedPaneId: "p1" });
-    const lifetime = conversationPaneLifetime(record);
-
-    writeRefComposerSeat("local:held", "seat-live");
-    expect(retainedConversationComposer(lifetime, "local:held")).toBeDefined();
-    expect(readRefComposerSeat("local:held")).toBe("seat-live");
   });
 });

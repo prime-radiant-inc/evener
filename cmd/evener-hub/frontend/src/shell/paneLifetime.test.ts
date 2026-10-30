@@ -2,7 +2,6 @@ import type { DockviewApi } from "dockview-core";
 import { lazy } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { createAttachmentOperations } from "../panes/session/composer/attachments/useAttachments";
-import { readRefComposerSeat } from "../panes/session/composer/draft";
 import { retainedTranscriptReadView } from "../panes/session/transcript/transcriptReadView";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import type { MutationRecoveryRecord } from "../stores/mutationOutbox";
@@ -231,7 +230,7 @@ test.each([false, true])("layout restore success %s disposes only committed repl
   }
 });
 
-test("a resumed source seat survives a later mobile route reconstruction", async () => {
+test("a resumed source keeps its seat for the live lifetime, and a mobile reload mints a fresh one", async () => {
   const pane = rootPane();
   workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
   const lifetime = conversationPaneLifetime(pane);
@@ -241,14 +240,18 @@ test("a resumed source seat survives a later mobile route reconstruction", async
   composer.setActiveRecoveryId(preserved);
   const seat = lifetime.composerSeatId;
 
+  // Resuming in place keeps the authoring lifetime, so the retained work
+  // stays restorable under the same durable seat.
   lifetime.adoptResumedSource("local:mobile-resumed");
-  expect(readRefComposerSeat("local:mobile-resumed")).toBe(seat);
+  expect(conversationPaneLifetime(pane).composerSeatId).toBe(seat);
 
-  // A reload reconstructs the resumed route under a fresh pane id. Route
-  // placement must find this tab's seat through the conversation mapping.
+  // A reload reconstructs the resumed route under a fresh pane id. The
+  // maintained mapping is gone by design: placement mints a fresh seat, so
+  // restoring the retained work takes one tap (Edit) on the recovery row
+  // instead of mounting automatically.
   resetWorkspaceStoreForTests();
   const reloadedId = workspaceStore.getState().openPane("session", { ref: "local:mobile-resumed" });
   const reloaded = workspaceStore.getState().panes.find((record) => record.id === reloadedId);
   if (!reloaded?.composerSeatId) throw new Error("reloaded conversation lacks its seat");
-  expect(reloaded.composerSeatId).toBe(seat);
+  expect(reloaded.composerSeatId).not.toBe(seat);
 });

@@ -30,14 +30,13 @@ import { bindFilePath } from "@evener/appwire-client/docContent";
 import type { DockviewApi } from "dockview-core";
 import { beforeEach, describe, expect, test } from "vitest";
 import { openDocBeside } from "../panes/doc/openDoc";
-import { readRefComposerSeat, writePaneComposerSeat, writeRefComposerSeat } from "../panes/session/composer/draft";
+import { writePaneComposerSeat } from "../panes/session/composer/draft";
 
 // Seeds both mappings a saved pane writes: the pane-id mapping a desktop
 // restore validates and the conversation mapping a mobile route
 // reconstruction reads.
 const writeComposerSeat = (paneId: string, ref: string, seat: string): void => {
   writePaneComposerSeat(paneId, ref, seat);
-  writeRefComposerSeat(ref, seat);
 };
 
 import { retainedConversationComposer } from "../panes/session/composer/retainedComposer";
@@ -448,8 +447,6 @@ test("a restore resolving a seat collision gives the second pane a distinct seat
   installLocalStorage(new MemoryStorage());
   try {
     setMutationClientIdentityForTests("tab-a");
-    writeRefComposerSeat("ref_parent", "seat-s");
-    writeRefComposerSeat("ref_child", "seat-s");
     writeComposerSeat("p1", "ref_parent", "seat-s");
 
     restorePanels({
@@ -483,8 +480,6 @@ test("a seat-collision restore keeps every cascade column a retained composer", 
     setMutationClientIdentityForTests("tab-a");
     // Both cascade conversations were saved under one seat; another pane
     // saved on this tab claims that seat first.
-    writeRefComposerSeat("ref_shared", "seat-s");
-    writeRefComposerSeat("ref_leaf", "seat-s");
     writeComposerSeat("p1", "ref_parent", "seat-s");
     writeComposerSeat("p2", "ref_leaf", "seat-s");
 
@@ -533,8 +528,6 @@ test("a cold restore keeps an ancestry-only ancestor column on its replacement s
     // edge segment is empty and names neither it nor the source chain.
     const ancestorRef = "local:cold-ancestor";
     const leafRef = "local:cold-leaf";
-    writeRefComposerSeat(ancestorRef, "seat-s");
-    writeRefComposerSeat(leafRef, "seat-s");
     // Another pane saved on this tab claims the shared seat first, so the
     // cascade restores onto a replacement seat.
     writeComposerSeat("p0", "local:cold-other", "seat-s");
@@ -633,15 +626,14 @@ test("a route placement before restore keeps the saved pane seat", async () => {
 
 // Another tab can save a different conversation under this pane id. This tab
 // still remembers that id as conversation A, but the restored pane is B; the
-// pane mapping must be validated against B rather than preferred blindly.
+// pane entry must be validated against the restored ref, and a mismatch
+// mints a fresh seat rather than reusing A's.
 test("shared-layout restore ignores a pane seat saved for another conversation", async () => {
   installLocalStorage(new MemoryStorage());
   try {
     setMutationClientIdentityForTests("tab-a");
     // This tab remembers p1 as conversation A.
     writeComposerSeat("p1", "ref_a", "seat-a");
-    // This tab's correct mapping for conversation B.
-    writeRefComposerSeat("ref_b", "seat-b");
 
     // Another tab saved conversation B under the same pane id.
     restorePanels({
@@ -653,7 +645,7 @@ test("shared-layout restore ignores a pane seat saved for another conversation",
     });
 
     const restored = workspaceStore.getState().panes.find((pane) => pane.id === "p1");
-    expect(restored?.composerSeatId).toBe("seat-b");
+    expect(restored?.composerSeatId).not.toBe("seat-a");
   } finally {
     setMutationClientIdentityForTests(undefined);
   }
@@ -661,8 +653,8 @@ test("shared-layout restore ignores a pane seat saved for another conversation",
 
 // A restored layout can list an unfamiliar pane before a known one for the
 // same conversation (a session and a cascade saved by another tab). The known
-// pane's validated mapping must be reserved before the unfamiliar pane can
-// consume the ref fallback.
+// pane's validated seat must be reserved before the unfamiliar pane mints
+// its own.
 test("restore reserves known pane seats before ref fallbacks", async () => {
   installLocalStorage(new MemoryStorage());
   try {
@@ -697,49 +689,6 @@ test("restore reserves known pane seats before ref fallbacks", async () => {
   }
 });
 
-// A restored layout can hold a session pane and a cascade for one
-// conversation. Each pane keeps its own seat, but the conversation mapping -
-// what a mobile route reconstruction reads after the reload - must follow the
-// restored focus, not whichever same-ref pane the panel iteration wrote last.
-test("restore reconciles a shared conversation mapping from the focused pane", async () => {
-  installLocalStorage(new MemoryStorage());
-  try {
-    setMutationClientIdentityForTests("tab-a");
-    writeComposerSeat("p_session", "ref_shared", "session-seat");
-    writeComposerSeat("p_cascade", "ref_shared", "cascade-seat");
-
-    restorePanels({
-      p_session: {
-        id: "p_session",
-        contentComponent: "default",
-        params: { paneType: "session", paneParams: { ref: "ref_shared" } },
-      },
-      p_cascade: {
-        id: "p_cascade",
-        contentComponent: "default",
-        params: {
-          paneType: "sessionZoom",
-          paneParams: { ref: "ref_shared", source: { type: "session", params: { ref: "local:root" } }, edges: [] },
-        },
-      },
-    });
-    // restorePanels focuses the first panel: the session pane, whose
-    // iteration-time write the cascade's would have overwritten.
-    expect(workspaceStore.getState().focusedPaneId).toBe("p_session");
-    expect(readRefComposerSeat("ref_shared")).toBe("session-seat");
-
-    // A mobile route reconstruction after the restore restores the focused
-    // pane's selected row, not the inactive cascade's.
-    resetWorkspaceStoreForTests();
-    const reloadedId = workspaceStore.getState().openPane("session", { ref: "ref_shared" });
-    const reloaded = workspaceStore.getState().panes.find((pane) => pane.id === reloadedId);
-    if (!reloaded?.composerSeatId) throw new Error("reloaded route lacks its seat");
-    expect(reloaded.composerSeatId).toBe("session-seat");
-  } finally {
-    setMutationClientIdentityForTests(undefined);
-  }
-});
-
 // Layouts are shared across tabs, but seat keys are per tab. Two fresh tabs
 // restoring the same shared layout before either has persisted a seat must
 // not both fall back to the same pane id as their composer seat: the owner
@@ -768,51 +717,6 @@ test("two fresh tabs restoring one shared layout never share a composer seat", a
     expect(seatA).toBeDefined();
     expect(seatB).toBeDefined();
     expect(seatB).not.toBe(seatA);
-  } finally {
-    setMutationClientIdentityForTests(undefined);
-  }
-});
-
-// A collision-forced replacement seat must take the cascade's ancestor
-// column mappings with it: a phone reload reconstructing an ancestor
-// conversation reads the ref mapping to hand the returning pane its seat, so
-// a mapping left on the displaced seat restores nothing.
-test("a collision's replacement seat takes the cascade's ancestor mappings with it", async () => {
-  installLocalStorage(new MemoryStorage());
-  try {
-    setMutationClientIdentityForTests("tab-a");
-    // This tab held the cascade (p1) and a separate leaf pane (p2) on one
-    // shared seat; the layout restores p2 validated, forcing p1 onto a
-    // replacement seat. The cascade's ancestor column mapping must follow.
-    writeRefComposerSeat("ref_child", "seat-s");
-    writeRefComposerSeat("ref_owner", "seat-s");
-    writeComposerSeat("p2", "ref_child", "seat-s");
-
-    restorePanels({
-      p1: {
-        id: "p1",
-        contentComponent: "default",
-        params: {
-          paneType: "sessionZoom",
-          paneParams: {
-            ref: "ref_child",
-            source: { type: "session", params: { ref: "ref_owner" } },
-            edges: [{ ownerRef: "ref_owner", childRef: "ref_child", delegateId: "delegate-1" }],
-          },
-        },
-      },
-      p2: {
-        id: "p2",
-        contentComponent: "default",
-        params: { paneType: "session", paneParams: { ref: "ref_child" } },
-      },
-    });
-
-    const cascade = workspaceStore.getState().panes.find((record) => record.id === "p1");
-    const leaf = workspaceStore.getState().panes.find((record) => record.id === "p2");
-    expect(leaf?.composerSeatId).toBe("seat-s");
-    expect(cascade?.composerSeatId).not.toBe("seat-s");
-    expect(readRefComposerSeat("ref_owner")).toBe(cascade?.composerSeatId);
   } finally {
     setMutationClientIdentityForTests(undefined);
   }

@@ -91,15 +91,17 @@ except where a line says so itself.
 
 ### Recovery selection ownership
 
-- Conversation seats remain as pane identity: allocated at placement, stored
-  per tab under the pane id (desktop restore) and the conversation ref (mobile
-  route reconstruction), reused when a reload restores the same conversation,
-  and never part of shared layout geometry. A reconstructed mobile route uses
-  the conversation mapping first, never a pane-id mapping left by another
-  conversation under the same restarted id. A route placement does not write a
-  pane-id mapping; those are written only when a layout is saved or restored.
-  Validated pane seats are reserved across the layout before any ref fallback
-  or fresh seat. Seats do not scope user selections, so no selection ever
+- Conversation seats remain as pane identity: placement mints a fresh seat for
+  every new pane, the pane keeps its seat across parking, transcript retypes
+  and live resume round trips, and seats are never part of shared layout
+  geometry. Seats are stored per tab under the pane id only; a restored
+  layout validates a saved pane's seat against the conversation it names
+  before reusing it, and every other restored pane mints fresh, so a
+  restarted pane id cannot lend another conversation's seat. There is no
+  maintained conversation mapping: a mobile route reconstruction mints a
+  fresh seat, and restoring the previous pane's work there takes one tap. A
+  resumed nested session carries the authoring pane's seat to its
+  replacement. Seats do not scope user selections, so no selection ever
   migrates between seats. A recovery row records the seat that last wrote it
   as its composition owner, and an empty composer at mount restores only the
   newest rejected row its own seat owns; explicit queue-strip actions reach
