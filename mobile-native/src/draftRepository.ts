@@ -58,6 +58,8 @@ export interface DraftTransfer {
 	to: DraftDestination;
 	state: DraftTransferState;
 	deliveredHash: string | null;
+	/** The unresolved capture the transferred record carried, if any. */
+	carriedCaptureToken: string | null;
 	completedCommandRecoveryIds: string[];
 	releasedRecoveryIds: string[];
 	createdAt: number;
@@ -114,6 +116,7 @@ export class DraftRepository {
       to_hub_id TEXT NOT NULL, to_ref TEXT NOT NULL,
       state TEXT NOT NULL,
       delivered_hash TEXT,
+	      carried_capture_token TEXT,
       completed_command_recovery_ids TEXT NOT NULL DEFAULT '[]',
       released_recovery_ids TEXT NOT NULL DEFAULT '[]',
       created_at INTEGER NOT NULL,
@@ -133,6 +136,10 @@ export class DraftRepository {
 		db.execSync(
 			`CREATE INDEX IF NOT EXISTS draft_transfer_log_to
       ON draft_transfer_log (to_hub_id, to_ref, created_at)`,
+		);
+		db.execSync(
+			`CREATE INDEX IF NOT EXISTS draft_transfer_log_carried
+      ON draft_transfer_log (carried_capture_token, created_at) WHERE carried_capture_token IS NOT NULL`,
 		);
 	}
 
@@ -158,6 +165,7 @@ export class DraftRepository {
 			to,
 			state: "pending",
 			deliveredHash: null,
+			carriedCaptureToken: null,
 			completedCommandRecoveryIds: [],
 			releasedRecoveryIds: [],
 			createdAt: at,
@@ -181,6 +189,20 @@ export class DraftRepository {
       ORDER BY created_at DESC LIMIT 1`,
 			from.hubId,
 			from.sessionRef,
+		);
+		return row === null ? undefined : this.mapTransfer(row);
+	}
+
+	/** The latest committed hop whose transferred record carried this capture
+	 * token: while a submission is unresolved its token travels inside the
+	 * record, so this row names where the record went last - regardless of
+	 * what other work later moved through the identities along the way. */
+	latestTransferCarrying(captureToken: string): DraftTransfer | undefined {
+		const row = this.db.getFirstSync<TransferRow>(
+			`SELECT * FROM draft_transfer_log
+      WHERE carried_capture_token = ? AND delivered_hash IS NOT NULL
+      ORDER BY created_at DESC LIMIT 1`,
+			captureToken,
 		);
 		return row === null ? undefined : this.mapTransfer(row);
 	}
@@ -432,6 +454,7 @@ export class DraftRepository {
 		evidence?: {
 			transferId: string;
 			deliveredHash: string;
+			carriedCaptureToken?: string;
 			completedCommandRecoveryIds?: readonly string[];
 			releasedRecoveryIds?: readonly string[];
 		},
@@ -440,9 +463,10 @@ export class DraftRepository {
 			if (evidence !== undefined)
 				this.db.runSync(
 					`UPDATE draft_transfer_log SET delivered_hash = ?,
-      completed_command_recovery_ids = ?, released_recovery_ids = ?, state_changed_at = ?
+      carried_capture_token = ?, completed_command_recovery_ids = ?, released_recovery_ids = ?, state_changed_at = ?
     WHERE transfer_id = ?`,
 					evidence.deliveredHash,
+					evidence.carriedCaptureToken ?? null,
 					JSON.stringify(evidence.completedCommandRecoveryIds ?? []),
 					JSON.stringify(evidence.releasedRecoveryIds ?? []),
 					this.now(),
@@ -554,6 +578,7 @@ export class DraftRepository {
 			to: { hubId: row.to_hub_id, sessionRef: row.to_ref },
 			state: row.state as DraftTransferState,
 			deliveredHash: row.delivered_hash,
+			carriedCaptureToken: row.carried_capture_token,
 			completedCommandRecoveryIds: decodeIdList(row.completed_command_recovery_ids),
 			releasedRecoveryIds: decodeIdList(row.released_recovery_ids),
 			createdAt: row.created_at,
@@ -569,6 +594,7 @@ interface TransferRow {
 	to_ref: string;
 	state: string;
 	delivered_hash: string | null;
+	carried_capture_token: string | null;
 	completed_command_recovery_ids: string | null;
 	released_recovery_ids: string | null;
 	created_at: number;

@@ -244,7 +244,10 @@ test("a migrated resend receipt reconciles under the resumed ref and clears its 
 	await reconcileEditedResends(f.runtime, resumedKey, resumed);
 	expect(resumed.getSnapshot().record).toMatchObject({ unconfirmed: null });
 	expect(await f.runtime.readRecoveryResend(resumedKey, [captured])).toBeUndefined();
-	expect(f.repository.read(resumedDestination)).toEqual({ draft: "", unconfirmed: null });
+	// The hop's settlement durably released the composition's cited source:
+	// the migrated receipt's row cannot restore into the resumed draft.
+	expect(f.repository.read(resumedDestination)).toMatchObject({ draft: "", unconfirmed: null });
+	expect(f.repository.read(resumedDestination).releasedRecoveryIds).toEqual(["mutation-1"]);
 });
 
 test("successful built-in completion durably cleans only captured sources without replay", async () => {

@@ -243,6 +243,7 @@ describe("drafts across navigation", () => {
 			beginTransfer: repository.beginTransfer.bind(repository),
 			outstandingTransfers: repository.outstandingTransfers.bind(repository),
 			latestCommittedTransferFrom: repository.latestCommittedTransferFrom.bind(repository),
+			latestTransferCarrying: repository.latestTransferCarrying.bind(repository),
 			hasPendingTransferTo: repository.hasPendingTransferTo.bind(repository),
 			forgetTransfer: repository.forgetTransfer.bind(repository),
 			markTransferSettled: repository.markTransferSettled.bind(repository),

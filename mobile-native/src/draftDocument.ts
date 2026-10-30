@@ -934,6 +934,27 @@ export class DraftDocument {
 		}
 		for (const [captureToken, resolution] of [...this.unresolvedResolutions]) {
 			if (this.unrecordedCaptures.has(captureToken)) continue;
+			// The ledger may already hold this resolution - a completion whose
+			// later draft saves failed queued a stale failure. A resolved
+			// obligation is not an error to retry: drop the queue and deliver.
+			try {
+				const recorded = this.submissionLedger?.().obligationById(captureToken);
+				if (recorded !== undefined && recorded.state !== "open") {
+					this.unresolvedResolutions.delete(captureToken);
+					inFlightCaptures.delete(captureToken);
+					if (resolution.state !== "failed")
+						this.deliverCompletion(
+							captureToken,
+							resolution.state,
+							resolution.completedCommandIds,
+							resolution.releasedRecoveryIds,
+						);
+					this.onObligationResolved?.();
+					continue;
+				}
+			} catch {
+				// The store is failing; fall through and try the write.
+			}
 			try {
 				this.submissionLedger?.().resolveSubmission(
 					captureToken,

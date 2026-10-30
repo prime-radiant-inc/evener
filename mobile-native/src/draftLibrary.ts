@@ -25,6 +25,7 @@ export type DraftStorage = Pick<
 	| "beginTransfer"
 	| "outstandingTransfers"
 	| "latestCommittedTransferFrom"
+	| "latestTransferCarrying"
 	| "hasPendingTransferTo"
 	| "forgetTransfer"
 	| "markTransferSettled"
@@ -96,6 +97,10 @@ export class DraftLibrary {
 			return false;
 		}
 		this.pending.delete(this.handoffKey(to));
+		// A committed hop owes settlement, not another transfer: its bytes
+		// already landed, and re-attempting would read the occupied destination
+		// as a refusal and destroy the committed pointer.
+		if (transfer.deliveredHash !== null) return this.settleTransfer(transfer);
 		return this.attemptHandoff(transfer);
 	}
 
@@ -232,6 +237,7 @@ export class DraftLibrary {
 			this.repository().transfer(transfer.from, transfer.to, snapshot.record, additions, {
 				transferId: transfer.transferId,
 				deliveredHash: compositionFingerprint(snapshot.record),
+				carriedCaptureToken: snapshot.record.unconfirmedCaptureToken,
 				completedCommandRecoveryIds: snapshot.record.completedCommandRecoveryIds ?? [],
 				releasedRecoveryIds: releasedSources(snapshot.record),
 			});
@@ -246,8 +252,16 @@ export class DraftLibrary {
 			const sessions = this.hubs.get(transfer.from.hubId);
 			if (sessions?.get(transfer.from.sessionRef) === source) sessions.delete(transfer.from.sessionRef);
 		}
-		// The hop's dispositions are owed to whoever owns the record now.
-		this.settleTransfer({ ...transfer, deliveredHash: compositionFingerprint(snapshot.record) });
+		// The hop's dispositions are owed to whoever owns the record now: the
+		// savepoint wrote the real arrays, so settle from them, not from the
+		// pre-transfer row object.
+		this.settleTransfer({
+			...transfer,
+			deliveredHash: compositionFingerprint(snapshot.record),
+			carriedCaptureToken: snapshot.record.unconfirmedCaptureToken ?? null,
+			completedCommandRecoveryIds: snapshot.record.completedCommandRecoveryIds ?? [],
+			releasedRecoveryIds: releasedSources(snapshot.record),
+		});
 		return true;
 	}
 
@@ -257,23 +271,36 @@ export class DraftLibrary {
 	 * failed release leaves the row pending so the next pass converges it. */
 	private refuseHandoff(transfer: DraftTransfer, source: DraftDocument, destination: DraftDocument): void {
 		const record = source.getSnapshot().record;
-		const ids = [
+		const cited = [
 			...(record.composer?.recoveryIds ?? []),
 			...(record.unconfirmedComposer?.recoveryIds ?? []),
 			...(record.parkedCompositions ?? []).flatMap((parked) => parked.composer?.recoveryIds ?? []),
 		];
+		// The refusal delivers everything the composition had settled so far -
+		// completed commands and prior releases as much as the still-cited
+		// sources - or the rows a retarget already moved could restore content
+		// an executed command consumed.
+		const completed = [...(record.completedCommandRecoveryIds ?? [])];
+		const released = [...new Set([...(record.releasedRecoveryIds ?? []), ...cited])];
 		try {
-			if (ids.length) destination.releaseRecoverySources(ids);
+			if (completed.length && !destination.adoptCompletedCommandRecovery(completed)) return;
+			if (released.length && !destination.releaseRecoverySources(released)) return;
 			const ledger = this.availableSubmissionLedger();
-			if (ledger !== undefined && ids.length)
-				ledger.writeDeliveries(
-					ids.map((recoveryId) => ({
+			if (ledger !== undefined && (completed.length || released.length))
+				ledger.writeDeliveries([
+					...completed.map((recoveryId) => ({
+						destination: transfer.to,
+						recoveryId,
+						disposition: "completed" as const,
+						transferId: transfer.transferId,
+					})),
+					...released.map((recoveryId) => ({
 						destination: transfer.to,
 						recoveryId,
 						disposition: "released" as const,
 						transferId: transfer.transferId,
 					})),
-				);
+				]);
 			this.repository().forgetTransfer(transfer.transferId);
 			this.pending.delete(this.handoffKey(transfer.to));
 		} catch {
@@ -293,9 +320,16 @@ export class DraftLibrary {
 		if (owner === undefined) return false;
 		const document = this.open(owner);
 		try {
-			if (transfer.completedCommandRecoveryIds.length)
-				document.adoptCompletedCommandRecovery(transfer.completedCommandRecoveryIds);
-			if (transfer.releasedRecoveryIds.length) document.releaseRecoverySources(transfer.releasedRecoveryIds);
+			// A marker write that did not persist leaves the settlement owed:
+			// the document methods answer false, and the row stays pending so
+			// the next pass retries the whole settlement.
+			if (
+				transfer.completedCommandRecoveryIds.length &&
+				!document.adoptCompletedCommandRecovery(transfer.completedCommandRecoveryIds)
+			)
+				return false;
+			if (transfer.releasedRecoveryIds.length && !document.releaseRecoverySources(transfer.releasedRecoveryIds))
+				return false;
 			const ledger = this.availableSubmissionLedger();
 			if (ledger !== undefined)
 				ledger.writeDeliveries([
@@ -340,31 +374,23 @@ export class DraftLibrary {
 		return undefined;
 	}
 
-	/** The identity whose record durably holds a submission's capture. The
-	 * pointer chain names the candidates, but a hop out of an identity
-	 * carries whatever record was there at transfer time - a later arrival
-	 * can make the latest pointer stale - so each candidate's record must
-	 * prove it holds the capture before the walk moves on. Unknown defers. */
+	/** The identity whose record durably holds a submission's capture. While
+	 * the submission is unresolved its token travels inside the record, and
+	 * every hop of that record carries it in the transfer evidence - so the
+	 * latest row carrying the token names where the record went, whatever
+	 * other work later moved through the identities along the way. The token
+	 * match at the destination proves it; unknown defers. */
 	private findCaptureOwner(origin: DraftDestination, captureToken: string): DraftDestination | undefined {
-		let at = origin;
-		for (let hops = 0; hops < TRANSFER_WALK_LIMIT; hops++) {
-			let record: DraftRecord | undefined;
-			try {
-				record = this.repository().read(at);
-			} catch {
-				return undefined;
-			}
-			if (record?.unconfirmedCaptureToken === captureToken) return at;
-			let next: DraftTransfer | undefined;
-			try {
-				next = this.repository().latestCommittedTransferFrom(at);
-			} catch {
-				return undefined;
-			}
-			if (next === undefined) return at;
-			at = next.to;
+		let hop: DraftTransfer | undefined;
+		try {
+			hop = this.repository().latestTransferCarrying(captureToken);
+		} catch {
+			return undefined;
 		}
-		return undefined;
+		// No hop carried the token: the record never moved, so the origin is
+		// where the capture lives or was cleared. The delivery's own token
+		// check turns a cleared capture into a proven-absent completion.
+		return hop === undefined ? origin : hop.to;
 	}
 
 	/** Deliver a resolved submission's completion at the identity that owns the

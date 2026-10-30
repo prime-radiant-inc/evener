@@ -188,4 +188,167 @@ describe("durable minimal handoffs", () => {
 		});
 		expect(restarted.open(c).getSnapshot().record.unconfirmed).toBeNull();
 	});
+
+	it("a completion finds its capture after the origin moved other work onward", async () => {
+		const { repository, ledger, library } = setup();
+		const a = destination("a");
+		const b = destination("b");
+		const c = destination("c");
+		repository.write(a, {
+			draft: "current",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		const live = library();
+		const source = live.open(a);
+		let finish!: () => void;
+		const submitted = source.submitBuiltinCommand(
+			() =>
+				new Promise<boolean>((resolve) => {
+					finish = () => resolve(true);
+				}),
+		);
+		const token = repository.read(a).unconfirmedCaptureToken;
+		if (token === undefined) throw new Error("missing capture token");
+		expect(live.handoff(a, b)).toBe(true);
+		// The origin is reopened with different work and resumes to C: the
+		// latest hop out of A now carries other work, not the capture.
+		repository.write(a, { draft: "other work", unconfirmed: null });
+		expect(live.handoff(a, c)).toBe(true);
+		finish();
+		await submitted;
+		// The completion still reaches the identity holding its capture.
+		expect(repository.read(b)).toMatchObject({
+			unconfirmed: null,
+			completedCommandRecoveryIds: ["recovered-a"],
+		});
+		expect(ledger.outstandingObligations()).toHaveLength(0);
+	});
+
+	it("a repeated handoff settles its committed hop instead of refusing it", () => {
+		const { repository, ledger } = setup();
+		const a = destination("a");
+		const b = destination("b");
+		repository.write(a, {
+			draft: "work",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		let deliveries = 0;
+		const failingLedger = new Proxy(ledger, {
+			get(target, property) {
+				const value = Reflect.get(target, property, target);
+				if (property === "writeDeliveries" && typeof value === "function")
+					return (...args: unknown[]) => {
+						if (deliveries++ === 0) throw new Error("deliveries write failed");
+						return (value as (...inner: unknown[]) => unknown).apply(target, args);
+					};
+				return typeof value === "function" ? (value as (...inner: unknown[]) => unknown).bind(target) : value;
+			},
+		}) as typeof ledger;
+		const live = new DraftLibrary(
+			() => repository,
+			() => "id-live",
+			() => failingLedger,
+		);
+		expect(live.handoff(a, b)).toBe(true);
+		// The hop committed; its settlement owes only the delivery records.
+		const committed = repository.outstandingTransfers();
+		expect(committed).toHaveLength(1);
+		expect(committed[0].deliveredHash).not.toBeNull();
+		// The same handoff again must settle the committed hop - never refuse
+		// against the destination its own transfer occupied.
+		expect(live.handoff(a, b)).toBe(true);
+		expect(repository.outstandingTransfers()).toHaveLength(0);
+		const pointer = repository.latestCommittedTransferFrom(a);
+		expect(pointer?.to).toMatchObject({ hubId: "hub", sessionRef: "b" });
+		expect(ledger.deliveries().length).toBeGreaterThan(0);
+	});
+
+	it("a settlement whose marker write fails stays pending and converges", () => {
+		const { repository, ledger, library } = setup();
+		const a = destination("a");
+		const b = destination("b");
+		repository.write(a, {
+			draft: "work",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		// The hop commits, but its delivery records cannot write yet, so its
+		// settlement stays owed.
+		let deliveries = 0;
+		const failingLedger = new Proxy(ledger, {
+			get(target, property) {
+				const value = Reflect.get(target, property, target);
+				if (property === "writeDeliveries" && typeof value === "function")
+					return (...args: unknown[]) => {
+						if (deliveries++ === 0) throw new Error("deliveries write failed");
+						return (value as (...inner: unknown[]) => unknown).apply(target, args);
+					};
+				return typeof value === "function" ? (value as (...inner: unknown[]) => unknown).bind(target) : value;
+			},
+		}) as typeof ledger;
+		const live = new DraftLibrary(
+			() => repository,
+			() => "id-live",
+			() => failingLedger,
+		);
+		expect(live.handoff(a, b)).toBe(true);
+		expect(repository.outstandingTransfers()).toHaveLength(1);
+		// The destination discards the transferred composition: its record no
+		// longer carries the hop's dispositions inline, so the owed settlement
+		// must write them as markers.
+		repository.write(b, { draft: "", unconfirmed: null });
+		let writesToB = 0;
+		const failing = new Proxy(repository, {
+			get(target, property) {
+				const value = Reflect.get(target, property, target);
+				if (property === "write" && typeof value === "function")
+					return (...args: unknown[]) => {
+						const to = args[0] as DraftDestination;
+						if (to.sessionRef === "b" && writesToB++ === 0) throw new Error("marker write failed");
+						return (value as (...inner: unknown[]) => unknown).apply(target, args);
+					};
+				return typeof value === "function" ? (value as (...inner: unknown[]) => unknown).bind(target) : value;
+			},
+		}) as typeof repository;
+		const retried = new DraftLibrary(
+			() => failing,
+			() => "id-retry",
+			() => ledger,
+		);
+		retried.retryPendingHandoffs();
+		// The marker write at the destination failed: the hop stays pending
+		// instead of settling over dispositions that never persisted.
+		expect(repository.outstandingTransfers()).toHaveLength(1);
+		expect(writesToB).toBe(1);
+		// A clean pass delivers the dispositions and settles the hop.
+		const restarted = library();
+		restarted.retryPendingHandoffs();
+		expect(repository.outstandingTransfers()).toHaveLength(0);
+		expect(repository.read(b).releasedRecoveryIds).toEqual(["recovered-a"]);
+	});
+
+	it("a refusal delivers completed and released markers to the occupied destination", () => {
+		const { repository, library } = setup();
+		const a = destination("a");
+		const b = destination("b");
+		repository.write(b, { draft: "b work", unconfirmed: null });
+		repository.write(a, {
+			draft: "work",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+			completedCommandRecoveryIds: ["recovered-a"],
+		});
+		const live = library();
+		expect(live.handoff(a, b)).toBe(false);
+		// The executed command's marker reaches the occupied destination along
+		// with the release, so its retargeted rows cannot restore the input.
+		expect(repository.read(b)).toMatchObject({
+			draft: "b work",
+			completedCommandRecoveryIds: ["recovered-a"],
+			releasedRecoveryIds: ["recovered-a"],
+		});
+		expect(repository.read(a)).toMatchObject({ draft: "work" });
+	});
 });
