@@ -74,6 +74,66 @@ func TestManagerWatchSetupCancellationStopsBlockedWatchWithoutRegistration(t *te
 	}
 }
 
+func TestManagerWatchSetupCancellationAfterSnapshotPreventsRegistration(t *testing.T) {
+	t.Parallel()
+	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
+	jm := root.jobManager
+	if jm == nil {
+		t.Fatal("session has no job manager")
+	}
+	jm.mu.Lock()
+	managerLocked := true
+	defer func() {
+		if managerLocked {
+			jm.mu.Unlock()
+		}
+	}()
+
+	updates := make(chan appwire.SessionWatchUpdate)
+	received := make(chan struct{})
+	update := appwire.SessionWatchUpdate{Snapshot: &appwire.ThreadReadResponse{BootGeneration: "7@worker", Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: "local:worker", InstanceID: "worker-instance"}}}, Metadata: appwire.SessionObservationMetadata{Ref: "local:worker", InstanceID: "worker-instance", GenerationID: "7@worker"}}
+	client := &managerSetupCancelClient{view: appwire.ManagerView{Ref: "local:manager", InstanceID: "manager-instance", Manager: true}, watchCtx: make(chan context.Context, 1), updates: updates}
+	root.SetHubClient(client)
+	go func() {
+		updates <- update
+		close(received)
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		_, err := root.configureHubWatchRuntime(ctx, map[string]any{"operation": "create", "hub": map[string]any{"ref": "local:worker", "events": []string{"status"}}})
+		result <- err
+	}()
+	awaitWithin(t, 10*time.Second, "client.Watch setup beginning", func() { <-client.watchCtx })
+	awaitWithin(t, 10*time.Second, "initial snapshot consumed before registration", func() { <-received })
+	cancel()
+	jm.mu.Unlock()
+	managerLocked = false
+
+	awaitWithin(t, 10*time.Second, "cancelled setup returning", func() {
+		err := <-result
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("setup error = %v, want context.Canceled", err)
+		}
+	})
+	jm.mu.Lock()
+	managerLocked = true
+	for _, cfg := range jm.watches {
+		if cfg.hubRef == "local:worker" {
+			t.Fatal("cancelled setup left a durable watch registration")
+		}
+	}
+	jm.mu.Unlock()
+	managerLocked = false
+	root.mu.Lock()
+	defer root.mu.Unlock()
+	if len(root.hubWatchCancels) != 0 {
+		t.Fatalf("cancelled setup retained %d transport subscriptions", len(root.hubWatchCancels))
+	}
+}
+
 func TestManagerWatchEstablishedSubscriptionOutlivesToolContext(t *testing.T) {
 	t.Parallel()
 	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
