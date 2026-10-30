@@ -3,7 +3,6 @@ package tool
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"math/big"
 	"strconv"
 	"strings"
@@ -118,7 +117,7 @@ func TestRegistryNumericValidationRecovery(t *testing.T) {
 	for _, constraint := range []string{`"type":"integer"`, `"minimum":0`, `"maximum":1`, `"multipleOf":1`, `"const":0`, `"enum":[0]`, `"type":"array","uniqueItems":true`} {
 		t.Run(constraint, func(t *testing.T) {
 			for _, size := range []int{2, 21} {
-				t.Run(fmt.Sprint(size), func(t *testing.T) {
+				t.Run(strconv.Itoa(size), func(t *testing.T) {
 					var property map[string]any
 					if err := json.Unmarshal([]byte(`{`+constraint+`}`), &property); err != nil {
 						t.Fatal(err)

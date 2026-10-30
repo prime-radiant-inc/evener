@@ -3,6 +3,7 @@ package tool
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -35,9 +36,9 @@ func DecodeArguments(raw []byte) (map[string]any, error) {
 		return nil, err
 	}
 	var extra any
-	if err := dec.Decode(&extra); err != io.EOF {
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
 		if err == nil {
-			err = fmt.Errorf("trailing JSON value")
+			err = errors.New("trailing JSON value")
 		}
 		return nil, err
 	}

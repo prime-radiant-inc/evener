@@ -201,7 +201,7 @@ func TestNotificationUnobservedReportAcrossCompaction(t *testing.T) {
 	})
 	wake, hint := newDrainWake()
 	root.SetNotifyFunc(hint)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	if _, err := root.DrainJobTree(ctx, wake); err != nil {
 		t.Fatal(err)

@@ -1108,7 +1108,7 @@ func TestCompletionDeliveryFailureRecovery(t *testing.T) {
 						t.Fatalf("injected append diagnostics=%+v, want initial source failure and pump retry failure", gotDiagnostics)
 					}
 					for _, diagnostic := range gotDiagnostics {
-						if diagnostic.Reason != "watch send pending state failed: controlled completion "+fault || diagnostic.JobID != failedMember.Key.ResolvedWatchedIdentity || diagnostic.WatchID != "" || diagnostic.Terminal {
+						if diagnostic.Kind != jobNotificationKindWatch || diagnostic.JobType != jobNotificationEventWatch || diagnostic.Status != jobNotificationEventWatch || diagnostic.OriginWatchID != cfg.watchID || diagnostic.callbackConfig != nil || diagnostic.JobID != failedMember.Key.ResolvedWatchedIdentity || diagnostic.WatchID != "" || diagnostic.Terminal {
 							t.Fatalf("injected append diagnostic=%+v", diagnostic)
 						}
 					}
@@ -1496,5 +1496,104 @@ func requireCallbackBatchTurnCounts(t *testing.T, turns []schema.Turn, ids []str
 		if accepted != 1 || observed != receipts {
 			t.Fatalf("ID %s accepted=%d observed=%d want1,%d", id, accepted, observed, receipts)
 		}
+	}
+}
+
+// An earlier source-budget owner belongs to the whole producer invocation,
+// including later siblings, not only its own recursive budget-notice tail.
+func TestWatchCallbackBatchOwnsBudgetThroughLaterSibling(t *testing.T) {
+	t.Parallel()
+	for _, persistent := range []bool{true, false} {
+		t.Run(fmt.Sprintf("persistent=%t", persistent), func(t *testing.T) {
+			s, adapter := newTerminalFlushSession(t, persistent)
+			jm := s.jobManager
+			first := callbackBatchWatch(t, jm, watchDeliveryBudget-1)
+			// Same-target registration is idempotent, so use a distinct real
+			// session-source watch for the later sibling.
+			watch, err := jm.configureWatch(watchArgs{Target: "*", Events: []string{"communicate"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			jm.mu.Lock()
+			_, later, found := jm.watchConfigByIDLocked(watch.WatchID)
+			jm.mu.Unlock()
+			if !found || later == first {
+				t.Fatal("later sibling must be a distinct live source watch")
+			}
+			entered, resume := make(chan struct{}), make(chan struct{})
+			release := sync.OnceFunc(func() { close(resume) })
+			var gated jobstore.WatchSendState
+			jm.mu.Lock()
+			later.testOnlyAfterCallbackPending = func(state jobstore.WatchSendState) {
+				gated = state
+				close(entered)
+				<-resume
+			}
+			jm.mu.Unlock()
+			notifications := []jobNotification{
+				{Kind: jobNotificationKindWatch, Reason: "sibling-first-731", OriginWatchID: first.watchID, callbackConfig: first, callbackTrigger: "event: COMMUNICATE"},
+				{Kind: jobNotificationKindWatch, Reason: "sibling-later-842", OriginWatchID: later.watchID, callbackConfig: later, callbackTrigger: "event: COMMUNICATE"},
+			}
+			var produced []jobNotification
+			var productionErr error
+			done := callbackBatchStart(t, release, func() {
+				produced, productionErr = jm.produceCallbackNotifications(notifications)
+			})
+			callbackBatchAwait(t, entered, "later sibling actual source commit")
+			source := producerSourceEvents(t, jm, jobstore.EventWatchSendPending)
+			if len(source) != 3 {
+				t.Fatalf("source at later sibling gate = %+v, want first firing, budget, later firing", source)
+			}
+			firing, budget, sibling := *source[0].WatchSend, *source[1].WatchSend, *source[2].WatchSend
+			if firing.Key.WatchID != first.watchID || budget.Key.WatchID != first.watchID || budget.TriggerReason != watchBudgetEndTrigger || sibling.Key.WatchID != later.watchID || sibling.DeliveryID != gated.DeliveryID || firing.DeliveryID == budget.DeliveryID {
+				t.Fatalf("unexpected actual sibling sources: %+v", source)
+			}
+			jm.mu.Lock()
+			owner := first.callbackBudgetOwner
+			jm.mu.Unlock()
+			if owner != firing.DeliveryID {
+				t.Fatalf("earlier owner while later sibling is paused = %q, want %q", owner, firing.DeliveryID)
+			}
+			if ids, err := s.pendingNotificationIDs(); err != nil || len(ids) != 0 {
+				t.Fatalf("source-only producer acquired premature custody: ids=%v err=%v", ids, err)
+			}
+			release()
+			callbackBatchAwait(t, done, "whole sibling producer return")
+			jm.mu.Lock()
+			owner = first.callbackBudgetOwner
+			// The gated invocation has joined. Later provider response events
+			// are not part of this source-production pause.
+			later.testOnlyAfterCallbackPending = nil
+			jm.mu.Unlock()
+			if productionErr != nil || len(produced) != 3 || owner != "" {
+				t.Fatalf("returned producer: err=%v produced=%d owner=%q", productionErr, len(produced), owner)
+			}
+			jm.dispatchProducedWatchSends()
+			want := []string{stableWatchAttentionID(firing), stableWatchAttentionID(budget), stableWatchAttentionID(sibling)}
+			ids, err := s.pendingNotificationIDs()
+			// This direct source producer has no completion-delivery production.
+			// The later live registration can drain before the detached first one.
+			slices.Sort(ids)
+			slices.Sort(want)
+			if err != nil || !slices.Equal(ids, want) {
+				t.Fatalf("sibling receiver custody=%v want exact source IDs=%v err=%v", ids, want, err)
+			}
+			for _, state := range []jobstore.WatchSendState{firing, budget, sibling} {
+				requireWatchSettlement(t, jm, state, 1)
+				requireCallbackBatchSource(t, s, state)
+			}
+			adapter.steps = []func(llm.Request) llm.Response{func(request llm.Request) llm.Response {
+				requireCallbackBatchRequest(t, s, request, want)
+				requireCallbackBatchReceipts(t, s, want, 0)
+				return finalResponse("sibling-owner-receipt-483")
+			}}
+			if _, err := s.ProcessInputKind(t.Context(), "", nil, EntryNotification); err != nil {
+				t.Fatal(err)
+			}
+			requireCallbackBatchReceipts(t, s, want, 1)
+			if len(adapter.Requests()) != 1 {
+				t.Fatalf("actual provider requests=%d want1", len(adapter.Requests()))
+			}
+		})
 	}
 }

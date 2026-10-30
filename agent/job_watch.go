@@ -6747,6 +6747,16 @@ func (jm *jobManager) enqueueWatchNotifications(notifications []jobNotification)
 }
 
 func (jm *jobManager) produceCallbackNotifications(notifications []jobNotification) ([]jobNotification, error) {
+	type callbackBudgetRelease struct {
+		cfg        *watchConfig
+		deliveryID string
+	}
+	var releases []callbackBudgetRelease
+	defer func() {
+		for _, release := range slices.Backward(releases) {
+			jm.releaseCallbackBudgetOwner(release.cfg, release.deliveryID)
+		}
+	}()
 	var produced []jobNotification
 	var errs []error
 	for _, n := range notifications {
@@ -6777,7 +6787,7 @@ func (jm *jobManager) produceCallbackNotifications(notifications []jobNotificati
 		d.frame = (&Session{}).formatJobNotificationReminder([]deliverableJobNotification{{notification: n}})
 		// This call retains ownership through recursive notice source production,
 		// including every failure return. Nested or older producers cannot release it.
-		defer jm.releaseCallbackBudgetOwner(cfg, d.deliveryID)
+		releases = append(releases, callbackBudgetRelease{cfg: cfg, deliveryID: d.deliveryID})
 		_, _, ok, notice, err := jm.recordWatchSendForBatch(d)
 		if ok {
 			produced = append(produced, n)

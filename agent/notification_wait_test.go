@@ -363,7 +363,7 @@ func TestNotificationResumesYieldedWait(t *testing.T) {
 					claimFenced <- !unlocked
 				}
 			})
-			ctx, cancel := context.WithCancel(context.Background())
+			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			if _, err := root.ProcessInput(ctx, "start-71", nil); err != nil {
 				t.Fatal(err)

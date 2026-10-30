@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
+	"path/filepath"
 	"reflect"
 	"runtime/pprof"
 	"sort"
@@ -81,12 +83,108 @@ func TestDelegateRuntimeReclaim_SubtreeWithANeverRunMemberIsRefused(t *testing.T
 }
 
 func TestDelegateRuntimeReclaim_ClosesPostorderAfterUnlock(t *testing.T) {
+	// Serial: this fixture owns the process-wide logger until all retries drain.
+	logged := &reclaimLogCapture{Handler: slog.NewTextHandler(io.Discard, nil)}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(logged))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	snapshot := func() []slog.Record {
+		logged.mu.Lock()
+		defer logged.mu.Unlock()
+		return append([]slog.Record(nil), logged.records...)
+	}
 	c, _ := newDelegateControllerTestHarness(t, 8, 4)
+	clk := agenttest.NewFakeClock()
+	root := &Session{delegateController: c, clock: clk}
+	c.rootRuntime = root
+	sessionIDs := make(map[string]string)
+	checkDiagnostics := func(records []slog.Record) {
+		t.Helper()
+		if len(records) != 4 {
+			t.Errorf("initial diagnostics = %d, want exactly four", len(records))
+		}
+		restored := make(map[string]string)
+		woken := make(map[string]error)
+		for _, record := range records {
+			if record.Level != slog.LevelWarn {
+				t.Errorf("diagnostic level = %v, want WARN", record.Level)
+			}
+			attrs := make(map[string]any)
+			var keys []string
+			record.Attrs(func(attr slog.Attr) bool {
+				keys = append(keys, attr.Key)
+				attrs[attr.Key] = attr.Value.Any()
+				return true
+			})
+			sort.Strings(keys)
+			switch {
+			case reflect.DeepEqual(keys, []string{"action", "delegate", "error", "session"}):
+				action, actionOK := attrs["action"].(string)
+				session, sessionOK := attrs["session"].(string)
+				id, idOK := attrs["delegate"].(string)
+				cause, causeOK := attrs["error"].(string)
+				_, duplicate := restored[id]
+				if !actionOK || action == "" || !sessionOK || session != root.ID() || !idOK ||
+					(id != "dlg_child" && id != "dlg_parent") || !causeOK || duplicate {
+					t.Errorf("unexpected restore diagnostic attributes: %#v", attrs)
+				}
+				restored[id] = cause
+			case reflect.DeepEqual(keys, []string{"error", "session_id"}):
+				id, idOK := attrs["session_id"].(string)
+				cause, causeOK := attrs["error"].(error)
+				_, duplicate := woken[id]
+				if !idOK || (id != sessionIDs["dlg_child"] && id != sessionIDs["dlg_parent"]) || !causeOK || duplicate {
+					t.Errorf("unexpected wake diagnostic attributes: %#v", attrs)
+				}
+				var pathErr *fs.PathError
+				if !errors.Is(cause, fs.ErrNotExist) || !errors.As(cause, &pathErr) ||
+					pathErr.Path != filepath.Join(c.stateDir, sessionsSubdir, id+".transcript.jsonl") {
+					t.Errorf("wake cause for %q = %v, want typed missing transcript at its source path", id, cause)
+				}
+				woken[id] = cause
+			default:
+				t.Errorf("unexpected diagnostic attributes: %#v", attrs)
+			}
+		}
+		for _, id := range []string{"dlg_child", "dlg_parent"} {
+			text, restoredOK := restored[id]
+			cause, wokenOK := woken[sessionIDs[id]]
+			if !restoredOK || !wokenOK || cause == nil || text != cause.Error() {
+				t.Errorf("unpaired restore/wake cause for %s: restore=%q wake=%v", id, text, cause)
+			}
+		}
+	}
+	// Registered after the harness so retries drain before its store/temp cleanup.
+	t.Cleanup(func() {
+		before := snapshot()
+		if err := c.Close(context.Background()); err != nil {
+			t.Errorf("controller Close: %v", err)
+		}
+		c.mu.Lock()
+		closing := c.closing
+		c.mu.Unlock()
+		if !closing {
+			t.Error("controller did not enter closing state")
+		}
+		if got := clk.PendingCallbacks(); got != 2 {
+			t.Errorf("callbacks after Close = %d, want two armed retries", got)
+		}
+		clk.Advance(jobNotificationRetryMaxDelay)
+		clk.Drain()
+		if got := clk.PendingCallbacks(); got != 0 {
+			t.Errorf("callbacks after drain = %d, want zero", got)
+		}
+		after := snapshot()
+		if !reflect.DeepEqual(after, before) {
+			t.Error("Close/drain produced additional diagnostics")
+		}
+		checkDiagnostics(after)
+	})
 	c.maxRetainedTerminal = 2
 	parent := seedDelegateReclaimRuntime(t, c, "dlg_parent", "", time.Unix(10, 0).UTC(), false, false)
 	child := seedDelegateReclaimRuntime(t, c, "dlg_child", "dlg_parent", time.Unix(20, 0).UTC(), false, false)
-	root := &Session{delegateController: c}
-	c.rootRuntime = root
+	sessionIDs["dlg_parent"] = parent.ID()
+	sessionIDs["dlg_child"] = child.ID()
 	byRuntime := map[*Session]string{parent: "dlg_parent", child: "dlg_child"}
 	var closed []string
 	root.cfg.testOnly.delegateRuntimeReclaimClose = func(runtime *Session) {
@@ -106,6 +204,10 @@ func TestDelegateRuntimeReclaim_ClosesPostorderAfterUnlock(t *testing.T) {
 	}
 	if !reflect.DeepEqual(closed, []string{"dlg_child", "dlg_parent"}) {
 		t.Fatalf("close order = %v, want postorder [dlg_child dlg_parent]", closed)
+	}
+	checkDiagnostics(snapshot())
+	if got := clk.PendingCallbacks(); got != 2 {
+		t.Fatalf("callbacks before Close = %d, want two real retries", got)
 	}
 }
 

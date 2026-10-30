@@ -1654,7 +1654,7 @@ func TestDelegateUpdateArrivingMidTurnIsNotRerunWhenTheMarkerCannotBeWritten(t *
 	})
 	traceUpdateFixture(t, root, a)
 	serveSupervisionRootWakes(t, root)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	if _, err := root.ProcessInput(ctx, "start", nil); err != nil {
 		t.Fatal(err)

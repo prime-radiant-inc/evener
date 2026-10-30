@@ -226,7 +226,7 @@ func (p *watchCustodyProof) observe(t *testing.T, state jobstore.WatchSendState)
 	// The wire-only delivery_id field is intentionally absent from the model's
 	// frame. Preserve all other source data, including its trigger provenance.
 	var content []string
-	for _, line := range strings.Split(state.Frame, "\n") {
+	for line := range strings.SplitSeq(state.Frame, "\n") {
 		if !strings.HasPrefix(line, "delivery_id:") {
 			content = append(content, line)
 		}
