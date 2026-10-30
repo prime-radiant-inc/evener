@@ -125,7 +125,7 @@ export function ComicMarkdown({ document, part }: { document: ComicMarkdownDocum
   useLayoutEffect(() => {
     const element = root.current;
     if (!element) return;
-    return !part.plain && part.kind !== "code" && thread?.cwd && sourcePaneId
+    return part.kind !== "code" && thread?.cwd && sourcePaneId
       ? enhanceFileReferences(element, {
           sessionRef: thread.ref,
           cwd: thread.cwd,

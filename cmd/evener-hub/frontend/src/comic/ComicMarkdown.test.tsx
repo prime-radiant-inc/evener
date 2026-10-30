@@ -12,6 +12,92 @@ import { publishComicPaneCoverage } from "./comicPaneCoverage";
 import { composeComicRows } from "./layout";
 import { projectComicMarkdown } from "./markdown";
 
+test("plain Comic filenames retain child authority through text and context updates", () => {
+  resetWorkspaceStoreForTests();
+  const rootRef = "local:034MXwo6BpPH0QQCgdICSf";
+  const childRef = "remote:034MXwo6BpPH0QQCgdICSg";
+  const child = hydrateThread({ thread: wireThread(childRef) }, childRef, 0);
+  const ownerId = workspaceStore.getState().openPane("session", { ref: rootRef });
+  const owner = workspaceStore.getState().panes.find((pane) => pane.id === ownerId);
+  if (!owner) throw new Error("missing containing pane");
+  const retire = publishComicPaneCoverage(owner, rootRef, [childRef]);
+  const decoy = workspaceStore.getState().openPane("session", { ref: childRef });
+  const view = (source: string, cwd: string) => {
+    const document = projectComicMarkdown(source, false);
+    expect(document.parts).toHaveLength(1);
+    expect(document.parts[0]?.plain).toBe(true);
+    return (
+      <TranscriptRenderProvider thread={{ ...child, cwd }} sourcePaneId={ownerId}>
+        {document.parts.map((part) => (
+          <ComicMarkdown key={part.start} document={document} part={part} />
+        ))}
+      </TranscriptRenderProvider>
+    );
+  };
+  const initial = "Saved report to docs/result.md";
+  const rendered = render(view(initial, "/workspace/child"));
+  const host = rendered.container.querySelector<HTMLElement>("[data-comic-markdown]");
+  if (!host) throw new Error("missing plain prose host");
+  const probe = ranges(rendered.container.ownerDocument);
+  try {
+    for (const [source, path, cwd] of [
+      [initial, "docs/result.md", "/workspace/child"],
+      ["Updated report at docs/updated.md", "docs/updated.md", "/workspace/child"],
+      ["Updated report at docs/updated.md", "docs/updated.md", "/relocated/child"],
+      ["Updated report at docs/updated.md", "docs/updated.md", ""],
+      ["Updated report at docs/updated.md", "docs/updated.md", "/relocated/child"],
+      ["No file remains", undefined, "/relocated/child"],
+      [initial, "docs/result.md", "/relocated/child"],
+    ] as const) {
+      rendered.rerender(view(source, cwd));
+      expect(rendered.container.querySelector("[data-comic-markdown]")).toBe(host);
+      expect(host.textContent).toBe(source);
+      expect(host.querySelectorAll("[data-entity-host], [data-file-action]")).toHaveLength(0);
+      for (let offset = 0; offset < source.length; offset++) {
+        comicMarkdownPoint(host, offset);
+        expect(probe.last?.toString()).toBe(source[offset]);
+        expect(probe.last?.startContainer.isConnected).toBe(true);
+        expect(host.contains(probe.last?.startContainer ?? null)).toBe(true);
+      }
+      const links = host.querySelectorAll("a");
+      expect(links).toHaveLength(path && cwd ? 1 : 0);
+      if (!path || !cwd) continue;
+      const anchor = links[0];
+      if (!anchor) throw new Error("missing plain filename link");
+      const url = new URL(anchor.href);
+      expect(url.pathname).toBe("/doc/file");
+      expect(Object.fromEntries(url.searchParams)).toEqual({
+        format: "raw",
+        session: childRef,
+        path: `${cwd}/${path}`,
+      });
+      comicMarkdownPoint(host, source.indexOf(path));
+      expect(probe.last?.startContainer).toBe(anchor.firstChild);
+      expect(probe.last?.startOffset).toBe(0);
+      workspaceStore.getState().focusPane(decoy);
+      expect(fireEvent.click(anchor)).toBe(false);
+      const doc = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+      expect(doc?.params).toEqual({ session: childRef, path, kind: "file" });
+      expect(doc && documentPaneState(doc)?.reference).toMatchObject({ cwd, readTarget: `${cwd}/${path}` });
+      expect(doc && documentPaneState(doc)?.origin).toBe(owner);
+      expect(workspaceStore.getState().focusedPaneId).toBe(doc?.id);
+      if (doc) workspaceStore.getState().closePane(doc.id);
+    }
+    rendered.rerender(
+      <TranscriptRenderProvider thread={{ ...child, cwd: "/relocated/child" }} sourcePaneId={ownerId}>
+        {formatted(`\`\`\`txt\n${initial}\n\`\`\``)}
+      </TranscriptRenderProvider>,
+    );
+    expect(rendered.container.querySelector('[data-comic-markdown="code"]')).not.toBeNull();
+    expect(rendered.container.querySelectorAll("a")).toHaveLength(0);
+  } finally {
+    probe.spy.mockRestore();
+    rendered.unmount();
+    retire();
+    resetWorkspaceStoreForTests();
+  }
+});
+
 test("cached child Markdown acquires source-owned file links when live cwd arrives", () => {
   const ref = "local:child";
   const cached = threadModelFromCache(
