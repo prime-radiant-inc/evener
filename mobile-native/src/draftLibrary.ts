@@ -1,24 +1,54 @@
-import { DraftDocument } from "./draftDocument";
-import type { DraftDestination, DraftRepository } from "./draftRepository";
+import {
+	type DraftCompletionDelivery,
+	type CompletionDeliveryOutcome,
+	DraftDocument,
+	captureInFlight,
+	submissionBeginUnrecorded,
+	mergeCompletion,
+	messageAdmissionCapture,
+} from "./draftDocument";
+import { type DraftDestination, type DraftRecord, type DraftRepository, type DraftTransfer } from "./draftRepository";
+import {
+	clearsCapture,
+	type DraftSubmissionLedgerSQLite,
+	type DraftSubmissionObligation,
+} from "./draftSubmissionLedger";
 
 export type DraftStorage = Pick<
 	DraftRepository,
-	"read" | "write" | "transfer" | "removeHub" | "imageInputs" | "refsWithDrafts"
+	| "read"
+	| "write"
+	| "transfer"
+	| "removeHub"
+	| "imageInputs"
+	| "refsWithDrafts"
+	| "beginTransfer"
+	| "outstandingTransfers"
+	| "latestCommittedTransferFrom"
+	| "hasPendingTransferTo"
+	| "forgetTransfer"
+	| "markTransferSettled"
 >;
+
+/** How many committed hops a completion may follow toward the record's current
+ * owner. A walk past the cap defers - it never guesses. */
+const TRANSFER_WALK_LIMIT = 16;
 
 /** One document per destination keeps pending work coherent across navigation. */
 export class DraftLibrary {
 	private hubs = new Map<string, Map<string, DraftDocument>>();
-	/** A handoff whose destination write has not committed yet. Retrying after
-	 * storage recovers keeps the moved recovery rows and their draft together. */
-	private pending = new Map<string, { from: DraftDestination; to: DraftDestination }>();
 	/** Documents retired by a handoff, kept per hub so hub removal still
 	 * invalidates a source the live document map no longer holds. */
 	private retired = new Map<string, Set<DraftDocument>>();
+	/** Only a drafts store too broken to record the durable pending row falls
+	 * back to this: the durable handoff state lives in draft_transfer_log. */
+	private pending = new Map<string, { from: DraftDestination; to: DraftDestination }>();
+	private obligationListeners = new Set<() => void>();
 	constructor(
 		private repository: () => DraftStorage,
 		private createImageId: () => string = () =>
 			`reissue-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
+		private submissionLedger?: () => DraftSubmissionLedgerSQLite,
 	) {}
 
 	open(destination: DraftDestination): DraftDocument {
@@ -29,7 +59,16 @@ export class DraftLibrary {
 		}
 		let document = sessions.get(destination.sessionRef);
 		if (!document) {
-			document = new DraftDocument(this.repository, destination, this.createImageId);
+			document = new DraftDocument(
+				this.repository,
+				destination,
+				this.createImageId,
+				undefined,
+				undefined,
+				this.submissionLedger,
+				(completion) => this.deliverCompletion(completion),
+				() => this.noteObligationResolved(),
+			);
 			sessions.set(destination.sessionRef, document);
 		}
 		return document;
@@ -37,105 +76,415 @@ export class DraftLibrary {
 
 	/** Hand a destination's complete draft, image bytes and settlement markers
 	 * to the identity a resume resolved to, before the replacement screen opens.
-	 * An already-open destination adopts the record into its live snapshot, and
-	 * an in-flight submission on the retired document settles through it. Only
-	 * an empty destination may take the handoff; existing work is left alone. */
+	 * The intent is durable before any bytes move: a restart finds the pending
+	 * hop in the transfer log and finishes it. An already-open destination
+	 * adopts the record into its live snapshot, and an in-flight submission on
+	 * the retired document settles through the ledger. Only an empty
+	 * destination may take the handoff; existing work is a permanent refusal. */
 	handoff(from: DraftDestination, to: DraftDestination): boolean {
 		if (from.hubId === to.hubId && from.sessionRef === to.sessionRef) return true;
-		const source = this.open(from);
+		let transfer: DraftTransfer | undefined;
+		try {
+			transfer = this.repository()
+				.outstandingTransfers()
+				.find((row) => sameDestination(row.from, from) && sameDestination(row.to, to));
+			if (transfer === undefined) transfer = this.repository().beginTransfer(from, to, this.createTransferId());
+		} catch {
+			// The drafts store cannot record the hop; keep the in-memory intent
+			// so a later call retries once the store is reachable.
+			this.deferHandoff(from, to);
+			return false;
+		}
+		this.pending.delete(this.handoffKey(to));
+		return this.attemptHandoff(transfer);
+	}
+
+	/** Retry what previous calls or previous processes left unfinished: the
+	 * ledger writes live and retired documents still owe, the pending hops, and
+	 * the completions of resolved obligations. Every step is idempotent, so a
+	 * pass that finds nothing to do costs only bounded outstanding reads. */
+	retryPendingHandoffs(): void {
+		for (const document of this.allDocuments()) document.flushObligationResolutions();
+		// Hops the drafts store could not even record: the in-memory intent
+		// retries first, recording the durable row once the store answers.
+		for (const { from, to } of [...this.pending.values()]) this.handoff(from, to);
+		let transfers: DraftTransfer[];
+		try {
+			transfers = this.repository().outstandingTransfers();
+		} catch {
+			transfers = [];
+		}
+		for (const transfer of transfers) {
+			if (transfer.deliveredHash === null) this.attemptHandoff(transfer);
+			else this.settleTransfer(transfer);
+		}
+		this.reconcileResolvedObligations();
+	}
+
+	/** Whether a transfer is still on its way into this destination. Unknown
+	 * when the store cannot answer: unknown pendingness is not no-pending. */
+	hasPendingHandoff(to: DraftDestination): boolean | undefined {
+		if (this.pending.has(this.handoffKey(to))) return true;
+		try {
+			return this.repository().hasPendingTransferTo(to);
+		} catch {
+			return undefined;
+		}
+	}
+
+	/** The recovery ids this identity must not restore: the input of every
+	 * submission still running whose origin or durable capture sits here.
+	 * Undefined when ownership cannot be read - unknown is not empty. */
+	openObligationRecoveryIds(endpoint: DraftDestination): ReadonlySet<string> | undefined {
+		const ledger = this.availableSubmissionLedger();
+		if (ledger === undefined) return undefined;
+		let obligations: DraftSubmissionObligation[];
+		try {
+			obligations = ledger.outstandingObligations();
+		} catch {
+			return undefined;
+		}
+		const ids = new Set<string>();
+		for (const obligation of obligations) {
+			if (obligation.state !== "open") continue;
+			if (sameDestination(obligation.origin, endpoint)) {
+				for (const id of obligation.recoveryIds) ids.add(id);
+				continue;
+			}
+		}
+		// A capture this endpoint durably holds belongs to whatever submission
+		// owns it, wherever that submission began.
+		let record: DraftRecord | undefined;
+		try {
+			record = this.repository().read(endpoint);
+		} catch {
+			return undefined;
+		}
+		if (record !== undefined) {
+			for (const obligation of obligations) {
+				if (obligation.state === "open" && record.unconfirmedCaptureToken === obligation.obligationId)
+					for (const id of obligation.recoveryIds) ids.add(id);
+			}
+			// A begin that never durably recorded still owns its capture: the
+			// ledger cannot show it, so only this check keeps its sources
+			// suppressed. A failed operation's capture is not suppressed -
+			// its input stays restorable.
+			if (record.unconfirmedCaptureToken !== undefined && submissionBeginUnrecorded(record.unconfirmedCaptureToken))
+				for (const id of record.unconfirmedComposer?.recoveryIds ?? []) ids.add(id);
+		}
+		return ids;
+	}
+
+	/** Subscribe to obligation resolutions - completed, not-sent, or failed -
+	 * so a mounted screen re-runs the reconciliation a resolution unblocks. */
+	onObligationTransition(listener: () => void): () => void {
+		this.obligationListeners.add(listener);
+		return () => {
+			this.obligationListeners.delete(listener);
+		};
+	}
+
+	private noteObligationResolved(): void {
+		for (const listener of this.obligationListeners) listener();
+	}
+
+	private createTransferId(): string {
+		return `transfer-${this.createImageId()}`;
+	}
+
+	/** One attempt at a durably intended hop. Transient failures leave the
+	 * row pending for the next pass; only a committed transfer or a proven
+	 * occupied destination takes the row out of the pending set. */
+	private attemptHandoff(transfer: DraftTransfer): boolean {
+		const source = this.open(transfer.from);
 		let snapshot = source.getSnapshot();
 		if (!snapshot.loaded) {
 			source.retry();
 			snapshot = source.getSnapshot();
 		}
-		if (!snapshot.loaded) {
-			this.deferHandoff(from, to);
-			return false;
-		}
-		const destination = this.open(to);
+		if (!snapshot.loaded) return false;
+		const destination = this.open(transfer.to);
 		let current = destination.getSnapshot();
 		if (!current.loaded || current.error !== null) {
-			// A failed load is transient: retry it before deciding, and keep the
-			// pending handoff so a later retry can still transfer the composition.
 			destination.retry();
 			current = destination.getSnapshot();
 		}
-		if (!current.loaded || current.error !== null || current.submitting) {
-			this.deferHandoff(from, to);
+		if (!current.loaded || current.error !== null || current.submitting) return false;
+		if (occupied(current.record)) {
+			this.refuseHandoff(transfer, source, destination);
 			return false;
 		}
-		const existing = current.record;
-		if (
-			existing.draft !== "" ||
-			(existing.images?.length ?? 0) > 0 ||
-			(existing.unconfirmedImages?.length ?? 0) > 0 ||
-			existing.unconfirmed !== null ||
-			(existing.composer?.recoveryIds?.length ?? 0) > 0 ||
-			(existing.unconfirmedComposer?.recoveryIds?.length ?? 0) > 0 ||
-			(existing.parkedCompositions?.length ?? 0) > 0 ||
-			(existing.composer?.skillNames?.length ?? 0) > 0 ||
-			(existing.unconfirmedComposer?.skillNames?.length ?? 0) > 0 ||
-			(existing.composer?.commandNames?.length ?? 0) > 0 ||
-			(existing.unconfirmedComposer?.commandNames?.length ?? 0) > 0 ||
-			existing.recoveryResendAcks?.length ||
-			existing.completedCommandRecoveryIds?.length ||
-			existing.releasedRecoveryIds?.length
-		) {
-			// Existing destination work is a permanent refusal, never a retry.
-			this.releaseRefusedSources(source, destination);
-			this.pending.delete(this.handoffKey(to));
-			return false;
-		}
+		// The retry always moves the source's current record: work composed
+		// after the first attempt travels with the hop instead of being
+		// stranded at the old identity, and no stale snapshot is ever
+		// transferred over newer source work.
 		const images = [
 			...(snapshot.record.images ?? []),
 			...(snapshot.record.unconfirmedImages ?? []),
 			...(snapshot.record.parkedCompositions ?? []).flatMap((parked) => parked.images ?? []),
 		];
-		let additions;
 		try {
-			additions = images.map((image) => {
+			const additions = images.map((image) => {
 				const data = source.imagePreviews([image])[0]?.data;
 				if (!data) throw new Error("Saved image is unavailable.");
 				return { ...image, data };
 			});
-			this.repository().transfer(from, to, snapshot.record, additions);
+			this.repository().transfer(transfer.from, transfer.to, snapshot.record, additions, {
+				transferId: transfer.transferId,
+				deliveredHash: compositionFingerprint(snapshot.record),
+				completedCommandRecoveryIds: snapshot.record.completedCommandRecoveryIds ?? [],
+				releasedRecoveryIds: releasedSources(snapshot.record),
+			});
 		} catch {
-			this.deferHandoff(from, to);
 			return false;
 		}
-		this.pending.delete(this.handoffKey(to));
+		this.pending.delete(this.handoffKey(transfer.to));
 		destination.adopt(snapshot.record);
 		if (destination !== source) {
-			source.retireInto(destination);
-			this.rememberRetired(from.hubId, source);
-			const sessions = this.hubs.get(from.hubId);
-			if (sessions?.get(from.sessionRef) === source) sessions.delete(from.sessionRef);
+			source.retire();
+			this.rememberRetired(transfer.from.hubId, source);
+			const sessions = this.hubs.get(transfer.from.hubId);
+			if (sessions?.get(transfer.from.sessionRef) === source) sessions.delete(transfer.from.sessionRef);
 		}
+		// The hop's dispositions are owed to whoever owns the record now.
+		this.settleTransfer({ ...transfer, deliveredHash: compositionFingerprint(snapshot.record) });
 		return true;
 	}
 
-	/** Retry a handoff whose storage write failed. A destination that gained
-	 * work in the meantime owns it, so its pending retry is dropped. */
-	retryPendingHandoffs(): void {
-		for (const { from, to } of [...this.pending.values()]) this.handoff(from, to);
-	}
-
-	hasPendingHandoff(to: DraftDestination): boolean {
-		return this.pending.has(this.handoffKey(to));
-	}
-
-	private deferHandoff(from: DraftDestination, to: DraftDestination): void {
-		this.pending.set(this.handoffKey(to), { from, to });
-	}
-
-	private releaseRefusedSources(source: DraftDocument, destination: DraftDocument): void {
+	/** An occupied destination is a permanent refusal: nothing moved, so the
+	 * row goes away entirely and can never pose as a pointer. The refused
+	 * composition's cited sources are released at the destination durably; a
+	 * failed release leaves the row pending so the next pass converges it. */
+	private refuseHandoff(transfer: DraftTransfer, source: DraftDocument, destination: DraftDocument): void {
 		const record = source.getSnapshot().record;
 		const ids = [
 			...(record.composer?.recoveryIds ?? []),
 			...(record.unconfirmedComposer?.recoveryIds ?? []),
 			...(record.parkedCompositions ?? []).flatMap((parked) => parked.composer?.recoveryIds ?? []),
 		];
-		if (ids.length) destination.releaseRecoverySources(ids);
+		try {
+			if (ids.length) destination.releaseRecoverySources(ids);
+			const ledger = this.availableSubmissionLedger();
+			if (ledger !== undefined && ids.length)
+				ledger.writeDeliveries(
+					ids.map((recoveryId) => ({
+						destination: transfer.to,
+						recoveryId,
+						disposition: "released" as const,
+						transferId: transfer.transferId,
+					})),
+				);
+			this.repository().forgetTransfer(transfer.transferId);
+			this.pending.delete(this.handoffKey(transfer.to));
+		} catch {
+			// The refusal stays pending until its writes commit.
+		}
+	}
+
+	/** A committed hop is settled when its dispositions are durably delivered
+	 * to the identity that owns the record now - the destination, or wherever
+	 * later hops carried it. Unreadable ownership defers; a settled row never
+	 * comes back. */
+	private settleTransfer(transfer: DraftTransfer): boolean {
+		if (transfer.deliveredHash === null) return false;
+		// The dispositions belong to the record this row moved: it landed at
+		// the row's destination, and later hops from there carried it onward.
+		const owner = this.recordOwner(transfer.to);
+		if (owner === undefined) return false;
+		const document = this.open(owner);
+		try {
+			if (transfer.completedCommandRecoveryIds.length)
+				document.adoptCompletedCommandRecovery(transfer.completedCommandRecoveryIds);
+			if (transfer.releasedRecoveryIds.length) document.releaseRecoverySources(transfer.releasedRecoveryIds);
+			const ledger = this.availableSubmissionLedger();
+			if (ledger !== undefined)
+				ledger.writeDeliveries([
+					...transfer.completedCommandRecoveryIds.map((recoveryId) => ({
+						destination: owner,
+						recoveryId,
+						disposition: "completed" as const,
+						transferId: transfer.transferId,
+					})),
+					...transfer.releasedRecoveryIds
+						.filter((recoveryId) => !transfer.completedCommandRecoveryIds.includes(recoveryId))
+						.map((recoveryId) => ({
+							destination: owner,
+							recoveryId,
+							disposition: "released" as const,
+							transferId: transfer.transferId,
+						})),
+				]);
+			this.repository().markTransferSettled(transfer.transferId);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	/** The identity that owns the record that started at `start`: follow the
+	 * latest committed hop out of each identity, at most TRANSFER_WALK_LIMIT
+	 * of them. A hop that never committed moved nothing and is not a pointer.
+	 * Unknown defers - the caller never guesses an owner. */
+	private recordOwner(start: DraftDestination): DraftDestination | undefined {
+		let at = start;
+		for (let hops = 0; hops < TRANSFER_WALK_LIMIT; hops++) {
+			let next: DraftTransfer | undefined;
+			try {
+				next = this.repository().latestCommittedTransferFrom(at);
+			} catch {
+				return undefined;
+			}
+			if (next === undefined) return at;
+			at = next.to;
+		}
+		return undefined;
+	}
+
+	/** The identity whose record durably holds a submission's capture. The
+	 * pointer chain names the candidates, but a hop out of an identity
+	 * carries whatever record was there at transfer time - a later arrival
+	 * can make the latest pointer stale - so each candidate's record must
+	 * prove it holds the capture before the walk moves on. Unknown defers. */
+	private findCaptureOwner(origin: DraftDestination, captureToken: string): DraftDestination | undefined {
+		let at = origin;
+		for (let hops = 0; hops < TRANSFER_WALK_LIMIT; hops++) {
+			let record: DraftRecord | undefined;
+			try {
+				record = this.repository().read(at);
+			} catch {
+				return undefined;
+			}
+			if (record?.unconfirmedCaptureToken === captureToken) return at;
+			let next: DraftTransfer | undefined;
+			try {
+				next = this.repository().latestCommittedTransferFrom(at);
+			} catch {
+				return undefined;
+			}
+			if (next === undefined) return at;
+			at = next.to;
+		}
+		return undefined;
+	}
+
+	/** Deliver a resolved submission's completion at the identity that owns the
+	 * record now. The obligation names the origin; the transfer pointers name
+	 * the owner. A delivery that lands - or provably finds the capture already
+	 * gone, with every read successful - acknowledges the obligation so the
+	 * routine pass never revisits it. */
+	private deliverCompletion(completion: DraftCompletionDelivery): CompletionDeliveryOutcome {
+		const ledger = this.availableSubmissionLedger();
+		if (ledger === undefined) return "unowned";
+		let obligation: DraftSubmissionObligation | undefined;
+		try {
+			obligation = ledger.obligationById(completion.captureToken);
+		} catch {
+			return "unreadable";
+		}
+		if (obligation === undefined || !clearsCapture(obligation.state)) return "unreadable";
+		const owner = this.findCaptureOwner(obligation.origin, completion.captureToken);
+		if (owner === undefined) return "unreadable";
+		const outcome = this.deliverCompletionAt(owner, completion);
+		if (outcome === "delivered" || outcome === "unowned") {
+			try {
+				ledger.acknowledgeApplied(completion.captureToken);
+			} catch {
+				// The pass re-delivers and re-acknowledges.
+			}
+		}
+		return outcome;
+	}
+
+	/** Merge a completion into the live document at the owner when one is
+	 * open, else into its persisted record. Reads that fail are unknown, never
+	 * proof the capture is gone. */
+	private deliverCompletionAt(owner: DraftDestination, completion: DraftCompletionDelivery): CompletionDeliveryOutcome {
+		const open = this.hubs.get(owner.hubId)?.get(owner.sessionRef);
+		const live = open?.getSnapshot();
+		if (open !== undefined && live?.loaded) {
+			if (open.adoptCompletion(completion)) return "delivered";
+			// The adoption's own save can fail after the in-memory merge: the
+			// errored live document retries the completion through its own
+			// persistence path instead of a direct write behind it.
+			if (open.getSnapshot().error !== null) return open.mergeCompletionThroughLiveState(completion);
+		}
+		let current: DraftRecord;
+		try {
+			current = this.repository().read(owner);
+		} catch {
+			return "unreadable";
+		}
+		if (current.unconfirmedCaptureToken !== completion.captureToken) return "unowned";
+		// A recovered message's capture settles through its resend receipt,
+		// which the receipt-acknowledging coordinator clears.
+		if (messageAdmissionCapture(completion, current)) return "delivered";
+		try {
+			this.repository().write(owner, mergeCompletion(current, completion));
+		} catch {
+			return "unreadable";
+		}
+		return "delivered";
+	}
+
+	/** The recovery pass over unresolved obligations: open ones abandoned by a
+	 * previous process release their obsolete in-flight ownership while their
+	 * uncertain input stays recoverable; resolved ones get their completion
+	 * delivered at the record's current owner. Nothing here reads history the
+	 * partial index has already priced out. */
+	private reconcileResolvedObligations(): void {
+		const ledger = this.availableSubmissionLedger();
+		if (ledger === undefined) return;
+		let obligations: DraftSubmissionObligation[];
+		try {
+			obligations = ledger.outstandingObligations();
+		} catch {
+			return;
+		}
+		for (const obligation of obligations) {
+			if (obligation.state === "open") {
+				// This process holds its own in-flight submissions; anything
+				// else was abandoned by a process that died mid-submission.
+				if (captureInFlight(obligation.obligationId)) continue;
+				try {
+					ledger.resolveSubmission(obligation.obligationId, "failed", [], []);
+				} catch {
+					// The store is failing; the next pass retries.
+				}
+				continue;
+			}
+			if (!clearsCapture(obligation.state)) continue;
+			const outcome = this.deliverCompletion({
+				captureToken: obligation.obligationId,
+				state: obligation.state === "completed" ? "completed" : "not-sent",
+				completedCommandIds: obligation.completedCommandIds,
+				releasedRecoveryIds: obligation.releasedRecoveryIds,
+			});
+			if (outcome === "delivered" || outcome === "unowned") {
+				try {
+					ledger.acknowledgeApplied(obligation.obligationId);
+				} catch {
+					// The next pass re-acknowledges.
+				}
+			}
+		}
+	}
+
+	private availableSubmissionLedger(): DraftSubmissionLedgerSQLite | undefined {
+		try {
+			return this.submissionLedger?.();
+		} catch {
+			return undefined;
+		}
+	}
+
+	private allDocuments(): DraftDocument[] {
+		const documents = [...[...this.hubs.values()].flatMap((sessions) => [...sessions.values()])];
+		for (const set of this.retired.values()) documents.push(...set);
+		return documents;
+	}
+
+	private deferHandoff(from: DraftDestination, to: DraftDestination): void {
+		this.pending.set(this.handoffKey(to), { from, to });
 	}
 
 	private rememberRetired(hubId: string, document: DraftDocument): void {
@@ -167,4 +516,62 @@ export class DraftLibrary {
 			this.hubs.delete(hubId);
 		}
 	}
+}
+
+function sameDestination(a: DraftDestination, b: DraftDestination): boolean {
+	return a.hubId === b.hubId && a.sessionRef === b.sessionRef;
+}
+
+/** Existing destination work is a permanent refusal, never a retry. */
+function occupied(record: DraftRecord): boolean {
+	return (
+		record.draft !== "" ||
+		(record.images?.length ?? 0) > 0 ||
+		(record.unconfirmedImages?.length ?? 0) > 0 ||
+		record.unconfirmed !== null ||
+		(record.composer?.recoveryIds?.length ?? 0) > 0 ||
+		(record.unconfirmedComposer?.recoveryIds?.length ?? 0) > 0 ||
+		(record.parkedCompositions?.length ?? 0) > 0 ||
+		(record.composer?.skillNames?.length ?? 0) > 0 ||
+		(record.unconfirmedComposer?.skillNames?.length ?? 0) > 0 ||
+		(record.composer?.commandNames?.length ?? 0) > 0 ||
+		(record.unconfirmedComposer?.commandNames?.length ?? 0) > 0 ||
+		!!record.recoveryResendAcks?.length ||
+		!!record.completedCommandRecoveryIds?.length ||
+		!!record.releasedRecoveryIds?.length
+	);
+}
+
+/** The recovery ids a record's composition still cites, plus the ones prior
+ * settlements marked released: the dispositions a hop's transfer carries. */
+function releasedSources(record: DraftRecord): string[] {
+	return [
+		...new Set([
+			...(record.releasedRecoveryIds ?? []),
+			...(record.composer?.recoveryIds ?? []),
+			...(record.unconfirmedComposer?.recoveryIds ?? []),
+			...(record.parkedCompositions ?? []).flatMap((parked) => parked.composer?.recoveryIds ?? []),
+		]),
+	];
+}
+
+/** A stable identity for a composition, independent of the settlement markers
+ * and captures the destination's later life can change. */
+function compositionFingerprint(record: DraftRecord): string {
+	const canonical = JSON.stringify({
+		draft: record.draft,
+		images: (record.images ?? []).map((image) => [image.id, image.marker, image.mediaType]),
+		composer: record.composer?.recoveryIds ?? [],
+		parked: (record.parkedCompositions ?? []).map((parked) => [
+			parked.text,
+			parked.composer?.recoveryIds ?? [],
+			(parked.images ?? []).map((image) => image.id),
+		]),
+	});
+	let hash = 2166136261;
+	for (let index = 0; index < canonical.length; index++) {
+		hash ^= canonical.charCodeAt(index);
+		hash = Math.imul(hash, 16777619);
+	}
+	return `${(hash >>> 0).toString(16)}-${canonical.length}`;
 }

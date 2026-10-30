@@ -59,51 +59,90 @@ function clearMatchingCapture(document: DraftDocument, token: string | undefined
 
 // Serialize fresh proof reads with this document's local reconciliation. A later
 // call must observe the ownership left by its predecessor, including a failure.
-const reconciliations = new WeakMap<DraftDocument, Promise<void>>();
+const reconciliations = new WeakMap<DraftDocument, Promise<ReconciliationOutcome>>();
+
+/** The reconciliation's outcome. "deferred" when an ownership read came back
+ * unknown and left the capture's settle or restore owed to a later run - the
+ * caller schedules that run instead of leaving the deferral to some unrelated
+ * refresh. */
+export type ReconciliationOutcome = "complete" | "deferred";
 
 export async function reconcileEditedResends(
 	runtime: NativeMutationRuntime,
 	targetKey: string,
 	document: DraftDocument,
-): Promise<void> {
+	ownership: () => ReadonlySet<string> | undefined = () => new Set<string>(),
+): Promise<ReconciliationOutcome> {
 	const previous = reconciliations.get(document);
 	const current = (previous ?? Promise.resolve())
 		.catch(() => undefined)
-		.then(async () => {
-			if (!ready(document, targetKey)) return;
+		.then(async (): Promise<ReconciliationOutcome> => {
+			if (!ready(document, targetKey)) return "complete";
 			const completedIds = [...(document.getSnapshot().record.completedCommandRecoveryIds ?? [])];
 			if (completedIds.length) {
 				for (const id of completedIds) await runtime.discardRecovery(id, targetKey);
-				if (!ready(document, targetKey) || !document.finishCompletedCommandRecovery(completedIds)) return;
+				if (!ready(document, targetKey) || !document.finishCompletedCommandRecovery(completedIds)) return "complete";
 			}
 			// Markers survive capture clearing, and receipt acknowledgment is idempotent.
 			for (const id of document.getSnapshot().record.recoveryResendAcks ?? []) {
 				await runtime.acknowledgeRecoveryResend(targetKey, id);
-				if (!document.finishRecoveryResendAck(id)) return;
+				if (!document.finishRecoveryResendAck(id)) return "complete";
 			}
-			if (!ready(document, targetKey)) return;
+			if (!ready(document, targetKey)) return "complete";
 			const sourceIds = document.getSnapshot().record.unconfirmedComposer?.recoveryIds;
-			if (!sourceIds?.length) return;
+			if (!sourceIds?.length) return "complete";
+			// A source whose submission is still running on this chain belongs to
+			// the ledger's open obligation until it completes. Restoring or
+			// settling it here would clear the capture the completion needs to
+			// attach, so an open obligation owns this whole capture: skip the
+			// restore-capable steps and let the completion reconcile it.
+			// Ownership is read here, inside the serialized operation, never
+			// trusted from queue time: a handoff can adopt a running
+			// command's capture into this document while this reconciliation
+			// waits behind its predecessor.
+			let ownershipUnknown = false;
+			const excluded = ownership();
+			if (excluded === undefined) {
+				// Unknown ownership deferred this reconciliation: report it, so
+				// the caller schedules the retry instead of waiting on the user.
+				return "deferred";
+			}
+			if (sourceIds.some((id) => excluded.has(id))) return "complete";
+			// Ownership and capture identity are revalidated across the reads
+			// below: a capture that changed hands or changed identity
+			// mid-flight is never restored or settled here.
+			const captureToken = document.getSnapshot().record.unconfirmedCaptureToken;
+			const stale = () => {
+				const record = document.getSnapshot().record;
+				if (record.unconfirmedCaptureToken !== captureToken) return true;
+				const now = ownership();
+				if (now === undefined) {
+					ownershipUnknown = true;
+					return true;
+				}
+				return sourceIds.some((id) => now.has(id));
+			};
 			const receipt = await runtime.readRecoveryResend(targetKey, sourceIds);
-			if (!ready(document, targetKey)) return;
+			if (!ready(document, targetKey) || stale()) return ownershipUnknown ? "deferred" : "complete";
 			if (receipt) {
 				// The captured owner and acknowledgment marker commit together in drafts.
 				// Never acknowledge mutation storage before that write succeeds.
-				if (!document.settleEditedResend(receipt)) return;
+				if (!document.settleEditedResend(receipt)) return "complete";
 				await runtime.acknowledgeRecoveryResend(targetKey, receipt.clientMutationId);
 				document.finishRecoveryResendAck(receipt.clientMutationId);
-				return;
+				return "complete";
 			}
 			// Neither a missing receipt nor outbox absence proves non-admission. Only
 			// freshly retained ALL-source recovery records authorize restoring the capture.
 			const retained = (await runtime.read(targetKey)).recovery.filter((source) =>
 				sourceIds.includes(source.clientMutationId),
 			);
-			if (ready(document, targetKey)) document.restoreEditedRecovery(retained);
+			if (ready(document, targetKey) && !stale()) document.restoreEditedRecovery(retained);
+			return ownershipUnknown ? "deferred" : "complete";
 		});
 	reconciliations.set(document, current);
 	try {
-		await current;
+		return await current;
 	} finally {
 		if (reconciliations.get(document) === current) reconciliations.delete(document);
 	}

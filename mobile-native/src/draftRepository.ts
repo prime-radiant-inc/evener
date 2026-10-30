@@ -44,9 +44,31 @@ export interface DraftDestination {
 	sessionRef: string;
 }
 
+export type DraftTransferState = "pending" | "settled" | "refused";
+
+/** One handoff hop's durable evidence, written in the transfer's own savepoint.
+ * The row exists from the moment the handoff is intended: `deliveredHash` is
+ * null while the transfer has not committed, and carries the composition
+ * fingerprint once it has, so a restart can tell "never landed" from "landed,
+ * settlement owed". The from→to pair is also the forward pointer a completion
+ * follows to find the identity that owns the record now. */
+export interface DraftTransfer {
+	transferId: string;
+	from: DraftDestination;
+	to: DraftDestination;
+	state: DraftTransferState;
+	deliveredHash: string | null;
+	completedCommandRecoveryIds: string[];
+	releasedRecoveryIds: string[];
+	createdAt: number;
+}
+
 export class DraftRepository {
 	readonly creation: CreationDraftRepository;
-	constructor(private readonly db: SqliteSync) {
+	constructor(
+		private readonly db: SqliteSync,
+		private readonly now: () => number = Date.now,
+	) {
 		this.creation = new CreationDraftRepository(db);
 		db.execSync(`CREATE TABLE IF NOT EXISTS draft_images (
       hub_id TEXT NOT NULL, session_ref TEXT NOT NULL, id TEXT NOT NULL,
@@ -86,6 +108,108 @@ export class DraftRepository {
       hub_id TEXT NOT NULL, session_ref TEXT NOT NULL, question_key TEXT NOT NULL,
       PRIMARY KEY (hub_id, session_ref)
     )`);
+		db.execSync(`CREATE TABLE IF NOT EXISTS draft_transfer_log (
+      transfer_id TEXT PRIMARY KEY,
+      from_hub_id TEXT NOT NULL, from_ref TEXT NOT NULL,
+      to_hub_id TEXT NOT NULL, to_ref TEXT NOT NULL,
+      state TEXT NOT NULL,
+      delivered_hash TEXT,
+      completed_command_recovery_ids TEXT NOT NULL DEFAULT '[]',
+      released_recovery_ids TEXT NOT NULL DEFAULT '[]',
+      created_at INTEGER NOT NULL,
+      state_changed_at INTEGER NOT NULL
+    )`);
+		// Created once; nothing later drops or rebuilds them. The outstanding
+		// pass prices in pending hops only, and the pointer walk and the
+		// pending-destination check read by identity, never by scan.
+		db.execSync(
+			`CREATE INDEX IF NOT EXISTS draft_transfer_log_outstanding
+      ON draft_transfer_log (created_at) WHERE state = 'pending'`,
+		);
+		db.execSync(
+			`CREATE INDEX IF NOT EXISTS draft_transfer_log_from
+      ON draft_transfer_log (from_hub_id, from_ref, created_at)`,
+		);
+		db.execSync(
+			`CREATE INDEX IF NOT EXISTS draft_transfer_log_to
+      ON draft_transfer_log (to_hub_id, to_ref, created_at)`,
+		);
+	}
+
+	/** Record a handoff hop as intended, before any bytes move. Until the
+	 * transfer commits it is the durable pending handoff a restart retries. */
+	beginTransfer(from: DraftDestination, to: DraftDestination, transferId: string): DraftTransfer {
+		const at = this.now();
+		this.db.runSync(
+			`INSERT INTO draft_transfer_log
+      (transfer_id, from_hub_id, from_ref, to_hub_id, to_ref, state, created_at, state_changed_at)
+    VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)`,
+			transferId,
+			from.hubId,
+			from.sessionRef,
+			to.hubId,
+			to.sessionRef,
+			at,
+			at,
+		);
+		return {
+			transferId,
+			from,
+			to,
+			state: "pending",
+			deliveredHash: null,
+			completedCommandRecoveryIds: [],
+			releasedRecoveryIds: [],
+			createdAt: at,
+		};
+	}
+
+	/** The pending handoff hops, oldest first: the retry pass's whole diet. */
+	outstandingTransfers(): DraftTransfer[] {
+		return this.db
+			.getAllSync<TransferRow>(`SELECT * FROM draft_transfer_log WHERE state = 'pending' ORDER BY created_at, rowid`)
+			.map((row) => this.mapTransfer(row));
+	}
+
+	/** The latest committed hop out of an identity: the forward pointer a
+	 * completion follows toward the record's current owner. A row whose
+	 * transfer never committed moved nothing, so it is not a pointer. */
+	latestCommittedTransferFrom(from: DraftDestination): DraftTransfer | undefined {
+		const row = this.db.getFirstSync<TransferRow>(
+			`SELECT * FROM draft_transfer_log
+      WHERE from_hub_id = ? AND from_ref = ? AND delivered_hash IS NOT NULL
+      ORDER BY created_at DESC LIMIT 1`,
+			from.hubId,
+			from.sessionRef,
+		);
+		return row === null ? undefined : this.mapTransfer(row);
+	}
+
+	/** Whether a transfer is still on its way into this destination. */
+	hasPendingTransferTo(to: DraftDestination): boolean {
+		const row = this.db.getFirstSync<{ found: number }>(
+			`SELECT 1 AS found FROM draft_transfer_log
+      WHERE to_hub_id = ? AND to_ref = ? AND state = 'pending' LIMIT 1`,
+			to.hubId,
+			to.sessionRef,
+		);
+		return row !== null;
+	}
+
+	/** A hop whose destination proved occupied never moved anything: its row
+	 * goes away so no later walk or retry treats it as evidence. */
+	forgetTransfer(transferId: string): void {
+		this.db.runSync("DELETE FROM draft_transfer_log WHERE transfer_id = ?", transferId);
+	}
+
+	/** A hop is settled once its dispositions are durably delivered. */
+	markTransferSettled(transferId: string): void {
+		this.db.runSync(
+			`UPDATE draft_transfer_log SET state = 'settled', state_changed_at = ?
+      WHERE transfer_id = ?`,
+			this.now(),
+			transferId,
+		);
 	}
 
 	readQuestionPosition(destination: DraftDestination, keys: string[]): string | undefined {
@@ -296,10 +420,34 @@ export class DraftRepository {
 	}
 
 	/** Move one destination's complete draft, image bytes and settlement
-	 * markers to another in one savepoint. The source is removed only after the
-	 * destination write commits, so a failed handoff leaves both recoverable. */
-	transfer(from: DraftDestination, to: DraftDestination, record: DraftRecord, additions: DraftImageData[] = []): void {
+	 * markers to another in one savepoint, recording the hop's evidence in the
+	 * same savepoint so it can never lag the move. The source is removed only
+	 * after the destination write commits, so a failed handoff leaves both
+	 * recoverable. */
+	transfer(
+		from: DraftDestination,
+		to: DraftDestination,
+		record: DraftRecord,
+		additions: DraftImageData[] = [],
+		evidence?: {
+			transferId: string;
+			deliveredHash: string;
+			completedCommandRecoveryIds?: readonly string[];
+			releasedRecoveryIds?: readonly string[];
+		},
+	): void {
 		withSavepoint(this.db, "draft_transfer", () => {
+			if (evidence !== undefined)
+				this.db.runSync(
+					`UPDATE draft_transfer_log SET delivered_hash = ?,
+      completed_command_recovery_ids = ?, released_recovery_ids = ?, state_changed_at = ?
+    WHERE transfer_id = ?`,
+					evidence.deliveredHash,
+					JSON.stringify(evidence.completedCommandRecoveryIds ?? []),
+					JSON.stringify(evidence.releasedRecoveryIds ?? []),
+					this.now(),
+					evidence.transferId,
+				);
 			this.write(to, record, additions);
 			this.remove(from);
 		});
@@ -391,11 +539,48 @@ export class DraftRepository {
 
 	removeHub(hubId: string): void {
 		this.creation.clear(hubId);
+		this.db.runSync("DELETE FROM draft_transfer_log WHERE from_hub_id = ? OR to_hub_id = ?", hubId, hubId);
 		this.db.runSync("DELETE FROM draft_image_sets WHERE hub_id = ?", hubId);
 		this.db.runSync("DELETE FROM draft_images WHERE hub_id = ?", hubId);
 		this.db.runSync("DELETE FROM drafts WHERE hub_id = ?", hubId);
 		this.db.runSync("DELETE FROM question_drafts WHERE hub_id = ?", hubId);
 		this.db.runSync("DELETE FROM question_positions WHERE hub_id = ?", hubId);
+	}
+
+	private mapTransfer(row: TransferRow): DraftTransfer {
+		return {
+			transferId: row.transfer_id,
+			from: { hubId: row.from_hub_id, sessionRef: row.from_ref },
+			to: { hubId: row.to_hub_id, sessionRef: row.to_ref },
+			state: row.state as DraftTransferState,
+			deliveredHash: row.delivered_hash,
+			completedCommandRecoveryIds: decodeIdList(row.completed_command_recovery_ids),
+			releasedRecoveryIds: decodeIdList(row.released_recovery_ids),
+			createdAt: row.created_at,
+		};
+	}
+}
+
+interface TransferRow {
+	transfer_id: string;
+	from_hub_id: string;
+	from_ref: string;
+	to_hub_id: string;
+	to_ref: string;
+	state: string;
+	delivered_hash: string | null;
+	completed_command_recovery_ids: string | null;
+	released_recovery_ids: string | null;
+	created_at: number;
+}
+
+function decodeIdList(raw: string | null): string[] {
+	if (raw === null) return [];
+	try {
+		const parsed: unknown = JSON.parse(raw);
+		return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : [];
+	} catch {
+		return [];
 	}
 }
 

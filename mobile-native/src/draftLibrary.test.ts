@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { DraftSubmissionLedgerSQLite } from "./draftSubmissionLedger";
 import { DraftLibrary } from "./draftLibrary";
 import { type DraftDestination, DraftRepository } from "./draftRepository";
 import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
@@ -11,7 +12,22 @@ function setup() {
 	const { database: db, port } = openSqliteSyncDouble();
 	databases.push(db);
 	const repository = new DraftRepository(port);
-	return { library: new DraftLibrary(() => repository), repository, db };
+	const { database: ledgerDb, port: ledgerPort } = openSqliteSyncDouble();
+	databases.push(ledgerDb);
+	let next = 0;
+	const ledger = new DraftSubmissionLedgerSQLite(ledgerPort, {
+		now: () => 1000,
+	});
+	return {
+		library: new DraftLibrary(
+			() => repository,
+			() => `id-${++next}`,
+			() => ledger,
+		),
+		repository,
+		db,
+		ledger,
+	};
 }
 
 describe("drafts across navigation", () => {
@@ -224,6 +240,12 @@ describe("drafts across navigation", () => {
 			},
 			write: repository.write.bind(repository),
 			transfer: repository.transfer.bind(repository),
+			beginTransfer: repository.beginTransfer.bind(repository),
+			outstandingTransfers: repository.outstandingTransfers.bind(repository),
+			latestCommittedTransferFrom: repository.latestCommittedTransferFrom.bind(repository),
+			hasPendingTransferTo: repository.hasPendingTransferTo.bind(repository),
+			forgetTransfer: repository.forgetTransfer.bind(repository),
+			markTransferSettled: repository.markTransferSettled.bind(repository),
 			removeHub: repository.removeHub.bind(repository),
 			imageInputs: repository.imageInputs.bind(repository),
 			refsWithDrafts: repository.refsWithDrafts.bind(repository),
