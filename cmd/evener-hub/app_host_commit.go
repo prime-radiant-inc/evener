@@ -205,6 +205,7 @@ func (m *hubHostManager) compensationChange(plan *hostCommitPlan) hostPersistCha
 		// The staged re-add spent the generation and presence epoch its entry
 		// carries, whatever the store's marks say now.
 		change.restore, change.restoreSpent = m.consumedRestore(marker, plan.Name, HostGeneration{Generation: plan.Entry.Generation, PresenceEpoch: plan.Entry.PresenceEpoch})
+		change.restoreName = plan.Name
 	}
 	return change
 }
@@ -215,16 +216,20 @@ func (m *hubHostManager) compensationChange(plan *hostCommitPlan) hostPersistCha
 // generation and presence epoch the re-add spent stay spent: they are returned
 // separately, for the name's high-water mark.
 func (m *hubHostManager) consumedRestore(marker HostStagedReceipt, name string, spent HostGeneration) (*HostConsumedRecords, HostGeneration) {
-	consumed := marker.Consumed
-	if consumed == nil {
+	if scope, ok := parseHostReceiptScopedKey(marker.Key); !ok || scope.Kind != hostMutationAdd {
 		return nil, HostGeneration{}
 	}
-	restore := *consumed
 	if held, ok := m.cfg.store.highWaterSnapshot()[name]; ok {
 		spent.Generation = max(spent.Generation, held.Generation)
 		spent.PresenceEpoch = max(spent.PresenceEpoch, held.PresenceEpoch)
 	}
 	spent.Generation = max(spent.Generation, marker.Provisional.Generation)
+	if marker.Consumed == nil {
+		// Nothing was purged to make room (the removal's tombstone had expired),
+		// but the add still spent its counters.
+		return nil, spent
+	}
+	restore := *marker.Consumed
 	return &restore, spent
 }
 

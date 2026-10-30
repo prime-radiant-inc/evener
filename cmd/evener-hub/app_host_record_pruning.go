@@ -267,6 +267,7 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 		records.droppedAttempts = map[string]struct{}{}
 	}
 	prunedBefore := maps.Clone(records.prunedReceipts)
+	attemptsBefore := maps.Clone(records.attempts)
 	for key, receipt := range change.carryReceipts {
 		if _, carried := records.receipts[key]; !carried {
 			records.receipts[key] = receipt
@@ -304,6 +305,12 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 				records.droppedMarkers[key] = struct{}{}
 			}
 		}
+		for id, attempt := range restore.Attempts {
+			if _, held := records.attempts[id]; !held {
+				records.attempts[id] = attempt
+				delete(records.droppedAttempts, id)
+			}
+		}
 		for key, marker := range restore.Pruned {
 			if _, held := records.prunedReceipts[key]; !held {
 				records.prunedReceipts[key] = marker
@@ -314,6 +321,15 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 			if _, held := records.remnants[id]; !held {
 				records.remnants[id] = remnant
 			}
+		}
+	}
+	if change.restore == nil && change.restoreName != "" {
+		// A rolled-back add with no tombstone to give back still spent its
+		// counters: an existing mark rises to them.
+		if mark, ok := records.highWater[change.restoreName]; ok {
+			mark.Generation = max(mark.Generation, change.restoreSpent.Generation)
+			mark.PresenceEpoch = max(mark.PresenceEpoch, change.restoreSpent.PresenceEpoch)
+			records.highWater[change.restoreName] = mark
 		}
 	}
 	if change.dropStoreSync != "" {
@@ -479,29 +495,38 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 	// same atomic write (§6: "every `hub.toml` mutation and every boot
 	// compacts markers past either bound in the same atomic write").
 	m.compactPrunedMarkers(records, now)
-	if marker, staging := records.stagedReceipts[protectedMarker]; staging && marker.Consumed != nil {
-		// The re-add this write stages consumed receipts and may have pushed
-		// replay guards out of a full marker set doing it; rolling it back gives
-		// them all back.
-		// What an earlier write of this staging already saved stays saved, and
-		// the marker's record is copied before it changes.
-		consumed := *marker.Consumed
-		consumed.Pruned = maps.Clone(consumed.Pruned)
-		if evicted := removedEntries(prunedBefore, records.prunedReceipts); len(evicted) != 0 {
-			if consumed.Pruned == nil {
-				consumed.Pruned = map[string]PrunedReceiptMarker{}
-			}
-			maps.Copy(consumed.Pruned, evicted)
-		}
-		marker.Consumed = &consumed
-		records.stagedReceipts[protectedMarker] = marker
-	}
 	// The teardown-repair records compact last for the same reason the markers
 	// do: a purge above drops whole names' remnants, and those drops must meet
 	// their bounds in this same atomic write (§6: every `hub.toml` mutation and
 	// every boot compacts past either bound in the same atomic write).
 	m.compactTeardownRecords(records, now)
+	if marker, staging := records.stagedReceipts[protectedMarker]; staging && marker.Consumed != nil {
+		// The re-add this write stages consumed receipts, remnants and their
+		// attempts, and may have pushed replay guards out of a full marker set
+		// doing it; rolling it back gives them all back. What an earlier write of
+		// this staging already saved stays saved, and the marker's record is
+		// copied before it changes.
+		consumed := *marker.Consumed
+		consumed.Pruned = mergeEvicted(consumed.Pruned, removedEntries(prunedBefore, records.prunedReceipts))
+		consumed.Attempts = mergeEvicted(consumed.Attempts, removedEntries(attemptsBefore, records.attempts))
+		marker.Consumed = &consumed
+		records.stagedReceipts[protectedMarker] = marker
+	}
 	return records, nil
+}
+
+// mergeEvicted returns saved plus evicted as a map of its own, nil when both are
+// empty.
+func mergeEvicted[V any](saved, evicted map[string]V) map[string]V {
+	if len(saved) == 0 && len(evicted) == 0 {
+		return nil
+	}
+	merged := maps.Clone(saved)
+	if merged == nil {
+		merged = map[string]V{}
+	}
+	maps.Copy(merged, evicted)
+	return merged
 }
 
 // purgeNameTeardownRecords drops one name's resolved remnants and every staged

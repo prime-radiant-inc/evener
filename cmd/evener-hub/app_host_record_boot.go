@@ -482,6 +482,7 @@ func (m *hubHostManager) rollBackUnlandedCommits(doc hostRecordDocument) map[str
 			change.dropTombstone = name
 		}
 		change.restore, change.restoreSpent = m.consumedRestore(marker, name, HostGeneration{})
+		change.restoreName = name
 		// A name that still holds a removal tombstone is the collision rule's to
 		// settle; keeping it out of this write keeps its tombstone beside no
 		// live entry, which the records refuse.

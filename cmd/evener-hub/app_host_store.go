@@ -77,6 +77,8 @@ type hostPersistChange struct {
 	// restoreSpent is the generation and presence epoch the rolled-back re-add
 	// spent; the name's high-water mark keeps them above the restored tombstone.
 	restoreSpent HostGeneration
+	// restoreName is the name those counters belong to.
+	restoreName string
 	// storeSync, when set, is the cross-file commit intent this write carries
 	// (deploy-pipeline 08b §9): a removal's staged write stages the exact store
 	// rows it is about to purge. dropStoreSync names a host whose intent this

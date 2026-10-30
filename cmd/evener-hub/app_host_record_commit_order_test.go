@@ -2024,3 +2024,88 @@ func TestSpentCountersOfAnExpiredNameReachTheManagerAfterARefusal(t *testing.T) 
 		t.Fatalf("an unrelated write lowered the spent counters: %+v, it spent %+v", mark, spent)
 	}
 }
+
+// TestBootRollbackOfAnUnlandedReAddGivesBackTheRepairAttemptsItPurged pins the
+// teardown history of a removal that was repaired before its host came back: the
+// re-add's staging write purges the resolved remnant and its attempt records, and
+// rolling the re-add back returns both.
+func TestBootRollbackOfAnUnlandedReAddGivesBackTheRepairAttemptsItPurged(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, store := hub.boot(t, false)
+	m.testOnlyTeardown = func(context.Context, string) error { return errors.New("injected teardown failure") }
+	removal, err := m.RemoveResult(context.Background(), removeRequest(t, m, "side"))
+	if err != nil || removal.HostMutationTeardownFailureRemoved == nil {
+		t.Fatalf("Remove(side) = (%+v, %v), want the teardown-failure arm", removal, err)
+	}
+	m.testOnlyTeardown = nil
+	if _, err := m.TeardownRetry(context.Background(), appwire.HostTeardownRetryParams{RemnantID: removal.HostMutationTeardownFailureRemoved.RemnantID}); err != nil {
+		t.Fatalf("TeardownRetry: %v", err)
+	}
+	before := mustRecords(t, store)
+	if len(before.TeardownAttempts) == 0 {
+		t.Fatal("the repair left no attempt record")
+	}
+	m, _ = hub.boot(t, true)
+	unlanded := fileBytes(t, hub.configPath)
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() {
+		_, _ = m.AddResult(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "again.example"}, MutationID: "re-add-side"})
+	})
+	if err := os.WriteFile(hub.configPath, unlanded, 0o600); err != nil {
+		t.Fatalf("put the pre-mutation hub.toml back: %v", err)
+	}
+
+	_, store = hub.boot(t, true)
+
+	got := mustRecords(t, store)
+	for id := range before.TeardownAttempts {
+		if _, kept := got.TeardownAttempts[id]; !kept {
+			t.Fatalf("the rolled-back re-add left repair attempt %q purged", id)
+		}
+	}
+}
+
+// TestAReAddAfterTheTombstoneExpiredKeepsItsSpentCountersWhenStagingIsUnconfirmed
+// covers the staging write that reached hub.toml with its directory sync failing
+// for a name whose tombstone is gone: no consumed record exists to carry the
+// counters, and the compensation must not write the older mark back over them.
+func TestAReAddAfterTheTombstoneExpiredKeepsItsSpentCountersWhenStagingIsUnconfirmed(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	store, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	doc := hostBootDocument(mustLoadConfig(t, hub.configPath), store)
+	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
+	if err != nil {
+		t.Fatalf("hostreg.NewSeeded: %v", err)
+	}
+	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: hub.configPath,
+		HostTombstoneRetention: time.Nanosecond,
+	}, hub.configPath, hosts, t.Logf)
+	if _, err := m.RemoveResult(context.Background(), removeRequest(t, m, "side")); err != nil {
+		t.Fatalf("remove side: %v", err)
+	}
+	if _, err := m.AddResult(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "first", Address: "first.example"}, MutationID: "add-first",
+	}); err != nil {
+		t.Fatalf("add first: %v", err)
+	}
+	before := mustRecords(t, store)
+	if _, tombstoned := before.Tombstones["side"]; tombstoned {
+		t.Fatal("the fixture's tombstone did not expire")
+	}
+	flakyHubTOMLDirSync(t, func(call int) bool { return call == 1 })
+
+	if _, err := m.AddResult(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "side", Address: "again.example"}, MutationID: "re-add-side",
+	}); err == nil {
+		t.Fatal("the re-add succeeded although its host file sync failed")
+	}
+
+	after := mustRecords(t, store).Generations["side"]
+	if after.Generation <= before.Generations["side"].Generation || after.PresenceEpoch <= before.Generations["side"].PresenceEpoch {
+		t.Fatalf("the refused re-add forgot the counters it spent: %+v, was %+v", after, before.Generations["side"])
+	}
+}
