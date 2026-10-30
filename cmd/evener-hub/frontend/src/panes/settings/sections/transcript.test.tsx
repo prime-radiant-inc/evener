@@ -8,6 +8,7 @@ import {
   toWireConfig,
   WireError,
 } from "@evener/appwire-client";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -93,16 +94,6 @@ function renderWithToasts() {
       <Toast />
     </>,
   );
-}
-
-function deferred<T>(): { promise: Promise<T>; resolve(value: T): void; reject(error: unknown): void } {
-  let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((next, fail) => {
-    resolve = next;
-    reject = fail;
-  });
-  return { promise, resolve, reject };
 }
 
 async function mountReadySection(

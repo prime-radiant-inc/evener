@@ -1,3 +1,4 @@
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { appliedReceipt } from "../mutationReceiptTestUtils";
 import { connectFakeClient } from "../testing/connectionTestUtils";
 import { ALL_CAPABILITIES as CAPABILITIES, type TestThreadOverrides, testThread } from "../threadTestUtils";
@@ -1498,16 +1499,6 @@ describe("useThreadsStore.loadOlderTurns", () => {
     expect(model?.olderCursor).toBe("cursor_0");
   });
 });
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, resolve, reject };
-}
 
 describe("retry-safe mutation outbox integration", () => {
   test("send resolves from the local commit while a lost response leaves one durable intent", async () => {

@@ -1,4 +1,5 @@
 import { evaluate, navigateTo } from "../../../browserGuardCdp.mjs";
+import { appendSourcePointDiagnostic } from "./sourcePointDiagnostics.mjs";
 
 const frame = (send) => evaluate(send, "new Promise(resolve => requestAnimationFrame(resolve))");
 
@@ -60,7 +61,7 @@ function sessionGeometry() {
   };
 }
 
-async function readerGestures(send, width) {
+async function readerGestures(send, width, blockedFonts) {
   const evidence=[];
   for(const gesture of width<900?['wheel','touch']:['wheel']) {
     const before=await evaluate(send, `(() => {
@@ -93,7 +94,7 @@ async function readerGestures(send, width) {
       throw Error('reader gesture did not retain movement '+JSON.stringify({width,gesture,before,after:await evaluate(send,`(() => {const port=document.querySelector('[data-comic-scroll]').firstElementChild;return {top:port.scrollTop,max:port.scrollHeight-port.clientHeight,saved:sessionStorage.getItem('evener:comic:position:local:comic-geometry'),events:window.comicReaderInput};})()`)}));
     }
     if(!after.events.every(event=>event.trusted)||!after.events.some(event=>event.type===(gesture==='wheel'?'wheel':'touchmove')))throw Error('reader gesture was not trusted '+JSON.stringify(after));
-    const earlyPopup=gesture==='touch'?await earlyAppearancePopup(send,after.saved):undefined;
+    const earlyPopup=gesture==='touch'?await earlyAppearancePopup(send,after.saved,{width,blockedFonts}):undefined;
     const stop=gesture==='touch'?await stopReaderTouch(send):undefined;
     evidence.push({gesture,before,after,earlyPopup,stop});
   }
@@ -133,16 +134,22 @@ function savedSourcePoint(expected) {
   return null;
 }
 
-async function earlyAppearancePopup(send, expected) {
+export async function earlyAppearancePopup(send, expected, stage) {
   // The finger has lifted, but its native fling may still update the source.
   // Keep the identity/offset fixed and independently check each current y.
-  const source=()=>until(send,`(${savedSourcePoint})(${JSON.stringify(expected)})`);
+  const source=async(phase)=> {
+    try { return await until(send,`(${savedSourcePoint})(${JSON.stringify(expected)})`); }
+    catch(error) {
+      await appendSourcePointDiagnostic(error,send,expected,{...stage,phase});
+      throw error;
+    }
+  };
   const before=await evaluate(send,appearanceSnapshot());
-  const sourceBefore=await source();
+  const sourceBefore=await source('before-open');
   const popup=await openAndDismissAppearance(send,620);
   const after=await evaluate(send,appearanceSnapshot());
   if(before.draft!==after.draft||before.height!==after.height)throw Error('early Appearance changed draft/reader height '+JSON.stringify({before,after}));
-  const sourceAfter=await source();
+  const sourceAfter=await source('after-dismiss');
   return {popup,before,after,sourceBefore,sourceAfter};
 }
 
@@ -307,7 +314,7 @@ export default async function assert(_measurement, { page }) {
     checkSession("restored native session", restored);
     evidence.push({ width, native, model, toolbar, restored });
     if(width<900)await replaceDraft(send,`EARLY_DRAFT_${width}`);
-    try { evidence.push({width,gestures:await readerGestures(send,width)}); }
+    try { evidence.push({width,gestures:await readerGestures(send,width,blockedFonts)}); }
     catch(error) { failures.push(error.message); }
 
     // Keyboard boundary simulation, not physical Safari coverage. The layout
