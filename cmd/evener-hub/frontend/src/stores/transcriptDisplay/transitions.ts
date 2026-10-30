@@ -6,6 +6,7 @@ import {
   type ViewportClass,
 } from "@evener/appwire-client";
 import { transitionTranscriptViews } from "../../panes/session/transcript/flow/transcriptViewRegistry";
+import { prepareConversationHandoff } from "../conversationClaimHandoff";
 
 interface EffectiveLayers {
   viewport: ViewportClass;
@@ -28,6 +29,7 @@ export function publishEffectiveTransition(
   targetLayout: ViewportClass,
   force = false,
 ): void {
+  if (before.viewport !== after.viewport) prepareConversationHandoff(after.viewport);
   const beforeConfig = effectiveForLayers(before, before.viewport);
   const afterConfig = effectiveForLayers(after, after.viewport);
   const afterFingerprint = configFingerprint(afterConfig);

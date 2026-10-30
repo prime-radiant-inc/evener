@@ -5,7 +5,7 @@
 import type { AppwireClientLike, NavigationSessionLocation } from "@evener/appwire-client";
 import { ACTIONS } from "@evener/appwire-client";
 import { isNavigationUnavailable, isSettledGone } from "@evener/appwire-client/state/navigation";
-import { useEffect, useReducer, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
 import { keybindingsRegistry } from "../keybindings/appRegistry";
 import { isEditableTarget } from "../keybindings/dispatcher";
 import { MotionProvider } from "../motion";
@@ -17,6 +17,7 @@ import { zoomParamsCoverConversation } from "../panes/zoom/cascadeCoverage";
 import { parseZoomParams, type SessionZoomParams } from "../panes/zoom/intent";
 import { startBackgroundTranscripts } from "../stores/backgroundTranscripts";
 import { useConnectionStore } from "../stores/connection";
+import { cancelConversationHandoff, conversationHandoffGeneration } from "../stores/conversationClaimHandoff";
 import {
   selectLiveRows,
   selectLocation,
@@ -26,7 +27,7 @@ import {
 } from "../stores/navigation/selectors";
 import { navigationStore, useNavigationStore } from "../stores/navigation/store";
 import { syncSettingsHostToRoute } from "../stores/settingsHost";
-import { initTranscriptDisplay } from "../stores/transcriptDisplay";
+import { initTranscriptDisplay, transcriptDisplayStore, useTranscriptDisplayStore } from "../stores/transcriptDisplay";
 import { ActivitySidebar } from "./activitybar/ActivitySidebar";
 import { currentAttentionEntryToken, restoreCurrentAttentionEntry } from "./attentionHistory";
 import { ConnectionBanner } from "./ConnectionBanner";
@@ -49,7 +50,7 @@ import { cycleSessionPane } from "./sessionCycle";
 import { openNestedSessionWithOwner, openTopLevelSession } from "./sessionPlacement";
 import { isSinglePaneRoute } from "./singlePane";
 import { useBrowserConnection } from "./useBrowserConnection";
-import { useIsMobile } from "./useIsMobile";
+import { isMobileViewport } from "./useIsMobile";
 import { useKeyboardInset } from "./useKeyboardInset";
 import {
   conversationOpenParentRef,
@@ -517,7 +518,23 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
       .lookupLocation(locationRef)
       .catch(() => undefined);
   }, [locationFailed, locationGone, locationRef, locationResource, navigationMode]);
-  const isMobile = useIsMobile();
+  const [viewportReady, setViewportReady] = useState(false);
+  const viewport = useTranscriptDisplayStore((state) => state.viewport);
+  useLayoutEffect(() => {
+    // Module initialization can precede the shell mount. Publish that initial
+    // drift through preparation too, never select a host from a live snapshot.
+    transcriptDisplayStore.getState().setViewport(isMobileViewport() ? "mobile" : "desktop");
+    setViewportReady(true);
+  }, []);
+  const isMobile = viewport === "mobile";
+  const handoffGeneration = conversationHandoffGeneration(viewport);
+  const hasHost = route !== null;
+  // A route departure can leave the workspace's retained pane record alive.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: pathname fences pending destination work
+  useEffect(() => {
+    if (!hasHost) cancelConversationHandoff(handoffGeneration);
+    return () => cancelConversationHandoff(handoffGeneration);
+  }, [handoffGeneration, hasHost, pathname]);
   // Route-change epoch for in-flight live demands: leaving the session (to settings, the dashboard, another
   // session) and returning BEFORE a demand resolves can restore an identical
   // focused pane id and session ref, so the press-time pane/ref guards alone
@@ -866,7 +883,7 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
             {!isMobile && route !== null && !singlePane && <RailHost />}
             {route === null ? (
               <NotFound />
-            ) : isMobile ? (
+            ) : !viewportReady ? null : isMobile ? (
               <StackHost railSlot={<RailHost />} routeDeferred={routeDeferred} singlePane={singlePane} />
             ) : (
               // The workspace column carries the dock host's row flex share by

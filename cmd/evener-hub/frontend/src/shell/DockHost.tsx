@@ -13,10 +13,16 @@ import "dockview-react/dist/styles/dockview.css";
 import "./dockview-theme.css";
 import { navigationSummaryFor, resolveThreadName } from "../panes/session/threadTitle";
 import { parseZoomParams } from "../panes/zoom/intent";
+import {
+  conversationHandoffGeneration,
+  registerConversationHostVisibility,
+  restrictConversationHandoff,
+} from "../stores/conversationClaimHandoff";
 import { useNavigationStore } from "../stores/navigation/store";
 import { threadsStore, useThreadsStore } from "../stores/threads";
 import { Skeleton } from "../widgets";
 import { attentionPanelAnchor, attentionPanelApplied } from "./attentionPlacement";
+import { ConversationHandoffBoundary } from "./ConversationHandoffBoundary";
 import { chromeStore, useChromeStore } from "./chromeStore";
 import styles from "./DockHost.module.css";
 import { PaneTab } from "./PaneTab";
@@ -104,7 +110,9 @@ function PaneHost({ api, params }: IDockviewPanelProps<PanePanelParams>) {
   return (
     <PaneVisibilityContext.Provider value={visible}>
       <Suspense fallback={<Skeleton />}>
-        <Component params={params.paneParams} paneId={api.id} focused={focused} />
+        <ConversationHandoffBoundary generation={conversationHandoffGeneration("desktop")} paneId={api.id}>
+          <Component params={params.paneParams} paneId={api.id} focused={focused} />
+        </ConversationHandoffBoundary>
       </Suspense>
     </PaneVisibilityContext.Provider>
   );
@@ -486,6 +494,20 @@ export function DockHost() {
       else panel?.api.setActive();
     }
   }, [api, focusedPaneId, panes]);
+
+  const handoffGeneration = conversationHandoffGeneration("desktop");
+  useEffect(() => {
+    if (!api) return;
+    const visible = () => new Set(api.panels.filter((panel) => panel.api.isVisible).map((panel) => panel.id));
+    const unregister = registerConversationHostVisibility(visible);
+    const restrict = () => restrictConversationHandoff(handoffGeneration, visible());
+    restrict();
+    const subscription = api.onDidLayoutChange(restrict);
+    return () => {
+      unregister();
+      subscription.dispose();
+    };
+  }, [api, handoffGeneration]);
 
   // Title sync: live-updates every open pane's dockview tab whenever its
   // computed title changes - the ONLY place PaneTitleCtx's threadName is
