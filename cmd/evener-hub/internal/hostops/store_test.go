@@ -277,8 +277,8 @@ func TestOpenRefusesACorruptStore(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			path := StorePath(t.TempDir())
 			writeRawStore(t, path, 0o600, body)
-			if _, err := Open(path); !errors.Is(err, ErrStoreCorrupt) {
-				t.Fatalf("Open on a corrupt store: err = %v, want ErrStoreCorrupt", err)
+			if err := loadAt(path); !errors.Is(err, ErrStoreCorrupt) {
+				t.Fatalf("load of a corrupt store: err = %v, want ErrStoreCorrupt", err)
 			}
 			// A refused file is never served and never rewritten: no temp file,
 			// and the bytes on disk are exactly what the caller wrote.
@@ -523,8 +523,8 @@ func TestOpenRefusesIdsOutsideTheAllocatorForm(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			path := StorePath(t.TempDir())
 			writeRawStore(t, path, 0o600, body)
-			if _, err := Open(path); !errors.Is(err, ErrStoreCorrupt) {
-				t.Fatalf("Open on %s: err = %v, want ErrStoreCorrupt", name, err)
+			if err := loadAt(path); !errors.Is(err, ErrStoreCorrupt) {
+				t.Fatalf("load of %s: err = %v, want ErrStoreCorrupt", name, err)
 			}
 		})
 	}
@@ -819,8 +819,8 @@ func TestOpenToleratesRetiredBoundaryShapesAndRefusesEpochs(t *testing.T) {
 		t.Run("refused/"+name, func(t *testing.T) {
 			path := StorePath(t.TempDir())
 			writeRawStore(t, path, 0o600, body)
-			if _, err := Open(path); !errors.Is(err, ErrStoreCorrupt) {
-				t.Fatalf("Open on a %s: err = %v, want ErrStoreCorrupt", name, err)
+			if err := loadAt(path); !errors.Is(err, ErrStoreCorrupt) {
+				t.Fatalf("load of a %s: err = %v, want ErrStoreCorrupt", name, err)
 			}
 		})
 	}
@@ -1103,7 +1103,7 @@ func TestOpenRefusesEveryRequiredRecordFieldThatIsOmitted(t *testing.T) {
 			body := `{"version":1,"sequence":1,"allocatorHighWaterMark":1,"records":[` + record + `]}`
 			path := StorePath(t.TempDir())
 			writeRawStore(t, path, 0o600, body)
-			if _, err := Open(path); !errors.Is(err, ErrStoreCorrupt) {
+			if err := loadAt(path); !errors.Is(err, ErrStoreCorrupt) {
 				t.Fatalf("a record with no %s loaded: err = %v, want ErrStoreCorrupt", name, err)
 			}
 			if got := string(mustReadFile(t, path)); got != body {
@@ -1488,4 +1488,11 @@ func TestRepeatedOpensOfANeverWrittenStoreStayEmpty(t *testing.T) {
 			t.Fatalf("open %d saw %d records in a never-written store", i, got)
 		}
 	}
+}
+
+// loadAt runs the loader alone over the file at path, so a test about what the
+// loader refuses does not also exercise the quarantine an Open would take.
+func loadAt(path string) error {
+	_, err := loadFS(afero.NewOsFs(), path)
+	return err
 }

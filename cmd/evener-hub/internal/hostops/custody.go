@@ -19,14 +19,15 @@ import (
 
 // This file owns spec §4's quarantine-custody snapshot: the schema the custody
 // file is written with, the all-or-nothing completeness check that decides
-// whether a corrupt store file may be quarantined at all, and the import set the
-// replacement store opens with. That check is the slice's safety core: custody
-// is written only when the corrupt file parses whole and its record set is
-// accounted for with no gap or residue, so no fence the file carried can be
-// lost. Any shortfall — an unparseable record, a per-host boundary record that
-// fails its schema, ownership missing for a fenced name, an id below the file's
-// own allocator high-water mark with no retained evidence — refuses startup
-// rather than serving past a fence nobody can prove.
+// whether a corrupt store file's names can be carried into the replacement, and
+// the import set the replacement store opens with. The snapshot is complete only
+// when the corrupt file parses whole and its record set is accounted for with no
+// gap or residue. Any shortfall — an unparseable record, a per-host boundary
+// record that fails its schema, ownership missing for a fenced name, an id below
+// the file's own allocator high-water mark with no retained evidence — makes the
+// custody unproven: the file is still set aside, with a custody file marked
+// unproven and no imports, so the hub resumes on an empty store and the health
+// signal says a closed name may not be held.
 //
 // The retired BoundaryEntry vocabulary and the later slices that once owned the
 // verifier, the kill/wait, and `orphan-resolve` were withdrawn with the
@@ -36,11 +37,12 @@ import (
 // carried kind under its stable `quarantineRecordId`, so the `operations` detail
 // filter can address every closed name by record id (no resolver runs).
 
-// ErrQuarantineIncomplete reports a corrupt store file whose custody snapshot
-// cannot be shown complete. Spec §4: "When the corrupt file cannot yield a
-// complete custody snapshot, boot fails startup rather than serving hosts past
-// an unprovable fence." It always accompanies ErrStoreCorrupt, so a caller that
-// classifies store failures sees one class either way.
+// ErrQuarantineIncomplete reports quarantine bookkeeping that cannot be shown
+// complete: a custody file that fails its schema, or an intent or aside file
+// with no custody behind it. A corrupt store file whose own snapshot is
+// incomplete is not this error: it is set aside with an unproven custody file.
+// It always accompanies ErrStoreCorrupt, so a caller that classifies store
+// failures sees one class either way.
 var ErrQuarantineIncomplete = errors.New("hostops: quarantine custody is incomplete")
 
 // custodyFile is §4's custody schema, pinned field-for-field:
@@ -72,6 +74,10 @@ type custodyFile struct {
 	// keeps for its hosts instead of losing them with the operation history. It
 	// is absent when the corrupt file had imported none.
 	HostRecords json.RawMessage `json:"hostRecords,omitempty"`
+	// Unproven marks a custody file written for a corrupt store that could not
+	// yield a complete snapshot: it carries no fences or ownership, and the
+	// names the corrupt file had closed are not held.
+	Unproven bool `json:"unproven,omitempty"`
 }
 
 // custodyRecordID is one imported record's identity for the replacement import.
@@ -859,7 +865,7 @@ func readCustodyFile(fs afero.Fs, path, storePath string) (custodyFile, error) {
 		}
 	}
 	for name := range top {
-		if name != "hostRecords" && !slices.Contains(requiredKeys, name) {
+		if name != "hostRecords" && name != "unproven" && !slices.Contains(requiredKeys, name) {
 			return custodyFile{}, fmt.Errorf("%w: %s carries unknown key %q", ErrQuarantineIncomplete, path, name)
 		}
 	}

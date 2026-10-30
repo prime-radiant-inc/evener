@@ -721,13 +721,15 @@ func readLegacyRecords(path string) (hostRecordSet, error) {
 // lifecycle actions on their own, so a record that makes the whole set
 // unreadable must not hide them. A remnant that cannot be read in full but names
 // its host and is still open keeps that host fenced through a stand-in that
-// carries only the host.
-func readLegacyTeardownFences(path string) (map[string]HostTeardownRemnant, map[string]HostTeardownAttempt) {
+// carries only the host. A remnant that names no host fences nothing; its key
+// is returned so the caller can tell the operator which record to check.
+func readLegacyTeardownFences(path string) (map[string]HostTeardownRemnant, map[string]HostTeardownAttempt, []string) {
+	var nameless []string
 	remnants := map[string]HostTeardownRemnant{}
 	attempts := map[string]HostTeardownAttempt{}
 	raw, err := configReadFile(path)
 	if err != nil {
-		return remnants, attempts
+		return remnants, attempts, nil
 	}
 	var remnantSection struct {
 		Remnants map[string]toml.Primitive `toml:"teardown_remnants"`
@@ -744,6 +746,7 @@ func readLegacyTeardownFences(path string) (map[string]HostTeardownRemnant, map[
 				Resolved toml.Primitive `toml:"resolved"`
 			}
 			if metadata.PrimitiveDecode(primitive, &partial) != nil || strings.TrimSpace(partial.Host) == "" {
+				nameless = append(nameless, key)
 				continue
 			}
 			if metadata.IsDefined("teardown_remnants", key, "resolved") {
@@ -763,5 +766,6 @@ func readLegacyTeardownFences(path string) (map[string]HostTeardownRemnant, map[
 			}
 		}
 	}
-	return remnants, attempts
+	slices.Sort(nameless)
+	return remnants, attempts, nameless
 }

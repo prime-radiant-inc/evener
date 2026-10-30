@@ -68,7 +68,7 @@ func TestOpenHostOpsStoreQuarantinesAndSignals(t *testing.T) {
 
 // TestOpenHostOpsStoreReportsEveryOpenFailureWithoutAHandle pins the open's
 // contract: a store that cannot be opened — a transient permission or kind
-// problem, or a corrupt file whose custody cannot be shown whole — is reported
+// problem — is reported
 // with no handle, and the caller decides what to serve. Startup keeps serving
 // the hosts and retries (TestHubKeepsServingHostsWhenTheStoreCannotOpen).
 func TestOpenHostOpsStoreReportsEveryOpenFailureWithoutAHandle(t *testing.T) {
@@ -119,11 +119,11 @@ func TestOpenHostOpsStoreReportsEveryOpenFailureWithoutAHandle(t *testing.T) {
 	}
 }
 
-// TestOpenHostOpsStoreRefusesACorruptStoreWhoseCustodyCannotBeProvenAndKeepsIt
-// pins the open's answer to a corrupt file the custody-first quarantine cannot
-// take: no store opens, the file is left exactly as it was, and nothing is
-// written beside it, so whoever repairs it finds the evidence intact.
-func TestOpenHostOpsStoreRefusesACorruptStoreWhoseCustodyCannotBeProvenAndKeepsIt(t *testing.T) {
+// TestOpenHostOpsStoreSetsAsideACorruptStoreWhoseCustodyCannotBeProven pins the
+// open's answer to a corrupt file the custody-first quarantine cannot prove:
+// the file is kept aside for diagnosis, an empty replacement opens, the health
+// signal says the custody is unproven, and host changes work again.
+func TestOpenHostOpsStoreSetsAsideACorruptStoreWhoseCustodyCannotBeProven(t *testing.T) {
 	stateRoot := t.TempDir()
 	path := hostops.StorePath(stateRoot)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -133,18 +133,31 @@ func TestOpenHostOpsStoreRefusesACorruptStoreWhoseCustodyCannotBeProvenAndKeepsI
 	if err := os.WriteFile(path, []byte(truncated), 0o600); err != nil {
 		t.Fatalf("write store: %v", err)
 	}
-	before := dirNames(t, filepath.Dir(path))
 
 	store, err := openHostOpsStore(stateRoot, new(strings.Builder), hostops.RetentionPolicy{})
 
-	if store != nil || err == nil {
-		t.Fatalf("openHostOpsStore = (%v, %v), want a refusal and no store", store, err)
+	if err != nil || store == nil {
+		t.Fatalf("openHostOpsStore = (%v, %v), want the replacement store", store, err)
 	}
-	if body, readErr := os.ReadFile(path); readErr != nil || string(body) != truncated {
-		t.Fatalf("the corrupt store was disturbed: %q, %v", body, readErr)
+	signal := store.Quarantine()
+	if signal == nil || !signal.Unproven || signal.QuarantinedFile != path {
+		t.Fatalf("store.Quarantine() = %+v, want an unproven signal naming %s", signal, path)
 	}
-	if after := dirNames(t, filepath.Dir(path)); !slices.Equal(before, after) {
-		t.Fatalf("the open left artifacts: before %v after %v", before, after)
+	var kept []byte
+	for _, name := range dirNames(t, filepath.Dir(path)) {
+		if strings.Contains(name, ".quarantined-") {
+			body, readErr := os.ReadFile(filepath.Join(filepath.Dir(path), name))
+			if readErr != nil {
+				t.Fatalf("read aside: %v", readErr)
+			}
+			kept = body
+		}
+	}
+	if string(kept) != truncated {
+		t.Fatalf("the set-aside file does not hold the corrupt bytes: %q", kept)
+	}
+	if _, err := store.Create(hostops.NewRecord{ClientOperationID: "after", Host: "h1", Kind: hostops.KindRestart, Generation: 1, IncarnationID: "inc"}); err != nil {
+		t.Fatalf("the replacement store refuses a write: %v", err)
 	}
 }
 

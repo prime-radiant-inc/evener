@@ -361,7 +361,8 @@ func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
 		// and the unreadable records stay in the store untouched.
 		m.cfg.store.set(m.cfg.hosts.All())
 		family, _, _ := ops.HostRecords()
-		remnants, attempts := decodeTeardownFences(family)
+		remnants, attempts, nameless := decodeTeardownFences(family)
+		m.reportNamelessRemnants("the operation store", nameless)
 		m.cfg.store.setRemnantMaps(map[string]HostStagedReceipt{}, remnants, attempts)
 		m.refuseMutations(fmt.Sprintf("the host records in the operation store are in a shape this build cannot read, so a build that can read them has to run: %v", err))
 		return
@@ -626,7 +627,8 @@ func (m *hubHostManager) bootLegacyRecords(settle bool) bool {
 	if !hasFile && strings.TrimSpace(m.cfg.configPath) != "" && !readable {
 		// Sections that cannot be read as a set still carry fences: the records
 		// that can be read keep their hosts from being dialled mid-teardown.
-		remnants, attempts := readLegacyTeardownFences(m.cfg.configPath)
+		remnants, attempts, nameless := readLegacyTeardownFences(m.cfg.configPath)
+		m.reportNamelessRemnants(m.cfg.configPath, nameless)
 		m.cfg.store.setRemnantMaps(map[string]HostStagedReceipt{}, remnants, attempts)
 	}
 	if !settle || !readable {
@@ -692,4 +694,13 @@ func (m *hubHostManager) bootLegacyRecords(settle bool) bool {
 	// reconciliation (§9).
 	m.reconcilePipelineBoot()
 	return readable
+}
+
+// reportNamelessRemnants tells the operator which teardown remnants in source
+// could not be read at all. With no host name recoverable they fence nothing, so
+// each is named for someone to check.
+func (m *hubHostManager) reportNamelessRemnants(source string, keys []string) {
+	for _, key := range keys {
+		m.logf("teardown remnant %q in %s is unreadable and names no host, so it fences nothing; check it", key, source)
+	}
 }
