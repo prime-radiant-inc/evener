@@ -1261,3 +1261,32 @@ func TestAStartupThatCouldNotReadTheRecordSectionsSettlesNothing(t *testing.T) {
 		t.Fatal("host changes are taken over a registry built without the persisted identities")
 	}
 }
+
+// TestMalformedRecordSectionsCannotBypassTheAttachFence covers sections that are
+// wrong in ways that make the whole set unreadable: an attempts section of the
+// wrong type, and a remnant whose known field has the wrong type. The remnant is
+// still open and names its host, so the host stays fenced.
+func TestMalformedRecordSectionsCannotBypassTheAttachFence(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "hub.toml")
+	body := "teardown_attempts = 1\n\n[[hosts]]\nname = \"delta\"\nssh = \"delta.example\"\n\n" +
+		"[teardown_remnants.r1]\nhost = \"delta\"\nkind = \"remove\"\ngeneration = \"not a number\"\n"
+	if err := os.WriteFile(configPath, []byte(body), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+
+	m, _ := bootOverStore(t, configPath, t.TempDir())
+
+	fences := m.cfg.store.remnantSnapshot()
+	var fenced bool
+	for _, remnant := range fences {
+		if remnant.Host == "delta" {
+			fenced = true
+		}
+	}
+	if !fenced {
+		t.Fatalf("the open remnant of delta does not fence it: %+v", fences)
+	}
+	if m.mutationRefusal() == nil {
+		t.Fatal("host changes are taken while the record sections cannot be read")
+	}
+}

@@ -716,10 +716,12 @@ func readLegacyRecords(path string) (hostRecordSet, error) {
 }
 
 // readLegacyTeardownFences reads the teardown remnants and attempts of the
-// reserved sections one record at a time, ignoring fields this build does not
-// decode and any other record that cannot be read. They fence lifecycle actions
-// on their own, so a record elsewhere in the file that makes the whole set
-// unreadable must not hide them.
+// reserved sections independently of each other and of every other section, one
+// record at a time, ignoring fields this build does not decode. They fence
+// lifecycle actions on their own, so a record that makes the whole set
+// unreadable must not hide them. A remnant that cannot be read in full but names
+// its host and is still open keeps that host fenced through a stand-in that
+// carries only the host.
 func readLegacyTeardownFences(path string) (map[string]HostTeardownRemnant, map[string]HostTeardownAttempt) {
 	remnants := map[string]HostTeardownRemnant{}
 	attempts := map[string]HostTeardownAttempt{}
@@ -727,24 +729,38 @@ func readLegacyTeardownFences(path string) (map[string]HostTeardownRemnant, map[
 	if err != nil {
 		return remnants, attempts
 	}
-	var sections struct {
+	var remnantSection struct {
 		Remnants map[string]toml.Primitive `toml:"teardown_remnants"`
-		Attempts map[string]toml.Primitive `toml:"teardown_attempts"`
 	}
-	metadata, err := toml.Decode(string(raw), &sections)
-	if err != nil {
-		return remnants, attempts
-	}
-	for key, primitive := range sections.Remnants {
-		var remnant HostTeardownRemnant
-		if metadata.PrimitiveDecode(primitive, &remnant) == nil {
-			remnants[key] = remnant
+	if metadata, err := toml.Decode(string(raw), &remnantSection); err == nil {
+		for key, primitive := range remnantSection.Remnants {
+			var remnant HostTeardownRemnant
+			if metadata.PrimitiveDecode(primitive, &remnant) == nil {
+				remnants[key] = remnant
+				continue
+			}
+			var partial struct {
+				Host     string         `toml:"host"`
+				Resolved toml.Primitive `toml:"resolved"`
+			}
+			if metadata.PrimitiveDecode(primitive, &partial) != nil || strings.TrimSpace(partial.Host) == "" {
+				continue
+			}
+			if metadata.IsDefined("teardown_remnants", key, "resolved") {
+				continue
+			}
+			remnants[key] = HostTeardownRemnant{Host: partial.Host}
 		}
 	}
-	for key, primitive := range sections.Attempts {
-		var attempt HostTeardownAttempt
-		if metadata.PrimitiveDecode(primitive, &attempt) == nil {
-			attempts[key] = attempt
+	var attemptSection struct {
+		Attempts map[string]toml.Primitive `toml:"teardown_attempts"`
+	}
+	if metadata, err := toml.Decode(string(raw), &attemptSection); err == nil {
+		for key, primitive := range attemptSection.Attempts {
+			var attempt HostTeardownAttempt
+			if metadata.PrimitiveDecode(primitive, &attempt) == nil {
+				attempts[key] = attempt
+			}
 		}
 	}
 	return remnants, attempts
