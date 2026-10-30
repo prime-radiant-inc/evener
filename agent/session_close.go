@@ -281,6 +281,11 @@ func (s *Session) closeTerminal(ctx context.Context, options closeOptions) {
 	s.state = SessionClosed
 	s.mu.Unlock()
 	s.closeEventStream(budgetCtx)
+	// The livelock goes last: everything above is worktree-adjacent work a
+	// live process might still owe (lane disposal, the own-marker unlock), and
+	// another session's prune must not read this one as dead until none of it
+	// can run anymore.
+	s.releaseSessionLivelock()
 }
 
 // releaseForRetirement releases only process-local runtime resources and
@@ -333,6 +338,7 @@ func (s *Session) releaseForRetirement(ctx context.Context, options closeOptions
 		releaseErr = errors.Join(releaseErr, fmt.Errorf("close transcript: %w", err))
 	}
 	s.closeEventStream(budgetCtx)
+	s.releaseSessionLivelock()
 	return releaseErr
 }
 

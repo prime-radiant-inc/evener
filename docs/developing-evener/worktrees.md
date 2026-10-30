@@ -75,10 +75,15 @@ What this means day to day:
   a human (or an agent that has verified the owner is really gone) can clear it with
   `git worktree unlock` and let `prune` collect it afterward. If the same session
   resumes later, it recognizes its own lock and picks the worktree back up rather than
-  erroring. A session's *own* marker on a lane it is not occupying is the one piece of
-  that residue evener can attribute with certainty: it does not block a `prune`
-  candidate, so `prune` reclaims that lane and releases the marker as it does.
-  Another session's marker is never taken on the sweeper's guess.
+  erroring. Two pieces of that residue evener can attribute with certainty, and
+  `prune` reclaims both: a session's *own* marker on a lane it is not occupying, and
+  a delegate marker whose owner session tree is *verifiably* dead — the parent
+  session resolves to the root of its tree (only a root hosts a process), and the
+  root's process is proven gone by its process livelock (a lifetime flock taken at
+  init that the OS releases at process death) or by its stale serve-daemon
+  rendezvous entry (a registered pid that no longer exists). Every other lock —
+  a live owner's, or one whose owner cannot be proven either way — stays the skip
+  it was; `prune` never takes another owner's lock on a guess.
 
 ## Disposal: `remove`, `prune`, and `dispose`
 
@@ -94,13 +99,15 @@ which can be misleading (e.g. a detached-HEAD review).
 
 `prune` is the "clean up everything that's safe to clean up" call — the one-shot
 alternative to remembering to `remove` every finished lane by hand. It walks every
-managed worktree and removes the ones that are simultaneously: unlocked, not currently
-in use by any live shell job or delegate under this session, clean (no uncommitted
-changes), and either untouched since creation or already merged into the branch it
-was created from. Everything else is reported with a reason instead of being touched —
-locked, dirty, unmerged, checked out somewhere else, or too new to judge yet. `prune`
-never takes `force`; anything it declines to remove is `remove`'s job, or a deliberate
-unlock.
+managed worktree and removes the ones that are simultaneously: unlocked (or locked
+by a lock `prune` is authorized to release — its own stale marker, or a delegate
+marker whose owner session tree is verifiably dead, see *Lock semantics*), not
+currently in use by any live shell job or delegate under this session, clean (no
+uncommitted changes), and either untouched since creation or already merged into the
+branch it was created from. Everything else is reported with a reason instead of
+being touched — locked, dirty, unmerged, checked out somewhere else, or too new to
+judge yet. `prune` never takes `force`; anything it declines to remove is `remove`'s
+job, or a deliberate unlock.
 
 `dispose` retires one finished **delegate isolation lane** by its delegate id — the
 synchronous move a live session makes the moment it finishes a lane's work, rather
@@ -220,6 +227,14 @@ What happens to the lane depends on whether the delegate did anything:
   its close, collecting only lanes that are unlocked and ancestry-merged and only after
   a thirty-minute grace. Unmerged, dirty, and squash-only lanes are never swept
   automatically — retire them with `dispose` (or `remove`) once their work lands.
+- **Owner dead without a clean close** (crash, kill) — nothing ran the disposal
+  lifecycle, so the lane keeps its `evener:dlg:` lock. A later `prune` no longer
+  stops there: it resolves the marker's session to its tree root and, when the
+  root's process is verifiably gone (its process livelock is free, or its daemon
+  rendezvous entry names a dead pid), treats the lock as the crash residue it is —
+  releasing it exactly as it releases its own stale marker, only on the path that
+  actually collects. An unchanged or merged lane is reclaimed; a dirty or unmerged
+  one keeps its lock and is reported by the gate that kept it.
 - If the delegate is later revived (a follow-up `delegate_send` on a kept lane), it
   re-locks its lane before resuming work in it — so a revived delegate is protected
   the same way a fresh one is. A resumed session likewise re-locks its own still-kept
@@ -244,15 +259,19 @@ These are documented trade-offs, not bugs:
   reads the other's lane as this session's own stale marker, so a `prune` from one can
   reclaim the lane the other is standing in. This is an existing "don't do that" case
   for evener sessions generally, not something specific to worktrees.
-- **A hard crash leaves the lane locked.** There's no automatic recovery from a
-  session or delegate dying without a clean shutdown — the lock stays until a human
-  or agent verifies the owner is really gone and runs `git worktree unlock`, after
-  which `prune` can collect it if it's otherwise safe to. The one exception is a
-  session's *own* marker on a lane it is not occupying: that marker does not block a
-  `prune` candidate, so `prune` reclaims the lane and releases it — the session itself
-  is the one thing whose non-occupancy it can attest without guessing. A lane `prune`
-  skips keeps its lock, and another session's marker has no liveness signal at all and
-  still needs a deliberate unlock.
+- **A hard crash leaves the lane locked only until its owner's death is
+  verifiable.** A session or delegate dying without a clean shutdown leaves the lock
+  in place — but `prune` now performs the verification the manual recovery always
+  required, instead of waiting for a human to run `git worktree unlock`. It releases
+  a session's *own* marker on a lane that session is not occupying (the owner itself
+  is the one thing whose non-occupancy it can attest), and a delegate marker whose
+  owner session tree it can *prove* gone: the marker's session resolves to its tree
+  root, and the root's process is dead — its process livelock is free, or its
+  serve-daemon rendezvous entry names a pid that no longer exists. A lane whose
+  owner is live, or whose death cannot be proven — a session from before livelocks
+  existed has no record to consult — keeps its lock, and `prune` reports it
+  `locked; owner liveness unverifiable` so the deliberate manual unlock stays a
+  human decision there. A lane `prune` skips keeps its lock.
 - **A session whose working directory is deleted out from under it refuses honestly.**
   If the lane a session is standing in is removed from the main checkout while the
   session keeps running, the session's working directory no longer exists, and every

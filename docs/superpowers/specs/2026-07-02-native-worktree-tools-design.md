@@ -734,9 +734,37 @@ sweeps, all through the control env:
      back), and the lock is re-taken if the
      removal then fails with the lane still present. Only the session's own
      marker is released; another session's or a live delegate's marker stays the
-     skip it was. Only the model-facing `prune` reclaims such a lane; the
-     automatic residue sweep leaves it alone, since it can run between a switch
-     taking the marker and recording the lane as current;
+    skip it was. Only the model-facing `prune` reclaims such a lane; the
+    automatic residue sweep leaves it alone, since it can run between a switch
+    taking the marker and recording the lane as current;
+   - or locked with **a delegate marker whose owner session tree is verifiably
+     dead** (issue #5471) — symmetric with the stranded own marker above. A
+     dead owner's lane lock is crash residue the §9 disposal lifecycle can
+     never release: the process that would run it is gone, and before this
+     exception `prune` reported the lane `locked` forever (58 such trees,
+     ~6.7 GB, observed on one workstation with no bulk remedy but a per-lane
+     manual `git worktree unlock`). The verification is done, not assumed: the
+     marker's parent session id resolves to the root of its session tree
+     (subagent metas chain via `parent_session_id`; only a root ever hosts a
+     process — a bare delegate resume is refused), and the root's process is
+     probed two ways. Its *process livelock* — a lifetime flock every root
+     session takes at init on `<state>/sessions/<id>.livelock`, which the OS
+     releases at process death, whatever killed it — held means live,
+     present-but-free means dead, absent means unknown. And its *serve-daemon
+     rendezvous entry* — a registered entry for the root session id with a
+     live pid means live, a dead pid is a crashed daemon's residue (a graceful
+     shutdown removes its entry). Any live signal outranks any dead one, so an
+     owner resumed by a new process reads live. A live owner keeps the skip
+     (`locked (…; owner session tree is live)`); an owner whose death cannot
+     be proven keeps it too (`locked (…; owner liveness unverifiable)` — a
+     session from before livelocks has no record to consult, and `prune` never
+     takes another owner's lock on a guess); and a proven-dead owner's marker
+     is released exactly like the stranded own marker above: at the collect
+     point only, claimed and read in one atomic rename so a lock swapped since
+     the listing is never unlocked, and restored if the removal then fails —
+     so a dirty or unmerged dead-owner lane keeps its lock and is reported by
+     the gate that kept it. The automatic residue sweep keeps its stricter
+     unlocked-only contract;
    - no live work under it per this session's `liveWorkUnder` (belt and
      braces alongside the lock);
    - clean per `git -C <path> status --porcelain=v1 --untracked-files=all`;
@@ -1284,16 +1312,23 @@ ever added, it and `isolation` must be mutually exclusive.)
      (hardening that also covers out-of-band deletion, for all delegates, not
      just isolated ones).
 6. **Hard parent death** (crash, SIGKILL): no disposal ran; the worktrees
-   remain locked with the `evener:dlg:…` reason. `list` shows them; clearing
-   the stale lock is the deliberate `git worktree unlock` act described in §5,
-   after which `prune` collects the unchanged/merged ones. This is fail-safe
-   in the same direction as everything else in this spec: crashes never
-   destroy work.
+   remain locked with the `evener:dlg:…` reason. `list` shows them, and a
+   later `prune` now performs the verification the manual recovery always
+   required instead of leaving it to a human: when the owning session tree's
+   root process is verifiably gone (§5's dead-owner exception — the root's
+   process livelock is free, or its daemon rendezvous entry names a dead
+   pid), `prune` releases the marker and collects the unchanged/merged ones.
+   An owner whose death cannot be proven — a session from before livelocks
+   existed — keeps the deliberate `git worktree unlock` act described in §5.
+   This stays fail-safe in the same direction as everything else in this
+   spec: crashes never destroy work, and collection still requires the lane
+   to be clean and unchanged-or-merged whatever the lock said.
 
 ### Guards
 
-`remove`/`prune` refuse while the delegate's lock is held (§5), and the
-live-work guard additionally refuses while any of the delegate's jobs are
+`remove` refuses while the delegate's lock is held (§5), `prune` skips it
+unless the owning session tree is verifiably dead (§5's dead-owner exception),
+and the live-work guard additionally refuses while any of the delegate's jobs are
 running. Because the delegate holds its lock for its entire lifetime, the
 parent cannot `switch` into an isolated delegate's worktree at all while the
 delegate exists (§4 step 2 refuses on the foreign lock) — inspection of a

@@ -1619,6 +1619,12 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	// structurally, not from ei.IsGitRepo (#4132).
 	s.applyInitInsideWorktreeLock()
 
+	// Take the root session's process livelock (issue #5471): the lifetime
+	// flock whose release-by-OS at process death is what makes a crashed
+	// owner's delegate lanes provably dead to a later prune. Root sessions
+	// only, and silent on failure — see acquireSessionLivelock.
+	s.acquireSessionLivelock()
+
 	// Load the core built-in agents first. Configured plugin agents are merged in
 	// during plugin initialization below.
 	var builtins map[string]plugin.Agent

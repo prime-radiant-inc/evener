@@ -387,6 +387,16 @@ type Session struct {
 	// path immediately before prune releases a stranded own marker, so a test can
 	// change who holds the lane at the one moment between deciding to release
 	// and releasing. Nil in production.
+	//
+	// livelockRelease releases this session's process livelock — the lifetime
+	// flock whose release-by-OS at process death is what lets a later prune
+	// prove a dead owner gone (session_worktree_owner_liveness.go, issue
+	// #5471). Set for root sessions at init; nil for subagents and for sessions
+	// that could not take the lock. Guarded by s.mu.
+	//
+	// worktreeRendezvousDir is a test-only seam overriding the rendezvous run
+	// directory the owner-liveness oracle consults. Empty in production, which
+	// resolves the platform default.
 	worktreeRestoreEnv                  *execenv.LocalExecutionEnvironment
 	worktreeCurrentPath                 string
 	worktreeCurrentManaged              bool
@@ -395,6 +405,8 @@ type Session struct {
 	worktreeDisposeBeforeRemove         func(lanePath string)
 	worktreeLaneStat                    func(path string) (os.FileInfo, error)
 	worktreeBeforeStrandedMarkerRelease func(lanePath string)
+	livelockRelease                     func()
+	worktreeRendezvousDir               string
 
 	// responseSideEffectsMu serializes a response's user-visible side-effect
 	// bundle (emit + appendTurn + counter bump) against teardown.

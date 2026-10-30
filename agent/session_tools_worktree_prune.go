@@ -106,6 +106,12 @@ type laneSweepPolicy struct {
 	// session's own create/switch, whereas the timer-driven residue sweep can run
 	// between a switch taking its marker and recording the lane as current.
 	reclaimStrandedOwnMarker bool
+	// reclaimDeadDelegateLanes lets the sweep collect a lane locked with a
+	// foreign evener:dlg: marker whose owner session tree is VERIFIABLY dead
+	// (session_worktree_owner_liveness.go, issue #5471). Only the model-facing
+	// prune sets it: the automatic residue sweep never unlocks anything, and a
+	// lock is only ever released on the path that actually collects the lane.
+	reclaimDeadDelegateLanes bool
 	// lockFiles is the control environment's file layer, through which the sweep
 	// proves the control policy lets it write the registry before it releases a
 	// stranded own marker. Set together with reclaimStrandedOwnMarker.
@@ -127,6 +133,7 @@ func prunePolicy() laneSweepPolicy {
 	return laneSweepPolicy{
 		abortOnError:             true,
 		reclaimStrandedOwnMarker: true,
+		reclaimDeadDelegateLanes: true,
 		disposableAt: func(run worktree.GitRunner, lanePath string, sc worktree.Sidecar) (bool, string, error) {
 			clean, offending, cErr := worktree.CleanTree(run, lanePath)
 			if cErr != nil {
@@ -158,10 +165,11 @@ func disposableOrMergeCheckFailure(run worktree.GitRunner, tip, baseSHA, mergeTa
 
 // collectRegisteredLanes disposes of registered managed worktrees (spec §5
 // prune sweep 1): a worktree is collected (dir + branch + sidecar removed)
-// iff it is unlocked (or carries only this session's own stale marker, which is
-// no obstacle — see staleOwnMarker below), has no live work under it, has a
-// sidecar, passes the policy's grace/delegate filters, and is disposable per
-// the policy predicate.
+// iff it is unlocked (or carries a lock the pass is authorized to release:
+// this session's own stale marker, or a foreign delegate marker whose owner
+// session tree is verifiably dead — see staleOwnMarker and deadOwnerMarker
+// below), has no live work under it, has a sidecar, passes the policy's
+// grace/delegate filters, and is disposable per the policy predicate.
 // Every entry that fails one of those tests is reported skipped with the reason;
 // any per-entry git query failure is treated as a soft skip. A mutation failure
 // aborts (prune) or is reported as a lost race and the sweep continues (P3),
@@ -175,8 +183,10 @@ func (s *Session) collectRegisteredLanes(ctx context.Context, run worktree.GitRu
 		// Not locked: the occupancy rule, owner-independent (spec §5 sweep 1;
 		// EvPruneCandidate skips any locked state regardless of whose marker).
 		lockSt := worktree.Unlocked
+		var lockMarker worktree.Marker
 		if e.Locked {
 			lockSt = worktree.ClassifyReason(e.LockReason, s.id, "")
+			lockMarker, _ = worktree.ParseMarker(e.LockReason)
 		}
 		// A lane carrying THIS session's own marker while the session does not
 		// occupy it is crash residue — what a process death inside the lane, or a
@@ -194,15 +204,38 @@ func (s *Session) collectRegisteredLanes(ctx context.Context, run worktree.GitRu
 		// own marker is ever released; a foreign or delegate marker stays the skip
 		// it was, so another live session's occupancy is never taken.
 		staleOwnMarker := policy.reclaimStrandedOwnMarker && lockSt == worktree.OwnSession && !s.occupiesManagedLane(e.Path)
+		// The second authorized release (issue #5471): a delegate marker
+		// whose owner session tree is verifiably dead is crash residue the
+		// owner's disposal lifecycle can never release — the process that
+		// would run it is gone (session_worktree_owner_liveness.go). The
+		// liveness check is the "agent that has verified the owner is really
+		// gone" the documented manual recovery required, automated; an owner
+		// that is live, or whose death cannot be proven, keeps its lock
+		// exactly as before. Like staleOwnMarker, the release happens only on
+		// the path that actually collects the lane, so every gate below that
+		// could keep the lane (dirty, unmerged, in-grace, live work) leaves
+		// the dead owner's lock in place too.
+		deadOwnerMarker := ""
 		if !staleOwnMarker && worktree.Decide(worktree.EvPruneCandidate, lockSt) == worktree.ActSkip {
 			reason := "locked"
 			if e.LockReason != "" {
 				reason = fmt.Sprintf("locked (%s)", e.LockReason)
 			}
-			skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: reason})
-			continue
+			if policy.reclaimDeadDelegateLanes && e.Locked && lockMarker.DelegateID != "" {
+				switch s.delegateLaneOwnerLiveness(lockMarker) {
+				case ownerDead:
+					deadOwnerMarker = worktree.FormatDelegateMarker(lockMarker.DelegateID, lockMarker.SessionID)
+				case ownerLive:
+					reason += "; owner session tree is live"
+				default:
+					reason += "; owner liveness unverifiable"
+				}
+			}
+			if deadOwnerMarker == "" {
+				skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: reason})
+				continue
+			}
 		}
-
 		// Has a sidecar: provenance unknown otherwise, not ours to judge.
 		sc, scErr := worktree.ReadSidecar(metaDir, e.Name)
 		if scErr != nil {
@@ -249,26 +282,30 @@ func (s *Session) collectRegisteredLanes(ctx context.Context, run worktree.GitRu
 		// Disposed mark is appended after the remove and before the branch delete
 		// (spec §P3: own-store records only).
 		//
-		// A lane that only survived the eligibility gate because its marker is
-		// this session's own, stale one (staleOwnMarker) is released here — at the
-		// one point where the pass has committed to collecting it, and after every
-		// skip rung that could have kept the lane (and needed its lock) has been
-		// passed. The release routes through the same EvLeave rule close uses, so a
-		// foreign or delegate marker is still left untouched.
+		// A lane that only survived the eligibility gate because its lock is
+		// one this pass is authorized to release — this session's own stale
+		// marker (staleOwnMarker), or a dead owner's delegate marker
+		// (deadOwnerMarker) — is released here: at the one point where the pass
+		// has committed to collecting it, and after every skip rung that could
+		// have kept the lane (and needed its lock) has been passed.
 		//
 		// The verdict that got us here came from the ONE `worktree list` snapshot
 		// taken at the top of the pass, which every earlier lane's git calls have
 		// since aged, so the marker is claimed and read in a single atomic step
-		// (releaseStrandedOwnMarker): a marker someone else released since the
-		// snapshot (a human running the documented `git worktree unlock` recovery,
-		// or a second process on the same session id) and another session then
-		// took is never unlocked, which would hand this lane's removal to prune
-		// while that session is rooted in it. A lane whose lock is no longer ours
-		// is skipped, not collected.
-		if staleOwnMarker {
-			released, relErr := s.releaseStrandedOwnMarker(policy.lockFiles, e.Path)
+		// (releaseStrandedMarker): a marker someone else released since the
+		// snapshot (a human running the documented `git worktree unlock`
+		// recovery, or a revived owner re-taking its lane) and another session
+		// then took is never unlocked, which would hand this lane's removal to
+		// prune while that session is rooted in it. A lane whose lock is no
+		// longer the one this pass authorized is skipped, not collected.
+		if staleOwnMarker || deadOwnerMarker != "" {
+			expected := worktree.FormatSessionMarker(s.id)
+			if deadOwnerMarker != "" {
+				expected = deadOwnerMarker
+			}
+			released, relErr := s.releaseStrandedMarker(policy.lockFiles, e.Path, expected)
 			if relErr != nil {
-				skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: "releasing stranded own marker: " + relErr.Error()})
+				skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: "releasing stranded marker: " + relErr.Error()})
 				continue
 			}
 			if !released {
@@ -282,7 +319,10 @@ func (s *Session) collectRegisteredLanes(ctx context.Context, run worktree.GitRu
 			// protected as it was, rather than left open to another session's
 			// sweep (whose live-work view cannot see this session's work under it).
 			if staleOwnMarker {
-				s.restoreStrandedOwnMarker(e.Path)
+				s.restoreStrandedMarker(e.Path, worktree.FormatSessionMarker(s.id))
+			}
+			if deadOwnerMarker != "" {
+				s.restoreStrandedMarker(e.Path, deadOwnerMarker)
 			}
 			if policy.abortOnError {
 				return nil, nil, fmt.Errorf("manage_worktree prune: %w", cErr)
@@ -301,24 +341,33 @@ func (s *Session) collectRegisteredLanes(ctx context.Context, run worktree.GitRu
 }
 
 // releaseStrandedOwnMarker releases the lock on a lane iff it still carries this
-// session's own marker and the session does not occupy the lane, reporting
-// whether it did. It is false, with nothing released, when the lane is now
-// unlocked, carries a foreign or delegate marker, or is occupied after all.
+// session's own marker and the session does not occupy the lane. It is the
+// own-marker wrapper around releaseStrandedMarker, which carries the protocol.
+func (s *Session) releaseStrandedOwnMarker(files execenv.FileMutator, lanePath string) (released bool, err error) {
+	return s.releaseStrandedMarker(files, lanePath, worktree.FormatSessionMarker(s.id))
+}
+
+// releaseStrandedMarker releases the lock on a lane iff it still carries
+// exactly expectedMarker (this session's own marker, or the dead owner's
+// delegate marker a prune pass verified) and the session does not occupy the
+// lane, reporting whether it did. It is false, with nothing released, when the
+// lane is now unlocked, carries any other marker, or is occupied after all.
 //
 // Confirming the marker and unlocking cannot be two steps: between a check and
 // `git worktree unlock` the marker can be released (the documented manual
-// recovery, or a second process on the same session id) and the lane taken by
-// another session, whose lock the unlock would then remove. Git has no
-// owner-checked unlock, so the lock file itself is claimed with a rename, which
-// moves exactly the file that was there at that instant. The claimed content
-// is then read: our own marker is deleted (the lane is unlocked), anything else
-// is put back without displacing a lock taken since. The lock file is read
-// first, so a foreign lock is taken away only when it replaced ours between that
-// read and the claim, and then only until the restore.
+// recovery, or a dead owner's session resumed by a new process re-taking its
+// lane) and the lane taken by another session, whose lock the unlock would
+// then remove. Git has no owner-checked unlock, so the lock file itself is
+// claimed with a rename, which moves exactly the file that was there at that
+// instant. The claimed content is then read: the expected marker is deleted
+// (the lane is unlocked), anything else is put back without displacing a lock
+// taken since. The lock file is read first, so a different lock is taken away
+// only when it replaced the expected one between that read and the claim,
+// and then only until the restore.
 //
 // That instant is the floor, not an oversight: a filesystem has no
 // compare-and-delete, so no protocol can keep git's lock effective across
-// inspecting a file it is about to remove. Reaching it takes our marker being
+// inspecting a file it is about to remove. Reaching it takes the expected marker being
 // removed and another session's lock appearing between the read and the rename,
 // and costs a foreign lane its lock only if a third process then collects it in
 // those microseconds (or this process dies before the restore). Every other
@@ -327,7 +376,7 @@ func (s *Session) collectRegisteredLanes(ctx context.Context, run worktree.GitRu
 // The control policy's write authority applies exactly as it does to the
 // sandboxed `git worktree remove` that follows: a session whose policy withholds
 // registry writes is refused before the lock is touched (requireRegistryWrite).
-func (s *Session) releaseStrandedOwnMarker(files execenv.FileMutator, lanePath string) (released bool, err error) {
+func (s *Session) releaseStrandedMarker(files execenv.FileMutator, lanePath, expectedMarker string) (released bool, err error) {
 	if s.occupiesManagedLane(lanePath) {
 		return false, nil
 	}
@@ -336,7 +385,7 @@ func (s *Session) releaseStrandedOwnMarker(files execenv.FileMutator, lanePath s
 		return false, err
 	}
 	// Look before claiming: the claim briefly takes the lock away, so a lock that
-	// is plainly not ours is never touched.
+	// is plainly not the expected one is never touched.
 	reason, readErr := os.ReadFile(lockFile)
 	if os.IsNotExist(readErr) {
 		return false, nil
@@ -344,7 +393,7 @@ func (s *Session) releaseStrandedOwnMarker(files execenv.FileMutator, lanePath s
 	if readErr != nil {
 		return false, readErr
 	}
-	if !s.isOwnMarker(reason) {
+	if !isExpectedLockMarker(reason, expectedMarker) {
 		return false, nil
 	}
 	if err := requireRegistryWrite(files, filepath.Dir(lockFile)); err != nil {
@@ -367,7 +416,7 @@ func (s *Session) releaseStrandedOwnMarker(files execenv.FileMutator, lanePath s
 		return false, err
 	}
 	claimedReason, claimedErr := os.ReadFile(claimedPath)
-	if claimedErr == nil && s.isOwnMarker(claimedReason) {
+	if claimedErr == nil && isExpectedLockMarker(claimedReason, expectedMarker) {
 		// The lane is already unlocked; a leftover claim file is harmless to git.
 		if rmErr := os.Remove(claimedPath); rmErr != nil {
 			s.emit(events.WarningData{Message: fmt.Sprintf("removing the released lock claim %s failed: %v", claimedPath, rmErr)})
@@ -404,10 +453,13 @@ func requireRegistryWrite(files execenv.FileMutator, dir string) error {
 	return files.RemovePath(probe)
 }
 
-// isOwnMarker reports whether the contents of a lock file are this session's
-// own occupancy marker.
-func (s *Session) isOwnMarker(lockFileContents []byte) bool {
-	return worktree.ClassifyReason(strings.TrimSpace(string(lockFileContents)), s.id, "") == worktree.OwnSession
+// isExpectedLockMarker reports whether the contents of a lock file are exactly
+// the marker a pass authorized itself to release — compared as a string after
+// trimming, so a lock file written with or without a trailing newline matches
+// the canonical format, and any other marker (foreign session, another
+// delegate, or a reasonless lock) never does.
+func isExpectedLockMarker(lockFileContents []byte, expectedMarker string) bool {
+	return strings.TrimSpace(string(lockFileContents)) == expectedMarker
 }
 
 // laneLockFile is the file git keeps a locked worktree's reason in, found
@@ -428,8 +480,15 @@ func laneLockFile(lanePath string) (string, error) {
 }
 
 // restoreStrandedOwnMarker puts this session's own marker back on a lane whose
-// release was made for a collection that then failed, so a lane this pass could
-// not collect keeps the protection it had. It writes the lock file directly,
+// release was made for a collection that then failed; the own-marker wrapper
+// around restoreStrandedMarker, which carries the protocol.
+func (s *Session) restoreStrandedOwnMarker(lanePath string) {
+	s.restoreStrandedMarker(lanePath, worktree.FormatSessionMarker(s.id))
+}
+
+// restoreStrandedMarker puts marker back on a lane whose release was made for
+// a collection that then failed, so a lane this pass could not collect keeps
+// the protection it had. It writes the lock file directly,
 // exactly as the release removed it: the failure may be the prune request's own
 // cancellation, and every git query on that request's runner would then fail the
 // same way and leave the lane unlocked. Creating the file exclusively makes it a
@@ -437,7 +496,7 @@ func laneLockFile(lanePath string) (string, error) {
 // failed has nothing left to lock) and when the lane was locked since — a foreign
 // lock is never displaced. Best-effort: a failure warns, and the lane is left as
 // the failure found it.
-func (s *Session) restoreStrandedOwnMarker(lanePath string) {
+func (s *Session) restoreStrandedMarker(lanePath, marker string) {
 	lockFile, err := laneLockFile(lanePath)
 	if err != nil {
 		return
@@ -445,16 +504,16 @@ func (s *Session) restoreStrandedOwnMarker(lanePath string) {
 	f, err := os.OpenFile(lockFile, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
 		if !os.IsExist(err) && !os.IsNotExist(err) {
-			s.emit(events.WarningData{Message: fmt.Sprintf("re-locking stranded own worktree marker at %s after a failed collection failed: %v", lanePath, err)})
+			s.emit(events.WarningData{Message: fmt.Sprintf("re-locking stranded worktree marker at %s after a failed collection failed: %v", lanePath, err)})
 		}
 		return
 	}
-	_, writeErr := f.WriteString(worktree.FormatSessionMarker(s.id) + "\n")
+	_, writeErr := f.WriteString(marker + "\n")
 	if closeErr := f.Close(); writeErr == nil {
 		writeErr = closeErr
 	}
 	if writeErr != nil {
-		s.emit(events.WarningData{Message: fmt.Sprintf("re-locking stranded own worktree marker at %s after a failed collection failed: %v", lanePath, writeErr)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("re-locking stranded worktree marker at %s after a failed collection failed: %v", lanePath, writeErr)})
 	}
 }
 
