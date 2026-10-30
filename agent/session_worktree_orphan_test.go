@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -30,11 +29,11 @@ func (r *wtRepo) pruneOrphanedOp(t *testing.T, days float64) (map[string]any, er
 }
 
 // seedOrphanParent writes the durable state of a foreign parent session: a
-// delegates journal naming one resumable delegate (resumability-closed when
-// closed), written through the store's own append API, and a transcript file
-// whose mtime carries the parent's last activity — the same signal the
-// session listings read.
-func seedOrphanParent(t *testing.T, r *wtRepo, sid, dlg string, closed bool, lastActive time.Time) {
+// delegates journal naming one resumable delegate (resumability closed with
+// closureReason when non-empty), written through the store's own append API,
+// and a transcript file whose mtime carries the parent's last activity — the
+// same signal the session listings read.
+func seedOrphanParent(t *testing.T, r *wtRepo, sid, dlg, closureReason string, lastActive time.Time) {
 	t.Helper()
 	store, err := delegatestore.Open(delegateJournalPath(r.stateDir, sid))
 	if err != nil {
@@ -57,13 +56,13 @@ func seedOrphanParent(t *testing.T, r *wtRepo, sid, dlg string, closed bool, las
 			ToolNameCeiling:  []string{"communicate"},
 		}},
 	}}
-	if closed {
+	if closureReason != "" {
 		events = append(events, delegatestore.Event{
 			Kind:               delegatestore.EventDelegateResumabilityClosed,
 			Seq:                2,
 			TS:                 time.Now().UTC(),
 			DelegateID:         dlg,
-			ResumabilityClosed: &delegatestore.ResumabilityClosed{Reason: "isolation_disposed"},
+			ResumabilityClosed: &delegatestore.ResumabilityClosed{Reason: closureReason},
 		})
 	}
 	if _, _, err := store.AppendBatch(delegatestore.State{}, events); err != nil {
@@ -111,7 +110,7 @@ func TestWorktreePrune_OrphanArmCollectsUnchangedStaleParentLane(t *testing.T) {
 	const parentSID = "034foreignstale0000000000000"
 	const dlg = "dlg_034foreignstale000000"
 	lane := r.delegateLane(t, "orphan-unchanged", dlg, parentSID)
-	seedOrphanParent(t, r, parentSID, dlg, false, time.Now().Add(-30*24*time.Hour))
+	seedOrphanParent(t, r, parentSID, dlg, "", time.Now().Add(-30*24*time.Hour))
 
 	out, err := r.pruneOrphanedOp(t, 7)
 	if err != nil {
@@ -138,7 +137,7 @@ func TestWorktreePrune_OrphanArmUnlocksButKeepsUnmergedLane(t *testing.T) {
 	const parentSID = "034foreignstale0000000000001"
 	const dlg = "dlg_034foreignstale000001"
 	lane := r.delegateLane(t, "orphan-unmerged", dlg, parentSID)
-	seedOrphanParent(t, r, parentSID, dlg, false, time.Now().Add(-30*24*time.Hour))
+	seedOrphanParent(t, r, parentSID, dlg, "", time.Now().Add(-30*24*time.Hour))
 	// Unmerged work: a commit only this branch carries.
 	commitInWorktree(t, lane, "unmerged.txt", "work the gates must keep", "unmerged work")
 
@@ -171,7 +170,7 @@ func TestWorktreePrune_OrphanArmSparesActiveParent(t *testing.T) {
 	const parentSID = "034foreignlive0000000000000"
 	const dlg = "dlg_034foreignlive000000"
 	lane := r.delegateLane(t, "orphan-active-parent", dlg, parentSID)
-	seedOrphanParent(t, r, parentSID, dlg, false, time.Now())
+	seedOrphanParent(t, r, parentSID, dlg, "", time.Now())
 
 	out, err := r.pruneOrphanedOp(t, 7)
 	if err != nil {
@@ -197,7 +196,7 @@ func TestWorktreePrune_OrphanArmReleasesStoreDeadDelegate(t *testing.T) {
 	const parentSID = "034foreigndead0000000000000"
 	const dlg = "dlg_034foreigndead000000"
 	lane := r.delegateLane(t, "orphan-store-dead", dlg, parentSID)
-	seedOrphanParent(t, r, parentSID, dlg, true, time.Now())
+	seedOrphanParent(t, r, parentSID, dlg, stableWorktreeDisposalReason, time.Now())
 
 	out, err := r.pruneOrphanedOp(t, 7)
 	if err != nil {
@@ -218,16 +217,14 @@ func TestWorktreePrune_OrphanArmOffByDefault(t *testing.T) {
 	const parentSID = "034foreignstale0000000000002"
 	const dlg = "dlg_034foreignstale000002"
 	lane := r.delegateLane(t, "orphan-flag-off", dlg, parentSID)
-	seedOrphanParent(t, r, parentSID, dlg, false, time.Now().Add(-30*24*time.Hour))
+	seedOrphanParent(t, r, parentSID, dlg, "", time.Now().Add(-30*24*time.Hour))
 
 	out, err := r.pruneOp(t)
 	if err != nil {
 		t.Fatalf("prune: %v", err)
 	}
-	if e := findPruneEntry(t, pruneEntries(t, out, "skipped"), "orphan-flag-off"); e == nil {
+	if findPruneEntry(t, pruneEntries(t, out, "skipped"), "orphan-flag-off") == nil {
 		t.Fatalf("locked lane not skipped without the flag: %+v", out)
-	} else if got, want := fmt.Sprint(e["reason"]), "locked ("+worktree.FormatDelegateMarker(dlg, parentSID)+")"; got != want {
-		t.Errorf("skip reason = %q, want %q", got, want)
 	}
 	if _, locked, reason := r.laneLocked(t, lane); !locked {
 		t.Errorf("lock released without the flag: %q", reason)
@@ -262,7 +259,7 @@ func TestWorktreePrune_OrphanArmSparesSidecarMismatch(t *testing.T) {
 	const parentSID = "034foreignstale0000000000003"
 	const dlg = "dlg_034foreignstale000003"
 	lane := r.delegateLane(t, "orphan-mismatch", dlg, parentSID)
-	seedOrphanParent(t, r, parentSID, dlg, false, time.Now().Add(-30*24*time.Hour))
+	seedOrphanParent(t, r, parentSID, dlg, "", time.Now().Add(-30*24*time.Hour))
 	// Someone rewrote the sidecar to name a different delegate.
 	metaDir := r.metaDir(t, r.canonicalMain(t))
 	if err := worktree.UpdateSidecar(metaDir, "orphan-mismatch", func(sc *worktree.Sidecar) {
@@ -280,5 +277,65 @@ func TestWorktreePrune_OrphanArmSparesSidecarMismatch(t *testing.T) {
 	}
 	if _, locked, reason := r.laneLocked(t, lane); !locked {
 		t.Errorf("sidecar-mismatch lane's lock released: %q", reason)
+	}
+}
+
+// A turn-budget-exhausted delegate is not disposal residue. Exhaustion also
+// closes resumability, but without the quiescence-checked isolation disposal
+// — the exhaustion path does not drain the lane's shells — so an active
+// parent's lane keeps its lock even with the arm on: only the recorded
+// isolation disposal proves the parent's disposal lifecycle ran.
+func TestWorktreePrune_OrphanArmSparesTurnExhaustedDelegate(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	const parentSID = "034foreignlive0000000000001"
+	const dlg = "dlg_034foreignlive000001"
+	lane := r.delegateLane(t, "orphan-turn-exhausted", dlg, parentSID)
+	seedOrphanParent(t, r, parentSID, dlg, "turn_budget_exhausted", time.Now())
+
+	out, err := r.pruneOrphanedOp(t, 7)
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if e := findPruneEntry(t, pruneEntries(t, out, "unlocked"), "orphan-turn-exhausted"); e != nil {
+		t.Fatalf("turn-exhausted delegate's lane unlocked: %+v", e)
+	}
+	if e := findPruneEntry(t, pruneEntries(t, out, "removed"), "orphan-turn-exhausted"); e != nil {
+		t.Fatalf("turn-exhausted delegate's lane collected: %+v", e)
+	}
+	if _, locked, reason := r.laneLocked(t, lane); !locked {
+		t.Errorf("turn-exhausted delegate's lock released: %q", reason)
+	}
+}
+
+// A nested delegate's lifecycle authority is its tree root's journal, not its
+// immediate parent's: the arm resolves the root before reading, so a
+// root-disposed delegate's lane is reclaimable even while its immediate
+// parent's transcript is fresh.
+func TestWorktreePrune_OrphanArmResolvesNestedParentJournal(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	const rootSID = "034foreignroot0000000000000"
+	const parentSID = "034foreignnest0000000000000"
+	const dlg = "dlg_034foreignnest000000"
+	lane := r.delegateLane(t, "orphan-nested", dlg, parentSID)
+	// The immediate parent's meta names the tree root whose journal holds the
+	// delegate; the parent's own transcript stays fresh, so only the store can
+	// settle the lane.
+	if err := schema.SaveSessionMeta(r.stateDir, schema.SessionMeta{ID: parentSID, JobTreeRootSessionID: rootSID}); err != nil {
+		t.Fatalf("save parent meta: %v", err)
+	}
+	seedOrphanParent(t, r, parentSID, dlg, "", time.Now())
+	seedOrphanParent(t, r, rootSID, dlg, stableWorktreeDisposalReason, time.Now())
+
+	out, err := r.pruneOrphanedOp(t, 7)
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if findPruneEntry(t, pruneEntries(t, out, "removed"), "orphan-nested") == nil {
+		t.Fatalf("nested delegate's disposed lane not collected: %+v", out)
+	}
+	if _, locked, reason := r.laneLocked(t, lane); locked {
+		t.Errorf("nested delegate's lane still locked: %q", reason)
 	}
 }

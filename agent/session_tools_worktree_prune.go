@@ -115,10 +115,11 @@ type laneSweepPolicy struct {
 	lockFiles execenv.FileMutator
 	// reclaimOrphanedDelegates, when > 0, lets the sweep release a locked
 	// delegate lane whose parent session provably cannot act as its disposer
-	// (orphanedDelegateMarker): the delegate is not resumable in the parent's
-	// store, or the parent session is gone or has been inactive at least this
-	// long. The operator-directed orphan arm (#5471); the model-facing prune
-	// sets it only when the caller passes orphaned_delegate_days.
+	// (orphanedDelegateMarker): the parent's store records the delegate's
+	// isolation disposal, or the parent session is gone or has been inactive
+	// at least this long. The operator-directed orphan arm (#5471); the
+	// model-facing prune sets it only when the caller passes
+	// orphaned_delegate_days.
 	reclaimOrphanedDelegates time.Duration
 }
 

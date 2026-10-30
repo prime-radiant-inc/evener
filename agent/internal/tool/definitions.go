@@ -1112,7 +1112,7 @@ func DefManageWorktree() llm.ToolDefinition {
 				},
 				"orphaned_delegate_days": map[string]any{
 					"type":        "number",
-					"description": "For prune: also release delegate-lane locks whose parent session provably cannot act as the disposer — its store closed the delegate, or the session is gone or inactive at least this many days. Removal still requires the ordinary unchanged/merged gates; a released lane with unmerged work stays put, unlocked and visible to the merge and force paths. 0 (default) keeps the locked-lane rule absolute.",
+					"description": "For prune: also release delegate-lane locks whose parent session provably cannot act as the disposer — its own disposal already ran (the store records the delegate's isolation disposal), or the session is gone or inactive at least this many days. Removal still requires the ordinary unchanged/merged gates; a released lane with unmerged work stays put, unlocked and visible to the merge and force paths. 0 (default) keeps the locked-lane rule absolute.",
 				},
 			},
 			"required": []string{"operation"},

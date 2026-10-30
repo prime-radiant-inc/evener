@@ -573,9 +573,9 @@ lane's lock belongs to its parent's disposal lifecycle, and when the parent
 session dies without clean closing, that lifecycle can never run — the lane
 stays locked forever, invisible to every bulk operation. `prune` called with
 `orphaned_delegate_days` releases exactly those locks: a delegate marker
-whose parent provably cannot act (the parent's own store closed the
-delegate's resumability, or the parent session is gone or inactive past the
-caller's threshold). The release re-verifies the marker atomically
+whose parent provably cannot act (the parent's own store records the
+delegate's isolation disposal, or the parent session is gone or inactive
+past the caller's threshold). The release re-verifies the marker atomically
 (claim-rename, restore on mismatch), removal still requires the ordinary
 unchanged/merged gates, a work-holding lane is unlocked and kept, and a
 resumed delegate re-locks an unlocked lane (the revival row below) — a
@@ -753,9 +753,12 @@ sweeps, all through the control env:
 	   - the operator-directed orphan arm (#5471) is the one exception to that
 	     locked-marker rule: a `prune` call passing `orphaned_delegate_days`
 	     also releases a foreign delegate marker whose parent provably cannot
-	     act as its disposer — the parent's own store closed the delegate's
-	     resumability, or the parent session is gone or inactive at least that
-	     many days — after the marker and the sidecar name the same delegate.
+	     act as its disposer — the parent's own store records the delegate's
+	     isolation disposal (the quiescence-checked closure the disposal
+	     lifecycle writes; a turn-budget exhaustion closes resumability too,
+	     but proves nothing about drained work and does not count), or the
+	     parent session is gone or inactive at least that many days — after
+	     the marker and the sidecar name the same delegate.
 	     That release uses the same claim-rename protocol as the stranded own
 	     marker, removal still requires every condition below (live work, clean,
 	     unchanged/merged), and a released lane this pass cannot collect is
