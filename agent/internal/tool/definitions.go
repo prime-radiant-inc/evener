@@ -171,7 +171,7 @@ func DefShellWithDetach(detachAvailable bool) llm.ToolDefinition {
 			"Small foreground output comes back in full. Larger or background output is bounded: a finished command with large output returns a head-and-tail digest and a job_id under which the full output is kept, so there is no need to pipe through head or tail. " +
 			"A background job reports a launch failure at once; once it is running you get its job_id and a notification when it finishes, so it needs no completion marker or redirect. " +
 			"To keep a complete log beyond the retained output, tee inside the command, for example `( make test ) 2>&1 | tee \"$EVENER_SCRATCH_DIR/test.log\"` when EVENER_SCRATCH_DIR is set: pipefail keeps the command's exit status, and tee overwrites the file. " +
-			"A `&` inside the command does not create a tracked job: when the command's foreground part ends, Evener stops the process group, so a process backgrounded inside the command dies with it — run such a helper as its own background job instead.",
+			"A `&` inside the command creates neither a tracked job nor guaranteed cleanup: after the foreground command exits, Evener terminates only descendants still holding the inherited output pipe, so a backgrounded process that redirects its own output survives untracked — run such a helper as its own background job instead.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
