@@ -278,17 +278,18 @@ func thinkingFromParts(parts []llm.ContentPart) string {
 
 // hasImageOrDocumentContent reports whether the multimodal content form is
 // needed: the plain-text builder silently drops every non-text part, so an
-// image, or a document carrying bytes (llm.DocumentFileData), must ride the
-// array form. A URL-only document stays plain — chat has no URL file
-// mechanism — and audio never reaches this gate: no production code sends
-// one.
+// image, or a document carrying inline bytes, must ride the array form. A
+// URL-only document stays plain — chat has no URL file mechanism — and
+// audio never reaches this gate: no production code sends one.
 func hasImageOrDocumentContent(parts []llm.ContentPart) bool {
 	for _, p := range parts {
 		switch p.Kind {
 		case llm.ContentImage:
 			return true
 		case llm.ContentDocument:
-			if llm.DocumentFileData(p.Document) != "" {
+			// Inline bytes only, tested without encoding the payload —
+			// the builder pays that once when it emits the file part.
+			if p.Document != nil && len(p.Document.Data) > 0 {
 				return true
 			}
 		}

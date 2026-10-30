@@ -233,7 +233,7 @@ func sessionModelTakesRequestMedia(part llm.ContentPart, profile *provider.Profi
 	case llm.ContentImage:
 		return profile.AcceptsImageInput()
 	case llm.ContentDocument:
-		return profile.AcceptsDocumentInput()
+		return profile.AcceptsDocumentInput(part.Document)
 	default:
 		return false
 	}

@@ -360,6 +360,17 @@ func documentTurn() schema.Turn {
 	})
 }
 
+// urlDocumentTurn builds a user-role Turn carrying a document part with a
+// source URL and no bytes, for targets whose wire has no URL file mechanism.
+func urlDocumentTurn() schema.Turn {
+	return schema.NewTurn(schema.TurnUserInput, llm.Message{
+		Role: llm.RoleUser,
+		Content: []llm.ContentPart{
+			{Kind: llm.ContentDocument, Document: &llm.DocumentData{URL: "https://example.com/doc.pdf", MediaType: "application/pdf"}},
+		},
+	})
+}
+
 func audioTurn() schema.Turn {
 	return schema.NewTurn(schema.TurnUserInput, llm.Message{
 		Role: llm.RoleUser,
@@ -432,8 +443,9 @@ func TestSetModel_DocumentInHistory_AcceptedForGoogleTarget(t *testing.T) {
 		t.Fatalf("SetModel Google target with user document in history: %v", err)
 	}
 	profile := sess.currentProfile()
-	if profile.ID() != "google" || profile.Model() != "gemini-2.5-flash" || !profile.AcceptsDocumentInput() {
-		t.Fatalf("switched profile = %s/%s, accepts documents = %v", profile.ID(), profile.Model(), profile.AcceptsDocumentInput())
+	doc := documentTurn().Message.Content[0].Document
+	if profile.ID() != "google" || profile.Model() != "gemini-2.5-flash" || !profile.AcceptsDocumentInput(doc) {
+		t.Fatalf("switched profile = %s/%s, accepts documents = %v", profile.ID(), profile.Model(), profile.AcceptsDocumentInput(doc))
 	}
 	if len(sess.history) != beforeLen+1 {
 		t.Fatalf("history length = %d, want %d existing turns plus one model-switch marker", len(sess.history), beforeLen)
@@ -504,6 +516,33 @@ func TestSetModel_DocumentInHistory_AcceptedForChatTarget(t *testing.T) {
 
 	if err := sess.SetModel("kimi/kimi-k3"); err != nil {
 		t.Fatalf("SetModel openai-compat (Chat) switch with document in history: %v", err)
+	}
+}
+
+// TestSetModel_UrlOnlyDocumentInHistory_RejectedForChatTarget pins the
+// payload boundary of the Chat flip: the Chat builder carries inline bytes
+// only (base64 file_data; chat has no URL file mechanism), so a URL-only
+// user document must still count as unrepresentable and refuse the switch —
+// accepting it would let every subsequent request silently omit the PDF.
+func TestSetModel_UrlOnlyDocumentInHistory_RejectedForChatTarget(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t,
+		withProfile(NewOpenAIProfile("gpt-5.4")),
+		withAdapter(&fakeAdapter{name: "openai"}),
+		withAdapter(&fakeAdapter{name: "kimi"}),
+		withConfig(SessionConfig{
+			ResolveProfile: testResolver,
+			testOnly:       testConfig{skipGitSnapshot: true},
+		}),
+	)
+	sess.appendTurn(schema.TurnUserInput, urlDocumentTurn().Message)
+
+	err := sess.SetModel("kimi/kimi-k3")
+	if err == nil {
+		t.Fatal("SetModel(\"kimi/kimi-k3\") with URL-only user document in history = nil error, want non-nil")
+	}
+	if !strings.Contains(err.Error(), "document") {
+		t.Fatalf("error = %q, want it to name the document kind", err.Error())
 	}
 }
 

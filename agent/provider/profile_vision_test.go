@@ -4,6 +4,7 @@ import (
 	"slices"
 	"testing"
 
+	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -87,30 +88,35 @@ func TestProfileDocumentInputPredicate(t *testing.T) {
 	r := fixtureRegistryWith(t, documentCapabilityInstances())
 
 	cases := []struct {
-		ref                  string
-		acceptsDocumentInput bool
+		ref   string
+		bytes bool
+		url   bool
 	}{
 		// Real rows: a Responses row that declares pdf input takes a
 		// user-message document; the image-only row does not.
-		{"openai/gpt-5.4", true},
-		{"openai/gpt-5.2", false},
+		{"openai/gpt-5.4", true, true},
+		{"openai/gpt-5.2", false, false},
 		// A pdf-declaring row takes a user-message document when its protocol
 		// represents one: the Responses builder writes input_file and the
 		// Anthropic builder writes a document content block (#4209), while
-		// Google writes inlineData and the Chat builder writes a file part.
-		{"anthropic/claude-mythos-preview", true},
-		{"respdoc/doc-1", true},
-		{"respdoc/vis-1", false},
-		{"chatdoc/doc-1", true},
-		{"anthdoc/doc-1", true},
-		{"googdoc/doc-1", true},
-		{"googdoc/vis-1", false},
-		{"google/gemini-2.5-flash", true},
+		// Google writes inlineData. The Chat builder writes a file part for
+		// inline bytes only — chat has no URL file mechanism.
+		{"anthropic/claude-mythos-preview", true, true},
+		{"respdoc/doc-1", true, true},
+		{"respdoc/vis-1", false, false},
+		{"chatdoc/doc-1", true, false},
+		{"anthdoc/doc-1", true, true},
+		{"googdoc/doc-1", true, true},
+		{"googdoc/vis-1", false, false},
+		{"google/gemini-2.5-flash", true, true},
 	}
 	for _, tc := range cases {
 		p := mustResolve(t, r, tc.ref)
-		if got := p.AcceptsDocumentInput(); got != tc.acceptsDocumentInput {
-			t.Errorf("%s: AcceptsDocumentInput = %v, want %v", tc.ref, got, tc.acceptsDocumentInput)
+		if got := p.AcceptsDocumentInput(&llm.DocumentData{Data: []byte("pdf-bytes"), MediaType: "application/pdf"}); got != tc.bytes {
+			t.Errorf("%s: AcceptsDocumentInput(bytes) = %v, want %v", tc.ref, got, tc.bytes)
+		}
+		if got := p.AcceptsDocumentInput(&llm.DocumentData{URL: "https://example.com/doc.pdf"}); got != tc.url {
+			t.Errorf("%s: AcceptsDocumentInput(url) = %v, want %v", tc.ref, got, tc.url)
 		}
 	}
 }
@@ -118,11 +124,11 @@ func TestProfileDocumentInputPredicate(t *testing.T) {
 func TestProfileDocumentInputRequiresTheModelsOwnRow(t *testing.T) {
 	t.Parallel()
 	p := mustResolve(t, fixtureRegistryWith(t, documentCapabilityInstances()), "googdoc/doc-1")
-	if !p.AcceptsDocumentInput() {
+	if !p.AcceptsDocumentInput(&llm.DocumentData{Data: []byte("pdf-bytes"), MediaType: "application/pdf"}) {
 		t.Fatal("the Google row's own PDF declaration must accept documents")
 	}
 	for _, ref := range []string{"unknown-model-4463", "unconfigured-provider/model-4463"} {
-		if p.WithModel(ref).AcceptsDocumentInput() {
+		if p.WithModel(ref).AcceptsDocumentInput(&llm.DocumentData{Data: []byte("pdf-bytes"), MediaType: "application/pdf"}) {
 			t.Errorf("%s inherited another model's PDF support", ref)
 		}
 	}

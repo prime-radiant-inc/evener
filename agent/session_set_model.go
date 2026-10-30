@@ -45,12 +45,11 @@ func unrepresentableHistoryKinds(history []schema.Turn, protocol string) []llm.C
 	if len(restricted) == 0 {
 		return nil
 	}
-	deliversUserDocuments := llm.DeliversUserMessageDocuments(registry.Resolved{Protocol: protocol})
 	seen := make(map[llm.ContentKind]bool, len(restricted))
 	var out []llm.ContentKind
 	for _, t := range history {
 		for _, p := range t.Message.Content {
-			if p.Kind == llm.ContentDocument && t.Message.Role == llm.RoleUser && deliversUserDocuments {
+			if p.Kind == llm.ContentDocument && t.Message.Role == llm.RoleUser && llm.DeliversUserMessageDocuments(registry.Resolved{Protocol: protocol}, p.Document) {
 				continue
 			}
 			if restricted[p.Kind] && !seen[p.Kind] {

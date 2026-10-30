@@ -210,29 +210,31 @@ func (c *Caller) complete(ctx context.Context, profile *provider.Profile, cheap 
 // sessionModelCannotTakeMedia reports whether routing this request onto the
 // session model would hand it media it cannot see: an image part needs image
 // input on the row, and a document part needs document input — the row
-// declares pdf and its adapter represents a user-message document (the
+// declares pdf and its adapter represents that user-message document (the
 // Responses builder writes input_file, the Anthropic builder writes a
 // document content block, Google writes inlineData/fileData, and the Chat
-// builder writes a file part).
+// builder writes a file part for inline bytes).
 func sessionModelCannotTakeMedia(profile *provider.Profile, req llm.Request) bool {
 	images, documents := requestMediaKinds(req)
-	if documents && !profile.AcceptsDocumentInput() {
-		return true
+	for _, doc := range documents {
+		if !profile.AcceptsDocumentInput(doc) {
+			return true
+		}
 	}
 	return images && !profile.AcceptsImageInput()
 }
 
-// requestMediaKinds reports whether any message part is an image or a
-// document — content only a model with the matching input modality can
-// actually see.
-func requestMediaKinds(req llm.Request) (images, documents bool) {
+// requestMediaKinds reports whether any message part is an image, and
+// collects the document parts — content only a model with the matching
+// input modality can actually see.
+func requestMediaKinds(req llm.Request) (images bool, documents []*llm.DocumentData) {
 	for _, m := range req.Messages {
 		for _, p := range m.Content {
 			switch p.Kind {
 			case llm.ContentImage:
 				images = true
 			case llm.ContentDocument:
-				documents = true
+				documents = append(documents, p.Document)
 			}
 		}
 	}
