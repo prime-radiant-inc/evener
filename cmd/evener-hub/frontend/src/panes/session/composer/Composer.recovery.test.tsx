@@ -679,7 +679,10 @@ test("this pane's bounced send restores to its next mount under the same seat", 
   });
   const user = userEvent.setup();
   await user.type(textarea(), "my send");
-  await user.click(submitButton());
+  await act(async () => {
+    fireEvent.click(submitButton());
+    await flushPendingTurnsProjectionForTests();
+  });
   // The same-tick failure path of this pane's own send: the bounced row
   // returns to the composer immediately.
   await waitFor(() => expect(textarea().textContent).toBe("my send"));
@@ -691,7 +694,9 @@ test("this pane's bounced send restores to its next mount under the same seat", 
   cleanup();
   const remountSource = createTestComposerSource("ref_a", seat);
   await mountComposerWithHandle("ref_a", { status: { type: "idle" } }, { source: remountSource });
-  await flushPendingTurnsProjectionForTests();
+  await act(async () => {
+    await flushPendingTurnsProjectionForTests();
+  });
   expect(remountSource.getSnapshot().activeRecoveryId).toBe(bounced.clientMutationId);
   expect(textarea().textContent).toBe("my send");
 });
