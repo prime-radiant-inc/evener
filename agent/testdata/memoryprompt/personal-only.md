@@ -52,7 +52,7 @@ Operate on a relative path in the bound personal or project memory wiki. Search 
 - `context_lines`: Lines of context to include before and after each match, 0-10 (default 0).
 - `glob_filter`: Glob filter for searched files, e.g. *.go; dotfiles and gitignored paths are always excluded.
 - `intent`: What you hope to learn or accomplish from this tool call, using a verb-first gerund. Make your hypothesis and the desired outcome clear; e.g. "Reading config to identify the active profile, so I can log in." or "Searching handlers for request routing, so I can trace the hang."
-- `max_results`: Maximum number of results to return: lines, file paths, or count entries by output mode. Defaults to 100.
+- `max_results`: Maximum output to return. In content mode the cap counts output lines — matches plus context lines — not the number of matches; in files_with_matches and count modes it caps returned files or entries. Defaults to 100.
 - `output_mode`: Output format: content (default, matching lines), files_with_matches (file paths only), count (match counts per file)
 - `path`: File or directory to search, relative to the scope root; blank searches the whole scope.
 - `pattern`: Regex pattern to match in file contents.
