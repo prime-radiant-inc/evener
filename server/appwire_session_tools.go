@@ -109,9 +109,11 @@ func (c *runtimeHubClients) admitted(ctx context.Context) (*runtimeHubClient, er
 	defer c.mu.Unlock()
 	var live []*runtimeHubClient
 	if c.selected != "" {
-		if client := c.clients[c.selected]; client != nil && client.valid() == nil {
-			live = append(live, client)
+		client := c.clients[c.selected]
+		if client == nil || client.valid() != nil {
+			return nil, appwire.Unavailable("selected runtime hub binding is not live")
 		}
+		live = append(live, client)
 	}
 	for hub, client := range c.clients {
 		if hub == c.selected || client.valid() != nil {
