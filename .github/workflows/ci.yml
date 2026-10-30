@@ -534,12 +534,12 @@ jobs:
             exit 1
           fi
 
-          # What failed, for readers deciding whether the drop was their PR or
-          # one of main's flaky tests. The six required aggregates only
-          # restate their lanes, so they are left out.
+          # What failed, for readers deciding what broke the group. The five
+          # aggregates only restate their lanes, so they are left out; fuzz
+          # runs its own steps, so its failures are reported like any lane's.
           failed="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" \
             --jq '[.jobs[] | select(.conclusion == "failure" or .conclusion == "cancelled")
-                   | select(.name as $n | ["web","tests","static","race-root","race-modules","fuzz"] | index($n) | not)
+                   | select(.name as $n | ["web","tests","static","race-root","race-modules"] | index($n) | not)
                    | .name as $job | .steps[]?
                    | select(.conclusion == "failure" or .conclusion == "cancelled")
                    | ($job + " — " + .name)] | unique' || true)"
@@ -553,7 +553,7 @@ jobs:
           {
             echo '**Dropped from the merge queue: the merge group that held this PR failed its shared checks** (#5470).'
             echo
-            echo "Every PR in the group ($members_md) was removed from the queue. Merge-group checks run against the group's combined snapshot and report only on the group queue branch, never on member PRs, so the drop leaves no failed check to read here — and the failures below name tests, not PRs. If this PR is green on its own, it was a bystander drop: re-enqueue it."
+            echo "Every PR in the group ($members_md) was removed from the queue. Merge-group checks run against the group's combined snapshot and report only on the group queue branch, never on member PRs, so the drop leaves no failed check to read here — and the failures below name tests, not PRs. Being green on its own does not clear this PR: green PRs can also fail in combination. Read the failures below and confirm they are transient or unrelated to this PR before re-enqueueing it."
             echo
             echo 'Failed in the group run:'
             printf '%s\n' "$failed_md"
