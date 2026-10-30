@@ -41,6 +41,8 @@ import {
 	settlementRetiresRecovery,
 } from "@evener/appwire-client/state/mutation";
 import { type SqliteSync, type SqliteSyncRunResult, withSavepoint } from "./sqliteSync";
+import { decodeDraftEndpoint } from "./draftHandoffLedger";
+import { DraftHandoffLedgerSQLite } from "./draftHandoffLedgerSQLite";
 
 // This app's SecureRandomSource: expo-crypto's synchronous randomUUID and
 // getRandomValues, the native module every other id-generating call site in
@@ -176,6 +178,10 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 	implements MutationOutboxStorage<A>, QueuedMessageStorage<A>
 {
 	readonly db: SqliteSync;
+	/** The durable identity-resume handoff graph. It shares this database
+	 * because retarget records an edge in the same savepoint that moves the
+	 * mutation rows to the resolved identity. */
+	readonly handoffLedger: DraftHandoffLedgerSQLite;
 	readonly #createMutationId: () => string;
 	readonly #now: () => number;
 	readonly #getOwnClientId: () => string | undefined;
@@ -186,6 +192,10 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 		this.#createMutationId = options.createMutationId ?? (() => createSecureUUID(randomSource));
 		this.#now = options.now ?? Date.now;
 		this.#getOwnClientId = options.getOwnClientId ?? (() => undefined);
+		this.handoffLedger = new DraftHandoffLedgerSQLite(db, {
+			now: this.#now,
+			createId: () => createSecureUUID(randomSource),
+		});
 		const schema = (table: string) => `CREATE TABLE IF NOT EXISTS ${table} (
 			client_mutation_id TEXT PRIMARY KEY, version INTEGER NOT NULL,
 			origin_client_id TEXT, target_ref TEXT NOT NULL, thread_id TEXT, instance_id TEXT, method TEXT NOT NULL,
@@ -614,6 +624,12 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 		if (!to.ref.trim()) throw new Error("retarget ref is required");
 		if (ref === to.ref) return [];
 		return this.transaction("mutation_outbox_retarget", () => {
+			// The identity changed whether or not a row moved: the draft handoff
+			// obligation is recorded in this same savepoint, so a resume of a
+			// session with no parked rows still has a durable edge to settle.
+			const fromEndpoint = decodeDraftEndpoint(ref);
+			const toEndpoint = decodeDraftEndpoint(to.ref);
+			if (fromEndpoint && toEndpoint) this.handoffLedger.recordIdentityChange(fromEndpoint, toEndpoint);
 			// Source order matters: the moved rows keep their relative order at the
 			// destination, so the FIFO the daemon saw is the FIFO it keeps seeing.
 			const rows = this.db.getAllSync<{ client_mutation_id: string; payload: string }>(
@@ -622,7 +638,10 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 				 ORDER BY intent_sequence`,
 				ref,
 			);
-			if (rows.length === 0) return [];
+			// The migrations below run whether or not a dispatchable outbox row
+			// moves: the identity change still strands recovery rows, resend
+			// receipts, and optimistic records at the retired ref, and a resume
+			// that carries none of its outbox forward must not leave them behind.
 			const ids = rows.map((row) => row.client_mutation_id);
 			// A recovery resend's receipt is the draft owner's proof that its
 			// captured sources were consumed. Its source rows move below, so the

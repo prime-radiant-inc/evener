@@ -406,6 +406,11 @@ export function ConversationScreen(
 	return <ConversationScreenView {...props} attachment={attachment} />;
 }
 
+/** A deferred ownership read retries itself on this cadence for as long as the
+ * screen is mounted, so a transient ledger or record failure converges to
+ * restoration without the user acting. */
+const UNKNOWN_OWNERSHIP_RETRY_MS = 1000;
+
 function ConversationScreenView({
 	route,
 	navigation,
@@ -2855,6 +2860,17 @@ function ConversationScreenView({
 	// uses fresh exact-source proof, never absence from an outbox projection.
 	const [editedRecoveryFailure, setEditedRecoveryFailure] = useState<unknown>(null);
 	const [editedRecoveryAttempt, retryEditedRecovery] = useState(0);
+	// An obligation's durable resolution - a failed command just as much as a
+	// completed one - lifts the destination's recovery suppression and unblocks
+	// its handoff. The ledger publishes the transition so the mounted screen
+	// re-runs this reconciliation instead of waiting for a remount.
+	const [obligationTransitions, noteObligationTransition] = useState(0);
+	useEffect(() => drafts.onObligationTransition(() => noteObligationTransition((count) => count + 1)), [drafts]);
+	// Ownership that cannot be read is unknown, and unknown ownership defers
+	// restoration. Deferring is not waiting for the user: this counter re-runs
+	// the reconciliation on the timer above, so a transient read failure
+	// converges with no action and no remount.
+	const [ownershipRetry, setOwnershipRetry] = useState(0);
 	const recoveryWork = JSON.stringify({
 		sources: recovery.snapshot?.recovery
 			.filter((row) => row.recoveryKind === "editing")
@@ -2869,12 +2885,81 @@ function ConversationScreenView({
 	useEffect(() => {
 		if (!recoveryAvailable || !draft.loaded || draft.submitting || draft.error || imageState.busy) return;
 		let current = true;
+		let ownershipRetryTimer: ReturnType<typeof setTimeout> | null = null;
 		const targetKey = recovery.targetKey;
+		const deferUntilOwnershipReads = (): void => {
+			if (current)
+				ownershipRetryTimer = setTimeout(() => setOwnershipRetry((count) => count + 1), UNKNOWN_OWNERSHIP_RETRY_MS);
+		};
 		void (async () => {
 			const runtime = getNativeMutationRuntime();
-			await reconcileEditedResends(runtime, targetKey, document);
+			drafts.retryPendingHandoffs();
+			// A row whose submission is still running on this chain must not be
+			// restored; the ledger's open obligation owns it until it completes.
+			// That ownership applies to the resend reconciliation too: a
+			// destination adopted mid-command shows submitting: false, so only
+			// this exclusion keeps the reconciliation from restoring the running
+			// command's sources and clearing the capture its completion needs.
+			const pendingObligations = drafts.openObligationRecoveryIds({
+				hubId: route.params.hubId,
+				sessionRef: route.params.ref,
+			});
+			// Unknown ownership is not empty: a ledger or record that cannot be
+			// read must defer restoration, or a still-running command's sources
+			// could be restored and its capture cleared before its completion
+			// attaches. Deferring schedules its own retry, so the deferral
+			// ends when the read recovers - not when the user acts.
+			if (pendingObligations === undefined) {
+				deferUntilOwnershipReads();
+				return;
+			}
+			// Ownership is passed as a reader, so the serialized reconciliation
+			// re-reads it when it actually runs: a handoff can adopt a running
+			// command's capture into this document while the reconciliation
+			// waits behind its predecessor, and the set read here would be
+			// stale by then.
+			const outcome = await reconcileEditedResends(runtime, targetKey, document, () =>
+				drafts.openObligationRecoveryIds({
+					hubId: route.params.hubId,
+					sessionRef: route.params.ref,
+				}),
+			);
+			// The serialized reconciliation re-reads ownership after its awaits:
+			// an unknown read there defers the settle just like the initial read
+			// above, and the screen retries it instead of leaving the capture
+			// unresolved until some unrelated refresh.
+			if (outcome === "deferred") {
+				deferUntilOwnershipReads();
+				return;
+			}
 			const retained = await runtime.read(targetKey);
-			const deliberatelyReleased = new Set(draft.record.releasedRecoveryIds ?? []);
+			const handoffPending = drafts.hasPendingHandoff({
+				hubId: route.params.hubId,
+				sessionRef: route.params.ref,
+			});
+			// Pendingness that cannot be read is unknown, not handoff-free:
+			// restoring into a destination a transfer is waiting for would
+			// strand the incoming composition at its origin, so defer and retry.
+			if (handoffPending === undefined) {
+				deferUntilOwnershipReads();
+				return;
+			}
+			const deliberatelyReleased = new Set([
+				...(draft.record.releasedRecoveryIds ?? []),
+				...(draft.record.unconfirmedComposer?.recoveryIds ?? []),
+				...pendingObligations,
+			]);
+			if (handoffPending) {
+				// A pending handoff can be waiting on its own failed writes - a
+				// claim or transfer the storage refused - and this effect's
+				// retry pass is the only runner that completes it. The deferral
+				// re-runs that pass on the same timer as the ownership reads, so
+				// restoring the storage alone converges the handoff with no
+				// user action. Waits on open obligations wake on obligation
+				// transitions, and the timer stops once no edge is pending.
+				deferUntilOwnershipReads();
+				return;
+			}
 			for (const row of retained.recovery) {
 				if (!current || imageSelection.getSnapshot().busy) return;
 				if (row.recoveryKind === "editing" && !deliberatelyReleased.has(row.clientMutationId))
@@ -2886,6 +2971,7 @@ function ConversationScreenView({
 		});
 		return () => {
 			current = false;
+			if (ownershipRetryTimer !== null) clearTimeout(ownershipRetryTimer);
 		};
 	}, [
 		document,
@@ -2898,6 +2984,8 @@ function ConversationScreenView({
 		draft.loaded,
 		draft.submitting,
 		draft.error,
+		obligationTransitions,
+		ownershipRetry,
 		imageState.busy,
 		imageSelection,
 		localThread,
