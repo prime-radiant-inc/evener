@@ -120,7 +120,7 @@ func TestDeployRefusedWithoutOperationStore(t *testing.T) {
 	entry := deployTestHost()
 	configPath := deployTestConfigPath(t, entry)
 	m, _, _ := deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{})
-	m.cfg.ops = nil
+	m.cfg.ops.Store(nil)
 	_, err := m.Deploy(context.Background(), appwire.HostDeployParams{
 		Name: entry.Name, Token: "tok", OperationID: "op-x",
 	})

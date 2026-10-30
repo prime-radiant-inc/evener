@@ -80,7 +80,7 @@
   "primeradiant.com/evener/cmd/evener-hub": 163.13,
   "primeradiant.com/evener/cmd/evener-hub/internal/appsource": 9.67,
   "primeradiant.com/evener/cmd/evener-hub/internal/hostlock": 2.0,
-  "primeradiant.com/evener/cmd/evener-hub/internal/hostops": 15.26,
+  "primeradiant.com/evener/cmd/evener-hub/internal/hostops": 22.93,
   "primeradiant.com/evener/cmd/evener-hub/internal/httpsec": 2.0,
   "primeradiant.com/evener/cmd/evener-hub/internal/hubcore": 11.62,
   "primeradiant.com/evener/cmd/evener-hub/internal/hubtest": 2.0,

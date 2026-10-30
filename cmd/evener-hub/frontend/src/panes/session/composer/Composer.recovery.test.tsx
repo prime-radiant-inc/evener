@@ -1,4 +1,5 @@
 import type { InputItem } from "@evener/appwire-client";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
@@ -26,7 +27,6 @@ import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { resetComposerFocusStoreForTests } from "./composerFocus";
 import {
   Composer,
-  deferred,
   installCanvasStubs,
   mountComposer,
   mountComposerWithHandle,

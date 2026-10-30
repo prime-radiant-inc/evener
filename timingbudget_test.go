@@ -1081,3 +1081,67 @@ func TestTimingTSVLibParsesFromAnyDirectoryWithoutRepoRoot(t *testing.T) {
 		t.Fatalf("rows = %q, want the web SUM row %q", out, want)
 	}
 }
+
+// slowRunnerBudget has five packages whose 10s budgets are big enough to count
+// toward the run's slowdown.
+const slowRunnerBudget = `{"metric":"package-wall-seconds","perTestCeilingSeconds":3,` +
+	`"perTestCeilingClasses":{"eval harness":{"ceilingSeconds":20,"tests":["TestClassed"]}},` +
+	`"packages":{"a":10,"b":10,"c":10,"d":10,"e":10}}`
+
+// A runner twice as slow as the budgets' host slows every package at once.
+// That is no package's regression, so the strict check must not fail it.
+func TestTimingBudgetForgivesAUniformlySlowRunner(t *testing.T) {
+	measured := "SUM\ta\t20.00\nSUM\tb\t20.00\nSUM\tc\t20.00\nSUM\td\t21.00\nSUM\te\t20.00\n" +
+		"TEST\ta\tTestClassed\t39.00\n"
+	out, err := runTimingBudgetCompare(t, measured, slowRunnerBudget)
+	if err != nil || strings.Contains(out, "FAIL") {
+		t.Fatalf("a uniformly slow run failed the strict check: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "NOTE") {
+		t.Fatalf("the slow-runner judgement went unreported:\n%s", out)
+	}
+}
+
+// One package far above its peers is still a regression on a slow runner.
+func TestTimingBudgetStillFailsAnOutlierOnASlowRunner(t *testing.T) {
+	measured := "SUM\ta\t20.00\nSUM\tb\t20.00\nSUM\tc\t20.00\nSUM\td\t20.00\nSUM\te\t60.00\n"
+	out, err := runTimingBudgetCompare(t, measured, slowRunnerBudget)
+	if err == nil || !strings.Contains(out, "FAIL  e") {
+		t.Fatalf("an outlier package passed on a slow runner: %v\n%s", err, out)
+	}
+}
+
+// A class ceiling is scaled by the same slowdown, and still binds beyond it.
+func TestTimingBudgetScalesClassCeilingsBySlowdownOnly(t *testing.T) {
+	slow := "SUM\ta\t20.00\nSUM\tb\t20.00\nSUM\tc\t20.00\nSUM\td\t20.00\nSUM\te\t20.00\n"
+	out, err := runTimingBudgetCompare(t, slow+"TEST\ta\tTestClassed\t41.00\n", slowRunnerBudget)
+	if err == nil || !strings.Contains(out, "TestClassed") {
+		t.Fatalf("a class breach beyond the scaled ceiling passed: %v\n%s", err, out)
+	}
+}
+
+// Package ratios against a markerless (stale-unit) budget say nothing about the
+// runner, so they must not stretch a blessed class ceiling.
+func TestTimingBudgetIgnoresStaleUnitRatiosWhenScalingCeilings(t *testing.T) {
+	budget := strings.Replace(slowRunnerBudget, `"metric":"package-wall-seconds",`, "", 1)
+	measured := "SUM\ta\t20.00\nSUM\tb\t20.00\nSUM\tc\t20.00\nSUM\td\t20.00\nSUM\te\t30.00\n" +
+		"TEST\ta\tTestClassed\t25.00\n"
+	out, err := runTimingBudgetCompare(t, measured, budget)
+	if err == nil || !strings.Contains(out, "TestClassed") {
+		t.Fatalf("a class breach passed because stale package ratios scaled its ceiling: %v\n%s", err, out)
+	}
+}
+
+// The nonroot lane budgets only four packages at 5s or more; a uniformly slow
+// run of just those must still be forgiven.
+func TestTimingBudgetForgivesAUniformlySlowFourPackageLane(t *testing.T) {
+	budget := `{"metric":"package-wall-seconds","perTestCeilingSeconds":3,` +
+		`"perTestCeilingClasses":{"eval harness":{"ceilingSeconds":20,"tests":["TestClassed"]}},` +
+		`"packages":{"agent":130,"agent/execenv":10,"llm":15,"llm/registry":6,"small":2}}`
+	measured := "SUM\tagent\t260.00\nSUM\tagent/execenv\t20.00\nSUM\tllm\t30.00\nSUM\tllm/registry\t12.00\nSUM\tsmall\t1.00\n" +
+		"TEST\tagent\tTestClassed\t39.00\n"
+	out, err := runTimingBudgetCompare(t, measured, budget)
+	if err != nil || strings.Contains(out, "FAIL") {
+		t.Fatalf("a uniformly slow four-package lane failed the strict check: %v\n%s", err, out)
+	}
+}

@@ -1,3 +1,4 @@
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import "../session/testing/editorGeometry";
 import type { ModelListResponse } from "@evener/appwire-client";
 import { act, screen, waitFor, within } from "@testing-library/react";
@@ -6,7 +7,6 @@ import { connectionStore } from "../../stores/connection";
 import { getToasts } from "../../widgets/toast/store";
 import { errorToastsNaming, toastKinds } from "../../widgets/toast/toastTestUtils";
 import {
-  deferred,
   effortControl,
   expectResolvedDefaultModel,
   fillPrompt,

@@ -264,6 +264,26 @@ func OpenWithRetention(path string, policy RetentionPolicy) (*Store, error) {
 	return openFSWithRetention(afero.NewOsFs(), path, storeFaults{}, policy)
 }
 
+// OpenWithDirSync is Open with the directory sync replaced by sync, so a test
+// can drive the failure behind a landed rename (RenameLanded) through callers
+// that must confirm durability before they go on.
+func OpenWithDirSync(path string, sync func(dir string) error) (*Store, error) {
+	faults := storeFaults{syncDir: func(_ afero.Fs, dir string) error { return sync(dir) }}
+	return openFSWithRetention(afero.NewOsFs(), path, faults, RetentionPolicy{})
+}
+
+// SyncDir makes the store file's directory entry durable. A write that returns
+// RenameLanded published its state but could not prove the rename survives a
+// crash; a caller about to move something else forward (the host file, a
+// stripped legacy section) calls this first and waits for it to succeed.
+func (s *Store) SyncDir() error {
+	sync := syncDirFS
+	if s.faults.syncDir != nil {
+		sync = s.faults.syncDir
+	}
+	return sync(s.fs, filepath.Dir(s.path))
+}
+
 // openFS is the construction seam beneath Open: it builds a Store over an
 // injected afero.Fs so tests can drive persistence and the write's failure
 // paths.

@@ -443,6 +443,13 @@ Evener reads the command's **stdout**, **stderr**, and **exit code**.
 > when stderr is blank. SessionStart failures remain user-only; SessionEnd outputs
 > are discarded. Print decision JSON only when you exit 0.
 
+Evener keeps at most **1 MiB of stdout and 1 MiB of stderr** per command hook, so
+a hook that floods its output cannot exhaust the session's memory. The hook still
+runs to completion and its exit code is honored, so an exit-2 block still blocks.
+A stream past the cap is kept as its first and last half-MiB around an
+`[... N bytes omitted ...]` marker; a JSON decision that large no longer parses,
+so it is read as plain text rather than as a decision.
+
 The output JSON Evener reads (exit 0):
 
 ```json

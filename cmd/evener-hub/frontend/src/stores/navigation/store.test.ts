@@ -9,6 +9,7 @@
 // convergence - is appwire-client/typescript/state/navigation/store.test.ts.
 import type { NavigationReadParams, NavigationReadResponse } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { capability, manifest, wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { navigationInvalidatedNotification } from "@evener/appwire-client/testing/notifications";
@@ -20,15 +21,6 @@ import { initNavigation, navigationStore, resetNavigationStoreForTests } from ".
 const generation = "generation_test";
 const flush = async () => {
   for (let i = 0; i < 64; i++) await Promise.resolve();
-};
-const deferred = <T>() => {
-  let resolve!: (value: T) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((r, j) => {
-    resolve = r;
-    reject = j;
-  });
-  return { promise, resolve, reject };
 };
 const emptyManifest = (overrides = {}) => manifest(overrides);
 type NavigationScript = (params: NavigationReadParams) => NavigationReadResponse | Promise<NavigationReadResponse>;
