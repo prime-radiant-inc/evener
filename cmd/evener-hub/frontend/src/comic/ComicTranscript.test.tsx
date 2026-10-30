@@ -409,6 +409,157 @@ test("keeps an item-backed point fixed with itemless errors across prepend, resi
   mounted.unmount();
 });
 
+async function mountPendingIndexReader(onTestFinished: (cleanup: () => void) => void) {
+  // Real Comic + VirtualList + TanStack, with only browser layout and frame delivery
+  // supplied here. The preceding row grows 32px and the target grows 39px in the
+  // same measurement batch, just as in the phone-width browser failure.
+  const frames = new Map<number, FrameRequestCallback>();
+  let frameID = 0;
+  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+    frames.set(++frameID, callback);
+    return frameID;
+  });
+  vi.stubGlobal("cancelAnimationFrame", (id: number) => frames.delete(id));
+  const frame = async () => {
+    await act(async () => {
+      const pending = [...frames.values()];
+      frames.clear();
+      for (const callback of pending) callback(0);
+    });
+  };
+  const rowHeight = (node: HTMLElement) => {
+    if (node.querySelector('[data-comic-entry="m-10"]')) return 412;
+    if (node.querySelector('[data-comic-entry="m-11"]')) return 419;
+    return node.querySelector("[data-comic-entry]") ? 380 : 20;
+  };
+  const isPort = (node: HTMLElement) => node.parentElement?.hasAttribute("data-comic-scroll");
+  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(320);
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(320);
+  vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(500);
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+    return this.hasAttribute("data-index") ? rowHeight(this) : isPort(this) ? 500 : 20;
+  });
+  vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(function (this: HTMLElement) {
+    return isPort(this) ? Number.parseFloat((this.firstElementChild as HTMLElement).style.height) : 20;
+  });
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    const row = this.closest<HTMLElement>("[data-index]");
+    if (row) {
+      const port = row.parentElement!.parentElement!;
+      const rowTop = Number.parseFloat(row.style.transform.slice("translateY(".length)) - port.scrollTop;
+      return new DOMRect(0, rowTop + (this === row ? 0 : 62.75), 320, this === row ? rowHeight(row) : 20);
+    }
+    return new DOMRect(0, 0, 320, this.style.height ? Number.parseFloat(this.style.height) : isPort(this) ? 500 : 20);
+  });
+  const measuredPoints: { entryId: string | undefined; offset: number; top: number }[] = [];
+  const createRange = document.createRange.bind(document);
+  vi.spyOn(document, "createRange").mockImplementation(() => {
+    const range = createRange();
+    range.getBoundingClientRect = () => {
+      const source = range.startContainer.parentElement!.closest<HTMLElement>("[data-comic-entry]")!;
+      const rect = source.getBoundingClientRect();
+      measuredPoints.push({ entryId: source.dataset.comicEntry, offset: range.startOffset, top: rect.top });
+      return rect;
+    };
+    return range;
+  });
+  const writes: { top: number; sourceMounted: boolean }[] = [];
+  const originalScrollTo = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTo");
+  Object.defineProperty(HTMLElement.prototype, "scrollTo", {
+    configurable: true,
+    value(this: HTMLElement, options: ScrollToOptions) {
+      this.scrollTop = options.top ?? this.scrollTop;
+      writes.push({ top: this.scrollTop, sourceMounted: !!this.querySelector('[data-comic-entry="m-11"]') });
+    },
+  });
+  onTestFinished(() => {
+    if (originalScrollTo) Object.defineProperty(HTMLElement.prototype, "scrollTo", originalScrollTo);
+    else Reflect.deleteProperty(HTMLElement.prototype, "scrollTo");
+  });
+  const position = {
+    mode: "away" as const,
+    sessionRef: "local:test",
+    path: [],
+    entryId: "m-11",
+    offset: 0,
+    viewportOffset: 23.75,
+  };
+  writeComicPosition("local:test", position);
+  const entries = Array.from({ length: 32 }, (_, index) => ({
+    ...entry,
+    id: `m-${index}`,
+    sourceItemId: `source-m-${index}`,
+    sourceIndex: index,
+    sourceTurnId: undefined,
+  }));
+  const older = history();
+  const mounted = render(<Reader entries={entries} older={older} />);
+  const port = mounted.container.querySelector("[data-comic-scroll]")!.firstElementChild as HTMLElement;
+  await act(async () => {}); // Drain real row measurements without running RAF reconciliation.
+  await frame(); // Commit the initial width while the source is still outside the window.
+  expect(port.querySelector('[data-comic-entry="m-11"]')).toBeNull();
+  expect(writes.some(({ top, sourceMounted }) => top > 0 && !sourceMounted)).toBe(true);
+  expect(measuredPoints).toEqual([]);
+  expect(frames.size).toBeGreaterThan(0);
+  return { port, frames, frame, measuredPoints, position, mounted, entries, older };
+}
+
+test("keeps a zero-delta source placement after pending index reconciliation", async ({ onTestFinished }) => {
+  const { port, frames, frame, measuredPoints, position, mounted, entries, older } =
+    await mountPendingIndexReader(onTestFinished);
+  await act(async () => fireEvent.scroll(port)); // Deliver only the native event from the real coarse write.
+  const source = port.querySelector<HTMLElement>('[data-comic-entry="m-11"]')!;
+  expect(source.dataset.comicSession).toBe("local:test");
+  expect(source.dataset.comicPath).toBe("[]");
+  expect(source.dataset.comicStart).toBe("0");
+  expect(measuredPoints.length).toBeGreaterThan(0);
+  // Even the FIRST measured source placement has zero delta. A prior precise
+  // scroll would already replace the coarse command and miss this regression.
+  for (const point of measuredPoints) expect(point).toEqual({ entryId: "m-11", offset: 0, top: 23.75 });
+  expect(source.getBoundingClientRect().top).toBe(23.75);
+  expect(readComicPosition("local:test")).toEqual(position);
+  expect(frames.size).toBeGreaterThan(0);
+
+  await frame(); // TanStack's pending index reconciliation must not realign the row top.
+  expect(source.getBoundingClientRect().top).toBe(23.75);
+  await act(async () => fireEvent.scroll(port));
+  await frame();
+  expect(source.getBoundingClientRect().top).toBe(23.75);
+  expect(readComicPosition("local:test")).toEqual(position);
+  expect(frames.size).toBe(0);
+  // Repeated equal-geometry commits can replace the command, but must not form
+  // a scroll/layout/frame loop or change the reader's persisted source point.
+  for (let commit = 0; commit < 2; commit += 1) {
+    mounted.rerender(<Reader entries={entries} older={older} />);
+    await act(async () => fireEvent.scroll(port));
+    await frame();
+    expect(frames.size).toBe(0);
+    expect(source.isConnected).toBe(true);
+    expect(source.getBoundingClientRect().top).toBe(23.75);
+    expect(readComicPosition("local:test")).toEqual(position);
+  }
+  mounted.unmount();
+});
+
+test("latest cancels an outstanding coarse source placement before measurement", async ({ onTestFinished }) => {
+  const { port, frame, mounted, entries, older } = await mountPendingIndexReader(onTestFinished);
+  await act(async () => fireEvent.click(screen.getByRole("button", { name: /latest/i })));
+  await act(async () => fireEvent.scroll(port));
+  await frame();
+  expect(port.querySelector('[data-comic-entry="m-31"]')).not.toBeNull();
+  expect(port.scrollTop).toBe(port.scrollHeight - port.clientHeight);
+  expect(readComicPosition("local:test")).toEqual({ mode: "end", sessionRef: "local:test", path: [] });
+  // A later valid commit must follow the new destination, not revive the
+  // unmeasured source whose index command was pending when Latest was clicked.
+  mounted.rerender(<Reader entries={entries} older={older} />);
+  await frame();
+  expect(port.querySelector('[data-comic-entry="m-31"]')).not.toBeNull();
+  expect(port.querySelector('[data-comic-entry="m-11"]')).toBeNull();
+  expect(port.scrollTop).toBe(port.scrollHeight - port.clientHeight);
+  expect(readComicPosition("local:test")).toEqual({ mode: "end", sessionRef: "local:test", path: [] });
+  mounted.unmount();
+});
+
 test("mounts bounded source rows rather than the whole loaded history", async () => {
   const entries = Array.from({ length: 500 }, (_, index) => ({ ...entry, id: `m-${index}`, sourceIndex: index }));
   const mounted = render(<Reader entries={entries} older={history()} />);

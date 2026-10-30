@@ -446,17 +446,20 @@ test.each(["doc", "sessionTasks"] as const)(
         const reference = bindFilePath("/tmp/handoff.md", "/tmp");
         if (!reference) throw new Error("fixture document reference missing");
         openDocBeside({ session: ref, reference, sourcePaneId: fixture.pane.id });
+        await import("../panes/doc/DocPane");
       } else workspaceStore.getState().openPane(type, { ref }, { slot: "secondary" });
     });
-    // Tasks is an ordinary non-conversation owner of the same ref. Its own
-    // claim continues to follow existing semantics, but cannot adopt a bridge.
-    const ordinaryReaders = type === "sessionTasks" ? 1 : 0;
+    if (type === "doc") expect(screen.getByRole("button", { name: "Reload" })).not.toBeNull();
+    // Both loaded panes own an ordinary claim, but neither can adopt a bridge.
     await act(async () => {
       fixture.setMobile(true);
     });
     expect(document.querySelector("[data-stacked-pane-type]")?.getAttribute("data-stacked-pane-type")).toBe(type);
-    expect(snapshot().foreground).toBe(ordinaryReaders);
-    if (ordinaryReaders === 0) expect(snapshot().items).toEqual([]);
+    if (type === "doc") expect(screen.getByRole("button", { name: "Reload" })).not.toBeNull();
+    expect(snapshot().foreground).toBe(1);
+    if (type === "doc") assertPreserved(fixture);
+    fixture.view.unmount();
+    expect(snapshot()).toMatchObject({ foreground: 0, background: 1, items: [] });
     await disposeFixture(fixture);
   },
 );
