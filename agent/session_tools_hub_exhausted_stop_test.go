@@ -50,6 +50,10 @@ func TestManagerStopExhaustedDelegateWithRunningShell(t *testing.T) {
 	// Registered after the fixture so stop/exit proof precedes Session.Close and
 	// TempDir removal even when a prerequisite or assertion fails.
 	t.Cleanup(func() {
+		// Stop completion can precede the previous driver's publication tail.
+		if joined, err := root.delegateController.joinStopReconcileDriver(tripwireCtx(t)); !joined || err != nil {
+			t.Errorf("cleanup previous stop driver: joined=%v err=%v", joined, err)
+		}
 		for _, row := range root.delegateController.Snapshot().rows {
 			if _, err := jobStopTool(context.Background(), root, map[string]any{"target": row.id, "max_wait_ms": 5000}, 0); err != nil {
 				t.Errorf("cleanup human stop %s: %v", row.id, err)
@@ -172,6 +176,10 @@ func TestManagerStopExhaustedDelegateWithRunningShell(t *testing.T) {
 
 	// On RED this cancels the exact work Manager left alive. On GREEN it
 	// verifies that the independent human route leaves the cancelled shell so.
+	// Join the previous driver, not only its earlier durable stop completion.
+	if joined, err := root.delegateController.joinStopReconcileDriver(tripwireCtx(t)); !joined || err != nil {
+		t.Fatalf("previous stop driver: joined=%v err=%v", joined, err)
+	}
 	if _, err := jobStopTool(t.Context(), root, map[string]any{"target": row.id, "max_wait_ms": 5000}, 0); err != nil {
 		t.Fatalf("SETUP: human control stop failed: %v", err)
 	}
