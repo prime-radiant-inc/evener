@@ -884,6 +884,33 @@ it("actual screen retries an undelivered completion without user action", async 
 	});
 });
 
+it("actual screen restores its own rows while an unrelated completion stays undelivered", async () => {
+	const f = await mount();
+	await f.offline();
+	const source = await enqueue(f, "unrelated blocked source");
+	act(() => f.tree.unmount());
+	await act(async () => {
+		const claimed = await f.runtime.storage.transferToRecovery(source.clientMutationId, "editing");
+		expect(claimed?.clientMutationId).toBe(source.clientMutationId);
+	});
+	// An unrelated identity's completion resolved, but its acknowledgment
+	// cannot record while the mutation store refuses writes: the obligation
+	// stays outstanding forever without touching this conversation.
+	const ledger = getNativeMutationRuntime().storage.submissionLedger;
+	ledger.beginSubmission("unrelated-token", { hubId: "hub-1", sessionRef: "elsewhere" }, ["unrelated-recovery"]);
+	ledger.resolveSubmission("unrelated-token", "completed", ["unrelated-recovery"], []);
+	harness.handoffWriteFailure = true;
+	const tree = await f.recreateOffline();
+	await settle();
+	// No user action, no failure surfaced: this screen's own retained edit
+	// restores even while the unrelated completion cannot converge.
+	expect(tree.root.findAllByProps({ accessibilityLabel: "Retry" })).toHaveLength(0);
+	expect(f.document.getSnapshot().record).toMatchObject({
+		draft: "unrelated blocked source",
+		composer: { recoveryIds: [source.clientMutationId] },
+	});
+});
+
 it("actual screen completes a pending handoff after its write failures recover", async () => {
 	const f = await mount();
 	await f.offline();

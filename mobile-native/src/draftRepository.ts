@@ -276,6 +276,14 @@ export class DraftRepository {
 			.map((row) => this.mapTransfer(row));
 	}
 
+	/** One transfer row by id, whatever its state: the retry pass re-reads
+	 * each hop before executing it, so a reroute an earlier hop in the same
+	 * batch committed is always honored, never the stale batch object. */
+	transferById(transferId: string): DraftTransfer | undefined {
+		const row = this.db.getFirstSync<TransferRow>("SELECT * FROM draft_transfer_log WHERE transfer_id = ?", transferId);
+		return row === null ? undefined : this.mapTransfer(row);
+	}
+
 	/** The latest committed hop out of an identity: the forward pointer a
 	 * completion follows toward the record's current owner. A row whose
 	 * transfer never committed moved nothing, so it is not a pointer. */

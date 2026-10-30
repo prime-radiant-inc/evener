@@ -25,6 +25,7 @@ export type DraftStorage = Pick<
 	| "beginTransfer"
 	| "outstandingTransfers"
 	| "pendingTransfersTo"
+	| "transferById"
 	| "latestCommittedTransferFrom"
 	| "latestCommittedTransferFromCarrying"
 	| "latestTransferCarrying"
@@ -122,8 +123,18 @@ export class DraftLibrary {
 			transfers = [];
 		}
 		for (const transfer of transfers) {
-			if (transfer.deliveredHash === null) this.attemptHandoff(transfer);
-			else this.settleTransfer(transfer);
+			// A hop earlier in this batch can reroute this row atomically with
+			// its own commit: execute the durable row as it stands now, never
+			// the stale object the batch was planned from.
+			let current: DraftTransfer | undefined;
+			try {
+				current = this.repository().transferById(transfer.transferId);
+			} catch {
+				continue;
+			}
+			if (current === undefined) continue;
+			if (current.deliveredHash === null) this.attemptHandoff(current);
+			else this.settleTransfer(current);
 		}
 		this.reconcileResolvedObligations();
 	}
@@ -291,7 +302,11 @@ export class DraftLibrary {
 		} catch {
 			return false;
 		}
-		this.pending.delete(this.handoffKey(transfer.to));
+		// Only this hop's own unrecorded fallback goes: a rerouted incoming
+		// intent waiting on the same key must survive until it durably records.
+		const outgoing = this.pending.get(this.handoffKey(transfer.to));
+		if (outgoing !== undefined && sameDestination(outgoing.from, transfer.from))
+			this.pending.delete(this.handoffKey(transfer.to));
 		destination.adopt(snapshot.record);
 		if (destination !== source) {
 			source.retire();
@@ -349,7 +364,11 @@ export class DraftLibrary {
 					})),
 				]);
 			this.repository().forgetTransfer(transfer.transferId);
-			this.pending.delete(this.handoffKey(transfer.to));
+			// The same rule as the committed hop's cleanup: a rerouted
+			// incoming intent on this key outlives the refused hop's fallback.
+			const refused = this.pending.get(this.handoffKey(transfer.to));
+			if (refused !== undefined && sameDestination(refused.from, transfer.from))
+				this.pending.delete(this.handoffKey(transfer.to));
 		} catch {
 			// The refusal stays pending until its writes commit.
 		}
@@ -502,6 +521,22 @@ export class DraftLibrary {
 					.flatMap((recoveryId) => ledger.deliveryDestinations(recoveryId))
 					.map((destination) => [destination.hubId + "\u0000" + destination.sessionRef, destination]),
 			);
+			// A committed hop still owing settlement can carry the executed
+			// input onward before any delivery record exists for it: the
+			// current owner of its record must receive the completed markers
+			// too, or a later settlement would leave the migrated source
+			// editable there. An owner that cannot be named defers the
+			// acknowledgment rather than guessing.
+			for (const transfer of this.repository().outstandingTransfers()) {
+				if (transfer.deliveredHash === null) continue;
+				const carries = [...transfer.completedCommandRecoveryIds, ...transfer.releasedRecoveryIds].some((recoveryId) =>
+					completion.completedCommandIds.includes(recoveryId),
+				);
+				if (!carries) continue;
+				const carrying = this.recordOwner(transfer.to, transfer.carriedGeneration ?? null);
+				if (carrying === undefined) return false;
+				seen.set(carrying.hubId + "\u0000" + carrying.sessionRef, carrying);
+			}
 			routed = [...seen.values()].filter((destination) => !sameDestination(destination, owner));
 		} catch {
 			return false;

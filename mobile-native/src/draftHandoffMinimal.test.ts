@@ -728,4 +728,157 @@ describe("durable minimal handoffs", () => {
 		});
 		expect(repository.read(c).releasedRecoveryIds).toEqual(["recovered-a"]);
 	});
+
+	it("a retry batch honors a reroute an earlier hop in the same batch committed", () => {
+		const { repository, ledger } = setup();
+		const a = destination("a");
+		const b = destination("b");
+		const c = destination("c");
+		repository.write(a, {
+			draft: "a work",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		repository.write(b, { draft: "b work", unconfirmed: null });
+		let failingRef: string | null = null;
+		const failing = new Proxy(repository, {
+			get(target, property) {
+				const value = Reflect.get(target, property, target);
+				if (property === "read" && typeof value === "function")
+					return (...args: unknown[]) => {
+						const destination_ = args[0] as DraftDestination;
+						if (destination_.sessionRef === failingRef) throw new Error("drafts unavailable");
+						return (value as (...inner: unknown[]) => unknown).apply(target, args);
+					};
+				return typeof value === "function" ? (value as (...inner: unknown[]) => unknown).bind(target) : value;
+			},
+		}) as DraftRepository;
+		let batchIds = 0;
+		const live = new DraftLibrary(
+			() => failing,
+			() => `id-batch-${++batchIds}`,
+			() => ledger,
+		);
+		// B -> C is intended first but cannot commit; A -> B is intended next
+		// and cannot load its source. The batch runs in creation order.
+		failingRef = "c";
+		expect(live.handoff(b, c)).toBe(false);
+		failingRef = "a";
+		expect(live.handoff(a, b)).toBe(false);
+		failingRef = null;
+		live.retryPendingHandoffs();
+		// B -> C commits and reroutes A's hop onward; the batch must execute
+		// the rerouted row, never its stale A -> B object - A's work stays
+		// with A, refused at the occupied C, never landed at the retired B.
+		expect(repository.read(c)).toMatchObject({ draft: "b work" });
+		expect(repository.read(b).draft).toBe("");
+		expect(repository.read(a)).toMatchObject({
+			draft: "a work",
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		expect(repository.read(c).releasedRecoveryIds).toEqual(["recovered-a"]);
+	});
+
+	it("a rerouted unrecorded intent survives the hop that rerouted it", () => {
+		const { repository, ledger } = setup();
+		const a = destination("a");
+		const b = destination("b");
+		const c = destination("c");
+		repository.write(a, {
+			draft: "a work",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		repository.write(b, { draft: "b work", unconfirmed: null });
+		let failStore = false;
+		const failing = new Proxy(repository, {
+			get(target, property) {
+				const value = Reflect.get(target, property, target);
+				if (property === "beginTransfer" && typeof value === "function" && failStore)
+					return () => {
+						throw new Error("drafts unavailable");
+					};
+				return typeof value === "function" ? (value as (...inner: unknown[]) => unknown).bind(target) : value;
+			},
+		}) as DraftRepository;
+		let intentIds = 0;
+		const live = new DraftLibrary(
+			() => failing,
+			() => `id-intent-${++intentIds}`,
+			() => ledger,
+		);
+		// A -> B cannot record: the intent lives only in memory.
+		failStore = true;
+		expect(live.handoff(a, b)).toBe(false);
+		failStore = false;
+		// B -> C commits and reroutes that intent onward: the redirected
+		// intent must outlive the committing hop's own cleanup.
+		expect(live.handoff(b, c)).toBe(true);
+		expect(live.hasPendingHandoff(c)).toBe(true);
+		live.retryPendingHandoffs();
+		expect(live.hasPendingHandoff(c)).toBe(false);
+		expect(repository.read(a)).toMatchObject({
+			draft: "a work",
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		expect(repository.read(c).releasedRecoveryIds).toEqual(["recovered-a"]);
+	});
+
+	it("an undelivered completion reaches owners of transfers still carrying its input", async () => {
+		const { repository, ledger, library } = setup();
+		const a = destination("a");
+		const b = destination("b");
+		const c = destination("c");
+		repository.write(a, {
+			draft: "current",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		repository.write(b, { draft: "b work", unconfirmed: null });
+		const live = library();
+		const source = live.open(a);
+		let finish!: () => void;
+		const submitted = source.submitBuiltinCommand(
+			() =>
+				new Promise<boolean>((resolve) => {
+					finish = () => resolve(true);
+				}),
+		);
+		// The handoff into occupied B refuses: the cited sources are released
+		// at B, and the delivery rows name B.
+		expect(live.handoff(a, b)).toBe(false);
+		// B's record moves on, but the settlement's delivery records cannot
+		// write: the committed hop stays owed with no rows naming C.
+		let failDeliveries = true;
+		const failingLedger = new Proxy(ledger, {
+			get(target, property) {
+				const value = Reflect.get(target, property, target);
+				if (property === "writeDeliveries" && typeof value === "function" && failDeliveries)
+					return () => {
+						throw new Error("deliveries unavailable");
+					};
+				return typeof value === "function" ? (value as (...inner: unknown[]) => unknown).bind(target) : value;
+			},
+		}) as typeof ledger;
+		const mover = new DraftLibrary(
+			() => repository,
+			() => "id-mover",
+			() => failingLedger,
+		);
+		expect(mover.handoff(b, c)).toBe(true);
+		expect(mover.hasPendingHandoff(c)).toBe(true);
+		// The command completes before the settlement retries: the executed
+		// input's completed markers must reach C - the identity whose record
+		// carries them - before the obligation is acknowledged.
+		finish();
+		await submitted;
+		expect(repository.read(c).completedCommandRecoveryIds).toEqual(["recovered-a"]);
+		failDeliveries = false;
+		const restarted = library();
+		restarted.retryPendingHandoffs();
+		expect(ledger.outstandingObligations()).toHaveLength(0);
+		expect(restarted.hasPendingHandoff(c)).toBe(false);
+		expect(repository.read(c).completedCommandRecoveryIds).toEqual(["recovered-a"]);
+		expect(repository.read(b).completedCommandRecoveryIds).toEqual(["recovered-a"]);
+	});
 });

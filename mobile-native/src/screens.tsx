@@ -2961,14 +2961,14 @@ function ConversationScreenView({
 				return;
 			}
 			// A resolved obligation still owing its completion's delivery keeps
-			// its capture held and Send blocked: this effect's retry pass is the
-			// runner that delivers it, so the timer stays armed until the
-			// delivery lands - restoring the storage alone must converge it.
+			// its capture held somewhere in the app: this effect's retry pass
+			// is the runner that delivers it, so the timer stays armed until
+			// the delivery lands - restoring the storage alone must converge
+			// it. The wait never blocks this conversation's own restoration:
+			// the suppressed ids are already excluded above, and an unrelated
+			// stuck acknowledgment must not freeze editable rows here.
 			const undelivered = drafts.hasUndeliveredCompletions();
-			if (undelivered === undefined || undelivered) {
-				deferUntilOwnershipReads();
-				return;
-			}
+			if (undelivered === undefined || undelivered) deferUntilOwnershipReads();
 			for (const row of retained.recovery) {
 				if (!current || imageSelection.getSnapshot().busy) return;
 				if (row.recoveryKind === "editing" && !deliberatelyReleased.has(row.clientMutationId))
