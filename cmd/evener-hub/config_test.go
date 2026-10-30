@@ -790,7 +790,10 @@ func TestHubTOMLRefusesUnknownFieldsInReservedRecordTables(t *testing.T) {
 			if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			_, err := LoadConfig(path)
+			if _, err := LoadConfig(path); err != nil {
+				t.Fatalf("the operator's config refused over a record section: %v", err)
+			}
+			_, err := readLegacyRecords(path)
 			if err == nil {
 				t.Fatal("a reserved record carrying a field this build does not decode loaded, want a refusal")
 			}

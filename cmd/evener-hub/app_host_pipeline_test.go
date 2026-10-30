@@ -93,7 +93,11 @@ func (f *pipelineFixture) restart(t *testing.T) *hubHostManager {
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	doc := hostBootDocument(cfg, f.store)
+	legacy, err := readLegacyRecords(f.configPath)
+	if err != nil {
+		t.Fatalf("readLegacyRecords: %v", err)
+	}
+	doc := hostBootDocument(cfg, legacy, f.store)
 	registry, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
 	if err != nil {
 		t.Fatalf("hostreg.NewSeeded: %v", err)
@@ -206,11 +210,11 @@ func (f *pipelineFixture) carriesIntent(t *testing.T, name string) bool {
 // readPipelineConfig decodes the fixture's hub.toml and, once the operation
 // store holds the machine records, overlays them: the file carries only the
 // [[hosts]] from then on, and the records a boot left are the store's.
-func readPipelineConfig(t *testing.T, path string) (Config, bool) {
+func readPipelineConfig(t *testing.T, path string) (loadedConfig, bool) {
 	t.Helper()
-	cfg, err := LoadConfig(path)
+	cfg, err := loadWithRecords(path)
 	if err != nil {
-		t.Fatalf("LoadConfig(%s): %v", path, err)
+		t.Fatalf("loadWithRecords(%s): %v", path, err)
 	}
 	store, err := hostops.Open(hostops.StorePath(filepath.Dir(path)))
 	if err != nil {
@@ -221,20 +225,16 @@ func readPipelineConfig(t *testing.T, path string) (Config, bool) {
 		if err != nil {
 			t.Fatalf("read the store's records: %v", err)
 		}
-		cfg.HostRecords, cfg.Generations = records.HostRecords, records.Generations
-		cfg.MutationReceipts, cfg.Tombstones = records.MutationReceipts, records.Tombstones
-		cfg.PrunedReceipts, cfg.StagedReceipts = records.PrunedReceipts, records.StagedReceipts
-		cfg.TeardownRemnants, cfg.TeardownAttempts = records.TeardownRemnants, records.TeardownAttempts
-		cfg.PendingStoreSync, cfg.MirrorCommits = records.PendingStoreSync, records.MirrorCommits
+		cfg.hostRecordSet = records
 	}
 	return cfg, true
 }
 
 // loadHubTOMLRecords decodes hub.toml alone: the reserved record sections a
 // legacy-mode manager writes, with no overlay from the operation store.
-func loadHubTOMLRecords(t *testing.T, path string) Config {
+func loadHubTOMLRecords(t *testing.T, path string) loadedConfig {
 	t.Helper()
-	cfg, err := LoadConfig(path)
+	cfg, err := loadWithRecords(path)
 	if err != nil {
 		t.Fatalf("LoadConfig(%s): %v", path, err)
 	}
@@ -1292,7 +1292,7 @@ func TestPerCommitStashIsNotClobberedByALaterRemoval(t *testing.T) {
 	// The restore put the record's own bytes back, so beta is declared again
 	// although the later commit removed it; the move that follows rewrites the
 	// file without the record sections.
-	restored, err := LoadConfig(fixture.configPath)
+	restored, err := loadWithRecords(fixture.configPath)
 	if err != nil {
 		t.Fatalf("LoadConfig after the boot: %v", err)
 	}

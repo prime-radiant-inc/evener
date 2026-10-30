@@ -431,7 +431,7 @@ func TestHostReceiptPurgeNotResurrectedByPreservation(t *testing.T) {
 	if _, err := f.m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "later", Address: "later.example"}}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	cfg, err := LoadConfig(f.configPath)
+	cfg, err := loadWithRecords(f.configPath)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
@@ -498,7 +498,7 @@ func TestHostReceiptEvictionMarkersBounded(t *testing.T) {
 	if _, still := f.m.cfg.store.tombstoneSnapshot()["churn"]; still {
 		t.Fatal("the eviction did not drop the oldest tombstone")
 	}
-	cfg, err := LoadConfig(f.configPath)
+	cfg, err := loadWithRecords(f.configPath)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
@@ -538,7 +538,7 @@ func TestHostReceiptKeyedReAddNotPurgedByItsOwnWrite(t *testing.T) {
 		t.Fatalf("keyed re-add: %v", err)
 	}
 	// The durable file carries the re-add's receipt and no marker for its key.
-	cfg, err := LoadConfig(f.configPath)
+	cfg, err := loadWithRecords(f.configPath)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
@@ -588,7 +588,7 @@ func TestHostTombstonePruneRaisesPresenceCounter(t *testing.T) {
 	if _, err := f.m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "later", Address: "later.example"}}); err != nil {
 		t.Fatalf("Add(later): %v", err)
 	}
-	cfg, err := LoadConfig(f.configPath)
+	cfg, err := loadWithRecords(f.configPath)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
@@ -610,7 +610,7 @@ func TestHostTombstonePruneRaisesPresenceCounter(t *testing.T) {
 		t.Fatalf("second Remove: %v", err)
 	}
 	boot := bootHostManager(t, f.configPath)
-	cfg, err = LoadConfig(f.configPath)
+	cfg, err = loadWithRecords(f.configPath)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}

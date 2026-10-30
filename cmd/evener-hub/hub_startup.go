@@ -473,7 +473,14 @@ func (r *hubRuntime) connectHosts() (func(), error) {
 	// when its custody can be shown whole; one whose custody cannot is left as it
 	// is until it is repaired (openHostOpsStore).
 	r.openOpsStore()
-	boot := hostBootDocument(cfg, r.opsStore)
+	legacy, err := readLegacyRecords(r.opts.configPath)
+	if err != nil {
+		// The reserved sections an earlier build wrote cannot be read. The hosts
+		// come up with identities minted at load, and the manager keeps host
+		// changes paused instead of moving records it cannot read.
+		r.logf("hub.toml record sections unreadable; hosts keep serving and host changes pause: %v", err)
+	}
+	boot := hostBootDocument(cfg, legacy, r.opsStore)
 	r.hostEntries = boot.Hosts
 	// Config loading already validated these through hostreg.New; build the
 	// real registry used by the SSH manager and handle the (impossible) error
@@ -481,7 +488,6 @@ func (r *hubRuntime) connectHosts() (func(), error) {
 	// counters first, so a hub.toml host with no persisted record is minted
 	// above every mark the records carry (registry spec 08 §1) rather than below
 	// a mark another name retained.
-	var err error
 	r.hostRegistry, err = hostreg.NewSeeded(r.hostEntries, boot.Records.highWaterMarks())
 	if err != nil {
 		return nil, fmt.Errorf("validate hosts: %w", err)
