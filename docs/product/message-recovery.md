@@ -115,6 +115,43 @@ sources. An already-open resumed draft adopts the transferred record
 immediately. The retired ref keeps no draft or recovery ownership. A resumed
 destination that already holds work is left untouched.
 
+### Durable handoff ledger
+
+An identity-changing handoff never depends on the process that started it. Each
+hop writes a row in the drafts store's transfer log inside the transfer's own
+savepoint: the composition fingerprint it delivered, the capture token and
+record generation it carried, and the completed and released recovery
+dispositions its composition had settled, including the evidence of
+resolutions that arrived while the hop could not commit. A hop that cannot
+commit stays pending in the same row, and the identity's retargeted recovery
+rows follow the destination the hop names. A destination that consumed a
+transferred composition keeps only its settlement markers; a later handoff
+merges those markers into the incoming work instead of refusing the empty
+composer.
+
+Every submission records an obligation in the mutations store before any
+transport attempt: its origin identity and the recovery sources it captured.
+A resolution - completed, not-sent or failed - records its dispositions
+durably. The obligation is acknowledged only after its completion is durably
+delivered at the identity that owns the record now, following committed
+transfer pointers by record generation, capped in length and fail-closed: an
+unreadable ledger or store means unknown, and unknown defers, never guesses.
+
+```mermaid
+flowchart LR
+  Hop[Identity change records its hop] --> Savepoint[Transfer savepoint: record, evidence, markers]
+  Savepoint --> Pending[Uncommitted hop stays pending]
+  Submit[Submission records its obligation] --> Resolve[Resolution records dispositions]
+  Resolve --> Deliver[Deliver at the record owner via transfer pointers]
+  Deliver --> Ack[Acknowledge only after durable delivery]
+  Pending --> Recover[Retry pass commits the hop with the evidence it owes]
+```
+
+No process owns a hop's recovery. A mounted screen's reconciliation pass is
+the runner: it retries pending hops, undelivered completions and unknown
+ownership reads on bounded timers, so storage recovering alone converges a
+handed-off draft or a held completion with no user action and no remount.
+
 Browser and native outboxes share one receipt-settlement rule from the AppWire
 package (`retainsAcceptedCopy`, `settlementRetiresRecovery`): a `pending` receipt
 keeps an accepted copy of an input-bearing turn and of a note save until
@@ -222,7 +259,9 @@ duplicate; only a reproduced identity/projection case can establish that cause.
   `session/useComposerDraft.ts`.
 - Native mutation authority: `nativeMutationRuntime.ts` and
   `mutationOutboxStorage.ts`; draft ownership and bytes: `draftDocument.ts` and
-  `draftRepository.ts`; separate-store coordination: `queuedMessageControls.ts`;
+  `draftRepository.ts`; durable handoff retries and settlement:
+  `draftLibrary.ts`; submission obligations and delivery records:
+  `draftSubmissionLedger.ts`; separate-store coordination: `queuedMessageControls.ts`;
   successful non-message built-ins use `submitBuiltinCommand` and durable
   completion markers, while `/steer` and `/queue` retain receipt settlement.
 - Native acquisition and projections: `useNativeMutationRecovery.ts`,
