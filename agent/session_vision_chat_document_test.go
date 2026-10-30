@@ -95,8 +95,7 @@ func chatRequestCarriesImage(body map[string]any) bool {
 	messages, _ := body["messages"].([]any)
 	for _, m := range messages {
 		message, _ := m.(map[string]any)
-		switch content := message["content"].(type) {
-		case []any:
+		if content, ok := message["content"].([]any); ok {
 			for _, part := range content {
 				entry, _ := part.(map[string]any)
 				if entry["type"] == "image_url" {
@@ -223,5 +222,74 @@ func TestDescribeImage_ChatRouteStillDescribesImages(t *testing.T) {
 	url, _ := imageURL["url"].(string)
 	if image["type"] != "image_url" || !strings.HasPrefix(url, "data:image/png;base64,") {
 		t.Fatalf("image part = %#v, want image_url carrying the raster data URI", content[1])
+	}
+}
+
+// The gate must not strand a document the session model can still describe:
+// a configured chat vision route cannot carry a PDF, but a document-capable
+// session model can, so the side-channel routes there — the same fallback
+// the retry leg gives a failed attempt — instead of steering vision
+// unavailable. Only when neither route can represent the document is it
+// undeliverable.
+func TestDescribeImage_ChatVisionRouteFallsBackToDocumentCapableSessionModel(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	chatRequests := 0
+	chatSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		chatRequests++
+		mu.Unlock()
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"no document provided","type":"invalid_request_error"}}`))
+	}))
+	t.Cleanup(chatSrv.Close)
+
+	googleRequests := 0
+	googleSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(`{"models":[{"name":"models/pdf-model"}]}`))
+			return
+		}
+		mu.Lock()
+		googleRequests++
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"pdf-result-chat-fallback"}]},"finishReason":"STOP"}]}`))
+	}))
+	t.Cleanup(googleSrv.Close)
+
+	dir := t.TempDir()
+	client := registryClientAt(t, dir, map[string]registry.Provider{
+		"chatvision": {
+			Base: "openai-compatible", APIKey: "test", DefaultModel: "vision-model", InheritModels: new(false),
+			Transport: registry.Transport{BaseURL: chatSrv.URL},
+			Models: map[string]registry.Model{"vision-model": {Caps: registry.Caps{
+				InputModalities: []string{"text", "image"},
+			}}},
+		},
+		"pdfgoogle": {
+			Base: "google", APIKey: "test", DefaultModel: "pdf-model", InheritModels: new(false),
+			Transport: registry.Transport{BaseURL: googleSrv.URL},
+			Models: map[string]registry.Model{"pdf-model": {Caps: registry.Caps{
+				InputModalities: []string{"text", "image", "pdf"}, MultimodalToolResults: new(true),
+			}}},
+		},
+	}, []string{"pdfgoogle"})
+	cfg := SessionConfig{StateDir: dir, VisionModel: "chatvision/vision-model"}
+	sess := newSession(t, withClient(client), withProfile(resolveClientProfile(t, client, "pdfgoogle/pdf-model")), withConfig(cfg))
+
+	result := sess.describeImageCall(context.Background(), tool.ExecResult{
+		ImageData:      validPDFFixture(t),
+		ImageMediaType: "application/pdf",
+		ImagePrompt:    "describe the document",
+	})
+	if result.outcome != visionSideChannelSuccess || result.description != "pdf-result-chat-fallback" {
+		t.Fatalf("PDF describe via document-capable session model = %+v, want the scripted description", result)
+	}
+	if chatRequests != 0 {
+		t.Fatalf("chat route requests = %d, want 0: the document must never be sent to a route that strips it", chatRequests)
+	}
+	if googleRequests != 1 {
+		t.Fatalf("session model requests = %d, want 1", googleRequests)
 	}
 }

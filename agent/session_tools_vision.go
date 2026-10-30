@@ -337,15 +337,20 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 		}}
 	}
 
-	// A document whose route cannot represent it never reaches the provider:
+	// A document whose route cannot represent it never reaches that route:
 	// the chat adapter silently strips the kind (llm.DeliversUserMessageDocuments),
 	// so the model would be asked to describe bytes it never saw — the provider
 	// answers an error the round reports as a vision failure (#5472), or worse,
-	// a confident description of a document it was not given (#4213). Ask the
-	// same question of the route that the retry leg below asks of the session
-	// model, before spending the round trip.
+	// a confident description of a document it was not given (#4213). When the
+	// session model can carry the document — the same test the retry leg below
+	// applies — route there instead, exactly as that leg does after a failed
+	// attempt. Only when neither route can represent the document is it
+	// undeliverable.
 	if mediaPart.Kind == llm.ContentDocument && !s.visionRouteDeliversDocuments(profile, routeProvider, routeModel) {
-		return visionSideChannelResult{outcome: visionSideChannelUndeliverableDocument}
+		if !sessionModelTakesRequestMedia(mediaPart, profile) {
+			return visionSideChannelResult{outcome: visionSideChannelUndeliverableDocument}
+		}
+		routeProvider, routeModel = profile.ID(), profile.Model()
 	}
 
 	visionTimeout := s.visionSideChannelDuration()
