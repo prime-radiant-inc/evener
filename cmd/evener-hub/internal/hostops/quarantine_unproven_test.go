@@ -315,6 +315,17 @@ func TestSecondQuarantineOverRebuiltLegacyCustodyAccountsForDiscardedIDs(t *test
 // fresh imports above the first custody's ids; the skipped ids stay accounted
 // for after the artifacts are cleaned away.
 func TestThirdQuarantineAccountsForIDsSkippedByTheSecond(t *testing.T) {
+	requireProvenThirdQuarantine(t, false)
+}
+
+// The same, over custody and store files an earlier build wrote, with no
+// allocatorFloor: the skipped ids are inferred from the custody files.
+func TestThirdQuarantineOverLegacyFilesAccountsForSkippedIDs(t *testing.T) {
+	requireProvenThirdQuarantine(t, true)
+}
+
+func requireProvenThirdQuarantine(t *testing.T, legacyFiles bool) {
+	t.Helper()
 	path := StorePath(t.TempDir())
 	writeRawStore(t, path, 0o600, quarantinedStoreJSON)
 	if _, err := Open(path); err != nil {
@@ -339,6 +350,24 @@ func TestThirdQuarantineAccountsForIDsSkippedByTheSecond(t *testing.T) {
 	entries, err := os.ReadDir(filepath.Dir(path))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if legacyFiles {
+		floorKey := regexp.MustCompile(`,"allocatorFloor":[0-9]+|"allocatorFloor":[0-9]+,`)
+		writeRawStore(t, path, 0o600, floorKey.ReplaceAllString(string(mustReadFile(t, path)), ""))
+		for _, entry := range entries {
+			if strings.Contains(entry.Name(), ".custody-") {
+				custodyPath := filepath.Join(filepath.Dir(path), entry.Name())
+				if err := os.WriteFile(custodyPath, floorKey.ReplaceAll(mustReadFile(t, custodyPath), nil), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		if err := forgetStore(path); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Open(path); err != nil {
+			t.Fatalf("open of the legacy files: %v", err)
+		}
 	}
 	for _, entry := range entries {
 		if strings.Contains(entry.Name(), ".custody-") || strings.Contains(entry.Name(), ".quarantined-") {
@@ -366,5 +395,49 @@ func TestThirdQuarantineAccountsForIDsSkippedByTheSecond(t *testing.T) {
 	}
 	if family, _, _ := third.HostRecords(); len(family.Hosts) == 0 {
 		t.Fatal("the host records were dropped")
+	}
+}
+
+// failingReadFs fails every read of the store file after the first, as an I/O
+// error on the custody reread would.
+type failingReadFs struct {
+	afero.Fs
+	path  string
+	opens int
+}
+
+func (f *failingReadFs) Open(name string) (afero.File, error) {
+	if name == f.path {
+		f.opens++
+		if f.opens > 1 {
+			return nil, errors.New("input/output error")
+		}
+	}
+	return f.Fs.Open(name)
+}
+
+// An I/O failure while reading the corrupt file for custody is not a content
+// failure: the open reports it and the file is left as it is, to be retried.
+func TestCustodyReadFailureIsNotSetAsideUnproven(t *testing.T) {
+	path := StorePath(t.TempDir())
+	writeRawStore(t, path, 0o600, quarantinedStoreJSON)
+
+	_, err := openFS(&failingReadFs{Fs: afero.NewOsFs(), path: path}, path, storeFaults{})
+
+	if err == nil {
+		t.Fatal("the open set the file aside over an I/O failure")
+	}
+	if errors.Is(err, ErrStoreCorrupt) {
+		t.Fatalf("an I/O failure was classified as store corruption: %v", err)
+	}
+	if body := mustReadFile(t, path); string(body) != quarantinedStoreJSON {
+		t.Fatalf("the file was disturbed: %q", body)
+	}
+	if entries, _ := os.ReadDir(filepath.Dir(path)); len(entries) != 1 {
+		t.Fatalf("artifacts were written: %d entries", len(entries))
+	}
+	// Once reads work again the open takes the quarantine.
+	if _, err := Open(path); err != nil {
+		t.Fatalf("retry: %v", err)
 	}
 }

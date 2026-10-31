@@ -212,12 +212,7 @@ func scanQuarantineArtifacts(fs afero.Fs, storePath string) (quarantineArtifacts
 			}
 			artifacts.custodyStamps[stamp] = true
 			artifacts.custodySignals[stamp] = *custody.signal(custodyPath)
-			artifacts.lineageFloor = max(artifacts.lineageFloor, custody.AllocatorFloor)
-			if !custody.Unproven {
-				// A proven custody file written before allocatorFloor existed
-				// still accounts for every id up to its mark.
-				artifacts.lineageFloor = max(artifacts.lineageFloor, custody.AllocatorHighWaterMark)
-			}
+			artifacts.lineageFloor = max(artifacts.lineageFloor, custody.accountedPrefix())
 			fenceByID := make(map[string]custodyFence, len(custody.Fences))
 			for _, fence := range custody.Fences {
 				fenceByID[fence.RecordID] = fence
@@ -577,6 +572,10 @@ func resolveStoreFS(fs afero.Fs, path string, faults storeFaults) (snapshot, uin
 	}
 	now := time.Now().UTC()
 	custody, err := custodyForCorruptStore(fs, path, epoch+1, now, artifacts)
+	var ioErr *custodyIOError
+	if errors.As(err, &ioErr) {
+		return snapshot{}, 0, nil, err
+	}
 	if err != nil {
 		// The file cannot prove the names it closed. It is set aside all the same,
 		// through the same custody-first steps, with a custody file that says the
