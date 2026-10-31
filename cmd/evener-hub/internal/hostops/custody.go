@@ -74,6 +74,11 @@ type custodyFile struct {
 	// keeps for its hosts instead of losing them with the operation history. It
 	// is absent when the corrupt file had imported none.
 	HostRecords json.RawMessage `json:"hostRecords,omitempty"`
+	// AllocatorFloor is the id range no store of this lineage issued: the
+	// replacement store records it in its own file, so a later quarantine
+	// accounts for the range after these artifacts are cleaned away. Zero when
+	// no unproven set-aside is in the lineage.
+	AllocatorFloor uint64 `json:"allocatorFloor,omitempty"`
 	// Unproven marks a custody file written for a corrupt store that could not
 	// yield a complete snapshot: it carries no fences or ownership, and the
 	// names the corrupt file had closed are not held.
@@ -333,6 +338,7 @@ type custodyDocument struct {
 	Tombstones             *[]tombstoneFile           `json:"tombstones"`
 	CompactionMarks        *[]CompactionMark          `json:"compactionMarks"`
 	CompactionFloor        uint64                     `json:"compactionFloor"`
+	AllocatorFloor         uint64                     `json:"allocatorFloor"`
 	Boundaries             map[string]json.RawMessage `json:"boundaries"`
 	RemovedHosts           map[string]json.RawMessage `json:"removedHosts"`
 	Tokens                 json.RawMessage            `json:"tokens"`
@@ -431,6 +437,7 @@ func readStoreForCustody(fs afero.Fs, path string) (snapshot, error) {
 		state.CompactionMarks = append([]CompactionMark(nil), (*file.CompactionMarks)...)
 	}
 	state.CompactionFloor = file.CompactionFloor
+	state.AllocatorFloor = file.AllocatorFloor
 	state.Boundaries = make(map[string]Boundary, len(file.Boundaries))
 	state.RemovedHosts = make(map[string]RemovedHost, len(file.RemovedHosts))
 	for name, value := range file.Boundaries {
@@ -485,15 +492,16 @@ func readStoreForCustody(fs afero.Fs, path string) (snapshot, error) {
 // corrupt file's own high-water mark, so a later quarantine can never mint an id
 // an earlier custody file still references: an id-only resolve (§5) must never
 // alias an unrelated record.
-// unprovenFloor is the highest allocator floor an unproven set-aside gave this
-// store's lineage (zero when there is none). The store never issued an id at or
-// below it, so those ids are accounted for without evidence.
+// lineageFloor is the highest allocator floor an unproven set-aside gave this
+// store's lineage (zero when there is none), from the store's own file and the
+// custody files. The store never issued an id at or below it, so those ids are
+// accounted for without evidence.
 // priorImports maps every id an existing custody file already handed out to the
 // entry that carries it. A fence import reusing such an id is refused unless it
 // is the same record identity — the same lineage's repeated fence keeps its
 // original id, while a different record under an earlier custody's id could
 // otherwise be cleared by resolving the older custody's row.
-func custodyFromStore(state snapshot, path string, epoch uint64, now time.Time, floor, unprovenFloor uint64, priorImports map[string]custodyFence) (custodyFile, error) {
+func custodyFromStore(state snapshot, path string, epoch uint64, now time.Time, floor, lineageFloor uint64, priorImports map[string]custodyFence) (custodyFile, error) {
 	if state.Version != storeVersion {
 		return custodyFile{}, fmt.Errorf("%w: unsupported store version %d", ErrQuarantineIncomplete, state.Version)
 	}
@@ -563,7 +571,8 @@ func custodyFromStore(state snapshot, path string, epoch uint64, now time.Time, 
 	// present counts the ids in [from, to] the file accounts for: the retained
 	// ones, plus every id at or below unprovenFloor, which no store of this
 	// lineage issued.
-	skipped := min(unprovenFloor, state.AllocatorHighWaterMark)
+	lineageFloor = max(lineageFloor, state.AllocatorFloor)
+	skipped := min(lineageFloor, state.AllocatorHighWaterMark)
 	present := func(from, to uint64) uint64 {
 		if from > to {
 			return 0
@@ -724,6 +733,7 @@ func custodyFromStore(state snapshot, path string, epoch uint64, now time.Time, 
 		Fences:                 fences,
 		Ownership:              ownership,
 		HostRecords:            familyRegion,
+		AllocatorFloor:         lineageFloor,
 	})
 }
 
@@ -879,7 +889,7 @@ func readCustodyFile(fs afero.Fs, path, storePath string) (custodyFile, error) {
 		}
 	}
 	for name := range top {
-		if name != "hostRecords" && name != "unproven" && !slices.Contains(requiredKeys, name) {
+		if name != "hostRecords" && name != "unproven" && name != "allocatorFloor" && !slices.Contains(requiredKeys, name) {
 			return custodyFile{}, fmt.Errorf("%w: %s carries unknown key %q", ErrQuarantineIncomplete, path, name)
 		}
 	}
@@ -924,6 +934,7 @@ func replacementState(custody custodyFile, floor uint64) (snapshot, error) {
 	}
 	state := snapshot{
 		Version:                storeVersion,
+		AllocatorFloor:         custody.AllocatorFloor,
 		AllocatorHighWaterMark: allocated,
 		Records:                records,
 		Boundaries:             map[string]Boundary{},

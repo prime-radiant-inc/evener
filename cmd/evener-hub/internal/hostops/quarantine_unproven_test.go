@@ -152,9 +152,10 @@ func TestUnprovenSetAsideFloorIsIndependentOfTheCorruptBytes(t *testing.T) {
 	}
 }
 
-// A store opened over an unproven set-aside skips a wide id range. Corrupting
-// only a region the quarantine discards, later, must not make that skipped
-// range look like lost records: the host records survive a proven quarantine.
+// A store opened over an unproven set-aside skips a wide id range, and records
+// that in its own file. Corrupting only a region the quarantine discards, later,
+// must not make that range look like lost records, even after the quarantine
+// artifacts are gone: the host records survive a proven quarantine.
 func TestSkippedIDRangeDoesNotMakeALaterQuarantineUnproven(t *testing.T) {
 	path := StorePath(t.TempDir())
 	writeRawStore(t, path, 0o600, truncatedStoreJSON)
@@ -164,6 +165,12 @@ func TestSkippedIDRangeDoesNotMakeALaterQuarantineUnproven(t *testing.T) {
 	}
 	if err := unproven.ImportHostRecords(familyOf("first"), HostMirror{}); err != nil {
 		t.Fatalf("ImportHostRecords: %v", err)
+	}
+	for _, infix := range []string{".custody-", ".quarantined-"} {
+		artifact, _ := quarantineArtifact(t, filepath.Dir(path), infix)
+		if err := os.Remove(artifact); err != nil {
+			t.Fatalf("remove %s: %v", artifact, err)
+		}
 	}
 	raw := string(mustReadFile(t, path))
 	broken := strings.Replace(raw, `"tokens":[]`, `"tokens":7`, 1)
@@ -181,6 +188,9 @@ func TestSkippedIDRangeDoesNotMakeALaterQuarantineUnproven(t *testing.T) {
 	}
 	if signal := reopened.Quarantine(); signal == nil || signal.Unproven || signal.QuarantineEpoch != 2 {
 		t.Fatalf("Quarantine() = %+v, want a proven quarantine at epoch 2", signal)
+	}
+	if id := createdID(t, reopened); id <= allocatorEpochStride {
+		t.Fatalf("the lineage's floor was lost: issued id %d", id)
 	}
 	if family, _, _ := reopened.HostRecords(); len(family.Hosts) == 0 {
 		t.Fatal("the host records were dropped")
