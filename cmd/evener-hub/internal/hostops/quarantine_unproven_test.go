@@ -138,3 +138,23 @@ func TestUnprovenSetAsideKeepsTheFloorOfVisibleRecordIDs(t *testing.T) {
 		t.Fatalf("the replacement allocated id %q, want one above the id the set-aside file shows", created.ID)
 	}
 }
+
+// A malformed region elsewhere in the file does not discard the allocator
+// evidence the other regions still show.
+func TestUnprovenSetAsideKeepsTheFloorBesideAMalformedCollection(t *testing.T) {
+	path := StorePath(t.TempDir())
+	body := `{"version":1,"sequence":0,"allocatorHighWaterMark":40,"records":[],"tombstones":{}}`
+	writeRawStore(t, path, 0o600, body)
+
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	created, err := store.Create(NewRecord{ClientOperationID: "after", Host: "h1", Kind: KindRestart, Generation: 1, IncarnationID: "inc"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if id, err := parseAllocatorID(created.ID); err != nil || id <= 40 {
+		t.Fatalf("the replacement allocated id %q, want one above the file's high-water mark", created.ID)
+	}
+}

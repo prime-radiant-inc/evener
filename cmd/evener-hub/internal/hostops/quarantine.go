@@ -957,12 +957,8 @@ func recoverAllocatorFloor(fs afero.Fs, path string) uint64 {
 	if err != nil {
 		return 0
 	}
-	var file struct {
-		AllocatorHighWaterMark *uint64           `json:"allocatorHighWaterMark"`
-		Records                []json.RawMessage `json:"records"`
-		Tombstones             []json.RawMessage `json:"tombstones"`
-	}
-	if json.Unmarshal(raw, &file) != nil {
+	var regions map[string]json.RawMessage
+	if json.Unmarshal(raw, &regions) != nil {
 		return 0
 	}
 	var floor uint64
@@ -971,18 +967,27 @@ func recoverAllocatorFloor(fs afero.Fs, path string) uint64 {
 			floor = max(floor, n)
 		}
 	}
-	if file.AllocatorHighWaterMark != nil {
-		raise(*file.AllocatorHighWaterMark)
+	// Each region is read on its own, so one malformed region cannot discard
+	// the evidence the others show.
+	var declared uint64
+	if json.Unmarshal(regions["allocatorHighWaterMark"], &declared) == nil {
+		raise(declared)
 	}
-	for _, item := range append(file.Records, file.Tombstones...) {
-		var row struct {
-			ID string `json:"id"`
-		}
-		if json.Unmarshal(item, &row) != nil {
+	for _, name := range []string{"records", "tombstones"} {
+		var items []json.RawMessage
+		if json.Unmarshal(regions[name], &items) != nil {
 			continue
 		}
-		if n, err := parseAllocatorID(row.ID); err == nil {
-			raise(n)
+		for _, item := range items {
+			var row struct {
+				ID string `json:"id"`
+			}
+			if json.Unmarshal(item, &row) != nil {
+				continue
+			}
+			if n, err := parseAllocatorID(row.ID); err == nil {
+				raise(n)
+			}
 		}
 	}
 	return floor
