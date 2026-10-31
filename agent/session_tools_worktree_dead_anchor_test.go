@@ -98,7 +98,7 @@ func TestWorktreeDeadAnchor_MutatingOpsRefuseNamed(t *testing.T) {
 	check("create", createErr)
 	_, removeErr := r.s.worktreeRemove(t.Context(), "live-lane", false, false, false)
 	check("remove", removeErr)
-	_, pruneErr := r.s.worktreePrune(t.Context())
+	_, pruneErr := r.s.worktreePrune(t.Context(), 0)
 	check("prune", pruneErr)
 
 	// Each refusal aborts before touching anything: create made no lane, remove

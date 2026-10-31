@@ -211,8 +211,13 @@ type WorktreePruneEntry struct {
 // left alone with a reason, and whether the repo-wide git registry hygiene
 // sweep (sweep 3) ran.
 type WorktreePruneResult struct {
-	Removed            []WorktreePruneEntry
-	Skipped            []WorktreePruneEntry
+	Removed []WorktreePruneEntry
+	Skipped []WorktreePruneEntry
+	// Unlocked names delegate lanes the orphan arm released without
+	// collecting: their parent provably cannot act as the disposer, and the
+	// lane holds work the ordinary gates kept. The lane stays, unlocked and
+	// visible to the merge and force paths (#5471).
+	Unlocked           []WorktreePruneEntry
 	RegistryPruned     bool
 	RegistrySkipReason string
 }
@@ -272,7 +277,8 @@ type worktreeGuard struct {
 	// listOp runs the list operation (spec §5 list, all three steps).
 	listOp func(ctx context.Context) ([]WorktreeListEntry, error)
 	// pruneOp runs the prune operation (spec §5 prune, all three sweeps).
-	pruneOp func(ctx context.Context) (WorktreePruneResult, error)
+	// orphanedDelegateDays arms the orphan reclaim arm (#5471) when > 0.
+	pruneOp func(ctx context.Context, orphanedDelegateDays float64) (WorktreePruneResult, error)
 	// disposeOp runs the dispose operation (spec §P1): retire a delegate's
 	// isolation worktree lane by id. force overrides an unmerged-commits refusal;
 	// forceDirty separately overrides an uncommitted-changes refusal (orthogonal,
@@ -535,19 +541,18 @@ func registerWorktreeTool(reg *tool.Registry, deps *toolDeps) {
 					"message":   worktreeListSummary(managed, unmanaged),
 				}, nil
 			case "prune":
-				res, err := deps.worktreeGuard.pruneOp(ctx)
+				orphanedDays, _ := args["orphaned_delegate_days"].(float64)
+				res, err := deps.worktreeGuard.pruneOp(ctx, orphanedDays)
 				if err != nil {
 					return nil, err
 				}
-				removed := make([]map[string]any, len(res.Removed))
-				for i, e := range res.Removed {
-					removed[i] = worktreePruneEntryToMap(e)
-				}
-				skipped := make([]map[string]any, len(res.Skipped))
-				for i, e := range res.Skipped {
-					skipped[i] = worktreePruneEntryToMap(e)
-				}
+				removed := worktreePruneEntryMaps(res.Removed)
+				skipped := worktreePruneEntryMaps(res.Skipped)
+				unlocked := worktreePruneEntryMaps(res.Unlocked)
 				msg := fmt.Sprintf("Removed %d, skipped %d.", len(removed), len(skipped))
+				if len(unlocked) > 0 {
+					msg += fmt.Sprintf(" Unlocked %d orphaned delegate lane(s), kept: their work is not disposable.", len(unlocked))
+				}
 				if res.RegistryPruned {
 					msg += " Git worktree registry pruned."
 				} else if res.RegistrySkipReason != "" {
@@ -557,6 +562,7 @@ func registerWorktreeTool(reg *tool.Registry, deps *toolDeps) {
 					"status":               "pruned",
 					"removed":              removed,
 					"skipped":              skipped,
+					"unlocked":             unlocked,
 					"registry_pruned":      res.RegistryPruned,
 					"registry_skip_reason": res.RegistrySkipReason,
 					"message":              msg,

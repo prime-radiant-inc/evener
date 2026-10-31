@@ -1063,7 +1063,8 @@ func DefManageWorktree() llm.ToolDefinition {
 		"exit (return to the main checkout); remove (delete a worktree by `name`; `delete_branch` also deletes its branch, " +
 		"`force` overrides provenance/merge gating, `force_dirty` overrides the refusal to discard uncommitted changes); " +
 		"prune (remove worktrees that have no unmerged work — unchanged or already-merged lanes, including ones left behind " +
-		"by finished sessions — the one-call way to clean up); " +
+		"by finished sessions — the one-call way to clean up; with orphaned_delegate_days it also releases the locks of " +
+		"delegate lanes whose parent session is gone or long-inactive — crash residue no other path may unlock); " +
 		"dispose (retire a delegate's isolation worktree lane by its delegate `id` once you are done with its work — unlocks, " +
 		"removes the worktree, deletes its branch, and marks the delegate disposed; `force` overrides the refusal to discard " +
 		"unmerged commits, `force_dirty` overrides the refusal to discard uncommitted changes). " +
@@ -1108,6 +1109,10 @@ func DefManageWorktree() llm.ToolDefinition {
 				"delete_branch": map[string]any{
 					"type":        "boolean",
 					"description": "For remove: also delete the worktree's branch. Default false.",
+				},
+				"orphaned_delegate_days": map[string]any{
+					"type":        "number",
+					"description": "For prune: also release delegate-lane locks whose parent session provably cannot act as the disposer — its own disposal already ran (the store records the delegate's isolation disposal), or the session is gone or inactive at least this many days. Removal still requires the ordinary unchanged/merged gates; a released lane with unmerged work stays put, unlocked and visible to the merge and force paths. 0 (default) keeps the locked-lane rule absolute.",
 				},
 			},
 			"required": []string{"operation"},

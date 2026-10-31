@@ -209,7 +209,7 @@ func worktreeSeed100ExactProgram(t *testing.T) {
 				scriptedCreate(t, h, "prune-registered")
 				h.exitToRoot(t)
 				installWorktreeSeams(t, h.s, failingDeleteWorktreeSeam())
-				if _, err := h.s.worktreePrune(context.Background()); err == nil {
+				if _, err := h.s.worktreePrune(context.Background(), 0); err == nil {
 					t.Fatal("prune accepted registered sidecar delete failure")
 				}
 			})
@@ -228,7 +228,7 @@ func worktreeSeed100ExactProgram(t *testing.T) {
 						worktreeFaultWriteSidecar(t, h, name, "base-sha", false, "", true)
 					}
 					installWorktreeSeams(t, h.s, failingDeleteWorktreeSeam())
-					if _, err := h.s.worktreePrune(context.Background()); err == nil {
+					if _, err := h.s.worktreePrune(context.Background(), 0); err == nil {
 						t.Fatal("prune accepted reconciled sidecar delete failure")
 					}
 				})

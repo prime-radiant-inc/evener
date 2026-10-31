@@ -476,10 +476,13 @@ func Decide(ev LockEvent, st LockState) LockAction {
 		// Row "prune candidate": unlocked → eligible (other conditions apply);
 		// any locked state → skip. Owner-independent (§5 prune sweep 1: "not
 		// locked" protects the current session, other sessions, and live
-		// delegates with no creator comparison). The one exception lives in the
-		// prune sweep, not here: a lane carrying the pruning session's own marker
-		// while the session does not occupy it is crash residue, eligible and
-		// released only at collection, so the sweep does not consult this row for it.
+		// delegates with no creator comparison). The exceptions live in the
+		// prune sweep, not here: a lane carrying the pruning session's own
+		// marker while the session does not occupy it is crash residue, and —
+		// when the caller arms the orphan reclaim (#5471) — so is a foreign
+		// delegate marker whose parent provably cannot act as its disposer;
+		// both are eligible and released only at collection, so the sweep does
+		// not consult this row for them.
 		switch st {
 		case Unlocked:
 			return ActNone // eligible — other prune conditions still apply

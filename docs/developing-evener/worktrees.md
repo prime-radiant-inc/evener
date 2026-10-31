@@ -33,7 +33,7 @@ One tool, seven operations, selected by `operation`:
 | `exit` | Leaves the current worktree and returns to where the session was before, without touching the worktree itself. | none |
 | `list` | Reports every managed worktree: path, branch, lock/occupant state, and how stale it is (age, dirty, commits ahead, merged). | none |
 | `remove` | Deletes a worktree (and, optionally, its branch). | `name` (required), `force` (skip the dirty-tree safety check), `delete_branch` (also delete the branch, if it's safe to) |
-| `prune` | Sweeps every managed worktree in one call and removes the ones that are safe to remove. | none |
+| `prune` | Sweeps every managed worktree in one call and removes the ones that are safe to remove. | `orphaned_delegate_days` (optional; also release delegate-lane locks whose parent session provably cannot act — default 0 keeps the locked-lane rule absolute) |
 | `dispose` | Retires one finished delegate isolation lane by its delegate id — unlocks it, removes the worktree, deletes its branch, and marks the delegate disposed. | `id` (required — the `dlg_…` delegate id), `force` (discard unmerged commits), `force_dirty` (discard uncommitted changes) |
 
 Because entering or leaving a worktree changes where every later tool call runs,
@@ -68,7 +68,8 @@ What this means day to day:
 - `force` never overrides a lock. Locks and dirty-tree safety are different
   protections: `force` skips the "are there uncommitted changes here" check on
   `remove`; unlocking someone else's worktree is a deliberate act (`git worktree
-  unlock`), never a tool flag.
+  unlock`), never a tool flag — with one operator-directed exception: `prune`'s
+  `orphaned_delegate_days`, below.
 - If a session or delegate dies without a clean shutdown — a crash, a kill — its lock
   is left behind. This is intentional fail-safe behavior: a stale lock just means
   nobody has confirmed the work is abandoned yet. The lock names its former owner, so
@@ -78,7 +79,13 @@ What this means day to day:
   erroring. A session's *own* marker on a lane it is not occupying is the one piece of
   that residue evener can attribute with certainty: it does not block a `prune`
   candidate, so `prune` reclaims that lane and releases the marker as it does.
-  Another session's marker is never taken on the sweeper's guess.
+  Another session's marker is never taken on the sweeper's guess. The one
+  foreign lock `prune` will release is a delegate lane whose parent provably
+  cannot act, and only when the caller passes `orphaned_delegate_days`: the
+  parent's store records the delegate's isolation disposal, or the parent
+  session is gone or has been inactive at least that many days. The released
+  lane still has to pass the ordinary removal gates, and a lane holding
+  unmerged work is unlocked but kept.
 
 ## Disposal: `remove`, `prune`, and `dispose`
 
@@ -100,7 +107,11 @@ changes), and either untouched since creation or already merged into the branch 
 was created from. Everything else is reported with a reason instead of being touched —
 locked, dirty, unmerged, checked out somewhere else, or too new to judge yet. `prune`
 never takes `force`; anything it declines to remove is `remove`'s job, or a deliberate
-unlock.
+unlock. With `orphaned_delegate_days` it also releases the lock of a delegate
+lane whose parent provably cannot act — the parent's isolation disposal
+already ran, or the parent session is gone or long-inactive — and then judges
+the lane by these same gates; a work-holding orphan is unlocked and reported
+kept.
 
 `dispose` retires one finished **delegate isolation lane** by its delegate id — the
 synchronous move a live session makes the moment it finishes a lane's work, rather

@@ -1234,7 +1234,7 @@
       "turnId": "turn_1",
       "toolName": "manage_worktree",
       "callId": "call_worktree_prune",
-      "output": "{\n  \"message\": \"Removed 0, skipped 2. Git worktree registry pruned.\",\n  \"registry_pruned\": true,\n  \"registry_skip_reason\": \"\",\n  \"removed\": [],\n  \"skipped\": [\n    {\n      \"branch_removed\": false,\n      \"name\": \"lane\",\n      \"path\": \"/home/jesse/.local/state/evener/projects/evener/worktrees/evener/lane\",\n      \"reason\": \"sidecar-less\",\n      \"sidecar_removed\": false,\n      \"worktree_removed\": false\n    },\n    {\n      \"branch_removed\": false,\n      \"name\": \"settle-fix\",\n      \"path\": \"\",\n      \"reason\": \"in-grace\",\n      \"sidecar_removed\": false,\n      \"worktree_removed\": false\n    }\n  ],\n  \"status\": \"pruned\"\n}",
+      "output": "{\n  \"message\": \"Removed 0, skipped 2. Git worktree registry pruned.\",\n  \"registry_pruned\": true,\n  \"registry_skip_reason\": \"\",\n  \"removed\": [],\n  \"skipped\": [\n    {\n      \"branch_removed\": false,\n      \"name\": \"lane\",\n      \"path\": \"/home/jesse/.local/state/evener/projects/evener/worktrees/evener/lane\",\n      \"reason\": \"sidecar-less\",\n      \"sidecar_removed\": false,\n      \"worktree_removed\": false\n    },\n    {\n      \"branch_removed\": false,\n      \"name\": \"settle-fix\",\n      \"path\": \"\",\n      \"reason\": \"in-grace\",\n      \"sidecar_removed\": false,\n      \"worktree_removed\": false\n    }\n  ],\n  \"status\": \"pruned\",\n  \"unlocked\": []\n}",
       "status": "completed",
       "completedAt": 1790625602000
     },
