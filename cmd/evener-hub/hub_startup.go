@@ -129,15 +129,16 @@ type hubRuntime struct {
 	endpoint       EndpointConfig
 	configIdentity string
 
-	runDir       string
-	stateGlob    string
-	pastIndexDB  string
-	hubStateRoot string
-	stateDir     string
-	authToken    string
-	hubToken     string
-	boundAddr    string
-	pluginRoot   string
+	runDir            string
+	stateGlob         string
+	pastIndexDB       string
+	hubStateRoot      string
+	stateDir          string
+	authToken         string
+	hubToken          string
+	sessionToolsHubID string
+	boundAddr         string
+	pluginRoot        string
 
 	roster           *hubcore.Roster
 	past             *hubcore.PastIndex
@@ -336,6 +337,12 @@ func (r *hubRuntime) openStores() (func(), error) {
 	r.favorite = hubcore.NewFavoriteStore(r.pastIndexDB)
 	r.pinSections = hubcore.NewPinSectionStore(r.pastIndexDB)
 	r.sessionSeen = hubcore.NewSessionSeenStore(r.pastIndexDB)
+	// Resolve the durable peer identity before any listener is published.
+	var err error
+	r.sessionToolsHubID, err = hubcore.NewHubIdentityStore(r.pastIndexDB).HubID()
+	if err != nil {
+		return nil, fmt.Errorf("session tools hub identity: %w", err)
+	}
 
 	hubToken, err := r.deps.newToken()
 	if err != nil {
@@ -510,13 +517,14 @@ func (r *hubRuntime) connectHosts() (func(), error) {
 		newSSHManager = sshconn.New
 	}
 	r.sshManager = newSSHManager(r.hostRegistry, sshconn.Options{
-		Logger:         r.logf,
-		BuildBinary:    deploy.buildBinary,
-		BuildSource:    deploy.buildSource,
-		OwnExecutable:  deploy.ownExecutable,
-		DeployDisabled: deploy.disabled,
-		DeployHelp:     deploy.help,
-		OnEvent:        r.onSSHEvent,
+		SessionToolsHubID: r.sessionToolsHubID,
+		Logger:            r.logf,
+		BuildBinary:       deploy.buildBinary,
+		BuildSource:       deploy.buildSource,
+		OwnExecutable:     deploy.ownExecutable,
+		DeployDisabled:    deploy.disabled,
+		DeployHelp:        deploy.help,
+		OnEvent:           r.onSSHEvent,
 	})
 	closeSSH := func() { _ = r.sshManager.Close() }
 
@@ -617,6 +625,7 @@ func (r *hubRuntime) buildWeb(appwireTrace *appserver.WebSocketTrace) (*WebServe
 		Favorite:                  r.favorite,
 		PinSections:               r.pinSections,
 		SessionSeen:               r.sessionSeen,
+		HubID:                     r.sessionToolsHubID,
 		MessageSearch:             r.messageSearch,
 		Spawner:                   r.spawner,
 		APILogDefault:             cfg.APILog,
@@ -744,6 +753,7 @@ func (r *hubRuntime) wireNavigationInvalidation(web *WebServer) {
 		bump()
 		web.navigation.Invalidate(navigationChangeHint{})
 		observeSessionCredentials()
+		reconcileSessionTools(web.sources)
 	})
 	r.archive.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{AllLoadedProjects: true}) })
 	r.favorite.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{AllLoadedProjects: true}) })
@@ -793,6 +803,7 @@ func (r *hubRuntime) startBackground(web *WebServer) (context.Context, func()) {
 	// this awaited group and only the context gates starting one.
 	transcriptIndexRepairs.wire(ctx)
 	r.sessionCredentials.start(ctx, goBackground)
+	startSessionTools(ctx, web.sources, goBackground)
 	// Populate the roster before serving so the first sidebar request can't hit
 	// an empty roster (the "flash of no sessions" right after a restart). Probes
 	// run concurrently, so this is bounded by ~one probe timeout regardless of

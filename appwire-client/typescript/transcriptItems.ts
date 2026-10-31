@@ -406,6 +406,7 @@ export function wireItemToModel(item: ThreadItem, imageSessionRoute?: string): I
   // affordance must be able to tell apart from a real index.
   if (item.transcriptEntryIndex !== undefined) model.transcriptEntryIndex = item.transcriptEntryIndex;
   if (item.clientMutationId) model.clientMutationId = item.clientMutationId;
+  if (item.actor) model.actor = item.actor;
   // Versioned-history fields, set only when the wire carried them (a v6 read,
   // history/updated, or an overlay item), so pre-v6 items keep their shape.
   if (item.version) model.version = item.version;
@@ -519,6 +520,7 @@ export function threadFields(resp: ThreadReadResponse, ref: string, now: number)
     model: thread.modelProvider,
     reasoningEffort: thread.evener.reasoningEffort,
     visionModel: thread.evener.visionModel ?? "",
+    manager: thread.evener.manager ?? false,
     askPending: thread.evener.askPending ?? false,
     // Go wire-nullable-array rule: omitempty absent means empty, not missing.
     pendingEscalations: thread.evener.pendingEscalations ?? [],

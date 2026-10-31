@@ -786,6 +786,8 @@ func (s *Session) prepareSubagentRunFromSelection(
 	if frozen != nil {
 		subCfg = subagentConfigFromFrozenDescriptor(frozen.Config, parentCfg)
 	}
+	// Ordinary children never inherit the parent's session-start role.
+	subCfg.Manager = false
 	subCfg.artifactStore = s.artifactStore
 	subCfg.artifactStoreInherited = true
 	subCfg.MCPConfigFiles = nil

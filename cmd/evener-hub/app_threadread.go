@@ -94,6 +94,9 @@ var afterSavedSubscriptionCapture func(appwire.ThreadReadParams)
 // unavailableThreadReadResponse prefers saved turns, but a confirmed incompatible
 // owner remains readable from roster metadata even before it has a past entry.
 func unavailableThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, bool, error) {
+	if err := params.ValidateAnswerContinuation(); err != nil {
+		return appwire.ThreadReadResponse{}, false, err
+	}
 	var entry hubcore.PastEntry
 	var hasPast bool
 	if params.Subscribe {
@@ -217,11 +220,27 @@ func pastThreadItemReadResponse(ctx context.Context, cfg hubcore.WebConfig, para
 }
 
 func pastEntryItemReadResponse(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadReadParams, entry hubcore.PastEntry) (appwire.ThreadReadResponse, bool, error) {
+	if err := params.ValidateAnswerContinuation(); err != nil {
+		return appwire.ThreadReadResponse{}, true, err
+	}
 	thread, err := pastEntryThread(ctx, cfg, entry, false)
 	if err != nil {
 		return appwire.ThreadReadResponse{}, true, err
 	}
 	thread = attachPastThreadSkillCatalog(entry, thread)
+	if query := params.AnswerContinuation; query != nil {
+		verdict := appwire.AnswerContinuationVerdict{AncestorTurnID: query.AncestorTurnID, CandidateTurnID: query.CandidateTurnID}
+		var snapshot appwire.SnapshotIdentity
+		err := withPastTranscriptIndex(ctx, entry, func(index *transcriptindex.Index) error {
+			var err error
+			verdict.Matches, snapshot, err = index.AnswerContinuation(ctx, query.AncestorTurnID, query.CandidateTurnID, params.HeldSnapshot)
+			return err
+		})
+		if err != nil {
+			return appwire.ThreadReadResponse{}, true, err
+		}
+		return appwire.ThreadReadResponse{Thread: thread, RequestGeneration: params.RequestGeneration, BootGeneration: appwire.DaemonlessBootGeneration, Snapshot: &snapshot, Authoritative: true, AnswerContinuation: &verdict}, true, nil
+	}
 	if !params.IncludeTurns {
 		return appwire.ThreadReadResponse{
 			Thread:            stampDerivedTotals(cfg, entry, thread),
@@ -242,6 +261,7 @@ func pastEntryItemReadResponse(ctx context.Context, cfg hubcore.WebConfig, param
 		thread = stampItemPageTurns(cfg, entry, thread)
 		thread = stampDerivedTotalsWith(cfg, entry, thread, page.Derived)
 		response.Thread = thread
+		response.LatestExecutionTurnID = page.LatestExecutionTurnID
 		return response, nil
 	}, itemLimit)
 	if packErr != nil {
@@ -266,10 +286,11 @@ var pastTranscriptIndexes = transcriptindex.NewCacheWithOpen(transcriptindex.Def
 // pastItemPage is one window of a daemonless session's history, read from its
 // transcript index.
 type pastItemPage struct {
-	Candidates []appitempaging.TranscriptItemCandidate
-	Identity   appitempaging.CursorIdentity
-	Exhausted  bool
-	Snapshot   appwire.SnapshotIdentity
+	Candidates            []appitempaging.TranscriptItemCandidate
+	LatestExecutionTurnID string
+	Identity              appitempaging.CursorIdentity
+	Exhausted             bool
+	Snapshot              appwire.SnapshotIdentity
 	// Changes is what changed since the client's held snapshot, when the
 	// index could answer for it; nil sends the window as a full replacement.
 	Changes *transcriptindex.Changes
@@ -303,10 +324,11 @@ func (p pastItemPage) history() appsource.HistoryIdentity {
 
 func pastItemPageFromWindow(entry hubcore.PastEntry, window transcriptindex.Window) pastItemPage {
 	return pastItemPage{
-		Candidates: window.Candidates,
-		Identity:   pastCursorIdentity(entry, window.Incarnation),
-		Exhausted:  !window.HasOlder,
-		Snapshot:   appwire.SnapshotIdentity{Incarnation: window.Incarnation, Length: window.Length},
+		Candidates:            window.Candidates,
+		LatestExecutionTurnID: window.LatestExecutionTurnID,
+		Identity:              pastCursorIdentity(entry, window.Incarnation),
+		Exhausted:             !window.HasOlder,
+		Snapshot:              appwire.SnapshotIdentity{Incarnation: window.Incarnation, Length: window.Length},
 	}
 }
 
@@ -1151,6 +1173,7 @@ func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hu
 		Evener: appwire.EvenerThread{
 			Ref:          ref,
 			InstanceID:   entry.Meta.ID,
+			Manager:      entry.Meta.Manager,
 			ParentRef:    parentRef,
 			Kind:         kind,
 			Profile:      entry.Meta.ProfileID,

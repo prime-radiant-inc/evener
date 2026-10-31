@@ -133,22 +133,27 @@ func concurrentDispatchMethod(method string) bool {
 // queue and the loop should return. A second transport inherits the whole
 // policy by driving this same entry point.
 //
-// The inline ping response enqueues through enqueueResponse, which parks on
-// a full outbound channel until the send loop drains it or the write-timeout
-// cascade cancels the connection: ping liveness is guaranteed against
-// handler behavior, not against a peer that stopped draining its own socket.
+// The inline ping response uses enqueueReaderReply, which never waits for
+// outbound capacity. A full outbound channel cancels the connection instead
+// of parking the socket reader behind a peer that stopped draining replies.
 func (c *Connection) receiveInbound(ctx context.Context, msg appwire.Message) bool {
+	if c.receiveSessionFrame(msg) {
+		return true
+	}
+	if msg.Notification != nil && c.handleNotification(*msg.Notification).Kind() == appwire.MessageInvalid {
+		return true
+	}
 	if msg.Request != nil && c.server.cfg.RequestAdmissionContext != nil {
 		admitted, ok := c.admitRequestContext(ctx, msg)
 		if !ok {
-			c.enqueueDispatched(ctx, appwire.ErrorMessage(msg.Request.ID, appwire.InternalError("internal error admitting request")))
-			return true
+			return c.enqueueReaderReply(msg, appwire.ErrorMessage(msg.Request.ID, appwire.InternalError("internal error admitting request")))
 		}
 		ctx = admitted
 	}
 	if msg.Request != nil && msg.Request.Method == appwire.MethodPing {
-		c.handleAndEnqueue(ctx, msg)
-		return true
+		alive := false
+		c.handleRecovered(ctx, msg, func(resp appwire.Message) { alive = c.enqueueReaderReply(msg, resp) })
+		return alive
 	}
 	if msg.Request != nil && msg.Request.Method == appwire.MethodEvenerThreadForceStop && c.isInitialized() {
 		c.mu.Lock()
@@ -182,10 +187,7 @@ func (c *Connection) receiveInbound(ctx context.Context, msg appwire.Message) bo
 			// so a panic enqueueing the refusal can't crash this goroutine (and,
 			// since nothing above it recovers either, the whole process) any more
 			// than a panic enqueueing an admitted force stop's real response can.
-			c.recoverPanic(msg, func() {
-				c.enqueueDispatched(ctx, appwire.ErrorMessage(msg.Request.ID, appwire.Unavailable("force stop is already running")))
-			})
-			return true
+			return c.enqueueReaderReply(msg, appwire.ErrorMessage(msg.Request.ID, appwire.Unavailable("force stop is already running")))
 		}
 		// Recovery must reach ownership cancellation even when the serial worker
 		// is awaiting an unresponsive daemon. Other mutations retain FIFO order.
@@ -266,38 +268,25 @@ func clientMutationIDOf(params json.RawMessage) string {
 	return only.ClientMutationID
 }
 
-// enqueueRequest pushes one inbound frame onto the connection's bounded
-// request queue on behalf of the transport's receive loop, which is the only
-// producer. A full queue blocks until the worker frees a slot or the
-// connection context ends; false means the connection died while blocked and
-// the loop should return. Blocking is the pressure valve: the parked loop
-// stops calling Recv, inbound frames accumulate in the kernel socket buffer,
-// and TCP flow control eventually reaches the client — no wire error, no
-// eviction. A client that pipelines deeper than the queue experiences
-// exactly the ordering it asked for, applied at the transport instead of in
-// server memory.
+// enqueueRequest tries the bounded request queue once for every connection.
+// Retry-safe mutations meet the existing high-water refusal first; an ordinary
+// request that cannot enter the full queue is refused before execution. A
+// failed refusal write cancels the connection rather than blocking its reader.
 func (c *Connection) enqueueRequest(ctx context.Context, msg appwire.Message) bool {
 	if refusal, ok := c.backpressureRefusal(msg); ok {
 		// The first refusal on the connection gets its own advisory, worded
 		// for this branch: the frame is answered in band, the receive loop
 		// keeps reading, and only mutations are turned away. A separate
-		// one-shot from the full-queue block advisory below, which must stay
-		// available to name the wedge signature when a non-mutation frame
-		// later parks the loop.
+		// one-shot remains for hard-cap refusal below.
 		if !c.queueHighWaterAdvised {
 			c.queueHighWaterAdvised = true
 			c.server.logf("appserver: connection %s inbound request queue at high-water depth (%d of %d frames); refusing mutation requests in band until the worker drains", c.id, len(c.requests), cap(c.requests))
 		}
 		// This enqueue runs directly in the receive loop's goroutine, with no
 		// handler and so no handleRecovered call to barrier it — recoverPanic
-		// is the barrier here, the same one the force-stop busy refusal in
-		// receiveInbound uses. Delivery can park on a full outbound buffer
-		// until the connection ends: the same acknowledged trade the inline
-		// ping path makes.
-		c.recoverPanic(msg, func() {
-			c.enqueueDispatched(ctx, refusal)
-		})
-		return true
+		// is the barrier in enqueueReaderReply, shared with ping and the
+		// force-stop busy refusal. Full output cancels the connection.
+		return c.enqueueReaderReply(msg, refusal)
 	}
 	request := admittedRequest{ctx: ctx, message: msg}
 	select {
@@ -305,24 +294,19 @@ func (c *Connection) enqueueRequest(ctx context.Context, msg appwire.Message) bo
 		return true
 	default:
 	}
-	// Saturation is a healthy server applying flow control, but it is also
-	// the one state where ping and dead-peer detection wait on the client's
-	// own backlog, so its first occurrence per connection gets an advisory —
-	// the same channel evictSlowConsumer uses, and the proportionate version
-	// of a metric this package does not have.
-	if !c.queueSaturationAdvised {
-		c.queueSaturationAdvised = true
-		c.server.logf("appserver: connection %s inbound request queue is full (%d frames); blocking the receive loop until the worker frees a slot", c.id, cap(c.requests))
-	}
 	if c.server.blockedEnqueue != nil {
 		c.server.blockedEnqueue()
 	}
-	select {
-	case c.requests <- request:
-		return true
-	case <-ctx.Done():
+	if !c.queueSaturationAdvised {
+		c.queueSaturationAdvised = true
+		c.server.logf("appserver: connection %s inbound request queue is full (%d frames); refusing requests until the worker drains", c.id, cap(c.requests))
+	}
+	if msg.Request == nil {
+		c.cancelContext()
 		return false
 	}
+	return c.enqueueReaderReply(msg, appwire.ErrorMessage(msg.Request.ID,
+		appwire.HardCapRefusal(clientMutationIDOf(msg.Request.Params), "the inbound queue is full and did not accept this message")))
 }
 
 // runWorker is the connection's serial worker: the only consumer of the
@@ -773,4 +757,16 @@ func (c *Connection) admitRequestContext(ctx context.Context, msg appwire.Messag
 	}()
 	admitted = c.server.cfg.RequestAdmissionContext(ctx, msg)
 	return admitted, admitted != nil
+}
+
+// enqueueReaderReply never waits for outbound capacity on the socket reader.
+// Worker replies use enqueueDispatched instead to retain hydration finalizers.
+func (c *Connection) enqueueReaderReply(request, reply appwire.Message) (ok bool) {
+	c.recoverPanic(request, func() {
+		ok = reply.Kind() == appwire.MessageInvalid || c.enqueue(reply)
+	})
+	if !ok {
+		c.cancelContext()
+	}
+	return ok
 }

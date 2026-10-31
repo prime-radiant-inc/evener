@@ -120,8 +120,6 @@ func rawParkedCapConnection(t *testing.T, server *Server, started chan string) (
 
 	for i := int64(2); i < slowReadDispatchCap+2; i++ {
 		sendRaw(t, transport, rawRequest(t, i, appwire.MethodThreadRead, appwire.ThreadReadParams{ThreadID: fmt.Sprintf("read-%d", i)}))
-	}
-	for range slowReadDispatchCap {
 		waitFor(t, "a slow read to park in its handler", started)
 	}
 	sendRaw(t, transport, rawRequest(t, slowReadDispatchCap+2, appwire.MethodThreadRead, appwire.ThreadReadParams{ThreadID: "read-beyond-cap"}))
@@ -330,16 +328,8 @@ func TestServeWebSocketSlowReadCapStallAdvisoryIsRateLimited(t *testing.T) {
 func TestServeWebSocketSlowReadCapComposedSaturationRecoversOnRelease(t *testing.T) {
 	server, logged, started, releases := parkedSlowReadServer(t)
 	server.requestQueueCapacity = 2
-	// Non-blocking sends: the setup phase pipelines the sixteen parked reads
-	// through the same two-slot queue, so it can transiently block the loop
-	// many times before the phase under test.
-	blocked := make(chan struct{}, 4)
-	server.blockedEnqueue = func() {
-		select {
-		case blocked <- struct{}{}:
-		default:
-		}
-	}
+	// Setup admits each of the sixteen reads before sending the next; the
+	// two-slot queue is reserved for the composed saturation phase below.
 	ticker := newControlledKeepaliveTicker()
 	decision := make(chan bool, 8)
 	server.keepaliveTickerFactory = func(time.Duration) webSocketKeepaliveTicker { return ticker }
@@ -359,35 +349,20 @@ func TestServeWebSocketSlowReadCapComposedSaturationRecoversOnRelease(t *testing
 		t.Fatalf("frame = %+v, want ping response id 100", pong)
 	}
 
-	// The setup phase's transient blocks are over — the worker dequeued the
-	// beyond-cap read, so every earlier enqueue completed — and the worker is
-	// now parked in the acquire; discard stale signals so the wait below
-	// observes the serial-fill phase, not the setup.
-	for len(blocked) > 0 {
-		<-blocked
-	}
-
-	// Fill the queue behind the parked worker until the receive loop blocks.
+	// Fill the queue behind the parked worker; the excess read is refused.
 	base := int64(slowReadDispatchCap + 3)
 	for i := base; i < base+3; i++ {
 		sendRaw(t, transport, rawRequest(t, i, appwire.MethodThreadList, appwire.ThreadListParams{}))
 	}
-	waitFor(t, "the receive loop to park on the full queue", blocked)
+	requireQueueRefusal(t, "composed hard-cap refusal", waitForFrameID(t, frames, base+2), base+2, "", appwire.RetryDispositionNone)
 	if !strings.Contains(logged(), "request queue is full") {
 		t.Fatalf("queue-saturation advisory did not fire:\n%s", logged())
 	}
 
-	// The loop is out of Recv: the keepalive gate defers transport pings and
-	// an app-level ping cannot even be read.
-	ticker.Tick()
-	if got := waitFor(t, "a keepalive decision while the loop is blocked", decision); got {
-		t.Fatal("keepalive reported the reader available while the receive loop was parked on the full queue")
-	}
+	// The reader keeps receiving at capacity: ping still answers in band.
 	sendRaw(t, transport, rawRequest(t, 101, appwire.MethodPing, appwire.EmptyParams{}))
-	select {
-	case msg := <-frames:
-		t.Fatalf("frame arrived while the queue was full: %+v", msg)
-	case <-time.After(150 * time.Millisecond):
+	if pong := waitForFrameID(t, frames, 101); pong.Response == nil {
+		t.Fatalf("ping at full ingress = %+v, want a response", pong)
 	}
 
 	// One completed read drains the whole composition.
@@ -395,9 +370,9 @@ func TestServeWebSocketSlowReadCapComposedSaturationRecoversOnRelease(t *testing
 	if id := waitFor(t, "the blocked read to start once a slot freed", started); id != "read-beyond-cap" {
 		t.Fatalf("started read = %q, want the cap-blocked one", id)
 	}
-	// The released read's own response rides along; wait for the specific
-	// ids the composition owes — the three serial requests and the ping.
-	want := map[int64]bool{base: true, base + 1: true, base + 2: true, 101: true}
+	// The released read's own response rides along; only the two admitted
+	// serial requests can execute, not the refused third.
+	want := map[int64]bool{base: true, base + 1: true}
 	deadline := time.After(5 * time.Second)
 	got := map[int64]bool{}
 	for len(got) < len(want) {
@@ -413,8 +388,8 @@ func TestServeWebSocketSlowReadCapComposedSaturationRecoversOnRelease(t *testing
 			t.Fatalf("drain incomplete: got responses %v of %v", got, want)
 		}
 	}
-	if runs := serialRuns.Load(); runs != 3 {
-		t.Fatalf("serial requests ran %d times, want 3", runs)
+	if runs := serialRuns.Load(); runs != 2 {
+		t.Fatalf("serial requests ran %d times, want only two admitted requests", runs)
 	}
 	// The loop is back in Recv; the keepalive gate recovers.
 	recovered := false
@@ -534,21 +509,43 @@ func parkThreadLists(t *testing.T, server *Server) (started, releases chan struc
 // could hold any number of goroutines.
 func TestServeWebSocketConcurrentRequestsHaveATotalCap(t *testing.T) {
 	server, logged := captureLogfServer()
-	pools := 0
+	var pools atomic.Int64
+	var hookDecisions atomic.Int64
 	server.cfg.ConcurrentRequest = func(method string, _ json.RawMessage) (string, bool) {
-		pools++
-		return fmt.Sprintf("pool-%d", pools), method == appwire.MethodThreadList
+		pool := pools.Add(1)
+		admit := method == appwire.MethodThreadList
+		hookDecisions.Add(1)
+		return fmt.Sprintf("pool-%d", pool), admit
 	}
 	listsStarted, _ := parkThreadLists(t, server)
 	httpServer := serveWebSocketHTTP(t, server)
 	client := dialAppWireClient(t, httpServer)
 	ctx := context.Background()
 
-	for range concurrentRequestTotalCap {
-		go func() { _, _ = client.ThreadList(ctx, appwire.ThreadListParams{}) }()
-	}
-	for range concurrentRequestTotalCap {
-		waitFor(t, "a request in a pool of its own to park in its handler", listsStarted)
+	earlyResults := make(chan error, concurrentRequestTotalCap)
+	var earlyResult string
+	for observedStarts := range concurrentRequestTotalCap {
+		go func() {
+			_, err := client.ThreadList(ctx, appwire.ThreadListParams{})
+			earlyResults <- err
+		}()
+		// Keep the existing five-second deadlock tripwire per handler start;
+		// it diagnoses failure to fill this request's own pool, not scheduling.
+		timer := time.NewTimer(5 * time.Second)
+		for {
+			select {
+			case <-listsStarted:
+				timer.Stop()
+				goto nextStart
+			case err := <-earlyResults:
+				if earlyResult == "" {
+					earlyResult = fmt.Sprintf("%v", err)
+				}
+			case <-timer.C:
+				t.Fatalf("timed out waiting for a request in a pool of its own to park: launched=%d observed_starts=%d hook_decisions=%d early_thread_list_result=%q", observedStarts+1, observedStarts, hookDecisions.Load(), earlyResult)
+			}
+		}
+	nextStart:
 	}
 	// Two requests beyond the total are both refused, and the total's
 	// advisory reaches Logf once.

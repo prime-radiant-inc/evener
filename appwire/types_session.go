@@ -18,6 +18,7 @@ type ClientInfo struct {
 }
 
 type Capabilities struct {
+	SessionTools            bool     `json:"sessionTools,omitempty"`
 	ExperimentalAPI         bool     `json:"experimentalApi"`
 	OptOutNotificationNames []string `json:"optOutNotificationMethods,omitempty"`
 }
@@ -619,6 +620,7 @@ type ServerInfo struct {
 }
 
 type FeatureSet struct {
+	SessionTools              bool `json:"sessionTools,omitempty"`
 	ThreadList                bool `json:"threadList"`
 	ThreadTurnsList           bool `json:"threadTurnsList"`
 	TurnStart                 bool `json:"turnStart"`

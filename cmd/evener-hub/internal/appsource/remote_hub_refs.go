@@ -3,6 +3,7 @@ package appsource
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -84,6 +85,31 @@ func (s *RemoteHubSource) fromRemoteRefString(raw string) (string, error) {
 			s.id, raw, ref.SourceID, remoteHubNamespace))
 	}
 	return appwire.Ref{SourceID: s.id, ThreadID: ref.ThreadID}.String(), nil
+}
+
+// fromRemoteThreadStartError rewrites evidence carried by a failed creation.
+// Successful response translation cannot see it: the router discards the
+// result when the owner's handler fails.
+func (s *RemoteHubSource) fromRemoteThreadStartError(err error) error {
+	wire, ok := errors.AsType[appwire.WireError](err)
+	if !ok {
+		return err
+	}
+	encoded, marshalErr := json.Marshal(wire.Data)
+	if marshalErr != nil {
+		return err
+	}
+	var partial appwire.ThreadStartPartialErrorData
+	if json.Unmarshal(encoded, &partial) != nil || partial.CreatedRef == "" {
+		return err
+	}
+	ref, translateErr := s.fromRemoteRefString(partial.CreatedRef)
+	if translateErr != nil {
+		// An unaddressable remote ref cannot name a controller-owned session.
+		// Preserve the refusal, but never leak a remote-local address.
+		return wire.WithThreadStartPartial("", "")
+	}
+	return wire.WithThreadStartPartial(ref, partial.CreatedInstanceID)
 }
 
 // forwardedRemoteThreadCapabilities is the controller-side half of a remote
@@ -402,6 +428,9 @@ func (s *RemoteHubSource) fromRemoteThread(thread appwire.Thread, forwarded appw
 		thread.Evener.PendingEscalations[index].Ref = s.fromRemoteNestedRef(thread.Evener.PendingEscalations[index].Ref)
 	}
 	s.fromRemoteDiagnostics(thread.Evener.Diagnostics)
+	for i := range thread.Turns {
+		s.translateTurnActors(&thread.Turns[i])
+	}
 	// The remote hub stamps its own origin-relative image URLs into the thread;
 	// the shared visitor moves every one of them onto the host-qualified
 	// controller route the browser fetches them from.
@@ -430,6 +459,52 @@ func (s *RemoteHubSource) fromRemoteNestedRef(raw string) string {
 	return appwire.Ref{SourceID: s.id, ThreadID: ref.ThreadID}.String()
 }
 
+func (s *RemoteHubSource) translateItemActor(item *appwire.ThreadItem) {
+	if item.Actor != nil && item.Actor.Kind == "manager" {
+		actor := *item.Actor
+		actor.ManagerRef = s.fromRemoteNestedRef(actor.ManagerRef)
+		item.Actor = &actor
+	}
+}
+
+func (s *RemoteHubSource) translateTurnActors(turn *appwire.Turn) {
+	for i := range turn.Items {
+		s.translateItemActor(&turn.Items[i])
+	}
+}
+
+// Visit only the typed item actor, preserving unknown fields and payload strings.
+func (s *RemoteHubSource) translateRawItemActor(raw json.RawMessage) json.RawMessage {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil || fields == nil {
+		return raw
+	}
+	var actor map[string]json.RawMessage
+	if json.Unmarshal(fields["actor"], &actor) != nil || actor == nil {
+		return raw
+	}
+	var kind, ref string
+	if json.Unmarshal(actor["kind"], &kind) != nil || kind != "manager" || json.Unmarshal(actor["managerRef"], &ref) != nil {
+		return raw
+	}
+	actor["managerRef"], _ = json.Marshal(s.fromRemoteNestedRef(ref))
+	fields["actor"], _ = json.Marshal(actor)
+	encoded, _ := json.Marshal(fields)
+	return encoded
+}
+
+func (s *RemoteHubSource) translateRawTurnActors(raw json.RawMessage) json.RawMessage {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil || fields == nil {
+		return raw
+	}
+	if items, ok := fields["items"]; ok {
+		fields["items"] = s.rewriteRawArray(items, s.translateRawItemActor)
+	}
+	encoded, _ := json.Marshal(fields)
+	return encoded
+}
+
 // translateThreadRaw rewrites a thread object's ref-bearing fields at the JSON
 // level, preserving every field this hub does not understand. Round-tripping
 // through appwire.Thread would silently drop a field a newer remote hub sent —
@@ -456,6 +531,9 @@ func (s *RemoteHubSource) translateThreadRaw(raw json.RawMessage, forwarded appw
 		return nil, err
 	}
 	fields["source"] = source
+	if turns, ok := fields["turns"]; ok {
+		fields["turns"] = s.rewriteRawArray(turns, s.translateRawTurnActors)
+	}
 	if evener, ok := fields["evener"]; ok && len(evener) > 0 {
 		var evenerFields map[string]json.RawMessage
 		if err := json.Unmarshal(evener, &evenerFields); err != nil {
@@ -585,14 +663,17 @@ func (s *RemoteHubSource) translateOutWithCapabilities(out any, forwarded func()
 		}
 		response.Thread = thread
 		for i := range response.Overlay {
+			s.translateItemActor(&response.Overlay[i].Item)
 			s.translateItemAuthorship(&response.Overlay[i].Item)
 		}
 		if response.Changes != nil {
 			for i := range response.Changes.Items {
+				s.translateItemActor(&response.Changes.Items[i])
 				s.translateItemAuthorship(&response.Changes.Items[i])
 			}
 			for i := range response.Changes.Turns {
 				for j := range response.Changes.Turns[i].Items {
+					s.translateItemActor(&response.Changes.Turns[i].Items[j])
 					s.translateItemAuthorship(&response.Changes.Turns[i].Items[j])
 				}
 			}
@@ -603,6 +684,7 @@ func (s *RemoteHubSource) translateOutWithCapabilities(out any, forwarded func()
 			return err
 		}
 		response.Thread = thread
+		s.translateTurnActors(&response.Turn)
 		s.translateTurnItems(&response.Turn)
 	case *appwire.ThreadResumeResponse:
 		thread, err := s.fromRemoteThread(response.Thread, forwarded())
@@ -629,17 +711,21 @@ func (s *RemoteHubSource) translateOutWithCapabilities(out any, forwarded func()
 		response.Ref = ref
 	case *appwire.ThreadTurnsListResponse:
 		for index := range response.Data {
+			s.translateTurnActors(&response.Data[index])
 			s.translateTurnItems(&response.Data[index])
 		}
 	case *appwire.ThreadTurnItemsListResponse:
 		for index := range response.Data {
+			s.translateItemActor(&response.Data[index])
 			rewriteItemImageURLs(s.id, &response.Data[index])
 			s.translateItemAuthorship(&response.Data[index])
 		}
 	case *appwire.TurnStartResponse:
+		s.translateTurnActors(&response.Turn)
 		s.translateTurnItems(&response.Turn)
 	case *appwire.EvenerSubagentPreviewResponse:
 		for index := range response.Items {
+			s.translateItemActor(&response.Items[index])
 			rewriteItemImageURLs(s.id, &response.Items[index])
 			s.translateItemAuthorship(&response.Items[index])
 		}

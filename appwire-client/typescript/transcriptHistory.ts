@@ -116,6 +116,7 @@ export const ITEM_OMISSION_TOLERANT_FIELDS = [
   "eventKind",
   "steeringKind",
   "source",
+  "actor",
 ] as const;
 
 // A version-superseding item replacement: incoming is authoritative for
@@ -911,13 +912,16 @@ function readModelDisposition(held: HistoryState, freshHistory: HistoryState | u
  * the same content-wins-on-reissue behavior an unversioned merge always
  * had), never discarded or replaced outright: with no generation/epoch/
  * incarnation of its own to compare, discarding or replacing would be a
- * guess this entry point has no basis for. This entry point never sees
- * `authoritative`/`changes` (wire-response-only fields with no analog on a
- * hydrated model, and no caller of it needs either — a daemonless or
- * partial-refresh read) — a caller needing either folds the wire response
- * through applyReadResponse instead.
+ * guess this entry point has no basis for. A service can carry the wire's
+ * `changes` alongside its hydrated model, updating held content outside the
+ * latest window after the same identity admission as applyReadResponse.
+ * The wire-only `authoritative` range replacement policy does not apply here.
  */
-export function applyReadModel<M extends ThreadModel>(model: M, fresh: ThreadModel): ThreadModel & ModelExtras<M> {
+export function applyReadModel<M extends ThreadModel>(
+  model: M,
+  fresh: ThreadModel,
+  changes?: ThreadReadResponse["changes"],
+): ThreadModel & ModelExtras<M> {
   const held = model.history ?? EMPTY_HISTORY;
   const freshHistory = fresh.history;
   const disposition = readModelDisposition(held, freshHistory);
@@ -934,6 +938,10 @@ export function applyReadModel<M extends ThreadModel>(model: M, fresh: ThreadMod
     const oldest = earliestPosition(turns);
     if (oldest && (!window || comparePositions(oldest, window[0]) < 0)) olderCursor = model.olderCursor;
     turns = mergeHistory(turns, fragment);
+    if (changes) {
+      const imageSessionRoute = imageSessionRouteForSession(fresh.imageSessionId ?? fresh.threadId);
+      turns = mergeHistory(turns, wireFragment(changes.turns, changes.items, imageSessionRoute), true);
+    }
   }
   // A caller here never tracks a request generation of its own (no
   // issueLatestWindowRead, no requestGeneration on the wire request — see

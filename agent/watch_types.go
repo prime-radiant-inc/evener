@@ -207,6 +207,15 @@ type watchConfig struct {
 	sourceDelegateID   string
 	sourceGeneration   uint64
 	stableReceiver     bool
+	hubRef             string
+	hubInstance        string
+	hubGeneration      string
+	hubCaller          string
+	hubCompletion      bool
+	hubTurnBound       bool
+	hubTurnID          string
+	hubSeen            map[string]bool
+	hubSuspended       bool
 	target             string
 	outputMatch        string
 	outputMatcher      *jobstore.OutputMatcher
@@ -240,8 +249,11 @@ type watchConfig struct {
 	settledUpdateSeq  map[jobstore.WatchSendKey]uint64
 	settledOrder      []jobstore.WatchSendKey
 	rejectingDelivery bool
-	nextUpdateSeq     uint64
-	progressStop      chan struct{}
+	// terminalDeliveryPending keeps detached eligibility alive while endHubWatch
+	// records its final send outside jm.mu.
+	terminalDeliveryPending bool
+	nextUpdateSeq           uint64
+	progressStop            chan struct{}
 	// deliveries counts model-facing deliveries for this watch config (rendered
 	// caller frames + delivered sidecar sends + no-send watch notifications +
 	// periodic progress ticks). It is the volume job_list reports, not the

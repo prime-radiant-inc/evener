@@ -1,10 +1,24 @@
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import { resetAskDockStoreForTests } from "../panes/session/composer/askDock/askDockStore";
 import { resetNavigationStoreForTests } from "../stores/navigation/store";
 import { resetThreadsStoreForTests } from "../stores/threads";
 import { resetDisclosureStoreForTests } from "../widgets/disclosure/disclosureStore";
 import SurfaceGallery, { SURFACE_GALLERY_SECTIONS } from "./SurfaceGallery";
+import ChromeSurfaceSection from "./surface-sections/chrome";
+
+test.each([
+  ["ordinary", false],
+  ["manager", true],
+  ["existing", false],
+])("Manager gallery %s projects a read-only session role", (state, manager) => {
+  render(<ChromeSurfaceSection />);
+  const row = screen.getAllByTestId(`manager-fixture-${state}`)[0];
+  if (!row) throw new Error("missing fixture row");
+  fireEvent.click(within(row).getByRole("button", { name: "Details" }));
+  expect(screen.queryByRole("switch")).toBeNull();
+  expect(screen.queryByTestId("session-details-manager") !== null).toBe(manager);
+});
 
 afterEach(() => {
   cleanup();

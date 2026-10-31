@@ -66,7 +66,7 @@ func startRefused(err error) (appwire.ThreadStartResponse, error) {
 	return appwire.ThreadStartResponse{}, causedWireError{wire: appserver.WireError(err).NotAccepted(""), cause: err}
 }
 
-func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
+func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadStartParams) (response appwire.ThreadStartResponse, startErr error) {
 	remote, forward, err := routeThreadStart(ctx, sources, params)
 	if err != nil {
 		return startRefused(err)
@@ -96,10 +96,25 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 		PluginRoot:    cfg.PluginRoot,
 		AgentsDocPath: hubAgentsDocPath(cfg),
 		Provider:      plan.modelRef.Provider,
+		Manager:       params.Manager,
 	})
 	if err != nil {
 		return appwire.ThreadStartResponse{}, appwire.HubLaunchError(err.Error())
 	}
+	createdInstanceID := ""
+	// Only a successful Spawn establishes ownership. Keep this evidence in the
+	// error itself: the router drops responses returned alongside errors.
+	defer func() {
+		if startErr == nil || (entry.ThreadID == "" && entry.SessionID == "") {
+			return
+		}
+		if createdInstanceID == "" {
+			createdInstanceID = localSpawnInstanceID(entry, appwire.Thread{})
+		}
+		wire := appserver.WireError(startErr).WithThreadStartPartial(
+			localSpawnWorkspaceRef(entry), createdInstanceID)
+		startErr = causedWireError{wire: wire, cause: startErr}
+	}()
 	canUseSpawnEntry := entry.Protocol == appwire.ProtocolVersion && entry.Endpoint != "" && entry.ThreadID != ""
 	if cfg.Roster != nil {
 		if err := hubRosterRefresh(ctx, cfg.Roster); err != nil {
@@ -180,6 +195,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 		}
 	}
 	expectedInstanceID := localSpawnInstanceID(entry, threadResp.Thread)
+	createdInstanceID = expectedInstanceID
 	threadResp.Thread = applyHubCapabilities(cfg, threadResp.Thread)
 	annotateThreadProjects([]appwire.Thread{threadResp.Thread})
 	turn := appwire.Turn{}

@@ -14,6 +14,7 @@
 import type { Thread, ThreadCapabilities } from "@evener/appwire-client";
 import { hydrateThread } from "@evener/appwire-client";
 import { ActivityPanel } from "../../panes/session/chrome/ActivityPanel";
+import { DetailsPanel } from "../../panes/session/chrome/DetailsPanel";
 import { StatusRow } from "../../panes/session/chrome/StatusRow";
 import { TasksPanel } from "../../panes/session/chrome/TasksPanel";
 import styles from "../gallery-section.module.css";
@@ -70,6 +71,16 @@ const fixtureThread: Thread = {
 
 const model = hydrateThread({ thread: fixtureThread }, ref, Date.now());
 
+// The session's start-time flag remains readable while disconnected.
+const managerFixtures = [
+  { name: "ordinary", projection: { manager: false } },
+  { name: "manager", projection: { manager: true } },
+  { name: "existing", projection: {} },
+].map(({ name, projection }) => ({
+  name,
+  model: hydrateThread({ thread: { ...fixtureThread, evener: { ...fixtureThread.evener, ...projection } } }, ref, 1000),
+}));
+
 export default function ChromeSurfaceSection() {
   return (
     <section>
@@ -92,6 +103,12 @@ export default function ChromeSurfaceSection() {
           <p className={styles.rowLabel}>activity</p>
           <ActivityPanel sessionRef={ref} model={model} />
         </div>
+        {managerFixtures.map((fixture) => (
+          <div key={fixture.name} className={styles.row} data-testid={`manager-fixture-${fixture.name}`}>
+            <p className={styles.rowLabel}>Manager {fixture.name}, disconnected</p>
+            <DetailsPanel model={fixture.model} now={1000} />
+          </div>
+        ))}
       </ThemeFlip>
     </section>
   );

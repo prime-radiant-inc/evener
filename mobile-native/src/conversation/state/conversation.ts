@@ -1705,7 +1705,14 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				boundService = service;
 				boundProjected = true;
 				try {
-					const { conversation, hasEarlierItems, hasLaterItems } = await service.readProjection(ref);
+					const heldHistory = get().conversation?.history;
+					const heldSnapshot = heldHistory?.incarnation
+						? { incarnation: heldHistory.incarnation, length: heldHistory.length }
+						: undefined;
+					const { conversation, changes, hasEarlierItems, hasLaterItems } = await service.readProjection(
+						ref,
+						heldSnapshot,
+					);
 					// I1: Suppress stale work — if the binding epoch changed, the store
 					// switched to a different service/ref. Do not commit.
 					if (entryEpoch !== bindingEpoch) return;
@@ -1770,7 +1777,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					// withLiveActiveTurn).
 					const appliedModel =
 						sameInstance && currentConvForMerge !== null
-							? applyReadModel(currentConvForMerge, conversation)
+							? applyReadModel(currentConvForMerge, conversation, changes)
 							: conversation;
 					// applyReadModel returns the held model BY REFERENCE, completely
 					// unchanged, when the read's own wire identity disposition is

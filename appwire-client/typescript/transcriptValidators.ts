@@ -108,6 +108,15 @@ function validPosition(value: unknown): value is ThreadItemPosition {
   );
 }
 
+function validSessionActor(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, ["kind", "managerRef"]) &&
+    (value.kind === "human" || value.kind === "manager") &&
+    (value.managerRef === undefined || typeof value.managerRef === "string")
+  );
+}
+
 const ITEM_MODEL_KEYS = new Set([
   "authorship",
   "id",
@@ -116,6 +125,7 @@ const ITEM_MODEL_KEYS = new Set([
   "position",
   "transcriptEntryIndex",
   "clientMutationId",
+  "actor",
   "type",
   "text",
   "pendingText",
@@ -158,6 +168,7 @@ export function validItem(value: unknown): value is CachedSessionItem {
   )
     return false;
   if (value.position !== undefined && !validPosition(value.position)) return false;
+  if (value.actor !== undefined && !validSessionActor(value.actor)) return false;
   for (const key of [
     "transcriptKey",
     "clientMutationId",
@@ -313,6 +324,7 @@ function validWireItem(value: unknown): value is ThreadItem {
   )
     return false;
   if (value.position !== undefined && !validPosition(value.position)) return false;
+  if (value.actor !== undefined && !validSessionActor(value.actor)) return false;
   for (const key of [
     "transcriptEntryIndex",
     "startedAt",

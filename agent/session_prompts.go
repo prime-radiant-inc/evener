@@ -179,6 +179,9 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 	// and background-jobs prompt surface only when those tools are callable.
 	data.DelegationAllowance = s.delegationAllowance
 	data.CanDelegate = s.canPromptDelegation()
+	data.ManagerEnabled = s.hubEnabled
+	data.ManagerDiscovery = s.hubEnabled && s.reg.Get("job_list") != nil
+	data.ManagerStatus = s.hubEnabled && s.reg.Get("job_status") != nil
 
 	// The section-facing tool-availability set, canonical names straight from
 	// the registry (see promptData.HasTool).

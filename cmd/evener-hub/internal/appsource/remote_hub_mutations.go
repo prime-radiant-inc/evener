@@ -34,7 +34,7 @@ func (s *RemoteHubSource) mutationCall(ctx context.Context, method string, clien
 		// call (and it keeps a genuine caller cancellation raw).
 		return s.mapConnectError(err)
 	}
-	if err := client.Request(ctx, method, params, out); err != nil {
+	if err := s.requestOn(ctx, client, method, params, out); err != nil {
 		if cerr := ctx.Err(); cerr != nil {
 			return cerr
 		}
@@ -123,7 +123,7 @@ func (s *RemoteHubSource) StartThread(ctx context.Context, params appwire.Thread
 	remote.Source = ""
 	var out appwire.ThreadStartResponse
 	if err := s.call(ctx, appwire.MethodThreadStart, remote, &out); err != nil {
-		return appwire.ThreadStartResponse{}, err
+		return appwire.ThreadStartResponse{}, s.fromRemoteThreadStartError(err)
 	}
 	return out, nil
 }
@@ -191,6 +191,31 @@ func (s *RemoteHubSource) StopDelegate(ctx context.Context, params appwire.Deleg
 	remote.ThreadID = ref.ThreadID
 	var out appwire.DelegateStopResponse
 	err = s.call(ctx, appwire.MethodEvenerDelegateStop, remote, &out)
+	return out, err
+}
+
+func (s *RemoteHubSource) StopJob(ctx context.Context, request appwire.SessionStopRequest) (appwire.SessionStopResponse, error) {
+	ref := ""
+	if request.Job != nil {
+		ref = request.Job.Ref
+	} else if request.OwnedDelegate != nil {
+		ref = request.OwnedDelegate.Ref
+	}
+	remoteRef, err := s.toRemoteRef(ref, "")
+	if err != nil {
+		return appwire.SessionStopResponse{}, err
+	}
+	if request.Job != nil {
+		remoteJob := *request.Job
+		remoteJob.Ref = remoteRef.String()
+		request.Job = &remoteJob
+	} else if request.OwnedDelegate != nil {
+		remoteDelegate := *request.OwnedDelegate
+		remoteDelegate.Ref = remoteRef.String()
+		request.OwnedDelegate = &remoteDelegate
+	}
+	var out appwire.SessionStopResponse
+	err = s.call(ctx, appwire.MethodEvenerJobsStop, request, &out)
 	return out, err
 }
 

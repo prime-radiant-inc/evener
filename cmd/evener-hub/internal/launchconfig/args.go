@@ -124,6 +124,12 @@ func ToArgs(r Resolved) []string {
 	// child's own default" — the standalone serve default and the Hub's
 	// one-hour default are different values for the same flag.
 	add("--daemon-idle-timeout", r.DaemonIdleTimeout.String())
+	// Boolean flag, rendered only when set: Manager is a start-time property and
+	// absent is the ordinary session. Unlike the idle deadline there is no
+	// "explicitly off" distinction worth carrying to every ordinary launch.
+	if r.Manager {
+		out = append(out, "--manager")
+	}
 	return out
 }
 

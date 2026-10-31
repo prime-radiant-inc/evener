@@ -14,6 +14,9 @@ import (
 )
 
 func jobListTool(s *Session, args map[string]any, maxChars int) (any, error) {
+	if _, hub := args["hub"]; hub {
+		return nil, errors.New("hub discovery requires authenticated dispatch")
+	}
 	jm, err := sessionJobManager(s)
 	if err != nil {
 		return "", err

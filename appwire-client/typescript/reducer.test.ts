@@ -23,7 +23,12 @@ import {
   testHydrateV6,
   testThread,
 } from "./testing/reducerTestKit";
-import { collectAuthoritativeMutationIds, hydrateThread, mergeOlderItemPage } from "./transcriptHistory";
+import {
+  applyReadModel,
+  collectAuthoritativeMutationIds,
+  hydrateThread,
+  mergeOlderItemPage,
+} from "./transcriptHistory";
 import type { AnyNotification, EvenerDelegateInfo, ThreadReadResponse, Turn } from "./types.gen";
 import { NOTIFICATION_NAMES } from "./types.gen";
 import { RAW_WARNING_FRAME_MAX_CHARS } from "./warningFold";
@@ -3982,6 +3987,7 @@ const TRANSCRIPT_SHAPED_NOTIFICATIONS = [
   "evener/marketplace/updated",
   "evener/plugin/updated",
   "evener/notices/changed",
+  "evener/runtime/session/observation",
   "evener/thread/resync",
   "evener/thread/activity/changed",
   "evener/settings/transcriptDisplay/changed",
@@ -4004,4 +4010,67 @@ test("every wire notification is classified as scalar-only or transcript-shaped"
 
 test("a method with no reducer case is transcript-shaped", () => {
   expect(notificationTouchesTranscript("evener/not/yet/known")).toBe(true);
+});
+
+test.each([true, false, undefined])("Manager start flag %s preserves the selected public identity", (manager) => {
+  const thread = testThread({
+    evener: { ref: "remote:canonical", instanceId: "instance", manager },
+  });
+  const model = hydrateThread({ thread }, "remote:historical", 1000);
+  expect(model).toMatchObject({
+    ref: "remote:historical",
+    threadId: thread.id,
+    instanceId: "instance",
+    manager: manager === true,
+  });
+  const refreshed = applyReadModel(model, hydrateThread({ thread }, model.ref, 2000));
+  expect(refreshed).toMatchObject({ ref: model.ref, instanceId: "instance", manager: manager === true });
+});
+
+test("Epochless resync leaves replacement decisions to authoritative history identity", () => {
+  const model = testHydrateV6({
+    turns: [
+      {
+        id: "old",
+        status: "completed",
+        itemsView: "full",
+        items: [{ id: "older-page", turnId: "old", type: "agentMessage", text: "old-sentinel" }],
+      },
+    ],
+  });
+  const hinted = applyNotification(
+    model,
+    { method: "evener/thread/resync", params: { ref: model.ref, threadId: model.threadId } },
+    2,
+  );
+  expect(hinted.history).toBe(model.history);
+  const same = applyReadModel(hinted, testHydrateV6());
+  expect(same.turns.flatMap((turn) => turn.items).map((item) => item.id)).toContain("older-page");
+  const changed = hydrateThread(
+    { thread: testThread(), bootGeneration: "", epoch: 2, snapshot: { incarnation: "replacement", length: 0 } },
+    model.ref,
+    3,
+  );
+  expect(applyReadModel(hinted, changed).turns).toEqual([]);
+  const invalidated = applyNotification(
+    model,
+    {
+      method: "evener/thread/resync",
+      params: { ref: model.ref, threadId: model.threadId, bootGeneration: "", epoch: 2 },
+    },
+    2,
+  );
+  expect(invalidated.history?.invalidatedAtGeneration).toBeDefined();
+});
+
+test("Manager reads follow the session start flag across Clear and new session identities", () => {
+  const before = testHydrate({ evener: { manager: true } });
+  const cleared = applyReadModel(before, testHydrate({ id: "replacement", evener: { manager: true } }));
+  expect(cleared).toMatchObject({ ref: before.ref, threadId: "replacement", manager: true });
+  for (const ref of ["local:new", "local:fork"]) {
+    const fresh = testHydrate({ evener: { ref } });
+    expect(fresh).toMatchObject({ ref, manager: false });
+  }
+  const reconnected = applyReadModel(before, testHydrate({ evener: { manager: true, instanceId: "new-runtime" } }));
+  expect(reconnected).toMatchObject({ ref: before.ref, instanceId: "new-runtime", manager: true });
 });

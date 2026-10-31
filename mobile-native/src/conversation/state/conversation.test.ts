@@ -2,8 +2,10 @@
 // Covers generation safety, notification routing, draft preservation,
 // conflict restore, and no auto-retry.
 
-import type { ThreadItem } from "@evener/appwire-client";
+import type { ThreadItem, Thread, Turn } from "@evener/appwire-client";
 import { describe, expect, it } from "vitest";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { createConversationService } from "../services/conversation";
 import { createConversationStore } from "./conversation";
 import {
 	ALL_TRUE_CAPS,
@@ -386,3 +388,209 @@ describe("ConversationStore", () => {
 		});
 	});
 });
+
+it("native epochless recovery requests held changes and refreshes older tools without losing pages or draft", async () => {
+	const ref = "local:recovery";
+	const oldTool: ThreadItem = {
+		id: "old-tool",
+		turnId: "old-turn",
+		type: "commandExecution",
+		callId: "call-1",
+		status: "inProgress",
+		version: 10,
+		position: { entry: 10, item: 0 },
+	};
+	const turn = (entry: number): Turn => ({
+		id: `turn_${entry}`,
+		status: "completed",
+		itemsView: "fragment",
+		items: [
+			{
+				id: `item_${entry}`,
+				turnId: `turn_${entry}`,
+				type: "agentMessage",
+				text: `sentinel-${entry}`,
+				version: entry,
+				position: { entry, item: 0 },
+			},
+		],
+	});
+	const snapshot = { incarnation: "recovery-history", length: 31 };
+	let recovered = false;
+	const client = new FakeClient("ready");
+	client.on("thread/read", (params) => ({
+		thread: {
+			id: "recovery-instance",
+			sessionId: "recovery-instance",
+			preview: "",
+			ephemeral: false,
+			modelProvider: "test",
+			createdAt: 1,
+			updatedAt: 1,
+			status: { type: "idle" },
+			cwd: "/fixture",
+			cliVersion: "test",
+			source: "evener",
+			turns: [turn(30)],
+			evener: {
+				ref,
+				instanceId: "recovery-instance",
+				capabilities: ALL_TRUE_CAPS,
+				queue: { revision: 0 },
+			},
+		},
+		bootGeneration: "1",
+		epoch: 1,
+		snapshot: { ...snapshot, length: recovered ? 32 : 31 },
+		olderCursor: "page-2",
+		// The real server needs HeldSnapshot to return changed content outside
+		// the bounded latest window. Do not give an unrequested delta to the client.
+		changes:
+			recovered &&
+			params.heldSnapshot?.incarnation === snapshot.incarnation &&
+			params.heldSnapshot.length === snapshot.length
+				? { items: [{ ...oldTool, status: "completed", output: "finished", version: 32 }] }
+				: undefined,
+	}));
+	client.on("thread/turns/list", ({ cursor }) => ({
+		bootGeneration: "1",
+		epoch: 1,
+		snapshot,
+		data:
+			cursor === "page-2"
+				? [turn(20)]
+				: [{ id: "old-turn", status: "completed", itemsView: "fragment", items: [oldTool] }],
+		nextCursor: cursor === "page-2" ? "page-3" : undefined,
+	}));
+	const service = createConversationService(client);
+	const store = createConversationStore();
+	try {
+		await store.getState().openProjected(service, ref);
+		expect((await store.getState().loadOlder(service)).status).toBe("loaded");
+		expect((await store.getState().loadOlder(service)).status).toBe("loaded");
+		const items = () => store.getState().conversation?.turns.flatMap((turn) => turn.items) ?? [];
+		expect(items().map((item) => item.id)).toEqual(["old-tool", "item_20", "item_30"]);
+		expect(items()[0]?.status).toBe("inProgress");
+		store.getState().setDraft("unsent-recovery-draft");
+		recovered = true;
+		const refreshed = new Promise<void>((resolve) => {
+			const unsubscribe = store.subscribe((state) => {
+				if (state.conversation?.history?.length === 32) {
+					unsubscribe();
+					resolve();
+				}
+			});
+		});
+		client.emitNotification({ method: "evener/thread/resync", params: { ref, threadId: "recovery-instance" } });
+		await refreshed;
+		const reads = client.calls.filter((call) => call.method === "thread/read");
+		expect(reads).toHaveLength(2);
+		expect(reads[1]?.params).toMatchObject({
+			ref,
+			includeTurns: true,
+			itemsView: "fragment",
+			itemLimit: 40,
+			subscribe: false,
+			heldSnapshot: snapshot,
+		});
+		expect(items().map((item) => item.id)).toEqual(["old-tool", "item_20", "item_30"]);
+		expect(items()[0]).toMatchObject({ status: "completed", output: "finished", version: 32 });
+		expect(store.getState().conversation?.items.some((item) => JSON.stringify(item).includes("finished"))).toBe(true);
+		expect(items()[1]?.text).toBe("sentinel-20");
+		expect(store.getState().draft).toBe("unsent-recovery-draft");
+	} finally {
+		store.getState().reset();
+	}
+});
+
+it.each([true, false, undefined])(
+	"Manager %s resync and reconnect preserve identity, later history pages and draft",
+	async (manager) => {
+		const ref = "local:historical";
+		let name = "name-before";
+		const turn = (entry: number): Turn => ({
+			id: `turn_${entry}`,
+			status: "completed",
+			itemsView: "fragment",
+			items: [
+				{
+					id: `item_${entry}`,
+					turnId: `turn_${entry}`,
+					type: "agentMessage",
+					text: `sentinel-${entry}`,
+					version: entry,
+					position: { entry, item: 0 },
+				},
+			],
+		});
+		const thread = (): Thread => ({
+			name,
+			id: "history-instance",
+			sessionId: "history-instance",
+			preview: "",
+			ephemeral: false,
+			modelProvider: "test",
+			createdAt: 1,
+			updatedAt: 1,
+			status: { type: "idle" },
+			cwd: "/fixture",
+			cliVersion: "test",
+			source: "evener",
+			turns: [turn(30)],
+			evener: {
+				ref,
+				instanceId: "history-instance",
+				capabilities: ALL_TRUE_CAPS,
+				queue: { revision: 0 },
+				manager,
+			},
+		});
+		const identity = { bootGeneration: "1", epoch: 1, snapshot: { incarnation: "history", length: 31 } };
+		const client = new FakeClient("ready");
+		client.on("thread/read", () => ({ thread: thread(), ...identity, olderCursor: "page-2" }));
+		client.on("thread/turns/list", ({ cursor }) => ({
+			...identity,
+			data: [turn(cursor === "page-2" ? 20 : 10)],
+			nextCursor: cursor === "page-2" ? "page-3" : undefined,
+		}));
+		const service = createConversationService(client);
+		const store = createConversationStore();
+		try {
+			await store.getState().openProjected(service, ref);
+			expect((await store.getState().loadOlder(service)).status).toBe("loaded");
+			expect((await store.getState().loadOlder(service)).status).toBe("loaded");
+			store.getState().setDraft("unsent-sentinel");
+			const retained = () => {
+				const state = store.getState();
+				expect(state.conversation).toMatchObject({ ref, instanceId: "history-instance", manager: manager === true });
+				expect(state.draft).toBe("unsent-sentinel");
+				expect(state.conversation?.turns.flatMap((turn) => turn.items).map((item) => item.id)).toEqual([
+					"item_10",
+					"item_20",
+					"item_30",
+				]);
+				expect(state.conversation?.items.some((item) => JSON.stringify(item).includes("sentinel-10"))).toBe(true);
+			};
+			retained();
+			name = "name-after-resync";
+			const refreshed = new Promise<void>((resolve) => {
+				const unsubscribe = store.subscribe((state) => {
+					if (state.conversation?.name === name) {
+						unsubscribe();
+						resolve();
+					}
+				});
+			});
+			client.emitNotification({ method: "evener/thread/resync", params: { ref, threadId: "history-instance" } });
+			await refreshed;
+			retained();
+			store.getState().suspendProjected();
+			name = "name-after-reconnect";
+			await store.getState().resumeProjected(service, ref);
+			expect(store.getState().conversation?.name).toBe(name);
+			retained();
+		} finally {
+			store.getState().reset();
+		}
+	},
+);

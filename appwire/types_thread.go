@@ -61,6 +61,10 @@ type TaskAggregate struct {
 }
 
 type EvenerThread struct {
+	// Manager is the session's start-time Manager property, reported by the
+	// session itself. It is not a runtime setting: nothing can turn it on or
+	// off after the session starts.
+	Manager bool `json:"manager,omitempty"`
 	// ResumeRequired means recovery stopped this session and automatic actions
 	// must wait for an explicit thread/resume. Saved transcripts remain readable.
 	ResumeRequired bool `json:"resumeRequired,omitempty"`
@@ -542,10 +546,11 @@ type DelegateStopResponse struct {
 // pending escalation. Approve re-runs the single denied invocation with the one
 // path granted; deny returns the typed error to the model.
 type SandboxEscalationResolveParams struct {
-	ThreadID     string `json:"threadId,omitempty"`
-	Ref          string `json:"ref,omitempty"`
-	EscalationID string `json:"escalationId"`
-	Approve      bool   `json:"approve"`
+	ManagerProof *SessionActorProof `json:"managerProof,omitempty"`
+	ThreadID     string             `json:"threadId,omitempty"`
+	Ref          string             `json:"ref,omitempty"`
+	EscalationID string             `json:"escalationId"`
+	Approve      bool               `json:"approve"`
 }
 
 type ThreadCapabilities struct {

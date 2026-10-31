@@ -283,16 +283,12 @@ func TestServeWebSocketWorkerSurvivesPanicAndExecutesQueuedRequests(t *testing.T
 	}
 }
 
-// TestServeWebSocketQueueFullAppliesBackpressureWithoutWireError pins queue
-// saturation as flow control: with a small injected capacity and a parked
-// serial handler, pipelining past capacity blocks the receive loop — no wire
-// error, no eviction — and once the handler releases, every response arrives,
-// in request order.
-func TestServeWebSocketQueueFullAppliesBackpressureWithoutWireError(t *testing.T) {
+// TestServeWebSocketQueueFullRefusesExcessAndPreservesAdmittedOrder pins the
+// bounded queue: admitted work executes in order, excess work is refused
+// before execution, and neither refusal consumes a worker slot.
+func TestServeWebSocketQueueFullRefusesExcessAndPreservesAdmittedOrder(t *testing.T) {
 	server, logged := captureLogfServer()
 	server.requestQueueCapacity = 2
-	blocked := make(chan struct{}, 4)
-	server.blockedEnqueue = func() { blocked <- struct{}{} }
 
 	var mu sync.Mutex
 	var executed []int64
@@ -314,26 +310,24 @@ func TestServeWebSocketQueueFullAppliesBackpressureWithoutWireError(t *testing.T
 	httpServer := serveWebSocketHTTP(t, server)
 	transport := dialRawAppWire(t, httpServer)
 	initializeRaw(t, transport)
+	conn := registeredConnection(t, server)
+	frames := collectFrames(transport)
 
-	const requests = 5
-	for i := int64(2); i < 2+requests; i++ {
+	sendRaw(t, transport, rawRequest(t, 2, appwire.MethodEvenerThreadNameSet, appwire.ThreadNameSetParams{Ref: "local:th_1", Name: "req-2"}))
+	waitFor(t, "first serial handler to start", firstStarted)
+	for i := int64(3); i <= 6; i++ {
 		sendRaw(t, transport, rawRequest(t, i, appwire.MethodEvenerThreadNameSet, appwire.ThreadNameSetParams{Ref: "local:th_1", Name: fmt.Sprintf("req-%d", i)}))
 	}
-	waitFor(t, "first serial handler to start", firstStarted)
-	waitFor(t, "receive loop to park on the full queue", blocked)
-
-	frames := collectFrames(transport)
-	select {
-	case msg := <-frames:
-		t.Fatalf("frame arrived while the queue was saturated and the handler parked: %+v", msg)
-	case <-time.After(100 * time.Millisecond):
+	waitForQueueDepth(t, conn, 2)
+	for _, id := range []int64{5, 6} {
+		requireQueueRefusal(t, "excess request", waitForFrameID(t, frames, id), id, "", appwire.RetryDispositionNone)
 	}
 	if logs := logged(); strings.Contains(logs, "evicting") {
 		t.Fatalf("saturation caused an eviction:\n%s", logs)
 	}
 
 	release()
-	for i := int64(2); i < 2+requests; i++ {
+	for i := int64(2); i <= 4; i++ {
 		msg := waitFor(t, fmt.Sprintf("response %d", i), frames)
 		if msg.Response == nil || msg.Response.ID.Int64() != i {
 			t.Fatalf("response out of order: got %+v, want response id %d", msg, i)
@@ -341,6 +335,9 @@ func TestServeWebSocketQueueFullAppliesBackpressureWithoutWireError(t *testing.T
 	}
 	mu.Lock()
 	defer mu.Unlock()
+	if len(executed) != 3 {
+		t.Fatalf("executed = %v, want only three admitted requests", executed)
+	}
 	for idx, ordinal := range executed {
 		if ordinal != int64(idx+2) {
 			t.Fatalf("execution order = %v, want ascending request order", executed)
@@ -356,16 +353,11 @@ func requestOrdinal(name string) int64 {
 }
 
 // TestServeWebSocketTeardownUnderQueueSaturationCompletesAfterHandlerRelease
-// pins the teardown path out of saturation: a close that arrives while the
-// receive loop is parked on the full queue is observed only when a queue slot
-// frees and the loop re-enters Recv — the same window PR #667's inline
-// handlers had — after which the connection tears down cleanly and the worker
-// exits.
+// pins that closing a saturated connection tears down without waiting for the
+// parked handler to free a queue slot, and queued requests do not execute.
 func TestServeWebSocketTeardownUnderQueueSaturationCompletesAfterHandlerRelease(t *testing.T) {
 	server, _ := captureLogfServer()
 	server.requestQueueCapacity = 2
-	blocked := make(chan struct{}, 4)
-	server.blockedEnqueue = func() { blocked <- struct{}{} }
 
 	firstStarted := make(chan struct{})
 	releaseFirst := make(chan struct{})
@@ -384,22 +376,27 @@ func TestServeWebSocketTeardownUnderQueueSaturationCompletesAfterHandlerRelease(
 	initializeRaw(t, transport)
 	conn := registeredConnection(t, server)
 
-	for i := int64(2); i < 7; i++ {
+	frames := collectFrames(transport)
+	sendRaw(t, transport, rawRequest(t, 2, appwire.MethodEvenerThreadNameSet, appwire.ThreadNameSetParams{Ref: "local:th_1", Name: "n"}))
+	waitFor(t, "first serial handler to start", firstStarted)
+	for i := int64(3); i < 7; i++ {
 		sendRaw(t, transport, rawRequest(t, i, appwire.MethodEvenerThreadNameSet, appwire.ThreadNameSetParams{Ref: "local:th_1", Name: "n"}))
 	}
-	waitFor(t, "first serial handler to start", firstStarted)
-	waitFor(t, "receive loop to park on the full queue", blocked)
-
-	// Close from a goroutine: the WebSocket close handshake cannot complete
-	// until the server observes the close frame, which — the contract under
-	// test — happens only when the parked handler finishes and a queue slot
-	// frees, so a synchronous Close would stall until its own timeout.
-	go func() { _ = transport.Close() }()
-	// The release is part of the contract under test: the close is observed
-	// only when the parked handler finishes and a queue slot frees.
+	waitForQueueDepth(t, conn, 2)
+	for _, id := range []int64{5, 6} {
+		requireQueueRefusal(t, "excess request before close", waitForFrameID(t, frames, id), id, "", appwire.RetryDispositionNone)
+	}
+	if err := transport.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Unregistration follows receive-loop cancellation and queue purge. Keep
+	// the handler parked until then so queued work cannot run before cancel.
+	waitUnregistered(t, server)
 	release()
 	waitFor(t, "worker to exit after teardown", conn.workerExited)
-	waitUnregistered(t, server)
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("calls after teardown = %d, want only the parked handler", got)
+	}
 }
 
 // TestServeWebSocketCloseAbandonsQueuedRequestsWithPurgeAdvisory pins
@@ -540,18 +537,16 @@ func TestServeWebSocketWorkerObservesCancellationAtDequeue(t *testing.T) {
 	}
 }
 
-// TestServeWebSocketQueueSaturationAdvisoryFiresOncePerConnection pins the
-// advisory's shape: repeated saturation on one connection produces exactly
-// one log line — an implementation can neither flood the log under sustained
-// backpressure nor skip the advisory.
+// TestServeWebSocketQueueSaturationAdvisoryFiresOncePerConnection pins that
+// repeated hard-cap refusals on one connection produce one advisory.
 func TestServeWebSocketQueueSaturationAdvisoryFiresOncePerConnection(t *testing.T) {
 	server, logged := captureLogfServer()
 	server.requestQueueCapacity = 1
-	blocked := make(chan struct{}, 8)
-	server.blockedEnqueue = func() { blocked <- struct{}{} }
 
 	releases := make(chan struct{}, 8)
+	started := make(chan struct{}, 4)
 	HandleTyped(server.Router(), appwire.MethodEvenerThreadNameSet, func(_ context.Context, _ appwire.ThreadNameSetParams) (appwire.EmptyResponse, error) {
+		started <- struct{}{}
 		<-releases
 		return appwire.EmptyResponse{}, nil
 	})
@@ -561,24 +556,41 @@ func TestServeWebSocketQueueSaturationAdvisoryFiresOncePerConnection(t *testing.
 	conn := registeredConnection(t, server)
 	frames := collectFrames(transport)
 
-	// First saturation: one executing, one queued, one blocking the loop.
-	for i := int64(2); i < 5; i++ {
+	sendRaw(t, transport, rawRequest(t, 2, appwire.MethodEvenerThreadNameSet, appwire.ThreadNameSetParams{Ref: "local:th_1", Name: "n"}))
+	waitFor(t, "the parked handler", started)
+	for i := int64(3); i <= 7; i++ {
 		sendRaw(t, transport, rawRequest(t, i, appwire.MethodEvenerThreadNameSet, appwire.ThreadNameSetParams{Ref: "local:th_1", Name: "n"}))
 	}
-	waitFor(t, "receive loop to park on the full queue", blocked)
-	releases <- struct{}{}
-
-	// Second saturation on the same connection.
-	sendRaw(t, transport, rawRequest(t, 5, appwire.MethodEvenerThreadNameSet, appwire.ThreadNameSetParams{Ref: "local:th_1", Name: "n"}))
-	waitFor(t, "receive loop to park on the refilled queue", blocked)
-	for range 3 {
+	waitForQueueDepth(t, conn, 1)
+	for id := int64(4); id <= 7; id++ {
+		requireQueueRefusal(t, "repeated hard-cap refusal", waitForFrameID(t, frames, id), id, "", appwire.RetryDispositionNone)
+	}
+	for range 2 {
 		releases <- struct{}{}
 	}
-
-	for i := int64(2); i < 6; i++ {
+	for i := int64(2); i <= 3; i++ {
 		msg := waitFor(t, fmt.Sprintf("response %d", i), frames)
 		if msg.Response == nil || msg.Response.ID.Int64() != i {
 			t.Fatalf("response out of order: got %+v, want id %d", msg, i)
+		}
+	}
+	// The first two admitted handlers finished, so the queue drained. Fill
+	// it again behind another parked handler and check the same advisory flag.
+	waitForQueueDepth(t, conn, 0)
+	waitFor(t, "second admitted handler", started)
+	sendRaw(t, transport, rawRequest(t, 8, appwire.MethodEvenerThreadNameSet, appwire.ThreadNameSetParams{Ref: "local:th_1", Name: "n"}))
+	waitFor(t, "handler in second saturation cycle", started)
+	sendRaw(t, transport, rawRequest(t, 9, appwire.MethodEvenerThreadNameSet, appwire.ThreadNameSetParams{Ref: "local:th_1", Name: "n"}))
+	waitForQueueDepth(t, conn, 1)
+	sendRaw(t, transport, rawRequest(t, 10, appwire.MethodEvenerThreadNameSet, appwire.ThreadNameSetParams{Ref: "local:th_1", Name: "n"}))
+	requireQueueRefusal(t, "refusal after drain and refill", waitForFrameID(t, frames, 10), 10, "", appwire.RetryDispositionNone)
+	for range 2 {
+		releases <- struct{}{}
+	}
+	for i := int64(8); i <= 9; i++ {
+		msg := waitFor(t, fmt.Sprintf("response %d", i), frames)
+		if msg.Response == nil || msg.Response.ID.Int64() != i {
+			t.Fatalf("response out of order after refill: got %+v, want id %d", msg, i)
 		}
 	}
 
@@ -692,11 +704,9 @@ func parkSendLoopWithFullBuffer(t *testing.T, server *Server, gate *gatedSendTra
 	return conn
 }
 
-// TestServeWebSocketPingParksOnFullOutboundBufferUntilSendDrains pins the
-// stated precondition on ping liveness: with the write side parked and the
-// outbound channel full, the inline ping response parks in enqueueResponse —
-// no response arrives — and once the write side drains, the ping answers.
-func TestServeWebSocketPingParksOnFullOutboundBufferUntilSendDrains(t *testing.T) {
+// TestServeWebSocketPingOnFullOutboundBufferEndsConnection pins the reader's
+// nonblocking output rule: a full send channel ends the connection promptly.
+func TestServeWebSocketPingOnFullOutboundBufferEndsConnection(t *testing.T) {
 	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local"})
 	gate := &gatedSendTransport{blocked: make(chan struct{}, 1), release: make(chan struct{})}
 	server.wrapWebSocketTransport = func(inner webSocketTransport) webSocketTransport {
@@ -706,34 +716,17 @@ func TestServeWebSocketPingParksOnFullOutboundBufferUntilSendDrains(t *testing.T
 	httpServer := serveWebSocketHTTP(t, server)
 	transport := dialRawAppWire(t, httpServer)
 	initializeRaw(t, transport)
-	parkSendLoopWithFullBuffer(t, server, gate)
+	conn := parkSendLoopWithFullBuffer(t, server, gate)
+	t.Cleanup(func() { close(gate.release) })
 
-	frames := collectFrames(transport)
+	_ = collectFrames(transport)
 	sendRaw(t, transport, rawRequest(t, 2, appwire.MethodPing, appwire.EmptyParams{}))
-	select {
-	case msg := <-frames:
-		t.Fatalf("frame arrived while the outbound buffer was full and the write side parked: %+v", msg)
-	case <-time.After(150 * time.Millisecond):
-	}
-
-	close(gate.release)
-	deadline := time.After(5 * time.Second)
-	for {
-		select {
-		case msg := <-frames:
-			if msg.Response != nil && msg.Response.ID.Int64() == 2 {
-				return
-			}
-		case <-deadline:
-			t.Fatal("ping response did not arrive after the write side drained")
-		}
-	}
+	waitFor(t, "worker to exit after output refusal", conn.workerExited)
+	waitUnregistered(t, server)
 }
 
-// TestServeWebSocketWriteTimeoutTearsDownConnectionWithPingParked pins the
-// other half of the precondition: a peer that never drains does not leave the
-// receive loop parked in enqueueResponse forever — the send loop's write
-// timeout fails the parked write, cancels the connection, and teardown runs.
+// TestServeWebSocketWriteTimeoutTearsDownConnectionWithPingParked also pins
+// send-loop write-timeout teardown while the reader refuses full output.
 func TestServeWebSocketWriteTimeoutTearsDownConnectionWithPingParked(t *testing.T) {
 	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local"})
 	server.sendWriteTimeout = 150 * time.Millisecond

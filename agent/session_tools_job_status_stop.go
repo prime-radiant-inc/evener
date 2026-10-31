@@ -15,6 +15,9 @@ import (
 )
 
 func jobStatusTool(s *Session, args map[string]any, maxChars int) (any, error) {
+	if _, hub := args["hub"]; hub {
+		return nil, errors.New("hub status requires authenticated dispatch")
+	}
 	target := strings.TrimSpace(stringArg(args, "target"))
 	if target == "" {
 		return "", errors.New("invalid_request: target is required")

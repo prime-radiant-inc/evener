@@ -145,6 +145,31 @@ describe("your message", () => {
 		...over,
 	});
 
+	it.each([undefined, "steered"] as const)("routes actor identity for input with origin %s", (origin) => {
+		const managerRef = "local:manager-origin";
+		const manager = render(
+			<TimelineItem
+				item={user({ origin, actor: { kind: "manager", managerRef } })}
+				hubId="hub"
+				sessionRef="local:worker"
+			/>,
+		);
+		expect(renderedText(manager)).toContain(managerRef);
+		const [managerAction] = manager.root.findAll((node) => typeof node.props.onLongPress === "function");
+		expect(managerAction?.props.accessibilityLabel).toContain(managerRef);
+		const human = render(
+			<TimelineItem
+				item={user({ origin, actor: { kind: "human", managerRef } })}
+				hubId="hub"
+				sessionRef="local:worker"
+			/>,
+		);
+		expect(renderedText(human)).not.toContain(managerRef);
+		const [humanAction] = human.root.findAll((node) => typeof node.props.onLongPress === "function");
+		expect(humanAction?.props.accessibilityLabel).toEqual(expect.any(String));
+		expect(humanAction?.props.accessibilityLabel).not.toContain(managerRef);
+	});
+
 	it("sits right-aligned in a bubble at most 85% wide with an 18pt continuous radius", () => {
 		expect(userBubbleStyle()).toMatchObject({
 			maxWidth: "85%",

@@ -181,14 +181,15 @@ type NavigationResourceKey = navigationResourceKey
 type NavigationService struct {
 	mu sync.Mutex
 
-	source       navigationSource
-	generation   string
-	genErr       error
-	now          func() time.Time
-	newTimer     func(time.Duration) navigationTimer
-	buildTimeout time.Duration
-	retryAfter   time.Duration
-	history      *navigationHistory
+	source        navigationSource
+	deleteSession sessionDeleteHandler
+	generation    string
+	genErr        error
+	now           func() time.Time
+	newTimer      func(time.Duration) navigationTimer
+	buildTimeout  time.Duration
+	retryAfter    time.Duration
+	history       *navigationHistory
 	// subagentParent is the alias resolver's hop function; nil disables it.
 	subagentParent func(context.Context, string) (string, string, error)
 	// aliasServed remembers, per location key that is not a present row, the

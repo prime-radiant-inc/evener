@@ -647,7 +647,7 @@ func (h *hostSSH) prepareDeployDir(hostDir string) {
 
 func cleanupHostDeploy(t *testing.T, host *hostSSH, hostDir, addr, installPath, installHash string) {
 	t.Helper()
-	if stopHostListener(t, host, addr, hostDir+"/"+hostDeployToml) {
+	if stopHostListener(t, host, addr, hostDir+"/"+hostDeployToml, hostDir+"/bin/evener") {
 		if err := host.tryRun("rm -rf " + shellquote.RemoteWord(hostDir)); err != nil {
 			t.Errorf("remove the test-owned directory %s on host %s: %v", hostDir, host.target, err)
 		}
@@ -663,6 +663,17 @@ func cleanupHostDeploy(t *testing.T, host *hostSSH, hostDir, addr, installPath, 
 	}
 	if got := host.sha256IfFile(installPath); got != installHash {
 		t.Errorf("the host's own install %s changed during the deploy case (sha256 %s -> %s); the deploy must write only to the test-owned %s", installPath, installHash, got, runTarget)
+	}
+}
+
+func removeHostFixtureAfterProof(t *testing.T, host *hostSSH, hostDir string, shutdownProved bool) {
+	t.Helper()
+	if !shutdownProved {
+		t.Logf("retaining test-owned directory %s on host %s because shutdown is unproved", hostDir, host.target)
+		return
+	}
+	if err := host.tryRun("rm -rf " + shellquote.RemoteWord(hostDir)); err != nil {
+		t.Errorf("remove the test-owned directory %s on host %s: %v", hostDir, host.target, err)
 	}
 }
 
@@ -782,21 +793,71 @@ func (h *hostSSH) sha256IfFile(path string) string {
 	return fields[0]
 }
 
-// stopHostListener stops the hub this case started and waits briefly for the
-// port to clear, so the directory it runs from can be removed. The port is
-// fixed, so a listener there could be an unrelated process: the kill is gated on
-// the pid's command line naming the private config path this case wrote, so it
-// can only ever target this test's own hub. A kill that fails, or a listener
-// that outlives the wait, is reported rather than logged away — a silent cleanup
-// failure would leave a hub running from a directory the test then removes.
-// Only true permits the caller to remove that directory.
-func stopHostListener(t *testing.T, host *hostSSH, addr, configPath string) bool {
+// stopHostListener stops this case's hub and proves both that its listener is
+// gone and that no process row still has the fixture binary and exact config
+// path. The port is fixed, so a listener there could be unrelated; the kill
+// rechecks both identity markers immediately before signaling. Only true permits
+// the caller to remove the directory the hub ran from.
+func stopHostListener(t *testing.T, host *hostSSH, addr, configPath, binaryPath string) bool {
 	t.Helper()
-	port := addr[strings.LastIndex(addr, ":")+1:]
-	kill := hostHubKillCommand(addr, configPath)
-	if err := host.tryRun(kill); err != nil {
+	if err := stopHostListenerProof(host, addr, configPath, binaryPath); err != nil {
 		t.Errorf("stopping the deploy check's host hub on %s (config %s): %v", addr, configPath, err)
+		retainHostCleanupRoot(t)
+		if reapErr := host.tryRun(hostHubReapCommand(configPath, binaryPath)); reapErr != nil {
+			t.Errorf("reaping owned host hub processes on %s (config %s): %v", addr, configPath, reapErr)
+			retainHostCleanupRoot(t)
+		}
 		return false
+	}
+	return true
+}
+
+// hostHubReapCommand handles only the exact executable/config process identity
+// after graceful proof failed. Every signal follows a fresh identity check, and
+// absence is accepted only from a successful process listing.
+func hostHubReapCommand(configPath, binaryPath string) string {
+	identityAWK := hostHubIdentityAWK()
+	script := `set -eu
+scan() {
+  rows=$(ps -ww -o pid=,command= -A) || return $?
+	  printf '%s\n' "$rows" | awk -v executable="$EVENER_HUB_BIN" -v config="$EVENER_HUB_CONFIG" '` + identityAWK + ` { if (owns(2)) print $1 }'
+}
+signal_owned() {
+  sig=$1
+  for pid in $(scan); do
+    case "$pid" in ''|*[!0-9]*) exit 2;; esac
+    cmd=$(ps -ww -o command= -p "$pid")
+    printf '%s\n' "$cmd" | awk -v executable="$EVENER_HUB_BIN" -v config="$EVENER_HUB_CONFIG" '` + identityAWK + ` { if (owns(1)) found=1 } END { exit !found }' || continue
+    cmd=$(ps -ww -o command= -p "$pid")
+    printf '%s\n' "$cmd" | awk -v executable="$EVENER_HUB_BIN" -v config="$EVENER_HUB_CONFIG" '` + identityAWK + ` { if (owns(1)) found=1 } END { exit !found }' || continue
+    kill -"$sig" "$pid"
+  done
+}
+signal_owned TERM
+i=0
+while [ $i -lt 20 ]; do
+  left=$(scan)
+  [ -z "$left" ] && exit 0
+  sleep 0.1
+  i=$((i+1))
+done
+signal_owned KILL
+i=0
+while [ $i -lt 20 ]; do
+  left=$(scan)
+  [ -z "$left" ] && exit 0
+  sleep 0.1
+  i=$((i+1))
+done
+exit 1`
+	return "env EVENER_HUB_BIN=" + shellquote.RemoteWord(binaryPath) + " EVENER_HUB_CONFIG=" + shellquote.RemoteWord(configPath) + " bash -c " + shellquote.RemoteWord(script)
+}
+
+func stopHostListenerProof(host *hostSSH, addr, configPath, binaryPath string) error {
+	port := addr[strings.LastIndex(addr, ":")+1:]
+	kill := hostHubKillCommand(addr, configPath, binaryPath)
+	if err := host.tryRun(kill); err != nil {
+		return fmt.Errorf("kill command failed: %w", err)
 	}
 	probe := hostListenerProbeScript(port)
 	deadline := time.Now().Add(10 * time.Second)
@@ -807,13 +868,16 @@ func stopHostListener(t *testing.T, host *hostSSH, addr, configPath string) bool
 		// listener is gone": returning here is what lets the caller remove the
 		// directory a still-running hub serves from. The timeout below reports the
 		// unproven cleanup.
-		if out, err := host.runStdout(probe); err == nil && hostListenerProbeAbsent(out) {
-			return true
+		out, err := host.runStdout(probe)
+		if err == nil && hostListenerProbeAbsent(out) {
+			processes, processErr := host.runStdout(hostHubProcessProbeCommand(configPath, binaryPath))
+			if processErr == nil && hostHubProcessesAbsent(processes) {
+				return nil
+			}
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
-	t.Errorf("the deploy check's host hub shutdown on %s is unproved after 10s; retaining its private directory", addr)
-	return false
+	return fmt.Errorf("shutdown on %s is unproved after 10s", addr)
 }
 
 // hostListenerProbeAbsent reports whether out — the answer of the shared
@@ -828,30 +892,64 @@ func hostListenerProbeAbsent(out []byte) bool {
 	return strings.TrimSpace(string(out)) == hostNoListenerMarker
 }
 
+func hostHubProcessProbeCommand(configPath, binaryPath string) string {
+	return "ps -ww -o pid=,command= -A >/dev/null 2>&1 || { echo 'cannot list host processes' >&2; exit 1; }; " +
+		"rows=$(ps -ww -o pid=,command= -A) || exit $?; " +
+		"printf '%s\\n' \"$rows\" | awk -v executable=" + shellquote.RemoteWord(binaryPath) +
+		" -v config=" + shellquote.RemoteWord(configPath) + " '" + hostHubIdentityAWK() +
+		" { if (owns(2)) { print \"HUB_PID \" $1; found=1 } } END { if (!found) print \"HUB_PROCESSES_ABSENT\" }'"
+}
+
+// hostHubIdentityAWK matches an exact executable and config argument. start is
+// 2 for a full ps PID/command row and 1 for ps command= output. It accepts both
+// hub forms (--config PATH, --config=PATH) and the real-process test helper's
+// dedicated config flag; arbitrary argument substrings are not ownership.
+func hostHubIdentityAWK() string {
+	return `function owns(start, i) {
+  if ($(start) != executable) return 0
+  for (i = start + 1; i <= NF; i++) {
+    if ($i == "--config" && $(i + 1) == config) return 1
+    if ($i == "--config=" config || $i == "-manager-cleanup-process-config=" config) return 1
+  }
+  return 0
+}`
+}
+
+func hostHubProcessesAbsent(out []byte) bool {
+	return strings.TrimSpace(string(out)) == "HUB_PROCESSES_ABSENT"
+}
+
 // hostHubKillCommand is the remote command that stops the hub this case started
 // and nothing else. It lists the pids listening on the case's private port and
-// signals each only when `ps` shows the case's own config path in its command
-// line — the marker the launched host hub was given (hubBootstrapArgv passes
-// --config). The port alone is deliberately not enough: it is a fixed literal, so
-// killing every listener on it could terminate an unrelated process.
+// signals each only when `ps` shows the case's own config path and evener-real
+// executable in its command line — the marker the launched host hub was given
+// (hubBootstrapArgv passes --config). It repeats those checks immediately before
+// the signal to avoid acting on a recycled PID. The port alone is deliberately
+// not enough: it is a fixed literal, so killing every listener on it could
+// terminate an unrelated process.
 //
 // The pids come from the shared listener probe, not a bare `lsof`: that probe
 // falls back to ss and to /proc/net/tcp, so a host without lsof is still probed,
 // and it exits nonzero when no probe can run. The kill checks that status before
 // the loop, because `for pid in $(...)` discards it: an unprobeable host must be
 // a reported failure, never a silent "nothing to kill".
-func hostHubKillCommand(addr, configPath string) string {
+func hostHubKillCommand(addr, configPath, binaryPath string) string {
 	port := addr[strings.LastIndex(addr, ":")+1:]
 	// The probe's answer is a pid per line or one of its two markers; the case
 	// guard keeps only numeric pids as kill candidates, so a marker can never
 	// reach `ps` or `kill`.
+	identityCheck := fmt.Sprintf(
+		`cmd=$(ps -ww -o command= -p "$pid" 2>/dev/null) || continue; `+
+			`printf '%%s\n' "$cmd" | awk -v executable=%s -v config=%s '$1 == executable && (($2 == "hub" && $3 == "--config" && $4 == config) || (NF == 3 && $2 == "-test.run=^TestManagerReadinessCleanupProcessHelper$" && $3 == "-manager-cleanup-process-config=" config)) { ok=1 } END { exit !ok }' || continue`,
+		shellquote.RemoteWord(binaryPath), shellquote.RemoteWord(configPath),
+	)
 	return fmt.Sprintf(
 		"pids=$( %s ); s=$?; "+
 			"if [ $s -ne 0 ]; then echo 'evener-hub deploy check cleanup: no listener probe is available on the host (lsof, ss, and /proc/net/tcp are all missing); refusing to conclude no hub is listening' >&2; exit $s; fi; "+
 			"for pid in $pids; do "+
 			"case \"$pid\" in ''|*[!0-9]*) continue;; esac; "+
-			"if ps -ww -o command= -p \"$pid\" 2>/dev/null | grep -F -e %s >/dev/null; then kill \"$pid\"; fi; done",
-		hostListenerProbeScript(port), shellquote.RemoteWord(configPath))
+			"%s; %s; kill \"$pid\"; done",
+		hostListenerProbeScript(port), identityCheck, identityCheck)
 }
 
 // TestHostHubKillCommandTargetsOnlyThisTestsHub pins the cleanup's precision
@@ -861,23 +959,25 @@ func hostHubKillCommand(addr, configPath string) string {
 func TestHostHubKillCommandTargetsOnlyThisTestsHub(t *testing.T) {
 	const addr = "127.0.0.1:19180"
 	const config = "/home/dev/evener-deploy-e2e-source/hub.toml"
-	got := hostHubKillCommand(addr, config)
+	const binary = "/home/dev/evener-deploy-e2e-source/bin/evener"
+	got := hostHubKillCommand(addr, config, binary)
 	if !strings.Contains(got, "lsof -ti :19180 -sTCP:LISTEN") {
 		t.Fatalf("kill command does not find the listener by the case's port: %q", got)
 	}
 	if !strings.Contains(got, "ps -ww -o command=") {
 		t.Fatalf("kill command does not read the pid's command line: %q", got)
 	}
-	if guard := "grep -F -e " + shellquote.RemoteWord(config); !strings.Contains(got, guard) {
-		t.Fatalf("kill command does not gate on this case's config path (%s): %q", guard, got)
+	if !strings.Contains(got, "-v executable="+shellquote.RemoteWord(binary)) || !strings.Contains(got, "-v config="+shellquote.RemoteWord(config)) {
+		t.Fatalf("kill command does not gate on exact executable and config identity: %q", got)
 	}
-	if !strings.Contains(got, "; then kill \"$pid\"; fi") {
-		t.Fatalf("kill is not conditioned on the config-path match: %q", got)
+	if strings.Count(got, "cmd=$(ps -ww -o command= -p \"$pid\" 2>/dev/null)") != 2 {
+		t.Fatalf("kill does not recheck PID identity immediately before signaling: %q", got)
 	}
-	// The config path is the discriminator, so a different path must produce a
-	// different command; otherwise the kill would match any listener on the port.
-	if other := hostHubKillCommand(addr, "/home/dev/other/hub.toml"); other == got {
-		t.Fatal("kill command ignores the config path, so it would signal any listener on the port")
+	if other := hostHubKillCommand(addr, config, "/home/dev/other/bin/evener"); other == got {
+		t.Fatal("kill command ignores the executable path")
+	}
+	if other := hostHubKillCommand(addr, "/home/dev/other/hub.toml", binary); other == got {
+		t.Fatal("kill command ignores the config path")
 	}
 }
 
@@ -893,7 +993,7 @@ func TestHostHubKillCommandTargetsOnlyThisTestsHub(t *testing.T) {
 func TestHostHubKillCommandFailsClosedWithoutAProbe(t *testing.T) {
 	const addr = "127.0.0.1:19180"
 	const config = "/home/dev/evener-deploy-e2e-source/hub.toml"
-	got := hostHubKillCommand(addr, config)
+	got := hostHubKillCommand(addr, config, "/home/dev/evener-deploy-e2e-source/bin/evener")
 	if strings.Contains(got, "lsof -tiTCP:19180 -sTCP:LISTEN 2>/dev/null") {
 		t.Fatalf("the kill still runs lsof alone and reads its silence as absence: %q", got)
 	}
@@ -957,6 +1057,7 @@ func TestStopHostListenerIgnoresProbeStderr(t *testing.T) {
 		"for a in \"$@\"; do script=\"$a\"; done\n" +
 		"case \"$script\" in\n" +
 		"  *'evener-hub deploy check cleanup'*) exit 0 ;;\n" +
+		"  *'HUB_PROCESSES_ABSENT'*) echo HUB_PROCESSES_ABSENT; exit 0 ;;\n" +
 		"esac\n" +
 		"echo 'lsof: WARNING: can not stat() file system' >&2\n" +
 		"echo " + hostNoListenerMarker + "\n"
@@ -966,5 +1067,87 @@ func TestStopHostListenerIgnoresProbeStderr(t *testing.T) {
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	host := &hostSSH{t: t, target: "fake-host"}
-	stopHostListener(t, host, "127.0.0.1:19180", "/tmp/hub.toml")
+	stopHostListener(t, host, "127.0.0.1:19180", "/tmp/hub.toml", "/tmp/bin/evener")
 }
+
+func hostDaemonReapCommand(hostDir string) string {
+	script := `ps -A >/dev/null 2>&1 || { echo 'SSH daemon cleanup: cannot list processes; refusing to conclude that none is running' >&2; exit 1; }
+reap() { ps -ww -o pid=,command= -A | awk -v bin="$EVENER_REAP_DIR/bin/evener-real" '$2==bin && $3=="serve" {print $1}'; }
+for pid in $(reap); do
+  case "$pid" in ''|*[!0-9]*) continue;; esac
+  [ "$pid" = "$$" ] && continue
+  [ "$pid" = "$PPID" ] && continue
+  kill "$pid" 2>/dev/null
+done
+i=0
+while [ $i -lt 35 ]; do
+  left=$(reap)
+  [ -z "$left" ] && exit 0
+  sleep 1
+  i=$((i+1))
+done
+for pid in $left; do
+  case "$pid" in ''|*[!0-9]*) continue;; esac
+  kill -9 "$pid" 2>/dev/null
+done
+sleep 1
+left=$(reap)
+if [ -n "$left" ]; then echo "SSH daemon cleanup: still running after SIGKILL: $left" >&2; exit 1; fi`
+	return fmt.Sprintf("env EVENER_REAP_DIR=%s bash -c %s", shellquote.RemoteWord(hostDir), shellquote.RemoteWord(script))
+}
+
+// TestHostDaemonReapCommandIsScopedToThisCase pins that the reaper signals only
+// daemons started from this case's private directory and reports a survivor
+// rather than exiting zero on it.
+func TestHostDaemonReapCommandIsScopedToThisCase(t *testing.T) {
+	const hostDir = "/tmp/evener-manager-ssh-1234-5678"
+	got := hostDaemonReapCommand(hostDir)
+	// The directory is the discriminator: a different case must produce a
+	// different command, or the reaper would signal every run's daemons.
+	if other := hostDaemonReapCommand(hostDir + "-other"); other == got {
+		t.Fatal("reap command ignores the directory, so it would signal another run's daemons")
+	}
+	// The filter reads process command lines, and the shell running the filter
+	// carries the script in its own command line. Spelling the daemon's expanded
+	// path into the script would therefore match that shell and kill the cleanup
+	// itself, which is how the first version of this failed. The directory must
+	// reach the match through the environment, so the script text holds only the
+	// unexpanded "$EVENER_REAP_DIR/bin/evener-real serve".
+	if strings.Contains(got, hostDir+"/bin/evener-real serve") {
+		t.Fatalf("reap command spells the expanded daemon path into its own command line, so its filter matches the shell running it: %q", got)
+	}
+	if !strings.Contains(got, "EVENER_REAP_DIR=") || !strings.Contains(got, `bin="$EVENER_REAP_DIR/bin/evener-real"`) {
+		t.Fatalf("reap command does not match the daemon by absolute path from the environment: %q", got)
+	}
+	// The executable field is matched exactly. A substring match on the command
+	// line would also match the grep or awk that is doing the matching, which
+	// made the first version of this report a phantom survivor forever.
+	if !strings.Contains(got, `$2==bin && $3=="serve"`) {
+		t.Fatalf("reap command does not exact-match the executable field: %q", got)
+	}
+	// A directory prefix must not match a longer sibling path. The match requires
+	// the daemon's own absolute binary, so /x and /x-other stay distinct even
+	// though one string is a prefix of the other.
+	if !strings.Contains(got, "/bin/evener-real") {
+		t.Fatalf("reap command matches a bare directory, so sibling run directories alias: %q", got)
+	}
+	// Escalation is part of the contract: SIGTERM, then SIGKILL for laggards.
+	if !strings.Contains(got, `kill "$pid"`) || !strings.Contains(got, "kill -9") {
+		t.Fatalf("reap command does not escalate from SIGTERM to SIGKILL: %q", got)
+	}
+	// A survivor must be a reported failure, never a silent success: the whole
+	// point is that leaving one behind goes unnoticed.
+	last := strings.LastIndex(got, "still running after SIGKILL")
+	if last < 0 || !strings.Contains(got[last:], "exit 1") {
+		t.Fatalf("reap command does not fail when a daemon survives: %q", got)
+	}
+	// Never conclude "nothing to kill" from an unreadable process table.
+	if !strings.Contains(got, "ps -A >/dev/null 2>&1 ||") {
+		t.Fatalf("reap command treats a failed ps as an empty match: %q", got)
+	}
+}
+
+// TestHostHubKillCommandTargetsOnlyThisTestsHub pins the cleanup's precision
+// without a host: the command that stops the case's hub must gate the kill on the
+// pid's command line carrying the case's own config path, so an unrelated
+// process holding the fixed port is never signalled.

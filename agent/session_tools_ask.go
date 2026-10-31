@@ -40,6 +40,7 @@ const (
 // (spec §5.1, §6); this struct carries the question and its option labels,
 // never the options' details.
 type askQuestion struct {
+	TurnID   string
 	Header   string
 	Question string
 	// Options are the question's option labels, in the order the call
@@ -134,8 +135,32 @@ func (s *Session) setAskPendingLocked(pending []askQuestion) {
 // call, not per question, so the two slices generally differ in length.
 // Callers hold s.mu already.
 func (s *Session) appendAskPendingLocked(parsed []askQuestion, argsJSON []byte) {
+	for i := range parsed {
+		parsed[i].TurnID = s.execution.turnID
+	}
 	s.askPending = append(s.askPending, parsed...)
 	s.askPendingCallArgs = append(s.askPendingCallArgs, argsJSON)
+}
+
+// pendingAskTurnIDs reads the same pending set durable admission will clear.
+// A restored question without recorded execution identity supplies no link.
+func (s *Session) pendingAskTurnIDs() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var ids []string
+	for _, question := range s.askPending {
+		ids = appendAnswerTurnIDs(ids, question.TurnID)
+	}
+	return ids
+}
+
+func appendAnswerTurnIDs(ids []string, more ...string) []string {
+	for _, id := range more {
+		if id != "" && !slices.Contains(ids, id) {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
 
 // clearAskPending empties the pending set. Callers: durable user-input
@@ -944,6 +969,9 @@ func questionsFromAskCalls(history []schema.Turn, toolResultsIdx int, wantCallID
 			parsed, err := parseAskQuestions(normalized)
 			if err != nil {
 				continue // semantic violation on a hand-edited/drifted transcript; skip
+			}
+			for i := range parsed {
+				parsed[i].TurnID = history[j].TurnID
 			}
 			out = append(out, parsed...)
 		}

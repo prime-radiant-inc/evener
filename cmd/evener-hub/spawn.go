@@ -190,6 +190,9 @@ func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rende
 	// launch paths (resume's resolved is a historical reconstruction — the
 	// timeout must reflect the Hub's CURRENT config, not the past launch's).
 	req.Resolved.DaemonIdleTimeout = h.Cfg.DaemonIdleTimeout
+	// A start-time property, assigned here rather than read from launch config:
+	// only a start request can grant it, and the daemon persists it itself.
+	req.Resolved.Manager = req.Manager
 	applyHubAPILogDefault(&req.Resolved, h.Cfg.APILog)
 	req.RunDir = h.RunDir
 	if req.Resolved.Effective.AppReplaySize != nil {
@@ -422,6 +425,11 @@ func buildResumeArgs(req hubcore.ResumeRequest) []string {
 	resumeResolved.Effective.Model = ""
 	resumeResolved.Effective.FastCheapModel = ""
 	resumeResolved.Effective.ModelFallbacks = nil
+	// Manager must never be passed on resume. The resumed daemon restores it from
+	// the session's own persisted meta, which is the authority for a session that
+	// already exists; rendering it here would let a resume re-decide a start-time
+	// property the session already owns.
+	resumeResolved.Manager = false
 	args = append(args, launchconfig.ToArgs(resumeResolved)...)
 	return args
 }

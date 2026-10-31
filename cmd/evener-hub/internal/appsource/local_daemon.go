@@ -2,6 +2,7 @@ package appsource
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"net/http"
@@ -16,10 +17,16 @@ import (
 )
 
 type LocalDaemonSource struct {
-	sourceID string
-	entries  func() []LocalDaemonEntry
-	client   *http.Client
-	dial     appwireDialFunc
+	sessionToolsFactory     func(appwire.SessionBinding) (appwire.SessionHubClient, error)
+	sessionToolsHubID       func() (string, error)
+	sessionToolsPoke        chan struct{}
+	sessionToolsMu          sync.Mutex
+	sessionToolsLifetime    context.Context
+	sessionToolsConnections map[string]sessionToolsLiveConnection
+	sourceID                string
+	entries                 func() []LocalDaemonEntry
+	client                  *http.Client
+	dial                    appwireDialFunc
 
 	itemPagingLocks keyedMutexRegistry
 	itemSnapshots   *itemSnapshotStateCache
@@ -59,6 +66,11 @@ type LocalDaemonEntry struct {
 	// appwire.EvenerThread.AskPending so the TUI's per-row ask marker (Task 29)
 	// sees it when attaching through the hub.
 	PendingAsk bool
+	// Manager mirrors hubcore.LiveEntry.Manager — the session's own start-time
+	// Manager property as its daemon projects it. threadFromEntry carries it
+	// into EvenerThread.Manager so hub views read the session's own property,
+	// never a hub-side record.
+	Manager bool
 	// PendingEscalation mirrors hubcore.LiveEntry.PendingEscalation — true
 	// while the daemon reports a blocked sandbox-exemption escalation. The
 	// unprobed fallback folds it out of Clear, matching the daemon's own
@@ -185,6 +197,160 @@ func (s *LocalDaemonSource) ID() string {
 	return s.sourceID
 }
 
+type sessionToolsLiveConnection struct {
+	binding   appwire.SessionBinding
+	transport appwire.Transport
+}
+
+// SetSessionTools is installed before any source connection starts. It does not
+// accept a caller identity from tool parameters or from a cold alias.
+func (s *LocalDaemonSource) SetSessionTools(factory func(appwire.SessionBinding) (appwire.SessionHubClient, error), hubID func() (string, error)) {
+	s.sessionToolsFactory = factory
+	s.sessionToolsHubID = hubID
+	s.sessionToolsPoke = make(chan struct{}, 1)
+	s.sessionToolsConnections = map[string]sessionToolsLiveConnection{}
+}
+
+func (s *LocalDaemonSource) SessionToolsThread(binding appwire.SessionBinding) (appwire.Thread, error) {
+	for _, entry := range s.entries() {
+		if entry.ReadOnlyAlias {
+			continue
+		}
+		thread := s.threadFromEntry(entry)
+		if thread.Evener.Ref == binding.Ref && thread.Evener.InstanceID == binding.InstanceID {
+			return thread, nil
+		}
+	}
+	return appwire.Thread{}, appwire.SessionUnavailable("runtime binding no longer names a discovered live session")
+}
+
+func (s *LocalDaemonSource) ReconcileSessionTools() {
+	if s.sessionToolsPoke == nil {
+		return
+	}
+	select {
+	case s.sessionToolsPoke <- struct{}{}:
+	default:
+	}
+}
+
+// RunSessionTools holds demand on the existing canonical relay, whose recovery
+// owner reconnects even when the roster's identity has not changed.
+func (s *LocalDaemonSource) RunSessionTools(ctx context.Context) {
+	if s.sessionToolsFactory == nil {
+		return
+	}
+	s.sessionToolsMu.Lock()
+	s.sessionToolsLifetime = ctx
+	s.sessionToolsMu.Unlock()
+	type held struct {
+		lease  RelaySessionRoutePublicationLease
+		cancel context.CancelFunc
+	}
+	leases := map[string]held{}
+	var workers sync.WaitGroup
+	defer func() {
+		for _, hold := range leases {
+			hold.cancel()
+			hold.lease.Close()
+		}
+		s.sessionToolsMu.Lock()
+		var transports []appwire.Transport
+		for ref, connection := range s.sessionToolsConnections {
+			transports = append(transports, connection.transport)
+			delete(s.sessionToolsConnections, ref)
+		}
+		s.sessionToolsMu.Unlock()
+		for _, transport := range transports {
+			_ = transport.Close()
+		}
+		workers.Wait()
+	}()
+	s.ReconcileSessionTools()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-s.sessionToolsPoke:
+		}
+		wanted := map[string]appwire.Thread{}
+		for _, entry := range s.entries() {
+			if !entry.ReadOnlyAlias {
+				thread := s.threadFromEntry(entry)
+				wanted[thread.Evener.Ref] = thread
+			}
+		}
+		s.sessionToolsMu.Lock()
+		var stale []appwire.Transport
+		hubID, _ := s.sessionToolsHubID()
+		for ref, connection := range s.sessionToolsConnections {
+			if wanted[ref].Evener.InstanceID != connection.binding.InstanceID || hubID != connection.binding.HubID {
+				stale = append(stale, connection.transport)
+				delete(s.sessionToolsConnections, ref)
+			}
+		}
+		s.sessionToolsMu.Unlock()
+		for _, transport := range stale {
+			_ = transport.Close()
+		}
+		for ref, hold := range leases {
+			if _, ok := wanted[ref]; !ok {
+				hold.cancel()
+				hold.lease.Close()
+				delete(leases, ref)
+			}
+		}
+		for raw := range wanted {
+			if _, ok := leases[raw]; ok {
+				continue
+			}
+			ref, err := appwire.ParseRef(raw)
+			if err != nil {
+				continue
+			}
+			lease, err := s.AcquireRelaySession(ref)
+			if err != nil {
+				continue
+			}
+			life, cancel := context.WithCancel(ctx)
+			feed, err := lease.Listen(life)
+			if err != nil {
+				cancel()
+				lease.Close()
+				continue
+			}
+			leases[raw] = held{lease: lease, cancel: cancel}
+			workers.Go(func() {
+				for delivery := range feed {
+					if delivery.Acknowledge != nil {
+						delivery.Acknowledge()
+					}
+				}
+			})
+			workers.Go(func() {
+				read, err := lease.Read(life, appwire.ThreadReadParams{Ref: raw})
+				if err == nil {
+					if read.Handoff != nil {
+						read.Handoff.Prepare()
+						read.Handoff.Commit()
+					}
+					return
+				}
+				// Reuse the relay's paced recovery for first-dial failures too.
+				if l, ok := lease.(*relaySessionLease); ok {
+					l.session.mu.Lock()
+					start := !l.session.closed && !l.session.recovering
+					l.session.recovering = l.session.recovering || start
+					l.session.mu.Unlock()
+					if start {
+						l.session.recoverCanonicalFeed()
+					}
+				}
+			})
+		}
+	}
+}
+
 func (s *LocalDaemonSource) ResolveRelaySession(params appwire.ThreadReadParams) (appwire.Ref, error) {
 	canonical, _, err := s.ResolveRelaySessionWithAdmission(params)
 	return canonical, err
@@ -283,16 +449,60 @@ func (s *LocalDaemonSource) AcquireRelaySession(ref appwire.Ref) (RelaySessionRo
 				}
 				client := appwire.NewClient(transport)
 				client.SetLogf(hubConnectionLogf)
+				var binding appwire.SessionBinding
+				s.sessionToolsMu.Lock()
+				bindingLifetime := s.sessionToolsLifetime
+				s.sessionToolsMu.Unlock()
+				if s.sessionToolsFactory != nil && (bindingLifetime == nil || bindingLifetime.Err() == nil) {
+					hubID, hubErr := s.sessionToolsHubID()
+					if hubErr == nil {
+						binding = appwire.SessionBinding{Ref: ref.String(), InstanceID: currentEntry.SessionID, HubID: hubID, BindingID: rand.Text()}
+						owner, ownerErr := s.sessionToolsFactory(binding)
+						if ownerErr == nil {
+							client.SetSessionTools(binding, owner)
+						} else {
+							binding.BindingID = ""
+							binding.HubID = ""
+						}
+					}
+				}
 				client.SetOrderedFrameHandler(func(message appwire.Message, err error) {
 					observe(epoch, message, err)
 				})
 				client.Start(ctx)
-				if _, initializeErr := client.Initialize(ctx, appwire.InitializeParams{ClientInfo: appwire.ClientInfo{Name: "evener-hub"}}); initializeErr != nil {
+				if _, initializeErr := client.Initialize(ctx, appwire.InitializeParams{ClientInfo: appwire.ClientInfo{Name: "evener-hub"}, Capabilities: appwire.Capabilities{SessionTools: binding.BindingID != ""}}); initializeErr != nil {
 					_ = transport.Close()
 					if callerErr := ctx.Err(); callerErr != nil {
 						return nil, nil, callerErr
 					}
 					return nil, nil, localDaemonInitializeError(initializeErr)
+				}
+				if binding.BindingID != "" {
+					if !client.Features().SessionTools {
+						// Keep HubID stable so reconciliation does not recycle this connection.
+						binding.BindingID = ""
+					} else if bindErr := client.BindSessionTools(ctx); bindErr == nil {
+						s.sessionToolsMu.Lock()
+						if bindingLifetime != nil && bindingLifetime.Err() != nil {
+							s.sessionToolsMu.Unlock()
+							_ = transport.Close()
+							return nil, nil, bindingLifetime.Err()
+						}
+						s.sessionToolsMu.Unlock()
+					} else {
+						binding.BindingID = ""
+						binding.HubID = ""
+					}
+				}
+				if s.sessionToolsFactory != nil {
+					binding.Ref = ref.String()
+					binding.InstanceID = currentEntry.SessionID
+					s.sessionToolsMu.Lock()
+					s.sessionToolsConnections[ref.String()] = sessionToolsLiveConnection{binding: binding, transport: transport}
+					s.sessionToolsMu.Unlock()
+					// Reconcile a failed binding or a daemon identity that changed
+					// while this connection was being established.
+					s.ReconcileSessionTools()
 				}
 				return client, transport, nil
 			},
@@ -313,6 +523,21 @@ func (s *LocalDaemonSource) AcquireRelaySession(ref appwire.Ref) (RelaySessionRo
 		return nil, appwire.SessionUnavailable("relay session retired during acquisition")
 	}
 	return lease, nil
+}
+
+// SessionToolsSupported reports support negotiated by the target's live
+// canonical relay connection. known is false until the target is serving.
+func (s *LocalDaemonSource) SessionToolsSupported(ref appwire.Ref) (supported, known bool) {
+	if ref.SourceID != s.sourceID {
+		return false, false
+	}
+	s.relayMu.Lock()
+	session := s.relaySessions[ref.String()]
+	s.relayMu.Unlock()
+	if session == nil {
+		return false, false
+	}
+	return session.SessionToolsSupported()
 }
 
 // acquireRelaySession preserves the old parameter-based source call sites while
@@ -477,6 +702,11 @@ func (s *LocalDaemonSource) StartTurn(ctx context.Context, params appwire.TurnSt
 func (s *LocalDaemonSource) StartTurnAtEntry(ctx context.Context, entry rendezvous.Entry, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
 	var out appwire.TurnStartResponse
 	err := s.withMutationClient(ctx, entry, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) error {
+		proof, err := s.targetManagerProof(entry, params.ManagerProof)
+		if err != nil {
+			return err
+		}
+		params.ManagerProof = proof
 		if err := gateSkillInputOnClient(ctx, client, params.Ref, params.ThreadID, params.Input); err != nil {
 			return err
 		}
@@ -494,6 +724,11 @@ func (s *LocalDaemonSource) SteerTurn(ctx context.Context, params appwire.TurnSt
 	}
 	var out appwire.TurnSteerResponse
 	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) error {
+		proof, err := s.targetManagerProof(entry, params.ManagerProof)
+		if err != nil {
+			return err
+		}
+		params.ManagerProof = proof
 		if err := gateSkillInputOnClient(ctx, client, params.Ref, params.ThreadID, params.Input); err != nil {
 			return err
 		}
@@ -508,8 +743,31 @@ func (s *LocalDaemonSource) ResolveSandboxEscalation(ctx context.Context, params
 		return err
 	}
 	return s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
+		proof, err := s.targetManagerProof(entry, params.ManagerProof)
+		if err != nil {
+			return err
+		}
+		params.ManagerProof = proof
 		return client.Request(ctx, appwire.MethodEvenerSandboxEscalationResolve, params, nil)
 	})
+}
+
+// targetManagerProof binds a hub-authorized caller label to the live target
+// runtime. A missing binding must fail closed, never turn Manager input human.
+func (s *LocalDaemonSource) targetManagerProof(entry rendezvous.Entry, proof *appwire.SessionActorProof) (*appwire.SessionActorProof, error) {
+	if proof == nil {
+		return nil, nil
+	}
+	ref := localDaemonWorkspaceRef(s.sourceID, entry, entry.SessionID)
+	s.sessionToolsMu.Lock()
+	connection, ok := s.sessionToolsConnections[ref]
+	s.sessionToolsMu.Unlock()
+	if !ok || connection.binding.BindingID == "" || connection.binding.InstanceID != entry.SessionID {
+		return nil, appwire.InvalidRequest("Manager target has no live binding")
+	}
+	bound := *proof
+	bound.BindingID = connection.binding.BindingID
+	return &bound, nil
 }
 
 // StopDelegate forwards evener/delegate/stop to the root's daemon. Like every
@@ -522,6 +780,24 @@ func (s *LocalDaemonSource) StopDelegate(ctx context.Context, params appwire.Del
 	var out appwire.DelegateStopResponse
 	err = s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
 		return client.Request(ctx, appwire.MethodEvenerDelegateStop, params, &out)
+	})
+	return out, err
+}
+
+func (s *LocalDaemonSource) StopJob(ctx context.Context, request appwire.SessionStopRequest) (appwire.SessionStopResponse, error) {
+	ref := ""
+	if request.Job != nil {
+		ref = request.Job.Ref
+	} else if request.OwnedDelegate != nil {
+		ref = request.OwnedDelegate.Ref
+	}
+	entry, err := s.entryForRef(ref, "")
+	if err != nil {
+		return appwire.SessionStopResponse{}, err
+	}
+	var out appwire.SessionStopResponse
+	err = s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
+		return client.Request(ctx, appwire.MethodEvenerJobsStop, request, &out)
 	})
 	return out, err
 }
@@ -545,6 +821,11 @@ func (s *LocalDaemonSource) QueueTurn(ctx context.Context, params appwire.TurnQu
 	}
 	var out appwire.TurnQueueResponse
 	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) error {
+		proof, err := s.targetManagerProof(entry, params.ManagerProof)
+		if err != nil {
+			return err
+		}
+		params.ManagerProof = proof
 		if err := gateSkillInputOnClient(ctx, client, params.Ref, "", params.Input); err != nil {
 			return err
 		}
@@ -560,6 +841,11 @@ func (s *LocalDaemonSource) DrainAsSteer(ctx context.Context, params appwire.Tur
 	}
 	var out appwire.TurnDrainAsSteerResponse
 	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) error {
+		proof, err := s.targetManagerProof(entry, params.ManagerProof)
+		if err != nil {
+			return err
+		}
+		params.ManagerProof = proof
 		if err := gateSkillInputOnClient(ctx, client, params.Ref, "", params.Input); err != nil {
 			return err
 		}
@@ -569,9 +855,20 @@ func (s *LocalDaemonSource) DrainAsSteer(ctx context.Context, params appwire.Tur
 }
 
 func (s *LocalDaemonSource) PromoteQueuedAsSteer(ctx context.Context, params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
-	return localForwardMutation(ctx, s, params.Ref, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
-		return requestAs[appwire.TurnPromoteQueuedAsSteerResponse](ctx, client, appwire.MethodTurnPromoteQueuedAsSteer, params)
+	entry, err := s.entryForRef(params.Ref, "")
+	if err != nil {
+		return appwire.TurnPromoteQueuedAsSteerResponse{}, localDaemonMutationEntryError(params.ClientMutationID, err)
+	}
+	var out appwire.TurnPromoteQueuedAsSteerResponse
+	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) error {
+		proof, err := s.targetManagerProof(entry, params.ManagerProof)
+		if err != nil {
+			return err
+		}
+		params.ManagerProof = proof
+		return client.Request(ctx, appwire.MethodTurnPromoteQueuedAsSteer, params, &out)
 	})
+	return out, err
 }
 
 func (s *LocalDaemonSource) CancelQueued(ctx context.Context, params appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
@@ -1105,6 +1402,7 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 		Evener: appwire.EvenerThread{
 			Ref:                ref,
 			InstanceID:         instanceID,
+			Manager:            item.Manager,
 			Capabilities:       listRowCapabilities(item, status),
 			AskPending:         item.PendingAsk,
 			PendingQuestion:    appwire.ClonePendingQuestion(item.PendingQuestion),

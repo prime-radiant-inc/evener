@@ -20,8 +20,7 @@
 // heading too.
 //
 // Every value comes off the live ThreadModel the status row already reads - no
-// fetch, no wire call, nothing to load, so there is no loading or error state
-// to render (unlike TasksPanel, whose rows are fetched on open).
+// fetch for accounting. Manager is the session's own start-time property.
 //
 // Cost is EvenerThread.Cost: the "~$X.XX" string appwire.EstimateCost derives
 // server-side from the thread's cumulative usage at the model's catalog price.
@@ -114,7 +113,7 @@ function Section({ title, rows }: { title: string; rows: (StackedPropertyListRow
   );
 }
 
-/** Shared stateless details body used by the mobile Sheet and desktop pane. */
+/** Shared details body used by the mobile Sheet and desktop pane. */
 export function DetailsPanelBody({ model, now }: DetailsPanelBodyProps) {
   const showContext = model.contextWindow > 0 && !isEndedStatus(model.status.type);
   // Remaining is the context window minus what is used, floored at zero - the
@@ -145,6 +144,7 @@ export function DetailsPanelBody({ model, now }: DetailsPanelBodyProps) {
           detailRow("model", "session-details-model", modelLabel(model.modelProvider, model.model), true),
           detailRow("state", "session-details-state", model.status.type),
           detailRow("session id", "session-details-id", model.threadId, true),
+          model.manager && detailRow("role", "session-details-manager", "Manager"),
         ]}
       />
       <Section

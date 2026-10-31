@@ -99,6 +99,11 @@ type DelegateStopSource interface {
 	StopDelegate(context.Context, appwire.DelegateStopParams) (appwire.DelegateStopResponse, error)
 }
 
+// JobStopSource forwards the two typed human job_stop modes to their owner.
+type JobStopSource interface {
+	StopJob(context.Context, appwire.SessionStopRequest) (appwire.SessionStopResponse, error)
+}
+
 // ItemCandidateSource exposes positioned item candidates alongside the source
 // methods used by ordinary callers.
 type ItemCandidateSource interface {

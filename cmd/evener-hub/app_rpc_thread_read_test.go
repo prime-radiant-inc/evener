@@ -51,6 +51,57 @@ func TestHubRPCThreadReadRoutesToDaemon(t *testing.T) {
 	}
 }
 
+func TestSessionOperationsReadPreservesHumanAndManagerSubscriptionModes(t *testing.T) {
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		ref, err := appwire.ParseRef(params.Ref)
+		if err != nil {
+			return appwire.ThreadReadResponse{}, err
+		}
+		if err := appserver.SubscribeWithAdmission(ctx, ref.ThreadID, false); err != nil {
+			return appwire.ThreadReadResponse{}, err
+		}
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: ref.ThreadID, SessionID: ref.ThreadID, Evener: appwire.EvenerThread{Ref: params.Ref}}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+	endpoint := "ws" + strings.TrimPrefix(daemonHTTP.URL, "http")
+	entries := []appsource.LocalDaemonEntry{
+		{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: endpoint, SourceID: "local", ThreadID: "human", SessionID: "human", WorkspaceRef: "local:human"}},
+		{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: endpoint, SourceID: "local", ThreadID: "manager", SessionID: "manager", WorkspaceRef: "local:manager"}},
+	}
+	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry { return entries }, http.DefaultClient)
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
+	relays := newHubRelay(server, cfg, sources)
+	operations := &sessionOperations{cfg: cfg, sources: sources, relays: relays, server: server}
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, operations.Read)
+	// This test-local route exercises the same internal snapshot-only path used
+	// by Manager operations without adding a production hook.
+	appserver.HandleTyped(server.Router(), "test/managerSnapshotRead", func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return operations.read(ctx, params, false)
+	})
+	hub := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer hub.Close()
+	client := dialHubRPCInitialized(t, hub)
+	defer client.Close()
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:human"}); err != nil {
+		t.Fatalf("ordinary human ThreadRead: %v", err)
+	}
+	if got := server.SubscriberCount("local:human"); got != 1 {
+		t.Fatalf("ordinary human subscriptions = %d, want 1", got)
+	}
+	var snapshot appwire.ThreadReadResponse
+	if err := client.Request(context.Background(), "test/managerSnapshotRead", appwire.ThreadReadParams{Ref: "local:manager"}, &snapshot); err != nil {
+		t.Fatalf("Manager snapshot read: %v", err)
+	}
+	if got := server.SubscriberCount("local:manager"); got != 0 {
+		t.Fatalf("Manager snapshot subscriptions = %d, want 0", got)
+	}
+}
+
 func TestHubRPCThreadReadRoutesReachableErroredDaemon(t *testing.T) {
 	const sessionID = "02wMz5Txv9yYdSRJat13MZ"
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})

@@ -115,6 +115,10 @@ type threadEnvelope struct {
 	// the sandbox request its meta persists. A session's sandbox is fixed when
 	// it starts, so the seed at identity install is the sample that matters.
 	Access *appwire.ThreadAccess
+	// Manager is the session's start-time Manager property, persisted in its
+	// meta. Like Access it is fixed when the session starts, so the seed at
+	// identity install is the sample that matters: nothing can move it later.
+	Manager bool
 }
 
 // ThreadEnvelopeSource supplies the live session values the thread envelope
@@ -436,6 +440,7 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 			}
 			next.LastMessage = meta.LastMessage
 			next.Access = appwire.SessionAccess(meta.Config.Sandbox, meta.Config.SandboxNet)
+			next.Manager = meta.Manager
 		}
 		if facets&facetGoal != 0 {
 			if meta.Goal != nil {
@@ -569,5 +574,6 @@ func (e *threadEnvelope) assign(facets envelopeFacet, next threadEnvelope, cwdSt
 		e.LastTurnEndedAt = next.LastTurnEndedAt
 		e.LastMessage = next.LastMessage
 		e.Access = next.Access
+		e.Manager = next.Manager
 	}
 }

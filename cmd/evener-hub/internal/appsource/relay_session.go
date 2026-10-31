@@ -174,6 +174,17 @@ func (l *relaySessionLease) Listen(ctx context.Context) (<-chan RelayDelivery, e
 	return l.session.listen(ctx, l.id)
 }
 
+// SessionToolsSupported reports the feature negotiated on the current serving
+// daemon connection. known is false until a connection has been established.
+func (s *relaySession) SessionToolsSupported() (supported, known bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.connection == nil || s.connection.disconnected {
+		return false, false
+	}
+	return s.connection.client.Features().SessionTools, true
+}
+
 func (l *relaySessionLease) Close() {
 	if l == nil || l.session == nil {
 		return

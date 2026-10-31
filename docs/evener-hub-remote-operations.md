@@ -85,6 +85,62 @@ Adjust the executable path to the installed build. `--addr` overrides the config
 
 A managed host needs SSH connectivity, the required tools, and repository/configuration paths on that host. Use host-scoped settings for provider connections and launch defaults. Check the selected host before saving a credential or trusting a repository launch file.
 
+### Remote Manager and input support
+
+A Manager manages sessions reachable through its own hub. Start it with
+`manager: true` in the AppWire `thread/start` parameters; anyone authorized to
+start a session may set that immutable bit. The daemon persists and reports it,
+and the hub reads the projection. A Manager on hub B uses B for `job_status`
+and other management calls, even when someone views or starts it through hub A.
+Hub A does not install a runtime binding on B's Manager.
+
+```mermaid
+flowchart LR
+  Manager[Manager on A] --> A[Hub A, existing RemoteHubSource]
+  A --> Bridge[Authenticated identified SSH bridge]
+  Bridge --> B[Hub B]
+  B --> Worker[Ordinary worker on B]
+```
+
+A local Manager on hub A sends to an ordinary worker on SSH-hosted hub B through
+A's existing `RemoteHubSource`. Manager input uses a private envelope on that
+authenticated, identified bridge. B qualifies the caller with A's durable hub ID
+before saving its attribution, so the actor cannot be mistaken for a session on B.
+The real-stack [TestE2E_ManagerAcceptance](../cmd/evener-hub/e2e_manager_acceptance_test.go)
+exercises `delegate_send`, the remote worker's `ask_user`, the Manager's answer,
+and the saved actors. It also checks a Manager on B using B's own hub for `job_status`.
+
+The existing authenticated connection exchanges the hubs' persisted IDs. This
+identifies cooperating hubs; it is **not cryptographic isolation between hostile
+token holders**. A hub bearer token is not a hub identity. Tool arguments cannot
+supply caller authority or actor metadata.
+
+Session configuration supplies Manager schemas even while transport is down.
+Calls may report unavailable, but healthy ordinary session work continues.
+Resume, process restart and Clear preserve the Manager bit; fresh roots and forks
+do not inherit it. See [Manager sessions](automation.md#manager-sessions).
+
+The shared remote source carries text Send, Queue and Steer, plus skill and command input **only when the target advertises those capabilities**. Human and Manager input use the same remote mutation receipts and target validation. Unsupported input modes stay unavailable; unrelated remote mutations are not advertised. Reads, status and sandbox approval use their existing routes.
+
+Manager worker creation remains local to the Manager's own hub. Remote creation
+through the Manager's `delegate` branch is deferred; start a worker through the
+remote host's own client, then use its source-qualified ref. Discovery of an empty
+remote host and its model catalog does not create a worker there.
+
+The real two-hub localhost SSH
+[remote approval test](../cmd/evener-hub/manager_readiness_approval_test.go)
+checks a restricted worker's denied write, a Manager's shared watch and approval
+without a browser subscriber, the changed file and the saved Manager-attributed
+decision and successful tool result. Only the external model responses are
+scripted. Live-model behavior and non-localhost deployment remain unqualified.
+
+**Remote Manager `job_watch` uses the same shared hub subscription path as human clients.** It supports targeted status, question, approval and communicate notifications plus accepted terminal completion. Question/answer/completion and saved Manager actor attribution are qualified through real two-hub SSH acceptance without a browser. A Manager attach or clear preserves existing human subscribers. Daemon socket reconnect is separately checked for local and remote routing with the original human subscriber retained; this is not a claim about SSH bridge reconnect. Resync re-reads authoritative state regardless of event selectors, retains the watched execution on the same generation, and ends the old watch on replacement.
+
+Run the actual SSH acceptance explicitly with
+`EVENER_SSH_E2E=1 EVENER_SSH_E2E_DEPLOY=1 go test ./cmd/evener-hub -run '^TestE2E_ManagerAcceptance$' -count=1`.
+It uses a new test-owned localhost SSH directory and reaps fixture daemons before removal.
+`TestE2E_ManagerRemoteSharedInput` exercises real remote-wire routing locally, not SSH.
+
 **Connect preserves a compatible running hub.** The controller verifies its live AppWire handshake and uses that same channel without replacing the binary or restarting the process. A different build label or unavailable cross-platform artifact does not prevent connection. Host details report the remote process's build, or unknown when the handshake omits build metadata.
 
 Connect still provisions a missing installation or upgrades a proven older one. A host whose protocol is newer than the controller's is refused rather than downgraded; update the controller. An explicit Connect can start a stopped compatible installation after proving no hub is listening; background reconnect cannot. Authentication, transport and malformed-handshake failures remain connection errors and do not authorize deployment. Explicit Deploy keeps its plan, confirmation and requested-build verification.

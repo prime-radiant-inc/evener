@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/llm"
 )
 
@@ -199,6 +200,7 @@ const (
 // payload. Each payload mirrors the live event's data field for field, for
 // the same reason HookInfo mirrors its event.
 type NoticeInfo struct {
+	Actor          SessionActor          `json:"actor,omitzero"`
 	Kind           NoticeKind            `json:"kind"`
 	ToolRepair     *ToolRepairNotice     `json:"tool_repair,omitempty"`
 	GoalEnded      *GoalEndedNotice      `json:"goal_ended,omitempty"`
@@ -272,6 +274,12 @@ type ApprovalDecisionNotice struct {
 	Tool         string `json:"tool"`
 	Kind         string `json:"kind"`
 	DeniedPath   string `json:"denied_path"`
+}
+
+// SessionActor is transcript persistence metadata, separate from its AppWire projection.
+type SessionActor struct {
+	Kind       string `json:"kind"`
+	ManagerRef string `json:"manager_ref,omitempty"`
 }
 
 // SkillActivatedNotice mirrors events.SkillActivatedData.
@@ -416,13 +424,21 @@ type GoalContinuationInfo struct {
 // projected, so turns carrying them are not byte-identical by design;
 // they stay sorted here too so a future key lands in one obvious place.
 type Turn struct {
-	AttemptGroupID string `json:"attempt_group_id,omitempty"`
+	Actor SessionActor `json:"actor,omitzero"`
+	// AnswerToTurnIDs names the pending question executions resolved by this
+	// accepted input. Missing evidence never establishes continuation.
+	AnswerToTurnIDs []string `json:"answer_to_turn_ids,omitempty"`
+	AttemptGroupID  string   `json:"attempt_group_id,omitempty"`
 	// AttentionID identifies steering that requires durable terminal cleanup.
 	// It is empty for ordinary steering and all non-steering turns.
 	AttentionID string `json:"attention_id,omitempty"`
 	// AttentionResolution is set only on TurnAttentionResolution turns.
 	AttentionResolution *AttentionResolutionInfo `json:"attention_resolution,omitempty"`
 	Authorship          *TranscriptAuthorship    `json:"authorship,omitempty"`
+	// CausalKnown distinguishes a newly recorded, known-empty origin from an
+	// unstamped older entry whose ancestry is unknown. Do not infer one from nil.
+	Causal      *provenance.Causal `json:"causal,omitempty"`
+	CausalKnown bool               `json:"causal_known,omitempty"`
 	// ClientMutationID identifies retry-safe client-authored input. StableTurnID
 	// preserves the logical turn identity across live events and transcript
 	// recovery for both client input and daemon goal continuations.

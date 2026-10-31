@@ -163,6 +163,14 @@ type NotificationSpec struct {
 var Methods = []MethodSpec{
 	{MethodInitialize, InitializeParams{}, InitializeResponse{}, ScopeConnection, "Handshake; must be the first request. Returns server info, protocol version, source ID, and feature set."},
 	{MethodPing, EmptyParams{}, EmptyResponse{}, ScopeConnection, "Connection keepalive, answered directly before the initialize gate (the browser's app-level heartbeat)."},
+	{MethodHubSessionToolsIdentify, SessionToolsPeerParams{}, SessionToolsPeerResponse{}, ScopeConnection, "Private peer identity exchange on an authenticated, negotiated hub bridge; a hub ID is not a credential."},
+	{MethodRuntimeSessionBind, SessionBinding{}, SessionBinding{}, ScopeConnection, "Private authenticated hub-to-runtime binding, accepted only by explicitly installed daemon handlers after initialize."},
+	{MethodRuntimeSessionState, SessionRuntimeRequest{}, ManagerView{}, ScopeConnection, "Private reverse request on a bound runtime connection, reads the session's own start-time Manager property."},
+	{MethodRuntimeSessionInvoke, SessionRuntimeRequest{}, SessionOperationResponse{}, ScopeConnection, "Private reverse request on a current Manager binding for one typed discovery, read, create, input, control or stop operation."},
+	{MethodRuntimeSessionWatch, SessionRuntimeRequest{}, EmptyResponse{}, ScopeConnection, "Private reverse request for a Manager observation lease through the Manager's bound hub and shared subscriptions for local or remote targets, with initial snapshot, live events and accepted-terminal completion."},
+	{MethodRuntimeSessionUnwatch, SessionRuntimeRequest{}, EmptyResponse{}, ScopeConnection, "Private reverse request, detaches one Manager observation lease from its bound connection."},
+	{MethodRuntimeSessionCancel, SessionRuntimeCancel{}, EmptyResponse{}, ScopeConnection, "Private reverse request, cancels the identified negative requestId on this authenticated binding. Available at operation capacity, completed calls are no-ops."},
+	{MethodHubSessionToolsInput, SessionToolsInput{}, json.RawMessage{}, ScopeHub, "Private identified bridge input for a bound Manager; its fixed method and target are admitted by the hosting hub, not arbitrary remote RPC."},
 	{MethodThreadList, ThreadListParams{}, ThreadListResponse{}, ScopeBoth, "Lists threads; the daemon returns its single session."},
 	{MethodThreadRead, ThreadReadParams{}, ThreadReadResponse{}, ScopeBoth, "Reads one thread and optionally subscribes to its live updates; includeTurns returns the newest bounded atomic projected items, and itemLimit caps items."},
 	{MethodThreadUnsubscribe, ThreadUnsubscribeParams{}, EmptyResponse{}, ScopeBoth, "Drops this connection's live-update subscription to a thread without reading it."},
@@ -284,6 +292,7 @@ var Methods = []MethodSpec{
 	{MethodEvenerSettingsAgentsDocSet, AgentsDocSetParams{}, AgentsDocResponse{}, ScopeHub, "Replaces the personal AGENTS.md whole (no precondition); broadcasts evener/settings/agentsDoc/changed."},
 	{MethodEvenerSandboxEscalationResolve, SandboxEscalationResolveParams{}, EmptyResponse{}, ScopeBoth, "Delivers a human's approve/deny decision for a pending sandbox-exemption escalation (M7); the daemon unblocks the waiting tool-exec goroutine, the hub relays."},
 	{MethodEvenerDelegateStop, DelegateStopParams{}, DelegateStopResponse{}, ScopeBoth, "Ends one subagent's current run at the user's request (S6): that subagent alone, while the subagents it started keep running; the root's daemon serves it, the hub relays. Answers stopping or notRunning."},
+	{MethodEvenerJobsStop, SessionStopRequest{}, SessionStopResponse{}, ScopeBoth, "Runs the human job_stop owner for a typed job_ target (includeChildren stops only immediate shell children) or owned_delegate dlg_ target (recursive owned subtree). The separate delegate mode ends only one run."},
 	{MethodEvenerHostRequest, HostRequestParams{}, HostForwardedResult{}, ScopeHub, "Forwards one hub-scoped admin RPC to a named remote host's hub through the allow-listed proxy (component 07a); the result is the forwarded method's own result, verbatim — an opaque JSON object, not a wrapper, so a typed client must treat the result as unknown and cast it to the forwarded method's own result type (see HostForwardedResult)."},
 	{MethodEvenerHostAttach, HostAttachParams{}, HostAttachResponse{}, ScopeHub, "Explicitly attaches one configured remote host by name through the Ensure-backed dialing seam (component 06's Connect action); a mutation and the only browser-reachable attach trigger, idempotent while attached, returning the host's post-attach state."},
 	{MethodEvenerHostAdd, HostAddParams{}, HostMutationResult{}, ScopeHub, "Registers one host entry (its full entry: name, ssh address, user, key path, and the host's paths and roots) into the machine-managed hub.toml; validates like hub.toml loading and refuses a name the live set already holds. Result is the mutation-result union: committed, committed-with-teardown-failure, collision-dropped, or the keyless-add ambiguous arm."},
@@ -373,6 +382,7 @@ func ValidateMutationParams(method string, raw json.RawMessage) error {
 // intentionally absent — it is defined but emitted by nothing (context
 // pressure rides on the Thread snapshot instead).
 var Notifications = []NotificationSpec{
+	{NotificationRuntimeSessionObservation, SessionRuntimeObservation{}, "Targeted private bound-connection status observation or consumer end. Not a durable job_watch delivery."},
 	{NotifyThreadStarted, ThreadStartedParams{}, "Session started; carries the initial Thread snapshot."},
 	{NotifyThreadClosed, ThreadClosedParams{}, "Session ended."},
 	{NotifyThreadStatusChanged, ThreadStatusChangedParams{}, "Thread status (type + active flags) changed."},
@@ -394,7 +404,7 @@ var Notifications = []NotificationSpec{
 	{NotifyEvenerMarketplaceUpdated, EmptyParams{}, "Broadcast after a marketplace mutation (add/edit/remove, or a refresh that moved a clone to another commit or repaired it); no payload. Clients refresh the marketplace list. A refresh that changed nothing moves only lastUpdated and does not broadcast."},
 	{NotifyEvenerPluginUpdated, EmptyParams{}, "Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade, or a marketplace edit that can re-key installs); no payload. Clients refresh the plugin list."},
 	{NotifyEvenerNoticesChanged, NoticesListResponse{}, "Hub-derived: the hub's notices changed (a notice appeared, cleared, or its session count moved); carries the whole new list, as evener/notices/list returns it. Hub-originated; never sent by daemons."},
-	{NotifyEvenerThreadResync, ThreadResyncParams{}, "Hub-originated hint asking clients to re-read one thread after relay recovery."},
+	{NotifyEvenerThreadResync, ThreadResyncParams{}, "Hub-originated hint asking clients to re-read one thread after relay recovery or a hub-owned setting change."},
 	{NotifyEvenerThreadActivityChanged, SessionActivityChangedParams{}, "Scoped activity invalidation; clients revalidate the named observed resources for the addressed session."},
 	{NotifyEvenerTaskUpdated, TaskUpdatedParams{}, "The session's task-list outcome counts (total/done/cancelled/remaining) changed."},
 	{NotifyEvenerGoalUpdated, GoalUpdatedParams{}, "The session's complete structured goal state changed; null clears it."},

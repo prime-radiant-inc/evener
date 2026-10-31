@@ -1253,6 +1253,7 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 	client := dialHubRPCInitialized(t, hub)
 
 	expected := []string{
+		appwire.MethodHubSessionToolsInput,
 		appwire.MethodThreadList,
 		appwire.MethodThreadRead,
 		appwire.MethodEvenerSessionImage,
@@ -1268,6 +1269,7 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodTurnInterrupt,
 		appwire.MethodEvenerSandboxEscalationResolve,
 		appwire.MethodEvenerDelegateStop,
+		appwire.MethodEvenerJobsStop, // Manager stop surface.
 		appwire.MethodTurnQueue,
 		appwire.MethodTurnDrainAsSteer,
 		appwire.MethodTurnPromoteQueuedAsSteer,

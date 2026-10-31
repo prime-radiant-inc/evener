@@ -84,6 +84,7 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 	reasoningEffortLevels := envelope.ReasoningEffortLevels
 	supportsReasoning := envelope.SupportsReasoning
 	visionModel := envelope.VisionModel
+	manager := envelope.Manager
 	lastTurnEndedAt := envelope.LastTurnEndedAt
 	lastMessage := envelope.LastMessage
 	access := cloneThreadAccess(envelope.Access)
@@ -139,6 +140,7 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 			ReasoningEffortLevels: reasoningEffortLevels,
 			SupportsReasoning:     supportsReasoning,
 			VisionModel:           visionModel,
+			Manager:               manager,
 			LastTurnEndedAt:       lastTurnEndedAt,
 			LastMessage:           lastMessage,
 			Access:                access,

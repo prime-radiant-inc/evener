@@ -400,6 +400,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	runDirFlag := fs.String("run-dir", "", "override rendezvous run directory")
 	appReplaySize := fs.Int("app-replay-size", 0, "AppWire notification replay ring size (default 1000)")
 	nonInteractive := fs.Bool("non-interactive", false, "mark this daemon session as headless/non-interactive")
+	managerMode := fs.Bool("manager", false, "start this session as a Manager of the sessions its hub can reach (a start-time property; persisted with the session)")
 	pluginRoot := fs.String("plugin-root", "", "internal plugin registry root override")
 	agentsDoc := fs.String("agents-doc", "", "personal AGENTS.md loaded ahead of project docs (default: <user config root>/AGENTS.md)")
 	var modelFallbacks cmdutil.StringSliceFlag
@@ -678,6 +679,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		ExportATIFProviderHandles:   *lf.exportATIFProviderHandles,
 		VisionModel:                 visionModelVal,
 		NonInteractive:              *nonInteractive,
+		Manager:                     *managerMode,
 		SystemPromptAsUser:          *lf.systemPromptAsUser,
 		ModelFallbacks:              []string(modelFallbacks),
 		OpenAIResponsesContinuation: settings.openAIResponsesContinuation,
@@ -890,9 +892,33 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	srv.SetSandboxEscalationResolveFunc(func(id string, approve bool) error {
 		return live.session().ResolveSandboxEscalation(id, approve)
 	})
+	if managerApproval, ok := srv.(interface {
+		SetSandboxEscalationResolveAsFunc(func(string, bool, schema.SessionActor) error)
+	}); ok {
+		managerApproval.SetSandboxEscalationResolveAsFunc(func(id string, approve bool, actor schema.SessionActor) error {
+			return live.session().ResolveSandboxEscalationAs(id, approve, actor)
+		})
+	}
 	srv.SetDelegateStopFunc(func(delegateID string) (appwire.DelegateStopOutcome, error) {
 		return live.session().StopDelegateRun(delegateID)
 	})
+	if jobsStop, ok := srv.(interface {
+		SetJobStopFunc(func(context.Context, appwire.SessionStopRequest) (appwire.SessionStopResponse, error))
+	}); ok {
+		jobsStop.SetJobStopFunc(func(ctx context.Context, request appwire.SessionStopRequest) (appwire.SessionStopResponse, error) {
+			var result appwire.SessionJobStopResponse
+			var err error
+			if request.Job != nil {
+				result, err = live.session().StopJobForManager(ctx, *request.Job)
+			} else {
+				result, err = live.session().StopOwnedDelegateForManager(ctx, *request.OwnedDelegate)
+			}
+			if err != nil {
+				return appwire.SessionStopResponse{}, err
+			}
+			return appwire.SessionStopResponse{Job: &result}, nil
+		})
+	}
 	srv.SetCompactFunc(func(ctx context.Context) error { return live.session().Compact(ctx) })
 	srv.SetGoalFunc(func(objective string) (bool, error) {
 		if strings.TrimSpace(objective) == "" {
@@ -910,17 +936,32 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		Start: func(params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
 			return live.session().AcceptClientMutationStart(params)
 		},
+		StartAs: func(params appwire.TurnStartParams, actor schema.SessionActor) (appwire.TurnStartResponse, error) {
+			return live.session().AcceptClientMutationStartAs(params, actor)
+		},
 		Steer: func(params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
 			return live.session().AcceptClientMutationSteer(params)
+		},
+		SteerAs: func(params appwire.TurnSteerParams, actor schema.SessionActor) (appwire.TurnSteerResponse, error) {
+			return live.session().AcceptClientMutationSteerAs(params, actor)
 		},
 		Queue: func(params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
 			return live.session().AcceptClientMutationQueue(params)
 		},
+		QueueAs: func(params appwire.TurnQueueParams, actor schema.SessionActor) (appwire.TurnQueueResponse, error) {
+			return live.session().AcceptClientMutationQueueAs(params, actor)
+		},
 		Drain: func(params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
 			return live.session().AcceptClientMutationDrainAsSteer(params)
 		},
+		DrainAs: func(params appwire.TurnDrainAsSteerParams, actor schema.SessionActor) (appwire.TurnDrainAsSteerResponse, error) {
+			return live.session().AcceptClientMutationDrainAsSteerAs(params, actor)
+		},
 		Promote: func(params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
 			return live.session().AcceptClientMutationPromoteQueuedAsSteer(params)
+		},
+		PromoteAs: func(params appwire.TurnPromoteQueuedAsSteerParams, actor schema.SessionActor) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
+			return live.session().AcceptClientMutationPromoteQueuedAsSteerAs(params, actor)
 		},
 		Cancel: func(params appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
 			return live.session().AcceptClientMutationCancelQueued(params)
@@ -971,6 +1012,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// thread/clear installs resolves on its own registry.
 	srv.SetCostLookupFunc(func(ref string) *registry.Cost { return live.session().CostFor(ref) })
 	srv.SetTasksFunc(func() []appwire.Task { return live.session().Tasks() })
+	if sessionTools, ok := srv.(interface{ SetSessionTools(func() *agent.Session) }); ok {
+		sessionTools.SetSessionTools(live.session)
+	}
 	srv.SetThreadActivityReadFunc(func(ctx context.Context, params appwire.SessionActivityReadParams) (appwire.SessionActivitySummary, error) {
 		sess := live.session()
 		if params.Ref == workspaceRef {
@@ -1037,6 +1081,8 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		defer releaseAdmission()
 		oldEnv := live.environment()
 		clearCfg := sessionCfg
+		// A resumed daemon has no Manager launch flag; the session owns it.
+		clearCfg.Manager = oldSess.Meta().Manager
 		// The launch picked the first session's ID into sessionCfg; the cleared
 		// session is a new session and picks its own.
 		clearCfg.SessionID = ""

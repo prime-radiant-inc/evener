@@ -1,6 +1,7 @@
 package appwire
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -527,6 +528,66 @@ type ErrorData struct {
 	Cause            string           `json:"cause,omitempty"`
 }
 
+// ThreadStartPartialErrorData names a session that a failed thread/start
+// already spawned. It retains the original refusal's classification and any
+// additional data, so the caller can reconcile the created session rather
+// than repeat a start whose outcome is known.
+type ThreadStartPartialErrorData struct {
+	ErrorData
+	CreatedRef        string `json:"createdRef"`
+	CreatedInstanceID string `json:"createdInstanceId"`
+	extra             map[string]json.RawMessage
+}
+
+func (d ThreadStartPartialErrorData) MarshalJSON() ([]byte, error) {
+	type fields ThreadStartPartialErrorData
+	base, err := json.Marshal(fields(d))
+	if err != nil {
+		return nil, err
+	}
+	if len(d.extra) == 0 {
+		return base, nil
+	}
+	var combined map[string]json.RawMessage
+	if err := json.Unmarshal(base, &combined); err != nil {
+		return nil, err
+	}
+	for key, value := range d.extra {
+		if _, standard := combined[key]; !standard {
+			combined[key] = value
+		}
+	}
+	return json.Marshal(combined)
+}
+
+// WithThreadStartPartial keeps the original wire error intact while placing
+// the spawned identity inside its Data: router dispatch discards a result
+// returned beside an error. Automatic retry is unsafe after a real spawn.
+func (e WireError) WithThreadStartPartial(ref, instanceID string) WireError {
+	var raw map[string]json.RawMessage
+	if encoded, err := json.Marshal(e.Data); err == nil {
+		_ = json.Unmarshal(encoded, &raw)
+	}
+	var data ThreadStartPartialErrorData
+	if encoded, err := json.Marshal(raw); err == nil {
+		_ = json.Unmarshal(encoded, &data)
+	}
+	if data.RetryDisposition == RetryDispositionAutomatic {
+		data.RetryDisposition = RetryDispositionBlocked
+	}
+	data.CreatedRef, data.CreatedInstanceID = ref, instanceID
+	delete(raw, "evenerErrorInfo")
+	delete(raw, "clientMutationId")
+	delete(raw, "mutationOutcome")
+	delete(raw, "retryDisposition")
+	delete(raw, "cause")
+	delete(raw, "createdRef")
+	delete(raw, "createdInstanceId")
+	data.extra = raw
+	e.Data = data
+	return e
+}
+
 // HostFieldErrorData is a host mutation's validation-refusal data (component 08
 // slice 2): the standard ErrorData plus the input the refusal blames, spelled
 // the way the wire names that input (HostEntry's json tags) so a dialog places
@@ -941,10 +1002,8 @@ func MutationUnknown(clientMutationID, message string) WireError {
 	}
 }
 
-// BackpressureCauseQueueSaturated is the one cause a connectionBackpressure
-// refusal carries: the connection's inbound request queue was at or beyond
-// its high-water depth when the mutation arrived, so the hub refused the
-// mutation without queueing it.
+// BackpressureCauseQueueSaturated marks a request refused before admission at
+// either the retry-safe mutation high-water mark or the full queue's hard cap.
 const BackpressureCauseQueueSaturated = "queueSaturated"
 
 // BackpressureRefusal is the hub's in-band refusal of a retry-safe mutation
@@ -957,17 +1016,28 @@ const BackpressureCauseQueueSaturated = "queueSaturated"
 // do, because the direct-send fallback does not retry
 // automatically.
 func BackpressureRefusal(clientMutationID, message string) WireError {
-	return WireError{
+	return backpressureRefusal(clientMutationID, message, RetryDispositionAutomatic)
+}
+
+// HardCapRefusal reports that a full connection queue did not accept a request.
+// Its caller must not infer automatic retry safety from that fact alone.
+func HardCapRefusal(clientMutationID, message string) WireError {
+	return backpressureRefusal(clientMutationID, message, RetryDispositionNone)
+}
+
+func backpressureRefusal(clientMutationID, message string, retry RetryDisposition) WireError {
+	wire := WireError{
 		Code:    CodeUnavailable,
 		Message: message,
 		Data: ErrorData{
-			EvenerErrorInfo:  ErrorConnectionBackpressure,
-			ClientMutationID: clientMutationID,
-			MutationOutcome:  MutationOutcomeNotAccepted,
-			RetryDisposition: RetryDispositionAutomatic,
-			Cause:            BackpressureCauseQueueSaturated,
+			EvenerErrorInfo: ErrorConnectionBackpressure,
+			Cause:           BackpressureCauseQueueSaturated,
 		},
-	}
+	}.NotAccepted(clientMutationID)
+	data := wire.Data.(ErrorData)
+	data.RetryDisposition = retry
+	wire.Data = data
+	return wire
 }
 
 // RetrySafeMutationMethods is the wire contract the hub and the shared

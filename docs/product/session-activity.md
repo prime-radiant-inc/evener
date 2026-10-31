@@ -14,6 +14,35 @@ Reading a session's activity is a separate operation, so
 browsing navigation does not load every session's work tree. A session's seen
 mark lives on the hub: a live navigation row carries its `seen_through`, and
 the activity read carries when the session's tree last moved (`lastMovedAt`).
+Manager discovery is also a shallow read: it lists source-qualified sessions
+and every configured host, even if that host has no sessions or is offline.
+It does not open activity rows, mark a session seen, acknowledge reports or
+expose host credentials. A Manager calls `job_list` with
+`hub:{mode:"activity",ref,resource:"summary"}` for the existing domain-owned
+summary, or uses `resource:"delegates"`, `"jobs"` or `"watches"` and follows
+each collection's cursor. Each row retains its qualified owner, so a child
+read cannot confer the parent's writable identity. Partial and unknown counts
+keep their existing meanings; they are not inferred from navigation.
+
+The Manager role is fixed at session start and persists across resume, process
+restart and Clear. Its `job_watch` belongs to its receiving session's watch
+activity, even while it observes an independent worker. Its recorded snapshot
+and live entries keep causal generation/entry evidence; accepted terminal
+completion, not an idle label or an unaccepted result, ends a completion watch.
+Recorded answer links let completion follow the watched work through questions.
+The existing history index answers a targeted, non-subscribing read from one
+cut; the watch retains no ancestry graph or unrelated terminal backlog. Lookup
+failure ends observation explicitly, without completing the work.
+Pending notices survive interruption. On reconnect the watch checks the saved
+Manager caller ref and instance, then retains observation only when the target's
+ref, instance and generation also match. Resync re-reads authoritative state,
+including for completion-only watches. Local and remote Manager watches use the
+same shared hub subscription path as human clients, with an independent lifetime
+for each subscriber. Replacement or exhausted recovery ends the watch with
+re-registration guidance. A runtime restart likewise ends continuing registrations
+with a notice, even after prior event delivery; reconnect never revives an ended
+watch. See [job control](../job-control.md#manager-observation-evidence).
+
 Opening a session (on the web, a pane opening or the page becoming visible
 with it open) marks it seen through the later of an unseen turn end and motion
 after that mark. The web reads that session's activity once per open for this,

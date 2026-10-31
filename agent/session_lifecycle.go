@@ -2145,6 +2145,7 @@ func (s *Session) returnAcceptedUserTurn(queuedIdentity queuedClientMutationIden
 // failed once still accepts the next record, and whether that is right for
 // every producer is the audit in #1181, not this path's rule to settle.
 func (s *Session) appendUserInputTurnRefusingPoison(turn schema.Turn) error {
+	turn.AnswerToTurnIDs = s.pendingAskTurnIDs()
 	err := s.appendTurnAfterTranscriptWrite(
 		turn,
 		func() error { return s.writeTranscriptSyncedLocked(turn) },
@@ -2286,6 +2287,7 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 		}
 		turn.ClientMutationID = queuedIdentity.ClientMutationID
 		turn.StableTurnID = queuedIdentity.StableTurnID
+		turn.Actor = s.clientMutationActor(queuedIdentity.ClientMutationID)
 		if skillInput != nil {
 			turn.SkillState = &schema.SkillTurnState{Input: skillInput}
 		}
@@ -2317,6 +2319,7 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 				return failure
 			}
 		}
+		turn.AnswerToTurnIDs = s.pendingAskTurnIDs()
 		if err := s.appendTurnAfterTranscriptWrite(
 			turn,
 			func() error { return s.appendClientMutationTranscriptLocked(turn) },

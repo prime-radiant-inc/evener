@@ -1,8 +1,10 @@
 package sandbox
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -152,23 +154,74 @@ func RemoveSessionScratchTree(rootID string, extraBases ...string) error {
 	return errors.Join(errs...)
 }
 
+type scratchTreeDirectory interface {
+	ReadDir(int) ([]os.DirEntry, error)
+	Close() error
+}
+
+var openScratchTreeDirectory = func(base string) (scratchTreeDirectory, error) { return os.Open(base) }
+
 // SessionScratchTreeRootIDs lists the root sessions whose scratch trees exist
-// in any base a session may have used, or in extraBases, each once.
-func SessionScratchTreeRootIDs(extraBases ...string) []string {
+// in any base a session may have used, or in extraBases, each once. A cancelled
+// or incomplete scan yields no unverified candidates from that pass.
+func SessionScratchTreeRootIDs(ctx context.Context, extraBases ...string) []string {
+	if ctx.Err() != nil {
+		return nil
+	}
 	var ids []string
 	for _, base := range sessionScratchTreeBases(extraBases...) {
-		entries, err := os.ReadDir(base)
+		if ctx.Err() != nil {
+			return nil
+		}
+		dir, err := openScratchTreeDirectory(base)
 		if err != nil {
 			continue
 		}
-		for _, entry := range entries {
-			id, ok := strings.CutPrefix(entry.Name(), sessionScratchTreePrefix)
-			if ok && entry.IsDir() && !slices.Contains(ids, id) {
+		baseIDs, complete := readScratchTreeRootIDs(ctx, dir)
+		if ctx.Err() != nil {
+			return nil
+		}
+		if !complete {
+			continue
+		}
+		for _, id := range baseIDs {
+			if !slices.Contains(ids, id) {
 				ids = append(ids, id)
 			}
 		}
 	}
 	return ids
+}
+
+// readScratchTreeRootIDs returns only a complete base scan. The directory is
+// closed even when the context ends inside a batch or a read fails.
+func readScratchTreeRootIDs(ctx context.Context, dir scratchTreeDirectory) ([]string, bool) {
+	defer func() { _ = dir.Close() }()
+	var ids []string
+	for {
+		if ctx.Err() != nil {
+			return nil, false
+		}
+		entries, err := dir.ReadDir(32)
+		if ctx.Err() != nil {
+			return nil, false
+		}
+		for _, entry := range entries {
+			if ctx.Err() != nil {
+				return nil, false
+			}
+			id, ok := strings.CutPrefix(entry.Name(), sessionScratchTreePrefix)
+			if ok && entry.IsDir() && !slices.Contains(ids, id) {
+				ids = append(ids, id)
+			}
+		}
+		if errors.Is(err, io.EOF) {
+			return ids, true
+		}
+		if err != nil {
+			return nil, false
+		}
+	}
 }
 
 // sessionScratchTombstonePrefix marks a session scratch renamed out of its

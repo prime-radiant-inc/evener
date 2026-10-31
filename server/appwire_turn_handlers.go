@@ -10,13 +10,26 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
-func (s *Server) handleAppTurnStart(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+func (s *Server) handleAppTurnStart(ctx context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+	actor, manager, err := s.inputActor(ctx, params.ManagerProof)
+	if err != nil {
+		return appwire.TurnStartResponse{}, err
+	}
+	params.ManagerProof = nil
 	unlock, err := s.admitRetrySafeMutation(params.Ref, params.ThreadID, &params.ExpectedInstanceID, &params.ClientMutationID)
 	if err != nil {
 		return appwire.TurnStartResponse{}, err
 	}
 	defer unlock()
-	fn := s.retrySafeTurnFunctions().Start
+	callbacks := s.retrySafeTurnFunctions()
+	fn := callbacks.Start
+	if manager {
+		as := callbacks.StartAs
+		if as == nil {
+			return appwire.TurnStartResponse{}, appwire.Unavailable("Manager turn start not available")
+		}
+		fn = func(p appwire.TurnStartParams) (appwire.TurnStartResponse, error) { return as(p, actor) }
+	}
 	// Skill selections are consumed at the input's actual claim: this endpoint
 	// prepares them against the durable input identity and delivers the
 	// complete bodies at dispatch. The support verdict is this endpoint's own
@@ -31,13 +44,26 @@ func (s *Server) handleAppTurnStart(_ context.Context, params appwire.TurnStartP
 	return callRetrySafe(s, fn, params, params.ClientMutationID, "turn start not available")
 }
 
-func (s *Server) handleAppTurnSteer(_ context.Context, params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
+func (s *Server) handleAppTurnSteer(ctx context.Context, params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
+	actor, manager, err := s.inputActor(ctx, params.ManagerProof)
+	if err != nil {
+		return appwire.TurnSteerResponse{}, err
+	}
+	params.ManagerProof = nil
 	unlock, err := s.admitRetrySafeMutation(params.Ref, params.ThreadID, &params.ExpectedInstanceID, &params.ClientMutationID)
 	if err != nil {
 		return appwire.TurnSteerResponse{}, err
 	}
 	defer unlock()
-	fn := s.retrySafeTurnFunctions().Steer
+	callbacks := s.retrySafeTurnFunctions()
+	fn := callbacks.Steer
+	if manager {
+		as := callbacks.SteerAs
+		if as == nil {
+			return appwire.TurnSteerResponse{}, appwire.Unavailable("Manager steer not available")
+		}
+		fn = func(p appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) { return as(p, actor) }
+	}
 	// Skill selections are consumed at the steering's actual delivery: the
 	// support verdict is this endpoint's own wiring. See the turn/start gate.
 	if params.Input, err = gateTurnInput(params.Input, fn != nil, true); err != nil {
@@ -46,7 +72,11 @@ func (s *Server) handleAppTurnSteer(_ context.Context, params appwire.TurnSteerP
 	return callRetrySafe(s, fn, params, params.ClientMutationID, "steer not available")
 }
 
-func (s *Server) handleAppSandboxEscalationResolve(_ context.Context, params appwire.SandboxEscalationResolveParams) (appwire.EmptyResponse, error) {
+func (s *Server) handleAppSandboxEscalationResolve(ctx context.Context, params appwire.SandboxEscalationResolveParams) (appwire.EmptyResponse, error) {
+	actor, manager, err := s.inputActor(ctx, params.ManagerProof)
+	if err != nil {
+		return appwire.EmptyResponse{}, err
+	}
 	if err := s.requireRootMutationTarget(params.Ref, params.ThreadID); err != nil {
 		return appwire.EmptyResponse{}, err
 	}
@@ -56,11 +86,20 @@ func (s *Server) handleAppSandboxEscalationResolve(_ context.Context, params app
 	}
 	s.mu.RLock()
 	fn := s.sandboxEscalationResolveFunc
+	as := s.sandboxEscalationResolveAs
 	s.mu.RUnlock()
-	if fn == nil {
+	if manager && as == nil {
+		return appwire.EmptyResponse{}, appwire.Unavailable("Manager approval not available")
+	}
+	if !manager && fn == nil {
 		return appwire.EmptyResponse{}, appwire.Unavailable("sandbox escalation resolve not available")
 	}
-	if err := fn(escalationID, params.Approve); err != nil {
+	if manager {
+		err = as(escalationID, params.Approve, actor)
+	} else {
+		err = fn(escalationID, params.Approve)
+	}
+	if err != nil {
 		// The escalation is unknown or already resolved (a stale card, a double
 		// click, or a race with turn-interrupt/close). Surface it as a conflict so
 		// the client can drop the card rather than retry.
@@ -97,6 +136,30 @@ func (s *Server) handleAppDelegateStop(_ context.Context, params appwire.Delegat
 	return appwire.DelegateStopResponse{Outcome: outcome}, nil
 }
 
+func (s *Server) handleAppJobsStop(ctx context.Context, request appwire.SessionStopRequest) (appwire.SessionStopResponse, error) {
+	if err := request.Validate(); err != nil {
+		return appwire.SessionStopResponse{}, err
+	}
+	ref := ""
+	if request.Job != nil {
+		ref = request.Job.Ref
+	} else if request.OwnedDelegate != nil {
+		ref = request.OwnedDelegate.Ref
+	} else {
+		return appwire.SessionStopResponse{}, appwire.InvalidParams("job or owned_delegate mode required")
+	}
+	if err := s.requireRootMutationTarget(ref, ""); err != nil {
+		return appwire.SessionStopResponse{}, err
+	}
+	s.mu.RLock()
+	fn := s.jobStopFunc
+	s.mu.RUnlock()
+	if fn == nil {
+		return appwire.SessionStopResponse{}, appwire.Unavailable("job stop not available")
+	}
+	return fn(ctx, request)
+}
+
 func (s *Server) handleAppTurnInterrupt(ctx context.Context, params appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
 	unlock, err := s.admitRetrySafeMutation(params.Ref, params.ThreadID, &params.ExpectedInstanceID, &params.ClientMutationID)
 	if err != nil {
@@ -110,13 +173,26 @@ func (s *Server) handleAppTurnInterrupt(ctx context.Context, params appwire.Turn
 	return callRetrySafe(s, fn, params, params.ClientMutationID, "interrupt not available")
 }
 
-func (s *Server) handleAppTurnQueue(_ context.Context, params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
+func (s *Server) handleAppTurnQueue(ctx context.Context, params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
+	actor, manager, err := s.inputActor(ctx, params.ManagerProof)
+	if err != nil {
+		return appwire.TurnQueueResponse{}, err
+	}
+	params.ManagerProof = nil
 	unlock, err := s.admitRetrySafeMutation(params.Ref, "", &params.ExpectedInstanceID, &params.ClientMutationID)
 	if err != nil {
 		return appwire.TurnQueueResponse{}, err
 	}
 	defer unlock()
-	fn := s.retrySafeTurnFunctions().Queue
+	callbacks := s.retrySafeTurnFunctions()
+	fn := callbacks.Queue
+	if manager {
+		as := callbacks.QueueAs
+		if as == nil {
+			return appwire.TurnQueueResponse{}, appwire.Unavailable("Manager queue not available")
+		}
+		fn = func(p appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) { return as(p, actor) }
+	}
 	// Skill selections ride the queued entry and are consumed at its actual
 	// claim; the support verdict is this endpoint's own wiring. See the
 	// turn/start gate.
@@ -126,13 +202,26 @@ func (s *Server) handleAppTurnQueue(_ context.Context, params appwire.TurnQueueP
 	return callRetrySafe(s, fn, params, params.ClientMutationID, "queue not available")
 }
 
-func (s *Server) handleAppTurnDrainAsSteer(_ context.Context, params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
+func (s *Server) handleAppTurnDrainAsSteer(ctx context.Context, params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
+	actor, manager, err := s.inputActor(ctx, params.ManagerProof)
+	if err != nil {
+		return appwire.TurnDrainAsSteerResponse{}, err
+	}
+	params.ManagerProof = nil
 	unlock, err := s.admitRetrySafeMutation(params.Ref, "", &params.ExpectedInstanceID, &params.ClientMutationID)
 	if err != nil {
 		return appwire.TurnDrainAsSteerResponse{}, err
 	}
 	defer unlock()
-	fn := s.retrySafeTurnFunctions().Drain
+	callbacks := s.retrySafeTurnFunctions()
+	fn := callbacks.Drain
+	if manager {
+		as := callbacks.DrainAs
+		if as == nil {
+			return appwire.TurnDrainAsSteerResponse{}, appwire.Unavailable("Manager drain not available")
+		}
+		fn = func(p appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) { return as(p, actor) }
+	}
 	// Drained entries keep their selections, consumed with the combined
 	// steering at its actual delivery; the support verdict is this endpoint's
 	// own wiring. See the turn/start gate. The input is optional: drain's job
@@ -146,7 +235,12 @@ func (s *Server) handleAppTurnDrainAsSteer(_ context.Context, params appwire.Tur
 // handleAppTurnPromoteQueuedAsSteer validates static request shape and leaves
 // queue compare-and-commit decisions to the Session callback. No turn in
 // flight is required.
-func (s *Server) handleAppTurnPromoteQueuedAsSteer(_ context.Context, params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
+func (s *Server) handleAppTurnPromoteQueuedAsSteer(ctx context.Context, params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
+	actor, manager, err := s.inputActor(ctx, params.ManagerProof)
+	if err != nil {
+		return appwire.TurnPromoteQueuedAsSteerResponse{}, err
+	}
+	params.ManagerProof = nil
 	unlock, err := s.admitRetrySafeMutation(params.Ref, "", &params.ExpectedInstanceID, &params.ClientMutationID)
 	if err != nil {
 		return appwire.TurnPromoteQueuedAsSteerResponse{}, err
@@ -155,7 +249,18 @@ func (s *Server) handleAppTurnPromoteQueuedAsSteer(_ context.Context, params app
 	if err := requireQueueEntryShape(params.Index, params.ExpectedEntryID); err != nil {
 		return appwire.TurnPromoteQueuedAsSteerResponse{}, err
 	}
-	return callRetrySafe(s, s.retrySafeTurnFunctions().Promote, params, params.ClientMutationID, "promote-queued-as-steer not available")
+	callbacks := s.retrySafeTurnFunctions()
+	fn := callbacks.Promote
+	if manager {
+		as := callbacks.PromoteAs
+		if as == nil {
+			return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.Unavailable("Manager promote not available")
+		}
+		fn = func(p appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
+			return as(p, actor)
+		}
+	}
+	return callRetrySafe(s, fn, params, params.ClientMutationID, "promote-queued-as-steer not available")
 }
 
 // handleAppTurnCancelQueued validates static request shape and leaves queue

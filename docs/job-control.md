@@ -52,6 +52,80 @@ Keep application-owned logs outside session scratch when a detached process must
 outlive the session (where the environment supports detaching; a session-owned
 background job cannot outlive it).
 
+### Manager observation evidence
+
+A Manager's session history, snapshot, and live history updates expose recorded
+`communicate` messages with `observation` metadata. `endTurn` and `endReason`
+describe the recorded request, not proof that the request ended the run.
+`terminalAccepted` is present only when the matching tool result says whether
+terminal arbitration accepted it. A missing value means **unknown**, not false;
+another concurrent terminal call may have won. `causalKnown` is true for newly
+recorded messages even when their causal chain is empty. An older unstamped
+message has `causalKnown: false`: it remains readable without invented ancestry.
+When present, `causal` uses the original bounded watch keys and chain, including
+its truncation marker. Recover a missed update by reading the recorded session
+instead of guessing from the last live notification.
+
+In a [Manager session](automation.md#manager-sessions), call
+`job_watch(operation="create", hub={"ref": "local:<workspace>", "events":
+["communicate"], "completion": true})` to watch the target's recorded observations
+through the Manager's own hub. `status`, `question`, `approval`, and `communicate`
+are supported event selectors; omit `events` to watch only completion.
+Completion means the **accepted** terminal winner for the watched execution
+had `endTurn: true` and `endReason: "done"`. An active or question-pending watch
+binds the authoritative active turn and retains it across reconnect, even when
+later work is active. A fresh idle watch may catch up with the latest recorded
+completed work across a daemon restart, but never skip later unfinished work
+to accept an older done. The serving generation scopes the subscription, not
+the original historical execution.
+Questions, waits, rejected terminal calls, and idle state do not complete it.
+The watch removes itself before delivering a completion wake.
+
+An accepted answer records the question execution it resolves. Completion also
+follows those recorded links across successive questions, whether the answer
+comes from a human or a Manager. It never follows unrelated later work or
+infers a link from an older record that lacks one. For a different terminal
+execution, the watch asks the existing history reader for a single-cut verdict;
+it keeps no continuation graph or terminal backlog. The existing subscription
+consumer retains the original candidate and held history cut while retrying a
+transient read-call failure. It uses the watch state-read policy: a two-second
+budget per call, two seconds between retries, and at most five consecutive
+failed calls. An operation timeout while the watch remains alive, transport
+unavailability, index contention or rebuilding, and an unclassified internal
+read error can recover without re-registration. The watch keeps its ID and
+pending-send identities and emits one interruption notice for that episode.
+Clearing, replacing or canceling the subscription stops its recovery.
+
+Missing required evidence, wrong requested turns, incompatible ref, instance,
+generation, epoch or history incarnation, and history truncation end observation
+immediately. Permanent request refusals and typed history failures also end it;
+none is a negative verdict. Exhausted retries end the watch with one durable
+end notice and re-registration guidance, never inferred completion. Index
+traversal checks cancellation between reads; existing catch-up and OS I/O may
+still finish after the caller stops waiting, so the operation budget is not a
+hard wall-clock bound on underlying I/O.
+
+The watch keeps its ID and pending notices through a connection interruption.
+It sends one interruption notice for the loss, then checks the Manager caller's
+ref and instance before resubscribing. A restored connection retains the watch
+only when the target also has the same ref, instance and generation. A replaced
+caller or target, an unsupported observation, or exhausted connection recovery ends
+the watch durably with re-registration guidance. A runtime restart likewise
+ends continuing hub watches and sends a re-registration notice, including
+watches that had already reported events. Reconnect never revives an ended watch.
+Unstamped replay entries remain readable in history and generate a replay-gap
+notice instead of an automatic event trigger. Human session consumers keep
+their own relay subscriptions, and watch notices never answer human questions.
+
+Local and remote Manager watches use the hub's shared, connection-owned
+subscription path. Use a canonical `HOST:WORKSPACE_ID` ref for a remote target.
+Resync re-reads the authoritative snapshot even for completion-only watches,
+while the notification drain continues. Each Manager and human client keeps
+its own subscription lifetime. Remote question/answer/completion is qualified;
+sandbox approval caused by a live remote prompt remains unexercised end to end.
+Manager schemas come from session configuration and remain present during a
+transport outage, even when a call cannot reach its target.
+
 ## Summary
 
 Evener exposes one unified list/status/control view over two typed resource

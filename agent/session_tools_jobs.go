@@ -71,7 +71,9 @@ func registerJobToolsWith(reg *tool.Registry, register func(tool.RegisteredTool)
 		Definition: tool.DefJobStatus(), ReadOnly: true,
 		Limit: schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-			_ = ctx
+			if _, hub := args["hub"]; hub {
+				return s.invokeHubRead(ctx, "job_status", args)
+			}
 			_ = env
 			return jobStatusTool(s, args, jobToolResultMaxChars(reg, "job_status"))
 		},
@@ -82,7 +84,9 @@ func registerJobToolsWith(reg *tool.Registry, register func(tool.RegisteredTool)
 		Definition: tool.DefJobListNamed(s.resultToolName()), ReadOnly: true,
 		Limit: schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-			_ = ctx
+			if _, hub := args["hub"]; hub {
+				return s.invokeHubRead(ctx, "job_list", args)
+			}
 			_ = env
 			return jobListTool(s, args, jobListOutputMaxChars(reg))
 		},

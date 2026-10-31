@@ -331,6 +331,7 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 		Model:                    s.profile.Model(),
 		CheapModel:               s.profile.CheapModelRefString(),
 		VisionModel:              s.cfg.VisionModel,
+		Manager:                  s.cfg.Manager,
 		Config:                   s.cfg.toSnapshot(),
 		ReasoningEffortEscalated: s.loopEffortEscalated,
 		EnvInfo:                  s.envInfo,

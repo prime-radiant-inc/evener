@@ -65,6 +65,7 @@ const (
 
 type WatchRecord struct {
 	WatchID                  string `json:"watch_id"`
+	HubRef                   string `json:"hub_ref,omitempty"`
 	Generation               string `json:"generation"`
 	OwnerSessionID           string `json:"owner_session_id"`
 	VisibleSessionID         string `json:"visible_session_id"`
@@ -117,6 +118,11 @@ type WatchConfigSnapshot struct {
 	AfterSeconds  int    `json:"after_seconds,omitempty"`
 	RepeatSeconds int    `json:"repeat_seconds,omitempty"`
 	Note          string `json:"note,omitempty"`
+	HubRef        string `json:"hub_ref,omitempty"`
+	HubInstance   string `json:"hub_instance,omitempty"`
+	HubGeneration string `json:"hub_generation,omitempty"`
+	HubCaller     string `json:"hub_caller,omitempty"`
+	HubCompletion bool   `json:"hub_completion,omitempty"`
 }
 
 type WatchEventFilterSnapshot struct {

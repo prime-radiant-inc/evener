@@ -13,7 +13,7 @@ func (r *hubRelay) readThread(ctx context.Context, source appsource.Source, para
 	if r.cfg.RelayHooks.BeforeReadThread != nil {
 		r.cfg.RelayHooks.BeforeReadThread()
 	}
-	needsRelay := params.Subscribe || relayOnThreadRead(source)
+	needsRelay := params.AnswerContinuation == nil && (params.Subscribe || relayOnThreadRead(source))
 	relaySource, atomic := source.(appsource.RelaySessionSource)
 	if !atomic || !needsRelay {
 		response, err := source.ReadThread(ctx, params)

@@ -200,6 +200,19 @@ afterEach(() => {
 });
 
 describe("what the sheet shows (spec 8.6)", () => {
+	it.each([true, false, undefined])("Manager projection %s has no session mutation control", (manager) => {
+		const { host } = provide(conversation({ manager }), { controls: null, ready: false });
+		const tree = sheet();
+		expect(tree.root.findAllByType("Switch" as never)).toHaveLength(0);
+		const group = withTestID(tree, "group:manager");
+		expect(group).toHaveLength(manager ? 1 : 0);
+		if (manager) {
+			expect(group[0]?.findAll((node) => typeof node.props.onPress === "function")).toHaveLength(0);
+		}
+		act(() => replaceHost({ ...host, session: conversation({ ref: "remote:ordinary" }) }));
+		expect(withTestID(tree, "group:manager")).toHaveLength(0);
+	});
+
 	it("leads with the name and the state line, with no header title", () => {
 		provide(conversation());
 		const tree = sheet();

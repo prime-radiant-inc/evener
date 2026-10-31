@@ -368,6 +368,8 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 		}
 	}
 	childConfig.MaxTurns = 500
+	// Owned delegates are ordinary sessions, including when this descriptor resumes.
+	childConfig.Manager = false
 	childConfig.AgentName = agentName
 	childConfig.ReasoningEffort = reasoningEffort
 	childConfig.MCPConfigFiles = nil

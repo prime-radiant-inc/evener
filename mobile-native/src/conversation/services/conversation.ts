@@ -26,6 +26,7 @@ import type {
 	ModelListParams,
 	ModelListResponse,
 	MutationReceipt,
+	SnapshotIdentity,
 	Thread,
 	ThreadCapabilities,
 	ThreadClearResponse,
@@ -112,6 +113,8 @@ export interface ConversationServiceOptions<ReadLease = unknown> {
 
 export interface ConversationReadProjection {
 	conversation: MobileConversation;
+	// The store applies out-of-window changes to the older pages it holds.
+	changes?: ThreadReadResponse["changes"];
 	olderCursor: string | null;
 	hasEarlierItems?: boolean;
 	hasLaterItems?: boolean;
@@ -164,7 +167,7 @@ export interface ConversationRecoveryActions {
 // state). It extends the canonical ConversationService with the live-only
 // methods that must not be optional-fallback to the old open() path.
 export interface LiveConversationService extends ConversationService {
-	readProjection(ref: string): Promise<ConversationReadProjection>;
+	readProjection(ref: string, heldSnapshot?: SnapshotIdentity): Promise<ConversationReadProjection>;
 }
 
 export interface ConversationModelCatalog {
@@ -635,7 +638,7 @@ export function createConversationService<ReadLease = unknown>(
 			return conversation;
 		},
 
-		async readProjection(threadRef) {
+		async readProjection(threadRef, heldSnapshot) {
 			const pagingInstance =
 				ref === threadRef ? instanceId : pendingProjection?.ref === threadRef ? pendingProjection.instanceId : null;
 			const expectedThreadId = threadId ?? undefined;
@@ -645,6 +648,7 @@ export function createConversationService<ReadLease = unknown>(
 				includeTurns: true,
 				itemsView: "fragment",
 				itemLimit: READ_ITEM_LIMIT,
+				...(heldSnapshot ? { heldSnapshot } : {}),
 			});
 			// The publish is the whole projected read: the raw response, the
 			// projection work and pair commit, and then the host's read fence. Paging
@@ -686,6 +690,7 @@ export function createConversationService<ReadLease = unknown>(
 				if (openEpoch === epoch) await reconcileRead(readLease, response);
 				return {
 					conversation,
+					changes: response.changes,
 					olderCursor,
 					hasEarlierItems: thread.turns?.some((turn) => turn.hasEarlierItems === true) ?? false,
 					hasLaterItems: thread.turns?.some((turn) => turn.hasLaterItems === true) ?? false,

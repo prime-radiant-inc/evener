@@ -77,6 +77,7 @@ func (s *Session) ClientMutationProjection() (appwire.QueueState, []appwire.Pend
 		}
 		record := snapshot.Journal[entry.ClientMutationID]
 		pendingByID[entry.ClientMutationID] = appwire.PendingMutation{
+			Actor:            wireSessionActor(record.Actor),
 			ClientMutationID: entry.ClientMutationID,
 			Method:           record.Method,
 			Input:            cloneClientMutationInput(entry.Input),
@@ -112,8 +113,14 @@ func (s *Session) ensureClientMutationStore() error {
 // AcceptClientMutationQueue durably accepts or replays one client-authored
 // queued input.
 func (s *Session) AcceptClientMutationQueue(params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
+	return s.AcceptClientMutationQueueAs(params, schema.SessionActor{Kind: "human"})
+}
+
+// AcceptClientMutationQueueAs accepts or replays a queued input attributed to actor.
+func (s *Session) AcceptClientMutationQueueAs(params appwire.TurnQueueParams, actor schema.SessionActor) (appwire.TurnQueueResponse, error) {
 	var response appwire.TurnQueueResponse
 	lookup, err := s.acceptClientMutation(clientMutationSpec{
+		actor:   actor,
 		method:  clientMutationMethodQueue,
 		id:      params.ClientMutationID,
 		payload: &params,
@@ -146,6 +153,7 @@ func (s *Session) AcceptClientMutationQueue(params appwire.TurnQueueParams) (app
 		// Re-engaging releases the parked steer too (issue #174).
 		snapshot.SteeringHeld = false
 		snapshot.InputQueue = append(snapshot.InputQueue, clientMutationQueueEntry{
+			Actor:            record.Actor,
 			ID:               record.StableQueueEntryIDs[0],
 			ClientMutationID: record.ClientMutationID,
 			Input:            cloneClientMutationInput(params.Input),
@@ -391,6 +399,7 @@ func (s *Session) claimSteeringCarrierInput() (queuedInput, error) {
 	// clientMutations.mu; the claim reads only the writer's own lock inside, so
 	// the serializer never waits on s.mu.
 	writer := s.attachedTranscript()
+	answerToTurnIDs := s.pendingAskTurnIDs()
 	var carrier queuedInput
 	err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
 		if !steeringCarrierRailOpen(snapshot) {
@@ -403,6 +412,11 @@ func (s *Session) claimSteeringCarrierInput() (queuedInput, error) {
 			// save the generation the claim then declined to change.
 			if refusal := s.refuseOnUnhealthyTranscript(writer); refusal != nil {
 				return refusal
+			}
+			if steeringAnswersAsk(events.SteeringSourceUser, steeringOriginFromJournal(snapshot.Journal, id), "") {
+				record := snapshot.Journal[id]
+				record.AnswerToTurnIDs = appendAnswerTurnIDs(record.AnswerToTurnIDs, answerToTurnIDs...)
+				snapshot.Journal[id] = record
 			}
 			snapshot.ActiveTurnID = turnID
 			carrier = queuedInput{ClientMutationID: id, StableTurnID: turnID, SteeringCarrier: true}
@@ -705,8 +719,14 @@ func clientMutationInputWithMentions(text string, images []ImageAttachment, skil
 // AcceptClientMutationSteer durably accepts or replays one client-authored
 // steering input.
 func (s *Session) AcceptClientMutationSteer(params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
+	return s.AcceptClientMutationSteerAs(params, schema.SessionActor{Kind: "human"})
+}
+
+// AcceptClientMutationSteerAs accepts or replays steering attributed to actor.
+func (s *Session) AcceptClientMutationSteerAs(params appwire.TurnSteerParams, actor schema.SessionActor) (appwire.TurnSteerResponse, error) {
 	var response appwire.TurnSteerResponse
 	lookup, err := s.acceptClientMutation(clientMutationSpec{
+		actor:   actor,
 		method:  clientMutationMethodSteer,
 		id:      params.ClientMutationID,
 		payload: &params,
@@ -803,9 +823,15 @@ func (s *Session) wakeForPendingQueuedInput() {
 // AcceptClientMutationDrainAsSteer durably accepts or replays one queued-
 // input drain into steering.
 func (s *Session) AcceptClientMutationDrainAsSteer(params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
+	return s.AcceptClientMutationDrainAsSteerAs(params, schema.SessionActor{Kind: "human"})
+}
+
+// AcceptClientMutationDrainAsSteerAs accepts or replays drain-and-steer attributed to actor.
+func (s *Session) AcceptClientMutationDrainAsSteerAs(params appwire.TurnDrainAsSteerParams, actor schema.SessionActor) (appwire.TurnDrainAsSteerResponse, error) {
 	var response appwire.TurnDrainAsSteerResponse
 	var consumedClientMutationIDs []string
 	lookup, err := s.acceptClientMutation(clientMutationSpec{
+		actor:         actor,
 		method:        clientMutationMethodDrain,
 		id:            params.ClientMutationID,
 		payload:       &params,
@@ -922,8 +948,14 @@ func combineClientMutationInputs(entries []clientMutationQueueEntry, extra []app
 // AcceptClientMutationPromoteQueuedAsSteer durably accepts or replays one
 // queued-input promotion into steering.
 func (s *Session) AcceptClientMutationPromoteQueuedAsSteer(params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
+	return s.AcceptClientMutationPromoteQueuedAsSteerAs(params, schema.SessionActor{Kind: "human"})
+}
+
+// AcceptClientMutationPromoteQueuedAsSteerAs accepts or replays promotion attributed to actor.
+func (s *Session) AcceptClientMutationPromoteQueuedAsSteerAs(params appwire.TurnPromoteQueuedAsSteerParams, actor schema.SessionActor) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
 	var response appwire.TurnPromoteQueuedAsSteerResponse
 	lookup, err := s.acceptClientMutation(clientMutationSpec{
+		actor:         actor,
 		method:        clientMutationMethodPromote,
 		id:            params.ClientMutationID,
 		payload:       &params,
@@ -1128,6 +1160,7 @@ func applyClientMutationRecord(
 
 func addPendingSteering(snapshot *clientMutationSnapshot, record *clientMutationRecord, input []appwire.InputItem) {
 	snapshot.PendingExecutions[record.ClientMutationID] = appwire.PendingMutation{
+		Actor:            wireSessionActor(record.Actor),
 		ClientMutationID: record.ClientMutationID,
 		Method:           record.Method,
 		Input:            cloneClientMutationInput(input),
@@ -1287,6 +1320,7 @@ func clientSteeringFromSnapshot(snapshot clientMutationSnapshot) []steeringMessa
 		queued := queuedInputFromClientMutation(clientMutationQueueEntry{Input: pending.Input})
 		origin := steeringOriginFromJournal(snapshot.Journal, id)
 		client = append(client, steeringMessage{
+			Actor: schema.SessionActor{Kind: pending.Actor.Kind, ManagerRef: pending.Actor.ManagerRef},
 			// A journal written before the write-path strip can carry controls in
 			// a note-origin pending text: the rebuilt entry reaches the model and
 			// the transcript, so that text is stripped like every other load path,

@@ -3,6 +3,7 @@
 package sandbox
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"slices"
@@ -172,7 +173,7 @@ func TestSessionScratchTreeRootIDsListsExistingTrees(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(tempBase, "evener-sandbox-123"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	got := SessionScratchTreeRootIDs()
+	got := SessionScratchTreeRootIDs(context.Background())
 	slices.Sort(got)
 	if want := []string{"ROOTA", "ROOTB"}; !slices.Equal(got, want) {
 		t.Errorf("SessionScratchTreeRootIDs = %v, want %v", got, want)
@@ -204,7 +205,7 @@ func TestSessionScratchTreeInARelativeTempDirIsRemoved(t *testing.T) {
 		t.Fatalf("scratch opened at %q, want %q under the relative temp dir", s.Dir, want)
 	}
 
-	if got := SessionScratchTreeRootIDs(); !slices.Contains(got, "ROOTL") {
+	if got := SessionScratchTreeRootIDs(context.Background()); !slices.Contains(got, "ROOTL") {
 		t.Errorf("SessionScratchTreeRootIDs = %v, want ROOTL from the relative temp dir", got)
 	}
 	if err := RemoveSessionScratchTree("ROOTL"); err != nil {
@@ -248,7 +249,7 @@ func TestSessionScratchTreesInAnExtraBaseAreFoundAndRemoved(t *testing.T) {
 	}
 	_ = s.Retain()
 
-	if got := SessionScratchTreeRootIDs(daemonBase); !slices.Contains(got, "ROOTE") {
+	if got := SessionScratchTreeRootIDs(context.Background(), daemonBase); !slices.Contains(got, "ROOTE") {
 		t.Errorf("SessionScratchTreeRootIDs(%s) = %v, want ROOTE", daemonBase, got)
 	}
 	if err := RemoveSessionScratchTree("ROOTE", daemonBase); err != nil {

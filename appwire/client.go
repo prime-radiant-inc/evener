@@ -27,8 +27,9 @@ var errClientClosed = errors.New("appwire client closed")
 const NotificationBufferCap = 4096
 
 type Client struct {
-	transport Transport
-	nextID    atomic.Int64
+	sessionTools *clientSessionTools
+	transport    Transport
+	nextID       atomic.Int64
 	// sendSlot is the client's single frame-write slot: a one-token channel
 	// semaphore taken before transport.Send and released after it returns, so
 	// exactly one goroutine is ever inside Send. A channel rather than a mutex
@@ -129,6 +130,10 @@ func (c *Client) startWithKeepalive(ctx context.Context, pingInterval, pongTimeo
 				c.failPending(err)
 				close(c.notifications)
 				return
+			}
+			if msg.Request != nil {
+				c.receiveSessionRequest(ctx, *msg.Request)
+				continue
 			}
 			if msg.Notification != nil {
 				if c.orderedFrames != nil {
@@ -436,6 +441,9 @@ func (c *Client) Notify(ctx context.Context, method string, params any) error {
 }
 
 func (c *Client) markClosed(err error) {
+	if c.sessionTools != nil {
+		c.sessionTools.cancel()
+	}
 	c.closedMu.Lock()
 	defer c.closedMu.Unlock()
 	select {

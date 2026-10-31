@@ -623,6 +623,7 @@ func newHubRelayProgressFixture(t *testing.T, hooks hubcore.RelayLifecycleHooks)
 		defer inventoryMu.Unlock()
 		return slices.Clone(inventory)
 	}, daemonHTTP.Client())
+	configureObservationTargetSessionTools(daemon, source)
 	remapChild := func(replacement rendezvous.Entry) {
 		inventoryMu.Lock()
 		defer inventoryMu.Unlock()

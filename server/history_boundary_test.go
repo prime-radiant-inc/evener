@@ -52,7 +52,7 @@ func TestReadBetweenAssistantAndCommunicate(t *testing.T) {
 	// yet).
 	hx.overlay.Event(events.New(events.RoundStartedData{RoundID: "r_2"}))
 	hx.overlay.Event(events.New(events.AssistantTextDeltaData{Delta: "drafting the reply"}))
-	turns, _, _, overlay, err := hx.history.latest(hx.history.capture(), "local:th_history", 10)
+	turns, _, _, _, overlay, err := hx.history.latest(hx.history.capture(), "local:th_history", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +164,7 @@ func TestPaginatedReadOverlappingCrossProcessRollback(t *testing.T) {
 	two := hx.record(t, "two")
 	hx.updatesThrough(t, two.Offset+two.Length)
 
-	_, older, snapshotBefore, _, err := hx.history.latest(hx.history.capture(), "local:th_history", 1)
+	_, older, snapshotBefore, _, _, err := hx.history.latest(hx.history.capture(), "local:th_history", 1)
 	if err != nil || older == "" {
 		t.Fatalf("latest = cursor %q, %v; want an older cursor", older, err)
 	}
@@ -196,7 +196,7 @@ func TestPaginatedReadOverlappingCrossProcessRollback(t *testing.T) {
 		t.Fatalf("before after the rollback = %v, want stale", err)
 	}
 
-	_, _, snapshotAfter, _, err := hx.history.latest(hx.history.capture(), "local:th_history", 10)
+	_, _, snapshotAfter, _, _, err := hx.history.latest(hx.history.capture(), "local:th_history", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +227,7 @@ func TestReadOverlappingRetryResetAndNextAttempt(t *testing.T) {
 	if len(captured.overlay) != 1 || captured.overlay[0].Kind != appwire.OverlayStream || captured.overlay[0].Item.Text != "attempt two, " {
 		t.Fatalf("captured overlay = %+v, want only attempt two's stream", captured.overlay)
 	}
-	turns, _, _, overlay, err := hx.history.latest(captured, "local:th_history", 10)
+	turns, _, _, _, overlay, err := hx.history.latest(captured, "local:th_history", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +283,7 @@ func TestFailedHistoryPublication(t *testing.T) {
 	hx.awaitPublished(t, three.Offset+three.Length)
 
 	// The client re-reads on the resync instead of merging deltas across it.
-	turns, older, _, _, err := hx.history.latest(hx.history.capture(), "local:th_history", 10)
+	turns, older, _, _, _, err := hx.history.latest(hx.history.capture(), "local:th_history", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -414,7 +414,7 @@ func TestAsyncAttentionWriteAfterCompletion(t *testing.T) {
 // prepended, item counting only (turn grouping does not matter here).
 func hxReadWhole(t *testing.T, hx *historyHarness) []appwire.Turn {
 	t.Helper()
-	turns, older, _, _, err := hx.history.latest(hx.history.capture(), "local:th_history", appwire.TranscriptItemPageLimit)
+	turns, older, _, _, _, err := hx.history.latest(hx.history.capture(), "local:th_history", appwire.TranscriptItemPageLimit)
 	if err != nil {
 		t.Fatal(err)
 	}

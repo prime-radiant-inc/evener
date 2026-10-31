@@ -568,6 +568,14 @@ every active saved registration with `runtime_lost`. Future monitoring stops,
 including declarative repeating timers whose configuration is saved. A repeating
 send watch that has already spoken can also skip an individual restart-end
 notice. Saved pending deliveries and future registrations have different lifetimes.
+Manager is an immutable session-start role. Its local and remote hub watches use
+the shared human/Manager subscription path, with independent subscriber lifetimes.
+They retain pending notices across interruption and resume only after checking
+the caller's ref and instance and the target's ref, instance and generation.
+Resync re-reads authoritative state; replacement or exhausted recovery ends the
+watch with re-registration guidance. Runtime restart also ends a continuing watch
+with an explicit re-registration notice, even after prior event delivery. This
+does not restore ordinary watches or repeating timers.
 
 **Evidence.** [newJobManagerWithStoreOpen](../../agent/jobs.go) and
 [clearUnrestoredActiveWatches](../../agent/jobs.go) clear all active records;
@@ -600,7 +608,7 @@ the need to communicate that future observation ended. Preserve enough watch
 identity and intent for the session to act on the notification, and respect
 explicit Stop and the watched target's lifetime. Automatic restoration is not
 required where reliable cancellation notification provides the simpler recovery.
-Implementation remains pending.
+Implementation remains pending for ordinary watches and repeating timers.
 
 **Acceptance.** Restart with active timers and watches, including a repeating
 watch that has already delivered a result. Each continuing intent either resumes

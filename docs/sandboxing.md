@@ -210,6 +210,13 @@ every sandboxed session's `TMPDIR`, so a socket a sibling's daemon puts there
 shell. That reaches only what that sibling's own sandbox already allows; an
 unsandboxed root's `TMPDIR` is not in the tree.
 
+Named scratch remains across session ends and resumes. The hub reconciles its
+root tree after archive or daemon exit and at startup, removing eligible released
+scratch only when no daemon or lease still protects it. Shutdown cancellation
+stops between bounded directory reads and before further removals; an incomplete
+listing does not authorize deletion, and a later pass can retry unfinished work.
+An individual filesystem call already in progress may still block until it returns.
+
 | Mode | File-tool reads | File-tool writes | Spawned-process reads | Spawned-process writes |
 |---|---|---|---|---|
 | `off` (default) | anywhere | anywhere | anywhere | anywhere |
