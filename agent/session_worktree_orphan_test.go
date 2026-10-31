@@ -750,12 +750,19 @@ func adoptForeignLane(t *testing.T, r *wtRepo, lanePath, foreignSID string) {
 		if _, locked, _ := r.laneLocked(t, lanePath); locked {
 			_, _ = runWorktreeGit(r.mainRoot, "worktree", "unlock", lanePath)
 		}
-		_, lockErr := runWorktreeGit(r.mainRoot, "worktree", "lock", "--reason", worktree.FormatSessionMarker(foreignSID), lanePath)
-		if lockErr == nil {
-			return
+		if _, lockErr := runWorktreeGit(r.mainRoot, "worktree", "lock", "--reason", worktree.FormatSessionMarker(foreignSID), lanePath); lockErr == nil {
+			// git took the lock, but require the lock that reads back to be
+			// the foreign one: a background wake re-takes any gap, and only
+			// the state, not the command's success, is the adoption.
+			if _, locked, reason := r.laneLocked(t, lanePath); locked {
+				if m, ok := worktree.ParseMarker(reason); ok && m.SessionID == foreignSID {
+					return
+				}
+			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("adopting the lane for a foreign session kept losing to the tree's own wake: %v", lockErr)
+			_, _, reason := r.laneLocked(t, lanePath)
+			t.Fatalf("adopting the lane for a foreign session kept losing to the tree's own wake: lane lock = %q", reason)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -770,10 +777,20 @@ func TestDelegateWakeRefusesForeignHeldInheritedLane(t *testing.T) {
 	lane := spawnSharedDescendantLane(t, r, "wake-inherited-foreign", "dlg_waketest0000003", "034placeholder000000007")
 	const foreignSID = "034somebodyelse00000000002"
 	adoptForeignLane(t, r, lane.lanePath, foreignSID)
+	// The precondition the wake must refuse, verified where a failure can
+	// name which side broke.
+	if _, locked, reason := r.laneLocked(t, lane.lanePath); !locked {
+		t.Fatalf("the shared child's lane is unlocked before its wake: %q", reason)
+	} else if m, ok := worktree.ParseMarker(reason); !ok || m.SessionID != foreignSID {
+		t.Fatalf("the shared child's lane lock before its wake = %q, want the foreign session's marker", reason)
+	}
 
 	lane.fixture.adapter.steps = []func(llm.Request) llm.Response{lane.finish}
 	if lane.delegateSess.driveSubagentNotificationTurn(lane.sharedSub) {
-		t.Fatal("shared descendant's wake launched into a lane held by another session")
+		_, locked, reason := r.laneLocked(t, lane.lanePath)
+		revalErr := lane.delegateSess.revalidateLaneForLaunch(lane.sharedDelegateID)
+		t.Fatalf("shared descendant's wake launched into a lane held by another session (lane locked=%v reason=%q, lane validation now: %v)",
+			locked, reason, revalErr)
 	}
 
 	_, locked, reason := r.laneLocked(t, lane.lanePath)
