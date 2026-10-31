@@ -231,6 +231,14 @@ type SessionConfig struct {
 	// Snapshots are written to <StateDir>/sessions/ and tasks to <StateDir>/tasks/.
 	StateDir string `json:"-"`
 
+	// RendezvousDir is the run directory the hosting daemon registered its
+	// rendezvous entry in (serve's --run-dir, EVENER_RUN_DIR, or the platform
+	// default, resolved by the host before it built this config). The
+	// owner-liveness probe reads the same directory, so a lane's live owner
+	// is found where its daemon actually registers. Engine-only like
+	// StateDir: never persisted, repopulated by the host on every launch.
+	RendezvousDir string `json:"-"`
+
 	// AcquireSessionOwnership reserves a freshly generated session ID for this
 	// process before any ID-specific state is persisted. Top-level hosts install
 	// the API-log ownership boundary; child and cleared sessions inherit it.

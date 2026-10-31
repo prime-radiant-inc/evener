@@ -2198,13 +2198,13 @@ function SpawnForm({
     //
     // /goal applies post-start via runSpawnBuiltinAfterStart (goal/set has no
     // processing gate - it queues behind the running turn). /model and
-    // /reasoning-effort ride thread/start as launch scalars instead: the
-    // daemon refuses thread/model/set while the first input's turn is active
-    // (Conflict "session is processing"), and the effort source reads the new
-    // thread from threadsStore, which is empty until the session pane
-    // hydrates - so neither follow-up mutation can work. Their values are
-    // pre-start validated here (there is no cheaper moment to refuse), then
-    // folded into the start call under the chips, which keeps floor §1.11
+    // /reasoning-effort ride thread/start as launch scalars instead: a
+    // post-start thread/model/set now queues behind the first turn rather
+    // than refusing, but the effort source reads the new thread from
+    // threadsStore, which is empty until the session pane hydrates - so
+    // neither follow-up mutation can work. Their values are pre-start
+    // validated here (there is no cheaper moment to refuse), then folded
+    // into the start call under the chips, which keeps floor §1.11
     // precedence (explicit slash value wins over ambient form state).
     const builtinMatch =
       pluginSelectionSupported && attachments.items.length === 0 && skillNames.length === 0 && commandNames.length === 0

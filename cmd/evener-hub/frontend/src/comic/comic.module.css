@@ -45,13 +45,14 @@
 
 .row {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, min(var(--comic-panel-max-width), calc((100% - 15px) / 2))));
   gap: 15px;
   align-items: stretch;
   margin-bottom: 15px;
 }
 
 .row > :only-child { grid-column: 1 / -1; }
+.row:has(.insert) { grid-template-columns: minmax(0, var(--comic-insert-max-width)); }
 
 .panel {
   box-sizing: border-box;
@@ -59,6 +60,9 @@
   flex-direction: column;
   position: relative;
   min-width: 0;
+  width: 100%;
+  max-width: var(--comic-panel-max-width);
+  justify-self: start;
   border: 3px solid var(--comic-ink);
   background: var(--comic-paper);
   font-size: var(--font-size-prose);
@@ -125,6 +129,13 @@
   overflow-wrap: anywhere;
   user-select: text;
 }
+
+.formattedText { white-space: normal; }
+.insert { max-width: var(--comic-insert-max-width); }
+.technicalScroll { min-width: 0; overflow-x: auto; margin: var(--space-3); user-select: text; }
+.technicalContent { width: max-content; min-width: 100%; }
+/* Caller-owned renderLine content supplies intrinsic line width without changing CodeBlock's CSS. */
+.codeLine { white-space: pre; overflow-wrap: normal; }
 
 .balloon:not(.thought, .captionBalloon)::before,
 .balloon:not(.thought, .captionBalloon)::after {

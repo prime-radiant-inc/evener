@@ -863,6 +863,13 @@ injected at construction (cycle-free: `cmd/evener` builds the closure;
   checked only against models the current instance already serves, and never
   switches instances — an unavailable plugin model falls through to the
   explicit delegate model and then the parent model.
+- A runtime switch requested while a turn is running is queued and applied at
+  the turn boundary, not refused: the running turn finishes on the model it
+  started with, the next turn (typically the message the user was typing when
+  they picked) runs on the new one, and `thread/model/changed` plus the
+  transcript's model-switch marker land at that boundary. Validation that needs
+  a settled history — unrepresentable-content checks — re-runs there; a switch
+  that fails it is dropped with a transcript warning instead of being retried.
 - The cross-instance fallback guard compares `Surface()`, not a behavior tag:
   a `model_fallbacks` entry that would switch to a different surface fails
   fast (prompt and tool surfaces differ too much to fall back silently);

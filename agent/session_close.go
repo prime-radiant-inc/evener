@@ -281,6 +281,10 @@ func (s *Session) closeTerminal(ctx context.Context, options closeOptions) {
 	s.state = SessionClosed
 	s.mu.Unlock()
 	s.closeEventStream(budgetCtx)
+	// The livelock goes last: everything above is worktree-adjacent work a
+	// live process might still owe, and a reporting probe must not read this
+	// one as dead-looking until none of it can run anymore.
+	s.releaseSessionLivelock()
 }
 
 // releaseForRetirement releases only process-local runtime resources and
@@ -333,6 +337,10 @@ func (s *Session) releaseForRetirement(ctx context.Context, options closeOptions
 		releaseErr = errors.Join(releaseErr, fmt.Errorf("close transcript: %w", err))
 	}
 	s.closeEventStream(budgetCtx)
+	// The livelock goes last, as in the terminal close: a retired root has no
+	// live process, and its free flock is the dead-looking evidence probes
+	// report — with the resumability caution the docs' recipe carries.
+	s.releaseSessionLivelock()
 	return releaseErr
 }
 

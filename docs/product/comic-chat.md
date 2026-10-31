@@ -3,7 +3,7 @@
 Choose **Comic** under **Presentation** in the conversation's **Verbosity** panel.
 Comic renders the whole conversation pane, including its composer, questions and
 approvals, within the existing workspace. Its units live in
-`cmd/evener-hub/frontend/src/comic/`. The reader composes literal source text into
+`cmd/evener-hub/frontend/src/comic/`. The reader composes source-backed Markdown into
 measured panels in one virtual scroll flow and remains usable if the font cannot
 load. Comic and its plain reader share source identities and foreground demand.
 
@@ -40,10 +40,35 @@ noninteractive.
 ## Presentation and accessibility
 
 At 760 CSS pixels and below, panels recompose into one column rather than
-shrinking a desktop strip. Literal Markdown stays source text. Available thought
-content is expanded in source order; missing or redacted content is not invented.
+shrinking a desktop strip. Ordinary panels stop at 26rem or the available width,
+leaving unused space as gutter. Paired panels retain their 15px gap when they fit.
+Headings, emphasis, lists, quotations, safe links and inline code render through
+the shared Markdown renderer. Available thought content is expanded in source
+order; missing or redacted content is not invented.
+Local file links use the originating reader's session, working directory and
+artifacts directory, including expanded inline children. An ordinary click opens
+the document beside the containing Comic pane; modified clicks retain the served
+file URL. A separately open child pane does not take ownership. Phone Back returns
+to the containing pane after document navigation unmounts its reader. This opening
+proof belongs only to that document and the exact living pane, is not persisted,
+and cannot authorize another child-file open after collapse or unmount.
+In cascade columns, the containing inspector owns navigation and keeps its
+secondary placement. Each mounted column publishes and retires its own inline
+reader coverage without replacing another column's proof.
+Live file reads use the owning session's actual installed directory, not its
+parent's directory or cached launch metadata. Session start seeds that directory
+for shared and isolated children; supported environment changes update only the
+owning child's daemon projection and request a reader resync. An unavailable or
+empty live directory still refuses the read rather than borrowing past metadata.
 Routine tool text is hidden, while tool-produced images retain source attribution.
 The surrounding interface has no desktop title bars, menu bars or beveled chrome.
+
+Code blocks and tables occupy separate source-attributed inserts, without a
+character, scene or speech balloon. Inserts stop at 40rem or the available width.
+They retain the whole block and grow vertically; wide content scrolls horizontally
+inside the insert rather than shrinking text or adding a vertical scrollbox.
+Code keeps its fixed-width lettering and whitespace; tables retain the Comic
+lettering. Surrounding prose stays before and after the insert in source order.
 
 On both phones and desktop, **Appearance** opens the View, Scene and expression
 controls in a popup. History controls and Send/Stop stay outside the popup so
@@ -51,8 +76,11 @@ appearance settings do not crowd out the conversation when the keyboard opens.
 Transcript scrolling keeps the popup open because its toolbar stays in place.
 Escape, outside clicks, scrolling outside the reader and window resizing dismiss it.
 
-Comic and plain views preserve semantic reading positions through reflow. The
-root respects reduced motion and safe-area padding, and shared controls retain
+Comic and plain views preserve semantic reading positions through reflow. Their
+anchors refer to original UTF16 source offsets, not a count of rendered characters.
+Offsets in hidden Markdown syntax resolve to nearby visible text. Text remains
+selectable; an active selection is not saved across reload.
+The root respects reduced motion and safe-area padding, and shared controls retain
 their keyboard behavior. Pointer completion and text selection follow the pane's
 document when it moves into a popout or docks back, even with Appearance closed.
 Comic registers the shared transcript scroll actions for the focused seat,
@@ -172,8 +200,10 @@ instance for the same logical session preserve expansion.
 `useComicActivity` observes only session-scoped delegates through the shared
 activity owner. `buildEntityView` chooses generation and revision precedence;
 `projectComicDelegates` qualifies owner, delegate ID and authoritative child ref.
-A canonical loaded delegation event supplies placement, not current status.
-Without one, the existing strip stays in a separate group. Loading its event
+A matching recorded delegate-creation output supplies placement, not membership,
+current status or a later completion. Meanwhile follows that launch in the
+parent's source order. Until the launch is loaded, its strip stays after the
+reader's history boundary and before its messages. Loading the creation output
 moves the strip without changing its key or committed child lifetime. Ambiguous
 identity remains readable as attributed source, without an invented child route.
 

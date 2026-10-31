@@ -22,6 +22,7 @@ import {
   activityDetailsThread,
   activitySummary,
 } from "../../stores/sessionActivityTestUtils";
+import { initTranscriptDisplay, resetTranscriptDisplayStoreForTests } from "../../stores/transcriptDisplay";
 import { readModuleCss } from "../../styles/cssBlock";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
 import { openAttentionSession } from "../attentionHistory";
@@ -487,6 +488,8 @@ test("a restored cascade renders only its selected reader on mobile and restores
           addListener() {},
           removeListener() {},
         })) as typeof window.matchMedia;
+  resetTranscriptDisplayStoreForTests();
+  initTranscriptDisplay();
   const context = (ref: string) =>
     cascadeContext(ref, ref === "grandchild" ? ["root", "child"] : ref === "child" ? ["root"] : []);
   const client = cascadeClient(context);
@@ -562,6 +565,7 @@ test("a restored cascade renders only its selected reader on mobile and restores
     expect(screen.queryByTestId("cascade-column")).toBeNull();
   } finally {
     cleanup();
+    resetTranscriptDisplayStoreForTests();
     if (height) Object.defineProperty(HTMLElement.prototype, "offsetHeight", height);
     else Reflect.deleteProperty(HTMLElement.prototype, "offsetHeight");
     if (original) window.matchMedia = original;
@@ -639,7 +643,13 @@ test("renders the replacement session and drops stale secondary panes from the s
   render(<StackHost />);
 
   expect(workspaceStore.getState().panes).toEqual([
-    { id: replacementId, type: "session", params: { ref: "local:session-a" }, slot: "main" },
+    {
+      id: replacementId,
+      type: "session",
+      params: { ref: "local:session-a" },
+      slot: "main",
+      composerSeatId: expect.any(String),
+    },
   ]);
   expect(await screen.findByRole("heading", { name: "local:session-a" })).toBeTruthy();
   expect(screen.queryByText(/doc pane: secondary/)).toBeNull();
@@ -1035,6 +1045,7 @@ test.each([false, true])(
       type: "session",
       params: { ref: "local:owner" },
       slot: "main",
+      composerSeatId: expect.any(String),
     });
     await user.click(screen.getByRole("button", { name: "Back" }));
     await findStackedEmptyState("welcome");

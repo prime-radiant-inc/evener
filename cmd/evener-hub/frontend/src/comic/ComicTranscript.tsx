@@ -13,8 +13,10 @@ import { isAtBottom } from "../panes/session/transcript/flow/scrollMetrics";
 import { useTranscriptScrollKeys } from "../panes/session/transcript/flow/useTranscriptScrollKeys";
 import { useChromeStore } from "../shell/chromeStore";
 import { useIsMobile } from "../shell/useIsMobile";
+import { useWorkspaceStore } from "../shell/workspace";
 import { isEntryTranscriptLocalOpening } from "../stores/entryTranscriptRoutes";
 import { threadsStore } from "../stores/threads";
+import { TranscriptRenderProvider, useTranscriptRenderContext } from "../transcriptDisplay/renderContext";
 import {
   Button,
   type CommittedVirtualListLayout,
@@ -23,10 +25,12 @@ import {
   VirtualList,
   type VirtualListHandle,
 } from "../widgets";
+import { comicMarkdownPoint } from "./ComicMarkdown";
 import { type ComicExpression, ComicPanel, type ComicScene } from "./ComicPanel";
 import { ComicPlainTranscript } from "./ComicPlainTranscript";
 import { ComicSubchatHeader } from "./ComicSubchatHeader";
 import styles from "./comic.module.css";
+import { publishComicPaneCoverage } from "./comicPaneCoverage";
 import { type ComicFlowRow, composeComicFlow, findComicFlowAnchorRow } from "./comicRows";
 import { createComicMeasurer, loadComicFonts } from "./measure";
 import type { ComicReadingPosition } from "./readerPosition";
@@ -35,13 +39,15 @@ import { type ComicReaderSnapshot, type ComicSubchatState, comicPathContains, co
 
 // Source ranges belong to this bespoke transcript surface, not the virtual-list widget.
 function textPoint(source: HTMLElement, offset: number): DOMRect | undefined {
+  const formatted = comicMarkdownPoint(source, offset);
+  if (formatted) return formatted;
   const text = source.querySelector("[data-comic-text]")?.firstChild;
   if (!text || text.nodeType !== Node.TEXT_NODE) return source.getBoundingClientRect();
   const local = Math.min(
     Math.max(0, offset - Number(source.dataset.comicStart)),
     Math.max(0, (text.textContent?.length ?? 0) - 1),
   );
-  const range = document.createRange();
+  const range = source.ownerDocument.createRange();
   range.setStart(text, local);
   range.setEnd(text, local + 1);
   return range.getBoundingClientRect();
@@ -100,6 +106,7 @@ export function ComicTranscript({
   appearanceView?: ReactNode;
 }): React.ReactElement {
   const { entries, history } = root;
+  const { sourcePaneId } = useTranscriptRenderContext();
   const isMobile = useIsMobile();
   const host = useRef<HTMLDivElement>(null);
   const controlsId = useId();
@@ -109,6 +116,7 @@ export function ComicTranscript({
   const anchor = useRef<ComicReadingPosition>(reader.position ?? { mode: "end", sessionRef, path: [] });
   const restoring = useRef(!!reader.position);
   const commanded = useRef<number | undefined>(undefined);
+  const pendingIndexPlacement = useRef(false);
   const savedOffset = useRef<number | undefined>(undefined);
   const moving = useRef(false);
   const movementStart = useRef<number | undefined>(undefined);
@@ -142,6 +150,17 @@ export function ComicTranscript({
   const fitsCache = useRef(new Map<string, boolean>());
   const lastPage = useRef<string | undefined>(undefined);
   const snapshots = useMemo(() => new Map([[comicPathKey([]), root], ...subchats.readers]), [root, subchats.readers]);
+  const sourcePane = useWorkspaceStore((state) => state.panes.find((pane) => pane.id === sourcePaneId));
+  const coverageOwner = useRef({});
+  useLayoutEffect(() => {
+    if (sourcePane)
+      return publishComicPaneCoverage(
+        sourcePane,
+        sessionRef,
+        [...snapshots.values()].map((snapshot) => snapshot.ref),
+        coverageOwner.current,
+      );
+  }, [sourcePane, sessionRef, snapshots]);
   const entriesByPath = useMemo(
     () =>
       new Map(
@@ -178,11 +197,21 @@ export function ComicTranscript({
     [openingRefs],
   );
 
-  const save = useCallback((position: ComicReadingPosition) => {
-    anchor.current = position;
-    savedOffset.current = list.current?.getScrollElement()?.scrollTop;
-    latest.current.reader.save(position);
+  const cancelIndexPlacement = useCallback(() => {
+    if (!pendingIndexPlacement.current) return;
+    pendingIndexPlacement.current = false;
+    committed.current?.cancelPendingScroll();
   }, []);
+
+  const save = useCallback(
+    (position: ComicReadingPosition) => {
+      cancelIndexPlacement();
+      anchor.current = position;
+      savedOffset.current = list.current?.getScrollElement()?.scrollTop;
+      latest.current.reader.save(position);
+    },
+    [cancelIndexPlacement],
+  );
 
   const captureMovement = useCallback(
     (port: HTMLElement) => {
@@ -200,6 +229,7 @@ export function ComicTranscript({
   );
 
   useLayoutEffect(() => {
+    cancelIndexPlacement();
     anchor.current = reader.position ?? { mode: "end", sessionRef, path: [] };
     restoring.current = !!reader.position;
     moving.current = false;
@@ -209,15 +239,16 @@ export function ComicTranscript({
     revision.current += 1;
     return () => {
       revision.current += 1;
+      cancelIndexPlacement();
     };
-  }, [reader, sessionRef]);
+  }, [reader, sessionRef, cancelIndexPlacement]);
 
   useLayoutEffect(() => {
     const container = host.current;
     const port = list.current?.getScrollElement();
     if (!container || !port) return;
     // The probe must inherit .comicRoot and use the scroll port's content width.
-    const measuring = document.createElement("div");
+    const measuring = container.ownerDocument.createElement("div");
     measuring.style.position = "absolute";
     measuring.style.top = "0";
     measuring.style.width = `${port.clientWidth}px`;
@@ -263,12 +294,20 @@ export function ComicTranscript({
     const measurer = probe.current;
     if (!measurer) return;
     const used = new Set<string>();
-    const fits: Parameters<typeof composeComicFlow>[3] = (text, composition, kind) => {
-      const key = JSON.stringify([kind, composition, text]);
+    const fits: Parameters<typeof composeComicFlow>[3] = (document, part, composition, kind) => {
+      const key = JSON.stringify([
+        kind,
+        composition,
+        document.live,
+        document.references,
+        part.kind,
+        part.plain,
+        part.input,
+      ]);
       used.add(key);
       const cached = fitsCache.current.get(key);
       if (cached !== undefined) return cached;
-      const result = measurer.fits(text, composition, kind);
+      const result = measurer.fits(document, part, composition, kind);
       fitsCache.current.set(key, result);
       return result;
     };
@@ -330,12 +369,14 @@ export function ComicTranscript({
       if (position.mode === "end") {
         const lastPanel = current.rows.reduce((last, row, index) => (row.kind === "panels" ? index : last), -1);
         if (rowIndex < lastPanel) {
+          pendingIndexPlacement.current = true;
           list.current?.scrollToIndex(rowIndex, { align: "end" });
           commanded.current = port.scrollTop;
           return;
         }
         const bottom = Math.max(0, port.scrollHeight - port.clientHeight);
-        if (Math.abs(port.scrollTop - bottom) > 1) layout.scrollToOffset(bottom);
+        if (pendingIndexPlacement.current || Math.abs(port.scrollTop - bottom) > 1) layout.scrollToOffset(bottom);
+        pendingIndexPlacement.current = false;
         commanded.current = port.scrollTop;
         return;
       }
@@ -352,6 +393,7 @@ export function ComicTranscript({
           (flow?.kind === "strip" || Number(node.dataset.comicStart) === slice?.start),
       );
       if (!source) {
+        pendingIndexPlacement.current = true;
         list.current?.scrollToIndex(rowIndex, { align: "start" });
         commanded.current = port.scrollTop;
         return;
@@ -366,7 +408,10 @@ export function ComicTranscript({
         setTailSpace((space) => space + shortage);
         return;
       }
-      if (Math.abs(delta) > 1) layout.scrollToOffset(port.scrollTop + delta);
+      // Measurement can place the source exactly while our earlier index
+      // command still targets its row top. Consume that command even at zero delta.
+      if (pendingIndexPlacement.current || Math.abs(delta) > 1) layout.scrollToOffset(port.scrollTop + delta);
+      pendingIndexPlacement.current = false;
       commanded.current = port.scrollTop;
       restoring.current = false;
     },
@@ -393,6 +438,7 @@ export function ComicTranscript({
       movementStart.current = event ? port.scrollTop : undefined;
       setTailSpace(0);
       commanded.current = undefined;
+      pendingIndexPlacement.current = false;
       committed.current?.cancelPendingScroll();
       for (const snapshot of latest.current.snapshots.values()) snapshot.history.cancelOlder();
       cancelAnimationFrame(frame);
@@ -659,6 +705,7 @@ export function ComicTranscript({
     movementStart.current = undefined;
     commanded.current = undefined;
     setTailSpace(0);
+    pendingIndexPlacement.current = false;
     committed.current?.cancelPendingScroll();
     for (const snapshot of latest.current.snapshots.values()) snapshot.history.cancelOlder();
   }
@@ -839,7 +886,7 @@ export function ComicTranscript({
                 data-comic-session={flow.sessionRef}
                 data-comic-path={comicPathKey(flow.path)}
               >
-                {row.panels.map(({ slice, composition }) => {
+                {row.panels.map(({ slice, composition, document, part }) => {
                   const entry = byId?.get(slice.entryId);
                   if (!entry) return null;
                   return (
@@ -852,25 +899,32 @@ export function ComicTranscript({
                       data-comic-start={slice.start}
                       data-comic-end={slice.end}
                     >
-                      {mode === "comic" ? (
-                        <ComicPanel
-                          entry={entry}
-                          slice={slice}
-                          composition={composition}
-                          scene={scene}
-                          expression={expression}
-                        />
-                      ) : (
-                        <ComicPlainTranscript
-                          entries={[
-                            {
-                              ...entry,
-                              text: entry.text.slice(slice.start, slice.end),
-                              images: slice.end === entry.text.length ? entry.images : undefined,
-                            },
-                          ]}
-                        />
-                      )}
+                      <TranscriptRenderProvider
+                        thread={snapshots.get(comicPathKey(flow.path))?.history.model}
+                        sourcePaneId={sourcePaneId}
+                      >
+                        {mode === "comic" ? (
+                          <ComicPanel
+                            entry={entry}
+                            document={document}
+                            part={part}
+                            slice={slice}
+                            composition={composition}
+                            scene={scene}
+                            expression={expression}
+                          />
+                        ) : (
+                          <ComicPlainTranscript
+                            entries={[
+                              {
+                                ...entry,
+                                text: entry.text.slice(slice.start, slice.end),
+                                images: slice.end === entry.text.length ? entry.images : undefined,
+                              },
+                            ]}
+                          />
+                        )}
+                      </TranscriptRenderProvider>
                     </div>
                   );
                 })}

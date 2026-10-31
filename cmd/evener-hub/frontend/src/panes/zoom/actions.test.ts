@@ -411,8 +411,11 @@ test("legacy transcript Return preserves its exact Back origin while the origin 
   });
   expect(pane(child.id).type).toBe("sessionZoom");
   expect(pane(root.id).type).toBe("sessionZoom");
+  // Retyping into a conversation pane mints the record's composer seat, and
+  // the Return back to a transcript keeps it on the record.
+  const seat = pane(child.id).composerSeatId;
   returnFromAgentCascade(child.id);
-  expect(pane(child.id)).toEqual(child);
+  expect(pane(child.id).composerSeatId).toBe(seat);
   expect(pane(child.id).params).toBe(child.params);
   expect(transcriptOpenOrigin(pane(child.id))).toBe(pane(root.id));
   returnFromAgentCascade(root.id);
