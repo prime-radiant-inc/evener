@@ -111,6 +111,7 @@ type serveServer interface {
 	SetModelFunc(func(string) error)
 	SetVisionModelFunc(func(string) error)
 	UpdateSessionInfo(sessionID, model, profile string)
+	UpdateSessionInfoFrom(sessionID string, sample func() (model, profile string))
 	SetNameFunc(func(string) error)
 	SetReasoningEffortFunc(func(string) error)
 	SetListModelsFunc(func(context.Context) ([]appwire.ModelDescriptor, error))
@@ -935,15 +936,23 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	}
 	srv.SetModelFunc(func(model string) error {
 		sess := live.session()
+		// SetModel queues a pick made while a turn runs (applied at the turn
+		// boundary) and applies one made at rest immediately.
 		if err := sess.SetModel(model); err != nil {
 			return err
 		}
-		// Refresh the daemon's cached session info synchronously (G2): status.Model
-		// otherwise only updates on EventSessionStart, which never fires again
-		// mid-session, so thread/read would report a stale model until the next
-		// turn re-derived it.
-		p := sess.Profile()
-		srv.UpdateSessionInfo(sess.ID(), p.Model(), p.ID())
+		// Refresh the daemon's cached session info for the RPC's own reply
+		// window (G2): the bridge's EventModelChanged effect refreshes it on
+		// its drain goroutine, so a switch that committed at RPC time would
+		// read stale from thread/read until that drain runs. The sampled form
+		// reads the profile inside the write's critical section: a queued
+		// pick's boundary commit racing this refresh cannot have a stale
+		// snapshot installed after the projection already installed the new
+		// model.
+		srv.UpdateSessionInfoFrom(sess.ID(), func() (string, string) {
+			p := sess.Profile()
+			return p.Model(), p.ID()
+		})
 		return nil
 	})
 	srv.SetNameFunc(func(name string) error { return live.session().Rename(name) })
