@@ -352,26 +352,21 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 		// (§6), so its ssh subprocesses are armed under the record too.
 		manager.SetEnsureRestartHook(m.EnsureRestart)
 	}
-	if m.cfg.deployHost == nil && manager != nil {
-		// The production deploy step (deploy pipeline 08b §6): the 04b deploy
-		// path with its guards intact, run by the operation's worker while it
-		// holds the host's gate.
+	if manager != nil {
+		// The production execution seams, absent from WebConfig so only the
+		// manager supplies them.
+		//
+		// deployHost is the 04b deploy path with its guards intact (deploy
+		// pipeline 08b §6), run by the operation's worker while it holds the
+		// host's gate; restartHost is the 04b restart path — user-versus-system
+		// unit decision and the proven-replacement wait — run under the same gate.
 		m.cfg.deployHost = manager.DeployForOperation
-	}
-	if m.cfg.restartHost == nil && manager != nil {
-		// The production restart step: the 04b restart path — user-versus-system
-		// unit decision and the proven-replacement wait — run by the worker
-		// under the same gate.
 		m.cfg.restartHost = manager.RestartForOperation
-	}
-	if m.cfg.recoverDeployment == nil && manager != nil {
 		m.cfg.recoverDeployment = manager.RecoverDeploymentForRestart
-	}
-	if m.cfg.attachUnderGate == nil && manager != nil {
-		// The production operation-owned reattach (§6 seam (d)): the manager's
-		// gate-aware attach primitive, which accepts the already-held gate,
-		// suppresses supervisor startup until the post-verification handoff, and
-		// never re-acquires the non-reentrant lock.
+		// attachUnderGate is the operation-owned reattach (§6 seam (d)): the
+		// manager's gate-aware attach primitive, which accepts the already-held
+		// gate, suppresses supervisor startup until the post-verification handoff,
+		// and never re-acquires the non-reentrant lock.
 		m.cfg.attachUnderGate = func(ctx context.Context, entry hostreg.Host, holder hostops.Holder, explicit bool) (func() bool, error) {
 			_, handoff, err := manager.AttachUnderGate(ctx, entry, holder, explicit)
 			if err != nil {
@@ -379,8 +374,6 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 			}
 			return handoff, nil
 		}
-	}
-	if m.cfg.attachedFacts == nil && manager != nil {
 		// The attached channel's captured preflight is the deploy path's facts
 		// source (deploy runs no fresh preflight of its own) and the attach-first
 		// restart's probe source. PreflightIfAttached never dials.

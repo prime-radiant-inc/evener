@@ -83,7 +83,7 @@
     "check:scripts": "tsx scripts/check-script-imports.mts",
     "lint": "biome ci src",
     "format": "biome format --write src",
-    "test": "node --test ../scripts/native/scene-lifecycle.test.mjs && sh ../scripts/native/run-tests.sh",
+    "test": "node --test ../scripts/native/scene-lifecycle.test.mjs ../scripts/native/test-discovery.test.mjs && sh ../scripts/native/run-tests.sh",
     "postinstall": "patch-package --error-on-fail"
   },
   "private": true

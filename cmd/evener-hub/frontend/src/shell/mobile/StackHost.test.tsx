@@ -643,7 +643,13 @@ test("renders the replacement session and drops stale secondary panes from the s
   render(<StackHost />);
 
   expect(workspaceStore.getState().panes).toEqual([
-    { id: replacementId, type: "session", params: { ref: "local:session-a" }, slot: "main" },
+    {
+      id: replacementId,
+      type: "session",
+      params: { ref: "local:session-a" },
+      slot: "main",
+      composerSeatId: expect.any(String),
+    },
   ]);
   expect(await screen.findByRole("heading", { name: "local:session-a" })).toBeTruthy();
   expect(screen.queryByText(/doc pane: secondary/)).toBeNull();
@@ -1039,6 +1045,7 @@ test.each([false, true])(
       type: "session",
       params: { ref: "local:owner" },
       slot: "main",
+      composerSeatId: expect.any(String),
     });
     await user.click(screen.getByRole("button", { name: "Back" }));
     await findStackedEmptyState("welcome");
