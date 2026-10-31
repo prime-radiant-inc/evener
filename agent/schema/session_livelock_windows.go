@@ -49,11 +49,3 @@ func AcquireSessionLivelock(dir, id string) (release func(), applied bool, err e
 func SessionLivelockHeld(_, _ string) (held, exists bool, err error) {
 	return false, false, errors.New("session livelock inspection is unsupported on this platform")
 }
-
-// LivelockContended reports whether an AcquireSessionLivelock error is
-// contention with a concurrent holder rather than a real failure. In this
-// reporting-only primitive the mint does not retry or block on it; see the
-// unix arm's doc comment.
-func LivelockContended(err error) bool {
-	return err != nil && errors.Is(err, windows.ERROR_LOCK_VIOLATION)
-}

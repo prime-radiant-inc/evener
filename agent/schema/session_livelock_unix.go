@@ -101,23 +101,3 @@ func SessionLivelockHeld(dir, id string) (held, exists bool, err error) {
 	}
 	return lock.Type != unix.F_UNLCK, true, nil
 }
-
-// errorsIsLockHeld reports whether a flock error is contention rather than a
-// probe failure. EWOULDBLOCK is the non-blocking take's contention answer;
-// EINTR would be a retryable interruption, but Go's runtime retries
-// interrupted flocks itself, so treating it as contention cannot strand a
-// probe on a path that never runs.
-func errorsIsLockHeld(err error) bool {
-	return errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN)
-}
-
-// LivelockContended reports whether an AcquireSessionLivelock error is
-// contention with a concurrent holder — a second process on the same session
-// id, the one contending holder left now that probes no longer take the
-// lock — rather than a real acquisition failure. In this reporting-only
-// primitive the mint does not retry or block on it: a session that finds the
-// flock held simply runs without one, which costs liveness visibility on ITS
-// lanes, never correctness.
-func LivelockContended(err error) bool {
-	return err != nil && errorsIsLockHeld(err)
-}

@@ -16,9 +16,3 @@ func AcquireSessionLivelock(_, _ string) (release func(), applied bool, err erro
 func SessionLivelockHeld(_, _ string) (held, exists bool, err error) {
 	return false, false, nil
 }
-
-// LivelockContended is never true here: this platform's acquire never takes a
-// lock, so it cannot contend.
-func LivelockContended(err error) bool {
-	return false
-}
