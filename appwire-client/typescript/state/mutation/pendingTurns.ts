@@ -72,6 +72,24 @@ export function blockedEntries<A extends MutationAttachmentRef = MutationAttachm
   return outboxEntriesByState(outbox, ref, "blockedUnknown");
 }
 
+// `ref`'s stop-canceled rows, oldest first - the one state a row can be
+// visible under a ref it does not target. A retargeted recovery resend
+// carries the displayed ref it was sent from, and its born-canceled row -
+// keyed to the destination the peer retargeted to - is the composition's
+// only durable copy, so the sending session's canceled strip must match it
+// by displayedRef as well as targetRef, or the composition the fenced toast
+// points at is invisible to its author after any reload. Canceled-specific
+// by design: the other states still project by targetRef alone, exactly as
+// before, so no other consumer's surface changes.
+export function canceledEntries<A extends MutationAttachmentRef = MutationAttachmentRef>(
+  outbox: ReadonlyMap<string, MutationOutboxRecord<A>>,
+  ref: string,
+): MutationOutboxRecord<A>[] {
+  return [...outbox.values()]
+    .filter((record) => record.state === "canceled" && (record.targetRef === ref || record.displayedRef === ref))
+    .sort((left, right) => left.intentSequence - right.intentSequence);
+}
+
 // `ref`'s outbox records in the given durable state, oldest first - the one
 // read the blocked-retry and stop-canceled lists share.
 export function outboxEntriesByState<A extends MutationAttachmentRef = MutationAttachmentRef>(

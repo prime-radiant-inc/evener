@@ -2,6 +2,7 @@
 import type { InputItem } from "@evener/appwire-client";
 import {
   describeQueuedMessageStorage,
+  describeWebQueuedMessageStorage,
   queuedIntent,
 } from "@evener/appwire-client/testing/queuedMessageStorageConformance";
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
@@ -130,6 +131,8 @@ test.each(["put", "add", "delete", "commit"] as const)("resend rolls back at %s 
     intentSequence: 3,
   });
 });
+
+describeWebQueuedMessageStorage("IndexedDB", fixture);
 
 test.each(["put", "delete", "commit"] as const)(
   "consolidation rolls back saved composition and secondary deletion at %s",

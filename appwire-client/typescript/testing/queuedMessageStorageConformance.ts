@@ -5,6 +5,7 @@ import type {
   MutationOutboxStorage,
   MutationStopBarrier,
   QueuedMessageStorage,
+  WebQueuedMessageStorage,
 } from "../state/mutation";
 
 export const queuedIntent = (targetRef = "local:queued"): MutationIntent<never> => ({
@@ -25,7 +26,7 @@ export const queuedIntent = (targetRef = "local:queued"): MutationIntent<never> 
   composerMentions: [{ kind: "skill", name: "inspect", offset: 11 }],
 });
 
-type Storage = MutationOutboxStorage &
+export type Storage = MutationOutboxStorage &
   QueuedMessageStorage & {
     listOutbox(targetRef?: string): Promise<MutationOutboxRecord[]>;
     readStopEpoch(targetRef: string): Promise<number>;
@@ -254,6 +255,77 @@ export function describeQueuedMessageStorage(name: string, create: () => QueuedS
       if (editable) expect(recovery?.payload.input).toEqual(input);
       const neighbor = await storage.enqueueIntent({ ...queuedIntent(), method, payload: { input } });
       expect(await storage.removeQueuedMessage(neighbor, capture)).toBe(removable);
+    });
+  });
+}
+
+// Omit the base capture signature so the web pair shape is the only
+// getOutboxWithStopEpoch an intersection would see: intersecting the two
+// signatures instead makes them overloads, and the base's narrower return
+// would win every call.
+type WebStorage = Omit<Storage, "getOutboxWithStopEpoch"> & WebQueuedMessageStorage;
+
+export interface WebQueuedStorageFixture {
+  storage: WebStorage;
+}
+
+// The web recovery fence's storage surface, as a contract: the capture pair a
+// reauthorizing click reads, and the blockedUnknown release only an explicit
+// user Retry may perform. Hosts without the surface run the base describe
+// alone; the web runtime runs this one against the same real storage.
+export function describeWebQueuedMessageStorage(name: string, create: () => WebQueuedStorageFixture): void {
+  describe(`${name} web stop-fence surface`, () => {
+    test("capturePairAnswersBothHalves", async () => {
+      const f = create();
+      const original = await f.storage.enqueueIntent(queuedIntent());
+      const capture = await f.storage.getOutboxWithStopEpoch(original.clientMutationId);
+      // An ordinary row crosses no displayed ref: the pair's displayed half
+      // reads zero, never undefined, so a capture consumer can compare both
+      // halves unconditionally.
+      expect(capture.stopEpoch).toBe(0);
+      expect(capture.displayedStopEpoch).toBe(0);
+      await f.storage.enqueueInterruptAndCancel({ ...queuedIntent(), method: "turn/interrupt" });
+      const stopped = await f.storage.getOutboxWithStopEpoch(original.clientMutationId);
+      expect(stopped.stopEpoch).toBe(1);
+      expect(stopped.displayedStopEpoch).toBe(0);
+    });
+
+    test("reauthorizeBlockedAnswersTheCapture", async () => {
+      const f = create();
+      const original = await f.storage.enqueueIntent(queuedIntent());
+      await f.storage.markAttempted(original.clientMutationId);
+      await f.storage.markUnknown(original.clientMutationId, "blockedUnknown");
+      // A Stop lands while the attempt's outcome is unknown: the cancel scan
+      // skips the attempted row and bumps the ref's epoch past its baseline,
+      // so the crossed fence parks it beyond every automatic reopen.
+      await f.storage.enqueueInterruptAndCancel({ ...queuedIntent(), method: "turn/interrupt" });
+      expect((await f.storage.getOutbox(original.clientMutationId))?.state).toBe("blockedUnknown");
+      const capture = await f.storage.getOutboxWithStopEpoch(original.clientMutationId);
+      // A second Stop outranks the earlier capture: the reauthorization
+      // refuses and the row stays parked.
+      await f.storage.enqueueInterruptAndCancel({ ...queuedIntent(), method: "turn/interrupt" });
+      expect(
+        await f.storage.reauthorizeBlockedMutation(original.clientMutationId, {
+          stopEpoch: capture.stopEpoch,
+          displayedStopEpoch: capture.displayedStopEpoch,
+        }),
+      ).toBe(false);
+      expect((await f.storage.getOutbox(original.clientMutationId))?.state).toBe("blockedUnknown");
+      // The post-Stop capture is the explicit Retry outranking the crossed
+      // Stop: the row reopens under its ORIGINAL mutation ID with its attempt
+      // evidence preserved.
+      const fresh = await f.storage.getOutboxWithStopEpoch(original.clientMutationId);
+      expect(
+        await f.storage.reauthorizeBlockedMutation(original.clientMutationId, {
+          stopEpoch: fresh.stopEpoch,
+          displayedStopEpoch: fresh.displayedStopEpoch,
+        }),
+      ).toBe(true);
+      expect(await f.storage.getOutbox(original.clientMutationId)).toMatchObject({
+        state: "submitting",
+        clientMutationId: original.clientMutationId,
+        attempted: true,
+      });
     });
   });
 }

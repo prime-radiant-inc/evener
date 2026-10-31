@@ -1,6 +1,6 @@
 import type { InputItem } from "../../types.gen";
 import { COMPOSER_METHODS, PENDING_TURN_METHODS } from "./composerMethods";
-import type { MutationStopBarrier } from "./outbox";
+import type { MutationStopBarrier, MutationStopCapture } from "./outbox";
 import type { MutationAttachmentRef, MutationIntent, MutationOutboxRecord, MutationRecoveryRecord } from "./records";
 
 // Optional composition ownership actions, separate from the dispatcher's port.
@@ -18,6 +18,21 @@ export interface QueuedMessageStorage<A extends MutationAttachmentRef = Mutation
     barrier: MutationStopBarrier | undefined,
     expectedRecoveryRevisions?: Readonly<Record<string, number>>,
   ): Promise<MutationOutboxRecord<A> | undefined>;
+}
+
+// The web recovery fence's storage surface. The base contract above stays the
+// whole shared surface - hosts without displayed-ref rows implement it alone
+// and are never forced to grow a web-only fence. The web runtime's retargeted
+// resends cross a still-displayed ref whose Stop epoch the click must capture
+// alongside the destination's, and its blockedUnknown rows release only
+// through the explicit-Retry reauthorization, so the web store declares this
+// extension and the conformance suite's web describe pins it.
+export interface WebQueuedMessageStorage<A extends MutationAttachmentRef = MutationAttachmentRef>
+  extends QueuedMessageStorage<A> {
+  getOutboxWithStopEpoch(
+    id: string,
+  ): Promise<{ record: MutationOutboxRecord<A> | undefined; stopEpoch: number; displayedStopEpoch: number }>;
+  reauthorizeBlockedMutation(id: string, barrier: MutationStopCapture): Promise<boolean>;
 }
 
 // Called only on a durable read inside the host's write transaction. The

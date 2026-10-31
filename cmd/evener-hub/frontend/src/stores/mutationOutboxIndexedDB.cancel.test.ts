@@ -434,6 +434,33 @@ describe("MutationOutboxIndexedDB cancellation", () => {
     expect((failure as DOMException).name).toBe("VersionError");
   });
 
+  test("an old tab's version-4 open against the version-5 database fails closed", async () => {
+    const storage = store();
+    await storage.enqueueIntent(intent("a row the old code cannot fence"));
+    storage.close();
+
+    // The pre-fence code opens the database at version 4. The version-5
+    // database this build writes must refuse that open with a VersionError
+    // instead of sharing rows the old code cannot fence honestly: an old
+    // tab's markAttempted commits attempt evidence with no crossed-fence
+    // check, so a mixed-version share would let the old tab redispatch a
+    // row a newer Stop crossed, and its cancel scan misses displayed-ref
+    // rows entirely - the original #5182 High again, mixed-version
+    // (docs/design/stop-cancellation-outbox.md §8). Failing the open is the
+    // safe direction: every outbox read and write in the old tab then
+    // reports a storage error, and projections degrade to "storage
+    // unavailable" - the safe mixed-version state is a reload, never a
+    // silent share.
+    const openRequest = indexedDB.open(databaseName, 4);
+    const failure = await new Promise<unknown>((resolve, reject) => {
+      openRequest.addEventListener("success", () => reject(new Error("the version-4 open unexpectedly succeeded")), {
+        once: true,
+      });
+      openRequest.addEventListener("error", () => resolve(openRequest.error), { once: true });
+    });
+    expect((failure as DOMException).name).toBe("VersionError");
+  });
+
   // #4342 (round-5 review): an explicit release is the user deliberately
   // sending after a Stop (§4's exemption), so it re-authorizes the row past
   // the Stop its fence captured: the released row's capture refreshes to the

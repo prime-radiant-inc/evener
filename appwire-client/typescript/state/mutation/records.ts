@@ -114,6 +114,22 @@ export interface MutationOutboxRecord<A extends MutationAttachmentRef = Mutation
   // delivery state from that era is unknown and only an explicit
   // `attempted: false` proves no earlier attempt.
   unresolvedAttempts?: number;
+  // The ref the composer that sent this row was DISPLAYING when it enqueued
+  // the row: a recovery resend can target a destination a peer retargeted
+  // the row to, while the sending pane still displays the superseded ref -
+  // and a Stop on that displayed session must still cancel the row, or the
+  // send dispatches after a Stop the user pressed on the session they were
+  // looking at. Absent on ordinary enqueues and on rows written before the
+  // field existed; Stop's cancel scan matches a missing value as never.
+  displayedRef?: string;
+  // The displayed ref's own stop epoch at enqueue time - the twin of
+  // stopEpochAtEnqueue for the ref `displayedRef` names. Every seam that can
+  // make an attempted or parked row dispatchable again (a refusal's rollback,
+  // a reconcile's reopen) checks BOTH epochs before it reopens, so a Stop on
+  // the still-displayed session holds the row canceled exactly like one on
+  // the destination. Absent on ordinary rows; a missing capture reads as
+  // zero, the conservative direction.
+  displayedStopEpochAtEnqueue?: number;
   // The ref's stop epoch at enqueue time - the barrier's own read,
   // stored. A refusal proves the attempt never landed, and a Stop whose
   // cancel scan skipped this attempted row bumped the epoch after this
@@ -125,6 +141,16 @@ export interface MutationOutboxRecord<A extends MutationAttachmentRef = Mutation
   // interleavings. Optional because rows written before the field existed
   // carry none; a missing capture reads as zero, the conservative direction.
   stopEpochAtEnqueue?: number;
+  // True only on a row a crossed Stop FENCED - the pre-transport gate's park
+  // and the reconcile's crossed-hold - naming the Stop as the reason the row
+  // is not delivering. The fence stops the row's DELIVERY, not the queue: a
+  // row so stamped must not block what follows it in FIFO order, because the
+  // thing most likely queued behind it is the Stop's own interrupt, which the
+  // daemon must receive for the session to stop. A row parked for any other
+  // reason (an attempt whose outcome nobody can vouch for) carries no stamp
+  // and keeps the queue closed behind it - the conservative direction.
+  // Absent on rows written before the field existed and on rows native owns.
+  stopFenced?: boolean;
 }
 
 export interface MutationOptimisticRecord<A extends MutationAttachmentRef = MutationAttachmentRef>

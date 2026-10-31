@@ -25,6 +25,7 @@ describe("refusal toasts", () => {
     pushSelectionRefusal("command-unsupported");
     pushRecoveryRefusal("changed");
     pushRecoveryRefusal("consumed");
+    pushRecoveryRefusal("fenced");
     expect(
       getToasts()
         .slice(before)
@@ -34,6 +35,7 @@ describe("refusal toasts", () => {
       ["error", "command-unsupported"],
       ["info", "changed"],
       ["info", "consumed"],
+      ["info", "fenced"],
     ]);
   });
 });

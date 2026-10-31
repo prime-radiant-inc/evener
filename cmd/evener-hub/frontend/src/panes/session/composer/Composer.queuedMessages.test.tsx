@@ -1052,14 +1052,18 @@ test("a Stop during recovery persistence holds the new Send identity without dis
 test("recovery activation during a paused resend preserves the secondary image recovery", async () => {
   const barrier = deferred<{ stopEpoch: number }>();
   const barrierReached = deferred<void>();
-  class PausedBarrierStorage extends MutationOutboxIndexedDB {
-    override async readStopEpoch(ref: string): Promise<number> {
+  // The press's whole capture pair now reads one readonly snapshot
+  // (getRecoveryWithStopEpoch), so the pause holds that capture.
+  class PausedCaptureStorage extends MutationOutboxIndexedDB {
+    override async getRecoveryWithStopEpoch(
+      ...args: Parameters<MutationOutboxIndexedDB["getRecoveryWithStopEpoch"]>
+    ): ReturnType<MutationOutboxIndexedDB["getRecoveryWithStopEpoch"]> {
       barrierReached.resolve();
       await barrier.promise;
-      return super.readStopEpoch(ref);
+      return super.getRecoveryWithStopEpoch(...args);
     }
   }
-  const storage = new PausedBarrierStorage();
+  const storage = new PausedCaptureStorage();
   const { fake } = await setup(false, storage);
   const first = await queued(storage, "first recovery");
   const second = await queued(storage, "image recovery");
