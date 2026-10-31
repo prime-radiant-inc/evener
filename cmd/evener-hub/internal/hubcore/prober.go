@@ -5,12 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"sort"
 	"strings"
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/execsupport/componentlog"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -27,7 +27,7 @@ type StatusProber struct {
 // labelled like every other hub diagnostic (past.go, roster.go) — is a safe
 // destination, unlike the TUI's stderr (issue #783).
 func hubConnectionLogf(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "[hub] "+format+"\n", args...)
+	componentlog.New("hub").Info(fmt.Sprintf(format, args...))
 }
 
 // Probe implements Prober.

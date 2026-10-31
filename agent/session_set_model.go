@@ -20,10 +20,10 @@ import (
 // restriction belongs to the request builder: a protocol misfiled here whose
 // builder hard-errors on the kind would brick every subsequent turn.
 //
-// Google rejects audio and non-user documents. OpenAI Chat silently drops
-// documents/audio, which counts as unrepresentable by policy. Anthropic and
-// OpenAI Responses carry documents but reject audio. User-document delivery
-// is checked separately below.
+// Google rejects audio and non-user documents. OpenAI Chat carries user
+// documents as a file part but silently drops audio and non-user documents.
+// Anthropic and OpenAI Responses carry documents but reject audio.
+// User-document delivery is checked separately below.
 func unrepresentableContentKinds(protocol string) map[llm.ContentKind]bool {
 	switch protocol {
 	case registry.ProtocolGoogle, registry.ProtocolOpenAIChat:
@@ -45,12 +45,11 @@ func unrepresentableHistoryKinds(history []schema.Turn, protocol string) []llm.C
 	if len(restricted) == 0 {
 		return nil
 	}
-	deliversUserDocuments := llm.DeliversUserMessageDocuments(registry.Resolved{Protocol: protocol})
 	seen := make(map[llm.ContentKind]bool, len(restricted))
 	var out []llm.ContentKind
 	for _, t := range history {
 		for _, p := range t.Message.Content {
-			if p.Kind == llm.ContentDocument && t.Message.Role == llm.RoleUser && deliversUserDocuments {
+			if p.Kind == llm.ContentDocument && t.Message.Role == llm.RoleUser && llm.DeliversUserMessageDocuments(registry.Resolved{Protocol: protocol}, p.Document) {
 				continue
 			}
 			if restricted[p.Kind] && !seen[p.Kind] {

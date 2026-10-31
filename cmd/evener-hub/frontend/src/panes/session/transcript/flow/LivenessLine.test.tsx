@@ -1,7 +1,7 @@
 import { STUCK_AFTER_MS } from "@evener/appwire-client";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
-import { connectionStore } from "../../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../../stores/connection";
 import { sessionActivitySnapshot } from "../../../../stores/sessionActivity";
 import { activityClient, activitySummary } from "../../../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
@@ -15,7 +15,7 @@ afterEach(() => {
   vi.useRealTimers();
   resetSubagentModuleStoreForTests();
   resetThreadsStoreForTests();
-  connectionStore.setState({ client: null, state: "idle" });
+  resetConnectionStoreForTests();
 });
 
 test("renders nothing while the thread is not active, regardless of gap", () => {

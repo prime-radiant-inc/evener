@@ -408,7 +408,7 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 		}
 		communicateText[callID] = message
 		if !communicatePreviewStarted[callID] {
-			s.emit(events.CommunicatePreviewStartData{CallID: callID})
+			s.emit(events.CommunicatePreviewStartData{CallID: callID, Authorship: s.roundTranscriptAuthorship()})
 			communicatePreviewStarted[callID] = true
 			communicatePreviewOrder = append(communicatePreviewOrder, callID)
 		}

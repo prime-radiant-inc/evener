@@ -740,13 +740,16 @@ func TestACommittedSwitchPublishesEvenWhenANewerQueuedPickLaterFails(t *testing.
 			ResolveProfile:   testResolver,
 			testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 		}))
-	// Pre-condition: a user document is unrepresentable for the OpenAIChat
-	// target, so the newer pick's deferred application must fail at the
-	// boundary it queues for.
-	if len(unrepresentableHistoryKinds([]schema.Turn{documentTurn()}, registry.ProtocolOpenAIChat)) == 0 {
-		t.Fatal("pre-condition: a user document must be unrepresentable for the queued pick's OpenAIChat target")
+	// Pre-condition: the newer queued pick's target must fail the deferred
+	// history check. OpenAIChat carries USER documents as file parts (#5485)
+	// but still drops non-user ones, so the seeded history carries an
+	// assistant-role document.
+	doc := documentTurn()
+	doc.Message.Role = llm.RoleAssistant
+	if len(unrepresentableHistoryKinds([]schema.Turn{doc}, registry.ProtocolOpenAIChat)) == 0 {
+		t.Fatal("pre-condition: a non-user document must be unrepresentable for the queued pick's OpenAIChat target")
 	}
-	s.appendTurn(schema.TurnUserInput, documentTurn().Message)
+	s.appendTurn(schema.TurnAssistant, doc.Message)
 
 	releaseAPublish := make(chan struct{})
 	aPublishEntered := make(chan struct{}, 1)

@@ -2,7 +2,7 @@
 
 import { expect, test } from "vitest";
 import type { ThreadModel } from "./model";
-import { applyNotification, hydrateThread } from "./reducer";
+import { applyNotification } from "./reducer";
 import {
   decideSteerRoute,
   decideSubmitRoute,
@@ -15,10 +15,11 @@ import {
   sessionControls,
 } from "./submitRouting";
 import { wireThread } from "./testing/notifications";
+import { hydrateThread } from "./transcriptHistory";
 import type { AnyNotification } from "./types.gen";
 
 // --- decideSubmitRoute: send vs queue vs no-op --------------------------
-// parity-m5-composer.md §A: submit is a no-op when the composer is empty of
+// Submit is a no-op when the composer is empty of
 // both text and attachments; otherwise routes to queue when queue-mode is
 // available, else send, else no-op with neither capability.
 
@@ -43,7 +44,7 @@ test("if both capabilities were ever true at once, queue wins (defensive tie-bre
 });
 
 // --- decideSteerRoute: classic steer vs drain-as-steer vs no-op ---------
-// parity-m5-composer.md §A (kata 0bq1): text + empty queue -> classic
+// Text + empty queue -> classic
 // steer; non-empty queue OR any attachments (regardless of text) -> drain;
 // empty text + empty queue + no attachments -> no-op (focus only).
 
@@ -124,7 +125,7 @@ test.each(["idle", "active", "awaiting", "warning", "systemError", "restartRequi
 // status never leaves active: the projector publishes idle only at
 // EventSessionEnd. The hub relays each of those as its own WebSocket message
 // and the client folds them one at a time, so the predicate is evaluated
-// between the two frames. Issue #1330's regression window, ported from
+// between the two frames. The window between the two frames, ported from
 // turn/completed + turn/started's activeTurnId clear/set (now
 // runningTurnId, which thread/status/changed alone owns — see model.ts's
 // doc comment): busy must not follow it either.

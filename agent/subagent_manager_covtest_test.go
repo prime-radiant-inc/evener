@@ -32,21 +32,6 @@ func TestSubagentManager_Get(t *testing.T) {
 	}
 }
 
-// TestSubagentManager_Remove covers remove for existing and missing.
-func TestSubagentManager_Remove(t *testing.T) {
-	t.Parallel()
-	m := newSubagentManager(0)
-	m.remove("nonexistent") // should not panic
-}
-
-// TestSubagentManager_RemoveSession covers removeSession with matching and
-// non-matching sessions.
-func TestSubagentManager_RemoveSession(t *testing.T) {
-	t.Parallel()
-	m := newSubagentManager(0)
-	m.removeSession("nonexistent", nil) // should not panic
-}
-
 // TestSubagentManager_HasRunningChildren covers every liveness state the
 // idle-release pre-gate probes: a restored-idle record has no runner channel
 // and must read as quiet (nil done is the steady state, not liveness), an
@@ -167,21 +152,6 @@ func TestSubagentManager_BeginReconstructionSideEffects_Closing(t *testing.T) {
 	if m.get("child1") != nil {
 		t.Fatal("expected child1 to be removed after closing")
 	}
-}
-
-// TestSubagentManager_WaitForReconstructionSideEffects covers the no-active
-// path (line 181-182 returns immediately when no active side effects).
-func TestSubagentManager_WaitForReconstructionSideEffects(t *testing.T) {
-	t.Parallel()
-	m := newSubagentManager(0)
-	m.waitForReconstructionSideEffects() // should not block when no active effects
-}
-
-// TestSubagentManager_WaitForReconstructions_NoPending covers the empty path.
-func TestSubagentManager_WaitForReconstructions_NoPending(t *testing.T) {
-	t.Parallel()
-	m := newSubagentManager(0)
-	m.waitForReconstructions() // should not block when no pending
 }
 
 // TestSubagentManager_Sessions covers the sessions accessor.

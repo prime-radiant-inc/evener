@@ -304,3 +304,28 @@ func RestoreSessionFromMeta(client *llm.Client, profile *provider.Profile, env e
 func clientMutationInput(text string, images []ImageAttachment, skillNames []string, commandNames ...[]string) []appwire.InputItem {
 	return clientMutationInputWithMentions(text, images, skillNames, nil, commandNames...)
 }
+
+// SteeringEntry is a read-only snapshot of one entry on the in-memory
+// steering queue. Text, Images and the selection names are copies.
+type SteeringEntry struct {
+	Text         string            // the steering message text
+	Images       []ImageAttachment // any images attached to the steering message
+	SkillNames   []string          // canonical skill identities selected with the steering
+	CommandNames []string          // canonical command identities selected with the steering
+}
+
+// SteeringQueueSnapshot returns a copy of the session's current steering
+// queue.
+func (s *Session) SteeringQueueSnapshot() []SteeringEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.steeringQueue) == 0 {
+		return nil
+	}
+	out := make([]SteeringEntry, len(s.steeringQueue))
+	for i, entry := range s.steeringQueue {
+		copyImages := append([]ImageAttachment(nil), entry.Images...)
+		out[i] = SteeringEntry{Text: entry.Text, Images: copyImages, SkillNames: append([]string(nil), entry.SkillNames...), CommandNames: append([]string(nil), entry.CommandNames...)}
+	}
+	return out
+}

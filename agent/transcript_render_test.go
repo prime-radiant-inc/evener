@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -339,7 +340,7 @@ func buildRawTestTranscript(t *testing.T) (path string, lines []string) {
 func TestRawLinesForRangeReturnsOnlySemanticV2Records(t *testing.T) {
 	t.Parallel()
 	path, verbatim := buildRawTestTranscript(t)
-	content, lineCount, skipped, truncated, err := rawLinesForRange(path, "", 1, 2)
+	content, lineCount, skipped, truncated, err := rawLinesForRange(context.Background(), path, "", 1, 2)
 	if err != nil {
 		t.Fatalf("rawLinesForRange: %v", err)
 	}
@@ -368,7 +369,7 @@ func TestRawLinesForRangeUsesFirstNonEmptyHeader(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	content, lineCount, skipped, truncated, err := rawLinesForRange(path, "", 0, 0)
+	content, lineCount, skipped, truncated, err := rawLinesForRange(context.Background(), path, "", 0, 0)
 	if err != nil {
 		t.Fatalf("rawLinesForRange: %v", err)
 	}
@@ -398,7 +399,7 @@ func TestRawLinesForRangeSkipsUnterminatedFinalRecord(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			content, lineCount, skipped, truncated, err := rawLinesForRange(path, "", 0, 10)
+			content, lineCount, skipped, truncated, err := rawLinesForRange(context.Background(), path, "", 0, 10)
 			if err != nil {
 				t.Fatalf("rawLinesForRange: %v", err)
 			}
@@ -425,7 +426,7 @@ func TestRawLinesForRangeRejectsMixedOrCorruptTranscript(t *testing.T) {
 		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if _, _, _, _, err := rawLinesForRange(path, "", 0, 1); err == nil {
+		if _, _, _, _, err := rawLinesForRange(context.Background(), path, "", 0, 1); err == nil {
 			t.Fatalf("rawLinesForRange accepted invalid transcript: %q", body)
 		}
 	}
@@ -477,7 +478,7 @@ func TestRawLinesForRange_HardCapTruncation(t *testing.T) {
 	t.Parallel()
 	path, firstEntryLine := buildOvercapTranscript(t)
 
-	content, _, _, truncated, err := rawLinesForRange(path, "", 0, 4)
+	content, _, _, truncated, err := rawLinesForRange(context.Background(), path, "", 0, 4)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1968,15 +1969,15 @@ func TestRenderMarkdown_LongResultLineClamped(t *testing.T) {
 }
 
 // delegateCreateBody marshals a stable-delegate create result via the REAL
-// production marshaler (marshalStableDelegateCreateResult), so these fixtures
-// carry exactly the wire shape stableDelegateCreateTool emits — the shape that
+// production marshaler (marshalDelegateCreateResult), so these fixtures
+// carry exactly the wire shape delegateCreateTool emits — the shape that
 // exposed the issue #194 regression (an allowlist-unknown key like
 // child_session_id silently downgraded the render to a raw JSON dump).
-func delegateCreateBody(t *testing.T, out stableDelegateCreateResult) string {
+func delegateCreateBody(t *testing.T, out delegateCreateResult) string {
 	t.Helper()
-	body, err := marshalStableDelegateCreateResult(out, 0)
+	body, err := marshalDelegateCreateResult(out, 0)
 	if err != nil {
-		t.Fatalf("marshalStableDelegateCreateResult: %v", err)
+		t.Fatalf("marshalDelegateCreateResult: %v", err)
 	}
 	return body
 }
@@ -1990,7 +1991,7 @@ func delegateCreateBody(t *testing.T, out stableDelegateCreateResult) string {
 func TestRenderMarkdown_DelegateToolCallAppears(t *testing.T) {
 	t.Parallel()
 	childRef := "local:01CHILDSESS000000000"
-	body := delegateCreateBody(t, stableDelegateCreateResult{
+	body := delegateCreateBody(t, delegateCreateResult{
 		DelegateID:     "dlg_01",
 		ChildSessionID: "sess_01",
 		Type:           "delegate",
@@ -2057,7 +2058,7 @@ func TestRenderMarkdown_BatchedDelegateToolCallsAppear(t *testing.T) {
 	results := make([]*llm.ToolResultData, len(specs))
 	for i, sp := range specs {
 		calls[i] = call(sp.callID, "delegate", fmt.Sprintf(`{"prompt":"batched research task %d"}`, i))
-		body := delegateCreateBody(t, stableDelegateCreateResult{
+		body := delegateCreateBody(t, delegateCreateResult{
 			DelegateID:    sp.delegateID,
 			Type:          "delegate",
 			Status:        "running",
@@ -2097,7 +2098,7 @@ func TestRenderMarkdown_BatchedDelegateToolCallsAppear(t *testing.T) {
 func TestRenderOutline_DelegateToolCallAppears(t *testing.T) {
 	t.Parallel()
 	childRef := "local:01OUTLINEDELEGATE00000000"
-	body := delegateCreateBody(t, stableDelegateCreateResult{
+	body := delegateCreateBody(t, delegateCreateResult{
 		DelegateID:    "dlg_out",
 		Type:          "delegate",
 		Status:        "completed",
@@ -2142,7 +2143,7 @@ func TestRenderOutline_BatchedDelegateToolCallsAppear(t *testing.T) {
 	results := make([]*llm.ToolResultData, len(specs))
 	for i, sp := range specs {
 		calls[i] = call(sp.callID, "delegate", fmt.Sprintf(`{"prompt":"outline batch task %d"}`, i))
-		body := delegateCreateBody(t, stableDelegateCreateResult{
+		body := delegateCreateBody(t, delegateCreateResult{
 			DelegateID:    sp.delegateID,
 			Type:          "delegate",
 			Status:        sp.status,

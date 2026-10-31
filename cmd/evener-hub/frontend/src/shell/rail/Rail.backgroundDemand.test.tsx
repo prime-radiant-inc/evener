@@ -19,9 +19,10 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { startBackgroundTranscripts } from "../../stores/backgroundTranscripts";
 import { connectionStore } from "../../stores/connection";
+import { setProductionEntryCacheForTests } from "../../stores/entryTranscriptRoutes";
 import { initNavigation, navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { SessionEntryCache } from "../../stores/sessionEntryCache";
-import { resetThreadsStoreForTests, setProductionEntryCacheForTests } from "../../stores/threads";
+import { resetThreadsStoreForTests } from "../../stores/threads";
 import { ClientProvider } from "../clientContext";
 import { Rail } from "./Rail";
 

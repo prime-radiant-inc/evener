@@ -150,12 +150,12 @@ func TestSnapshot(t *testing.T) {
 	}
 }
 
-// TestStableDelegateOwnerRuntime covers the stableDelegateOwnerRuntime method.
-func TestStableDelegateOwnerRuntime(t *testing.T) {
+// TestDelegateOwnerRuntime covers the delegateOwnerRuntime method.
+func TestDelegateOwnerRuntime(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	// Root delegate (no parent): should return rootRuntime (nil in test harness).
-	owner := c.stableDelegateOwnerRuntime(delegateLease{delegateID: "dlg_target", generation: 1})
+	owner := c.delegateOwnerRuntime(delegateLease{delegateID: "dlg_target", generation: 1})
 	// rootRuntime is nil in the test harness.
 	if owner != nil {
 		t.Fatalf("expected nil rootRuntime, got %v", owner)

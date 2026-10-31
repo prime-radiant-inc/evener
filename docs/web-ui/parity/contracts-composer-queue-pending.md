@@ -18,6 +18,30 @@ except where a line says so itself.
 
 ## Composer
 
+### Accepted-read recovery ownership
+
+- Both browser clients use the shared threads store's recovery admission. A
+  fresh accepted repository end/final read reconciles mutation authority and
+  arms the same recovery obligation as a tracked hydration when the server
+  requires resume. Send parks its durable input until the shared resume flow
+  completes, preserving mutation identity and the expected-instance fence
+  across same-identity completion or an authorized changed-ref handoff.
+- Repository reads do not clear recovery obligations or prove uncertain outbox
+  rows absent. Tracked mutation reconciliation keeps that responsibility,
+  including Stop ownership, FIFO and foldable/non-foldable recovery rules.
+- A readiness wake racing a retiring gated dispatch is retained. Dispatch stays
+  serialized per ref, and a still-closed gate does not spin. This handoff does
+  not retry transient refusals or uncertain transport outcomes inside the same
+  drive; pacing and authoritative reconciliation retain ownership of those.
+- Stale, canceled, retired and suppressed responses supply no recovery
+  authority. Cache opening and generic model publication alone neither arm nor
+  clear recovery obligations. Existing status-fold rules remain unchanged.
+- Reopening behavior is unchanged: same-connection reacquisition can cancel an
+  outgoing final read and reuse retained history without a new read. Opening
+  never starts or resumes a daemon and does not create an unconditional refresh
+  barrier. A genuine current-owner read is needed to learn changed recovery
+  state from the server.
+
 ### Attention history retention
 
 - A browser attention entry binds a runtime generation and entry token to the
@@ -64,6 +88,25 @@ except where a line says so itself.
   double-taps and split presses, keyboard Stop, editor focus, both themes,
   measured 399/400px content boxes, a narrow desktop pane, and Send geometry
   at larger font sizes. The default browser guard includes the same checks.
+
+### Recovery selection ownership
+
+- Conversation seats remain as pane identity: placement mints a fresh seat for
+  every new pane, the pane keeps its seat across parking, transcript retypes
+  and live resume round trips, and seats are never part of shared layout
+  geometry. Seats are stored per tab under the pane id only; a restored
+  layout validates a saved pane's seat against the conversation it names
+  before reusing it, and every other restored pane mints fresh, so a
+  restarted pane id cannot lend another conversation's seat. There is no
+  maintained conversation mapping: a mobile route reconstruction mints a
+  fresh seat, and restoring the previous pane's work there takes one tap. A
+  resumed nested session carries the authoring pane's seat to its
+  replacement. Seats do not scope user selections, so no selection ever
+  migrates between seats. A recovery row records the seat that last wrote it
+  as its composition owner, and an empty composer at mount restores only the
+  newest rejected row its own seat owns; explicit queue-strip actions reach
+  every row regardless of owner, and rows recorded before owners existed are
+  never restored automatically.
 
 ### Atomic skill and command selections
 

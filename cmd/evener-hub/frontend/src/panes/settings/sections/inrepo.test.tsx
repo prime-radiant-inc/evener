@@ -4,7 +4,8 @@ import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
-import { connectionStore } from "../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
+import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
 import { RepositoryConfigSection } from "./inrepo";
 import { shownReasons } from "./reasonTestUtils";
 
@@ -13,11 +14,10 @@ beforeAll(() => {
 });
 
 function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  fake.on("evener/path/validate", ({ path }) => ({ valid: true, path: path === "~" ? "/home" : path }));
-  fake.on("evener/paths/complete", () => ({ data: [] }));
-  connectionStore.getState().connect(fake);
-  return fake;
+  return connectReadyFakeClient((fake) => {
+    fake.on("evener/path/validate", ({ path }) => ({ valid: true, path: path === "~" ? "/home" : path }));
+    fake.on("evener/paths/complete", () => ({ data: [] }));
+  });
 }
 
 function resolvedWithRepo(repo: LaunchConfigResolved["repo"]): LaunchConfigResolved {
@@ -36,12 +36,12 @@ async function noFileFound(): Promise<void> {
 }
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   localStorage.clear();
 });
 
 afterEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   cleanup();
 });
 

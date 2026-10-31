@@ -32,7 +32,7 @@ func TestSessionActivityPageBudgetEscapedRowsRemainReachable(t *testing.T) {
 					descriptors[i] = pastStableDescriptor(root, fmt.Sprintf("childbudget_%03d", i), prose)
 					descriptors[i].Description = prose
 				}
-				writePastStableDelegates(t, stateDir, root, descriptors...)
+				writePastDelegates(t, stateDir, root, descriptors...)
 			} else {
 				if err := os.MkdirAll(jobsDir(stateDir, root), 0o700); err != nil {
 					t.Fatal(err)
@@ -174,13 +174,13 @@ func TestSessionActivityIntentDenseDelegateJournalPagesUnderTheColdBudget(t *tes
 	for i := range descriptors {
 		descriptors[i] = pastStableDescriptor(root, fmt.Sprintf("childdense_%03d", i), "dense run")
 	}
-	writePastStableDelegates(t, stateDir, root, descriptors...)
+	writePastDelegates(t, stateDir, root, descriptors...)
 
 	// The dense journal: the newest delegate's generation opens, states one
 	// intent per tool call — created, started and stated events together pass
 	// the 2,000-unit cold budget — and the daemon dies mid-run, so the row
 	// must serve the folded line of the interrupted open generation. The id
-	// follows writePastStableDelegates's own rule for descriptor ids.
+	// follows writePastDelegates's own rule for descriptor ids.
 	denseID := "dlg_" + strings.TrimPrefix(descriptors[total-1].ChildSessionID, "child")
 	path := filepath.Join(jobsDir(stateDir, root), "delegates.jsonl")
 	existing, err := delegatestore.ReadEvents(path)

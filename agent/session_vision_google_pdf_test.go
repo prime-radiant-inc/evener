@@ -67,6 +67,15 @@ func TestDescribeImage_GooglePDFRoutingAndSingleDelivery(t *testing.T) {
 			}}
 			dir := t.TempDir()
 			client := registryClientAt(t, dir, map[string]registry.Provider{
+				// The configured vision route is deliberately a document-delivering
+				// protocol: these subroutes pin the failure→session-model retry
+				// choreography, and a chat route never gets that far — the
+				// side-channel declines to send a document its adapter strips
+				// (#5472), which session_vision_chat_document_test.go holds.
+				"pdfroute": {
+					Base: "anthropic", APIKey: "test",
+					Transport: registry.Transport{BaseURL: "http://pdfroute.test.invalid"},
+				},
 				"pdfgoogle": {
 					Base: "google", APIKey: "test", DefaultModel: "pdf-model", InheritModels: new(false),
 					Transport: registry.Transport{BaseURL: srv.URL + "/v1beta"},

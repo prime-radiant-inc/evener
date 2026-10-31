@@ -84,7 +84,7 @@ func TestSummarizeFoldCapsKeepRunesWhole(t *testing.T) {
 		schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("t1", "shell", multibyteRun("", 100), false)),
 		schema.NewTurn(schema.TurnUserInput, llm.User("recent")),
 	}
-	if _, err := cm.summarizeWithLLMSteered(context.Background(), history, 1, ""); err != nil {
+	if _, err := cm.summarizeFold(context.Background(), history, 1, "", nil); err != nil {
 		t.Fatalf("summarize: %v", err)
 	}
 	reqs := adapter.Requests()

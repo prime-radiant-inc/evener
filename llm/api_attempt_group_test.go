@@ -199,6 +199,12 @@ func TestAPIAttemptGroupAppendsAttemptsThenOneSettlement(t *testing.T) {
 // reports the protocol that actually answered, and a call that begins no
 // attempt at all (an override serves it) reports none.
 func TestAPIAttemptGroupRecordsFinalAttemptProtocol(t *testing.T) {
+	// The nil-receiver read is the safe default a group handle that was never
+	// set reports: no protocol, not a panic.
+	var missing *APIAttemptGroup
+	if got := missing.Protocol(); got != "" {
+		t.Fatalf("protocol of a nil group = %q, want empty", got)
+	}
 	group := NewAPIAttemptGroup("ag_protocol")
 	if got := group.Protocol(); got != "" {
 		t.Fatalf("protocol before any attempt = %q, want empty", got)

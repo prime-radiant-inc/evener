@@ -4,13 +4,16 @@ import type { InitializeResponse, ThreadReadResponse } from "@evener/appwire-cli
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { connectionStore } from "./connection";
+import { connectReadyFakeClient } from "../testing/connectionTestUtils";
+import { connectionStore, resetConnectionStoreForTests } from "./connection";
+import { setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { SessionEntryCache } from "./sessionEntryCache";
-import { resetThreadsStoreForTests, setProductionEntryCacheForTests, threadsStore } from "./threads";
+import { resetThreadsStoreForTests, threadsStore } from "./threads";
+import { getReadyEpoch } from "./wiredClient";
 
 let cache: SessionEntryCache;
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   cache = new SessionEntryCache({
     indexedDB: new IDBFactory(),
@@ -24,12 +27,7 @@ afterEach(() => {
   cache.close();
   vi.restoreAllMocks();
 });
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  fake.on("thread/unsubscribe", () => ({}));
-  connectionStore.getState().connect(fake);
-  return fake;
-}
+const connectFakeClient = () => connectReadyFakeClient((fake) => fake.on("thread/unsubscribe", () => ({})));
 
 function readResponse(ref: string, overrides: TestThreadOverrides = {}, requestGeneration = 1): ThreadReadResponse {
   return {
@@ -176,5 +174,26 @@ describe("client swap (manual retry) rewiring", () => {
       params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
     });
     expect(threadsStore.getState().threads.get("ref_a")?.status).toEqual({ type: "idle" });
+  });
+});
+
+describe("ready generation without a transcript residency", () => {
+  test("a client swap starts a new ready generation", () => {
+    connectFakeClient();
+    const before = getReadyEpoch();
+
+    connectionStore.getState().connect(new FakeClient("ready"));
+
+    expect(getReadyEpoch()).toBeGreaterThan(before);
+  });
+
+  test("the same client reconnecting starts a new ready generation", () => {
+    const client = connectFakeClient();
+    const before = getReadyEpoch();
+
+    client.emitStateChange("reconnecting");
+    client.emitStateChange("ready");
+
+    expect(getReadyEpoch()).toBeGreaterThan(before);
   });
 });

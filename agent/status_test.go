@@ -40,7 +40,7 @@ func TestDetailedStatusUsesNamespacedSkillCatalogKey(t *testing.T) {
 }
 
 func TestSession_DetailedStatus_DelegatesMatchControllerFoldAfterReopen(t *testing.T) {
-	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+	fixture := newColdDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
 		descriptor.Description = "stable status description"
 		descriptor.ParentWatchGranted = true
 		descriptor.DelegationAllowance = 2
@@ -70,7 +70,7 @@ func TestSession_DetailedStatus_DelegatesMatchControllerFoldAfterReopen(t *testi
 	}
 }
 
-func TestStableDelegateAttention_RestoreAndColdRead(t *testing.T) {
+func TestDelegateAttention_RestoreAndColdRead(t *testing.T) {
 	tests := []struct {
 		name              string
 		pending           bool
@@ -93,7 +93,7 @@ func TestStableDelegateAttention_RestoreAndColdRead(t *testing.T) {
 
 	for i, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			fixture := newColdStableDelegateFixture(t, "")
+			fixture := newColdDelegateFixture(t, "")
 			targetDelegateID := fixture.delegateID
 			targetChildID := fixture.childID
 			if tt.lifecycle == "fenced" {
@@ -888,7 +888,7 @@ func TestDetailedStatus_HookEvents(t *testing.T) {
 func TestLoadSessionDelegateStatus_OversizedDelegateJournalLineDegradesWithDiagnosticInsteadOfFailing(t *testing.T) {
 	stateDir := t.TempDir()
 	rootID := "oversizedelegateroot"
-	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, "child1", "a task long enough to exceed a tiny test line cap"))
+	writePastDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, "child1", "a task long enough to exceed a tiny test line cap"))
 	savePastActivityMeta(t, stateDir, rootID, "Root")
 
 	// Inject a small MaxLineBytes so this test's fixture doesn't need an
@@ -926,7 +926,7 @@ func TestSessionOwnsDelegateCancellationDuringJournalFold(t *testing.T) {
 	stateDir := t.TempDir()
 	ownerID := "02wMz5Txv1C3Hut0M8GCeC"
 	childID := "02wMz5Txv1C3Hut0M8GCeD"
-	writePastStableDelegates(t, stateDir, ownerID, pastStableDescriptor(ownerID, childID, "inspect ownership"))
+	writePastDelegates(t, stateDir, ownerID, pastStableDescriptor(ownerID, childID, "inspect ownership"))
 	savePastActivityMeta(t, stateDir, ownerID, "Owner")
 	synctest.Test(t, func(t *testing.T) {
 		started, release := make(chan struct{}), make(chan struct{})
@@ -971,7 +971,7 @@ func TestSessionOwnsDelegateVerifiesRootOwnerAndImmediateParent(t *testing.T) {
 	child := pastStableDescriptor(rootID, childID, "nested task")
 	child.ParentDelegateID = "dlg_" + parentID
 	sibling := pastStableDescriptor(rootID, siblingID, "sibling task")
-	writePastStableDelegates(t, stateDir, rootID, parent, child, sibling)
+	writePastDelegates(t, stateDir, rootID, parent, child, sibling)
 	savePastActivityMeta(t, stateDir, rootID, "root")
 	savePastActivityMetaWithTreeRevision(t, stateDir, parentID, "parent", rootID, 1)
 	savePastActivityMetaWithTreeRevision(t, stateDir, siblingID, "sibling", rootID, 1)
@@ -1010,7 +1010,7 @@ func TestSessionOwnedDelegateIDs_ListsDescendantSessionsTheRootOwns(t *testing.T
 		descriptor.ParentDelegateID = "dlg_" + parentID
 		return descriptor
 	}
-	writePastStableDelegates(t, stateDir, rootID,
+	writePastDelegates(t, stateDir, rootID,
 		pastStableDescriptor(rootID, aID, "a"),
 		under(pastStableDescriptor(rootID, bID, "b"), aID),
 		under(pastStableDescriptor(rootID, cID, "c"), bID),
@@ -1068,7 +1068,7 @@ func TestSessionOwnedDelegateIDs_HonorsCancellationAfterTheFold(t *testing.T) {
 	const rootID = "02wMz5Txv1C3Hut0M8GCeP"
 	const childID = "02wMz5Txv1C3Hut0M8GCeQ"
 	stateDir := t.TempDir()
-	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "child"))
+	writePastDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "child"))
 	ctx := &cancelAfterFoldWait{Context: t.Context()}
 	if ids, err := SessionOwnedDelegateIDs(ctx, stateDir, rootID); !errors.Is(err, context.Canceled) {
 		t.Fatalf("SessionOwnedDelegateIDs after cancellation = %v, %v; want context.Canceled", ids, err)

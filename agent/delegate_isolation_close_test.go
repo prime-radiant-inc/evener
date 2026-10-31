@@ -35,7 +35,7 @@ func reserveWorktreeIsolatedDelegateArgs(t *testing.T, root *Session, args deleg
 	if err != nil {
 		t.Fatalf("selectSubagentModel: %v", err)
 	}
-	toolNameCeiling := root.stableDelegateEffectiveToolNameCeiling(selection, args, args.Isolation)
+	toolNameCeiling := root.delegateEffectiveToolNameCeiling(selection, args, args.Isolation)
 	descriptor, project, err := runtime.describe(ctx, args, args.Task, args.Isolation, nil, selection, toolNameCeiling)
 	if err != nil {
 		t.Fatalf("describe delegate: %v", err)

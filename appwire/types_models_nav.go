@@ -218,7 +218,7 @@ type AuthStatusResponse struct {
 	EnvVar string `json:"envVar,omitempty"`
 	// ShadowedEnvVar names an environment variable that is set but loses to
 	// a higher-precedence credential (api_key, credential_headers, or
-	// store, spec §10); empty when no such variable is set, including when
+	// store); empty when no such variable is set, including when
 	// an env source is itself what resolves.
 	ShadowedEnvVar string `json:"shadowedEnvVar,omitempty"`
 	Email          string `json:"email,omitempty"`
@@ -228,7 +228,7 @@ type AuthStatusResponse struct {
 	NeedsRefresh   bool   `json:"needsRefresh,omitempty"`
 	NeedsLogin     bool   `json:"needsLogin,omitempty"`
 	// RefreshRejected is true when the issuer permanently refused this
-	// instance's stored refresh token (authopenai.RefreshRejected, #2479):
+	// instance's stored refresh token (authopenai.RefreshRejected):
 	// the access token may still be valid, but the session needs a fresh
 	// sign-in before its next refresh. It is why NeedsLogin can be true for a
 	// record whose access token has not expired, so a client must not read
@@ -386,7 +386,7 @@ type ThreadStatusChangedParams struct {
 	// AskPending carries EvenerThread.AskPending — "this session is waiting on
 	// a human answer" — for the reason the failure count rides along above: it
 	// is otherwise snapshot-only, so after the user answers, every OTHER
-	// client keeps showing "question waiting" until its next read (#1613). The
+	// client keeps showing "question waiting" until its next read. The
 	// pending set clears only at a turn boundary (a resolving user turn, an
 	// interrupted turn: agent/session_tools_ask.go), which is exactly when a
 	// status change is announced, so this refreshes it when it can have moved
@@ -400,10 +400,10 @@ type ThreadStatusChangedParams struct {
 	// announced (see EvenerThread.Capabilities), for the same reason the failure
 	// count rides along above: it is otherwise snapshot-only, and Send is the
 	// entry defined by whether a turn is in flight (Steer, Interrupt and Queue
-	// advertise harness support and do not move with the status, #1363/#1375).
+	// advertise harness support and do not move with the status).
 	// A client that read the thread while it was idle therefore holds send=true
 	// for the whole turn that follows, and renders a session it KNOWS is active
-	// with a Send it must not offer until the page is reloaded (kata 06t8). A
+	// with a Send it must not offer until the page is reloaded. A
 	// status transition is exactly when Send flips, so the set refreshes there
 	// and nowhere else — no polling, no re-read of the transcript.
 	//
@@ -418,7 +418,7 @@ type ThreadStatusChangedParams struct {
 	// (cmd/evener-hub/app_relay.go's stampClosedThreadCapabilities), so a close
 	// still arrives carrying a set — the same one the next thread/read returns.
 	// A client that read the daemon's own all-false set there would lose the
-	// follow-up composer for a session the hub would happily resume (kata pk2d).
+	// follow-up composer for a session the hub would happily resume.
 	Capabilities *ThreadCapabilities `json:"capabilities,omitempty"`
 	// ActiveTurnID is the currently running turn's id, empty when none. See
 	// EvenerThread.ActiveTurnID.

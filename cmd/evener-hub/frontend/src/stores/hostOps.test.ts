@@ -23,7 +23,7 @@ import { FakeClient, gateSettlements } from "@evener/appwire-client/testing/fake
 import { goConstantValue } from "@evener/appwire-client/testing/goConstants";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { connectReadyFakeClient } from "../testing/connectionTestUtils";
-import { connectionStore } from "./connection";
+import { connectionStore, resetConnectionStoreForTests } from "./connection";
 import {
   clearedOutcomeLine,
   deployRefusalAction,
@@ -76,7 +76,7 @@ function plan(overrides: Partial<HostPlan> = {}): HostPlan {
 }
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   hostsStore.getState().resetForTests();
   hostOpsStore.getState().resetForTests();
 });

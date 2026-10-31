@@ -1,18 +1,19 @@
 // @vitest-environment node
 
-import type { AnyNotification, ConnectionState, Thread, ThreadReadResponse } from "@evener/appwire-client";
+import type { AnyNotification, Thread, ThreadReadResponse } from "@evener/appwire-client";
 import { hydrateThread } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { beforeEach, describe, expect, test } from "vitest";
 import { appliedReceipt } from "../../../../mutationReceiptTestUtils";
-import { connectionStore } from "../../../../stores/connection";
+import { resetConnectionStoreForTests } from "../../../../stores/connection";
 import {
   putThreadModel,
   readMutationPersistence,
   resetThreadsStoreForTests,
   threadsStore,
 } from "../../../../stores/threads";
+import { connectReadyFakeClient } from "../../../../testing/connectionTestUtils";
 import { ALL_CAPABILITIES as CAPABILITIES } from "../../../../threadTestUtils";
 import { askDockStore, resetAskDockStoreForTests } from "./askDockStore";
 import { ackAskUserCall, askArgs, askPendingStatusChanged, ONE_QUESTION } from "./askDockTestUtils";
@@ -46,12 +47,6 @@ function readResponse(ref: string): ThreadReadResponse {
   // that "invalidate", not "apply", so the pushed item never merges and no
   // batch is ever seen.
   return { thread: testThread(ref), bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 0 } };
-}
-
-function connectFakeClient(state: ConnectionState = "ready"): FakeClient {
-  const fake = new FakeClient(state);
-  connectionStore.getState().connect(fake);
-  return fake;
 }
 
 const TWO_QUESTIONS = [
@@ -151,14 +146,14 @@ beforeEach(() => {
   // environment, which has neither browser global.
   globalThis.IDBKeyRange = IDBKeyRange;
   globalThis.location = { origin: "http://localhost:3000" } as Location;
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetAskDockStoreForTests();
 });
 
 describe("reconciliation from the live ThreadModel", () => {
   test("hydrating a thread with a live, unresolved ask_user call populates one batch", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("thread/read", () => ({
       thread: {
         ...testThread("ref_a", {
@@ -193,7 +188,7 @@ describe("reconciliation from the live ThreadModel", () => {
   });
 
   test("a live ask_user ack (item/started then item/completed) adds a fresh batch", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("thread/read", () => readResponse("ref_a"));
     await threadsStore.getState().ensureThread("ref_a");
     expect(askDockStore.getState().byRef.get("ref_a")).toBeUndefined();
@@ -207,7 +202,7 @@ describe("reconciliation from the live ThreadModel", () => {
   });
 
   test("a second ask_user ack with no reply in between merges into the same open batch", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("thread/read", () => readResponse("ref_a"));
     await threadsStore.getState().ensureThread("ref_a");
 
@@ -221,7 +216,7 @@ describe("reconciliation from the live ThreadModel", () => {
   });
 
   test("a foreign user message resolves an open (not-sending) batch entirely", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("thread/read", () => readResponse("ref_a"));
     await threadsStore.getState().ensureThread("ref_a");
     startTurn(fake, "ref_a", "turn_1");
@@ -276,7 +271,7 @@ describe("sendBatch", () => {
   }
 
   test("composes the batch's answers verbatim and sends through the plain send() path", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const batchId = await setupOneBatch(fake);
     askDockStore.setAnswer("ref_a", "call_1:0", { kind: "option", labels: ["Yes"] });
     fake.on("turn/start", () => new Promise(() => {}));
@@ -292,7 +287,7 @@ describe("sendBatch", () => {
   });
 
   test("an unresolved question composes as skipped, matching the ordinary composer's own send path", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const batchId = await setupOneBatch(fake);
     fake.on("turn/start", () => new Promise(() => {}));
 
@@ -306,7 +301,7 @@ describe("sendBatch", () => {
   });
 
   test("clears that batch's answers once it settles successfully", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const batchId = await setupOneBatch(fake);
     askDockStore.setAnswer("ref_a", "call_1:0", { kind: "skip" });
     fake.on("turn/start", (params) => ({
@@ -325,7 +320,7 @@ describe("sendBatch", () => {
     // userMessage echo) - the same permanent exclusion that protects the
     // Conflict path must also cover the plain success path, since both
     // route through the same removeBatch.
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const batchId = await setupOneBatch(fake);
     fake.on("turn/start", (params) => ({
       receipt: appliedReceipt(params.clientMutationId, "thread_a"),
@@ -343,7 +338,7 @@ describe("sendBatch", () => {
   });
 
   test("is a no-op (never calls turn/start) when the batch no longer exists - already resolved elsewhere", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const batchId = await setupOneBatch(fake);
     startTurn(fake, "ref_a", "turn_2");
     fake.emitNotification(userMessageNotification("ref_a", "turn_2", "item_2", "[answers]..."));
@@ -373,7 +368,7 @@ describe("active tab (kata 99yf)", () => {
   }
 
   test("setActive records the visible question and rejects keys outside the batch", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const batchId = await setupBatch(fake, TWO_QUESTIONS);
 
     askDockStore.setActive("ref_a", batchId, "call_1:1");
@@ -387,7 +382,7 @@ describe("active tab (kata 99yf)", () => {
   });
 
   test("a one-click single-select answer auto-advances to the next unanswered question", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const batchId = await setupBatch(fake, TWO_QUESTIONS);
 
     askDockStore.setAnswer("ref_a", "call_1:0", { kind: "option", labels: ["a"] });
@@ -401,7 +396,7 @@ describe("active tab (kata 99yf)", () => {
   });
 
   test("auto-advance wraps to an earlier unanswered question", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const batchId = await setupBatch(fake, THREE_QUESTIONS);
 
     askDockStore.setActive("ref_a", batchId, "call_1:2");
@@ -410,7 +405,7 @@ describe("active tab (kata 99yf)", () => {
   });
 
   test("multi-select, free-text, and let-evener-decide answers never auto-advance", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const batchId = await setupBatch(fake, MULTI_THEN_SINGLE);
 
     askDockStore.setAnswer("ref_a", "call_1:0", { kind: "option", labels: ["a"] });
@@ -424,7 +419,7 @@ describe("active tab (kata 99yf)", () => {
   });
 
   test("answering a question that is not the visible tab does not move the active tab", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const batchId = await setupBatch(fake, TWO_QUESTIONS);
 
     askDockStore.setActive("ref_a", batchId, "call_1:1");
@@ -433,7 +428,7 @@ describe("active tab (kata 99yf)", () => {
   });
 
   test("the active entry is pruned when its batch is sent", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const batchId = await setupBatch(fake, TWO_QUESTIONS);
     askDockStore.setActive("ref_a", batchId, "call_1:1");
     fake.on("turn/start", () => new Promise(() => {}));
@@ -444,7 +439,7 @@ describe("active tab (kata 99yf)", () => {
   });
 
   test("the active entry is pruned when its batch resolves elsewhere", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const batchId = await setupBatch(fake, TWO_QUESTIONS);
     askDockStore.setActive("ref_a", batchId, "call_1:1");
 
@@ -491,7 +486,7 @@ const RECOMMENDED_MULTI = [
 
 describe("recommended default seeding", () => {
   test("a question with a recommended option starts with that option as its answer", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("thread/read", () => readResponse("ref_a"));
     await threadsStore.getState().ensureThread("ref_a");
     startTurn(fake, "ref_a", "turn_1");
@@ -504,7 +499,7 @@ describe("recommended default seeding", () => {
   });
 
   test("a multi_select question pre-checks its recommended option", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("thread/read", () => readResponse("ref_a"));
     await threadsStore.getState().ensureThread("ref_a");
     startTurn(fake, "ref_a", "turn_1");
@@ -517,7 +512,7 @@ describe("recommended default seeding", () => {
   });
 
   test("a question with no recommended option starts unanswered", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("thread/read", () => readResponse("ref_a"));
     await threadsStore.getState().ensureThread("ref_a");
     startTurn(fake, "ref_a", "turn_1");
@@ -527,7 +522,7 @@ describe("recommended default seeding", () => {
   });
 
   test("a late-arriving question seeds its own default without clobbering an in-progress answer", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("thread/read", () => readResponse("ref_a"));
     await threadsStore.getState().ensureThread("ref_a");
     startTurn(fake, "ref_a", "turn_1");
@@ -542,7 +537,7 @@ describe("recommended default seeding", () => {
   });
 
   test("a deliberately cleared answer is not reseeded on the next reconcile", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("thread/read", () => readResponse("ref_a"));
     await threadsStore.getState().ensureThread("ref_a");
     startTurn(fake, "ref_a", "turn_1");
@@ -558,7 +553,7 @@ describe("recommended default seeding", () => {
   });
 
   test("a seeded default composes into the [answers] reply exactly like a picked option", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("thread/read", () => readResponse("ref_a"));
     await threadsStore.getState().ensureThread("ref_a");
     startTurn(fake, "ref_a", "turn_1");
@@ -614,7 +609,7 @@ describe("activation epochs", () => {
   }
 
   test("an atomic snapshot replacement of the pending set re-arms the greeting and bumps the epoch", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("thread/read", () => readResponse("ref_a"));
     await threadsStore.getState().ensureThread("ref_a");
     startTurn(fake, "ref_a", "turn_1");
@@ -638,7 +633,7 @@ describe("activation epochs", () => {
   });
 
   test("a same-set addition keeps the greeting and the epoch", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("thread/read", () => readResponse("ref_a"));
     await threadsStore.getState().ensureThread("ref_a");
     startTurn(fake, "ref_a", "turn_1");

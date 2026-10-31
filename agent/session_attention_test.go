@@ -746,7 +746,7 @@ func TestDelegateAttention_RecoveryStopWaitsForOldRunnerBeforeReuse(t *testing.T
 		releaseSuccessorOnce.Do(func() { close(releaseSuccessor) })
 	})
 
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	adapter := &fakeErrAdapter{
 		name: "openai",
 		steps: []func(llm.Request) (llm.Response, error){
@@ -1368,7 +1368,7 @@ func TestDelegateAttention_PublicTranscriptReadsExcludePrivateResolutionMetadata
 		t.Fatalf("close transcript: %v", err)
 	}
 
-	rawValue, err := readRaw(path, "", "local:"+sessionID, "")
+	rawValue, err := readRaw(context.Background(), path, "", "local:"+sessionID, "")
 	if err != nil {
 		t.Fatalf("read raw transcript: %v", err)
 	}
@@ -1377,7 +1377,7 @@ func TestDelegateAttention_PublicTranscriptReadsExcludePrivateResolutionMetadata
 		t.Fatalf("raw transcript type = %T", rawValue)
 	}
 	pin := 1
-	expandedValue, err := readMarkdownPage(path, "", "local:"+sessionID, schema.SessionMeta{}, "", &pin, 0, maxExpansionBytes)
+	expandedValue, err := readMarkdownPage(context.Background(), path, "", "local:"+sessionID, schema.SessionMeta{}, "", &pin, 0, maxExpansionBytes)
 	if err != nil {
 		t.Fatalf("expand transcript turn: %v", err)
 	}
@@ -1385,7 +1385,7 @@ func TestDelegateAttention_PublicTranscriptReadsExcludePrivateResolutionMetadata
 	if !ok || expanded.Expansion == nil {
 		t.Fatalf("expanded transcript = %#v", expandedValue)
 	}
-	outlineValue, err := readOutline(path, "", "local:"+sessionID, "")
+	outlineValue, err := readOutline(context.Background(), path, "", "local:"+sessionID, "")
 	if err != nil {
 		t.Fatalf("read transcript outline: %v", err)
 	}
@@ -1429,19 +1429,19 @@ func TestDelegateAttention_PublicTranscriptReadsExcludePrivateResolutionMetadata
 		t.Fatalf("provider history dropped delegate packet content: %s", providerJSON)
 	}
 
-	privateSnippets, opened := contentSnippets(stateDir, sessionID, "Attention resolved.", "attention resolved.")
+	privateSnippets, opened := contentSnippets(context.Background(), stateDir, sessionID, "Attention resolved.", "attention resolved.")
 	if !opened {
 		t.Fatal("find_session_transcripts content scan did not open the real transcript")
 	}
 	if len(privateSnippets) != 0 {
 		t.Fatalf("find_session_transcripts exposed the private resolution marker: %#v", privateSnippets)
 	}
-	visibleSnippets, opened := contentSnippets(stateDir, sessionID, "visible result", "visible result")
+	visibleSnippets, opened := contentSnippets(context.Background(), stateDir, sessionID, "visible result", "visible result")
 	if !opened || len(visibleSnippets) != 1 || visibleSnippets[0].Seq != 1 {
 		t.Fatalf("find_session_transcripts visible tool-result query = opened %v, snippets %#v", opened, visibleSnippets)
 	}
 
-	rawWindowValue, err := readRaw(path, "", "local:"+sessionID, "last:2")
+	rawWindowValue, err := readRaw(context.Background(), path, "", "local:"+sessionID, "last:2")
 	if err != nil {
 		t.Fatalf("read ranged raw transcript: %v", err)
 	}
@@ -1459,7 +1459,7 @@ func TestDelegateAttention_PublicTranscriptReadsExcludePrivateResolutionMetadata
 		t.Fatalf("ranged public JSONL kinds = %#v, want %#v", windowKinds, want)
 	}
 
-	markdownWindowValue, err := readMarkdownPage(path, "", "local:"+sessionID, schema.SessionMeta{}, "last:2", nil, 0, 0)
+	markdownWindowValue, err := readMarkdownPage(context.Background(), path, "", "local:"+sessionID, schema.SessionMeta{}, "last:2", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("read ranged markdown transcript: %v", err)
 	}
@@ -1468,7 +1468,7 @@ func TestDelegateAttention_PublicTranscriptReadsExcludePrivateResolutionMetadata
 		t.Fatalf("ranged markdown split the public tool round: %s", markdownWindow.Content)
 	}
 
-	outlineWindowValue, err := readOutline(path, "", "local:"+sessionID, "last:2")
+	outlineWindowValue, err := readOutline(context.Background(), path, "", "local:"+sessionID, "last:2")
 	if err != nil {
 		t.Fatalf("read ranged outline transcript: %v", err)
 	}
@@ -1499,12 +1499,12 @@ func TestDelegateAttention_PublicTranscriptReadsExcludePrivateResolutionMetadata
 	if err := findWriter.Close(); err != nil {
 		t.Fatalf("close searchable transcript: %v", err)
 	}
-	findSnippets, opened := contentSnippets(stateDir, findSessionID, "later public match", "later public match")
+	findSnippets, opened := contentSnippets(context.Background(), stateDir, findSessionID, "later public match", "later public match")
 	if !opened || len(findSnippets) != 1 || findSnippets[0].Seq != 1 {
 		t.Fatalf("public find sequence = opened %v snippets %#v, want public seq 1", opened, findSnippets)
 	}
 	findPin := findSnippets[0].Seq
-	findExpansionValue, err := readMarkdownPage(findPath, "", "local:"+findSessionID, schema.SessionMeta{}, "", &findPin, 0, maxExpansionBytes)
+	findExpansionValue, err := readMarkdownPage(context.Background(), findPath, "", "local:"+findSessionID, schema.SessionMeta{}, "", &findPin, 0, maxExpansionBytes)
 	if err != nil {
 		t.Fatalf("expand public find sequence: %v", err)
 	}
@@ -1539,13 +1539,13 @@ func TestDelegateAttention_PublicJSONLPreservesExactToolResultNumbers(t *testing
 		t.Fatalf("close transcript: %v", err)
 	}
 
-	rawValue, err := readRaw(path, "", "local:"+sessionID, "")
+	rawValue, err := readRaw(context.Background(), path, "", "local:"+sessionID, "")
 	if err != nil {
 		t.Fatalf("read raw transcript: %v", err)
 	}
 	raw := rawValue.(readRawEnvelope)
 	pin := 0
-	expandedValue, err := readMarkdownPage(path, "", "local:"+sessionID, schema.SessionMeta{}, "", &pin, 0, maxExpansionBytes)
+	expandedValue, err := readMarkdownPage(context.Background(), path, "", "local:"+sessionID, schema.SessionMeta{}, "", &pin, 0, maxExpansionBytes)
 	if err != nil {
 		t.Fatalf("expand transcript turn: %v", err)
 	}
@@ -2356,7 +2356,7 @@ func TestDelegateAttention_ColdPostAckReadFailureRetriesExactID(t *testing.T) {
 }
 
 func TestDelegateAttention_SettledResidentChildStartsExactAttentionGeneration(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	attentionEntered := make(chan struct{})
 	releaseAttention := make(chan struct{})
 	var releaseOnce sync.Once
@@ -2498,7 +2498,7 @@ func TestDelegateAttention_RestoreSessionStartCountsColdReplayAppend(t *testing.
 	if !ok {
 		t.Fatal("restored session emitted no SESSION_START")
 	}
-	_, entries, _, err := readTranscript(path, "")
+	_, entries, _, err := readTranscript(context.Background(), path, "")
 	if err != nil {
 		t.Fatalf("read restored transcript: %v", err)
 	}
@@ -4070,7 +4070,7 @@ func TestRootDelegateAttention_RestoreRearmsPendingIDsWithoutProviderCall(t *tes
 }
 
 func TestDelegateAttention_RestartRearmsColdChildAndDrainsExactAttention(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	const (
 		owedID            = "watch:restart-attention:owed"
 		owedContent       = `<job-notification event="watch_send">recover consumed owed generation</job-notification>`
@@ -4213,7 +4213,7 @@ func TestDelegateAttention_RestartRearmsColdChildAndDrainsExactAttention(t *test
 	waitForStableSupervisionRun(t, root, fixture.childID)
 
 	t.Run("rejects exact non-attention generation", func(t *testing.T) {
-		fixture := newColdStableDelegateFixture(t, "")
+		fixture := newColdDelegateFixture(t, "")
 		const attentionID = "watch:restart-attention:trigger-conflict"
 		childPath := transcriptPath(fixture.stateDir, fixture.childID)
 		if appended, err := appendColdDelegateNotificationDurablyWithOpen(childPath, fixture.childID, attentionID, "trigger conflict", time.Unix(1_700_000_400, 0).UTC(), transcript.OpenWriterForSession); err != nil || !appended {
@@ -4281,7 +4281,7 @@ func TestDelegateAttention_RestartRearmsColdChildAndDrainsExactAttention(t *test
 }
 
 func TestDelegateAttention_PrelaunchRecoveryDoesNotWaitForUnlaunchedRunner(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
 	if err != nil {
 		t.Fatalf("restore root: %v", err)
@@ -4743,7 +4743,7 @@ func (file *attentionFailNextSyncFile) Sync() error {
 	return file.File.Sync()
 }
 
-func TestStableDelegateAttention_ReachableColdOwnerRetainsAttentionAfterRestoreFailure(t *testing.T) {
+func TestDelegateAttention_ReachableColdOwnerRetainsAttentionAfterRestoreFailure(t *testing.T) {
 	c, journalPath := newDelegateControllerTestHarness(t, 2, 1)
 	seedStableAttentionRepairDelegate(t, c, "dlg_owner", "", true)
 	const attentionID = "delegate:reachable-owner"
@@ -4779,7 +4779,7 @@ func TestStableDelegateAttention_ReachableColdOwnerRetainsAttentionAfterRestoreF
 	}
 }
 
-func TestStableDelegateAttention_UnreachableOwnerTransfersToNearestReachableAncestor(t *testing.T) {
+func TestDelegateAttention_UnreachableOwnerTransfersToNearestReachableAncestor(t *testing.T) {
 	c, journalPath := newDelegateControllerTestHarness(t, 3, 1)
 	seedStableAttentionRepairDelegate(t, c, "dlg_parent", "", true)
 	seedStableAttentionRepairDelegate(t, c, "dlg_child", "dlg_parent", false)
@@ -4819,7 +4819,7 @@ func TestStableDelegateAttention_UnreachableOwnerTransfersToNearestReachableAnce
 	}
 }
 
-func TestStableDelegateAttention_AncestorFsyncPrecedesChildDiscard(t *testing.T) {
+func TestDelegateAttention_AncestorFsyncPrecedesChildDiscard(t *testing.T) {
 	c, journalPath := newDelegateControllerTestHarness(t, 3, 1)
 	seedStableAttentionRepairDelegate(t, c, "dlg_parent", "", true)
 	seedStableAttentionRepairDelegate(t, c, "dlg_child", "dlg_parent", false)
@@ -4847,7 +4847,7 @@ func TestStableDelegateAttention_AncestorFsyncPrecedesChildDiscard(t *testing.T)
 	}
 }
 
-func TestStableDelegateAttention_ConsumedEntryIsNeverEscalated(t *testing.T) {
+func TestDelegateAttention_ConsumedEntryIsNeverEscalated(t *testing.T) {
 	c, journalPath := newDelegateControllerTestHarness(t, 3, 1)
 	seedStableAttentionRepairDelegate(t, c, "dlg_parent", "", true)
 	seedStableAttentionRepairDelegate(t, c, "dlg_child", "dlg_parent", false)
@@ -4883,7 +4883,7 @@ func TestStableDelegateAttention_ConsumedEntryIsNeverEscalated(t *testing.T) {
 	}
 }
 
-func TestStableDelegateAttention_StartupRepairUsesNoProvider(t *testing.T) {
+func TestDelegateAttention_StartupRepairUsesNoProvider(t *testing.T) {
 	c, journalPath := newDelegateControllerTestHarness(t, 2, 1)
 	seedStableAttentionRepairDelegate(t, c, "dlg_child", "", false)
 	const attentionID = "delegate:provider-free-transfer"

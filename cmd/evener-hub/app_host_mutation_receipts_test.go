@@ -297,7 +297,7 @@ func TestHostMutationUpdateCommitsTheGuardedPair(t *testing.T) {
 
 	// The durable file carries the same receipt — the commit and its receipt
 	// are one atomic write.
-	cfg, err := LoadConfig(f.configPath)
+	cfg, err := loadWithRecords(f.configPath)
 	if err != nil {
 		t.Fatalf("load hub.toml: %v", err)
 	}
@@ -772,7 +772,7 @@ func TestHostMutationReceiptKeptWhenTheLivePhaseFails(t *testing.T) {
 	if _, open := f.m.cfg.store.markedRemnantFor("side"); !open {
 		t.Fatal("the receipt names a remnant the store does not carry")
 	}
-	cfg, err := LoadConfig(f.configPath)
+	cfg, err := loadWithRecords(f.configPath)
 	if err != nil {
 		t.Fatalf("load hub.toml: %v", err)
 	}
@@ -883,7 +883,7 @@ name = "other"
 			if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
 				t.Fatalf("write hub.toml: %v", err)
 			}
-			if _, err := LoadConfig(configPath); err == nil {
+			if _, err := loadWithRecords(configPath); err == nil {
 				t.Fatal("LoadConfig accepted a receipt record the build cannot decode")
 			} else if !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("LoadConfig error = %q, want it to mention %q", err, tc.want)
@@ -906,7 +906,7 @@ func TestHostMutationReceiptsPreservedAcrossUnrelatedMutations(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Add(third): %v", err)
 	}
-	cfg, err := LoadConfig(f.configPath)
+	cfg, err := loadWithRecords(f.configPath)
 	if err != nil {
 		t.Fatalf("load hub.toml: %v", err)
 	}
@@ -952,7 +952,7 @@ func TestHostMutationRemoveReceiptRidesTheCommitWrite(t *testing.T) {
 	if _, err := f.m.Remove(context.Background(), params); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
-	cfg, err := LoadConfig(f.configPath)
+	cfg, err := loadWithRecords(f.configPath)
 	if err != nil {
 		t.Fatalf("load hub.toml: %v", err)
 	}

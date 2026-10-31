@@ -12,7 +12,7 @@ import (
 // it has to reach that thread too: the grandchild's updates are emitted on the
 // middle subagent's own stream as well as the root's, carrying the sessions
 // whose threads list the row.
-func TestStableDelegateUpdate_ReachesEachLiveAncestorSubagentThread(t *testing.T) {
+func TestDelegateUpdate_ReachesEachLiveAncestorSubagentThread(t *testing.T) {
 	t.Parallel()
 	var recorder sessionEventRecorder
 	tree := newRealDelegateTree(t, recorder.record)
@@ -94,7 +94,7 @@ func emitGrandchildRow(tree realDelegateTree, recorder *sessionEventRecorder, ed
 // the grandchild after the middle subagent's runtime is released reaches the
 // root's thread only, still naming the middle subagent as an ancestor so its
 // next thread read lists the row.
-func TestStableDelegateUpdate_ReleasedAncestorGetsNone(t *testing.T) {
+func TestDelegateUpdate_ReleasedAncestorGetsNone(t *testing.T) {
 	t.Parallel()
 	var recorder sessionEventRecorder
 	tree := newRealDelegateTree(t, recorder.record)
@@ -130,7 +130,7 @@ func TestStableDelegateUpdate_ReleasedAncestorGetsNone(t *testing.T) {
 // ancestor stream never coincide. A row whose owner is its parent subagent's
 // session (the shape runtimeForDelegateOwnerLocked still serves) makes them
 // the same stream, which must carry the update once.
-func TestStableDelegateUpdate_ParentOwnedRowReachesItsOwnerOnce(t *testing.T) {
+func TestDelegateUpdate_ParentOwnedRowReachesItsOwnerOnce(t *testing.T) {
 	t.Parallel()
 	var recorder sessionEventRecorder
 	tree := newRealDelegateTree(t, recorder.record)

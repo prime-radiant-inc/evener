@@ -84,7 +84,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 			endEnvironmentScratch(childEnv)
 		}
 	}()
-	if childEnv == nil || childEnv.WorkingDirectory() != descriptor.WorkingDir || localEnvPolicyName(childEnv) != descriptor.LocalEnvPolicy || !frozenStableDelegateSandboxMatches(childEnv, descriptor.Sandbox) {
+	if childEnv == nil || childEnv.WorkingDirectory() != descriptor.WorkingDir || localEnvPolicyName(childEnv) != descriptor.LocalEnvPolicy || !frozenDelegateSandboxMatches(childEnv, descriptor.Sandbox) {
 		return nil, false, errors.New("committed delegate environment is unavailable")
 	}
 	activatedSkillBodies, err := restoreFrozenSkillBodies(descriptor.FrozenSkillNames, descriptor.FrozenSkillBodies)
@@ -133,6 +133,8 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 			forwardJobEvent:               s.jobManager.forwardEvent,
 			descendantEvent:               s.cfg.spawn.descendantEvent,
 			descendantRecorded:            s.cfg.spawn.descendantRecorded,
+			treeCounter:                   s.cfg.spawn.treeCounter,
+			driveCounter:                  s.cfg.spawn.driveCounter,
 			parentSteer:                   s.SteerWithProvenance,
 			parentSystemNotification:      s.routeSystemNotification,
 			subagentTask:                  descriptor.Task,

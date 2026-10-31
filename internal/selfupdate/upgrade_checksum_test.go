@@ -137,11 +137,75 @@ func TestParseChecksumEntry(t *testing.T) {
 		{"other archive", sum + "  evener_darwin_arm64.tar.gz", "evener_linux_amd64.tar.gz", ""},
 		{"short hash", "abc  evener_linux_amd64.tar.gz", "evener_linux_amd64.tar.gz", ""},
 		{"no filename", sum, "evener_linux_amd64.tar.gz", ""},
+		{"non-hex sum", strings.Repeat("g", 64) + "  evener_linux_amd64.tar.gz", "evener_linux_amd64.tar.gz", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := parseChecksumEntry(tc.line, tc.asset); got != tc.want {
 				t.Fatalf("parseChecksumEntry(%q) = %q, want %q", tc.line, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestVerifyChecksumFileRefusesUnusableEvidence(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	archive := filepath.Join(dir, "archive.tar.gz")
+	if err := os.WriteFile(archive, []byte("archive bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sum := strings.Repeat("a", 64)
+	if err := verifyChecksumFile(archive, filepath.Join(dir, "missing-checksums.txt"), "archive.tar.gz", ""); err == nil {
+		t.Fatal("a missing checksums file was accepted")
+	}
+
+	noEntry := filepath.Join(dir, "no-entry.txt")
+	if err := os.WriteFile(noEntry, []byte(strings.Repeat("b", 64)+"  other.tar.gz\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := verifyChecksumFile(archive, noEntry, "archive.tar.gz", "")
+	if !errors.Is(err, errChecksumMissing) {
+		t.Fatalf("a checksums file without the asset = %v, want the missing sentinel", err)
+	}
+
+	ambiguous := filepath.Join(dir, "ambiguous.txt")
+	line := sum + "  archive.tar.gz\n"
+	if err := os.WriteFile(ambiguous, []byte(line+line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyChecksumFile(archive, ambiguous, "archive.tar.gz", ""); !errors.Is(err, errChecksumAmbiguous) {
+		t.Fatalf("two checksum entries for the asset = %v, want the ambiguous sentinel", err)
+	}
+
+	checksums := filepath.Join(dir, "checksums.txt")
+	if err := os.WriteFile(checksums, []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyChecksumFile(filepath.Join(dir, "missing-archive.tar.gz"), checksums, "archive.tar.gz", sum); err == nil {
+		t.Fatal("a missing archive was accepted")
+	}
+}
+
+func TestVerifyArchiveChecksumSurfacesTransportFailures(t *testing.T) {
+	t.Parallel()
+	archive := filepath.Join(t.TempDir(), "archive.tar.gz")
+	if err := os.WriteFile(archive, []byte("archive bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyArchiveChecksum(t.Context(), http.DefaultClient, "http://spaced host/owner/repo", "v1", "archive.tar.gz", archive); err == nil {
+		t.Fatal("a checksums URL that cannot be requested succeeded")
+	}
+	closed := httptest.NewServer(http.NotFoundHandler())
+	closed.Close()
+	if err := verifyArchiveChecksum(t.Context(), http.DefaultClient, closed.URL+"/owner/repo", "v1", "archive.tar.gz", archive); err == nil {
+		t.Fatal("a checksums download from a dead server succeeded")
+	}
+	if err := verifyArchiveChecksum(t.Context(), &http.Client{Transport: failingTransport{}}, "http://updates.example/owner/repo", "v1", "archive.tar.gz", archive); err == nil {
+		t.Fatal("a checksums body that cannot be read succeeded")
+	}
+	server := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(server.Close)
+	if err := verifyArchiveChecksum(t.Context(), http.DefaultClient, server.URL+"/owner/repo", "v1", "archive.tar.gz", archive); err == nil {
+		t.Fatal("a checksums download that 404s succeeded")
 	}
 }

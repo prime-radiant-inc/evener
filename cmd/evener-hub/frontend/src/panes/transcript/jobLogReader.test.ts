@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { conversationPaneLifetime } from "../../shell/paneLifetime";
 import { type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { resetThreadsStoreForTests } from "../../stores/threads";
 import { jobOutputMetadata } from "./JobLogTestUtils";
 import { type JobLogReader, type JobLogReaderSnapshot, retainedJobLogReader } from "./jobLogReader";
@@ -79,7 +79,7 @@ beforeEach(async () => {
 afterEach(() => {
   resetWorkspaceStoreForTests();
   for (const client of clients.splice(0)) client.close();
-  connectionStore.setState({ client: null, state: "idle" });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   expect(vi.getTimerCount()).toBe(0);
   vi.useRealTimers();

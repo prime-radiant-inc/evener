@@ -157,3 +157,12 @@ func TestExtractRecordedResponse_SSEModelFallback(t *testing.T) {
 		t.Fatalf("Model = %q, want fallback-model", resp.Model)
 	}
 }
+
+// TestExtractRecordedResponse_JSONNoChoices pins the JSON path propagating
+// the decoder's own failure: a recorded body with an empty choices list is an
+// error from ExtractRecordedResponse, not an empty success.
+func TestExtractRecordedResponse_JSONNoChoices(t *testing.T) {
+	if _, err := ExtractRecordedResponse([]byte(`{"choices":[]}`), "m"); err == nil {
+		t.Fatal("a JSON body with no choices must fail the re-extraction")
+	}
+}

@@ -33,7 +33,7 @@ import (
 type obedienceCase struct {
 	name        string
 	history     string // raw text rendered by turnsFromText into schema.Turns
-	instruction string // compaction_instructions text passed to summarizeWithLLMSteered
+	instruction string // compaction_instructions text passed to summarizeFold
 	mustDrop    string // a distinctive token that must NOT appear in the summary
 	mustKeep    string // a distinctive token that MUST appear in the summary
 }
@@ -283,9 +283,9 @@ func TestSummarizeObedience(t *testing.T) {
 	honored, keepViolations := 0, 0
 	for _, c := range cases {
 		hist := turnsFromText(t, c.history)
-		out, err := cm.summarizeWithLLMSteered(ctx, hist, 2, c.instruction)
+		out, err := cm.summarizeFold(ctx, hist, 2, c.instruction, nil)
 		if err != nil {
-			t.Fatalf("case %q: summarizeWithLLMSteered: %v", c.name, err)
+			t.Fatalf("case %q: summarizeFold: %v", c.name, err)
 		}
 		summary := summaryText(out)
 
@@ -367,7 +367,7 @@ func newRealSummarizerManager(t *testing.T) *Manager {
 }
 
 // turnsFromText converts a raw text string into a slice of schema.Turns large
-// enough to exceed PreserveRecentTurns=2 so that summarizeWithLLMSteered has
+// enough to exceed PreserveRecentTurns=2 so that summarizeFold has
 // content to compact. The text is placed as the first UserInput turn; two
 // short filler turns follow so that safeCutoff has room to set a non-negative
 // cutoff at len-2.
@@ -382,7 +382,7 @@ func turnsFromText(t *testing.T, text string) []schema.Turn {
 }
 
 // summaryText extracts the text content from the first TurnSummary in the
-// result slice returned by summarizeWithLLMSteered.
+// result slice returned by summarizeFold.
 // summaryText returns what the summarizer model wrote in a compaction's
 // summary turn. The turn also carries the human partner's messages verbatim
 // (partnerMessagesMarkdown); that carry is left out so the evals score the

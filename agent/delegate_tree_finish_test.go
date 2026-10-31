@@ -546,7 +546,7 @@ func TestDelegateControllerStopCompletedClearsPreparedDiagnostic(t *testing.T) {
 func TestDelegateControllerFinishNoActionRequiresExactEligibleClaim(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	claim := eligibleDelegateNoActionClaim(t, c, "dlg_target")
-	fallback := stableDelegateFinishFromRun(delegateTerminalRunInputs{result: "bare attention response"})
+	fallback := delegateFinishFromRun(delegateTerminalRunInputs{result: "bare attention response"})
 	prepared, err := c.prepareNoAction(claim, fallback)
 	if err != nil {
 		t.Fatalf("prepareNoAction: %v", err)
@@ -621,7 +621,7 @@ func TestDelegateControllerFinishNoActionRejectsReportRequiredTerminalAndPrepare
 			t.Run(name, func(t *testing.T) {
 				c, _ := newDelegateControllerTestHarness(t, 1, 1)
 				claim := eligibleDelegateNoActionClaimForRun(t, c, "dlg_target", runErr)
-				fallback := stableDelegateFinishFromRun(delegateTerminalRunInputs{result: "error fallback", runErr: runErr})
+				fallback := delegateFinishFromRun(delegateTerminalRunInputs{result: "error fallback", runErr: runErr})
 				if prepared, err := c.prepareNoAction(claim, fallback); err != nil || prepared {
 					t.Fatalf("prepareNoAction(non-nil run error) = %t, %v, want false/nil", prepared, err)
 				}
@@ -691,7 +691,7 @@ func TestDelegateControllerFinishNoActionStopUsesRetainedFallback(t *testing.T) 
 	startedAt := time.Date(2026, 8, 29, 1, 2, 3, 0, time.UTC)
 	endedAt := startedAt.Add(4 * time.Minute)
 	activityAt := startedAt.Add(3 * time.Minute)
-	fallback := stableDelegateFinishFromRun(delegateTerminalRunInputs{
+	fallback := delegateFinishFromRun(delegateTerminalRunInputs{
 		result:           "retained fallback",
 		descriptor:       delegatestore.Descriptor{Task: "inspect task", Description: "inspect description"},
 		startedAt:        startedAt,
@@ -796,7 +796,7 @@ func TestDelegateControllerFinishNoActionStopUsesRetainedFallback(t *testing.T) 
 func TestDelegateControllerFinishNoActionAppendFailureRetainsRecoveryState(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	claim := eligibleDelegateNoActionClaim(t, c, "dlg_target")
-	if prepared, err := c.prepareNoAction(claim, stableDelegateFinishFromRun(delegateTerminalRunInputs{result: "fallback"})); err != nil || !prepared {
+	if prepared, err := c.prepareNoAction(claim, delegateFinishFromRun(delegateTerminalRunInputs{result: "fallback"})); err != nil || !prepared {
 		t.Fatalf("prepareNoAction = %t, %v", prepared, err)
 	}
 	if err := c.store.Close(); err != nil {

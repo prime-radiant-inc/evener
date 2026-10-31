@@ -144,8 +144,8 @@ Native open-session rehydration also retains open status on failure, outside its
 initial-read retry loop. The server can repair a projection on a later read.
 
 **Evidence.** Browser
-[hydrateAndSubscribe](../../cmd/evener-hub/frontend/src/stores/threads.ts#L1818),
-native [rehydrate](../../mobile-native/src/conversation/state/conversation.ts#L2017) and
+[refreshTrackedThread](../../cmd/evener-hub/frontend/src/stores/threads.ts),
+native [rehydrate](../../mobile-native/src/conversation/state/conversation.ts) and
 [entry read actor](../../mobile-native/src/session/nativeConversationSessions.ts#L417), and server
 [recoverForRead](../../server/thread_history.go#L355) expose the ownership gap.
 Shared `reducer.history.test.ts` specifies that a later success clears history failure.
@@ -427,15 +427,15 @@ no in-memory ordering guard, so the per-ref ordering gap applies without
 a refusal, and its dispatch gate does not apply to the fallback. With no
 ready connection the storage error is the send's failure.
 
-**Evidence.** [enqueueMutationIntent](../../cmd/evener-hub/frontend/src/stores/threads.ts#L2999)
-and its [direct-fallback branch and ordering guard](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3092);
-[dispatchMutationDirectly](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3303)
+**Evidence.** [enqueueMutationIntent](../../cmd/evener-hub/frontend/src/stores/threads.ts)
+and its [direct-fallback branch and ordering guard](../../cmd/evener-hub/frontend/src/stores/threads.ts);
+[dispatchMutationDirectly](../../cmd/evener-hub/frontend/src/stores/threads.ts)
 mints one `clientMutationId` before its retry ladder; the missing fence is the
 [click-time stop epoch](../../appwire-client/typescript/state/mutation/outbox.ts#L73)
 the enqueue compares against. The [reconcile
-classification](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3865)
+classification](../../cmd/evener-hub/frontend/src/stores/threads.ts)
 splits the storage-caused failure from a genuine one, and
-[currentDispatchClient](../../cmd/evener-hub/frontend/src/stores/threads.ts#L1150)
+[currentDispatchClient](../../cmd/evener-hub/frontend/src/stores/threads.ts)
 fences a storage-blocked ref everywhere except the send fallback's own re-earn.
 [NativeMutationRuntime.submit](../../mobile-native/src/nativeMutationRuntime.ts)
 and `isSqliteStorageFailure` in
@@ -782,7 +782,7 @@ history, local navigation and unrelated provider instances unavailable. Provider
 configuration has a separate degraded path, so failure scope is inconsistent.
 
 **Evidence.** [Credential loading](../../internal/credentials/store.go#L58) rejects
-the file; [hub startup](../../cmd/evener-hub/main.go#L385) returns the error.
+the file; [hub startup](../../cmd/evener-hub/hub_startup.go#L374) returns the error.
 `TestStore_PermissionsEnforced` specifies the store's permission refusal.
 Separately, `TestAuth_UnreadableCredentialsStoreRefusesInsteadOfPanicking` tests
 an auth controller that keeps reads working while refusing writes; it does not
@@ -855,8 +855,8 @@ complete quarantine custody aborts hub startup. Remote host administration can
 therefore block unrelated local sessions and history. Complete quarantine and
 some other IO failures already have degraded recovery paths.
 
-**Evidence.** [openHostOpsStore](../../cmd/evener-hub/main.go#L952) and its
-[startup handling](../../cmd/evener-hub/main.go#L606);
+**Evidence.** [openHostOpsStore](../../cmd/evener-hub/main.go#L394) and its
+[startup handling](../../cmd/evener-hub/hub_startup.go#L461);
 `TestOpenHostOpsStoreRefusesStartupOnIncompleteCustody` pins the global
 refusal. This does not justify discarding the journal or following untrusted
 stash paths.

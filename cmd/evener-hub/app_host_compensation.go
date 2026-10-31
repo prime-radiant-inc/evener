@@ -12,9 +12,9 @@ import (
 // clearing, and a clear record clears without resurrecting rows. A failed step
 // leaves the record where it is, with its stash intact — the next boot retries.
 func (m *hubHostManager) reconcileCompensations() {
-	records := m.cfg.ops.Compensations()
+	records := m.opsStore().Compensations()
 	for _, host := range sortedMapKeys(records) {
-		record, ok := m.cfg.ops.Compensation(host)
+		record, ok := m.opsStore().Compensation(host)
 		if !ok {
 			continue
 		}
@@ -34,10 +34,10 @@ func (m *hubHostManager) reconcileCompensations() {
 // absent means the purge landed before the crash, so the record advances and
 // the hubtoml arm follows.
 func (m *hubHostManager) resumeArmedCompensation(record hostops.Compensation) {
-	fileCfg, hasFile := m.hostFileRecords()
-	intent, intentLive := fileCfg.PendingStoreSync[record.Host]
+	doc, hasFile := m.recordStore().load()
+	intent, intentLive := doc.Records.PendingStoreSync[record.Host]
 	rowsPresent := false
-	if row, ok := m.cfg.ops.OutstandingToken(record.Host); ok {
+	if row, ok := m.opsStore().OutstandingToken(record.Host); ok {
 		for _, preimage := range record.Rows {
 			if preimage.Value == row.Value {
 				rowsPresent = true
@@ -64,7 +64,7 @@ func (m *hubHostManager) resumeArmedCompensation(record hostops.Compensation) {
 			return
 		}
 		// The restored bytes are the authority for the machine records too.
-		if restored, ok := m.hostFileRecords(); ok {
+		if restored, ok := m.recordStore().load(); ok {
 			m.installRestoredRecords(restored)
 		}
 		// The purge never landed and the rows are untouched, but the swap
@@ -81,18 +81,18 @@ func (m *hubHostManager) resumeArmedCompensation(record hostops.Compensation) {
 		// `compensating-hubtoml` with the file already restored, and the next
 		// boot's hubtoml arm sees the restored bytes carry no intent and takes
 		// the commit-point clear traced there.
-		if err := m.cfg.ops.AdvanceCompensation(record.Host, hostops.CompensationHubTOML); err != nil {
+		if err := m.opsStore().AdvanceCompensation(record.Host, hostops.CompensationHubTOML); err != nil {
 			m.logf("boot compensation for %q not advanced past the restore: %v", record.Host, err)
 			return
 		}
-		if err := m.cfg.ops.AdvanceCompensation(record.Host, hostops.CompensationRows); err != nil {
+		if err := m.opsStore().AdvanceCompensation(record.Host, hostops.CompensationRows); err != nil {
 			m.logf("boot compensation for %q not advanced to the rows arm: %v", record.Host, err)
 			return
 		}
 		record.Phase = hostops.CompensationRows
 		m.resumeCompensation(record)
 	default:
-		if err := m.cfg.ops.AdvanceCompensation(record.Host, hostops.CompensationHubTOML); err != nil {
+		if err := m.opsStore().AdvanceCompensation(record.Host, hostops.CompensationHubTOML); err != nil {
 			m.logf("boot compensation for %q not advanced: %v", record.Host, err)
 			return
 		}
@@ -109,7 +109,7 @@ func (m *hubHostManager) resumeCompensation(record hostops.Compensation) {
 	switch record.Phase {
 	case hostops.CompensationHubTOML:
 		// §9's commit-point check, the same one the armed arm makes.
-		fileCfg, hasFile := m.hostFileRecords()
+		doc, hasFile := m.recordStore().load()
 		if !hasFile {
 			// No file to converge with: the boot pipeline enters here only for a
 			// genuinely absent or empty document (hostFileAbsentOrEmpty gates it),
@@ -118,7 +118,7 @@ func (m *hubHostManager) resumeCompensation(record hostops.Compensation) {
 			m.clearCompensation(record, "no hub.toml to converge with")
 			return
 		}
-		if _, intentLive := fileCfg.PendingStoreSync[record.Host]; intentLive {
+		if _, intentLive := doc.Records.PendingStoreSync[record.Host]; intentLive {
 			// The commit path had not passed its commit point: restore and
 			// follow the arms.
 			if err := m.restoreHubTOMLFromStash(record.Stash); err != nil {
@@ -129,7 +129,7 @@ func (m *hubHostManager) resumeCompensation(record hostops.Compensation) {
 			// carry: the store's model converges to them here, so the rest of this
 			// boot and every later write derive from the restored file rather than
 			// re-emitting the compensated commit's records.
-			if restored, ok := m.hostFileRecords(); ok {
+			if restored, ok := m.recordStore().load(); ok {
 				m.installRestoredRecords(restored)
 			}
 			if !m.advanceCompensationTo(record, hostops.CompensationRows, "advance-rows") {
@@ -181,7 +181,7 @@ func (m *hubHostManager) resumeCompensation(record hostops.Compensation) {
 // the restored hub.toml's generation revalidates come back, the restored runtime
 // set is re-applied to the live handles, and only then does the record clear.
 func (m *hubHostManager) resumeFromRows(record hostops.Compensation) {
-	restored, ok := m.hostFileRecords()
+	restored, ok := m.recordStore().load()
 	generation, incarnation, live := uint64(0), "", false
 	if ok {
 		generation, incarnation, live = m.restoredIdentity(restored, record.Host)
@@ -189,7 +189,7 @@ func (m *hubHostManager) resumeFromRows(record hostops.Compensation) {
 	if !m.compensationStepAllowed(record.Host, "reinsert") {
 		return
 	}
-	inserted, err := m.cfg.ops.ReinsertCompensationRows(record.Host, func(row hostops.Token) bool {
+	inserted, err := m.opsStore().ReinsertCompensationRows(record.Host, func(row hostops.Token) bool {
 		return live && row.Generation == generation && row.IncarnationID == incarnation
 	})
 	if err != nil {
@@ -226,7 +226,7 @@ func (m *hubHostManager) advanceCompensationTo(record hostops.Compensation, to h
 	if !m.compensationStepAllowed(record.Host, step) {
 		return false
 	}
-	if err := m.cfg.ops.AdvanceCompensation(record.Host, to); err != nil {
+	if err := m.opsStore().AdvanceCompensation(record.Host, to); err != nil {
 		m.logf("boot compensation for %q not advanced to %s: %v", record.Host, to, err)
 		return false
 	}
@@ -246,7 +246,7 @@ func (m *hubHostManager) compensationStepAllowed(host, step string) bool {
 // clearCompensation drops one record and its stash: the compensation
 // converged, and no live record names the stash any more.
 func (m *hubHostManager) clearCompensation(record hostops.Compensation, why string) {
-	if err := m.cfg.ops.ClearCompensation(record.Host); err != nil {
+	if err := m.opsStore().ClearCompensation(record.Host); err != nil {
 		m.logf("boot compensation for %q not cleared (%s): %v", record.Host, why, err)
 		return
 	}

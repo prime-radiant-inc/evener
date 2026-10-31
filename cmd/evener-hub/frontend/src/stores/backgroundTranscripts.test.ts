@@ -14,11 +14,12 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { type BackgroundTranscriptsOwner, eligibleLiveRefs, startBackgroundTranscripts } from "./backgroundTranscripts";
 import { connectionStore } from "./connection";
+import { productionEntryTranscriptForTests, setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { initNavigation, navigationStore, resetNavigationStoreForTests } from "./navigation/store";
 import { SessionEntryCache } from "./sessionEntryCache";
 import { holdNextWriteTransaction } from "./testing/stalledIndexedDB";
 import * as threads from "./threads";
-import { resetThreadsStoreForTests, setProductionEntryCacheForTests, threadsStore } from "./threads";
+import { resetThreadsStoreForTests, threadsStore } from "./threads";
 
 const GENERATION = "generation_test";
 const REPLACEMENT_GENERATION = "generation_replacement";
@@ -261,7 +262,7 @@ function holdFirstWrite(cache: SessionEntryCache) {
       !disarmed &&
       !consumed &&
       finalReadStarted &&
-      batch.historyKey === threads.productionEntryTranscriptForTests("local:a").historyKey
+      batch.historyKey === productionEntryTranscriptForTests("local:a").historyKey
     ) {
       consumed = true;
       held = holdNextWriteTransaction(["transcriptItems", "transcriptTurns", "transcriptCoverage", "transcriptMeta"]);
@@ -709,8 +710,8 @@ describe("startBackgroundTranscripts", () => {
       await owner.settled();
       expect(threadReadRefs()).toEqual(new Set(["local:a"]));
       // A resident model makes release drain a final cache write we can hold.
-      expect(threads.productionEntryTranscriptForTests("local:a").baseline).toBeDefined();
-      expect(threads.productionEntryTranscriptForTests("local:a").model).toBeDefined();
+      expect(productionEntryTranscriptForTests("local:a").baseline).toBeDefined();
+      expect(productionEntryTranscriptForTests("local:a").model).toBeDefined();
       expect(threadsStore.getState().threads.get("local:a")?.history?.incarnation).toBeDefined();
       const acquisitionsBeforeRelease = acquisitionsOf("local:a");
 
@@ -748,7 +749,7 @@ describe("startBackgroundTranscripts", () => {
       const serialized = JSON.stringify(survived?.history);
       expect(serialized).toContain("recorded");
       expect(serialized.split("recorded").length - 1).toBe(1);
-      const key = threads.productionEntryTranscriptForTests("local:a").historyKey;
+      const key = productionEntryTranscriptForTests("local:a").historyKey;
       if (!key) throw new Error("reappeared ordinary owner lost its history identity");
       const recorded = JSON.stringify(await cache.getLatest(key, 10));
       expect(recorded).toContain("recorded");
@@ -784,8 +785,8 @@ describe("startBackgroundTranscripts", () => {
       expect(threadReadRefs()).toEqual(new Set(["local:a"]));
       // A resident, versioned model exists, so disposal would drain a real
       // cache write; no release write has been held yet.
-      expect(threads.productionEntryTranscriptForTests("local:a").baseline).toBeDefined();
-      expect(threads.productionEntryTranscriptForTests("local:a").model).toBeDefined();
+      expect(productionEntryTranscriptForTests("local:a").baseline).toBeDefined();
+      expect(productionEntryTranscriptForTests("local:a").model).toBeDefined();
       expect(threadsStore.getState().threads.get("local:a")?.history?.incarnation).toBeDefined();
       expect(hold.consumed()).toBe(false);
       throw new Error("injected early failure before the first release write");
@@ -818,8 +819,8 @@ describe("startBackgroundTranscripts", () => {
       await healthy.settled();
       expect(threadReadRefs().has("local:healthy")).toBe(true);
       expect(threadsStore.getState().threads.get("local:healthy")?.history?.incarnation).toBeDefined();
-      expect(threads.productionEntryTranscriptForTests("local:healthy").baseline).toBeDefined();
-      expect(threads.productionEntryTranscriptForTests("local:healthy").model).toBeDefined();
+      expect(productionEntryTranscriptForTests("local:healthy").baseline).toBeDefined();
+      expect(productionEntryTranscriptForTests("local:healthy").model).toBeDefined();
     } finally {
       await healthy.dispose();
       await healthy.settled();
@@ -891,8 +892,8 @@ describe("startBackgroundTranscripts", () => {
     try {
       await owner.settled();
       expect(threadReadRefs()).toEqual(new Set(["local:a"]));
-      expect(threads.productionEntryTranscriptForTests("local:a").baseline).toBeDefined();
-      expect(threads.productionEntryTranscriptForTests("local:a").model).toBeDefined();
+      expect(productionEntryTranscriptForTests("local:a").baseline).toBeDefined();
+      expect(productionEntryTranscriptForTests("local:a").model).toBeDefined();
       const acquisitionsBeforeRelease = acquisitionsOf("local:a");
 
       // a leaves Live; the coherent sweep starts a's final release, which

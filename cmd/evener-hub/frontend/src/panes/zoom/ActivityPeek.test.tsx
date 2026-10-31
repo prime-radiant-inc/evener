@@ -11,7 +11,7 @@ import { ClientProvider } from "../../shell/clientContext";
 import { conversationPaneLifetime } from "../../shell/paneLifetime";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { activityDelegate, activitySummary, activityThread } from "../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests } from "../../stores/threads";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
@@ -37,7 +37,7 @@ afterEach(() => {
   cleanup();
   resetWorkspaceStoreForTests();
   resetActivitySidebarStoreForTests();
-  connectionStore.setState({ client: null, state: "idle" });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetDisclosureStoreForTests();
   vi.unstubAllGlobals();

@@ -77,6 +77,7 @@ export interface ComposerSourceSnapshot {
   activeRecoveryId: string | null;
   recoveryActivating: boolean;
   recoveryOperationBusy: boolean;
+  builtinOperationBusy: boolean;
   freshRecoveryRef: string | null;
   restoreEpoch: number;
 }
@@ -115,6 +116,7 @@ export interface ComposerSourceState {
   runRecoveryOperation<T>(operation: () => Promise<T>): Promise<T>;
   flushRecoveryWrites(): Promise<void>;
   tryAcquireRecoveryOperation(): (() => void) | null;
+  tryAcquireBuiltinOperation(): (() => void) | null;
   activateRecovery(record: MutationRecoveryRecord): Promise<boolean>;
   queueRecoveryPersistence(
     id: string,
@@ -152,6 +154,19 @@ function recoveryCompositionRevision(record: MutationRecoveryRecord): number {
 /** Original conversation work belongs to its pane, not to an editor mount. */
 const defaultCompositionOwners = new Map<string, string>();
 
+/** The per-ref default composition owner: the owner a composer source minted
+ * without an explicit owner carries. Seeded recovery rows use it so a test's
+ * default-seeded row belongs to the same seat a default mount restores, the
+ * way a real pane's row belongs to that pane. */
+export function defaultCompositionOwner(ref: string): string {
+  let owner = defaultCompositionOwners.get(ref);
+  if (owner === undefined) {
+    owner = createSecureUUID();
+    defaultCompositionOwners.set(ref, owner);
+  }
+  return owner;
+}
+
 /** A recovery whose submission has started is no longer available to an Edit
  * press from a remounted composer. The submission already owns the captured
  * composition; restoring it through a fresh source would write a new revision
@@ -172,9 +187,7 @@ export function recoverySubmissionInFlight(clientMutationId: string): boolean {
 /** A pane passes its lifetime token; standalone mounts fall back to one token
  * per ref so a remount outside the pane shell still reuses ownership. */
 export function createComposerSourceState(ref: string, ownerId?: string): ComposerSourceState {
-  const compositionOwnerId = ownerId ?? defaultCompositionOwners.get(ref) ?? createSecureUUID();
-  if (ownerId === undefined && !defaultCompositionOwners.has(ref))
-    defaultCompositionOwners.set(ref, compositionOwnerId);
+  const compositionOwnerId = ownerId ?? defaultCompositionOwner(ref);
   const initial = readComposerDraftSnapshot(ref);
   let currentDraftRevisionId = initial.revisionId;
   const state = createStore<ComposerSourceSnapshot>(() => ({
@@ -185,6 +198,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     activeRecoveryId: null,
     recoveryActivating: false,
     recoveryOperationBusy: false,
+    builtinOperationBusy: false,
     freshRecoveryRef: null,
     restoreEpoch: 0,
   }));
@@ -706,6 +720,21 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     };
   }
 
+  // A command belongs to the pane source, not the presentation that started it.
+  // Keep this separate from recovery operations, which Queue/Steer already own.
+  function tryAcquireBuiltinOperation(): (() => void) | null {
+    const snapshot = state.getState();
+    if (disposed || snapshot.builtinOperationBusy || snapshot.recoveryActivating || snapshot.recoveryOperationBusy)
+      return null;
+    state.setState({ builtinOperationBusy: true });
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      if (!disposed) state.setState({ builtinOperationBusy: false });
+    };
+  }
+
   function settleRecoverySubmission(
     clientMutationId: string,
     draftUnchanged: boolean,
@@ -829,6 +858,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     runRecoveryOperation,
     flushRecoveryWrites: () => recoveryWrites.catch(() => undefined),
     tryAcquireRecoveryOperation,
+    tryAcquireBuiltinOperation,
     queueRecoveryPersistence,
     activateRecovery,
     bindEditor(nextEditor) {

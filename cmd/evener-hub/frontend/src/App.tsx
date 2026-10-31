@@ -1,5 +1,6 @@
 import { lazy, Suspense } from "react";
-import { AppShell } from "./shell/AppShell";
+
+const WorkspaceRoute = lazy(() => import("./shell/AppShell").then((module) => ({ default: module.AppShell })));
 
 // Dev-only routes, at /dev/widgets, /dev/surfaces, /dev/type and
 // /dev/harness. import.meta.env.DEV
@@ -54,5 +55,9 @@ export function App() {
       </Suspense>
     );
   }
-  return <AppShell />;
+  return (
+    <Suspense fallback={null}>
+      <WorkspaceRoute />
+    </Suspense>
+  );
 }

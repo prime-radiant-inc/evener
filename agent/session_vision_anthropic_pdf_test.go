@@ -19,7 +19,7 @@ func TestDescribeImage_AnthropicSessionStillDescribesPDFs(t *testing.T) {
 		func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("a pdf about cats")} },
 	}}
 	profile := newAnthropicProfile("claude-opus-4-6")
-	if !profile.AcceptsDocumentInput() {
+	if !profile.AcceptsDocumentInput(&llm.DocumentData{Data: []byte("%PDF-1.4 fake"), MediaType: "application/pdf"}) {
 		t.Fatal("test premise: the fixture Anthropic row must declare pdf input")
 	}
 	sess := newSession(t, withAdapter(anthropic), withProfile(profile))

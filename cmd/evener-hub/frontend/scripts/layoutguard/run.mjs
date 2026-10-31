@@ -55,7 +55,8 @@
 //                  and resolved.css - both are generated fresh at run time,
 //                  see build() below), defining window.measure() returning a
 //                  JSON-serializable measurement.
-//   - assert.mjs   default export (measurement) => { pass, reason }
+//   - assert.mjs   default export (measurement, { page }) => { pass, reason }.
+//                  The optional page context allows native CDP input checks.
 //
 // STATUS: this is a local pre-merge check and part of
 // `make test-web-browser` in CI; it is not wired into `make lint`. It covers
@@ -190,7 +191,7 @@ async function runCase(page, vitePort, caseDir, emulation) {
 
   await forcePseudoStates(page.send, caseJson.forcePseudoStates ?? []);
   const measurement = await evaluate(page.send, "window.measure()");
-  const result = await assert(measurement);
+  const result = await assert(measurement, { page });
   return { name, description: caseJson.description, measurement, ...result };
 }
 

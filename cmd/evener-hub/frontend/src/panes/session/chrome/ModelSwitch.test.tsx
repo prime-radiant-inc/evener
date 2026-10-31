@@ -1,6 +1,3 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { ModelListResponse, ThreadModel } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
 import { act, render, screen, waitFor } from "@testing-library/react";
@@ -8,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test } from "vitest";
 import { resetConnectionStoreForTests } from "../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
+import { readModuleCss } from "../../../styles/cssBlock";
 import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
 import { ALL_CAPABILITIES as CAPABILITIES } from "../../../threadTestUtils";
 import { Toast } from "../../../widgets";
@@ -21,7 +19,7 @@ import rawStyles from "./modelswitch.module.css";
 // gets, via (any-pointer: coarse) rather than a width breakpoint since this
 // isn't a widgets/button consumer.
 test("the trigger reaches the tap floor on a coarse pointer", () => {
-  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "modelswitch.module.css"), "utf8");
+  const css = readModuleCss(import.meta.url, "modelswitch.module.css");
   const coarse = css.match(/@media \(any-pointer: coarse\) \{([\s\S]*?)\n\}/);
   expect(coarse, "modelswitch.module.css must have a (any-pointer: coarse) media block").not.toBeNull();
   const rule = coarse![1]!.match(/\.trigger\s*\{([^}]*)\}/);

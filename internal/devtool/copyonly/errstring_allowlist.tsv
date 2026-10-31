@@ -177,7 +177,7 @@ cmd/evener-fuzzcov/main_coverage_test.go	2
 cmd/evener-hub/app_host_admin_test.go	1
 cmd/evener-hub/app_host_deploy_test.go	2
 cmd/evener-hub/app_rpc_item_paging_test.go	1
-cmd/evener-hub/app_rpc_test.go	2
+cmd/evener-hub/app_rpc_resume_test.go	2
 cmd/evener-hub/app_update_test.go	1
 cmd/evener-hub/internal/appsource/local_daemon_coverage_test.go	1
 cmd/evener-hub/internal/appsource/remote_hub_source_paging_test.go	7

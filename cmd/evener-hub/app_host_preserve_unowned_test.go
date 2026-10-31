@@ -45,35 +45,35 @@ func TestRecordTablesPreserveUnownedFileRecords(t *testing.T) {
 		preserveContract(t, receiptKey,
 			func(host, tag string) HostMutationReceipt { return HostMutationReceipt{Outcome: tag + host} },
 			func(file, carried map[string]HostMutationReceipt, dropped map[string]struct{}) map[string]HostMutationReceipt {
-				return hubTOMLReceiptTables(Config{MutationReceipts: file}, nil, known, carried, dropped)
+				return hubTOMLReceiptTables(hostRecordSet{MutationReceipts: file}, nil, known, carried, dropped)
 			})
 	})
 	t.Run("tombstones", func(t *testing.T) {
 		preserveContract(t, func(host string) string { return host },
 			func(host, tag string) HostTombstone { return HostTombstone{Name: host, Origin: tag} },
 			func(file, carried map[string]HostTombstone, dropped map[string]struct{}) map[string]HostTombstone {
-				return hubTOMLTombstoneTables(Config{Tombstones: file}, nil, known, carried, dropped)
+				return hubTOMLTombstoneTables(hostRecordSet{Tombstones: file}, nil, known, carried, dropped)
 			})
 	})
 	t.Run("pruned receipts", func(t *testing.T) {
 		preserveContract(t, receiptKey,
 			func(host, tag string) PrunedReceiptMarker { return PrunedReceiptMarker{PrunedAt: tag + host} },
 			func(file, carried map[string]PrunedReceiptMarker, dropped map[string]struct{}) map[string]PrunedReceiptMarker {
-				return hubTOMLPrunedReceiptTables(Config{PrunedReceipts: file}, nil, known, carried, dropped)
+				return hubTOMLPrunedReceiptTables(hostRecordSet{PrunedReceipts: file}, nil, known, carried, dropped)
 			})
 	})
 	t.Run("staged receipts", func(t *testing.T) {
 		preserveContract(t, func(host string) string { return host },
 			func(host, tag string) HostStagedReceipt { return HostStagedReceipt{Key: tag + host} },
 			func(file, carried map[string]HostStagedReceipt, dropped map[string]struct{}) map[string]HostStagedReceipt {
-				return hubTOMLStagedReceiptTables(Config{StagedReceipts: file}, nil, known, carried, dropped)
+				return hubTOMLStagedReceiptTables(hostRecordSet{StagedReceipts: file}, nil, known, carried, dropped)
 			})
 	})
 	t.Run("teardown remnants", func(t *testing.T) {
 		preserveContract(t, func(host string) string { return "remnant-" + host },
 			func(host, tag string) HostTeardownRemnant { return HostTeardownRemnant{Host: host, Seam: tag} },
 			func(file, carried map[string]HostTeardownRemnant, dropped map[string]struct{}) map[string]HostTeardownRemnant {
-				return hubTOMLTeardownRemnantTables(Config{TeardownRemnants: file}, nil, known, carried, dropped)
+				return hubTOMLTeardownRemnantTables(hostRecordSet{TeardownRemnants: file}, nil, known, carried, dropped)
 			})
 	})
 	t.Run("teardown attempts", func(t *testing.T) {
@@ -86,7 +86,7 @@ func TestRecordTablesPreserveUnownedFileRecords(t *testing.T) {
 				return HostTeardownAttempt{RemnantID: "remnant-" + host, State: tag}
 			},
 			func(file, carried map[string]HostTeardownAttempt, dropped map[string]struct{}) map[string]HostTeardownAttempt {
-				return hubTOMLTeardownAttemptTables(Config{TeardownAttempts: file, TeardownRemnants: remnants}, nil, known, carried, nil, dropped)
+				return hubTOMLTeardownAttemptTables(hostRecordSet{TeardownAttempts: file, TeardownRemnants: remnants}, nil, known, carried, nil, dropped)
 			})
 	})
 	t.Run("store sync intents", func(t *testing.T) {
@@ -95,7 +95,7 @@ func TestRecordTablesPreserveUnownedFileRecords(t *testing.T) {
 				return HostStoreSyncIntent{Generation: 1, TokenValues: []string{tag + host}}
 			},
 			func(file, carried map[string]HostStoreSyncIntent, dropped map[string]struct{}) map[string]HostStoreSyncIntent {
-				return hubTOMLStoreSyncTables(Config{PendingStoreSync: file}, nil, known, carried, dropped)
+				return hubTOMLStoreSyncTables(hostRecordSet{PendingStoreSync: file}, nil, known, carried, dropped)
 			})
 	})
 }

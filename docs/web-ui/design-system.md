@@ -65,6 +65,7 @@ losing the conversation that made the evidence relevant.
 - **Let filename Open own its placement.** On a settled session route, opening
   or reopening a filename selects its document beside the exact living source
   promoted to main, including a secondary session or read-only transcript.
+  Filename links remain source-bound through popout content updates and redocking.
   The canonical document binding retains that source for Back. Reconnect and
   settled location refresh do not replay the old route over this selection.
   Route reconciliation waits until the opening stack finishes when document

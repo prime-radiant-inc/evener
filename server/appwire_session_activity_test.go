@@ -4,10 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strconv"
 	"testing"
 
+	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/schema"
 
 	"primeradiant.com/evener/appwire"
 )
@@ -93,6 +97,41 @@ func TestSessionActivityContextAndChildRef(t *testing.T) {
 	_, err = s.AppServer().Router().Dispatch(canceled, appwire.Request{Method: appwire.MethodEvenerThreadActivityRead, Params: json.RawMessage(`{"ref":"local:child"}`)})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled read = %v", err)
+	}
+}
+
+func TestSessionActivityHandlerForwardsDomainDelegateNames(t *testing.T) {
+	stateDir := t.TempDir()
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{ID: "leaf", JobTreeRootSessionID: "root", Name: "Thread title, not leaf name"}); err != nil {
+		t.Fatal(err)
+	}
+	// This durable Created journal is folded by the real retained domain reader
+	// behind the actual public handler; the thread title is never a name source.
+	journal := []byte(`{"version":1}
+{"events":[{"kind":"delegate_created","seq":1,"delegate_id":"dlg_parent","created":{"descriptor":{"child_session_id":"parent","transcript_ref":"local:parent","owner_session_id":"root","visible_session_id":"root","name":"Parent canonical name","description":"Parent description","task":"parent task","agent_type":"general","resolved_model":"gpt-5.2","tool_name_ceiling":["communicate"],"resumable":true}}},{"kind":"delegate_created","seq":2,"delegate_id":"dlg_leaf","created":{"descriptor":{"child_session_id":"leaf","transcript_ref":"local:leaf","parent_delegate_id":"dlg_parent","owner_session_id":"parent","visible_session_id":"root","name":"Leaf canonical name","description":"Leaf description","task":"leaf task","agent_type":"general","resolved_model":"gpt-5.2","tool_name_ceiling":["communicate"],"resumable":true}}}]}
+`)
+	path := filepath.Join(stateDir, "sessions", "root", "delegates.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, journal, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := NewServer(ServerConfig{})
+	s.SetAppIdentity("local", "root")
+	s.SetThreadActivityReadFunc(func(ctx context.Context, params appwire.SessionActivityReadParams) (appwire.SessionActivitySummary, error) {
+		return agent.LoadSessionActivitySummary(ctx, stateDir, "leaf", params)
+	})
+	result, err := s.AppServer().Router().Dispatch(t.Context(), appwire.Request{Method: appwire.MethodEvenerThreadActivityRead, Params: json.RawMessage(`{"ref":"local:leaf"}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	context := result.(appwire.SessionActivitySummary).Context
+	if !context.AncestryKnown || context.DelegateID != "dlg_leaf" || context.DelegateName != "Leaf canonical name" || context.ParentRef != "local:parent" || context.RootRef != "local:root" || len(context.Ancestors) != 2 {
+		t.Fatalf("handler lost produced addressed context: %+v", context)
+	}
+	if context.Ancestors[0].Ref != "local:root" || context.Ancestors[0].DelegateName != "" || context.Ancestors[1].Ref != "local:parent" || context.Ancestors[1].DelegateID != "dlg_parent" || context.Ancestors[1].DelegateName != "Parent canonical name" || context.Ancestors[1].Title != "Parent description" {
+		t.Fatalf("handler lost produced ancestor name/title/identity: %+v", context.Ancestors)
 	}
 }
 

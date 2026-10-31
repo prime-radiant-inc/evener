@@ -1,19 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { ItemModel } from "./model";
-import {
-  applyNotification,
-  applyReadModel,
-  currentTranscriptState,
-  decodeCurrentTranscriptState,
-  hydrateThread,
-  mergeOlderItemPage,
-  threadModelFromCurrentState,
-} from "./reducer";
+import { applyNotification } from "./reducer";
 import { currentRead, textDelta } from "./testing/currentTranscript";
 import { notificationWireItem } from "./testing/notificationWireFixtures";
 import { appendChunk, chunkViewBackingForTests } from "./testing/reducerHooks";
 import { subagentCallItems } from "./testing/subagentWireFixtures";
 import { toolWireItems } from "./testing/toolWireFixtures";
+import { currentTranscriptState, decodeCurrentTranscriptState, threadModelFromCurrentState } from "./transcriptCache";
+import { applyReadModel, hydrateThread, mergeOlderItemPage } from "./transcriptHistory";
 import { itemTextPresence, markItemIdentityOnly, markItemTextOmitted } from "./transcriptItems";
 import {
   type EvenerDelegateInfo,
@@ -1049,6 +1043,16 @@ describe("current transcript checkpoints", () => {
     // field, so the deferred-page validators cannot drift without a red build.
     const everyItemField: Required<ThreadItem> = {
       type: "toolCall",
+      authorship: {
+        author: {
+          kind: "agent",
+          sessionRef: "local:child",
+          ownerRef: "local:root",
+          delegateId: "dlg_child",
+          delegateName: "Worker",
+        },
+        inherited: true,
+      },
       id: "item_full",
       transcriptKey: "key_full",
       position: { entry: 1, item: 2, sub: 3 },

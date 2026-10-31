@@ -17,7 +17,7 @@ import (
 
 // This file fuzzes the compaction / context-management core of the contextmgr
 // package: the deterministic checkpoint distiller (collectCheckpointData +
-// formatCheckpoint), the LLM summarizer (summarizeWithLLMSteered), and the
+// formatCheckpoint), the LLM summarizer (summarizeFold), and the
 // pluggable ManageContext strategy (SessionLogStrategy).
 //
 // All new top-level identifiers are prefixed with the lane token "ctxmgr_" so
@@ -185,7 +185,7 @@ func ctxmgr_faultResponder(plan []byte) func(req llm.Request) error {
 
 // ctxmgr_scriptedClient builds an llm.Client whose single provider answers with
 // reply, failing calls per the fault plan. The provider name matches the
-// profile's own id so summarizeWithLLM's routes resolve to it.
+// profile's own id so summarizeFold's routes resolve to it.
 func ctxmgr_scriptedClient(provider, reply string, plan []byte) *llm.Client {
 	client := llm.NewClient()
 	client.Register(&agenttest.ScriptedAdapter{
@@ -320,7 +320,7 @@ func FuzzCtxmgrCheckpointData(f *testing.F) {
 	})
 }
 
-// FuzzCtxmgrSummarizeSteered drives summarizeWithLLMSteered against a scripted,
+// FuzzCtxmgrSummarizeSteered drives summarizeFold against a scripted,
 // fault-injected adapter so both the success path (a SUMMARY turn replaces the
 // old prefix) and the model-error path (every route fails → error returned) are
 // reached without any network call.
@@ -352,7 +352,7 @@ func FuzzCtxmgrSummarizeSteered(f *testing.F) {
 			client := ctxmgr_scriptedClient(profile.ID(), "## Progress\nhandoff summary body", faultPlan)
 			cm := NewManager(profile, client, cheapmodel.New(client))
 
-			result, err := cm.summarizeWithLLMSteered(context.Background(), history, preserve, instructions)
+			result, err := cm.summarizeFold(context.Background(), history, preserve, instructions, nil)
 			return result, history, err
 		}
 
@@ -370,7 +370,7 @@ func FuzzCtxmgrSummarizeSteered(f *testing.F) {
 		// A nil result is only legitimate when the input history was itself nil
 		// (the early no-op returns history unchanged).
 		if result == nil && len(history) > 0 {
-			t.Fatalf("summarizeWithLLMSteered returned nil result for non-empty history")
+			t.Fatalf("summarizeFold returned nil result for non-empty history")
 		}
 
 		// Preserved-suffix invariant.
@@ -401,7 +401,7 @@ func FuzzCtxmgrSummarizeSteered(f *testing.F) {
 			t.Fatalf("summarize nondeterministic error: run2 err=%v", err2)
 		}
 		if !reflect.DeepEqual(ctxmgr_fingerprints(result), ctxmgr_fingerprints(result2)) {
-			t.Fatalf("summarizeWithLLMSteered not deterministic")
+			t.Fatalf("summarizeFold not deterministic")
 		}
 	})
 }

@@ -125,7 +125,7 @@ func TestProcessInputCompletedTurnDrainsCommandOnlyQueuedInput(t *testing.T) {
 	} else if data := strings.Join(userMessageTexts(requests[1]), "\n"); strings.Count(data, body) != 1 {
 		t.Errorf("next real turn lost or duplicated opaque command expansion: %q", data)
 	}
-	transcript, err := readTranscriptFull(s.TranscriptPath(), "")
+	transcript, err := readTranscriptFull(context.Background(), s.TranscriptPath(), "")
 	if err != nil {
 		t.Fatal(err)
 	}

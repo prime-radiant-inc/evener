@@ -1,0 +1,2169 @@
+package hub
+
+// A host mutation writes the store first (the staged marker, the provisional
+// receipt and the identities it mints) and hub.toml second (the host change).
+// These tests cut that order where the two writes disagree and require the hub
+// to settle on what hub.toml holds, keep every minted generation spent, and go
+// on taking host changes.
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+)
+
+// requireNoReceiptFor fails when the records hold any receipt for mutationID.
+func requireNoReceiptFor(t *testing.T, records hostRecordSet, mutationID string) {
+	t.Helper()
+	for key := range records.MutationReceipts {
+		if scope, ok := parseHostReceiptScopedKey(key); ok && scope.MutationID == mutationID {
+			t.Fatalf("the records hold a receipt %q for the mutation hub.toml never received", key)
+		}
+	}
+}
+
+func TestBootRollsBackACommitWhoseHostChangeNeverReachedHubTOML(t *testing.T) {
+	const staged = "staged-mutation"
+	cases := map[string]struct {
+		mutate func(t *testing.T, m *hubHostManager) crashMutation
+		// wantLive is the address side serves at once the commit is rolled back.
+		wantLive string
+		// stagedHost is the host the staged commit names.
+		stagedHost string
+	}{
+		"add": {
+			mutate: func(*testing.T, *hubHostManager) crashMutation {
+				params := appwire.HostAddParams{Entry: appwire.HostEntry{Name: "ghost", Address: "ghost.example"}, MutationID: staged}
+				return crashMutation{id: staged, issue: func(m *hubHostManager) (appwire.HostMutationResult, error) {
+					return m.AddResult(context.Background(), params)
+				}}
+			},
+			stagedHost: "ghost",
+		},
+		"update": {
+			mutate: func(t *testing.T, m *hubHostManager) crashMutation {
+				params := updateRequest(t, m, "side", appwire.HostEntry{Address: "edited.example"})
+				params.MutationID = staged
+				return crashMutation{id: staged, issue: func(m *hubHostManager) (appwire.HostMutationResult, error) {
+					return m.UpdateResult(context.Background(), params)
+				}}
+			},
+			wantLive:   "side.example",
+			stagedHost: "side",
+		},
+		"remove": {
+			mutate: func(t *testing.T, m *hubHostManager) crashMutation {
+				params := removeRequest(t, m, "side")
+				params.MutationID = staged
+				return crashMutation{id: staged, issue: func(m *hubHostManager) (appwire.HostMutationResult, error) {
+					return m.RemoveResult(context.Background(), params)
+				}}
+			},
+			wantLive:   "side.example",
+			stagedHost: "side",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+			m, _ := hub.boot(t, false)
+			beforeBytes := fileBytes(t, hub.configPath)
+			mutation := tc.mutate(t, m)
+			armCut(m, cutStaged)
+			runUntilCrash(t, func() { _, _ = mutation.issue(m) })
+
+			// The crash landed between the two writes: the store holds the staged
+			// commit, hub.toml still holds the hosts it had.
+			marker, ok := mustRecords(t, hub.store).StagedReceipts[tc.stagedHost]
+			if !ok {
+				t.Fatal("the store holds no staged marker after the cut")
+			}
+			spent := marker.Provisional.Generation
+			if err := os.WriteFile(hub.configPath, beforeBytes, 0o600); err != nil {
+				t.Fatalf("put the pre-mutation hub.toml back: %v", err)
+			}
+
+			recovered, _ := hub.boot(t, true)
+
+			records := mustRecords(t, hub.store)
+			if len(records.StagedReceipts) != 0 {
+				t.Fatalf("recovery left staged markers: %+v", records.StagedReceipts)
+			}
+			requireNoReceiptFor(t, records, staged)
+			rows := hostRows(t, recovered)
+			if tc.wantLive == "" {
+				if row, present := rows[tc.stagedHost]; present {
+					t.Fatalf("the rolled-back add left a row for %q: %+v", tc.stagedHost, row)
+				}
+			} else if row := rows[tc.stagedHost]; row.Removed || row.Address != tc.wantLive {
+				t.Fatalf("the rolled-back commit left %q as %+v, want it live at %q", tc.stagedHost, row, tc.wantLive)
+			}
+			if rows["keep"].Removed {
+				t.Fatal("the rollback disturbed a sibling host")
+			}
+
+			// The generation the rolled-back commit minted stays spent, and the hub
+			// takes the host change again.
+			if tc.wantLive == "" {
+				if _, err := recovered.AddResult(context.Background(), appwire.HostAddParams{
+					Entry: appwire.HostEntry{Name: "ghost", Address: "ghost.example"}, MutationID: newTestMutationID(),
+				}); err != nil {
+					t.Fatalf("the add again after the rollback: %v", err)
+				}
+				if again := hostRows(t, recovered)["ghost"]; again.Generation <= spent {
+					t.Fatalf("the add again was handed generation %d, which the rolled-back commit already minted (%d)", again.Generation, spent)
+				}
+				return
+			}
+			if _, err := recovered.UpdateResult(context.Background(), updateRequest(t, recovered, "side", appwire.HostEntry{Address: "again.example"})); err != nil {
+				t.Fatalf("the edit after the rollback: %v", err)
+			}
+			if after := hostRows(t, recovered)["side"]; after.Generation <= spent {
+				t.Fatalf("the edit after the rollback was handed generation %d, not above the rolled-back commit's %d", after.Generation, spent)
+			}
+		})
+	}
+}
+
+// TestAHostChangeHubTOMLRefusesLeavesTheStoreAsItWasAndRetriesCleanly pins the
+// refusal half of the order: the store is written first, so a host change that
+// then cannot reach hub.toml must take its staged marker, provisional receipt
+// and minted identity back out of the store, and the same request, retried
+// once hub.toml is writable, commits as if the first attempt had never been.
+func TestAHostChangeHubTOMLRefusesLeavesTheStoreAsItWasAndRetriesCleanly(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}})
+	m, store := hub.boot(t, false)
+	before := mustRecords(t, store)
+	boundariesBefore := store.Boundaries()
+
+	failing := true
+	previous := configReadFile
+	configReadFile = func(path string) ([]byte, error) {
+		if failing {
+			return nil, os.ErrPermission
+		}
+		return previous(path)
+	}
+	t.Cleanup(func() { configReadFile = previous })
+
+	params := appwire.HostAddParams{Entry: appwire.HostEntry{Name: "ghost", Address: "ghost.example"}, MutationID: "retried-add"}
+	if _, err := m.AddResult(context.Background(), params); err == nil {
+		t.Fatal("an add whose host change cannot reach hub.toml succeeded")
+	}
+	requireSameMap(t, "host records", mustRecords(t, store).HostRecords, before.HostRecords)
+	requireSameMap(t, "receipts", mustRecords(t, store).MutationReceipts, before.MutationReceipts)
+	requireSameMap(t, "staged markers", mustRecords(t, store).StagedReceipts, before.StagedReceipts)
+	if got := store.Boundaries(); len(got) != len(boundariesBefore) {
+		t.Fatalf("the refused change left the boundary mirror at %v, was %v", got, boundariesBefore)
+	}
+
+	failing = false
+	result, err := m.AddResult(context.Background(), params)
+	if err != nil || result.HostMutationCommitted == nil {
+		t.Fatalf("the retried add = (%+v, %v), want the committed arm", result, err)
+	}
+	if rows := hostRows(t, m); rows["ghost"].Address != "ghost.example" || rows["ghost"].Removed {
+		t.Fatalf("the retried add left %+v", rows["ghost"])
+	}
+}
+
+// TestBootDoesNotFinalizeACommitItCouldNotRollBack pins the rollback's failure
+// posture: a staged commit whose host change never reached hub.toml, and whose
+// rollback write fails, stays staged and is never finalized forward (that would
+// commit an edit hub.toml does not hold); host changes pause, and the next
+// start, once the write works, rolls the commit back and resumes them.
+func TestBootDoesNotFinalizeACommitItCouldNotRollBack(t *testing.T) {
+	const staged = "staged-mutation"
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, _ := hub.boot(t, false)
+	beforeBytes := fileBytes(t, hub.configPath)
+	params := updateRequest(t, m, "side", appwire.HostEntry{Address: "edited.example"})
+	params.MutationID = staged
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() { _, _ = m.UpdateResult(context.Background(), params) })
+	if err := os.WriteFile(hub.configPath, beforeBytes, 0o600); err != nil {
+		t.Fatalf("put the pre-mutation hub.toml back: %v", err)
+	}
+
+	bootRollbackFault = func(string) error { return errors.New("injected rollback write failure") }
+	t.Cleanup(func() { bootRollbackFault = nil })
+	recovered, store := hub.boot(t, true)
+
+	records := mustRecords(t, store)
+	marker, stillStaged := records.StagedReceipts["side"]
+	if !stillStaged {
+		t.Fatal("the commit that could not be rolled back lost its marker")
+	}
+	for key, receipt := range records.MutationReceipts {
+		if scope, ok := parseHostReceiptScopedKey(key); ok && scope.MutationID == staged && receipt.BootRecovered {
+			t.Fatalf("the unrolled commit was finalized forward: %q = %+v", key, receipt)
+		}
+	}
+	if row := hostRows(t, recovered)["side"]; row.Address != "side.example" {
+		t.Fatalf("side serves %+v, want the address hub.toml still holds", row)
+	}
+	_, err := recovered.UpdateResult(context.Background(), updateRequest(t, recovered, "side", appwire.HostEntry{Address: "again.example"}))
+	requireWireError(t, err, appwire.CodeUnavailable)
+	// The client retrying the very request that was staged must not be told it
+	// succeeded: hub.toml does not hold the edit.
+	replay := updateRequest(t, recovered, "side", appwire.HostEntry{Address: "edited.example"})
+	replay.MutationID = staged
+	_, err = recovered.UpdateResult(context.Background(), replay)
+	requireWireError(t, err, appwire.CodeUnavailable)
+
+	bootRollbackFault = nil
+	recovered, store = hub.boot(t, true)
+	if err := recovered.mutationRefusal(); err != nil {
+		t.Fatalf("host changes are still refused after the rollback could be written: %v", err)
+	}
+	records = mustRecords(t, store)
+	if len(records.StagedReceipts) != 0 {
+		t.Fatalf("the retry left staged markers: %+v", records.StagedReceipts)
+	}
+	requireNoReceiptFor(t, records, staged)
+	if after := hostRows(t, recovered)["side"]; after.Generation <= marker.Provisional.Generation-1 {
+		t.Fatalf("side serves generation %d after the rollback", after.Generation)
+	}
+	if _, err := recovered.UpdateResult(context.Background(), updateRequest(t, recovered, "side", appwire.HostEntry{Address: "again.example"})); err != nil {
+		t.Fatalf("the edit after the rollback: %v", err)
+	}
+}
+
+// TestBootKeepsAnUnrolledRemovalStagedUntilItCanBeRolledBack pins the same
+// posture for a removal: while its rollback cannot be written, the staged
+// marker and tombstone stay, the host keeps serving, and a retried request
+// is not answered as a committed removal; the next start, which can write,
+// rolls it back for good.
+func TestBootKeepsAnUnrolledRemovalStagedUntilItCanBeRolledBack(t *testing.T) {
+	const staged = "staged-removal"
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, _ := hub.boot(t, false)
+	beforeBytes := fileBytes(t, hub.configPath)
+	params := removeRequest(t, m, "side")
+	params.MutationID = staged
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
+	if err := os.WriteFile(hub.configPath, beforeBytes, 0o600); err != nil {
+		t.Fatalf("put the pre-mutation hub.toml back: %v", err)
+	}
+
+	bootRollbackFault = func(string) error { return errors.New("injected rollback write failure") }
+	t.Cleanup(func() { bootRollbackFault = nil })
+	recovered, store := hub.boot(t, true)
+
+	records := mustRecords(t, store)
+	if _, stillStaged := records.StagedReceipts["side"]; !stillStaged {
+		t.Fatal("the removal that could not be rolled back lost its marker")
+	}
+	if rows := hostRows(t, recovered); rows["side"].Removed || rows["side"].Address != "side.example" {
+		t.Fatalf("side serves %+v while its removal is unsettled", rows["side"])
+	}
+	replay := removeRequestFor("side", params.ExpectedGeneration, params.ExpectedIncarnationID)
+	replay.MutationID = staged
+	_, err := recovered.RemoveResult(context.Background(), replay)
+	requireWireError(t, err, appwire.CodeUnavailable)
+
+	bootRollbackFault = nil
+	recovered, store = hub.boot(t, true)
+	if err := recovered.mutationRefusal(); err != nil {
+		t.Fatalf("host changes are still refused after the rollback could be written: %v", err)
+	}
+	records = mustRecords(t, store)
+	if len(records.StagedReceipts) != 0 {
+		t.Fatalf("the retry left staged markers: %+v", records.StagedReceipts)
+	}
+	requireNoReceiptFor(t, records, staged)
+	if _, tombstoned := records.Tombstones["side"]; tombstoned {
+		t.Fatal("the rolled-back removal left its tombstone")
+	}
+	if _, err := recovered.RemoveResult(context.Background(), removeRequest(t, recovered, "side")); err != nil {
+		t.Fatalf("removing side after the rollback: %v", err)
+	}
+}
+
+// receiptKeysFor lists the receipt keys the records hold for mutationID.
+func receiptKeysFor(records hostRecordSet, mutationID string) []string {
+	var keys []string
+	for key := range records.MutationReceipts {
+		if scope, ok := parseHostReceiptScopedKey(key); ok && scope.MutationID == mutationID {
+			keys = append(keys, key)
+		}
+	}
+	return keys
+}
+
+// TestBootRollbackOfAnUnlandedReAddKeepsTheRemovalItConsumed pins the rollback's
+// preservation: a re-add's first store write consumes the name's removal
+// tombstone, so rolling the re-add back must put the tombstone back, with the
+// generation the re-add spent, or a crash in that window would erase the
+// removed host's retained record. The purge also takes the name's superseded
+// receipts, which come back with it.
+func TestBootRollbackOfAnUnlandedReAddKeepsTheRemovalItConsumed(t *testing.T) {
+	const staged = "staged-re-add"
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, _ := hub.boot(t, false)
+	const earlier = "earlier-edit"
+	edit := updateRequest(t, m, "side", appwire.HostEntry{Address: "earlier.example"})
+	edit.MutationID = earlier
+	if _, err := m.UpdateResult(context.Background(), edit); err != nil {
+		t.Fatalf("Update(side): %v", err)
+	}
+	heldBefore := receiptKeysFor(mustRecords(t, hub.store), earlier)
+	if len(heldBefore) == 0 {
+		t.Fatal("the earlier edit left no receipt")
+	}
+	if _, err := m.RemoveResult(context.Background(), removeRequest(t, m, "side")); err != nil {
+		t.Fatalf("Remove(side): %v", err)
+	}
+	removed, ok := mustRecords(t, hub.store).Tombstones["side"]
+	if !ok {
+		t.Fatal("the removal left no tombstone")
+	}
+	beforeBytes := fileBytes(t, hub.configPath)
+	params := appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "again.example"}, MutationID: staged}
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() { _, _ = m.AddResult(context.Background(), params) })
+	marker, ok := mustRecords(t, hub.store).StagedReceipts["side"]
+	if !ok {
+		t.Fatal("the store holds no staged marker after the cut")
+	}
+	if _, consumed := mustRecords(t, hub.store).Tombstones["side"]; consumed {
+		t.Fatal("the fixture's re-add did not consume the tombstone in its first write")
+	}
+	spent := marker.Provisional.Generation
+	spentEpoch := mustRecords(t, hub.store).Generations["side"].PresenceEpoch
+	if err := os.WriteFile(hub.configPath, beforeBytes, 0o600); err != nil {
+		t.Fatalf("put the pre-mutation hub.toml back: %v", err)
+	}
+
+	recovered, _ := hub.boot(t, true)
+
+	records := mustRecords(t, hub.store)
+	if len(records.StagedReceipts) != 0 {
+		t.Fatalf("recovery left staged markers: %+v", records.StagedReceipts)
+	}
+	if mark := records.Generations["side"]; mark.PresenceEpoch < spentEpoch || mark.Generation < spent {
+		t.Fatalf("the high-water mark after the rollback is %+v, below the spent generation %d and presence epoch %d", mark, spent, spentEpoch)
+	}
+	tombstone, kept := records.Tombstones["side"]
+	if !kept {
+		t.Fatal("the rolled-back re-add erased the removal tombstone")
+	}
+	if tombstone.IncarnationID != removed.IncarnationID || tombstone.Generation != removed.Generation {
+		t.Fatalf("restored tombstone = %+v, want the removal's own identity %q at generation %d", tombstone, removed.IncarnationID, removed.Generation)
+	}
+	if kept := receiptKeysFor(records, earlier); len(kept) != len(heldBefore) {
+		t.Fatalf("the rolled-back re-add left receipts %v for the earlier edit, want the %v it held", kept, heldBefore)
+	}
+	if row := hostRows(t, recovered)["side"]; !row.Removed {
+		t.Fatalf("side serves %+v after the rollback, want it removed", row)
+	}
+	if _, err := recovered.AddResult(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "side", Address: "again.example"}, MutationID: newTestMutationID(),
+	}); err != nil {
+		t.Fatalf("the re-add after the rollback: %v", err)
+	}
+}
+
+// TestBootRollsBackAFirstAddThatNeverCreatedHubTOML pins the rollback over an
+// absent host file: the first add stages in the store before it creates
+// hub.toml, and a crash between the two leaves a staged commit for a file that
+// does not exist. That is an empty host set, so the commit rolls back instead
+// of finalizing as a host that was never written.
+func TestBootRollsBackAFirstAddThatNeverCreatedHubTOML(t *testing.T) {
+	const staged = "staged-first-add"
+	hub := newCrashHub(t, nil)
+	m, _ := hub.boot(t, false)
+	if err := os.Remove(hub.configPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("remove hub.toml: %v", err)
+	}
+	params := appwire.HostAddParams{Entry: appwire.HostEntry{Name: "ghost", Address: "ghost.example"}, MutationID: staged}
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() { _, _ = m.AddResult(context.Background(), params) })
+	if _, ok := mustRecords(t, hub.store).StagedReceipts["ghost"]; !ok {
+		t.Fatal("the store holds no staged marker after the cut")
+	}
+	if err := os.Remove(hub.configPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("remove hub.toml: %v", err)
+	}
+
+	recovered, _ := hub.boot(t, true)
+
+	records := mustRecords(t, hub.store)
+	if len(records.StagedReceipts) != 0 {
+		t.Fatalf("recovery left staged markers: %+v", records.StagedReceipts)
+	}
+	requireNoReceiptFor(t, records, staged)
+	if row, present := hostRows(t, recovered)["ghost"]; present {
+		t.Fatalf("the rolled-back add left a row for ghost: %+v", row)
+	}
+	if _, err := recovered.AddResult(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "ghost", Address: "ghost.example"}, MutationID: staged,
+	}); err != nil {
+		t.Fatalf("the add again after the rollback: %v", err)
+	}
+	if row := hostRows(t, recovered)["ghost"]; row.Removed || row.Address != "ghost.example" {
+		t.Fatalf("the retried add left %+v", row)
+	}
+}
+
+// TestBootLeavesStagedCommitsAloneWhileHubTOMLCannotBeRead pins the posture for
+// an unreadable host file: it says nothing about which commits landed, so no
+// marker is rolled back or finalized, host changes pause, and the next start,
+// which can read the file, settles them.
+func TestBootLeavesStagedCommitsAloneWhileHubTOMLCannotBeRead(t *testing.T) {
+	const staged = "staged-mutation"
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, _ := hub.boot(t, false)
+	beforeBytes := fileBytes(t, hub.configPath)
+	params := updateRequest(t, m, "side", appwire.HostEntry{Address: "edited.example"})
+	params.MutationID = staged
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() { _, _ = m.UpdateResult(context.Background(), params) })
+	if err := os.WriteFile(hub.configPath, beforeBytes, 0o600); err != nil {
+		t.Fatalf("put the pre-mutation hub.toml back: %v", err)
+	}
+
+	hub.restartStateRoot(t)
+	cfg := mustLoadConfig(t, hub.configPath)
+	store, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	doc := hostBootDocument(cfg.Config, legacyRecordsOf(t, hub.configPath), store)
+	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
+	if err != nil {
+		t.Fatalf("hostreg.NewSeeded: %v", err)
+	}
+	previous := configReadFile
+	configReadFile = func(string) ([]byte, error) { return nil, errors.New("injected read failure") }
+	recovered := newHubHostManager(appsource.NewRegistry(), nil,
+		hubcore.WebConfig{RemoteHostOpsStore: store, RemoteHostConfigPath: hub.configPath}, hub.configPath, hosts, t.Logf)
+	configReadFile = previous
+
+	records := mustRecords(t, store)
+	if _, stillStaged := records.StagedReceipts["side"]; !stillStaged {
+		t.Fatal("a commit was settled although hub.toml could not be read")
+	}
+	for key, receipt := range records.MutationReceipts {
+		if scope, ok := parseHostReceiptScopedKey(key); ok && scope.MutationID == staged && receipt.BootRecovered {
+			t.Fatalf("the staged commit was finalized without reading hub.toml: %q", key)
+		}
+	}
+	if recovered.mutationRefusal() == nil {
+		t.Fatal("host changes are taken while staged commits are unsettled")
+	}
+
+	again, store := hub.boot(t, true)
+
+	if err := again.mutationRefusal(); err != nil {
+		t.Fatalf("host changes are still refused once hub.toml reads: %v", err)
+	}
+	if staged := mustRecords(t, store).StagedReceipts; len(staged) != 0 {
+		t.Fatalf("the next start left staged markers: %+v", staged)
+	}
+}
+
+// TestBootRollbackOfAnUnlandedRemovalKeepsTheHostsIdentity pins what a removal
+// that never reached hub.toml leaves behind: the host was never removed, so it
+// serves under the identity it had, its operations are not marked removed, and
+// the removal's tombstone is gone.
+func TestBootRollbackOfAnUnlandedRemovalKeepsTheHostsIdentity(t *testing.T) {
+	const staged = "staged-removal"
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, store := hub.boot(t, false)
+	generation, incarnation := testMutationIdentity(t, m, "side")
+	op := seedOperationRecord(t, store, "side", "op-before", generation, incarnation)
+	beforeBytes := fileBytes(t, hub.configPath)
+	params := removeRequest(t, m, "side")
+	params.MutationID = staged
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
+	if err := os.WriteFile(hub.configPath, beforeBytes, 0o600); err != nil {
+		t.Fatalf("put the pre-mutation hub.toml back: %v", err)
+	}
+
+	recovered, restarted := hub.boot(t, true)
+
+	gotGeneration, gotIncarnation := testMutationIdentity(t, recovered, "side")
+	if gotGeneration != generation || gotIncarnation != incarnation {
+		t.Fatalf("side serves (%d, %q) after the rollback, want its identity (%d, %q)", gotGeneration, gotIncarnation, generation, incarnation)
+	}
+	records := mustRecords(t, restarted)
+	if _, tombstoned := records.Tombstones["side"]; tombstoned {
+		t.Fatal("the rolled-back removal left its tombstone")
+	}
+	if record, ok := restarted.Record(op.ID); !ok || record.HostRemoved {
+		t.Fatalf("the host's operation is %+v after the rollback, want it not marked removed", record)
+	}
+	if _, err := recovered.RemoveResult(context.Background(), removeRequest(t, recovered, "side")); err != nil {
+		t.Fatalf("removing side after the rollback: %v", err)
+	}
+}
+
+// TestBootKeepsALandedRemovalWhenTheNameWasAddedAgainByHand pins the other
+// reading of a staged removal beside a configured host: the removal landed
+// (hub.toml lost the host) and an operator added the name again before the next
+// boot. The replacement is a new incarnation, the removal's receipt stands, and
+// a client retrying the removal does not take the replacement out.
+func TestBootKeepsALandedRemovalWhenTheNameWasAddedAgainByHand(t *testing.T) {
+	const staged = "staged-removal"
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, _ := hub.boot(t, false)
+	generation, incarnation := testMutationIdentity(t, m, "side")
+	params := removeRequest(t, m, "side")
+	params.MutationID = staged
+	armCut(m, cutFlipped)
+	runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
+	if err := writeHubTOMLHosts(hub.configPath, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side-again.example"}}); err != nil {
+		t.Fatalf("add side again by hand: %v", err)
+	}
+
+	recovered, _ := hub.boot(t, true)
+
+	gotGeneration, gotIncarnation := testMutationIdentity(t, recovered, "side")
+	if gotIncarnation == incarnation || gotGeneration <= generation {
+		t.Fatalf("the replacement serves (%d, %q), want a new incarnation above (%d, %q)", gotGeneration, gotIncarnation, generation, incarnation)
+	}
+	if len(receiptKeysFor(mustRecords(t, hub.store), staged)) == 0 {
+		t.Fatal("the landed removal lost its receipt")
+	}
+	_, _ = recovered.RemoveResult(context.Background(), params)
+	if row := hostRows(t, recovered)["side"]; row.Removed || row.Address != "side-again.example" {
+		t.Fatalf("retrying the removal left the replacement as %+v", row)
+	}
+}
+
+// TestBootKeepsACommitWhoseRuntimeSwapStartedWhenHubTOMLWasEditedAfterwards pins
+// the phase evidence: the runtime swap starts only after the host change is in
+// hub.toml, so an operator's later edit of the same host does not make the
+// commit look unlanded, and the committed mutation keeps its receipt.
+func TestBootKeepsACommitWhoseRuntimeSwapStartedWhenHubTOMLWasEditedAfterwards(t *testing.T) {
+	const staged = "swapped-mutation"
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, _ := hub.boot(t, false)
+	params := updateRequest(t, m, "side", appwire.HostEntry{Address: "edited.example"})
+	params.MutationID = staged
+	armCut(m, cutFlipped)
+	runUntilCrash(t, func() { _, _ = m.UpdateResult(context.Background(), params) })
+	if err := writeHubTOMLHosts(hub.configPath, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "by-hand.example"}}); err != nil {
+		t.Fatalf("edit side by hand: %v", err)
+	}
+
+	hub.boot(t, true)
+
+	if len(receiptKeysFor(mustRecords(t, hub.store), staged)) == 0 {
+		t.Fatal("the committed mutation lost its receipt to a later edit of the file")
+	}
+}
+
+// TestADegradedBootLeavesHubTOMLBytesAlone pins the write posture while the
+// configured store has not opened: the hosts are served from what the file
+// holds and nothing is rewritten, so a later settlement compares staged commits
+// with the file exactly as they saw it.
+func TestADegradedBootLeavesHubTOMLBytesAlone(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}})
+	before := fileBytes(t, hub.configPath)
+	hosts, err := hostreg.New(hostRegistryEntries(mustLoadConfig(t, hub.configPath)))
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+
+	newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostConfigPath: hub.configPath, RemoteHostOpsUnavailable: true,
+	}, hub.configPath, hosts, t.Logf)
+
+	if !bytes.Equal(fileBytes(t, hub.configPath), before) {
+		t.Fatal("a boot without its store rewrote hub.toml")
+	}
+}
+
+// TestRollbackLeavesTheHostListInHubTOMLAlone pins the rollback's reach: it
+// settles machine records, so a hub.toml the operator edited after the crash (a
+// host edited, another removed) reads back exactly as they left it once the
+// unrelated staged commit is rolled back.
+func TestRollbackLeavesTheHostListInHubTOMLAlone(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}, {Name: "gone", SSH: "gone.example"}})
+	m, _ := hub.boot(t, false)
+	params := updateRequest(t, m, "side", appwire.HostEntry{Address: "edited.example"})
+	params.MutationID = "staged-mutation"
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() { _, _ = m.UpdateResult(context.Background(), params) })
+	if err := writeHubTOMLHosts(hub.configPath, []hostreg.Host{{Name: "keep", SSH: "keep-by-hand.example"}, {Name: "side", SSH: "side.example"}}); err != nil {
+		t.Fatalf("edit hub.toml by hand: %v", err)
+	}
+	edited := fileBytes(t, hub.configPath)
+
+	_, store := hub.boot(t, true)
+
+	if len(mustRecords(t, store).StagedReceipts) != 0 {
+		t.Fatal("the staged commit was not rolled back")
+	}
+	if !bytes.Equal(fileBytes(t, hub.configPath), edited) {
+		t.Fatal("the rollback rewrote the host list the operator left")
+	}
+}
+
+// TestRollbackLeavesAnotherHostsTombstoneForTheCollisionRule pins what the
+// rollback's write may touch: a removed name hub.toml carries again, with an
+// open teardown remnant, is the collision rule's to handle (it is excluded until
+// the remnant resolves), so settling an unrelated staged commit first must not
+// consume its tombstone or publish the new identity, which would strand the
+// remnant's cleanup handle.
+func TestRollbackLeavesAnotherHostsTombstoneForTheCollisionRule(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}, {Name: "gone", SSH: "gone.example"}})
+	m, _ := hub.boot(t, false)
+	m.testOnlyTeardown = func(context.Context, string) error { return errors.New("injected teardown failure") }
+	removal, err := m.RemoveResult(context.Background(), removeRequest(t, m, "gone"))
+	if err != nil || removal.HostMutationTeardownFailureRemoved == nil {
+		t.Fatalf("Remove(gone) = (%+v, %v), want the teardown-failure arm", removal, err)
+	}
+	remnantID := removal.HostMutationTeardownFailureRemoved.RemnantID
+	m.testOnlyTeardown = nil
+	beforeBytes := fileBytes(t, hub.configPath)
+	params := updateRequest(t, m, "side", appwire.HostEntry{Address: "edited.example"})
+	params.MutationID = "staged-mutation"
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() { _, _ = m.UpdateResult(context.Background(), params) })
+	if err := os.WriteFile(hub.configPath, append(beforeBytes, []byte("\n[[hosts]]\nname = \"gone\"\nssh = \"gone-again.example\"\n")...), 0o600); err != nil {
+		t.Fatalf("add gone again by hand: %v", err)
+	}
+
+	recovered, store := hub.boot(t, true)
+
+	if _, tombstoned := mustRecords(t, store).Tombstones["gone"]; !tombstoned {
+		t.Fatal("the unrelated rollback consumed the removed host's tombstone")
+	}
+	if _, err := recovered.TeardownRetry(context.Background(), appwire.HostTeardownRetryParams{RemnantID: remnantID}); err != nil {
+		t.Fatalf("TeardownRetry after the recovery: %v", err)
+	}
+}
+
+// TestRecoveryClassifiesAStagedRemovalAgainstTheFileAsItWas pins the order of the
+// legacy-section strip: it rewrites hub.toml, so the comparison with the file the
+// commit staged against has to come first. A strip that never landed before the
+// crash leaves the sections in the file the removal staged against, and the
+// unlanded removal must still read as unlanded.
+func TestRecoveryClassifiesAStagedRemovalAgainstTheFileAsItWas(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, _ := hub.boot(t, false)
+	_, incarnation := testMutationIdentity(t, m, "side")
+	leftover := "\n[generations.leftover]\ngeneration = 3\nincarnation_id = \"inc-leftover\"\npresence_epoch = 1\n"
+	if err := os.WriteFile(hub.configPath, append(fileBytes(t, hub.configPath), []byte(leftover)...), 0o600); err != nil {
+		t.Fatalf("leave legacy sections in hub.toml: %v", err)
+	}
+	staged := fileBytes(t, hub.configPath)
+	params := removeRequest(t, m, "side")
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
+	if err := os.WriteFile(hub.configPath, staged, 0o600); err != nil {
+		t.Fatalf("put hub.toml back as the removal staged against it: %v", err)
+	}
+
+	recovered, store := hub.boot(t, true)
+
+	if _, got := testMutationIdentity(t, recovered, "side"); got != incarnation {
+		t.Fatalf("side serves incarnation %q, want the one it had, %q: the unlanded removal was read as a landed one", got, incarnation)
+	}
+	if _, tombstoned := mustRecords(t, store).Tombstones["side"]; tombstoned {
+		t.Fatal("the rolled-back removal left its tombstone")
+	}
+	requireNoRecordSections(t, hub.configPath)
+}
+
+// TestMigrationRaisesALiveHostToTheMirrorsHigherGeneration covers a legacy
+// reconciliation whose raise of a live host never reached hub.toml: the import
+// must not replace the mirror's higher generation with the file's.
+func TestMigrationRaisesALiveHostToTheMirrorsHigherGeneration(t *testing.T) {
+	fixture := newPipelineFixture(t, []hostreg.Host{pipelineEntry("keep", 3)}, nil)
+	spent := hostops.Boundary{Generation: 40, IncarnationID: "inc-keep", PresenceEpoch: 3}
+	if err := fixture.store.MirrorHostState(hostops.HostMirror{Boundaries: map[string]hostops.Boundary{"keep": spent}, Live: []string{"keep"}}); err != nil {
+		t.Fatalf("MirrorHostState: %v", err)
+	}
+	m := fixture.legacyManager(t)
+
+	m.migrateLegacyRecords(fixture.store)
+
+	if mark := mustRecords(t, fixture.store).Generations["keep"]; mark.Generation < spent.Generation {
+		t.Fatalf("the family holds generation %d for keep, below the mirror's %d", mark.Generation, spent.Generation)
+	}
+	if got, _ := m.cfg.hosts.Get("keep"); got.Generation < spent.Generation {
+		t.Fatalf("keep is served at generation %d, below the mirror's %d", got.Generation, spent.Generation)
+	}
+}
+
+// TestUnreadableHubTOMLAtStartupStillFencesAnOpenRemnantHost pins the fences'
+// place in the attempt: the store's readable teardown remnants fence their hosts
+// before the settlement can stop on an unreadable host file, so a host with an
+// unresolved cleanup is not dialed in the meantime.
+func TestUnreadableHubTOMLAtStartupStillFencesAnOpenRemnantHost(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, _ := hub.boot(t, false)
+	m.testOnlyTeardown = func(context.Context, string) error { return errors.New("injected teardown failure") }
+	if result, err := m.UpdateResult(context.Background(), updateRequest(t, m, "side", appwire.HostEntry{Address: "edited.example"})); err != nil || result.HostMutationTeardownFailure == nil {
+		t.Fatalf("Update = (%+v, %v), want the teardown-failure arm", result, err)
+	}
+	hub.restartStateRoot(t)
+	reopened, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	boot := hostBootDocument(mustLoadConfig(t, hub.configPath).Config, legacyRecordsOf(t, hub.configPath), reopened)
+	hosts, err := hostreg.NewSeeded(boot.Hosts, boot.Records.highWaterMarks())
+	if err != nil {
+		t.Fatalf("hostreg.NewSeeded: %v", err)
+	}
+	previous := configReadFile
+	configReadFile = func(string) ([]byte, error) { return nil, errors.New("injected read failure") }
+	recovered := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostOpsStore: reopened, RemoteHostConfigPath: hub.configPath,
+	}, hub.configPath, hosts, t.Logf)
+	configReadFile = previous
+
+	if recovered.mutationRefusal() == nil {
+		t.Fatal("the settlement went ahead although hub.toml could not be read")
+	}
+	if _, fenced := recovered.openRemnantID("side"); !fenced {
+		t.Fatal("the open remnant did not fence its host while the settlement was stopped")
+	}
+}
+
+// TestRollbackOfAReAddBesideADifferentlyConfiguredHostOfTheSameName pins the
+// restore's clash with a live entry: the re-add never landed, an operator has
+// since configured the name differently, and the restored tombstone beside that
+// live host is the collision rule's to settle, not a write the records refuse
+// on every retry.
+func TestRollbackOfAReAddBesideADifferentlyConfiguredHostOfTheSameName(t *testing.T) {
+	const staged = "staged-re-add"
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, _ := hub.boot(t, false)
+	if _, err := m.RemoveResult(context.Background(), removeRequest(t, m, "side")); err != nil {
+		t.Fatalf("Remove(side): %v", err)
+	}
+	params := appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "again.example"}, MutationID: staged}
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() { _, _ = m.AddResult(context.Background(), params) })
+	if err := writeHubTOMLHosts(hub.configPath, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "configured-differently.example"}}); err != nil {
+		t.Fatalf("configure side differently: %v", err)
+	}
+
+	recovered, _ := hub.boot(t, true)
+
+	if err := recovered.mutationRefusal(); err != nil {
+		t.Fatalf("host changes are still paused: %v", err)
+	}
+	if staged := mustRecords(t, hub.store).StagedReceipts; len(staged) != 0 {
+		t.Fatalf("recovery left staged markers: %+v", staged)
+	}
+	if row := hostRows(t, recovered)["side"]; row.Removed || row.Address != "configured-differently.example" {
+		t.Fatalf("side serves %+v, want the host the operator configured", row)
+	}
+}
+
+// flakyDirSync fails the store's directory sync while armed, which makes every
+// store write publish its state and report RenameLanded.
+type flakyDirSync struct {
+	failing  atomic.Bool
+	storeDir string
+}
+
+// sync fails only the store's own directory, the sync behind the rename; the
+// syncs that create the directory tree before a first write still succeed.
+func (f *flakyDirSync) sync(dir string) error {
+	if f.failing.Load() && dir == f.storeDir {
+		return errors.New("injected directory sync failure")
+	}
+	return nil
+}
+
+// TestAHostChangeWaitsForTheStoreToBeDurableBeforeTouchingHubTOML pins the order
+// of the two files' durability: a store write whose rename landed but whose
+// directory sync failed is published, but the host file does not move forward on
+// it, so a power loss cannot keep the host change and lose its records. The
+// change is refused as retryable, leaves hub.toml and the store as they were, and
+// goes through once the sync works.
+func TestAHostChangeWaitsForTheStoreToBeDurableBeforeTouchingHubTOML(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "hub.toml")
+	if err := writeHubTOMLHosts(configPath, []hostreg.Host{{Name: "keep", SSH: "keep.example"}}); err != nil {
+		t.Fatalf("seed hub.toml: %v", err)
+	}
+	storePath := hostops.StorePath(t.TempDir())
+	dir := flakyDirSync{storeDir: filepath.Dir(storePath)}
+	store, err := hostops.OpenWithDirSync(storePath, dir.sync)
+	if err != nil {
+		t.Fatalf("OpenWithDirSync: %v", err)
+	}
+	cfg := mustLoadConfig(t, configPath)
+	boot := hostBootDocument(cfg.Config, legacyRecordsOf(t, configPath), store)
+	hosts, err := hostreg.NewSeeded(boot.Hosts, boot.Records.highWaterMarks())
+	if err != nil {
+		t.Fatalf("hostreg.NewSeeded: %v", err)
+	}
+	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: configPath,
+	}, configPath, hosts, t.Logf)
+	before := fileBytes(t, configPath)
+
+	dir.failing.Store(true)
+	_, err = m.UpdateResult(context.Background(), updateRequest(t, m, "keep", appwire.HostEntry{Address: "edited.example"}))
+	if err == nil {
+		t.Fatal("the change went ahead on a store write that was not durable")
+	}
+	if !bytes.Equal(fileBytes(t, configPath), before) {
+		t.Fatal("hub.toml moved forward on a store write that was not durable")
+	}
+	if staged := mustRecords(t, store).StagedReceipts; len(staged) != 0 {
+		t.Fatalf("the refused change left staged markers: %+v", staged)
+	}
+
+	dir.failing.Store(false)
+	if _, err := m.UpdateResult(context.Background(), updateRequest(t, m, "keep", appwire.HostEntry{Address: "edited.example"})); err != nil {
+		t.Fatalf("the change after the sync works: %v", err)
+	}
+}
+
+// TestMigrationKeepsTheLegacySectionsUntilTheStoreIsDurable pins the same order
+// for the move: the legacy sections are the records' other copy, so they stay in
+// hub.toml while the import is published but not proven durable, and the next
+// start, which can sync, drops them.
+func TestMigrationKeepsTheLegacySectionsUntilTheStoreIsDurable(t *testing.T) {
+	configPath, records := legacyHub(t)
+	storePath := hostops.StorePath(t.TempDir())
+	dir := flakyDirSync{storeDir: filepath.Dir(storePath)}
+	dir.failing.Store(true)
+	store, err := hostops.OpenWithDirSync(storePath, dir.sync)
+	if err != nil {
+		t.Fatalf("OpenWithDirSync: %v", err)
+	}
+	cfg := mustLoadConfig(t, configPath)
+	boot := hostBootDocument(cfg.Config, legacyRecordsOf(t, configPath), nil)
+	hosts, err := hostreg.NewSeeded(boot.Hosts, boot.Records.highWaterMarks())
+	if err != nil {
+		t.Fatalf("hostreg.NewSeeded: %v", err)
+	}
+	newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: configPath,
+	}, configPath, hosts, t.Logf)
+
+	requireFamilyEquals(t, store, records)
+	if sections := legacyRecordSections(mustReadDocument(t, configPath)); len(sections) == 0 {
+		t.Fatal("the legacy sections were dropped before the import was durable")
+	}
+
+	// The next start, with the directory sync working, drops them.
+	dir.failing.Store(false)
+	next := hostBootDocument(mustLoadConfig(t, configPath).Config, legacyRecordsOf(t, configPath), store)
+	nextHosts, err := hostreg.NewSeeded(next.Hosts, next.Records.highWaterMarks())
+	if err != nil {
+		t.Fatalf("hostreg.NewSeeded: %v", err)
+	}
+	newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+		RemoteHostRegistry: nextHosts, RemoteHostOpsStore: store, RemoteHostConfigPath: configPath,
+	}, configPath, nextHosts, t.Logf)
+
+	requireNoRecordSections(t, configPath)
+}
+
+// mustReadDocument reads hub.toml's raw TOML document.
+func mustReadDocument(t *testing.T, path string) map[string]any {
+	t.Helper()
+	doc, _, err := readHubTOMLDocument(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return doc
+}
+
+// TestACompensationRestoresTheHostFileBeforeDroppingTheStagedRecords pins the
+// order of an un-commit: the host change being taken back already reached
+// hub.toml, so the file is restored first and the staged marker goes second. A
+// crash between then leaves the host where it belongs with a marker boot rolls
+// back; the other order would leave the staged commit's trace gone while the file
+// still holds its change.
+func TestACompensationRestoresTheHostFileBeforeDroppingTheStagedRecords(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}})
+	m, store := hub.boot(t, false)
+	m.testOnlyAfterStage = func(name string) {
+		if err := m.cfg.hosts.Add(hostreg.Host{Name: name, SSH: "raced.example"}); err != nil {
+			t.Errorf("race the registry: %v", err)
+		}
+	}
+	var fileRestored, markerStillStaged bool
+	hostFileFirstSeam = func() error {
+		for _, h := range mustLoadConfig(t, hub.configPath).Hosts {
+			if h.Name == "new" {
+				return nil
+			}
+		}
+		fileRestored = true
+		_, markerStillStaged = mustRecords(t, store).StagedReceipts["new"]
+		return nil
+	}
+	t.Cleanup(func() { hostFileFirstSeam = nil })
+
+	_, err := m.AddResult(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "new", Address: "new.example"}, MutationID: newTestMutationID()})
+	requireRefusal(t, err)
+
+	if !fileRestored || !markerStillStaged {
+		t.Fatalf("the compensation did not write the host file before the records: fileRestored=%v markerStillStaged=%v", fileRestored, markerStillStaged)
+	}
+	if staged := mustRecords(t, store).StagedReceipts; len(staged) != 0 {
+		t.Fatalf("the compensation left staged markers: %+v", staged)
+	}
+}
+
+// TestACompensationWhoseStoreWriteFailsStillSettlesTheManagersRecords pins what
+// the manager believes once the host file is back: a store outage between the
+// restore and the record write must not leave the manager holding the failed
+// commit's provisional receipt, which a retry of the same mutation would replay
+// as a committed one.
+func TestACompensationWhoseStoreWriteFailsStillSettlesTheManagersRecords(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}})
+	m, _ := hub.boot(t, false)
+	m.testOnlyAfterStage = func(name string) {
+		if err := m.cfg.hosts.Add(hostreg.Host{Name: name, SSH: "raced.example"}); err != nil {
+			t.Errorf("race the registry: %v", err)
+		}
+	}
+	hostFileFirstSeam = func() error { return errors.New("injected store outage") }
+	t.Cleanup(func() { hostFileFirstSeam = nil })
+	params := appwire.HostAddParams{Entry: appwire.HostEntry{Name: "new", Address: "new.example"}, MutationID: "failed-add"}
+
+	if _, err := m.AddResult(context.Background(), params); err == nil {
+		t.Fatal("the add succeeded although its registration failed")
+	}
+
+	if _, staged := m.cfg.store.stagedSnapshot()["new"]; staged {
+		t.Fatal("the manager still holds the failed commit's staged marker")
+	}
+	m.testOnlyAfterStage = nil
+	result, err := m.AddResult(context.Background(), params)
+	if err == nil && result.HostMutationCommitted != nil {
+		t.Fatalf("the retry replayed the failed commit as a committed add: %+v", result.HostMutationCommitted)
+	}
+}
+
+// TestAnUnlandedRemovalIsStillUnlandedAfterAnUnrelatedSettingsEdit pins what
+// counts as the removal's landing evidence: the host list. An operator who
+// changed a setting that is not a host between the crash and the restart has not
+// changed whether the removal reached hub.toml, so the host keeps its identity
+// and the removal rolls back instead of being read as a landed removal followed
+// by a re-add.
+func TestAnUnlandedRemovalIsStillUnlandedAfterAnUnrelatedSettingsEdit(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, _ := hub.boot(t, false)
+	_, incarnation := testMutationIdentity(t, m, "side")
+	staged := fileBytes(t, hub.configPath)
+	params := removeRequest(t, m, "side")
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
+	edited := append([]byte("status_poll_interval = \"13s\"\n"), staged...)
+	if err := os.WriteFile(hub.configPath, edited, 0o600); err != nil {
+		t.Fatalf("edit a setting by hand: %v", err)
+	}
+
+	recovered, store := hub.boot(t, true)
+
+	if _, got := testMutationIdentity(t, recovered, "side"); got != incarnation {
+		t.Fatalf("side serves incarnation %q, want the one it had, %q: the unlanded removal was read as a landed one", got, incarnation)
+	}
+	if _, tombstoned := mustRecords(t, store).Tombstones["side"]; tombstoned {
+		t.Fatal("the rolled-back removal left its tombstone")
+	}
+}
+
+// TestAnUnlandedRemovalIsJudgedByItsOwnHostNotItsSiblings pins the evidence's
+// scope: editing or reordering other hosts between the crash and the restart does
+// not change whether this host's removal reached hub.toml.
+func TestAnUnlandedRemovalIsJudgedByItsOwnHostNotItsSiblings(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}, {Name: "other", SSH: "other.example"}})
+	m, _ := hub.boot(t, false)
+	_, incarnation := testMutationIdentity(t, m, "side")
+	params := removeRequest(t, m, "side")
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
+	// The siblings are edited and reordered; side's own entry is as it was.
+	if err := writeHubTOMLHosts(hub.configPath, []hostreg.Host{{Name: "other", SSH: "other-by-hand.example"}, {Name: "side", SSH: "side.example"}, {Name: "keep", SSH: "keep.example"}}); err != nil {
+		t.Fatalf("edit the siblings by hand: %v", err)
+	}
+
+	recovered, store := hub.boot(t, true)
+
+	if _, got := testMutationIdentity(t, recovered, "side"); got != incarnation {
+		t.Fatalf("side serves incarnation %q, want the one it had, %q", got, incarnation)
+	}
+	if _, tombstoned := mustRecords(t, store).Tombstones["side"]; tombstoned {
+		t.Fatal("the rolled-back removal left its tombstone")
+	}
+}
+
+// TestACompensationWhoseDirectorySyncFailsStillSettlesTheManagersRecords pins the
+// landed-restore case: the compensation's rename put the host file back and only
+// its directory sync failed, so the failed commit's staged marker and provisional
+// receipt are settled all the same and a retry of the same request is not
+// answered with a committed outcome.
+func TestACompensationWhoseDirectorySyncFailsStillSettlesTheManagersRecords(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}})
+	m, store := hub.boot(t, false)
+	m.testOnlyAfterStage = func(name string) {
+		if err := m.cfg.hosts.Add(hostreg.Host{Name: name, SSH: "raced.example"}); err != nil {
+			t.Errorf("race the registry: %v", err)
+		}
+	}
+	flakyHubTOMLDirSync(t, func(call int) bool { return call == 2 })
+	params := appwire.HostAddParams{Entry: appwire.HostEntry{Name: "new", Address: "new.example"}, MutationID: "failed-add"}
+
+	if _, err := m.AddResult(context.Background(), params); err == nil {
+		t.Fatal("the add succeeded although its registration failed")
+	}
+
+	if _, staged := m.cfg.store.stagedSnapshot()["new"]; staged {
+		t.Fatal("the manager still holds the failed commit's staged marker")
+	}
+	// The restored file is not proven durable, so the store keeps the marker a
+	// boot rolls back until it is.
+	if _, held := mustRecords(t, store).StagedReceipts["new"]; !held {
+		t.Fatal("the store dropped the staged marker before the restored host file was durable")
+	}
+	m.testOnlyAfterStage = nil
+	result, err := m.AddResult(context.Background(), params)
+	if err == nil && result.HostMutationCommitted != nil {
+		t.Fatalf("the retry replayed the failed commit as a committed add: %+v", result.HostMutationCommitted)
+	}
+}
+
+// TestNoSingleReadFailureAtBootFinalizesARemovalThatNeverLanded pins that a
+// transient failure of any one hub.toml read during recovery is never taken as
+// evidence about a staged removal: whatever that boot defers, a clean restart
+// finds the host with the identity it had and no tombstone.
+func TestNoSingleReadFailureAtBootFinalizesARemovalThatNeverLanded(t *testing.T) {
+	crash := func(t *testing.T) (*crashHub, string) {
+		hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+		m, _ := hub.boot(t, false)
+		_, incarnation := testMutationIdentity(t, m, "side")
+		params := removeRequest(t, m, "side")
+		unlanded := fileBytes(t, hub.configPath)
+		armCut(m, cutStaged)
+		runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
+		// The removal staged and never reached hub.toml.
+		if err := os.WriteFile(hub.configPath, unlanded, 0o600); err != nil {
+			t.Fatalf("restore the file the crash left behind: %v", err)
+		}
+		return hub, incarnation
+	}
+	bootFailingRead := func(t *testing.T, hub *crashHub, failAt int) (*hubHostManager, *hostops.Store, int) {
+		hub.restartStateRoot(t)
+		cfg := mustLoadConfig(t, hub.configPath)
+		store, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+		if err != nil {
+			t.Fatalf("hostops.Open: %v", err)
+		}
+		legacy := legacyRecordsOf(t, hub.configPath)
+		previous := configReadFile
+		reads := 0
+		configReadFile = func(path string) ([]byte, error) {
+			reads++
+			if reads == failAt {
+				return nil, errors.New("injected read failure")
+			}
+			return previous(path)
+		}
+		defer func() { configReadFile = previous }()
+		doc := hostBootDocument(cfg.Config, legacy, store)
+		hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
+		if err != nil {
+			t.Fatalf("hostreg.NewSeeded: %v", err)
+		}
+		m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+			RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: hub.configPath,
+		}, hub.configPath, hosts, t.Logf)
+		return m, store, reads
+	}
+
+	hub, _ := crash(t)
+	_, _, total := bootFailingRead(t, hub, 0)
+	if total == 0 {
+		t.Fatal("recovery read hub.toml no times")
+	}
+	for failAt := 1; failAt <= total; failAt++ {
+		hub, incarnation := crash(t)
+		bootFailingRead(t, hub, failAt)
+
+		recovered, store, _ := bootFailingRead(t, hub, 0)
+
+		if _, got := testMutationIdentity(t, recovered, "side"); got != incarnation {
+			t.Fatalf("read %d failing: side serves incarnation %q after a clean restart, want %q", failAt, got, incarnation)
+		}
+		if _, tombstoned := mustRecords(t, store).Tombstones["side"]; tombstoned {
+			t.Fatalf("read %d failing: the never-landed removal left its tombstone", failAt)
+		}
+	}
+}
+
+// TestAnUnsyncedCompensationKeepsTheStagedRecordsThroughLaterWrites pins that
+// the staged records a compensation left in the store are not dropped by a later
+// write until the restored host file's directory is proven durable: a write that
+// leaves the host file as it is would otherwise discard the only evidence a
+// crash needs to roll the change back.
+func TestAnUnsyncedCompensationKeepsTheStagedRecordsThroughLaterWrites(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}})
+	m, store := hub.boot(t, false)
+	m.testOnlyAfterStage = func(name string) {
+		if err := m.cfg.hosts.Add(hostreg.Host{Name: name, SSH: "raced.example"}); err != nil {
+			t.Errorf("race the registry: %v", err)
+		}
+	}
+	syncFails := true
+	flakyHubTOMLDirSync(t, func(call int) bool { return call >= 2 && syncFails })
+	params := appwire.HostAddParams{Entry: appwire.HostEntry{Name: "new", Address: "new.example"}, MutationID: "failed-add"}
+	if _, err := m.AddResult(context.Background(), params); err == nil {
+		t.Fatal("the add succeeded although its registration failed")
+	}
+	m.testOnlyAfterStage = nil
+
+	entries := m.cfg.store.snapshot()
+	if err := m.persistHosts(entries, entries, hostPersistChange{recordsOnly: true}); err == nil {
+		t.Fatal("a write went through while the restored host file was not proven durable")
+	}
+	if _, held := mustRecords(t, store).StagedReceipts["new"]; !held {
+		t.Fatal("a later write dropped the staged marker before the restored host file was durable")
+	}
+
+	syncFails = false
+	if err := m.persistHosts(entries, entries, hostPersistChange{recordsOnly: true}); err != nil {
+		t.Fatalf("the write is still refused once the directory syncs: %v", err)
+	}
+	if _, held := mustRecords(t, store).StagedReceipts["new"]; held {
+		t.Fatal("the staged marker outlived the proven restore")
+	}
+}
+
+// TestNoSingleReadFailureWhileStagingARemovalLetsItFinalizeAsLanded is the
+// staging half of the read-failure rule: whichever one hub.toml read fails while
+// a removal stages, the removal either refuses or stages with evidence a
+// recovery can judge, so a crash before it reaches the file never costs the host
+// its identity.
+func TestNoSingleReadFailureWhileStagingARemovalLetsItFinalizeAsLanded(t *testing.T) {
+	stageAndCrash := func(t *testing.T, failAt int) (*crashHub, string, int) {
+		hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+		m, _ := hub.boot(t, false)
+		_, incarnation := testMutationIdentity(t, m, "side")
+		params := removeRequest(t, m, "side")
+		unlanded := fileBytes(t, hub.configPath)
+		armCut(m, cutStaged)
+		previous := configReadFile
+		reads := 0
+		configReadFile = func(path string) ([]byte, error) {
+			reads++
+			if reads == failAt {
+				return nil, errors.New("injected read failure")
+			}
+			return previous(path)
+		}
+		func() {
+			defer func() {
+				configReadFile = previous
+				if recovered := recover(); recovered != nil {
+					if _, crashed := recovered.(crashCut); !crashed {
+						panic(recovered)
+					}
+				}
+			}()
+			_, _ = m.RemoveResult(context.Background(), params)
+		}()
+		// Whatever staged never reached hub.toml.
+		if err := os.WriteFile(hub.configPath, unlanded, 0o600); err != nil {
+			t.Fatalf("restore the file the crash left behind: %v", err)
+		}
+		return hub, incarnation, reads
+	}
+	_, _, total := stageAndCrash(t, 0)
+	if total == 0 {
+		t.Fatal("staging read hub.toml no times")
+	}
+	for failAt := 1; failAt <= total; failAt++ {
+		hub, incarnation, _ := stageAndCrash(t, failAt)
+		hub.restartStateRoot(t)
+		store, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+		if err != nil {
+			t.Fatalf("hostops.Open: %v", err)
+		}
+		recovered := restartOver(t, hub.configPath, store)
+
+		if _, got := testMutationIdentity(t, recovered, "side"); got != incarnation {
+			t.Fatalf("read %d failing while staging: side serves incarnation %q after the crash, want %q", failAt, got, incarnation)
+		}
+		if _, tombstoned := mustRecords(t, store).Tombstones["side"]; tombstoned {
+			t.Fatalf("read %d failing while staging: the never-landed removal left its tombstone", failAt)
+		}
+	}
+}
+
+// TestBootFinalizationNeverRewritesTheHostList pins that settling a landed
+// commit's marker at boot writes records alone: a host edited in hub.toml after
+// the registry was built is the operator's to keep, not the registry's to put
+// back.
+func TestBootFinalizationNeverRewritesTheHostList(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, _ := hub.boot(t, false)
+	params := removeRequest(t, m, "side")
+	armCut(m, cutFlipped)
+	runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
+
+	hub.restartStateRoot(t)
+	store, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	doc := hostBootDocument(mustLoadConfig(t, hub.configPath).Config, legacyRecordsOf(t, hub.configPath), store)
+	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
+	if err != nil {
+		t.Fatalf("hostreg.NewSeeded: %v", err)
+	}
+	if err := writeHubTOMLHosts(hub.configPath, []hostreg.Host{{Name: "keep", SSH: "edited-by-hand.example"}}); err != nil {
+		t.Fatalf("edit hub.toml by hand: %v", err)
+	}
+	newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: hub.configPath,
+	}, hub.configPath, hosts, t.Logf)
+
+	var ssh string
+	for _, host := range mustLoadConfig(t, hub.configPath).Hosts {
+		if host.Name == "keep" {
+			ssh = host.SSH
+		}
+	}
+	if ssh != "edited-by-hand.example" {
+		t.Fatalf("boot finalization put the registry's host list over the operator's edit: keep.ssh = %q", ssh)
+	}
+}
+
+// TestBootRollbackWaitsUntilTheHostFileDirectoryIsDurable pins that a boot does
+// not clear a staged commit's records on the strength of a hub.toml whose
+// directory sync has not been proven: the file may be the restored one a
+// compensation left unsynced, and the records are the evidence a crash needs.
+func TestBootRollbackWaitsUntilTheHostFileDirectoryIsDurable(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, _ := hub.boot(t, false)
+	_, incarnation := testMutationIdentity(t, m, "side")
+	params := removeRequest(t, m, "side")
+	unlanded := fileBytes(t, hub.configPath)
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
+	if err := os.WriteFile(hub.configPath, unlanded, 0o600); err != nil {
+		t.Fatalf("restore the file the crash left behind: %v", err)
+	}
+
+	syncFails := true
+	flakyHubTOMLDirSync(t, func(int) bool { return syncFails })
+	hub.restartStateRoot(t)
+	store, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	waiting := restartOver(t, hub.configPath, store)
+
+	if _, held := mustRecords(t, store).StagedReceipts["side"]; !held {
+		t.Fatal("the boot cleared the staged records before the host file's directory was durable")
+	}
+	if waiting.mutationRefusal() == nil {
+		t.Fatal("host changes are taken while the staged commit is unsettled")
+	}
+
+	syncFails = false
+	hub.restartStateRoot(t)
+	store, err = hostops.Open(hostops.StorePath(hub.stateRoot))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	recovered := restartOver(t, hub.configPath, store)
+
+	if _, held := mustRecords(t, store).StagedReceipts["side"]; held {
+		t.Fatal("the staged records outlived a durable host file")
+	}
+	if _, got := testMutationIdentity(t, recovered, "side"); got != incarnation {
+		t.Fatalf("side serves incarnation %q after the rollback, want %q", got, incarnation)
+	}
+}
+
+// flippedEditCrash leaves an edit of "side" committed in hub.toml with its marker
+// past the flip, as a crash after the flip does, and returns the pieces a
+// compensation of it is built from.
+func flippedEditCrash(t *testing.T) (hub *crashHub, m *hubHostManager, store *hostops.Store, previous []hostreg.Host, marker HostStagedReceipt, edited []byte) {
+	t.Helper()
+	hub = newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, store = hub.boot(t, false)
+	previous = m.cfg.store.snapshot()
+	params := updateRequest(t, m, "side", appwire.HostEntry{Address: "edited.example"})
+	armCut(m, cutFlipped)
+	runUntilCrash(t, func() { _, _ = m.UpdateResult(context.Background(), params) })
+	marker, staged := m.cfg.store.stagedSnapshot()["side"]
+	if !staged || !markerPastFlip(marker) {
+		t.Fatalf("the crash left %+v, want a marker past its flip", marker)
+	}
+	return hub, m, store, previous, marker, fileBytes(t, hub.configPath)
+}
+
+// TestACompensationOfAFlippedCommitTakesTheFlipBackBeforeTheHostFile pins the
+// invariant recovery reads a flipped marker by: it is there only while hub.toml
+// holds the change. A compensation that cannot write the store therefore leaves
+// the host file alone, and one that can restores the file and drops the marker.
+func TestACompensationOfAFlippedCommitTakesTheFlipBackBeforeTheHostFile(t *testing.T) {
+	compensate := func(m *hubHostManager, previous []hostreg.Host, marker HostStagedReceipt) error {
+		return m.persistHosts(previous, previous, hostPersistChange{
+			dropMarker: "side", dropReceipt: marker.Key, hostFileFirst: true,
+		})
+	}
+
+	t.Run("store unwritable", func(t *testing.T) {
+		hub, m, _, previous, marker, edited := flippedEditCrash(t)
+		storeFile := hostops.StorePath(hub.stateRoot)
+		if err := os.Remove(storeFile); err != nil {
+			t.Fatalf("remove the store file: %v", err)
+		}
+		if err := os.MkdirAll(filepath.Join(storeFile, "occupied"), 0o700); err != nil {
+			t.Fatalf("occupy the store file's path: %v", err)
+		}
+
+		if err := compensate(m, previous, marker); err == nil {
+			t.Fatal("the compensation reported success although the store could not be written")
+		}
+
+		if !bytes.Equal(fileBytes(t, hub.configPath), edited) {
+			t.Fatal("the host file was restored although the flip could not be taken back")
+		}
+	})
+
+	t.Run("store writable", func(t *testing.T) {
+		hub, m, store, previous, marker, edited := flippedEditCrash(t)
+
+		if err := compensate(m, previous, marker); err != nil {
+			t.Fatalf("compensate: %v", err)
+		}
+
+		if bytes.Equal(fileBytes(t, hub.configPath), edited) {
+			t.Fatal("the host file still holds the compensated edit")
+		}
+		if staged := mustRecords(t, store).StagedReceipts; len(staged) != 0 {
+			t.Fatalf("the compensation left staged markers: %+v", staged)
+		}
+	})
+}
+
+// TestAnIdenticalReAddAfterAFlippedRemovalIsANewHost pins that a removal past its
+// flip stays landed when the operator recreates the host with the same settings:
+// the file cannot tell a recreated host from a restored one, and rolling the
+// removal back would hand the new host the old incarnation and let a retry of the
+// original removal take it down.
+func TestAnIdenticalReAddAfterAFlippedRemovalIsANewHost(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, _ := hub.boot(t, false)
+	_, incarnation := testMutationIdentity(t, m, "side")
+	before := fileBytes(t, hub.configPath)
+	params := removeRequest(t, m, "side")
+	armCut(m, cutFlipped)
+	runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
+	if err := os.WriteFile(hub.configPath, before, 0o600); err != nil {
+		t.Fatalf("recreate the host by hand: %v", err)
+	}
+
+	recovered, _ := hub.boot(t, true)
+
+	if _, got := testMutationIdentity(t, recovered, "side"); got == incarnation {
+		t.Fatal("the recreated host was handed the removed host's incarnation")
+	}
+	// A retry of the original removal replays its recorded outcome; it never
+	// removes the host the operator recreated.
+	_, _ = recovered.RemoveResult(context.Background(), params)
+	if _, ok := recovered.cfg.hosts.Get("side"); !ok {
+		t.Fatal("a retry of the original removal took down the recreated host")
+	}
+}
+
+// TestARecreatedHostIsNotBlockedByTheSupersededRemovalsTeardown pins that the
+// teardown a flipped removal left to finish is a no-op once the operator has
+// recreated the host: it belongs to an incarnation that is gone, and must not
+// leave an open remnant that fences the new one.
+func TestARecreatedHostIsNotBlockedByTheSupersededRemovalsTeardown(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, _ := hub.boot(t, false)
+	before := fileBytes(t, hub.configPath)
+	params := removeRequest(t, m, "side")
+	armCut(m, cutFlipped)
+	runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
+	if err := os.WriteFile(hub.configPath, before, 0o600); err != nil {
+		t.Fatalf("recreate the host by hand: %v", err)
+	}
+
+	recovered, store := hub.boot(t, true)
+
+	if open := mustRecords(t, store).TeardownRemnants; len(open) != 0 {
+		t.Fatalf("the superseded removal left %d open remnant(s) fencing the recreated host", len(open))
+	}
+	update := updateRequest(t, recovered, "side", appwire.HostEntry{Address: "side2.example"})
+	if _, err := recovered.UpdateResult(context.Background(), update); err != nil {
+		t.Fatalf("the recreated host cannot be edited: %v", err)
+	}
+}
+
+// TestAStagedRemovalIsNotMirroredAsRemovedUntilItsFlip pins that the operation
+// store's retention does not treat a host as removed while its removal can still
+// be rolled back: the mirror marks the removal only once the commit is past its
+// flip, so a restart long after a crash cannot compact the history of a host that
+// is still configured.
+func TestAStagedRemovalIsNotMirroredAsRemovedUntilItsFlip(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, store := hub.boot(t, false)
+	params := removeRequest(t, m, "side")
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
+
+	if _, marked := store.RemovedHosts()["side"]; marked {
+		t.Fatal("the store counts a host as removed before its removal reached hub.toml")
+	}
+
+	m, store = hub.boot(t, true)
+	params = removeRequest(t, m, "keep")
+	armCut(m, cutFlipped)
+	runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
+
+	if _, marked := store.RemovedHosts()["keep"]; !marked {
+		t.Fatal("the store does not count a host as removed after its removal reached hub.toml")
+	}
+}
+
+// TestTakingBackARemovalsFlipClearsItsRemovedMark pins that a removal returned to
+// its pre-flip phase is no longer counted as removed by the operation store: a
+// crash after that, before the host file is restored, must not leave a
+// configured host whose history the store's retention would compact.
+func TestTakingBackARemovalsFlipClearsItsRemovedMark(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, store := hub.boot(t, false)
+	params := removeRequest(t, m, "side")
+	armCut(m, cutFlipped)
+	runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
+	if _, marked := store.RemovedHosts()["side"]; !marked {
+		t.Fatal("the flipped removal is not counted as removed")
+	}
+
+	if err := (hostOpsRecordStore{path: hub.configPath, ops: store, logf: t.Logf}).takeBackFlip("side"); err != nil {
+		t.Fatalf("takeBackFlip: %v", err)
+	}
+
+	if _, marked := store.RemovedHosts()["side"]; marked {
+		t.Fatal("the store still counts a host as removed after its removal was taken back to before its flip")
+	}
+}
+
+// TestACompensationDoesNotRelyOnAnUnprovenPreFlipMarker pins that taking a flip
+// back accepts a marker already before its flip only once the store's directory
+// is durable: a restore that published without syncing may be lost, bringing the
+// older flipped marker back beside a host file the compensation already
+// restored.
+func TestACompensationDoesNotRelyOnAnUnprovenPreFlipMarker(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "hub.toml")
+	if err := writeHubTOMLHosts(configPath, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}}); err != nil {
+		t.Fatalf("seed hub.toml: %v", err)
+	}
+	storePath := hostops.StorePath(t.TempDir())
+	dir := flakyDirSync{storeDir: filepath.Dir(storePath)}
+	store, err := hostops.OpenWithDirSync(storePath, dir.sync)
+	if err != nil {
+		t.Fatalf("OpenWithDirSync: %v", err)
+	}
+	m := restartOver(t, configPath, store)
+	params := removeRequest(t, m, "side")
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
+	record := hostOpsRecordStore{path: configPath, ops: store, logf: t.Logf}
+
+	dir.failing.Store(true)
+	if err := record.takeBackFlip("side"); err == nil {
+		t.Fatal("a pre-flip marker was accepted although the store's directory is not durable")
+	}
+
+	dir.failing.Store(false)
+	if err := record.takeBackFlip("side"); err != nil {
+		t.Fatalf("takeBackFlip with a durable store: %v", err)
+	}
+}
+
+// TestAReAddRefusedAfterStagingKeepsTheRemovedHostsHistory pins that the live
+// compensation of a re-add puts back what the staging write purged to make room
+// for it: the tombstone, its receipts and the spent counters stay, because the
+// removal still stands.
+func TestAReAddRefusedAfterStagingKeepsTheRemovedHostsHistory(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, store := hub.boot(t, false)
+	if _, err := m.RemoveResult(context.Background(), removeRequest(t, m, "side")); err != nil {
+		t.Fatalf("remove side: %v", err)
+	}
+	before := mustRecords(t, store)
+	if _, tombstoned := before.Tombstones["side"]; !tombstoned {
+		t.Fatal("the removal left no tombstone")
+	}
+	staged := false
+	var spent HostGeneration
+	m.testOnlyAfterStage = func(name string) {
+		staged = true
+		spent = mustRecords(t, store).Generations[name]
+		if err := m.cfg.hosts.Add(hostreg.Host{Name: name, SSH: "raced.example"}); err != nil {
+			t.Errorf("race the registry: %v", err)
+		}
+	}
+
+	if _, err := m.AddResult(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "side", Address: "again.example"}, MutationID: "re-add-side",
+	}); err == nil {
+		t.Fatal("the re-add succeeded although its registration failed")
+	}
+
+	if !staged {
+		t.Fatal("the re-add refused before it staged")
+	}
+	after := mustRecords(t, store)
+	_, tombstoned := after.Tombstones["side"]
+	if !tombstoned {
+		t.Fatal("the refused re-add took the removed host's tombstone with it")
+	}
+	if got, want := after.Tombstones["side"], before.Tombstones["side"]; got.Generation != want.Generation || got.PresenceEpoch != want.PresenceEpoch || got.IncarnationID != want.IncarnationID {
+		t.Fatalf("the refused re-add changed the removal's identity: %d/%q/%d, was %d/%q/%d (operation records are marked by it)",
+			got.Generation, got.IncarnationID, got.PresenceEpoch, want.Generation, want.IncarnationID, want.PresenceEpoch)
+	}
+	boundary, _ := store.Boundary("side")
+	if marker := store.RemovedHosts()["side"]; marker.Generation != boundary.Generation || marker.IncarnationID != boundary.IncarnationID {
+		t.Fatalf("the operation store's boundary %+v and removed mark %+v disagree, so its removed-host retention would skip the host", boundary, marker)
+	}
+	if len(after.MutationReceipts) < len(before.MutationReceipts) {
+		t.Fatalf("the refused re-add lost receipts: %d before, %d after", len(before.MutationReceipts), len(after.MutationReceipts))
+	}
+	if after.Generations["side"].Generation < spent.Generation || after.Generations["side"].PresenceEpoch < spent.PresenceEpoch || spent.PresenceEpoch <= before.Generations["side"].PresenceEpoch {
+		t.Fatalf("the refused re-add forgot the counters it spent: %+v, it spent %+v after %+v", after.Generations["side"], spent, before.Generations["side"])
+	}
+}
+
+// TestBootFinalizationWaitsUntilTheHostFileDirectoryIsDurable is the landed half
+// of the rule the rollback follows: a commit whose host change is in hub.toml is
+// not finalized, and its staged marker not cleared, until the file's directory is
+// proven durable.
+func TestBootFinalizationWaitsUntilTheHostFileDirectoryIsDurable(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, _ := hub.boot(t, false)
+	params := removeRequest(t, m, "side")
+	armCut(m, cutFlipped)
+	runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
+
+	syncFails := true
+	flakyHubTOMLDirSync(t, func(int) bool { return syncFails })
+	hub.restartStateRoot(t)
+	store, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	waiting := restartOver(t, hub.configPath, store)
+
+	if _, held := mustRecords(t, store).StagedReceipts["side"]; !held {
+		t.Fatal("the boot finalized a landed commit before the host file's directory was durable")
+	}
+	if waiting.mutationRefusal() == nil {
+		t.Fatal("host changes are taken while the staged commit is unsettled")
+	}
+
+	syncFails = false
+	hub.restartStateRoot(t)
+	store, err = hostops.Open(hostops.StorePath(hub.stateRoot))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	restartOver(t, hub.configPath, store)
+
+	if _, held := mustRecords(t, store).StagedReceipts["side"]; held {
+		t.Fatal("the landed commit stayed unfinalized once the directory was durable")
+	}
+}
+
+// TestALandedRemovalRecoveredAfterItsRetentionStillMarksTheRemovedHost pins the
+// order of boot's passes: the removed host's operation records and token rows are
+// marked before the finalizer's write can expire the tombstone that says which
+// host was removed, so a removal recovered after its retention window leaves no
+// live-looking rows behind.
+func TestALandedRemovalRecoveredAfterItsRetentionStillMarksTheRemovedHost(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, store := hub.boot(t, false)
+	side, _ := m.cfg.hosts.Get("side")
+	mintHostToken(t, store, side)
+	params := removeRequest(t, m, "side")
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
+
+	hub.restartStateRoot(t)
+	reopened, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	doc := hostBootDocument(mustLoadConfig(t, hub.configPath).Config, legacyRecordsOf(t, hub.configPath), reopened)
+	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
+	if err != nil {
+		t.Fatalf("hostreg.NewSeeded: %v", err)
+	}
+	newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostOpsStore: reopened, RemoteHostConfigPath: hub.configPath,
+		HostTombstoneRetention: time.Nanosecond,
+	}, hub.configPath, hosts, t.Logf)
+
+	if _, ok := reopened.OutstandingToken("side"); ok {
+		t.Fatal("the removed host's token row survived a recovery past its retention window")
+	}
+}
+
+// TestBootDoesNotFinalizeALandedRemovalWhoseRemovedHostPassDidNotSettle pins that
+// a removed-host pass that cannot be confirmed stops the settlement: the
+// finalizer's write could otherwise expire the tombstone that is the only
+// evidence of which host the unmarked records belong to.
+func TestBootDoesNotFinalizeALandedRemovalWhoseRemovedHostPassDidNotSettle(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, store := hub.boot(t, false)
+	side, _ := m.cfg.hosts.Get("side")
+	mintHostToken(t, store, side)
+	params := removeRequest(t, m, "side")
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
+
+	boot := func(syncFails bool) (*hubHostManager, *hostops.Store) {
+		hub.restartStateRoot(t)
+		storePath := hostops.StorePath(hub.stateRoot)
+		dir := flakyDirSync{storeDir: filepath.Dir(storePath)}
+		dir.failing.Store(syncFails)
+		reopened, err := hostops.OpenWithDirSync(storePath, dir.sync)
+		if err != nil {
+			t.Fatalf("OpenWithDirSync: %v", err)
+		}
+		doc := hostBootDocument(mustLoadConfig(t, hub.configPath).Config, legacyRecordsOf(t, hub.configPath), reopened)
+		hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
+		if err != nil {
+			t.Fatalf("hostreg.NewSeeded: %v", err)
+		}
+		return newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+			RemoteHostRegistry: hosts, RemoteHostOpsStore: reopened, RemoteHostConfigPath: hub.configPath,
+		}, hub.configPath, hosts, t.Logf), reopened
+	}
+
+	waiting, reopened := boot(true)
+	if _, held := mustRecords(t, reopened).StagedReceipts["side"]; !held {
+		t.Fatal("the boot finalized a landed removal although its removed-host pass was not confirmed")
+	}
+	if waiting.mutationRefusal() == nil {
+		t.Fatal("host changes are taken while the staged commit is unsettled")
+	}
+
+	_, settled := boot(false)
+	if _, held := mustRecords(t, settled).StagedReceipts["side"]; held {
+		t.Fatal("the landed removal stayed unfinalized once the pass could be confirmed")
+	}
+}
+
+// TestAShortRetentionDoesNotExpireAStagedRemovalsTombstone pins that a tombstone
+// an unsettled staged removal needs is not expired by the write that stages it:
+// recovery reads it to tell a host that was never removed from one that was.
+func TestAShortRetentionDoesNotExpireAStagedRemovalsTombstone(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	storePath := hostops.StorePath(hub.stateRoot)
+	store, err := hostops.Open(storePath)
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	doc := hostBootDocument(mustLoadConfig(t, hub.configPath).Config, legacyRecordsOf(t, hub.configPath), store)
+	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
+	if err != nil {
+		t.Fatalf("hostreg.NewSeeded: %v", err)
+	}
+	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: hub.configPath,
+		HostTombstoneRetention: time.Nanosecond,
+	}, hub.configPath, hosts, t.Logf)
+	params := removeRequest(t, m, "side")
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
+
+	if _, held := mustRecords(t, store).Tombstones["side"]; !held {
+		t.Fatal("the write that staged the removal expired its tombstone, which recovery needs")
+	}
+}
+
+// TestAReAddWhoseHostFileSyncFailsAtStagingKeepsItsSpentCounters covers the
+// staging write whose hub.toml rename landed and whose directory sync failed: the
+// manager never installed the staged marker, but the store recorded the re-add's
+// counters, and the compensation must not hand them out again.
+func TestAReAddWhoseHostFileSyncFailsAtStagingKeepsItsSpentCounters(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, store := hub.boot(t, false)
+	if _, err := m.RemoveResult(context.Background(), removeRequest(t, m, "side")); err != nil {
+		t.Fatalf("remove side: %v", err)
+	}
+	before := mustRecords(t, store)
+	flakyHubTOMLDirSync(t, func(call int) bool { return call == 1 })
+
+	if _, err := m.AddResult(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "side", Address: "again.example"}, MutationID: "re-add-side",
+	}); err == nil {
+		t.Fatal("the re-add succeeded although its host file sync failed")
+	}
+
+	after := mustRecords(t, store)
+	if _, tombstoned := after.Tombstones["side"]; !tombstoned {
+		t.Fatal("the refused re-add took the removed host's tombstone with it")
+	}
+	if after.Generations["side"].Generation <= before.Generations["side"].Generation || after.Generations["side"].PresenceEpoch <= before.Generations["side"].PresenceEpoch {
+		t.Fatalf("the refused re-add forgot the counters it spent: %+v, was %+v", after.Generations["side"], before.Generations["side"])
+	}
+}
+
+// TestARolledBackReAddsBoundaryOutlivesTheTombstoneExpiry pins that the
+// historical boundary of a removed host stays the removal's own after its
+// tombstone expires: the first write after the retention window must not swap
+// the spent counters in for it, or the store's removed-host mark stops agreeing
+// and its retention skips the host.
+func TestARolledBackReAddsBoundaryOutlivesTheTombstoneExpiry(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, store := hub.boot(t, false)
+	if _, err := m.RemoveResult(context.Background(), removeRequest(t, m, "side")); err != nil {
+		t.Fatalf("remove side: %v", err)
+	}
+	m.testOnlyAfterStage = func(name string) {
+		if err := m.cfg.hosts.Add(hostreg.Host{Name: name, SSH: "raced.example"}); err != nil {
+			t.Errorf("race the registry: %v", err)
+		}
+	}
+	if _, err := m.AddResult(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "side", Address: "again.example"}, MutationID: "re-add-side",
+	}); err == nil {
+		t.Fatal("the re-add succeeded although its registration failed")
+	}
+	m.testOnlyAfterStage = nil
+	if mark := mustRecords(t, store).Generations["side"]; mark.Generation <= mustRecords(t, store).Tombstones["side"].Generation {
+		t.Fatalf("the fixture's mark %+v does not sit above the tombstone", mark)
+	}
+
+	hub.restartStateRoot(t)
+	reopened, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	doc := hostBootDocument(mustLoadConfig(t, hub.configPath).Config, legacyRecordsOf(t, hub.configPath), reopened)
+	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
+	if err != nil {
+		t.Fatalf("hostreg.NewSeeded: %v", err)
+	}
+	expiring := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostOpsStore: reopened, RemoteHostConfigPath: hub.configPath,
+		HostTombstoneRetention: time.Nanosecond,
+	}, hub.configPath, hosts, t.Logf)
+	if _, err := expiring.AddResult(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "other", Address: "other.example"}, MutationID: "add-other",
+	}); err != nil {
+		t.Fatalf("add other: %v", err)
+	}
+
+	if _, kept := mustRecords(t, reopened).Tombstones["side"]; kept {
+		t.Fatal("the fixture's tombstone did not expire")
+	}
+	boundary, _ := reopened.Boundary("side")
+	if marker := reopened.RemovedHosts()["side"]; marker.Generation != boundary.Generation || marker.IncarnationID != boundary.IncarnationID {
+		t.Fatalf("after the expiry the boundary %+v and the removed mark %+v disagree", boundary, marker)
+	}
+}
+
+// TestAnAddPastItsRegistrationIsNotRolledBackByALaterEditOfTheFile pins that an
+// add whose registration completed before a crash is judged by that, not by what
+// hub.toml holds after a hand edit: the marker is flipped before the registry
+// insert, so recovery finalizes the add and keeps its receipt.
+func TestAnAddPastItsRegistrationIsNotRolledBackByALaterEditOfTheFile(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, _ := hub.boot(t, false)
+	if _, err := m.RemoveResult(context.Background(), removeRequest(t, m, "side")); err != nil {
+		t.Fatalf("remove side: %v", err)
+	}
+	// A re-add forgets the removed host's cached rows right after it registers:
+	// the point between the registry insert and the finalizing write.
+	m.cfg.forgetLastGoodThreads = func(string) { panic(crashCut{}) }
+	params := appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "again.example"}, MutationID: "re-add-side"}
+	runUntilCrash(t, func() { _, _ = m.AddResult(context.Background(), params) })
+	if err := writeHubTOMLHosts(hub.configPath, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "edited-by-hand.example"}}); err != nil {
+		t.Fatalf("edit hub.toml by hand: %v", err)
+	}
+
+	_, store := hub.boot(t, true)
+
+	kept := false
+	for key := range mustRecords(t, store).MutationReceipts {
+		if scope, ok := parseHostReceiptScopedKey(key); ok && scope.Name == "side" && scope.Kind == hostMutationAdd {
+			kept = true
+		}
+	}
+	if !kept {
+		t.Fatal("recovery rolled back an add whose registration had completed")
+	}
+}
+
+// TestAReAddWhoseHostFileWriteFailsBeforeTheRenameKeepsItsSpentCounters covers a
+// staging write whose records are durable and whose host file write fails before
+// its rename: the records go back to what they were, with the counters the
+// refused attempt spent still spent.
+func TestAReAddWhoseHostFileWriteFailsBeforeTheRenameKeepsItsSpentCounters(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, store := hub.boot(t, false)
+	if _, err := m.RemoveResult(context.Background(), removeRequest(t, m, "side")); err != nil {
+		t.Fatalf("remove side: %v", err)
+	}
+	before := mustRecords(t, store)
+	var spent HostGeneration
+	previous := configReadFile
+	configReadFile = func(path string) ([]byte, error) {
+		if mark := mustRecords(t, store).Generations["side"]; spent.Generation == 0 && mark.Generation > before.Generations["side"].Generation {
+			spent = mark
+			return nil, errors.New("injected read failure")
+		}
+		return previous(path)
+	}
+	t.Cleanup(func() { configReadFile = previous })
+
+	_, err := m.AddResult(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "side", Address: "again.example"}, MutationID: "re-add-side",
+	})
+	configReadFile = previous
+	if err == nil {
+		t.Fatal("the re-add succeeded although its host file write failed")
+	}
+	if spent.Generation == 0 {
+		t.Fatal("the fixture never failed a host file write after the records were durable")
+	}
+
+	after := mustRecords(t, store)
+	if _, tombstoned := after.Tombstones["side"]; !tombstoned {
+		t.Fatal("the refused re-add took the removed host's tombstone with it")
+	}
+	if mark := after.Generations["side"]; mark.Generation < spent.Generation || mark.PresenceEpoch < spent.PresenceEpoch {
+		t.Fatalf("the refused re-add forgot the counters it spent: %+v, it spent %+v", mark, spent)
+	}
+
+	// An unrelated write after the refusal carries the manager's view of the
+	// counters, which must be the restored ones.
+	if _, err := m.AddResult(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "other", Address: "other.example"}, MutationID: "add-other",
+	}); err != nil {
+		t.Fatalf("add other: %v", err)
+	}
+	if mark := mustRecords(t, store).Generations["side"]; mark.Generation < spent.Generation || mark.PresenceEpoch < spent.PresenceEpoch {
+		t.Fatalf("an unrelated write lowered the spent counters: %+v, it spent %+v", mark, spent)
+	}
+}
+
+// TestBootRollbackOfAnUnlandedReAddGivesBackThePrunedMarkersItEvicted pins that
+// the replay guards a re-add's staging write pushed out of a full marker set come
+// back with the rest of the history it consumed: a retry of an old add whose
+// guard disappeared would otherwise recreate the removed host.
+func TestBootRollbackOfAnUnlandedReAddGivesBackThePrunedMarkersItEvicted(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, store := hub.boot(t, false)
+	if _, err := m.UpdateResult(context.Background(), updateRequest(t, m, "side", appwire.HostEntry{Address: "edited.example"})); err != nil {
+		t.Fatalf("edit side: %v", err)
+	}
+	if _, err := m.RemoveResult(context.Background(), removeRequest(t, m, "side")); err != nil {
+		t.Fatalf("remove side: %v", err)
+	}
+	// Fill the name's pruned markers to the bound with recent guards.
+	set := mustRecords(t, store)
+	filled := map[string]struct{}{}
+	for i := range 64 {
+		key := hostMutationReceiptKey(fmt.Sprintf("old-add-%02d", i), "side", hostMutationAdd, hostMutationIdentity{Generation: 1, IncarnationID: "inc-old"})
+		set.PrunedReceipts[key] = PrunedReceiptMarker{PrunedAt: hostInstant(time.Now().Add(-time.Duration(i+1) * time.Minute))}
+		filled[key] = struct{}{}
+	}
+	family, err := encodeHostRecords(set)
+	if err != nil {
+		t.Fatalf("encode the filled family: %v", err)
+	}
+	if err := store.CommitHostRecords(family, hostMirrorFor(set, store.Boundaries())); err != nil {
+		t.Fatalf("commit the filled family: %v", err)
+	}
+	m, _ = hub.boot(t, true)
+
+	unlanded := fileBytes(t, hub.configPath)
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() {
+		_, _ = m.AddResult(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "again.example"}, MutationID: "re-add-side"})
+	})
+	if err := os.WriteFile(hub.configPath, unlanded, 0o600); err != nil {
+		t.Fatalf("put the pre-mutation hub.toml back: %v", err)
+	}
+
+	_, store = hub.boot(t, true)
+
+	got := mustRecords(t, store).PrunedReceipts
+	for key := range filled {
+		if _, kept := got[key]; !kept {
+			t.Fatalf("the rolled-back re-add left replay guard %q evicted", key)
+		}
+	}
+}
+
+// TestAReAddRefusedAfterItsFlipGivesBackThePrunedMarkersItEvicted is the live
+// half of the rollback above: the flip that follows the staging write must keep
+// what staging saved, so a registration that refuses still gives the evicted
+// replay guards back.
+func TestAReAddRefusedAfterItsFlipGivesBackThePrunedMarkersItEvicted(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, store := hub.boot(t, false)
+	if _, err := m.UpdateResult(context.Background(), updateRequest(t, m, "side", appwire.HostEntry{Address: "edited.example"})); err != nil {
+		t.Fatalf("edit side: %v", err)
+	}
+	if _, err := m.RemoveResult(context.Background(), removeRequest(t, m, "side")); err != nil {
+		t.Fatalf("remove side: %v", err)
+	}
+	set := mustRecords(t, store)
+	filled := map[string]struct{}{}
+	for i := range 64 {
+		key := hostMutationReceiptKey(fmt.Sprintf("old-add-%02d", i), "side", hostMutationAdd, hostMutationIdentity{Generation: 1, IncarnationID: "inc-old"})
+		set.PrunedReceipts[key] = PrunedReceiptMarker{PrunedAt: hostInstant(time.Now().Add(-time.Duration(i+1) * time.Minute))}
+		filled[key] = struct{}{}
+	}
+	family, err := encodeHostRecords(set)
+	if err != nil {
+		t.Fatalf("encode the filled family: %v", err)
+	}
+	if err := store.CommitHostRecords(family, hostMirrorFor(set, store.Boundaries())); err != nil {
+		t.Fatalf("commit the filled family: %v", err)
+	}
+	m, store = hub.boot(t, true)
+	m.testOnlyAfterStage = func(name string) {
+		if err := m.cfg.hosts.Add(hostreg.Host{Name: name, SSH: "raced.example"}); err != nil {
+			t.Errorf("race the registry: %v", err)
+		}
+	}
+
+	if _, err := m.AddResult(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "side", Address: "again.example"}, MutationID: "re-add-side",
+	}); err == nil {
+		t.Fatal("the re-add succeeded although its registration failed")
+	}
+
+	got := mustRecords(t, store).PrunedReceipts
+	for key := range filled {
+		if _, kept := got[key]; !kept {
+			t.Fatalf("the refused re-add left replay guard %q evicted", key)
+		}
+	}
+}
+
+// TestSpentCountersOfAnExpiredNameReachTheManagerAfterARefusal covers a removed
+// name whose tombstone has already expired: only its generation mark is left, and
+// the counters a refused re-add spent beyond it must reach the manager too.
+func TestSpentCountersOfAnExpiredNameReachTheManagerAfterARefusal(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	store, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	doc := hostBootDocument(mustLoadConfig(t, hub.configPath).Config, legacyRecordsOf(t, hub.configPath), store)
+	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
+	if err != nil {
+		t.Fatalf("hostreg.NewSeeded: %v", err)
+	}
+	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: hub.configPath,
+		HostTombstoneRetention: time.Nanosecond,
+	}, hub.configPath, hosts, t.Logf)
+	if _, err := m.RemoveResult(context.Background(), removeRequest(t, m, "side")); err != nil {
+		t.Fatalf("remove side: %v", err)
+	}
+	// An unrelated write after the removal expires the tombstone, leaving the mark.
+	if _, err := m.AddResult(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "first", Address: "first.example"}, MutationID: "add-first",
+	}); err != nil {
+		t.Fatalf("add first: %v", err)
+	}
+	before := mustRecords(t, store)
+	if _, tombstoned := before.Tombstones["side"]; tombstoned {
+		t.Fatal("the fixture's tombstone did not expire")
+	}
+	var spent HostGeneration
+	previous := configReadFile
+	configReadFile = func(path string) ([]byte, error) {
+		if mark := mustRecords(t, store).Generations["side"]; spent.Generation == 0 && mark.Generation > before.Generations["side"].Generation {
+			spent = mark
+			return nil, errors.New("injected read failure")
+		}
+		return previous(path)
+	}
+	t.Cleanup(func() { configReadFile = previous })
+	_, err = m.AddResult(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "side", Address: "again.example"}, MutationID: "re-add-side",
+	})
+	configReadFile = previous
+	if err == nil || spent.Generation == 0 {
+		t.Fatalf("the fixture's host file write did not fail after the records were durable (err %v)", err)
+	}
+
+	if _, err := m.AddResult(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "second", Address: "second.example"}, MutationID: "add-second",
+	}); err != nil {
+		t.Fatalf("add second: %v", err)
+	}
+	if mark := mustRecords(t, store).Generations["side"]; mark.Generation < spent.Generation || mark.PresenceEpoch < spent.PresenceEpoch {
+		t.Fatalf("an unrelated write lowered the spent counters: %+v, it spent %+v", mark, spent)
+	}
+}
+
+// TestBootRollbackOfAnUnlandedReAddGivesBackTheRepairAttemptsItPurged pins the
+// teardown history of a removal that was repaired before its host came back: the
+// re-add's staging write purges the resolved remnant and its attempt records, and
+// rolling the re-add back returns both.
+func TestBootRollbackOfAnUnlandedReAddGivesBackTheRepairAttemptsItPurged(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	m, store := hub.boot(t, false)
+	m.testOnlyTeardown = func(context.Context, string) error { return errors.New("injected teardown failure") }
+	removal, err := m.RemoveResult(context.Background(), removeRequest(t, m, "side"))
+	if err != nil || removal.HostMutationTeardownFailureRemoved == nil {
+		t.Fatalf("Remove(side) = (%+v, %v), want the teardown-failure arm", removal, err)
+	}
+	m.testOnlyTeardown = nil
+	if _, err := m.TeardownRetry(context.Background(), appwire.HostTeardownRetryParams{RemnantID: removal.HostMutationTeardownFailureRemoved.RemnantID}); err != nil {
+		t.Fatalf("TeardownRetry: %v", err)
+	}
+	before := mustRecords(t, store)
+	if len(before.TeardownAttempts) == 0 {
+		t.Fatal("the repair left no attempt record")
+	}
+	m, _ = hub.boot(t, true)
+	unlanded := fileBytes(t, hub.configPath)
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() {
+		_, _ = m.AddResult(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "again.example"}, MutationID: "re-add-side"})
+	})
+	if err := os.WriteFile(hub.configPath, unlanded, 0o600); err != nil {
+		t.Fatalf("put the pre-mutation hub.toml back: %v", err)
+	}
+
+	_, store = hub.boot(t, true)
+
+	got := mustRecords(t, store)
+	for id := range before.TeardownAttempts {
+		if _, kept := got.TeardownAttempts[id]; !kept {
+			t.Fatalf("the rolled-back re-add left repair attempt %q purged", id)
+		}
+	}
+}
+
+// TestAReAddAfterTheTombstoneExpiredKeepsItsSpentCountersWhenStagingIsUnconfirmed
+// covers the staging write that reached hub.toml with its directory sync failing
+// for a name whose tombstone is gone: no consumed record exists to carry the
+// counters, and the compensation must not write the older mark back over them.
+func TestAReAddAfterTheTombstoneExpiredKeepsItsSpentCountersWhenStagingIsUnconfirmed(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	store, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	doc := hostBootDocument(mustLoadConfig(t, hub.configPath).Config, legacyRecordsOf(t, hub.configPath), store)
+	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
+	if err != nil {
+		t.Fatalf("hostreg.NewSeeded: %v", err)
+	}
+	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+		RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: hub.configPath,
+		HostTombstoneRetention: time.Nanosecond,
+	}, hub.configPath, hosts, t.Logf)
+	if _, err := m.RemoveResult(context.Background(), removeRequest(t, m, "side")); err != nil {
+		t.Fatalf("remove side: %v", err)
+	}
+	if _, err := m.AddResult(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "first", Address: "first.example"}, MutationID: "add-first",
+	}); err != nil {
+		t.Fatalf("add first: %v", err)
+	}
+	before := mustRecords(t, store)
+	if _, tombstoned := before.Tombstones["side"]; tombstoned {
+		t.Fatal("the fixture's tombstone did not expire")
+	}
+	flakyHubTOMLDirSync(t, func(call int) bool { return call == 1 })
+
+	if _, err := m.AddResult(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "side", Address: "again.example"}, MutationID: "re-add-side",
+	}); err == nil {
+		t.Fatal("the re-add succeeded although its host file sync failed")
+	}
+
+	after := mustRecords(t, store).Generations["side"]
+	if after.Generation <= before.Generations["side"].Generation || after.PresenceEpoch <= before.Generations["side"].PresenceEpoch {
+		t.Fatalf("the refused re-add forgot the counters it spent: %+v, was %+v", after, before.Generations["side"])
+	}
+}
+
+// TestBootRollbackOfAnUnlandedReAddGivesBackReceiptsItsCompactionDeleted pins
+// that the history a re-add's staging write consumed includes what the same
+// write's compaction removed: a removal receipt older than the superseded window
+// is deleted by the staging write, and the rollback returns it with the
+// tombstone it belongs to.
+func TestBootRollbackOfAnUnlandedReAddGivesBackReceiptsItsCompactionDeleted(t *testing.T) {
+	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
+	bootLongRetention := func() (*hubHostManager, *hostops.Store) {
+		hub.restartStateRoot(t)
+		store, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+		if err != nil {
+			t.Fatalf("hostops.Open: %v", err)
+		}
+		doc := hostBootDocument(mustLoadConfig(t, hub.configPath).Config, legacyRecordsOf(t, hub.configPath), store)
+		hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
+		if err != nil {
+			t.Fatalf("hostreg.NewSeeded: %v", err)
+		}
+		return newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{
+			RemoteHostRegistry: hosts, RemoteHostOpsStore: store, RemoteHostConfigPath: hub.configPath,
+			HostTombstoneRetention: 720 * time.Hour,
+		}, hub.configPath, hosts, t.Logf), store
+	}
+	m, store := bootLongRetention()
+	removal, err := m.RemoveResult(context.Background(), removeRequest(t, m, "side"))
+	if err != nil || removal.HostMutationCommittedRemoved == nil {
+		t.Fatalf("Remove(side) = (%+v, %v)", removal, err)
+	}
+	removalKeys := map[string]struct{}{}
+	for key := range mustRecords(t, store).MutationReceipts {
+		if scope, ok := parseHostReceiptScopedKey(key); ok && scope.Name == "side" && scope.Kind == hostMutationRemove {
+			removalKeys[key] = struct{}{}
+		}
+	}
+	if len(removalKeys) == 0 {
+		t.Fatal("the removal left no receipt")
+	}
+	unlanded := fileBytes(t, hub.configPath)
+	m.cfg.now = func() time.Time { return time.Now().Add(8 * 24 * time.Hour) }
+	armCut(m, cutStaged)
+	runUntilCrash(t, func() {
+		_, _ = m.AddResult(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "again.example"}, MutationID: "re-add-side"})
+	})
+	if err := os.WriteFile(hub.configPath, unlanded, 0o600); err != nil {
+		t.Fatalf("put the pre-mutation hub.toml back: %v", err)
+	}
+
+	_, store = bootLongRetention()
+
+	got := mustRecords(t, store).MutationReceipts
+	for key := range removalKeys {
+		if _, kept := got[key]; !kept {
+			t.Fatalf("the rolled-back re-add left the removal receipt %q deleted", key)
+		}
+	}
+}

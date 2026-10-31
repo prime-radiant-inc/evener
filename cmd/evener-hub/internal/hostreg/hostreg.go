@@ -295,8 +295,18 @@ func NewSeeded(entries []Host, marks map[string]HighWater) (*Registry, error) {
 	return r, nil
 }
 
+// AddRestored registers an entry a boot recovery restored into the durable file
+// after the registry was built, under the identity that file records, as New
+// would have loaded it. Unlike Add it mints nothing the entry already carries,
+// so the restored host is the same incarnation its records and operations name.
+// A name already registered is refused (ErrDuplicateHost).
+func (r *Registry) AddRestored(entry Host) error {
+	return r.seed(entry)
+}
+
 // seed inserts one boot-loaded entry, preserving the identity the durable file
-// persisted and minting only what it did not carry. New is its only caller.
+// persisted and minting only what it did not carry. New and AddRestored are its
+// callers.
 func (r *Registry) seed(entry Host) error {
 	entry = Normalize(entry)
 	if err := validateEntry(entry); err != nil {

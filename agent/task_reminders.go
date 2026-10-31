@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -182,7 +183,7 @@ func (s *Session) hasTaskListAnnouncement() bool {
 	if s.stateDir == "" || s.id == "" {
 		return false
 	}
-	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id), s.stateDir)
+	data, err := readTranscriptFull(context.Background(), transcriptPath(s.stateDir, s.id), s.stateDir)
 	if err != nil {
 		// An unreadable transcript cannot prove delivery. Announcing again is
 		// the safer error: a repeated plan wastes context, a lost one costs the

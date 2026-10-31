@@ -8,16 +8,13 @@ import { capability, completeSession, manifest, wireSnapshot } from "@evener/app
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { archivedListKey, archivedListStore, resetArchivedListStoreForTests } from "../../stores/archivedList";
-import { connectionStore } from "../../stores/connection";
+import { setCacheChannelFactoryForTests } from "../../stores/cacheLifetime";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
+import { setProductionEntryCacheForTests } from "../../stores/entryTranscriptRoutes";
 import { navigationStore } from "../../stores/navigation/store";
 import { SessionEntryCache } from "../../stores/sessionEntryCache";
 import { holdNextTransaction } from "../../stores/testing/stalledIndexedDB";
-import {
-  resetThreadsStoreForTests,
-  setCacheChannelFactoryForTests,
-  setProductionEntryCacheForTests,
-  threadsStore,
-} from "../../stores/threads";
+import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import {
   assignSessionPin,
   deletePinSection,
@@ -32,7 +29,7 @@ import {
 } from "./actions";
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetArchivedListStoreForTests();
 });
@@ -40,7 +37,7 @@ beforeEach(() => {
 afterEach(() => {
   resetThreadsStoreForTests();
   vi.restoreAllMocks();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
 });
 
 describe("named pin sections", () => {

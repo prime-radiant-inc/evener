@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
@@ -23,7 +24,7 @@ import (
 // transcriptTurnKinds returns the kind of every entry in a transcript file.
 func transcriptTurnKinds(t *testing.T, path string) []schema.TurnKind {
 	t.Helper()
-	data, err := readTranscriptFull(path, "")
+	data, err := readTranscriptFull(context.Background(), path, "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}

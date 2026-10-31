@@ -319,7 +319,7 @@ type Server struct {
 	listModelsFunc           func(context.Context) ([]appwire.ModelDescriptor, error)
 	appSessionActivity       sessionActivityHooks
 	tasksFn                  func() []appwire.Task
-	jobsFn                   func(appwire.JobsListParams) (any, error)
+	jobsFn                   func(context.Context, appwire.JobsListParams) (any, error)
 	jobOutputFn              func(jobID string, beforeBytes *int64, maxBytes int64) (data appwire.JobOutputPage, found bool, err error)
 	jobGetFn                 func(jobID string) (data appwire.JobActivityJob, found bool, err error)
 	shutdownFunc             func()
@@ -701,7 +701,7 @@ func (s *Server) SetTasksFunc(fn func() []appwire.Task) {
 // an error if it cannot read one: an unreadable durable root must reach the
 // caller as a failure, never as the empty success a job-less session answers
 // with.
-func (s *Server) SetJobsFunc(fn func(appwire.JobsListParams) (any, error)) {
+func (s *Server) SetJobsFunc(fn func(context.Context, appwire.JobsListParams) (any, error)) {
 	s.mu.Lock()
 	s.jobsFn = fn
 	s.mu.Unlock()

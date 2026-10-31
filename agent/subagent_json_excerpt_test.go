@@ -135,7 +135,7 @@ func TestSubagentSeesFailingInputExcerpt(t *testing.T) {
 			t.Fatalf("subagent recovery request missing %q\nrequest: %s", want, got)
 		}
 	}
-	packet := loadStableDelegateTerminalPacket(t, sess, res.DelegateID)
+	packet := loadDelegateTerminalPacket(t, sess, res.DelegateID)
 	var output string
 	if err := json.Unmarshal(packet.Message, &output); err != nil {
 		t.Fatalf("decode stable terminal message: %v", err)
@@ -150,7 +150,7 @@ func TestSubagentSeesFailingInputExcerpt(t *testing.T) {
 	childTranscriptPath := schema.SessionTranscriptPath(stateDir, childID)
 	childLines := readTranscriptLines(t, childTranscriptPath)
 	requireTranscriptRawArguments(t, childLines, truncatedArgs)
-	_, childEntries, _, err := readTranscript(childTranscriptPath, "")
+	_, childEntries, _, err := readTranscript(context.Background(), childTranscriptPath, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -289,7 +289,7 @@ func TestSubagentUnquotedKeyToolCallRecoversAndExecutes(t *testing.T) {
 		t.Fatalf("recovery request has no task_list tool result:\n%s", got)
 	}
 
-	packet := loadStableDelegateTerminalPacket(t, sess, res.DelegateID)
+	packet := loadDelegateTerminalPacket(t, sess, res.DelegateID)
 	var output string
 	if err := json.Unmarshal(packet.Message, &output); err != nil {
 		t.Fatalf("decode stable terminal message: %v", err)
@@ -302,7 +302,7 @@ func TestSubagentUnquotedKeyToolCallRecoversAndExecutes(t *testing.T) {
 	childTranscriptPath := schema.SessionTranscriptPath(stateDir, childID)
 	childLines := readTranscriptLines(t, childTranscriptPath)
 	requireTranscriptRawArguments(t, childLines, unquotedArgs)
-	_, childEntries, _, err := readTranscript(childTranscriptPath, "")
+	_, childEntries, _, err := readTranscript(context.Background(), childTranscriptPath, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}

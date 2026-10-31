@@ -744,7 +744,7 @@ type clearIdentityServer struct {
 
 	state    *clearTestState
 	clear    func(context.Context, appwire.ThreadClearParams) error
-	jobs     func(appwire.JobsListParams) (any, error)
+	jobs     func(context.Context, appwire.JobsListParams) (any, error)
 	shutdown func()
 	// envelopeSource is the one seam the daemon reads live session state
 	// through. Capturing it lets this test observe WHICH session the daemon
@@ -773,7 +773,7 @@ func (s *clearIdentityServer) SetClearFunc(fn func(context.Context, appwire.Thre
 	s.Server.SetClearFunc(fn)
 }
 
-func (s *clearIdentityServer) SetJobsFunc(fn func(appwire.JobsListParams) (any, error)) {
+func (s *clearIdentityServer) SetJobsFunc(fn func(context.Context, appwire.JobsListParams) (any, error)) {
 	s.jobs = fn
 	s.Server.SetJobsFunc(fn)
 }
@@ -1161,7 +1161,7 @@ func TestRunServeClearSuccessClosesOldStreamAndInstallsPreparedIdentity(t *testi
 		read := clearThreadRead(t, state.srv)
 		lateThreadID = read.Thread.ID
 		lateLeak = threadCarriesText(read, oldClearInputMarker)
-		data, err := state.srv.jobs(appwire.JobsListParams{Ref: "local:" + obs.oldSessionID})
+		data, err := state.srv.jobs(context.Background(), appwire.JobsListParams{Ref: "local:" + obs.oldSessionID})
 		jobsErr = err
 		if tree, ok := data.(appwire.JobActivityTree); ok {
 			jobsTree = tree

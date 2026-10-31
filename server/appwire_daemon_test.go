@@ -267,7 +267,7 @@ func TestDaemonRacedMutationReturnsTypedLifecycleError(t *testing.T) {
 		ClientMutationID: "raced-start", ExpectedInstanceID: root.ID(), Input: input,
 	})
 	assertLifecycleUnavailable(t, err, "preparing")
-	if root.QueueDepth() != 0 || len(root.SteeringQueueSnapshot()) != 0 {
+	if durablyAcceptedMutations(root) != 0 {
 		t.Fatal("raced mutation was durably accepted")
 	}
 	if err := c.Abort(claim, ""); err != nil {

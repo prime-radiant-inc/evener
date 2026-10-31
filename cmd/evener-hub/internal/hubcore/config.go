@@ -21,11 +21,12 @@ import (
 	"primeradiant.com/evener/rendezvous"
 )
 
-// RelayLifecycleHooks are optional test seams the relay idle-retirement loop
-// invokes to observe teardown. They are nil in production and set once via
+// RelayLifecycleHooks are optional test seams for relay reads, publication,
+// subscription and teardown. They are nil in production and set once via
 // WebConfig at construction (never mutated after a relay goroutine starts), so
 // each hub server instance carries its own — no shared global, no data race.
 type RelayLifecycleHooks struct {
+	BeforeReadThread           func()
 	IdleExit                   func(threadID string)
 	AfterIdleDelete            func(threadID string)
 	RetryWait                  func(context.Context, time.Duration) error
@@ -126,12 +127,23 @@ type WebConfig struct {
 	// registry spec 08 §6 — so UI-added and UI-edited hosts live in it; empty
 	// disables host persistence (the surface stays memory-only).
 	RemoteHostConfigPath string
-	// RemoteHostOpsStore is the operation store the host-management surface
-	// mirrors each hub.toml commit's per-host boundary record into (registry
-	// spec 08 §7). nil (tests, embedders) disables mirroring; the mirror is a
-	// copy of hub.toml's machine records, never their authority, so a hub
-	// without it still commits and loads hosts.
+	// RemoteHostOpsStore is the operation store: the home of the host-management
+	// surface's machine records (identities, receipts, tombstones, teardown
+	// repair), of the operation and token state, and of the per-host boundary
+	// mirror. nil with RemoteHostOpsUnavailable false (tests, embedders) keeps
+	// the machine records in hub.toml's reserved sections and disables the
+	// operation surfaces.
 	RemoteHostOpsStore *hostops.Store
+	// RemoteHostOpsUnavailable marks a hub whose operation store is configured
+	// but could not be opened. The hosts in hub.toml keep serving; host add,
+	// edit and remove refuse as unavailable until the hub is started with a
+	// store that opens.
+	RemoteHostOpsUnavailable bool
+	// RemoteHostRecordsUnreadable marks a hub whose startup could not read the
+	// record sections an earlier build left in hub.toml, so its registry was
+	// built without the persisted identities. Nothing is settled or moved from
+	// that registry, and host changes pause.
+	RemoteHostRecordsUnreadable bool
 	// RemoteHostClient returns an attached, initialized AppWire client for a
 	// remote host, attaching over SSH on first use (component 04). nil
 	// disables remote hosts (tests).

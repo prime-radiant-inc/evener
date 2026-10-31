@@ -216,8 +216,8 @@ func TestAppWireMutationReplayTable(t *testing.T) {
 				}
 			},
 			assert: func(t *testing.T, sess *agent.Session, _ *int, _ appwire.Message) {
-				steering := sess.SteeringQueueSnapshot()
-				if len(steering) != 1 || steering[0].Text != "steer once" {
+				steering := steeringInputs(sess)
+				if len(steering) != 1 || len(steering[0]) != 1 || steering[0][0].Text != "steer once" {
 					t.Fatalf("steering effects = %+v, want one", steering)
 				}
 			},
@@ -256,8 +256,8 @@ func TestAppWireMutationReplayTable(t *testing.T) {
 				}
 			},
 			assert: func(t *testing.T, sess *agent.Session, _ *int, _ appwire.Message) {
-				steering := sess.SteeringQueueSnapshot()
-				if len(queueTexts(sess)) != 0 || len(steering) != 1 || steering[0].Text != "drain once" {
+				steering := steeringInputs(sess)
+				if len(queueTexts(sess)) != 0 || len(steering) != 1 || len(steering[0]) != 1 || steering[0][0].Text != "drain once" {
 					t.Fatalf("drain effects: queue=%#v steering=%+v", queueTexts(sess), steering)
 				}
 			},
@@ -279,8 +279,8 @@ func TestAppWireMutationReplayTable(t *testing.T) {
 				}
 			},
 			assert: func(t *testing.T, sess *agent.Session, _ *int, _ appwire.Message) {
-				steering := sess.SteeringQueueSnapshot()
-				if len(queueTexts(sess)) != 0 || len(steering) != 1 || steering[0].Text != "promote once" {
+				steering := steeringInputs(sess)
+				if len(queueTexts(sess)) != 0 || len(steering) != 1 || len(steering[0]) != 1 || steering[0][0].Text != "promote once" {
 					t.Fatalf("promote effects: queue=%#v steering=%+v", queueTexts(sess), steering)
 				}
 			},

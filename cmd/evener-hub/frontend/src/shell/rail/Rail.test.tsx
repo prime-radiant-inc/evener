@@ -33,10 +33,11 @@ import {
   refreshLoadedArchivedLists,
   resetArchivedListStoreForTests,
 } from "../../stores/archivedList";
-import { connectionStore } from "../../stores/connection";
+import { setCacheChannelFactoryForTests } from "../../stores/cacheLifetime";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
-import { resetThreadsStoreForTests, setCacheChannelFactoryForTests, threadsStore } from "../../stores/threads";
+import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import { hoverForTooltip } from "../../widgets/tooltip/tooltipTestUtils";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
@@ -337,7 +338,7 @@ function stubScrollIntoView(): () => void {
 }
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetNavigationStoreForTests();
   resetNavigationStoreForTests();
   resetToastStoreForTests();
@@ -346,7 +347,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   vi.unstubAllGlobals();
 });
 

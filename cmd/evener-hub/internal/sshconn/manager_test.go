@@ -410,8 +410,8 @@ func TestEnsureStderrWiredToSink(t *testing.T) {
 func TestEnsureProtocolMismatchReachesTheDeployPath(t *testing.T) {
 	t.Run("no deploy configured refuses the protocol terminally", func(t *testing.T) {
 		host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
-		override := map[string][]byte{
-			"launch-check": []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v4","version":"dev","launch_flags":["api-log"]}`),
+		override := map[remoteOp][]byte{
+			opLaunchCheck: []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v4","version":"dev","launch_flags":["api-log"]}`),
 		}
 		fr := &fakeRunner{runFn: cannedRun(override), startFn: goodStartFn(t)}
 		requireProtocolUpgrade(t, fr)
@@ -469,7 +469,7 @@ func TestEnsureUnfilteredOlderProtocolReachesDeployPath(t *testing.T) {
 		host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 		fr := &fakeRunner{
 			runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-				if containsToken(argv, "launch-check") {
+				if classifyRemote(argv) == opLaunchCheck {
 					return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v4","version":"oldsha","launch_flags":["api-log"]}`), nil
 				}
 				return cannedRun(nil)(context.Background(), argv, nil)
@@ -619,11 +619,11 @@ func TestEnsureInitializeProtocolMismatch(t *testing.T) {
 func TestEnsureUnsupportedHost(t *testing.T) {
 	cases := []struct {
 		name     string
-		override map[string][]byte
+		override map[remoteOp][]byte
 	}{
-		{"unknown os", map[string][]byte{"uname -s": []byte("FreeBSD\n")}},
-		{"unknown arch", map[string][]byte{"uname -m": []byte("i686\n")}},
-		{"unsupported target", map[string][]byte{"uname -s": []byte("Darwin\n"), "uname -m": []byte("x86_64\n")}},
+		{"unknown os", map[remoteOp][]byte{opUnameKernel: []byte("FreeBSD\n")}},
+		{"unknown arch", map[remoteOp][]byte{opUnameArch: []byte("i686\n")}},
+		{"unsupported target", map[remoteOp][]byte{opUnameKernel: []byte("Darwin\n"), opUnameArch: []byte("x86_64\n")}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -643,7 +643,7 @@ func TestEnsureUnsupportedHost(t *testing.T) {
 
 func TestEnsurePreflightDecodeFailure(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
-	fr := &fakeRunner{runFn: cannedRun(map[string][]byte{"launch-check": []byte("not json"), "api/health": nil, "lsof -ti": []byte(noListenerMarker)}), startFn: goodStartFn(t)}
+	fr := &fakeRunner{runFn: cannedRun(map[remoteOp][]byte{opLaunchCheck: []byte("not json"), opHealth: nil, opListenerProbe: []byte(noListenerMarker)}), startFn: goodStartFn(t)}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{})
 	if ch, err := m.Ensure(t.Context(), "alpha"); err != nil || ch == nil {
 		t.Fatalf("live handshake lost to disk metadata: channel=%v err=%v", ch, err)
@@ -1833,7 +1833,7 @@ func TestEnsureTerminalFailureReleasesHostOwnership(t *testing.T) {
 			mu.Lock()
 			refuse := mismatch
 			mu.Unlock()
-			if refuse && strings.Contains(strings.Join(argv, " "), "launch-check") {
+			if refuse && classifyRemote(argv) == opLaunchCheck {
 				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v4","version":"dev","launch_flags":["api-log"]}`), nil
 			}
 			return canned(ctx, argv, stdin)
@@ -1982,30 +1982,20 @@ func TestIsTerminalClassifiesManagerClosed(t *testing.T) {
 func TestEnsureBoundsSelectedEndpoint(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	probing := make(chan struct{}, 4)
-	fr := &fakeRunner{runFn: func(ctx context.Context, argv []string, _ io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.HasSuffix(joined, "uname -s"):
-			return []byte("Linux\n"), nil
-		case strings.HasSuffix(joined, "uname -m"):
-			return []byte("x86_64\n"), nil
-		case strings.HasSuffix(joined, "id -u"):
-			return []byte("1000\n"), nil
-		case strings.Contains(joined, "XDG_STATE_HOME"):
-			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
-		case strings.Contains(joined, "launch-check"):
-			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`), nil
-		case strings.HasSuffix(joined, "/opt/evener/bin/evener hub endpoint --json"):
-			select {
-			case probing <- struct{}{}:
-			default:
-			}
-			// Block until the selected probe's own context expires.
-			<-ctx.Done()
-			return nil, ctx.Err()
-		default:
-			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+	canned := cannedRun(map[remoteOp][]byte{
+		opLaunchCheck: []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`),
+	})
+	fr := &fakeRunner{runFn: func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+		if classifyRemote(argv) != opHubEndpoint {
+			return canned(ctx, argv, stdin)
 		}
+		select {
+		case probing <- struct{}{}:
+		default:
+		}
+		// Block until the selected probe's own context expires.
+		<-ctx.Done()
+		return nil, ctx.Err()
 	}}
 	requireProtocolUpgrade(t, fr)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
@@ -2099,7 +2089,7 @@ func TestTerminalFailureStopsTheReconnectLoop(t *testing.T) {
 			mu.Lock()
 			refuse := mismatch
 			mu.Unlock()
-			if refuse && strings.Contains(strings.Join(argv, " "), "launch-check") {
+			if refuse && classifyRemote(argv) == opLaunchCheck {
 				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v4","version":"dev","launch_flags":["api-log"]}`), nil
 			}
 			return canned(ctx, argv, stdin)
@@ -2192,7 +2182,7 @@ func TestReplacementAttachDoesNotLeakTheOlderSupervisor(t *testing.T) {
 			mu.Lock()
 			refuse := mismatch
 			mu.Unlock()
-			if refuse && strings.Contains(strings.Join(argv, " "), "launch-check") {
+			if refuse && classifyRemote(argv) == opLaunchCheck {
 				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v4","version":"dev","launch_flags":["api-log"]}`), nil
 			}
 			return canned(ctx, argv, stdin)
@@ -2327,7 +2317,7 @@ func TestSupersededSupervisorDoesNotEmitDisconnectedAfterReplacement(t *testing.
 					mu.Lock()
 					refuse := mismatch
 					mu.Unlock()
-					if refuse && strings.Contains(strings.Join(argv, " "), "launch-check") {
+					if refuse && classifyRemote(argv) == opLaunchCheck {
 						return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v4","version":"dev","launch_flags":["api-log"]}`), nil
 					}
 					return canned(ctx, argv, stdin)
@@ -2509,7 +2499,7 @@ func TestRemoteCommandStderrPermissionDeniedIsNotAuthFailure(t *testing.T) {
 	remoteExit := exitStatus(t, 1)
 	fr := &fakeRunner{
 		runFn: func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
-			if strings.Contains(strings.Join(argv, " "), "launch-check") {
+			if classifyRemote(argv) == opLaunchCheck {
 				return nil, &RunError{
 					Stderr: []byte("evener: Permission denied (publickey).\n"),
 					Err:    remoteExit,

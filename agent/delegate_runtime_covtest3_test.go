@@ -58,21 +58,3 @@ func TestRuntimeForDelegateOwner_NilController(t *testing.T) {
 		t.Fatal("expected nil for nil controller")
 	}
 }
-
-// TestEmitStableDelegateUpdate_NilSession covers the nil-session guard
-// in emitStableDelegateUpdate (lines 1944-1946).
-func TestEmitStableDelegateUpdate_NilSession(t *testing.T) {
-	t.Parallel()
-	var s *Session
-	s.emitStableDelegateUpdate(delegateUpdatePlan{})
-	// Should not panic.
-}
-
-// TestEmitStableDelegateUpdate_NilController covers the nil-controller guard
-// in emitStableDelegateUpdate (lines 1944-1946).
-func TestEmitStableDelegateUpdate_NilController(t *testing.T) {
-	t.Parallel()
-	s := &Session{}
-	s.emitStableDelegateUpdate(delegateUpdatePlan{})
-	// Should not panic.
-}

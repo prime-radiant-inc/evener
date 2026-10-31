@@ -4,23 +4,19 @@ import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { connectionStore } from "./connection";
-import {
-  observePendingHydrationRetirementsForTests,
-  productionEntryTranscriptForTests,
-  resetThreadsStoreForTests,
-  threadsStore,
-} from "./threads";
+import { connectionStore, resetConnectionStoreForTests } from "./connection";
+import { productionEntryTranscriptForTests } from "./entryTranscriptRoutes";
+import { observePendingHydrationRetirementsForTests, resetThreadsStoreForTests, threadsStore } from "./threads";
 
 beforeEach(() => {
-  connectionStore.setState({ client: null, state: "idle", serverInfo: undefined });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   vi.stubGlobal("indexedDB", new IDBFactory());
   vi.stubGlobal("IDBKeyRange", IDBKeyRange);
 });
 afterEach(() => {
   resetThreadsStoreForTests();
-  connectionStore.setState({ client: null, state: "idle" });
+  resetConnectionStoreForTests();
   vi.unstubAllGlobals();
 });
 

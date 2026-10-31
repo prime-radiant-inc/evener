@@ -36,10 +36,10 @@ import (
 type HostRecord struct {
 	// IncarnationID is the name's live incarnation id (spec §1): minted on
 	// every add/re-add, never reused.
-	IncarnationID string `toml:"incarnation_id"`
+	IncarnationID string `toml:"incarnation_id" json:"incarnation_id"`
 	// PresenceEpoch is the name's presence counter (spec §1): advanced on
 	// every add, remove, re-add and expiry purge.
-	PresenceEpoch uint64 `toml:"presence_epoch"`
+	PresenceEpoch uint64 `toml:"presence_epoch" json:"presence_epoch"`
 	// The six fields below are the retired crash-fencing bootstrap keys. They
 	// are decoded only so that a hub.toml written by the build that carried the
 	// bootstrap stack still loads: the reserved-record rule refuses a reserved
@@ -51,12 +51,12 @@ type HostRecord struct {
 	// pointers because BurntSushi's omitempty does not omit numeric zeros, so a
 	// stripped zero would otherwise re-emit itself as a fresh key. They go away
 	// with the rest of the fencing removal.
-	RetiredBootstrapAttempted    bool    `toml:"bootstrap_attempted,omitempty"`
-	RetiredHelperInstalled       bool    `toml:"helper_installed,omitempty"`
-	RetiredHelperVersion         *uint64 `toml:"helper_version,omitempty"`
-	RetiredBootstrapEpochBoot    string  `toml:"bootstrap_epoch_boot,omitempty"`
-	RetiredBootstrapEpochOpSeq   *uint64 `toml:"bootstrap_epoch_op_seq,omitempty"`
-	RetiredBootstrapAttemptToken string  `toml:"bootstrap_attempt_token,omitempty"`
+	RetiredBootstrapAttempted    bool    `toml:"bootstrap_attempted,omitempty" json:"-"`
+	RetiredHelperInstalled       bool    `toml:"helper_installed,omitempty" json:"-"`
+	RetiredHelperVersion         *uint64 `toml:"helper_version,omitempty" json:"-"`
+	RetiredBootstrapEpochBoot    string  `toml:"bootstrap_epoch_boot,omitempty" json:"-"`
+	RetiredBootstrapEpochOpSeq   *uint64 `toml:"bootstrap_epoch_op_seq,omitempty" json:"-"`
+	RetiredBootstrapAttemptToken string  `toml:"bootstrap_attempt_token,omitempty" json:"-"`
 }
 
 // withoutRetiredFencingFields returns r with the retired bootstrap keys
@@ -81,11 +81,11 @@ func (r HostRecord) withoutRetiredFencingFields() HostRecord {
 // (the retention slices own that).
 type HostGeneration struct {
 	// Generation is the greatest generation the name has carried.
-	Generation uint64 `toml:"generation"`
+	Generation uint64 `toml:"generation" json:"generation"`
 	// IncarnationID is the incarnation that generation belongs to.
-	IncarnationID string `toml:"incarnation_id"`
+	IncarnationID string `toml:"incarnation_id" json:"incarnation_id"`
 	// PresenceEpoch is the presence epoch recorded with that generation.
-	PresenceEpoch uint64 `toml:"presence_epoch"`
+	PresenceEpoch uint64 `toml:"presence_epoch" json:"presence_epoch"`
 }
 
 // hostRecordFor derives name's live record from a registry entry.
@@ -141,31 +141,6 @@ func hostGenerationFor(entry hostreg.Host) HostGeneration {
 	}
 }
 
-// resolveHostIdentity maps the records a hub.toml file carries onto the
-// registry entry for one live host: the generation the file persisted (the boot
-// load restores it; spec §15) and the live record's incarnation id and presence
-// epoch. The [generations] record is a *high-water* mark, not a live identity:
-// it restores the generation and seeds the counters (hostHighWaterMarks), but
-// its incarnation id and epoch describe a removed incarnation and must never be
-// inherited by a live name. A name with no live record is a new incarnation —
-// spec §15: the boot "mints a fresh incarnation id for every hub.toml host name
-// with no persisted incarnation" — minted at load, with its epoch advanced past
-// whatever the mark retained.
-func resolveHostIdentity(name string, records map[string]HostRecord, generations map[string]HostGeneration) (generation uint64, incarnationID string, presenceEpoch uint64) {
-	record := records[name]
-	return generations[name].Generation, record.IncarnationID, record.PresenceEpoch
-}
-
-// hostHighWaterMarks maps the file's [generations] records onto the registry's
-// high-water marks: the counters a boot seeds before anything mints.
-func hostHighWaterMarks(cfg Config) map[string]hostreg.HighWater {
-	marks := make(map[string]hostreg.HighWater, len(cfg.Generations))
-	for name, mark := range cfg.Generations {
-		marks[name] = hostreg.HighWater{Generation: mark.Generation, PresenceEpoch: mark.PresenceEpoch}
-	}
-	return marks
-}
-
 // hostFileRecordSet derives the machine records a hub.toml write carries: every
 // live entry's own triple, plus every retained high-water record whose name has
 // no live entry (a removal's record). It is the one derivation both the writer
@@ -200,19 +175,24 @@ func hostFileRecordSet(entries []hostreg.Host, highWater map[string]HostGenerati
 	return records, generations
 }
 
-// decodeHubTOMLForRewrite decodes the bytes a rewrite is about to replace. An
-// absent file decodes as an empty Config (the rewrite creates it); anything
+// decodeHubTOMLForRewrite decodes the bytes a rewrite is about to replace: the
+// operator's config and, beside it, the reserved record sections the file still
+// carries. An absent file decodes as empty (the rewrite creates it); anything
 // else must decode through the loader's own rules, so a rewrite can only ever
 // be derived from a file the hub could read at boot.
-func decodeHubTOMLForRewrite(path string, raw []byte) (Config, error) {
+func decodeHubTOMLForRewrite(path string, raw []byte) (Config, hostRecordSet, error) {
 	if len(raw) == 0 {
-		return Config{}, nil
+		return Config{}, hostRecordSet{}, nil
 	}
 	cfg, err := decodeConfig(path, string(raw))
 	if err != nil {
-		return Config{}, fmt.Errorf("hub.toml rewrite refused: %w", err)
+		return Config{}, hostRecordSet{}, fmt.Errorf("hub.toml rewrite refused: %w", err)
 	}
-	return cfg, nil
+	records, err := decodeLegacyRecords(path, string(raw))
+	if err != nil {
+		return Config{}, hostRecordSet{}, fmt.Errorf("hub.toml rewrite refused: %w", err)
+	}
+	return cfg, records, nil
 }
 
 // fileOnlyHostEntries returns the host entries cfg holds that neither known nor
@@ -262,17 +242,17 @@ func fileOnlyHostEntries(cfg Config, known, entries []hostreg.Host) []HostConfig
 // eviction, a live-name purge): their file generations entry is superseded by
 // the advanced mark the derivation is writing, so the older copy must not ride
 // back in through preservation.
-func hubTOMLRecordTables(cfg Config, entries, known []hostreg.Host, highWater map[string]HostGeneration, purgedNames map[string]struct{}) (map[string]HostRecord, map[string]HostGeneration) {
+func hubTOMLRecordTables(file hostRecordSet, entries, known []hostreg.Host, highWater map[string]HostGeneration, purgedNames map[string]struct{}) (map[string]HostRecord, map[string]HostGeneration) {
 	owned := ownedRecordNames(entries, known)
 	records, generations := hostFileRecordSet(entries, highWater)
 	if known != nil {
-		for name, record := range cfg.HostRecords {
+		for name, record := range file.HostRecords {
 			if _, ok := owned[name]; ok {
 				continue
 			}
 			records[name] = record
 		}
-		for name, mark := range cfg.Generations {
+		for name, mark := range file.Generations {
 			if _, ok := owned[name]; ok {
 				continue
 			}
@@ -342,10 +322,10 @@ func validateHostRecords(records map[string]HostRecord, generations map[string]H
 // rides through. known is always the store's non-nil snapshot on the mutation
 // and rollback paths; a nil known is the exact-write sentinel (both other
 // sentinels nil), which writes exactly the given set.
-func hubTOMLReceiptTables(cfg Config, entries, known []hostreg.Host, receipts map[string]HostMutationReceipt, dropped map[string]struct{}) map[string]HostMutationReceipt {
-	out := make(map[string]HostMutationReceipt, len(receipts)+len(cfg.MutationReceipts))
+func hubTOMLReceiptTables(file hostRecordSet, entries, known []hostreg.Host, receipts map[string]HostMutationReceipt, dropped map[string]struct{}) map[string]HostMutationReceipt {
+	out := make(map[string]HostMutationReceipt, len(receipts)+len(file.MutationReceipts))
 	maps.Copy(out, receipts)
-	preserveUnowned(out, cfg.MutationReceipts, ownedRecordNames(entries, known), receiptKeyHost, dropped)
+	preserveUnowned(out, file.MutationReceipts, ownedRecordNames(entries, known), receiptKeyHost, dropped)
 	return out
 }
 
@@ -415,10 +395,10 @@ func receiptKeyHost[V any](key string, _ V) (string, bool) {
 // the same ownership rule the record and receipt tables apply, so a tombstone
 // the mutation does not own is not silently dropped by its rewrite. A nil known
 // is the exact-write sentinel, which writes exactly the given set.
-func hubTOMLTombstoneTables(cfg Config, entries, known []hostreg.Host, tombstones map[string]HostTombstone, dropped map[string]struct{}) map[string]HostTombstone {
-	out := make(map[string]HostTombstone, len(tombstones)+len(cfg.Tombstones))
+func hubTOMLTombstoneTables(file hostRecordSet, entries, known []hostreg.Host, tombstones map[string]HostTombstone, dropped map[string]struct{}) map[string]HostTombstone {
+	out := make(map[string]HostTombstone, len(tombstones)+len(file.Tombstones))
 	maps.Copy(out, tombstones)
-	preserveUnowned(out, cfg.Tombstones, ownedRecordNames(entries, known), keyIsHost, dropped)
+	preserveUnowned(out, file.Tombstones, ownedRecordNames(entries, known), keyIsHost, dropped)
 	return out
 }
 
@@ -426,10 +406,10 @@ func hubTOMLTombstoneTables(cfg Config, entries, known []hostreg.Host, tombstone
 // writes: the carried set plus every file marker whose scope names a host this
 // write does not own, preserved verbatim. The marker's owner is the name in its
 // scoped key — the name whose receipt history the marker bounds.
-func hubTOMLPrunedReceiptTables(cfg Config, entries, known []hostreg.Host, markers map[string]PrunedReceiptMarker, dropped map[string]struct{}) map[string]PrunedReceiptMarker {
-	out := make(map[string]PrunedReceiptMarker, len(markers)+len(cfg.PrunedReceipts))
+func hubTOMLPrunedReceiptTables(file hostRecordSet, entries, known []hostreg.Host, markers map[string]PrunedReceiptMarker, dropped map[string]struct{}) map[string]PrunedReceiptMarker {
+	out := make(map[string]PrunedReceiptMarker, len(markers)+len(file.PrunedReceipts))
 	maps.Copy(out, markers)
-	preserveUnowned(out, cfg.PrunedReceipts, ownedRecordNames(entries, known), receiptKeyHost, dropped)
+	preserveUnowned(out, file.PrunedReceipts, ownedRecordNames(entries, known), receiptKeyHost, dropped)
 	return out
 }
 
@@ -439,10 +419,10 @@ func hubTOMLPrunedReceiptTables(cfg Config, entries, known []hostreg.Host, marke
 // apply, so a marker a mutation does not own is not silently dropped by its
 // rewrite (spec §5: "every marker write preserves other hosts' entries
 // verbatim"). A nil known is the exact-write sentinel.
-func hubTOMLStagedReceiptTables(cfg Config, entries, known []hostreg.Host, markers map[string]HostStagedReceipt, dropped map[string]struct{}) map[string]HostStagedReceipt {
-	out := make(map[string]HostStagedReceipt, len(markers)+len(cfg.StagedReceipts))
+func hubTOMLStagedReceiptTables(file hostRecordSet, entries, known []hostreg.Host, markers map[string]HostStagedReceipt, dropped map[string]struct{}) map[string]HostStagedReceipt {
+	out := make(map[string]HostStagedReceipt, len(markers)+len(file.StagedReceipts))
 	maps.Copy(out, markers)
-	preserveUnowned(out, cfg.StagedReceipts, ownedRecordNames(entries, known), keyIsHost, dropped)
+	preserveUnowned(out, file.StagedReceipts, ownedRecordNames(entries, known), keyIsHost, dropped)
 	return out
 }
 
@@ -451,10 +431,10 @@ func hubTOMLStagedReceiptTables(cfg Config, entries, known []hostreg.Host, marke
 // fence and the retention rules key by — so a remnant for a name this write
 // does not own rides through verbatim, exactly as the other record tables'
 // records do.
-func hubTOMLTeardownRemnantTables(cfg Config, entries, known []hostreg.Host, remnants map[string]HostTeardownRemnant, dropped map[string]struct{}) map[string]HostTeardownRemnant {
-	out := make(map[string]HostTeardownRemnant, len(remnants)+len(cfg.TeardownRemnants))
+func hubTOMLTeardownRemnantTables(file hostRecordSet, entries, known []hostreg.Host, remnants map[string]HostTeardownRemnant, dropped map[string]struct{}) map[string]HostTeardownRemnant {
+	out := make(map[string]HostTeardownRemnant, len(remnants)+len(file.TeardownRemnants))
 	maps.Copy(out, remnants)
-	preserveUnowned(out, cfg.TeardownRemnants, ownedRecordNames(entries, known), func(_ string, remnant HostTeardownRemnant) (string, bool) {
+	preserveUnowned(out, file.TeardownRemnants, ownedRecordNames(entries, known), func(_ string, remnant HostTeardownRemnant) (string, bool) {
 		return remnant.Host, true
 	}, dropped)
 	return out
@@ -464,10 +444,10 @@ func hubTOMLTeardownRemnantTables(cfg Config, entries, known []hostreg.Host, rem
 // attempt is owned through its remnant's host: a dropped remnant takes its
 // attempts with it, which is why the ownership lookup goes through the carried
 // remnant set rather than the host entry alone.
-func hubTOMLTeardownAttemptTables(cfg Config, entries, known []hostreg.Host, attempts map[string]HostTeardownAttempt, remnants map[string]HostTeardownRemnant, dropped map[string]struct{}) map[string]HostTeardownAttempt {
-	out := make(map[string]HostTeardownAttempt, len(attempts)+len(cfg.TeardownAttempts))
+func hubTOMLTeardownAttemptTables(file hostRecordSet, entries, known []hostreg.Host, attempts map[string]HostTeardownAttempt, remnants map[string]HostTeardownRemnant, dropped map[string]struct{}) map[string]HostTeardownAttempt {
+	out := make(map[string]HostTeardownAttempt, len(attempts)+len(file.TeardownAttempts))
 	maps.Copy(out, attempts)
-	preserveUnowned(out, cfg.TeardownAttempts, ownedRecordNames(entries, known), func(_ string, attempt HostTeardownAttempt) (string, bool) {
+	preserveUnowned(out, file.TeardownAttempts, ownedRecordNames(entries, known), func(_ string, attempt HostTeardownAttempt) (string, bool) {
 		if _, carried := remnants[attempt.RemnantID]; carried {
 			// A remnant this write carries owns its attempts: the derivation
 			// already decided which survive.
@@ -476,7 +456,7 @@ func hubTOMLTeardownAttemptTables(cfg Config, entries, known []hostreg.Host, att
 		// The write owns the remnant's host but no longer carries the remnant
 		// (a purge): the attempt goes with it. An attempt whose remnant the file
 		// does not hold has no owner and rides through.
-		return cfg.TeardownRemnants[attempt.RemnantID].Host, true
+		return file.TeardownRemnants[attempt.RemnantID].Host, true
 	}, dropped)
 	return out
 }

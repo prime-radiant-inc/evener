@@ -224,7 +224,7 @@ func TestCovRemoveRuntimePendingWatchSend(t *testing.T) {
 }
 
 // TestCovChildResumable covers childResumable
-// and directStableDelegateForChildSession (lines 4411-4421).
+// and directDelegateForChildSession (lines 4411-4421).
 func TestCovChildResumable(t *testing.T) {
 	t.Parallel()
 	// nil session / no controller — returns false.

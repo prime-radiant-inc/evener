@@ -2,6 +2,7 @@
 // The real app imports its unchanged ordinary stores after the budget boundary is set.
 // No ref selects a fixture route, and no separate transcript database is created.
 import type { TranscriptDisplayConfigV1, ViewportClass } from "@evener/appwire-client";
+import { WireError } from "@evener/appwire-client";
 import { installBackgroundTranscriptOptionsForTests } from "../stores/backgroundTranscriptOptions";
 import { SESSION_CACHE_DATABASE_NAME, SESSION_CACHE_DATABASE_VERSION } from "../stores/sessionCacheSchema";
 
@@ -61,6 +62,7 @@ window.history.replaceState(null, "", displayDocument ? `/?${query}` : "/");
 try {
   await import("../main");
   const threads = await import("../stores/threads");
+  const routes = await import("../stores/entryTranscriptRoutes");
   const connection = await import("../stores/connection");
   const workspace = await import("../shell/workspace");
   if (displayDocument) {
@@ -136,7 +138,7 @@ try {
       // repository writing through the real cache, so its retained bytes are
       // the bounded shared budget the sustained workload is charged against.
       entryAdmission: (ref: string) => {
-        const route = threads.productionEntryTranscriptForTests(ref);
+        const route = routes.productionEntryTranscriptForTests(ref);
         const repository = route.repository;
         if (!repository) return null;
         const admission = repository.getAdmissionSnapshotForTesting();
@@ -148,14 +150,14 @@ try {
         };
       },
       entryRoute: (ref: string) => {
-        const route = threads.productionEntryTranscriptForTests(ref);
+        const route = routes.productionEntryTranscriptForTests(ref);
         const store = threads.threadsStore.getState().threads.get(ref);
         const items = (store?.turns ?? []).flatMap((turn) => turn.items ?? []);
         return {
           present: route.repository !== undefined,
           historyKey: route.historyKey ?? null,
           storeModelPresent: store !== undefined,
-          localOpening: threads.isEntryTranscriptLocalOpening(ref),
+          localOpening: routes.isEntryTranscriptLocalOpening(ref),
           storeItemCount: items.length,
           storeNonEmptyItems: items.filter((item) => (item.text ?? "") !== "" || (item.output ?? "") !== "").length,
           lastLocalOpenStatus: route.lastLocalOpenStatus ?? null,
@@ -164,16 +166,16 @@ try {
       // Read-only recovery state: why a local open does or does not report
       // "current" for the entry route, measured rather than inferred.
       entryRecovery: (ref: string) => {
-        const route = threads.productionEntryTranscriptForTests(ref);
+        const route = routes.productionEntryTranscriptForTests(ref);
         const repository = route.repository;
         if (!repository) return { repositoryPresent: false };
         return { repositoryPresent: true, ...repository.getRecoveryStateForTesting() };
       },
     }),
   });
-  // Dev-only two-tab fencing surface. It exercises the REAL cache clear/delete
-  // paths (threads.clearCachedSessions / markCacheSessionsDeleted), the real
-  // BroadcastChannel propagation and the real IndexedDB across two real tabs.
+  // Dev-only two-tab fencing surface. Deletion uses the production action after
+  // the real daemon exits, so a sibling's fresh read meets a server-side fence,
+  // not merely a cache broadcast while the source session is still readable.
   // It is a guard entry, never a product route: no ref selects a fixture and no
   // separate store is created.
   Object.defineProperty(window, "backgroundTranscriptGuard", {
@@ -187,10 +189,22 @@ try {
         };
       },
       open: (ref: string) => threads.threadsStore.getState().ensureThread(ref),
+      sourceReadOutcome: async (ref: string) => {
+        const client = connection.connectionStore.getState().client;
+        if (!client) throw new Error("No connected client for the deletion proof");
+        try {
+          await client.request("thread/read", { ref, includeTurns: true, subscribe: false });
+          return "readable";
+        } catch (error) {
+          if (!(error instanceof WireError)) throw error;
+          return "rejected";
+        }
+      },
       settle: (ref: string) => threads.settleEntryTranscriptForTests(ref),
       clear: () => threads.clearCachedSessions(),
-      delete: (ref: string) => {
-        threads.markCacheSessionsDeleted([ref]);
+      delete: async (key: string, workingDir: string) => {
+        const { deleteProject } = await import("../shell/rail/actions");
+        return deleteProject(key, workingDir);
       },
     }),
   });

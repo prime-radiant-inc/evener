@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"primeradiant.com/evener/appwire"
@@ -53,12 +54,29 @@ type hostManagerConfig struct {
 	// rewrites in place. Empty (tests, embedders without a file) disables
 	// persistence: the store stays memory-only and every method still works.
 	configPath string
-	// ops is the operation store the per-host boundary records are mirrored
-	// into (registry spec 08 §7): the triple each hub.toml write commits is
-	// mirrored behind it, in one atomic store write. Nil (tests, embedders,
-	// and a hub whose operation store failed to open) disables mirroring; the
-	// mirror is a copy of hub.toml's records, never their authority.
-	ops *hostops.Store
+	// records is the durable home of the machine records and the host set they
+	// travel with. The manager reads and writes records only through it
+	// (recordStore), and boot swaps it from hub.toml's reserved sections to the
+	// operation store once the records have moved.
+	records   hostRecordStore
+	recordsMu sync.RWMutex
+	// ops is the operation store: the home of the machine records and of the
+	// operation, token and boundary state beside them. Nil when no store is
+	// configured (tests, embedders) or while the hub's store is unavailable
+	// (see unavailable); a store that opens later is attached at runtime, so
+	// every read goes through opsStore.
+	ops atomic.Pointer[hostops.Store]
+	// opsUnavailable marks a hub whose operation store was configured but could
+	// not be opened: the hosts in hub.toml keep serving, host mutations refuse
+	// until a store attaches.
+	opsUnavailable bool
+	// recordsUnreadable marks a hub whose startup could not read the record
+	// sections an earlier build left in hub.toml (hubcore.WebConfig).
+	recordsUnreadable bool
+	// refusal, when set, is why host mutations are refused: the operation store
+	// is unavailable, or the records it holds could not be settled or read. It
+	// clears when a boot attach converges.
+	refusal atomic.Pointer[hostRefusal]
 	// sources is the component-05 registry; a remote host's source is where
 	// attachment state (Online) and the per-host client live.
 	sources *appsource.Registry
@@ -255,29 +273,32 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 		hosts, _ = hostreg.New(nil)
 	}
 	m := &hubHostManager{cfg: &hostManagerConfig{
-		hosts:            hosts,
-		store:            &hostStore{},
-		configPath:       strings.TrimSpace(configPath),
-		ops:              cfg.RemoteHostOpsStore,
-		sources:          sources,
-		remoteCache:      cfg.RemoteThreadCache,
-		manager:          manager,
-		client:           cfg.RemoteHostClient,
-		online:           cfg.RemoteHostOnline,
-		clientIfAttached: cfg.RemoteHostClientIfAttached,
-		handshake:        cfg.RemoteHostHandshake,
-		facts:            cfg.RemoteHostFacts,
-		planFacts:        cfg.RemoteHostPlanFacts,
-		planProbe:        cfg.RemoteHostPlanProbe,
-		gate:             hostGateFor(manager),
-		bootID:           strings.TrimSpace(cfg.HubBootID),
-		probeTimeout:     hostProbeTimeoutFor(cfg.HostProbeTimeout),
-		running:          newHostRunningConfig(cfg),
-		state:            newHostAttachState(),
-		mutating:         map[string]struct{}{},
-		policy:           hostRecordPolicyFor(cfg),
-		logf:             logf,
+		hosts:             hosts,
+		store:             &hostStore{},
+		configPath:        strings.TrimSpace(configPath),
+		records:           hubTOMLRecordStore{path: strings.TrimSpace(configPath)},
+		opsUnavailable:    cfg.RemoteHostOpsUnavailable,
+		recordsUnreadable: cfg.RemoteHostRecordsUnreadable,
+		sources:           sources,
+		remoteCache:       cfg.RemoteThreadCache,
+		manager:           manager,
+		client:            cfg.RemoteHostClient,
+		online:            cfg.RemoteHostOnline,
+		clientIfAttached:  cfg.RemoteHostClientIfAttached,
+		handshake:         cfg.RemoteHostHandshake,
+		facts:             cfg.RemoteHostFacts,
+		planFacts:         cfg.RemoteHostPlanFacts,
+		planProbe:         cfg.RemoteHostPlanProbe,
+		gate:              hostGateFor(manager),
+		bootID:            strings.TrimSpace(cfg.HubBootID),
+		probeTimeout:      hostProbeTimeoutFor(cfg.HostProbeTimeout),
+		running:           newHostRunningConfig(cfg),
+		state:             newHostAttachState(),
+		mutating:          map[string]struct{}{},
+		policy:            hostRecordPolicyFor(cfg),
+		logf:              logf,
 	}}
+	m.cfg.ops.Store(cfg.RemoteHostOpsStore)
 	if m.cfg.planFacts == nil && manager != nil {
 		// The production refresh seam (deploy pipeline 08b §6 step 1): the
 		// ungated one-shot SSH preflight the manager runs against the host, read
@@ -331,26 +352,21 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 		// (§6), so its ssh subprocesses are armed under the record too.
 		manager.SetEnsureRestartHook(m.EnsureRestart)
 	}
-	if m.cfg.deployHost == nil && manager != nil {
-		// The production deploy step (deploy pipeline 08b §6): the 04b deploy
-		// path with its guards intact, run by the operation's worker while it
-		// holds the host's gate.
+	if manager != nil {
+		// The production execution seams, absent from WebConfig so only the
+		// manager supplies them.
+		//
+		// deployHost is the 04b deploy path with its guards intact (deploy
+		// pipeline 08b §6), run by the operation's worker while it holds the
+		// host's gate; restartHost is the 04b restart path — user-versus-system
+		// unit decision and the proven-replacement wait — run under the same gate.
 		m.cfg.deployHost = manager.DeployForOperation
-	}
-	if m.cfg.restartHost == nil && manager != nil {
-		// The production restart step: the 04b restart path — user-versus-system
-		// unit decision and the proven-replacement wait — run by the worker
-		// under the same gate.
 		m.cfg.restartHost = manager.RestartForOperation
-	}
-	if m.cfg.recoverDeployment == nil && manager != nil {
 		m.cfg.recoverDeployment = manager.RecoverDeploymentForRestart
-	}
-	if m.cfg.attachUnderGate == nil && manager != nil {
-		// The production operation-owned reattach (§6 seam (d)): the manager's
-		// gate-aware attach primitive, which accepts the already-held gate,
-		// suppresses supervisor startup until the post-verification handoff, and
-		// never re-acquires the non-reentrant lock.
+		// attachUnderGate is the operation-owned reattach (§6 seam (d)): the
+		// manager's gate-aware attach primitive, which accepts the already-held
+		// gate, suppresses supervisor startup until the post-verification handoff,
+		// and never re-acquires the non-reentrant lock.
 		m.cfg.attachUnderGate = func(ctx context.Context, entry hostreg.Host, holder hostops.Holder, explicit bool) (func() bool, error) {
 			_, handoff, err := manager.AttachUnderGate(ctx, entry, holder, explicit)
 			if err != nil {
@@ -358,95 +374,11 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 			}
 			return handoff, nil
 		}
-	}
-	if m.cfg.attachedFacts == nil && manager != nil {
 		// The attached channel's captured preflight is the deploy path's facts
 		// source (deploy runs no fresh preflight of its own) and the attach-first
 		// restart's probe source. PreflightIfAttached never dials.
 		m.cfg.attachedFacts = manager.PreflightIfAttached
 	}
-	// The file's records are read once, before anything else can mint: its
-	// retained marks seed the counters, so a host folded in below mints above
-	// every mark the file carries, and any live host the file carries no
-	// identity for gets its pair recorded in the same boot. Seeding runs before
-	// the store takes its snapshot, so the entries the snapshot carries are the
-	// seeded ones — a registry built before the marks were known would otherwise
-	// record its pre-seed epochs.
-	fileRecords, hasFile := m.hostFileRecords()
-	if hasFile {
-		m.seedHighWater(fileRecords)
-	}
-	// The file's receipts are the dedup table's durable half: they are loaded
-	// as-is — decodeConfig already refused any record this build cannot decode
-	// — so a lost-response retry after a restart still finds the receipt its
-	// commit wrote.
-	m.cfg.store.setReceipts(fileRecords.MutationReceipts)
-	m.cfg.store.set(hosts.All())
-	// The file's tombstones and pruned markers are the other durable halves:
-	// decodeConfig validated every record (the same hard startup-error posture
-	// a corrupt host entry takes), so they are loaded as-is and restored
-	// alongside the host entries (spec §15: "boot restores them alongside the
-	// host entries, and they survive controller restarts").
-	m.cfg.store.setRecordMaps(fileRecords.Tombstones, fileRecords.PrunedReceipts)
-	// The cross-file commit intents load with the other machine-managed
-	// sections: decodeConfig already validated each shape, so they are restored
-	// as-is, and the boot pipeline below (or the next mutation's write) is what
-	// converges them.
-	m.cfg.store.setStoreSync(fileRecords.PendingStoreSync)
-	// The teardown-repair records load with the other machine-managed sections;
-	// decodeConfig already validated each shape, so they are restored as-is (the
-	// same hard startup-error posture a corrupt host entry takes).
-	m.cfg.store.setRemnantMaps(fileRecords.StagedReceipts, fileRecords.TeardownRemnants, fileRecords.TeardownAttempts)
-	collided := false
-	if hasFile {
-		collided = m.breakBootTombstoneCollision(fileRecords)
-	}
-	// Boot finalizes each staged-receipt marker by the persisted phase and flags
-	// (spec §5: "Boot finalizes each host entry by the persisted phase and flags
-	// ... and the receipt records `bootRecovered: true`"). A marker is the
-	// durable evidence of a commit whose post-commit write was lost, so boot
-	// runs the phase-aware recovery and finalizes from the observed result
-	// before the hub serves; a failure is logged and leaves the marker for the
-	// next mutation-path write or the next boot.
-	for _, name := range sortedStagedMarkerNames(m.cfg.store.stagedSnapshot()) {
-		if m.cfg.ops != nil {
-			if _, open := m.cfg.ops.Compensation(name); open {
-				// §9's compensation owns this name's convergence only while the
-				// commit path has not passed its commit point, and the file still
-				// carrying a live intent for the name is exactly that state: the
-				// compensation may restore, and finalizing the marker as
-				// committed here would run its pinned teardown and write a
-				// committed receipt for a commit the compensation is about to
-				// undo. An intent already cleared means the commit stands, so the
-				// marker finalizes like any other — never deferred behind a
-				// record the pipeline below is about to clear without restoring.
-				if _, intentLive := fileRecords.PendingStoreSync[name]; intentLive {
-					m.logf("boot staged-receipt marker for %q left staged: an open compensation owns its convergence", name)
-					continue
-				}
-				m.logf("boot staged-receipt marker for %q finalized: its compensation's intent is already cleared, so the commit stands", name)
-			}
-		}
-		if _, err := m.finalizeOrphanMarkerIfAny(context.Background(), name, true); err != nil {
-			m.logf("boot finalization of the staged receipt marker for %q refused: %v", name, err)
-		}
-	}
-	// The boot's durable prune: expired tombstones, a tombstone a live
-	// entry consumed, and any record compaction past its bound land in one
-	// atomic write before the hub serves requests (spec §15: "every boot
-	// prunes durably in the same atomic-write posture before serving
-	// requests"; §6: "every `hub.toml` mutation and every boot compacts
-	// markers past either bound in the same atomic write"). A boot with
-	// nothing to prune writes nothing, so an untouched file stays
-	// byte-identical. A boot without that write may still owe the initial
-	// identity records.
-	if attempted := m.reconcileBootRecords(hasFile, collided); !attempted {
-		m.materializeHostRecords(fileRecords, hasFile)
-	}
-	// Spec 08b §7's boot passes, in their fixed order, before the
-	// manager serves: the tombstone-derived host-removed pass, the bidirectional
-	// generation-mirror reconciliation, and the cross-file intent
-	// reconciliation (§9).
-	m.reconcilePipelineBoot()
+	m.bootRecords()
 	return m
 }

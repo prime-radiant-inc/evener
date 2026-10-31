@@ -356,6 +356,27 @@ subscriptions or claim to cancel remote execution.
 
 ## Shared client responsibilities
 
+Comic Chat's `useComicActivity` observes `session` scope and the `delegates`
+collection only. Its root reader and each explicitly expanded child share this
+binding with other consumers. `buildEntityView` chooses the authoritative
+generation; the comic projection uses canonical transcript events only to place
+the matching owned strip. Missing causal history keeps the strip in a separate
+group, and ambiguous ownership never becomes an actionable child link.
+Child lifetime components live above virtual rows and release only their demand
+on collapse. The explicit full-page route remains available without an inline
+composer or approval submission. Activity headings use proven context
+`delegateName` fields, not ancestor titles or task descriptions. Transcript
+authorship comes separately from shared `ItemModel.authorship`: original authors
+survive inherited context, and missing authors stay neutral rather than borrowing
+the current child or parent. Neither path acquires a parent activity lease. Human questions
+and sandbox approvals remain interactive-root-only; model-facing delegate
+attention is not a human request. See [Comic Chat](comic-chat.md#inline-child-readers).
+
+The Comic full-page root uses the shared composer actions, AskDock and sandbox
+approval rail. Activity strips do not submit answers, grant approval or start a
+daemon. Route changes and late action settlement stay with their captured root
+ref; activity status does not transfer that ownership to a newly selected child.
+
 [`SessionActivityStore`](../../appwire-client/typescript/sessionActivityStore.ts)
 owns summary and collection demand, request coalescing, cursor recovery,
 reconnects and stale-result rejection. Opening a collection observes it; closing

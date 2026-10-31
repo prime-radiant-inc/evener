@@ -65,3 +65,16 @@ func TestCodexSolOneMillionAliasUsesBaseWireID(t *testing.T) {
 		t.Fatalf("wrong 1M alias: %+v", res)
 	}
 }
+
+// A narrowed instance keeps the shaping glob that applies to the rows it
+// kept: Astra still resolves with the Lite framing and its window.
+func TestCodexInheritModelsMatchingKeepsShapingGlobForKeptRows(t *testing.T) {
+	r := fixtureLoad(t, nil, "[providers.subscription]\nbase = \"openai-codex\"\ninherit_models_matching = [\"gpt-6-astra\"]\n")
+	res := mustResolve(t, r, "subscription/gpt-6-astra")
+	if res.Synthesized || !BoolValue(res.Caps.ResponsesLite) || res.Caps.ContextWindow == nil || *res.Caps.ContextWindow != 272000 || res.Transport.Body["text.verbosity"] != "low" {
+		t.Fatalf("narrowed Astra lost its shaping glob: %+v", res)
+	}
+	if narrowed, err := r.Resolve("subscription/gpt-6-luna"); err == nil {
+		t.Fatalf("gpt-6-luna must stay dropped by the narrowing: %+v", narrowed)
+	}
+}

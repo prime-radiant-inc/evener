@@ -347,10 +347,10 @@ func TestCovSessionJobManager_NilSession(t *testing.T) {
 	}
 }
 
-// TestCovStableDelegateFinish_NilSession covers stableDelegateFinish with nil session.
-func TestCovStableDelegateFinish_NilSession(t *testing.T) {
+// TestCovDelegateFinish_NilSession covers buildDelegateFinish with nil session.
+func TestCovDelegateFinish_NilSession(t *testing.T) {
 	t.Parallel()
-	finish := stableDelegateFinish(nil, "result", nil)
+	finish := buildDelegateFinish(nil, "result", nil)
 	if finish.outcome != delegatestore.OutcomeFailed || finish.disposition != delegatestore.DispositionTerminalError || finish.reason != "ended_without_report" {
 		t.Fatalf("unreported finish = outcome:%q disposition:%q reason:%q", finish.outcome, finish.disposition, finish.reason)
 	}
@@ -368,7 +368,7 @@ func TestCovStableDelegateFinish_NilSession(t *testing.T) {
 	if !sess.acceptCommunicateTerminal(context.Background(), report, reply, "", nil, "") {
 		t.Fatal("terminal report was not accepted")
 	}
-	reported := stableDelegateFinish(sess, reply, nil)
+	reported := buildDelegateFinish(sess, reply, nil)
 	if reported.outcome != delegatestore.OutcomeCompleted || reported.disposition != delegatestore.DispositionReported || reported.reason != "" {
 		t.Fatalf("reported finish = outcome:%q disposition:%q reason:%q", reported.outcome, reported.disposition, reported.reason)
 	}
@@ -380,10 +380,10 @@ func TestCovStableDelegateFinish_NilSession(t *testing.T) {
 	}
 }
 
-// TestCovStableDelegateFinish_WithError covers stableDelegateFinish with error
-func TestCovStableDelegateFinish_WithError(t *testing.T) {
+// TestCovDelegateFinish_WithError covers buildDelegateFinish with error
+func TestCovDelegateFinish_WithError(t *testing.T) {
 	t.Parallel()
-	finish := stableDelegateFinish(&Session{comm: communicateResult{called: true}}, "", context.DeadlineExceeded)
+	finish := buildDelegateFinish(&Session{comm: communicateResult{called: true}}, "", context.DeadlineExceeded)
 	if finish.outcome != delegatestore.OutcomeFailed || finish.disposition != delegatestore.DispositionTerminalError || finish.reason != "run_error" {
 		t.Fatalf("error finish = outcome:%q disposition:%q reason:%q", finish.outcome, finish.disposition, finish.reason)
 	}

@@ -5,7 +5,7 @@ import type { InstanceEntry } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { captureNewTabs, NEW_TAB_POLICY, openedNewTab } from "../../../../shell/openInNewTab.testSupport";
-import { connectionStore } from "../../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../../stores/connection";
 import { resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { CODEX_AUTH_SCHEME, startOAuthFlow, supportsHostDeviceSignIn } from "./oauthFlow";
 
@@ -40,12 +40,12 @@ describe("CODEX_AUTH_SCHEME cross-language pin", () => {
 });
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetCredentialsStoreForTests();
 });
 
 afterEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   vi.restoreAllMocks();
 });
 

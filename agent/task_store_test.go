@@ -1756,7 +1756,7 @@ func TestTaskListTool_UpdateShowsAllComplete(t *testing.T) {
 func TestTaskListTool_UpdateNamesBlockingDelegateDependency(t *testing.T) {
 	root, fixture, entered, release := newBlockingColdDelegateRuntime(t)
 
-	outcomes := make(chan stableDelegateSendOutcome, 1)
+	outcomes := make(chan delegateSendOutcome, 1)
 	go func() {
 		outcomes <- (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "resolve the open question", 60_000)
 	}()
@@ -1795,13 +1795,13 @@ func TestTaskListTool_UpdateNamesBlockingDelegateDependency(t *testing.T) {
 	if outcome.result.Err != nil || outcome.result.Status != "completed" || outcome.commit == nil {
 		t.Fatalf("blocking delegate outcome = %#v", outcome.result)
 	}
-	abortUnpersistedStableDelegateOutcome(t, outcome)
+	abortUnpersistedDelegateOutcome(t, outcome)
 }
 
 func TestTaskListTool_UpdateLeavesBackgroundDelegateOutOfDependencyReminder(t *testing.T) {
 	root, fixture, entered, release := newBlockingColdDelegateRuntime(t)
 
-	outcomes := make(chan stableDelegateSendOutcome, 1)
+	outcomes := make(chan delegateSendOutcome, 1)
 	go func() {
 		outcomes <- (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "resolve in background", 0)
 	}()
@@ -1848,7 +1848,7 @@ func TestTaskListTool_UpdateIgnoresTerminalDelegates(t *testing.T) {
 		{name: "failed", failed: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			fixture := newColdStableDelegateFixture(t, "")
+			fixture := newColdDelegateFixture(t, "")
 			if tc.failed {
 				fixture.client.Register(&fakeErrAdapter{
 					name: "openai",
@@ -1880,7 +1880,7 @@ func TestTaskListTool_UpdateIgnoresTerminalDelegates(t *testing.T) {
 			if got := string(outcome.result.Status); got != wantStatus {
 				t.Fatalf("terminal delegate status = %q, want %q", got, wantStatus)
 			}
-			abortUnpersistedStableDelegateOutcome(t, outcome)
+			abortUnpersistedDelegateOutcome(t, outcome)
 
 			ctx := context.Background()
 			root.reg.ExecuteCall(ctx, root.env, llm.ToolCallData{

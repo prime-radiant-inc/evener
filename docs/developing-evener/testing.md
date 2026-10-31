@@ -747,8 +747,8 @@ test can satisfy this test's assertion.
 The connection store follows the same rule: reset it with
 `resetConnectionStoreForTests()` (`stores/connection.ts`) rather than a
 hand-written `setState`, and wire a ready fake with `connectReadyFakeClient()`
-(`src/testing/connectionTestUtils.ts`) rather than a per-file
-`connectFakeClient`.
+(or `connectFakeClient(state)` for a non-ready one) from
+`src/testing/connectionTestUtils.ts` rather than a per-file helper.
 
 ### Frontend store-fixture contracts
 
@@ -757,7 +757,7 @@ from the assertion that fails:
 
 - A store fixture's `thread/read` handler must echo the request generation
   (`requestGeneration: params.requestGeneration ?? …`), or the response is
-  thrown away: `readDisposition` (appwire-client/typescript/reducer.ts)
+  thrown away: `readDisposition` (appwire-client/typescript/transcriptHistory.ts)
   discards a latest-window response whose `requestGeneration` is older than
   the held history's `issuedGeneration`, so a handler returning a static
   fixture with a stale default generation turns the read into a silent no-op
@@ -877,7 +877,10 @@ everywhere else.
 aggregate for the frontend, against the checked-in `testing-budget.json`, so a
 timing regression cannot silently erode the suite's runtime. It fails at 1.5x a
 package's checked-in budget and warns at 1.1x, and it applies a per-test ceiling
-segmented by test class. It reuses `gate-surface-lib.sh`, so it measures the same
+segmented by test class. Failure limits, class ceilings included, scale by the
+run's slowdown (the median measured/budget ratio over at least three packages
+budgeted at 5s or more, when above 1), so a uniformly slow runner does not fail
+the gate while one package far above its peers still does. It reuses `gate-surface-lib.sh`, so it measures the same
 surface `ROOT_FULL=1 make test` proves.
 
 ### Per-Test Ceilings Are Segmented by Test Class
@@ -1021,7 +1024,7 @@ and wait for the real evidence global separately, with its own timeout.
 
 The full-stack skill guard is a different KIND of check:
 
-- **`web-skillguard`** (`make test-web-browser`'s last step;
+- **`web-skillguard`** (a production-build-dependent `make test-web-browser` check;
   `cmd/evener-hub/skill_composer_browser_test.go` driving
   `cmd/evener-hub/frontend/scripts/skillguard/run.mjs`, behind the `browserguard`
   build tag) proves canonical SKILL SELECTION through the real stack: the
@@ -1039,6 +1042,17 @@ The full-stack skill guard is a different KIND of check:
   the embedded dist): `make test-web-browser` builds it first via `build-web`, and
   the gate (`evener-dev dev web-browser-guards`, cmd/evener-dev/webbrowser.go)
   still builds one when the dist is missing rather than skipping.
+
+- **`web-comicguard`** runs
+  `go test -tags browserguard ./cmd/evener-hub -run '^TestComicChatBrowser$' -count=1`.
+  Its registered build dependency prevents launch after a failed frontend build;
+  interruption waits for the Go fixture's daemon/browser cleanup. The real hub,
+  daemon transcripts and Chrome drive the alternate Comic reader and shared root
+  interactions. Only the external provider is scripted. Default runs inspect actual
+  glyphs from the bundled historical Comic Sans font, including synthesized bold.
+  `EVENER_COMIC_BLOCK_FONTS=1` exercises failed-font fallback and usable controls.
+  See the [driver guide](../../cmd/evener-hub/frontend/scripts/comicguard/README.md)
+  for commands, retained evidence and the limits of viewport emulation.
 
 These guards are owned by `make test-web-browser`, which is required by the CI web
 job and remains separate from `make lint` and `make test` because it needs Chrome.
@@ -1436,6 +1450,39 @@ When adding a runtime env var:
 - Document it in `docs/developing-evener/environment.md`.
 - Keep live-test opt-in gates explicit; a provider credential alone must not make a
   default test issue network requests.
+
+## Test File Layout
+
+A test file covers one topic and stays under roughly 2,500 lines. The cap is a
+guide, not a gate: a lint on file length makes every large test addition a
+rule fight. Split a file that has outgrown it, and split before adding to one
+that is already far past it.
+
+- Name a file for the behavior it covers (`app_rpc_deletion_fence_test.go`),
+  never a sprint, round, pass or coverage label.
+- Shared helpers live in one `<area>_helpers_test.go` (Go) or
+  `<area>Fixtures.ts` / `<area>TestHarness.tsx` (TypeScript) beside the tests.
+  A helper used by one topical file stays in that file.
+- Topical files import the helpers file. Helpers never import topical files,
+  and topical files never import each other; a helper two of them need moves
+  to the helpers file.
+- A split moves tests whole. It never merges, deletes or rewrites one, so the
+  test names are the same before and after. Where a file has `describe`
+  blocks, a block moves whole. Where it has none, group by the first noun in
+  the test names, and add a `describe` in the new file only when the group
+  already shares a `beforeEach`.
+- Mocks that vitest hoists (`vi.mock`) move with the tests that need them.
+
+Prove a split lost nothing with `scripts/ops/test-inventory.sh`: list the
+test names before, list them after, and diff. The diff must be empty, and the
+PR description carries it.
+
+```sh
+scripts/ops/test-inventory.sh go cmd/evener-hub > before.txt
+# ...move tests...
+scripts/ops/test-inventory.sh go cmd/evener-hub > after.txt
+scripts/ops/test-inventory.sh diff before.txt after.txt
+```
 
 ## Targets
 

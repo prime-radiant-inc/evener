@@ -39,7 +39,7 @@ import { cheatsheetStore, closeCheatsheet, openCheatsheet } from "./cheatsheetCo
 
 // jsdom implements no matchMedia at all (useIsMobile.test.ts documents the
 // probe), so the mobile test installs one: the mobile query matches, every
-// other query does not - AppShell.test.tsx's installMobileViewport, verbatim.
+// other query does not - appShellTestUtils.tsx's installMobileViewport, verbatim.
 function installMobileViewport(): void {
   vi.stubGlobal(
     "matchMedia",

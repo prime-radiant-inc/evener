@@ -1,11 +1,12 @@
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { appliedReceipt } from "../mutationReceiptTestUtils";
+import { connectFakeClient } from "../testing/connectionTestUtils";
 import { ALL_CAPABILITIES as CAPABILITIES, type TestThreadOverrides, testThread } from "../threadTestUtils";
 import { acquireSessionActivity } from "./sessionActivity";
 import { activitySummary } from "./sessionActivityTestUtils";
 import "fake-indexeddb/auto";
 import type {
   AnyNotification,
-  ConnectionState,
   MethodName,
   MethodTypes,
   ThreadReadResponse,
@@ -29,8 +30,9 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { resetPendingTurnsStoreForTests } from "../panes/session/composer/queue/pendingTurnsStore";
 import { resetSubagentModuleStoreForTests } from "../panes/session/transcript/tools/subagentModuleStore";
 import { resetWorkspaceStoreForTests } from "../shell/workspace";
-import { connectionStore } from "./connection";
+import { connectionStore, resetConnectionStoreForTests } from "./connection";
 import "./humanNoteDrafts";
+import { setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { SessionEntryCache } from "./sessionEntryCache";
 import { holdNextWriteTransaction } from "./testing/stalledIndexedDB";
@@ -38,7 +40,6 @@ import {
   installHydrationRetrySchedulerForTests,
   resetThreadsStoreForTests,
   setMutationStorageForTests,
-  setProductionEntryCacheForTests,
   threadsStore,
 } from "./threads";
 
@@ -152,15 +153,6 @@ function _sameEpochReconnectFixture() {
   return { authoritativeSnapshot, completion, turnCompleted };
 }
 
-// connectFakeClient wires a fresh FakeClient through useConnectionStore's
-// locked connect(client) entry point — the same path threads.ts's
-// requireClient() rides to reach the client (see connection.ts).
-function connectFakeClient(state: ConnectionState = "ready"): FakeClient {
-  const fake = new FakeClient(state);
-  connectionStore.getState().connect(fake);
-  return fake;
-}
-
 function connectMutationClient(): FakeClient {
   const fake = new FakeClient("ready");
   fake.on("thread/read", (params) => {
@@ -224,7 +216,7 @@ function runScheduledHydrationRetry(index = 0): void {
 }
 
 beforeEach(async () => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   // The store-wide resume-only predicate reads the pending-turns projection
   // (threads.ts's installResumeOnlyProjection), so clear any blockedUnknown
@@ -1508,16 +1500,6 @@ describe("useThreadsStore.loadOlderTurns", () => {
   });
 });
 
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, resolve, reject };
-}
-
 describe("retry-safe mutation outbox integration", () => {
   test("send resolves from the local commit while a lost response leaves one durable intent", async () => {
     const response = deferred<TurnStartResponse>();
@@ -2428,7 +2410,7 @@ test.each(["output", "metadata"] as const)("fences obsolete job %s after readine
     expect(peer.requests(method)).toEqual([]);
   } finally {
     client.close();
-    connectionStore.setState({ client: null, state: "idle" });
+    resetConnectionStoreForTests();
   }
 });
 

@@ -10,9 +10,8 @@
 // writes to it; the ref option seeds a ref other than ref_a (the ref-change
 // baseline test needs ref_b's hold to predate its first observation), every
 // other caller takes the default.
-import type { ConnectionState, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { connectionStore } from "../../../../../stores/connection";
+import type { Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
+import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { MutationOutboxIndexedDB } from "../../../../../stores/mutationOutboxIndexedDB";
 import type { InputAttachment } from "../../../../../stores/threads";
 import { threadsStore } from "../../../../../stores/threads";
@@ -63,12 +62,6 @@ export function testThread(ref: string, overrides: Partial<Thread> = {}): Thread
 
 export function readResponse(ref: string, overrides: Partial<Thread> = {}): ThreadReadResponse {
   return { thread: testThread(ref, overrides) };
-}
-
-export function connectFakeClient(state: ConnectionState = "ready"): FakeClient {
-  const fake = new FakeClient(state);
-  connectionStore.getState().connect(fake);
-  return fake;
 }
 
 export async function hydrate(fake: FakeClient, ref: string, overrides: Partial<Thread> = {}): Promise<void> {
