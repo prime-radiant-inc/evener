@@ -305,6 +305,65 @@ describe("openPane", () => {
     expect(workspaceStore.getState().focusedPaneId).toBe(id);
   });
 
+  test("reopening an unchanged existing pane emits no workspace store notification", () => {
+    const state = workspaceStore.getState();
+    const id = state.openPane("doc", { ref: "quiet-a" });
+    state.openPane("doc", { ref: "quiet-b" });
+    state.focusPane(id);
+    expect(workspaceStore.getState().focusedPaneId).toBe(id);
+
+    let notifications = 0;
+    const unsubscribe = workspaceStore.subscribe(() => {
+      notifications += 1;
+    });
+    try {
+      // Same pane, same params, already focused: nothing changed, so the
+      // store must stay silent.
+      expect(state.openPane("doc", { ref: "quiet-a" })).toBe(id);
+      expect(notifications).toBe(0);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  test("reopening an existing pane with changed focus still focuses it", () => {
+    const state = workspaceStore.getState();
+    const first = state.openPane("doc", { ref: "focus-a" });
+    state.openPane("doc", { ref: "focus-b" });
+    expect(workspaceStore.getState().focusedPaneId).not.toBe(first);
+
+    let notifications = 0;
+    const unsubscribe = workspaceStore.subscribe(() => {
+      notifications += 1;
+    });
+    try {
+      expect(state.openPane("doc", { ref: "focus-a" })).toBe(first);
+      expect(workspaceStore.getState().focusedPaneId).toBe(first);
+      expect(notifications).toBe(1);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  test("keepExistingFocus still suppresses focus writes on reopen", () => {
+    const state = workspaceStore.getState();
+    const first = state.openPane("doc", { ref: "keep-a" });
+    const second = state.openPane("doc", { ref: "keep-b" });
+    expect(workspaceStore.getState().focusedPaneId).toBe(second);
+
+    let notifications = 0;
+    const unsubscribe = workspaceStore.subscribe(() => {
+      notifications += 1;
+    });
+    try {
+      expect(state.openPane("doc", { ref: "keep-a" }, { keepExistingFocus: true })).toBe(first);
+      expect(workspaceStore.getState().focusedPaneId).toBe(second);
+      expect(notifications).toBe(0);
+    } finally {
+      unsubscribe();
+    }
+  });
+
   test("keepExistingFocus leaves focus alone when the pane is already open", () => {
     const first = workspaceStore.getState().openPane("doc", { ref: "a" });
     const second = workspaceStore.getState().openPane("doc", { ref: "b" });

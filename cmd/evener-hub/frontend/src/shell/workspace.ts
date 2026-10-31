@@ -688,7 +688,6 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
             ...(keepFocus ? {} : { focusedPaneId: existing.id }),
           });
         }
-        if (!keepFocus) set({ focusedPaneId: existing.id });
         return existing.id;
       }
     } else {
@@ -708,7 +707,6 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
         if (panes !== state.panes || focusChanged) {
           set({ panes, ...(keepFocus ? {} : { focusedPaneId: existing.id }) });
         }
-        if (!keepFocus) set({ focusedPaneId: existing.id });
         return existing.id;
       }
     }
