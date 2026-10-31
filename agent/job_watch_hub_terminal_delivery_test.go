@@ -2,6 +2,7 @@ package agent
 
 import (
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -85,6 +86,15 @@ func TestHubWatchTerminalDeliverySurvivesPriorLastNoticeSettlement(t *testing.T)
 			} else if finalState == nil || finalState.EndNotice || finalState.TriggerIdentity != "worker-instance/7@worker/accepted-terminal:status:completed" {
 				t.Fatalf("terminal completion state = %#v", finalState)
 			}
+			frameFields := map[string]string{}
+			for _, line := range strings.Split(finalState.Frame, "\n") {
+				if key, value, ok := strings.Cut(line, ": "); ok {
+					frameFields[key] = value
+				}
+			}
+			if frameFields["watch_id"] != watch.WatchID || frameFields["delivery_id"] != finalState.DeliveryID || frameFields["job_id"] != finalState.TriggerIdentity || frameFields["trigger"] != finalState.TriggerReason {
+				t.Fatalf("terminal frame identity fields = %#v, state = %#v", frameFields, finalState)
+			}
 			oldStore := jm.store
 			if err := oldStore.Close(); err != nil {
 				t.Fatal(err)
@@ -119,6 +129,9 @@ func TestHubWatchTerminalDeliverySurvivesPriorLastNoticeSettlement(t *testing.T)
 			owner, restoredCfg, restoredState, ok := restoredSession.resolveWatchSendToken(&restoredToken)
 			if !ok || owner != restored {
 				t.Fatal("reopened terminal token did not resolve")
+			}
+			if restoredState.Frame != finalState.Frame {
+				t.Fatalf("restored terminal frame differs from persisted frame: got %q, want %q", restoredState.Frame, finalState.Frame)
 			}
 			if err := owner.settleWatchSendDelivered(restoredCfg, restoredState); err != nil {
 				t.Fatalf("drain restored terminal send: %v", err)

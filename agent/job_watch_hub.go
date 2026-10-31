@@ -332,6 +332,7 @@ func (jm *jobManager) endHubWatch(watchID, reason string, completion *watchSendD
 	}
 	delivery.allowAfterTerminalExpiry = true
 	jm.mu.Unlock()
+	delivery = jm.snapshotWatchSendFrame(delivery)
 	state, _, recorded, err := jm.recordWatchSend(delivery, []jobstore.Event{watchClearedEvent(jm, cfg, reason)})
 	if err != nil || !recorded {
 		jm.mu.Lock()
