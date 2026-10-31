@@ -400,7 +400,7 @@ func openHostOpsStore(stateRoot string, stderr io.Writer, retention hostops.Rete
 	}
 	if signal := store.Quarantine(); signal != nil && signal.Unproven {
 		_, _ = fmt.Fprintf(stderr,
-			"[hub] host operation store set aside without proven custody %s (custody %s, quarantine epoch %d); the replacement store is empty, so a name the set-aside file had closed may not be held closed\n",
+			"[hub] host operation store set aside without proven custody %s (custody %s, quarantine epoch %d); it was replaced by an empty store, so a name the set-aside file had closed may not be held closed\n",
 			signal.QuarantinedFile, signal.CustodyFile, signal.QuarantineEpoch)
 	} else if signal != nil {
 		_, _ = fmt.Fprintf(stderr,
