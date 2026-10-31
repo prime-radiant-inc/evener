@@ -88,7 +88,7 @@ func TestHubWatchTerminalDeliverySurvivesPriorLastNoticeSettlement(t *testing.T)
 				t.Fatalf("terminal completion state = %#v", finalState)
 			}
 			frameFields := map[string]string{}
-			for _, line := range strings.Split(finalState.Frame, "\n") {
+			for line := range strings.SplitSeq(finalState.Frame, "\n") {
 				if key, value, ok := strings.Cut(line, ": "); ok {
 					frameFields[key] = value
 				}
