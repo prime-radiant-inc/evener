@@ -321,11 +321,26 @@ func (jm *jobManager) endHubWatch(watchID, reason string, completion *watchSendD
 		jm.mu.Unlock()
 		return nil
 	}
-	snapshot := watchConfigTerminalSnapshot{key: key, cfg: cfg, endReason: reason}
 	cfg.rejectingDelivery = true
+	jm.rememberDetachedPendingLocked(cfg)
+	var delivery watchSendDelivery
+	if completion != nil {
+		delivery = *completion
+	} else {
+		delivery = jm.watchSendSnapshot(cfg, cfg.hubRef+"#ended", "watch ended: "+strings.TrimSpace(reason)+"; re-register if observation is still needed", events.SessionEvent{SessionID: jm.sessionID})
+		delivery.endNotice = true
+	}
+	delivery.allowAfterTerminalExpiry = true
 	jm.mu.Unlock()
-	if err := jm.appendWatchTeardownBatch(nil, []watchConfigTerminalSnapshot{snapshot}); err != nil {
-		jm.rollbackWatchConfigSnapshotsRejecting([]watchConfigTerminalSnapshot{snapshot})
+	state, _, recorded, err := jm.recordWatchSend(delivery, []jobstore.Event{watchClearedEvent(jm, cfg, reason)})
+	if err != nil || !recorded {
+		jm.mu.Lock()
+		cfg.rejectingDelivery = false
+		delete(jm.terminalFlush, cfg)
+		jm.mu.Unlock()
+		if err == nil {
+			err = errors.New("terminal watch send was not persisted")
+		}
 		return err
 	}
 	jm.mu.Lock()
@@ -337,14 +352,6 @@ func (jm *jobManager) endHubWatch(watchID, reason string, completion *watchSendD
 	jm.recordWatchEndedLocked(key, cfg, reason)
 	cfg.rejectingDelivery = false
 	jm.rememberDetachedPendingLocked(cfg)
-	var delivery watchSendDelivery
-	if completion != nil {
-		delivery = *completion
-	} else {
-		delivery = jm.watchSendSnapshot(cfg, cfg.hubRef+"#ended", "watch ended: "+strings.TrimSpace(reason)+"; re-register if observation is still needed", events.SessionEvent{SessionID: jm.sessionID})
-		delivery.endNotice = true
-	}
-	delivery.allowAfterTerminalExpiry = true
 	// Keep the terminal eligibility record alive until the final send has had
 	// its chance to enter the shared durable rail, even if prior pending sends
 	// settle concurrently in this unlock-to-record gap.
@@ -353,7 +360,13 @@ func (jm *jobManager) endHubWatch(watchID, reason string, completion *watchSendD
 	if jm.testOnlyAfterHubWatchDetach != nil {
 		jm.testOnlyAfterHubWatchDetach()
 	}
-	jm.recordWatchSendsAndKick([]watchSendDelivery{delivery})
+	if state.Key.ResolvedSendTo == runtimeMessageAliasCaller {
+		if !jm.enqueueNotifications([]jobNotification{watchSendTokenNotification("", state)}) {
+			jm.kick()
+		}
+	} else {
+		jm.kick()
+	}
 	jm.mu.Lock()
 	cfg.terminalDeliveryPending = false
 	jm.forgetTerminalFlushIfEmptyLocked(cfg)

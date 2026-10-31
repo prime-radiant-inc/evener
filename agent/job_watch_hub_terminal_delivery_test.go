@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -61,6 +62,82 @@ func TestHubWatchTerminalDeliverySurvivesPriorLastNoticeSettlement(t *testing.T)
 			}
 			// TRIPWIRE: local journal detachment normally finishes below a second; this only catches a deadlock.
 			awaitWithin(t, 10*time.Second, "endHubWatch detachment boundary", func() { <-detached })
+			finalPending := 0
+			for _, event := range loadJobStoreEvents(t, jm) {
+				if event.Kind == jobstore.EventWatchSendPending && event.WatchSend != nil && event.WatchSend.Key.WatchID == watch.WatchID && event.WatchSend.DeliveryID != prior.DeliveryID {
+					finalPending++
+				}
+			}
+			if finalPending != 1 {
+				t.Fatalf("durable terminal pending sends at detachment=%d, want 1", finalPending)
+			}
+			var finalState *jobstore.WatchSendState
+			for _, event := range loadJobStoreEvents(t, jm) {
+				if event.Kind == jobstore.EventWatchSendPending && event.WatchSend != nil && event.WatchSend.Key.WatchID == watch.WatchID && event.WatchSend.DeliveryID != prior.DeliveryID {
+					state := *event.WatchSend
+					finalState = &state
+				}
+			}
+			if terminal == "end" {
+				if finalState == nil || !finalState.EndNotice || finalState.TriggerIdentity != "local:worker#ended" {
+					t.Fatalf("terminal end state = %#v", finalState)
+				}
+			} else if finalState == nil || finalState.EndNotice || finalState.TriggerIdentity != "worker-instance/7@worker/accepted-terminal:status:completed" {
+				t.Fatalf("terminal completion state = %#v", finalState)
+			}
+			oldStore := jm.store
+			if err := oldStore.Close(); err != nil {
+				t.Fatal(err)
+			}
+			restored, err := newJobManagerWithStoreOpen(root.stateDir, jm.sessionID, func(jobNotification) {}, jobstore.OpenNoSync, jobstore.CreateOutputNoSync)
+			if err != nil {
+				t.Fatalf("reopen job manager at detachment boundary: %v", err)
+			}
+			jm.store = restored.store
+			jm.appendEvent = restored.store.Append
+			jm.appendEvents = restored.store.AppendBatch
+			watches, err := restored.store.LoadWatches()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if watches[watch.WatchID] == nil || watches[watch.WatchID].Active {
+				t.Fatalf("reopened WatchCleared fold = %#v, want inactive record", watches[watch.WatchID])
+			}
+			for _, priorDelivery := range restored.pendingWatchSendDeliveries(nil) {
+				if priorDelivery.state.DeliveryID == prior.DeliveryID {
+					if err := restored.settleWatchSendDelivered(priorDelivery.cfg, priorDelivery.state); err != nil {
+						t.Fatalf("settle prior notice after reopen: %v", err)
+					}
+				}
+			}
+			pending := restored.pendingWatchSendDeliveries(nil)
+			if len(pending) != 1 || pending[0].state.Key.WatchID != watch.WatchID || pending[0].state.DeliveryID != finalState.DeliveryID {
+				t.Fatalf("reopened terminal pending sends = %#v, want one final send", pending)
+			}
+			restoredSession := &Session{jobManager: restored}
+			restoredToken := watchSendToken{Key: finalState.Key, UpdateSeq: finalState.UpdateSeq, DeliveryID: finalState.DeliveryID}
+			owner, restoredCfg, restoredState, ok := restoredSession.resolveWatchSendToken(&restoredToken)
+			if !ok || owner != restored {
+				t.Fatal("reopened terminal token did not resolve")
+			}
+			if err := owner.settleWatchSendDelivered(restoredCfg, restoredState); err != nil {
+				t.Fatalf("drain restored terminal send: %v", err)
+			}
+			if pending := restored.pendingWatchSendDeliveries(nil); len(pending) != 0 {
+				t.Fatalf("pending sends after restored delivery = %d, want 0", len(pending))
+			}
+			if _, _, _, ok := restoredSession.resolveWatchSendToken(&restoredToken); ok {
+				t.Fatal("restored terminal token resolved again after delivery")
+			}
+			delivered := 0
+			for _, event := range loadJobStoreEvents(t, restored) {
+				if event.Kind == jobstore.EventWatchSendDelivered && event.WatchSend != nil && event.WatchSend.DeliveryID == finalState.DeliveryID {
+					delivered++
+				}
+			}
+			if delivered != 1 {
+				t.Fatalf("restored terminal delivery records = %d, want 1", delivered)
+			}
 			if err := jm.settleWatchSendDelivered(cfg, prior); err != nil {
 				releaseBoundary()
 				t.Fatal(err)
@@ -101,5 +178,46 @@ func TestHubWatchTerminalDeliverySurvivesPriorLastNoticeSettlement(t *testing.T)
 				t.Fatalf("durable %s notices=%d, want 1", terminal, finals)
 			}
 		})
+	}
+}
+
+func TestHubWatchTerminalDeliveryAppendBatchFailureLeavesWatchActive(t *testing.T) {
+	t.Parallel()
+	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
+	jm := root.jobManager
+	watch, err := jm.configureHubWatch("local:worker", "worker-instance", "7@worker", "local:manager", []string{"status"}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := jm.onHubObservation(watch.WatchID, appwire.SessionWatchUpdate{Event: "status", Metadata: appwire.SessionObservationMetadata{Ref: "local:worker", InstanceID: "worker-instance", GenerationID: "7@worker", EntryID: "prior", CausalKnown: true}}); err != nil {
+		t.Fatal(err)
+	}
+	appendErr := errors.New("append batch failure")
+	tokens := make(chan jobNotification, 1)
+	jm.enqueue = func(n jobNotification) { tokens <- n }
+	jm.appendEvents = func([]jobstore.Event) error { return appendErr }
+	if err := jm.endHubWatch(watch.WatchID, "target replaced", nil); !errors.Is(err, appendErr) {
+		t.Fatalf("endHubWatch error = %v, want injected append failure", err)
+	}
+	for _, event := range loadJobStoreEvents(t, jm) {
+		if event.Kind == jobstore.EventWatchCleared && event.WatchID == watch.WatchID {
+			t.Fatal("WatchCleared became durable after AppendBatch failure")
+		}
+		if event.Kind == jobstore.EventWatchSendPending && event.WatchSend != nil && event.WatchSend.Key.WatchID == watch.WatchID && event.WatchSend.EndNotice {
+			t.Fatal("terminal delivery became durable after AppendBatch failure")
+		}
+	}
+	jm.mu.Lock()
+	_, _, active := jm.watchConfigByIDLocked(watch.WatchID)
+	jm.mu.Unlock()
+	if !active {
+		t.Fatal("watch config was detached after AppendBatch failure")
+	}
+	select {
+	case token := <-tokens:
+		if token.WatchSend != nil && token.WatchSend.Key.ResolvedWatchedIdentity == "local:worker#ended" {
+			t.Fatalf("terminal notification queued after AppendBatch failure: %#v", token)
+		}
+	default:
 	}
 }
