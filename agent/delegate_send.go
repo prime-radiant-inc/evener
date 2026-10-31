@@ -490,11 +490,12 @@ func populateDelegateSendResult(result *sendMessageResult, packet delegatestore.
 		}
 		if metadata.Worktree != nil {
 			result.Worktree = &delegateWorktreeReport{
-				Path:    metadata.Worktree.Path,
-				Branch:  metadata.Worktree.Branch,
-				HeadSHA: metadata.Worktree.HeadSHA,
-				Ahead:   metadata.Worktree.Ahead,
-				Dirty:   metadata.Worktree.Dirty,
+				Path:         metadata.Worktree.Path,
+				Branch:       metadata.Worktree.Branch,
+				HeadSHA:      metadata.Worktree.HeadSHA,
+				Ahead:        metadata.Worktree.Ahead,
+				Dirty:        metadata.Worktree.Dirty,
+				DisposalHint: metadata.Worktree.DisposalHint,
 			}
 		}
 	}
