@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -1378,6 +1379,270 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileCoordinatorDrainsForDescendant(t 
 	case <-time.After(10 * time.Second):
 		t.Fatal("the coordinator never settled after the descendant finished")
 	}
+}
+
+// An isolated descendant that wakes after its parent generation has settled
+// leaves the parent with neither a turn ticker nor a finalization drain: the
+// descendant's activity refreshes only its own lane's parent —
+// the coordinator's transcript — while nothing refreshed the root transcript
+// protecting the coordinator's lane, so a foreign prune removed the settled
+// coordinator's clean lane mid-activity and broke its continuation when the
+// descendant's report later woke it. A descendant's activity must refresh
+// every isolated ancestor's evidence, its own lane's parent and each
+// ancestor's alike.
+func TestWorktreePrune_OrphanArmSparesLaneWhileWokenDescendantWorks(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	gate := t.TempDir()
+	// The woken turn blocks inside a silent foreground shell: its own
+	// activity keeps reporting while nothing of the settled parent does.
+	enteredB := gate + "/descendant-entered"
+	releaseB := gate + "/descendant-release"
+	const sentinel = "timer-woken sentinel task"
+	const coordinatorMarker = "spawn a settled descendant"
+	// The owed reply's content is the wake request's own input, the one
+	// text part only that request carries: the descendant's first answer
+	// rides in a communicate tool call's arguments, where a content router
+	// cannot see it.
+	const owedReply = "the descendant's owed reply is ready"
+	blockCmd := "sh -c 'touch " + enteredB + "; while [ ! -e " + releaseB + " ]; do sleep 0.2; done'"
+	shellArgs, err := json.Marshal(map[string]any{"command": blockCmd})
+	if err != nil {
+		t.Fatalf("marshal shell args: %v", err)
+	}
+	spawnB := func(llm.Request) llm.Response {
+		args, _ := json.Marshal(map[string]string{"prompt": sentinel, "isolation": "worktree"})
+		return agenttest.ToolCallResponse(llm.ToolCallData{ID: "call_spawn_isolated_descendant", Name: "delegate", Arguments: args, Type: "function"})
+	}
+	// Every request the tree can make during the two phases routes by its
+	// content, so the adapter cursor's exact position is never the test's
+	// assumption: the coordinator's own requests carry its input, the
+	// woken descendant's request alone carries the owed reply it wakes to
+	// answer, and the one-shot shell fires exactly once.
+	var spawned, wakeShelled atomic.Bool
+	route := func(req llm.Request) llm.Response {
+		switch {
+		case requestMentions(req, coordinatorMarker) && spawned.CompareAndSwap(false, true):
+			return spawnB(req)
+		case requestMentions(req, coordinatorMarker):
+			return agenttest.FinalResponse("coordinator done")
+		case requestMentions(req, owedReply) && wakeShelled.CompareAndSwap(false, true):
+			return agenttest.ToolCallResponse(llm.ToolCallData{ID: "call_wake_shell", Name: "shell", Arguments: shellArgs, Type: "function"})
+		default:
+			return agenttest.FinalResponse("descendant done")
+		}
+	}
+	fixture, root, lanePath := spawnRetainedDelegateLane(t, r, "woken-descendant-lane", "dlg_orphanactive000004", "034orphanactive0004",
+		route, route, route, route, route, route, route, route)
+	parentTranscript := schema.SessionTranscriptPath(fixture.stateDir, fixture.meta.ID)
+
+	// The coordinator's second turn spawns the isolated descendant, whose
+	// first turn starts the stable shell job and answers; the coordinator's
+	// run settles with the job live, and the parent acknowledges its report
+	// the way a live delegate_send does.
+	sendOutcome := make(chan delegateSendOutcome, 1)
+	go func() {
+		outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, coordinatorMarker, 60_000)
+		sendOutcome <- outcome
+	}()
+	// A diagnostic dump for the settle failures: which requests the tree
+	// made and which markers each carried, and where the two generations
+	// stand.
+	dumpState := func() string {
+		var b strings.Builder
+		if sub := root.subagents.get(fixture.childID); sub == nil {
+			b.WriteString("A: missing; ")
+		} else {
+			sub.mu.Lock()
+			fmt.Fprintf(&b, "A running=%v driving=%v finalizing=%v closed=%v; ", sub.running, sub.driving, sub.finalizing, sub.closed)
+			sub.mu.Unlock()
+		}
+		ctl := root.delegateController
+		ctl.mu.Lock()
+		for id, agg := range ctl.durable {
+			fmt.Fprintf(&b, "row %s phase=%v gen=%d open=%v parent=%q isolation=%q; ", id, agg.Phase, agg.Generation, agg.CurrentRunOpen, agg.Descriptor.ParentDelegateID, agg.Descriptor.Isolation)
+		}
+		ctl.mu.Unlock()
+		fixture.adapter.mu.Lock()
+		fmt.Fprintf(&b, "adapter requests=%d cursor=%d: ", len(fixture.adapter.requests), fixture.adapter.i)
+		for i, req := range fixture.adapter.requests {
+			marks := ""
+			if requestMentions(req, coordinatorMarker) {
+				marks += "coordinator,"
+			}
+			if requestMentions(req, sentinel) {
+				marks += "sentinel,"
+			}
+			if requestMentions(req, "descendant done") {
+				marks += "answered,"
+			}
+			fmt.Fprintf(&b, "[%d:%s] ", i, marks)
+		}
+		fixture.adapter.mu.Unlock()
+		return b.String()
+	}
+	select {
+	case outcome := <-sendOutcome:
+		if outcome.result.Err != nil {
+			t.Fatalf("the coordinator's turn failed: %v; %s", outcome.result.Err, dumpState())
+		}
+		if outcome.commit != nil {
+			plans, err := outcome.commit.Complete(true)
+			if err != nil {
+				t.Fatalf("acknowledge the coordinator: %v", err)
+			}
+			if err := root.executeDelegateMutationPlans(plans); err != nil {
+				t.Fatalf("apply the coordinator's acknowledgment: %v", err)
+			}
+		}
+	case <-time.After(70 * time.Second):
+		t.Fatalf("the coordinator never settled; %s", dumpState())
+	}
+
+	// Both generations stand settled: the coordinator neither runs, drives
+	// nor finalizes — nothing of its own refreshes the root's evidence from
+	// here on — and the descendant sits retained with its stable job live.
+	delegateSub := root.subagents.get(fixture.childID)
+	if delegateSub == nil || delegateSub.sess == nil {
+		t.Fatalf("delegate %s is not retained after its run", fixture.childID)
+	}
+	// Both generations settle cleanly now: the descendant's quick turn is
+	// done and nothing of the coordinator's holds the drain open.
+	settled := false
+	for deadline := time.Now().Add(30 * time.Second); !settled && time.Now().Before(deadline); {
+		delegateSub.mu.Lock()
+		running, driving, finalizing := delegateSub.running, delegateSub.driving, delegateSub.finalizing
+		delegateSub.mu.Unlock()
+		settled = !running && !driving && !finalizing
+		if !settled {
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+	if !settled {
+		t.Fatalf("the coordinator never settled after its report; %s", dumpState())
+	}
+	// The descendant's tree row and runtime, found the way the tree's own
+	// tests do.
+	var descendantID, descendantChildID string
+	descendants := 0
+	tree := root.delegateController
+	tree.mu.Lock()
+	for id, agg := range tree.durable {
+		if agg.Descriptor.ParentDelegateID == fixture.delegateID {
+			descendants++
+			descendantID, descendantChildID = id, agg.Descriptor.ChildSessionID
+		}
+	}
+	tree.mu.Unlock()
+	if descendants != 1 {
+		t.Fatalf("the coordinator spawned %d descendants, want exactly 1", descendants)
+	}
+	descendantSub := delegateSub.sess.subagents.get(descendantChildID)
+	if descendantSub == nil || descendantSub.sess == nil {
+		t.Fatalf("the descendant %s is not retained after its run", descendantChildID)
+	}
+	waitForCondition(t, 10*time.Second, "the descendant to settle after its quick turn", func() bool {
+		descendantSub.mu.Lock()
+		running, finalizing := descendantSub.running, descendantSub.finalizing
+		descendantSub.mu.Unlock()
+		return !running && !finalizing
+	})
+
+	// The settled tree's parent evidence is long stale — the silence the
+	// orphan reclaim measures — backdated here rather than waited out.
+	stale := time.Now().Add(-30 * 24 * time.Hour)
+	if err := os.Chtimes(parentTranscript, stale, stale); err != nil {
+		t.Fatalf("backdate the parent's transcript: %v", err)
+	}
+
+	// The descendant owes its parent a reply it never took — the state a
+	// cold restart reconstructs for a retained delegate (the stable-shell
+	// repair) and the tree arms the same way while both generations stand
+	// settled. The owed turn pends durably on the descendant's own
+	// transcript and the tree's wake bookkeeping carries it: the
+	// already-armed wake a settled tree's descendant later takes.
+	const wakeAttentionID = "delegate:woken-descendant-owed-reply"
+	if _, err := descendantSub.sess.appendDelegateNotificationDurably(wakeAttentionID, owedReply); err != nil {
+		t.Fatalf("pend the descendant's owed attention: %v", err)
+	}
+	if _, err := root.delegateController.openDelegateAttention(descendantID, wakeAttentionID); err != nil {
+		t.Fatalf("arm the descendant's attention wake: %v", err)
+	}
+
+	// The wake: the tree's own attention drive, the consumer the root's
+	// armed retry timer serves. A drive that cannot launch yet is
+	// retryable — the timer re-fires — so mirror it within a bound. The
+	// woken turn blocks inside a silent foreground shell, its activity the
+	// tree's only life now.
+	shellStarted := false
+	for driveDeadline := time.Now().Add(30 * time.Second); !shellStarted && time.Now().Before(driveDeadline); {
+		root.drivePendingDelegateAttention()
+		for pollDeadline := time.Now().Add(2 * time.Second); !shellStarted && time.Now().Before(pollDeadline); {
+			if _, err := os.Stat(enteredB); err == nil {
+				shellStarted = true
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	if !shellStarted {
+		descendantSub.mu.Lock()
+		dRunning, dDriving, dFinalizing, dClosed := descendantSub.running, descendantSub.driving, descendantSub.finalizing, descendantSub.closed
+		descendantSub.mu.Unlock()
+		fixture.adapter.mu.Lock()
+		requestCount, cursor := len(fixture.adapter.requests), fixture.adapter.i
+		fixture.adapter.mu.Unlock()
+		_, subLocked, subReason := r.laneLocked(t, lanePath)
+		t.Fatalf("the woken descendant's shell never started (sub running=%v driving=%v finalizing=%v closed=%v, adapter requests=%d cursor=%d, coordinator lane locked=%v reason=%q)",
+			dRunning, dDriving, dFinalizing, dClosed, requestCount, cursor, subLocked, subReason)
+	}
+
+	// The launch already recorded this wake in the ancestors' evidence;
+	// the silence it must outlast is the rest of the turn, so the ongoing
+	// refresh alone must keep every isolated ancestor fresh from here on.
+	stale = time.Now().Add(-30 * 24 * time.Hour)
+	if err := os.Chtimes(parentTranscript, stale, stale); err != nil {
+		t.Fatalf("backdate the parent's transcript again: %v", err)
+	}
+
+	// The woken descendant's activity is the tree's life now: it must keep
+	// the settled coordinator's lane evidence fresh.
+	waitForCondition(t, 10*time.Second, "the woken descendant to keep the coordinator's lane evidence fresh", func() bool {
+		info, err := os.Stat(parentTranscript)
+		return err == nil && info.ModTime().After(stale)
+	})
+
+	// A foreign session's prune — armed with a threshold the backdate crosses
+	// but the refresh does not — must not release or collect the settled
+	// coordinator's lane while its descendant works.
+	out, err := r.pruneOrphanedOp(t, 7)
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if findPruneEntry(t, pruneEntries(t, out, "removed"), "woken-descendant-lane") != nil {
+		t.Fatalf("a settled coordinator's lane was reclaimed while its descendant worked: %+v", out)
+	}
+	if findPruneEntry(t, pruneEntries(t, out, "unlocked"), "woken-descendant-lane") != nil {
+		t.Fatalf("a settled coordinator's lane was released while its descendant worked: %+v", out)
+	}
+	_, locked, reason := r.laneLocked(t, lanePath)
+	if !locked {
+		t.Fatalf("the coordinator's lane lost its lock: %q", reason)
+	}
+	m, ok := worktree.ParseMarker(reason)
+	if !ok || m.DelegateID != fixture.delegateID || m.SessionID != fixture.meta.ID {
+		t.Fatalf("the coordinator's lane lock = %q, want the delegate marker naming its parent session", reason)
+	}
+
+	// The woken turn finishes cleanly once released.
+	if err := os.WriteFile(releaseB, nil, 0o644); err != nil {
+		t.Fatalf("release the woken descendant: %v", err)
+	}
+	waitForCondition(t, 30*time.Second, "the woken turn to finish after release", func() bool {
+		descendantSub.mu.Lock()
+		running := descendantSub.running
+		descendantSub.mu.Unlock()
+		return !running
+	})
 }
 
 // The released inherited lane is re-taken before the shared child's turn

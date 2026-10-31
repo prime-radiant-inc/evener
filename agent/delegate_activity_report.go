@@ -154,19 +154,41 @@ func (c *delegateTreeController) ReportActivityPhase(lease delegateLease, at tim
 
 // refreshLaneParentActivityEvidence records a running delegate's ongoing
 // activity in the last-activity evidence the orphan reclaim and the session
-// listings read: the transcript mtime of the session its lane's marker names.
-// A turn that outlasts the operator's inactivity threshold leaves its marker
-// parent idle — the parent runs no turn of its own while it waits — so the
-// once-per-launch refresh (revalidateLaneForLaunch) goes stale mid-task, and a
-// foreign prune, whose live-work view cannot see the turn's work under the
-// lane, could judge the parent long-inactive and release the lane under the
-// running turn. Best-effort, like the launch refresh: a delegate with no
-// isolation lane, and a tree with no root runtime or state directory, has no
-// evidence to refresh.
+// listings read: the transcript mtime of the session each isolated lane in
+// the delegate's ancestry names. A turn that outlasts the operator's
+// inactivity threshold leaves its lane's marker parent idle — the parent runs
+// no turn of its own while it waits — and a descendant that wakes after its
+// parent generation settled leaves every settled isolated ancestor idle the
+// same way, with neither a turn ticker nor a finalization drain of its own.
+// Without the walk a foreign prune, whose live-work view cannot see the turn's
+// work under the lanes, could judge a settled ancestor long-inactive and
+// release its lane under the running turn. Best-effort, like the launch
+// refresh: a delegate with no isolation lane, and a tree with no root runtime
+// or state directory, has no evidence to refresh.
 func (c *delegateTreeController) refreshLaneParentActivityEvidence(delegateID string) {
-	lane, ok := c.isolatedLaneForDelegate(delegateID)
-	if !ok {
+	if c == nil {
 		return
 	}
-	c.rootRuntime.refreshActivityEvidence(lane.markerSessionID)
+	var markers []string
+	c.mu.Lock()
+	seen := make(map[string]struct{})
+	for id := delegateID; id != ""; {
+		aggregate := c.durable[id]
+		if aggregate == nil {
+			break
+		}
+		if aggregate.Descriptor.Isolation == "worktree" && aggregate.Descriptor.WorkingDir != "" {
+			if marker := c.markerSessionIDLocked(aggregate); marker != "" {
+				if _, ok := seen[marker]; !ok {
+					seen[marker] = struct{}{}
+					markers = append(markers, marker)
+				}
+			}
+		}
+		id = aggregate.Descriptor.ParentDelegateID
+	}
+	c.mu.Unlock()
+	for _, marker := range markers {
+		c.rootRuntime.refreshActivityEvidence(marker)
+	}
 }

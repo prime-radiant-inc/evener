@@ -281,13 +281,13 @@ func (s *Session) validateDrivenDelegateLane(sub *subagent) bool {
 // re-establishes the tree's claim on it before any launch hands the turn
 // over: the delegate's own when it is worktree-isolated, and otherwise the
 // nearest isolated ancestor's — the checkout a non-isolated descendant
-// shares. The launch itself is activity of the session the lane's marker
-// names — the parent the orphan reclaim consults — so it is recorded in that
-// session's evidence before the lane is adopted or re-locked; a launch that
-// interleaves with a prune leaves the release recheck seeing a live parent. A
-// delegate with no lane of this tree's own runs in this session's checkout,
-// which no reclaim can release, and a launch on a non-local environment has
-// no git worktree to validate.
+// shares. The launch itself is activity of the session each isolated lane's
+// marker names — every ancestor the orphan reclaim consults, settled ones
+// included — so it is recorded in each of their evidence before the lane is
+// adopted or re-locked; a launch that interleaves with a prune leaves the
+// release recheck seeing a live parent. A delegate with no lane of this
+// tree's own runs in this session's checkout, which no reclaim can release,
+// and a launch on a non-local environment has no git worktree to validate.
 func (s *Session) revalidateLaneForLaunch(delegateID string) error {
 	if s == nil || s.delegateController == nil || delegateID == "" {
 		return nil
@@ -300,7 +300,7 @@ func (s *Session) revalidateLaneForLaunch(delegateID string) error {
 	if !ok {
 		return nil
 	}
-	s.refreshActivityEvidence(lane.markerSessionID)
+	s.delegateController.refreshLaneParentActivityEvidence(delegateID)
 	return s.reviveRevalidateDelegateLane(local, lane)
 }
 
