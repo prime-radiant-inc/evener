@@ -2439,6 +2439,271 @@ it("a foreground opening that misses its bounded lookup twice still converges th
 it("a foreground opening that misses its bounded lookup three times still converges the recorded display", () =>
   convergesAfterMissedLookups(3));
 
+// body set. The foreground reads below echo each request's own generation (a
+// static reply with the fixture's first generation is discarded by
+// readDisposition, so counting wire requests proves issuance, not acceptance)
+// and each carries a source update past the seeded rows, so the assertions
+// prove the ACCEPTED update (its newest row is not on disk) survived the
+// recovery that converges the display from the cache.
+function latestWindowRead(ref: string, total: number): ThreadReadResponse {
+  const window = 40;
+  const read = response(
+    ref,
+    Array.from({ length: window }, (_, index) => turn(`row-${total - window + index + 1}`, total - window + index + 1)),
+  );
+  read.snapshot = { incarnation: "inc-a", length: total };
+  read.olderCursor = "opaque-server-before-row-1";
+  return read;
+}
+
+it("an opening that misses its bound converges the recorded range below the daemon's windowed answer", async () => {
+  const storage = cache();
+  const realGetLatestWindow = storage.getLatestWindow.bind(storage);
+  setProductionEntryCacheForTests(storage);
+  const ref = "local:a";
+  const read = response(
+    ref,
+    Array.from({ length: 225 }, (_, index) => turn(`row-${index + 1}`, index + 1)),
+  );
+  read.snapshot = { incarnation: "inc-a", length: 225 };
+  const client = connect(read);
+  let foregroundReads = 0;
+  client.on("thread/read", (params) => {
+    foregroundReads += 1;
+    return foregroundReads === 1
+      ? read
+      : { ...latestWindowRead(ref, 224 + foregroundReads), requestGeneration: params.requestGeneration };
+  });
+  const lease = acquireBackgroundThread(ref);
+  await lease.ready;
+  await settleEntryTranscriptForTests(ref);
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect(await storage.getLatest(key, 300)).toHaveLength(225);
+  const bodies = () =>
+    threadsStore
+      .getState()
+      .threads.get(ref)
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.text)
+      .filter(Boolean);
+  expect(bodies()).toEqual([]);
+
+  // Two withheld window reads keep the acquisition's open and the chain's
+  // first attempt short of their bounds, exactly the twice-miss strand; the
+  // third read runs healthy storage so the paced attempt can restore.
+  let withheldWindowReads = 0;
+  (storage as unknown as { getLatestWindow: unknown }).getLatestWindow = (...args: unknown[]) => {
+    if (withheldWindowReads > 0) {
+      withheldWindowReads -= 1;
+      return new Promise(() => {}) as ReturnType<typeof realGetLatestWindow>;
+    }
+    return realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>)) as ReturnType<
+      typeof realGetLatestWindow
+    >;
+  };
+  withheldWindowReads = 2;
+  // Only the open's backstop is pinned: its read is withheld forever, so
+  // machine load cannot delay the miss. The recovery chain's stalled-open
+  // window keeps the production default — pinning it to 250ms starves a
+  // real (load-slowed) read and reintroduces the very flake this family
+  // pins (the run-40800595769 signature).
+  setSessionCacheOpenBackstopForTests(40);
+  try {
+    await threadsStore.getState().ensureThread(ref);
+    await settleEntryTranscriptForTests(ref);
+    // The wire answer carried only the daemon's 40-item window with a server
+    // cursor, and the accepted update's newest row (absent from disk) merged
+    // into the converged display: the recorded range below the window came
+    // from the cache, not from the wire.
+    expect(bodies()).toContain("row-226");
+    expect(bodies()).toEqual(Array.from({ length: 200 }, (_, index) => `row-${index + 27}`));
+    expect(threadsStore.getState().threads.get(ref)?.olderCursor).toBeDefined();
+  } finally {
+    setSessionCacheStalledOpenForTests(5000);
+    setSessionCacheOpenBackstopForTests(10000);
+    threadsStore.getState().releaseThread(ref);
+    await lease.release();
+  }
+});
+
+it("a transient storage failure during a missed open's recovery still converges the recorded range below the windowed answer", async () => {
+  const storage = cache();
+  const realGetLatestWindow = storage.getLatestWindow.bind(storage);
+  setProductionEntryCacheForTests(storage);
+  const ref = "local:a";
+  const read = response(
+    ref,
+    Array.from({ length: 225 }, (_, index) => turn(`row-${index + 1}`, index + 1)),
+  );
+  read.snapshot = { incarnation: "inc-a", length: 225 };
+  const client = connect(read);
+  let foregroundReads = 0;
+  client.on("thread/read", (params) => {
+    foregroundReads += 1;
+    return foregroundReads === 1
+      ? read
+      : { ...latestWindowRead(ref, 224 + foregroundReads), requestGeneration: params.requestGeneration };
+  });
+  const lease = acquireBackgroundThread(ref);
+  await lease.ready;
+  await settleEntryTranscriptForTests(ref);
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect(await storage.getLatest(key, 300)).toHaveLength(225);
+  const bodies = () =>
+    threadsStore
+      .getState()
+      .threads.get(ref)
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.text)
+      .filter(Boolean);
+  expect(bodies()).toEqual([]);
+
+  // A miss, then a transient failure: the acquisition's open misses its
+  // bound, and the follow-up open that reads a storage error refuses fast —
+  // its own start reset the per-open miss marker, so only the route-level
+  // owed fact still entitles the pane to recovery. The paced chain keeps
+  // working against the now-healthy storage and restores the recorded range
+  // below the wire window with the accepted update intact.
+  let withheldWindowReads = 0;
+  let failingWindowReads = 0;
+  (storage as unknown as { getLatestWindow: unknown }).getLatestWindow = (...args: unknown[]) => {
+    if (withheldWindowReads > 0) {
+      withheldWindowReads -= 1;
+      return new Promise(() => {}) as ReturnType<typeof realGetLatestWindow>;
+    }
+    if (failingWindowReads > 0) {
+      failingWindowReads -= 1;
+      return Promise.reject(new Error("storage transiently failed")) as ReturnType<typeof realGetLatestWindow>;
+    }
+    return realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>)) as ReturnType<
+      typeof realGetLatestWindow
+    >;
+  };
+  withheldWindowReads = 1;
+  failingWindowReads = 1;
+  // Stalled-open window unpinned, for the load-starvation reason above.
+  setSessionCacheOpenBackstopForTests(40);
+  try {
+    await threadsStore.getState().ensureThread(ref);
+    await settleEntryTranscriptForTests(ref);
+    // The accepted foreground update (its newest row is not on disk)
+    // survived the recovery that converged the display from the cache, and
+    // the recorded range below the wire window came from the cache, not from
+    // any further wire answer.
+    expect(bodies()).toContain("row-226");
+    expect(bodies()).toEqual(Array.from({ length: 200 }, (_, index) => `row-${index + 27}`));
+    expect(threadsStore.getState().threads.get(ref)?.olderCursor).toBeDefined();
+  } finally {
+    setSessionCacheStalledOpenForTests(5000);
+    setSessionCacheOpenBackstopForTests(10000);
+    threadsStore.getState().releaseThread(ref);
+    await lease.release();
+  }
+});
+
+it("a converged pane automatically reconciles its restored older rows against the source", async () => {
+  const storage = cache();
+  const realGetLatestWindow = storage.getLatestWindow.bind(storage);
+  setProductionEntryCacheForTests(storage);
+  const ref = "local:a";
+  const read = response(
+    ref,
+    Array.from({ length: 225 }, (_, index) => turn(`row-${index + 1}`, index + 1)),
+  );
+  read.snapshot = { incarnation: "inc-a", length: 225 };
+  const client = connect(read);
+  let foregroundReads = 0;
+  client.on("thread/read", (params) => {
+    foregroundReads += 1;
+    return foregroundReads === 1
+      ? read
+      : { ...latestWindowRead(ref, 224 + foregroundReads), requestGeneration: params.requestGeneration };
+  });
+  // The source's older pages, served below the wire window: the daemon's
+  // bounded thread/turns/list answers, one 40-row page per call, descending
+  // from the wire window's start. Row 160 was EDITED at the source (version
+  // 2) while the local record still holds its pre-gap cached version — the
+  // exact shape a reconnect in the same incarnation leaves behind.
+  const listReads: string[] = [];
+  client.on("thread/turns/list", (params) => {
+    listReads.push(params.cursor ?? "-");
+    const page = Math.min(listReads.length, 4);
+    const first = 188 - page * 40;
+    const rows = Array.from({ length: 40 }, (_, index) => {
+      const entry = first + index;
+      const pageTurn = turn(`row-${entry}`, entry, entry === 160 ? `row-${entry}-edited` : `row-${entry}`);
+      return entry === 160
+        ? { ...pageTurn, items: (pageTurn.items ?? []).map((item) => ({ ...item, version: 2 })) }
+        : pageTurn;
+    });
+    return {
+      data: rows,
+      nextCursor: page < 4 ? `opaque-server-page-${page + 1}` : undefined,
+      bootGeneration: "1",
+      epoch: 1,
+      // A page's snapshot length is the index's own byte watermark at read
+      // time; it must be at least the held watermark to merge.
+      snapshot: { incarnation: "inc-a", length: 230 },
+    };
+  });
+  const lease = acquireBackgroundThread(ref);
+  await lease.ready;
+  await settleEntryTranscriptForTests(ref);
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect(await storage.getLatest(key, 300)).toHaveLength(225);
+  const bodies = () =>
+    threadsStore
+      .getState()
+      .threads.get(ref)
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.text)
+      .filter(Boolean);
+  expect(bodies()).toEqual([]);
+
+  // One withheld window read misses the acquisition's open bound; the
+  // chain's paced attempt then runs healthy storage, and its owed fill
+  // restores the recorded rows below the wire window from the raw durable
+  // pull — rows no current-baseline statement validated. Their cached bodies
+  // display, but the range is not reconciled: an older item that changed at
+  // the source while the client was away would keep showing its pre-gap
+  // cached version until the user happened to page that deep. The pane must
+  // reconcile the range automatically — the same bounded older pages a
+  // user's scroll issues — until the source has spoken for every restored
+  // identity, and row 160's edited version heals into the display.
+  let withheldWindowReads = 0;
+  (storage as unknown as { getLatestWindow: unknown }).getLatestWindow = (...args: unknown[]) => {
+    if (withheldWindowReads > 0) {
+      withheldWindowReads -= 1;
+      return new Promise(() => {}) as ReturnType<typeof realGetLatestWindow>;
+    }
+    return realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>)) as ReturnType<
+      typeof realGetLatestWindow
+    >;
+  };
+  withheldWindowReads = 1;
+  // Stalled-open window unpinned, for the load-starvation reason above.
+  setSessionCacheOpenBackstopForTests(40);
+  try {
+    await threadsStore.getState().ensureThread(ref);
+    await settleEntryTranscriptForTests(ref);
+    // The converged display: every recorded row restored, and row 160 healed
+    // to the source's edited version once the bounded pages reconciled the
+    // restored range.
+    await vi.waitFor(() =>
+      expect(bodies()).toEqual(
+        Array.from({ length: 200 }, (_, index) => (index + 27 === 160 ? "row-160-edited" : `row-${index + 27}`)),
+      ),
+    );
+    expect(listReads.length).toBeGreaterThanOrEqual(1);
+    expect(bodies()).toContain("row-226");
+  } finally {
+    setSessionCacheStalledOpenForTests(5000);
+    setSessionCacheOpenBackstopForTests(10000);
+    threadsStore.getState().releaseThread(ref);
+    await lease.release();
+  }
+});
+
 // The source read's bodies make the display complete before the open's
 // give-up bound expires, so the display itself shows no stranding. The
 // miss disposed the pane's reader, though, and the repository then reclaims the

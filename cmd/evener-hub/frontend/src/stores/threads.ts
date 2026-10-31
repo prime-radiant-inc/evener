@@ -385,6 +385,9 @@ export interface ThreadsStoreState {
   watchThread(ref: string, opts?: { includeTurns?: boolean }): Promise<void>;
   releaseWatchedThread(ref: string): void;
   loadOlderTurns(ref: string): Promise<void>;
+  /** One bounded source page below the wire window, to reconcile restored
+   * older rows no current-baseline statement validated. */
+  reconcileRecordedRange(ref: string): Promise<void>;
   // skillNames carries the composer's canonical skill selections for the
   // request. It is gated: a non-empty selection requires the target's
   // advertised capabilities.skillInput to be true, and a refusal throws
@@ -7084,6 +7087,68 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     return resumeFencedForSend(ref);
   },
 
+  // A pane whose restored older rows no current-baseline statement validated
+  // reconciles them through the same bounded source page a user's scroll
+  // issues below the wire window. This scoped read never displaces the paging
+  // machinery: it captures the pane's own cursor and ownership and accepts
+  // the page into the route's repository, which reconciles every identity the
+  // page covers. It is read-only, so it waits out a reconnect (issue #195's
+  // RCA) instead of failing the caller.
+  async reconcileRecordedRange(ref: string) {
+    await requireReadyClient();
+    const client = getWiredClient();
+    const capturedEpoch = getReadyEpoch();
+    const fixture = entryTranscriptRoute(ref);
+    const fixtureState = fixture?.ref === ref ? fixture : undefined;
+    const fixtureRepository = fixtureState?.repository;
+    const model = threadsStore.getState().threads.get(ref);
+    if (!client || !fixtureState || !fixtureRepository || !model) return;
+    const capturedRef = model.ref;
+    const capturedCursor = model.olderCursor;
+    // A local-only scheduling key is never an opaque source cursor: send the
+    // display key on the wire never; the ordinary paths own that range.
+    if (!capturedCursor || capturedCursor.startsWith("entry-local:")) return;
+    const capturedAuthority = fixtureRepository.getBaselineIdentity();
+    const capturedBefore = fixtureRepository.oldestPosition();
+    const capturedHydrations = threadsStore.getState().hydrations.get(ref) ?? 0;
+    const capturedPageGeneration = olderPageGeneration(ref);
+    const stillOwned = (): boolean => {
+      const current = threadsStore.getState().threads.get(ref);
+      return (
+        current !== undefined &&
+        getWiredClient() === client &&
+        getReadyEpoch() === capturedEpoch &&
+        current.ref === capturedRef &&
+        current.olderCursor === capturedCursor &&
+        (threadsStore.getState().hydrations.get(ref) ?? 0) === capturedHydrations &&
+        olderPageGeneration(ref) === capturedPageGeneration &&
+        !pendingThreadHydrations.has(ref) &&
+        entryTranscriptRoute(ref) === fixtureState &&
+        fixtureState?.repository === fixtureRepository &&
+        !threadsStore.getState().deletedRefs.has(ref)
+      );
+    };
+    if (!stillOwned()) return;
+    let resp: ThreadTurnsListResponse;
+    try {
+      resp = await client.request("thread/turns/list", olderItemsParams(ref, capturedCursor));
+    } catch {
+      return;
+    }
+    if (!stillOwned()) return;
+    const accepted = fixtureRepository.acceptPage(resp, {
+      lifetime: fixtureState.lifetime,
+      ...nextTranscriptReadIdentity(),
+      authority: capturedAuthority,
+      ...(capturedBefore === undefined ? {} : { before: capturedBefore }),
+      requestCursor: capturedCursor,
+    });
+    if (accepted) {
+      const snapshot = fixtureRepository.getSnapshot();
+      if (snapshot) putThreadModel(ref, snapshot);
+    }
+  },
+
   async loadOlderTurns(ref) {
     beginHistoryHold(ref);
     try {
@@ -7746,6 +7811,7 @@ installEntryRouteHost({
   onCacheEpochObserved,
   ensureGeneration: (ref) => ensureGenerations.get(ref),
   createRepository: createEntryTranscriptRepository,
+  reconcileRecordedRange: (ref) => threadsStore.getState().reconcileRecordedRange(ref),
 });
 
 function onCacheEpochObserved(observed: number): void {

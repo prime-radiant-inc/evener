@@ -119,6 +119,52 @@ function readMany(count: number): ThreadReadResponse {
   return response;
 }
 
+// The daemon's real thread/read answer: the latest 40-item window plus an
+// opaque server cursor for the older history it omits, never a thread's
+// whole body set. `epoch` forces the disposition this caller needs — an
+// epoch bump replaces held history, while a same-identity length-grown read
+// merges.
+function windowedRead(total: number, epoch: number): ThreadReadResponse {
+  const window = 40;
+  const first = total - window + 1;
+  const response = read(`row-${first}`, total);
+  response.epoch = epoch;
+  response.thread.turns = [
+    {
+      id: "turn_1",
+      itemsView: "full",
+      status: "completed",
+      version: total,
+      items: Array.from(
+        { length: window },
+        (_, index): ThreadItem => ({
+          type: "agentMessage",
+          id: `item-${first + index}`,
+          transcriptKey: `item-${first + index}`,
+          turnId: "turn_1",
+          position: { entry: first + index, item: 0 },
+          version: first + index,
+          text: `row-${first + index}`,
+        }),
+      ),
+    },
+  ];
+  response.snapshot = { incarnation: identity.incarnation, length: total };
+  response.olderCursor = `opaque-server-before-item-${first - 1}`;
+  return response;
+}
+
+// The same windowed shape with an explicit SNAPSHOT LENGTH: that number is a
+// byte boundary (internal/transcriptindex/index.go), not an item count — a
+// 60-item transcript can carry a 30-byte snapshot when its bodies are small,
+// and a windowed replace's debt must be measured in item identities either
+// way, never by comparing the two.
+function windowedReadWithLength(total: number, epoch: number, bytes: number): ThreadReadResponse {
+  const response = windowedRead(total, epoch);
+  response.snapshot = { incarnation: identity.incarnation, length: bytes };
+  return response;
+}
+
 function historyUpdate(label: string, entry: number): AnyNotification {
   return {
     method: "history/updated",
@@ -1944,6 +1990,135 @@ it.each(["server cursor present", "no server cursor"] as const)(
     owner.dispose();
   },
 );
+
+it("a merge-shaped read between a windowed replace and its restore does not forget the recorded range", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  owner.acceptRead(readMany(80), { lifetime: 1, readId: "read-full", boundary: "boundary-full" });
+  await owner.settled();
+  // The route notes the range is owed when a raced open's convergence is
+  // outstanding; this harness plays that note directly, at the product's
+  // firing point: after the baseline the missing open raced against.
+  owner.noteOwedRecordedRange();
+  // The daemon's windowed answer REPLACES the hydrated history (epoch bump)
+  // with the latest 40-item wire window plus a server cursor: the recorded
+  // range below it is owed. A merge-shaped read then arrives before opening
+  // recovery finishes — same identity, length grown, generation current, the
+  // shape an overlay/end read or a watcher's refresh produces. Its
+  // disposition says nothing about the range the replace dropped, so the debt
+  // must survive it: the local open restores the recorded range below the
+  // wire window instead of presenting only the window.
+  owner.acceptRead(windowedRead(81, 1), { lifetime: 1, readId: "read-window", boundary: "boundary-window" });
+  await owner.settled();
+  owner.acceptRead(windowedRead(82, 1), { lifetime: 1, readId: "read-merge", boundary: "boundary-merge" });
+  await owner.settled();
+  const reader = owner.attachReader();
+
+  const opened = await reader.openLocal(200);
+  const texts = opened.model?.turns.flatMap((turn) => turn.items).map((item) => item.text);
+  expect(texts).toEqual(Array.from({ length: 82 }, (_, index) => `row-${index + 1}`));
+  reader.dispose();
+  owner.dispose();
+});
+
+it("a repository whose first read is windowed still owes the recorded range below its window", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  // Seed the durable record through one repository, then open it through a
+  // FRESH repository with no previous history — the shape a cached-opening
+  // timeout leaves behind when it retires its repository mid-recovery. The
+  // next read replaces nothing (there is no held history), so the read's own
+  // disposition cannot name the recorded range; the record itself must.
+  const seeder = repository(fixture.cache);
+  seeder.acceptRead(readMany(80), { lifetime: 1, readId: "read-seed", boundary: "boundary-seed" });
+  await seeder.settled();
+  seeder.dispose();
+
+  const owner = repository(fixture.cache, 2);
+  owner.noteOwedRecordedRange();
+  owner.acceptRead(windowedRead(81, 1), { lifetime: 2, readId: "read-window", boundary: "boundary-window" });
+  await owner.settled();
+  const reader = owner.attachReader();
+
+  const opened = await reader.openLocal(200);
+  const texts = opened.model?.turns.flatMap((turn) => turn.items).map((item) => item.text);
+  expect(texts).toEqual(Array.from({ length: 81 }, (_, index) => `row-${index + 1}`));
+  reader.dispose();
+  owner.dispose();
+});
+
+it("a windowed replace's recorded debt is measured in item identities, never in snapshot bytes", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  owner.acceptRead(readMany(60), { lifetime: 1, readId: "read-full", boundary: "boundary-full" });
+  await owner.settled();
+  // The route notes the miss against the established display, the product's
+  // firing point: the debt the windowed replace creates below its wire
+  // window is measured against the record the full read seeded.
+  owner.noteOwedRecordedRange();
+  // A windowed replace over a record whose snapshot BYTES stay below its
+  // item count: the flag is set by a plain replace either way, but the old
+  // gate compared the byte length against the presented item count, decided
+  // nothing was dropped, and left the recorded range below the wire window
+  // unrestored. The debt is the record's own identities.
+  owner.acceptRead(windowedReadWithLength(61, 1, 30), {
+    lifetime: 1,
+    readId: "read-window",
+    boundary: "boundary-window",
+  });
+  await owner.settled();
+  const reader = owner.attachReader();
+
+  const opened = await reader.openLocal(200);
+  const texts = opened.model?.turns.flatMap((turn) => turn.items).map((item) => item.text);
+  expect(texts).toEqual(Array.from({ length: 61 }, (_, index) => `row-${index + 1}`));
+  reader.dispose();
+  owner.dispose();
+});
+
+it("an owed fill fenced mid-read does not consume the recorded demand", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  owner.acceptRead(readMany(82), { lifetime: 1, readId: "read-full", boundary: "boundary-full" });
+  await owner.settled();
+  owner.noteOwedRecordedRange();
+  owner.acceptRead(windowedRead(83, 1), { lifetime: 1, readId: "read-window", boundary: "boundary-window" });
+  await owner.settled();
+  const reader = owner.attachReader();
+  // Hold the fill's durable pull and prove the open has reached it; the
+  // settlement races retire an open's ownership while its reads still run,
+  // and a disposed reader is that retirement. The fill assembles against a
+  // fence that then discards it: the demand the fill was satisfying must
+  // survive the discarded presentation, or the next open presents the bare
+  // wire window with every disarm point reading the debt as already paid.
+  const realGetLatest = fixture.cache.getLatest.bind(fixture.cache);
+  const fillEntered = deferred<void>();
+  let releaseFill!: () => void;
+  let fillArgs: unknown[] = [];
+  const heldFill = new Promise<unknown>((resolve) => {
+    releaseFill = () => resolve(realGetLatest(...(fillArgs as Parameters<typeof realGetLatest>)));
+  });
+  (fixture.cache as unknown as { getLatest: unknown }).getLatest = (...args: unknown[]) => {
+    fillArgs = args;
+    fillEntered.resolve();
+    return heldFill;
+  };
+  const fencedOpen = reader.openLocal(200);
+  await fillEntered.promise;
+  reader.dispose();
+  releaseFill();
+  await fencedOpen;
+  (fixture.cache as unknown as { getLatest: unknown }).getLatest = realGetLatest;
+  const reopenedReader = owner.attachReader();
+  const reopened = await reopenedReader.openLocal(200);
+  const texts = reopened.model?.turns.flatMap((turn) => turn.items).map((item) => item.text);
+  expect(texts).toEqual(Array.from({ length: 83 }, (_, index) => `row-${index + 1}`));
+  reopenedReader.dispose();
+  owner.dispose();
+});
 
 it("attaches a reader to an already-mounted model by reference without reconstructing history", () => {
   const fixture = createEntryCacheFixture();

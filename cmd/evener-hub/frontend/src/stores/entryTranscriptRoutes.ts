@@ -4,7 +4,12 @@
 // installs the host below once its store exists.
 
 import type { AppwireClientLike, ThreadItemPosition, ThreadModel } from "@evener/appwire-client";
-import { encodeTranscriptItem, pruneBackgroundHistoryBodies, threadModelFromCache } from "@evener/appwire-client";
+import {
+  comparePositions,
+  encodeTranscriptItem,
+  pruneBackgroundHistoryBodies,
+  threadModelFromCache,
+} from "@evener/appwire-client";
 import { type CacheLifetime, observedCacheEpoch } from "./cacheLifetime";
 import {
   entryHistoryKey,
@@ -82,6 +87,12 @@ export interface EntryRouteHost {
       seedModel?: ThreadModel;
     },
   ): TranscriptRepository;
+  /**
+   * One bounded older-range read against the source — the same read a user's
+   * scroll issues — so a pane whose restored older rows no current-baseline
+   * statement validated can reconcile them against the source automatically.
+   */
+  reconcileRecordedRange(ref: string): Promise<void>;
 }
 
 let installedHost: EntryRouteHost | undefined;
@@ -226,6 +237,19 @@ export interface EntryTranscriptRoute {
   // body-suppressed with no demand cursor. Distinguishes that strand from the
   // fast recovery-needed answers a repository without a usable record returns.
   localOpenDeadlineMissed?: boolean;
+
+  // True while some raced local opening missed its bound and no later open
+  // has established a usable view since: the pane's recorded display is
+  // still owed its convergence. Unlike localOpenDeadlineMissed — per-open,
+  // cleared when the next open begins, and read by the recovery chain to
+  // pace its own attempts — this fact survives the acquisition's follow-up
+  // opens: the promotion or certification open that follows a miss can
+  // refuse fast (a transient storage error answers a fast recovery-needed
+  // through openLocal's catch), and its own start has already reset the
+  // per-open marker, so without this fact the pane would strand
+  // body-suppressed with nothing scheduled — the CI strand where bodies
+  // stayed [] after an awaited ensureThread.
+  unresolvedOpenMiss?: boolean;
 }
 
 const productionEntryRoutes = new Map<string, EntryTranscriptRoute>();
@@ -411,14 +435,61 @@ export function publishEntryTranscriptModel(ref: string): void {
 
 // The complete-requested-window standard a local open tolerates without a
 // cache certificate: every foreground item the model expects is present with
-// at least its version and a real body.
-export function holdsCompleteForegroundWindow(model: ThreadModel | undefined): boolean {
+// at least its version and a real body — and every identity the durable record
+// still owes below a plain windowed baseline is presented with a real body.
+// The daemon answers thread/read with the latest item window (the client
+// requests 40 items) plus a server cursor, so an accepted fresh-baseline read
+// leaves the model holding only that wire window, and the recorded cache —
+// not the wire — is the display's source for the older bodies of the 200-row
+// promotion. The owed range is measured in the record's own item identities,
+// never in the snapshot's length: that number is a byte boundary, so an item
+// count demanded from it would require 200 rows of a record that only has 80
+// and call a degraded one-blip window complete whenever bytes stayed small.
+// Without the owed-identity clause every disarm point below would treat a
+// one-blip open's degraded wire window as converged and never restore the
+// recorded rows.
+export function holdsCompleteForegroundWindow(
+  model: ThreadModel | undefined,
+  repository?: {
+    owedRecorded(): { unknown: true } | { identities: ReadonlyMap<string, ThreadItemPosition> } | undefined;
+    holdsWindowedBaseline(): boolean;
+  },
+): boolean {
   const displayed = new Map(
     model?.turns.flatMap((turn) => turn.items.map((item) => [item.transcriptKey ?? item.id, item] as const)),
   );
   // Legacy reads keep their recorded bodies in turns, without versioned
   // history. Do not mistake that nonempty accepted window for an empty one.
   const requested = (model?.history?.turns ?? model?.turns)?.flatMap((turn) => turn.items).slice(-200) ?? [];
+  // The record's owed identities — resolved from the durable record where
+  // the miss was declared, preserved across merge reads and repository
+  // replacement — must each be presented with a real body before the view
+  // counts as healed. A capture the record could not answer is unknown debt:
+  // treat it as owed rather than accept a view that might still be missing
+  // its recorded range.
+  // Only a windowed baseline can owe a recorded range: an authoritative or
+  // cursorless baseline speaks for everything below it, and a repository
+  // that never windowed cannot have the debt the arming note stands for.
+  // Repositories without the windowed shape keep the model-only verdict, so
+  // the arming note never changes a non-windowed pane's convergence.
+  const owed = repository?.holdsWindowedBaseline() ? repository.owedRecorded() : undefined;
+  if (owed !== undefined) {
+    if ("unknown" in owed) return false;
+    // Bound the demand to the promotion window: the newest 200 identities of
+    // what the model presents together with what the record still owes.
+    // Identities below that boundary are older demand, not debt — the same
+    // line holdsResidentForegroundRange draws for its own interval.
+    const positions = [
+      ...[...displayed.values()].flatMap((item) => (item.position ? [item.position] : [])),
+      ...owed.identities.values(),
+    ].sort(comparePositions);
+    const floor = positions.slice(-200)[0];
+    for (const [key, position] of owed.identities) {
+      if (floor && comparePositions(position, floor) < 0) continue;
+      const restored = displayed.get(key);
+      if (restored === undefined || encodeTranscriptItem(restored).identityOnly) return false;
+    }
+  }
   return (
     requested.length > 0 &&
     requested.every((item) => {
@@ -636,6 +707,15 @@ export async function openEntryTranscript(
       // late-result fences.
       fixture.lastLocalOpenStatus = "recovery-needed";
       fixture.localOpenDeadlineMissed = true;
+      fixture.unresolvedOpenMiss = true;
+      // The stranding miss's convergence is owed: the recorded range below a
+      // plain windowed baseline stays debt in the repository until a restore
+      // presents it or the source speaks for it, surviving this open's
+      // refusal and any follow-up open of the same acquisition. The note is
+      // synchronous — no durable pull runs inside this open — and the demand
+      // stays armed until a fill presents the range or the source speaks for
+      // it.
+      repository.noteOwedRecordedRange();
       if (openingOwned()) fixture.lastLocalOpenUsable = false;
       return false;
     }
@@ -666,9 +746,14 @@ export async function openEntryTranscript(
             fixture.lastLocalOpenStatus = settled.status;
             const usable =
               settled.retainedRangeComplete !== false &&
-              (settled.status !== "recovery-needed" || holdsCompleteForegroundWindow(settled.model));
+              (settled.status !== "recovery-needed" || holdsCompleteForegroundWindow(settled.model, repository));
             if (usable) {
               fixture.lastLocalOpenUsable = true;
+              fixture.unresolvedOpenMiss = false;
+              // The view may have restored recorded bodies the current
+              // baseline never validated: reconcile that range against the
+              // source before it is treated as converged.
+              scheduleEntryRecordedReconciliation(ref);
               return;
             }
             fixture.lastLocalOpenUsable = false;
@@ -694,7 +779,14 @@ export async function openEntryTranscript(
       // tracked re-open can heal; an established restore that stalled past
       // its own settled-opening window hands to source recovery instead
       // (the #4954 stalled-open contract), and must not arm this chain.
-      if (!stalled) fixture.localOpenDeadlineMissed = true;
+      if (!stalled) {
+        fixture.localOpenDeadlineMissed = true;
+        fixture.unresolvedOpenMiss = true;
+        // The deadline-missed open's convergence is owed the same way: the
+        // repository holds the debt past the per-open marker the paced
+        // chain reads.
+        repository.noteOwedRecordedRange();
+      }
       if (openingOwned()) fixture.lastLocalOpenUsable = false;
       return false;
     }
@@ -718,7 +810,7 @@ export async function openEntryTranscript(
     // latest read.
     const usable =
       result.retainedRangeComplete !== false &&
-      (result.status !== "recovery-needed" || holdsCompleteForegroundWindow(result.model));
+      (result.status !== "recovery-needed" || holdsCompleteForegroundWindow(result.model, repository));
     if (openingOwned()) fixture.lastLocalOpenUsable = usable;
     // A quiet certification that establishes the display takes exclusive
     // ownership of the route's opening: the older published opening it
@@ -730,6 +822,13 @@ export async function openEntryTranscript(
     // path and clears its backstop timer instead of lingering toward it.
     if (quiet && usable && retireSupersededPublishedOpening(ref, openingToken)) {
       routeHost().notifyOpeningEstablishedOverSuperseded(ref);
+    }
+    if (usable && openingOwned()) fixture.unresolvedOpenMiss = false;
+    if (usable) {
+      // The view may have restored recorded bodies the current baseline never
+      // validated: reconcile that range against the source before it is
+      // treated as converged.
+      scheduleEntryRecordedReconciliation(ref);
     }
     return usable;
   } finally {
@@ -901,20 +1000,31 @@ export function scheduleEntryOpeningRecovery(ref: string): void {
   if (!route || route.ref !== ref) return;
   if (pendingOpeningRecoveries.get(ref) === route) return;
   if (foregroundHolds(ref) <= 0) return; // no live foreground holder to recover for
-  if (route.localOpenDeadlineMissed !== true) return; // the open refused fast or handed to another path: not this chain's strand
+  // The per-open marker paces the chain's own attempts; the route-level
+  // unresolvedOpenMiss keeps the chain armed across the follow-up opens that
+  // reset the per-open marker — a pane whose promotion or certification open
+  // refused fast after a miss is still owed its convergence, and no later
+  // event will schedule it.
+  if (route.localOpenDeadlineMissed !== true && route.unresolvedOpenMiss !== true) return;
   // The chain exists to promote recorded bodies into a display that is still
   // body-suppressed; a display another path (main's source recovery, a newer
   // open) already healed needs no re-open churn against storage that may
   // never answer.
-  if (holdsCompleteForegroundWindow(store().getState().threads.get(ref))) return;
+  if (holdsCompleteForegroundWindow(store().getState().threads.get(ref), route.repository)) return;
   pendingOpeningRecoveries.set(ref, route);
   const recovery = (async () => {
     let stalledAttempts = 0;
     for (;;) {
       const opened = await openEntryTranscript(ref, true);
-      if (opened) return;
-      if (entryTranscriptRoute(ref) !== route) return; // a retired route's recovery must not outlive it
-      if (foregroundHolds(ref) <= 0) return; // holder released: nothing left to recover for
+      if (opened) {
+        return;
+      }
+      if (entryTranscriptRoute(ref) !== route) {
+        return;
+      }
+      if (foregroundHolds(ref) <= 0) {
+        return;
+      }
       // Another path healed the display mid-chain only while the repository
       // still backs that display: a pending attempt whose timeout disposed the
       // shared reader lets the repository reclaim its bodies without
@@ -922,7 +1032,7 @@ export function scheduleEntryOpeningRecovery(ref: string): void {
       // the next publication would prune. Require the resident range too, and
       // a reclaimed repository re-opens instead of ending recovery on it.
       if (
-        holdsCompleteForegroundWindow(store().getState().threads.get(ref)) &&
+        holdsCompleteForegroundWindow(store().getState().threads.get(ref), route.repository) &&
         route.repository?.holdsResidentForegroundRange()
       )
         return;
@@ -984,7 +1094,7 @@ export function scheduleEntryOpeningRecovery(ref: string): void {
       // the view is followed by the local re-open that promotes its
       // restored bodies into the display. A source response that already
       // healed the display needs no further cache read to converge.
-      if (!holdsCompleteForegroundWindow(store().getState().threads.get(ref))) {
+      if (!holdsCompleteForegroundWindow(store().getState().threads.get(ref), route.repository)) {
         await openEntryTranscript(ref, true);
       }
       return;
@@ -1005,6 +1115,52 @@ export function scheduleEntryOpeningRecovery(ref: string): void {
     if (pendingOpeningRecoveries.get(ref) === route) pendingOpeningRecoveries.delete(ref);
     if (openingRecoveryCompletions.get(ref) === recovery) openingRecoveryCompletions.delete(ref);
   });
+}
+
+// An open that restored recorded bodies no current-baseline statement
+// validated (see `unreconciledRecorded`) must not leave that range
+// converged-on-cached-guesses: an older item that changed while the client
+// was away would keep displaying its pre-gap cached version until the user
+// happened to page that deep. The route reconciles the range against the
+// source automatically — the same bounded older page a user's scroll issues —
+// while the restored cached bodies keep displaying through the
+// reconciliation. One chain, deduplicated per live route, stopping at the
+// first page that makes no progress: the ordinary owner-scoped paths and the
+// user's own paging own the rest.
+const pendingRecordedReconciliations = new Map<string, EntryTranscriptRoute>();
+
+function scheduleEntryRecordedReconciliation(ref: string): void {
+  const route = entryTranscriptRoute(ref);
+  if (!route || route.ref !== ref) return;
+  const repository = route.repository;
+  if (!repository || repository.unreconciledRecorded().size === 0) return;
+  if (pendingRecordedReconciliations.get(ref) === route) return;
+  if (foregroundHolds(ref) <= 0) return;
+  pendingRecordedReconciliations.set(ref, route);
+  void (async () => {
+    try {
+      // The promotion window bounds the owed range and each page is one
+      // bounded read, so the loop cannot run away; it ends when the source
+      // has spoken for every identity the restore displayed or when a page
+      // reconciles nothing (offline, exhausted, superseded).
+      for (let pages = 0; pages < 8; pages += 1) {
+        if (entryTranscriptRoute(ref) !== route) return;
+        if (foregroundHolds(ref) <= 0) return;
+        const current = route.repository;
+        if (!current) return;
+        const owed = current.unreconciledRecorded();
+        if (owed.size === 0) return;
+        await routeHost().reconcileRecordedRange(ref);
+        if (entryTranscriptRoute(ref) !== route || route.repository !== current) return;
+        if (route.repository?.unreconciledRecorded().size === owed.size) return;
+      }
+    } catch {
+      // A failed reconciliation keeps the displayed cached bodies; the
+      // ordinary retry paths and the user's own paging own the rest.
+    } finally {
+      if (pendingRecordedReconciliations.get(ref) === route) pendingRecordedReconciliations.delete(ref);
+    }
+  })();
 }
 
 export function releaseEntryTranscriptReader(ref: string, releaseDisplay = false): void {
