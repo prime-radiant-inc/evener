@@ -21,6 +21,7 @@ package agent
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"testing"
@@ -152,4 +153,61 @@ func TestWorktreePruneReportsLiveOwnerViaRendezvous(t *testing.T) {
 	marker := worktree.FormatDelegateMarker("dlg_reportrendez01", owner)
 	path := lockLaneWithDelegateMarker(t, r, "rendezvous-owner-lane", "dlg_reportrendez01", owner)
 	requireLaneReportedSkippedAndKept(t, r, "rendezvous-owner-lane", path, "locked ("+marker+"); owner-live")
+}
+
+// TestWorktreePruneHeldLivelockOutranksUnestablishableEntry (review round 7,
+// finding 1): conclusive live evidence takes precedence over doubt. The
+// tree's root process holds its livelock, and an attributed rendezvous entry
+// whose daemon identity cannot be established (no registration time) is only
+// doubt — it must not turn the verdict owner-unverifiable when the livelock
+// is held. This is also the darwin shape (processStartedAt has no reader
+// there): a served owner must never read unverifiable while its livelock is
+// held. The lane is still not collected.
+func TestWorktreePruneHeldLivelockOutranksUnestablishableEntry(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	dir := hermeticRendezvous(t, r)
+	root := identifier.MustNewSessionID()
+	seedOwnerRootSession(t, r.stateDir, root)
+	release, applied, err := schema.AcquireSessionLivelock(r.stateDir, root)
+	if err != nil || !applied || release == nil {
+		t.Fatalf("hold root livelock: applied=%t err=%v", applied, err)
+	}
+	defer release()
+	// An attributed entry whose identity cannot be established: a live pid
+	// with no registration time.
+	seedRendezvousEntry(t, dir, root, os.Getpid(), time.Time{})
+
+	marker := worktree.FormatDelegateMarker("dlg_reportunestheld01", root)
+	path := lockLaneWithDelegateMarker(t, r, "unestablishable-held-lane", "dlg_reportunestheld01", root)
+	requireLaneReportedSkippedAndKept(t, r, "unestablishable-held-lane", path, "locked ("+marker+"); owner-live")
+}
+
+// TestWorktreePruneGonePidEntryDoesNotBlockDeadLooking (review round 7,
+// finding 1): a demonstrably gone pid is residue, not doubt. A stale
+// rendezvous entry whose daemon's process is gone (here a short-lived child
+// that already exited and was reaped) must be discarded, not treated as an
+// unavailable start time that defers the verdict — the free livelock's
+// dead-looking report is exactly what recovery needs here. The lane is still
+// not collected.
+func TestWorktreePruneGonePidEntryDoesNotBlockDeadLooking(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	dir := hermeticRendezvous(t, r)
+	root := identifier.MustNewSessionID()
+	seedOwnerRootSession(t, r.stateDir, root)
+	if err := os.WriteFile(schema.SessionLivelockPath(r.stateDir, root), nil, 0o600); err != nil {
+		t.Fatalf("seed free livelock: %v", err)
+	}
+	// The dead daemon: a child that already exited and was reaped, so its
+	// pid is demonstrably gone.
+	gone := exec.Command("true")
+	if err := gone.Run(); err != nil {
+		t.Fatalf("run the short-lived daemon child: %v", err)
+	}
+	seedRendezvousEntry(t, dir, root, gone.Process.Pid, time.Now().UTC())
+
+	marker := worktree.FormatDelegateMarker("dlg_reportgonepid01", root)
+	path := lockLaneWithDelegateMarker(t, r, "gone-pid-lane", "dlg_reportgonepid01", root)
+	requireLaneReportedSkippedAndKept(t, r, "gone-pid-lane", path, "locked ("+marker+"); owner-dead-looking")
 }

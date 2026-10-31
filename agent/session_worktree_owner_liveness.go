@@ -61,15 +61,21 @@ func (l ownerLiveness) String() string {
 //
 // A rendezvous entry counts as the tree's live evidence only when BOTH its
 // attribution and its daemon identity hold (review round 6, findings 1 and
-// 2): the entry's session identity is resolved to ITS tree root before
+//
+//	2): the entry's session identity is resolved to ITS tree root before
+//
 // matching — an independently resumed coordinator (serve --resume of a
 // subagent that kept its lineage) has its own rendezvous entry while its
 // original root's livelock sits free, and string-matching entries to the
 // walked root would miss it — and the pid must still name the daemon that
 // wrote the entry, verified against the process's start time, because a
 // crashed daemon's stale entry can be worn by a pid an unrelated process
-// reused. An entry whose identity cannot be established reports doubt
-// (owner-unverifiable), never death.
+// reused. The evidence is ranked (review round 7, finding 1): a
+// demonstrably gone pid is residue, discarded; a reused pid is refuted,
+// discarded; an identity that cannot be established is doubt, DEFERRED
+// until every entry and the livelock have been consulted — it may veto a
+// dead-looking report but must never veto conclusive live evidence. A
+// held livelock outranks everything: it is the root's own live process.
 func (s *Session) delegateLaneOwnerLiveness(m worktree.Marker) ownerLiveness {
 	root, ok := s.sessionTreeRootSID(m.SessionID)
 	if !ok {
@@ -80,6 +86,13 @@ func (s *Session) delegateLaneOwnerLiveness(m worktree.Marker) ownerLiveness {
 		// their verdict is trivially live.
 		return ownerLive
 	}
+	// inconclusive names an attributed entry whose daemon identity could not
+	// be established: a live pid that might still be the daemon that wrote
+	// the entry (no registration time recorded, or no start-time reader on
+	// this platform — darwin has none). It defers, not decides: the verdict
+	// below consults the livelock before it, and only a dead-looking answer
+	// is vetoed by it.
+	inconclusive := false
 	if dir, ok := s.worktreeOwnerRendezvousDir(); ok {
 		if entries, err := rendezvous.List(dir); err == nil {
 			for _, e := range entries {
@@ -104,27 +117,36 @@ func (s *Session) delegateLaneOwnerLiveness(m worktree.Marker) ownerLiveness {
 				if !ok || entryRoot != root {
 					continue
 				}
+				// A demonstrably gone pid is residue: the daemon that wrote
+				// the entry is dead, so the entry is neither live evidence
+				// nor doubt — discard it and let the other evidence decide.
+				if !processAlive(e.PID) {
+					continue
+				}
 				// Daemon identity: the entry records when its daemon
 				// registered, which can only postdate that daemon's own
 				// start. A pid whose current process began after the entry
 				// was written is a reused pid wearing the dead daemon's entry —
-				// not liveness evidence. A start time that cannot be read,
-				// or an entry that carries none, is doubt, not death.
+				// refuted, discarded like the gone one. A start time that
+				// cannot be read, or an entry that carries none, is doubt.
 				if e.StartedAt.IsZero() {
-					return ownerUnknown
+					inconclusive = true
+					continue
 				}
 				started, ok := processStartedAt(e.PID)
 				if !ok {
-					return ownerUnknown
+					inconclusive = true
+					continue
 				}
 				if started.After(e.StartedAt) {
 					// The pid was reused after the entry's daemon died; the
 					// entry is residue. Keep looking at the other evidence.
 					continue
 				}
-				if processAlive(e.PID) {
-					return ownerLive
-				}
+				// Live pid, and the process that holds it began before the
+				// entry was written: the daemon that wrote the entry is still
+				// running. Conclusive.
+				return ownerLive
 			}
 		}
 	}
@@ -135,10 +157,11 @@ func (s *Session) delegateLaneOwnerLiveness(m worktree.Marker) ownerLiveness {
 	switch {
 	case held:
 		return ownerLive
-	case exists:
+	case exists && !inconclusive:
 		// The file is there and its flock is free: the OS released it at
 		// process death. No live signal was found above, so the tree reads
-		// dead-looking — the reporting word, never a collection verdict.
+		// dead-looking — the reporting word, never a collection verdict —
+		// unless an inconclusive rendezvous entry leaves doubt that it is.
 		return ownerDeadLooking
 	default:
 		// No livelock at all: a session from before livelocks, or one that

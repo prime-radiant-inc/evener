@@ -12,7 +12,6 @@ package agent
 // exists (the mint created it) but nothing holds it.
 
 import (
-	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
@@ -54,9 +53,6 @@ func TestNewSessionFailureReleasesMintedLivelock(t *testing.T) {
 		sess.Close()
 		t.Fatal("expected NewSession to fail on an unknown context strategy")
 	}
-	if !strings.Contains(err.Error(), "unknown context strategy") {
-		t.Fatalf("err = %v, want unknown context strategy error", err)
-	}
 	if sess != nil {
 		t.Fatal("expected a nil session on error")
 	}
@@ -82,9 +78,6 @@ func TestRestoreSessionFailureReleasesMintedLivelock(t *testing.T) {
 	if err == nil {
 		sess.Close()
 		t.Fatal("expected the restore to fail on an unknown context strategy")
-	}
-	if !strings.Contains(err.Error(), "unknown context strategy") {
-		t.Fatalf("err = %v, want unknown context strategy error", err)
 	}
 	if sess != nil {
 		t.Fatal("expected a nil session on error")

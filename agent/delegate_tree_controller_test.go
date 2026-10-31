@@ -269,7 +269,7 @@ func TestDelegateControllerProductionIntegrationMatchesInventory(t *testing.T) {
 		t.Fatalf("enumerate production files: %v", err)
 	}
 	production = slices.DeleteFunc(production, func(name string) bool {
-		return delegateControllerPlatformExcludedFiles[name]
+		return delegateControllerPlatformExcludedProductionFiles()[name]
 	})
 	loadedFiles := make([]string, 0, len(pkg.Syntax))
 	for _, file := range pkg.Syntax {
@@ -288,16 +288,14 @@ func TestDelegateControllerProductionIntegrationMatchesInventory(t *testing.T) {
 	}
 }
 
-// delegateControllerPlatformExcludedFiles names the top-level production files
-// whose build constraints exclude the native platform, so packages.Load — which
-// loads for the host GOOS — cannot load them (the process-liveness arm behind
-// the owner-liveness reporting, issue #5471). Register any new
-// build-tag-excluded top-level production file here, or this inventory fails
-// on the omission.
-var delegateControllerPlatformExcludedFiles = map[string]bool{
-	"process_alive_other.go":      true,
-	"process_started_at_other.go": true,
-}
+// delegateControllerPlatformExcludedProductionFiles names the top-level
+// production files whose build constraints exclude the CURRENT platform, so
+// packages.Load — which loads for the host GOOS — cannot load them. The set
+// is platform-conditional (the per-GOOS files beside this one, following the
+// for other GOOS families — the process-liveness and start-time arms behind
+// the owner-liveness reporting, issue #5471. Register any new
+// build-tag-excluded top-level production file in the arm for every GOOS that
+// cannot load it, or this inventory fails on the omission.
 
 func TestDelegateControllerDormancyGuardRejectsConstructionAndAliases(t *testing.T) {
 	t.Parallel()
