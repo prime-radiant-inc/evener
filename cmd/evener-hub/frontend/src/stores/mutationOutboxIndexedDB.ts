@@ -455,7 +455,11 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
     const records = await requestResult<MutationOutboxRecord[]>(store.getAll());
     const canceled: string[] = [];
     for (const record of records) {
-      if (record.targetRef !== targetRef) continue;
+      // A retargeted recovery resend carries the displayed ref it was sent
+      // from, so a Stop on that still-displayed session cancels it too - the
+      // post-enqueue half of the dual-ref Stop fence. Ordinary rows name only
+      // their own targetRef.
+      if (record.targetRef !== targetRef && record.displayedRef !== targetRef) continue;
       if (!isCancelableByStop(record)) continue;
       await requestResult(store.put({ ...record, state: "canceled" }));
       canceled.push(record.clientMutationId);
@@ -1236,6 +1240,11 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
           (displayedBarrier !== undefined && displayedStopEpoch > displayedBarrier.stopEpoch)
             ? "canceled"
             : "submitting",
+        // Retain the displayed-ref cancellation ownership past the enqueue:
+        // a Stop pressed on the still-displayed session after this row
+        // commits (while its dispatch waits out a reconnect) must still be
+        // able to cancel it.
+        ...(displayedBarrier === undefined ? {} : { displayedRef: displayedBarrier.targetRef }),
         attempted: false,
         stopEpochAtEnqueue: stopEpoch,
       };

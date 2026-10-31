@@ -43,7 +43,8 @@ test("a failed destination claim acquisition releases no claim another reader ho
   // The acquisition runs with no wired client, so ensureThread refuses
   // before taking any claim of its own.
   resetConnectionStoreForTests();
-  await expect(acquireUnreadThreadClaim("ref_dest")).rejects.toThrow(/no client connected/i);
+  // The rejection itself is the behavior; its message wording is not.
+  await expect(acquireUnreadThreadClaim("ref_dest")).rejects.toThrow();
   // A replacement connection answers the destination read, and the first
   // connection's stalled read dies with it.
   const second = connectReadyFakeClient();

@@ -20,7 +20,7 @@ import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } f
 import { createTestComposerSource } from "../testing/composerSource";
 import { replaceEditorText } from "../testing/editor";
 import { Composer } from "./Composer";
-import { seedRejectedRecovery, submitButton, textarea } from "./composerTestUtils";
+import { notAcceptedError, seedRejectedRecovery, submitButton, textarea } from "./composerTestUtils";
 import { resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./queue/testing/flushPendingTurnsProjection";
 
@@ -75,9 +75,9 @@ const thread: Thread = {
   },
 };
 
-function readResponse(ref?: string): ThreadReadResponse {
+function readResponse(ref?: string, overrides: Partial<Thread> = {}): ThreadReadResponse {
   return {
-    thread: { ...thread, evener: { ...thread.evener, ref: ref ?? "root" } },
+    thread: { ...thread, ...overrides, evener: { ...thread.evener, ref: ref ?? "root" } },
     bootGeneration: "1",
     epoch: 1,
     snapshot: { incarnation: "inc", length: 0 },
@@ -86,26 +86,38 @@ function readResponse(ref?: string): ThreadReadResponse {
 
 interface WiredFake {
   delivered: Array<Record<string, unknown>>;
+  methods: string[];
   readReached: Promise<void>;
   releaseRead(): void;
 }
 
-function wireFake(fake: FakeClient, resumed: string, gateDestinationRead: boolean): WiredFake {
+interface WireOptions {
+  gateDestinationRead?: boolean;
+  activeDestination?: boolean;
+  refuseDestinationStart?: boolean;
+}
+
+function wireFake(fake: FakeClient, resumed: string, options: WireOptions = {}): WiredFake {
   const readReached = deferred<void>();
   let releaseRead: (() => void) | undefined;
   fake.on("thread/read", async ({ ref }) => {
-    if (gateDestinationRead && ref === resumed) {
+    if (options.gateDestinationRead && ref === resumed) {
       readReached.resolve();
       await new Promise<void>((resolve) => {
         releaseRead = resolve;
       });
     }
-    return readResponse(ref);
+    return readResponse(ref, options.activeDestination && ref === resumed ? { status: { type: "active" } } : {});
   });
   const delivered: Array<Record<string, unknown>> = [];
-  fake.on("turn/start", (params) => {
+  const methods: string[] = [];
+  const receiveTurn = (params: unknown, method: string) => {
     const request = params as unknown as { clientMutationId?: string } & Record<string, unknown>;
     delivered.push(request);
+    methods.push(method);
+    if (options.refuseDestinationStart && method === "turn/start" && request.ref === resumed) {
+      throw notAcceptedError(String(request.clientMutationId ?? ""));
+    }
     return {
       turn: { id: "turn-recovery-resend", status: "inProgress", itemsView: "full", items: [] },
       receipt: {
@@ -115,9 +127,14 @@ function wireFake(fake: FakeClient, resumed: string, gateDestinationRead: boolea
         projectionState: "reflected",
       },
     };
+  };
+  fake.on("turn/start", (params) => {
+    return receiveTurn(params, "turn/start");
   });
+  fake.on("turn/queue", (params) => receiveTurn(params, "turn/queue"));
   return {
     delivered,
+    methods,
     readReached: readReached.promise,
     releaseRead: () => releaseRead?.(),
   };
@@ -164,7 +181,7 @@ test("a retargeted recovery Send targets the destination and releases its claim"
   vi.spyOn(console, "error").mockImplementation(() => {});
   const storage = new MutationOutboxIndexedDB();
   const fake = new FakeClient("ready");
-  const wired = wireFake(fake, "local:delivered", false);
+  const wired = wireFake(fake, "local:delivered");
   const recoveryId = await stageRetargetedSend(storage, fake, "local:delivered");
   await act(async () => {
     fireEvent.click(submitButton());
@@ -216,7 +233,7 @@ async function runStopMatrixCase(stop: StopOrigin, phase: StopPhase): Promise<vo
   const storage = new HeldWriteStorage();
   const resumed = `local:matrix-${phase}-${stop}`;
   const fake = new FakeClient("ready");
-  const wired = wireFake(fake, resumed, phase === "hydration");
+  const wired = wireFake(fake, resumed, phase === "hydration" ? { gateDestinationRead: true } : {});
   await stageRetargetedSend(storage, fake, resumed);
   const peer = new MutationOutboxIndexedDB();
   try {
@@ -288,7 +305,7 @@ test("a stop while the press-time destination read is delayed cancels the send",
   const storage = new HeldTargetReadStorage();
   const resumed = "local:stop-read";
   const fake = new FakeClient("ready");
-  const wired = wireFake(fake, resumed, false);
+  const wired = wireFake(fake, resumed);
   await stageRetargetedSend(storage, fake, resumed);
   const peer = new MutationOutboxIndexedDB();
   try {
@@ -311,4 +328,79 @@ test("a stop while the press-time destination read is delayed cancels the send",
     storage.finishHold();
     peer.close();
   }
+});
+
+test("a stop on the displayed ref after an offline resend cancels it before reconnect", async () => {
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  const storage = new MutationOutboxIndexedDB();
+  const resumed = "local:offline-stop";
+  const fake = new FakeClient("ready");
+  const wired = wireFake(fake, resumed);
+  await stageRetargetedSend(storage, fake, resumed);
+  try {
+    // The destination is already tracked before the send - a reader on the
+    // resumed session has it open - so the claim takes nothing and the resend
+    // commits straight to the outbox.
+    await threadsStore.getState().ensureThread(resumed);
+    // The tab drops offline before the Send: the row commits durably and its
+    // dispatch parks on the reconnect.
+    fake.emitStateChange("reconnecting");
+    await act(async () => {
+      fireEvent.click(submitButton());
+    });
+    await waitFor(async () => expect(await storage.listOutbox(resumed)).toHaveLength(1));
+    // A Stop on the still-displayed session lands while dispatch is paused.
+    // The row targets the destination, so this Stop can only reach it through
+    // the displayed-ref cancellation ownership the resend carried.
+    await storage.enqueueInterruptAndCancel({
+      targetRef: "root",
+      method: "turn/interrupt",
+      payload: { ref: "root" },
+      attachments: [],
+      optimisticDisplay: { method: "turn/interrupt", input: [] },
+    });
+    // Reconnect: dispatch resumes, and the Stop must have won.
+    fake.emitReady();
+    await flushPendingTurnsProjectionForTests();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    });
+    expect(wired.delivered).toHaveLength(0);
+    const rows = await storage.listOutbox(resumed);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ state: "canceled", targetRef: resumed });
+  } finally {
+    fake.emitReady();
+  }
+});
+
+test("a retargeted Send whose destination is running routes as a queue", async () => {
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  const storage = new MutationOutboxIndexedDB();
+  const resumed = "local:active-destination";
+  const fake = new FakeClient("ready");
+  const wired = wireFake(fake, resumed, {
+    activeDestination: true,
+    // The hub's AcceptClientMutationStart refusal: a fresh turn/start into a
+    // session that is already running a user-started turn.
+    refuseDestinationStart: true,
+  });
+  const recoveryId = await stageRetargetedSend(storage, fake, resumed);
+  // A reader on the resumed session has it open, and its turn is running.
+  await threadsStore.getState().ensureThread(resumed);
+  expect(threadsStore.getState().threads.get(resumed)?.status.type).toBe("active");
+  await act(async () => {
+    fireEvent.click(submitButton());
+  });
+  await flushPendingTurnsProjectionForTests();
+  // The displayed session offered Send, but the destination decides the
+  // route: the send queues behind the destination's running turn instead of
+  // bouncing as a rejected recovery under a session the user is not looking
+  // at.
+  await waitFor(() => expect(wired.methods).toContain("turn/queue"));
+  expect(wired.methods).not.toContain("turn/start");
+  const deliveredQueue = wired.delivered[wired.methods.indexOf("turn/queue")];
+  expect(deliveredQueue).toMatchObject({ ref: resumed });
+  await waitFor(async () => expect(await storage.listRecovery(resumed)).toHaveLength(0));
+  expect(await storage.getRecovery(recoveryId)).toBeUndefined();
 });

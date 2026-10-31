@@ -543,10 +543,11 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
                 throw recoveryWriteRefusal;
               }
               await withRecoveryDestinationClaim(sendTargetRef, async () => {
+                const route = destinationSendRoute(sendTargetRef, kind);
                 const outcome = await resendRecoveryPendingTurn(
                   submittedRecoveryId,
                   sendTargetRef,
-                  kind,
+                  route,
                   submittedText,
                   payload,
                   submittedSkillNames,
@@ -670,21 +671,37 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     }
   }
 
-  function liveAvailability() {
-    const target = liveThreadModel(ref);
+  function liveAvailability(targetRef: string = ref) {
+    const target = liveThreadModel(targetRef);
     if (!target) return { canSend: false, canQueue: false };
     const state = threadsStore.getState();
     return composerAvailability(
       target,
-      ownPendingSend(pendingTurnEntries(ref, "send")),
-      state.restartBlockingObligations.has(ref),
+      ownPendingSend(pendingTurnEntries(targetRef, "send")),
+      state.restartBlockingObligations.has(targetRef),
       {
-        uncertainMessages: hasBlockedUnknown(ref),
-        stopInFlight: state.stoppingRefs.has(ref),
-        queuedNonSend: hasQueuedNonSend(ref),
-        mutationStateAuthoritative: state.mutationAuthorityRefs.has(ref),
+        uncertainMessages: hasBlockedUnknown(targetRef),
+        stopInFlight: state.stoppingRefs.has(targetRef),
+        queuedNonSend: hasQueuedNonSend(targetRef),
+        mutationStateAuthoritative: state.mutationAuthorityRefs.has(targetRef),
       },
     );
+  }
+
+  // The press routed Send/Queue on the DISPLAYED session's availability. A
+  // retargeted recovery resend targets a destination that can be running a
+  // turn of its own by the time the send reaches it, and a fresh turn/start
+  // there is refused outright - stranding the send as a rejected recovery
+  // under a session the user is not looking at. The implicit Send/Queue
+  // choice is re-derived from the hydrated destination and its own pending
+  // input; explicitly requested control actions (Steer, drain) pass through.
+  function destinationSendRoute(targetRef: string, kind: "send" | "queue" | "steer" | "drain") {
+    if (kind !== "send" && kind !== "queue") return kind;
+    const allowed = liveAvailability(targetRef);
+    if (!allowed.canSend && !allowed.canQueue) {
+      throw new Error(`Send is not available for the destination session (${targetRef})`);
+    }
+    return allowed.canQueue ? "queue" : "send";
   }
 
   async function submitFromLiveState(): Promise<void> {
