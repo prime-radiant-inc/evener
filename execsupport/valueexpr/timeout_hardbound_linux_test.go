@@ -7,9 +7,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/execsupport/shellquote"
 )
 
 // The command timeout must be a hard bound even when a descendant escapes
@@ -39,8 +42,52 @@ func TestCommandTimeoutHardBoundDespiteEscapedDescendant(t *testing.T) {
 	})
 	commandTimeout = 500 * time.Millisecond
 
+	// The deadline includes shell startup. Keep evidence if it fires before
+	// the escapee reports its pid, without changing that required assertion.
+	stages := filepath.Join(dir, "startup.pids")
+	stderr := filepath.Join(dir, "startup.stderr")
+	t.Cleanup(func() {
+		if !t.Failed() {
+			return
+		}
+		for _, tool := range []string{"sh", "setsid", "sleep"} {
+			path, err := exec.LookPath(tool)
+			t.Logf("fixture tool %s: path=%q err=%v", tool, path, err)
+		}
+		for _, path := range []string{stderr, stages, marker} {
+			data, err := os.ReadFile(path)
+			t.Logf("fixture %s: data=%q err=%v", filepath.Base(path), data, err)
+		}
+		data, _ := os.ReadFile(stages)
+		if pid, err := os.ReadFile(marker); err == nil {
+			data = append(data, []byte("\nescapee "+strings.TrimSpace(string(pid)))...)
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) != 2 {
+				continue
+			}
+			pid, err := strconv.Atoi(fields[1])
+			if err != nil || pid <= 0 {
+				continue
+			}
+			status, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "status"))
+			t.Logf("fixture %s pid=%d: proc read err=%v", fields[0], pid, err)
+			for _, field := range strings.Split(string(status), "\n") {
+				if strings.HasPrefix(field, "State:") || strings.HasPrefix(field, "PPid:") ||
+					strings.HasPrefix(field, "NSpgid:") || strings.HasPrefix(field, "NSsid:") {
+					t.Logf("fixture pid=%d %s", pid, field)
+				}
+			}
+		}
+	})
+	inner := `printf 'escaped %s\n' "$$" >> ` + shellquote.Literal(stages) + `; sleep 10 & echo $! > ` + shellquote.Literal(marker)
+	// Builtins add no processes. Only this known fixture's stderr is saved,
+	// and stdout remains captured and inherited by the escaped descendant.
+	command := `{ printf 'shell %s\n' "$$" >> ` + shellquote.Literal(stages) + `; setsid sh -c ` + shellquote.Literal(inner) +
+		` & printf 'launcher %s\n' "$!" >> ` + shellquote.Literal(stages) + `; exec sleep 30; } 2> ` + shellquote.Literal(stderr)
 	start := time.Now()
-	_, err := evaluate(`setsid sh -c 'sleep 10 & echo $! > ` + marker + `' & exec sleep 30`)
+	_, err := evaluate(command)
 	if err == nil {
 		t.Fatal("evaluate returned nil; want the timeout error")
 	}
