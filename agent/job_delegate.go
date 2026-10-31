@@ -278,8 +278,17 @@ func (s *Session) delegateWorktreeReport(isolation, workingDir string) *delegate
 }
 
 func (s *Session) delegateDisposalHint(desc delegatestore.Descriptor, delegateID string, dirty bool) string {
-	if s == nil || delegateCreatorSessionID(desc.VisibleSessionID, desc.OwnerSessionID) != s.id || !s.canInstructTool("manage_worktree") || !isDelegateID(delegateID) {
+	if s == nil || !isDelegateID(delegateID) {
 		return ""
+	}
+	if delegateCreatorSessionID(desc.VisibleSessionID, desc.OwnerSessionID) != s.id || !s.canInstructTool("manage_worktree") {
+		return ""
+	}
+	if desc.ParentDelegateID != "" {
+		controller := s.delegateController
+		if controller == nil || !controller.delegateOwnerCanInstructTool(s, desc, "manage_worktree") {
+			return ""
+		}
 	}
 	if dirty {
 		return fmt.Sprintf("Inspect or resume this delegate before disposal; manage_worktree op=dispose id=%s refuses dirty worktrees, and force_dirty discards uncommitted changes.", delegateID)
