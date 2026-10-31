@@ -1008,6 +1008,14 @@ type Session struct {
 	// failures never advance it, so a rejected pick cannot cancel an earlier
 	// accepted one. Guarded by s.mu.
 	modelPickAccepted uint64
+	// modelSwitchPublishMu serializes every switch application's publication
+	// phase - the marker record and the EventModelChanged emit - so those land
+	// in the order the profile swaps committed, and an application whose pick
+	// a newer accepted pick passed after its swap skips its publication
+	// instead of telling every subscriber the wrong model last. Never held
+	// together with s.mu: it is acquired after the commit's locked section
+	// ends.
+	modelSwitchPublishMu sync.Mutex
 	// goalDependentsHeld records that the goal gate just held its continuation
 	// because wake-pending dependents (running delegates or non-detached
 	// background jobs) guarantee a future wake: the no-progress fold was
@@ -1831,7 +1839,9 @@ func (s *Session) applyPendingModelSwitch() {
 // fresh enumeration; nil primes here. The fence bounds the commit to the pick
 // that started it: a superseded pick drops, and an at-rest pick that finds a
 // turn in flight at the commit point queues for that turn's boundary instead
-// of swapping under it.
+// of swapping under it. The publication phase is serialized under
+// modelSwitchPublishMu with the watermark rechecked there, so the marker and
+// event land in swap order and a superseded application publishes nothing.
 func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *llm.ModelListing, fence modelSwitchFence) error {
 	if primedListing == nil {
 		// A named Codex model may exist only in the target instance's live
@@ -1957,6 +1967,22 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 		droppedFallbacks:     s.lastDroppedModelFallbacks,
 	})
 	s.mu.Unlock()
+	if hook := s.cfg.testOnly.beforeModelSwitchPublish; hook != nil {
+		hook()
+	}
+	// Publication is serialized across every switch application, and the
+	// watermark is rechecked inside the serialization: a newer accepted pick
+	// that committed while this application's publication was pending owns the
+	// outcome - its own marker and event carry the story - so publishing the
+	// older one now would tell every subscriber the wrong model last.
+	s.modelSwitchPublishMu.Lock()
+	defer s.modelSwitchPublishMu.Unlock()
+	s.mu.Lock()
+	superseded := fence.pickSeq != 0 && s.modelPickAccepted > fence.pickSeq
+	s.mu.Unlock()
+	if superseded {
+		return nil
+	}
 	s.reportPromptRenderFailure(promptWarning)
 	// Persisted marker turn (N5): a new schema.Turn kind rendered as a
 	// systemMessage by both projection paths and excluded from

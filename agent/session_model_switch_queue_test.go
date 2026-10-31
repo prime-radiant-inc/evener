@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
@@ -529,5 +530,77 @@ func TestSupersededLoopTopApplicationAppliesTheNewerQueuedPick(t *testing.T) {
 	}
 	if requests[1].Model != "gpt-4.1-mini" {
 		t.Fatalf("the queued message ran on model %q; a newer pick queued while the loop's application refetched must apply before the turn it admits (%q)", requests[1].Model, "gpt-4.1-mini")
+	}
+}
+
+// TestSupersededApplicationDoesNotPublishOverANewerPick pins the publication
+// phase's ordering: a queued application that committed its swap, then lost to
+// a newer at-rest pick that committed and published while the older one's
+// publication was pending, must not publish its stale model last - the marker
+// and the model-changed event have to land in swap order.
+func TestSupersededApplicationDoesNotPublishOverANewerPick(t *testing.T) {
+	dir := t.TempDir()
+	listModels := attemptRecordingLiveModels("openai", "gpt-5.2", "gpt-5.4", "gpt-4.1-mini")
+	adapter := &fakeAdapter{
+		name:       "openai",
+		liveModels: func(ctx context.Context) ([]registry.Model, error) { return listModels(ctx) },
+	}
+	s := newSession(t, withAdapter(adapter), withDir(dir), withConfig(SessionConfig{
+		StateDir:         dir,
+		MaxSubagentDepth: 1,
+		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+	}))
+	adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response {
+			// The queued pick: mid-turn, so it stores and the idle tail
+			// applies it.
+			if err := s.SetModel("gpt-5.4"); err != nil {
+				t.Errorf("queued pick: %v", err)
+			}
+			return agenttest.CommunicateResponse(true, "first turn done")
+		},
+	}
+	// Gate the queued application's publication; the newer pick commits and
+	// publishes while it is parked, then releases it. One-shot: the newer
+	// pick's own publication passes the gate without parking.
+	releaseAPublish := make(chan struct{})
+	aPublishEntered := make(chan struct{}, 1)
+	hookOnce := make(chan struct{}, 1)
+	updateSessionTestConfig(s, func(cfg *testConfig) {
+		cfg.beforeModelSwitchPublish = func() {
+			select {
+			case hookOnce <- struct{}{}:
+				aPublishEntered <- struct{}{}
+				<-releaseAPublish
+			default:
+			}
+		}
+	})
+
+	evs, stop := captureEvents(s)
+	go func() {
+		<-aPublishEntered
+		if err := s.SetModel("gpt-4.1-mini"); err != nil {
+			t.Errorf("newer pick: %v", err)
+		}
+		close(releaseAPublish)
+	}()
+
+	if _, err := s.ProcessInput(context.Background(), "the only turn", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	stop()
+
+	var last events.ModelChangedData
+	for _, ev := range *evs {
+		if d, ok := ev.Data.(events.ModelChangedData); ok {
+			last = d
+		}
+	}
+	if last.NewModel != "gpt-4.1-mini" {
+		t.Fatalf("the last thread/model/changed named model %q; the newer pick's publication landed before the older application's, so the older one must not publish over it (%q)", last.NewModel, "gpt-4.1-mini")
+	}
+	if got := s.Profile().Model(); got != "gpt-4.1-mini" {
+		t.Fatalf("profile model = %q, want the newer pick (%q)", got, "gpt-4.1-mini")
 	}
 }
