@@ -14,6 +14,7 @@ import {
   subagentOutcomesResponse,
 } from "@evener/appwire-client/testing/subagentWireFixtures";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { type ReactNode, useImperativeHandle, useRef } from "react";
 import { flushSync } from "react-dom";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -24,11 +25,16 @@ import {
   useTranscriptReader,
 } from "../panes/session/transcript/useTranscript";
 import { chromeStore, resetChromeStoreForTests } from "../shell/chromeStore";
+import { documentPaneState, resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
 import { connectionStore, resetConnectionStoreForTests } from "../stores/connection";
 import { olderTranscriptPageKey } from "../stores/entryTranscriptRoutes";
 import { resetThreadsStoreForTests, settleEntryTranscriptForTests, threadsStore } from "../stores/threads";
 import { useThreadModel } from "../stores/useThreadModel";
+import { TranscriptRenderProvider } from "../transcriptDisplay/renderContext";
 import * as widgets from "../widgets";
+import "../panes/doc";
+import "../panes/session";
+import { comicMarkdownPoint } from "./ComicMarkdown";
 import { ComicTranscript } from "./ComicTranscript";
 import * as comicRows from "./comicRows";
 import { type ComicDelegateStrip, projectComicDelegates } from "./delegates";
@@ -60,6 +66,7 @@ afterEach(() => {
   resetThreadsStoreForTests();
   resetTranscriptPagingForTests();
   resetChromeStoreForTests();
+  resetWorkspaceStoreForTests();
 });
 
 const entry: ComicEntry = {
@@ -85,6 +92,7 @@ function history(): UseTranscriptResult {
   };
 }
 function Reader({
+  sessionRef = "local:test",
   entries = [entry],
   mode = "comic",
   older,
@@ -92,6 +100,7 @@ function Reader({
   activitySnapshot = null,
   subchats = { readers: new Map(), expandedPaths: [], expand() {}, collapse() {} },
 }: {
+  sessionRef?: string;
   entries?: readonly ComicEntry[];
   mode?: "comic" | "plain";
   older: UseTranscriptResult;
@@ -99,11 +108,11 @@ function Reader({
   activitySnapshot?: SessionActivitySnapshot | null;
   subchats?: ComicSubchatState;
 }) {
-  const reader = useComicReader("local:test");
+  const reader = useComicReader(sessionRef);
   return (
     <ComicTranscript
       root={{
-        ref: "local:test",
+        ref: sessionRef,
         path: [],
         entries,
         history: older,
@@ -116,6 +125,184 @@ function Reader({
     />
   );
 }
+
+test.each(["root", "child"])("%s document links keep their reader and pane through hydration", async (target) => {
+  const rootModel = {
+    ...hydrateThread({ thread: wireThread("local:034MXwo6BpPH0QQCgdICSf") }, "local:034MXwo6BpPH0QQCgdICSf", 0),
+    cwd: "/workspace/root",
+    artifactsDir: "/retained/root",
+  };
+  const childModel = {
+    ...rootModel,
+    ref: "remote:034MXwo6BpPH0QQCgdICSg",
+    cwd: "/workspace/child",
+    artifactsDir: "/retained/child",
+  };
+  const model = target === "root" ? rootModel : childModel;
+  const entities = buildEntityView({
+    sessionRef: "local:root",
+    tree: parseActivityTree(subagentOutcomesResponse().data) ?? undefined,
+    turns: [],
+    stale: false,
+    ended: false,
+  });
+  const fixture = projectComicDelegates(
+    hydrateThread({ thread: wireThread("local:root", { sessionId: "root" }) }, "local:root", 0),
+    entities,
+  )[0];
+  if (!fixture) throw new Error("missing delegate fixture");
+  const strip = {
+    ...fixture,
+    ownerRef: rootModel.ref,
+    childRef: childModel.ref,
+    source: { itemId: entry.sourceItemId!, sourceIndex: 0 },
+  };
+  const source = `[**LOCAL**](docs/design.md) [ARTIFACT](file://${model.artifactsDir}/result.md) [EXTERNAL](https://example.com/a.md) [OUTSIDE](../outside.md) [UNSAFE](javascript:alert%281%29) and \`docs/bare.md\``;
+  const linked = { ...entry, text: source };
+  const owner = workspaceStore.getState().openPane("session", { ref: rootModel.ref });
+  // An unrelated focused pane must not steal the source owner.
+  workspaceStore.getState().openPane("session", { ref: childModel.ref });
+  const view = (hydrated: boolean) => (
+    <TranscriptRenderProvider thread={rootModel} sourcePaneId={owner}>
+      <Reader
+        sessionRef={rootModel.ref}
+        entries={target === "root" ? [linked] : [entry]}
+        older={{ ...history(), model: hydrated ? rootModel : undefined }}
+        strips={target === "child" ? [strip] : []}
+        subchats={{
+          readers: new Map([
+            [
+              JSON.stringify([strip.key]),
+              {
+                ref: childModel.ref,
+                path: [strip.key],
+                entries: [linked],
+                history: { ...history(), model: hydrated ? childModel : undefined },
+                activity: { snapshot: null, strips: [], entities: new Map(), context: {}, loadMore: async () => {} },
+              },
+            ],
+          ]),
+          expandedPaths: [[strip.key]],
+          expand() {},
+          collapse() {},
+        }}
+      />
+    </TranscriptRenderProvider>
+  );
+  const mounted = render(view(false));
+  await screen.findByRole("link", { name: "LOCAL" });
+  const checkGlyphs = () => {
+    const strong = screen.getByRole("link", { name: "LOCAL" }).querySelector("strong")!;
+    const create = document.createRange.bind(document);
+    const spy = vi.spyOn(document, "createRange").mockImplementation(() => {
+      const range = create();
+      range.getBoundingClientRect = () => {
+        expect(range.startContainer.isConnected).toBe(true);
+        expect(strong.contains(range.startContainer)).toBe(true);
+        expect(["L", "A"]).toContain(range.toString());
+        return new DOMRect();
+      };
+      return range;
+    });
+    try {
+      const root = strong.closest<HTMLElement>("[data-comic-markdown]")!;
+      comicMarkdownPoint(root, source.indexOf("LOCAL"));
+      comicMarkdownPoint(root, source.indexOf("LOCAL") + 3);
+      expect(spy).toHaveBeenCalledTimes(2);
+    } finally {
+      spy.mockRestore();
+    }
+  };
+  checkGlyphs();
+  expect(screen.getByRole("link", { name: "LOCAL" }).getAttribute("href")).toBe("docs/design.md");
+  for (let repeat = 0; repeat < 2; repeat++) {
+    mounted.rerender(view(true));
+    checkGlyphs();
+    for (const [name, path] of [
+      ["LOCAL", `${model.cwd}/docs/design.md`],
+      ["ARTIFACT", `${model.artifactsDir}/result.md`],
+    ] as const) {
+      const link = screen.getByRole("link", { name });
+      const url = new URL(link.getAttribute("href")!, "https://hub.example");
+      expect(url.pathname).toBe("/doc/file");
+      expect(url.searchParams.get("session")).toBe(model.ref);
+      expect(url.searchParams.get("path")).toBe(path);
+      expect(url.searchParams.get("format")).toBe("raw");
+      expect(fireEvent.click(link)).toBe(false);
+      const doc = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+      expect(doc?.params).toMatchObject({ session: model.ref, kind: "file" });
+      expect(doc && documentPaneState(doc)).toMatchObject({
+        reference: { cwd: name === "ARTIFACT" ? model.artifactsDir : model.cwd, readTarget: path },
+        origin: { id: owner },
+      });
+      if (doc) workspaceStore.getState().closePane(doc.id);
+    }
+    for (const [name, options] of [
+      ["LOCAL", { ctrlKey: true }],
+      ["LOCAL", { metaKey: true }],
+      ["EXTERNAL", {}],
+      ["OUTSIDE", {}],
+    ] as const) {
+      let prevented = true;
+      document.addEventListener(
+        "click",
+        (event) => {
+          prevented = event.defaultPrevented;
+          event.preventDefault();
+        },
+        { once: true },
+      );
+      fireEvent.click(screen.getByRole("link", { name }), options);
+      expect(prevented).toBe(false);
+      expect(workspaceStore.getState().panes.some((pane) => pane.type === "doc")).toBe(false);
+    }
+    expect(
+      [...mounted.container.querySelectorAll("a")].find((a) => a.textContent === "UNSAFE")?.hasAttribute("href"),
+    ).toBe(false);
+  }
+  const user = userEvent.setup();
+  for (const name of ["LOCAL", "docs/bare.md"]) {
+    await user.pointer({ target: screen.getByRole("link", { name }), keys: "[MouseLeft>]" });
+    mounted.rerender(view(true));
+    await user.pointer({ target: screen.getByRole("link", { name }), keys: "[/MouseLeft]" });
+    const doc = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+    expect(doc?.params).toMatchObject({ session: model.ref, kind: "file" });
+    expect(doc && documentPaneState(doc)?.origin?.id).toBe(owner);
+    if (doc) workspaceStore.getState().closePane(doc.id);
+    checkGlyphs();
+  }
+});
+
+test("mounted fit cache measures plain and Markdown versions of the same paragraph input", async () => {
+  const plain = { ...entry, id: "plain", kind: "thought" as const, text: "First\n\nSecond" };
+  const formatted = { ...plain, id: "formatted", sourceIndex: 1, text: "First\n\nSecond\n\n**Third**" };
+  let measuredPlain = false;
+  let measuredMarkdownPair = false;
+  // Platform geometry distinguishes actual widget paragraphs from literal pre-wrap
+  // text. The production reader, cache, composer and measurer all run unchanged.
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    let height = 20;
+    if (this.matches("[data-comic-text]") && this.closest("[data-comic-probe]")) {
+      const paragraphs = this.querySelectorAll("p");
+      if (!paragraphs.length && this.textContent === "First\n\nSecond") measuredPlain = true;
+      if (paragraphs.length === 2 && !this.querySelector("strong")) measuredMarkdownPair = true;
+      height = paragraphs.length >= 2 ? 1000 : 20;
+    }
+    return new DOMRect(0, 0, 760, height);
+  });
+  const mounted = render(<Reader entries={[plain, formatted]} older={history()} />);
+  await waitFor(() => expect(measuredPlain).toBe(true));
+  await waitFor(() => expect(measuredMarkdownPair).toBe(true));
+  const panels = [...mounted.container.querySelectorAll<HTMLElement>("[data-comic-entry='formatted']")];
+  expect(panels).toHaveLength(3);
+  expect(panels.map((panel) => panel.querySelectorAll("p").length)).toEqual([1, 1, 1]);
+  expect(
+    panels
+      .map((panel) => formatted.text.slice(Number(panel.dataset.comicStart), Number(panel.dataset.comicEnd)))
+      .join(""),
+  ).toBe(formatted.text);
+});
+
 test("uses one scroll port through view changes and cancels restoration at latest", async () => {
   const older = history();
   const mounted = render(<Reader older={older} />);
@@ -156,7 +343,7 @@ test("indexes each reader once and reuses its entries across visible rows and pr
   });
   const original = projectComicDelegates(model, entities)[0];
   if (!original) throw new Error("Fixture has no delegate");
-  const strip = { ...original, ownerRef: "local:test" };
+  const strip = { ...original, ownerRef: "local:test", source: { itemId: entry.sourceItemId!, sourceIndex: 0 } };
   const entries = [{ ...entry }, { ...entry, id: "second", sourceIndex: 1 }];
   const childEntry = { ...entry, text: "CHILD_FIRST" };
   const childSecond = { ...entry, id: "second", sourceIndex: 1, text: "CHILD_SECOND" };
@@ -178,6 +365,7 @@ test("indexes each reader once and reuses its entries across visible rows and pr
   };
   const older = history();
   const mounted = render(<Reader entries={entries} older={older} strips={[strip]} subchats={subchats} />);
+  const renderedRootText = "literal fixture text\n";
   const checkContent = (rootText: string, childText: string) => {
     expect(
       mounted.container.querySelector('[data-comic-session="local:test"] [data-comic-entry="m"] [data-comic-text]')
@@ -188,8 +376,15 @@ test("indexes each reader once and reuses its entries across visible rows and pr
         `[data-comic-session="${strip.childRef}"] [data-comic-entry="m"] [data-comic-text]`,
       )?.textContent,
     ).toBe(childText);
+    const sources = [
+      ...mounted.container.querySelectorAll<HTMLElement>('[data-comic-session="local:test"] [data-comic-entry="m"]'),
+    ];
+    expect(
+      sources.map((node) => entry.text.slice(Number(node.dataset.comicStart), Number(node.dataset.comicEnd))).join(""),
+    ).toBe(entry.text);
+    expect(sources[0]?.querySelector("em")?.textContent).toBe("text");
   };
-  await waitFor(() => checkContent(entry.text, childEntry.text));
+  await waitFor(() => checkContent(renderedRootText, childEntry.text));
   expect(rootMap).toHaveBeenCalledTimes(1);
   expect(childMap).toHaveBeenCalledTimes(1);
   rootMap.mockClear();
@@ -200,7 +395,7 @@ test("indexes each reader once and reuses its entries across visible rows and pr
 
   expect(rootMap).not.toHaveBeenCalled();
   expect(childMap).not.toHaveBeenCalled();
-  checkContent(entry.text, childEntry.text);
+  checkContent(renderedRootText, childEntry.text);
 
   const updatedEntry = { ...childEntry, text: "CHILD_UPDATED" };
   const changed = { ...child, entries: [updatedEntry, childSecond] };
@@ -212,7 +407,7 @@ test("indexes each reader once and reuses its entries across visible rows and pr
       subchats={{ ...subchats, readers: new Map([[JSON.stringify(child.path), changed]]) }}
     />,
   );
-  await waitFor(() => checkContent(entry.text, updatedEntry.text));
+  await waitFor(() => checkContent(renderedRootText, updatedEntry.text));
 });
 
 test("retains an absent saved anchor while shared pages advance, and stops on failure or user movement", async () => {
@@ -257,7 +452,9 @@ test("keeps itemless errors in distinct canonical groups through switching and p
   for (const mode of ["plain", "comic"] as const) {
     mounted.rerender(<Reader entries={[{ ...entry, id: "preceding" }, entry, error]} mode={mode} older={older} />);
     await waitFor(() =>
-      expect(mounted.container.querySelector('[data-comic-entry="m"] [data-comic-text]')?.textContent).toBe(entry.text),
+      expect(mounted.container.querySelector('[data-comic-entry="m"] [data-comic-text]')?.textContent).toBe(
+        mode === "plain" ? entry.text : "literal fixture text\n",
+      ),
     );
     expect(
       mounted.container
@@ -860,7 +1057,10 @@ test.each([false, true])(
       }
       const destination = port.ownerDocument;
       const previous = destination === document ? popout : document;
-      const text = port.querySelector('[data-comic-entry="m"] [data-comic-text]')!.firstChild!;
+      const content = port.querySelector('[data-comic-entry="m"] [data-comic-text]');
+      if (!content) throw new Error("missing selectable content");
+      const text = destination.createTreeWalker(content, NodeFilter.SHOW_TEXT).nextNode();
+      if (!text) throw new Error("missing selectable glyphs");
       expect(text.nodeType).toBe(Node.TEXT_NODE);
       expect(text.textContent!.length).toBeGreaterThan(0);
       const range = destination.createRange();
@@ -1348,7 +1548,7 @@ test("does not attach parent end to trailing child output", async () => {
     ended: false,
   });
   const original = projectComicDelegates(model, entities)[0]!;
-  const strip = { ...original, ownerRef: "local:test" };
+  const strip = { ...original, ownerRef: "local:test", source: { itemId: entry.sourceItemId!, sourceIndex: 0 } };
   let follow: boolean | undefined;
   const real = widgets.VirtualList;
   vi.spyOn(widgets, "VirtualList").mockImplementation((props) => {

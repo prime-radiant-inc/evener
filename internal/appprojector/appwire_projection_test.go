@@ -10,6 +10,18 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
+func TestProjectSessionStartWorkingDirectory(t *testing.T) {
+	for _, restored := range []bool{false, true} {
+		p := NewAppEventProjector("child", "local:child")
+		out := p.Project(events.SessionEvent{Kind: events.EventSessionStart, SessionID: "child",
+			Data: events.SessionStartData{WorkingDir: "/installed/child", Restored: restored}})
+		started := out[0].Params.(appwire.ThreadStartedParams)
+		if started.Thread.ID != "child" || started.Thread.CWD != "/installed/child" {
+			t.Fatalf("restored=%v start = %+v", restored, started)
+		}
+	}
+}
+
 func TestProject_ModelChanged(t *testing.T) {
 	p := NewAppEventProjector("th1", "local:th1")
 	out := p.Project(events.SessionEvent{

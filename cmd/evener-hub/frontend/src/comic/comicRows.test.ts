@@ -70,6 +70,21 @@ const state: ComicSubchatState = {
 };
 test("flattens causal child rows and isolates itemless errors and unplaced activity", () => {
   const rows = composeComicFlow(root, state, 390, () => true);
+  expect(
+    rows
+      .filter((row) => row.kind === "history" || row.kind === "panels" || row.kind === "strip")
+      .map((row) =>
+        row.kind === "panels" ? [row.sessionRef, row.row.panels[0]?.slice.entryId] : [row.sessionRef, row.kind],
+      ),
+  ).toEqual([
+    [root.ref, "history"],
+    [root.ref, "before"],
+    [root.ref, "strip"],
+    [child.ref, "history"],
+    [child.ref, "before"],
+    [root.ref, "after"],
+    [root.ref, "itemless"],
+  ]);
   const sources = rows.flatMap((row) =>
     row.kind === "panels" ? row.row.panels.map((p) => [row.sessionRef, p.slice.entryId]) : [],
   );
@@ -91,6 +106,8 @@ test("flattens causal child rows and isolates itemless errors and unplaced activ
     () => true,
   );
   expect(unplaced.filter((r) => r.kind === "unplaced-group")).toHaveLength(1);
+  expect(unplaced.map((row) => row.kind).slice(0, 4)).toEqual(["history", "unplaced-group", "strip", "history"]);
+  expect(unplaced.find((row) => row.kind === "strip")?.id).toBe(rows.find((row) => row.kind === "strip")?.id);
   expect(unplaced.every((r) => r.kind !== "panels" || r.row.panels.length === 1)).toBe(true);
 });
 test("matches complete path and session before entry offsets and keeps end target on its reader", () => {

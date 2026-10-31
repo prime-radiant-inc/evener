@@ -1,7 +1,19 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { runInNewContext } from 'node:vm';
-import { cachedReloadRecovery, comicScenario, delegateLookupStep, recordReloadEvents, sampleCachedReloadRecovery, savedSourcePlaced, verifyApprovalRecovery, verifyComposerReceipts, verifyRemoteRequests, verifyRecoveryRetirement, verifyResumeAdmission } from './comicguard/run.mjs';
+import { cachedReloadRecovery, comicScenario, delegateLookupStep, recordReloadEvents, sampleCachedReloadRecovery, savedSourcePlaced, servedDocumentAnchorReady, verifyApprovalRecovery, verifyComposerReceipts, verifyRemoteRequests, verifyRecoveryRetirement, verifyResumeAdmission } from './comicguard/run.mjs';
+
+test('document readiness waits for cached relative links to acquire live source authority',()=>{
+  assert.equal(servedDocumentAnchorReady(undefined),false);
+  assert.equal(servedDocumentAnchorReady(''),false);
+  assert.equal(servedDocumentAnchorReady('http://127.0.0.1:34211/s/comic-document-child.md'),false);
+  assert.equal(servedDocumentAnchorReady('http://127.0.0.1:34211/doc/file?session=local%3Achild&path=%2Fchild%2Fcomic-document-child.md'),true);
+});
+
+test('served readiness leaves wrong source and path rejection to the separate ownership assertion',()=>{
+  assert.equal(servedDocumentAnchorReady('http://127.0.0.1:34211/doc/file?session=local%3Awrong&path=%2Fwrong.md'),true);
+  assert.equal(servedDocumentAnchorReady('http://127.0.0.1:34211/doc/file-other?session=local%3Achild'),false);
+});
 
 const sourceAnchor = {mode:'away',sessionRef:'local:grandchild',path:['child','grandchild'],entryId:'thought',offset:305,viewportOffset:24.125};
 function placedSource() {

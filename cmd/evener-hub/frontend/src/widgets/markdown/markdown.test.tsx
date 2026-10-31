@@ -76,6 +76,21 @@ test("renders a bullet list", () => {
   expect(items).toEqual(["one", "two"]);
 });
 
+test.each([false, true])("preserves ordered-list starting numbers, live=%s", (live) => {
+  const { container } = render(<Markdown source={"7. first\n\n   second"} live={live} />);
+  const list = container.querySelector("ol");
+  expect(list?.start).toBe(7);
+  expect(list?.querySelectorAll(":scope > li")).toHaveLength(1);
+  expect(list?.querySelectorAll("li > p")).toHaveLength(2);
+});
+
+test("ordered-list attributes in raw HTML stay escaped", () => {
+  const source = '<ol start="7" onclick="alert(1)"><li>raw</li></ol>';
+  const { container } = render(<Markdown source={source} />);
+  expect(container.querySelector("ol, li, [onclick]")).toBeNull();
+  expect(container.textContent).toBe(source);
+});
+
 test("renders a blockquote", () => {
   const { container } = render(<Markdown source="> a quote" />);
   // marked wraps the quoted line in its own <p>, adding formatting

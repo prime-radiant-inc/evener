@@ -1,5 +1,6 @@
 import { bindFilePath } from "@evener/appwire-client/docContent";
 import { beforeEach, expect, test } from "vitest";
+import { publishComicPaneCoverage } from "../../comic/comicPaneCoverage";
 import { captureAttentionPlacement, presentAttentionTarget } from "../../shell/attentionPlacement";
 import "../session";
 import {
@@ -13,6 +14,24 @@ import { openDocBeside } from "./openDoc";
 
 beforeEach(() => {
   resetWorkspaceStoreForTests();
+});
+
+test("an expanded Comic child document belongs to its containing pane, not another child pane", () => {
+  const sourceId = workspaceStore.getState().openPane("session", { ref: "parent" });
+  const source = workspaceStore.getState().mainPane()!;
+  workspaceStore.getState().openPane("session", { ref: "child" });
+  const release = publishComicPaneCoverage(source, "parent", ["child"]);
+  const reference = bindFilePath("docs/child.md", "/child/work")!;
+  try {
+    openDocBeside({ session: "child", reference, sourcePaneId: sourceId });
+    const doc = workspaceStore.getState().panes.find((pane) => pane.type === "doc")!;
+    expect(doc.params).toEqual({ session: "child", path: "docs/child.md", kind: "file" });
+    expect(documentPaneState(doc)?.origin).toBe(source);
+    expect(workspaceStore.getState().mainPane()).toBe(source);
+    expect(workspaceStore.getState().focusedPaneId).toBe(doc.id);
+  } finally {
+    release();
+  }
 });
 
 test("openDocBeside opens a real bound file pane owned by its source", () => {
