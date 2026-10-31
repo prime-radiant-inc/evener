@@ -310,3 +310,61 @@ func TestSecondQuarantineOverLegacyCustodyAccountsForDiscardedIDs(t *testing.T) 
 func TestSecondQuarantineOverRebuiltLegacyCustodyAccountsForDiscardedIDs(t *testing.T) {
 	requireProvenSecondQuarantine(t, false, "rebuild")
 }
+
+// A second quarantine whose corrupt file reports a lower mark allocates its
+// fresh imports above the first custody's ids; the skipped ids stay accounted
+// for after the artifacts are cleaned away.
+func TestThirdQuarantineAccountsForIDsSkippedByTheSecond(t *testing.T) {
+	path := StorePath(t.TempDir())
+	writeRawStore(t, path, 0o600, quarantinedStoreJSON)
+	if _, err := Open(path); err != nil {
+		t.Fatalf("first Open: %v", err)
+	}
+	second := `{"version":1,"sequence":1,"allocatorHighWaterMark":1,"records":[` +
+		`{"id":"00000000000000000001","clientOperationId":"op-h8","host":"h8","kind":"deploy","state":"complete",` +
+		`"generation":2,"incarnationId":"inc-h8","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z",` +
+		`"hostRemoved":false,"result":{"ok":true,"message":"done"},"sequence":2}],` +
+		`"boundaries":{"h7":{"generation":5,"incarnationId":"inc-h7","presenceEpoch":2}}}`
+	writeRawStore(t, path, 0o600, second)
+	if err := forgetStore(path); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := Open(path)
+	if err != nil {
+		t.Fatalf("second Open: %v", err)
+	}
+	if err := replacement.ImportHostRecords(familyOf("first"), HostMirror{}); err != nil {
+		t.Fatalf("ImportHostRecords: %v", err)
+	}
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.Contains(entry.Name(), ".custody-") || strings.Contains(entry.Name(), ".quarantined-") {
+			if err := os.Remove(filepath.Join(filepath.Dir(path), entry.Name())); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	raw := string(mustReadFile(t, path))
+	broken := strings.Replace(raw, `"tokens":[]`, `"tokens":7`, 1)
+	if broken == raw {
+		t.Fatalf("the fixture carries no tokens region:\n%s", raw)
+	}
+	writeRawStore(t, path, 0o600, broken)
+	if err := forgetStore(path); err != nil {
+		t.Fatal(err)
+	}
+
+	third, err := Open(path)
+	if err != nil {
+		t.Fatalf("third Open: %v", err)
+	}
+	if signal := third.Quarantine(); signal == nil || signal.Unproven || signal.QuarantineEpoch != 3 {
+		t.Fatalf("Quarantine() = %+v, want a proven quarantine at epoch 3", signal)
+	}
+	if family, _, _ := third.HostRecords(); len(family.Hosts) == 0 {
+		t.Fatal("the host records were dropped")
+	}
+}
