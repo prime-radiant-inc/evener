@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/appwire"
 )
@@ -232,5 +233,64 @@ func TestHubWatchTerminalDeliveryAppendBatchFailureLeavesWatchActive(t *testing.
 			t.Fatalf("terminal notification queued after AppendBatch failure: %#v", token)
 		}
 	default:
+	}
+}
+
+func TestHubWatchTerminalDeliveryRunawayDropStillDetaches(t *testing.T) {
+	t.Parallel()
+	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
+	jm := root.jobManager
+	watch, err := jm.configureHubWatch("local:worker", "worker-instance", "7@worker", "local:manager", []string{"status"}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jm.mu.Lock()
+	_, cfg, ok := jm.watchConfigByIDLocked(watch.WatchID)
+	if !ok {
+		jm.mu.Unlock()
+		t.Fatal("watch config disappeared")
+	}
+	delivery := jm.watchSendSnapshot(cfg, "worker-instance/7@worker/terminal", "completed", events.SessionEvent{SessionID: jm.sessionID})
+	delivery.fuseDepth = runawaySelfInfluenceDepth
+	jm.mu.Unlock()
+	var diagnostics []jobNotification
+	jm.enqueue = func(n jobNotification) { diagnostics = append(diagnostics, n) }
+	if err := jm.endHubWatch(watch.WatchID, "completed", &delivery); err != nil {
+		t.Fatalf("endHubWatch: %v", err)
+	}
+	jm.mu.Lock()
+	_, _, active := jm.watchConfigByIDLocked(watch.WatchID)
+	jm.mu.Unlock()
+	if active {
+		t.Fatal("in-memory watch remained active after durable terminal drop")
+	}
+	watches, err := jm.store.LoadWatches()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if watches[watch.WatchID] == nil || watches[watch.WatchID].Active {
+		t.Fatalf("folded watch = %#v, want cleared", watches[watch.WatchID])
+	}
+	sends, err := jm.store.LoadWatchSends()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sends.Pending) != 0 {
+		t.Fatalf("pending terminal sends after runaway drop = %d, want 0", len(sends.Pending))
+	}
+	foundDrop := false
+	for _, event := range loadJobStoreEvents(t, jm) {
+		if event.Kind == jobstore.EventWatchSendDropped && event.WatchSend != nil && event.WatchSend.Key.WatchID == watch.WatchID && event.WatchSend.DiagnosticReason == "runaway" {
+			foundDrop = true
+		}
+	}
+	foundDiagnostic := false
+	for _, diagnostic := range diagnostics {
+		if diagnostic.OriginWatchID == watch.WatchID && diagnostic.WatchSend == nil {
+			foundDiagnostic = true
+		}
+	}
+	if !foundDrop || !foundDiagnostic {
+		t.Fatalf("runaway drop recorded=%v, watch diagnostic=%v", foundDrop, foundDiagnostic)
 	}
 }

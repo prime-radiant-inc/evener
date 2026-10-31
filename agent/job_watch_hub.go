@@ -334,7 +334,8 @@ func (jm *jobManager) endHubWatch(watchID, reason string, completion *watchSendD
 	jm.mu.Unlock()
 	delivery = jm.snapshotWatchSendFrame(delivery)
 	state, _, recorded, err := jm.recordWatchSend(delivery, []jobstore.Event{watchClearedEvent(jm, cfg, reason)})
-	if err != nil || !recorded {
+	committed := state.DeliveryID != ""
+	if !committed {
 		jm.mu.Lock()
 		cfg.rejectingDelivery = false
 		delete(jm.terminalFlush, cfg)
@@ -361,19 +362,21 @@ func (jm *jobManager) endHubWatch(watchID, reason string, completion *watchSendD
 	if jm.testOnlyAfterHubWatchDetach != nil {
 		jm.testOnlyAfterHubWatchDetach()
 	}
-	if state.Key.ResolvedSendTo == runtimeMessageAliasCaller {
-		if !jm.enqueueNotifications([]jobNotification{watchSendTokenNotification("", state)}) {
+	if recorded {
+		if state.Key.ResolvedSendTo == runtimeMessageAliasCaller {
+			if !jm.enqueueNotifications([]jobNotification{watchSendTokenNotification("", state)}) {
+				jm.kick()
+			}
+		} else {
 			jm.kick()
 		}
-	} else {
-		jm.kick()
 	}
 	jm.mu.Lock()
 	cfg.terminalDeliveryPending = false
 	jm.forgetTerminalFlushIfEmptyLocked(cfg)
 	jm.mu.Unlock()
 	jm.publishWatchActivity()
-	return nil
+	return err
 }
 
 // restore uses the existing restart end-notice rail, including generations

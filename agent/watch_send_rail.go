@@ -93,10 +93,10 @@ func (jm *jobManager) recordWatchSend(d watchSendDelivery, terminalEvents ...[]j
 	}
 	state = persistedState
 	if terr != nil {
-		return jobstore.WatchSendState{}, nil, false, jm.dropWatchSend(state, d.cfg, terr.Error())
+		return state, d.cfg, false, jm.dropWatchSend(state, d.cfg, terr.Error())
 	}
 	if state.SelfInfluenceDepth >= runawaySelfInfluenceDepth {
-		return jobstore.WatchSendState{}, nil, false, jm.dropWatchSend(state, d.cfg, "runaway")
+		return state, d.cfg, false, jm.dropWatchSend(state, d.cfg, "runaway")
 	}
 	return state, d.cfg, true, nil
 }
@@ -408,14 +408,15 @@ func (jm *jobManager) isCurrentPendingWatchSend(cfg *watchConfig, state jobstore
 }
 
 func (jm *jobManager) isCurrentPendingWatchSendLocked(cfg *watchConfig, state jobstore.WatchSendState) bool {
-	if cfg == nil || cfg.rejectingDelivery || jm.closing {
+	terminalFlush := cfg != nil && jm.terminalFlush != nil && jm.terminalFlush[cfg]
+	if cfg == nil || jm.closing || (cfg.rejectingDelivery && !terminalFlush) {
 		return false
 	}
 	pending := cfg.pending[state.Key]
 	if pending == nil || pending.UpdateSeq != state.UpdateSeq || pending.DeliveryID != state.DeliveryID {
 		return false
 	}
-	if jm.terminalFlush != nil && jm.terminalFlush[cfg] {
+	if terminalFlush {
 		return true
 	}
 	key := watchKey{VisibleSessionID: state.Key.VisibleSessionID, Target: state.Key.WatchTarget, SendTo: cfg.sendTo(), ReceiverSessionID: cfg.receiverSessionID, ReceiverDelegateID: cfg.receiverDelegateID}
