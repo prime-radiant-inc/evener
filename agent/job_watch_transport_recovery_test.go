@@ -23,6 +23,7 @@ func TestWatchOneShotPacedTransportRecovery(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			jm.clock = agenttest.NewFakeClockAt(time.Unix(1700000000, 0))
 			t.Cleanup(func() { _ = jm.close() })
 			s.jobManager, jm.retirementOwner, jm.delegateController = jm, s, s.delegateController
 			key, cfg := producerTimer(t, s, false)

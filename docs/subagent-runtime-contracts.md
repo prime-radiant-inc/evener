@@ -141,6 +141,14 @@ it. Historical requests with a missing or false field retain their historical
 discard fold. No inbox append releases a user Stop, question, approval or subtree
 fence, and permanently closed destinations retain canonical closure handling.
 
+Leased model admission refuses a covering pending Stop as cancellation, even
+before its cancel plan reaches the runtime context. This applies before request
+binding and between binding and history projection, where refusal releases the
+model claim without consuming pending steering. Independent earlier refusals
+(closing, reclamation, stale or unavailable bindings, recovery and closed
+resumability) retain their errors. Other admission callers still return busy for
+Stop. Cancellation does not open a fence or reset the fatal automatic-drive gate.
+
 Child reports and updates wake a parent delegate waiting on work. The parent's
 next model request presents the pending notification without waiting for another
 child's update or completion. A delegate cannot claim `done` while a child is

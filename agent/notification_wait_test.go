@@ -2221,19 +2221,42 @@ func TestWaitResumeClaimSerializesStop(t *testing.T) {
 			returns := newActivationReturns()
 			initialBoundary := newWaitBoundary()
 			defer initialBoundary.release()
+			successorBoundary := newWaitBoundary()
+			defer successorBoundary.release()
+			successorRequests := make(chan llm.Request, 1)
 			fifo, releaseShell := waitProducerFIFO(t)
 			defer releaseShell()
-			adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("fence-owner", "FENCE-WAIT-81") }, func(llm.Request) llm.Response { return finalResponse("root-81") })
+			reply := func(response llm.Response) func(context.Context, llm.Request) (llm.Response, error) {
+				return updateReply(response)
+			}
+			adapter.finiteScript("root", reply(delegateToolResponse("fence-owner", "FENCE-WAIT-81")), reply(finalResponse("root-81")))
 			modelGate := make(chan struct{})
 			releaseModel := sync.OnceFunc(func() { close(modelGate) })
 			defer releaseModel()
-			adapter.script("FENCE-WAIT-81", func(llm.Request) llm.Response {
+			finish := func(ctx context.Context, req llm.Request) (llm.Response, error) {
+				lease, ok := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
+				if !ok {
+					return llm.Response{}, errors.New("fence provider has no actual run lease")
+				}
+				switch lease.generation {
+				case 1:
+					<-modelGate
+					return finalResponse("fence-result-81"), nil
+				case 2:
+					successorRequests <- req
+					successorBoundary.hold(t)
+					return finalResponse("fence-successor-result-81"), nil
+				default:
+					return llm.Response{}, fmt.Errorf("unexpected fence provider generation %d", lease.generation)
+				}
+			}
+			adapter.finiteScript("FENCE-WAIT-81", func(context.Context, llm.Request) (llm.Response, error) {
 				args, _ := json.Marshal(map[string]any{"command": fmt.Sprintf("read value < %q", fifo), "mode": "background"})
-				return toolCallResponse(llm.ToolCallData{ID: "shell-81", Name: "shell", Type: "function", Arguments: args})
-			}, func(req llm.Request) llm.Response {
+				return toolCallResponse(llm.ToolCallData{ID: "shell-81", Name: "shell", Type: "function", Arguments: args}), nil
+			}, func(_ context.Context, req llm.Request) (llm.Response, error) {
 				initialBoundary.hold(t)
-				return waitResponseFor("fence-wait-81", regexp.MustCompile(`job_[A-Za-z0-9_]{10,}`).FindString(lastToolResultText(req.Messages)))
-			}, func(llm.Request) llm.Response { <-modelGate; return finalResponse("fence-result-81") })
+				return waitResponseFor("fence-wait-81", regexp.MustCompile(`job_[A-Za-z0-9_]{10,}`).FindString(lastToolResultText(req.Messages))), nil
+			}, finish, finish)
 			root := newMessagingRoot(t, adapter, returns.configure)
 			t.Cleanup(func() { returns.close(t, root) })
 			claimRecorded := make(chan struct{})
@@ -2272,6 +2295,10 @@ func TestWaitResumeClaimSerializesStop(t *testing.T) {
 					t.Error("claim append is not serialized with Stop")
 				}
 			}
+			// Hold only wake execution, after the claim barrier. Source completion
+			// and durable custody still settle before the generation-1 assertions.
+			releaseWake := sync.OnceFunc(owner.holdJobNotificationWake())
+			defer releaseWake()
 			stopStarted, stopDone := make(chan struct{}), make(chan struct{})
 			t.Cleanup(func() { releaseClaim(); releaseModel(); waitForTestSignal(t, stopDone, "Stop contender cleanup") })
 			go func() {
@@ -2321,6 +2348,41 @@ func TestWaitResumeClaimSerializesStop(t *testing.T) {
 			if claims != wantClaims || finishes != 1 {
 				t.Fatalf("claims=%d want%d, stopped outcomes=%d want1", claims, wantClaims, finishes)
 			}
+			record := loadShellRecord(t, owner.jobManager, cp.WaitingOn)
+			if !record.Status.IsTerminal() || record.TerminalGen == "" || record.NotifyState != jobstore.NotifyDelivered {
+				t.Fatalf("stopped shell custody=%+v", record)
+			}
+			terminalID := stableShellAttentionID(record.JobID, record.TerminalGen)
+			pending, err := owner.pendingNotificationIDs()
+			if err != nil || !slices.Contains(pending, terminalID) {
+				t.Fatalf("preserved terminal custody=%v err=%v, want %s", pending, err, terminalID)
+			}
+			releaseWake()
+			successor := successorBoundary.take(t, returns, owner.ID())
+			req := <-successorRequests
+			if successor.sessionID != stopped.sessionID || successor.delegateID != stopped.delegateID || successor.lease.generation != 2 || successor.lease == stopped.lease || successor.generationDone == stopped.generationDone {
+				t.Fatalf("successor changed identity or reused stopped lease: %+v -> %+v", stopped, successor)
+			}
+			activationStillOpen(t, successor.generationDone)
+			if run := delegateAggregateSnapshot(t, root.delegateController, successor.delegateID); !run.CurrentRunOpen || run.Generation != 2 || run.Trigger != delegatestore.TriggerAttention {
+				t.Fatalf("preserved attention successor=%+v", run)
+			}
+			if err := incidentJobPayload(req, record.JobID, string(record.Status), record.Reason); err != nil {
+				t.Fatal(err)
+			}
+			presented := incidentPresentedIDs(t, root.stateDir, owner.ID(), req, terminalID)
+			successorBoundary.release()
+			incidentSettled(t, root, owner.ID(), successor)
+			incidentCoverage(t, root.stateDir, owner.ID(), map[string][]string{"fence-successor-result-81": presented}, terminalID)
+			for _, id := range presented {
+				incidentNotificationFacts(t, root.stateDir, owner.ID(), id)
+				if resolution, generation := childAttentionResolution(t, root.getSub(owner.ID()), id); resolution != delegateAttentionConsumed || generation != 0 {
+					t.Fatalf("successor consumed resolution=%s generation=%d for %s", resolution, generation, id)
+				}
+			}
+			t.Logf("original Stop proof passed, generation 2 observed and consumed %v", presented)
+			returns.close(t, root)
+			t.Log("real Close and all activation returns joined")
 		})
 	}
 }

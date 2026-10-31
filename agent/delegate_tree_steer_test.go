@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"sync"
 	"testing"
@@ -544,6 +545,196 @@ func completeDelegateModelRequest(c *delegateTreeController, lease delegateLease
 		return nil, err
 	}
 	return c.CompleteModelRequest(claim, claim.runtime.delegateModelHistorySnapshot(), replayScope{})
+}
+
+func TestDelegateControllerModelRequestStopCancellation(t *testing.T) {
+	t.Parallel()
+	for _, complete := range []bool{false, true} {
+		name := "before_begin"
+		if complete {
+			name = "before_complete"
+		}
+		t.Run(name, func(t *testing.T) {
+			c, _ := newDelegateControllerTestHarness(t, 1, 1)
+			seedDelegateControllerRunning(t, c, "dlg_target", "")
+			runtime := attachDelegateSteerRuntime(t, c, "dlg_target", afero.NewMemMapFs())
+			lease := delegateLease{delegateID: "dlg_target", generation: 1}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			c.mu.Lock()
+			c.live[lease.delegateID].binding.cancel = cancel
+			c.mu.Unlock()
+			if _, err := c.Steer(ctx, rootDelegateActor("root-session"), lease.delegateID, "MODEL-STOP-PENDING"); err != nil {
+				t.Fatal(err)
+			}
+			var claim *delegateModelRequestClaim
+			if complete {
+				var err error
+				claim, err = c.BeginModelRequest(lease)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, plan, _, err := c.StopSubtree(rootDelegateActor("root-session"), lease.delegateID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				// Release any claim even when an assertion aborts the test, then
+				// execute the real plan and settle the exact covered generation.
+				if claim != nil {
+					_ = c.AbortModelRequest(claim)
+				}
+				executeDelegateCancelPlan(plan)
+				if _, err := c.FinishGeneration(lease, delegateFinish{outcome: delegatestore.OutcomeCancelled}); err != nil {
+					t.Error(err)
+				}
+			}()
+			events, err := c.store.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			last := events[len(events)-1]
+			if last.SubtreeStopRequested == nil || !last.SubtreeStopRequested.PreserveNotifications {
+				t.Fatalf("real preserving Stop missing: %+v", last)
+			}
+			if ctx.Err() != nil || len(plan.cancel) != 1 {
+				t.Fatalf("cancel plan ran before model admission: context=%v cancels=%d", ctx.Err(), len(plan.cancel))
+			}
+			c.mu.Lock()
+			before := append([]delegateSteeringAdmission(nil), c.live[lease.delegateID].pendingSteers...)
+			stopping := c.durable[lease.delegateID].Phase == delegatestore.PhaseStopping && c.durable[lease.delegateID].PendingStopSeq != 0
+			c.mu.Unlock()
+			if !stopping || len(before) != 1 {
+				t.Fatalf("Stop fixture: stopping=%v pending=%+v", stopping, before)
+			}
+			if complete {
+				var history []llm.Message
+				history, err = c.CompleteModelRequest(claim, runtime.delegateModelHistorySnapshot(), replayScope{})
+				if len(history) != 0 {
+					t.Fatalf("Stop admitted model history: %+v", history)
+				}
+			} else {
+				var admitted *delegateModelRequestClaim
+				admitted, err = c.BeginModelRequest(lease)
+				if admitted != nil {
+					t.Fatal("Stop admitted a model claim")
+				}
+			}
+			if !errors.Is(err, context.Canceled) || stableDelegateFatalRun(err) {
+				t.Errorf("Stop model admission error=%v, want nonfatal cancellation before context cancel", err)
+			}
+			if ctx.Err() != nil {
+				t.Fatalf("model refusal canceled the context instead of preserving Stop cause: %v", ctx.Err())
+			}
+			if err := c.BeginTool(lease); !errors.Is(err, errDelegateTargetBusy) {
+				t.Fatalf("unrelated tool admission changed: %v", err)
+			}
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			if len(c.modelClaims) != 0 || !reflect.DeepEqual(c.live[lease.delegateID].pendingSteers, before) {
+				t.Errorf("Stop leaked model claim or consumed steering: claims=%d pending=%+v", len(c.modelClaims), c.live[lease.delegateID].pendingSteers)
+			}
+		})
+	}
+}
+
+func TestDelegateControllerModelRequestRefusalPrecedence(t *testing.T) {
+	t.Parallel()
+	for _, complete := range []bool{false, true} {
+		boundary := "begin"
+		if complete {
+			boundary = "complete"
+		}
+		t.Run(boundary, func(t *testing.T) {
+			for _, refusal := range []string{"closing", "reclamation", "stale_generation", "missing_binding", "unready_binding", "recovery", "not_resumable", "ancestor", "phase", "runtime", "duplicate", "settlement"} {
+				// Duplicate and settlement claims are checked only at Begin.
+				if complete && (refusal == "duplicate" || refusal == "settlement") {
+					continue
+				}
+				t.Run(refusal, func(t *testing.T) {
+					for _, stopping := range []bool{false, true} {
+						// Stop precedes ancestor/phase and the model-specific checks.
+						if stopping && (refusal == "ancestor" || refusal == "phase" || refusal == "runtime" || refusal == "duplicate" || refusal == "settlement") {
+							continue
+						}
+						t.Run(fmt.Sprintf("stop=%t", stopping), func(t *testing.T) {
+							c, _ := newDelegateControllerTestHarness(t, 1, 1)
+							seedDelegateControllerRunning(t, c, "dlg_target", "")
+							runtime := attachDelegateSteerRuntime(t, c, "dlg_target", afero.NewMemMapFs())
+							lease := delegateLease{delegateID: "dlg_target", generation: 1}
+							var claim *delegateModelRequestClaim
+							if complete || refusal == "duplicate" {
+								var err error
+								claim, err = c.BeginModelRequest(lease)
+								if err != nil {
+									t.Fatal(err)
+								}
+								defer c.AbortModelRequest(claim)
+							}
+							if stopping {
+								_, plan, _, err := c.StopSubtree(rootDelegateActor("root-session"), lease.delegateID)
+								if err != nil {
+									t.Fatal(err)
+								}
+								defer executeDelegateCancelPlan(plan)
+							}
+							want := errDelegateTargetBusy
+							c.mu.Lock()
+							live := c.live[lease.delegateID]
+							switch refusal {
+							case "closing":
+								c.closing = true
+							case "reclamation":
+								c.reclaiming[lease.delegateID] = 1
+							case "stale_generation":
+								c.durable[lease.delegateID].Generation++
+								want = errDelegateStaleLease
+							case "missing_binding":
+								live.binding = nil
+								want = errDelegateStaleLease
+							case "unready_binding":
+								live.binding.ready = false
+							case "recovery":
+								live.recoveryRequired = true
+							case "not_resumable":
+								c.durable[lease.delegateID].Resumable = false
+							case "ancestor":
+								c.durable[lease.delegateID].Descriptor.ParentDelegateID = "dlg_missing"
+							case "phase":
+								c.durable[lease.delegateID].Phase = delegatestore.PhaseStopping
+							case "runtime":
+								live.binding.runtime = nil
+								if complete {
+									want = errDelegateStaleLease
+								}
+							case "settlement":
+								c.settlementClaims[1] = &delegateSettlementClaim{token: 1, lease: lease}
+							}
+							c.mu.Unlock()
+							var err error
+							if complete {
+								_, err = c.CompleteModelRequest(claim, runtime.delegateModelHistorySnapshot(), replayScope{})
+							} else {
+								_, err = c.BeginModelRequest(lease)
+							}
+							if !errors.Is(err, want) || errors.Is(err, context.Canceled) || !stableDelegateFatalRun(err) {
+								t.Fatalf("independent refusal=%v, want fatal %v without cancellation", err, want)
+							}
+							if complete {
+								c.mu.Lock()
+								remaining := len(c.modelClaims)
+								c.mu.Unlock()
+								if remaining != 0 {
+									t.Fatalf("refused completion retained %d model claims", remaining)
+								}
+							}
+						})
+					}
+				})
+			}
+		})
+	}
 }
 
 func TestDelegateControllerBeginToolRejectsStoppingOrStaleLease(t *testing.T) {

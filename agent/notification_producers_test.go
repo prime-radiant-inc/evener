@@ -68,7 +68,6 @@ func producerRecordCount(t *testing.T, s *Session) int {
 func producerTimer(t *testing.T, s *Session, send bool) (watchKey, *watchConfig) {
 	t.Helper()
 	jm := s.jobManager
-	jm.clock = agenttest.NewFakeClockAt(time.Unix(1700000000, 0))
 	a := watchArgs{Operation: "create", Source: "self", Target: runtimeMessageAliasCaller, AfterSeconds: 60, Note: "payload-5a9e"}
 	if send {
 		a.Send = &watchSendArgs{To: runtimeMessageAliasCaller, Message: "payload-8d2f"}
@@ -317,7 +316,9 @@ func TestNotificationProducers(t *testing.T) {
 			<-release
 			return jobListResponse("boundary")
 		})
-		s := newMessagingRoot(t, adapter, nil)
+		s := newMessagingRoot(t, adapter, func(cfg *SessionConfig) {
+			cfg.clock = agenttest.NewFakeClockAt(time.Unix(1700000000, 0))
+		})
 		done := make(chan error, 1)
 		go func() { _, err := s.ProcessInput(context.Background(), "start", nil); done <- err }()
 		<-entered
@@ -402,6 +403,7 @@ func TestNotificationProducers(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		jm.clock = agenttest.NewFakeClockAt(time.Unix(1700000000, 0))
 		s.jobManager, jm.retirementOwner = jm, s
 		jm.delegateController = s.delegateController
 		t.Cleanup(func() { jm.close() })
@@ -459,7 +461,11 @@ func TestNotificationProducers(t *testing.T) {
 	for _, kind := range []string{"timer", "session event", "output match", "shell exit", "explicit send", "system"} {
 		t.Run(kind, func(t *testing.T) {
 			adapter := newMessagingAdapter()
-			s := newMessagingRoot(t, adapter, nil)
+			s := newMessagingRoot(t, adapter, func(cfg *SessionConfig) {
+				if kind == "timer" || kind == "explicit send" {
+					cfg.clock = agenttest.NewFakeClockAt(time.Unix(1700000000, 0))
+				}
+			})
 			jm := s.jobManager
 			var eventWatchID string
 			switch kind {
@@ -752,12 +758,17 @@ func TestWatchProductionSurvivesRestart(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			configuredClock := agenttest.NewFakeClockAt(time.Unix(1700000000, 0))
+			jm.clock = configuredClock
 			s.jobManager, jm.retirementOwner = jm, s
 			jm.delegateController = s.delegateController
 			t.Cleanup(func() { jm.close() })
 			fs.writeErr = errors.New("receiver unavailable")
 			for range 2 {
 				key, cfg := producerTimer(t, s, send)
+				if jm.clock != configuredClock {
+					t.Fatalf("timer clock = %p, want configured clock %p", jm.clock, configuredClock)
+				}
 				jm.fireProgressTick(key, cfg)
 				if _, err := jm.clearWatchByID(cfg.watchID); err != nil {
 					t.Fatal(err)
@@ -813,7 +824,9 @@ func TestWatchProductionSurvivesRestart(t *testing.T) {
 			t.Log("before reopen source pending=2, ended=2, receiver=0; after reopen receiver=2, source delivered=2, second pump adds 0")
 		})
 		t.Run(map[bool]string{false: "callback", true: "explicit send"}[send], func(t *testing.T) {
-			s := newMessagingRoot(t, newMessagingAdapter(), nil)
+			s := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) {
+				cfg.clock = agenttest.NewFakeClockAt(time.Unix(1700000000, 0))
+			})
 			jm := s.jobManager
 			key, cfg := producerTimer(t, s, send)
 			// A real closed source descriptor fails the append at the filesystem boundary.
@@ -1550,7 +1563,9 @@ func TestRestartSystemNoticeRetainsSourceIdentity(t *testing.T) {
 }
 
 func TestCallbackOneShotSourceRecoveryBeforeNextTick(t *testing.T) {
-	s := newMessagingRoot(t, newMessagingAdapter(), nil)
+	s := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) {
+		cfg.clock = agenttest.NewFakeClockAt(time.Unix(1700000000, 0))
+	})
 	jm := s.jobManager
 	key, cfg := producerTimer(t, s, false)
 	if err := jm.store.Close(); err != nil {

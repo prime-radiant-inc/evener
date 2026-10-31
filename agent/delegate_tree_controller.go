@@ -990,6 +990,13 @@ func (c *delegateTreeController) completionSnapshot(lease delegateLease) (delega
 }
 
 func (c *delegateTreeController) admitLeaseLocked(lease delegateLease, phases ...delegatestore.Phase) (*delegatestore.Aggregate, *delegateLiveState, error) {
+	return c.admitLeaseWithStopErrorLocked(lease, errDelegateTargetBusy, phases...)
+}
+
+// Model admission treats the covering Stop as cancellation even before its
+// cancel plan runs. Other callers retain target_busy. Keep independent earlier
+// refusals ahead of Stop so they cannot be hidden by cancellation semantics.
+func (c *delegateTreeController) admitLeaseWithStopErrorLocked(lease delegateLease, stopErr error, phases ...delegatestore.Phase) (*delegatestore.Aggregate, *delegateLiveState, error) {
 	if c.closing {
 		return nil, nil, errDelegateTargetBusy
 	}
@@ -1000,8 +1007,11 @@ func (c *delegateTreeController) admitLeaseLocked(lease delegateLease, phases ..
 	if err != nil {
 		return nil, nil, err
 	}
-	if live.recoveryRequired || aggregate.PendingStopSeq != 0 || !aggregate.Resumable || live.binding == nil || !live.binding.ready {
+	if live.recoveryRequired || !aggregate.Resumable || live.binding == nil || !live.binding.ready {
 		return nil, nil, errDelegateTargetBusy
+	}
+	if aggregate.PendingStopSeq != 0 {
+		return nil, nil, stopErr
 	}
 	if blocked, _ := c.ancestorFenceLocked(aggregate.Descriptor.ParentDelegateID); blocked {
 		return nil, nil, errDelegateTargetBusy
