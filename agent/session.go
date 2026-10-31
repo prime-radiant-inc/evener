@@ -395,6 +395,17 @@ type Session struct {
 	worktreeDisposeBeforeRemove         func(lanePath string)
 	worktreeLaneStat                    func(path string) (os.FileInfo, error)
 	worktreeBeforeStrandedMarkerRelease func(lanePath string)
+	// worktreeRendezvousDir is a test-only seam naming the rendezvous run
+	// directory the owner-liveness probe consults instead of the platform
+	// default (see worktreeOwnerRendezvousDir).
+	worktreeRendezvousDir string
+
+	// livelockRelease drops this root session's process livelock, taken at
+	// init (acquireSessionLivelock). Nil for subagents (their root's process
+	// hosts them) and for a root whose take found the flock held — a second
+	// process on the same id, the documented can't-tell-apart case, which
+	// then runs with liveness visibility only, never correctness.
+	livelockRelease func()
 
 	// responseSideEffectsMu serializes a response's user-visible side-effect
 	// bundle (emit + appendTurn + counter bump) against teardown.

@@ -198,6 +198,20 @@ func (s *Session) collectRegisteredLanes(ctx context.Context, run worktree.GitRu
 			reason := "locked"
 			if e.LockReason != "" {
 				reason = fmt.Sprintf("locked (%s)", e.LockReason)
+				// A delegate marker's owner session tree gets a liveness
+				// verdict appended (issue #5471): a lane whose owning tree
+				// looks dead is the issue's stuck population — invisible
+				// behind a bare locked reason — and a live or unverifiable
+				// owner must not be mistaken for one. REPORTING ONLY: the
+				// verdict never changes this skip or any collection; the
+				// lane is appended skipped below whatever it says, and
+				// acting on it is the manual recipe in
+				// docs/developing-evener/worktrees.md (a model or human
+				// decision). Plain session markers and reasonless locks
+				// keep their bare reason.
+				if m, ok := worktree.ParseMarker(e.LockReason); ok && m.DelegateID != "" {
+					reason = fmt.Sprintf("locked (%s); %s", e.LockReason, s.delegateLaneOwnerLiveness(m))
+				}
 			}
 			skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: reason})
 			continue

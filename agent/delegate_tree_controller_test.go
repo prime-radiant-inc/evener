@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -267,6 +268,9 @@ func TestDelegateControllerProductionIntegrationMatchesInventory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("enumerate production files: %v", err)
 	}
+	production = slices.DeleteFunc(production, func(name string) bool {
+		return delegateControllerPlatformExcludedFiles[name]
+	})
 	loadedFiles := make([]string, 0, len(pkg.Syntax))
 	for _, file := range pkg.Syntax {
 		loadedFiles = append(loadedFiles, filepath.Base(pkg.Fset.Position(file.Package).Filename))
@@ -282,6 +286,16 @@ func TestDelegateControllerProductionIntegrationMatchesInventory(t *testing.T) {
 	for _, inventoryError := range delegateControllerDormancyInventoryErrors(violations, delegateControllerDormancyExpectedInventory) {
 		t.Error(inventoryError)
 	}
+}
+
+// delegateControllerPlatformExcludedFiles names the top-level production files
+// whose build constraints exclude the native platform, so packages.Load — which
+// loads for the host GOOS — cannot load them (the process-liveness arm behind
+// the owner-liveness reporting, issue #5471). Register any new
+// build-tag-excluded top-level production file here, or this inventory fails
+// on the omission.
+var delegateControllerPlatformExcludedFiles = map[string]bool{
+	"process_alive_other.go": true,
 }
 
 func TestDelegateControllerDormancyGuardRejectsConstructionAndAliases(t *testing.T) {

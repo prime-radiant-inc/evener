@@ -1777,6 +1777,13 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		s.seedFrozenSkillPreloads()
 	}
 
+	// Take the root session's process livelock (issue #5471): the lifetime
+	// flock whose release-by-OS at process death is what a later prune's
+	// owner-liveness REPORTING reads. Root sessions only, non-blocking, and
+	// silent on failure — nothing gates or retries on it (see
+	// acquireSessionLivelock).
+	s.acquireSessionLivelock()
+
 	return s.promptSourceLog, nil
 }
 
