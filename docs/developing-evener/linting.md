@@ -101,6 +101,14 @@ casing regimes cannot live in one config. `.golangci-appwire.yml` holds the
 camelCase half of the split and explains itself; the root `.golangci.yml`
 holds everything else.
 
+## CI module concurrency
+
+CI sets `LINT_PARALLEL=2` for `make lint-golangci`, limiting simultaneous
+package loads in both the Linux and Darwin module sweeps. Each linter retains
+its two-worker configuration and five-minute deadline. All workspace modules,
+tests, rules, the appwire pass and tagged compile floors remain enabled. The
+module runner's local default remains four concurrent modules.
+
 ## Why `lint-generated` runs `make generate`
 
 `lint-generated` invokes the `generate` target rather than carrying its own
