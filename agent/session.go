@@ -1842,6 +1842,11 @@ func (s *Session) applyPendingModelSwitch() {
 // of swapping under it. The publication phase is serialized under
 // modelSwitchPublishMu with the watermark rechecked there, so the marker and
 // event land in swap order and a superseded application publishes nothing.
+// The profile a commit replaces is read at the commit itself: an earlier
+// pick's application can move the session through another provider while
+// this one validates, so the communicate-override carry, the provider-tool
+// reconciliation, and the marker's from-claim follow the transition that
+// actually happened, never the pick-time classification.
 func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *llm.ModelListing, fence modelSwitchFence) error {
 	if primedListing == nil {
 		// A named Codex model may exist only in the target instance's live
@@ -1856,14 +1861,10 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 		s.mu.Unlock()
 		return nil
 	}
-	oldProfile := s.profile
-	nextProfile, crossProvider, err := s.resolveProfileForRef(s.profile, model)
+	nextProfile, _, err := s.resolveProfileForRef(s.profile, model)
 	if err != nil {
 		s.mu.Unlock()
 		return err
-	}
-	if crossProvider {
-		nextProfile = nextProfile.WithCommunicateOverridesFrom(s.profile)
 	}
 	// Unrepresentable-history preflight: reject before any state changes when
 	// the target can't faithfully carry content kinds already in history.
@@ -1911,6 +1912,16 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 	if fence.pickSeq > s.modelPickAccepted {
 		s.modelPickAccepted = fence.pickSeq
 	}
+	// The profile this commit actually replaces is the one the session runs
+	// right now: an earlier pick's application may have moved the session
+	// through another provider while this one validated, so every
+	// transition-relative fact - the communicate-override carry, the
+	// provider-tool reconciliation, and the marker's from-claim - is read
+	// here, under the commit lock, never from the pick-time snapshot.
+	commitPrev := s.profile
+	if commitPrev.CrossProviderRef(model) {
+		nextProfile = nextProfile.WithCommunicateOverridesFrom(commitPrev)
+	}
 	s.profile = nextProfile
 	// The namer's spent-allowance latch was learned against the profile being
 	// replaced, so it does not survive the swap (see
@@ -1919,8 +1930,8 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 	if s.contextMgr != nil {
 		s.contextMgr.SetProfile(s.profile)
 	}
-	if crossProvider && s.reg != nil {
-		s.reapplyProviderSpecificTools(oldProfile, nextProfile)
+	if s.reg != nil {
+		s.reapplyProviderSpecificTools(commitPrev, nextProfile)
 	}
 	s.rebuildToolDefsCache()
 	// Knowledge cutoff must be recomputed BEFORE the prompt-cache refresh
@@ -1958,7 +1969,7 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 		}
 	}
 	markerText := buildModelSwitchMarkerText(modelSwitchMarkerParams{
-		oldProfile:           oldProfile,
+		oldProfile:           commitPrev,
 		nextProfile:          nextProfile,
 		contextWarning:       contextWarning,
 		contextWarningPct:    contextWarningPct,
@@ -1990,13 +2001,13 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 	// client) before the live-only EventModelChanged notification below.
 	marker := schema.NewTurn(schema.TurnModelSwitch, llm.System(markerText))
 	marker.ModelSwitch = &schema.ModelSwitchInfo{
-		OldProvider: oldProfile.ID(), OldModel: oldProfile.Model(),
+		OldProvider: commitPrev.ID(), OldModel: commitPrev.Model(),
 		NewProvider: nextProfile.ID(), NewModel: nextProfile.Model(),
 	}
 	s.recordTurn(marker, marker)
 	s.emit(events.ModelChangedData{
-		OldProvider:           oldProfile.ID(),
-		OldModel:              oldProfile.Model(),
+		OldProvider:           commitPrev.ID(),
+		OldModel:              commitPrev.Model(),
 		NewProvider:           nextProfile.ID(),
 		NewModel:              nextProfile.Model(),
 		ReasoningEffortLevels: nextProfile.ReasoningEffortLevels(),

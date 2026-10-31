@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -602,5 +603,97 @@ func TestSupersededApplicationDoesNotPublishOverANewerPick(t *testing.T) {
 	}
 	if got := s.Profile().Model(); got != "gpt-4.1-mini" {
 		t.Fatalf("profile model = %q, want the newer pick (%q)", got, "gpt-4.1-mini")
+	}
+}
+
+// TestNewerPickReconcilesToolsAgainstTheProfileItActuallyReplaces pins the
+// commit path's transition facts: a pick classifies its switch against the
+// profile current when it validated, but commits later, and an older pick's
+// application can move the session through another provider while this one
+// sat parked in its live-listing preflight. The commit must reconcile the
+// provider-specific tools against the profile it actually replaces, so a
+// same-provider pick landing past an intervening cross-provider switch still
+// re-registers the tools that switch removed.
+func TestNewerPickReconcilesToolsAgainstTheProfileItActuallyReplaces(t *testing.T) {
+	dir := t.TempDir()
+	googleAdapter := &gatedListingAdapter{fakeAdapter: fakeAdapter{name: "google"}}
+	openaiAdapter := &gatedListingAdapter{fakeAdapter: fakeAdapter{name: "openai"}}
+	s := newSession(t,
+		withAdapter(googleAdapter),
+		withAdapter(openaiAdapter),
+		withProfile(newGeminiProfile("gemini-2.5-pro")),
+		withDir(dir),
+		withConfig(SessionConfig{
+			StateDir:         dir,
+			MaxSubagentDepth: 1,
+			testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+		}))
+	if s.reg.Get("web_search") == nil {
+		t.Fatal("pre-condition: the session must start with web_search wired for a web-searching google profile")
+	}
+	// The fixture session carries no cross-instance resolver; production wires
+	// cfg.ResolveProfile to the client's registry, so wire the same here and the
+	// openai pick resolves as the cross-provider switch it is.
+	s.resolveProfile = func(ref string) (*provider.Profile, error) {
+		res, err := s.client.Resolve(ref)
+		if err != nil {
+			return nil, err
+		}
+		return provider.FromResolved(res, s.client.Registry()), nil
+	}
+	// Armed after construction: NewSession's startup resolve must not consume
+	// the picks' scripted listing calls.
+	releaseOlder, releaseNewer := make(chan struct{}), make(chan struct{})
+	olderCalled, newerCalled := make(chan struct{}, 1), make(chan struct{}, 1)
+	openaiAdapter.models = []func() ([]registry.Model, error){
+		func() ([]registry.Model, error) {
+			olderCalled <- struct{}{}
+			<-releaseOlder
+			return []registry.Model{{ID: "gpt-5.2"}}, nil
+		},
+	}
+	googleAdapter.models = []func() ([]registry.Model, error){
+		func() ([]registry.Model, error) {
+			newerCalled <- struct{}{}
+			<-releaseNewer
+			return []registry.Model{{ID: "gemini-2.5-pro"}}, nil
+		},
+	}
+
+	// The older pick (openai) is admitted first and parks in its enumeration
+	// after classifying its cross-provider switch against the google profile.
+	olderDone := make(chan error, 1)
+	go func() { olderDone <- s.SetModel("openai/gpt-5.2") }()
+	<-olderCalled
+	// The newer pick (google) is admitted second: it classifies itself
+	// same-provider against the still-google profile, then parks in its own
+	// enumeration. Its commit lands after the older pick's, which the
+	// acceptance watermark permits: neither application superseded the other.
+	newerDone := make(chan error, 1)
+	go func() { newerDone <- s.SetModel("gemini-2.5-pro") }()
+	<-newerCalled
+
+	// The older pick's enumeration returns and its commit lands while the
+	// newer pick is still parked: google -> openai, web_search removed.
+	close(releaseOlder)
+	if err := <-olderDone; err != nil {
+		t.Fatalf("older pick: %v", err)
+	}
+	if s.reg.Get("web_search") != nil {
+		t.Fatal("pre-condition: the intervening openai switch must have removed web_search")
+	}
+
+	// The newer pick's enumeration returns and its commit lands on the openai
+	// profile: the transition it actually replaces is openai -> google, and
+	// the provider-specific tools the intervening switch removed must return.
+	close(releaseNewer)
+	if err := <-newerDone; err != nil {
+		t.Fatalf("newer pick: %v", err)
+	}
+	if s.reg.Get("web_search") == nil {
+		t.Fatal("web_search is missing after a same-provider pick landed past an intervening cross-provider switch; the commit must reconcile provider tools against the profile it actually replaces")
+	}
+	if got := s.Profile().Model(); got != "gemini-2.5-pro" {
+		t.Fatalf("profile model = %q; the newer pick must own the outcome (%q)", got, "gemini-2.5-pro")
 	}
 }
