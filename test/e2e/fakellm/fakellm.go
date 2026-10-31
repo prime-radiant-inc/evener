@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -32,6 +33,11 @@ import (
 // ModelID is the model the fake advertises on /models. Point a providers.toml
 // instance at BaseURL and spawn against "<instance>/" + ModelID.
 const ModelID = "fake-test-model"
+
+// SwitchTargetID is a second id AdvertiseModels can list alongside ModelID, so
+// a test can drive a genuine mid-session switch (thread/model/set) against a
+// target the live membership preflight accepts.
+const SwitchTargetID = "fake-switch-target"
 
 // autoNameJSON answers the session namer's structured-output call. The namer
 // runs on a detached goroutine the moment a turn starts, so every live-stack
@@ -47,8 +53,12 @@ type Server struct {
 	closeOnce sync.Once
 	closed    chan struct{}
 
-	namerMu   sync.Mutex
-	namerHold chan struct{}
+	// modelsMu guards advertised; the /models handler runs on the HTTP
+	// goroutine while a test configures the list from the test goroutine.
+	modelsMu    sync.Mutex
+	advertised  []string
+	namerMu     sync.Mutex
+	namerHold   chan struct{}
 }
 
 // Call is one model request from the session loop, paused until the test
@@ -285,9 +295,32 @@ func contentText(content any) string {
 	}
 }
 
+// AdvertiseModels replaces the ids /models lists. The default is ModelID
+// alone; a mid-session switch test lists SwitchTargetID beside it so the
+// daemon's live membership validation accepts the switch target. Must be
+// called before the session resolves its model list.
+func (s *Server) AdvertiseModels(ids ...string) {
+	if len(ids) == 0 {
+		ids = []string{ModelID}
+	}
+	s.modelsMu.Lock()
+	s.advertised = slices.Clone(ids)
+	s.modelsMu.Unlock()
+}
+
 func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {
+	s.modelsMu.Lock()
+	ids := s.advertised
+	s.modelsMu.Unlock()
+	if len(ids) == 0 {
+		ids = []string{ModelID}
+	}
+	data := make([]string, 0, len(ids))
+	for _, id := range ids {
+		data = append(data, fmt.Sprintf(`{"id":%q,"object":"model"}`, id))
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_, _ = fmt.Fprintf(w, `{"object":"list","data":[{"id":%q,"object":"model"}]}`, ModelID)
+	_, _ = fmt.Fprintf(w, `{"object":"list","data":[%s]}`, strings.Join(data, ","))
 }
 
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {

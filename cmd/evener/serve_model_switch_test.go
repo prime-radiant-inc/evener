@@ -162,6 +162,293 @@ func TestServeModelSwitch_ThreadReadReflectsNewModelWithNoInterveningTurn(t *tes
 	}
 }
 
+// collectServeModelSwitchFrames drains the client's notifications and reports
+// two things a mid-turn switch test needs: every thread/model/changed frame's
+// params, and the ids of turns that reached TurnStatusCompleted (first
+// completion only, skipping the system prelude and re-publications).
+type serveModelSwitchFrames struct {
+	modelChanged chan appwire.ThreadModelChangedParams
+	turnDone     chan string
+}
+
+func collectServeModelSwitchFrames(client *appwire.Client, ref string) *serveModelSwitchFrames {
+	frames := &serveModelSwitchFrames{
+		modelChanged: make(chan appwire.ThreadModelChangedParams, 4),
+		turnDone:     make(chan string, 8),
+	}
+	completed := map[string]bool{}
+	go func() {
+		for notification := range client.Notifications() {
+			switch notification.Method {
+			case appwire.NotifyThreadModelChanged:
+				var params appwire.ThreadModelChangedParams
+				if json.Unmarshal(notification.Params, &params) != nil || params.Ref != ref {
+					continue
+				}
+				frames.modelChanged <- params
+			case appwire.NotifyHistoryUpdated:
+				var params appwire.HistoryUpdatedParams
+				if json.Unmarshal(notification.Params, &params) != nil || params.Ref != ref {
+					continue
+				}
+				for _, turn := range params.Turns {
+					if turn.Status == appwire.TurnStatusCompleted && turn.ID != appwire.SystemPreludeTurnID && !completed[turn.ID] {
+						completed[turn.ID] = true
+						frames.turnDone <- turn.ID
+					}
+				}
+			}
+		}
+	}()
+	return frames
+}
+
+func waitForServeModelChanged(ctx context.Context, frames *serveModelSwitchFrames, wantModel string) (appwire.ThreadModelChangedParams, error) {
+	for {
+		select {
+		case params := <-frames.modelChanged:
+			if params.Model == wantModel {
+				return params, nil
+			}
+		case <-ctx.Done():
+			return appwire.ThreadModelChangedParams{}, fmt.Errorf("waiting for thread/model/changed with model %q: %w", wantModel, ctx.Err())
+		}
+	}
+}
+
+// TestServeModelSwitch_SubscribedClientLearnsSwitchAtRest pins the push half of
+// an at-rest switch: a client subscribed to the thread must receive
+// thread/model/changed carrying the new provider/model, without any turn
+// running. The read half (thread/read reflecting the switch) is pinned by
+// TestServeModelSwitch_ThreadReadReflectsNewModelWithNoInterveningTurn; without
+// this push half, every subscribed surface (the hub web client included) keeps
+// showing the old model until some later re-read — which reads as the switch
+// silently flipping back.
+func TestServeModelSwitch_SubscribedClientLearnsSwitchAtRest(t *testing.T) {
+	installServeScriptedProvider(t, &scriptedProvider{name: "openai", steps: nil})
+
+	workDir := t.TempDir()
+	stateDir := t.TempDir()
+	runDir := t.TempDir()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runServe([]string{
+			"--model", "openai/gpt-initial",
+			"--addr", "127.0.0.1:0",
+			"--dir", workDir,
+			"--state-dir", stateDir,
+			"--run-dir", runDir,
+		})
+	}()
+	entry := waitForServeTestRendezvous(t, runDir)
+	t.Cleanup(func() {
+		select {
+		case <-done:
+		default:
+			_ = shutdownServeTestDaemon(context.Background(), entry.Address, entry.SessionID)
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	transport, err := appwire.DialWebSocket(ctx, "ws://"+entry.Address+"/rpc", http.DefaultClient)
+	if err != nil {
+		t.Fatalf("DialWebSocket: %v", err)
+	}
+	client := appwire.NewClient(transport)
+	client.Start(context.WithoutCancel(ctx))
+	defer client.Close()
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{
+		ClientInfo: appwire.ClientInfo{Name: "serve-model-switch-push-test", Version: "test"},
+	}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	ref := appwire.Ref{SourceID: "local", ThreadID: entry.SessionID}.String()
+	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref, Subscribe: true}); err != nil {
+		t.Fatalf("ThreadRead subscribe: %v", err)
+	}
+	frames := collectServeModelSwitchFrames(client, ref)
+
+	if err := client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{
+		Ref:           ref,
+		ModelProvider: "openai",
+		Model:         "gpt-switched",
+	}); err != nil {
+		t.Fatalf("ThreadModelSet: %v", err)
+	}
+
+	params, err := waitForServeModelChanged(ctx, frames, "gpt-switched")
+	if err != nil {
+		t.Fatalf("thread/model/changed after an at-rest switch: %v", err)
+	}
+	if params.ModelProvider != "openai" {
+		t.Fatalf("thread/model/changed ModelProvider = %q, want %q", params.ModelProvider, "openai")
+	}
+
+	if err := shutdownServeTestDaemon(context.Background(), entry.Address, entry.SessionID); err != nil {
+		t.Fatalf("thread/shutdown: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runServe: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runServe did not exit after thread/shutdown")
+	}
+}
+
+// TestServeModelSwitch_MidTurnSetQueuesUntilNextTurn pins the composer's
+// contract: a model picked while a turn is still running is accepted (no
+// Conflict), the running turn finishes on the model it started with, and the
+// switch applies at the turn boundary so the NEXT turn — typically the message
+// the user was typing when they picked — runs on the new model. The queued
+// switch must also reach subscribed clients as thread/model/changed when it
+// applies.
+func TestServeModelSwitch_MidTurnSetQueuesUntilNextTurn(t *testing.T) {
+	firstArrived := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	provider := &scriptedProvider{
+		name: "openai",
+		steps: []func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response {
+				select {
+				case firstArrived <- struct{}{}:
+				default:
+				}
+				<-releaseFirst
+				return scriptedCommunicate("first turn done")
+			},
+		},
+	}
+	installServeScriptedProvider(t, provider)
+
+	workDir := t.TempDir()
+	stateDir := t.TempDir()
+	runDir := t.TempDir()
+	done := make(chan error, 1)
+	go func() {
+		done <- runServe([]string{
+			"--model", "openai/gpt-initial",
+			"--addr", "127.0.0.1:0",
+			"--dir", workDir,
+			"--state-dir", stateDir,
+			"--run-dir", runDir,
+		})
+	}()
+	entry := waitForServeTestRendezvous(t, runDir)
+	t.Cleanup(func() {
+		select {
+		case <-done:
+		default:
+			_ = shutdownServeTestDaemon(context.Background(), entry.Address, entry.SessionID)
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	transport, err := appwire.DialWebSocket(ctx, "ws://"+entry.Address+"/rpc", http.DefaultClient)
+	if err != nil {
+		t.Fatalf("DialWebSocket: %v", err)
+	}
+	client := appwire.NewClient(transport)
+	client.Start(context.WithoutCancel(ctx))
+	defer client.Close()
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{
+		ClientInfo: appwire.ClientInfo{Name: "serve-mid-turn-switch-test", Version: "test"},
+	}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	ref := appwire.Ref{SourceID: "local", ThreadID: entry.SessionID}.String()
+	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref, Subscribe: true}); err != nil {
+		t.Fatalf("ThreadRead subscribe: %v", err)
+	}
+	frames := collectServeModelSwitchFrames(client, ref)
+
+	first, err := client.TurnStart(ctx, appwire.TurnStartParams{
+		ClientMutationID:   "mid-turn-switch-first",
+		ExpectedInstanceID: entry.SessionID,
+		Ref:                ref,
+		Input:              []appwire.InputItem{{Type: "text", Text: "start the first turn"}},
+	})
+	if err != nil {
+		t.Fatalf("TurnStart (first): %v", err)
+	}
+
+	select {
+	case <-firstArrived:
+	case <-ctx.Done():
+		t.Fatalf("first turn never reached the provider: %v", ctx.Err())
+	}
+
+	// The pick mid-turn: accepted now, applied at the boundary. This is the
+	// call that used to answer Conflict "session is processing".
+	if err := client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{
+		Ref:           ref,
+		ModelProvider: "openai",
+		Model:         "gpt-queued",
+	}); err != nil {
+		t.Fatalf("ThreadModelSet during an active turn: %v", err)
+	}
+	close(releaseFirst)
+
+	if err := waitServeTurn(ctx, frames.turnDone, first.Turn.ID); err != nil {
+		t.Fatalf("first turn completion: %v", err)
+	}
+	if params, err := waitForServeModelChanged(ctx, frames, "gpt-queued"); err != nil {
+		t.Fatalf("thread/model/changed after the boundary: %v", err)
+	} else if params.ModelProvider != "openai" {
+		t.Fatalf("thread/model/changed ModelProvider = %q, want %q", params.ModelProvider, "openai")
+	}
+
+	second, err := client.TurnStart(ctx, appwire.TurnStartParams{
+		ClientMutationID:   "mid-turn-switch-second",
+		ExpectedInstanceID: entry.SessionID,
+		Ref:                ref,
+		Input:              []appwire.InputItem{{Type: "text", Text: "run on the switched model"}},
+	})
+	if err != nil {
+		t.Fatalf("TurnStart (second): %v", err)
+	}
+	if err := waitServeTurn(ctx, frames.turnDone, second.Turn.ID); err != nil {
+		t.Fatalf("second turn completion: %v", err)
+	}
+
+	requests := provider.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("scripted provider requests = %d, want 2", len(requests))
+	}
+	if requests[0].Model != "gpt-initial" {
+		t.Fatalf("first turn ran on model %q, want the model the turn started with (%q)", requests[0].Model, "gpt-initial")
+	}
+	if requests[1].Model != "gpt-queued" {
+		t.Fatalf("second turn ran on model %q, want the queued switch (%q)", requests[1].Model, "gpt-queued")
+	}
+
+	read, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref})
+	if err != nil {
+		t.Fatalf("ThreadRead after the queued switch applied: %v", err)
+	}
+	if read.Thread.ModelProvider != "gpt-queued" {
+		t.Fatalf("thread/read ModelProvider = %q, want %q", read.Thread.ModelProvider, "gpt-queued")
+	}
+
+	if err := shutdownServeTestDaemon(context.Background(), entry.Address, entry.SessionID); err != nil {
+		t.Fatalf("thread/shutdown: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runServe: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runServe did not exit after thread/shutdown")
+	}
+}
+
 func TestServeModelSwitch_ProviderFailureRestoresCapability(t *testing.T) {
 	kimi := &scriptedProvider{
 		name: "kimi-anthropic",

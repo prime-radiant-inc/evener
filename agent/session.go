@@ -988,6 +988,11 @@ type Session struct {
 	// sets it at entry and clears it as its last act before going idle, so
 	// "set goal + read flag" and "clear flag + go idle" are mutually exclusive.
 	goalInTurn bool
+	// pendingModel holds a model switch requested while a turn was running
+	// (SetModel's queue path). The processing boundary applies it
+	// (applyPendingModelSwitch) so the next turn runs on it; guarded by s.mu.
+	// Empty when no switch is queued.
+	pendingModel string
 	// goalDependentsHeld records that the goal gate just held its continuation
 	// because wake-pending dependents (running delegates or non-detached
 	// background jobs) guarantee a future wake: the no-progress fold was
@@ -1631,20 +1636,145 @@ func (s *Session) reapplyProviderSpecificTools(oldProfile, newProfile *provider.
 	}
 }
 
-// SetModel changes the model used for future LLM calls.
-// Takes effect on the next request. Returns an error (without changing any
-// session state) when the model ref cannot be resolved to a profile, when the
-// current history contains content the target can't represent (see
-// unrepresentableHistoryKinds), or when the target model fails live
-// membership validation (see validateModelSwitchMembership). On a successful
-// switch, cfg.ModelFallbacks entries that no longer validate against the new
-// profile are dropped and reported in the model-switch marker.
+// SetModel changes the model used for future LLM calls, applying the switch
+// immediately. Takes effect on the next request. Returns an error (without
+// changing any session state) when the model ref cannot be resolved to a
+// profile, when the current history contains content the target can't
+// represent (see unrepresentableHistoryKinds), or when the target model fails
+// live membership validation (see validateModelSwitchMembership). On a
+// successful switch, cfg.ModelFallbacks entries that no longer validate against
+// the new profile are dropped and reported in the model-switch marker.
+//
+// Callers that must not swap a profile while a turn's rounds are in flight
+// (the daemon's thread/model/set hook) use SetModelForNextTurn instead, which
+// queues the switch for the turn boundary; this immediate variant is for
+// at-rest switches and seams that deliberately test mid-turn projection.
 func (s *Session) SetModel(model string) error {
 	release, admissionErr := s.beginRetirementMutation("admission")
 	if admissionErr != nil {
 		return admissionErr
 	}
 	defer release()
+	s.mu.Lock()
+	if s.closingOrClosedLocked() {
+		s.mu.Unlock()
+		return nil
+	}
+	s.mu.Unlock()
+	return s.applyModelSwitch(model)
+}
+
+// SetModelForNextTurn is the appwire model picker's contract: a switch picked
+// while a turn is running is validated as far as a moving session allows, then
+// queued and applied at the turn boundary, so the next turn - typically the
+// message the user was typing when they picked - runs on the new model. The
+// running turn finishes on the model it started with. With nothing running,
+// the switch applies immediately. History representability is re-checked at the
+// boundary against the settled history; a switch that fails there surfaces as
+// a transcript warning and is dropped rather than retried.
+func (s *Session) SetModelForNextTurn(model string) error {
+	release, admissionErr := s.beginRetirementMutation("admission")
+	if admissionErr != nil {
+		return admissionErr
+	}
+	defer release()
+	s.mu.Lock()
+	if s.closingOrClosedLocked() {
+		s.mu.Unlock()
+		return nil
+	}
+	if s.state != SessionProcessing && !s.goalInTurn {
+		s.mu.Unlock()
+		return s.applyModelSwitch(model)
+	}
+	s.mu.Unlock()
+	return s.queueModelSwitch(model)
+}
+
+// queueModelSwitch records a mid-turn switch for the turn boundary. The
+// pick-time validation mirrors the at-rest path as far as a running session
+// permits: the ref must resolve (a typo or unknown instance errors now, at
+// the picker), and membership is preflighted against a live listing. The
+// unrepresentable-history preflight is deliberately skipped - history is
+// being appended to by the running turn - and re-run by the boundary's
+// applyModelSwitch against settled history.
+func (s *Session) queueModelSwitch(model string) error {
+	primedInstance, primedListing := s.primeCodexRoster(model)
+	s.mu.Lock()
+	if s.closingOrClosedLocked() {
+		s.mu.Unlock()
+		return nil
+	}
+	if s.state != SessionProcessing && !s.goalInTurn {
+		// The turn ended while the preflight ran: the session is at rest, so
+		// the switch can apply directly instead of waiting for a boundary
+		// that already fired.
+		s.mu.Unlock()
+		return s.applyModelSwitch(model)
+	}
+	nextProfile, _, err := s.resolveProfileForRef(s.profile, model)
+	if err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	client := s.client
+	s.mu.Unlock()
+
+	if _, err = resolveModelSwitchTarget(client, nextProfile, s.id, *s.providerAdapterTimeout(), primedInstance, primedListing); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	if s.closingOrClosedLocked() {
+		s.mu.Unlock()
+		return nil
+	}
+	if s.state != SessionProcessing && !s.goalInTurn {
+		s.mu.Unlock()
+		return s.applyModelSwitch(model)
+	}
+	// Last pick wins: the newest choice is what the next turn should run on.
+	s.pendingModel = model
+	s.mu.Unlock()
+	return nil
+}
+
+// applyPendingModelSwitch applies a queued switch once no rounds remain. A
+// session still processing keeps its pending switch for the boundary that is
+// still owed. A failed application is reported as a warning and dropped, not
+// retried: the invalid choice stays visible in the transcript while a
+// re-pick re-enters the normal path.
+func (s *Session) applyPendingModelSwitch() {
+	s.mu.Lock()
+	if s.state == SessionProcessing {
+		s.mu.Unlock()
+		return
+	}
+	model := s.pendingModel
+	s.pendingModel = ""
+	s.mu.Unlock()
+	if model == "" {
+		return
+	}
+	release, admissionErr := s.beginRetirementMutation("admission")
+	if admissionErr != nil {
+		return
+	}
+	defer release()
+	if err := s.applyModelSwitch(model); err != nil {
+		s.emit(events.WarningData{
+			Message: "queued model switch to " + model + " did not apply: " + err.Error(),
+			Source:  "model_switch",
+		})
+	}
+}
+
+// applyModelSwitch is SetModel's committed switch: resolve, validate against
+// settled history, swap the profile, record the marker turn, publish
+// EventModelChanged, and persist. The caller owns the retirement admission -
+// both the at-rest path (SetModel) and the boundary applier
+// (applyPendingModelSwitch) hold one.
+func (s *Session) applyModelSwitch(model string) error {
 	// A named Codex model may exist only in the target instance's live
 	// roster. List it before s.mu: the strict cross-provider resolve below
 	// runs under the lock and must stay a pure registry lookup, while the

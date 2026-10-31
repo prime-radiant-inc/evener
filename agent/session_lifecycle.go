@@ -687,6 +687,13 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		s.mu.Lock()
 		s.goalInTurn = false
 		s.mu.Unlock()
+		// The last act before going idle: a switch queued while this input
+		// ran whose boundary already passed (the pick landed after the final
+		// turn settled but before this clear) would otherwise wait for a
+		// turn that nothing schedules. The session is idle here, so the
+		// switch applies now and its marker is persisted before the process
+		// can retire.
+		s.applyPendingModelSwitch()
 	}()
 
 	// A test-only seam: fail the turn before its user entry is recorded, the

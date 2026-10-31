@@ -285,6 +285,18 @@ func defaultServeDeps() serveDeps {
 			srv := s.(*server.Server)
 			sess.ConsumeEventsLossless(func(ev events.SessionEvent) {
 				server.BridgeEvent(srv, ev, observer)
+				if ev.Kind == events.EventModelChanged {
+					// A switch queued mid-turn applies at the turn boundary
+					// with no thread/model/set RPC in flight to refresh the
+					// status cache the way SetModelFunc's closure does at
+					// rest, so thread/read would keep reporting the previous
+					// model until the next turn re-derived it (the G2
+					// staleness SetModelFunc's synchronous refresh closes).
+					// Mirror that refresh here, on the event that proves the
+					// switch committed.
+					p := sess.Profile()
+					srv.UpdateSessionInfo(sess.ID(), p.Model(), p.ID())
+				}
 			}, onDrained)
 		},
 		drainWaitExpiry: func() <-chan time.Time { return time.After(shutdownDrainWaitBudget) },
@@ -1510,13 +1522,19 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	}
 	srv.SetModelFunc(func(model string) error {
 		sess := getSession()
-		if err := sess.SetModel(model); err != nil {
+		// SetModelForNextTurn, not SetModel: a pick made while a turn runs
+		// queues for the turn boundary instead of swapping the profile under
+		// the running turn's rounds.
+		if err := sess.SetModelForNextTurn(model); err != nil {
 			return err
 		}
 		// Refresh the daemon's cached session info synchronously (G2): status.Model
 		// otherwise only updates on EventSessionStart, which never fires again
 		// mid-session, so thread/read would report a stale model until the next
-		// turn re-derived it.
+		// turn re-derived it. For a mid-turn pick this writes the still-current
+		// model (the switch is queued, Profile() is unchanged); the
+		// EventModelChanged arm of the bridge below refreshes it again when
+		// the boundary commits the switch.
 		p := sess.Profile()
 		srv.UpdateSessionInfo(sess.ID(), p.Model(), p.ID())
 		return nil

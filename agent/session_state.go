@@ -426,6 +426,13 @@ func (s *Session) finishProcessingAtBoundary(ctx context.Context, state SessionS
 	transitioned, turnMS := s.transitionProcessingAtBoundaryLocked(state)
 	s.mu.Unlock()
 	s.finishProcessingAtBoundaryEvents(ctx, transitioned, turnMS)
+	// A model switch queued mid-turn applies here, after the boundary's own
+	// events: no rounds remain, the history is settled, and the input loop
+	// has not yet started the next queued turn, so that turn runs on the new
+	// model and the switch marker sits between the two turns.
+	if transitioned {
+		s.applyPendingModelSwitch()
+	}
 }
 
 // transitionProcessingAtBoundaryLocked publishes a processing boundary while
