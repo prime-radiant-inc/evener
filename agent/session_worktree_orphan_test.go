@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -867,12 +868,13 @@ func TestDelegateLaunchAdoptsSiblingWonLaneAfterLockLoss(t *testing.T) {
 // parent's activity evidence on its own. The fixture lives in the repo
 // harness's state dir, so the harness session's prune reads the same parent
 // evidence the arm reads.
-func spawnRetainedDelegateLane(t *testing.T, r *wtRepo, laneName, standInDlg, standInSID string, secondTurn func(llm.Request) llm.Response) (coldDelegateFixture, *Session, string) {
+func spawnRetainedDelegateLane(t *testing.T, r *wtRepo, laneName, standInDlg, standInSID string, turns ...func(llm.Request) llm.Response) (coldDelegateFixture, *Session, string) {
 	t.Helper()
 	var lanePath string
 	fixture := newColdDelegateFixtureConfiguredInState(t, "", r.stateDir, func(d *delegatestore.Descriptor) {
 		d.Isolation = "worktree"
-		d.ToolNameCeiling = []string{"communicate", "shell"}
+		d.ToolNameCeiling = []string{"communicate", "delegate", "shell"}
+		d.DelegationAllowance = 1
 		lanePath = r.delegateLane(t, laneName, standInDlg, standInSID)
 		d.WorkingDir = lanePath
 	})
@@ -891,13 +893,16 @@ func spawnRetainedDelegateLane(t *testing.T, r *wtRepo, laneName, standInDlg, st
 	finish := func(llm.Request) llm.Response {
 		return agenttest.FinalResponse("done")
 	}
-	// Both turns are scripted up front: the fake adapter serves its steps by
-	// a cursor that survives reassignment, so a later slice replacement after
-	// the cursor would never be served.
-	// A tool-calling second turn answers its result with a final response, so
-	// the trailing step covers the follow-up round; a second turn that ends on
-	// its own response never consumes it.
-	fixture.adapter.steps = []func(llm.Request) llm.Response{finish, secondTurn, finish}
+	// The retained delegate's follow-up turns are scripted up front: the
+	// fake adapter serves its steps by a cursor that survives reassignment,
+	// so a later slice replacement after the cursor would never be served.
+	// A turn that ends on its own final response never consumes the trailing
+	// steps; a tool-calling one answers its result with them, and the second
+	// trailing finish covers any completion nudge that follows.
+	steps := []func(llm.Request) llm.Response{finish}
+	steps = append(steps, turns...)
+	steps = append(steps, finish, finish)
+	fixture.adapter.steps = steps
 	first := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "first turn", 10_000)
 	if first.result.Err != nil || first.commit == nil {
 		t.Fatalf("first send: %+v", first.result)
@@ -1230,6 +1235,148 @@ func TestWorktreePrune_OrphanArmSparesLaneThroughSilentToolCall(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("the silent turn never finished after release")
+	}
+}
+
+// requestMentions reports whether a scripted model request carries the
+// needle in any of its text parts — the way a step tells two sessions'
+// racing requests apart when they share one adapter.
+func requestMentions(req llm.Request, needle string) bool {
+	for _, msg := range req.Messages {
+		for _, part := range msg.Content {
+			if part.Kind == llm.ContentText && strings.Contains(part.Text, needle) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// An isolated coordinator that finishes its turn while its isolated
+// descendant still runs is active work the turn's evidence ticker cannot
+// see: the finalization drain holds the generation open for the descendant
+// after the coordinator's turn — and its ticker — have ended. The
+// descendant refreshes the coordinator's own transcript, but nothing
+// refreshes the root transcript protecting the coordinator's lane, so a
+// foreign prune could remove its clean checkout while its generation still
+// awaits the descendant, breaking its continuation.
+func TestWorktreePrune_OrphanArmSparesLaneWhileCoordinatorDrainsForDescendant(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	gate := t.TempDir()
+	enteredB := gate + "/descendant-entered"
+	releaseB := gate + "/descendant-release"
+	const sentinel = "descendant sentinel task"
+	const coordinatorMarker = "isolate a descendant and wait"
+	blockCmd := "sh -c 'touch " + enteredB + "; while [ ! -e " + releaseB + " ]; do sleep 0.2; done'"
+	shellArgs, err := json.Marshal(map[string]any{"command": blockCmd})
+	if err != nil {
+		t.Fatalf("marshal shell args: %v", err)
+	}
+	// The coordinator's second turn spawns an isolated descendant and then
+	// finishes, leaving its generation awaiting the descendant in the
+	// finalization drain.
+	spawnB := func(llm.Request) llm.Response {
+		args, _ := json.Marshal(map[string]string{"prompt": sentinel, "isolation": "worktree"})
+		return agenttest.ToolCallResponse(llm.ToolCallData{ID: "call_spawn_isolated_descendant", Name: "delegate", Arguments: args, Type: "function"})
+	}
+	// The descendant's fresh history cannot contain the coordinator's own
+	// input, and the coordinator's follow-up always does, so one scripted
+	// step serves whichever of the two racing requests reaches the adapter
+	// first: the descendant gets a blocking foreground shell (it blocks in
+	// its tool call, holding no adapter lock), the coordinator its final
+	// response.
+	router := func(req llm.Request) llm.Response {
+		if requestMentions(req, coordinatorMarker) {
+			return agenttest.FinalResponse("coordinator done")
+		}
+		return agenttest.ToolCallResponse(llm.ToolCallData{ID: "call_descendant_shell", Name: "shell", Arguments: shellArgs, Type: "function"})
+	}
+	fixture, root, lanePath := spawnRetainedDelegateLane(t, r, "drain-wait-lane", "dlg_orphanactive000003", "034orphanactive0003", spawnB, router, router)
+	parentTranscript := schema.SessionTranscriptPath(fixture.stateDir, fixture.meta.ID)
+
+	sendOutcome := make(chan delegateSendOutcome, 1)
+	go func() {
+		outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, coordinatorMarker, 60_000)
+		sendOutcome <- outcome
+	}()
+	// The descendant's shell is live and the coordinator's turn has finished:
+	// its generation now sits in the finalization drain, awaiting the
+	// descendant.
+	waitForCondition(t, 30*time.Second, "the coordinator to finish while the descendant works", func() bool {
+		if _, err := os.Stat(enteredB); err != nil {
+			return false
+		}
+		coordinatorRequests := 0
+		for _, req := range fixture.adapter.Requests() {
+			if requestMentions(req, coordinatorMarker) {
+				coordinatorRequests++
+			}
+		}
+		return coordinatorRequests >= 2
+	})
+	// Let the coordinator's turn ticker's last moment pass, so only the
+	// drain can keep the evidence fresh from here.
+	time.Sleep(delegateActivityPublishInterval + 500*time.Millisecond)
+
+	// The lane's marker parent — the root — has now been idle past the
+	// operator's threshold: nothing of its own runs while the tree waits on
+	// the descendant.
+	stale := time.Now().Add(-30 * 24 * time.Hour)
+	if err := os.Chtimes(parentTranscript, stale, stale); err != nil {
+		t.Fatalf("backdate the parent's transcript: %v", err)
+	}
+
+	// The finalization drain is active delegate work: its wait must keep
+	// the evidence fresh.
+	waitForCondition(t, 10*time.Second, "the drain wait to keep the lane owner's evidence fresh", func() bool {
+		info, err := os.Stat(parentTranscript)
+		return err == nil && info.ModTime().After(stale)
+	})
+
+	// A foreign session's prune — armed with a threshold the backdate crosses
+	// but the refresh does not — must not release or collect the lane while
+	// the generation still awaits the descendant.
+	out, err := r.pruneOrphanedOp(t, 7)
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if findPruneEntry(t, pruneEntries(t, out, "removed"), "drain-wait-lane") != nil {
+		t.Fatalf("a coordinator awaiting its descendant had its lane reclaimed: %+v", out)
+	}
+	if findPruneEntry(t, pruneEntries(t, out, "unlocked"), "drain-wait-lane") != nil {
+		t.Fatalf("a coordinator awaiting its descendant had its lane released: %+v", out)
+	}
+	_, locked, reason := r.laneLocked(t, lanePath)
+	if !locked {
+		t.Fatalf("the coordinator's lane lost its lock: %q", reason)
+	}
+	m, ok := worktree.ParseMarker(reason)
+	if !ok || m.DelegateID != fixture.delegateID || m.SessionID != fixture.meta.ID {
+		t.Fatalf("the coordinator's lane lock = %q, want the delegate marker naming its parent session", reason)
+	}
+
+	// The descendant finishes, the drain completes, and the coordinator
+	// settles cleanly.
+	if err := os.WriteFile(releaseB, nil, 0o644); err != nil {
+		t.Fatalf("release the descendant: %v", err)
+	}
+	select {
+	case outcome := <-sendOutcome:
+		if outcome.result.Err != nil {
+			t.Fatalf("the coordinator failed after the prune: %v", outcome.result.Err)
+		}
+		if outcome.commit != nil {
+			plans, err := outcome.commit.Complete(true)
+			if err != nil {
+				t.Fatalf("acknowledge the coordinator: %v", err)
+			}
+			if err := root.executeDelegateMutationPlans(plans); err != nil {
+				t.Fatalf("apply the coordinator's acknowledgment: %v", err)
+			}
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the coordinator never settled after the descendant finished")
 	}
 }
 

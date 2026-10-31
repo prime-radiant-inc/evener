@@ -1950,6 +1950,13 @@ func (a *subagent) drainForFinalization(ctx context.Context, result string) (str
 	a.mu.Lock()
 	a.finalizing = true
 	a.mu.Unlock()
+	// The drain can hold the generation open for as long as a descendant
+	// runs, after this session's own turn — and its turn ticker — has ended:
+	// a coordinator awaiting a descendant is still active delegate work, and
+	// its lane's marker parent evidence must stay fresh through the wait or
+	// a foreign prune can release the lane mid-finalization.
+	stopEvidenceTicker := a.sess.startLaneEvidenceTicker(ctx)
+	defer stopEvidenceTicker()
 	drained, err := a.sess.DrainJobTreeKeepingReport(ctx)
 	if err != nil {
 		return result, parentDriveNotify, err
