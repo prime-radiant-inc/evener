@@ -218,7 +218,7 @@ func sendMessageFailed(target string, err error) sendMessageResult {
 func (s *Session) descriptorWorktreeReport(desc delegatestore.Descriptor) *delegateWorktreeReport {
 	report := s.delegateWorktreeReport(desc.Isolation, desc.WorkingDir)
 	if report != nil {
-		report.DisposalHint = s.delegateDisposalHint(desc, filepath.Base(report.Path))
+		report.DisposalHint = s.delegateDisposalHint(desc, filepath.Base(report.Path), report.Dirty)
 	}
 	return report
 }
@@ -277,9 +277,12 @@ func (s *Session) delegateWorktreeReport(isolation, workingDir string) *delegate
 	}
 }
 
-func (s *Session) delegateDisposalHint(desc delegatestore.Descriptor, delegateID string) string {
+func (s *Session) delegateDisposalHint(desc delegatestore.Descriptor, delegateID string, dirty bool) string {
 	if s == nil || desc.OwnerSessionID != s.id || !s.canInstructTool("manage_worktree") || !isDelegateID(delegateID) {
 		return ""
+	}
+	if dirty {
+		return fmt.Sprintf("Inspect or resume this delegate before disposal; manage_worktree op=dispose id=%s refuses dirty worktrees, and force_dirty discards uncommitted changes.", delegateID)
 	}
 	return fmt.Sprintf("When you're done with this delegate's work (e.g., after merging it), dispose its worktree and branch: manage_worktree op=dispose id=%s.", delegateID)
 }
