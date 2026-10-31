@@ -984,25 +984,9 @@ func TestCompletionDeliveryFailureRecovery(t *testing.T) {
 					fs = observationRetainedWriter(t, s, "watch:")
 				}
 				gate := filepath.Join(t.TempDir(), "failure")
-				jobID := startBackgroundShellJob(t, s, "while [ ! -f "+gate+" ]; do sleep 0.02; done")
-				done, _ := shellDoneChannel(jm, jobID)
 				entered, resume := make(chan struct{}), make(chan struct{})
 				release := sync.OnceFunc(func() { close(resume) })
 				var recovering atomic.Bool
-				defer func() {
-					recovering.Store(true)
-					if fs != nil {
-						fs.mu.Lock()
-						fs.failing = false
-						fs.target = nil
-						fs.mu.Unlock()
-					}
-					release()
-					if err := os.WriteFile(gate, nil, 0o600); err != nil {
-						t.Error(err)
-					}
-					callbackBatchAwait(t, done, "failure shell cleanup")
-				}()
 				if _, err := jobWatchTool(s, map[string]any{"operation": "create", "source": "self", "events": []any{"job.notification"}}, jobToolResultDefaultMaxChar); err != nil {
 					t.Fatal(err)
 				}
@@ -1058,16 +1042,40 @@ func TestCompletionDeliveryFailureRecovery(t *testing.T) {
 					}
 					return appendEvents(batch)
 				}
+				// Publish every callback before the shell starts its finalizer.
+				// The entered signal publishes the hook's identity back to this test.
+				var enteredJobID string
 				jm.testOnlyAfterNotifyPendingAppend = func(id string) {
-					if id == jobID {
-						close(entered)
-						<-resume
-					}
+					enteredJobID = id
+					close(entered)
+					<-resume
 				}
+				var done <-chan struct{}
+				defer func() {
+					recovering.Store(true)
+					if fs != nil {
+						fs.mu.Lock()
+						fs.failing = false
+						fs.target = nil
+						fs.mu.Unlock()
+					}
+					release()
+					if err := os.WriteFile(gate, nil, 0o600); err != nil {
+						t.Error(err)
+					}
+					if done != nil {
+						callbackBatchAwait(t, done, "failure shell cleanup")
+					}
+				}()
+				jobID := startBackgroundShellJob(t, s, "while [ ! -f "+gate+" ]; do sleep 0.02; done")
+				done, _ = shellDoneChannel(jm, jobID)
 				if err := os.WriteFile(gate, nil, 0o600); err != nil {
 					t.Fatal(err)
 				}
 				callbackBatchAwait(t, entered, "completion emission drained before shell custody")
+				if enteredJobID != jobID {
+					t.Fatalf("completion hook job=%s want=%s", enteredJobID, jobID)
+				}
 				requireCompletionClaimsReleased(t, jm)
 				var failedMember jobstore.WatchSendState
 				var attemptDone <-chan struct{}

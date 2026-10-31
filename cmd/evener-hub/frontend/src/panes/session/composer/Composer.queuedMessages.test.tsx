@@ -786,7 +786,7 @@ test("two offline edits consolidate one durable owner and preserve typing during
   const hold = holdNextWriteTransaction(["recovery"]);
   try {
     await user.click(screen.getByRole("button", { name: "Edit message" }));
-    await hold.reached;
+    await act(async () => hold.reached);
     selectEditorText(screen.getByRole("textbox", { name: "Message" }), source.getSnapshot().text.length);
     await user.keyboard(" newer");
     await act(async () => hold.release());

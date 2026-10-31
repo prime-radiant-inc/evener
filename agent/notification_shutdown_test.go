@@ -362,6 +362,7 @@ func TestNotificationShutdownPreservesDetachedJob(t *testing.T) {
 	}
 	select {
 	case <-clock.started:
+	// TRIPWIRE: registration is immediate, 30s only bounds a missing receipt.
 	case <-time.After(30 * time.Second):
 		t.Fatal("timed out waiting for repeated watch ticker registration")
 	}
