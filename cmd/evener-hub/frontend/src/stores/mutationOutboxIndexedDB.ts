@@ -93,6 +93,15 @@ export interface MutationOutboxIndexedDBOptions {
   onOpenDiagnostic?: (diagnostic: MutationOutboxOpenDiagnostic) => void;
 }
 
+// A recovery Send can target a ref a peer retargeted its row to while the
+// pane still displays the superseded ref. A Stop on the still-displayed
+// session names the displayed ref, so the resend transaction fences BOTH
+// owners' Stop epochs: the destination's (the barrier every resend already
+// carries) and the displayed ref's, which this barrier names.
+export interface DisplayedRecoveryStopBarrier extends MutationStopBarrier {
+  targetRef: string;
+}
+
 const DATABASE_NAME = "evener-mutation-outbox";
 // Version 4 is a compatibility fence, not a schema migration: the upgrade
 // handler below is unchanged and purely additive. The deployed version-3 code
@@ -363,6 +372,29 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
       const [record, sequences] = await Promise.all([recordRequest, sequencesRequest]);
       // A missing row has no ref to fence; the caller's absent-row refusal
       // never reaches the comparison.
+      const stopEpoch = record
+        ? (sequences.find((sequence) => sequence.targetRef === record.targetRef)?.stopEpoch ?? 0)
+        : 0;
+      return { record, stopEpoch };
+    });
+  }
+
+  // A recovery Send's press-time capture, the recovery-row twin of
+  // getOutboxWithStopEpoch above: the row AND its durable destination's stop
+  // epoch in ONE readonly snapshot. The Send press requests it in its own
+  // synchronous prefix because the row may be retargeted by a peer while the
+  // Send waits on its persistence or on destination hydration - the snapshot's
+  // destination and its epoch are the fence's baseline, so a Stop pressed
+  // after the press stays in that fence's future, never its baseline.
+  async getRecoveryWithStopEpoch(
+    clientMutationId: string,
+  ): Promise<{ record: MutationRecoveryRecord | undefined; stopEpoch: number }> {
+    return this.#read([RECOVERY_STORE, SEQUENCE_STORE], async (transaction) => {
+      const sequencesRequest = requestResult<TargetSequence[]>(transaction.objectStore(SEQUENCE_STORE).getAll());
+      const recordRequest = requestResult<MutationRecoveryRecord | undefined>(
+        transaction.objectStore(RECOVERY_STORE).get(clientMutationId),
+      );
+      const [record, sequences] = await Promise.all([recordRequest, sequencesRequest]);
       const stopEpoch = record
         ? (sequences.find((sequence) => sequence.targetRef === record.targetRef)?.stopEpoch ?? 0)
         : 0;
@@ -1123,6 +1155,7 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
     barrier?: MutationStopBarrier,
     expectedRecoveryRevisions?: Readonly<Record<string, number>>,
     compositionOwnerId?: string,
+    displayedBarrier?: DisplayedRecoveryStopBarrier,
   ): Promise<MutationOutboxRecord | undefined> {
     const result = await this.resendRecoveryResult(
       sourceIds,
@@ -1130,6 +1163,7 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
       barrier,
       expectedRecoveryRevisions,
       compositionOwnerId,
+      displayedBarrier,
     );
     return result.status === "sent" ? result.record : undefined;
   }
@@ -1140,6 +1174,7 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
     barrier?: MutationStopBarrier,
     expectedRecoveryRevisions?: Readonly<Record<string, number>>,
     compositionOwnerId?: string,
+    displayedBarrier?: DisplayedRecoveryStopBarrier,
   ): Promise<MutationRecoveryResendResult> {
     if (!intent.targetRef.trim()) throw new Error("targetRef is required");
     return this.#write(ENQUEUE_STORES, "resendRecovery", async (transaction) => {
@@ -1179,6 +1214,8 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
       // submission: its own refused redeliveries stay transient instead of
       // fence-canceling against a Stop that predates the resend.
       const stopEpoch = await this.#stopEpochOf(transaction, intent.targetRef);
+      const displayedStopEpoch =
+        displayedBarrier === undefined ? 0 : await this.#stopEpochOf(transaction, displayedBarrier.targetRef);
       const attachments = intent.attachments.map((attachment) => ({
         ...attachment,
         presentationId: this.#createPresentationId(),
@@ -1194,7 +1231,11 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
         originClientId: ownClientId(),
         intentSequence,
         createdAt: this.#now(),
-        state: barrier !== undefined && stopEpoch > barrier.stopEpoch ? "canceled" : "submitting",
+        state:
+          (barrier !== undefined && stopEpoch > barrier.stopEpoch) ||
+          (displayedBarrier !== undefined && displayedStopEpoch > displayedBarrier.stopEpoch)
+            ? "canceled"
+            : "submitting",
         attempted: false,
         stopEpochAtEnqueue: stopEpoch,
       };

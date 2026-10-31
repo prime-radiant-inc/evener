@@ -4,7 +4,6 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "reac
 import { controlsFor, liveThreadModel, pressLocalRecoveryFenced, pressRefusal } from "../../../stores/liveControls";
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import {
-  captureRecoveryStopBarrier,
   hasBlockedUnknown,
   hasQueuedNonSend,
   type InputAttachment,
@@ -38,7 +37,14 @@ import {
   sameSkillSelections,
 } from "./sourceState";
 import { composerAvailability } from "./submissionAvailability";
-import { pushRecoveryRefusal, pushSelectionRefusal, selectionRefusal, submitDraftToStore } from "./submitProtocol";
+import {
+  captureRecoverySendIntent,
+  pushRecoveryRefusal,
+  pushSelectionRefusal,
+  selectionRefusal,
+  submitDraftToStore,
+  withRecoveryDestinationClaim,
+} from "./submitProtocol";
 
 type BusyAction = "submit" | "steer" | "interrupt" | "drain" | null;
 
@@ -460,7 +466,14 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
       releaseRecoveryInFlight?.();
       releaseRecoveryInFlight = null;
     };
-    const recoveryBarrier = submittedRecoveryId === null ? undefined : captureRecoveryStopBarrier(ref);
+    // The synchronous intent: both Stop fences are captured in the press's own
+    // synchronous prefix, before any await below, so a Stop pressed while this
+    // Send waits on persistence or destination hydration lands between the
+    // press and its mutation for BOTH refs the send can cross - the displayed
+    // ref this pane renders and the row's durable destination, which a peer
+    // retarget may have moved away from the displayed one.
+    const pressedRecoveryIntent =
+      submittedRecoveryId === null ? undefined : captureRecoverySendIntent(ref, submittedRecoveryId);
     let recoveryResendRefused = false;
     let recoveryAlreadySent = false;
     const recoveryWriteRefusal = new Error("Recovery persistence was refused");
@@ -515,28 +528,49 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
               if (committedRevision === undefined) {
                 throw recoveryWriteRefusal;
               }
-              const outcome = await resendRecoveryPendingTurn(
-                submittedRecoveryId,
-                ref,
-                kind,
-                submittedText,
-                payload,
-                submittedSkillNames,
-                submittedCommandNames,
-                submittedMentions,
-                recoveryBarrier,
-                { [submittedRecoveryId]: committedRevision },
-                source.compositionOwnerId,
-              );
-              if (outcome.status !== "sent") {
-                recoveryResendRefused = outcome.status === "refused";
-                recoveryAlreadySent = outcome.status === "consumed";
-                throw recoveryResendRefused ? recoveryWriteRefusal : recoveryAlreadySentRefusal;
+              const durable = await pressedRecoveryIntent?.durableSnapshot;
+              if (durable?.record === undefined) {
+                recoveryAlreadySent = true;
+                throw recoveryAlreadySentRefusal;
               }
-              // The resend transaction consumed the recovery row, so a remount
-              // can no longer restore it. Keep the guard until here rather than
-              // until the network settles.
-              releaseInFlightRecovery();
+              const sendTargetRef = source.recoveryTargetRef;
+              if (sendTargetRef !== durable.record.targetRef) {
+                // The row moved again while this Send was persisting. No fence
+                // this press holds dates that destination's Stop history, so
+                // fail closed rather than let the Send cross a Stop it never
+                // captured.
+                recoveryResendRefused = true;
+                throw recoveryWriteRefusal;
+              }
+              await withRecoveryDestinationClaim(sendTargetRef, async () => {
+                const outcome = await resendRecoveryPendingTurn(
+                  submittedRecoveryId,
+                  sendTargetRef,
+                  kind,
+                  submittedText,
+                  payload,
+                  submittedSkillNames,
+                  submittedCommandNames,
+                  submittedMentions,
+                  // The press-time snapshot of the destination's Stop epoch
+                  // is the destination fence - it was captured with the row in
+                  // one readonly transaction, ordered before any Stop pressed
+                  // after the press.
+                  Promise.resolve({ stopEpoch: durable.stopEpoch }),
+                  { [submittedRecoveryId]: committedRevision },
+                  source.compositionOwnerId,
+                  pressedRecoveryIntent?.displayedBarrier,
+                );
+                if (outcome.status !== "sent") {
+                  recoveryResendRefused = outcome.status === "refused";
+                  recoveryAlreadySent = outcome.status === "consumed";
+                  throw recoveryResendRefused ? recoveryWriteRefusal : recoveryAlreadySentRefusal;
+                }
+                // The resend transaction consumed the recovery row, so a remount
+                // can no longer restore it. Keep the guard until here rather than
+                // until the network settles.
+                releaseInFlightRecovery();
+              });
             });
             return;
           }

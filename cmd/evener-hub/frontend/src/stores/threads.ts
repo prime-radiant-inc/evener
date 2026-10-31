@@ -128,6 +128,7 @@ import {
   type MutationStopBarrier,
 } from "./mutationOutbox";
 import {
+  type DisplayedRecoveryStopBarrier,
   MutationOutboxIndexedDB,
   type MutationRecoveryResendResult,
   type RetargetedMutations,
@@ -3151,6 +3152,23 @@ export function captureRecoveryStopBarrier(targetRef: string): Promise<MutationS
   return barrier;
 }
 
+/** A recovery row and its durable destination's Stop epoch, from ONE readonly
+ * storage snapshot. The recovery Send press requests this in its own
+ * synchronous prefix - the Retry path's own capture discipline
+ * (getOutboxWithStopEpoch): the snapshot is the press's first storage
+ * observation, so a Stop pressed while the Send waits on persistence or
+ * destination hydration stays in the fence's future, and a peer retarget that
+ * lands inside those waits cannot move the destination under the press. */
+export function readRecoveryWithStopEpoch(
+  clientMutationId: string,
+): Promise<{ record: MutationRecoveryRecord | undefined; stopEpoch: number }> {
+  const capture = requireMutationRuntime().storage.getRecoveryWithStopEpoch(clientMutationId);
+  // The capture can fail while the Send is still awaiting its recovery write.
+  // Keep that rejection for the sender without an unhandled interim promise.
+  void capture.catch(() => undefined);
+  return capture;
+}
+
 export async function updateRecoveryMutation(
   clientMutationId: string,
   targetRef: string,
@@ -3247,6 +3265,7 @@ export async function resendRecoveryMutation(
   barrierRead = captureRecoveryStopBarrier(targetRef),
   expectedRecoveryRevisions?: Readonly<Record<string, number>>,
   compositionOwnerId?: string,
+  displayedBarrierRead?: Promise<DisplayedRecoveryStopBarrier>,
 ): Promise<MutationRecoveryResendResult> {
   const runtime = requireMutationRuntime();
   await runtime.start;
@@ -3260,6 +3279,10 @@ export async function resendRecoveryMutation(
     compositionOwnerId,
   );
   const barrier = await barrierRead;
+  // The displayed ref's fence, captured at the same press: a Stop on the
+  // still-displayed session cancels this resend exactly like one on the
+  // destination.
+  const displayedBarrier = displayedBarrierRead === undefined ? undefined : await displayedBarrierRead;
   // Registered around the write: the resent row is undelivered work, and a
   // fallback send must see it before the async refresh can.
   const result = await trackOutboxWrite(
@@ -3271,6 +3294,7 @@ export async function resendRecoveryMutation(
         barrier,
         expectedRecoveryRevisions,
         compositionOwnerId,
+        displayedBarrier,
       ),
     (outcome) =>
       outcome.status !== "sent"
