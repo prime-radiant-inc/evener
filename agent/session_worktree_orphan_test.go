@@ -647,11 +647,12 @@ func TestDelegateWakeRefusesForeignHeldLane(t *testing.T) {
 // owning it, and whose notification wake therefore validates an ancestor's
 // lane, not a lane of its own.
 type sharedDescendantLane struct {
-	fixture      coldDelegateFixture
-	lanePath     string
-	delegateSess *Session // the lane-owning delegate's runtime, which drives the child's wake
-	sharedSub    *subagent
-	finish       func(llm.Request) llm.Response
+	fixture          coldDelegateFixture
+	lanePath         string
+	delegateSess     *Session // the lane-owning delegate's runtime, which drives the child's wake
+	sharedSub        *subagent
+	sharedDelegateID string
+	finish           func(llm.Request) llm.Response
 }
 
 // spawnSharedDescendantLane builds that tree: a cold fixture delegate with an
@@ -706,13 +707,14 @@ func spawnSharedDescendantLane(t *testing.T, r *wtRepo, laneName, standInDlg, st
 	}
 	// The shared child is found through the tree's durable records by its
 	// parent edge, the way the tree's own tests do.
-	var sharedChildID string
+	var sharedDelegateID, sharedChildID string
 	shared := 0
 	tree := root.delegateController
 	tree.mu.Lock()
-	for _, agg := range tree.durable {
+	for id, agg := range tree.durable {
 		if agg.Descriptor.ParentDelegateID == fixture.delegateID {
 			shared++
+			sharedDelegateID = id
 			sharedChildID = agg.Descriptor.ChildSessionID
 		}
 	}
@@ -725,11 +727,12 @@ func spawnSharedDescendantLane(t *testing.T, r *wtRepo, laneName, standInDlg, st
 		t.Fatalf("the delegate's child %s is not retained after its run", sharedChildID)
 	}
 	return &sharedDescendantLane{
-		fixture:      fixture,
-		lanePath:     lanePath,
-		delegateSess: delegateSub.sess,
-		sharedSub:    sharedSub,
-		finish:       finish,
+		fixture:          fixture,
+		lanePath:         lanePath,
+		delegateSess:     delegateSub.sess,
+		sharedSub:        sharedSub,
+		sharedDelegateID: sharedDelegateID,
+		finish:           finish,
 	}
 }
 
@@ -796,8 +799,22 @@ func TestDelegateWakeReLocksUnlockedInheritedLaneAndRecordsOwnerActivity(t *test
 		closed, running, driving := shared.closed, shared.running, shared.driving
 		shared.mu.Unlock()
 		_, locked, reason := r.laneLocked(t, lane.lanePath)
-		t.Fatalf("notification drive skipped the idle shared child (lane locked=%v reason=%q, sub closed=%v running=%v driving=%v)",
-			locked, reason, closed, running, driving)
+		// Reproduce the drive's own preconditions, in its order, so the
+		// failure names the one that declined: the drive's boolean cannot.
+		mutRelease, mutErr := lane.delegateSess.beginRetirementMutation("delegate_drive")
+		if mutErr == nil {
+			mutRelease()
+		}
+		revalErr := lane.delegateSess.revalidateLaneForLaunch(lane.sharedDelegateID)
+		driveSlot, driveSlotOK := lane.delegateSess.reserveDriveSlot()
+		if driveSlotOK {
+			driveSlot.release()
+		}
+		lane.delegateSess.mu.Lock()
+		driverClosing := lane.delegateSess.closingOrClosedLocked()
+		lane.delegateSess.mu.Unlock()
+		t.Fatalf("notification drive never launched the shared child (lane locked=%v reason=%q, sub closed=%v running=%v driving=%v; retirement mutation=%v, lane validation=%v, drive slot=%v, driver closing=%v)",
+			locked, reason, closed, running, driving, mutErr, revalErr, driveSlotOK, driverClosing)
 	}
 
 	_, locked, reason := r.laneLocked(t, lane.lanePath)
