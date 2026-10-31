@@ -110,6 +110,21 @@ test("flattens causal child rows and isolates itemless errors and unplaced activ
   expect(unplaced.find((row) => row.kind === "strip")?.id).toBe(rows.find((row) => row.kind === "strip")?.id);
   expect(unplaced.every((r) => r.kind !== "panels" || r.row.panels.length === 1)).toBe(true);
 });
+test("flow rows carry the packed column count from the width formula", () => {
+  const packed: ComicReaderSnapshot = {
+    ...root,
+    entries: ["a", "b", "c", "d"].map((id, index) => entry(id, index)),
+    activity: { ...activity, strips: [] },
+  };
+  const rows = composeComicFlow(packed, { ...state, readers: new Map(), expandedPaths: [] }, 1290, () => true, 416);
+  const panelsRows = rows.filter((row) => row.kind === "panels");
+  expect(panelsRows.map((row) => (row.kind === "panels" ? row.row.panels.map((p) => p.slice.entryId) : []))).toEqual([
+    ["a", "b", "c"],
+    ["d"],
+  ]);
+  expect(panelsRows.map((row) => (row.kind === "panels" ? row.row.columns : 0))).toEqual([3, 1]);
+  expect(panelsRows.every((row) => row.kind !== "panels" || row.row.unit === "panel")).toBe(true);
+});
 test("matches complete path and session before entry offsets and keeps end target on its reader", () => {
   const rows = composeComicFlow(root, state, 390, () => true);
   const index = findComicFlowAnchorRow(rows, {

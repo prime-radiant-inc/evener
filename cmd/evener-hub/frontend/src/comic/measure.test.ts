@@ -30,8 +30,9 @@ test("creates and measures the hidden panel in its container's document", () => 
   expect(probe?.ownerDocument).toBe(foreignDocument);
   expect(probe?.querySelector("[data-comic-text]")?.textContent).toBe(source);
   expect((probe as HTMLElement).style.width).toBe("777px");
-  measurer.fits(doc, part, "paired", "dialogue");
+  measurer.fits(doc, part, "packed", "dialogue", 381);
   expect((probe as HTMLElement).style.width).toBe("381px");
+  expect(measurer.panelMaxWidth()).toBe(416);
   measurer.dispose();
   expect(container.querySelector("[data-comic-probe]")).toBeNull();
 });

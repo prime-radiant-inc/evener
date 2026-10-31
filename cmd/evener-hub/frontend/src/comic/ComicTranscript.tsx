@@ -294,7 +294,7 @@ export function ComicTranscript({
     const measurer = probe.current;
     if (!measurer) return;
     const used = new Set<string>();
-    const fits: Parameters<typeof composeComicFlow>[3] = (document, part, composition, kind) => {
+    const fits: Parameters<typeof composeComicFlow>[3] = (document, part, composition, kind, slotWidth) => {
       const key = JSON.stringify([
         kind,
         composition,
@@ -303,15 +303,16 @@ export function ComicTranscript({
         part.kind,
         part.plain,
         part.input,
+        slotWidth,
       ]);
       used.add(key);
       const cached = fitsCache.current.get(key);
       if (cached !== undefined) return cached;
-      const result = measurer.fits(document, part, composition, kind);
+      const result = measurer.fits(document, part, composition, kind, slotWidth);
       fitsCache.current.set(key, result);
       return result;
     };
-    const next = composeComicFlow(root, subchats, geometry.width, fits);
+    const next = composeComicFlow(root, subchats, geometry.width, fits, measurer.panelMaxWidth());
     const position = anchor.current;
     const target = snapshots.get(comicPathKey(position.path));
     if (
@@ -880,7 +881,10 @@ export function ComicTranscript({
             return (
               <section
                 className={styles.row}
-                style={index === rows.length - 1 ? { paddingBottom: tailSpace } : undefined}
+                style={{
+                  gridTemplateColumns: `repeat(${row.columns}, minmax(0, var(--comic-${row.unit}-max-width)))`,
+                  ...(index === rows.length - 1 ? { paddingBottom: tailSpace } : undefined),
+                }}
                 aria-label={error ? "Turn errors" : undefined}
                 data-comic-row={flow.id}
                 data-comic-session={flow.sessionRef}

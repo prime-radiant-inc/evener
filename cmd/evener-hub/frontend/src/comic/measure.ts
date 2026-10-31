@@ -19,6 +19,7 @@ export async function loadComicFonts(): Promise<"ready" | "unavailable"> {
 /** Probe shares the rendered panel/balloon/text CSS, including thought padding and mobile breakpoints. */
 export function createComicMeasurer(container: HTMLElement): {
   fits: ComicFits;
+  panelMaxWidth(): number;
   dispose(): void;
 } {
   const ownerDocument = container.ownerDocument;
@@ -39,10 +40,11 @@ export function createComicMeasurer(container: HTMLElement): {
   container.append(panel);
 
   return {
-    fits(document, part, composition, kind) {
+    fits(document, part, composition, kind, slotWidth) {
       if (composition === "insert") return true;
       const width = container.getBoundingClientRect().width || container.clientWidth || ownerWindow?.innerWidth || 0;
-      panel.style.width = `${composition === "paired" && width > 760 ? (width - 15) / 2 : width}px`;
+      // A packed slot is the column width the row layout computed for this panel.
+      panel.style.width = `${Math.max(0, slotWidth ?? width)}px`;
       panel.classList.toggle(styles.spotlight as string, composition === "spotlight");
       balloon.classList.toggle(styles.thought as string, kind === "thought");
       panel.setAttribute("data-comic-kind", kind);
@@ -57,6 +59,14 @@ export function createComicMeasurer(container: HTMLElement): {
         Math.max(content.getBoundingClientRect().height, content.scrollHeight) <=
         lineHeight * (composition === "spotlight" ? 3 : 6) + 1
       );
+    },
+    panelMaxWidth() {
+      const computed = ownerWindow?.getComputedStyle(panel).maxWidth ?? "";
+      const px = Number.parseFloat(computed);
+      if (Number.isFinite(px) && px > 0) return px;
+      // jsdom does not resolve the token; --comic-panel-max-width is 26rem.
+      const root = Number.parseFloat(ownerWindow?.getComputedStyle(ownerDocument.documentElement).fontSize ?? "") || 16;
+      return 26 * root;
     },
     dispose() {
       panel.remove();

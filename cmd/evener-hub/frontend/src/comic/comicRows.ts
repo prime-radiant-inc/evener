@@ -20,13 +20,14 @@ export function composeComicFlow(
   subchats: ComicSubchatState,
   viewportWidth: number,
   fits: ReturnType<typeof createComicMeasurer>["fits"],
+  panelMaxWidth?: number,
 ): readonly ComicFlowRow[] {
   const rows: ComicFlowRow[] = [];
   const append = (reader: ComicReaderSnapshot, ancestors: readonly string[]) => {
     const base = { sessionRef: reader.ref, path: reader.path };
     const id = (part: string) => JSON.stringify([reader.ref, reader.path, part]);
     const panels = (entries: readonly ComicEntry[]) => {
-      for (const row of composeComicRows(entries, viewportWidth, fits))
+      for (const row of composeComicRows(entries, viewportWidth, fits, panelMaxWidth))
         rows.push({ ...base, id: id(row.id), kind: "panels", row });
     };
     const stripRow = (strip: ComicDelegateStrip) => {

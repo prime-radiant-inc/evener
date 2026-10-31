@@ -12,8 +12,18 @@ test("finds the same source offset after continuation boundaries change", () => 
   const part = document.parts[0];
   if (!part) throw new Error("missing part");
   const rows: ComicRow[] = [
-    { id: "m:0", panels: [{ slice: { entryId: "m", start: 0, end: 5 }, composition: "wide", document, part }] },
-    { id: "m:5", panels: [{ slice: { entryId: "m", start: 5, end: 12 }, composition: "wide", document, part }] },
+    {
+      id: "m:0",
+      columns: 1,
+      unit: "panel",
+      panels: [{ slice: { entryId: "m", start: 0, end: 5 }, composition: "wide", document, part }],
+    },
+    {
+      id: "m:5",
+      columns: 1,
+      unit: "panel",
+      panels: [{ slice: { entryId: "m", start: 5, end: 12 }, composition: "wide", document, part }],
+    },
   ];
   expect(
     findComicAnchorRow(rows, {

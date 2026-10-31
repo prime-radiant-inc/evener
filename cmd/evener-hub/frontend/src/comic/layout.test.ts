@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 import { composeComicRows, splitComicText } from "./layout";
 import type { ComicEntry } from "./projection";
@@ -81,7 +84,8 @@ test("pairs only adjacent single-slice dialogue within a strip", () => {
   const rows = composeComicRows(
     entries,
     1100,
-    (_document, part, composition) => composition !== "paired" || part.input.length <= 6,
+    (_document, part, composition) => composition !== "packed" || part.input.length <= 6,
+    416,
   );
   expect(rows.map((row) => row.panels.map((panel) => panel.slice.entryId))).toEqual([
     ["a", "b"],
@@ -94,11 +98,47 @@ test("pairs only adjacent single-slice dialogue within a strip", () => {
   expect(composeComicRows(entries, 760, () => true).every((row) => row.panels.length === 1)).toBe(true);
 });
 
-test("pairs two short dialogues above the one-column boundary and keeps a lone dialogue single", () => {
+test("keeps one column below the packing boundary and packs two at it", () => {
   const entries = [entry("a", "dialogue", "Hello."), entry("b", "dialogue", "Hi.")];
-  expect(composeComicRows(entries, 761, () => true).map((row) => row.panels.length)).toEqual([2]);
-  expect(composeComicRows(entries.slice(0, 1), 1360, () => true).map((row) => row.panels.length)).toEqual([1]);
-  expect(composeComicRows(entries, 390, () => true).map((row) => row.panels.length)).toEqual([1, 1]);
+  expect(composeComicRows(entries, 846, () => true, 416).map((row) => row.panels.length)).toEqual([1, 1]);
+  expect(composeComicRows(entries, 847, () => true, 416).map((row) => row.panels.length)).toEqual([2]);
+  expect(composeComicRows(entries.slice(0, 1), 1750, () => true, 416).map((row) => row.panels.length)).toEqual([1]);
+  expect(composeComicRows(entries, 390, () => true, 416).map((row) => row.panels.length)).toEqual([1, 1]);
+});
+
+test("packs as many panel-sized panels as the width fits", () => {
+  const entries = ["a", "b", "c", "d", "e"].map((id) => entry(id, "dialogue", `${id}.`));
+  const rows = composeComicRows(entries, 1290, () => true, 416);
+  expect(rows.map((row) => row.panels.map((panel) => panel.slice.entryId))).toEqual([
+    ["a", "b", "c"],
+    ["d", "e"],
+  ]);
+  expect(rows.map((row) => row.columns)).toEqual([3, 3]);
+  expect(rows.every((row) => row.unit === "panel")).toBe(true);
+  const wide = composeComicRows(entries, 1750, () => true, 416);
+  expect(wide.map((row) => row.panels.length)).toEqual([4, 1]);
+  expect(wide.map((row) => row.columns)).toEqual([4, 1]);
+  expect(wide[1]?.panels[0]?.composition).toBe("spotlight");
+});
+
+test("packed slots measure at their own column width", () => {
+  const slots: number[] = [];
+  composeComicRows(
+    [entry("a", "dialogue", "Hello."), entry("b", "dialogue", "Hi."), entry("c", "dialogue", "Hey.")],
+    1290,
+    (_document, _part, _composition, _kind, slot) => {
+      slots.push(slot ?? 0);
+      return true;
+    },
+    416,
+  );
+  expect(slots).toEqual([420, 420, 420]);
+});
+
+test("row columns stay bounded by the panel size token", () => {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "./comic.module.css"), "utf8");
+  expect(css).toContain("max-width: var(--comic-panel-max-width)");
+  expect(css).not.toContain("repeat(2,");
 });
 
 test("a continuation is wide and a spotlight is settled short dialogue only", () => {
@@ -153,7 +193,7 @@ test("single-prose eligibility gates compact fit calls without limiting pair len
       calls.push(composition);
       return true;
     });
-    expect(calls.filter((composition) => composition === "paired" || composition === "spotlight")).toEqual([]);
+    expect(calls.filter((composition) => composition === "packed" || composition === "spotlight")).toEqual([]);
   }
   const calls: string[] = [];
   const fit = (_document: unknown, _part: unknown, composition: string) => {
@@ -165,9 +205,14 @@ test("single-prose eligibility gates compact fit calls without limiting pair len
   );
   expect(calls.every((composition) => composition === "spotlight")).toBe(true);
   calls.length = 0;
-  const rows = composeComicRows([entry("long", "dialogue", "x".repeat(81)), entry("next", "dialogue", "y")], 1200, fit);
+  const rows = composeComicRows(
+    [entry("long", "dialogue", "x".repeat(81)), entry("next", "dialogue", "y")],
+    1200,
+    fit,
+    416,
+  );
   expect(rows.map((row) => row.panels.length)).toEqual([2]);
-  expect(calls).toEqual(["paired", "paired"]);
+  expect(calls).toEqual(["packed", "packed"]);
 });
 
 test("formatted continuations break between blocks, not inside emphasis or references", () => {
