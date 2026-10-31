@@ -738,6 +738,29 @@ func spawnSharedDescendantLane(t *testing.T, r *wtRepo, laneName, standInDlg, st
 	}
 }
 
+// adoptForeignLane installs a foreign session's lock on the lane, contending
+// with the tree's own wake machinery: a background wake for the shared child
+// revalidates the lane at any moment and re-takes a just-released lane under
+// the tree's own marker — the behavior under test — so the adoption retries
+// until the foreign lock is the one that holds.
+func adoptForeignLane(t *testing.T, r *wtRepo, lanePath, foreignSID string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, locked, _ := r.laneLocked(t, lanePath); locked {
+			_, _ = runWorktreeGit(r.mainRoot, "worktree", "unlock", lanePath)
+		}
+		_, lockErr := runWorktreeGit(r.mainRoot, "worktree", "lock", "--reason", worktree.FormatSessionMarker(foreignSID), lanePath)
+		if lockErr == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("adopting the lane for a foreign session kept losing to the tree's own wake: %v", lockErr)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 // A shared descendant's wake must not launch into an ancestor lane another
 // session has adopted: the drive reports not-launched and the newer lock is
 // never touched, exactly as a lane-owning delegate's wake does.
@@ -746,8 +769,7 @@ func TestDelegateWakeRefusesForeignHeldInheritedLane(t *testing.T) {
 	r := newWorktreeRepo(t)
 	lane := spawnSharedDescendantLane(t, r, "wake-inherited-foreign", "dlg_waketest0000003", "034placeholder000000007")
 	const foreignSID = "034somebodyelse00000000002"
-	wtGit(t, r.mainRoot, "worktree", "unlock", lane.lanePath)
-	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", worktree.FormatSessionMarker(foreignSID), lane.lanePath)
+	adoptForeignLane(t, r, lane.lanePath, foreignSID)
 
 	lane.fixture.adapter.steps = []func(llm.Request) llm.Response{lane.finish}
 	if lane.delegateSess.driveSubagentNotificationTurn(lane.sharedSub) {
