@@ -95,7 +95,9 @@ for (const kind of ["launch", "reply", "notification"] as const) {
         const strips = projectComicDelegates(model, entities, ownerRef);
         expect(strips).toHaveLength(1);
         expect(strips[0]!.entity).toBe(entity);
-        expect.soft(strips[0]!.source).toEqual(matches ? { itemId: source.id, sourceIndex: 0 } : undefined);
+        expect
+          .soft(strips[0]!.source)
+          .toEqual(kind === "launch" && matches ? { itemId: source.id, sourceIndex: 0 } : undefined);
         expect(projectComicDelegates(model, new Map([[otherOwner.id, otherOwner]]))).toEqual([]);
       }
       if (kind !== "launch") {
@@ -152,7 +154,7 @@ test.each(["local", "east"])("recorded modern notifications retain owned identit
   const entity = activity(ownerRef, "dlg_1", `${host}:${childId}`);
   const entities = new Map([[entity.id, entity]]);
   const before = JSON.stringify(model);
-  expect(projectComicDelegates(model, entities)[0]!.source).toEqual({ itemId: notification.id, sourceIndex: 0 });
+  expect(projectComicDelegates(model, entities)[0]!.source).toBeUndefined();
   const entries = projectComicConversation(model, { ownerRef, entities });
   expect(entries[0]!.persona?.key).toBe(JSON.stringify([ownerRef, "dlg_1"]));
   expect(entries[1]).toMatchObject({

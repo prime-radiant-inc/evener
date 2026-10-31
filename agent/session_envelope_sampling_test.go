@@ -79,6 +79,10 @@ var envelopeSamplingForbiddenLocks = []envelopeSamplingLock{
 		s.memoryMu.Lock()
 		return s.memoryMu.Unlock
 	}},
+	{owner: "Session", field: "modelSwitchPublishMu", hold: func(s *Session) func() {
+		s.modelSwitchPublishMu.Lock()
+		return s.modelSwitchPublishMu.Unlock
+	}},
 	{owner: "Session", field: "restMu", hold: func(s *Session) func() {
 		s.restMu.Lock()
 		return s.restMu.Unlock

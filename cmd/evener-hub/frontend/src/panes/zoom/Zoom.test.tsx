@@ -8,6 +8,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { useStore } from "zustand";
 import { accessibleName } from "../../accessibleNameTestUtils";
+import { comicPaneCoversConversation } from "../../comic/comicPaneCoverage";
 import { chromeStore } from "../../shell/chromeStore";
 import { ClientProvider } from "../../shell/clientContext";
 import { NeedsYouProvider } from "../../shell/NeedsYouProvider";
@@ -15,6 +16,7 @@ import { conversationPaneLifetime } from "../../shell/paneLifetime";
 import { installFocusedScope, summaryOf } from "../../shell/statusbar/scopeTestUtils";
 import {
   consumePaneFocus,
+  documentPaneState,
   type OpenPaneRecord,
   requestPaneFocus,
   resetWorkspaceStoreForTests,
@@ -40,6 +42,7 @@ import { holdReaderFrames, installTranscriptGeometry } from "../session/transcri
 import { retainedTranscriptReadView } from "../session/transcript/transcriptReadView";
 import { resetTranscriptPagingForTests } from "../session/transcript/useTranscript";
 import { enterAgentCascade, popAgentCascade, returnFromAgentCascade } from "./actions";
+import { zoomPaneCoversConversation } from "./cascadeCoverage";
 import { cascadeScope } from "./cascadeTestUtils";
 import { recordCascadeOrigin } from "./inspectionOrigin";
 import type { SessionZoomParams } from "./intent";
@@ -251,6 +254,134 @@ function inspectedCascade() {
   recordCascadeOrigin(inspector, source);
   return { source, inspector };
 }
+
+test("Comic inline children in two real cascade columns retain the secondary inspector", async () => {
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+  const { fake, response, context, identities } = fixture();
+  const { source, inspector } = inspectedCascade();
+  inspector.params = {
+    ...currentParams(),
+    ref: "grandchild",
+    edges: [
+      { ownerRef: "root", childRef: "child", delegateId: "d1" },
+      { ownerRef: "child", childRef: "grandchild", delegateId: "d2" },
+    ],
+  } satisfies SessionZoomParams;
+  const standalone: OpenPaneRecord = {
+    id: "standalone",
+    type: "session",
+    slot: "secondary",
+    params: { ref: "child-inline" },
+  };
+  workspaceStore.setState({ panes: [source, inspector, standalone] });
+  fake.on("thread/read", ({ ref, requestGeneration, includeTurns }) => {
+    const read = response(ref!);
+    return {
+      ...read,
+      requestGeneration,
+      thread: {
+        ...read.thread,
+        cwd: `/work/${ref}`,
+        turns:
+          includeTurns === false
+            ? []
+            : [
+                {
+                  id: `${ref}-turn`,
+                  status: "completed",
+                  itemsView: "full",
+                  items: [{ id: `${ref}-file`, type: "agentMessage", text: `[FILE](docs/${ref}.md)` }],
+                },
+              ],
+      },
+    };
+  });
+  fake.on("evener/thread/delegates/list", ({ ref, scope }) => ({
+    context: context(ref),
+    scope: scope ?? "session",
+    delegates: ["child", "grandchild"].includes(ref)
+      ? [
+          activityDelegate({
+            ownerRef: ref,
+            rootRef: "root",
+            childRef: `${ref}-inline`,
+            delegateId: `${ref}-inline-delegate`,
+          }),
+        ]
+      : [],
+    page: { complete: true, issues: [] },
+  }));
+  transcriptDisplayStore.getState().setPresentation("desktop", "comic");
+  const mounted = mount(fake);
+  for (const ref of ["child", "grandchild"]) {
+    const column = await waitFor(() => cascadeScope(ref, "cascade-column"));
+    const toggle = await waitFor(() => {
+      const button = column.querySelector<HTMLButtonElement>(
+        `[data-comic-child-ref="${ref}-inline"] button[aria-expanded]`,
+      );
+      expect(button).not.toBeNull();
+      return button!;
+    });
+    await act(async () => fireEvent.click(toggle));
+    await waitFor(() => expect(column.querySelector(`[data-comic-session="${ref}-inline"] a`)).not.toBeNull());
+  }
+  expect(columnRefs()).toEqual(["child", "grandchild"]);
+  for (const ref of ["child", "grandchild"]) {
+    const childRef = `${ref}-inline`;
+    expect(zoomPaneCoversConversation(inspector, childRef)).toBe(false);
+    const link = cascadeScope(ref, "cascade-column").querySelector<HTMLAnchorElement>(
+      `[data-comic-session="${childRef}"] a`,
+    )!;
+    await act(async () => fireEvent.click(link));
+    const doc = workspaceStore
+      .getState()
+      .panes.find((pane) => pane.type === "doc" && (pane.params as { session: string }).session === childRef)!;
+    expect(doc.params).toEqual({ session: childRef, path: `docs/${childRef}.md`, kind: "file" });
+    expect(documentPaneState(doc)?.reference.readTarget).toBe(`/work/${childRef}/docs/${childRef}.md`);
+    expect(documentPaneState(doc)?.origin).toBe(inspector);
+    expect(workspaceStore.getState().mainPane()).toBe(source);
+    expect(inspector.slot).toBe("secondary");
+    expect(workspaceStore.getState().focusedPaneId).toBe(doc.id);
+  }
+  expect(comicPaneCoversConversation(inspector, "child-inline")).toBe(true);
+  expect(comicPaneCoversConversation(inspector, "grandchild-inline")).toBe(true);
+  const toggle = () =>
+    cascadeScope("child", "cascade-column").querySelector<HTMLButtonElement>(
+      '[data-comic-child-ref="child-inline"] button[aria-expanded]',
+    )!;
+  await act(async () => fireEvent.click(toggle()));
+  expect(comicPaneCoversConversation(inspector, "child-inline")).toBe(false);
+  expect(comicPaneCoversConversation(inspector, "grandchild-inline")).toBe(true);
+  await act(async () => fireEvent.click(toggle()));
+  await waitFor(() => expect(comicPaneCoversConversation(inspector, "child-inline")).toBe(true));
+  expect(comicPaneCoversConversation(inspector, "grandchild-inline")).toBe(true);
+  // Popping the leaf unmounts its whole column, not just one inline reader.
+  await act(async () => popAgentCascade("cascade", "child"));
+  expect(columnRefs()).toEqual(["child"]);
+  expect(comicPaneCoversConversation(inspector, "child-inline")).toBe(false);
+  expect(comicPaneCoversConversation(currentPane(), "child-inline")).toBe(true);
+  expect(comicPaneCoversConversation(currentPane(), "grandchild-inline")).toBe(false);
+  expect(comicPaneCoversConversation(inspector, "grandchild-inline")).toBe(false);
+  const beforeRebind = currentPane();
+  identities.set("root", "new-root");
+  await act(async () =>
+    fake.emitNotification({ method: "evener/thread/resync", params: { ref: "root", threadId: "wire-new-root" } }),
+  );
+  await waitFor(() => expect(currentParams().ref).toBe("root"));
+  expect(columnRefs()).toEqual([]);
+  expect(comicPaneCoversConversation(beforeRebind, "child-inline")).toBe(false);
+  expect(comicPaneCoversConversation(currentPane(), "child-inline")).toBe(false);
+  mounted.unmount();
+  expect(comicPaneCoversConversation(inspector, "child-inline")).toBe(false);
+  expect(comicPaneCoversConversation(inspector, "grandchild-inline")).toBe(false);
+});
 
 test.each(["loading", "deleted"])("a %s nested seat keeps its presentation return control", async (state) => {
   vi.stubGlobal(

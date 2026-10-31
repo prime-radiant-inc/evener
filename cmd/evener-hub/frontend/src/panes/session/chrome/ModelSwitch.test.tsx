@@ -183,17 +183,19 @@ test.each([
   expect(trigger().disabled).toBe(false);
 });
 
-// A mid-turn switch is the one case the daemon itself refuses (Conflict, see
-// server/appwire_thread_settings.go's handleAppThreadModelSet). The refusal belongs to
-// the wire and surfaces as a toast, not as a control the user can't press -
-// pre-emptively disabling it was the client guessing at an answer only the
-// daemon has, and it took the switch away from every cold session too.
-test("a mid-turn refusal surfaces as a toast rather than a disabled trigger", async () => {
+// A pick made while a turn is running takes the SAME wire call and the SAME
+// success path as an at-rest one: the daemon queues the switch for the turn
+// boundary (agent/session.go's SetModel queue path), so the next turn runs on
+// it. What can still fail - an unresolvable ref, an unknown model - surfaces as
+// a toast, not as a control the user can't press.
+test("a mid-turn pick sends thread/model/set rather than being refused client-side; a failed set surfaces as a toast", async () => {
   const user = userEvent.setup();
   const fake = connectReadyFakeClient();
   fake.on("model/list", () => modelListResponse());
-  fake.on("thread/model/set", () => {
-    throw new Error("turn turn_1 is active");
+  let called: unknown;
+  fake.on("thread/model/set", (params) => {
+    called = params;
+    throw new Error("model nope/m-404 is not configured");
   });
 
   render(
@@ -207,10 +209,10 @@ test("a mid-turn refusal surfaces as a toast rather than a disabled trigger", as
   await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(3));
   await user.clear(combobox);
   await user.keyboard("gpt");
-  await waitFor(() => expect(screen.getByRole("option", { name: /gpt-5\.5/i })).toBeTruthy());
   await user.click(screen.getByRole("option", { name: /gpt-5\.5/i }));
 
-  await screen.findByText(/turn turn_1 is active/i);
+  await waitFor(() => expect(called).toEqual({ ref: "ref_a", modelProvider: "openai", model: "gpt-5.5" }));
+  await screen.findByText(/nope\/m-404/i);
 });
 
 // A cold exited session takes the SAME wire call as a live one: the hub resumes

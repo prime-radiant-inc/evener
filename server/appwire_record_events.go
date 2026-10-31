@@ -478,6 +478,23 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 			ref = appwire.Ref{SourceID: projection.thread.Source, ThreadID: threadID}.String()
 			projection.thread.Evener.Ref = ref
 		}
+		if changed, ok := event.Data.(events.EnvironmentChangedData); ok && event.Kind == events.EventEnvironmentChanged {
+			projection.thread.CWD = changed.WorkingDir
+			resync := appwire.ThreadResyncParams{
+				ThreadID:       threadID,
+				Ref:            ref,
+				BootGeneration: s.appBootGeneration,
+			}
+			if history != nil {
+				resync.Epoch = history.Epoch()
+			}
+			pending = append(pending, pendingAppNotification{
+				threadID: threadID,
+				ref:      ref,
+				method:   appwire.NotifyEvenerThreadResync,
+				params:   resync,
+			})
+		}
 		for i := range pending {
 			if pending[i].ref == "" {
 				pending[i].ref = appwire.Ref{SourceID: sourceIDForProjection(s.appSourceID), ThreadID: pending[i].threadID}.String()
