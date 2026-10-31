@@ -812,6 +812,46 @@ func (c *delegateTreeController) delegateOwnedBySessionLocked(owner *Session, ag
 	return parentID == owner.owningDelegateID
 }
 
+// delegateOwnerCanInstructTool resolves the direct parent that will receive a
+// delegate's report. Terminal reports are assembled by the root runtime, so
+// the reporter's own tool registry is not necessarily the recipient's.
+func (c *delegateTreeController) delegateOwnerCanInstructTool(reporter *Session, desc delegatestore.Descriptor, toolName string) bool {
+	if c == nil || reporter == nil || reporter.delegateController != c || desc.OwnerSessionID != c.rootSessionID {
+		return false
+	}
+	if desc.ParentDelegateID == "" {
+		return reporter.id == c.rootSessionID && reporter.owningDelegateID == "" && reporter.canInstructTool(toolName)
+	}
+
+	c.mu.Lock()
+	parent := c.durable[desc.ParentDelegateID]
+	if parent == nil || parent.Descriptor.OwnerSessionID != c.rootSessionID {
+		c.mu.Unlock()
+		return false
+	}
+	parentSessionID := parent.Descriptor.ChildSessionID
+	toolCeiling := append([]string(nil), parent.Descriptor.ToolNameCeiling...)
+	var ownerRuntime *Session
+	if live := c.live[desc.ParentDelegateID]; live != nil {
+		ownerRuntime = live.runtime
+		if ownerRuntime == nil && live.binding != nil {
+			ownerRuntime = live.binding.runtime
+		}
+	}
+	c.mu.Unlock()
+
+	if reporter.id == parentSessionID && reporter.owningDelegateID == desc.ParentDelegateID {
+		return reporter.canInstructTool(toolName)
+	}
+	if ownerRuntime != nil {
+		if ownerRuntime.id != parentSessionID || ownerRuntime.owningDelegateID != desc.ParentDelegateID || ownerRuntime.delegateController != c {
+			return false
+		}
+		return ownerRuntime.canInstructTool(toolName)
+	}
+	return slices.Contains(toolCeiling, toolName)
+}
+
 // hasWakePendingDelegateFor reports whether owner has any direct delegate in a
 // non-terminal phase (running/settling/stopping — a report or terminal
 // notification is guaranteed). It is the goal gate's early-exit existence

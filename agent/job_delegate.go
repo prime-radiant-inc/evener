@@ -278,7 +278,14 @@ func (s *Session) delegateWorktreeReport(isolation, workingDir string) *delegate
 }
 
 func (s *Session) delegateDisposalHint(desc delegatestore.Descriptor, delegateID string, dirty bool) string {
-	if s == nil || desc.OwnerSessionID != s.id || !s.canInstructTool("manage_worktree") || !isDelegateID(delegateID) {
+	if s == nil || !isDelegateID(delegateID) {
+		return ""
+	}
+	if controller := s.delegateController; controller != nil {
+		if !controller.delegateOwnerCanInstructTool(s, desc, "manage_worktree") {
+			return ""
+		}
+	} else if desc.OwnerSessionID != s.id || desc.ParentDelegateID != "" || !s.canInstructTool("manage_worktree") {
 		return ""
 	}
 	if dirty {

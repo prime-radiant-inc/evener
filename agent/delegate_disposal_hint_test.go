@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -12,6 +13,7 @@ import (
 
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/llm"
 )
 
@@ -142,6 +144,153 @@ func TestDelegateDisposalHint_DelegateSendReportsFinalWorktreeState(t *testing.T
 				if !strings.Contains(sendOutput, "When you're done with this delegate's work") || strings.Contains(sendOutput, "force_dirty") {
 					t.Fatalf("clean delegate_send output has incorrect cleanup guidance: %q", sendOutput)
 				}
+			}
+		})
+	}
+}
+
+func TestDelegateDisposalHint_UsesImmediateParentToolCapability(t *testing.T) {
+	for _, parentCanManage := range []bool{false, true} {
+		name := "parent-without-manage-worktree"
+		if parentCanManage {
+			name = "parent-with-manage-worktree"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			repo := newRetirementWorktreeRepo(t)
+			root := repo.s
+			if root.reg.Get("manage_worktree") == nil {
+				t.Fatal("root session must retain manage_worktree for this scenario")
+			}
+
+			parentTools := []string{"delegate", "delegate_send", "write_file"}
+			if parentCanManage {
+				parentTools = append(parentTools, "manage_worktree")
+			}
+			const coordinatorType = "test:limited-coordinator"
+			root.pluginAgents[coordinatorType] = plugin.Agent{
+				Name:         "limited-coordinator",
+				Model:        "inherit",
+				Tools:        parentTools,
+				SystemPrompt: "Use the supplied tools.",
+				PluginName:   "test",
+			}
+
+			nestedArgs, err := json.Marshal(map[string]any{
+				"prompt":    "Create a dirty isolated child worktree.",
+				"isolation": "worktree",
+				"name":      "nested-dirty-hint",
+			})
+			if err != nil {
+				t.Fatalf("marshal nested delegate args: %v", err)
+			}
+			parentSteps := []func(llm.Request) llm.Response{
+				func(llm.Request) llm.Response {
+					return communicateWithDefaultOutput("coordinator ready")
+				},
+				func(llm.Request) llm.Response {
+					return agenttest.ToolCallResponse(llm.ToolCallData{ID: "create-nested", Name: "delegate", Arguments: nestedArgs, Type: "function"})
+				},
+				func(req llm.Request) llm.Response {
+					if toolResultTextForCall(req, "create-nested") == "" {
+						t.Error("coordinator did not receive its nested delegate creation result")
+					}
+					return communicateWithDefaultOutput("nested child launched")
+				},
+			}
+			for range 4 {
+				parentSteps = append(parentSteps, func(llm.Request) llm.Response {
+					return communicateWithDefaultOutput("parent handled child notification")
+				})
+			}
+			parentClient := llm.NewClient()
+			parentClient.Register(&fakeAdapter{name: "openai", steps: parentSteps})
+			registerTestSessionNamer(parentClient)
+
+			childClient := llm.NewClient()
+			childClient.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+				func(llm.Request) llm.Response {
+					return agenttest.ToolCallResponse(writeFileCall("dirty-file", "CHILD_WORK.txt", "nested dirty worktree"))
+				},
+				func(req llm.Request) llm.Response {
+					if toolResultTextForCall(req, "dirty-file") == "" {
+						t.Error("child did not receive its file-write result")
+					}
+					return communicateWithDefaultOutput("child worktree updated")
+				},
+			}})
+			registerTestSessionNamer(childClient)
+
+			clients := make(chan *llm.Client, 2)
+			clients <- parentClient
+			clients <- childClient
+			root.cfg.testOnly.childClientFactory = func() *llm.Client { return <-clients }
+
+			allowance := 1
+			coordinator := root.createDelegate(context.Background(), delegateArgs{
+				Task:                "coordinator startup",
+				AgentType:           coordinatorType,
+				DelegationAllowance: &allowance,
+			})
+			if coordinator.Err != nil {
+				t.Fatalf("create coordinator: %v", coordinator.Err)
+			}
+			parent := root.subagents.get(coordinator.ChildSessionID)
+			if parent == nil || parent.sess == nil {
+				t.Fatalf("coordinator session %q is missing", coordinator.ChildSessionID)
+			}
+			if got := parent.sess.reg.Get("manage_worktree") != nil; got != parentCanManage {
+				t.Fatalf("coordinator manage_worktree capability = %t, want %t", got, parentCanManage)
+			}
+			waitSubagentRun(t, parent)
+
+			outcome := (delegateRuntime{owner: root}).send(context.Background(), coordinator.DelegateID, "create nested dirty child", 60_000)
+			if outcome.result.Err != nil {
+				t.Fatalf("send nested-create to coordinator: %v", outcome.result.Err)
+			}
+
+			var nestedID string
+			root.delegateController.mu.Lock()
+			for id, aggregate := range root.delegateController.durable {
+				if aggregate.Descriptor.ParentDelegateID == coordinator.DelegateID {
+					nestedID = id
+					break
+				}
+			}
+			root.delegateController.mu.Unlock()
+			if nestedID == "" {
+				t.Fatalf("coordinator %q did not create a nested delegate", coordinator.DelegateID)
+			}
+			nested := delegateAggregateSnapshot(t, root.delegateController, nestedID)
+			if nested.Descriptor.ParentDelegateID != coordinator.DelegateID {
+				t.Fatalf("nested delegate parent = %q, want coordinator %q", nested.Descriptor.ParentDelegateID, coordinator.DelegateID)
+			}
+			child := parent.sess.subagents.get(nested.Descriptor.ChildSessionID)
+			if child == nil {
+				t.Fatalf("nested child session %q is missing", nested.Descriptor.ChildSessionID)
+			}
+			waitSubagentRun(t, child)
+
+			nested = delegateAggregateSnapshot(t, root.delegateController, nestedID)
+			if nested.LatestPacket == nil {
+				t.Fatal("nested delegate has no terminal packet")
+			}
+			var metadata delegateTerminalPacketMetadata
+			if err := json.Unmarshal(nested.LatestPacket.Metadata, &metadata); err != nil {
+				t.Fatalf("decode nested terminal metadata: %v", err)
+			}
+			if metadata.Worktree == nil || !metadata.Worktree.Dirty {
+				t.Fatalf("nested terminal worktree report = %+v, want dirty worktree", metadata.Worktree)
+			}
+			if got := metadata.Worktree.DisposalHint != ""; got != parentCanManage {
+				t.Fatalf("nested disposal hint present = %t, want %t based on immediate parent's capability", got, parentCanManage)
+			}
+			worktreePath := nested.Descriptor.WorkingDir
+			if contents, err := os.ReadFile(filepath.Join(worktreePath, "CHILD_WORK.txt")); err != nil || string(contents) != "nested dirty worktree" {
+				t.Fatalf("nested worktree file = %q, err=%v", contents, err)
+			}
+			if status := strings.TrimSpace(wtGit(t, worktreePath, "status", "--short")); status != "?? CHILD_WORK.txt" {
+				t.Fatalf("nested dirty worktree status = %q", status)
 			}
 		})
 	}
