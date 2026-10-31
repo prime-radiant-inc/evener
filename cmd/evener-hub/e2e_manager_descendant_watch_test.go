@@ -130,6 +130,7 @@ func testManagerOwnedDescendantWatch(t *testing.T, missingGeneration bool) {
 		t.Fatal(err)
 	}
 	daemon.WireTranscriptHistory(sess)
+	daemon.SetSessionTools(func() *agent.Session { return sess })
 	boot := appwire.BootGeneration(generation)
 	if missingGeneration {
 		boot = ""

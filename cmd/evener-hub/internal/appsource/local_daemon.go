@@ -525,10 +525,17 @@ func (s *LocalDaemonSource) AcquireRelaySession(ref appwire.Ref) (RelaySessionRo
 	return lease, nil
 }
 
-// SessionToolsSupported reports support negotiated by the target's live
-// canonical relay connection. known is false until the target is serving.
-func (s *LocalDaemonSource) SessionToolsSupported(ref appwire.Ref) (supported, known bool) {
-	if ref.SourceID != s.sourceID {
+// SessionToolsSupported reports support negotiated by the live relay
+// connection that serves the target. Descendant sessions share the root
+// daemon's relay, so the target resolves through the same canonical mapping
+// the read path uses before the session is looked up. known is false until
+// the target is serving.
+func (s *LocalDaemonSource) SessionToolsSupported(target appwire.Ref) (supported, known bool) {
+	if target.SourceID != s.sourceID {
+		return false, false
+	}
+	ref, err := s.ResolveRelaySession(appwire.ThreadReadParams{Ref: target.String()})
+	if err != nil {
 		return false, false
 	}
 	s.relayMu.Lock()
