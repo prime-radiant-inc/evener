@@ -669,12 +669,14 @@ func spawnSharedDescendantLane(t *testing.T, r *wtRepo, laneName, standInDlg, st
 		lanePath = r.delegateLane(t, laneName, standInDlg, standInSID)
 		d.WorkingDir = lanePath
 	})
-	// The idle-release machinery claims settled subtree leaves — this tree's
-	// shared child included — on a schedule the test cannot see; a claim in
-	// flight when the wake runs declines the drive, so the tree the lane
-	// contract is pinned on must not release on its own.
+	// The tree must not release on its own (the idle-release machinery claims
+	// settled subtree leaves on a schedule the test cannot see) and must not
+	// depend on the runner having a sandbox wrapper: the wake's lane validation
+	// runs git through the delegate session's own environment, and the CI
+	// runners have no bwrap to wrap it with — a capable-prober fixture would
+	// exit 127 on every git call there.
 	root, err := restoreDelegateResourceBootstrapSessionWithTestConfig(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir, testConfig{
-		sandboxProber:              bwrapCapableProber(fixture.workspace),
+		sandboxProber:              unsandboxedProber(fixture.workspace),
 		disableDelegateIdleRelease: true,
 	})
 	if err != nil {
