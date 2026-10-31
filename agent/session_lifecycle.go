@@ -629,6 +629,12 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		return "", admissionErr
 	}
 	defer release()
+	// A delegate child's turn keeps the marker parent's activity evidence
+	// fresh for its whole life, silent stretches included; see
+	// startLaneEvidenceTicker. Stopped before the retirement release, so no
+	// tick outlives the turn.
+	stopEvidenceTicker := s.startLaneEvidenceTicker(ctx)
+	defer stopEvidenceTicker()
 	// Stamp the session id for the whole turn so LLM side calls made from tools
 	// (web fetch summaries, naming, in-turn compaction) attribute to this
 	// session in the per-session API log. callModelWithFallback layers its

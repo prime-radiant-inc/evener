@@ -321,6 +321,41 @@ func (s *Session) refreshActivityEvidence(sessionID string) {
 	_ = os.Chtimes(schema.SessionTranscriptPath(s.stateDir, sessionID), now, now)
 }
 
+// startLaneEvidenceTicker keeps the lane-marker parent's activity evidence
+// fresh for the life of this delegate child's turn. Phase reports fire at
+// transitions only — a long foreground shell call reports once before it
+// starts and then stays silent — so per-report refreshes cannot cover a
+// turn's quiet stretches, and the evidence the orphan reclaim reads would go
+// stale under running work, letting a foreign prune release the lane
+// mid-task. The tick reuses the activity publication floor: no turn keeps
+// the evidence staler than the noisiest legitimate reporter makes it. The
+// returned stop joins the goroutine; a session that is no delegate child, or
+// carries no controller, starts nothing.
+func (s *Session) startLaneEvidenceTicker(ctx context.Context) (stop func()) {
+	if s == nil || s.owningDelegateID == "" || s.delegateController == nil {
+		return func() {}
+	}
+	tickerCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := s.sclock().NewTicker(delegateActivityPublishInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-tickerCtx.Done():
+				return
+			case <-ticker.C():
+				s.delegateController.refreshLaneParentActivityEvidence(s.owningDelegateID)
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
+}
+
 // retryPendingReLocks re-attempts the resume re-lock for lanes whose first
 // attempt failed (spec §P3: "warning + one retry"). It drains pendingReLock
 // (a single retry — a lane still failing is not re-queued) and warns once per

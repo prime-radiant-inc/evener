@@ -872,7 +872,7 @@ func spawnRetainedDelegateLane(t *testing.T, r *wtRepo, laneName, standInDlg, st
 	var lanePath string
 	fixture := newColdDelegateFixtureConfiguredInState(t, "", r.stateDir, func(d *delegatestore.Descriptor) {
 		d.Isolation = "worktree"
-		d.ToolNameCeiling = []string{"communicate"}
+		d.ToolNameCeiling = []string{"communicate", "shell"}
 		lanePath = r.delegateLane(t, laneName, standInDlg, standInSID)
 		d.WorkingDir = lanePath
 	})
@@ -894,7 +894,10 @@ func spawnRetainedDelegateLane(t *testing.T, r *wtRepo, laneName, standInDlg, st
 	// Both turns are scripted up front: the fake adapter serves its steps by
 	// a cursor that survives reassignment, so a later slice replacement after
 	// the cursor would never be served.
-	fixture.adapter.steps = []func(llm.Request) llm.Response{finish, secondTurn}
+	// A tool-calling second turn answers its result with a final response, so
+	// the trailing step covers the follow-up round; a second turn that ends on
+	// its own response never consumes it.
+	fixture.adapter.steps = []func(llm.Request) llm.Response{finish, secondTurn, finish}
 	first := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "first turn", 10_000)
 	if first.result.Err != nil || first.commit == nil {
 		t.Fatalf("first send: %+v", first.result)
@@ -1130,6 +1133,103 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileRetainedChildNotifies(t *testing.
 	case <-driveDone:
 	case <-time.After(10 * time.Second):
 		t.Fatal("the notification turn never finished after release")
+	}
+}
+
+// A silent live tool call is active delegate work the per-report refreshes
+// cannot see: a foreground shell reports activity once before it starts and
+// then stays silent, the quiet watchdog is minutes away, and a foreign
+// prune's live-work view cannot see the shell — so the turn itself must keep
+// the marker parent's evidence fresh, or the prune unlocks and removes the
+// clean checkout before the command finishes. No activity report is injected
+// here: the machinery under test is the turn's own.
+func TestWorktreePrune_OrphanArmSparesLaneThroughSilentToolCall(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	gate := t.TempDir()
+	entered := gate + "/shell-entered"
+	release := gate + "/shell-release"
+	// A foreground shell call that signals its start and then waits silently.
+	// The signal lands outside the lane, so the checkout stays clean.
+	blockCmd := "sh -c 'touch " + entered + "; while [ ! -e " + release + " ]; do sleep 0.2; done'"
+	args, err := json.Marshal(map[string]any{"command": blockCmd})
+	if err != nil {
+		t.Fatalf("marshal shell args: %v", err)
+	}
+	silentCall := func(llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(llm.ToolCallData{ID: "call_silent_shell", Name: "shell", Arguments: args, Type: "function"})
+	}
+	fixture, root, lanePath := spawnRetainedDelegateLane(t, r, "silent-tool-lane", "dlg_orphanactive000002", "034orphanactive0002", silentCall)
+	parentTranscript := schema.SessionTranscriptPath(fixture.stateDir, fixture.meta.ID)
+
+	sendOutcome := make(chan delegateSendOutcome, 1)
+	go func() {
+		outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "silent work", 60_000)
+		sendOutcome <- outcome
+	}()
+	// The shell is live: it signaled its start and now waits silently.
+	waitForCondition(t, 30*time.Second, "the silent shell call to start", func() bool {
+		_, err := os.Stat(entered)
+		return err == nil
+	})
+
+	// The parent has now been idle past the operator's threshold — the turn's
+	// last phase note fired before the shell started, and nothing else reports
+	// while it waits.
+	stale := time.Now().Add(-30 * 24 * time.Hour)
+	if err := os.Chtimes(parentTranscript, stale, stale); err != nil {
+		t.Fatalf("backdate the parent's transcript: %v", err)
+	}
+
+	// The turn's own machinery must keep the evidence fresh through the
+	// silent wait.
+	waitForCondition(t, 10*time.Second, "the silent tool call to keep the lane owner's evidence fresh", func() bool {
+		info, err := os.Stat(parentTranscript)
+		return err == nil && info.ModTime().After(stale)
+	})
+
+	// A foreign session's prune — armed with a threshold the backdate crosses
+	// but the refresh does not — must not release or collect the lane while
+	// the command is still running.
+	out, err := r.pruneOrphanedOp(t, 7)
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if findPruneEntry(t, pruneEntries(t, out, "removed"), "silent-tool-lane") != nil {
+		t.Fatalf("a silent live tool call's lane was reclaimed mid-activity: %+v", out)
+	}
+	if findPruneEntry(t, pruneEntries(t, out, "unlocked"), "silent-tool-lane") != nil {
+		t.Fatalf("a silent live tool call's lane was released by the orphan arm: %+v", out)
+	}
+	_, locked, reason := r.laneLocked(t, lanePath)
+	if !locked {
+		t.Fatalf("the silent tool call's lane lost its lock: %q", reason)
+	}
+	m, ok := worktree.ParseMarker(reason)
+	if !ok || m.DelegateID != fixture.delegateID || m.SessionID != fixture.meta.ID {
+		t.Fatalf("the silent tool call's lane lock = %q, want the delegate marker naming its parent session", reason)
+	}
+
+	// The blocked command finishes and the turn settles cleanly.
+	if err := os.WriteFile(release, nil, 0o644); err != nil {
+		t.Fatalf("release the blocked command: %v", err)
+	}
+	select {
+	case outcome := <-sendOutcome:
+		if outcome.result.Err != nil {
+			t.Fatalf("the silent turn failed after the prune: %v", outcome.result.Err)
+		}
+		if outcome.commit != nil {
+			plans, err := outcome.commit.Complete(true)
+			if err != nil {
+				t.Fatalf("acknowledge the silent turn: %v", err)
+			}
+			if err := root.executeDelegateMutationPlans(plans); err != nil {
+				t.Fatalf("apply the silent turn's acknowledgment: %v", err)
+			}
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the silent turn never finished after release")
 	}
 }
 
