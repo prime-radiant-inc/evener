@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"time"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
@@ -104,6 +105,17 @@ func (c *delegateTreeController) ReportActivityPhase(lease delegateLease, at tim
 	aggregate, live, err := c.admitLeaseLocked(lease, delegatestore.PhaseRunning)
 	if err != nil {
 		c.mu.Unlock()
+		// A retained child's notification turns run without opening a
+		// generation, so their reports arrive on the finished generation's
+		// lease and stay rejected: no clock moves, nothing publishes. The
+		// rejection is not the whole story — the report is the turn's own
+		// activity, so the marker parent's evidence refreshes through it
+		// anyway, or a foreign prune can judge the tree inactive past the
+		// operator's threshold and release the lane under the running
+		// notification turn.
+		if errors.Is(err, errDelegateStaleLease) {
+			c.refreshLaneParentActivityEvidence(lease.delegateID)
+		}
 		return err
 	}
 	rearm := live.quietRearmPendingLocked()

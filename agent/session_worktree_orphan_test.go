@@ -660,11 +660,16 @@ type sharedDescendantLane struct {
 // spawnSharedDescendantLane builds that tree: a cold fixture delegate with an
 // isolated lane, restored and sent once through a turn that spawns exactly
 // one non-isolated child sharing the lane and then finishes, leaving both the
-// delegate and its child retained.
-func spawnSharedDescendantLane(t *testing.T, r *wtRepo, laneName, standInDlg, standInSID string) *sharedDescendantLane {
+// delegate and its child retained. The fixture lives in the repo harness's
+// state dir, so a harness-session prune reads the same parent evidence the
+// orphan arm reads. notificationTurn, when given, scripts the retained
+// child's next notification turn up front — the fake adapter serves its steps
+// by a cursor that survives reassignment, so a step appended after the cursor
+// would never be served.
+func spawnSharedDescendantLane(t *testing.T, r *wtRepo, laneName, standInDlg, standInSID string, notificationTurn ...func(llm.Request) llm.Response) *sharedDescendantLane {
 	t.Helper()
 	var lanePath string
-	fixture := newColdDelegateFixtureConfigured(t, "", func(d *delegatestore.Descriptor) {
+	fixture := newColdDelegateFixtureConfiguredInState(t, "", r.stateDir, func(d *delegatestore.Descriptor) {
 		d.Isolation = "worktree"
 		d.ToolNameCeiling = []string{"communicate", "delegate"}
 		d.DelegationAllowance = 1
@@ -698,9 +703,15 @@ func spawnSharedDescendantLane(t *testing.T, r *wtRepo, laneName, standInDlg, st
 			Type:      "function",
 		})
 	}
-	// The delegate's turn spawns its child, the child's turn finishes, and the
-	// delegate's follow-up turn finishes.
-	fixture.adapter.steps = []func(llm.Request) llm.Response{spawn, finish, finish}
+	notify := finish
+	if len(notificationTurn) > 0 && notificationTurn[0] != nil {
+		notify = notificationTurn[0]
+	}
+	// The delegate's turn spawns its child, the child's turn finishes, the
+	// delegate's follow-up turn finishes, and the retained child's next
+	// notification turn answers the scripted step (or the adapter's bare-text
+	// fallback when none is given).
+	fixture.adapter.steps = []func(llm.Request) llm.Response{spawn, finish, finish, notify}
 	first := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "first turn", 10_000)
 	if first.result.Err != nil {
 		t.Fatalf("first send: %v", first.result.Err)
@@ -1020,6 +1031,105 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileDelegateReportsActivity(t *testin
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("the long turn never finished after release")
+	}
+}
+
+// A retained child's notification turn runs without opening a generation, so
+// its ongoing activity reports arrive on the finished generation's lease and
+// ReportActivityPhase rejects them — the rejection is the fence that keeps a
+// settled generation's clocks untouched, and it stands. The report is still
+// the turn's own activity: the marker parent's evidence must refresh through
+// it anyway, or a foreign prune — whose live-work view cannot see the turn —
+// judges the tree inactive past the operator's threshold and collects the
+// clean, unchanged checkout mid-notification.
+func TestWorktreePrune_OrphanArmSparesLaneWhileRetainedChildNotifies(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var wedgeOnce sync.Once
+	wedge := func(llm.Request) llm.Response {
+		wedgeOnce.Do(func() { close(entered) })
+		<-release
+		return agenttest.FinalResponse("done")
+	}
+	lane := spawnSharedDescendantLane(t, r, "active-notify-lane", "dlg_waketest0000008", "034placeholder000000012", wedge)
+	parentTranscript := schema.SessionTranscriptPath(lane.fixture.stateDir, lane.fixture.meta.ID)
+
+	// The retained child's notification turn wedges inside its first model
+	// call: the tree is alive, the child runs a turn, and the lane's marker
+	// parent stays idle.
+	driveDone := make(chan struct{})
+	go func() {
+		defer close(driveDone)
+		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
+			if lane.delegateSess.driveSubagentNotificationTurn(lane.sharedSub) {
+				return
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+	}()
+	select {
+	case <-entered:
+	case <-time.After(12 * time.Second):
+		t.Fatal("the retained child's notification turn never started")
+	}
+
+	// The parent has now been idle past the operator's threshold: the wake
+	// refreshed its evidence once at launch, and nothing since.
+	stale := time.Now().Add(-30 * 24 * time.Hour)
+	if err := os.Chtimes(parentTranscript, stale, stale); err != nil {
+		t.Fatalf("backdate the parent's transcript: %v", err)
+	}
+
+	// The running turn reports activity through the closure bound to its
+	// finished generation — the retained child's notification turns open no
+	// generation of their own — and the report is rejected as a stale lease.
+	// The rejection is not the whole story: the turn is real activity.
+	lane.sharedSub.sess.mu.Lock()
+	activity := lane.sharedSub.sess.cfg.spawn.parentJobActivity
+	lane.sharedSub.sess.mu.Unlock()
+	if activity == nil {
+		t.Fatal("the retained child carries no parent activity binding")
+	}
+	activity(lane.sharedDelegateID, jobPhaseToolRunning)
+
+	// The rejected report is the parent's activity evidence now.
+	info, err := os.Stat(parentTranscript)
+	if err != nil {
+		t.Fatalf("stat the parent's transcript: %v", err)
+	}
+	if !info.ModTime().After(stale) {
+		t.Fatal("the retained child's ongoing notification activity did not refresh the lane owner's evidence")
+	}
+
+	// A foreign session's prune — armed with a threshold the backdate crosses
+	// but the refresh does not — must not release or collect the lane.
+	out, err := r.pruneOrphanedOp(t, 7)
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if findPruneEntry(t, pruneEntries(t, out, "removed"), "active-notify-lane") != nil {
+		t.Fatalf("an active notification turn's lane was reclaimed mid-activity: %+v", out)
+	}
+	if findPruneEntry(t, pruneEntries(t, out, "unlocked"), "active-notify-lane") != nil {
+		t.Fatalf("an active notification turn's lane was released by the orphan arm: %+v", out)
+	}
+	_, locked, reason := r.laneLocked(t, lane.lanePath)
+	if !locked {
+		t.Fatalf("the active notification turn's lane lost its lock: %q", reason)
+	}
+	m, ok := worktree.ParseMarker(reason)
+	if !ok || m.DelegateID != lane.fixture.delegateID || m.SessionID != lane.fixture.meta.ID {
+		t.Fatalf("the active notification turn's lane lock = %q, want the lane-owning delegate's marker naming its parent session", reason)
+	}
+
+	// The notification turn finishes cleanly once released.
+	close(release)
+	select {
+	case <-driveDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the notification turn never finished after release")
 	}
 }
 
