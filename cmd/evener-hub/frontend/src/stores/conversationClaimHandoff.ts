@@ -30,11 +30,15 @@ export function registerConversationHostVisibility(
   };
 }
 
-function release(overlap: Overlap): void {
-  if (overlaps.get(overlap.view) !== overlap) return;
+function forget(overlap: Overlap): boolean {
+  if (overlaps.get(overlap.view) !== overlap) return false;
   overlaps.delete(overlap.view);
   overlap.unsubscribe();
-  threadsStore.getState().releaseThread(overlap.ref);
+  return true;
+}
+
+function release(overlap: Overlap): void {
+  if (forget(overlap)) threadsStore.getState().releaseThread(overlap.ref);
 }
 
 function validate(overlap: Overlap): void {
@@ -88,10 +92,7 @@ export function prepareConversationHandoff(target: ViewportClass): void {
       continue;
     }
     if (pending || (presented && !presented.has(view.paneId))) continue;
-    threadsStore
-      .getState()
-      .ensureThread(ref)
-      .catch(() => {});
+    const claim = threadsStore.getState().ensureThread(ref);
     const overlap: Overlap = {
       ref,
       view,
@@ -106,6 +107,8 @@ export function prepareConversationHandoff(target: ViewportClass): void {
       unsubscribeView();
       unsubscribeThread();
     };
+    // A rejected ensure owns no hold to release, only its own registration.
+    void claim.catch(() => forget(overlap));
   }
 }
 

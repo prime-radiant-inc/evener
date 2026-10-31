@@ -1,4 +1,5 @@
 import * as appwire from "@evener/appwire-client";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render } from "@testing-library/react";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
@@ -28,6 +29,7 @@ import {
   useThreadsStore,
 } from "./threads";
 import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "./transcriptDisplay";
+import { useThreadClaim } from "./useThreadModel";
 
 let cache: SessionEntryCache;
 
@@ -276,4 +278,123 @@ test("never-started readers do not seed temporary ownership", () => {
   expect(ensure).not.toHaveBeenCalled();
   expect(snapshot().foreground).toBe(0);
   view.unmount();
+});
+
+function RejectionProbe({ readView }: { readView?: ReturnType<typeof retainedTranscriptReadView> }) {
+  useThreadClaim(ref, readView);
+  return null;
+}
+
+async function rejectedConversation(prepareBeforeRejection = false) {
+  const pane: OpenPaneRecord = { id: "rejected-reader", type: "session", params: { ref }, slot: "main" };
+  workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
+  const readView = retainedTranscriptReadView(conversationPaneLifetime(pane), ref, "session");
+  const ensure = vi.spyOn(threadsStore.getState(), "ensureThread");
+  // An injected missing client rejects before acquiring a foreground hold.
+  connectionStore.setState({ state: "ready" });
+  const doomed = render(<RejectionProbe readView={readView} />);
+  // Preparation must precede rejection settlement so withdrawing the ordinary
+  // registration cannot make the overlap rejection scenario disappear.
+  if (prepareBeforeRejection) act(() => transcriptDisplayStore.getState().setViewport("mobile"));
+  await act(async () => {
+    await expect(ensure.mock.results[0]?.value).rejects.toBeDefined();
+  });
+  expect(snapshot().foreground).toBe(0);
+  return { doomed, ensure };
+}
+
+async function survivingReader(readView?: ReturnType<typeof retainedTranscriptReadView>) {
+  const client = new FakeClient("ready");
+  client.on("thread/read", (params) => ({ ...response(), requestGeneration: params.requestGeneration }));
+  client.on("thread/unsubscribe", () => ({}));
+  act(() => connectionStore.getState().connect(client));
+  const survivor = render(<RejectionProbe readView={readView} />);
+  await act(async () => {
+    // Join the real in-flight hydration, then release only this joiner's claim.
+    await threadsStore.getState().ensureThread(ref);
+    threadsStore.getState().releaseThread(ref);
+    await settleEntryTranscriptForTests(ref);
+  });
+  const background = acquireBackgroundThread(ref);
+  await act(async () => {
+    await background.ready;
+    await settleEntryTranscriptForTests(ref);
+  });
+  expect(snapshot()).toMatchObject({ foreground: 1, background: 1, sources: sourceIds });
+  return { survivor, background };
+}
+
+test("rejected conversation does not seed ownership after another reader acquires", async () => {
+  const rejected = await rejectedConversation();
+  const healthy = await survivingReader();
+  act(() => transcriptDisplayStore.getState().setViewport("mobile"));
+  const afterPrepare = snapshot();
+  act(() => rejected.doomed.unmount());
+  const afterDoomedUnmount = snapshot();
+  act(() => cancelConversationHandoff(conversationHandoffGeneration("mobile")));
+  const afterCancel = snapshot();
+  healthy.survivor.unmount();
+  await healthy.background.release();
+  expect({ afterPrepare, afterDoomedUnmount, afterCancel }).toMatchObject({
+    afterPrepare: { foreground: 1, sources: sourceIds },
+    afterDoomedUnmount: { foreground: 1, sources: sourceIds },
+    afterCancel: { foreground: 1, sources: sourceIds },
+  });
+});
+
+test("rejected overlap cancellation never consumes a later reader's ownership or sources", async () => {
+  const rejected = await rejectedConversation(true);
+  expect(rejected.ensure).toHaveBeenCalledTimes(2);
+  await act(async () => {
+    await expect(rejected.ensure.mock.results[1]?.value).rejects.toBeDefined();
+  });
+  expect(snapshot().foreground).toBe(0);
+  act(() => rejected.doomed.unmount());
+  const healthy = await survivingReader();
+  act(() => cancelConversationHandoff(conversationHandoffGeneration("mobile")));
+  const afterCancel = snapshot();
+  healthy.survivor.unmount();
+  await healthy.background.release();
+  expect(afterCancel).toMatchObject({ foreground: 1, sources: sourceIds });
+});
+
+test("late transport failure after unmount and overlap cancellation preserves replacement ownership", async () => {
+  const pending = deferred<appwire.ThreadReadResponse>();
+  const requested = deferred<void>();
+  const client = new FakeClient("ready");
+  client.on("thread/read", () => {
+    requested.resolve();
+    return pending.promise;
+  });
+  client.on("thread/unsubscribe", () => ({}));
+  connectionStore.getState().connect(client);
+  const pane: OpenPaneRecord = { id: "pending-reader", type: "session", params: { ref }, slot: "main" };
+  workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
+  const readView = retainedTranscriptReadView(conversationPaneLifetime(pane), ref, "session");
+  const ensure = vi.spyOn(threadsStore.getState(), "ensureThread");
+  const outgoing = render(<RejectionProbe readView={readView} />);
+  await act(async () => await requested.promise);
+  act(() => transcriptDisplayStore.getState().setViewport("mobile"));
+  expect(snapshot().foreground).toBe(2);
+  const outgoingClaims = ensure.mock.results.map(({ value }) => value as Promise<void>);
+  act(() => {
+    cancelConversationHandoff(conversationHandoffGeneration("mobile"));
+    outgoing.unmount();
+  });
+  expect(snapshot().foreground).toBe(0);
+  const healthy = await survivingReader(readView);
+  act(() => transcriptDisplayStore.getState().setViewport("desktop"));
+  expect(snapshot()).toMatchObject({ foreground: 2, sources: sourceIds });
+  await act(async () => {
+    pending.reject(new Error("late transport failure"));
+    // Transport rejection after retirement resolves ensureThread, rather than
+    // rejecting its already-released claim. Do not mistake this for catch coverage.
+    await expect(Promise.all(outgoingClaims)).resolves.toEqual([undefined, undefined]);
+  });
+  expect(snapshot()).toMatchObject({ foreground: 2, sources: sourceIds });
+  act(() => cancelConversationHandoff(conversationHandoffGeneration("desktop")));
+  expect(snapshot()).toMatchObject({ foreground: 1, sources: sourceIds });
+  healthy.survivor.unmount();
+  expect(snapshot()).toMatchObject({ foreground: 0, items: [] });
+  await healthy.background.release();
 });
