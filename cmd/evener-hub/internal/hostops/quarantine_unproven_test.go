@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -223,7 +224,7 @@ func TestCorruptFileWithAFloorAboveItsMarkIsSetAsideUnproven(t *testing.T) {
 // proven quarantine produced, optionally after its quarantine artifacts are
 // gone, and requires the next open to quarantine it with proven custody and
 // keep the host records.
-func requireProvenSecondQuarantine(t *testing.T, cleanArtifacts bool) {
+func requireProvenSecondQuarantine(t *testing.T, cleanArtifacts, legacyFiles bool) {
 	t.Helper()
 	path := StorePath(t.TempDir())
 	writeRawStore(t, path, 0o600, quarantinedStoreJSON)
@@ -243,6 +244,15 @@ func requireProvenSecondQuarantine(t *testing.T, cleanArtifacts bool) {
 		}
 	}
 	raw := string(mustReadFile(t, path))
+	floorKey := regexp.MustCompile(`,"allocatorFloor":[0-9]+|"allocatorFloor":[0-9]+,`)
+	if legacyFiles {
+		// Files an earlier build wrote carry no allocatorFloor.
+		raw = floorKey.ReplaceAllString(raw, "")
+		custodyPath, custodyBody := quarantineArtifact(t, filepath.Dir(path), ".custody-")
+		if err := os.WriteFile(custodyPath, floorKey.ReplaceAll(custodyBody, nil), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	broken := strings.Replace(raw, `"tokens":[]`, `"tokens":7`, 1)
 	if broken == raw {
 		t.Fatalf("the fixture carries no tokens region:\n%s", raw)
@@ -267,11 +277,17 @@ func requireProvenSecondQuarantine(t *testing.T, cleanArtifacts bool) {
 // A replacement carrying ownership imports is quarantined again with proven
 // custody: its imports are the same identities the first custody handed out.
 func TestSecondQuarantineKeepsOwnershipImportsAsTheirOwnLineage(t *testing.T) {
-	requireProvenSecondQuarantine(t, false)
+	requireProvenSecondQuarantine(t, false, false)
 }
 
 // The ids a proven quarantine discarded stay accounted for after its artifacts
 // are cleaned away.
 func TestSecondQuarantineAfterArtifactCleanupAccountsForDiscardedIDs(t *testing.T) {
-	requireProvenSecondQuarantine(t, true)
+	requireProvenSecondQuarantine(t, true, false)
+}
+
+// Files an earlier build wrote, with no allocatorFloor, still account for the
+// ids their proven quarantine dropped.
+func TestSecondQuarantineOverLegacyCustodyAccountsForDiscardedIDs(t *testing.T) {
+	requireProvenSecondQuarantine(t, false, true)
 }

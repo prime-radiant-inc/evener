@@ -151,9 +151,9 @@ type quarantineArtifacts struct {
 	// operator-visible signal over the survivors instead of handing back one
 	// naming a file it just deleted.
 	custodySignals map[string]QuarantineSignal
-	// unprovenFloor is the highest allocator floor any unproven custody file
-	// gave the store: ids at or below it were never issued.
-	unprovenFloor uint64
+	// lineageFloor is the highest id any custody file accounts for without
+	// evidence: ids at or below it were never issued by the store.
+	lineageFloor uint64
 	// sidecarEpoch is the durable counter the sidecar file carried on its own
 	// (zero when there is none). resolveStoreFS persists the live epoch whenever
 	// it exceeds it, so the counter cannot regress if the custody files are
@@ -212,7 +212,12 @@ func scanQuarantineArtifacts(fs afero.Fs, storePath string) (quarantineArtifacts
 			}
 			artifacts.custodyStamps[stamp] = true
 			artifacts.custodySignals[stamp] = *custody.signal(custodyPath)
-			artifacts.unprovenFloor = max(artifacts.unprovenFloor, custody.AllocatorFloor)
+			artifacts.lineageFloor = max(artifacts.lineageFloor, custody.AllocatorFloor)
+			if !custody.Unproven {
+				// A proven custody file written before allocatorFloor existed
+				// still accounts for every id up to its mark.
+				artifacts.lineageFloor = max(artifacts.lineageFloor, custody.AllocatorHighWaterMark)
+			}
 			fenceByID := make(map[string]custodyFence, len(custody.Fences))
 			for _, fence := range custody.Fences {
 				fenceByID[fence.RecordID] = fence
@@ -962,7 +967,7 @@ func custodyForCorruptStore(fs afero.Fs, path string, epoch uint64, now time.Tim
 	if err != nil {
 		return custodyFile{}, err
 	}
-	return custodyFromStore(decoded, path, epoch, now, artifacts.allocatorFloor, artifacts.unprovenFloor, artifacts.priorImports)
+	return custodyFromStore(decoded, path, epoch, now, artifacts.allocatorFloor, artifacts.lineageFloor, artifacts.priorImports)
 }
 
 // allocatorEpochStride is the id space one quarantine epoch owns when its
