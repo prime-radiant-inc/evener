@@ -188,7 +188,7 @@ func (s *Session) parentStillInactive(parentSID string, minInactivity time.Durat
 	if err != nil {
 		return os.IsNotExist(err)
 	}
-	return time.Now().Sub(info.ModTime()) >= minInactivity
+	return time.Since(info.ModTime()) >= minInactivity
 }
 
 // restoreOrphanedDelegateMarker puts the marker back after a release whose

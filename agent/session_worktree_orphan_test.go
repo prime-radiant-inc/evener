@@ -668,7 +668,14 @@ func spawnSharedDescendantLane(t *testing.T, r *wtRepo, laneName, standInDlg, st
 		lanePath = r.delegateLane(t, laneName, standInDlg, standInSID)
 		d.WorkingDir = lanePath
 	})
-	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+	// The idle-release machinery claims settled subtree leaves — this tree's
+	// shared child included — on a schedule the test cannot see; a claim in
+	// flight when the wake runs declines the drive, so the tree the lane
+	// contract is pinned on must not release on its own.
+	root, err := restoreDelegateResourceBootstrapSessionWithTestConfig(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir, testConfig{
+		sandboxProber:              bwrapCapableProber(fixture.workspace),
+		disableDelegateIdleRelease: true,
+	})
 	if err != nil {
 		t.Fatalf("restore root: %v", err)
 	}

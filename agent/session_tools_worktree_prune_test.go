@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -50,9 +51,7 @@ func (r *wtRepo) pruneOpArgs(t *testing.T, extra map[string]any) (map[string]any
 		t.Fatal("registry is missing manage_worktree")
 	}
 	args := map[string]any{"operation": "prune"}
-	for k, v := range extra {
-		args[k] = v
-	}
+	maps.Copy(args, extra)
 	out, err := rt.Exec(t.Context(), r.s.currentEnv(), args)
 	if err != nil {
 		return nil, err
