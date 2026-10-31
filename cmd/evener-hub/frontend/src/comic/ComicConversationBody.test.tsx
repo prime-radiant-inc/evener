@@ -350,6 +350,19 @@ test.each(
 );
 
 test("Comic registers focused-seat transcript actions outside its scroll port", async () => {
+  // Initial end-follow must see the same geometry as the keyboard actions.
+  vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(1500);
+  const nativeScrollTo = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTo");
+  Object.defineProperty(HTMLElement.prototype, "scrollTo", {
+    configurable: true,
+    value(this: HTMLElement, options: ScrollToOptions) {
+      this.scrollTop = options.top ?? this.scrollTop;
+    },
+  });
+  onTestFinished(() => {
+    if (nativeScrollTo) Object.defineProperty(HTMLElement.prototype, "scrollTo", nativeScrollTo);
+    else Reflect.deleteProperty(HTMLElement.prototype, "scrollTo");
+  });
   const { root, mount } = setup();
   installKeybindings();
   const first = mount("keyboard-first");
@@ -359,18 +372,24 @@ test("Comic registers focused-seat transcript actions outside its scroll port", 
   const a = first.container.querySelector<HTMLElement>("[data-comic-scroll] > div");
   const b = second.container.querySelector<HTMLElement>("[data-comic-scroll] > div");
   if (!a || !b) throw Error("missing scroll ports");
-  for (const port of [a, b]) {
-    Object.defineProperty(port, "scrollHeight", { configurable: true, value: 1500 });
-    Object.defineProperty(port, "scrollTo", {
-      configurable: true,
-      value(options: ScrollToOptions) {
-        port.scrollTop = options.top ?? port.scrollTop;
-      },
-    });
-  }
-  a.scrollTop = 200;
-  b.scrollTop = 200;
-  workspaceStore.setState({ focusedPaneId: "keyboard-second" });
+  await waitFor(() => {
+    expect(a.scrollTop).toBe(1000);
+    expect(b.scrollTop).toBe(1000);
+  });
+  act(() => {
+    for (const port of [a, b]) {
+      fireEvent.scroll(port);
+      fireEvent.wheel(port, { deltaY: -800 });
+      port.scrollTop = 200;
+      fireEvent.scroll(port);
+    }
+    workspaceStore.setState({ focusedPaneId: "keyboard-second" });
+  });
+  await waitFor(() => {
+    expect(a.scrollTop).toBe(200);
+    expect(b.scrollTop).toBe(200);
+    expect(readComicPosition(root)?.mode).toBe("away");
+  });
   const press = (key: string) =>
     act(() => {
       document.body.dispatchEvent(
