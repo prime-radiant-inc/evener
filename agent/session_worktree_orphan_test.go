@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -799,6 +800,51 @@ func TestDelegateWakeRefusesForeignHeldInheritedLane(t *testing.T) {
 	}
 	if m, ok := worktree.ParseMarker(reason); !ok || m.SessionID != foreignSID {
 		t.Fatalf("foreign lock = %q, want the other session's marker", reason)
+	}
+}
+
+// Two launches sharing an inherited lane race to re-take it: the per-child
+// guards serialize each child's own drives, not siblings, so both can inspect
+// the lane unlocked and both reach for the lock. The loser's lock fails on
+// git's "already locked" once the winner's has landed, and that failure must
+// not fail the launch — the tree owns the lane now. The scripted runner
+// forces the losing interleave with real git: the sibling's lock lands inside
+// the loser's inspect-to-lock gap, and the loser's own lock then really
+// refuses.
+func TestDelegateLaunchAdoptsSiblingWonLaneAfterLockLoss(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	lane := spawnSharedDescendantLane(t, r, "sibling-won-lane", "dlg_waketest0000006", "034placeholder000000010")
+	// The end state the orphan arm and the manual unlock leave.
+	wtGit(t, r.mainRoot, "worktree", "unlock", lane.lanePath)
+
+	var siblingWon atomic.Bool
+	lane.delegateSess.cfg.testOnly.worktreeGitRunner = func(ctx context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
+		inner := gitRunner(ctx, env)
+		return func(args ...string) (string, error) {
+			if len(args) >= 2 && args[0] == "worktree" && args[1] == "lock" && siblingWon.CompareAndSwap(false, true) {
+				// The sibling launch takes the lane inside the loser's gap
+				// with the tree's own marker, so the loser's real lock
+				// following it refuses as already locked.
+				if _, err := inner("worktree", "lock", "--reason", worktree.FormatDelegateMarker(lane.fixture.delegateID, lane.fixture.meta.ID), lane.lanePath); err != nil {
+					return "", err
+				}
+			}
+			return inner(args...)
+		}
+	}
+
+	err := lane.delegateSess.revalidateLaneForLaunch(lane.sharedDelegateID)
+	if err != nil {
+		t.Fatalf("a launch whose sibling won the shared lane failed: %v", err)
+	}
+	_, locked, reason := r.laneLocked(t, lane.lanePath)
+	if !locked {
+		t.Fatal("the shared lane is left unlocked")
+	}
+	m, ok := worktree.ParseMarker(reason)
+	if !ok || m.DelegateID != lane.fixture.delegateID || m.SessionID != lane.fixture.meta.ID {
+		t.Fatalf("shared lane's lock = %q, want the lane-owning delegate's marker naming its parent session", reason)
 	}
 }
 

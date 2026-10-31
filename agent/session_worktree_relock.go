@@ -231,6 +231,17 @@ func (s *Session) reviveRevalidateDelegateLane(local *execenv.LocalExecutionEnvi
 		return fmt.Errorf("delegate lane %s at %s is gone; refusing revival into a removed checkout", lane.delegateID, lane.path)
 	case delegateLaneUnlocked:
 		if err := s.lockDelegateLane(local, lane); err != nil {
+			// A sibling launch sharing this lane can take it between this
+			// launch's inspection and its lock attempt — the per-child guards
+			// serialize each child's own drives, not two children sharing an
+			// ancestor's lane — and git then refuses the loser's lock as
+			// already locked. The lane is not lost to the tree: re-inspect,
+			// and a lane now carrying the tree's own marker is an adoption.
+			// Any other state keeps the original error.
+			replan, recheckErr := s.inspectDelegateLaneLock(local, lane)
+			if recheckErr == nil && replan == delegateLaneAdopt {
+				return nil
+			}
 			return fmt.Errorf("re-locking delegate lane %s at %s: %w", lane.delegateID, lane.path, err)
 		}
 		return nil
