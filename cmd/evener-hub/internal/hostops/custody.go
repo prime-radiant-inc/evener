@@ -737,7 +737,9 @@ func custodyFromStore(state snapshot, path string, epoch uint64, now time.Time, 
 		Fences:                 fences,
 		Ownership:              ownership,
 		HostRecords:            familyRegion,
-		AllocatorFloor:         lineageFloor,
+		// Every id up to this file's mark is either carried into the
+		// replacement or deliberately dropped by it, and none is issued again.
+		AllocatorFloor: max(lineageFloor, state.AllocatorHighWaterMark),
 	})
 }
 

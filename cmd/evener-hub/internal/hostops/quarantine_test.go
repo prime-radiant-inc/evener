@@ -245,7 +245,7 @@ func TestQuarantineCustodySchema(t *testing.T) {
 	custodyPath, body := quarantineArtifact(t, filepath.Dir(path), ".custody-")
 	top := decodeCustodyBody(t, body)
 	sameKeySet(t, keysFromMap(top),
-		"quarantineEpoch", "quarantinedFile", "custodiedAt", "recordIds", "allocatorHighWaterMark", "fences", "ownership")
+		"quarantineEpoch", "quarantinedFile", "custodiedAt", "recordIds", "allocatorHighWaterMark", "allocatorFloor", "fences", "ownership")
 
 	var quarantinedFile string
 	if err := json.Unmarshal(top["quarantinedFile"], &quarantinedFile); err != nil {

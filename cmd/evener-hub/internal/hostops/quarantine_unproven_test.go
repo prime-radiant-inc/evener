@@ -218,3 +218,60 @@ func TestCorruptFileWithAFloorAboveItsMarkIsSetAsideUnproven(t *testing.T) {
 		}
 	}
 }
+
+// requireProvenSecondQuarantine corrupts only the tokens region of a store a
+// proven quarantine produced, optionally after its quarantine artifacts are
+// gone, and requires the next open to quarantine it with proven custody and
+// keep the host records.
+func requireProvenSecondQuarantine(t *testing.T, cleanArtifacts bool) {
+	t.Helper()
+	path := StorePath(t.TempDir())
+	writeRawStore(t, path, 0o600, quarantinedStoreJSON)
+	first, err := Open(path)
+	if err != nil {
+		t.Fatalf("first Open: %v", err)
+	}
+	if err := first.ImportHostRecords(familyOf("first"), HostMirror{}); err != nil {
+		t.Fatalf("ImportHostRecords: %v", err)
+	}
+	if cleanArtifacts {
+		for _, infix := range []string{".custody-", ".quarantined-"} {
+			artifact, _ := quarantineArtifact(t, filepath.Dir(path), infix)
+			if err := os.Remove(artifact); err != nil {
+				t.Fatalf("remove %s: %v", artifact, err)
+			}
+		}
+	}
+	raw := string(mustReadFile(t, path))
+	broken := strings.Replace(raw, `"tokens":[]`, `"tokens":7`, 1)
+	if broken == raw {
+		t.Fatalf("the fixture carries no tokens region:\n%s", raw)
+	}
+	writeRawStore(t, path, 0o600, broken)
+	if err := forgetStore(path); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open over the corrupted replacement: %v", err)
+	}
+	if signal := second.Quarantine(); signal == nil || signal.Unproven || signal.QuarantineEpoch != 2 {
+		t.Fatalf("Quarantine() = %+v, want a proven quarantine at epoch 2", signal)
+	}
+	if family, _, _ := second.HostRecords(); len(family.Hosts) == 0 {
+		t.Fatal("the host records were dropped")
+	}
+}
+
+// A replacement carrying ownership imports is quarantined again with proven
+// custody: its imports are the same identities the first custody handed out.
+func TestSecondQuarantineKeepsOwnershipImportsAsTheirOwnLineage(t *testing.T) {
+	requireProvenSecondQuarantine(t, false)
+}
+
+// The ids a proven quarantine discarded stay accounted for after its artifacts
+// are cleaned away.
+func TestSecondQuarantineAfterArtifactCleanupAccountsForDiscardedIDs(t *testing.T) {
+	requireProvenSecondQuarantine(t, true)
+}
