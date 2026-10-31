@@ -93,7 +93,7 @@ export function findComicFlowAnchorRow(
     }
     if (flow.kind === "strip" && position.entryId === flow.strip.key) return index;
     if (flow.kind !== "panels") continue;
-    for (const { slice } of flow.row.panels) {
+    for (const { slice } of flow.row.panels.flatMap((panel) => panel.balloons)) {
       if (slice.entryId !== position.entryId) continue;
       last = index;
       if (position.offset >= slice.start && (position.offset < slice.end || slice.start === slice.end)) return index;

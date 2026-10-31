@@ -46,13 +46,13 @@ test.each(
       <ComicPlainTranscript entries={entries} />
     ) : (
       <ComicPanel
-        document={document}
-        part={part}
-        entry={entry}
-        slice={{ entryId: entry.id, start: 0, end: text.length }}
-        composition="wide"
+        balloons={[
+          { document, part, entry, slice: { entryId: entry.id, start: 0, end: text.length }, composition: "wide" },
+        ]}
         scene="room"
         expression="neutral"
+        sessionRef="local:root"
+        path="[]"
       />
     ),
   );

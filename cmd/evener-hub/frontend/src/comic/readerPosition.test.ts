@@ -16,13 +16,21 @@ test("finds the same source offset after continuation boundaries change", () => 
       id: "m:0",
       columns: 1,
       unit: "panel",
-      panels: [{ slice: { entryId: "m", start: 0, end: 5 }, composition: "wide", document, part }],
+      panels: [
+        {
+          balloons: [{ slice: { entryId: "m", start: 0, end: 5 }, composition: "wide", document, part }],
+        },
+      ],
     },
     {
       id: "m:5",
       columns: 1,
       unit: "panel",
-      panels: [{ slice: { entryId: "m", start: 5, end: 12 }, composition: "wide", document, part }],
+      panels: [
+        {
+          balloons: [{ slice: { entryId: "m", start: 5, end: 12 }, composition: "wide", document, part }],
+        },
+      ],
     },
   ];
   expect(

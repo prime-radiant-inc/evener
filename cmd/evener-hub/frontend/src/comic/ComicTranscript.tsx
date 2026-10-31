@@ -32,7 +32,9 @@ import { ComicSubchatHeader } from "./ComicSubchatHeader";
 import styles from "./comic.module.css";
 import { publishComicPaneCoverage } from "./comicPaneCoverage";
 import { type ComicFlowRow, composeComicFlow, findComicFlowAnchorRow } from "./comicRows";
+import type { ComicBalloon } from "./layout";
 import { createComicMeasurer, loadComicFonts } from "./measure";
+import type { ComicEntry } from "./projection";
 import type { ComicReadingPosition } from "./readerPosition";
 import type { useComicReader } from "./useComicReader";
 import { type ComicReaderSnapshot, type ComicSubchatState, comicPathContains, comicPathKey } from "./useComicSubchats";
@@ -384,7 +386,9 @@ export function ComicTranscript({
       const flow = current.rows[rowIndex];
       const slice =
         flow?.kind === "panels"
-          ? flow.row.panels.find((panel) => panel.slice.entryId === position.entryId)?.slice
+          ? flow.row.panels
+              .flatMap((panel) => panel.balloons)
+              .find((balloon) => balloon.slice.entryId === position.entryId)?.slice
           : undefined;
       const source = [...port.querySelectorAll<HTMLElement>("[data-comic-entry]")].find(
         (node) =>
@@ -877,7 +881,9 @@ export function ComicTranscript({
               );
             const row = flow.row;
             const byId = entriesByPath.get(comicPathKey(flow.path));
-            const error = row.panels.some(({ slice }) => byId?.get(slice.entryId)?.sourceTurnId !== undefined);
+            const error = row.panels
+              .flatMap((panel) => panel.balloons)
+              .some(({ slice }) => byId?.get(slice.entryId)?.sourceTurnId !== undefined);
             return (
               <section
                 className={styles.row}
@@ -890,46 +896,54 @@ export function ComicTranscript({
                 data-comic-session={flow.sessionRef}
                 data-comic-path={comicPathKey(flow.path)}
               >
-                {row.panels.map(({ slice, composition, document, part }) => {
-                  const entry = byId?.get(slice.entryId);
-                  if (!entry) return null;
+                {row.panels.map(({ balloons }, panelIndex) => {
+                  const resolved: { item: ComicBalloon; entry: ComicEntry }[] = [];
+                  for (const item of balloons) {
+                    const entry = byId?.get(item.slice.entryId);
+                    if (entry) resolved.push({ item, entry });
+                  }
+                  if (!resolved.length) return null;
+                  const panelKey = `${resolved[0]?.item.slice.entryId}:${resolved[0]?.item.slice.start}:${panelIndex}`;
                   return (
-                    <div
-                      className={styles.sourcePanel}
-                      key={`${slice.entryId}:${slice.start}`}
-                      data-comic-entry={slice.entryId}
-                      data-comic-session={flow.sessionRef}
-                      data-comic-path={comicPathKey(flow.path)}
-                      data-comic-start={slice.start}
-                      data-comic-end={slice.end}
+                    <TranscriptRenderProvider
+                      key={panelKey}
+                      thread={snapshots.get(comicPathKey(flow.path))?.history.model}
+                      sourcePaneId={sourcePaneId}
                     >
-                      <TranscriptRenderProvider
-                        thread={snapshots.get(comicPathKey(flow.path))?.history.model}
-                        sourcePaneId={sourcePaneId}
-                      >
-                        {mode === "comic" ? (
+                      {mode === "comic" ? (
+                        <div className={styles.sourcePanel}>
                           <ComicPanel
-                            entry={entry}
-                            document={document}
-                            part={part}
-                            slice={slice}
-                            composition={composition}
+                            balloons={resolved.map(({ item, entry }) => ({ ...item, entry }))}
                             scene={scene}
                             expression={expression}
+                            sessionRef={flow.sessionRef}
+                            path={comicPathKey(flow.path)}
                           />
-                        ) : (
-                          <ComicPlainTranscript
-                            entries={[
-                              {
-                                ...entry,
-                                text: entry.text.slice(slice.start, slice.end),
-                                images: slice.end === entry.text.length ? entry.images : undefined,
-                              },
-                            ]}
-                          />
-                        )}
-                      </TranscriptRenderProvider>
-                    </div>
+                        </div>
+                      ) : (
+                        resolved.map(({ item, entry }) => (
+                          <div
+                            className={styles.sourcePanel}
+                            key={`${item.slice.entryId}:${item.slice.start}`}
+                            data-comic-entry={item.slice.entryId}
+                            data-comic-session={flow.sessionRef}
+                            data-comic-path={comicPathKey(flow.path)}
+                            data-comic-start={item.slice.start}
+                            data-comic-end={item.slice.end}
+                          >
+                            <ComicPlainTranscript
+                              entries={[
+                                {
+                                  ...entry,
+                                  text: entry.text.slice(item.slice.start, item.slice.end),
+                                  images: item.slice.end === entry.text.length ? entry.images : undefined,
+                                },
+                              ]}
+                            />
+                          </div>
+                        ))
+                      )}
+                    </TranscriptRenderProvider>
                   );
                 })}
               </section>

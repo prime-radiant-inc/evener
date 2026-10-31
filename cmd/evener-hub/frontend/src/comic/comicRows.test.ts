@@ -74,7 +74,9 @@ test("flattens causal child rows and isolates itemless errors and unplaced activ
     rows
       .filter((row) => row.kind === "history" || row.kind === "panels" || row.kind === "strip")
       .map((row) =>
-        row.kind === "panels" ? [row.sessionRef, row.row.panels[0]?.slice.entryId] : [row.sessionRef, row.kind],
+        row.kind === "panels"
+          ? [row.sessionRef, row.row.panels.flatMap((panel) => panel.balloons)[0]?.slice.entryId]
+          : [row.sessionRef, row.kind],
       ),
   ).toEqual([
     [root.ref, "history"],
@@ -86,7 +88,9 @@ test("flattens causal child rows and isolates itemless errors and unplaced activ
     [root.ref, "itemless"],
   ]);
   const sources = rows.flatMap((row) =>
-    row.kind === "panels" ? row.row.panels.map((p) => [row.sessionRef, p.slice.entryId]) : [],
+    row.kind === "panels"
+      ? row.row.panels.flatMap((panel) => panel.balloons).map((balloon) => [row.sessionRef, balloon.slice.entryId])
+      : [],
   );
   expect(sources).toEqual([
     [root.ref, "before"],
@@ -96,7 +100,9 @@ test("flattens causal child rows and isolates itemless errors and unplaced activ
   ]);
   expect(rows.filter((r) => r.kind === "strip")).toHaveLength(1);
   expect(rows.findIndex((r) => r.kind === "turn-errors-group")).toBeLessThan(
-    rows.findIndex((r) => r.kind === "panels" && r.row.panels[0]?.slice.entryId === "itemless"),
+    rows.findIndex(
+      (r) => r.kind === "panels" && r.row.panels.flatMap((panel) => panel.balloons)[0]?.slice.entryId === "itemless",
+    ),
   );
   expect(rows.filter((r) => r.kind === "history")).toHaveLength(2);
   const unplaced = composeComicFlow(
@@ -118,12 +124,39 @@ test("flow rows carry the packed column count from the width formula", () => {
   };
   const rows = composeComicFlow(packed, { ...state, readers: new Map(), expandedPaths: [] }, 1290, () => true, 416);
   const panelsRows = rows.filter((row) => row.kind === "panels");
-  expect(panelsRows.map((row) => (row.kind === "panels" ? row.row.panels.map((p) => p.slice.entryId) : []))).toEqual([
-    ["a", "b", "c"],
-    ["d"],
-  ]);
+  expect(
+    panelsRows.map((row) =>
+      row.kind === "panels" ? row.row.panels.flatMap((panel) => panel.balloons.map((b) => b.slice.entryId)) : [],
+    ),
+  ).toEqual([["a", "b", "c"], ["d"]]);
   expect(panelsRows.map((row) => (row.kind === "panels" ? row.row.columns : 0))).toEqual([3, 1]);
   expect(panelsRows.every((row) => row.kind !== "panels" || row.row.unit === "panel")).toBe(true);
+});
+
+test("a stacked panel preserves reading anchors for every balloon", () => {
+  const stacked: ComicReaderSnapshot = {
+    ...root,
+    entries: ["a", "b", "c"].map((id, index) => ({
+      ...entry(id, index),
+      persona: { key: "worker", character: "xeno", name: "Worker", badge: "delegate" },
+      speaker: "assistant",
+    })),
+    activity: { ...activity, strips: [] },
+  };
+  const rows = composeComicFlow(stacked, { ...state, readers: new Map(), expandedPaths: [] }, 1290, () => true, 416);
+  expect(rows.filter((row) => row.kind === "panels")).toHaveLength(1);
+  for (const id of ["a", "b", "c"]) {
+    expect(
+      findComicFlowAnchorRow(rows, {
+        mode: "away",
+        sessionRef: stacked.ref,
+        path: [],
+        entryId: id,
+        offset: 0,
+        viewportOffset: 0,
+      }),
+    ).toBeDefined();
+  }
 });
 test("matches complete path and session before entry offsets and keeps end target on its reader", () => {
   const rows = composeComicFlow(root, state, 390, () => true);

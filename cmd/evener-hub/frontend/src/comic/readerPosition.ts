@@ -74,7 +74,7 @@ export function findComicAnchorRow(rows: readonly ComicRow[], position: ComicRea
   if (position.mode === "end") return rows.length ? rows.length - 1 : undefined;
   let last: number | undefined;
   for (let index = 0; index < rows.length; index += 1) {
-    for (const { slice } of rows[index]?.panels ?? []) {
+    for (const { slice } of rows[index]?.panels.flatMap((panel) => panel.balloons) ?? []) {
       if (slice.entryId !== position.entryId) continue;
       last = index;
       if (position.offset >= slice.start && position.offset < slice.end) return index;

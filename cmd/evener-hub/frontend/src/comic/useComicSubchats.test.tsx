@@ -325,7 +325,7 @@ test("late launch relocates the same pending child reader without losing its rea
       : row.kind === "strip"
         ? [row.strip.key]
         : row.kind === "panels"
-          ? [row.row.panels[0]?.slice.entryId]
+          ? [row.row.panels.flatMap((panel) => panel.balloons)[0]?.slice.entryId]
           : [],
   );
   expect(rootFlow).toEqual([

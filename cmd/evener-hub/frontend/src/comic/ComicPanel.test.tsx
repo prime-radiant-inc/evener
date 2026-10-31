@@ -3,6 +3,7 @@ import { wireThread } from "@evener/appwire-client/testing/notifications";
 import { render, screen } from "@testing-library/react";
 import { expect, test } from "vitest";
 import { ComicPanel } from "./ComicPanel";
+import type { ComicPersona } from "./cast";
 import { composeComicRows } from "./layout";
 import { projectComicMarkdown } from "./markdown";
 import { createComicMeasurer, loadComicFonts } from "./measure";
@@ -32,13 +33,11 @@ function panel(value: ComicEntry, start = 0, end = value.text.length) {
   if (!part) throw new Error("missing part");
   return (
     <ComicPanel
-      document={document}
-      part={part}
-      entry={value}
-      slice={{ entryId: value.id, start, end }}
-      composition="wide"
+      balloons={[{ document, part, entry: value, slice: { entryId: value.id, start, end }, composition: "wide" }]}
       scene="room"
       expression="neutral"
+      sessionRef="local:test"
+      path="[]"
     />
   );
 }
@@ -62,10 +61,17 @@ test("formatted dialogue and technical inserts preserve semantic source order", 
     text: `# Heading\n\n**Bold** [link][ref]\n\n- item\n\n\`\`\`ts\n${codeFixture}\n\`\`\`\n\n| A | B |\n| - | - |\n| 1 | 2 |\n\nAfter\n\n[ref]: https://example.com/path`,
     images: [{ src: "data:image/png;base64,iVBORw0KGgo=", name: "last.png" }],
   });
-  const panels = composeComicRows([value], 1200, () => true).flatMap((row) => row.panels);
+  const specs = composeComicRows([value], 1200, () => true).flatMap((row) => row.panels);
   const { container } = render(
-    panels.map((item) => (
-      <ComicPanel key={item.slice.start} entry={value} {...item} scene="room" expression="neutral" />
+    specs.map((spec) => (
+      <ComicPanel
+        key={`${spec.balloons[0]?.slice.entryId}:${spec.balloons[0]?.slice.start}`}
+        balloons={spec.balloons.map((balloon) => ({ ...balloon, entry: value }))}
+        scene="room"
+        expression="neutral"
+        sessionRef="local:test"
+        path="[]"
+      />
     )),
   );
   expect(container.querySelectorAll("h1, strong, ul, a, table")).toHaveLength(5);
@@ -85,11 +91,18 @@ test("a code-only thought keeps every line and its final images without an empty
     text: `\n\n\`\`\`mermaid\n${code}\n\`\`\`\n\n`,
     images: [{ src: "data:image/png;base64,iVBORw0KGgo=", name: "last.png" }],
   });
-  const panels = composeComicRows([value], 390, () => false).flatMap((row) => row.panels);
-  expect(panels).toHaveLength(1);
+  const specs = composeComicRows([value], 390, () => false).flatMap((row) => row.panels);
+  expect(specs).toHaveLength(1);
   const { container } = render(
-    panels.map((item) => (
-      <ComicPanel key={item.slice.start} entry={value} {...item} scene="room" expression="neutral" />
+    specs.map((spec) => (
+      <ComicPanel
+        key={`${spec.balloons[0]?.slice.entryId}:${spec.balloons[0]?.slice.start}`}
+        balloons={spec.balloons.map((balloon) => ({ ...balloon, entry: value }))}
+        scene="room"
+        expression="neutral"
+        sessionRef="local:test"
+        path="[]"
+      />
     )),
   );
   expect(container.querySelectorAll("article")).toHaveLength(1);
@@ -333,12 +346,13 @@ test("a mixed message preserves every text unit and renders one ordered image ga
       { src: "data:image/png;base64,iVBORw0KGgp=", name: "second.png" },
     ],
   });
-  const panels = composeComicRows([value], 1200, (_document, part) => part.input.length <= 18).flatMap(
+  const specs = composeComicRows([value], 1200, (_document, part) => part.input.length <= 18).flatMap(
     (row) => row.panels,
   );
-  expect(panels.length).toBeGreaterThan(2);
+  const balloons = specs.flatMap((spec) => spec.balloons);
+  expect(balloons.length).toBeGreaterThan(2);
   let offset = 0;
-  for (const { slice } of panels) {
+  for (const { slice } of balloons) {
     expect(slice.start).toBe(offset);
     expect(slice.end).toBeGreaterThan(offset);
     offset = slice.end;
@@ -347,16 +361,14 @@ test("a mixed message preserves every text unit and renders one ordered image ga
 
   const { container } = render(
     <div>
-      {panels.map(({ slice, composition, document, part }) => (
+      {specs.map((spec) => (
         <ComicPanel
-          key={slice.start}
-          document={document}
-          part={part}
-          entry={value}
-          slice={slice}
-          composition={composition}
+          key={`${spec.balloons[0]?.slice.entryId}:${spec.balloons[0]?.slice.start}`}
+          balloons={spec.balloons.map((balloon) => ({ ...balloon, entry: value }))}
           scene="room"
           expression="neutral"
+          sessionRef="local:test"
+          path="[]"
         />
       ))}
     </div>,
@@ -373,7 +385,7 @@ test("a mixed message preserves every text unit and renders one ordered image ga
     Array.from(last?.querySelectorAll("[data-comic-text], [data-testid='image-gallery-thumb'] img") ?? [], (node) =>
       node instanceof HTMLImageElement ? node.getAttribute("src") : node.textContent,
     ),
-  ).toEqual([value.text.slice(panels.at(-1)?.slice.start), ...(value.images?.map((image) => image.src) ?? [])]);
+  ).toEqual([value.text.slice(balloons.at(-1)?.slice.start), ...(value.images?.map((image) => image.src) ?? [])]);
   expect(
     Array.from(container.querySelectorAll("[data-testid='image-gallery-caption']"), (caption) => caption.textContent),
   ).toEqual(["first.png", "second.png"]);
@@ -382,9 +394,11 @@ test("a mixed message preserves every text unit and renders one ordered image ga
 test("an image-only user message retains its gallery without inventing text", () => {
   const value = entry({ text: "", images: [{ src: "data:image/png;base64,iVBORw0KGgo=", name: "user.png" }] });
   const rows = composeComicRows([value], 1200, () => true);
-  expect(rows.map((row) => row.panels.map(({ slice, composition }) => ({ slice, composition })))).toEqual([
-    [{ slice: { entryId: value.id, start: 0, end: 0 }, composition: "wide" }],
-  ]);
+  expect(
+    rows.map((row) =>
+      row.panels.flatMap((panel) => panel.balloons.map(({ slice, composition }) => ({ slice, composition }))),
+    ),
+  ).toEqual([[{ slice: { entryId: value.id, start: 0, end: 0 }, composition: "wide" }]]);
   const { container } = render(panel(value));
   expect(container.querySelector("[data-comic-text]")?.textContent).toBe("");
   expect(container.querySelectorAll("[data-testid='image-gallery-thumb']")).toHaveLength(1);
@@ -402,17 +416,58 @@ test("stage pose is stable for an entry and presentation never infers a result",
   if (!part) throw new Error("missing first part");
   rendered.rerender(
     <ComicPanel
-      document={document}
-      part={part}
-      entry={value}
-      slice={{ entryId: value.id, start: 0, end: value.text.length }}
-      composition="wide"
+      balloons={[
+        {
+          document,
+          part,
+          entry: value,
+          slice: { entryId: value.id, start: 0, end: value.text.length },
+          composition: "wide",
+        },
+      ]}
       scene="field"
       expression="angry"
+      sessionRef="local:test"
+      path="[]"
     />,
   );
   expect(rendered.container.querySelector("[data-comic-scene]")?.getAttribute("data-comic-scene")).toBe("field");
   expect(rendered.container.querySelector("[data-comic-scene] img")?.getAttribute("src")).toContain("anna-angry.png");
+});
+
+test("stacked same-party balloons share one panel and stage with per-balloon source ranges", () => {
+  const worker = { key: "worker", character: "xeno", name: "Worker", badge: "delegate" } satisfies ComicPersona;
+  const entries = [
+    entry({ id: "one", persona: worker, speaker: "assistant", text: "First update." }),
+    entry({ id: "two", persona: worker, speaker: "assistant", text: "Second update." }),
+  ];
+  const rows = composeComicRows(entries, 1290, () => true, 416);
+  expect(rows).toHaveLength(1);
+  const spec = rows[0]?.panels[0];
+  const { container } = render(
+    <ComicPanel
+      balloons={spec?.balloons.map((balloon, index) => ({ ...balloon, entry: entries[index]! })) ?? []}
+      scene="room"
+      expression="neutral"
+      sessionRef="local:test"
+      path="[]"
+    />,
+  );
+  expect(container.querySelectorAll("article")).toHaveLength(1);
+  expect(container.querySelectorAll("[data-comic-balloon]")).toHaveLength(2);
+  expect(container.querySelectorAll("[data-comic-scene] img")).toHaveLength(1);
+  expect(
+    Array.from(container.querySelectorAll("[data-comic-entry]"), (node) => node.getAttribute("data-comic-entry")),
+  ).toEqual(["one", "two"]);
+  expect(
+    Array.from(container.querySelectorAll("[data-comic-entry]"), (node) => [
+      node.getAttribute("data-comic-start"),
+      node.getAttribute("data-comic-end"),
+    ]),
+  ).toEqual([
+    ["0", `${entries[0]?.text.length}`],
+    ["0", `${entries[1]?.text.length}`],
+  ]);
 });
 
 test("DOM probe checks both balloon geometries and can be disposed", () => {

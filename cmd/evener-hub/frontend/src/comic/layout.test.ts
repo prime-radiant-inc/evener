@@ -2,8 +2,9 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
-import { composeComicRows, splitComicText } from "./layout";
-import type { ComicEntry } from "./projection";
+import type { ComicPersona } from "./cast";
+import { type ComicRow, composeComicRows, splitComicText } from "./layout";
+import type { ComicEntry, ComicItemEntry } from "./projection";
 
 function entry(id: string, kind: ComicEntry["kind"], text: string): ComicEntry {
   return {
@@ -18,12 +19,32 @@ function entry(id: string, kind: ComicEntry["kind"], text: string): ComicEntry {
   };
 }
 
+const WORKER: ComicPersona = { key: "worker", character: "xeno", name: "Worker", badge: "delegate" };
+const HUMAN: ComicPersona = { key: "human", character: "anna", name: "Anna", badge: "human" };
+
+function party(id: string, kind: ComicEntry["kind"], text: string, persona: ComicPersona): ComicItemEntry {
+  return {
+    id,
+    sourceItemId: id,
+    sourceIndex: 0,
+    kind,
+    speaker: kind === "dialogue" ? "human" : "assistant",
+    sourceLabel: id,
+    text,
+    streaming: false,
+    persona,
+  };
+}
+
 const originals = [
   "alpha\t beta\n\nnext sentence.  After that!",
   "```ts\nconst answer = 42;\n```\n\nlast line",
   "cafe\u0301 👩🏽‍💻 and 👨‍👩‍👧‍👦 then 🇺🇸",
   "unbroken".repeat(35),
 ];
+
+const rowBalloonIds = (rows: readonly ComicRow[]) =>
+  rows.map((row) => row.panels.flatMap((panel) => panel.balloons.map((balloon) => balloon.slice.entryId)));
 
 describe.each(["dialogue", "thought"] as const)("%s partition", (kind) => {
   test("reconstructs every source character at grapheme boundaries", () => {
@@ -51,7 +72,10 @@ describe.each(["dialogue", "thought"] as const)("%s partition", (kind) => {
       );
       expect(rows.every((row) => row.panels.length === 1)).toBe(true);
       expect(
-        rows.flatMap((row) => row.panels.map(({ slice }) => original.slice(slice.start, slice.end))).join(""),
+        rows
+          .flatMap((row) => row.panels.flatMap((panel) => panel.balloons))
+          .map(({ slice }) => original.slice(slice.start, slice.end))
+          .join(""),
       ).toBe(original);
     }
   });
@@ -65,7 +89,7 @@ describe.each(["dialogue", "thought"] as const)("%s partition", (kind) => {
 test("does not invent words for an empty image or content-free thought", () => {
   const entries = [entry("image", "images", ""), entry("thought", "thought", "")];
   const rows = composeComicRows(entries, 1200, () => true);
-  expect(rows.map((row) => row.panels.map((panel) => panel.slice))).toEqual([
+  expect(rows.map((row) => row.panels.flatMap((panel) => panel.balloons.map((balloon) => balloon.slice)))).toEqual([
     [{ entryId: "image", start: 0, end: 0 }],
     [{ entryId: "thought", start: 0, end: 0 }],
   ]);
@@ -87,14 +111,7 @@ test("pairs only adjacent single-slice dialogue within a strip", () => {
     (_document, part, composition) => composition !== "packed" || part.input.length <= 6,
     416,
   );
-  expect(rows.map((row) => row.panels.map((panel) => panel.slice.entryId))).toEqual([
-    ["a", "b"],
-    ["c"],
-    ["d"],
-    ["e"],
-    ["long"],
-    ["after"],
-  ]);
+  expect(rowBalloonIds(rows)).toEqual([["a", "b"], ["c"], ["d"], ["e"], ["long"], ["after"]]);
   expect(composeComicRows(entries, 760, () => true).every((row) => row.panels.length === 1)).toBe(true);
 });
 
@@ -109,7 +126,7 @@ test("keeps one column below the packing boundary and packs two at it", () => {
 test("packs as many panel-sized panels as the width fits", () => {
   const entries = ["a", "b", "c", "d", "e"].map((id) => entry(id, "dialogue", `${id}.`));
   const rows = composeComicRows(entries, 1290, () => true, 416);
-  expect(rows.map((row) => row.panels.map((panel) => panel.slice.entryId))).toEqual([
+  expect(rowBalloonIds(rows)).toEqual([
     ["a", "b", "c"],
     ["d", "e"],
   ]);
@@ -118,7 +135,71 @@ test("packs as many panel-sized panels as the width fits", () => {
   const wide = composeComicRows(entries, 1750, () => true, 416);
   expect(wide.map((row) => row.panels.length)).toEqual([4, 1]);
   expect(wide.map((row) => row.columns)).toEqual([4, 1]);
-  expect(wide[1]?.panels[0]?.composition).toBe("spotlight");
+  expect(wide[1]?.panels[0]?.balloons[0]?.composition).toBe("spotlight");
+});
+
+test("stacks consecutive same-party one-liners into one panel", () => {
+  const entries = ["a", "b", "c"].map((id) => party(id, "dialogue", `${id}.`, WORKER));
+  const rows = composeComicRows(entries, 1290, () => true, 416);
+  expect(rows).toHaveLength(1);
+  expect(rows[0]?.panels).toHaveLength(1);
+  expect(rows[0]?.panels[0]?.balloons.map((balloon) => balloon.slice.entryId)).toEqual(["a", "b", "c"]);
+  expect(rows[0]?.panels[0]?.balloons.map(({ slice }) => [slice.start, slice.end])).toEqual([
+    [0, 2],
+    [0, 2],
+    [0, 2],
+  ]);
+  expect(rows[0]?.panels[0]?.balloons.every((balloon) => balloon.composition === "packed")).toBe(true);
+  expect(rows[0]?.columns).toBe(1);
+});
+
+test("attributed captions stack, unattributed captions never stack", () => {
+  const attributed = ["r1", "r2"].map((id) => party(id, "caption", `${id}.`, WORKER));
+  const rows = composeComicRows(attributed, 1290, () => true, 416);
+  expect(rows).toHaveLength(1);
+  expect(rows[0]?.panels[0]?.balloons.map((balloon) => balloon.slice.entryId)).toEqual(["r1", "r2"]);
+  const bare = [entry("c1", "caption", "One."), entry("c2", "caption", "Two.")];
+  const bareRows = composeComicRows(bare, 1290, () => true, 416);
+  expect(bareRows.every((row) => row.panels.length === 1)).toBe(true);
+  expect(bareRows.every((row) => row.panels[0]?.balloons.length === 1)).toBe(true);
+});
+
+test("a long same-party run continues into a following panel of the same party", () => {
+  const entries = Array.from({ length: 10 }, (_, index) => party(`u${index}`, "dialogue", `line ${index}.`, WORKER));
+  const rows = composeComicRows(entries, 1290, () => true, 416);
+  // The capped run and its continuation pack side by side as two panels of one row.
+  expect(rows).toHaveLength(1);
+  expect(rows[0]?.panels.map((panel) => panel.balloons.map((balloon) => balloon.slice.entryId))).toEqual([
+    Array.from({ length: 8 }, (_, index) => `u${index}`),
+    ["u8", "u9"],
+  ]);
+  expect(rows[0]?.columns).toBe(3);
+});
+
+test("different-party one-liners still pack side by side", () => {
+  const entries = [
+    party("a", "dialogue", "A.", HUMAN),
+    party("b", "dialogue", "B.", WORKER),
+    party("c", "dialogue", "C.", HUMAN),
+  ];
+  const rows = composeComicRows(entries, 1290, () => true, 416);
+  expect(rows.map((row) => row.panels.map((panel) => panel.balloons.map((balloon) => balloon.slice.entryId)))).toEqual([
+    [["a"], ["b"], ["c"]],
+  ]);
+});
+
+test("a stack packs beside other panels without losing source ranges", () => {
+  const entries = [
+    party("a", "dialogue", "A1.", WORKER),
+    party("b", "dialogue", "A2.", WORKER),
+    party("c", "dialogue", "C.", HUMAN),
+  ];
+  const rows = composeComicRows(entries, 847, () => true, 416);
+  expect(rows).toHaveLength(1);
+  expect(rows[0]?.panels.map((panel) => panel.balloons.map((balloon) => balloon.slice.entryId))).toEqual([
+    ["a", "b"],
+    ["c"],
+  ]);
 });
 
 test("packed slots measure at their own column width", () => {
@@ -149,7 +230,11 @@ test("a continuation is wide and a spotlight is settled short dialogue only", ()
   ];
   entries[2] = { ...entries[2], streaming: true } as ComicEntry;
   const rows = composeComicRows(entries, 1200, (_document, part) => part.input.length <= 30);
-  expect(rows.map((row) => row.panels.map((p) => [p.slice.entryId, p.composition]))).toEqual([
+  expect(
+    rows.map((row) =>
+      row.panels.flatMap((panel) => panel.balloons).map((balloon) => [balloon.slice.entryId, balloon.composition]),
+    ),
+  ).toEqual([
     [["first", "wide"]],
     [["first", "wide"]],
     [["first", "wide"]],
@@ -166,8 +251,12 @@ test.each(["first", "second"] as const)("image-bearing dialogue in %s pair posit
   const plain = entry("plain", "dialogue", "Thanks.");
   const entries = position === "first" ? [mixed, plain] : [plain, mixed];
   const rows = composeComicRows(entries, 1200, () => true);
-  expect(rows.map((row) => row.panels.map((panel) => panel.slice.entryId))).toEqual(entries.map((value) => [value.id]));
-  expect(rows.flatMap((row) => row.panels).find((panel) => panel.slice.entryId === mixed.id)?.composition).toBe("wide");
+  expect(rowBalloonIds(rows)).toEqual(entries.map((value) => [value.id]));
+  expect(
+    rows
+      .flatMap((row) => row.panels.flatMap((panel) => panel.balloons))
+      .find((balloon) => balloon.slice.entryId === mixed.id)?.composition,
+  ).toBe("wide");
 });
 
 test("a short image-bearing dialogue never becomes a spotlight", () => {
@@ -175,7 +264,7 @@ test("a short image-bearing dialogue never becomes a spotlight", () => {
     ...entry("mixed", "dialogue", "Look."),
     images: [{ src: "data:image/png;base64,iVBORw0KGgo=", name: "photo.png" }],
   };
-  expect(composeComicRows([mixed], 1200, () => true)[0]?.panels[0]?.composition).toBe("wide");
+  expect(composeComicRows([mixed], 1200, () => true)[0]?.panels[0]?.balloons[0]?.composition).toBe("wide");
 });
 
 test("single-prose eligibility gates compact fit calls without limiting pair length", () => {
@@ -200,9 +289,9 @@ test("single-prose eligibility gates compact fit calls without limiting pair len
     calls.push(composition);
     return true;
   };
-  expect(composeComicRows([entry("limit", "dialogue", "x".repeat(80))], 1200, fit)[0]?.panels[0]?.composition).toBe(
-    "spotlight",
-  );
+  expect(
+    composeComicRows([entry("limit", "dialogue", "x".repeat(80))], 1200, fit)[0]?.panels[0]?.balloons[0]?.composition,
+  ).toBe("spotlight");
   expect(calls.every((composition) => composition === "spotlight")).toBe(true);
   calls.length = 0;
   const rows = composeComicRows(
@@ -222,11 +311,11 @@ test("formatted continuations break between blocks, not inside emphasis or refer
     390,
     (_document, part) => part.input.length < 25,
   );
-  const panels = rows.flatMap((row) => row.panels);
-  expect(panels).toHaveLength(3);
-  expect(panels.map(({ slice }) => source.slice(slice.start, slice.end)).join("")).toBe(source);
-  expect(panels.map(({ slice }) => slice.start)).toEqual([0, 11, 39]);
-  expect(panels.map(({ part }) => part.input.includes("[ref]: https://example.com"))).toEqual([true, true, true]);
+  const balloons = rows.flatMap((row) => row.panels.flatMap((panel) => panel.balloons));
+  expect(balloons).toHaveLength(3);
+  expect(balloons.map(({ slice }) => source.slice(slice.start, slice.end)).join("")).toBe(source);
+  expect(balloons.map(({ slice }) => slice.start)).toEqual([0, 11, 39]);
+  expect(balloons.map(({ part }) => part.input.includes("[ref]: https://example.com"))).toEqual([true, true, true]);
 });
 
 test("technical blocks bypass balloon budgets even in a thought and never pair", () => {
@@ -240,7 +329,7 @@ test("technical blocks bypass balloon budgets even in a thought and never pair",
       return false;
     },
   );
-  expect(rows[0]?.panels.map((panel) => panel.composition)).toEqual(["insert"]);
+  expect(rows[0]?.panels.flatMap((panel) => panel.balloons).map((balloon) => balloon.composition)).toEqual(["insert"]);
   expect(calls).not.toContain("code");
-  expect(rows[0]?.panels[0]?.slice).toEqual({ entryId: "code", start: 0, end: source.length });
+  expect(rows[0]?.panels[0]?.balloons[0]?.slice).toEqual({ entryId: "code", start: 0, end: source.length });
 });

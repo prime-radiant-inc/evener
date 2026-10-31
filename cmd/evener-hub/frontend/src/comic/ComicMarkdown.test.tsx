@@ -273,13 +273,18 @@ function composed(source: string, live: boolean, errors: unknown[], split = fals
     760,
     () => !split,
   );
-  expect(rows.flatMap((row) => row.panels.map(({ slice }) => source.slice(slice.start, slice.end))).join("")).toBe(
-    source,
-  );
+  expect(
+    rows
+      .flatMap((row) => row.panels.flatMap((panel) => panel.balloons))
+      .map(({ slice }) => source.slice(slice.start, slice.end))
+      .join(""),
+  ).toBe(source);
   return (
     <RenderErrors errors={errors}>
       {rows.flatMap((row) =>
-        row.panels.map(({ document, part }) => <ComicMarkdown key={part.start} document={document} part={part} />),
+        row.panels
+          .flatMap((panel) => panel.balloons)
+          .map(({ document, part }) => <ComicMarkdown key={part.start} document={document} part={part} />),
       )}
     </RenderErrors>
   );
