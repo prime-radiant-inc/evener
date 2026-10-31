@@ -64,7 +64,7 @@ func TestRemoteManagerActorNamespace(t *testing.T) {
 			t.Run("read_changes_and_overlay", func(t *testing.T) {
 				nonlocal := appwire.ThreadItem{Type: "userMessage", Text: "other", Actor: &appwire.SessionActor{Kind: "manager", ManagerRef: "hub-a-id:manager-on-a"}}
 				response := appwire.ThreadReadResponse{
-					Thread: appwire.Thread{ID: "worker", Source: "local", Evener: appwire.EvenerThread{Ref: "local:worker"}},
+					Thread:  appwire.Thread{ID: "worker", Source: "local", Evener: appwire.EvenerThread{Ref: "local:worker"}},
 					Changes: &appwire.HistoryChanges{Items: []appwire.ThreadItem{item(), nonlocal}, Turns: []appwire.Turn{{ID: "turn-2", Items: []appwire.ThreadItem{item(), nonlocal}}}},
 					Overlay: []appwire.OverlayItem{{Key: "stream:1", Kind: appwire.OverlayStream, Item: item()}, {Key: "stream:2", Kind: appwire.OverlayStream, Item: nonlocal}},
 				}
