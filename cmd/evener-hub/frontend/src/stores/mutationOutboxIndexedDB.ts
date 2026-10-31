@@ -3,7 +3,7 @@ import {
   canEditQueuedMessage,
   canRemoveQueuedMessage,
   matchesQueuedMessageSnapshot,
-  type QueuedMessageStorage,
+  type WebQueuedMessageStorage,
 } from "@evener/appwire-client/state/mutation";
 import { IDBConnection, requestResult, transactionCompletion, tryAbortTransaction } from "./idbConnection";
 import { ownClientId } from "./mutationClientIdentity";
@@ -16,6 +16,7 @@ import type {
   MutationRecoveryKind,
   MutationRecoveryRecord,
   MutationStopBarrier,
+  MutationStopCapture,
 } from "./mutationOutbox";
 import { acceptedRecord, retainsAcceptedCopy, settlementRetiresRecovery } from "./mutationOutbox";
 import { trackProjectionWork } from "./projectionWork";
@@ -29,6 +30,7 @@ type MutationOutboxOperation =
   | "cancelUnattempted"
   | "discardCanceled"
   | "releaseCanceled"
+  | "reauthorizeBlocked"
   | "settleReceipt"
   | "transferToRecovery"
   | "updateRecoveryInput"
@@ -67,7 +69,8 @@ function sameRecoveryComposition(
 export type MutationRecoveryResendResult =
   | { status: "sent"; record: MutationOutboxRecord }
   | { status: "consumed" }
-  | { status: "refused" };
+  | { status: "refused" }
+  | { status: "fenced" };
 
 // What retargetOutbox moved to the resumed ref, by store: the caller drives its
 // per-ref bookkeeping when ANY of them moved (an optimistic-only or
@@ -93,18 +96,29 @@ export interface MutationOutboxIndexedDBOptions {
   onOpenDiagnostic?: (diagnostic: MutationOutboxOpenDiagnostic) => void;
 }
 
+// The displayed-ref half a recovery Send's press must name, beyond the base
+// capture pair (MutationStopCapture): the ref this pane renders, whose Stop
+// epoch the resend fences alongside the destination's - after a peer
+// retarget the two differ, and a Stop on the still-displayed session names
+// the displayed ref, so the resend stamps it on the row it enqueues.
+export type DisplayedRecoveryStopCapture = MutationStopCapture & { displayedRef: string };
+
 const DATABASE_NAME = "evener-mutation-outbox";
-// Version 4 is a compatibility fence, not a schema migration: the upgrade
-// handler below is unchanged and purely additive. The deployed version-3 code
-// shares attempt evidence through the `attempted` flag alone, so its dispatch
-// never counts unresolved attempts and a refusal rollback in this build could
-// erase evidence the older tab's concurrent attempt still needs - this build
-// must not share a database with it. A version-3 open against this database
-// fails with VersionError, and the old tab fails closed (storage-unavailable
-// errors) instead of silently erasing attempt evidence: the safe
-// mixed-version state is a reload, never a silent share
-// (docs/design/stop-cancellation-outbox.md §8).
-const DATABASE_VERSION = 4;
+// Version 5 is a compatibility fence, not a schema migration: the upgrade
+// handler below is unchanged and purely additive. The deployed version-4 code
+// fences only at the seams around dispatch, so a mixed-version share would
+// let the older tab's markAttempted commit attempt evidence on - and then
+// redispatch - a row a newer Stop crossed, while its cancel scan misses
+// displayed-ref rows entirely (the original #5182 High again,
+// mixed-version); the older eras' hazards (uncounted attempt evidence, a
+// canceled row stalling an old tab's FIFO) sit below it and stay fenced by the
+// same bump. A version-4 open against this database fails with VersionError,
+// and the old tab fails closed (storage-unavailable errors) instead of
+// silently misfencing: the safe mixed-version state is a reload, never a
+// silent share (docs/design/stop-cancellation-outbox.md §8).
+// The schema-fence version, exported so tests assert against the production
+// constant rather than a literal a future bump strands.
+export const DATABASE_VERSION = 5;
 const OUTBOX_STORE = "outbox";
 const OPTIMISTIC_STORE = "optimistic";
 const RECOVERY_STORE = "recovery";
@@ -216,7 +230,7 @@ function isCancelableByStop(record: MutationOutboxRecord): boolean {
 // MutationOutboxIndexedDB serializes sequence allocation with each durable
 // transition. Cross-tab correctness comes from IndexedDB readwrite transaction
 // ordering rather than a browser lease or leader election.
-export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAttachment> {
+export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<MutationAttachment> {
   readonly #connection: IDBConnection;
   readonly #databaseName: string;
   readonly #createMutationId: () => string;
@@ -348,26 +362,25 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
   // event delivery (the retry-lookup seams the note-draft tests hold).
   async getOutboxWithStopEpoch(
     clientMutationId: string,
-  ): Promise<{ record: MutationOutboxRecord | undefined; stopEpoch: number }> {
-    return this.#read([OUTBOX_STORE, SEQUENCE_STORE], async (transaction) => {
-      // The sequences row is keyed by the ref, which only the row read
-      // carries - but the pair must issue together, so the epoch side reads
-      // the whole (small, one-row-per-ref) store and picks the row's ref out of
-      // the result. It issues first so the pair cannot leave one request's
-      // promise unconsumed: the row read is the request a caller's abort seam
-      // can strike mid-creation, and both promises always meet Promise.all.
-      const sequencesRequest = requestResult<TargetSequence[]>(transaction.objectStore(SEQUENCE_STORE).getAll());
-      const recordRequest = requestResult<MutationOutboxRecord | undefined>(
-        transaction.objectStore(OUTBOX_STORE).get(clientMutationId),
-      );
-      const [record, sequences] = await Promise.all([recordRequest, sequencesRequest]);
-      // A missing row has no ref to fence; the caller's absent-row refusal
-      // never reaches the comparison.
-      const stopEpoch = record
-        ? (sequences.find((sequence) => sequence.targetRef === record.targetRef)?.stopEpoch ?? 0)
-        : 0;
-      return { record, stopEpoch };
-    });
+  ): Promise<{ record: MutationOutboxRecord | undefined; stopEpoch: number; displayedStopEpoch: number }> {
+    return this.#rowWithStopEpoch(OUTBOX_STORE, clientMutationId, (record) => record?.displayedRef);
+  }
+
+  // A recovery Send's press-time capture, the recovery-row twin of
+  // getOutboxWithStopEpoch above: the row, its durable destination's stop
+  // epoch, AND the still-displayed ref's - the press's whole capture pair in
+  // ONE readonly snapshot, so the press opens one transaction instead of two
+  // and both fence halves read one consistent baseline. The Send press
+  // requests it in its own synchronous prefix because the row may be
+  // retargeted by a peer while the Send waits on its persistence or on
+  // destination hydration - the snapshot's destination and its epoch are the
+  // fence's baseline, so a Stop pressed after the press stays in that fence's
+  // future, never its baseline.
+  async getRecoveryWithStopEpoch(
+    clientMutationId: string,
+    displayedRef?: string,
+  ): Promise<{ record: MutationRecoveryRecord | undefined; stopEpoch: number; displayedStopEpoch: number }> {
+    return this.#rowWithStopEpoch(RECOVERY_STORE, clientMutationId, () => displayedRef);
   }
 
   // Stop's durable write: the ref's cancelable rows turn "canceled" in the
@@ -423,7 +436,11 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
     const records = await requestResult<MutationOutboxRecord[]>(store.getAll());
     const canceled: string[] = [];
     for (const record of records) {
-      if (record.targetRef !== targetRef) continue;
+      // A retargeted recovery resend carries the displayed ref it was sent
+      // from, so a Stop on that still-displayed session cancels it too - the
+      // post-enqueue half of the dual-ref Stop fence. Ordinary rows name only
+      // their own targetRef.
+      if (record.targetRef !== targetRef && record.displayedRef !== targetRef) continue;
       if (!isCancelableByStop(record)) continue;
       await requestResult(store.put({ ...record, state: "canceled" }));
       canceled.push(record.clientMutationId);
@@ -474,34 +491,38 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
     });
   }
 
-  // The one release of a canceled row: an explicit user Retry. Background
-  // reconciliation and reopen paths never reach this — it transitions only
-  // canceled -> submitting and refuses every other state. The optional
-  // barrier is the Retry click's stop-epoch capture (getOutboxWithStopEpoch,
-  // the release twin of enqueueIntent's): a Stop whose cancel transaction
-  // committed between the capture and this release bumped the epoch past the
-  // capture, and its cancel scan skipped the row (already canceled) - this
-  // write is the only thing left that could resurrect it, so it refuses and
-  // the row stays canceled for the newer Stop. A capture taken after the
-  // newest Stop compares equal and releases: that Retry is §4's deliberate
-  // post-Stop send. A caller passing no barrier at all is unchanged.
-  async releaseCanceled(clientMutationId: string, barrier?: MutationStopBarrier): Promise<boolean> {
-    return this.#write([OUTBOX_STORE, SEQUENCE_STORE], "releaseCanceled", async (transaction) => {
-      const store = transaction.objectStore(OUTBOX_STORE);
-      const record = await requestResult<MutationOutboxRecord | undefined>(store.get(clientMutationId));
-      if (record?.state !== "canceled") return false;
-      if (barrier !== undefined && (await this.#stopEpochOf(transaction, record.targetRef)) > barrier.stopEpoch) {
-        return false;
-      }
-      // The release is the user deliberately sending after a Stop (§4's
-      // exemption), so it re-authorizes the row past the Stop its fence
-      // captured: the capture refreshes to the current epoch, and the row's
-      // next refusal redelivers instead of re-canceling. The barrier above
-      // still fences a Stop newer than this press.
-      const stopEpoch = await this.#stopEpochOf(transaction, record.targetRef);
-      await requestResult(store.put({ ...record, state: "submitting", stopEpochAtEnqueue: stopEpoch }));
-      return true;
-    });
+  // The one release of a canceled row: an explicit user Retry, the §4 release
+  // fence. Background reconciliation and reopen paths never reach this - it
+  // transitions only canceled -> submitting and refuses every other state.
+  // The optional barrier is the Retry click's capture pair
+  // (getOutboxWithStopEpoch, the release twin of enqueueIntent's): a Stop
+  // whose cancel transaction committed between the capture and this release
+  // bumped either ref's epoch past its capture half, and its cancel scan
+  // skipped the row (already canceled) - this write is the only thing left
+  // that could resurrect it, so it refuses and the row stays canceled for the
+  // newer Stop. A capture taken after the newest Stop compares equal and
+  // releases: that Retry is §4's deliberate post-Stop send. A caller passing
+  // no barrier at all is unchanged (the legacy shape).
+  async releaseCanceled(clientMutationId: string, barrier?: MutationStopCapture): Promise<boolean> {
+    return this.#reauthorizeParkedRow(clientMutationId, barrier, "canceled");
+  }
+
+  // The one release of a blockedUnknown row: an explicit user Retry, and only
+  // for a row the crossed-Stop fence actually holds. Automatic reconciliation
+  // decides every innocent blockedUnknown row itself (reopen it, settle it
+  // from a receipt, or keep it waiting on authority), and the manual retry
+  // owes those rows their fresh authoritative read - so a reauthorization
+  // that also reopened them would bypass that refresh. The crossed fence's
+  // rows are exactly the ones no read can reopen: restoreProvenAbsent
+  // deliberately decides nothing for an attempted row a Stop crossed, because
+  // absence from a bounded read proves nothing, so a row the hub never
+  // accepted and no receipt will ever name would otherwise park its
+  // destination's FIFO forever. The user's click is the authorization: it
+  // re-sends the row under its ORIGINAL mutation ID with its attempt evidence
+  // preserved, so the daemon's journal can still replay the first attempt's
+  // receipt and dedupe the resend.
+  async reauthorizeBlockedMutation(clientMutationId: string, barrier: MutationStopCapture): Promise<boolean> {
+    return this.#reauthorizeParkedRow(clientMutationId, barrier, "blockedUnknown");
   }
 
   async listOutbox(targetRef?: string): Promise<MutationOutboxRecord[]> {
@@ -780,20 +801,85 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
       const record = await requestResult<MutationOutboxRecord | undefined>(store.get(clientMutationId));
       if (record?.state !== "submitting") return false;
       const unresolvedAttempts = priorUnresolvedAttempts(record) + 1;
-      // A row from before the capture field existed (persisted untouched
-      // through every later schema version) proves by survival, at its
-      // first mark, that no Stop's cancel scan has run since its birth -
-      // any bump would have canceled it while unattempted - so the epoch
-      // as it stands IS the epoch it was born at: initialize the capture
-      // here, and the refusal's fence compares against the birth epoch
-      // instead of an inherited zero a historical Stop trips. The
-      // conditional keeps every modern row's request sequence byte
-      // identical (the note editor's tightly-sequenced drain).
-      const stopEpochAtEnqueue =
-        record.stopEpochAtEnqueue === undefined
-          ? await this.#stopEpochOf(transaction, record.targetRef)
-          : record.stopEpochAtEnqueue;
-      await requestResult(store.put({ ...record, attempted: true, unresolvedAttempts, stopEpochAtEnqueue }));
+      // The choke-point fence: the one gate every dispatch passes, so no path
+      // can put a crossed row on the wire. The per-seam fences around dispatch
+      // (the cancel scan, the born-canceled barrier, the refusal rollback, the
+      // reconcile hold) are defense-in-depth from here on - this comparison is
+      // the enforcement point, commit-ordered against every Stop that can
+      // still lose a race with the transport.
+      //
+      // The fence needs the ref's current epoch only for rows the cancel scan
+      // cannot cancel. A fresh modern row (no attempt evidence, baseline
+      // stamped at birth) with a lagging baseline was necessarily crossed by a
+      // Stop whose own cancel scan matched it on either ref it crosses and
+      // canceled it while unattempted - so by the time this transaction reads
+      // the row, the state check above has already refused it. For those rows
+      // the fence reads nothing and this transaction keeps the request
+      // sequence byte-identical the note editor's tightly-sequenced drain
+      // stages against (the extra read wedges that drain's replay - pinned by
+      // NotesPanel's superseded-save test). A row carrying evidence (a
+      // reauthorized row's preserved attempt, or an unresolved concurrent
+      // attempt - the rows the scan skips) and a row from before the capture
+      // field existed DO read the epochs, batched with nothing else pending:
+      // the row's ref is unknown before the row read, so the batch reads the
+      // whole small sequence store and both requests resolve in one event
+      // delivery.
+      const evidenced = record.attempted === true || priorUnresolvedAttempts(record) > 0;
+      if (evidenced || record.stopEpochAtEnqueue === undefined) {
+        const sequences = await requestResult<TargetSequence[]>(transaction.objectStore(SEQUENCE_STORE).getAll());
+        const epochOf = (ref: string) => sequences.find((sequence) => sequence.targetRef === ref)?.stopEpoch ?? 0;
+        // A row from before the capture field existed (persisted untouched
+        // through every later schema version) proves by survival, at its
+        // first mark, that no Stop's cancel scan has run since its birth -
+        // any bump would have canceled it while unattempted - so the epoch
+        // as it stands IS the epoch it was born at: initialize the capture
+        // here, and the fence compares against the birth epoch instead of an
+        // inherited zero a historical Stop trips.
+        const stopEpochAtEnqueue =
+          record.stopEpochAtEnqueue === undefined ? epochOf(record.targetRef) : record.stopEpochAtEnqueue;
+        if (
+          await this.#fenceCrossedSinceEnqueue(
+            transaction,
+            { ...record, stopEpochAtEnqueue },
+            {
+              stopEpoch: epochOf(record.targetRef),
+              displayedStopEpoch: record.displayedRef === undefined ? undefined : epochOf(record.displayedRef),
+            },
+          )
+        ) {
+          // The fence's verdict is the row's truth: a row with no attempt
+          // evidence provably never left any tab, so the Stop's verdict is
+          // truthful cancellation; a row carrying evidence may already be in
+          // flight, so it parks delivery-uncertain for a receipt or refusal
+          // to settle - never canceled by absence (§5: attempted rows are
+          // uncertain, not canceled). The refused pass mints no attempt
+          // evidence: a fence-refused second tab's write must not inflate the
+          // count a real attempt's own refusal then rolls back - the count
+          // stays what the real attempts made it, or the refusal would leave
+          // a phantom attempt holding a provably unsent row uncertain
+          // forever. The park carries the fence's stamp: the Stop is the
+          // reason this row is not delivering, and the queue must still pass
+          // it (F1's semantics live at nextDispatchable).
+          await requestResult(
+            store.put(
+              evidenced
+                ? {
+                    ...record,
+                    state: "blockedUnknown",
+                    attempted: true,
+                    unresolvedAttempts: priorUnresolvedAttempts(record),
+                    stopEpochAtEnqueue,
+                    stopFenced: true,
+                  }
+                : { ...record, state: "canceled", attempted: false, unresolvedAttempts: 0, stopEpochAtEnqueue },
+            ),
+          );
+          return false;
+        }
+        await requestResult(store.put({ ...record, attempted: true, unresolvedAttempts, stopEpochAtEnqueue }));
+        return true;
+      }
+      await requestResult(store.put({ ...record, attempted: true, unresolvedAttempts }));
       return true;
     });
   }
@@ -819,9 +905,12 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
           // cancel scan skipped this attempted row bumped the epoch while
           // the attempt was in flight, and the refusal proves the attempt
           // never landed - the row holds canceled, released only by an
-          // explicit Retry, never dispatchable ahead of the interrupt.
-          const stopEpoch = await this.#stopEpochOf(transaction, record.targetRef);
-          if (stopEpoch > (record.stopEpochAtEnqueue ?? 0)) {
+          // explicit Retry, never dispatchable ahead of the interrupt. A
+          // retargeted resend is fenced on BOTH refs it crosses: a Stop on
+          // the still-displayed session it was sent from holds the row the
+          // same way one on the destination does. With markAttempted the
+          // enforcement point, this seam's fence is defense-in-depth.
+          if (await this.#fenceCrossedSinceEnqueue(transaction, record)) {
             await requestResult(store.put({ ...record, state: "canceled", attempted: false, unresolvedAttempts: 0 }));
             return false;
           }
@@ -835,8 +924,7 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
           await requestResult(store.put({ ...record, unresolvedAttempts: unresolvedAttempts - 1 }));
           return false;
         }
-        const stopEpoch = await this.#stopEpochOf(transaction, record.targetRef);
-        if (stopEpoch > (record.stopEpochAtEnqueue ?? 0)) {
+        if (await this.#fenceCrossedSinceEnqueue(transaction, record)) {
           await requestResult(store.put({ ...record, state: "canceled", attempted: false, unresolvedAttempts: 0 }));
           return false;
         }
@@ -876,16 +964,64 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
   // Preserve the original mutation ID and entire payload so the daemon's
   // durable journal can replay its receipt, or the original instance fence
   // can reject a retry after a clear. Known IDs stay on the receipt path.
-  // Returns the restored IDs.
+  // Returns the IDs this pass decided: each reopened to submitting, or - for
+  // a retargeted resend that took a Stop on either ref it crosses while it
+  // sat parked and provably unattempted - held canceled outright. An
+  // ATTEMPTED row the same fence stops is not decided at all: its attempt may
+  // already be delivered with the response lost, and absence from a bounded
+  // read proves nothing, so the crossed Stop fences redispatch only - the row
+  // stays delivery-uncertain for a receipt or refusal to settle, the same
+  // truth the refusal rollback's fence derives from an actual refusal.
   async restoreProvenAbsent(targetRef: string, authoritativeIds: ReadonlySet<string>): Promise<string[]> {
-    return this.#write(OUTBOX_STORE, undefined, async (transaction) => {
+    return this.#write([OUTBOX_STORE, SEQUENCE_STORE], undefined, async (transaction) => {
       const store = transaction.objectStore(OUTBOX_STORE);
       const records = await requestResult<MutationOutboxRecord[]>(store.getAll());
       const restored: string[] = [];
+      // The epochs every parked row on this ref compares against, read once
+      // for the pass (displayed refs memoized: retargeted rows share one).
+      const targetStopEpoch = await this.#stopEpochOf(transaction, targetRef);
+      const displayedStopEpochs = new Map<string, number>();
       for (const record of records) {
         if (record.targetRef !== targetRef) continue;
         if (record.state !== "blockedUnknown") continue;
         if (authoritativeIds.has(record.clientMutationId)) continue;
+        // The dual-ref fence at the reconcile seam, for EVERY parked row -
+        // retargeted or ordinary: a Stop that landed on either ref the send
+        // crosses while the row sat parked must stop this reopen, or the row
+        // re-dispatches ahead of a Stop the user pressed; and for an
+        // ordinary row the reopen is worse than a reorder - its baselines
+        // never move, so the reopened row parks again at the pre-transport
+        // gate and no Retry press can ever resend it. What the fence may
+        // DECIDE depends on what the row proves: an unattempted row provably
+        // never reached the hub, so the Stop's verdict is truthful
+        // cancellation; an attempted row may already be delivered with its
+        // response lost, and a bounded read that omits it proves nothing, so
+        // the fence holds it parked, stamped with the Stop -
+        // delivery-uncertain, never re-dispatched, still settleable by a
+        // receipt or a refusal. With markAttempted the enforcement point,
+        // this seam's fence is defense-in-depth.
+        let displayedStopEpoch: number | undefined;
+        if (record.displayedRef !== undefined) {
+          displayedStopEpoch = displayedStopEpochs.get(record.displayedRef);
+          if (displayedStopEpoch === undefined) {
+            displayedStopEpoch = await this.#stopEpochOf(transaction, record.displayedRef);
+            displayedStopEpochs.set(record.displayedRef, displayedStopEpoch);
+          }
+        }
+        if (
+          await this.#fenceCrossedSinceEnqueue(transaction, record, {
+            stopEpoch: targetStopEpoch,
+            displayedStopEpoch,
+          })
+        ) {
+          if (record.attempted === false) {
+            await requestResult(store.put({ ...record, state: "canceled" }));
+            restored.push(record.clientMutationId);
+          } else {
+            await requestResult(store.put({ ...record, state: "blockedUnknown", stopFenced: true }));
+          }
+          continue;
+        }
         await requestResult(store.put({ ...record, state: "submitting" }));
         restored.push(record.clientMutationId);
       }
@@ -1123,6 +1259,7 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
     barrier?: MutationStopBarrier,
     expectedRecoveryRevisions?: Readonly<Record<string, number>>,
     compositionOwnerId?: string,
+    displayedBarrier?: DisplayedRecoveryStopCapture,
   ): Promise<MutationOutboxRecord | undefined> {
     const result = await this.resendRecoveryResult(
       sourceIds,
@@ -1130,6 +1267,7 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
       barrier,
       expectedRecoveryRevisions,
       compositionOwnerId,
+      displayedBarrier,
     );
     return result.status === "sent" ? result.record : undefined;
   }
@@ -1140,6 +1278,7 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
     barrier?: MutationStopBarrier,
     expectedRecoveryRevisions?: Readonly<Record<string, number>>,
     compositionOwnerId?: string,
+    displayedBarrier?: DisplayedRecoveryStopCapture,
   ): Promise<MutationRecoveryResendResult> {
     if (!intent.targetRef.trim()) throw new Error("targetRef is required");
     return this.#write(ENQUEUE_STORES, "resendRecovery", async (transaction) => {
@@ -1179,6 +1318,34 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
       // submission: its own refused redeliveries stay transient instead of
       // fence-canceling against a Stop that predates the resend.
       const stopEpoch = await this.#stopEpochOf(transaction, intent.targetRef);
+      const displayedStopEpoch =
+        displayedBarrier === undefined
+          ? 0
+          : // An ordinary resend's displayed ref IS its destination: the one
+            // read serves both halves.
+            displayedBarrier.displayedRef === intent.targetRef
+            ? stopEpoch
+            : await this.#stopEpochOf(transaction, displayedBarrier.displayedRef);
+      // A RETARGETED resend the fence stops never becomes a destination row:
+      // its canceled row would live keyed to the destination ref, a session
+      // the sending pane is not looking at (the recovery tray projects by the
+      // displayed session's ref), so the composition's only durable copy
+      // would be invisible to its author. The source recovery rows stay
+      // exactly where the user can see them, with the tray's existing
+      // affordances, and the press answers a distinct not-sent outcome.
+      // Retargeted-ness is a property of the send itself - the pane displays
+      // a session other than the row's destination - never of which optional
+      // parameters a caller passed. An ordinary (non-retargeted) resend keeps
+      // its born-canceled row: the displayed ref IS the destination, so the
+      // canceled row surfaces in the same session's queue strip with its
+      // Retry affordance (§6's display).
+      if (
+        displayedBarrier !== undefined &&
+        displayedBarrier.displayedRef !== intent.targetRef &&
+        ((barrier !== undefined && stopEpoch > barrier.stopEpoch) || displayedStopEpoch > displayedBarrier.stopEpoch)
+      ) {
+        return { status: "fenced" };
+      }
       const attachments = intent.attachments.map((attachment) => ({
         ...attachment,
         presentationId: this.#createPresentationId(),
@@ -1194,7 +1361,21 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
         originClientId: ownClientId(),
         intentSequence,
         createdAt: this.#now(),
-        state: barrier !== undefined && stopEpoch > barrier.stopEpoch ? "canceled" : "submitting",
+        state:
+          (barrier !== undefined && stopEpoch > barrier.stopEpoch) ||
+          (displayedBarrier !== undefined && displayedStopEpoch > displayedBarrier.stopEpoch)
+            ? "canceled"
+            : "submitting",
+        // Retain the displayed-ref cancellation ownership past the enqueue:
+        // a Stop pressed on the still-displayed session after this row
+        // commits (while its dispatch waits out a reconnect) must still be
+        // able to cancel it.
+        ...(displayedBarrier === undefined
+          ? {}
+          : {
+              displayedRef: displayedBarrier.displayedRef,
+              displayedStopEpochAtEnqueue: displayedStopEpoch,
+            }),
         attempted: false,
         stopEpochAtEnqueue: stopEpoch,
       };
@@ -1210,10 +1391,15 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
       if (record.state === "submitting") return record;
       // A canceled row provably never left the client, so it cannot be
       // reordered against the daemon and must not park what follows it —
-      // including the interrupt that canceled it. A blockedUnknown head is
-      // different: the daemon may already have applied it, so the FIFO stays
-      // closed behind it.
-      if (record.state === "blockedUnknown") return undefined;
+      // including the interrupt that canceled it. A blockedUnknown head
+      // stamped by the Stop fence is the same truth: the Stop is the reason
+      // the row is not delivering, and the fence stops the row's DELIVERY,
+      // not the queue — what follows it, most often the Stop's own
+      // interrupt, must still reach the daemon or the session keeps running
+      // past the Stop the user pressed. An unstamped blockedUnknown head is
+      // genuine delivery uncertainty: the daemon may already have applied
+      // it, so the FIFO stays closed behind it.
+      if (record.state === "blockedUnknown" && record.stopFenced !== true) return undefined;
     }
     return undefined;
   }
@@ -1390,5 +1576,148 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
         stopEpoch: (current?.stopEpoch ?? 0) + 1,
       } satisfies TargetSequence),
     );
+  }
+
+  // The dual-ref fence's ONE predicate, the comparison every fence site
+  // consumes: whether a Stop landed on either ref the row crosses since its
+  // enqueue-time baselines were captured. A missing baseline or a missing
+  // displayed ref reads as never (zero), the conservative direction. The
+  // optional epochs hand the predicate readings the caller's own transaction
+  // already took (the reauthorization path validates and refreshes against
+  // one read per ref), so folding a site here costs no extra sequence-store
+  // reads.
+  async #fenceCrossedSinceEnqueue(
+    transaction: IDBTransaction,
+    record: MutationOutboxRecord,
+    epochs?: { stopEpoch?: number; displayedStopEpoch?: number },
+  ): Promise<boolean> {
+    const stopEpoch = epochs?.stopEpoch ?? (await this.#stopEpochOf(transaction, record.targetRef));
+    if (stopEpoch > (record.stopEpochAtEnqueue ?? 0)) return true;
+    if (record.displayedRef === undefined) return false;
+    const displayedStopEpoch =
+      epochs?.displayedStopEpoch ?? (await this.#stopEpochOf(transaction, record.displayedRef));
+    return displayedStopEpoch > (record.displayedStopEpochAtEnqueue ?? 0);
+  }
+
+  // The ONE baseline refresh, a pure shaper: the only place both enqueue-time
+  // baselines ever change after a row's birth is the reauthorization path
+  // below, which hands the shaper the epochs its own transaction just
+  // validated - the deliberate post-Stop send re-anchors both fences to the
+  // world as it stands, and when the two refs are the same the pair reads the
+  // same epoch and stays consistent.
+  #baselinesRefreshed(
+    record: MutationOutboxRecord,
+    stopEpoch: number,
+    displayedStopEpoch?: number,
+  ): MutationOutboxRecord {
+    return {
+      ...record,
+      stopEpochAtEnqueue: stopEpoch,
+      ...(displayedStopEpoch === undefined ? {} : { displayedStopEpochAtEnqueue: displayedStopEpoch }),
+    };
+  }
+
+  // The one reauthorization path, shared by the two releases an explicit
+  // user Retry owns (the same deliberate post-Stop send): the user sending
+  // past the Stop the row sat behind, re-sent under its ORIGINAL mutation ID
+  // with its attempt evidence preserved. `from` names the parked state the
+  // click releases; the two differ only in what the fence owes the row. A
+  // canceled row provably never reached the daemon, so it may release with
+  // no barrier at all (the legacy caller shape) and carries no crossed
+  // precondition. A blockedUnknown row is delivery-uncertain: its release
+  // DEMANDS the click's capture pair and refuses an innocent row (the
+  // crossed-fence precondition) - reconciliation decides those rows, and
+  // the manual retry owes them their fresh authoritative read. The barrier
+  // validation is the capture-to-release fence: a Stop that landed on either
+  // ref inside the window compares newer and the release refuses, the row
+  // staying parked for it - the crossed Stop a blockedUnknown row already
+  // sat behind predates the capture and is the very Stop this click
+  // deliberately outranks. Both baselines refresh from the same single read
+  // per ref that validated them, so the row's next refusal redelivers
+  // instead of re-parking against the Stop this click outranked. Everything
+  // else about the row is preserved as it stands. With markAttempted the
+  // enforcement point, this seam's validation is defense-in-depth.
+  async #reauthorizeParkedRow(
+    clientMutationId: string,
+    barrier: MutationStopCapture | undefined,
+    from: "canceled" | "blockedUnknown",
+  ): Promise<boolean> {
+    return this.#write(
+      [OUTBOX_STORE, SEQUENCE_STORE],
+      from === "canceled" ? "releaseCanceled" : "reauthorizeBlocked",
+      async (transaction) => {
+        const store = transaction.objectStore(OUTBOX_STORE);
+        const record = await requestResult<MutationOutboxRecord | undefined>(store.get(clientMutationId));
+        if (record?.state !== from) return false;
+        const stopEpoch = await this.#stopEpochOf(transaction, record.targetRef);
+        const displayedStopEpoch =
+          record.displayedRef === undefined ? undefined : await this.#stopEpochOf(transaction, record.displayedRef);
+        // The crossed-fence precondition, blockedUnknown only: at least one
+        // baseline lags its ref's current epoch. An innocent row answers
+        // false and keeps its reconcile-driven outcomes.
+        if (
+          from === "blockedUnknown" &&
+          !(await this.#fenceCrossedSinceEnqueue(transaction, record, {
+            stopEpoch,
+            displayedStopEpoch: displayedStopEpoch ?? 0,
+          }))
+        ) {
+          return false;
+        }
+        if (barrier !== undefined && stopEpoch > barrier.stopEpoch) return false;
+        if (
+          barrier?.displayedStopEpoch !== undefined &&
+          displayedStopEpoch !== undefined &&
+          displayedStopEpoch > barrier.displayedStopEpoch
+        ) {
+          return false;
+        }
+        // The released row drops the fence's stamp: this click deliberately
+        // outranked the Stop, so the row is no longer one the Stop is holding
+        // - and a later park (an outcome nobody can vouch for) must block the
+        // queue behind it like every genuine-uncertainty row does.
+        await requestResult(
+          store.put(
+            this.#baselinesRefreshed(
+              { ...record, state: "submitting", stopFenced: undefined },
+              stopEpoch,
+              displayedStopEpoch,
+            ),
+          ),
+        );
+        return true;
+      },
+    );
+  }
+
+  // The ONE press-time capture both capture methods serve: a row (from
+  // whichever store) and the stop epochs of its destination and displayed
+  // refs, from ONE readonly snapshot. The sequences row is keyed by the ref,
+  // which only the row read carries - but the pair must issue together, so
+  // the epoch side reads the whole (small, one-row-per-ref) store and picks
+  // the refs out of the result. It issues first so the pair cannot leave one
+  // request's promise unconsumed: the row read is the request a caller's
+  // abort seam can strike mid-creation, and both promises always meet
+  // Promise.all. A missing row has no ref to fence (the caller's absent-row
+  // refusal never reaches the comparison), and a missing displayed ref reads
+  // zero - a capture consumer can compare both halves unconditionally.
+  async #rowWithStopEpoch<R extends { targetRef: string }>(
+    storeName: typeof OUTBOX_STORE | typeof RECOVERY_STORE,
+    clientMutationId: string,
+    displayedRefOf: (record: R | undefined) => string | undefined,
+  ): Promise<{ record: R | undefined; stopEpoch: number; displayedStopEpoch: number }> {
+    return this.#read([storeName, SEQUENCE_STORE], async (transaction) => {
+      const sequencesRequest = requestResult<TargetSequence[]>(transaction.objectStore(SEQUENCE_STORE).getAll());
+      const recordRequest = requestResult<R | undefined>(transaction.objectStore(storeName).get(clientMutationId));
+      const [record, sequences] = await Promise.all([recordRequest, sequencesRequest]);
+      const displayedRef = displayedRefOf(record);
+      const stopEpoch = record
+        ? (sequences.find((sequence) => sequence.targetRef === record.targetRef)?.stopEpoch ?? 0)
+        : 0;
+      const displayedStopEpoch = displayedRef
+        ? (sequences.find((sequence) => sequence.targetRef === displayedRef)?.stopEpoch ?? 0)
+        : 0;
+      return { record, stopEpoch, displayedStopEpoch };
+    });
   }
 }

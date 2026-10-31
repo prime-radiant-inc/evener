@@ -126,8 +126,10 @@ import {
   type MutationOutboxRecord,
   type MutationRecoveryRecord,
   type MutationStopBarrier,
+  type MutationStopCapture,
 } from "./mutationOutbox";
 import {
+  type DisplayedRecoveryStopCapture,
   MutationOutboxIndexedDB,
   type MutationRecoveryResendResult,
   type RetargetedMutations,
@@ -2989,7 +2991,12 @@ export async function retryBlockedMutation(
   // it in the database.
   const captureRead = runtime.storage.getOutboxWithStopEpoch(clientMutationId);
   await runtime.start;
-  const { record, stopEpoch } = await captureRead;
+  // The capture is the click's PAIR: the row's destination epoch and, for a
+  // retargeted resend, the still-displayed ref's. A Stop on either ref that
+  // commits after this snapshot and before the release write below compares
+  // newer against its half and the release refuses - the same commit-order
+  // comparison the enqueue barrier carries, now on both refs the row crosses.
+  const { record, stopEpoch, displayedStopEpoch } = await captureRead;
   if (record?.state !== "blockedUnknown" && record?.state !== "canceled") return false;
   // Only an explicit user Retry releases a canceled row (the one reversal the
   // design allows); background retry modes exist for delivery-uncertain rows
@@ -3047,7 +3054,7 @@ export async function retryBlockedMutation(
     // fallback send must see it before the async refresh can.
     const released = await trackOutboxWrite(
       record.targetRef,
-      () => runtime.storage.releaseCanceled(clientMutationId, { stopEpoch }),
+      () => runtime.storage.releaseCanceled(clientMutationId, { stopEpoch, displayedStopEpoch }),
       // The released row keeps the id it is reopened under, and is undelivered
       // work: it is reopened for a fresh dispatch.
       (didRelease) => (didRelease ? { clientMutationId, undelivered: true } : undefined),
@@ -3070,6 +3077,39 @@ export async function retryBlockedMutation(
   );
   if (!isCurrentMutationRuntime(runtime) || currentDispatchClient() !== client || dispatchReadyEpoch !== epoch)
     return false;
+  // A blockedUnknown row that is STILL parked after the reconciliation above is
+  // one the crossed-Stop fence held - no automatic path may reopen it, and the
+  // user's Retry click is the one authorization that can. It runs after the
+  // resync deliberately: an innocent parked row must first get its fresh
+  // authoritative read (which may settle it delivered, reopen it, or keep it
+  // waiting on authority - all outcomes this click must not preempt), and the
+  // crossed row's own read may still settle it by receipt. Only the held row
+  // reauthorizes, under its original mutation ID with the attempt evidence
+  // preserved (the daemon's journal can still replay the first attempt's
+  // receipt). The click's capture pair validates both refs: a Stop that landed
+  // on either inside the capture-to-release window refuses the
+  // reauthorization and the row stays parked for it. A refused
+  // reauthorization falls through to the decision read below - the row it
+  // left parked reports itself. Background retry modes never take this branch.
+  if (record.state === "blockedUnknown" && mode === "user") {
+    // The reauthorization itself refuses every row that is no longer parked
+    // delivery-uncertain behind a crossed fence, inside its own transaction
+    // on a fresher read - no pre-read needed.
+    const released = await trackOutboxWrite(
+      record.targetRef,
+      () => runtime.storage.reauthorizeBlockedMutation(clientMutationId, { stopEpoch, displayedStopEpoch }),
+      // The reauthorized row keeps the id it reopens under, and is undelivered
+      // work: it reopens for a fresh dispatch.
+      (didRelease) => (didRelease ? { clientMutationId, undelivered: true } : undefined),
+    );
+    if (released) {
+      notifyMutationPersistence([record.targetRef]);
+      // The resync-and-dispatch tail above already ran its dispatch pass, so
+      // the reopened row drives its own - the same kick a resend gives its
+      // fresh row.
+      handleDiscoveredMutations(runtime, [record.targetRef]);
+    }
+  }
   const current = await runtime.storage.getOutbox(clientMutationId);
   return current?.state !== "blockedUnknown" && current?.state !== "canceled";
 }
@@ -3149,6 +3189,24 @@ export function captureRecoveryStopBarrier(targetRef: string): Promise<MutationS
   // Keep that rejection for the sender without an unhandled interim promise.
   void barrier.catch(() => undefined);
   return barrier;
+}
+
+/** A recovery row and its durable destination's Stop epoch, from ONE readonly
+ * storage snapshot. The recovery Send press requests this in its own
+ * synchronous prefix - the Retry path's own capture discipline
+ * (getOutboxWithStopEpoch): the snapshot is the press's first storage
+ * observation, so a Stop pressed while the Send waits on persistence or
+ * destination hydration stays in the fence's future, and a peer retarget that
+ * lands inside those waits cannot move the destination under the press. */
+export function readRecoveryWithStopEpoch(
+  clientMutationId: string,
+  displayedRef?: string,
+): Promise<{ record: MutationRecoveryRecord | undefined; stopEpoch: number; displayedStopEpoch: number }> {
+  const capture = requireMutationRuntime().storage.getRecoveryWithStopEpoch(clientMutationId, displayedRef);
+  // The capture can fail while the Send is still awaiting its recovery write.
+  // Keep that rejection for the sender without an unhandled interim promise.
+  void capture.catch(() => undefined);
+  return capture;
 }
 
 export async function updateRecoveryMutation(
@@ -3244,9 +3302,10 @@ export async function resendRecoveryMutation(
   skillNames?: readonly string[],
   commandNames?: readonly string[],
   mentions?: readonly ComposerMention[],
-  barrierRead = captureRecoveryStopBarrier(targetRef),
+  barrierRead: MutationStopCapture | Promise<MutationStopCapture> = captureRecoveryStopBarrier(targetRef),
   expectedRecoveryRevisions?: Readonly<Record<string, number>>,
   compositionOwnerId?: string,
+  displayedBarrierRead?: DisplayedRecoveryStopCapture | Promise<DisplayedRecoveryStopCapture>,
 ): Promise<MutationRecoveryResendResult> {
   const runtime = requireMutationRuntime();
   await runtime.start;
@@ -3260,6 +3319,10 @@ export async function resendRecoveryMutation(
     compositionOwnerId,
   );
   const barrier = await barrierRead;
+  // The displayed ref's fence, captured at the same press: a Stop on the
+  // still-displayed session cancels this resend exactly like one on the
+  // destination.
+  const displayedBarrier = displayedBarrierRead === undefined ? undefined : await displayedBarrierRead;
   // Registered around the write: the resent row is undelivered work, and a
   // fallback send must see it before the async refresh can.
   const result = await trackOutboxWrite(
@@ -3271,6 +3334,7 @@ export async function resendRecoveryMutation(
         barrier,
         expectedRecoveryRevisions,
         compositionOwnerId,
+        displayedBarrier,
       ),
     (outcome) =>
       outcome.status !== "sent"

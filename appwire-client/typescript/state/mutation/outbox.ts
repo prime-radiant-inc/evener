@@ -69,6 +69,17 @@ export interface MutationStopBarrier {
   stopEpoch: number;
 }
 
+// The capture PAIR a click that reauthorizes a row carries: the destination
+// half every barrier already holds, plus the still-displayed ref's epoch for a
+// retargeted send that crosses one (and that ref's own name where the fence
+// stamps it on the row). Hosts without displayed-ref rows capture the
+// destination half alone; the optional halves read as absent and their fence
+// comparisons conservatively skip them.
+export interface MutationStopCapture extends MutationStopBarrier {
+  displayedStopEpoch?: number;
+  displayedRef?: string;
+}
+
 // The storage this layer needs, as an interface rather than a class: the web's
 // MutationOutboxIndexedDB implements it and stays where it is (it is IndexedDB
 // through and through), and another host implements the same 15 calls over

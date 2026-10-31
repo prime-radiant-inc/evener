@@ -31,7 +31,7 @@ import {
   setSessionCacheStalledOpenForTests,
 } from "./entryTranscriptRoutes";
 import { entryWriteAdmissionFor } from "./entryWriteAdmission";
-import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
+import { DATABASE_VERSION, MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { settleProjectionWorkForTests } from "./projectionWork";
 import {
   entryHistoryKey,
@@ -5303,7 +5303,7 @@ it("ordinary browser routes reads notifications paging reopen reconnect and fina
   expect(await lease.release()).toEqual({ kind: "saved" });
   expect(threadsStore.getState().threads.has(ref)).toBe(false);
   expect(await factory.databases()).toEqual([
-    { name: "evener-mutation-outbox", version: 4 },
+    { name: "evener-mutation-outbox", version: DATABASE_VERSION },
     { name: SESSION_CACHE_DATABASE_NAME, version: SESSION_CACHE_DATABASE_VERSION },
   ]);
 });
