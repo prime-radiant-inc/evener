@@ -525,6 +525,21 @@ func (s *LocalDaemonSource) AcquireRelaySession(ref appwire.Ref) (RelaySessionRo
 	return lease, nil
 }
 
+// SessionToolsSupported reports support negotiated by the target's live
+// canonical relay connection. known is false until the target is serving.
+func (s *LocalDaemonSource) SessionToolsSupported(ref appwire.Ref) (supported, known bool) {
+	if ref.SourceID != s.sourceID {
+		return false, false
+	}
+	s.relayMu.Lock()
+	session := s.relaySessions[ref.String()]
+	s.relayMu.Unlock()
+	if session == nil {
+		return false, false
+	}
+	return session.SessionToolsSupported()
+}
+
 // acquireRelaySession preserves the old parameter-based source call sites while
 // keeping canonical resolution separate from relay session acquisition.
 func (s *LocalDaemonSource) acquireRelaySession(params appwire.ThreadReadParams) (RelaySessionLease, error) {

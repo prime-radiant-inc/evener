@@ -106,6 +106,7 @@ func TestManagerObservationReconnectBeyondLatestPage(t *testing.T) {
 	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
 		return []appsource.LocalDaemonEntry{{Entry: entry, SessionID: id}, {Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, SourceID: "local", SessionID: "manager", InstanceID: "manager", WorkspaceRef: "local:manager"}, SessionID: "manager", Manager: true}}
 	}, upstream.Client())
+	configureObservationTargetSessionTools(daemon, source)
 	sources := appsource.NewRegistry()
 	sources.Add(source)
 	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}

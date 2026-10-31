@@ -136,6 +136,62 @@ func TestSessionToolsBindingRequiresNegotiatedBind(t *testing.T) {
 	}
 }
 
+func TestLocalDaemonSessionToolsSupportUsesNegotiatedFeature(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		supported bool
+	}{
+		{name: "old daemon"},
+		{name: "upgraded daemon", supported: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entry := rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon", SourceID: "local", ThreadID: "thread", SessionID: "instance", WorkspaceRef: "local:thread"}
+			source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry { return []LocalDaemonEntry{{Entry: entry}} }, nil)
+			source.SetSessionTools(func(appwire.SessionBinding) (appwire.SessionHubClient, error) { return bindingTestOwner{}, nil }, func() (string, error) { return "hub-local", nil })
+			source.dial = func(context.Context, string, *http.Client, http.Header) (appwire.Transport, error) {
+				transport := newScriptedAppwireTransport(nil)
+				transport.send = func(_ context.Context, message appwire.Message) error {
+					if message.Request == nil {
+						return nil
+					}
+					var response any
+					switch message.Request.Method {
+					case appwire.MethodInitialize:
+						response = appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, Features: appwire.FeatureSet{SessionTools: tc.supported}}
+					case appwire.MethodRuntimeSessionBind:
+						var binding appwire.SessionBinding
+						if err := json.Unmarshal(message.Request.Params, &binding); err != nil {
+							return err
+						}
+						response = binding
+					case appwire.MethodThreadRead:
+						response = appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "instance", SessionID: "instance", Evener: appwire.EvenerThread{Ref: "local:thread", InstanceID: "instance"}}}
+					default:
+						return errors.New("unexpected AppWire method")
+					}
+					transport.recv <- appwire.ResponseMessage(message.Request.ID, response)
+					return nil
+				}
+				return transport, nil
+			}
+			ref, _ := appwire.ParseRef("local:thread")
+			lease, err := source.AcquireRelaySession(ref)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer lease.Close()
+			if _, err := lease.Read(t.Context(), appwire.ThreadReadParams{Ref: ref.String()}); err != nil {
+				t.Fatal(err)
+			}
+			got, known := source.SessionToolsSupported(ref)
+			if !known || got != tc.supported {
+				t.Fatalf("negotiated support = (%t, %t), want (%t, true)", got, known, tc.supported)
+			}
+		})
+	}
+}
+
 func boolCount(value bool) int32 {
 	if value {
 		return 1

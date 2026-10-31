@@ -38,6 +38,7 @@ func TestManagerObservationRecordedCompletionCut(t *testing.T) {
 	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
 		return []appsource.LocalDaemonEntry{{Entry: entry, SessionID: instance, Manager: true}}
 	}, upstream.Client())
+	configureObservationTargetSessionTools(daemon, source)
 	sources := appsource.NewRegistry()
 	sources.Add(source)
 	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), HubID: "hub-test"}
@@ -90,6 +91,27 @@ func TestManagerObservationRecordedCompletionCut(t *testing.T) {
 			t.Fatal("recorded observation not delivered across relay")
 		}
 	}
+}
+
+type observationTestSessionHubClient struct{}
+
+func configureObservationTargetSessionTools(daemon *daemonserver.Server, source *appsource.LocalDaemonSource) {
+	daemon.AppServer().InstallSessionTools(func(context.Context, appwire.SessionBinding, appwire.SessionHubClient) error { return nil })
+	if source != nil {
+		source.SetSessionTools(func(appwire.SessionBinding) (appwire.SessionHubClient, error) {
+			return observationTestSessionHubClient{}, nil
+		}, func() (string, error) { return "hub-test", nil })
+	}
+}
+
+func (observationTestSessionHubClient) State(context.Context) (appwire.ManagerView, error) {
+	return appwire.ManagerView{Manager: true}, nil
+}
+func (observationTestSessionHubClient) Invoke(context.Context, appwire.SessionOperationRequest) (appwire.SessionOperationResponse, error) {
+	return appwire.SessionOperationResponse{}, nil
+}
+func (observationTestSessionHubClient) Watch(context.Context, appwire.SessionWatchRequest) (<-chan appwire.SessionWatchUpdate, error) {
+	return nil, nil
 }
 
 func managerEchoObservationItem(t *testing.T, callID, reason string, accepted bool) appwire.ThreadItem {

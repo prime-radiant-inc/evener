@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -165,6 +166,27 @@ func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.Sess
 	if err != nil {
 		cleanup()
 		return nil, err
+	}
+	if request.Completion || sessionWatchSelected(request, "communicate") {
+		// Remote peer capabilities are not exposed through the remote source; keep
+		// this gate local rather than inventing a new cross-hub wire surface.
+		if ref.SourceID == appwire.LocalSourceID {
+			servingRef, parseErr := appwire.ParseRef(read.Thread.Evener.Ref)
+			local, ok := b.owner.sources.Source(servingRef.SourceID)
+			if parseErr != nil {
+				cleanup()
+				return nil, appwire.InvalidRequest("target cannot report recorded-observation support")
+			}
+			if ok {
+				if localSource, localDaemon := local.(*appsource.LocalDaemonSource); localDaemon {
+					supported, known := localSource.SessionToolsSupported(servingRef)
+					if !known || !supported {
+						cleanup()
+						return nil, appwire.InvalidRequest("target cannot report recorded-observation support")
+					}
+				}
+			}
+		}
 	}
 	notifications := client.Notifications()
 	updates := make(chan appwire.SessionWatchUpdate, 32)
