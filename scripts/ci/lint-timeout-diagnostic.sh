@@ -102,46 +102,45 @@ sampler=$!
 trap 'kill "$sampler" 2>/dev/null || :; wait "$sampler" 2>/dev/null || :' EXIT
 export PATH="$work/bin:$PATH"
 failed=0
+modules=(. agent llm auth envvars invariant identifier execsupport fuzz)
 phase() {
   name=$1 source=$2 arm=$3 os=$4 parallel=$5
   out="$evidence/$name"
   mkdir "$out"
   shim "$out" "$source"
-  printf 'source=%s\nGOCACHE=%s\nGOLANGCI_LINT_CACHE=%s\nGOOS=%s\nLINT_PARALLEL=%s\nMODULES=. agent llm auth\n' \
-    "$source" "$work/$arm/go" "$work/$arm/lint" "$os" "$parallel" >"$out/inputs"
+  printf 'source=%s\nGOCACHE=%s\nGOLANGCI_LINT_CACHE=%s\nGOOS=%s\nLINT_PARALLEL=%s\nMODULES=%s\n' \
+    "$source" "$work/$arm/go" "$work/$arm/lint" "$os" "$parallel" "${modules[*]}" >"$out/inputs"
   date -u +%FT%TZ >"$out/start"
   rc=0
   (cd "$source"; GOCACHE="$work/$arm/go" GOLANGCI_LINT_CACHE="$work/$arm/lint" \
-    GOOS="$os" MODULES='. agent llm auth' LINT_PARALLEL="$parallel" \
+    GOOS="$os" MODULES="${modules[*]}" LINT_PARALLEL="$parallel" \
     "$work/bin/evener-dev" dev module-lint) >"$out/runner.log" 2>&1 || rc=$?
   printf '%s\n' "$rc" >"$out/exit"
   date -u +%FT%TZ >"$out/end"
   cat "$out/runner.log"
   [[ $rc -eq 0 ]] || failed=1
   # Missing/truncated evidence is an infrastructure failure, never a clean arm.
-  for module in root agent llm auth; do
+  for module in "${modules[@]}"; do
+    [[ $module != . ]] || module=root
     for file in cwd argv start end exit resources linter.log; do
       test -s "$out/$module/$file"
     done
     [[ $(cat "$out/$module/exit") == 0 ]] || failed=1
   done
-  [[ $(find "$out" -mindepth 1 -maxdepth 1 -type d | wc -l) -eq 4 ]]
+  [[ $(find "$out" -mindepth 1 -maxdepth 1 -type d | wc -l) -eq ${#modules[@]} ]]
   printf '%s\t%s\n' "$name" "$rc" >>"$evidence/phases.tsv"
 }
 # mkdir (without -p) asserts fresh empty cache roots; all are left for runner disposal.
-for arm in A C D; do
+for arm in A C; do
   mkdir "$work/$arm" "$work/$arm/go" "$work/$arm/lint"
   test -z "$(find "$work/$arm/go" "$work/$arm/lint" -mindepth 1 -print -quit)"
   printf '%s cold: empty Go and analysis caches\n' "$arm" >>"$evidence/cold-assertions"
 done
 phase A-linux "$work/head" A linux 4
 phase A-darwin "$work/head" A darwin 4
-phase B-darwin-warm "$work/head" A darwin 4
 phase C-linux "$work/head" C linux 4
-phase C-darwin-serial "$work/head" C darwin 1
-phase D-linux "$work/base" D linux 4
-phase D-darwin "$work/base" D darwin 4
-[[ $(wc -l <"$evidence/phases.tsv") -eq 7 ]]
+phase C-darwin-parallel2 "$work/head" C darwin 2
+[[ $(wc -l <"$evidence/phases.tsv") -eq 4 ]]
 kill -0 "$sampler"
 test -s "$evidence/vmstat"
 printf '%s\n' "$failed" >"$evidence/verdict"
