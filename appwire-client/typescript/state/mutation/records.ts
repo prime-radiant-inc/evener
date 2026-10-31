@@ -141,6 +141,16 @@ export interface MutationOutboxRecord<A extends MutationAttachmentRef = Mutation
   // interleavings. Optional because rows written before the field existed
   // carry none; a missing capture reads as zero, the conservative direction.
   stopEpochAtEnqueue?: number;
+  // True only on a row a crossed Stop FENCED - the pre-transport gate's park
+  // and the reconcile's crossed-hold - naming the Stop as the reason the row
+  // is not delivering. The fence stops the row's DELIVERY, not the queue: a
+  // row so stamped must not block what follows it in FIFO order, because the
+  // thing most likely queued behind it is the Stop's own interrupt, which the
+  // daemon must receive for the session to stop. A row parked for any other
+  // reason (an attempt whose outcome nobody can vouch for) carries no stamp
+  // and keeps the queue closed behind it - the conservative direction.
+  // Absent on rows written before the field existed and on rows native owns.
+  stopFenced?: boolean;
 }
 
 export interface MutationOptimisticRecord<A extends MutationAttachmentRef = MutationAttachmentRef>

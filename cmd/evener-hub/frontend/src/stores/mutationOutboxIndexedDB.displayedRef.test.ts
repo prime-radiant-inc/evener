@@ -380,12 +380,16 @@ describe("retargeted resend rows' displayed-ref fence", () => {
       attempted: true,
     });
     // A Stop lands on the ref while the first attempt is still unresolved.
-    await storage.enqueueInterruptAndCancel(interruptIntent(DESTINATION));
+    const stop = await storage.enqueueInterruptAndCancel(interruptIntent(DESTINATION));
     // The pre-transport gate must refuse the redispatch and park the row
     // delivery-uncertain: the surviving attempt may still be in flight.
     expect(await storage.markAttempted(original.clientMutationId)).toBe(false);
     expect(await storage.getOutbox(original.clientMutationId)).toMatchObject({ state: "blockedUnknown" });
-    expect(await storage.nextDispatchable(DESTINATION)).toBeUndefined();
+    // The park is fence-stamped: the Stop is the reason this row is not
+    // delivering, so the queue still passes the Stop's own interrupt.
+    expect(await storage.nextDispatchable(DESTINATION)).toMatchObject({
+      clientMutationId: stop.clientMutationId,
+    });
     storage.close();
   });
 
@@ -482,6 +486,118 @@ describe("retargeted resend rows' displayed-ref fence", () => {
       displayedRef: DISPLAYED,
     });
     expect(await storage.getRecovery(original.clientMutationId)).toBeUndefined();
+    storage.close();
+  });
+
+  test("a row the Stop fence parks at the FIFO head does not block the Stop's own interrupt", async () => {
+    const storage = store();
+    // A send whose attempt's request was lost: the row keeps its evidence at
+    // the head of the destination's FIFO while the user presses Stop.
+    const send = await storage.enqueueIntent(intent("hello", DESTINATION));
+    await storage.markAttempted(send.clientMutationId);
+    const stop = await storage.enqueueInterruptAndCancel(interruptIntent(DESTINATION));
+    // The cancel scan skips the attempted row, so the dispatcher's next pass
+    // takes it to the pre-transport gate - and the crossed Stop parks it.
+    expect(await storage.markAttempted(send.clientMutationId)).toBe(false);
+    expect(await storage.getOutbox(send.clientMutationId)).toMatchObject({
+      state: "blockedUnknown",
+      stopFenced: true,
+    });
+    // The fence stops the row's DELIVERY, not the queue: the Stop's own
+    // interrupt must still reach the daemon past the row it parked.
+    expect(await storage.nextDispatchable(DESTINATION)).toMatchObject({
+      clientMutationId: stop.clientMutationId,
+    });
+    storage.close();
+  });
+
+  test("a row parked for genuine delivery uncertainty still blocks the queue behind it", async () => {
+    const storage = store();
+    // The control for the fence stamp: an attempt whose OUTCOME nobody can
+    // vouch for (persistenceUnavailable) parks the row for a reason no Stop
+    // caused - the fence never ran, so the queue stays closed behind it
+    // until its receipt or refusal settles.
+    const send = await storage.enqueueIntent(intent("hello", DESTINATION));
+    await storage.markAttempted(send.clientMutationId);
+    await storage.markUnknown(send.clientMutationId, "blockedUnknown");
+    await storage.enqueueInterruptAndCancel(interruptIntent(DESTINATION));
+    const parked = await storage.getOutbox(send.clientMutationId);
+    expect(parked).toMatchObject({ state: "blockedUnknown" });
+    expect(parked?.stopFenced).toBeUndefined();
+    expect(await storage.nextDispatchable(DESTINATION)).toBeUndefined();
+    storage.close();
+  });
+
+  test("a reconcile holds an ordinary Stop-crossed attempted row for the explicit Retry that resends it", async () => {
+    const storage = store();
+    // The reviewer's shape, ordinary row: no displayed ref, so the row's only
+    // fence is its destination's epoch - and the reconcile's fence requiring
+    // a displayed ref let every crossed ordinary row reopen.
+    const original = await storage.enqueueIntent(intent("hello", DESTINATION));
+    await storage.markAttempted(original.clientMutationId);
+    await storage.markUnknown(original.clientMutationId, "blockedUnknown");
+    await storage.enqueueInterruptAndCancel(interruptIntent(DESTINATION));
+    // The crossed row must NOT reopen: the Stop the user pressed fences its
+    // redispatch, and no automatic path may outrank it.
+    expect(await storage.restoreProvenAbsent(DESTINATION, new Set())).not.toContain(original.clientMutationId);
+    expect(await storage.getOutbox(original.clientMutationId)).toMatchObject({
+      state: "blockedUnknown",
+      attempted: true,
+      stopFenced: true,
+    });
+    // The user's click is the one authorization that outranks the crossed
+    // Stop: explicit Retry reauthorizes under the original mutation ID, and
+    // the refreshed baselines pass the pre-transport gate - the resend goes.
+    const capture = await storage.getOutboxWithStopEpoch(original.clientMutationId);
+    expect(await storage.reauthorizeBlockedMutation(original.clientMutationId, { stopEpoch: capture.stopEpoch })).toBe(
+      true,
+    );
+    expect(await storage.getOutbox(original.clientMutationId)).toMatchObject({ state: "submitting" });
+    expect(await storage.markAttempted(original.clientMutationId)).toBe(true);
+    storage.close();
+  });
+
+  test("a fence-refused gate pass mints no attempt evidence", async () => {
+    const storage = store();
+    // One real attempt in flight; the user presses Stop; the scan skips the
+    // attempted row and bumps the epoch.
+    const original = await storage.enqueueIntent(intent("hello", DESTINATION));
+    await storage.markAttempted(original.clientMutationId);
+    await storage.enqueueInterruptAndCancel(interruptIntent(DESTINATION));
+    // A second tab hits the pre-transport gate for the same row: the fence
+    // refuses its pass, and a refused pass is not an attempt - the count
+    // must read the one real unresolved attempt, not two.
+    expect(await storage.markAttempted(original.clientMutationId)).toBe(false);
+    expect(await storage.getOutbox(original.clientMutationId)).toMatchObject({
+      state: "blockedUnknown",
+      attempted: true,
+      unresolvedAttempts: 1,
+    });
+    // The real attempt's in-band refusal proves the truth: the count reads
+    // one-for-one and the row cancels for the Stop - no phantom attempt
+    // keeps a provably unsent row delivery-uncertain forever.
+    expect(await storage.unmarkAttempted(original.clientMutationId)).toBe(false);
+    expect(await storage.getOutbox(original.clientMutationId)).toMatchObject({
+      state: "canceled",
+      attempted: false,
+    });
+    storage.close();
+  });
+
+  test("a reconcile-held ordinary row stays settleable by the receipt its lost response never carried", async () => {
+    const storage = store();
+    // The fence's hold fences REDISPATCH only - it must not foreclose the
+    // row's OUTCOME (§5): the attempt may have been accepted at the hub with
+    // its response lost, and the reconcile's bounded read omitted it.
+    const original = await storage.enqueueIntent(intent("hello", DESTINATION));
+    await storage.markAttempted(original.clientMutationId);
+    await storage.markUnknown(original.clientMutationId, "blockedUnknown");
+    await storage.enqueueInterruptAndCancel(interruptIntent(DESTINATION));
+    expect(await storage.restoreProvenAbsent(DESTINATION, new Set())).not.toContain(original.clientMutationId);
+    expect(await storage.getOutbox(original.clientMutationId)).toMatchObject({ state: "blockedUnknown" });
+    // The receipt the hub's journal replays still establishes delivery.
+    expect(await storage.settleReceipt(original.clientMutationId, "reflected")).toBe(true);
+    expect(await storage.getOutbox(original.clientMutationId)).toBeUndefined();
     storage.close();
   });
 });

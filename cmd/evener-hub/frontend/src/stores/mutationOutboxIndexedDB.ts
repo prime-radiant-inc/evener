@@ -852,11 +852,25 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
           // truthful cancellation; a row carrying evidence may already be in
           // flight, so it parks delivery-uncertain for a receipt or refusal
           // to settle - never canceled by absence (§5: attempted rows are
-          // uncertain, not canceled).
+          // uncertain, not canceled). The refused pass mints no attempt
+          // evidence: a fence-refused second tab's write must not inflate the
+          // count a real attempt's own refusal then rolls back - the count
+          // stays what the real attempts made it, or the refusal would leave
+          // a phantom attempt holding a provably unsent row uncertain
+          // forever. The park carries the fence's stamp: the Stop is the
+          // reason this row is not delivering, and the queue must still pass
+          // it (F1's semantics live at nextDispatchable).
           await requestResult(
             store.put(
               evidenced
-                ? { ...record, state: "blockedUnknown", attempted: true, unresolvedAttempts, stopEpochAtEnqueue }
+                ? {
+                    ...record,
+                    state: "blockedUnknown",
+                    attempted: true,
+                    unresolvedAttempts: priorUnresolvedAttempts(record),
+                    stopEpochAtEnqueue,
+                    stopFenced: true,
+                  }
                 : { ...record, state: "canceled", attempted: false, unresolvedAttempts: 0, stopEpochAtEnqueue },
             ),
           );
@@ -971,37 +985,42 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         if (record.targetRef !== targetRef) continue;
         if (record.state !== "blockedUnknown") continue;
         if (authoritativeIds.has(record.clientMutationId)) continue;
-        // The dual-ref fence at the reconcile seam: a Stop that landed on
-        // either ref the send crosses while the row sat parked must stop this
-        // reopen - the row would otherwise re-dispatch ahead of a Stop the
-        // user pressed. What the fence may DECIDE depends on what the row
-        // proves: an unattempted row provably never reached the hub, so the
-        // Stop's verdict is truthful cancellation; an attempted row may
-        // already be delivered with its response lost, and a bounded read
-        // that omits it proves nothing, so the fence keeps it
-        // delivery-uncertain - parked, never re-dispatched, still settleable
-        // by a receipt or a refusal. Ordinary rows keep the reconcile's
-        // pre-existing behavior - their own cancel scan already reached them
-        // while unattempted. With markAttempted the enforcement point, this
-        // seam's fence is defense-in-depth.
+        // The dual-ref fence at the reconcile seam, for EVERY parked row -
+        // retargeted or ordinary: a Stop that landed on either ref the send
+        // crosses while the row sat parked must stop this reopen, or the row
+        // re-dispatches ahead of a Stop the user pressed; and for an
+        // ordinary row the reopen is worse than a reorder - its baselines
+        // never move, so the reopened row parks again at the pre-transport
+        // gate and no Retry press can ever resend it. What the fence may
+        // DECIDE depends on what the row proves: an unattempted row provably
+        // never reached the hub, so the Stop's verdict is truthful
+        // cancellation; an attempted row may already be delivered with its
+        // response lost, and a bounded read that omits it proves nothing, so
+        // the fence holds it parked, stamped with the Stop -
+        // delivery-uncertain, never re-dispatched, still settleable by a
+        // receipt or a refusal. With markAttempted the enforcement point,
+        // this seam's fence is defense-in-depth.
+        let displayedStopEpoch: number | undefined;
         if (record.displayedRef !== undefined) {
-          let displayedStopEpoch = displayedStopEpochs.get(record.displayedRef);
+          displayedStopEpoch = displayedStopEpochs.get(record.displayedRef);
           if (displayedStopEpoch === undefined) {
             displayedStopEpoch = await this.#stopEpochOf(transaction, record.displayedRef);
             displayedStopEpochs.set(record.displayedRef, displayedStopEpoch);
           }
-          if (
-            await this.#fenceCrossedSinceEnqueue(transaction, record, {
-              stopEpoch: targetStopEpoch,
-              displayedStopEpoch,
-            })
-          ) {
-            if (record.attempted === false) {
-              await requestResult(store.put({ ...record, state: "canceled" }));
-              restored.push(record.clientMutationId);
-            }
-            continue;
+        }
+        if (
+          await this.#fenceCrossedSinceEnqueue(transaction, record, {
+            stopEpoch: targetStopEpoch,
+            displayedStopEpoch,
+          })
+        ) {
+          if (record.attempted === false) {
+            await requestResult(store.put({ ...record, state: "canceled" }));
+            restored.push(record.clientMutationId);
+          } else {
+            await requestResult(store.put({ ...record, state: "blockedUnknown", stopFenced: true }));
           }
+          continue;
         }
         await requestResult(store.put({ ...record, state: "submitting" }));
         restored.push(record.clientMutationId);
@@ -1372,10 +1391,15 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
       if (record.state === "submitting") return record;
       // A canceled row provably never left the client, so it cannot be
       // reordered against the daemon and must not park what follows it —
-      // including the interrupt that canceled it. A blockedUnknown head is
-      // different: the daemon may already have applied it, so the FIFO stays
-      // closed behind it.
-      if (record.state === "blockedUnknown") return undefined;
+      // including the interrupt that canceled it. A blockedUnknown head
+      // stamped by the Stop fence is the same truth: the Stop is the reason
+      // the row is not delivering, and the fence stops the row's DELIVERY,
+      // not the queue — what follows it, most often the Stop's own
+      // interrupt, must still reach the daemon or the session keeps running
+      // past the Stop the user pressed. An unstamped blockedUnknown head is
+      // genuine delivery uncertainty: the daemon may already have applied
+      // it, so the FIFO stays closed behind it.
+      if (record.state === "blockedUnknown" && record.stopFenced !== true) return undefined;
     }
     return undefined;
   }
@@ -1648,8 +1672,18 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         ) {
           return false;
         }
+        // The released row drops the fence's stamp: this click deliberately
+        // outranked the Stop, so the row is no longer one the Stop is holding
+        // - and a later park (an outcome nobody can vouch for) must block the
+        // queue behind it like every genuine-uncertainty row does.
         await requestResult(
-          store.put(this.#baselinesRefreshed({ ...record, state: "submitting" }, stopEpoch, displayedStopEpoch)),
+          store.put(
+            this.#baselinesRefreshed(
+              { ...record, state: "submitting", stopFenced: undefined },
+              stopEpoch,
+              displayedStopEpoch,
+            ),
+          ),
         );
         return true;
       },
