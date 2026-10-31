@@ -939,8 +939,10 @@ func replacementState(custody custodyFile, floor uint64) (snapshot, error) {
 		}
 	}
 	state := snapshot{
-		Version:                storeVersion,
-		AllocatorFloor:         custody.AllocatorFloor,
+		Version: storeVersion,
+		// A custody file written before allocatorFloor existed accounts for every
+		// id up to its mark.
+		AllocatorFloor:         max(custody.AllocatorFloor, custody.AllocatorHighWaterMark),
 		AllocatorHighWaterMark: allocated,
 		Records:                records,
 		Boundaries:             map[string]Boundary{},
