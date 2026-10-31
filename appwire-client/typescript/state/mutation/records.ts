@@ -122,6 +122,14 @@ export interface MutationOutboxRecord<A extends MutationAttachmentRef = Mutation
   // looking at. Absent on ordinary enqueues and on rows written before the
   // field existed; Stop's cancel scan matches a missing value as never.
   displayedRef?: string;
+  // The displayed ref's own stop epoch at enqueue time - the twin of
+  // stopEpochAtEnqueue for the ref `displayedRef` names. Every seam that can
+  // make an attempted or parked row dispatchable again (a refusal's rollback,
+  // a reconcile's reopen) checks BOTH epochs before it reopens, so a Stop on
+  // the still-displayed session holds the row canceled exactly like one on
+  // the destination. Absent on ordinary rows; a missing capture reads as
+  // zero, the conservative direction.
+  displayedStopEpochAtEnqueue?: number;
   // The ref's stop epoch at enqueue time - the barrier's own read,
   // stored. A refusal proves the attempt never landed, and a Stop whose
   // cancel scan skipped this attempted row bumped the epoch after this

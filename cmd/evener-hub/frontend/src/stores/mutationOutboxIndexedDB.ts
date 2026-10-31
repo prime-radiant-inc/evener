@@ -855,9 +855,15 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
           // cancel scan skipped this attempted row bumped the epoch while
           // the attempt was in flight, and the refusal proves the attempt
           // never landed - the row holds canceled, released only by an
-          // explicit Retry, never dispatchable ahead of the interrupt.
+          // explicit Retry, never dispatchable ahead of the interrupt. A
+          // retargeted resend is fenced on BOTH refs it crosses: a Stop on
+          // the still-displayed session it was sent from holds the row the
+          // same way one on the destination does.
           const stopEpoch = await this.#stopEpochOf(transaction, record.targetRef);
-          if (stopEpoch > (record.stopEpochAtEnqueue ?? 0)) {
+          if (
+            stopEpoch > (record.stopEpochAtEnqueue ?? 0) ||
+            (await this.#displayedStopAdvanced(transaction, record))
+          ) {
             await requestResult(store.put({ ...record, state: "canceled", attempted: false, unresolvedAttempts: 0 }));
             return false;
           }
@@ -872,7 +878,7 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
           return false;
         }
         const stopEpoch = await this.#stopEpochOf(transaction, record.targetRef);
-        if (stopEpoch > (record.stopEpochAtEnqueue ?? 0)) {
+        if (stopEpoch > (record.stopEpochAtEnqueue ?? 0) || (await this.#displayedStopAdvanced(transaction, record))) {
           await requestResult(store.put({ ...record, state: "canceled", attempted: false, unresolvedAttempts: 0 }));
           return false;
         }
@@ -912,9 +918,13 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
   // Preserve the original mutation ID and entire payload so the daemon's
   // durable journal can replay its receipt, or the original instance fence
   // can reject a retry after a clear. Known IDs stay on the receipt path.
-  // Returns the restored IDs.
+  // Returns the IDs this pass decided - each reopened to submitting, or, for
+  // a retargeted resend whose displayed ref or destination took a Stop while
+  // the row sat attempted and uncertain, held canceled instead: the same
+  // dual-ref fence the refusal rollback carries. Either decision changes the
+  // row, so the caller notifies the ref for either.
   async restoreProvenAbsent(targetRef: string, authoritativeIds: ReadonlySet<string>): Promise<string[]> {
-    return this.#write(OUTBOX_STORE, undefined, async (transaction) => {
+    return this.#write([OUTBOX_STORE, SEQUENCE_STORE], undefined, async (transaction) => {
       const store = transaction.objectStore(OUTBOX_STORE);
       const records = await requestResult<MutationOutboxRecord[]>(store.getAll());
       const restored: string[] = [];
@@ -922,6 +932,24 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
         if (record.targetRef !== targetRef) continue;
         if (record.state !== "blockedUnknown") continue;
         if (authoritativeIds.has(record.clientMutationId)) continue;
+        // The reconcile's absence proof is the same proof an in-band refusal
+        // carries, so a retargeted resend gets the same fence at this
+        // reopen: a Stop that landed on either ref the send crosses while
+        // the row sat attempted holds the row canceled, never dispatchable
+        // ahead of it. Ordinary rows keep the reconcile's pre-existing
+        // behavior - their own cancel scan already reached them while
+        // unattempted.
+        if (record.displayedRef !== undefined) {
+          const stopEpoch = await this.#stopEpochOf(transaction, record.targetRef);
+          if (
+            stopEpoch > (record.stopEpochAtEnqueue ?? 0) ||
+            (await this.#displayedStopAdvanced(transaction, record))
+          ) {
+            await requestResult(store.put({ ...record, state: "canceled" }));
+            restored.push(record.clientMutationId);
+            continue;
+          }
+        }
         await requestResult(store.put({ ...record, state: "submitting" }));
         restored.push(record.clientMutationId);
       }
@@ -1244,7 +1272,12 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
         // a Stop pressed on the still-displayed session after this row
         // commits (while its dispatch waits out a reconnect) must still be
         // able to cancel it.
-        ...(displayedBarrier === undefined ? {} : { displayedRef: displayedBarrier.targetRef }),
+        ...(displayedBarrier === undefined
+          ? {}
+          : {
+              displayedRef: displayedBarrier.targetRef,
+              displayedStopEpochAtEnqueue: displayedStopEpoch,
+            }),
         attempted: false,
         stopEpochAtEnqueue: stopEpoch,
       };
@@ -1440,5 +1473,16 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
         stopEpoch: (current?.stopEpoch ?? 0) + 1,
       } satisfies TargetSequence),
     );
+  }
+
+  // Whether a Stop landed on the still-displayed ref a retargeted resend was
+  // sent from since the row was born - the displayed half of the dual-ref
+  // fence, checked at every seam that can make an attempted or parked row
+  // dispatchable again. Ordinary rows carry no displayed ref and answer
+  // false; a missing capture reads as zero, the conservative direction.
+  async #displayedStopAdvanced(transaction: IDBTransaction, record: MutationOutboxRecord): Promise<boolean> {
+    if (record.displayedRef === undefined) return false;
+    const displayedStopEpoch = await this.#stopEpochOf(transaction, record.displayedRef);
+    return displayedStopEpoch > (record.displayedStopEpochAtEnqueue ?? 0);
   }
 }

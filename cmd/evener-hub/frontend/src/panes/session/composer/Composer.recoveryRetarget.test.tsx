@@ -7,6 +7,7 @@
 // released exactly when it was acquired.
 
 import type { Thread, ThreadReadResponse } from "@evener/appwire-client";
+import { WireError } from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
@@ -89,12 +90,14 @@ interface WiredFake {
   methods: string[];
   readReached: Promise<void>;
   releaseRead(): void;
+  refuseAttempt(error: unknown): void;
 }
 
 interface WireOptions {
   gateDestinationRead?: boolean;
   activeDestination?: boolean;
   refuseDestinationStart?: boolean;
+  holdDestinationStart?: boolean;
 }
 
 function wireFake(fake: FakeClient, resumed: string, options: WireOptions = {}): WiredFake {
@@ -111,12 +114,16 @@ function wireFake(fake: FakeClient, resumed: string, options: WireOptions = {}):
   });
   const delivered: Array<Record<string, unknown>> = [];
   const methods: string[] = [];
+  const heldAttempt = deferred<never>();
   const receiveTurn = (params: unknown, method: string) => {
     const request = params as unknown as { clientMutationId?: string } & Record<string, unknown>;
     delivered.push(request);
     methods.push(method);
     if (options.refuseDestinationStart && method === "turn/start" && request.ref === resumed) {
       throw notAcceptedError(String(request.clientMutationId ?? ""));
+    }
+    if (options.holdDestinationStart && method === "turn/start" && request.ref === resumed) {
+      return heldAttempt.promise as never;
     }
     return {
       turn: { id: "turn-recovery-resend", status: "inProgress", itemsView: "full", items: [] },
@@ -137,6 +144,7 @@ function wireFake(fake: FakeClient, resumed: string, options: WireOptions = {}):
     methods,
     readReached: readReached.promise,
     releaseRead: () => releaseRead?.(),
+    refuseAttempt: (error: unknown) => heldAttempt.reject(error),
   };
 }
 
@@ -403,4 +411,82 @@ test("a retargeted Send whose destination is running routes as a queue", async (
   expect(deliveredQueue).toMatchObject({ ref: resumed });
   await waitFor(async () => expect(await storage.listRecovery(resumed)).toHaveLength(0));
   expect(await storage.getRecovery(recoveryId)).toBeUndefined();
+});
+
+test("a backpressure refusal after a Stop on the displayed ref holds the send canceled", async () => {
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  const storage = new MutationOutboxIndexedDB();
+  const resumed = "local:refusal-fence";
+  const fake = new FakeClient("ready");
+  const wired = wireFake(fake, resumed, { holdDestinationStart: true });
+  await stageRetargetedSend(storage, fake, resumed);
+  try {
+    await threadsStore.getState().ensureThread(resumed);
+    await act(async () => {
+      fireEvent.click(submitButton());
+    });
+    // The resend's dispatch attempt is outstanding and durably attempted.
+    await waitFor(async () => {
+      const rows = await storage.listOutbox(resumed);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.attempted).toBe(true);
+    });
+    // A Stop lands on the still-displayed session while the attempt is in
+    // flight. Its cancel scan skips the attempted row - only the refusal's
+    // rollback can decide the row now.
+    await storage.enqueueInterruptAndCancel({
+      targetRef: "root",
+      method: "turn/interrupt",
+      payload: { ref: "root" },
+      attachments: [],
+      optimisticDisplay: { method: "turn/interrupt", input: [] },
+    });
+    // The hub answers the outstanding attempt with an automatic backpressure
+    // refusal: the attempt provably never landed, so the rollback could make
+    // the row dispatchable again - unless a Stop crossed it.
+    wired.refuseAttempt(
+      new WireError("not accepted", -32602, {
+        clientMutationId: String(wired.delivered[0]?.clientMutationId ?? ""),
+        mutationOutcome: "notAccepted",
+        retryDisposition: "automatic",
+      }),
+    );
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    });
+    await flushPendingTurnsProjectionForTests();
+    // The Stop on the displayed ref holds the row canceled: it must not
+    // re-dispatch on the refusal's paced retry.
+    await waitFor(async () => {
+      const rows = await storage.listOutbox(resumed);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ state: "canceled" });
+    });
+    expect(wired.delivered).toHaveLength(1);
+  } finally {
+    wired.refuseAttempt(new Error("test teardown"));
+  }
+});
+
+test("a watched-only destination still routes its Send", async () => {
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  const storage = new MutationOutboxIndexedDB();
+  const resumed = "local:watched-only";
+  const fake = new FakeClient("ready");
+  const wired = wireFake(fake, resumed);
+  await stageRetargetedSend(storage, fake, resumed);
+  // The destination exists only as a watched stream model - a transcript
+  // card's lean watch - with no tracked pane model behind it.
+  await threadsStore.getState().watchThread(resumed);
+  await waitFor(() => expect(threadsStore.getState().watchedThreads.has(resumed)).toBe(true));
+  expect(threadsStore.getState().threads.has(resumed)).toBe(false);
+  await act(async () => {
+    fireEvent.click(submitButton());
+  });
+  await flushPendingTurnsProjectionForTests();
+  // The Send routes on what the destination actually supports instead of
+  // refusing: the claim gives the routing its foreground model.
+  await waitFor(() => expect(wired.methods).toContain("turn/start"));
+  expect(wired.delivered[wired.methods.indexOf("turn/start")]).toMatchObject({ ref: resumed });
+  threadsStore.getState().releaseWatchedThread(resumed);
 });

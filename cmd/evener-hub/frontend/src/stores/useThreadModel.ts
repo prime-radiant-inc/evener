@@ -36,17 +36,20 @@ export interface ThreadClaimLease {
   release(): void;
 }
 
-/** A one-shot foreground claim for a destination this tab is not already
- * reading (neither a tracked pane model nor a watched stream) - the recovery
- * Send's destination hydration. The lease exists only once ensureThread
- * RESOLVES: a rejected acquisition has already rolled its own claim back
- * inside ensureThread, so a caller that released anyway would consume another
- * foreground reader's claim and retire its subscription or hydration
- * lifecycle. Resolving null means no claim was needed and there is nothing to
- * release. */
+/** A one-shot foreground claim for a destination this tab has no tracked pane
+ * model for - the recovery Send's destination hydration. A destination that
+ * exists only as a watched stream model is still claimed: routing and
+ * dispatch read the tracked map, so a watched-only destination needs the
+ * foreground model for the resend's duration (the watch's own lean lifecycle
+ * is refcounted separately and is untouched). The lease exists only once
+ * ensureThread RESOLVES: a rejected acquisition has already rolled its own
+ * claim back inside ensureThread, so a caller that released anyway would
+ * consume another foreground reader's claim and retire its subscription or
+ * hydration lifecycle. Resolving null means no claim was needed and there is
+ * nothing to release. */
 export async function acquireUnreadThreadClaim(ref: string): Promise<ThreadClaimLease | null> {
   const state = threadsStore.getState();
-  if (state.threads.get(ref) !== undefined || state.watchedThreads.get(ref) !== undefined) return null;
+  if (state.threads.get(ref) !== undefined) return null;
   await state.ensureThread(ref);
   let released = false;
   return {
