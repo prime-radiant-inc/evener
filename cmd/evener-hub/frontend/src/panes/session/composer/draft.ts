@@ -19,11 +19,13 @@
 // canonical skill selections survive a reload next to its text. The v1 key
 // held plain text only; see readComposerDraft for the approved transition.
 import { canonicalSkillNames } from "@evener/appwire-client";
+import { ownClientId } from "../../../stores/mutationClientIdentity";
 import { createSecureUUID } from "../../../stores/secureUUID";
 import { patchSelectionText, type SkillEditorValue } from "./skillDocument";
 
 const STORAGE_PREFIX = "evener.composer.draft.v1.";
 const STRUCTURED_STORAGE_PREFIX = "evener.composer.draft.v2.";
+const COMPOSER_SEAT_PREFIX = "evener.composer.seat.v1.";
 const draftRevisions = new Map<string, number>();
 
 // A composer draft: the textarea's text plus the canonical names of the
@@ -57,6 +59,58 @@ export function draftStorageKey(ref: string): string {
 
 export function composerDraftStorageKey(ref: string): string {
   return `${STRUCTURED_STORAGE_PREFIX}${ref}`;
+}
+
+// A conversation seat outlives the pane id a mobile reload reallocates - but
+// only the per-pane record below survives a desktop layout save/restore. It
+// belongs to this tab alone and never to the shared layout.
+function paneSeatKey(paneId: string): string {
+  return `${COMPOSER_SEAT_PREFIX}${encodeURIComponent(ownClientId())}.pane.${encodeURIComponent(paneId)}`;
+}
+
+function storedSeat(key: string): string | undefined {
+  try {
+    const value = localStorage.getItem(key);
+    return value === null || value === "" ? undefined : value;
+  } catch {
+    return undefined;
+  }
+}
+
+// The stored pane mapping without validating its conversation. A desktop
+// cascade restore checks continuity through the cascade path instead of the
+// exact leaf: another tab may have drilled the shared layout deeper since
+// this tab saved its seat.
+export function readPaneComposerSeatEntry(paneId: string): { seat: string; ref: string } | undefined {
+  const raw = storedSeat(paneSeatKey(paneId));
+  if (raw === undefined) return undefined;
+  try {
+    const parsed = JSON.parse(raw) as { seat?: unknown; ref?: unknown };
+    if (typeof parsed.seat !== "string" || typeof parsed.ref !== "string") return undefined;
+    return { seat: parsed.seat, ref: parsed.ref };
+  } catch {
+    // A pre-identity mapping cannot prove which conversation it belongs to.
+    return undefined;
+  }
+}
+
+// Clears a pane-id seat record. A layout save rewrites the entries for the
+// panes it holds, so a cleared entry only matters for panes a save will not
+// revisit.
+export function clearPaneComposerSeat(paneId: string): void {
+  try {
+    localStorage.removeItem(paneSeatKey(paneId));
+  } catch {
+    // Best-effort, like every other composer persistence.
+  }
+}
+
+export function writePaneComposerSeat(paneId: string, ref: string, seat: string): void {
+  try {
+    localStorage.setItem(paneSeatKey(paneId), JSON.stringify({ ref, seat }));
+  } catch {
+    // Best-effort, like every other composer persistence.
+  }
 }
 
 function isStoredComposerDraft(value: unknown): value is ComposerDraft {

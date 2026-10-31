@@ -154,6 +154,19 @@ function recoveryCompositionRevision(record: MutationRecoveryRecord): number {
 /** Original conversation work belongs to its pane, not to an editor mount. */
 const defaultCompositionOwners = new Map<string, string>();
 
+/** The per-ref default composition owner: the owner a composer source minted
+ * without an explicit owner carries. Seeded recovery rows use it so a test's
+ * default-seeded row belongs to the same seat a default mount restores, the
+ * way a real pane's row belongs to that pane. */
+export function defaultCompositionOwner(ref: string): string {
+  let owner = defaultCompositionOwners.get(ref);
+  if (owner === undefined) {
+    owner = createSecureUUID();
+    defaultCompositionOwners.set(ref, owner);
+  }
+  return owner;
+}
+
 /** A recovery whose submission has started is no longer available to an Edit
  * press from a remounted composer. The submission already owns the captured
  * composition; restoring it through a fresh source would write a new revision
@@ -174,9 +187,7 @@ export function recoverySubmissionInFlight(clientMutationId: string): boolean {
 /** A pane passes its lifetime token; standalone mounts fall back to one token
  * per ref so a remount outside the pane shell still reuses ownership. */
 export function createComposerSourceState(ref: string, ownerId?: string): ComposerSourceState {
-  const compositionOwnerId = ownerId ?? defaultCompositionOwners.get(ref) ?? createSecureUUID();
-  if (ownerId === undefined && !defaultCompositionOwners.has(ref))
-    defaultCompositionOwners.set(ref, compositionOwnerId);
+  const compositionOwnerId = ownerId ?? defaultCompositionOwner(ref);
   const initial = readComposerDraftSnapshot(ref);
   let currentDraftRevisionId = initial.revisionId;
   const state = createStore<ComposerSourceSnapshot>(() => ({
