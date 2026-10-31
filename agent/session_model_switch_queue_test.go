@@ -215,8 +215,10 @@ func TestAtRestPickDoesNotSwapUnderATurnThatStartedWhileItValidated(t *testing.T
 	// Armed after construction: NewSession's own startup resolve enumerates
 	// the instance once, and that call must fail open on the unscripted
 	// adapter rather than consume the pick's scripted gates.
+	pickListingCalled := make(chan struct{}, 1)
 	adapter.models = []func() ([]registry.Model, error){
 		func() ([]registry.Model, error) {
+			pickListingCalled <- struct{}{}
 			<-releasePickPreflight
 			return nil, errors.New("pick-time listing unavailable")
 		},
@@ -230,6 +232,11 @@ func TestAtRestPickDoesNotSwapUnderATurnThatStartedWhileItValidated(t *testing.T
 	adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
 			go func() { pickDone <- s.SetModel("gpt-5.4") }()
+			// Do not end the first turn until the pick has reached its
+			// preflight listing: the pick is then guaranteed to have taken
+			// the queue path while this turn was still running, not the
+			// at-rest path if its goroutine happened to start late.
+			<-pickListingCalled
 			return agenttest.CommunicateResponse(true, "first turn done")
 		},
 		func(llm.Request) llm.Response {
@@ -344,5 +351,183 @@ func TestSupersededPendingApplicationDoesNotOverwriteANewerPick(t *testing.T) {
 	// older application has had its say: the newer pick must have won.
 	if got := s.Profile().Model(); got != "gpt-4.1-mini" {
 		t.Fatalf("profile model = %q after the queued pick resumed past a newer at-rest pick; the newer choice must win (%q)", got, "gpt-4.1-mini")
+	}
+}
+
+// TestConcurrentMidTurnPicksLastAcceptedChoiceWins pins the queue's store
+// under concurrent mid-turn picks: a slower preflight from an earlier pick
+// must not overwrite the newer pick's queued choice when it finishes late.
+func TestConcurrentMidTurnPicksLastAcceptedChoiceWins(t *testing.T) {
+	dir := t.TempDir()
+	adapter := &gatedListingAdapter{fakeAdapter: fakeAdapter{name: "openai"}}
+	releaseSlowListing := make(chan struct{})
+	aListingCalled := make(chan struct{}, 1)
+	s := newSession(t, withAdapter(adapter), withDir(dir), withConfig(SessionConfig{
+		StateDir:         dir,
+		MaxSubagentDepth: 1,
+		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+	}))
+	adapter.models = []func() ([]registry.Model, error){
+		// The earlier pick's preflight: parked while the turn runs.
+		func() ([]registry.Model, error) {
+			aListingCalled <- struct{}{}
+			<-releaseSlowListing
+			return nil, errors.New("slow listing unavailable")
+		},
+		// The newer pick's preflight: fails fast and queues.
+		func() ([]registry.Model, error) { return nil, errors.New("fast listing unavailable") },
+	}
+	aDone, bDone := make(chan error, 1), make(chan error, 1)
+	adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response {
+			go func() { aDone <- s.SetModel("gpt-5.4") }()
+			// The second pick only enters its preflight once the first one
+			// has claimed the parked listing, so the two listings route
+			// deterministically.
+			go func() {
+				<-aListingCalled
+				bDone <- s.SetModel("gpt-4.1-mini")
+			}()
+			return agenttest.CommunicateResponse(true, "first turn done")
+		},
+		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "queued turn done") },
+	}
+	serveSessionWithMutationStore(t, s)
+	queueOneMutation(t, s, "cm-last-accepted", "the queued message")
+	// The boundary hook is the rendezvous: it fires after the first turn's
+	// boundary and before the loop applies the pending switch, so it can
+	// order the two picks' stores and release the parked one deterministically.
+	// One-shot: it also fires at the drained turn's own communicate boundary,
+	// where nothing is left to wait for.
+	hookOnce := make(chan struct{}, 1)
+	updateSessionTestConfig(s, func(cfg *testConfig) {
+		cfg.afterCommunicateBoundary = func(*Session) {
+			select {
+			case hookOnce <- struct{}{}:
+				<-bDone
+				close(releaseSlowListing)
+				if err := <-aDone; err != nil {
+					t.Errorf("earlier pick: %v", err)
+				}
+			default:
+			}
+		}
+	})
+
+	if _, err := s.ProcessInput(context.Background(), "first message", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	requests := adapter.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("model requests = %d, want the first turn and the drained queued message (2)", len(requests))
+	}
+	if requests[1].Model != "gpt-4.1-mini" {
+		t.Fatalf("the queued message ran on model %q; the newer pick's accepted choice must survive the earlier pick's late store (%q)", requests[1].Model, "gpt-4.1-mini")
+	}
+}
+
+// TestRejectedPickDoesNotCancelAnEarlierQueuedPick pins the watermark's
+// acceptance rule: a pick that fails validation (here, an unresolvable ref)
+// must not advance the generation, or the queued switch accepted before it
+// would drop as superseded at the boundary.
+func TestRejectedPickDoesNotCancelAnEarlierQueuedPick(t *testing.T) {
+	dir := t.TempDir()
+	listModels := attemptRecordingLiveModels("openai", "gpt-5.2", "gpt-5.4")
+	adapter := &fakeAdapter{
+		name:       "openai",
+		liveModels: func(ctx context.Context) ([]registry.Model, error) { return listModels(ctx) },
+	}
+	s := newSession(t, withAdapter(adapter), withDir(dir), withConfig(SessionConfig{
+		StateDir:         dir,
+		MaxSubagentDepth: 1,
+		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+	}))
+	adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response {
+			if err := s.SetModel("gpt-5.4"); err != nil {
+				t.Errorf("accepted pick: %v", err)
+			}
+			if err := s.SetModel("bogus/no-such-model"); err == nil {
+				t.Error("the bogus pick was accepted; its validation must fail")
+			}
+			return agenttest.CommunicateResponse(true, "first turn done")
+		},
+		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "queued turn done") },
+	}
+	serveSessionWithMutationStore(t, s)
+	queueOneMutation(t, s, "cm-rejected-pick", "the queued message")
+
+	if _, err := s.ProcessInput(context.Background(), "first message", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	requests := adapter.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("model requests = %d, want the first turn and the drained queued message (2)", len(requests))
+	}
+	if requests[1].Model != "gpt-5.4" {
+		t.Fatalf("the queued message ran on model %q; a rejected later pick must not cancel the accepted queued switch (%q)", requests[1].Model, "gpt-5.4")
+	}
+}
+
+// TestSupersededLoopTopApplicationAppliesTheNewerQueuedPick pins the loop's
+// re-drain: when the pending application the loop popped is superseded while
+// it refetches, the newer pick queued in the meantime must still apply before
+// the turn the loop is about to admit.
+func TestSupersededLoopTopApplicationAppliesTheNewerQueuedPick(t *testing.T) {
+	dir := t.TempDir()
+	adapter := &gatedListingAdapter{fakeAdapter: fakeAdapter{name: "openai"}}
+	releaseLoopFetch := make(chan struct{})
+	loopFetchCalled := make(chan struct{}, 1)
+	s := newSession(t, withAdapter(adapter), withDir(dir), withConfig(SessionConfig{
+		StateDir:         dir,
+		MaxSubagentDepth: 1,
+		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+	}))
+	adapter.models = []func() ([]registry.Model, error){
+		// The queued pick's preflight fails open, so the loop-top application
+		// must refetch.
+		func() ([]registry.Model, error) { return nil, errors.New("pick-time listing unavailable") },
+		// The loop-top refetch, parked while the newer pick queues.
+		func() ([]registry.Model, error) {
+			loopFetchCalled <- struct{}{}
+			<-releaseLoopFetch
+			return nil, errors.New("loop listing unavailable")
+		},
+		// The newer pick's preflight.
+		func() ([]registry.Model, error) { return nil, errors.New("newer pick listing unavailable") },
+	}
+	adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response {
+			if err := s.SetModel("gpt-5.4"); err != nil {
+				t.Errorf("queued pick: %v", err)
+			}
+			return agenttest.CommunicateResponse(true, "first turn done")
+		},
+		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "queued turn done") },
+	}
+	serveSessionWithMutationStore(t, s)
+	queueOneMutation(t, s, "cm-loop-superseded", "the queued message")
+	// While the loop-top application's refetch is parked, a newer pick queues
+	// from its own goroutine and releases the refetch once it has stored.
+	go func() {
+		<-loopFetchCalled
+		if err := s.SetModel("gpt-4.1-mini"); err != nil {
+			t.Errorf("newer pick: %v", err)
+		}
+		close(releaseLoopFetch)
+	}()
+
+	if _, err := s.ProcessInput(context.Background(), "first message", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	requests := adapter.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("model requests = %d, want the first turn and the drained queued message (2)", len(requests))
+	}
+	if requests[1].Model != "gpt-4.1-mini" {
+		t.Fatalf("the queued message ran on model %q; a newer pick queued while the loop's application refetched must apply before the turn it admits (%q)", requests[1].Model, "gpt-4.1-mini")
 	}
 }

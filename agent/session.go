@@ -997,12 +997,17 @@ type Session struct {
 	// (applyPendingModelSwitch) so the next turn runs on it; guarded by s.mu.
 	// A zero value queues nothing.
 	pendingModel pendingModelSwitch
-	// modelPickSeq is the generation counter for model picks: SetModel stamps
-	// the current value under s.mu on every admission, so a pick's seq names
-	// the newest decision at the moment it was made. A switch application
-	// whose captured seq no longer matches at its commit was superseded by a
-	// newer pick and drops instead of overwriting it. Guarded by s.mu.
+	// modelPickSeq is the issue counter for model picks: SetModel stamps the
+	// current value under s.mu on every admission, so each pick - accepted or
+	// rejected - owns a unique, monotonic id. Guarded by s.mu.
 	modelPickSeq uint64
+	// modelPickAccepted is the issue of the newest pick an acceptance point
+	// committed: a queued store, a busy re-queue, or a profile swap. A pick
+	// whose issue is older was superseded by a newer accepted choice: its
+	// stores are skipped and its in-flight application drops. Validation
+	// failures never advance it, so a rejected pick cannot cancel an earlier
+	// accepted one. Guarded by s.mu.
+	modelPickAccepted uint64
 	// goalDependentsHeld records that the goal gate just held its continuation
 	// because wake-pending dependents (running delegates or non-detached
 	// background jobs) guarantee a future wake: the no-progress fold was
@@ -1662,9 +1667,10 @@ type pendingModelSwitch struct {
 // modelSwitchFence bounds one switch application's commit to the pick that
 // started it. A zero value fences nothing (the immediate test seam).
 type modelSwitchFence struct {
-	// pickSeq is the generation SetModel stamped on this pick. At the commit
-	// point a nonzero seq that no longer matches means a newer pick owns the
-	// outcome: the application drops instead of overwriting it.
+	// pickSeq is the issue SetModel stamped on this pick. At the commit
+	// point an issue that the acceptance watermark (modelPickAccepted) has
+	// passed means a newer accepted pick owns the outcome: the application
+	// drops instead of overwriting it.
 	pickSeq uint64
 	// queueWhenBusy re-queues the switch at the commit point instead of
 	// committing when a turn is in flight: the at-rest pickers' "land it at
@@ -1766,41 +1772,54 @@ func (s *Session) queueModelSwitch(model string, pickSeq uint64) error {
 		return s.applyModelSwitch(model, primedInstance, primedListing, fence)
 	}
 	// Last pick wins: the newest choice is what the next turn should run on.
-	s.pendingModel = pendingModelSwitch{model: model, primedInstance: primedInstance, primedListing: primedListing, seq: pickSeq}
+	// The acceptance watermark guards the store: a pick a newer accepted pick
+	// has passed was superseded, and its late store must not resurrect it
+	// over the newer choice. Storing accepts the pick, so the watermark
+	// advances with it.
+	if s.modelPickAccepted <= pickSeq {
+		s.pendingModel = pendingModelSwitch{model: model, primedInstance: primedInstance, primedListing: primedListing, seq: pickSeq}
+		s.modelPickAccepted = pickSeq
+	}
 	s.mu.Unlock()
 	return nil
 }
 
-// applyPendingModelSwitch applies a queued switch once no rounds remain. Its
+// applyPendingModelSwitch applies queued switches once no rounds remain. Its
 // callers are the input loop's two ownership points: before admitting each
 // turn (where the previous turn's deferred settlement has already run) and at
 // the idle tail after the input drains. The guard is the PROCESSING state
 // alone, not turnInFlightLocked, because goalInTurn is still set at both
 // sites for the input call that owns them. A failed application is reported
 // as a warning and dropped, not retried: the invalid choice stays visible in
-// the transcript while a re-pick re-enters the normal path.
+// the transcript while a re-pick re-enters the normal path. A superseded
+// application drops silently, and the loop then re-reads the queue: a newer
+// pick may have been accepted while the superseded one was still fetching,
+// and it must still land before the turn the caller is about to admit.
 func (s *Session) applyPendingModelSwitch() {
-	s.mu.Lock()
-	if s.state == SessionProcessing {
+	for {
+		s.mu.Lock()
+		if s.state == SessionProcessing {
+			s.mu.Unlock()
+			return
+		}
+		pending := s.pendingModel
+		s.pendingModel = pendingModelSwitch{}
 		s.mu.Unlock()
-		return
-	}
-	pending := s.pendingModel
-	s.pendingModel = pendingModelSwitch{}
-	s.mu.Unlock()
-	if pending.model == "" {
-		return
-	}
-	release, admissionErr := s.beginRetirementMutation("admission")
-	if admissionErr != nil {
-		return
-	}
-	defer release()
-	if err := s.applyModelSwitch(pending.model, pending.primedInstance, pending.primedListing, modelSwitchFence{pickSeq: pending.seq}); err != nil {
-		s.emit(events.WarningData{
-			Message: "queued model switch to " + pending.model + " did not apply: " + err.Error(),
-			Source:  "model_switch",
-		})
+		if pending.model == "" {
+			return
+		}
+		release, admissionErr := s.beginRetirementMutation("admission")
+		if admissionErr != nil {
+			return
+		}
+		err := s.applyModelSwitch(pending.model, pending.primedInstance, pending.primedListing, modelSwitchFence{pickSeq: pending.seq})
+		release()
+		if err != nil {
+			s.emit(events.WarningData{
+				Message: "queued model switch to " + pending.model + " did not apply: " + err.Error(),
+				Source:  "model_switch",
+			})
+		}
 	}
 }
 
@@ -1860,19 +1879,27 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 		s.mu.Unlock()
 		return nil
 	}
-	if fence.pickSeq != 0 && s.modelPickSeq != fence.pickSeq {
-		// A newer pick superseded this one while it validated; the newer
-		// choice owns the outcome, so this application drops.
+	if fence.pickSeq != 0 && s.modelPickAccepted > fence.pickSeq {
+		// A newer accepted pick superseded this one while it validated; the
+		// newer choice owns the outcome, so this application drops.
 		s.mu.Unlock()
 		return nil
 	}
 	if fence.queueWhenBusy && s.turnInFlightLocked() {
 		// A turn started while this at-rest pick was still validating. Queue
 		// for that turn's boundary instead of swapping the profile under it,
-		// carrying the listing this validation already fetched.
+		// carrying the listing this validation already fetched. Re-queueing
+		// accepts the pick, so the watermark advances with it.
 		s.pendingModel = pendingModelSwitch{model: model, primedInstance: listedInstance, primedListing: listing, seq: fence.pickSeq}
+		if s.modelPickAccepted < fence.pickSeq {
+			s.modelPickAccepted = fence.pickSeq
+		}
 		s.mu.Unlock()
 		return nil
+	}
+	// Committing accepts the pick.
+	if fence.pickSeq > s.modelPickAccepted {
+		s.modelPickAccepted = fence.pickSeq
 	}
 	s.profile = nextProfile
 	// The namer's spent-allowance latch was learned against the profile being
