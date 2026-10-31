@@ -479,6 +479,52 @@ func (c *delegateTreeController) stableWorktreeSnapshots() []delegateWorktreeSna
 	return rows
 }
 
+// isolatedLaneForDelegate resolves the isolation lane a delegate's turn runs
+// in: the delegate's own lane when it is worktree-isolated, and otherwise the
+// nearest isolated ancestor's — the checkout a non-isolated descendant
+// shares. The lane's marker names the session that spawned the lane-owning
+// delegate, the parent whose disposal lifecycle the orphan reclaim consults.
+// ok=false: the delegate runs in no lane this tree holds.
+func (c *delegateTreeController) isolatedLaneForDelegate(delegateID string) (isolationLane, bool) {
+	if c == nil || delegateID == "" {
+		return isolationLane{}, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	id := delegateID
+	for {
+		aggregate := c.durable[id]
+		if aggregate == nil {
+			return isolationLane{}, false
+		}
+		if aggregate.Descriptor.Isolation == "worktree" && aggregate.Descriptor.WorkingDir != "" {
+			return isolationLane{
+				delegateID:      id,
+				path:            aggregate.Descriptor.WorkingDir,
+				markerSessionID: c.markerSessionIDLocked(aggregate),
+			}, true
+		}
+		if parent := aggregate.Descriptor.ParentDelegateID; parent != "" {
+			id = parent
+			continue
+		}
+		return isolationLane{}, false
+	}
+}
+
+// markerSessionIDLocked names the session the lane-owning delegate's marker
+// carries: the one that spawned it. A root-owned lane names the root session
+// on its descriptor; a delegate-owned lane names the parent delegate's own
+// session, whose spawn wrote the marker. Callers hold c.mu.
+func (c *delegateTreeController) markerSessionIDLocked(aggregate *delegatestore.Aggregate) string {
+	if parent := aggregate.Descriptor.ParentDelegateID; parent != "" {
+		if parentAggregate := c.durable[parent]; parentAggregate != nil && parentAggregate.Descriptor.ChildSessionID != "" {
+			return parentAggregate.Descriptor.ChildSessionID
+		}
+	}
+	return aggregate.Descriptor.OwnerSessionID
+}
+
 // ownedStableWorktreeSnapshots returns only direct worktree children of owner.
 // ParentDelegateID is the direct-owner relation; OwnerSessionID authenticates
 // root-owned rows against this controller's root session.

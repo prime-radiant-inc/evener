@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"testing"
 	"time"
@@ -638,6 +639,155 @@ func TestDelegateWakeRefusesForeignHeldLane(t *testing.T) {
 	}
 	if m, ok := worktree.ParseMarker(reason); !ok || m.SessionID != foreignSID {
 		t.Fatalf("foreign lock = %q, want the other session's marker", reason)
+	}
+}
+
+// sharedDescendantLane is a delegate lane whose owner's turn has spawned a
+// retained non-isolated child: a delegate that runs in the lane without
+// owning it, and whose notification wake therefore validates an ancestor's
+// lane, not a lane of its own.
+type sharedDescendantLane struct {
+	fixture      coldDelegateFixture
+	lanePath     string
+	delegateSess *Session // the lane-owning delegate's runtime, which drives the child's wake
+	sharedSub    *subagent
+	finish       func(llm.Request) llm.Response
+}
+
+// spawnSharedDescendantLane builds that tree: a cold fixture delegate with an
+// isolated lane, restored and sent once through a turn that spawns exactly
+// one non-isolated child sharing the lane and then finishes, leaving both the
+// delegate and its child retained.
+func spawnSharedDescendantLane(t *testing.T, r *wtRepo, laneName, standInDlg, standInSID string) *sharedDescendantLane {
+	t.Helper()
+	var lanePath string
+	fixture := newColdDelegateFixtureConfigured(t, "", func(d *delegatestore.Descriptor) {
+		d.Isolation = "worktree"
+		d.ToolNameCeiling = []string{"communicate", "delegate"}
+		d.DelegationAllowance = 1
+		lanePath = r.delegateLane(t, laneName, standInDlg, standInSID)
+		d.WorkingDir = lanePath
+	})
+	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	t.Cleanup(root.Close)
+	wtGit(t, r.mainRoot, "worktree", "unlock", lanePath)
+	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", worktree.FormatDelegateMarker(fixture.delegateID, fixture.meta.ID), lanePath)
+	finish := func(llm.Request) llm.Response {
+		return agenttest.FinalResponse("done")
+	}
+	spawn := func(llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(llm.ToolCallData{
+			ID:        "call_spawn_child",
+			Name:      "delegate",
+			Arguments: json.RawMessage(`{"prompt":"grandchild sentinel task"}`),
+			Type:      "function",
+		})
+	}
+	// The delegate's turn spawns its child, the child's turn finishes, and the
+	// delegate's follow-up turn finishes.
+	fixture.adapter.steps = []func(llm.Request) llm.Response{spawn, finish, finish}
+	first := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "first turn", 10_000)
+	if first.result.Err != nil {
+		t.Fatalf("first send: %v", first.result.Err)
+	}
+	delegateSub := root.subagents.get(fixture.childID)
+	if delegateSub == nil || delegateSub.sess == nil {
+		t.Fatalf("delegate %s is not retained after its run", fixture.childID)
+	}
+	// The shared child is found through the tree's durable records by its
+	// parent edge, the way the tree's own tests do.
+	var sharedChildID string
+	shared := 0
+	tree := root.delegateController
+	tree.mu.Lock()
+	for _, agg := range tree.durable {
+		if agg.Descriptor.ParentDelegateID == fixture.delegateID {
+			shared++
+			sharedChildID = agg.Descriptor.ChildSessionID
+		}
+	}
+	tree.mu.Unlock()
+	if shared != 1 {
+		t.Fatalf("the lane-owning delegate spawned %d children, want exactly 1", shared)
+	}
+	sharedSub := delegateSub.sess.subagents.get(sharedChildID)
+	if sharedSub == nil || sharedSub.sess == nil {
+		t.Fatalf("the delegate's child %s is not retained after its run", sharedChildID)
+	}
+	return &sharedDescendantLane{
+		fixture:      fixture,
+		lanePath:     lanePath,
+		delegateSess: delegateSub.sess,
+		sharedSub:    sharedSub,
+		finish:       finish,
+	}
+}
+
+// A shared descendant's wake must not launch into an ancestor lane another
+// session has adopted: the drive reports not-launched and the newer lock is
+// never touched, exactly as a lane-owning delegate's wake does.
+func TestDelegateWakeRefusesForeignHeldInheritedLane(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	lane := spawnSharedDescendantLane(t, r, "wake-inherited-foreign", "dlg_waketest0000003", "034placeholder000000007")
+	const foreignSID = "034somebodyelse00000000002"
+	wtGit(t, r.mainRoot, "worktree", "unlock", lane.lanePath)
+	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", worktree.FormatSessionMarker(foreignSID), lane.lanePath)
+
+	lane.fixture.adapter.steps = []func(llm.Request) llm.Response{lane.finish}
+	if lane.delegateSess.driveSubagentNotificationTurn(lane.sharedSub) {
+		t.Fatal("shared descendant's wake launched into a lane held by another session")
+	}
+
+	_, locked, reason := r.laneLocked(t, lane.lanePath)
+	if !locked {
+		t.Fatal("the foreign lock was displaced")
+	}
+	if m, ok := worktree.ParseMarker(reason); !ok || m.SessionID != foreignSID {
+		t.Fatalf("foreign lock = %q, want the other session's marker", reason)
+	}
+}
+
+// The released inherited lane is re-taken before the shared child's turn
+// runs, and the wake counts as activity of the session the lane's marker
+// names — the parent the orphan reclaim consults — not of the delegate
+// driving the wake.
+func TestDelegateWakeReLocksUnlockedInheritedLaneAndRecordsOwnerActivity(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	lane := spawnSharedDescendantLane(t, r, "wake-inherited-relock", "dlg_waketest0000004", "034placeholder000000008")
+	// The parent's evidence is long-stale: the shared child's wake runs on the
+	// delegate's machinery and touches no parent transcript of its own.
+	parentTranscript := schema.SessionTranscriptPath(lane.fixture.stateDir, lane.fixture.meta.ID)
+	stale := time.Now().Add(-30 * 24 * time.Hour)
+	if err := os.Chtimes(parentTranscript, stale, stale); err != nil {
+		t.Fatalf("backdate the parent's transcript: %v", err)
+	}
+	// The end state the orphan arm and the manual unlock leave.
+	wtGit(t, r.mainRoot, "worktree", "unlock", lane.lanePath)
+
+	lane.fixture.adapter.steps = []func(llm.Request) llm.Response{lane.finish}
+	if !lane.delegateSess.driveSubagentNotificationTurn(lane.sharedSub) {
+		t.Fatal("notification drive skipped the idle shared child")
+	}
+
+	_, locked, reason := r.laneLocked(t, lane.lanePath)
+	if !locked {
+		t.Fatal("shared descendant's turn launched without the inherited lane re-locked")
+	}
+	m, ok := worktree.ParseMarker(reason)
+	if !ok || m.DelegateID != lane.fixture.delegateID || m.SessionID != lane.fixture.meta.ID {
+		t.Fatalf("re-locked lane's lock = %q, want the lane-owning delegate's marker naming its parent session", reason)
+	}
+	info, err := os.Stat(parentTranscript)
+	if err != nil {
+		t.Fatalf("stat the parent's transcript: %v", err)
+	}
+	if !info.ModTime().After(stale) {
+		t.Fatal("the lane owner's activity evidence was not refreshed by the wake")
 	}
 }
 

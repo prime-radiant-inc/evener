@@ -271,30 +271,21 @@ func (s *Session) sharedRestoreEnvironment(descriptor delegatestore.Descriptor) 
 	return nil
 }
 
-// reviveValidateIsolationLane re-establishes an isolated delegate's lane lock
-// before a revive path hands the lane back to a child. Every path funnels
-// through it — restoreIdle's retained and reconstructed children, and
-// restoreIdleForSend's existing-child return. Close-time disposal leaves a
-// kept changed lane unlocked ("switch-able until revived", spec §9 Guards),
-// and prune's orphan arm (#5471) and the documented manual unlock can release
-// a resumable delegate's lane; an unlocked lane is re-locked, a lane still
-// carrying this session's marker is adopted, a lane held by anyone else is a
-// refusal, and a removed lane fails the revival before any environment is
-// built on a checkout that is no longer there. Non-isolated delegates and
-// non-local environments are not gated.
+// reviveValidateIsolationLane re-establishes the tree's claim on the lane a
+// delegate's turn runs in before a revive path hands the lane back to a
+// child. Every path funnels through it — restoreIdle's retained and
+// reconstructed children, and restoreIdleForSend's existing-child return.
+// Close-time disposal leaves a kept changed lane unlocked ("switch-able until
+// revived", spec §9 Guards), and prune's orphan arm (#5471) and the
+// documented manual unlock can release a resumable delegate's lane; an
+// unlocked lane is re-locked, a lane still carrying this session's marker is
+// adopted, a lane held by anyone else is a refusal, and a removed lane fails
+// the revival before any environment is built on a checkout that is no longer
+// there. A non-isolated delegate that shares an isolated ancestor's checkout
+// validates that ancestor's lane; a delegate with no lane of this tree's own
+// and a non-local environment are not gated.
 func (s *Session) reviveValidateIsolationLane(started delegateStartCommit) error {
-	descriptor := started.descriptor
-	if descriptor.Isolation != "worktree" || descriptor.WorkingDir == "" {
-		return nil
-	}
-	local, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)
-	if !ok {
-		return nil // local git worktrees are a local-env-only feature
-	}
-	return s.reviveRevalidateDelegateLane(local, isolationLane{
-		delegateID: started.lease.delegateID,
-		path:       descriptor.WorkingDir,
-	})
+	return s.revalidateLaneForLaunch(started.lease.delegateID)
 }
 
 func (runtime delegateRuntime) restoreIdleForSend(started delegateStartCommit) (*subagent, bool, func(*subagent, error), error) {

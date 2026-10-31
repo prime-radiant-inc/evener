@@ -113,7 +113,7 @@ func (s *Session) lockDelegateLane(local *execenv.LocalExecutionEnvironment, lan
 	}
 	defer done()
 	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
-	_, err := run("worktree", "lock", "--reason", worktree.FormatDelegateMarker(lane.delegateID, s.id), lanePath)
+	_, err := run("worktree", "lock", "--reason", worktree.FormatDelegateMarker(lane.delegateID, lane.markerSessionID), lanePath)
 	return err
 }
 
@@ -174,7 +174,8 @@ func (s *Session) undisposedOwnedLanes() []isolationLane {
 		if !delegate.resumable || delegate.descriptor.WorkingDir == "" {
 			continue
 		}
-		lanes = append(lanes, isolationLane{delegateID: delegate.delegateID, path: delegate.descriptor.WorkingDir})
+		// This session spawned these lanes, so their markers name it.
+		lanes = append(lanes, isolationLane{delegateID: delegate.delegateID, path: delegate.descriptor.WorkingDir, markerSessionID: s.id})
 	}
 	return lanes
 }
@@ -240,14 +241,14 @@ func (s *Session) reviveRevalidateDelegateLane(local *execenv.LocalExecutionEnvi
 	}
 }
 
-// validateDrivenDelegateLane re-checks an isolated delegate's lane before an
-// automatic launch — a notification-driven drive turn — hands the retained
-// child another turn in it. The releases that threaten revival (close-time
+// validateDrivenDelegateLane re-checks the lane a notification-driven drive
+// turn is about to run in before it hands the retained child another turn:
+// the child's own when it is worktree-isolated, and otherwise the isolated
+// ancestor's lane it shares. The releases that threaten revival (close-time
 // disposal, prune's orphan arm, the documented manual unlock) threaten the
 // drive just the same: an unlocked lane is re-locked, and a lane held by
 // anyone else or removed outright refuses the launch — the drive reports
 // not-launched (its notifications stay queued) and the lane is never touched.
-// A child that is not an isolated delegate has no lane to validate.
 func (s *Session) validateDrivenDelegateLane(sub *subagent) bool {
 	if s == nil || sub == nil || sub.sess == nil || s.delegateController == nil {
 		return true
@@ -256,44 +257,57 @@ func (s *Session) validateDrivenDelegateLane(sub *subagent) bool {
 	if delegateID == "" {
 		return true
 	}
-	for _, delegate := range s.delegateController.ownedStableWorktreeSnapshots(s) {
-		if delegate.delegateID != delegateID || delegate.descriptor.WorkingDir == "" {
-			continue
-		}
-		// The launch this validation gates is itself parent activity: record
-		// it in the evidence the orphan reclaim reads before adopting the
-		// lane, or a child-only wake would leave a stale parent looking dead.
-		s.refreshOwnActivityEvidence()
-		local, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)
-		if !ok {
-			return true // local git worktrees are a local-env-only feature
-		}
-		if err := s.reviveRevalidateDelegateLane(local, isolationLane{delegateID: delegateID, path: delegate.descriptor.WorkingDir}); err != nil {
-			s.emit(events.WarningData{
-				Message: fmt.Sprintf("delegate %s's lane at %s failed revalidation before a notification turn: %v", delegateID, delegate.descriptor.WorkingDir, err),
-			})
-			return false
-		}
-		return true
+	if err := s.revalidateLaneForLaunch(delegateID); err != nil {
+		s.emit(events.WarningData{
+			Message: fmt.Sprintf("delegate %s's lane failed revalidation before a notification turn: %v", delegateID, err),
+		})
+		return false
 	}
 	return true
 }
 
-// refreshOwnActivityEvidence updates the last-activity signal the session
-// listings and the orphan reclaim both read — the session transcript's mtime
-// (the doctor's LastActivity). An automatic delegate launch runs on this
-// session's machinery without running this session's own turn, so the evidence
-// would otherwise stay stale while the session is demonstrably alive, and the
-// orphan arm could judge a parent that just launched its child long-inactive
-// and release the child's lane under the running turn. Best-effort: a session
-// with nothing persisted has no evidence to refresh, and the arm disarms
-// without a state directory anyway.
-func (s *Session) refreshOwnActivityEvidence() {
-	if s == nil {
+// revalidateLaneForLaunch resolves the lane a delegate's next turn edits and
+// re-establishes the tree's claim on it before any launch hands the turn
+// over: the delegate's own when it is worktree-isolated, and otherwise the
+// nearest isolated ancestor's — the checkout a non-isolated descendant
+// shares. The launch itself is activity of the session the lane's marker
+// names — the parent the orphan reclaim consults — so it is recorded in that
+// session's evidence before the lane is adopted or re-locked; a launch that
+// interleaves with a prune leaves the release recheck seeing a live parent. A
+// delegate with no lane of this tree's own runs in this session's checkout,
+// which no reclaim can release, and a launch on a non-local environment has
+// no git worktree to validate.
+func (s *Session) revalidateLaneForLaunch(delegateID string) error {
+	if s == nil || s.delegateController == nil || delegateID == "" {
+		return nil
+	}
+	local, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		return nil // local git worktrees are a local-env-only feature
+	}
+	lane, ok := s.delegateController.isolatedLaneForDelegate(delegateID)
+	if !ok {
+		return nil
+	}
+	s.refreshActivityEvidence(lane.markerSessionID)
+	return s.reviveRevalidateDelegateLane(local, lane)
+}
+
+// refreshActivityEvidence records activity in the last-activity signal the
+// session listings and the orphan reclaim both read — the named session's
+// transcript mtime (the doctor's LastActivity). An automatic launch runs on
+// the tree's machinery without running a turn of that session's own, so the
+// evidence would otherwise stay stale while the tree is demonstrably alive,
+// and the orphan arm could judge the parent long-inactive and release a
+// child's lane under the running turn. Best-effort: a session with nothing
+// persisted has no evidence to refresh, and the arm disarms without a state
+// directory anyway.
+func (s *Session) refreshActivityEvidence(sessionID string) {
+	if s == nil || sessionID == "" {
 		return
 	}
 	now := s.sclock().Now()
-	_ = os.Chtimes(schema.SessionTranscriptPath(s.stateDir, s.id), now, now)
+	_ = os.Chtimes(schema.SessionTranscriptPath(s.stateDir, sessionID), now, now)
 }
 
 // retryPendingReLocks re-attempts the resume re-lock for lanes whose first
