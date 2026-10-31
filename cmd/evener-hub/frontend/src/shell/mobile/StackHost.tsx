@@ -39,10 +39,16 @@
 // separate "last mobile screen" memory to restore independently of that.
 import { type ReactNode, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { parseZoomParams } from "../../panes/zoom/intent";
+import {
+  conversationHandoffGeneration,
+  registerConversationHostVisibility,
+  restrictConversationHandoff,
+} from "../../stores/conversationClaimHandoff";
 import { Chevron, IconButton } from "../../widgets";
 import { ActivitySidebar } from "../activitybar/ActivitySidebar";
 import { useActivitySidebarStore } from "../activitybar/activitySidebarStore";
 import { attentionEntryOwnsReader, goBackInAttentionHistory } from "../attentionHistory";
+import { ConversationHandoffBoundary } from "../ConversationHandoffBoundary";
 import { useChromeStore } from "../chromeStore";
 import { paneFor } from "../paneRegistry";
 import { PaneVisibilityContext } from "../paneVisibility";
@@ -72,7 +78,9 @@ function StackedPane({ pane }: { pane: OpenPaneRecord }) {
   return (
     <PaneVisibilityContext.Provider value>
       <Suspense fallback={null}>
-        <Component params={pane.params} paneId={pane.id} focused />
+        <ConversationHandoffBoundary generation={conversationHandoffGeneration("mobile")} paneId={pane.id}>
+          <Component params={pane.params} paneId={pane.id} focused />
+        </ConversationHandoffBoundary>
       </Suspense>
     </PaneVisibilityContext.Provider>
   );
@@ -205,6 +213,12 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   // publishes one, the top-bar Back invokes IT instead of the stack walk.
   const paneBack = useChromeStore((s) => s.paneBack);
   const focusedPane = panes.find((p) => p.id === focusedPaneId) ?? null;
+  const handoffGeneration = conversationHandoffGeneration("mobile");
+  useEffect(() => {
+    const visible = () => new Set(focusedPane ? [focusedPane.id] : []);
+    restrictConversationHandoff(handoffGeneration, visible());
+    return registerConversationHostVisibility("mobile", visible);
+  }, [handoffGeneration, focusedPane]);
   const activityOpen = useActivitySidebarStore((s) => s.open);
   const [panelOpen, setPanelOpen] = useState(false);
   // True when no real pane is focused: either nothing at all, or the
