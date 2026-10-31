@@ -62,7 +62,7 @@ func TestCommandTimeoutHardBoundDespiteEscapedDescendant(t *testing.T) {
 		if pid, err := os.ReadFile(marker); err == nil {
 			data = append(data, []byte("\nescapee "+strings.TrimSpace(string(pid)))...)
 		}
-		for _, line := range strings.Split(string(data), "\n") {
+		for line := range strings.SplitSeq(string(data), "\n") {
 			fields := strings.Fields(line)
 			if len(fields) != 2 {
 				continue
@@ -71,9 +71,9 @@ func TestCommandTimeoutHardBoundDespiteEscapedDescendant(t *testing.T) {
 			if err != nil || pid <= 0 {
 				continue
 			}
-			status, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "status"))
+			status, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/status")
 			t.Logf("fixture %s pid=%d: proc read err=%v", fields[0], pid, err)
-			for _, field := range strings.Split(string(status), "\n") {
+			for field := range strings.SplitSeq(string(status), "\n") {
 				if strings.HasPrefix(field, "State:") || strings.HasPrefix(field, "PPid:") ||
 					strings.HasPrefix(field, "NSpgid:") || strings.HasPrefix(field, "NSsid:") {
 					t.Logf("fixture pid=%d %s", pid, field)
