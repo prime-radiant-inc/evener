@@ -504,6 +504,9 @@ func resolveStoreFS(fs afero.Fs, path string, faults storeFaults) (snapshot, uin
 				if err := writeQuarantineEpoch(fs, path, epoch, faults); err != nil {
 					return snapshot{}, 0, nil, err
 				}
+				if state, err = recordLineageFloor(fs, path, state, artifacts.lineageFloor, faults); err != nil {
+					return snapshot{}, 0, nil, err
+				}
 				return state, epoch, signal, nil
 			case errors.Is(loadErr, ErrStoreCorrupt):
 				if !asideExists {
@@ -556,6 +559,9 @@ func resolveStoreFS(fs afero.Fs, path string, faults storeFaults) (snapshot, uin
 				}
 			}
 			signal = artifacts.signalAfterRemoving(path, orphanStamps...)
+		}
+		if state, err = recordLineageFloor(fs, path, state, artifacts.lineageFloor, faults); err != nil {
+			return snapshot{}, 0, nil, err
 		}
 		return state, epoch, signal, nil
 	}
@@ -988,4 +994,19 @@ const allocatorEpochStride = 1 << 40
 // store can come back down into an earlier one's range.
 func unprovenAllocatorFloor(quarantineEpoch uint64) uint64 {
 	return quarantineEpoch * allocatorEpochStride
+}
+
+// recordLineageFloor writes into a healthy store the id range its custody files
+// account for, when the store does not carry it yet (a store an earlier build
+// wrote), so the range stays accounted for after the quarantine artifacts are
+// cleaned away.
+func recordLineageFloor(fs afero.Fs, path string, state snapshot, floor uint64, faults storeFaults) (snapshot, error) {
+	if floor <= state.AllocatorFloor || floor > state.AllocatorHighWaterMark {
+		return state, nil
+	}
+	state.AllocatorFloor = floor
+	if err := writeReplacement(fs, path, state, faults); err != nil {
+		return snapshot{}, err
+	}
+	return state, nil
 }
