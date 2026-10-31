@@ -776,9 +776,28 @@ func TestDelegateWakeReLocksUnlockedInheritedLaneAndRecordsOwnerActivity(t *test
 	// The end state the orphan arm and the manual unlock leave.
 	wtGit(t, r.mainRoot, "worktree", "unlock", lane.lanePath)
 
-	lane.fixture.adapter.steps = []func(llm.Request) llm.Response{lane.finish}
-	if !lane.delegateSess.driveSubagentNotificationTurn(lane.sharedSub) {
-		t.Fatal("notification drive skipped the idle shared child")
+	// A not-launched drive is a retryable result in production — the caller
+	// re-drives at the next loop boundary — and a loaded shard can decline a
+	// launch for a reason that clears on its own. Mirror the caller within a
+	// bound: the outcome assertions below cannot be satisfied without a real
+	// launch, and a decline that never clears fails with the state that
+	// caused it.
+	launched := false
+	for deadline := time.Now().Add(10 * time.Second); !launched && time.Now().Before(deadline); {
+		lane.fixture.adapter.steps = []func(llm.Request) llm.Response{lane.finish}
+		launched = lane.delegateSess.driveSubagentNotificationTurn(lane.sharedSub)
+		if !launched {
+			time.Sleep(200 * time.Millisecond)
+		}
+	}
+	if !launched {
+		shared := lane.sharedSub
+		shared.mu.Lock()
+		closed, running, driving := shared.closed, shared.running, shared.driving
+		shared.mu.Unlock()
+		_, locked, reason := r.laneLocked(t, lane.lanePath)
+		t.Fatalf("notification drive skipped the idle shared child (lane locked=%v reason=%q, sub closed=%v running=%v driving=%v)",
+			locked, reason, closed, running, driving)
 	}
 
 	_, locked, reason := r.laneLocked(t, lane.lanePath)
