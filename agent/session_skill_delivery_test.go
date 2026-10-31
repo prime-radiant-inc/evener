@@ -1306,7 +1306,7 @@ func TestSkillDelivery_ProjectionModelSwitch(t *testing.T) {
 	updateSessionTestConfig(s, func(cfg *testConfig) {
 		cfg.execToolCheckpoint = func(name string) {
 			if name == "after_execute" && !switchedMidTurn.Swap(true) {
-				if err := s.applyModelSwitch("openai/gpt-5.2", "", nil); err != nil {
+				if err := s.applyModelSwitch("openai/gpt-5.2", "", nil, modelSwitchFence{}); err != nil {
 					t.Errorf("applyModelSwitch: %v", err)
 				}
 			}

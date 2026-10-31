@@ -997,6 +997,12 @@ type Session struct {
 	// (applyPendingModelSwitch) so the next turn runs on it; guarded by s.mu.
 	// A zero value queues nothing.
 	pendingModel pendingModelSwitch
+	// modelPickSeq is the generation counter for model picks: SetModel stamps
+	// the current value under s.mu on every admission, so a pick's seq names
+	// the newest decision at the moment it was made. A switch application
+	// whose captured seq no longer matches at its commit was superseded by a
+	// newer pick and drops instead of overwriting it. Guarded by s.mu.
+	modelPickSeq uint64
 	// goalDependentsHeld records that the goal gate just held its continuation
 	// because wake-pending dependents (running delegates or non-detached
 	// background jobs) guarantee a future wake: the no-progress fold was
@@ -1643,12 +1649,29 @@ func (s *Session) reapplyProviderSpecificTools(oldProfile, newProfile *provider.
 // pendingModelSwitch is a switch picked mid-input, waiting for the turn
 // boundary. The primed instance and listing are the ones the pick-time
 // preflight fetched; the boundary's applyModelSwitch reuses them so a queued
-// switch costs one live enumeration, not two. A zero value (empty model)
-// means nothing is queued.
+// switch costs one live enumeration, not two. The seq is the pick generation
+// SetModel stamped, which fences the boundary application against superseding
+// picks. A zero value (empty model) means nothing is queued.
 type pendingModelSwitch struct {
 	model          string
 	primedInstance string
 	primedListing  *llm.ModelListing
+	seq            uint64
+}
+
+// modelSwitchFence bounds one switch application's commit to the pick that
+// started it. A zero value fences nothing (the immediate test seam).
+type modelSwitchFence struct {
+	// pickSeq is the generation SetModel stamped on this pick. At the commit
+	// point a nonzero seq that no longer matches means a newer pick owns the
+	// outcome: the application drops instead of overwriting it.
+	pickSeq uint64
+	// queueWhenBusy re-queues the switch at the commit point instead of
+	// committing when a turn is in flight: the at-rest pickers' "land it at
+	// the next boundary" fallback, so a turn that started while the pick was
+	// still validating never has the profile swapped under it. The pending
+	// applier leaves it false - its own input call is the busy thing.
+	queueWhenBusy bool
 }
 
 // SetModel changes the model used for future LLM calls.
@@ -1679,12 +1702,14 @@ func (s *Session) SetModel(model string) error {
 		s.mu.Unlock()
 		return nil
 	}
+	s.modelPickSeq++
+	pickSeq := s.modelPickSeq
 	if !s.turnInFlightLocked() {
 		s.mu.Unlock()
-		return s.applyModelSwitch(model, "", nil)
+		return s.applyModelSwitch(model, "", nil, modelSwitchFence{pickSeq: pickSeq, queueWhenBusy: true})
 	}
 	s.mu.Unlock()
-	return s.queueModelSwitch(model)
+	return s.queueModelSwitch(model, pickSeq)
 }
 
 // turnInFlightLocked reports whether an input is being processed, from its
@@ -1703,8 +1728,9 @@ func (s *Session) turnInFlightLocked() bool {
 // being appended to by the running turn - and re-run by the boundary's
 // applyModelSwitch against settled history, reusing the listing this preflight
 // fetched so the boundary pays no second enumeration.
-func (s *Session) queueModelSwitch(model string) error {
+func (s *Session) queueModelSwitch(model string, pickSeq uint64) error {
 	primedInstance, primedListing := s.primeCodexRoster(model)
+	fence := modelSwitchFence{pickSeq: pickSeq, queueWhenBusy: true}
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
@@ -1715,7 +1741,7 @@ func (s *Session) queueModelSwitch(model string) error {
 		// the switch can apply directly instead of waiting for a boundary
 		// that already fired.
 		s.mu.Unlock()
-		return s.applyModelSwitch(model, "", nil)
+		return s.applyModelSwitch(model, primedInstance, primedListing, fence)
 	}
 	nextProfile, _, err := s.resolveProfileForRef(s.profile, model)
 	if err != nil {
@@ -1737,10 +1763,10 @@ func (s *Session) queueModelSwitch(model string) error {
 	}
 	if !s.turnInFlightLocked() {
 		s.mu.Unlock()
-		return s.applyModelSwitch(model, "", nil)
+		return s.applyModelSwitch(model, primedInstance, primedListing, fence)
 	}
 	// Last pick wins: the newest choice is what the next turn should run on.
-	s.pendingModel = pendingModelSwitch{model: model, primedInstance: primedInstance, primedListing: primedListing}
+	s.pendingModel = pendingModelSwitch{model: model, primedInstance: primedInstance, primedListing: primedListing, seq: pickSeq}
 	s.mu.Unlock()
 	return nil
 }
@@ -1770,7 +1796,7 @@ func (s *Session) applyPendingModelSwitch() {
 		return
 	}
 	defer release()
-	if err := s.applyModelSwitch(pending.model, pending.primedInstance, pending.primedListing); err != nil {
+	if err := s.applyModelSwitch(pending.model, pending.primedInstance, pending.primedListing, modelSwitchFence{pickSeq: pending.seq}); err != nil {
 		s.emit(events.WarningData{
 			Message: "queued model switch to " + pending.model + " did not apply: " + err.Error(),
 			Source:  "model_switch",
@@ -1781,10 +1807,13 @@ func (s *Session) applyPendingModelSwitch() {
 // applyModelSwitch is SetModel's committed switch: resolve, validate against
 // settled history, swap the profile, record the marker turn, publish
 // EventModelChanged, and persist. The caller owns the retirement admission -
-// SetModel and the boundary applier each hold one. A primed listing the caller
+// SetModel and the pending applier each hold one. A primed listing the caller
 // already fetched (the queue's pick-time preflight) is reused instead of a
-// fresh enumeration; nil primes here.
-func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *llm.ModelListing) error {
+// fresh enumeration; nil primes here. The fence bounds the commit to the pick
+// that started it: a superseded pick drops, and an at-rest pick that finds a
+// turn in flight at the commit point queues for that turn's boundary instead
+// of swapping under it.
+func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *llm.ModelListing, fence modelSwitchFence) error {
 	if primedListing == nil {
 		// A named Codex model may exist only in the target instance's live
 		// roster. List it before s.mu: the strict cross-provider resolve below
@@ -1819,14 +1848,29 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 	// Live model list is fetched once and reused for both metadata fill and
 	// the membership preflight below (see resolveModelSwitchTarget) — this
 	// rejects before any state changes when the target instance can
-	// enumerate its models and the requested model isn't among them.
-	nextProfile, _, _, err = resolveModelSwitchTarget(client, nextProfile, s.id, *s.providerAdapterTimeout(), primedInstance, primedListing)
+	// enumerate its models and the requested model isn't among them. The
+	// instance and listing are kept for the fence's re-queue below.
+	nextProfile, listedInstance, listing, err := resolveModelSwitchTarget(client, nextProfile, s.id, *s.providerAdapterTimeout(), primedInstance, primedListing)
 	if err != nil {
 		return err
 	}
 
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
+		s.mu.Unlock()
+		return nil
+	}
+	if fence.pickSeq != 0 && s.modelPickSeq != fence.pickSeq {
+		// A newer pick superseded this one while it validated; the newer
+		// choice owns the outcome, so this application drops.
+		s.mu.Unlock()
+		return nil
+	}
+	if fence.queueWhenBusy && s.turnInFlightLocked() {
+		// A turn started while this at-rest pick was still validating. Queue
+		// for that turn's boundary instead of swapping the profile under it,
+		// carrying the listing this validation already fetched.
+		s.pendingModel = pendingModelSwitch{model: model, primedInstance: listedInstance, primedListing: listing, seq: fence.pickSeq}
 		s.mu.Unlock()
 		return nil
 	}
