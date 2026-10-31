@@ -108,6 +108,32 @@ except where a line says so itself.
   every row regardless of owner, and rows recorded before owners existed are
   never restored automatically.
 
+### Recovery preservation
+
+- The live refs are the content's only home until disposal, and disposal is
+  synchronous: a closing pane snapshots its composition and enqueues exactly
+  one final durable write on the same serialized recovery-write chain its
+  saves use. Close flushes, never drops - a close during a pending write keeps
+  every keystroke. An empty composition closes through the guarded discard, a
+  leased composition through the save CAS, and a CAS another writer advanced
+  through a preserve under the pane's own seat. A pane holding no lease owes
+  nothing at close: its draft already holds every keystroke.
+- A resend that finds its row already consumed preserves the current
+  composition at the outcome itself, under a fresh owner, and adopts the
+  preserved row by lease transfer alone. Adoption never writes content back
+  into a live composer; content flows only from the live refs outward through
+  the CAS write, and the send-failure persistence path composes with the
+  preserved row.
+- The preserved write consumes its base row in the same transaction when that
+  row is still the exact durable state the pane last knew - the same id,
+  target ref, seat and composition revision - so a preserved copy and a live
+  base row are not restorable together, while a row a peer advanced keeps that
+  peer's work intact.
+- An empty composer at mount restores a seat-owned rejected row only while no
+  recovery activation is in flight, and its draft cleanup clears only the
+  persisted draft revision the pane's own editor bound, so another tab's newer
+  draft survives it.
+
 ### Atomic skill and command selections
 
 - Session and launcher composers share the real ProseMirror editor. Explicit

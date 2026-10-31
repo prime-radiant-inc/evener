@@ -1052,6 +1052,7 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
     composerMentions?: readonly ComposerMention[],
     compositionOwnerId?: string,
     localDraftRevisionId?: string,
+    consumeRecoveryIds?: readonly string[],
   ): Promise<MutationRecoveryRecord | undefined> {
     return this.#write(ENQUEUE_STORES, "preserveRecoveryComposition", async (transaction) => {
       const recoveryStore = transaction.objectStore(RECOVERY_STORE);
@@ -1090,6 +1091,26 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
         stopEpochAtEnqueue: await this.#stopEpochOf(transaction, base.targetRef),
       };
       await requestResult(recoveryStore.put(record));
+      // The preserved write consumes its base row in the same transaction, so
+      // a preserved copy and a live base row can never both be restorable.
+      // The consume names the row by the exact durable state the preserver
+      // last knew - the id, the target ref, the composition owner, and the
+      // composition revision - so a base row another seat owns, one a peer
+      // advanced, or one a resume retargeted is not the preserver's to take.
+      const consumeIds = [...new Set([...(consumeRecoveryIds ?? []), base.clientMutationId])];
+      const consumeOwner = compositionOwnerId ?? base.compositionOwnerId;
+      const consumeRevision = (base as VersionedMutationRecoveryRecord).compositionRevision ?? 0;
+      for (const id of consumeIds) {
+        const row = await requestResult<VersionedMutationRecoveryRecord | undefined>(recoveryStore.get(id));
+        if (
+          !row ||
+          row.targetRef !== base.targetRef ||
+          (row.compositionOwnerId ?? undefined) !== (consumeOwner ?? undefined) ||
+          (row.compositionRevision ?? 0) !== consumeRevision
+        )
+          continue;
+        await requestResult(recoveryStore.delete(id));
+      }
       return record;
     });
   }

@@ -3198,6 +3198,7 @@ export async function preserveRecoveryMutation(
   mentions?: readonly ComposerMention[],
   compositionOwnerId?: string,
   localDraftRevisionId?: string,
+  consumeRecoveryIds?: readonly string[],
 ): Promise<MutationRecoveryRecord | undefined> {
   const runtime = requireMutationRuntime();
   await runtime.start;
@@ -3209,6 +3210,7 @@ export async function preserveRecoveryMutation(
     mentions,
     compositionOwnerId,
     localDraftRevisionId,
+    consumeRecoveryIds,
   );
   if (!record) return undefined;
   notifyMutationPersistence([targetRef]);

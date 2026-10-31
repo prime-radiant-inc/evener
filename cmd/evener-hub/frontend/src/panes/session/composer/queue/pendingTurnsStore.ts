@@ -571,6 +571,7 @@ export function preserveRecoveryPendingTurn(
   mentions?: readonly ComposerMention[],
   compositionOwnerId?: string,
   localDraftRevisionId?: string,
+  consumeRecoveryIds?: readonly string[],
 ): ReturnType<typeof preserveRecoveryMutation> {
   return trackProjectionWork(
     (async () => {
@@ -584,6 +585,7 @@ export function preserveRecoveryPendingTurn(
         mentions,
         compositionOwnerId,
         localDraftRevisionId,
+        consumeRecoveryIds,
       );
       void refreshPendingTurnsProjection(ref);
       return preserved;

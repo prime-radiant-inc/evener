@@ -632,3 +632,92 @@ test("preserveRecoveryComposition reuses a row that already holds the compositio
   expect(preserved?.clientMutationId).toBe(original.clientMutationId);
   expect(await f.storage.listRecovery(original.targetRef)).toHaveLength(1);
 });
+
+// A preserved write consumes its base row in the same transaction, so a
+// preserved copy and a live base row can never both be restorable or
+// submittable. The consume names the row by identity: the base id, its target
+// ref, and the composition owner the preserved write carries.
+test("preserveRecoveryComposition consumes its same-owner base row atomically", async () => {
+  const f = fixture();
+  const outbox = await f.storage.enqueueIntent(queuedIntent());
+  const seeded = await f.storage.transferToRecovery(outbox.clientMutationId, "editing");
+  if (!seeded) throw new Error("failed to seed recovery");
+  const owned = await f.storage.updateRecoveryInput(
+    seeded.clientMutationId,
+    seeded.payload.input as InputItem[],
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    0,
+    undefined,
+    "seat-a",
+  );
+  if (!owned) throw new Error("failed to own the seeded row");
+
+  const changed: InputItem[] = [{ type: "text", text: "the preserved composition" }];
+  const preserved = await f.storage.preserveRecoveryComposition(
+    owned,
+    changed,
+    [],
+    "the preserved composition",
+    [],
+    "seat-a",
+  );
+  expect(preserved?.clientMutationId).not.toBe(owned.clientMutationId);
+  // The base row left with the mint, in the same transaction: it cannot be
+  // restored or submitted again.
+  expect(await f.storage.getRecovery(owned.clientMutationId)).toBeUndefined();
+  const intent = queuedIntent();
+  expect(
+    await f.storage.resendRecoveryResult(owned.clientMutationId, {
+      ...intent,
+      payload: { ...intent.payload, input: changed },
+    }),
+  ).toEqual({ status: "consumed" });
+  const rows = await f.storage.listRecovery(owned.targetRef);
+  expect(rows).toHaveLength(1);
+  expect(rows[0]?.clientMutationId).toBe(preserved?.clientMutationId);
+  const reopened = await f.reopen();
+  expect(await reopened.getRecovery(owned.clientMutationId)).toBeUndefined();
+  expect(await reopened.listRecovery(owned.targetRef)).toHaveLength(1);
+});
+
+// A base row a different seat owns is not the preserver's to take: the pane
+// preserving its own composition leaves the other seat's row restorable.
+test("preserveRecoveryComposition leaves a differently-owned base row in place", async () => {
+  const f = fixture();
+  const outbox = await f.storage.enqueueIntent(queuedIntent());
+  const seeded = await f.storage.transferToRecovery(outbox.clientMutationId, "editing");
+  if (!seeded) throw new Error("failed to seed recovery");
+  const owned = await f.storage.updateRecoveryInput(
+    seeded.clientMutationId,
+    seeded.payload.input as InputItem[],
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    0,
+    undefined,
+    "seat-b",
+  );
+  if (!owned) throw new Error("failed to own the seeded row");
+
+  const changed: InputItem[] = [{ type: "text", text: "this pane's composition" }];
+  const preserved = await f.storage.preserveRecoveryComposition(
+    owned,
+    changed,
+    [],
+    "this pane's composition",
+    [],
+    "seat-a",
+  );
+  expect(preserved?.clientMutationId).not.toBe(owned.clientMutationId);
+  expect(await f.storage.getRecovery(owned.clientMutationId)).toMatchObject({
+    clientMutationId: owned.clientMutationId,
+  });
+  const rows = await f.storage.listRecovery(owned.targetRef);
+  expect(rows.map((row) => row.clientMutationId)).toEqual([owned.clientMutationId, preserved?.clientMutationId]);
+});
