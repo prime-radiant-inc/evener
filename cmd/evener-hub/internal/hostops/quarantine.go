@@ -151,6 +151,9 @@ type quarantineArtifacts struct {
 	// operator-visible signal over the survivors instead of handing back one
 	// naming a file it just deleted.
 	custodySignals map[string]QuarantineSignal
+	// unprovenFloor is the highest allocator floor any unproven custody file
+	// gave the store: ids at or below it were never issued.
+	unprovenFloor uint64
 	// sidecarEpoch is the durable counter the sidecar file carried on its own
 	// (zero when there is none). resolveStoreFS persists the live epoch whenever
 	// it exceeds it, so the counter cannot regress if the custody files are
@@ -209,6 +212,9 @@ func scanQuarantineArtifacts(fs afero.Fs, storePath string) (quarantineArtifacts
 			}
 			artifacts.custodyStamps[stamp] = true
 			artifacts.custodySignals[stamp] = *custody.signal(custodyPath)
+			if custody.Unproven {
+				artifacts.unprovenFloor = max(artifacts.unprovenFloor, custody.AllocatorHighWaterMark)
+			}
 			fenceByID := make(map[string]custodyFence, len(custody.Fences))
 			for _, fence := range custody.Fences {
 				fenceByID[fence.RecordID] = fence
@@ -942,7 +948,7 @@ func custodyForCorruptStore(fs afero.Fs, path string, epoch uint64, now time.Tim
 	if err != nil {
 		return custodyFile{}, err
 	}
-	return custodyFromStore(decoded, path, epoch, now, artifacts.allocatorFloor, artifacts.priorImports)
+	return custodyFromStore(decoded, path, epoch, now, artifacts.allocatorFloor, artifacts.unprovenFloor, artifacts.priorImports)
 }
 
 // allocatorEpochStride is the id space one quarantine epoch owns when its

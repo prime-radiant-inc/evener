@@ -485,12 +485,15 @@ func readStoreForCustody(fs afero.Fs, path string) (snapshot, error) {
 // corrupt file's own high-water mark, so a later quarantine can never mint an id
 // an earlier custody file still references: an id-only resolve (§5) must never
 // alias an unrelated record.
+// unprovenFloor is the highest allocator floor an unproven set-aside gave this
+// store's lineage (zero when there is none). The store never issued an id at or
+// below it, so those ids are accounted for without evidence.
 // priorImports maps every id an existing custody file already handed out to the
 // entry that carries it. A fence import reusing such an id is refused unless it
 // is the same record identity — the same lineage's repeated fence keeps its
 // original id, while a different record under an earlier custody's id could
 // otherwise be cleared by resolving the older custody's row.
-func custodyFromStore(state snapshot, path string, epoch uint64, now time.Time, floor uint64, priorImports map[string]custodyFence) (custodyFile, error) {
+func custodyFromStore(state snapshot, path string, epoch uint64, now time.Time, floor, unprovenFloor uint64, priorImports map[string]custodyFence) (custodyFile, error) {
 	if state.Version != storeVersion {
 		return custodyFile{}, fmt.Errorf("%w: unsupported store version %d", ErrQuarantineIncomplete, state.Version)
 	}
@@ -556,7 +559,27 @@ func custodyFromStore(state snapshot, path string, epoch uint64, now time.Time, 
 	//     compacted, so a gap there is a lost record; and any id above the
 	//     highest visible id — where §4's "truncation that merely omits a record"
 	//     lands — has no evidence at all. Both refuse.
-	missing := state.AllocatorHighWaterMark - uint64(len(ids))
+	//
+	// present counts the ids in [from, to] the file accounts for: the retained
+	// ones, plus every id at or below unprovenFloor, which no store of this
+	// lineage issued.
+	skipped := min(unprovenFloor, state.AllocatorHighWaterMark)
+	present := func(from, to uint64) uint64 {
+		if from > to {
+			return 0
+		}
+		var count uint64
+		if from <= skipped {
+			count = min(to, skipped) - from + 1
+		}
+		for allocated := range ids {
+			if allocated >= from && allocated <= to && allocated > skipped {
+				count++
+			}
+		}
+		return count
+	}
+	missing := state.AllocatorHighWaterMark - present(1, state.AllocatorHighWaterMark)
 	if missing > 0 {
 		smallest, haveSmallest := uint64(0), false
 		var maxVisible uint64
@@ -594,19 +617,10 @@ func custodyFromStore(state snapshot, path string, epoch uint64, now time.Time, 
 			return custodyFile{}, fmt.Errorf("%w: %d ids below the allocator high-water mark %d carry no removal evidence",
 				ErrQuarantineIncomplete, missing, state.AllocatorHighWaterMark)
 		}
-		var visibleBelow, visibleInSpan uint64
-		for allocated := range ids {
-			switch {
-			case allocated < smallest:
-				visibleBelow++
-			case allocated <= maxVisible:
-				visibleInSpan++
-			}
-		}
-		missingBelow := smallest - 1 - visibleBelow
+		missingBelow := smallest - 1 - present(1, smallest-1)
 		missingInSpan := uint64(0)
 		if maxVisible >= smallest {
-			missingInSpan = maxVisible - smallest + 1 - visibleInSpan
+			missingInSpan = maxVisible - smallest + 1 - present(smallest, maxVisible)
 		}
 		missingAbove := missing - missingBelow - missingInSpan
 		if missingAbove > 0 {
