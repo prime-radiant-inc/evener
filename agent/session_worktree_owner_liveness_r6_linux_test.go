@@ -211,3 +211,29 @@ func TestWorktreePruneGonePidEntryDoesNotBlockDeadLooking(t *testing.T) {
 	path := lockLaneWithDelegateMarker(t, r, "gone-pid-lane", "dlg_reportgonepid01", root)
 	requireLaneReportedSkippedAndKept(t, r, "gone-pid-lane", path, "locked ("+marker+"); owner-dead-looking")
 }
+
+// TestWorktreePruneHonorsConfiguredRendezvousRunDir (review round 9): the
+// probe must read the rendezvous directory the hosting daemon actually
+// registers in — serve's effective run dir, carried by the session config —
+// not the platform default. A daemon run with a non-default --run-dir has
+// its verifiable live entry there, and an older daemon's root (one that
+// predates livelocks, so no livelock file exists) is found live through it.
+// The lane is still not collected.
+func TestWorktreePruneHonorsConfiguredRendezvousRunDir(t *testing.T) {
+	t.Parallel()
+	runDir := t.TempDir()
+	cfg := worktreeTestSessionConfig()
+	cfg.RendezvousDir = runDir
+	// No hermetic seam here: this test exercises the config-carried
+	// directory, exactly as serve supplies it.
+	r := newWorktreeRepoWithConfig(t, cfg)
+	root := identifier.MustNewSessionID()
+	seedOwnerRootSession(t, r.stateDir, root)
+	// No livelock file: the owner predates livelocks; the rendezvous entry
+	// is its only live evidence, and it lives in the configured run dir.
+	seedRendezvousEntry(t, runDir, root, os.Getpid(), time.Now().UTC())
+
+	marker := worktree.FormatDelegateMarker("dlg_reportrundir01", root)
+	path := lockLaneWithDelegateMarker(t, r, "run-dir-lane", "dlg_reportrundir01", root)
+	requireLaneReportedSkippedAndKept(t, r, "run-dir-lane", path, "locked ("+marker+"); owner-live")
+}

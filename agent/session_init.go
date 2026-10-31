@@ -799,8 +799,12 @@ type RestoreSessionConfig struct {
 	// the live parent's, replacing whatever the delegate saved.
 	parentMemoryProjectID string
 	StateDir              string
-	Project               identifier.Project
-	ResolveProfile        func(ref string) (*provider.Profile, error)
+	// RendezvousDir is the hosting daemon's rendezvous run directory, the
+	// same field SessionConfig carries — see its doc there. The host that
+	// resolved it for its own registration supplies it here too.
+	RendezvousDir  string
+	Project        identifier.Project
+	ResolveProfile func(ref string) (*provider.Profile, error)
 	// StartupModelListing reuses a listing the launcher already fetched for
 	// this session's model instance instead of fetching it again.
 	StartupModelListing     *StartupModelListing
@@ -955,6 +959,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 	cfg.LifetimeContext = restoreCfg.LifetimeContext
 	cfg.StateDir = canonicalStateDir(restoreCfg.StateDir)
+	cfg.RendezvousDir = restoreCfg.RendezvousDir
 	cfg.Project = restoreCfg.Project
 	cfg.ResolveProfile = restoreCfg.ResolveProfile
 	cfg.AcquireSessionOwnership = restoreCfg.AcquireSessionOwnership

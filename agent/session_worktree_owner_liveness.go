@@ -3,6 +3,7 @@ package agent
 import (
 	"primeradiant.com/evener/agent/internal/worktree"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -200,15 +201,25 @@ func (s *Session) sessionTreeRootSID(sid string) (string, bool) {
 }
 
 // worktreeOwnerRendezvousDir is the rendezvous run directory the liveness
-// oracle consults: the test seam when set, else the platform default. A
-// directory that cannot be resolved answers no rendezvous evidence rather
-// than failing the check.
+// oracle consults, resolved the same way the hosting daemon resolved the
+// directory it registered in (review round 9, finding 1): the test seam when
+// set, else the config-carried run dir (serve's --run-dir / EVENER_RUN_DIR /
+// default, resolved once by the host), else EVENER_RUN_DIR from this
+// process's own environment, else the platform default. A directory that
+// cannot be resolved answers no rendezvous evidence rather than failing the
+// check.
 func (s *Session) worktreeOwnerRendezvousDir() (string, bool) {
 	s.mu.Lock()
 	dir := s.worktreeRendezvousDir
 	s.mu.Unlock()
 	if dir != "" {
 		return dir, true
+	}
+	if s.cfg.RendezvousDir != "" {
+		return s.cfg.RendezvousDir, true
+	}
+	if env := envvars.EVENERRunDir.Getenv(); env != "" {
+		return env, true
 	}
 	dir, err := rendezvous.DefaultDir()
 	if err != nil {
