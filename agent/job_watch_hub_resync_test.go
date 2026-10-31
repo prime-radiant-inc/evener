@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"strings"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -39,8 +38,12 @@ func TestManagerWatchResyncInterruptsWithoutStatusSelector(t *testing.T) {
 		t.Fatal("authoritative catch-up did not resume watch")
 	}
 	notices := 0
+	wantIdentity := meta.Ref + "#interruption"
 	for _, event := range loadJobStoreEvents(t, jm) {
-		if event.WatchSend != nil && event.WatchSend.Key.WatchID == watch.WatchID && strings.Contains(event.WatchSend.TriggerReason, "interrupted") {
+		if event.WatchSend == nil || event.WatchSend.Key.WatchID != watch.WatchID {
+			continue
+		}
+		if event.WatchSend.TriggerIdentity == wantIdentity {
 			notices++
 		}
 	}

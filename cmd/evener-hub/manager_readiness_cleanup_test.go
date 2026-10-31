@@ -54,12 +54,12 @@ type managerCleanupFailureResult struct {
 }
 
 func runManagerCleanupServeHelper() {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGTERM, syscall.SIGUSR1)
 	if err := os.WriteFile(os.Getenv(managerCleanupServeReadyEnv), []byte("ready"), 0o600); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, syscall.SIGTERM, syscall.SIGUSR1)
 	defer signal.Stop(signals)
 	<-signals
 }
@@ -78,12 +78,12 @@ func TestManagerReadinessCleanupProcessHelper(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	if err := os.WriteFile(os.Getenv(managerCleanupReadyEnv), []byte(listener.Addr().String()), 0o600); err != nil {
-		t.Fatalf("write readiness: %v", err)
-	}
 	signals := make(chan os.Signal, 2)
 	signal.Notify(signals, syscall.SIGTERM, syscall.SIGUSR1)
 	defer signal.Stop(signals)
+	if err := os.WriteFile(os.Getenv(managerCleanupReadyEnv), []byte(listener.Addr().String()), 0o600); err != nil {
+		t.Fatalf("write readiness: %v", err)
+	}
 	listenerClosed := false
 	for sig := range signals {
 		switch sig {
@@ -425,6 +425,77 @@ func TestStopHostListenerReapsOwnedProcessAfterProofFailure(t *testing.T) {
 	}
 	if result.ProcessSignal != "killed" {
 		t.Errorf("owned process exit = %v, want verified SIGKILL after it held the barrier", waitErr)
+	}
+}
+
+// TestHostHubKillRecognizesOnlyOwnedArgv runs the generated command with data-only
+// process discovery and a kill function that records selection instead of signaling.
+func TestHostHubKillRecognizesOnlyOwnedArgv(t *testing.T) {
+	const binary = "/fixture/bin/evener"
+	const config = "/fixture/hub.toml"
+	const hub = binary + " hub --config " + config
+	const helper = binary + " -test.run=^TestManagerReadinessCleanupProcessHelper$ -manager-cleanup-process-config=" + config
+	for _, tc := range []struct {
+		name      string
+		argv      string
+		rechecked string
+		want      bool
+	}{
+		{name: "real hub", argv: hub, want: true},
+		{name: "exact helper", argv: helper, want: true},
+		{name: "hub wrong executable", argv: "/other" + hub},
+		{name: "helper wrong executable", argv: "/other" + helper},
+		{name: "hub wrong config", argv: binary + " hub --config /other/hub.toml"},
+		{name: "helper wrong config", argv: binary + " -test.run=^TestManagerReadinessCleanupProcessHelper$ -manager-cleanup-process-config=/other/hub.toml"},
+		{name: "hub config substring", argv: hub + ".other"},
+		{name: "helper config substring", argv: helper + ".other"},
+		{name: "wrong helper selector", argv: binary + " -test.run=^TestOtherHelper$ -manager-cleanup-process-config=" + config},
+		{name: "extra helper field", argv: helper + " extra"},
+		{name: "wrong hub subcommand", argv: binary + " serve --config " + config},
+		{name: "identity changed before signal", argv: helper, rechecked: helper + ".other"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			mark := filepath.Join(root, "selected")
+			rechecked := tc.rechecked
+			if rechecked == "" {
+				rechecked = tc.argv
+			}
+			// Every process boundary is fixture data. In particular, the generated
+			// kill resolves to this function, never a signal to the synthetic PID.
+			script := `lsof() { printf '%s\n' 424242; }
+ps() {
+  if [ -s "$SELECTOR_PS_READS" ]; then
+    printf '%s\n' "$SELECTOR_RECHECKED_ARGV"
+  else
+    printf '%s\n' "$SELECTOR_ARGV"
+  fi
+  printf '%s\n' read >> "$SELECTOR_PS_READS"
+}
+kill() { printf '%s\n' "$@" > "$SELECTOR_MARK"; }
+` + hostHubKillCommand("127.0.0.1:19180", config, binary)
+			// TRIPWIRE: bound a stuck generated shell command, not timing under test.
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, "/bin/bash", "-c", script)
+			cmd.Env = append(os.Environ(),
+				"SELECTOR_ARGV="+tc.argv,
+				"SELECTOR_RECHECKED_ARGV="+rechecked,
+				"SELECTOR_PS_READS="+filepath.Join(root, "ps-reads"),
+				"SELECTOR_MARK="+mark,
+			)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("run generated selector: %v\n%s", err, out)
+			}
+			selected, err := os.ReadFile(mark)
+			if tc.want {
+				if err != nil || string(selected) != "424242\n" {
+					t.Fatalf("selected PID = %q, error = %v, want synthetic PID 424242", selected, err)
+				}
+			} else if !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("unowned argv selected PID %q, error = %v", selected, err)
+			}
+		})
 	}
 }
 

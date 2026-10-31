@@ -509,21 +509,48 @@ func parkThreadLists(t *testing.T, server *Server) (started, releases chan struc
 // could hold any number of goroutines.
 func TestServeWebSocketConcurrentRequestsHaveATotalCap(t *testing.T) {
 	server, logged := captureLogfServer()
-	pools := 0
+	var pools atomic.Int64
+	var hookDecisions atomic.Int64
 	server.cfg.ConcurrentRequest = func(method string, _ json.RawMessage) (string, bool) {
-		pools++
-		return fmt.Sprintf("pool-%d", pools), method == appwire.MethodThreadList
+		pool := pools.Add(1)
+		admit := method == appwire.MethodThreadList
+		hookDecisions.Add(1)
+		return fmt.Sprintf("pool-%d", pool), admit
 	}
 	listsStarted, _ := parkThreadLists(t, server)
 	httpServer := serveWebSocketHTTP(t, server)
 	client := dialAppWireClient(t, httpServer)
 	ctx := context.Background()
 
+	const launched = concurrentRequestTotalCap
+	earlyResults := make(chan error, launched)
 	for range concurrentRequestTotalCap {
-		go func() { _, _ = client.ThreadList(ctx, appwire.ThreadListParams{}) }()
+		go func() {
+			_, err := client.ThreadList(ctx, appwire.ThreadListParams{})
+			earlyResults <- err
+		}()
 	}
-	for range concurrentRequestTotalCap {
-		waitFor(t, "a request in a pool of its own to park in its handler", listsStarted)
+	observedStarts := 0
+	var earlyResult string
+	for observedStarts < concurrentRequestTotalCap {
+		// Keep the existing five-second deadlock tripwire per handler start;
+		// it diagnoses failure to fill this request's own pool, not scheduling.
+		timer := time.NewTimer(5 * time.Second)
+		for {
+			select {
+			case <-listsStarted:
+				observedStarts++
+				timer.Stop()
+				goto nextStart
+			case err := <-earlyResults:
+				if earlyResult == "" {
+					earlyResult = fmt.Sprintf("%v", err)
+				}
+			case <-timer.C:
+				t.Fatalf("timed out waiting for a request in a pool of its own to park: launched=%d observed_starts=%d hook_decisions=%d early_thread_list_result=%q", launched, observedStarts, hookDecisions.Load(), earlyResult)
+			}
+		}
+	nextStart:
 	}
 	// Two requests beyond the total are both refused, and the total's
 	// advisory reaches Logf once.

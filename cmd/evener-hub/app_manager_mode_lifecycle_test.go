@@ -116,6 +116,51 @@ func TestManagerModeClearColdRead(t *testing.T) {
 	if live.Thread.Evener.Ref != ref {
 		t.Fatalf("live projection = %+v", live.Thread.Evener)
 	}
+	// The current instance alias still reports the live workspace ref. After
+	// Clear, the same selection must report its own historical identity.
+	aliasClient := dialHubRPC(t, hub)
+	defer aliasClient.Close()
+	if _, err := aliasClient.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatal(err)
+	}
+	selectedBefore, err := aliasClient.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: "local:" + instance, Subscribe: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selectedBefore.Thread.Evener.Ref != ref || selectedBefore.Thread.Evener.InstanceID != instance || !selectedBefore.Thread.Evener.Manager {
+		t.Fatalf("current instance alias before second Clear = %+v", selectedBefore.Thread.Evener)
+	}
+	second, err := client.ThreadClear(t.Context(), appwire.ThreadClearParams{Ref: ref, ClientMutationID: "manager-clear-again", ExpectedInstanceID: instance})
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentInstance := second.Thread.Evener.InstanceID
+	if currentInstance == "" || currentInstance == instance || second.Thread.Evener.Ref != ref || !second.Thread.Evener.Manager {
+		t.Fatalf("second Clear projection = %+v, previous instance %q", second.Thread.Evener, instance)
+	}
+	roster.Refresh()
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	liveClient := dialHubRPC(t, hub)
+	defer liveClient.Close()
+	if _, err := liveClient.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatal(err)
+	}
+	liveRead, err := liveClient.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: ref, Subscribe: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if liveRead.Thread.Evener.Ref != ref || liveRead.Thread.Evener.InstanceID != currentInstance || !liveRead.Thread.Evener.Manager {
+		t.Fatalf("live alias after second Clear = %+v, want instance %s", liveRead.Thread.Evener, currentInstance)
+	}
+	selected, err := aliasClient.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: "local:" + instance, Subscribe: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected.Thread.Evener.Ref != "local:"+instance || selected.Thread.Evener.InstanceID != instance || !selected.Thread.Evener.Manager {
+		t.Fatalf("historical sibling was rerouted after second Clear: %+v", selected.Thread.Evener)
+	}
 	if err := client.ThreadShutdown(t.Context(), appwire.ThreadShutdownParams{Ref: ref}); err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +177,11 @@ func TestManagerModeClearColdRead(t *testing.T) {
 	if _, err := cold.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatal(err)
 	}
-	for _, selected := range []struct{ ref, instance string }{{"local:" + instance, instance}, {ref, initial.Thread.Evener.InstanceID}} {
+	for _, selected := range []struct{ ref, instance string }{
+		{"local:" + instance, instance},
+		{"local:" + currentInstance, currentInstance},
+		{ref, initial.Thread.Evener.InstanceID},
+	} {
 		requested := selected.ref
 		read, err := cold.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: requested})
 		if err != nil {
@@ -143,14 +192,6 @@ func TestManagerModeClearColdRead(t *testing.T) {
 		}
 	}
 	if _, err := cold.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: ref, Subscribe: true}); err != nil {
-		t.Fatal(err)
-	}
-	aliasClient := dialHubRPC(t, hub)
-	defer aliasClient.Close()
-	if _, err := aliasClient.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := aliasClient.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: "local:" + instance, Subscribe: true}); err != nil {
 		t.Fatal(err)
 	}
 	child, _, err := agent.ForkSessionAtUserTurn(f.stateDir, initial.Thread.Evener.InstanceID, divergence, "")
@@ -178,7 +219,8 @@ func TestManagerModeClearColdRead(t *testing.T) {
 	}
 
 	// Rebuild the real hub spawner and human server over the same persisted roots.
-	f.sessionID = instance
+	canonicalCurrentRef := "local:" + currentInstance
+	f.sessionID = currentInstance
 	if err := f.restartHub(); err != nil {
 		t.Fatal(err)
 	}
@@ -193,47 +235,12 @@ func TestManagerModeClearColdRead(t *testing.T) {
 	if _, err := reconnected.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatal(err)
 	}
-	resumed, err := reconnected.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: ref})
+	resumed, err := reconnected.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: canonicalCurrentRef})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resumed.Thread.Evener.Ref != ref || resumed.Thread.Evener.InstanceID != instance || !resumed.Thread.Evener.Manager {
+	if resumed.Thread.Evener.Ref != canonicalCurrentRef || resumed.Thread.Evener.InstanceID != currentInstance || !resumed.Thread.Evener.Manager {
 		t.Fatalf("resumed projection = %+v", resumed.Thread.Evener)
-	}
-	// A second Clear leaves the intermediate instance independently readable
-	// while the same workspace is live at a new instance.
-	second, err := client.ThreadClear(t.Context(), appwire.ThreadClearParams{Ref: ref, ClientMutationID: "manager-clear-again", ExpectedInstanceID: instance})
-	if err != nil {
-		t.Fatal(err)
-	}
-	currentInstance := second.Thread.Evener.InstanceID
-	roster.Refresh()
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
-	liveClient := dialHubRPC(t, hub)
-	defer liveClient.Close()
-	if _, err := liveClient.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatal(err)
-	}
-	liveRead, err := liveClient.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: ref, Subscribe: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if liveRead.Thread.Evener.InstanceID != currentInstance {
-		t.Fatalf("live subscription got stale instance: %+v", liveRead.Thread.Evener)
-	}
-	// Renew the intermediate historical selection after Clear; retain its own
-	// public identity rather than replacing it with the live workspace ref.
-	selected, err := aliasClient.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: "local:" + instance, Subscribe: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if selected.Thread.Evener.Ref != "local:"+instance || selected.Thread.Evener.InstanceID != instance {
-		t.Fatalf("historical sibling was rerouted: %+v", selected.Thread.Evener)
-	}
-	if !selected.Thread.Evener.Manager || !liveRead.Thread.Evener.Manager || !second.Thread.Evener.Manager {
-		t.Fatalf("Manager after second Clear: historical=%t live=%t response=%t", selected.Thread.Evener.Manager, liveRead.Thread.Evener.Manager, second.Thread.Evener.Manager)
 	}
 	if err := f.launchInitial(); err != nil {
 		t.Fatal(err)

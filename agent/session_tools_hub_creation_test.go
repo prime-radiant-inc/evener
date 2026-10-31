@@ -13,9 +13,10 @@ import (
 // Only the hub boundary is scripted. Input acceptance and replay use the real
 // worker's durable mutation owner, including its persisted pending execution.
 type managerCreationClient struct {
-	worker *Session
-	stage  string
-	starts []appwire.TurnStartParams
+	worker  *Session
+	stage   string
+	creates int
+	starts  []appwire.TurnStartParams
 }
 
 func (*managerCreationClient) State(context.Context) (appwire.ManagerView, error) {
@@ -23,6 +24,7 @@ func (*managerCreationClient) State(context.Context) (appwire.ManagerView, error
 }
 func (c *managerCreationClient) Invoke(_ context.Context, req appwire.SessionOperationRequest) (appwire.SessionOperationResponse, error) {
 	if req.Create != nil {
+		c.creates++
 		if c.stage == "createFailed" {
 			return appwire.SessionOperationResponse{}, appwire.WireError{Code: appwire.CodeConflict, Data: appwire.ErrorData{MutationOutcome: appwire.MutationOutcomeNotAccepted}}
 		}
@@ -49,6 +51,60 @@ func (c *managerCreationClient) Invoke(_ context.Context, req appwire.SessionOpe
 	}
 	return appwire.SessionOperationResponse{}, errors.New("unexpected operation")
 }
+
+func TestManagerCreateRejectsInvalidWatchSelectorsBeforeCreate(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		watch map[string]any
+	}{
+		{name: "empty selector set", watch: map[string]any{"events": []string{}}},
+		{name: "unknown event", watch: map[string]any{"events": []string{"unknown"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			worker := newTestSession(t)
+			client := &managerCreationClient{worker: worker}
+			root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
+			root.SetHubClient(client)
+			_, err := root.createHubDelegate(t.Context(), map[string]any{
+				"prompt": "worker task",
+				"hub": map[string]any{
+					"cwd": t.TempDir(), "model": "openai/gpt-5.2", "watch": tc.watch,
+				},
+			})
+			if client.creates != 0 {
+				t.Fatalf("Create calls=%d, want zero before selector rejection", client.creates)
+			}
+			if err == nil {
+				t.Fatal("invalid watch selectors were accepted")
+			}
+		})
+	}
+}
+
+func TestManagerCreateAcceptsCompletionOnlyWatch(t *testing.T) {
+	worker := newTestSession(t)
+	client := &managerCreationClient{worker: worker}
+	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
+	root.SetHubClient(client)
+	value, err := root.createHubDelegate(t.Context(), map[string]any{
+		"prompt": "worker task",
+		"hub": map[string]any{
+			"cwd": t.TempDir(), "model": "openai/gpt-5.2",
+			"watch": map[string]any{"events": []string{}, "completion": true},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, ok := value.(managerCreateOutcome)
+	if !ok || out.Watch.Status != "attached" || out.Watch.WatchID == "" {
+		t.Fatalf("completion-only watch was not attached: %#v", value)
+	}
+	if client.creates != 1 || len(client.starts) != 1 {
+		t.Fatalf("Create calls=%d, Start calls=%d; want one each", client.creates, len(client.starts))
+	}
+}
+
 func (c *managerCreationClient) Watch(ctx context.Context, req appwire.SessionWatchRequest) (<-chan appwire.SessionWatchUpdate, error) {
 	if c.stage == "watchFailed" {
 		return nil, appwire.InvalidParams("fixture refusal")

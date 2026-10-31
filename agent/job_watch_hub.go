@@ -26,12 +26,22 @@ const (
 	hubWatchStateFailureLimit = 5
 )
 
+var hubObservationEvents = [...]string{"status", "question", "approval", "communicate"}
+
 func hubObservationSelector(event string) bool {
-	switch event {
-	case "status", "question", "approval", "communicate":
-		return true
+	return slices.Contains(hubObservationEvents[:], event)
+}
+
+func validateHubWatchSelectors(selectors []string, completion bool) error {
+	if len(selectors) == 0 && !completion {
+		return errors.New("invalid_request: watch needs events or completion")
 	}
-	return false
+	for _, event := range selectors {
+		if !hubObservationSelector(event) {
+			return fmt.Errorf("invalid_request: unsupported hub observation %q", event)
+		}
+	}
+	return nil
 }
 
 // Hub watches use the same journal, pending-send rail and watch ID as ordinary
@@ -43,13 +53,8 @@ func (jm *jobManager) configureHubWatchContext(ctx context.Context, ref, instanc
 	if ref == "" || instance == "" || generation == "" || caller == "" {
 		return watchResult{}, errors.New("source_not_watchable: authoritative hub target generation and Manager caller are required")
 	}
-	if len(selectors) == 0 && !completion {
-		return watchResult{}, errors.New("invalid_request: watch needs events or completion")
-	}
-	for _, event := range selectors {
-		if !hubObservationSelector(event) {
-			return watchResult{}, fmt.Errorf("invalid_request: unsupported hub observation %q", event)
-		}
+	if err := validateHubWatchSelectors(selectors, completion); err != nil {
+		return watchResult{}, err
 	}
 	a := watchArgs{Target: ref, Source: ref, Send: &watchSendArgs{To: runtimeMessageAliasCaller}, ReceiverSendInternal: true}
 	cfg, err := newWatchConfig(a, jm.now(), "")
@@ -389,13 +394,8 @@ func (s *Session) configureHubWatchRuntime(ctx context.Context, args map[string]
 	if client == nil || !enabled || closing {
 		return nil, appwire.InvalidRequest("Manager tool unavailable")
 	}
-	if len(request.Events) == 0 && !request.Completion {
-		return nil, appwire.InvalidParams("events or completion is required")
-	}
-	for _, selector := range request.Events {
-		if !hubObservationSelector(selector) {
-			return nil, appwire.InvalidParams("unsupported observation selector " + selector)
-		}
+	if err := validateHubWatchSelectors(request.Events, request.Completion); err != nil {
+		return nil, appwire.InvalidParams(err.Error())
 	}
 	state, err := client.State(ctx)
 	if err != nil {

@@ -39,13 +39,13 @@ func TestHubRPCSubscribedInvalidRefPreservesInvalidParams(t *testing.T) {
 	}
 }
 
-func TestHubReadAdmissionFollowsRequestedSubscription(t *testing.T) {
+func TestHubReadAdmissionCancellationPreservesUnavailable(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		subscribe bool
 	}{
-		{name: "plain snapshot"},
-		{name: "local UI subscription", subscribe: true},
+		{name: "implicit ordinary relay"},
+		{name: "explicit subscription", subscribe: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
@@ -103,12 +103,8 @@ func TestHubReadAdmissionFollowsRequestedSubscription(t *testing.T) {
 			select {
 			case err := <-result:
 				var wireErr appwire.WireError
-				if tc.subscribe {
-					if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeUnavailable {
-						t.Fatalf("canceled subscriber returned %v, want unavailable", err)
-					}
-				} else if err != nil {
-					t.Fatalf("plain snapshot rejected by canceled admission: %v", err)
+				if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeUnavailable {
+					t.Fatalf("canceled ordinary read returned %v, want unavailable", err)
 				}
 			case <-ctx.Done():
 				t.Fatal("read did not finish")

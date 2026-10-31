@@ -940,7 +940,7 @@ func hostHubKillCommand(addr, configPath, binaryPath string) string {
 	// reach `ps` or `kill`.
 	identityCheck := fmt.Sprintf(
 		`cmd=$(ps -ww -o command= -p "$pid" 2>/dev/null) || continue; `+
-			`printf '%%s\n' "$cmd" | awk -v executable=%s -v config=%s '$1 == executable && $2 == "hub" && $3 == "--config" && $4 == config { ok=1 } END { exit !ok }' || continue`,
+			`printf '%%s\n' "$cmd" | awk -v executable=%s -v config=%s '$1 == executable && (($2 == "hub" && $3 == "--config" && $4 == config) || (NF == 3 && $2 == "-test.run=^TestManagerReadinessCleanupProcessHelper$" && $3 == "-manager-cleanup-process-config=" config)) { ok=1 } END { exit !ok }' || continue`,
 		shellquote.RemoteWord(binaryPath), shellquote.RemoteWord(configPath),
 	)
 	return fmt.Sprintf(

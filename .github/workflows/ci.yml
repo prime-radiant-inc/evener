@@ -371,6 +371,18 @@ jobs:
           CLI_SHARD_PARALLEL: 2
         run: make test-race RACE_SCOPE=root RACE_ROOT_PART=${{ matrix.part }}
 
+      # Race skips the survey and timing capture, so raw hub output stays here.
+      - name: Keep failed hub race logs
+        if: failure() && matrix.part == 'hub'
+        uses: actions/upload-artifact@v7
+        with:
+          name: failed-go-race-root-${{ matrix.part }}-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 3
+          if-no-files-found: warn
+          path: |
+            /dev/shm/evener-module-tests.*/tmp/_/hub-test-shards.*/shard[0-9]*.log
+            /tmp/evener-module-tests.*/tmp/_/hub-test-shards.*/shard[0-9]*.log
+
       - uses: ./.github/actions/go-cache-save
 
   race-root:
@@ -402,6 +414,18 @@ jobs:
 
       - name: Test (race detector — ${{ matrix.scope }})
         run: make test-race RACE_SCOPE=${{ matrix.scope }}
+
+      # Agent race tests are unsharded, and the module log has full got/want.
+      - name: Keep failed agent race log
+        if: failure() && matrix.scope == 'agent'
+        uses: actions/upload-artifact@v7
+        with:
+          name: failed-go-race-modules-${{ matrix.scope }}-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 3
+          if-no-files-found: warn
+          path: |
+            /dev/shm/evener-module-tests.*/agent.log
+            /tmp/evener-module-tests.*/agent.log
 
       - uses: ./.github/actions/go-cache-save
 
@@ -442,6 +466,25 @@ jobs:
           LOAD_AWARE_LOAD1: "0"
           EVENER_GATE_TIMING_TSV: /tmp/gate-timing-${{ matrix.scope }}.tsv
         run: ROOT_FULL=1 WEB=0 make test TEST_SCOPE=${{ matrix.scope }}
+
+      # Survey failure replay is abbreviated. Keep the full surveys and raw
+      # timing-capture shard text, never the surrounding homes or test binaries.
+      - name: Keep failed hub and agent test logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: failed-go-tests-${{ matrix.scope }}-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 3
+          if-no-files-found: warn
+          path: |
+            /dev/shm/evener-module-tests.*/tmp/_/hub-test-shards.*/survey.log
+            /dev/shm/evener-module-tests.*/tmp/agent/agent-test-shards.*/survey.log
+            /dev/shm/evener-module-tests.*/json/shards/hub/hub-shard[0-9]*.v
+            /dev/shm/evener-module-tests.*/json/shards/agent/agent-shard[0-9]*.v
+            /tmp/evener-module-tests.*/tmp/_/hub-test-shards.*/survey.log
+            /tmp/evener-module-tests.*/tmp/agent/agent-test-shards.*/survey.log
+            /tmp/evener-module-tests.*/json/shards/hub/hub-shard[0-9]*.v
+            /tmp/evener-module-tests.*/json/shards/agent/agent-shard[0-9]*.v
 
       # The timing ratchet's rows come from the test run above (issue #144), so
       # the budget is enforced without a second full pass. Each lane checks its
