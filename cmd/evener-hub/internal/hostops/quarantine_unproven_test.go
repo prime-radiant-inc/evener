@@ -44,13 +44,6 @@ func TestCorruptStoreWithIncompleteCustodyIsSetAsideAndHostChangesResume(t *test
 		t.Fatalf("Open: %v", err)
 	}
 	requireUnprovenReplacement(t, store, path, []byte(truncatedStoreJSON))
-	// The truncated file still shows its declared mark, which the replacement
-	// allocates above.
-	if records := store.Records(); len(records) != 1 {
-		t.Fatalf("records = %+v", records)
-	} else if id, err := parseAllocatorID(records[0].ID); err != nil || id <= 2 {
-		t.Fatalf("the replacement allocated id %q, want one above the truncated file's mark of 2", records[0].ID)
-	}
 
 	// The next boot reopens the replacement and still reports the unproven set-aside.
 	again, err := Open(path)
@@ -106,82 +99,53 @@ func TestNonRegularCorruptStorePathIsNotSetAside(t *testing.T) {
 	}
 }
 
-// The set-aside keeps the allocator floor the corrupt file still shows, so an
-// operation id the old file handed out is never handed out again.
-func TestUnprovenSetAsideKeepsTheAllocatorFloor(t *testing.T) {
-	path := StorePath(t.TempDir())
-	body := `{"version":1,"sequence":1,"allocatorHighWaterMark":40,"records":[` + absurdHWMTerminalRecordJSON() + `]}`
-	writeRawStore(t, path, 0o600, body)
-
-	store, err := Open(path)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
+func createdID(t *testing.T, store *Store) uint64 {
+	t.Helper()
 	created, err := store.Create(NewRecord{ClientOperationID: "after", Host: "h1", Kind: KindRestart, Generation: 1, IncarnationID: "inc"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if id, err := parseAllocatorID(created.ID); err != nil || id <= 40 {
-		t.Fatalf("the replacement allocated id %q, want one above the set-aside file's high-water mark", created.ID)
+	id, err := parseAllocatorID(created.ID)
+	if err != nil {
+		t.Fatalf("created id %q: %v", created.ID, err)
 	}
+	return id
 }
 
-// Record and tombstone ids the corrupt file still shows raise the floor even
-// when its declared high-water mark sits below them.
-func TestUnprovenSetAsideKeepsTheFloorOfVisibleRecordIDs(t *testing.T) {
-	path := StorePath(t.TempDir())
-	body := `{"version":1,"sequence":0,"allocatorHighWaterMark":0,"records":[` + absurdHWMTerminalRecordJSON() + `]}`
-	writeRawStore(t, path, 0o600, body)
-
-	store, err := Open(path)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
+// The replacement's ids start above every id an earlier store could have
+// issued without the corrupt bytes being read: garbage, a declared mark and a
+// repeated member all get the same floor, and a second unproven set-aside
+// starts above the first replacement's range.
+func TestUnprovenSetAsideFloorIsIndependentOfTheCorruptBytes(t *testing.T) {
+	bodies := map[string]string{
+		"binary garbage":    "\x00\xff\xfe not json at all \x01",
+		"a declared mark":   `{"version":1,"sequence":0,"allocatorHighWaterMark":40,"records":[` + absurdHWMTerminalRecordJSON() + `]}`,
+		"a repeated member": `{"version":1,"allocatorHighWaterMark":40,"allocatorHighWaterMark":0,"records":[]}`,
+		"a truncated file":  truncatedStoreJSON,
 	}
-	created, err := store.Create(NewRecord{ClientOperationID: "after", Host: "h1", Kind: KindRestart, Generation: 1, IncarnationID: "inc"})
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	if id, err := parseAllocatorID(created.ID); err != nil || id <= 1 {
-		t.Fatalf("the replacement allocated id %q, want one above the id the set-aside file shows", created.ID)
-	}
-}
-
-// A malformed region elsewhere in the file does not discard the allocator
-// evidence the other regions still show.
-func TestUnprovenSetAsideKeepsTheFloorBesideAMalformedCollection(t *testing.T) {
-	path := StorePath(t.TempDir())
-	body := `{"version":1,"sequence":0,"allocatorHighWaterMark":40,"records":[],"tombstones":{}}`
-	writeRawStore(t, path, 0o600, body)
-
-	store, err := Open(path)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	created, err := store.Create(NewRecord{ClientOperationID: "after", Host: "h1", Kind: KindRestart, Generation: 1, IncarnationID: "inc"})
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	if id, err := parseAllocatorID(created.ID); err != nil || id <= 40 {
-		t.Fatalf("the replacement allocated id %q, want one above the file's high-water mark", created.ID)
-	}
-}
-
-// A duplicate member later in the file cannot lower the floor an earlier one
-// showed.
-func TestUnprovenSetAsideKeepsTheHighestFloorAcrossDuplicateMembers(t *testing.T) {
-	path := StorePath(t.TempDir())
-	body := `{"version":1,"sequence":0,"allocatorHighWaterMark":40,"allocatorHighWaterMark":0,"records":[]}`
-	writeRawStore(t, path, 0o600, body)
-
-	store, err := Open(path)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	created, err := store.Create(NewRecord{ClientOperationID: "after", Host: "h1", Kind: KindRestart, Generation: 1, IncarnationID: "inc"})
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	if id, err := parseAllocatorID(created.ID); err != nil || id <= 40 {
-		t.Fatalf("the replacement allocated id %q, want one above 40", created.ID)
+	for name, body := range bodies {
+		t.Run(name, func(t *testing.T) {
+			path := StorePath(t.TempDir())
+			writeRawStore(t, path, 0o600, body)
+			first, err := Open(path)
+			if err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+			if id := createdID(t, first); id <= allocatorEpochStride {
+				t.Fatalf("first replacement issued id %d, want one above the epoch stride", id)
+			}
+			// Corrupt the replacement as well, after it has issued ids.
+			if err := forgetStore(path); err != nil {
+				t.Fatal(err)
+			}
+			writeRawStore(t, path, 0o600, body)
+			second, err := Open(path)
+			if err != nil {
+				t.Fatalf("second Open: %v", err)
+			}
+			if id := createdID(t, second); id <= 2*allocatorEpochStride {
+				t.Fatalf("second replacement issued id %d, want one above the second epoch's stride", id)
+			}
+		})
 	}
 }

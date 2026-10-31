@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -551,14 +552,15 @@ func resolveStoreFS(fs afero.Fs, path string, faults storeFaults) (snapshot, uin
 		// through the same custody-first steps, with a custody file that says the
 		// snapshot is unproven: the hub resumes on an empty store and the signal
 		// tells the operator a closed name may not be held.
+		if epoch+1 > math.MaxUint64/allocatorEpochStride {
+			return snapshot{}, 0, nil, custodyIncomplete(errors.New("the quarantine epoch leaves no id space for another unproven set-aside"))
+		}
 		custody, err = assembleCustody(custodyFile{
-			QuarantineEpoch: epoch + 1,
-			QuarantinedFile: path,
-			CustodiedAt:     now,
-			RecordIDs:       []custodyRecordID{},
-			// The floor keeps the replacement from handing out an id the
-			// set-aside file already did.
-			AllocatorHighWaterMark: recoverAllocatorFloor(fs, path),
+			QuarantineEpoch:        epoch + 1,
+			QuarantinedFile:        path,
+			CustodiedAt:            now,
+			RecordIDs:              []custodyRecordID{},
+			AllocatorHighWaterMark: unprovenAllocatorFloor(epoch + 1),
 			Fences:                 []custodyFence{},
 			Ownership:              []custodyOwnership{},
 			Unproven:               true,
@@ -943,82 +945,22 @@ func custodyForCorruptStore(fs afero.Fs, path string, epoch uint64, now time.Tim
 	return custodyFromStore(decoded, path, epoch, now, artifacts.allocatorFloor, artifacts.priorImports)
 }
 
-// maxPlausibleAllocatorFloor bounds the allocator high-water mark an unproven
-// set-aside trusts: a value near the top of uint64 is not a counter the store
-// reached, and carrying it would leave the replacement unable to allocate.
-const maxPlausibleAllocatorFloor = 1 << 62
+// allocatorEpochStride is the id space one quarantine epoch owns when its
+// custody is unproven.
+const allocatorEpochStride = 1 << 40
 
-// jsonMember is one top-level member of a JSON object.
-type jsonMember struct {
-	name  string
-	value json.RawMessage
-}
-
-// leadingMembers returns the top-level members of a JSON object that decode
-// whole, in file order and counting repeats, stopping at the first syntax
-// error. A file truncated after its allocator mark still yields the mark.
-func leadingMembers(raw []byte) []jsonMember {
-	var members []jsonMember
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	if token, err := decoder.Token(); err != nil || token != json.Delim('{') {
-		return members
-	}
-	for decoder.More() {
-		key, err := decoder.Token()
-		name, isName := key.(string)
-		if err != nil || !isName {
-			return members
-		}
-		var value json.RawMessage
-		if decoder.Decode(&value) != nil {
-			return members
-		}
-		members = append(members, jsonMember{name: name, value: value})
-	}
-	return members
-}
-
-// recoverAllocatorFloor reads the highest allocator id a corrupt store file
-// that is still a JSON object shows: its declared high-water mark and every
-// canonical record or tombstone id, ignoring every other region. It returns
-// zero when the file shows nothing plausible.
-func recoverAllocatorFloor(fs afero.Fs, path string) uint64 {
-	raw, err := afero.ReadFile(fs, path)
-	if err != nil {
-		return 0
-	}
-	var floor uint64
-	raise := func(n uint64) {
-		if n <= maxPlausibleAllocatorFloor {
-			floor = max(floor, n)
-		}
-	}
-	// Each member is read on its own, so one malformed or repeated member cannot
-	// discard or lower the evidence the others show.
-	for _, member := range leadingMembers(raw) {
-		switch member.name {
-		case "allocatorHighWaterMark":
-			var declared uint64
-			if json.Unmarshal(member.value, &declared) == nil {
-				raise(declared)
-			}
-		case "records", "tombstones":
-			var items []json.RawMessage
-			if json.Unmarshal(member.value, &items) != nil {
-				continue
-			}
-			for _, item := range items {
-				var row struct {
-					ID string `json:"id"`
-				}
-				if json.Unmarshal(item, &row) != nil {
-					continue
-				}
-				if n, err := parseAllocatorID(row.ID); err == nil {
-					raise(n)
-				}
-			}
-		}
-	}
-	return floor
+// unprovenAllocatorFloor is the allocator floor of the replacement store behind
+// an unproven set-aside at quarantineEpoch. The corrupt file's bytes are never
+// read for it, because nothing in a corrupt file can be trusted to show what
+// the store issued.
+//
+// Invariant: a store opened at quarantine epoch k only issues ids below
+// k*allocatorEpochStride + allocatorEpochStride, because it starts at or above
+// k*allocatorEpochStride and issues fewer than 2^40 ids over its life (a store
+// that was never quarantined is epoch 0). The replacement at epoch k+1 starts
+// at (k+1)*allocatorEpochStride, so it is above every id any earlier store
+// issued, whatever the set-aside file holds. Epochs only increase, so no later
+// store can come back down into an earlier one's range.
+func unprovenAllocatorFloor(quarantineEpoch uint64) uint64 {
+	return quarantineEpoch * allocatorEpochStride
 }
