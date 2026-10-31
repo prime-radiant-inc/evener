@@ -576,10 +576,14 @@ stays locked forever, invisible to every bulk operation. `prune` called with
 whose parent provably cannot act (the parent's own store records the
 delegate's isolation disposal, or the parent session is gone or inactive
 past the caller's threshold). The release re-verifies the marker atomically
-(claim-rename, restore on mismatch), removal still requires the ordinary
-unchanged/merged gates, a work-holding lane is unlocked and kept, and a
-resumed delegate re-locks an unlocked lane (the revival row below) — a
-removed lane fails its revival loudly into the construction-failed closure.
+(claim-rename, restore on mismatch) and re-derives the parent's inactivity
+while the claim holds the lock — a parent that resumed between the plan and
+the release has its lock restored untouched, because its revival adopts the
+marker in place and the marker comparison alone cannot notice. Removal still
+requires the ordinary unchanged/merged gates, a work-holding lane is unlocked
+and kept, and a resumed delegate re-locks an unlocked lane (the revival row
+below) — a removed lane fails its revival loudly into the construction-failed
+closure.
 
 **Restores follow the same rule.** Any operation that lands the session's
 env in a managed worktree without going through `switch` — `exit` restoring
@@ -760,8 +764,10 @@ sweeps, all through the control env:
 	     parent session is gone or inactive at least that many days — after
 	     the marker and the sidecar name the same delegate.
 	     That release uses the same claim-rename protocol as the stranded own
-	     marker, removal still requires every condition below (live work, clean,
-	     unchanged/merged), and a released lane this pass cannot collect is
+	     marker, and re-derives the parent's inactivity at release time — a
+	     resume in the gap restores the lock untouched. Removal still requires
+	     every condition below (live work, clean, unchanged/merged), and a
+	     released lane this pass cannot collect is
 	     reported unlocked and kept — visible to the merge and force paths —
 	     rather than skipped. This session's own delegates are never the arm's
 	     business: their disposer can still act, through `dispose`. The

@@ -221,9 +221,10 @@ func (s *Session) collectRegisteredLanes(ctx context.Context, run worktree.GitRu
 		// plan was made around is ever released — the claim protocol re-reads
 		// the lock before touching it.
 		orphanMark := worktree.Marker{}
+		orphanBasis := orphanedByInactivity
 		if policy.reclaimOrphanedDelegates > 0 && lockSt == worktree.Foreign && e.LockReason != "" {
-			if m, orphaned := s.orphanedDelegateMarker(ctx, e.LockReason, policy.reclaimOrphanedDelegates, now, orphanMemo); orphaned {
-				orphanMark = m
+			if m, basis, orphaned := s.orphanedDelegateMarker(ctx, e.LockReason, policy.reclaimOrphanedDelegates, now, orphanMemo); orphaned {
+				orphanMark, orphanBasis = m, basis
 			}
 		}
 		if !staleOwnMarker && orphanMark.DelegateID == "" && worktree.Decide(worktree.EvPruneCandidate, lockSt) == worktree.ActSkip {
@@ -267,7 +268,7 @@ func (s *Session) collectRegisteredLanes(ctx context.Context, run worktree.GitRu
 		}
 		orphanReleased := false
 		if orphanMark.DelegateID != "" {
-			released, relErr := s.releaseOrphanedDelegateMarker(policy.lockFiles, e.Path, orphanMark)
+			released, relErr := s.releaseOrphanedDelegateMarker(policy.lockFiles, e.Path, orphanMark, orphanBasis, policy.reclaimOrphanedDelegates)
 			if relErr != nil {
 				skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: "releasing orphaned delegate marker: " + relErr.Error()})
 				continue
@@ -362,7 +363,11 @@ func (s *Session) collectRegisteredLanes(ctx context.Context, run worktree.GitRu
 // releaseClaimedLock releases a lane's lock iff the lock file still carries
 // the marker matches() accepts, reporting whether it did. It is false, with
 // nothing released, when the lane is now unlocked or carries some other
-// marker. matches sees the raw lock-file bytes.
+// marker. matches sees the raw lock-file bytes. recheck, when non-nil, is a
+// final eligibility check run after the claim has verified the marker — the
+// claim holds the lock at that point, so it can re-derive a premise that can
+// go stale between the plan and the release. A false verdict puts the lock
+// back and reports nothing released.
 //
 // Confirming the marker and unlocking cannot be two steps: between a check and
 // `git worktree unlock` the marker can be released (the documented manual
@@ -387,7 +392,7 @@ func (s *Session) collectRegisteredLanes(ctx context.Context, run worktree.GitRu
 // The control policy's write authority applies exactly as it does to the
 // sandboxed `git worktree remove` that follows: a session whose policy withholds
 // registry writes is refused before the lock is touched (requireRegistryWrite).
-func (s *Session) releaseClaimedLock(files execenv.FileMutator, lanePath string, matches func([]byte) bool, claimPrefix string) (released bool, err error) {
+func (s *Session) releaseClaimedLock(files execenv.FileMutator, lanePath string, matches func([]byte) bool, claimPrefix string, recheck func() bool) (released bool, err error) {
 	lockFile, err := laneLockFile(lanePath)
 	if err != nil {
 		return false, err
@@ -425,6 +430,16 @@ func (s *Session) releaseClaimedLock(files execenv.FileMutator, lanePath string,
 	}
 	claimedReason, claimedErr := os.ReadFile(claimedPath)
 	if claimedErr == nil && matches(claimedReason) {
+		if recheck != nil && !recheck() {
+			// The premise the release was planned on no longer holds, and the
+			// claim is holding the lock: put it back. A lock re-taken in the
+			// meantime wins, as in the mismatch restore below.
+			if linkErr := os.Link(claimedPath, lockFile); linkErr != nil && !os.IsExist(linkErr) {
+				return false, fmt.Errorf("restoring the lock claimed from %s: %w", lanePath, linkErr)
+			}
+			_ = os.Remove(claimedPath)
+			return false, nil
+		}
 		// The lane is already unlocked; a leftover claim file is harmless to git.
 		if rmErr := os.Remove(claimedPath); rmErr != nil {
 			s.emit(events.WarningData{Message: fmt.Sprintf("removing the released lock claim %s failed: %v", claimedPath, rmErr)})
@@ -452,7 +467,7 @@ func (s *Session) releaseStrandedOwnMarker(files execenv.FileMutator, lanePath s
 	if s.occupiesManagedLane(lanePath) {
 		return false, nil
 	}
-	return s.releaseClaimedLock(files, lanePath, s.isOwnMarker, "locked.release")
+	return s.releaseClaimedLock(files, lanePath, s.isOwnMarker, "locked.release", nil)
 }
 
 // requireRegistryWrite proves, through the control environment's policy-checked

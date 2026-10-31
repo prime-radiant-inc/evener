@@ -350,7 +350,7 @@ func TestWorktreePrune_OrphanArmResolvesNestedParentJournal(t *testing.T) {
 func TestOrphanArmDisarmsWithoutStateDir(t *testing.T) {
 	t.Parallel()
 	s := &Session{id: "034nonpersistentses0000", stateDir: ""}
-	if _, ok := s.orphanedDelegateMarker(context.Background(),
+	if _, _, ok := s.orphanedDelegateMarker(context.Background(),
 		worktree.FormatDelegateMarker("dlg_034somebody00000", "034someparent000000000"),
 		7*24*time.Hour, time.Now(), nil); ok {
 		t.Fatal("the orphan arm claimed a lane without a state directory")
@@ -638,5 +638,47 @@ func TestDelegateWakeRefusesForeignHeldLane(t *testing.T) {
 	}
 	if m, ok := worktree.ParseMarker(reason); !ok || m.SessionID != foreignSID {
 		t.Fatalf("foreign lock = %q, want the other session's marker", reason)
+	}
+}
+
+// The inactivity verdict is a point-in-time claim, and the parent can resume
+// between the eligibility check and the lock release — its revival adopts the
+// marker in place, writing nothing the release's marker comparison could
+// notice. The release therefore re-verifies the parent's inactivity while the
+// claim holds the lock, and a parent that woke has its lock put back,
+// untouched, with the lane reported skipped.
+func TestWorktreePrune_OrphanArmRestoresWhenParentWakesDuringRelease(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	const parentSID = "034foreignstale0000000000004"
+	const dlg = "dlg_034foreignstale000004"
+	lane := r.delegateLane(t, "orphan-wakes-mid-release", dlg, parentSID)
+	seedOrphanParent(t, r, parentSID, dlg, "", time.Now().Add(-30*24*time.Hour))
+	// The parent resumes inside the release window: the seam fires after the
+	// eligibility plan, before the lock is claimed. A resume leaves the same
+	// fresh-transcript signal here.
+	var wakeErr error
+	r.s.worktreeBeforeStrandedMarkerRelease = func(lanePath string) {
+		if lanePath != lane {
+			return
+		}
+		wakeErr = os.Chtimes(schema.SessionTranscriptPath(r.stateDir, parentSID), time.Now(), time.Now())
+	}
+
+	out, err := r.pruneOrphanedOp(t, 7)
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if wakeErr != nil {
+		t.Fatalf("wake the parent: %v", wakeErr)
+	}
+	if findPruneEntry(t, pruneEntries(t, out, "removed"), "orphan-wakes-mid-release") != nil {
+		t.Fatalf("a resumed parent's lane was collected: %+v", out)
+	}
+	if e := findPruneEntry(t, pruneEntries(t, out, "unlocked"), "orphan-wakes-mid-release"); e != nil {
+		t.Fatalf("a resumed parent's lane was reported unlocked: %+v", e)
+	}
+	if _, locked, reason := r.laneLocked(t, lane); !locked {
+		t.Errorf("the resumed parent's lock was not restored: %q", reason)
 	}
 }

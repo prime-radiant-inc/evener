@@ -48,10 +48,10 @@ import (
 // memo caches one folded store state per journal-owning root session for the
 // sweep pass, so many lanes of one parent fold that parent's journal once
 // instead of once per lane.
-func (s *Session) orphanedDelegateMarker(ctx context.Context, reason string, minInactivity time.Duration, now time.Time, memo map[string]delegatestore.State) (worktree.Marker, bool) {
+func (s *Session) orphanedDelegateMarker(ctx context.Context, reason string, minInactivity time.Duration, now time.Time, memo map[string]delegatestore.State) (worktree.Marker, orphanedBasis, bool) {
 	m, ok := worktree.ParseMarker(reason)
 	if !ok || m.DelegateID == "" || m.SessionID == "" || m.SessionID == s.id {
-		return worktree.Marker{}, false
+		return worktree.Marker{}, 0, false
 	}
 	if s.stateDir == "" {
 		// A session without a state directory cannot see any parent's
@@ -59,22 +59,41 @@ func (s *Session) orphanedDelegateMarker(ctx context.Context, reason string, min
 		// working directory and answer "missing" for a live parent — while the
 		// sweep still enumerates lanes from the default state home. The arm
 		// disarms rather than treat every foreign parent as gone.
-		return worktree.Marker{}, false
+		return worktree.Marker{}, 0, false
 	}
 	// The cheap activity signal first: a parent whose session directory is
 	// gone, or whose transcript has been inactive past the operator's
 	// threshold, cannot act as the disposer.
 	if info, err := os.Stat(schema.SessionTranscriptPath(s.stateDir, m.SessionID)); err == nil {
 		if now.Sub(info.ModTime()) >= minInactivity {
-			return m, true
+			return m, orphanedByInactivity, true
 		}
 	} else if os.IsNotExist(err) {
-		return m, true
+		return m, orphanedByInactivity, true
 	}
 	// A parent that is still active, or whose activity could not be read: the
 	// parent's delegates store is the remaining authority.
-	return m, s.parentStoreClosedDelegate(ctx, m.SessionID, m.DelegateID, memo)
+	if s.parentStoreClosedDelegate(ctx, m.SessionID, m.DelegateID, memo) {
+		return m, orphanedByDisposal, true
+	}
+	return worktree.Marker{}, 0, false
 }
+
+// orphanedBasis names which arm of the predicate found the parent unable to
+// act, because the release re-verifies only the arm that can go stale: an
+// inactivity verdict is a point-in-time claim a parent can wake out of, while
+// a recorded isolation disposal is durable — a closed delegate cannot be
+// revived, so nothing can change behind that verdict.
+type orphanedBasis int
+
+const (
+	// orphanedByInactivity: the parent session is gone or inactive past the
+	// operator's threshold, judged from the transcript at plan time.
+	orphanedByInactivity orphanedBasis = iota
+	// orphanedByDisposal: the parent's store records the delegate's isolation
+	// disposal.
+	orphanedByDisposal
+)
 
 // parentStoreClosedDelegate reports whether the parent's delegates store
 // records the delegate's isolation disposal — the parent's own disposal
@@ -140,15 +159,36 @@ func isExpectedDelegateMarker(lockFileContents []byte, expectedDlg, expectedSID 
 // carries exactly the delegate marker the sweep planned around, reporting
 // whether it did. The claim-rename-verify-restore protocol is the shared
 // releaseClaimedLock's, for the same reason git's own unlock is not usable
-// here: see releaseStrandedOwnMarker. The control policy's write authority
-// applies exactly as it does to the sandboxed git calls that follow.
-func (s *Session) releaseOrphanedDelegateMarker(files execenv.FileMutator, lanePath string, expected worktree.Marker) (released bool, err error) {
+// here: see releaseStrandedOwnMarker. An inactivity-based verdict is
+// re-derived at release time (parentStillInactive) — the parent can wake
+// between the plan and the release, and its revival adopts the marker in
+// place, so the marker comparison alone cannot tell a dead parent from one
+// that just resumed. The control policy's write authority applies exactly as
+// it does to the sandboxed git calls that follow.
+func (s *Session) releaseOrphanedDelegateMarker(files execenv.FileMutator, lanePath string, expected worktree.Marker, basis orphanedBasis, minInactivity time.Duration) (released bool, err error) {
 	if s.occupiesManagedLane(lanePath) {
 		return false, nil
 	}
+	var recheck func() bool
+	if basis == orphanedByInactivity {
+		recheck = func() bool { return s.parentStillInactive(expected.SessionID, minInactivity) }
+	}
 	return s.releaseClaimedLock(files, lanePath, func(contents []byte) bool {
 		return isExpectedDelegateMarker(contents, expected.DelegateID, expected.SessionID)
-	}, "locked.orphan-release")
+	}, "locked.orphan-release", recheck)
+}
+
+// parentStillInactive re-verifies, at release time, the inactivity the plan
+// was made on: judged against a fresh clock, the parent's transcript must
+// still be missing or inactive past the threshold. This second stat, taken
+// with the lock held by the claim, is what catches a parent that resumed
+// between the plan and the release; its lock is then put back untouched.
+func (s *Session) parentStillInactive(parentSID string, minInactivity time.Duration) bool {
+	info, err := os.Stat(schema.SessionTranscriptPath(s.stateDir, parentSID))
+	if err != nil {
+		return os.IsNotExist(err)
+	}
+	return time.Now().Sub(info.ModTime()) >= minInactivity
 }
 
 // restoreOrphanedDelegateMarker puts the marker back after a release whose
