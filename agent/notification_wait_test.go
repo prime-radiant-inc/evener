@@ -2226,9 +2226,7 @@ func TestWaitResumeClaimSerializesStop(t *testing.T) {
 			successorRequests := make(chan llm.Request, 1)
 			fifo, releaseShell := waitProducerFIFO(t)
 			defer releaseShell()
-			reply := func(response llm.Response) func(context.Context, llm.Request) (llm.Response, error) {
-				return updateReply(response)
-			}
+			reply := updateReply
 			adapter.finiteScript("root", reply(delegateToolResponse("fence-owner", "FENCE-WAIT-81")), reply(finalResponse("root-81")))
 			modelGate := make(chan struct{})
 			releaseModel := sync.OnceFunc(func() { close(modelGate) })
@@ -2250,13 +2248,13 @@ func TestWaitResumeClaimSerializesStop(t *testing.T) {
 					return llm.Response{}, fmt.Errorf("unexpected fence provider generation %d", lease.generation)
 				}
 			}
-			adapter.finiteScript("FENCE-WAIT-81", func(context.Context, llm.Request) (llm.Response, error) {
+			adapter.finiteScript("FENCE-WAIT-81", []updateStep{func(context.Context, llm.Request) (llm.Response, error) {
 				args, _ := json.Marshal(map[string]any{"command": fmt.Sprintf("read value < %q", fifo), "mode": "background"})
 				return toolCallResponse(llm.ToolCallData{ID: "shell-81", Name: "shell", Type: "function", Arguments: args}), nil
 			}, func(_ context.Context, req llm.Request) (llm.Response, error) {
 				initialBoundary.hold(t)
 				return waitResponseFor("fence-wait-81", regexp.MustCompile(`job_[A-Za-z0-9_]{10,}`).FindString(lastToolResultText(req.Messages))), nil
-			}, finish, finish)
+			}, finish, finish}...)
 			root := newMessagingRoot(t, adapter, returns.configure)
 			t.Cleanup(func() { returns.close(t, root) })
 			claimRecorded := make(chan struct{})

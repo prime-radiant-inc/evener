@@ -328,7 +328,7 @@ func TestNotificationShutdownPreservesDetachedJob(t *testing.T) {
 		_ = f.Close()
 		waitForTestSignal(t, readerExited, "detached completion FIFO reader cleanup")
 	}()
-	clock := agenttest.NewFakeClock()
+	clock := &notificationTickerClock{FakeClock: agenttest.NewFakeClock(), started: make(chan *notificationTicker, 1)}
 	adapter := &fakeAdapter{name: "openai"}
 	// Timers are correctly refused in a fresh one-shot session. A daemon may
 	// install them, and a later one-shot resume owns their terminal cleanup.
@@ -360,7 +360,11 @@ func TestNotificationShutdownPreservesDetachedJob(t *testing.T) {
 	}
 	for takeDrainWake(wakes) {
 	}
-	clock.BlockUntil(1)
+	select {
+	case <-clock.started:
+	case <-time.After(30 * time.Second):
+		t.Fatal("timed out waiting for repeated watch ticker registration")
+	}
 	clock.Advance(time.Minute)
 	waitForTestSignal(t, wakes, "real timer receiver custody")
 	s.jobManager.watchCallbackMu.Lock()
