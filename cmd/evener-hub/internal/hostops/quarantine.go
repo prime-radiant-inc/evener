@@ -217,12 +217,27 @@ func scanQuarantineArtifacts(fs afero.Fs, storePath string) (quarantineArtifacts
 			for _, fence := range custody.Fences {
 				fenceByID[fence.RecordID] = fence
 			}
+			ownershipByID := make(map[string]custodyOwnership, len(custody.Ownership))
+			for _, entry := range custody.Ownership {
+				ownershipByID[entry.QuarantineRecordID] = entry
+			}
 			for _, row := range custody.RecordIDs {
 				if fence, ok := fenceByID[row.RecordID]; ok {
 					artifacts.priorImports[row.RecordID] = fence
 					continue
 				}
-				artifacts.priorImports[row.RecordID] = custodyFence{RecordID: row.RecordID, Host: row.Host}
+				// An ownership-only import is a record of the replacement under
+				// its full identity, so the same record found again is not an
+				// alias.
+				entry := ownershipByID[row.RecordID]
+				artifacts.priorImports[row.RecordID] = custodyFence{
+					RecordID:          row.RecordID,
+					Host:              row.Host,
+					Kind:              entry.Kind,
+					ClientOperationID: entry.ClientOperationID,
+					Generation:        entry.Generation,
+					IncarnationID:     entry.IncarnationID,
+				}
 			}
 			if artifacts.rebuildStamp == "" || custody.QuarantineEpoch > artifacts.rebuildEpoch ||
 				(custody.QuarantineEpoch == artifacts.rebuildEpoch && stamp > artifacts.rebuildStamp) {
