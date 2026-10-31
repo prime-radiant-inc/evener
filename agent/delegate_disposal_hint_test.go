@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -109,7 +110,7 @@ func TestDelegateDisposalHint_DelegateSendReportsFinalWorktreeState(t *testing.T
 			if _, err := repo.s.ProcessInput(turnCtx, "fetch final child result", nil); err != nil {
 				t.Fatalf("delegate_send ProcessInput: %v", err)
 			}
-			if !strings.Contains(sendOutput, "dirty="+fmt.Sprint(dirty)) {
+			if !strings.Contains(sendOutput, "dirty="+strconv.FormatBool(dirty)) {
 				t.Fatalf("delegate_send output = %q, want dirty=%t", sendOutput, dirty)
 			}
 			if !strings.Contains(sendOutput, created.Worktree.Path) || !strings.Contains(sendOutput, created.Worktree.Branch) {
