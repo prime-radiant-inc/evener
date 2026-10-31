@@ -2315,11 +2315,12 @@ type delegateTerminalPacketMetadata struct {
 }
 
 type delegateTerminalWorktreeReport struct {
-	Path    string `json:"path"`
-	Branch  string `json:"branch"`
-	HeadSHA string `json:"head_sha"`
-	Ahead   int    `json:"ahead"`
-	Dirty   bool   `json:"dirty"`
+	Path         string `json:"path"`
+	Branch       string `json:"branch"`
+	HeadSHA      string `json:"head_sha"`
+	Ahead        int    `json:"ahead"`
+	Dirty        bool   `json:"dirty"`
+	DisposalHint string `json:"disposal_hint,omitempty"`
 }
 
 // delegateFinishFromRun constructs the one immutable packet used by
@@ -2455,11 +2456,12 @@ func delegateTerminalMetadataFromRun(inputs delegateTerminalRunInputs) delegateT
 	}
 	if inputs.worktree != nil {
 		metadata.Worktree = &delegateTerminalWorktreeReport{
-			Path:    inputs.worktree.Path,
-			Branch:  inputs.worktree.Branch,
-			HeadSHA: inputs.worktree.HeadSHA,
-			Ahead:   inputs.worktree.Ahead,
-			Dirty:   inputs.worktree.Dirty,
+			Path:         inputs.worktree.Path,
+			Branch:       inputs.worktree.Branch,
+			HeadSHA:      inputs.worktree.HeadSHA,
+			Ahead:        inputs.worktree.Ahead,
+			Dirty:        inputs.worktree.Dirty,
+			DisposalHint: inputs.worktree.DisposalHint,
 		}
 	}
 	metadata.ScratchPath = inputs.scratchPath
