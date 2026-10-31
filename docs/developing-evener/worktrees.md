@@ -259,11 +259,14 @@ These are documented trade-offs, not bugs:
   is the one thing whose non-occupancy it can attest without guessing. A lane `prune`
   skips keeps its lock. For a *delegate* marker — a lane owned by another session's
   tree — the skip reason reports the owner-liveness verdict prune can prove:
-  `owner-live` (the tree's root process holds its process livelock, or its serve
-  daemon's rendezvous entry names a live pid), `owner-dead-looking` (the root's
-  livelock file exists but the flock is free — the OS released it at process death —
-  and no rendezvous pid is live), or `owner-unverifiable` (the root cannot be
-  resolved, or predates livelocks). The verdict never collects anything by itself.
+  `owner-live` (the tree's root process holds its process livelock, or a
+  rendezvous entry of one of the tree's sessions — the root's own, or an
+  independently resumed coordinator's — names a pid verified to still be the
+  daemon that registered it), `owner-dead-looking` (the root's livelock file
+  exists but the flock is free — the OS released it at process death — and no
+  verified rendezvous pid is live), or `owner-unverifiable` (the root cannot
+  be resolved, predates livelocks, or a rendezvous entry's daemon identity
+  cannot be established). The verdict never collects anything by itself.
   The one-time bulk recovery recipe for a dead-owner pile:
   1. Run `manage_worktree prune` and read the skipped list: every
      `owner-dead-looking` lane is a candidate; every `owner-live` lane is not.

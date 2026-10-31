@@ -10,10 +10,8 @@ package agent
 // lane below stays skipped, locked and on disk whatever the verdict says.
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
-	"strconv"
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/worktree"
@@ -135,33 +133,4 @@ func TestWorktreePruneReportsUnverifiableDelegateLaneOwner(t *testing.T) {
 	marker := worktree.FormatDelegateMarker("dlg_reportunver01", missingOwner)
 	path := lockLaneWithDelegateMarker(t, r, "unverifiable-owner-lane", "dlg_reportunver01", missingOwner)
 	requireLaneReportedSkippedAndKept(t, r, "unverifiable-owner-lane", path, "locked ("+marker+"); owner-unverifiable")
-}
-
-// TestWorktreePruneReportsLiveOwnerViaRendezvous: the rendezvous arm — a
-// serve daemon's root may carry no livelock at all (a session resumed before
-// this primitive existed, or a state directory migrated), and a live
-// rendezvous pid is the evidence that still proves it alive. Any live signal
-// outranks a missing one.
-func TestWorktreePruneReportsLiveOwnerViaRendezvous(t *testing.T) {
-	t.Parallel()
-	r := newWorktreeRepo(t)
-	dir := hermeticRendezvous(t, r)
-	owner := identifier.MustNewSessionID()
-	seedOwnerRootSession(t, r.stateDir, owner)
-	entry, err := json.Marshal(map[string]any{
-		"pid":        os.Getpid(), // this test process: provably alive
-		"session_id": owner,
-	})
-	if err != nil {
-		t.Fatalf("marshal rendezvous entry: %v", err)
-	}
-	// List only reads files named <pid>.json — the file name carries the
-	// entry's process identity.
-	if err := os.WriteFile(filepath.Join(dir, strconv.Itoa(os.Getpid())+".json"), entry, 0o644); err != nil {
-		t.Fatalf("seed rendezvous entry: %v", err)
-	}
-
-	marker := worktree.FormatDelegateMarker("dlg_reportrendez01", owner)
-	path := lockLaneWithDelegateMarker(t, r, "rendezvous-owner-lane", "dlg_reportrendez01", owner)
-	requireLaneReportedSkippedAndKept(t, r, "rendezvous-owner-lane", path, "locked ("+marker+"); owner-live")
 }

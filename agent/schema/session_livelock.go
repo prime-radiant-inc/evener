@@ -25,11 +25,16 @@ func SessionLivelockPath(dir, id string) string {
 //     "can't be told apart" case — finds the flock held and runs without
 //     one, which costs liveness visibility, never correctness.
 //
-//   - A probe (SessionLivelockHeld) distinguishes three states: the flock is
-//     held (a live process), the file exists but the flock is free (no live
-//     process — the OS released it at process death), and no file (the
-//     session predates livelocks, or never hosted a process here), which
-//     answers nothing and must never be read as death.
+//   - A probe (SessionLivelockHeld) distinguishes three states WITHOUT ever
+//     taking the lock — the hostlock marker/query pattern: the mint sets a
+//     query-visible marker beside its flock, and the probe is a plain
+//     F_GETLK inspection that acquires nothing, so it can never delay or
+//     deny a concurrent mint. The states: held (a live process — its marker
+//     is there), the file exists but nothing is held (no live process — the
+//     OS released it at process death), and no file (the session predates
+//     livelocks, or never hosted a process here), which answers nothing and
+//     must never be read as death. Platforms without a non-taking
+//     inspection answer an error instead of guessing.
 //
 // The platform arms below carry the same API as lockSessionMetaCrossProcess:
 // unix takes a real flock, windows takes the LockFileEx equivalent, and the

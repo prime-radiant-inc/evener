@@ -58,6 +58,18 @@ func (l ownerLiveness) String() string {
 // whole tree. Any live signal outranks any dead-looking one: a live
 // rendezvous pid proves liveness even when the livelock is absent, and a
 // held livelock proves it whatever a stale rendezvous entry says.
+//
+// A rendezvous entry counts as the tree's live evidence only when BOTH its
+// attribution and its daemon identity hold (review round 6, findings 1 and
+// 2): the entry's session identity is resolved to ITS tree root before
+// matching — an independently resumed coordinator (serve --resume of a
+// subagent that kept its lineage) has its own rendezvous entry while its
+// original root's livelock sits free, and string-matching entries to the
+// walked root would miss it — and the pid must still name the daemon that
+// wrote the entry, verified against the process's start time, because a
+// crashed daemon's stale entry can be worn by a pid an unrelated process
+// reused. An entry whose identity cannot be established reports doubt
+// (owner-unverifiable), never death.
 func (s *Session) delegateLaneOwnerLiveness(m worktree.Marker) ownerLiveness {
 	root, ok := s.sessionTreeRootSID(m.SessionID)
 	if !ok {
@@ -74,7 +86,40 @@ func (s *Session) delegateLaneOwnerLiveness(m worktree.Marker) ownerLiveness {
 				if e.PID <= 0 {
 					continue
 				}
-				if e.SessionID != root && e.ThreadID != root && e.InstanceID != root {
+				identity := e.SessionID
+				if identity == "" {
+					identity = e.ThreadID
+				}
+				if identity == "" {
+					identity = e.InstanceID
+				}
+				if identity == "" {
+					continue
+				}
+				// Attribution: the entry belongs to this lane's tree only if
+				// its session identity resolves to the same root. The walk is
+				// what lets an independently resumed coordinator's own entry
+				// speak for its nested lanes while the original root is idle.
+				entryRoot, ok := s.sessionTreeRootSID(identity)
+				if !ok || entryRoot != root {
+					continue
+				}
+				// Daemon identity: the entry records when its daemon
+				// registered, which can only postdate that daemon's own
+				// start. A pid whose current process began after the entry
+				// was written is a reused pid wearing the dead daemon's entry —
+				// not liveness evidence. A start time that cannot be read,
+				// or an entry that carries none, is doubt, not death.
+				if e.StartedAt.IsZero() {
+					return ownerUnknown
+				}
+				started, ok := processStartedAt(e.PID)
+				if !ok {
+					return ownerUnknown
+				}
+				if started.After(e.StartedAt) {
+					// The pid was reused after the entry's daemon died; the
+					// entry is residue. Keep looking at the other evidence.
 					continue
 				}
 				if processAlive(e.PID) {

@@ -39,33 +39,15 @@ func AcquireSessionLivelock(dir, id string) (release func(), applied bool, err e
 	}, true, nil
 }
 
-// SessionLivelockHeld probes the session's livelock without taking it:
-// held means a live process holds the lock; exists means the file is there at
-// all. held=false with exists=true is positive evidence no live process holds
-// it; held=false with exists=false answers nothing and callers must treat it
-// as unknown, never as death.
-func SessionLivelockHeld(dir, id string) (held, exists bool, err error) {
-	f, err := os.OpenFile(SessionLivelockPath(dir, id), os.O_RDWR, 0o600)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return false, false, nil
-		}
-		return false, false, err
-	}
-	defer func() { _ = f.Close() }()
-	var overlapped windows.Overlapped
-	lockErr := windows.LockFileEx(windows.Handle(f.Fd()),
-		windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY,
-		0, ^uint32(0), ^uint32(0), &overlapped)
-	switch {
-	case lockErr == nil:
-		_ = windows.UnlockFileEx(windows.Handle(f.Fd()), 0, ^uint32(0), ^uint32(0), &overlapped)
-		return false, true, nil
-	case errors.Is(lockErr, windows.ERROR_LOCK_VIOLATION):
-		return true, true, nil
-	default:
-		return false, true, lockErr
-	}
+// SessionLivelockHeld reports that this platform has no lock inspection that
+// does not first take the lock: Windows offers no F_GETLK equivalent, and a
+// take-and-release probe would contend with the mint's single non-blocking
+// acquisition — able to make a resume's registration fail and its lanes read
+// dead-looking all its life (review round 6, finding 3). An unsupported
+// inspection is an error, never a guess, exactly as hostlock answers on the
+// platforms it cannot inspect: callers must treat it as unknown.
+func SessionLivelockHeld(_, _ string) (held, exists bool, err error) {
+	return false, false, errors.New("session livelock inspection is unsupported on this platform")
 }
 
 // LivelockContended reports whether an AcquireSessionLivelock error is

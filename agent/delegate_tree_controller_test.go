@@ -295,7 +295,8 @@ func TestDelegateControllerProductionIntegrationMatchesInventory(t *testing.T) {
 // build-tag-excluded top-level production file here, or this inventory fails
 // on the omission.
 var delegateControllerPlatformExcludedFiles = map[string]bool{
-	"process_alive_other.go": true,
+	"process_alive_other.go":      true,
+	"process_started_at_other.go": true,
 }
 
 func TestDelegateControllerDormancyGuardRejectsConstructionAndAliases(t *testing.T) {

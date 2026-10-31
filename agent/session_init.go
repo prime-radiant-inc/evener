@@ -599,6 +599,16 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	if err != nil {
 		return nil, err
 	}
+	// initSessionState minted this root's process livelock as its last step,
+	// so every failure below this point — a fallible constructor step after
+	// init — must give it back: a construction that never came to life must
+	// not hold false-live evidence until process exit (review round 6,
+	// finding 4). On success the normal close path releases it.
+	defer func() {
+		if !initComplete {
+			s.releaseSessionLivelock()
+		}
+	}()
 
 	// initSessionState (via initMCP) may have set s.mcpMgr to a manager holding
 	// live server connections; every error return below this point must close
@@ -1346,6 +1356,15 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if err != nil {
 		return nil, err
 	}
+	// The restore twin of NewSession's post-init livelock release: the mint
+	// happened inside initSessionState, and any restore-replay failure below
+	// must not leave the restored root reading live until process exit
+	// (review round 6, finding 4).
+	defer func() {
+		if !restoreComplete {
+			s.releaseSessionLivelock()
+		}
+	}()
 
 	// initSessionState (via initMCP) may have set s.mcpMgr to a manager holding
 	// live server connections; every error return below this point must close
