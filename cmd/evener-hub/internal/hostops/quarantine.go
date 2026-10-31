@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -69,6 +70,21 @@ type QuarantineSignal struct {
 	QuarantinedFile string
 	CustodyFile     string
 	QuarantineEpoch uint64
+	// Unproven is set when the corrupt file could not yield a complete custody
+	// snapshot and was set aside anyway: the replacement store carries no closed
+	// names, so a name the corrupt file had closed may not be held.
+	Unproven bool
+}
+
+// signal is the operator-visible health signal for the quarantine this custody
+// file records.
+func (c custodyFile) signal(custodyPath string) *QuarantineSignal {
+	return &QuarantineSignal{
+		QuarantinedFile: c.QuarantinedFile,
+		CustodyFile:     custodyPath,
+		QuarantineEpoch: c.QuarantineEpoch,
+		Unproven:        c.Unproven,
+	}
 }
 
 // Quarantine returns the handle's quarantine signal — nil when no custody file
@@ -130,11 +146,14 @@ type quarantineArtifacts struct {
 	// either has its aside or is the one a pending intent names).
 	custodyStamps map[string]bool
 	asideStamps   map[string]bool
-	// custodyEpochs maps each custody file's timestamp to the epoch it carries,
-	// so a cleanup that removes some custody files can re-derive the
+	// custodySignals maps each custody file's timestamp to the signal it
+	// carries, so a cleanup that removes some custody files can re-derive the
 	// operator-visible signal over the survivors instead of handing back one
 	// naming a file it just deleted.
-	custodyEpochs map[string]uint64
+	custodySignals map[string]QuarantineSignal
+	// lineageFloor is the highest id any custody file accounts for without
+	// evidence: ids at or below it were never issued by the store.
+	lineageFloor uint64
 	// sidecarEpoch is the durable counter the sidecar file carried on its own
 	// (zero when there is none). resolveStoreFS persists the live epoch whenever
 	// it exceeds it, so the counter cannot regress if the custody files are
@@ -153,10 +172,10 @@ type quarantineArtifacts struct {
 // never serves").
 func scanQuarantineArtifacts(fs afero.Fs, storePath string) (quarantineArtifacts, error) {
 	artifacts := quarantineArtifacts{
-		custodyStamps: map[string]bool{},
-		asideStamps:   map[string]bool{},
-		custodyEpochs: map[string]uint64{},
-		priorImports:  map[string]custodyFence{},
+		custodyStamps:  map[string]bool{},
+		asideStamps:    map[string]bool{},
+		custodySignals: map[string]QuarantineSignal{},
+		priorImports:   map[string]custodyFence{},
 	}
 	sidecarEpoch, found, err := readQuarantineEpochFile(fs, storePath)
 	if err != nil {
@@ -189,24 +208,36 @@ func scanQuarantineArtifacts(fs afero.Fs, storePath string) (quarantineArtifacts
 			}
 			if artifacts.signal == nil || custody.QuarantineEpoch > artifacts.signal.QuarantineEpoch ||
 				(custody.QuarantineEpoch == artifacts.signal.QuarantineEpoch && stamp > stampOf(artifacts.signal.CustodyFile, base)) {
-				artifacts.signal = &QuarantineSignal{
-					QuarantinedFile: custody.QuarantinedFile,
-					CustodyFile:     custodyPath,
-					QuarantineEpoch: custody.QuarantineEpoch,
-				}
+				artifacts.signal = custody.signal(custodyPath)
 			}
 			artifacts.custodyStamps[stamp] = true
-			artifacts.custodyEpochs[stamp] = custody.QuarantineEpoch
+			artifacts.custodySignals[stamp] = *custody.signal(custodyPath)
+			artifacts.lineageFloor = max(artifacts.lineageFloor, custody.accountedPrefix())
 			fenceByID := make(map[string]custodyFence, len(custody.Fences))
 			for _, fence := range custody.Fences {
 				fenceByID[fence.RecordID] = fence
+			}
+			ownershipByID := make(map[string]custodyOwnership, len(custody.Ownership))
+			for _, entry := range custody.Ownership {
+				ownershipByID[entry.QuarantineRecordID] = entry
 			}
 			for _, row := range custody.RecordIDs {
 				if fence, ok := fenceByID[row.RecordID]; ok {
 					artifacts.priorImports[row.RecordID] = fence
 					continue
 				}
-				artifacts.priorImports[row.RecordID] = custodyFence{RecordID: row.RecordID, Host: row.Host}
+				// An ownership-only import is a record of the replacement under
+				// its full identity, so the same record found again is not an
+				// alias.
+				entry := ownershipByID[row.RecordID]
+				artifacts.priorImports[row.RecordID] = custodyFence{
+					RecordID:          row.RecordID,
+					Host:              row.Host,
+					Kind:              entry.Kind,
+					ClientOperationID: entry.ClientOperationID,
+					Generation:        entry.Generation,
+					IncarnationID:     entry.IncarnationID,
+				}
 			}
 			if artifacts.rebuildStamp == "" || custody.QuarantineEpoch > artifacts.rebuildEpoch ||
 				(custody.QuarantineEpoch == artifacts.rebuildEpoch && stamp > artifacts.rebuildStamp) {
@@ -316,22 +347,21 @@ func stampOf(custodyPath, base string) string {
 // evidence the operator needs to resolve the names it closed.
 func (a quarantineArtifacts) signalAfterRemoving(storePath string, removed ...string) *QuarantineSignal {
 	best := ""
-	for stamp, epoch := range a.custodyEpochs {
+	for stamp, signal := range a.custodySignals {
 		if slices.Contains(removed, stamp) {
 			continue
 		}
-		if best == "" || epoch > a.custodyEpochs[best] || (epoch == a.custodyEpochs[best] && stamp > best) {
+		if best == "" || signal.QuarantineEpoch > a.custodySignals[best].QuarantineEpoch ||
+			(signal.QuarantineEpoch == a.custodySignals[best].QuarantineEpoch && stamp > best) {
 			best = stamp
 		}
 	}
 	if best == "" {
 		return nil
 	}
-	return &QuarantineSignal{
-		QuarantinedFile: storePath,
-		CustodyFile:     quarantineCustodyPath(storePath, best),
-		QuarantineEpoch: a.custodyEpochs[best],
-	}
+	signal := a.custodySignals[best]
+	signal.QuarantinedFile = storePath
+	return &signal
 }
 
 // quarantineFailed classifies a quarantine-path failure: it is a store-corrupt
@@ -427,11 +457,7 @@ func resolveStoreFS(fs afero.Fs, path string, faults storeFaults) (snapshot, uin
 			epoch = custody.QuarantineEpoch
 		}
 		if signal == nil || signal.QuarantineEpoch < custody.QuarantineEpoch {
-			signal = &QuarantineSignal{
-				QuarantinedFile: custody.QuarantinedFile,
-				CustodyFile:     intent.CustodyFile,
-				QuarantineEpoch: custody.QuarantineEpoch,
-			}
+			signal = custody.signal(intent.CustodyFile)
 		}
 		_, statErr := lstat(fs, path)
 		switch {
@@ -473,6 +499,9 @@ func resolveStoreFS(fs afero.Fs, path string, faults storeFaults) (snapshot, uin
 				if err := writeQuarantineEpoch(fs, path, epoch, faults); err != nil {
 					return snapshot{}, 0, nil, err
 				}
+				if state, err = recordLineageFloor(fs, path, state, artifacts.lineageFloor, faults); err != nil {
+					return snapshot{}, 0, nil, err
+				}
 				return state, epoch, signal, nil
 			case errors.Is(loadErr, ErrStoreCorrupt):
 				if !asideExists {
@@ -509,11 +538,7 @@ func resolveStoreFS(fs afero.Fs, path string, faults storeFaults) (snapshot, uin
 			epoch = custody.QuarantineEpoch
 		}
 		if signal == nil {
-			signal = &QuarantineSignal{
-				QuarantinedFile: custody.QuarantinedFile,
-				CustodyFile:     custodyPath,
-				QuarantineEpoch: custody.QuarantineEpoch,
-			}
+			signal = custody.signal(custodyPath)
 		}
 		return replacementFromCustody(fs, path, custodyPath, custody, artifacts.allocatorFloor, epoch, signal, faults)
 	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -530,20 +555,48 @@ func resolveStoreFS(fs afero.Fs, path string, faults storeFaults) (snapshot, uin
 			}
 			signal = artifacts.signalAfterRemoving(path, orphanStamps...)
 		}
+		if state, err = recordLineageFloor(fs, path, state, artifacts.lineageFloor, faults); err != nil {
+			return snapshot{}, 0, nil, err
+		}
 		return state, epoch, signal, nil
 	}
 	if !errors.Is(loadErr, ErrStoreCorrupt) {
 		return snapshot{}, 0, nil, loadErr
 	}
 	// A corrupt store file: custody-first quarantine. Extraction runs before any
-	// write, so an incomplete snapshot leaves the directory untouched.
-	decoded, err := readStoreForCustody(fs, path)
-	if err != nil {
+	// write, so a file that cannot be quarantined leaves the directory untouched.
+	if info, err := lstat(fs, path); err != nil {
+		return snapshot{}, 0, nil, fmt.Errorf("hostops: stat store %s: %w", path, err)
+	} else if err := rejectNonStoreFileKind(path, info); err != nil {
 		return snapshot{}, 0, nil, custodyIncomplete(err)
 	}
-	custody, err := custodyFromStore(decoded, path, epoch+1, time.Now().UTC(), artifacts.allocatorFloor, artifacts.priorImports)
+	now := time.Now().UTC()
+	custody, err := custodyForCorruptStore(fs, path, epoch+1, now, artifacts)
+	if _, isIO := errors.AsType[*custodyIOError](err); isIO {
+		return snapshot{}, 0, nil, err
+	}
 	if err != nil {
-		return snapshot{}, 0, nil, custodyIncomplete(err)
+		// The file cannot prove the names it closed. It is set aside all the same,
+		// through the same custody-first steps, with a custody file that says the
+		// snapshot is unproven: the hub resumes on an empty store and the signal
+		// tells the operator a closed name may not be held.
+		if epoch+1 > math.MaxUint64/allocatorEpochStride {
+			return snapshot{}, 0, nil, custodyIncomplete(errors.New("the quarantine epoch leaves no id space for another unproven set-aside"))
+		}
+		custody, err = assembleCustody(custodyFile{
+			QuarantineEpoch:        epoch + 1,
+			QuarantinedFile:        path,
+			CustodiedAt:            now,
+			RecordIDs:              []custodyRecordID{},
+			AllocatorHighWaterMark: unprovenAllocatorFloor(epoch + 1),
+			AllocatorFloor:         unprovenAllocatorFloor(epoch + 1),
+			Fences:                 []custodyFence{},
+			Ownership:              []custodyOwnership{},
+			Unproven:               true,
+		})
+		if err != nil {
+			return snapshot{}, 0, nil, custodyIncomplete(err)
+		}
 	}
 	custodyPath := quarantineCustodyPath(path, quarantineStamp(custody.CustodiedAt))
 	asidePath := quarantineAsidePath(path, quarantineStamp(custody.CustodiedAt))
@@ -609,11 +662,7 @@ func resolveStoreFS(fs afero.Fs, path string, faults storeFaults) (snapshot, uin
 	if err := clearQuarantineIntent(fs, path, faults); err != nil {
 		return snapshot{}, 0, nil, err
 	}
-	signal = &QuarantineSignal{
-		QuarantinedFile: custody.QuarantinedFile,
-		CustodyFile:     custodyPath,
-		QuarantineEpoch: custody.QuarantineEpoch,
-	}
+	signal = custody.signal(custodyPath)
 	return replacement, custody.QuarantineEpoch, signal, nil
 }
 
@@ -913,4 +962,49 @@ func checkQuarantineBytes(raw []byte) error {
 		return err
 	}
 	return validateRawFieldKeys(raw)
+}
+
+// custodyForCorruptStore reads the corrupt file at path and builds its complete
+// custody snapshot, or reports why the file cannot prove one.
+func custodyForCorruptStore(fs afero.Fs, path string, epoch uint64, now time.Time, artifacts quarantineArtifacts) (custodyFile, error) {
+	decoded, err := readStoreForCustody(fs, path)
+	if err != nil {
+		return custodyFile{}, err
+	}
+	return custodyFromStore(decoded, path, epoch, now, artifacts.allocatorFloor, artifacts.lineageFloor, artifacts.priorImports)
+}
+
+// allocatorEpochStride is the id space one quarantine epoch owns when its
+// custody is unproven.
+const allocatorEpochStride = 1 << 40
+
+// unprovenAllocatorFloor is the allocator floor of the replacement store behind
+// an unproven set-aside at quarantineEpoch. The corrupt file's bytes are never
+// read for it, because nothing in a corrupt file can be trusted to show what
+// the store issued.
+//
+// Invariant: a store opened at quarantine epoch k only issues ids below
+// k*allocatorEpochStride + allocatorEpochStride, because it starts at or above
+// k*allocatorEpochStride and issues fewer than 2^40 ids over its life (a store
+// that was never quarantined is epoch 0). The replacement at epoch k+1 starts
+// at (k+1)*allocatorEpochStride, so it is above every id any earlier store
+// issued, whatever the set-aside file holds. Epochs only increase, so no later
+// store can come back down into an earlier one's range.
+func unprovenAllocatorFloor(quarantineEpoch uint64) uint64 {
+	return quarantineEpoch * allocatorEpochStride
+}
+
+// recordLineageFloor writes into a healthy store the id range its custody files
+// account for, when the store does not carry it yet (a store an earlier build
+// wrote), so the range stays accounted for after the quarantine artifacts are
+// cleaned away.
+func recordLineageFloor(fs afero.Fs, path string, state snapshot, floor uint64, faults storeFaults) (snapshot, error) {
+	if floor <= state.AllocatorFloor || floor > state.AllocatorHighWaterMark {
+		return state, nil
+	}
+	state.AllocatorFloor = floor
+	if err := writeReplacement(fs, path, state, faults); err != nil {
+		return snapshot{}, err
+	}
+	return state, nil
 }

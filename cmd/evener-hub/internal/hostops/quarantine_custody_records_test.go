@@ -176,11 +176,11 @@ func TestQuarantineAcceptsMatureGapsWithCompactionEvidence(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			path := StorePath(t.TempDir())
 			writeRawStore(t, path, 0o600, body)
-			if store, err := Open(path); err == nil {
-				t.Fatalf("Open returned %v for %s, want an incomplete-custody refusal", store, name)
-			} else if !errors.Is(err, ErrStoreCorrupt) || !errors.Is(err, ErrQuarantineIncomplete) {
-				t.Fatalf("Open = %v, want ErrStoreCorrupt/ErrQuarantineIncomplete", err)
+			store, err := Open(path)
+			if err != nil {
+				t.Fatalf("Open for %s: %v, want the unproven set-aside", name, err)
 			}
+			requireUnprovenReplacement(t, store, path, []byte(body))
 		})
 	}
 }

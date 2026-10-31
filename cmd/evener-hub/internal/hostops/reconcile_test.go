@@ -455,7 +455,7 @@ func TestLoadRefusesNonCanonicalPendingCompensationKeys(t *testing.T) {
 		if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
 			t.Fatalf("write store: %v", err)
 		}
-		if _, err := Open(path); err == nil {
+		if err := loadAt(path); err == nil {
 			t.Fatalf("the store loaded a pendingCompensation %s outside the canonical spelling", name)
 		}
 	}
