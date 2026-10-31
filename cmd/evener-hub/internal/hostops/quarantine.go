@@ -572,8 +572,7 @@ func resolveStoreFS(fs afero.Fs, path string, faults storeFaults) (snapshot, uin
 	}
 	now := time.Now().UTC()
 	custody, err := custodyForCorruptStore(fs, path, epoch+1, now, artifacts)
-	var ioErr *custodyIOError
-	if errors.As(err, &ioErr) {
+	if _, isIO := errors.AsType[*custodyIOError](err); isIO {
 		return snapshot{}, 0, nil, err
 	}
 	if err != nil {
