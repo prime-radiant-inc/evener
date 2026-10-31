@@ -234,6 +234,12 @@ preview as a compact message from the delegate's name, with the name resolving
 through the standard delegate entity card and its open-conversation control.
 Opening the row loads the child's conversation pane directly.
 
+Terminal worktree evidence carries a parent-only `disposal_hint` when the
+receiving session owns the delegate and can use `manage_worktree`. A dirty lane's
+hint directs the parent to inspect or resume the child before disposal and states
+that `force_dirty` discards uncommitted changes. Ordinary disposal refuses a
+dirty lane; Evener never removes or discards it automatically.
+
 A delegate that reports and then runs more turns in its finalization drain
 settles on its latest report, so `reportPreview` shows the newer one while the
 earlier report stays in the delegate's transcript. A drain turn that ends
