@@ -116,7 +116,9 @@ const DATABASE_NAME = "evener-mutation-outbox";
 // and the old tab fails closed (storage-unavailable errors) instead of
 // silently misfencing: the safe mixed-version state is a reload, never a
 // silent share (docs/design/stop-cancellation-outbox.md §8).
-const DATABASE_VERSION = 5;
+// The schema-fence version, exported so tests assert against the production
+// constant rather than a literal a future bump strands.
+export const DATABASE_VERSION = 5;
 const OUTBOX_STORE = "outbox";
 const OPTIMISTIC_STORE = "optimistic";
 const RECOVERY_STORE = "recovery";
@@ -799,55 +801,71 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
       const record = await requestResult<MutationOutboxRecord | undefined>(store.get(clientMutationId));
       if (record?.state !== "submitting") return false;
       const unresolvedAttempts = priorUnresolvedAttempts(record) + 1;
-      // A row from before the capture field existed (persisted untouched
-      // through every later schema version) proves by survival, at its
-      // first mark, that no Stop's cancel scan has run since its birth -
-      // any bump would have canceled it while unattempted - so the epoch
-      // as it stands IS the epoch it was born at: initialize the capture
-      // here, and the refusal's fence compares against the birth epoch
-      // instead of an inherited zero a historical Stop trips. The
-      // conditional keeps every modern row's request sequence byte
-      // identical (the note editor's tightly-sequenced drain).
-      const stopEpochAtEnqueue =
-        record.stopEpochAtEnqueue === undefined
-          ? await this.#stopEpochOf(transaction, record.targetRef)
-          : record.stopEpochAtEnqueue;
-      // The choke-point fence: the one gate every dispatch passes, inside its
-      // own write transaction, so no path can put a crossed row on the wire.
-      // The per-seam fences around dispatch (the cancel scan, the
-      // born-canceled barrier, the refusal rollback, the reconcile hold) are
-      // defense-in-depth from here on - this comparison is the enforcement
-      // point, commit-ordered against every Stop that can still lose a race
-      // with the transport.
-      // The legacy row's just-initialized baseline IS the current epoch, so
-      // its targetRef half is vacuous by the initialization's own argument -
-      // hand the predicate the reading this transaction already took rather
-      // than a second identical one.
-      if (
-        await this.#fenceCrossedSinceEnqueue(
-          transaction,
-          { ...record, stopEpochAtEnqueue },
-          record.stopEpochAtEnqueue === undefined ? { stopEpoch: stopEpochAtEnqueue } : undefined,
-        )
-      ) {
-        // The fence's verdict is the row's truth: a row with no attempt
-        // evidence provably never left any tab, so the Stop's verdict is
-        // truthful cancellation; a row carrying evidence (a reauthorized
-        // row's preserved attempt, or an unresolved concurrent attempt) may
-        // already be in flight, so it parks delivery-uncertain for a receipt
-        // or refusal to settle - never canceled by absence (§5: attempted
-        // rows are uncertain, not canceled).
-        const evidenced = record.attempted === true || priorUnresolvedAttempts(record) > 0;
-        await requestResult(
-          store.put(
-            evidenced
-              ? { ...record, state: "blockedUnknown", attempted: true, unresolvedAttempts, stopEpochAtEnqueue }
-              : { ...record, state: "canceled", attempted: false, unresolvedAttempts: 0, stopEpochAtEnqueue },
-          ),
-        );
-        return false;
+      // The choke-point fence: the one gate every dispatch passes, so no path
+      // can put a crossed row on the wire. The per-seam fences around dispatch
+      // (the cancel scan, the born-canceled barrier, the refusal rollback, the
+      // reconcile hold) are defense-in-depth from here on - this comparison is
+      // the enforcement point, commit-ordered against every Stop that can
+      // still lose a race with the transport.
+      //
+      // The fence needs the ref's current epoch only for rows the cancel scan
+      // cannot cancel. A fresh modern row (no attempt evidence, baseline
+      // stamped at birth) with a lagging baseline was necessarily crossed by a
+      // Stop whose own cancel scan matched it on either ref it crosses and
+      // canceled it while unattempted - so by the time this transaction reads
+      // the row, the state check above has already refused it. For those rows
+      // the fence reads nothing and this transaction keeps the request
+      // sequence byte-identical the note editor's tightly-sequenced drain
+      // stages against (the extra read wedges that drain's replay - pinned by
+      // NotesPanel's superseded-save test). A row carrying evidence (a
+      // reauthorized row's preserved attempt, or an unresolved concurrent
+      // attempt - the rows the scan skips) and a row from before the capture
+      // field existed DO read the epochs, batched with nothing else pending:
+      // the row's ref is unknown before the row read, so the batch reads the
+      // whole small sequence store and both requests resolve in one event
+      // delivery.
+      const evidenced = record.attempted === true || priorUnresolvedAttempts(record) > 0;
+      if (evidenced || record.stopEpochAtEnqueue === undefined) {
+        const sequences = await requestResult<TargetSequence[]>(transaction.objectStore(SEQUENCE_STORE).getAll());
+        const epochOf = (ref: string) => sequences.find((sequence) => sequence.targetRef === ref)?.stopEpoch ?? 0;
+        // A row from before the capture field existed (persisted untouched
+        // through every later schema version) proves by survival, at its
+        // first mark, that no Stop's cancel scan has run since its birth -
+        // any bump would have canceled it while unattempted - so the epoch
+        // as it stands IS the epoch it was born at: initialize the capture
+        // here, and the fence compares against the birth epoch instead of an
+        // inherited zero a historical Stop trips.
+        const stopEpochAtEnqueue =
+          record.stopEpochAtEnqueue === undefined ? epochOf(record.targetRef) : record.stopEpochAtEnqueue;
+        if (
+          await this.#fenceCrossedSinceEnqueue(
+            transaction,
+            { ...record, stopEpochAtEnqueue },
+            {
+              stopEpoch: epochOf(record.targetRef),
+              displayedStopEpoch: record.displayedRef === undefined ? undefined : epochOf(record.displayedRef),
+            },
+          )
+        ) {
+          // The fence's verdict is the row's truth: a row with no attempt
+          // evidence provably never left any tab, so the Stop's verdict is
+          // truthful cancellation; a row carrying evidence may already be in
+          // flight, so it parks delivery-uncertain for a receipt or refusal
+          // to settle - never canceled by absence (§5: attempted rows are
+          // uncertain, not canceled).
+          await requestResult(
+            store.put(
+              evidenced
+                ? { ...record, state: "blockedUnknown", attempted: true, unresolvedAttempts, stopEpochAtEnqueue }
+                : { ...record, state: "canceled", attempted: false, unresolvedAttempts: 0, stopEpochAtEnqueue },
+            ),
+          );
+          return false;
+        }
+        await requestResult(store.put({ ...record, attempted: true, unresolvedAttempts, stopEpochAtEnqueue }));
+        return true;
       }
-      await requestResult(store.put({ ...record, attempted: true, unresolvedAttempts, stopEpochAtEnqueue }));
+      await requestResult(store.put({ ...record, attempted: true, unresolvedAttempts }));
       return true;
     });
   }
