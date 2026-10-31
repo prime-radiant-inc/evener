@@ -10,6 +10,51 @@ import (
 	"primeradiant.com/evener/test/e2e/fakellm"
 )
 
+// subscribeThreadNotifications drains the client's notification stream into a
+// model-changed channel and a recovery-resync signal. There is one pump per
+// client on purpose: notifications arrive on a single channel, so a second
+// pump would take a random subset of the stream.
+func subscribeThreadNotifications(client *appwire.Client) (<-chan appwire.ThreadModelChangedParams, <-chan struct{}) {
+	modelChanged := make(chan appwire.ThreadModelChangedParams, 8)
+	resynced := make(chan struct{}, 4)
+	go func() {
+		for notification := range client.Notifications() {
+			switch notification.Method {
+			case appwire.NotifyThreadModelChanged:
+				var params appwire.ThreadModelChangedParams
+				if json.Unmarshal(notification.Params, &params) != nil {
+					continue
+				}
+				modelChanged <- params
+			case appwire.NotifyEvenerThreadResync:
+				select {
+				case resynced <- struct{}{}:
+				default:
+				}
+			}
+		}
+	}()
+	return modelChanged, resynced
+}
+
+// awaitModelChanged returns the first model-changed frame carrying wantModel,
+// skipping frames for other models, since a test may switch more than once.
+func awaitModelChanged(ctx context.Context, t *testing.T, ch <-chan appwire.ThreadModelChangedParams, wantModel string) appwire.ThreadModelChangedParams {
+	t.Helper()
+	for {
+		select {
+		case params := <-ch:
+			if params.Model == wantModel {
+				return params
+			}
+		case <-time.After(45 * time.Second):
+			t.Fatalf("no thread/model/changed with model %q reached the hub subscriber", wantModel)
+		case <-ctx.Done():
+			t.Fatalf("waiting for thread/model/changed with model %q: %v", wantModel, ctx.Err())
+		}
+	}
+}
+
 // TestE2E_ModelSwitchOnColdSessionReachesTheResumedSubscriber pins the
 // at-rest pick for the shape the live-stack tests cannot reach from a live
 // daemon: a session whose daemon has exited. The hub resumes the session
@@ -84,19 +129,7 @@ func TestE2E_ModelSwitchOnColdSessionReachesTheResumedSubscriber(t *testing.T) {
 	if _, err := clientRequest[appwire.ThreadReadResponse](ctx, client, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: ref, Subscribe: true}); err != nil {
 		t.Fatalf("thread/read subscribe on the cold session: %v", err)
 	}
-	modelChanged := make(chan appwire.ThreadModelChangedParams, 8)
-	go func() {
-		for notification := range client.Notifications() {
-			if notification.Method != appwire.NotifyThreadModelChanged {
-				continue
-			}
-			var params appwire.ThreadModelChangedParams
-			if json.Unmarshal(notification.Params, &params) != nil {
-				continue
-			}
-			modelChanged <- params
-		}
-	}()
+	modelChanged, resynced := subscribeThreadNotifications(client)
 
 	if _, err := clientRequest[appwire.EmptyResponse](ctx, client, appwire.MethodThreadModelSet, appwire.ThreadModelSetParams{
 		Ref:           ref,
@@ -106,15 +139,22 @@ func TestE2E_ModelSwitchOnColdSessionReachesTheResumedSubscriber(t *testing.T) {
 		t.Fatalf("thread/model/set on the cold session: %v", err)
 	}
 
+	// A pick on a cold session resumes the daemon behind the set, and the
+	// switch's frame can be emitted before the hub's relay has re-attached to
+	// the resumed daemon. The subscriber must still converge: either the
+	// frame itself arrives, or the relay's recovery resync does, which is the
+	// signal a pane re-reads on. Either way the thread's authoritative state
+	// must show the switch.
 	select {
 	case params := <-modelChanged:
 		if params.Model != fakellm.SwitchTargetID || params.ModelProvider != "fake" {
 			t.Fatalf("thread/model/changed = provider %q model %q, want fake/%s", params.ModelProvider, params.Model, fakellm.SwitchTargetID)
 		}
+	case <-resynced:
 	case <-time.After(45 * time.Second):
-		t.Fatal("the switch's thread/model/changed never reached the subscriber that attached while the session was cold")
+		t.Fatal("neither thread/model/changed nor a recovery resync reached the subscriber that attached while the session was cold")
 	case <-ctx.Done():
-		t.Fatalf("waiting for thread/model/changed: %v", ctx.Err())
+		t.Fatalf("waiting for the cold-session switch to reach the subscriber: %v", ctx.Err())
 	}
 
 	read, err := clientRequest[appwire.ThreadReadResponse](ctx, client, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: ref})
@@ -174,34 +214,7 @@ func TestE2E_ModelSwitchQueuesMidTurnAndPushesAtRest(t *testing.T) {
 	if _, err := clientRequest[appwire.ThreadReadResponse](ctx, client, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: ref, Subscribe: true}); err != nil {
 		t.Fatalf("thread/read subscribe: %v", err)
 	}
-	modelChanged := make(chan appwire.ThreadModelChangedParams, 8)
-	go func() {
-		for notification := range client.Notifications() {
-			if notification.Method != appwire.NotifyThreadModelChanged {
-				continue
-			}
-			var params appwire.ThreadModelChangedParams
-			if json.Unmarshal(notification.Params, &params) != nil {
-				continue
-			}
-			modelChanged <- params
-		}
-	}()
-	awaitModelChanged := func(wantModel string) appwire.ThreadModelChangedParams {
-		t.Helper()
-		for {
-			select {
-			case params := <-modelChanged:
-				if params.Model == wantModel {
-					return params
-				}
-			case <-time.After(30 * time.Second):
-				t.Fatalf("no thread/model/changed with model %q reached the hub subscriber", wantModel)
-			case <-ctx.Done():
-				t.Fatalf("waiting for thread/model/changed with model %q: %v", wantModel, ctx.Err())
-			}
-		}
-	}
+	modelChanged, _ := subscribeThreadNotifications(client)
 
 	// Round 1 held open: the turn is genuinely in flight while the pick fires.
 	round1, err := provider.Next(ctx.Done())
@@ -254,7 +267,7 @@ func TestE2E_ModelSwitchQueuesMidTurnAndPushesAtRest(t *testing.T) {
 
 	// The boundary-applied switch reaches the subscribed web client through
 	// the hub, so every surface's label converges without a re-read.
-	params := awaitModelChanged(fakellm.SwitchTargetID)
+	params := awaitModelChanged(ctx, t, modelChanged, fakellm.SwitchTargetID)
 	if params.ModelProvider != "fake" {
 		t.Fatalf("thread/model/changed ModelProvider = %q, want %q", params.ModelProvider, "fake")
 	}
@@ -269,7 +282,7 @@ func TestE2E_ModelSwitchQueuesMidTurnAndPushesAtRest(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("at-rest thread/model/set: %v", err)
 	}
-	if params := awaitModelChanged(fakellm.ModelID); params.ModelProvider != "fake" {
+	if params := awaitModelChanged(ctx, t, modelChanged, fakellm.ModelID); params.ModelProvider != "fake" {
 		t.Fatalf("at-rest thread/model/changed ModelProvider = %q, want %q", params.ModelProvider, "fake")
 	}
 	read, err := clientRequest[appwire.ThreadReadResponse](ctx, client, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: ref})

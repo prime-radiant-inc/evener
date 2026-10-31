@@ -1299,12 +1299,15 @@ func TestSkillDelivery_ProjectionModelSwitch(t *testing.T) {
 		}))
 	// Switch the model between the tool result and the committing dispatch, so
 	// the request is projected for a different provider/protocol target.
+	// applyModelSwitch, not SetModel: this checkpoint runs mid-turn, so the
+	// folded SetModel would queue the switch for the boundary; this test
+	// pins the mid-turn projection machinery, which needs the immediate swap.
 	var switchedMidTurn atomic.Bool
 	updateSessionTestConfig(s, func(cfg *testConfig) {
 		cfg.execToolCheckpoint = func(name string) {
 			if name == "after_execute" && !switchedMidTurn.Swap(true) {
-				if err := s.SetModel("openai/gpt-5.2"); err != nil {
-					t.Errorf("SetModel: %v", err)
+				if err := s.applyModelSwitch("openai/gpt-5.2", "", nil); err != nil {
+					t.Errorf("applyModelSwitch: %v", err)
 				}
 			}
 		}

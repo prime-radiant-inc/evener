@@ -56,9 +56,9 @@ func (s *Server) handleAppThreadModelSet(_ context.Context, params appwire.Threa
 	fn := s.modelFunc
 	s.mu.RUnlock()
 	// No processing gate: while a turn runs, the session queues the switch and
-	// applies it at the turn boundary (Session.SetModelForNextTurn's queue
-	// path), so a pick made in the composer lands on the next turn instead of
-	// erroring. The running turn still finishes on the model it started with.
+	// applies it at the turn boundary (Session.SetModel's queue path), so a
+	// pick made in the composer lands on the next turn instead of erroring.
+	// The running turn still finishes on the model it started with.
 	if fn == nil {
 		return appwire.EmptyResponse{}, appwire.Unavailable("model change not available")
 	}

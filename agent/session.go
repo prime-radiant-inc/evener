@@ -987,12 +987,16 @@ type Session struct {
 	// idle session and deferring to the running drain-loop gate. ProcessInputKind
 	// sets it at entry and clears it as its last act before going idle, so
 	// "set goal + read flag" and "clear flag + go idle" are mutually exclusive.
+	// It also widens turnInFlightLocked to the whole input call, which is how
+	// SetModel decides a pick arrived mid-input and must queue for the boundary.
 	goalInTurn bool
-	// pendingModel holds a model switch requested while a turn was running
-	// (SetModel's queue path). The processing boundary applies it
+	// pendingModel holds a model switch requested while an input was in
+	// flight (SetModel's queue path), together with the live listing its
+	// pick-time preflight fetched, so the boundary application reuses it
+	// instead of enumerating again. The processing boundary applies it
 	// (applyPendingModelSwitch) so the next turn runs on it; guarded by s.mu.
-	// Empty when no switch is queued.
-	pendingModel string
+	// A zero value queues nothing.
+	pendingModel pendingModelSwitch
 	// goalDependentsHeld records that the goal gate just held its continuation
 	// because wake-pending dependents (running delegates or non-detached
 	// background jobs) guarantee a future wake: the no-progress fold was
@@ -1636,19 +1640,34 @@ func (s *Session) reapplyProviderSpecificTools(oldProfile, newProfile *provider.
 	}
 }
 
-// SetModel changes the model used for future LLM calls, applying the switch
-// immediately. Takes effect on the next request. Returns an error (without
-// changing any session state) when the model ref cannot be resolved to a
-// profile, when the current history contains content the target can't
-// represent (see unrepresentableHistoryKinds), or when the target model fails
-// live membership validation (see validateModelSwitchMembership). On a
-// successful switch, cfg.ModelFallbacks entries that no longer validate against
-// the new profile are dropped and reported in the model-switch marker.
+// pendingModelSwitch is a switch picked mid-input, waiting for the turn
+// boundary. The primed instance and listing are the ones the pick-time
+// preflight fetched; the boundary's applyModelSwitch reuses them so a queued
+// switch costs one live enumeration, not two. A zero value (empty model)
+// means nothing is queued.
+type pendingModelSwitch struct {
+	model          string
+	primedInstance string
+	primedListing  *llm.ModelListing
+}
+
+// SetModel changes the model used for future LLM calls.
+// Takes effect on the next request. Returns an error (without changing any
+// session state) when the model ref cannot be resolved to a profile, when the
+// current history contains content the target can't represent (see
+// unrepresentableHistoryKinds), or when the target model fails live
+// membership validation (see validateModelSwitchMembership). On a successful
+// switch, cfg.ModelFallbacks entries that no longer validate against the new
+// profile are dropped and reported in the model-switch marker.
 //
-// Callers that must not swap a profile while a turn's rounds are in flight
-// (the daemon's thread/model/set hook) use SetModelForNextTurn instead, which
-// queues the switch for the turn boundary; this immediate variant is for
-// at-rest switches and seams that deliberately test mid-turn projection.
+// A switch requested while an input is in flight does not swap the profile
+// under the running turn's rounds: it is validated as far as a moving session
+// allows, then queued and applied at the turn boundary, so the next turn -
+// typically the message the user was typing when they picked - runs on the new
+// model and the running turn finishes on the one it started with. History
+// representability is re-checked at that boundary against the settled history;
+// a switch that fails there surfaces as a transcript warning and is dropped
+// rather than retried.
 func (s *Session) SetModel(model string) error {
 	release, admissionErr := s.beginRetirementMutation("admission")
 	if admissionErr != nil {
@@ -1660,44 +1679,30 @@ func (s *Session) SetModel(model string) error {
 		s.mu.Unlock()
 		return nil
 	}
-	s.mu.Unlock()
-	return s.applyModelSwitch(model)
-}
-
-// SetModelForNextTurn is the appwire model picker's contract: a switch picked
-// while a turn is running is validated as far as a moving session allows, then
-// queued and applied at the turn boundary, so the next turn - typically the
-// message the user was typing when they picked - runs on the new model. The
-// running turn finishes on the model it started with. With nothing running,
-// the switch applies immediately. History representability is re-checked at the
-// boundary against the settled history; a switch that fails there surfaces as
-// a transcript warning and is dropped rather than retried.
-func (s *Session) SetModelForNextTurn(model string) error {
-	release, admissionErr := s.beginRetirementMutation("admission")
-	if admissionErr != nil {
-		return admissionErr
-	}
-	defer release()
-	s.mu.Lock()
-	if s.closingOrClosedLocked() {
+	if !s.turnInFlightLocked() {
 		s.mu.Unlock()
-		return nil
-	}
-	if s.state != SessionProcessing && !s.goalInTurn {
-		s.mu.Unlock()
-		return s.applyModelSwitch(model)
+		return s.applyModelSwitch(model, "", nil)
 	}
 	s.mu.Unlock()
 	return s.queueModelSwitch(model)
 }
 
-// queueModelSwitch records a mid-turn switch for the turn boundary. The
-// pick-time validation mirrors the at-rest path as far as a running session
+// turnInFlightLocked reports whether an input is being processed, from its
+// admission through the last drained turn. The state covers the rounds
+// themselves; goalInTurn widens it to the whole input call, including pre-turn
+// work and the gaps between a call's drained turns. Callers hold s.mu.
+func (s *Session) turnInFlightLocked() bool {
+	return s.state == SessionProcessing || s.goalInTurn
+}
+
+// queueModelSwitch records a mid-input switch for the turn boundary. The
+// pick-time validation mirrors the at-rest path as far as a moving session
 // permits: the ref must resolve (a typo or unknown instance errors now, at
 // the picker), and membership is preflighted against a live listing. The
 // unrepresentable-history preflight is deliberately skipped - history is
 // being appended to by the running turn - and re-run by the boundary's
-// applyModelSwitch against settled history.
+// applyModelSwitch against settled history, reusing the listing this preflight
+// fetched so the boundary pays no second enumeration.
 func (s *Session) queueModelSwitch(model string) error {
 	primedInstance, primedListing := s.primeCodexRoster(model)
 	s.mu.Lock()
@@ -1705,12 +1710,12 @@ func (s *Session) queueModelSwitch(model string) error {
 		s.mu.Unlock()
 		return nil
 	}
-	if s.state != SessionProcessing && !s.goalInTurn {
-		// The turn ended while the preflight ran: the session is at rest, so
+	if !s.turnInFlightLocked() {
+		// The input ended while the preflight ran: the session is at rest, so
 		// the switch can apply directly instead of waiting for a boundary
 		// that already fired.
 		s.mu.Unlock()
-		return s.applyModelSwitch(model)
+		return s.applyModelSwitch(model, "", nil)
 	}
 	nextProfile, _, err := s.resolveProfileForRef(s.profile, model)
 	if err != nil {
@@ -1729,31 +1734,32 @@ func (s *Session) queueModelSwitch(model string) error {
 		s.mu.Unlock()
 		return nil
 	}
-	if s.state != SessionProcessing && !s.goalInTurn {
+	if !s.turnInFlightLocked() {
 		s.mu.Unlock()
-		return s.applyModelSwitch(model)
+		return s.applyModelSwitch(model, "", nil)
 	}
 	// Last pick wins: the newest choice is what the next turn should run on.
-	s.pendingModel = model
+	s.pendingModel = pendingModelSwitch{model: model, primedInstance: primedInstance, primedListing: primedListing}
 	s.mu.Unlock()
 	return nil
 }
 
-// applyPendingModelSwitch applies a queued switch once no rounds remain. A
-// session still processing keeps its pending switch for the boundary that is
-// still owed. A failed application is reported as a warning and dropped, not
-// retried: the invalid choice stays visible in the transcript while a
-// re-pick re-enters the normal path.
+// applyPendingModelSwitch applies a queued switch once no rounds remain: its
+// guard is the PROCESSING state alone, not turnInFlightLocked, because it runs
+// at the turn boundary where goalInTurn is still set for the input call that
+// owns the boundary. A failed application is reported as a warning and
+// dropped, not retried: the invalid choice stays visible in the transcript
+// while a re-pick re-enters the normal path.
 func (s *Session) applyPendingModelSwitch() {
 	s.mu.Lock()
 	if s.state == SessionProcessing {
 		s.mu.Unlock()
 		return
 	}
-	model := s.pendingModel
-	s.pendingModel = ""
+	pending := s.pendingModel
+	s.pendingModel = pendingModelSwitch{}
 	s.mu.Unlock()
-	if model == "" {
+	if pending.model == "" {
 		return
 	}
 	release, admissionErr := s.beginRetirementMutation("admission")
@@ -1761,9 +1767,9 @@ func (s *Session) applyPendingModelSwitch() {
 		return
 	}
 	defer release()
-	if err := s.applyModelSwitch(model); err != nil {
+	if err := s.applyModelSwitch(pending.model, pending.primedInstance, pending.primedListing); err != nil {
 		s.emit(events.WarningData{
-			Message: "queued model switch to " + model + " did not apply: " + err.Error(),
+			Message: "queued model switch to " + pending.model + " did not apply: " + err.Error(),
 			Source:  "model_switch",
 		})
 	}
@@ -1772,15 +1778,18 @@ func (s *Session) applyPendingModelSwitch() {
 // applyModelSwitch is SetModel's committed switch: resolve, validate against
 // settled history, swap the profile, record the marker turn, publish
 // EventModelChanged, and persist. The caller owns the retirement admission -
-// both the at-rest path (SetModel) and the boundary applier
-// (applyPendingModelSwitch) hold one.
-func (s *Session) applyModelSwitch(model string) error {
-	// A named Codex model may exist only in the target instance's live
-	// roster. List it before s.mu: the strict cross-provider resolve below
-	// runs under the lock and must stay a pure registry lookup, while the
-	// live rows this applies are what let it accept a model the bundled
-	// roster lags.
-	primedInstance, primedListing := s.primeCodexRoster(model)
+// SetModel and the boundary applier each hold one. A primed listing the caller
+// already fetched (the queue's pick-time preflight) is reused instead of a
+// fresh enumeration; nil primes here.
+func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *llm.ModelListing) error {
+	if primedListing == nil {
+		// A named Codex model may exist only in the target instance's live
+		// roster. List it before s.mu: the strict cross-provider resolve below
+		// runs under the lock and must stay a pure registry lookup, while the
+		// live rows this applies are what let it accept a model the bundled
+		// roster lags.
+		primedInstance, primedListing = s.primeCodexRoster(model)
+	}
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
