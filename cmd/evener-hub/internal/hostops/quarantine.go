@@ -212,9 +212,7 @@ func scanQuarantineArtifacts(fs afero.Fs, storePath string) (quarantineArtifacts
 			}
 			artifacts.custodyStamps[stamp] = true
 			artifacts.custodySignals[stamp] = *custody.signal(custodyPath)
-			if custody.Unproven {
-				artifacts.unprovenFloor = max(artifacts.unprovenFloor, custody.AllocatorHighWaterMark)
-			}
+			artifacts.unprovenFloor = max(artifacts.unprovenFloor, custody.AllocatorFloor)
 			fenceByID := make(map[string]custodyFence, len(custody.Fences))
 			for _, fence := range custody.Fences {
 				fenceByID[fence.RecordID] = fence
@@ -567,6 +565,7 @@ func resolveStoreFS(fs afero.Fs, path string, faults storeFaults) (snapshot, uin
 			CustodiedAt:            now,
 			RecordIDs:              []custodyRecordID{},
 			AllocatorHighWaterMark: unprovenAllocatorFloor(epoch + 1),
+			AllocatorFloor:         unprovenAllocatorFloor(epoch + 1),
 			Fences:                 []custodyFence{},
 			Ownership:              []custodyOwnership{},
 			Unproven:               true,
