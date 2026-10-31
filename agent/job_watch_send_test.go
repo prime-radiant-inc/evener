@@ -186,8 +186,8 @@ func TestSendWatchBudgetTripsWhenFramesNeverSettle(t *testing.T) {
 			fires, live, count, watchDeliveryBudget)
 	}
 	// The teardown detaches the config but does not drop what it already
-	// produced: the one coalesced frame moves off the live watch onto the
-	// terminal-flush rail, still there for a receiver that comes back for it.
+	// produced: the last coalesced firing and its separate budget notice move
+	// onto the terminal-flush rail for a receiver that comes back for them.
 	jm.mu.Lock()
 	livePending, flushPending := 0, 0
 	for _, live := range jm.watches {
@@ -197,8 +197,8 @@ func TestSendWatchBudgetTripsWhenFramesNeverSettle(t *testing.T) {
 		flushPending += len(flushing.pendingOrder)
 	}
 	jm.mu.Unlock()
-	if livePending != 0 || flushPending != 1 {
-		t.Fatalf("pending frames after the teardown = live:%d flushing:%d, want the budget-crossing frame flushing and nothing live", livePending, flushPending)
+	if livePending != 0 || flushPending != 2 {
+		t.Fatalf("pending frames after the teardown = live:%d flushing:%d, want the budget-crossing firing and budget notice flushing and nothing live", livePending, flushPending)
 	}
 	cleared := 0
 	for _, notification := range notified {

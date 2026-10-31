@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -423,9 +424,11 @@ func newRetirementPreservationFixture(t *testing.T) *retirementPreservationFixtu
 	// call routed by the structural request SessionID. This is what actually
 	// reaches depth 2.
 	root.client.Register(&nestedDelegateAdapter{
-		name:             "openai",
-		creatorSessionID: f.childIDs[0],
-		nestedTask:       "retirement-lane-two",
+		name:              "openai",
+		creatorSessionID:  f.childIDs[0],
+		creatorDelegateID: f.delegateIDs[0],
+		creator:           f.childRuntimes[0],
+		nestedTask:        "retirement-lane-two",
 	})
 	outcome := (delegateRuntime{owner: root}).send(context.Background(), f.delegateIDs[0], "create a nested delegate", 0)
 	if outcome.result.Err != nil {
@@ -501,18 +504,20 @@ func (f *retirementPreservationFixture) nestedDelegateUnder(parentID string) (de
 
 // nestedDelegateAdapter is a scripted provider. For exactly one creator child
 // session it issues a real `delegate` tool call (worktree isolation) on that
-// session's first turn, then ends; every other session ends through the real
-// communicate/result path. Routing is by the structural Request.SessionID, never
-// by prompt prose.
+// session's first turn, then waits for the nested runner before requesting done.
+// Every other session ends through the real communicate/result path. Routing is
+// by the structural Request.SessionID, never by prompt prose.
 type nestedDelegateAdapter struct {
 	fakeAdapter
-	creatorSessionID string
-	nestedTask       string
-	mu               sync.Mutex
-	issued           bool
+	creatorSessionID  string
+	creatorDelegateID string
+	creator           *Session
+	nestedTask        string
+	mu                sync.Mutex
+	issued            bool
 }
 
-func (a *nestedDelegateAdapter) Complete(_ context.Context, req llm.Request) (llm.Response, error) {
+func (a *nestedDelegateAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
 	if req.SessionID == a.creatorSessionID {
 		a.mu.Lock()
 		first := !a.issued
@@ -524,6 +529,27 @@ func (a *nestedDelegateAdapter) Complete(_ context.Context, req llm.Request) (ll
 				return llm.Response{}, err
 			}
 			return toolCallResponse(llm.ToolCallData{ID: "nested-create-" + a.nestedTask, Name: "delegate", Arguments: raw}), nil
+		}
+		a.creator.delegateController.mu.Lock()
+		var childSessionID string
+		for _, aggregate := range a.creator.delegateController.durable {
+			if aggregate.Descriptor.ParentDelegateID == a.creatorDelegateID {
+				childSessionID = aggregate.Descriptor.ChildSessionID
+				break
+			}
+		}
+		a.creator.delegateController.mu.Unlock()
+		child := a.creator.subagents.get(childSessionID)
+		if child == nil {
+			return llm.Response{}, fmt.Errorf("nested delegate was not created under %s", a.creatorDelegateID)
+		}
+		child.mu.Lock()
+		done := child.done
+		child.mu.Unlock()
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return llm.Response{}, ctx.Err()
 		}
 	}
 	response := communicateWithDefaultOutput("nested-result")

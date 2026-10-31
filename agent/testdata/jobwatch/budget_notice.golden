@@ -1,0 +1,3 @@
+<job-notification job_id="" event="watch" job_type="watch" description="" status="watch" reason="watch cleared: job_x matched 50 times; re-arm with a tighter condition (higher every or narrower output_match)" intent="" output_bytes="0" watch_id="watch_budget_fixture">
+Watch event triggered: watch cleared: job_x matched 50 times; re-arm with a tighter condition (higher every or narrower output_match).
+</job-notification>

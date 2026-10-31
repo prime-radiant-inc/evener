@@ -269,7 +269,7 @@ func finishGenerationOn(t *testing.T, c *delegateTreeController, runtime *Sessio
 	if err != nil {
 		t.Fatalf("CommitStart: %v", err)
 	}
-	if err := c.AttachRuntime(started.lease, runtime); err != nil {
+	if err := attachRuntimeWithHandoffForTest(c, started.lease, runtime); err != nil {
 		t.Fatalf("AttachRuntime: %v", err)
 	}
 	if _, err := c.AdmitStartInput(started.lease, func() error { return nil }); err != nil {
@@ -353,7 +353,7 @@ func TestDelegateControllerIgnoresAnEarlierGenerationsQuiescence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CommitStart second: %v", err)
 	}
-	if err := c.AttachRuntime(second.lease, runtime); err != nil {
+	if err := attachRuntimeWithHandoffForTest(c, second.lease, runtime); err != nil {
 		t.Fatalf("AttachRuntime second: %v", err)
 	}
 	if _, err := c.AdmitStartInput(second.lease, func() error { return nil }); err != nil {
@@ -374,8 +374,11 @@ func TestDelegateControllerAdmitsAStartOnceTheFinishedRuntimeIsReplaced(t *testi
 	c, _, _ := finishedDelegateStillFinalizing(t)
 	assertStartRefused(t, c, "dlg_target", "while the finished runtime is resident")
 	c.mu.Lock()
-	c.setResidentRuntimeLocked(c.live["dlg_target"], &Session{})
+	recheck := c.setResidentRuntimeLocked(c.live["dlg_target"], &Session{})
 	c.mu.Unlock()
+	if recheck {
+		c.recheckNotificationReceivers()
+	}
 	assertStartAdmitted(t, c, "dlg_target", "once another runtime is resident")
 }
 
@@ -504,8 +507,11 @@ func TestDelegateControllerReleasesAFinalizationWhoseRuntimeIsReplaced(t *testin
 		t.Fatalf("ReserveStart while finalizing = %v, want a finalizing refusal", err)
 	}
 	c.mu.Lock()
-	c.setResidentRuntimeLocked(c.live["dlg_target"], &Session{})
+	recheck := c.setResidentRuntimeLocked(c.live["dlg_target"], &Session{})
 	c.mu.Unlock()
+	if recheck {
+		c.recheckNotificationReceivers()
+	}
 	select {
 	case <-finalizing.released:
 	default:
@@ -611,23 +617,30 @@ func TestDelegateControllerWakesTheAttentionDriveWhenAFinalizationIsReleased(t *
 		{"the finished runtime reports quiescence", reportFinalizeTailDone},
 		{"another runtime becomes resident", func(_ *testing.T, c *delegateTreeController, lease delegateLease, runtime *Session) {
 			c.mu.Lock()
-			c.setResidentRuntimeLocked(c.live[lease.delegateID], runtime)
+			recheck := c.setResidentRuntimeLocked(c.live[lease.delegateID], runtime)
 			c.mu.Unlock()
+			if recheck {
+				c.recheckNotificationReceivers()
+			}
 		}},
 		{"the resident runtime is dropped", func(_ *testing.T, c *delegateTreeController, lease delegateLease, _ *Session) {
 			c.mu.Lock()
-			c.setResidentRuntimeLocked(c.live[lease.delegateID], nil)
+			recheck := c.setResidentRuntimeLocked(c.live[lease.delegateID], nil)
 			c.mu.Unlock()
+			if recheck {
+				c.recheckNotificationReceivers()
+			}
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fixture := newColdStableDelegateFixture(t, "")
+			attentionRequested := make(chan struct{})
+			var attentionRequest llm.Request
 			fixture.adapter.steps = []func(llm.Request) llm.Response{
 				func(llm.Request) llm.Response { return finalResponse("warm-result-57") },
 				func(req llm.Request) llm.Response {
-					if !requestContainsText(req, "release-payload-57") {
-						t.Error("released receiver request omitted its accepted message")
-					}
+					attentionRequest = req
+					close(attentionRequested)
 					return finalResponse("released-result-57")
 				},
 			}
@@ -653,15 +666,15 @@ func TestDelegateControllerWakesTheAttentionDriveWhenAFinalizationIsReleased(t *
 				t.Fatal(err)
 			}
 			tc.release(t, c, lease, runtime)
-			select {
-			case <-released:
-			case <-time.After(10 * time.Second):
-				t.Fatal("the finalization fence was not released")
+			waitForTestSignal(t, released, "finalization fence release")
+			waitForTestSignal(t, attentionRequested, "second provider request after finalization release")
+			if !requestContainsText(attentionRequest, "release-payload-57") {
+				t.Fatal("released receiver request omitted its accepted message")
 			}
-			waitForCondition(t, 10*time.Second, "addressed receiver request after finalization release", func() bool {
-				return supervisionRequestCount(fixture.adapter) == 2
-			})
 			waitForStableSupervisionRun(t, root, fixture.childID)
+			if got := supervisionRequestCount(fixture.adapter); got != 2 {
+				t.Fatalf("provider requests = %d, want 2", got)
+			}
 			assertAttentionResponseReceipts(t, runtime, "release-notification-57", 1)
 			if starts := attentionRunStarts(t, fixture); starts != 1 {
 				t.Fatalf("released receiver generations = %d, want one", starts)

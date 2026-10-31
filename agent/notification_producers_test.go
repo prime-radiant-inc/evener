@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,7 +17,9 @@ import (
 
 	"github.com/spf13/afero"
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
+	clockpkg "primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
@@ -65,7 +68,6 @@ func producerRecordCount(t *testing.T, s *Session) int {
 func producerTimer(t *testing.T, s *Session, send bool) (watchKey, *watchConfig) {
 	t.Helper()
 	jm := s.jobManager
-	jm.clock = agenttest.NewFakeClockAt(time.Unix(1700000000, 0))
 	a := watchArgs{Operation: "create", Source: "self", Target: runtimeMessageAliasCaller, AfterSeconds: 60, Note: "payload-5a9e"}
 	if send {
 		a.Send = &watchSendArgs{To: runtimeMessageAliasCaller, Message: "payload-8d2f"}
@@ -87,6 +89,7 @@ type producerQueryFaultFS struct {
 	afero.Fs
 	syncErr, closeErr error
 	syncCount         *int
+	truncateErr       error
 }
 
 func (fs producerQueryFaultFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
@@ -94,13 +97,21 @@ func (fs producerQueryFaultFS) OpenFile(name string, flag int, perm os.FileMode)
 	if err != nil {
 		return nil, err
 	}
-	return producerQueryFaultFile{File: file, syncErr: fs.syncErr, closeErr: fs.closeErr, syncCount: fs.syncCount}, nil
+	return producerQueryFaultFile{File: file, syncErr: fs.syncErr, closeErr: fs.closeErr, syncCount: fs.syncCount, truncateErr: fs.truncateErr}, nil
 }
 
 type producerQueryFaultFile struct {
 	afero.File
 	syncErr, closeErr error
 	syncCount         *int
+	truncateErr       error
+}
+
+func (file producerQueryFaultFile) Truncate(size int64) error {
+	if file.truncateErr != nil {
+		return file.truncateErr
+	}
+	return file.File.Truncate(size)
 }
 
 func (file producerQueryFaultFile) Close() error {
@@ -305,7 +316,9 @@ func TestNotificationProducers(t *testing.T) {
 			<-release
 			return jobListResponse("boundary")
 		})
-		s := newMessagingRoot(t, adapter, nil)
+		s := newMessagingRoot(t, adapter, func(cfg *SessionConfig) {
+			cfg.clock = agenttest.NewFakeClockAt(time.Unix(1700000000, 0))
+		})
 		done := make(chan error, 1)
 		go func() { _, err := s.ProcessInput(context.Background(), "start", nil); done <- err }()
 		<-entered
@@ -329,41 +342,60 @@ func TestNotificationProducers(t *testing.T) {
 		t.Log("during provider request receiver=1, pending=1; after safe next request provider requests=2, pending=0")
 	})
 	t.Run("cold receiver without resident runtime", func(t *testing.T) {
-		s, _ := notificationReceiverForTest(t, nil)
+		fixture := newColdStableDelegateFixture(t, "")
+		entered, gate := make(chan struct{}), make(chan struct{})
+		release := sync.OnceFunc(func() { close(gate) })
+		defer release()
+		fixture.adapter.steps = []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
+			observationRequest(t, req, []string{"cold-payload-5"}, nil)
+			close(entered)
+			<-gate
+			return finalResponse("cold-response-5")
+		}}
+		s := restoreSupervisionRoot(t, fixture, agenttest.NewFakeClock())
 		c := s.delegateController
-		seedDelegateControllerIdle(t, c, "dlg_cold", "")
 		c.mu.Lock()
-		receiverID := c.durable["dlg_cold"].Descriptor.ChildSessionID
+		live := c.live[fixture.delegateID]
+		cold := live == nil || live.runtime == nil
 		c.mu.Unlock()
-		path := transcriptPath(c.stateDir, receiverID)
-		writer, err := transcript.NewWriter(path, transcript.Header{SessionID: receiverID})
+		if !cold || s.subagents == nil {
+			t.Fatal("receiver must start cold under an initialized holder")
+		}
+		jm := s.jobManager
+		_, err := jm.configureWatch(watchArgs{Target: runtimeMessageAliasCaller, Events: []string{"communicate"}, Note: "cold-payload-5", ReceiverSessionID: fixture.childID, ReceiverDelegateID: fixture.delegateID})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := writer.Close(); err != nil {
-			t.Fatal(err)
-		}
-		jm, err := newJobManager(s.stateDir, s.ID(), s.enqueueJobNotificationAndNotify)
-		if err != nil {
-			t.Fatal(err)
-		}
-		s.jobManager, jm.retirementOwner, jm.delegateController = jm, s, c
-		t.Cleanup(func() { jm.close() })
-		jm.clock = agenttest.NewFakeClockAt(time.Unix(1700000000, 0))
-		result, err := jm.configureWatch(watchArgs{Target: runtimeMessageAliasCaller, Events: []string{"communicate"}, ReceiverSessionID: receiverID, ReceiverDelegateID: "dlg_cold"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		_ = result
 		jm.onSessionEvent(events.SessionEvent{SessionID: s.ID(), Kind: events.EventCommunicate, Data: events.CommunicateData{Message: "cold payload"}})
-		entries := notificationRawEntries(t, path)
-		if len(entries) != 1 || entries[0].Turn.AttentionID == "" {
-			t.Fatalf("cold receiver entries=%#v", entries)
+		awaitSignal(t, entered, "cold receiver provider request")
+		path := transcriptPath(s.stateDir, fixture.childID)
+		var id string
+		for _, entry := range notificationRawEntries(t, path) {
+			if entry.Turn.AttentionID != "" {
+				if id != "" {
+					t.Fatal("cold delivery duplicated canonical custody")
+				}
+				id = entry.Turn.AttentionID
+			}
+			if len(entry.Turn.ObservedNotificationIDs) != 0 {
+				t.Fatal("acceptance granted observation before the provider responded")
+			}
 		}
-		if producerRecordCount(t, s) != 0 || len(producerSourceEvents(t, jm, jobstore.EventWatchSendDelivered)) != 1 {
+		if id == "" || producerRecordCount(t, s) != 0 || len(producerSourceEvents(t, jm, jobstore.EventWatchSendDelivered)) != 1 {
 			t.Fatal("cold delivery lost receiver identity or failed custody ack")
 		}
-		t.Log("cold receiver records=1, source delivered=1, holder records=0, resident receiver absent")
+		c.mu.Lock()
+		receiver := c.live[fixture.delegateID].runtime
+		c.mu.Unlock()
+		assertNotificationPending(t, receiver, []string{id})
+		release()
+		waitForStableSupervisionRun(t, s, fixture.childID)
+		s.sendersWG.Wait()
+		assertNotificationObservedOnce(t, path, id)
+		assertNotificationPending(t, receiver, []string{})
+		if got := supervisionRequestCount(fixture.adapter); got != 1 {
+			t.Fatalf("provider requests=%d, want one addressed child request", got)
+		}
 	})
 	t.Run("retry after custody before source ack", func(t *testing.T) {
 		s, _ := notificationReceiverForTest(t, nil)
@@ -371,6 +403,7 @@ func TestNotificationProducers(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		jm.clock = agenttest.NewFakeClockAt(time.Unix(1700000000, 0))
 		s.jobManager, jm.retirementOwner = jm, s
 		jm.delegateController = s.delegateController
 		t.Cleanup(func() { jm.close() })
@@ -428,7 +461,11 @@ func TestNotificationProducers(t *testing.T) {
 	for _, kind := range []string{"timer", "session event", "output match", "shell exit", "explicit send", "system"} {
 		t.Run(kind, func(t *testing.T) {
 			adapter := newMessagingAdapter()
-			s := newMessagingRoot(t, adapter, nil)
+			s := newMessagingRoot(t, adapter, func(cfg *SessionConfig) {
+				if kind == "timer" || kind == "explicit send" {
+					cfg.clock = agenttest.NewFakeClockAt(time.Unix(1700000000, 0))
+				}
+			})
 			jm := s.jobManager
 			var eventWatchID string
 			switch kind {
@@ -721,12 +758,17 @@ func TestWatchProductionSurvivesRestart(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			configuredClock := agenttest.NewFakeClockAt(time.Unix(1700000000, 0))
+			jm.clock = configuredClock
 			s.jobManager, jm.retirementOwner = jm, s
 			jm.delegateController = s.delegateController
 			t.Cleanup(func() { jm.close() })
 			fs.writeErr = errors.New("receiver unavailable")
 			for range 2 {
 				key, cfg := producerTimer(t, s, send)
+				if jm.clock != configuredClock {
+					t.Fatalf("timer clock = %p, want configured clock %p", jm.clock, configuredClock)
+				}
 				jm.fireProgressTick(key, cfg)
 				if _, err := jm.clearWatchByID(cfg.watchID); err != nil {
 					t.Fatal(err)
@@ -782,7 +824,9 @@ func TestWatchProductionSurvivesRestart(t *testing.T) {
 			t.Log("before reopen source pending=2, ended=2, receiver=0; after reopen receiver=2, source delivered=2, second pump adds 0")
 		})
 		t.Run(map[bool]string{false: "callback", true: "explicit send"}[send], func(t *testing.T) {
-			s := newMessagingRoot(t, newMessagingAdapter(), nil)
+			s := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) {
+				cfg.clock = agenttest.NewFakeClockAt(time.Unix(1700000000, 0))
+			})
 			jm := s.jobManager
 			key, cfg := producerTimer(t, s, send)
 			// A real closed source descriptor fails the append at the filesystem boundary.
@@ -819,28 +863,62 @@ func reopenProducerSource(t *testing.T, jm *jobManager) {
 	jm.store, jm.appendEvent, jm.appendEvents = reopened, reopened.Append, reopened.AppendBatch
 }
 
+// A ticker receipt identifies the actual timer owner. FakeClock.Drain only
+// joins AfterFunc callbacks, not the progress goroutine's deferred Stop.
+type notificationTickerClock struct {
+	*agenttest.FakeClock
+	started chan *notificationTicker
+}
+
+type notificationTicker struct {
+	clockpkg.Ticker
+	stopped chan struct{}
+}
+
+func (c *notificationTickerClock) NewTicker(d time.Duration) clockpkg.Ticker {
+	ticker := &notificationTicker{Ticker: c.FakeClock.NewTicker(d), stopped: make(chan struct{})}
+	c.started <- ticker
+	return ticker
+}
+
+func (ticker *notificationTicker) Stop() {
+	ticker.Ticker.Stop()
+	close(ticker.stopped)
+}
+
 func testNotificationWatchRestartCut(t *testing.T, cut string) {
 	a := newMessagingAdapter()
-	clock := agenttest.NewFakeClock()
+	clock := &notificationTickerClock{FakeClock: agenttest.NewFakeClock(), started: make(chan *notificationTicker, 1)}
 	a.script("root", func(llm.Request) llm.Response {
 		return toolCallResponse(llm.ToolCallData{ID: "restart-timer-11", Name: "job_watch", Type: "function",
 			Arguments: json.RawMessage(`{"operation":"create","source":"self","after_seconds":60,"note":"timer-c03a71b9"}`)})
 	}, func(llm.Request) llm.Response { return finalResponse("timer-installed-11") })
 	root := newMessagingRoot(t, a, func(cfg *SessionConfig) { cfg.clock = clock })
+	var ticker *notificationTicker
+	defer func() {
+		root.Close()
+		if ticker != nil {
+			waitForTestSignal(t, ticker.stopped, "one-shot timer cleanup")
+		}
+	}()
 	if _, err := root.ProcessInput(context.Background(), "timer-start-11", nil); err != nil {
 		t.Fatal(err)
 	}
-	clock.BlockUntil(1)
+	ticker = <-clock.started
 	clock.Advance(time.Minute)
-	waitForCondition(t, 3*time.Second, "one-shot produced, ended and accepted", func() bool {
-		return len(producerSourceEvents(t, root.jobManager, jobstore.EventWatchCleared)) == 1 && len(producerSourceEvents(t, root.jobManager, jobstore.EventWatchSendDelivered)) == 1
-	})
+	waitForTestSignal(t, ticker.stopped, "one-shot production, end and dispatch return")
 	produced := producerSourceEvents(t, root.jobManager, jobstore.EventWatchSendPending)
 	if len(produced) != 1 || produced[0].WatchSend == nil {
 		t.Fatalf("real timer source=%+v", produced)
 	}
 	state := *produced[0].WatchSend
 	id := fmt.Sprintf("watch:%s:%d", state.DeliveryID, state.UpdateSeq)
+	ended := producerSourceEvents(t, root.jobManager, jobstore.EventWatchCleared)
+	acksBefore := producerSourceEvents(t, root.jobManager, jobstore.EventWatchSendDelivered)
+	if len(ended) != 1 || ended[0].WatchID != state.Key.WatchID || len(acksBefore) != 1 || acksBefore[0].WatchSend == nil || stableWatchAttentionID(*acksBefore[0].WatchSend) != id {
+		t.Fatalf("one-shot end=%+v custody=%+v source=%+v", ended, acksBefore, state)
+	}
+	incidentPendingFacts(t, root.stateDir, root.ID(), id)
 	copied := copyWaitingState(t, root.stateDir)
 	sourcePath := filepath.Join(jobsDir(copied, root.ID()), "jobs.jsonl")
 	if cut == "watch production before durable end" {
@@ -866,7 +944,7 @@ func testNotificationWatchRestartCut(t *testing.T, cut string) {
 	restored := restoreWaitingCopy(t, root, copied)
 	wake, hint := newDrainWake()
 	restored.SetNotifyFunc(hint)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if _, err := restored.DrainJobTree(ctx, wake); err != nil {
 		t.Fatal(err)
@@ -1213,12 +1291,6 @@ func TestCommittedSourceAckRetryDoesNotHoldColdRestore(t *testing.T) {
 	}
 	assertNotificationPending(t, s, []string{})
 	assertAttentionResponseReceipts(t, s, rootID, 1)
-	unblockListing()
-	deliveryErr := <-delivered
-	joinedDelivery = true
-	if deliveryErr == nil {
-		t.Fatal("closed source acknowledged the canonical receiver write")
-	}
 	entries, retries := notificationRawEntries(t, path), c.ReplayDeliveries()
 	if len(entries) != 1 || entries[0].Turn.AttentionID != attentionID || len(retries) != 1 || retries[0].deliveryID != deliveryID {
 		t.Fatal("source-only retry lost receiver custody or the source obligation")
@@ -1226,8 +1298,9 @@ func TestCommittedSourceAckRetryDoesNotHoldColdRestore(t *testing.T) {
 	if _, _, err := c.idleDelegateRestoreCommit(fixture.delegateID); err != nil {
 		t.Fatalf("committed receiver custody still holds cold restore: %v", err)
 	}
-	// Recover the shared journal. Automatic reconstruction can now replay the
-	// source acknowledgment, and its existing receiver retry must run the body.
+	// Repair the shared journal before releasing reconstruction so the failed
+	// source acknowledgment does not also cause an unrelated CommitStart failure.
+	// The root's existing transport retry still owns the exact source debt.
 	reopened, err := delegatestore.Open(delegateResourceStorePath(s.stateDir, s.ID()))
 	if err != nil {
 		t.Fatal(err)
@@ -1235,6 +1308,12 @@ func TestCommittedSourceAckRetryDoesNotHoldColdRestore(t *testing.T) {
 	c.mu.Lock()
 	c.store = reopened
 	c.mu.Unlock()
+	unblockListing()
+	deliveryErr := <-delivered
+	joinedDelivery = true
+	if deliveryErr == nil {
+		t.Fatal("closed source acknowledged the canonical receiver write")
+	}
 	clock.Advance(jobNotificationRetryInitialDelay)
 	notificationAwait(t, ready)
 	started = true
@@ -1484,7 +1563,9 @@ func TestRestartSystemNoticeRetainsSourceIdentity(t *testing.T) {
 }
 
 func TestCallbackOneShotSourceRecoveryBeforeNextTick(t *testing.T) {
-	s := newMessagingRoot(t, newMessagingAdapter(), nil)
+	s := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) {
+		cfg.clock = agenttest.NewFakeClockAt(time.Unix(1700000000, 0))
+	})
 	jm := s.jobManager
 	key, cfg := producerTimer(t, s, false)
 	if err := jm.store.Close(); err != nil {
@@ -1503,7 +1584,17 @@ func TestCallbackOneShotSourceRecoveryBeforeNextTick(t *testing.T) {
 func TestWatchSourceFailureRetainsAllMatchedFirings(t *testing.T) {
 	for _, kind := range []string{"event send", "output send", "budget boundary", "two callbacks"} {
 		t.Run(kind, func(t *testing.T) {
-			s := newMessagingRoot(t, newMessagingAdapter(), nil)
+			var s *Session
+			var cold coldStableDelegateFixture
+			if kind == "two callbacks" {
+				cold = newColdStableDelegateFixture(t, "")
+				cold.adapter.steps = []func(llm.Request) llm.Response{func(llm.Request) llm.Response {
+					return finalResponse("recovered second callback")
+				}}
+				s = restoreSupervisionRoot(t, cold, agenttest.NewFakeClock())
+			} else {
+				s = newMessagingRoot(t, newMessagingAdapter(), nil)
+			}
 			jm := s.jobManager
 			var configs []*watchConfig
 			var jobID string
@@ -1526,15 +1617,7 @@ func TestWatchSourceFailureRetainsAllMatchedFirings(t *testing.T) {
 				if kind == "two callbacks" {
 					a.Send = nil
 					if i == 1 {
-						seedDelegateControllerIdle(t, s.delegateController, "dlg_second", "")
-						a.ReceiverSessionID, a.ReceiverDelegateID = "child-dlg_second", "dlg_second"
-						w, err := transcript.NewWriter(transcriptPath(s.stateDir, a.ReceiverSessionID), transcript.Header{SessionID: a.ReceiverSessionID})
-						if err != nil {
-							t.Fatal(err)
-						}
-						if err := w.Close(); err != nil {
-							t.Fatal(err)
-						}
+						a.ReceiverSessionID, a.ReceiverDelegateID = cold.childID, cold.delegateID
 					}
 				}
 				r, err := jm.configureWatch(a)
@@ -1587,8 +1670,20 @@ func TestWatchSourceFailureRetainsAllMatchedFirings(t *testing.T) {
 					t.Fatalf("after recovery %s condition=%d total=%d, want %d/%d", eventKind, conditionRows, len(rows), before+count, wantTotal)
 				}
 			}
-			if kind == "two callbacks" && len(notificationRawEntries(t, transcriptPath(s.stateDir, "child-dlg_second"))) != 1 {
-				t.Fatal("later callback recipient lost its source event")
+			if kind == "two callbacks" {
+				waitForStableSupervisionRun(t, s, cold.childID)
+				s.sendersWG.Wait()
+				path := transcriptPath(s.stateDir, cold.childID)
+				var ids []string
+				for _, entry := range notificationRawEntries(t, path) {
+					if entry.Turn.AttentionID != "" {
+						ids = append(ids, entry.Turn.AttentionID)
+					}
+				}
+				if len(ids) != 1 {
+					t.Fatalf("later callback recipient custody=%v, want one source event", ids)
+				}
+				assertNotificationObservedOnce(t, path, ids[0])
 			}
 		})
 	}
@@ -1596,83 +1691,109 @@ func TestWatchSourceFailureRetainsAllMatchedFirings(t *testing.T) {
 
 func TestCallbackCustodyAckRetrySurvivesNextFiring(t *testing.T) {
 	for _, send := range []bool{false, true} {
-		t.Run(map[bool]string{false: "callback", true: "caller send"}[send], func(t *testing.T) {
-			adapter := newMessagingAdapter()
-			s := newMessagingRoot(t, adapter, nil)
-			jm := s.jobManager
-			jm.clock = agenttest.NewFakeClockAt(time.Unix(1700000000, 0))
-			a := watchArgs{Source: "self", Target: runtimeMessageAliasCaller, RepeatSeconds: 60}
-			if send {
-				a.Send = &watchSendArgs{To: runtimeMessageAliasCaller, Message: "repeat"}
-			}
-			r, err := jm.configureWatch(a)
-			if err != nil {
-				t.Fatal(err)
-			}
-			jm.mu.Lock()
-			key, cfg, _ := jm.watchConfigByIDLocked(r.WatchID)
-			jm.mu.Unlock()
-			s.SetNotifyFunc(func() { _ = jm.store.Close() })
-			jm.fireProgressTick(key, cfg)
-			s.SetNotifyFunc(nil)
-			if producerRecordCount(t, s) != 1 || len(producerSourceEvents(t, jm, jobstore.EventWatchSendDelivered)) != 0 {
-				t.Fatal("failed to hold source ack after custody")
-			}
-			reopenProducerSource(t, jm)
-			appendOne := jm.store.Append
-			jm.appendEvent = func(event jobstore.Event) error {
-				if err := appendOne(event); err != nil {
-					return err
+		for _, replacement := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/replacement=%t", map[bool]string{false: "callback", true: "caller send"}[send], replacement), func(t *testing.T) {
+				adapter := newMessagingAdapter()
+				s := newMessagingRoot(t, adapter, nil)
+				jm := s.jobManager
+				jm.clock = agenttest.NewFakeClockAt(time.Unix(1700000000, 0))
+				a := watchArgs{Source: "self", Target: runtimeMessageAliasCaller, RepeatSeconds: 60}
+				if send {
+					a.Send = &watchSendArgs{To: runtimeMessageAliasCaller, Message: "repeat"}
 				}
-				if event.Kind == jobstore.EventWatchSendPending {
-					return jm.store.Close() // B is durable, A's receipt is still faulted.
+				r, err := jm.configureWatch(a)
+				if err != nil {
+					t.Fatal(err)
 				}
-				return nil
-			}
-			jm.fireProgressTick(key, cfg)
-			if rows, acks := producerSourceEvents(t, jm, jobstore.EventWatchSendPending), producerSourceEvents(t, jm, jobstore.EventWatchSendDelivered); len(rows) != 2 || len(acks) != 0 {
-				t.Fatalf("crash cut durable pending=%d receipts=%d, want 2/0", len(rows), len(acks))
-			}
-			if producerRecordCount(t, s) != 1 {
-				t.Fatal("crash cut must retain A's custody without accepting B")
-			}
-			restored, err := newJobManager(s.stateDir, s.ID(), s.enqueueJobNotificationAndNotify)
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { restored.close() })
-			s.jobManager, restored.retirementOwner, restored.delegateController = restored, s, s.delegateController
-			path := transcriptPath(s.stateDir, s.ID())
-			if err := os.Rename(path, path+".held"); err != nil {
-				t.Fatal(err)
-			}
-			restored.dispatchProducedWatchSends()
-			if err := os.Rename(path+".held", path); err != nil {
-				t.Fatal(err)
-			}
-			fold, err := restored.store.LoadWatchSends()
-			if err != nil || len(fold.Pending) != 1 || len(fold.Superseded) != 1 || len(producerSourceEvents(t, restored, jobstore.EventWatchSendDelivered)) != 0 {
-				t.Fatalf("uncertain custody query changed current or predecessor work: %+v, %v", fold, err)
-			}
-			restored.dispatchProducedWatchSends()
-			restored.dispatchProducedWatchSends()
-			acks := producerSourceEvents(t, restored, jobstore.EventWatchSendDelivered)
-			entries := notificationRawEntries(t, transcriptPath(s.stateDir, s.ID()))
-			if len(acks) != 2 || len(entries) != 2 || len(adapter.requestsFor("root")) != 0 {
-				t.Fatalf("after real crash accepted records=%d source acks=%d provider requests=%d, want 2/2/0", len(entries), len(acks), len(adapter.requestsFor("root")))
-			}
-			for _, entry := range entries {
-				matches := 0
-				for _, ack := range acks {
-					if entry.Turn.AttentionID == stableWatchAttentionID(*ack.WatchSend) {
-						matches++
+				jm.mu.Lock()
+				key, cfg, _ := jm.watchConfigByIDLocked(r.WatchID)
+				jm.mu.Unlock()
+				s.SetNotifyFunc(func() { _ = jm.store.Close() })
+				jm.fireProgressTick(key, cfg)
+				s.SetNotifyFunc(nil)
+				if producerRecordCount(t, s) != 1 || len(producerSourceEvents(t, jm, jobstore.EventWatchSendDelivered)) != 0 {
+					t.Fatal("failed to hold source ack after custody")
+				}
+				reopenProducerSource(t, jm)
+				appendOne := jm.store.Append
+				jm.appendEvent = func(event jobstore.Event) error {
+					if err := appendOne(event); err != nil {
+						return err
+					}
+					if event.Kind == jobstore.EventWatchSendPending {
+						return jm.store.Close() // B is durable, A's receipt is still faulted.
+					}
+					return nil
+				}
+				jm.fireProgressTick(key, cfg)
+				if rows, acks := producerSourceEvents(t, jm, jobstore.EventWatchSendPending), producerSourceEvents(t, jm, jobstore.EventWatchSendDelivered); len(rows) != 2 || len(acks) != 0 {
+					t.Fatalf("crash cut durable pending=%d receipts=%d, want 2/0", len(rows), len(acks))
+				}
+				if producerRecordCount(t, s) != 1 {
+					t.Fatal("crash cut must retain A's custody without accepting B")
+				}
+				produced := producerSourceEvents(t, jm, jobstore.EventWatchSendPending)
+				first, second := *produced[0].WatchSend, *produced[1].WatchSend
+				restored, err := newJobManager(s.stateDir, s.ID(), s.enqueueJobNotificationAndNotify)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { restored.close() })
+				s.jobManager, restored.retirementOwner, restored.delegateController = restored, s, s.delegateController
+				path := transcriptPath(s.stateDir, s.ID())
+				if err := os.Rename(path, path+".held"); err != nil {
+					t.Fatal(err)
+				}
+				if replacement {
+					writer, err := transcript.NewWriter(path, transcript.Header{SessionID: s.ID()})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := writer.Close(); err != nil {
+						t.Fatal(err)
 					}
 				}
-				if matches != 1 {
-					t.Fatal("accepted identity lost its unique source acknowledgement")
+				accepted, queryErr := s.notificationSourceAccepted(stableWatchAttentionID(first))
+				restored.dispatchProducedWatchSends()
+				if replacement {
+					if err := os.Remove(path); err != nil {
+						t.Fatal(err)
+					}
 				}
-			}
-		})
+				if err := os.Rename(path+".held", path); err != nil {
+					t.Fatal(err)
+				}
+				if accepted || queryErr == nil || (!replacement && !errors.Is(queryErr, os.ErrNotExist)) {
+					t.Errorf("unavailable resident pathname replacement=%t custody=%t err=%v, want uncertainty", replacement, accepted, queryErr)
+				}
+				fold, err := restored.store.LoadWatchSends()
+				if err != nil || len(fold.Pending) != 1 || len(fold.Superseded) != 1 || len(producerSourceEvents(t, restored, jobstore.EventWatchSendDelivered)) != 0 {
+					t.Errorf("uncertain custody query changed current or predecessor work: %+v, %v", fold, err)
+				}
+				t.Logf("replacement=%t A=%s B=%s pending=%d predecessors=%d delivered=%d dropped=%d requests=%d", replacement, stableWatchAttentionID(first), stableWatchAttentionID(second), len(fold.Pending), len(fold.Superseded), len(producerSourceEvents(t, restored, jobstore.EventWatchSendDelivered)), len(producerSourceEvents(t, restored, jobstore.EventWatchSendDropped)), len(adapter.requestsFor("root")))
+				if !reflect.DeepEqual(fold.Pending[second.Key], &second) || !reflect.DeepEqual(fold.Superseded[first.DeliveryID], &first) || len(producerSourceEvents(t, restored, jobstore.EventWatchSendDropped)) != 0 || len(adapter.requestsFor("root")) != 0 {
+					t.Error("uncertainty changed exact A predecessor/B head or settled/executed source work")
+				}
+				restored.dispatchProducedWatchSends()
+				restored.dispatchProducedWatchSends()
+				acks := producerSourceEvents(t, restored, jobstore.EventWatchSendDelivered)
+				entries := notificationRawEntries(t, transcriptPath(s.stateDir, s.ID()))
+				if len(acks) != 2 || len(entries) != 2 || len(adapter.requestsFor("root")) != 0 {
+					t.Fatalf("after real crash accepted records=%d source acks=%d provider requests=%d, want 2/2/0", len(entries), len(acks), len(adapter.requestsFor("root")))
+				}
+				for _, entry := range entries {
+					matches := 0
+					for _, ack := range acks {
+						if entry.Turn.AttentionID == stableWatchAttentionID(*ack.WatchSend) {
+							matches++
+						}
+					}
+					if matches != 1 {
+						t.Fatal("accepted identity lost its unique source acknowledgement")
+					}
+				}
+			})
+		}
 	}
 }
 
@@ -1864,6 +1985,541 @@ func TestCandidateOnlyWatchReceiptsRecoverThroughHostPumps(t *testing.T) {
 				}
 			}
 			t.Log("candidate-only reconstruction: heads=0 candidates=1 canonical=2 receipts=1; uncertain Sync and failed source ack retained receipt; repaired host pumps: candidates=0 canonical=2 exact receipts=2 provider requests=0 new payloads=0")
+		})
+	}
+}
+
+func TestHistoricalCallbackRequiresExactDurableCustody(t *testing.T) {
+	for _, fault := range []string{"sync", "content", "metadata", "provenance", "absent"} {
+		t.Run(fault, func(t *testing.T) {
+			adapter := newMessagingAdapter()
+			s := newMessagingRoot(t, adapter, nil)
+			jm := s.jobManager
+			jm.clock = agenttest.NewFakeClockAt(time.Unix(1700000000, 0))
+			r, err := jm.configureWatch(watchArgs{Source: "self", Target: runtimeMessageAliasCaller, RepeatSeconds: 60, Note: "historical-callback-39d2"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			jm.mu.Lock()
+			key, cfg, _ := jm.watchConfigByIDLocked(r.WatchID)
+			jm.mu.Unlock()
+			for range 2 {
+				appendOne := jm.store.Append
+				jm.appendEvent = func(event jobstore.Event) error {
+					if err := appendOne(event); err != nil {
+						return err
+					}
+					if event.Kind == jobstore.EventWatchSendPending {
+						return jm.store.Close()
+					}
+					return nil
+				}
+				jm.fireProgressTick(key, cfg)
+				reopenProducerSource(t, jm)
+			}
+			if _, err := jm.clearWatch(key); err != nil {
+				t.Fatal(err)
+			}
+			produced := producerSourceEvents(t, jm, jobstore.EventWatchSendPending)
+			if len(produced) != 2 || !produced[0].WatchSend.CallbackFrame || producerRecordCount(t, s) != 0 || len(producerSourceEvents(t, jm, jobstore.EventWatchSendDelivered)) != 0 {
+				t.Fatal("source did not retain unaccepted historical A/current B")
+			}
+			first, second := *produced[0].WatchSend, *produced[1].WatchSend
+			if first.Provenance == nil {
+				t.Fatal("real callback source omitted causal provenance")
+			}
+			path := transcriptPath(s.stateDir, s.ID())
+			if err := s.closeAttachedTranscript(); err != nil {
+				t.Fatal(err)
+			}
+			if err := jm.closeStoreOnly(); err != nil {
+				t.Fatal(err)
+			}
+			original := schema.NewTurn(schema.TurnSteering, llm.UserMachinery(first.Frame))
+			original.AttentionID, original.NotificationProvenance = stableWatchAttentionID(first), provenance.Clone(first.Provenance)
+			original.StableTurnID = newQueueEntryID()
+			held := errors.New("historical receiver sync held")
+			install := func(turn *schema.Turn, failSync bool) {
+				t.Helper()
+				writer, err := transcript.NewWriter(path, transcript.Header{SessionID: s.ID()})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := writer.Close(); err != nil {
+					t.Fatal(err)
+				}
+				if turn == nil {
+					return
+				}
+				fs := producerQueryFaultFS{Fs: afero.NewOsFs()}
+				if failSync {
+					fs.syncErr = held
+					fs.truncateErr = held
+				}
+				writer, _, err = transcript.OpenWriterForSessionWithFS(fs, path, s.ID())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := writer.AppendDurable(*turn); err != nil {
+					t.Fatal(err)
+				}
+				warnings := writer.DrainWarnings()
+				closeErr := writer.Close()
+				if failSync {
+					if len(warnings) != 1 || !errors.Is(warnings[0], held) || !errors.Is(closeErr, held) {
+						t.Fatalf("retained sync debt warnings=%v close=%v", warnings, closeErr)
+					}
+				} else if len(warnings) != 0 || closeErr != nil {
+					t.Fatalf("install custody warnings=%v close=%v", warnings, closeErr)
+				}
+			}
+			corrupt := original
+			switch fault {
+			case "content":
+				corrupt.Message = llm.UserMachinery("different-opaque-payload-e834")
+			case "metadata":
+				corrupt.Message = llm.User(first.Frame)
+			case "provenance":
+				corrupt.NotificationProvenance = provenance.WithWatch(nil, "opaque-other-watch", "opaque-other-generation", "opaque-other-delivery", s.ID(), "")
+			}
+			if fault == "absent" {
+				install(nil, false)
+			} else {
+				install(&corrupt, fault == "sync")
+			}
+			syncs := 0
+			fs := producerQueryFaultFS{Fs: afero.NewOsFs(), syncCount: &syncs}
+			if fault == "sync" || fault == "absent" {
+				fs.syncErr = held
+			}
+			snapshot := stableWatchBootstrapSnapshot{stateDir: s.stateDir, receiverByID: map[string]stableWatchReceiverSnapshot{"": {sessionID: s.ID(), transcriptRef: "local:" + s.ID()}}, attentionOpen: func(path, id string) (*transcript.Writer, []transcript.Entry, error) {
+				return transcript.OpenWriterForSessionWithFS(fs, path, id)
+			}}
+			storePath := filepath.Join(jm.dir, "jobs.jsonl")
+			err = repairStableWatchStoreForBootstrap(snapshot, storePath)
+			if err == nil || ((fault == "sync" || fault == "absent") && !errors.Is(err, held)) {
+				t.Errorf("historical %s recovery err=%v syncs=%d, want exact custody refusal", fault, err, syncs)
+			}
+			eventsLog, err := jobstore.ReadEvents(storePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fold := jobstore.FoldWatchSends(eventsLog)
+			acks, drops := producerSourceEvents(t, jm, jobstore.EventWatchSendDelivered), producerSourceEvents(t, jm, jobstore.EventWatchSendDropped)
+			t.Logf("fault=%s A=%s B=%s syncs=%d ack=%d drop=%d pending=%d predecessors=%d", fault, stableWatchAttentionID(first), stableWatchAttentionID(second), syncs, len(acks), len(drops), len(fold.Pending), len(fold.Superseded))
+			if !reflect.DeepEqual(fold.Pending[second.Key], &second) || !reflect.DeepEqual(fold.Superseded[first.DeliveryID], &first) || len(acks) != 0 || len(drops) != 0 || len(adapter.requestsFor("root")) != 0 {
+				t.Error("uncertain historical custody changed exact A/B, acknowledged, dropped or executed")
+			}
+			if fault != "absent" {
+				install(&original, false)
+			}
+			fs.syncErr = nil
+			for range 2 {
+				if err := repairStableWatchStoreForBootstrap(snapshot, storePath); err != nil {
+					t.Fatal(err)
+				}
+			}
+			entries := notificationRawEntries(t, path)
+			acks = producerSourceEvents(t, jm, jobstore.EventWatchSendDelivered)
+			for i, state := range []jobstore.WatchSendState{first, second} {
+				want := 1
+				if i == 0 && fault == "absent" {
+					want = 0
+				}
+				matches, receipts := 0, 0
+				for _, entry := range entries {
+					if entry.Turn.AttentionID == stableWatchAttentionID(state) {
+						matches++
+						if !reflect.DeepEqual(entry.Turn.Message, llm.UserMachinery(state.Frame)) || !reflect.DeepEqual(entry.Turn.NotificationProvenance, state.Provenance) {
+							t.Error("repaired historical callback changed full message/provenance")
+						}
+					}
+				}
+				for _, ack := range acks {
+					if exactWatchSendEvent(ack, jobstore.EventWatchSendDelivered, state) {
+						receipts++
+					}
+				}
+				if matches != want || receipts != want {
+					t.Errorf("recovered %s canonical=%d acknowledgments=%d want=%d", stableWatchAttentionID(state), matches, receipts, want)
+				}
+			}
+			if len(adapter.requestsFor("root")) != 0 {
+				t.Fatal("transport recovery executed provider")
+			}
+		})
+	}
+}
+
+func TestBootstrapCallbackReceiverIdentity(t *testing.T) {
+	t.Parallel()
+	snapshot := stableWatchBootstrapSnapshot{receiverByID: map[string]stableWatchReceiverSnapshot{
+		"":          {sessionID: "root", transcriptRef: "local:root"},
+		"dlg_child": {sessionID: "child", transcriptRef: "local:child"},
+	}}
+	for _, tc := range []struct {
+		name, sessionID, delegateID string
+		stable, want                bool
+	}{
+		{name: "root callback", sessionID: "root", want: true},
+		{name: "local child callback", sessionID: "child", want: true},
+		{name: "explicit child", sessionID: "child", delegateID: "dlg_child", stable: true, want: true},
+		{name: "unknown session", sessionID: "unknown"},
+		{name: "unknown delegate", sessionID: "child", delegateID: "dlg_unknown"},
+		{name: "explicit mismatch", sessionID: "root", delegateID: "dlg_child"},
+		{name: "missing session", delegateID: "dlg_child"},
+		{name: "stable child missing delegate", sessionID: "child", stable: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			receiver, ok := snapshot.receiver(jobstore.WatchSendState{ReceiverSessionID: tc.sessionID, ReceiverDelegateID: tc.delegateID, CallbackFrame: true, StableReceiver: tc.stable})
+			if ok != tc.want || (ok && receiver.sessionID != tc.sessionID) {
+				t.Fatalf("receiver=%+v available=%t want=%t", receiver, ok, tc.want)
+			}
+		})
+	}
+}
+
+func TestChildLocalCallbackReplayAfterRootRestart(t *testing.T) {
+	t.Parallel()
+	for _, historical := range []bool{false, true} {
+		t.Run(fmt.Sprintf("historical=%t", historical), func(t *testing.T) {
+			fixture := newColdStableDelegateFixture(t, "")
+			jm, err := newJobManager(fixture.stateDir, fixture.childID, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { jm.close() })
+			jm.clock = agenttest.NewFakeClockAt(time.Unix(1700000000, 0))
+			a := watchArgs{Source: "self", Target: runtimeMessageAliasCaller, AfterSeconds: 60}
+			if historical {
+				a.AfterSeconds, a.RepeatSeconds = 0, 60
+			}
+			r, err := jm.configureWatch(a)
+			if err != nil {
+				t.Fatal(err)
+			}
+			jm.mu.Lock()
+			key, cfg, ok := jm.watchConfigByIDLocked(r.WatchID)
+			jm.mu.Unlock()
+			if !ok {
+				t.Fatal("missing live source registration")
+			}
+			if historical {
+				writer, _, err := transcript.OpenWriterForSession(transcriptPath(fixture.stateDir, fixture.childID), fixture.childID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				receiver := &Session{id: fixture.childID, stateDir: fixture.stateDir}
+				receiver.attachTranscript(writer)
+				receiver.SetNotifyFunc(func() { _ = jm.store.Close() })
+				jm.retirementOwner = receiver
+				jm.fireProgressTick(key, cfg)
+				jm.retirementOwner = nil
+				if len(notificationRawEntries(t, transcriptPath(fixture.stateDir, fixture.childID))) != 1 || len(producerSourceEvents(t, jm, jobstore.EventWatchSendDelivered)) != 0 {
+					t.Fatal("failed source ack did not retain child-local custody")
+				}
+				reopenProducerSource(t, jm)
+				if err := receiver.closeAttachedTranscript(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// No child receiver runtime survives this firing or the root restart.
+			jm.fireProgressTick(key, cfg)
+			if historical {
+				if _, err := jm.clearWatch(key); err != nil {
+					t.Fatal(err)
+				}
+			}
+			produced := producerSourceEvents(t, jm, jobstore.EventWatchSendPending)
+			want := 1
+			if historical {
+				want = 2
+			}
+			if len(produced) != want || jm.watchCount() != 0 {
+				t.Fatalf("produced=%d registrations=%d", len(produced), jm.watchCount())
+			}
+			for _, event := range produced {
+				state := event.WatchSend
+				if !state.CallbackFrame || state.StableReceiver || state.ReceiverDelegateID != "" || state.ReceiverSessionID != fixture.childID {
+					t.Fatal("real producer did not record child-local callback receiver")
+				}
+			}
+			if err := jm.closeStoreOnly(); err != nil {
+				t.Fatal(err)
+			}
+			root, err := RestoreSessionFromMetaWithConfig(fixture.client, fixture.profile, execenv.NewLocalExecutionEnvironment(fixture.workspace), fixture.meta, RestoreSessionConfig{
+				StateDir: fixture.stateDir, ForceRealIO: true,
+				testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, sandboxProber: bwrapCapableProber(fixture.workspace), disableDelegateIdleRelease: true},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(root.Close)
+			for range 2 {
+				if err := repairStableWatchDeliveriesForBootstrap(root.delegateController); err != nil {
+					t.Fatal(err)
+				}
+			}
+			entries := notificationRawEntries(t, transcriptPath(fixture.stateDir, fixture.childID))
+			acks := producerSourceEvents(t, jm, jobstore.EventWatchSendDelivered)
+			if len(entries) != want || len(acks) != want || len(fixture.adapter.Requests()) != 0 {
+				t.Fatalf("child records=%d receipts=%d provider requests=%d want=%d/%d/0", len(entries), len(acks), len(fixture.adapter.Requests()), want, want)
+			}
+			for _, event := range produced {
+				state := *event.WatchSend
+				matches, receipts := 0, 0
+				for _, entry := range entries {
+					if entry.Turn.AttentionID == stableWatchAttentionID(state) {
+						matches++
+						if !reflect.DeepEqual(entry.Turn.Message, llm.UserMachinery(state.Frame)) || !reflect.DeepEqual(entry.Turn.NotificationProvenance, state.Provenance) {
+							t.Fatal("bootstrap changed complete message or provenance")
+						}
+					}
+				}
+				for _, ack := range acks {
+					if exactWatchSendEvent(ack, jobstore.EventWatchSendDelivered, state) {
+						receipts++
+					}
+				}
+				if matches != 1 || receipts != 1 {
+					t.Fatalf("identity=%s records=%d receipts=%d", stableWatchAttentionID(state), matches, receipts)
+				}
+			}
+			t.Logf("historical=%t child-local records=%d exact receipts=%d provider requests=0", historical, len(entries), len(acks))
+		})
+	}
+}
+
+func TestColdDescendantCallbackReplayAfterRootRestart(t *testing.T) {
+	for _, historical := range []bool{false, true} {
+		t.Run(fmt.Sprintf("historical=%t", historical), func(t *testing.T) {
+			fixture := newColdStableDelegateFixture(t, "")
+			store, err := delegatestore.Open(delegateResourceStorePath(fixture.stateDir, fixture.meta.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			c, err := openDelegateTreeController(delegateTreeControllerConfig{store: store, rootSessionID: fixture.meta.ID, stateDir: fixture.stateDir, turnLimit: 2, driveLimit: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			jm, err := newJobManager(fixture.stateDir, fixture.childID, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			jm.delegateController = c
+			jm.clock = agenttest.NewFakeClockAt(time.Unix(1700000000, 0))
+			a := watchArgs{Source: "self", Target: runtimeMessageAliasCaller, ReceiverSessionID: fixture.meta.ID, Note: "callback-payload-8c21", AfterSeconds: 60}
+			if historical {
+				a.AfterSeconds, a.RepeatSeconds = 0, 60
+			}
+			r, err := jm.configureWatch(a)
+			if err != nil {
+				t.Fatal(err)
+			}
+			jm.mu.Lock()
+			key, cfg, ok := jm.watchConfigByIDLocked(r.WatchID)
+			jm.mu.Unlock()
+			if !ok {
+				t.Fatal("missing live source registration")
+			}
+			if historical {
+				// A crosses real receiver custody but the source descriptor closes on wake.
+				writer, _, err := transcript.OpenWriterForSession(transcriptPath(fixture.stateDir, fixture.meta.ID), fixture.meta.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				receiver := &Session{id: fixture.meta.ID, stateDir: fixture.stateDir, delegateController: c}
+				receiver.attachTranscript(writer)
+				receiver.SetNotifyFunc(func() { _ = jm.store.Close() })
+				c.rootRuntime = receiver
+				jm.fireProgressTick(key, cfg)
+				receiver.SetNotifyFunc(nil)
+				if len(notificationRawEntries(t, transcriptPath(fixture.stateDir, fixture.meta.ID))) != 1 || len(producerSourceEvents(t, jm, jobstore.EventWatchSendDelivered)) != 0 {
+					t.Fatal("failed-ack cut did not preserve actual A custody")
+				}
+				reopenProducerSource(t, jm)
+				c.rootRuntime = nil
+				if err := receiver.closeAttachedTranscript(); err != nil {
+					t.Fatal(err)
+				}
+				appendOne := jm.store.Append
+				jm.appendEvent = func(e jobstore.Event) error {
+					if err := appendOne(e); err != nil {
+						return err
+					}
+					if e.Kind == jobstore.EventWatchSendPending {
+						return jm.store.Close()
+					}
+					return nil
+				}
+			}
+			// The root receiver is absent. This firing must remain real source debt.
+			jm.fireProgressTick(key, cfg)
+			produced := producerSourceEvents(t, jm, jobstore.EventWatchSendPending)
+			want := 1
+			if historical {
+				want = 2
+				reopenProducerSource(t, jm)
+				if _, err := jm.clearWatch(key); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if len(produced) != want || len(producerSourceEvents(t, jm, jobstore.EventWatchSendDelivered)) != 0 {
+				t.Fatalf("source cut produced=%d want=%d", len(produced), want)
+			}
+			for _, e := range produced {
+				if !e.WatchSend.CallbackFrame || e.WatchSend.StableReceiver || e.WatchSend.ReceiverSessionID != fixture.meta.ID {
+					t.Fatal("fixture did not produce exact descendant callback kind and receiver")
+				}
+			}
+			if jm.watchCount() != 0 {
+				t.Fatal("retired registration survived production/clear")
+			}
+			if err := jm.closeStoreOnly(); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Close(); err != nil {
+				t.Fatal(err)
+			}
+			// No descendant runtime, controller or source manager survives the restart.
+			jm, c = nil, nil
+			var restoredEntries []transcript.Entry
+			root, err := RestoreSessionFromMetaWithConfig(fixture.client, fixture.profile, execenv.NewLocalExecutionEnvironment(fixture.workspace), fixture.meta, RestoreSessionConfig{
+				StateDir: fixture.stateDir, ForceRealIO: true,
+				OnRestoredTranscript: func(_ transcript.Header, entries []transcript.Entry, _ bool) { restoredEntries = entries },
+				testOnly:             testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, sandboxProber: bwrapCapableProber(fixture.workspace), disableDelegateIdleRelease: true},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(root.Close)
+			entries := notificationRawEntries(t, transcriptPath(fixture.stateDir, fixture.meta.ID))
+			sourcePath := filepath.Join(jobsDir(fixture.stateDir, fixture.childID), "jobs.jsonl")
+			sourceEvents, err := jobstore.ReadEvents(sourcePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			acks := 0
+			for _, e := range sourceEvents {
+				if e.Kind == jobstore.EventWatchSendDelivered {
+					acks++
+				}
+			}
+			if len(entries) != want || acks != want {
+				t.Fatalf("cold callback records=%d source receipts=%d, want %d/%d", len(entries), acks, want, want)
+			}
+			if len(fixture.adapter.Requests()) != 0 {
+				t.Fatal("bootstrap custody became model observation")
+			}
+			for _, p := range produced {
+				id := stableWatchAttentionID(*p.WatchSend)
+				exactAcks := 0
+				for _, e := range sourceEvents {
+					if exactWatchSendEvent(e, jobstore.EventWatchSendDelivered, *p.WatchSend) {
+						exactAcks++
+					}
+				}
+				if exactAcks != 1 {
+					t.Fatalf("callback %s exact source receipts=%d want 1", id, exactAcks)
+				}
+				snapshotMatches := 0
+				for _, e := range restoredEntries {
+					if e.Turn.AttentionID == id {
+						snapshotMatches++
+						if !reflect.DeepEqual(e.Turn.Message, llm.UserMachinery(p.WatchSend.Frame)) {
+							t.Errorf("restored snapshot changed callback %s", id)
+						}
+					}
+				}
+				t.Logf("historical=%t seq=%d id=%s restored snapshot matches=%d", historical, p.WatchSend.UpdateSeq, id, snapshotMatches)
+				if snapshotMatches != 1 {
+					t.Errorf("restored snapshot callback %s matches=%d, want 1", id, snapshotMatches)
+				}
+				matches := 0
+				for _, e := range entries {
+					if e.Turn.AttentionID == id {
+						matches++
+						if !reflect.DeepEqual(e.Turn.Message, llm.UserMachinery(p.WatchSend.Frame)) {
+							t.Fatal("callback complete message changed at restart")
+						}
+					}
+				}
+				if matches != 1 {
+					t.Fatal("cold callback identity missing or duplicated")
+				}
+				assertAttentionResponseReceipts(t, root, id, 0)
+			}
+			// Reopen the real source and repeat bootstrap, without resurrecting watches.
+			if err := repairStableWatchDeliveriesForBootstrap(root.delegateController); err != nil {
+				t.Fatal(err)
+			}
+			again, err := newJobManager(fixture.stateDir, fixture.childID, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if again.watchCount() != 0 || len(again.pendingWatchSendDeliveries(nil)) != 0 {
+				t.Fatal("reopen resurrected source registration or current debt")
+			}
+			if err := again.closeStoreOnly(); err != nil {
+				t.Fatal(err)
+			}
+			fixture.adapter.steps = []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
+				used := make(map[int]bool)
+				for _, p := range produced {
+					found := false
+					for i, m := range req.Messages {
+						if !used[i] && reflect.DeepEqual(m, llm.UserMachinery(p.WatchSend.Frame)) {
+							found = true
+							used[i] = true
+							break
+						}
+					}
+					t.Logf("request historical=%t seq=%d id=%s covered=%t", historical, p.WatchSend.UpdateSeq, stableWatchAttentionID(*p.WatchSend), found)
+					if !found {
+						t.Errorf("notification-only request omitted callback %s", stableWatchAttentionID(*p.WatchSend))
+					}
+				}
+				return communicateResponse(true, "callback observed")
+			}}
+			wakes := make(chan struct{}, 1)
+			root.SetNotifyFunc(func() {
+				select {
+				case wakes <- struct{}{}:
+				default:
+				}
+			})
+			defer root.SetNotifyFunc(nil)
+			select {
+			case <-wakes:
+			// TRIPWIRE: bounds a missing automatic host wake, not its ordering.
+			case <-time.After(10 * time.Second):
+				t.Fatal("restored callback did not wake its root receiver")
+			}
+			if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+				t.Fatal(err)
+			}
+			if len(fixture.adapter.Requests()) != 1 {
+				t.Fatal("callback replay did not run exactly one notification-only request")
+			}
+			for _, p := range produced {
+				assertAttentionResponseReceipts(t, root, stableWatchAttentionID(*p.WatchSend), 1)
+			}
+			finalEntries := notificationRawEntries(t, transcriptPath(fixture.stateDir, fixture.meta.ID))
+			for _, p := range produced {
+				id := stableWatchAttentionID(*p.WatchSend)
+				matches := 0
+				for _, e := range finalEntries {
+					if e.Turn.AttentionID == id {
+						matches++
+						if !reflect.DeepEqual(e.Turn.Message, llm.UserMachinery(p.WatchSend.Frame)) {
+							t.Fatalf("callback %s message changed after observation", id)
+						}
+					}
+				}
+				if matches != 1 {
+					t.Fatalf("repeated reopen/observation callback %s canonical=%d want=1", id, matches)
+				}
+			}
 		})
 	}
 }

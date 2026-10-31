@@ -130,6 +130,17 @@ Behavior:
    `read_transcript` reads, so the child transcript stays the recovery route
    even when a large trailing structured result pushes the footer out of the
    retained tail.
+   For a positive-wait reply, this exact tail and recovery footer count as
+   presentation of its bound canonical notification IDs only while the
+   root-tree artifact resolves to the exact complete aggregate, including
+   `earlier_results`. The chosen request presents that carrier instead of a
+   duplicate whole canonical body. Live history, persisted history and response
+   observation use the same check. A missing, expired, foreign or mismatched
+   artifact, altered footer or reduced carrier falls back to whole canonical
+   presentation. Artifact availability or private tool state alone earns no
+   observation: only the successful response to the selected presentation does,
+   synced when persistence is configured. Closing a child does not expire its
+   live root's capability; closing the root does, including across restore.
 3. Because the report is rendered at the end of the reply, `TruncTail` keeps
    the newest report's ending. The newest report is whole only when its
    complete formatted contribution, including the footer and structured result

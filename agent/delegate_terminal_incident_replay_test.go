@@ -8,8 +8,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
@@ -378,19 +378,58 @@ func incidentPresentedIDs(t *testing.T, stateDir, sessionID string, req llm.Requ
 	return ids
 }
 
-func incidentYielded(t *testing.T, owner *Session, childID string) {
+func incidentYielded(t *testing.T, owner *Session, childID string, receipt *activationReturn) {
 	t.Helper()
 	sub := owner.getSub(childID)
 	if sub == nil {
 		t.Fatal("missing real delegate runtime")
 	}
-	waitForCondition(t, 3*time.Second, "incident safe yield", func() bool { sub.mu.Lock(); defer sub.mu.Unlock(); return !sub.running })
+	if receipt.sessionID != childID || receipt.delegateID != sub.sess.owningDelegateID {
+		t.Fatalf("yield activation identity = %+v", receipt)
+	}
+	waitForTestSignal(t, receipt.returned, "incident yielded activation return")
+	sub.mu.Lock()
+	running := sub.running
+	sub.mu.Unlock()
+	if running {
+		t.Fatal("incident executor still running after yield return")
+	}
+	run := delegateAggregateSnapshot(t, owner.delegateController, receipt.delegateID)
+	if !run.CurrentRunOpen || run.Generation != receipt.lease.generation {
+		t.Fatalf("yield generation = %+v", run)
+	}
+	activationStillOpen(t, receipt.generationDone)
+}
+
+func incidentSettled(t *testing.T, owner *Session, childID string, receipt *activationReturn) {
+	t.Helper()
+	waitForTestSignal(t, receipt.generationDone, "incident terminal generation")
+	waitForTestSignal(t, receipt.returned, "incident terminal activation return")
+	sub := owner.getSub(childID)
+	if sub == nil || receipt.sessionID != childID || receipt.delegateID != sub.sess.owningDelegateID {
+		t.Fatalf("terminal activation identity = %+v", receipt)
+	}
+	sub.mu.Lock()
+	running := sub.running
+	sub.mu.Unlock()
+	if running {
+		t.Fatal("incident executor still running after terminal return")
+	}
+	if run := delegateAggregateSnapshot(t, owner.delegateController, receipt.delegateID); run.CurrentRunOpen || run.Generation != receipt.lease.generation {
+		t.Fatalf("terminal generation = %+v", run)
+	}
 }
 
 func testNotificationIncidentReopen(t *testing.T) {
 	const coordKey, workerKey = "INCIDENT-COORD-11", "INCIDENT-WORKER-11"
 	const report, result = "report-4d489d7c", "result-b48f7e2a"
 	a := newMessagingAdapter(coordKey, workerKey)
+	returns := newActivationReturns()
+	workerGate := make(chan struct{})
+	releaseWorker := sync.OnceFunc(func() { close(workerGate) })
+	defer releaseWorker()
+	coordWaiting, coordRelease := make(chan struct{}, 4), make(chan struct{}, 4)
+	defer close(coordRelease)
 	fifo, releaseShell := waitProducerFIFO(t)
 	defer releaseShell()
 	a.script("root", func(llm.Request) llm.Response { return delegateToolResponse("incident-coordinator", coordKey) }, func(llm.Request) llm.Response { return finalResponse("initial-root-11") })
@@ -406,21 +445,38 @@ func testNotificationIncidentReopen(t *testing.T) {
 			workerTarget = deferredHeadDelegateID.FindString(lastToolResultText(req.Messages))
 		}
 		a.script(coordKey, waitStep)
+		coordWaiting <- struct{}{}
+		awaitSignal(t, coordRelease, "incident coordinator activation capture")
 		return waitResponseFor(fmt.Sprintf("incident-coord-wait-%d", len(a.requestsFor(coordKey))), workerTarget)
 	}
 	a.script(coordKey, func(llm.Request) llm.Response { return delegateToolResponse("incident-worker", workerKey) }, waitStep)
 	a.script(workerKey, func(llm.Request) llm.Response { return incidentShellResponse("incident-shell", fifo) }, func(req llm.Request) llm.Response {
+		awaitSignal(t, workerGate, "incident worker activation capture")
 		return waitResponseFor("incident-worker-wait", regexp.MustCompile(`job_[A-Za-z0-9_]{10,}`).FindString(lastToolResultText(req.Messages)))
 	})
-	root := newMessagingRoot(t, a, nil)
+	root := newMessagingRoot(t, a, returns.configure)
+	t.Cleanup(func() { returns.close(t, root) })
 	if _, err := root.ProcessInput(context.Background(), "incident-start-11", nil); err != nil {
 		t.Fatal(err)
 	}
 	a.waitForRequests(t, workerKey, 2)
 	coord := root.subagents.sessions()[0]
 	worker := coord.subagents.sessions()[0]
-	incidentYielded(t, coord, worker.ID())
-	incidentYielded(t, root, coord.ID())
+	workerActivation := returns.take(t, worker.ID())
+	waitForTestSignal(t, coordWaiting, "initial incident coordinator wait")
+	initialCoord := returns.take(t, coord.ID())
+	coordRelease <- struct{}{}
+	incidentYielded(t, root, coord.ID(), initialCoord)
+	releaseWorker()
+	incidentYielded(t, coord, worker.ID(), workerActivation)
+	// The worker's waiting update resumes the coordinator in the same lease.
+	waitForTestSignal(t, coordWaiting, "incident coordinator worker-update response")
+	observingCoord := returns.take(t, coord.ID())
+	if observingCoord.lease != initialCoord.lease {
+		t.Fatalf("incident coordinator replaced its lease: %+v -> %+v", initialCoord, observingCoord)
+	}
+	coordRelease <- struct{}{}
+	incidentYielded(t, root, coord.ID(), observingCoord)
 	// Observe only real already-produced coordinator messages before the cut.
 	a.script("root", func(llm.Request) llm.Response { return finalResponse("initial-notices-11") })
 	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
@@ -457,12 +513,27 @@ func testNotificationIncidentReopen(t *testing.T) {
 	}
 	a.script("root", rootStep)
 	restored := restoreWaitingCopy(t, root, copied)
+	// The restored root has not admitted a child executor yet. Its descendants
+	// inherit this factory when the addressed drain restores them.
+	restored.cfg.testOnly.subagentActivationReturn = returns.capture
+	t.Cleanup(func() { returns.close(t, restored) })
 	wake, hint := newDrainWake()
 	restored.SetNotifyFunc(hint)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if _, err := restored.DrainJobTree(ctx, wake); err != nil {
-		t.Fatal(err)
+	finished := make(chan struct{})
+	var drainErr error
+	t.Cleanup(func() {
+		cancel()
+		awaitSignal(t, finished, "restored incident drain cleanup")
+	})
+	go func() {
+		defer close(finished)
+		_, drainErr = restored.DrainJobTree(ctx, wake)
+	}()
+	waitForTestSignal(t, finished, "restored incident drain return")
+	if drainErr != nil {
+		t.Fatal(drainErr)
 	}
 	var wr, cr, rr llm.Request
 	select {

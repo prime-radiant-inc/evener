@@ -252,6 +252,21 @@ turn is published, is held and published when processing ends, unless a turn is 
 input's SESSION_END (an interrupted one included) lands first. A turn start waits for a rest that is arming to finish
 its announcement, so the announcement is sent before anything the turn emits once it starts. Restore derives awaiting at once, with no quiet period.
 
+### Tool argument numbers
+
+Tool ingestion preserves JSON numbers exactly through preparation, repair,
+hook input updates and registry dispatch. Arbitrary data fields retain their
+decimal/exponent values, including integers beyond float64 precision and tiny
+nonzero numbers. Existing raw UTF-8/size checks and float-overflow rejection
+remain in force. Scalar readers convert only at consumption: legacy approximate
+readers retain their truncation behavior, while strict whole-number readers
+check exact values and their own bounds.
+
+The pinned schema validator cannot represent every mathematically valid number.
+Its arithmetic failures become tool validation errors before execution, not
+session panics. Unconstrained data does not require that arithmetic and retains
+its exact values. This boundary is not an aggregate arithmetic resource budget.
+
 ### The repeated-call breaker
 
 Steering a stuck agent has two layers. `injectPostToolSteering`
@@ -266,11 +281,13 @@ argument-size guard — never reaches the ledger. The ledger carries **two trigg
 keyed differently**. The **failure trigger** counts consecutive failures sharing an
 error class, keyed on tool name + a hash of a **normalized** view of the arguments:
 the top-level `intent` free text and the shell tool's presentation-only `description`
-are dropped, and JSON key order, whitespace, and number spellings are canonicalized,
+are dropped, and JSON key order, whitespace, and ordinary number spellings are canonicalized,
 so a call that changes only those is the same failing operation; the tool's own
 `RegisteredTool.NormalizeArgs`, when it has one, is applied too, so a value it
 removes before dispatch fingerprints as the omitted call — while arguments
-that are not a single well-formed JSON value fall back to the raw bytes. Its second
+that are not a single well-formed JSON value fall back to the raw bytes. Costly
+numeric canonicalization retains exact literals instead of rounding or rejecting
+them, so some equivalent spellings may not share a fingerprint. Its second
 failure appends a nudge to the result, and the third is **not executed at
 all** — the tool is resolved to compute the key, and the call is refused before
 any validation or execution. The **repetition trigger**

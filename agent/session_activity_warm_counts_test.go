@@ -53,9 +53,14 @@ func TestSessionActivityWarmCountsRecoverDeliveredDescendantWatch(t *testing.T) 
 	}
 	onSessionEventKD(f.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "count recovery"})
 	cfg := f.onlyWatchConfig(t)
-	state := f.requireOnePending(t).state
-	if err := f.sourceJM.settleWatchSendDelivered(cfg, state); err != nil {
-		t.Fatal(err)
+	produced := producerSourceEvents(t, f.sourceJM, jobstore.EventWatchSendPending)
+	delivered := producerSourceEvents(t, f.sourceJM, jobstore.EventWatchSendDelivered)
+	if len(produced) != 1 || len(delivered) != 1 || !exactWatchSendEvent(delivered[0], jobstore.EventWatchSendDelivered, *produced[0].WatchSend) {
+		t.Fatal("real descendant delivery did not produce exactly one matching source receipt")
+	}
+	entries := notificationRawEntries(t, f.rootTranscriptPath)
+	if len(entries) != 1 || entries[0].Turn.AttentionID != stableWatchAttentionID(*produced[0].WatchSend) || !strings.Contains(entries[0].Turn.Message.Text(), "count recovery") {
+		t.Fatal("delivered descendant frame did not reach exact canonical receiver custody")
 	}
 	after, err := f.root.ActivitySummary(t.Context(), params)
 	if err != nil || !after.Jobs.Known || after.Jobs != before.Jobs || !after.Watches.Known || after.Watches.Total != 1 || summaryRefreshPending(t, after) {

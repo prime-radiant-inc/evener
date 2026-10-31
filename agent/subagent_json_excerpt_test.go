@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -34,6 +35,7 @@ func TestSubagentSeesFailingInputExcerpt(t *testing.T) {
 	// The child's script: turn 1 emits a write_file call whose arguments are
 	// truncated mid-string (unrepairable; RepairJSON only fixes escapes).
 	const truncatedArgs = `{"content": "# Report\n\nall work so far...", "file_path": "/tmp/report.md`
+	const recoveryReceipt = "opaque-recovery-621"
 	var childAdapter *agenttest.FakeAdapter
 	var factoryCalls atomic.Int64
 	factory := func() *llm.Client {
@@ -50,7 +52,7 @@ func TestSubagentSeesFailingInputExcerpt(t *testing.T) {
 					})
 				},
 				func(llm.Request) llm.Response {
-					return agenttest.FinalResponse("child recovered and done")
+					return agenttest.FinalResponse(recoveryReceipt)
 				},
 			},
 		}
@@ -119,29 +121,32 @@ func TestSubagentSeesFailingInputExcerpt(t *testing.T) {
 
 	// The second request is what the subagent's model sees AFTER the failed
 	// call: it must carry the error tool result quoting the failing input.
-	recovery, err := json.Marshal(reqs[1])
-	if err != nil {
-		t.Fatalf("marshal recovery request: %v", err)
-	}
-	got := string(recovery)
-	for _, want := range []string{
-		"arguments were not valid JSON",
-		"unexpected end of JSON input",
-		"near byte",
-		`\u003e\u003e\u003e`, // json.Marshal escapes ">" as \u003e
-		"/tmp/report.md",
-		"Send a single JSON object",
-	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("subagent recovery request missing %q\nrequest: %s", want, got)
+	failures := 0
+	for _, message := range reqs[1].Messages {
+		for _, part := range message.Content {
+			result := part.ToolResult
+			if result == nil || result.ToolCallID != "call_truncated" {
+				continue
+			}
+			failures++
+			if result.Name != "write_file" || !result.IsError || !result.PrevalOnly {
+				t.Fatalf("rejected call result lost pre-dispatch identity: %+v", result)
+			}
+			content, ok := result.Content.(string)
+			if !ok || !strings.Contains(content, strconv.Quote(truncatedArgs)) {
+				t.Fatalf("provider-bound rejection lost original input excerpt: %v", result.Content)
+			}
 		}
+	}
+	if failures != 1 {
+		t.Fatalf("provider-bound results for call_truncated = %d, want 1", failures)
 	}
 	packet := loadStableDelegateTerminalPacket(t, sess, res.DelegateID)
 	var output string
 	if err := json.Unmarshal(packet.Message, &output); err != nil {
 		t.Fatalf("decode stable terminal message: %v", err)
 	}
-	if !strings.Contains(output, "child recovered") {
+	if output != recoveryReceipt {
 		t.Fatalf("subagent did not report recovery: output=%q", output)
 	}
 

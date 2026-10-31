@@ -358,6 +358,7 @@ type communicateSessionRoutedAdapter struct {
 	delegate   llm.ToolCallData
 	status     llm.ToolCallData
 	childDone  llm.ToolCallData
+	beforeDone llm.ToolCallData
 	parentDone llm.ToolCallData
 }
 
@@ -371,9 +372,12 @@ func (a *communicateSessionRoutedAdapter) Complete(_ context.Context, req llm.Re
 	var response llm.Response
 	if req.SessionID == a.rootSessionID {
 		a.rootRequests++
-		if a.rootRequests == 1 {
+		switch a.rootRequests {
+		case 1:
 			response = toolCallResponse(a.delegate, a.status)
-		} else {
+		case 2:
+			response = toolCallResponse(a.beforeDone)
+		default:
 			response = toolCallResponse(a.parentDone)
 		}
 	} else {
@@ -419,38 +423,96 @@ func TestCommunicate_StatusBatchedWithDelegateDoesNotEndTurn(t *testing.T) {
 		"message":  "Starting observer delegate and watch flow.",
 		"end_turn": false,
 	})
-	childDone := communicateCall("child_done", "CHILD_DONE")
-	parentDone := communicateCall("parent_done", "Parent saw the delegate complete.")
+	const (
+		reportBody   = "child-report-9c73"
+		beforeResult = "before-result-6d92"
+		parentResult = "parent-result-f45a"
+	)
+	childDone := communicateCall("child_done", reportBody)
+	parentDone := communicateCall("parent_done", parentResult)
 	f := &communicateSessionRoutedAdapter{
 		delegate:   delegate,
 		status:     status,
 		childDone:  childDone,
+		beforeDone: communicateCall("before_report", beforeResult),
 		parentDone: parentDone,
 	}
 	c.Register(f)
 
 	rootIdle := make(chan struct{})
-	deliveryClassified := make(chan bool, 1)
 	var releaseChild sync.Once
-	t.Cleanup(func() { releaseChild.Do(func() { close(rootIdle) }) })
+	unblockChild := func() { releaseChild.Do(func() { close(rootIdle) }) }
 	var boundaryOnce sync.Once
-	var deliveryWasDeferred bool
+	var custodyID string
 	var sess *Session
+	childPublished := make(chan struct{})
+	var published struct {
+		sub   *subagent
+		done  <-chan struct{}
+		lease delegateLease
+	}
 	cfg := SessionConfig{StateDir: t.TempDir()}
-	cfg.testOnly.subagentAfterFinalStatePublish = func(*subagent) { <-rootIdle }
+	cfg.testOnly.subagentAfterFinalStatePublish = func(sub *subagent) {
+		published.sub = sub
+		sub.mu.Lock()
+		published.done = sub.done
+		sub.mu.Unlock()
+		c := sub.sess.delegateController
+		c.mu.Lock()
+		if live := c.live[sub.sess.owningDelegateID]; live != nil && live.binding != nil && live.binding.runtime == sub.sess {
+			published.lease = live.binding.lease
+		}
+		c.mu.Unlock()
+		close(childPublished)
+		<-rootIdle
+	}
 	cfg.testOnly.afterCommunicateBoundary = func(s *Session) {
 		if s != sess {
 			return
 		}
 		boundaryOnce.Do(func() {
-			releaseChild.Do(func() { close(rootIdle) })
-			deliveryWasDeferred = <-deliveryClassified
+			defer unblockChild()
+			// Root request 2 settled without the child body. Publish only at
+			// its terminal boundary, then distinguish custody from observation.
+			awaitSignal(t, childPublished, "child final-state publication gate")
+			select {
+			case <-childPublished:
+			default:
+				return
+			}
+			if published.done == nil || published.lease.delegateID == "" || published.lease.generation != 1 {
+				t.Errorf("captured child publication = %+v", published)
+				return
+			}
+			select {
+			case <-published.done:
+				t.Error("child generation finished before publication gate release")
+				return
+			default:
+			}
+			unblockChild()
+			awaitSignal(t, published.done, "captured child generation completion")
+			// This fixture has one child and admits no successor. The root
+			// ProcessInput is not in sendersWG, so this joins only the child
+			// executor tail, never the callback's own root turn.
+			executorsDone := make(chan struct{})
+			go func() { sess.sendersWG.Wait(); close(executorsDone) }()
+			awaitSignal(t, executorsDone, "communicate child executor tail")
+			custodyID = "delegate:" + published.lease.delegateID + "/delivery/1"
+			ids, err := sess.pendingNotificationIDs()
+			if err != nil || len(ids) != 1 || ids[0] != custodyID {
+				t.Errorf("terminal boundary pending = %v, err %v, want %s", ids, err, custodyID)
+				return
+			}
+			fold, err := readDelegateAttentionFold(sess.TranscriptPath(), sess.ID())
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			if len(fold.observed) != 0 || len(fold.resolutions) != 0 || fold.content[custodyID].Text() == "" {
+				t.Errorf("terminal boundary: custody=%v observed=%v resolutions=%v, want body custody without observation", fold.order, fold.observed, fold.resolutions)
+			}
 		})
-	}
-	cfg.testOnly.delegateDeliveryClassified = func(s *Session, deferred bool) {
-		if s == sess {
-			deliveryClassified <- deferred
-		}
 	}
 
 	var err error
@@ -458,6 +520,13 @@ func TestCommunicate_StatusBatchedWithDelegateDoesNotEndTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
+	t.Cleanup(sess.Close)
+	t.Cleanup(func() {
+		unblockChild()
+		executorsDone := make(chan struct{})
+		go func() { sess.sendersWG.Wait(); close(executorsDone) }()
+		waitForTestSignal(t, executorsDone, "communicate fixture executor cleanup")
+	})
 	f.setRootSessionID(sess.ID())
 	// TRIPWIRE: every step here is a scripted single/two-round adapter call
 	// answered in-process with no I/O; the parent turn normally completes in
@@ -469,16 +538,64 @@ func TestCommunicate_StatusBatchedWithDelegateDoesNotEndTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
-	sess.Close()
-
-	if !deliveryWasDeferred {
-		t.Fatal("delegate completion crossed the terminal boundary instead of waiting for the ProcessInput drain")
+	if want := strings.Join([]string{beforeResult, parentResult}, "\n"); out != want {
+		t.Fatalf("ProcessInput output = %q, want %q", out, want)
 	}
-	if strings.TrimSpace(out) != "Parent saw the delegate complete." {
-		t.Fatalf("ProcessInput returned %q, want parent final", out)
+	if total, root, child := f.requestCounts(); total != 4 || root != 3 || child != 1 {
+		t.Fatalf("requests: total=%d root=%d child=%d, want 4/3/1", total, root, child)
 	}
-	if total, root, child := f.requestCounts(); total != 3 || root != 2 || child != 1 {
-		t.Fatalf("requests: got total=%d root=%d child=%d, want two parent turns and one child delegate turn", total, root, child)
+	f.mu.Lock()
+	requests := append([]llm.Request(nil), f.requests...)
+	f.mu.Unlock()
+	var rootRequests []llm.Request
+	for _, req := range requests {
+		if req.SessionID == sess.ID() {
+			rootRequests = append(rootRequests, req)
+		}
+	}
+	var receipt stableDelegateCreateResult
+	statusContinued := false
+	for _, msg := range rootRequests[1].Messages {
+		for _, part := range msg.Content {
+			if part.ToolResult == nil {
+				continue
+			}
+			switch part.ToolResult.ToolCallID {
+			case delegate.ID:
+				body, ok := part.ToolResult.Content.(string)
+				if !ok {
+					t.Fatalf("delegate receipt content type = %T", part.ToolResult.Content)
+				}
+				if err := json.Unmarshal([]byte(body), &receipt); err != nil {
+					t.Fatal(err)
+				}
+			case status.ID:
+				statusContinued = !part.ToolResult.IsError
+			}
+		}
+	}
+	if !statusContinued || receipt.DelegateID == "" {
+		t.Fatal("request 2 did not continue from both batched tool results")
+	}
+	if published.sub == nil || published.sub.sess.ID() != receipt.ChildSessionID || published.lease.delegateID != receipt.DelegateID {
+		t.Fatalf("captured child publication = %+v, want delegate %s child %s", published, receipt.DelegateID, receipt.ChildSessionID)
+	}
+	wantID := "delegate:" + receipt.DelegateID + "/delivery/1"
+	if custodyID != wantID {
+		t.Fatalf("custody ID = %q, want %q", custodyID, wantID)
+	}
+	for i, req := range rootRequests {
+		want := 0
+		if i == 2 {
+			want = 1
+		}
+		if got := strings.Count(messagesText(req.Messages), reportBody); got != want {
+			t.Fatalf("root request %d child body count = %d, want %d", i+1, got, want)
+		}
+	}
+	observationReceipts(t, sess, [][]string{nil, nil, {wantID}})
+	if ids, err := sess.pendingNotificationIDs(); err != nil || len(ids) != 0 {
+		t.Fatalf("pending reports = %v, err %v", ids, err)
 	}
 }
 

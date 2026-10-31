@@ -279,6 +279,98 @@ func awaitSignal(t *testing.T, ch <-chan struct{}, what string) {
 	}
 }
 
+// Each factory invocation gets its own token, even when a resume keeps the
+// lease and generation done. Only the test goroutine matches registrations.
+type activationReturn struct {
+	sessionID, delegateID string
+	lease                 delegateLease
+	generationDone        <-chan struct{}
+	returned              chan struct{}
+}
+
+type activationReturns struct {
+	registered chan *activationReturn
+	pending    []*activationReturn
+	all        []*activationReturn
+}
+
+func activationStillOpen(t *testing.T, ch <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-ch:
+		t.Fatal("held activation completed")
+	default:
+	}
+}
+
+func newActivationReturns() *activationReturns {
+	// The bounded scripts below create fewer than 128 activations, including
+	// cancellation cleanup. Overflow is an invariant failure, never a lost join.
+	return &activationReturns{registered: make(chan *activationReturn, 128)}
+}
+
+func (r *activationReturns) configure(cfg *SessionConfig) {
+	cfg.testOnly.subagentActivationReturn = r.capture
+}
+
+func (r *activationReturns) capture(sub *subagent, lease delegateLease) func() {
+	sub.mu.Lock()
+	done := sub.done
+	sub.mu.Unlock()
+	receipt := &activationReturn{
+		sessionID: sub.sess.ID(), delegateID: sub.sess.owningDelegateID,
+		lease: lease, generationDone: done, returned: make(chan struct{}),
+	}
+	select {
+	case r.registered <- receipt:
+	default:
+		panic("activation registration capacity exceeded")
+	}
+	// This runs after WG.Done, so it must not access the session or recorder.
+	return func() { close(receipt.returned) }
+}
+
+func (r *activationReturns) collect() {
+	for {
+		select {
+		case receipt := <-r.registered:
+			r.pending = append(r.pending, receipt)
+			r.all = append(r.all, receipt)
+		default:
+			return
+		}
+	}
+}
+
+// take follows a known causal boundary (normally held provider entry). The
+// factory runs before execution, so no polling or registration timeout is needed.
+func (r *activationReturns) take(t *testing.T, sessionID string) *activationReturn {
+	t.Helper()
+	r.collect()
+	for i, receipt := range r.pending {
+		if receipt.sessionID == sessionID {
+			r.pending = append(r.pending[:i], r.pending[i+1:]...)
+			if receipt.lease.delegateID != receipt.delegateID || receipt.lease.generation == 0 {
+				t.Fatalf("activation identity = %+v", receipt)
+			}
+			return receipt
+		}
+	}
+	t.Fatalf("no activation registered for session %s", sessionID)
+	return nil
+}
+
+// Call after stopping wake producers and releasing provider gates. Close fences
+// future admission and cancels/joins execution, then receipts join its final tail.
+func (r *activationReturns) close(t *testing.T, root *Session) {
+	t.Helper()
+	root.Close()
+	r.collect()
+	for _, receipt := range r.all {
+		awaitSignal(t, receipt.returned, "activation cleanup")
+	}
+}
+
 // waitForRootAttention waits until root holds at least n unresolved
 // attention items and returns them in transcript order.
 func waitForRootAttention(t *testing.T, root *Session, n int) []string {
@@ -304,6 +396,15 @@ func notificationReportWakesParent(t *testing.T, _ bool) {
 	releaseSibling := sync.OnceFunc(func() { close(siblingGate) })
 	defer releaseReport()
 	defer releaseSibling()
+	returns := newActivationReturns()
+	initialGate, observedGate, terminalGate := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	terminalEntered := make(chan struct{})
+	releaseInitial := sync.OnceFunc(func() { close(initialGate) })
+	releaseObserved := sync.OnceFunc(func() { close(observedGate) })
+	releaseTerminal := sync.OnceFunc(func() { close(terminalGate) })
+	defer releaseInitial()
+	defer releaseObserved()
+	defer releaseTerminal()
 	workerIDs := make(chan string, 2)
 	presented := make(chan llm.Request, 1)
 	var siblingID string
@@ -330,11 +431,18 @@ func notificationReportWakesParent(t *testing.T, _ bool) {
 		func(req llm.Request) llm.Response {
 			siblingID = deferredHeadDelegateID.FindString(lastToolResultText(req.Messages))
 			workerIDs <- siblingID
+			awaitSignal(t, initialGate, "initial coordinator activation capture")
 			return waitResponse()
 		},
 		func(req llm.Request) llm.Response {
 			presented <- req
+			awaitSignal(t, observedGate, "observing coordinator activation capture")
 			return waitResponse()
+		},
+		func(llm.Request) llm.Response {
+			close(terminalEntered)
+			awaitSignal(t, terminalGate, "terminal coordinator activation capture")
+			return finalResponse("coordinator finished")
 		},
 	)
 	adapter.script("WORKER-A", func(llm.Request) llm.Response {
@@ -345,7 +453,8 @@ func notificationReportWakesParent(t *testing.T, _ bool) {
 		awaitSignal(t, siblingGate, "A's report to be observed")
 		return finalResponse("sibling finished")
 	})
-	root := newMessagingRoot(t, adapter, nil)
+	root := newMessagingRoot(t, adapter, returns.configure)
+	t.Cleanup(func() { returns.close(t, root) })
 	serveSupervisionRootWakes(t, root)
 	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -354,7 +463,17 @@ func notificationReportWakesParent(t *testing.T, _ bool) {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 	adapter.waitForRequests(t, "COORD-BRIEF", 3)
-	coordinator := waitForSoleChildIdle(t, root)
+	children := root.subagents.sessions()
+	if len(children) != 1 {
+		t.Fatalf("coordinator children = %d", len(children))
+	}
+	coordinator := children[0]
+	initial := returns.take(t, coordinator.ID())
+	releaseInitial()
+	waitForTestSignal(t, initial.returned, "initial coordinator yield")
+	if coordinator.State() != SessionIdle {
+		t.Fatalf("coordinator state = %s", coordinator.State())
+	}
 	workerID, sibling := <-workerIDs, <-workerIDs
 	if workerID == "" || sibling == "" || workerID == sibling {
 		t.Fatalf("worker identities = %q, %q", workerID, sibling)
@@ -369,13 +488,17 @@ func notificationReportWakesParent(t *testing.T, _ bool) {
 	if text := messagesText(req.Messages); strings.Count(text, payload) != 1 || !strings.Contains(text, `delegate_id="`+workerID+`"`) {
 		t.Fatalf("coordinator request did not carry worker A's payload exactly once: %s", text)
 	}
+	observed := returns.take(t, coordinator.ID())
+	if observed.lease != initial.lease || observed.generationDone != initial.generationDone {
+		t.Fatalf("coordinator resumed a different generation: %+v -> %+v", initial, observed)
+	}
+	releaseObserved()
+	waitForTestSignal(t, observed.returned, "coordinator response and yield while B remains held")
 	attentionID := "delegate:" + workerID + "/delivery/1"
-	// Await the successful response's resolution, not just provider entry.
-	waitForCondition(t, 30*time.Second, "the report's successful request to consume its delivery", func() bool {
-		fold := rootAttentionFold(t, coordinator)
-		return fold.resolutions[attentionID] == delegateAttentionConsumed
-	})
 	fold := rootAttentionFold(t, coordinator)
+	if fold.resolutions[attentionID] != delegateAttentionConsumed {
+		t.Fatalf("report resolution = %s", fold.resolutions[attentionID])
+	}
 	if !slices.Equal(fold.order, []string{attentionID}) || fold.resumeGenerations[attentionID] != 0 {
 		t.Fatalf("report delivery fold = order %v generations %v, want the presenting generation only", fold.order, fold.resumeGenerations)
 	}
@@ -406,12 +529,18 @@ func notificationReportWakesParent(t *testing.T, _ bool) {
 		}
 	}
 	releaseSibling()
-	waitForCondition(t, 30*time.Second, "coordinator RunFinished after sibling release", func() bool {
-		for _, event := range publicationEvents(t, root) {
-			if event.DelegateID == coordinator.owningDelegateID && event.RunFinished != nil {
-				return true
-			}
+	waitForTestSignal(t, terminalEntered, "terminal coordinator provider")
+	terminal := returns.take(t, coordinator.ID())
+	if terminal.lease != initial.lease || terminal.generationDone != initial.generationDone {
+		t.Fatalf("terminal coordinator generation = %+v", terminal)
+	}
+	releaseTerminal()
+	waitForTestSignal(t, initial.generationDone, "captured coordinator generation done")
+	waitForTestSignal(t, terminal.returned, "terminal coordinator owner cleanup")
+	for _, event := range publicationEvents(t, root) {
+		if event.DelegateID == coordinator.owningDelegateID && event.RunFinished != nil {
+			return
 		}
-		return false
-	})
+	}
+	t.Fatal("coordinator did not publish RunFinished after sibling release")
 }

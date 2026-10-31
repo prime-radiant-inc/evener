@@ -92,23 +92,47 @@ func TestNotificationPublication(t *testing.T) {
 	}
 	t.Run("waiting publishes before target settles", func(t *testing.T) {
 		adapter := newMessagingAdapter("WAIT-WORKER", "WAIT-TARGET")
+		returns := newActivationReturns()
+		workerRequest, targetRequest := make(chan llm.Request, 1), make(chan llm.Request, 1)
+		publicationGate := make(chan struct{})
+		releasePublication := sync.OnceFunc(func() { close(publicationGate) })
+		defer releasePublication()
 		adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("spawn", "WAIT-WORKER") }, func(llm.Request) llm.Response { return finalResponse("root-finished") })
 		gate := make(chan struct{})
 		release := sync.OnceFunc(func() { close(gate) })
 		defer release()
-		adapter.script("WAIT-TARGET", func(llm.Request) llm.Response { <-gate; return finalResponse("target-finished") })
+		adapter.script("WAIT-TARGET", func(req llm.Request) llm.Response {
+			targetRequest <- req
+			<-gate
+			return finalResponse("target-finished")
+		})
 		adapter.script("WAIT-WORKER", func(llm.Request) llm.Response { return delegateToolResponse("target", "WAIT-TARGET") }, func(req llm.Request) llm.Response {
+			workerRequest <- req
+			<-publicationGate
 			id := deferredHeadDelegateID.FindString(lastToolResultText(req.Messages))
 			return toolCallResponse(publicationCall("wait-publication", map[string]any{"message": "wait-43ac", "end_turn": true, "end_reason": "waiting_on_work", "waiting_on": id, "output": publicationOutput("wait-43ac")}))
 		})
-		root := newMessagingRoot(t, adapter, nil)
+		root := newMessagingRoot(t, adapter, returns.configure)
+		t.Cleanup(func() {
+			releasePublication()
+			release()
+			returns.close(t, root)
+		})
 		if _, err := root.ProcessInput(context.Background(), "start", nil); err != nil {
 			t.Fatal(err)
 		}
-		adapter.waitForRequests(t, "WAIT-WORKER", 2)
-		child := waitForSoleChildIdle(t, root)
-		waitForCondition(t, 30*time.Second, "accepted wait", func() bool { return child.Communicated() })
-		waitForCondition(t, 30*time.Second, "wait receiver append", func() bool { return len(rootAttentionFold(t, root).order) == 1 })
+		request := <-workerRequest
+		target := <-targetRequest
+		child := root.getSub(request.SessionID).sess
+		activation := returns.take(t, child.ID())
+		targetActivation := returns.take(t, target.SessionID)
+		activationStillOpen(t, targetActivation.generationDone)
+		releasePublication()
+		incidentYielded(t, root, child.ID(), activation)
+		if !child.Communicated() || len(rootAttentionFold(t, root).order) != 1 {
+			t.Fatal("yielded wait did not publish its accepted message to the owner")
+		}
+		activationStillOpen(t, targetActivation.generationDone)
 		for _, e := range publicationEvents(t, root) {
 			if u := e.UpdatePosted; u != nil {
 				if u.Communicate == nil || u.Communicate.CallID != "wait-publication" || u.Communicate.WaitingOn == "" || !u.Communicate.EndTurn || len(u.Packet.StructuredResult) == 0 {
@@ -139,11 +163,23 @@ func TestNotificationPublication(t *testing.T) {
 		if _, err := root.ProcessInput(context.Background(), "start", nil); err != nil {
 			t.Fatal(err)
 		}
-		waitForCondition(t, 30*time.Second, "two publications", func() bool { return len(rootAttentionFold(t, root).order) == 2 })
+		// The synchronous root tool admitted the sole terminal child. No sibling
+		// or successor can keep this owning sender tail open.
+		root.sendersWG.Wait()
+		child := root.subagents.sessions()[0]
+		sub := root.getSub(child.ID())
+		sub.mu.Lock()
+		err := sub.err
+		sub.mu.Unlock()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var updateID string
 		var update *delegatestore.UpdatePosted
 		for _, e := range publicationEvents(t, root) {
 			if e.UpdatePosted != nil {
 				update = e.UpdatePosted
+				updateID = fmt.Sprintf("delegate:%s/update/%d", e.DelegateID, e.Seq)
 			}
 			if e.TerminalPrepared != nil {
 				p := e.TerminalPrepared
@@ -158,6 +194,10 @@ func TestNotificationPublication(t *testing.T) {
 		}
 		if update == nil || update.Communicate.CallID != "tuple-update" || update.Communicate.Blocker != "" || !strings.Contains(string(update.Packet.StructuredResult), "first.json") {
 			t.Fatalf("update tuple=%+v", update)
+		}
+		wantIDs := []string{updateID, delegateAttentionID(child.owningDelegateID + "/delivery/1")}
+		if ids := rootAttentionFold(t, root).order; !slices.Equal(ids, wantIDs) {
+			t.Fatalf("same-batch publications=%v, want %v", ids, wantIDs)
 		}
 	})
 	t.Run("owning batch and same call retry", testPublicationOwningBatch)
@@ -181,12 +221,26 @@ func TestNotificationPublication(t *testing.T) {
 		if !admitted {
 			t.Fatal("accepted done did not install generation fence")
 		}
+		sub := root.getSub(child.ID())
+		sub.mu.Lock()
+		generationDone := sub.done
+		sub.mu.Unlock()
+		activationStillOpen(t, generationDone)
 		release()
-		waitForCondition(t, 30*time.Second, "first generation quiesced", func() bool {
-			c.mu.Lock()
-			defer c.mu.Unlock()
-			return !c.durable[lease.delegateID].CurrentRunOpen && c.finalizingLocked(lease.delegateID) == nil
-		})
+		waitForTestSignal(t, generationDone, "first publication generation")
+		root.sendersWG.Wait()
+		c.mu.Lock()
+		quiesced := !c.durable[lease.delegateID].CurrentRunOpen && c.finalizingLocked(lease.delegateID) == nil
+		c.mu.Unlock()
+		if !quiesced {
+			t.Fatal("first generation retained finalization after its sender returned")
+		}
+		sub.mu.Lock()
+		err := sub.err
+		sub.mu.Unlock()
+		if err != nil {
+			t.Fatal(err)
+		}
 		call := publicationCall("restart-generation", map[string]any{"to": lease.delegateID, "message": "continue", "max_wait_ms": 0})
 		call.Name = "delegate_send"
 		out = publicationExecute(context.Background(), root, call)
@@ -363,6 +417,20 @@ func TestCompletionWithLiveChild(t *testing.T) {
 	for _, order := range []string{"existing child", "child then done", "done then child"} {
 		t.Run(order, func(t *testing.T) {
 			adapter := newMessagingAdapter("COORD-PUB", "LIVE-PUB")
+			returns := newActivationReturns()
+			providerGate, inspectGate := make(chan struct{}), make(chan struct{})
+			releaseProvider := sync.OnceFunc(func() { close(providerGate) })
+			releaseInspect := sync.OnceFunc(func() { close(inspectGate) })
+			defer releaseProvider()
+			defer releaseInspect()
+			providerRequest, childRequest := make(chan llm.Request, 1), make(chan llm.Request, 1)
+			first := func(response llm.Response) func(llm.Request) llm.Response {
+				return func(req llm.Request) llm.Response {
+					providerRequest <- req
+					<-providerGate
+					return response
+				}
+			}
 			childGate := make(chan struct{})
 			release := sync.OnceFunc(func() { close(childGate) })
 			defer release()
@@ -372,14 +440,15 @@ func TestCompletionWithLiveChild(t *testing.T) {
 			done := publicationCall("premature-done", map[string]any{"message": "done-b83f", "end_turn": true, "output": publicationOutput("done-b83f")})
 			switch order {
 			case "existing child":
-				adapter.script("COORD-PUB", func(llm.Request) llm.Response { return toolCallResponse(create) }, func(llm.Request) llm.Response { return toolCallResponse(done) })
+				adapter.script("COORD-PUB", first(toolCallResponse(create)), func(llm.Request) llm.Response { return toolCallResponse(done) })
 			case "child then done":
-				adapter.script("COORD-PUB", func(llm.Request) llm.Response { return toolCallResponse(create, done) })
+				adapter.script("COORD-PUB", first(toolCallResponse(create, done)))
 			default:
-				adapter.script("COORD-PUB", func(llm.Request) llm.Response { return toolCallResponse(done, create) })
+				adapter.script("COORD-PUB", first(toolCallResponse(done, create)))
 			}
 			adapter.script("COORD-PUB", func(req llm.Request) llm.Response {
 				inspected <- req
+				<-inspectGate
 				var target string
 				for _, message := range req.Messages {
 					for _, part := range message.Content {
@@ -390,20 +459,35 @@ func TestCompletionWithLiveChild(t *testing.T) {
 				}
 				return toolCallResponse(publicationCall("valid-wait", map[string]any{"message": "wait-8cc1", "end_turn": true, "end_reason": "waiting_on_work", "waiting_on": target}))
 			})
-			adapter.script("LIVE-PUB", func(llm.Request) llm.Response { <-childGate; return finalResponse("child-finished") })
-			root := newMessagingRoot(t, adapter, nil)
+			adapter.script("LIVE-PUB", func(req llm.Request) llm.Response {
+				childRequest <- req
+				<-childGate
+				return finalResponse("child-finished")
+			})
+			root := newMessagingRoot(t, adapter, returns.configure)
+			t.Cleanup(func() {
+				releaseProvider()
+				releaseInspect()
+				release()
+				returns.close(t, root)
+			})
 			if _, err := root.ProcessInput(context.Background(), "start", nil); err != nil {
 				t.Fatal(err)
 			}
+			initial := <-providerRequest
+			coordinator := root.getSub(initial.SessionID).sess
+			activation := returns.take(t, coordinator.ID())
+			activationStillOpen(t, activation.generationDone)
+			releaseProvider()
 			if order == "done then child" {
-				waitForCondition(t, 30*time.Second, "coordinator settlement", func() bool {
-					for _, e := range publicationEvents(t, root) {
-						if e.RunFinished != nil {
-							return true
-						}
-					}
-					return false
-				})
+				incidentSettled(t, root, coordinator.ID(), activation)
+				sub := root.getSub(coordinator.ID())
+				sub.mu.Lock()
+				err := sub.err
+				sub.mu.Unlock()
+				if err != nil {
+					t.Fatal(err)
+				}
 				count := 0
 				var finished *delegatestore.RunFinished
 				var coordinatorID string
@@ -423,7 +507,6 @@ func TestCompletionWithLiveChild(t *testing.T) {
 				if finished == nil || finished.Outcome.Status != delegatestore.OutcomeCompleted || finished.Disposition != delegatestore.DispositionReported || settled.LatestPacket == nil || settled.LatestPacket.Kind != delegatestore.PacketReported || string(settled.LatestPacket.Message) != `"done-b83f"` {
 					t.Fatalf("done-then-child finish=%+v packet=%+v, want completed reported done-b83f", finished, settled.LatestPacket)
 				}
-				coordinator := root.subagents.sessions()[0]
 				accepted := publicationToolResult(t, coordinator, done.ID)
 				var result struct {
 					Accepted bool `json:"accepted"`
@@ -438,11 +521,9 @@ func TestCompletionWithLiveChild(t *testing.T) {
 				t.Logf("coordinator=%s generation=%d outcome=%s packet=%s message=%s done accepted=%t child refused=%t", coordinatorID, finished.Generation, finished.Outcome.Status, settled.LatestPacket.Kind, settled.LatestPacket.Message, result.Accepted, refused.IsError)
 				return
 			}
-			var req llm.Request
-			select {
-			case req = <-inspected:
-			case <-time.After(30 * time.Second):
-				t.Fatal("done was not refused as an ordinary tool result")
+			req := <-inspected
+			if req.SessionID != coordinator.ID() {
+				t.Fatalf("inspection session=%s, want %s", req.SessionID, coordinator.ID())
 			}
 			var refused bool
 			for _, m := range req.Messages {
@@ -460,8 +541,15 @@ func TestCompletionWithLiveChild(t *testing.T) {
 					t.Fatal("refused done produced terminal evidence")
 				}
 			}
-			coordinator := waitForSoleChildIdle(t, root)
-			waitForCondition(t, 30*time.Second, "valid waiting publication", func() bool { return coordinator.Communicated() })
+			liveRequest := <-childRequest
+			liveActivation := returns.take(t, liveRequest.SessionID)
+			activationStillOpen(t, liveActivation.generationDone)
+			releaseInspect()
+			incidentYielded(t, root, coordinator.ID(), activation)
+			if !coordinator.Communicated() {
+				t.Fatal("yielded coordinator did not accept its waiting publication")
+			}
+			activationStillOpen(t, liveActivation.generationDone)
 			if len(rootAttentionFold(t, root).order) != 1 {
 				t.Fatal("valid waiting message did not reach owner")
 			}
@@ -473,9 +561,12 @@ func TestCompletionWithLiveChild(t *testing.T) {
 // Done fences child work in its own input, not work a later admitted input owns.
 func TestCompletionAdmissionRetiresOnSameGenerationInput(t *testing.T) {
 	adapter := newMessagingAdapter("CONTINUATION-COORD", "CONTINUATION-CHILD")
+	returns := newActivationReturns()
 	providerEntered, providerGate := make(chan struct{}), make(chan struct{})
 	doneExecuted, batchGate := make(chan struct{}), make(chan struct{})
 	childGate, inspectGate := make(chan struct{}), make(chan struct{})
+	continuationGate := make(chan struct{})
+	releaseContinuation := sync.OnceFunc(func() { close(continuationGate) })
 	releaseProvider := sync.OnceFunc(func() { close(providerGate) })
 	releaseBatch := sync.OnceFunc(func() { close(batchGate) })
 	releaseChild := sync.OnceFunc(func() { close(childGate) })
@@ -484,6 +575,7 @@ func TestCompletionAdmissionRetiresOnSameGenerationInput(t *testing.T) {
 	defer releaseBatch()
 	defer releaseChild()
 	defer releaseInspect()
+	defer releaseContinuation()
 	done := publicationCall("continuation-done", map[string]any{"message": "done-before-steer", "end_turn": true, "output": publicationOutput("done-before-steer")})
 	create := delegateToolResponse("continuation-create", "CONTINUATION-CHILD").ToolCalls()[0]
 	continuation, inspected := make(chan llm.Request, 1), make(chan llm.Request, 1)
@@ -494,6 +586,7 @@ func TestCompletionAdmissionRetiresOnSameGenerationInput(t *testing.T) {
 		return toolCallResponse(done)
 	}, func(req llm.Request) llm.Response {
 		continuation <- req
+		<-continuationGate
 		return toolCallResponse(create)
 	}, func(req llm.Request) llm.Response {
 		inspected <- req
@@ -502,12 +595,22 @@ func TestCompletionAdmissionRetiresOnSameGenerationInput(t *testing.T) {
 		return toolCallResponse(publicationCall("continuation-wait", map[string]any{"message": "waiting for follow-up child", "end_turn": true, "end_reason": "waiting_on_work", "waiting_on": target}))
 	})
 	adapter.script("CONTINUATION-CHILD", func(llm.Request) llm.Response { <-childGate; return finalResponse("follow-up finished") })
-	root := newMessagingRoot(t, adapter, nil)
+	root := newMessagingRoot(t, adapter, returns.configure)
+	t.Cleanup(func() {
+		releaseProvider()
+		releaseBatch()
+		releaseContinuation()
+		releaseInspect()
+		releaseChild()
+		returns.close(t, root)
+	})
 	if _, err := root.ProcessInput(context.Background(), "start", nil); err != nil {
 		t.Fatal(err)
 	}
 	awaitSignal(t, providerEntered, "coordinator initial provider")
 	coordinator := root.subagents.sessions()[0]
+	activation := returns.take(t, coordinator.ID())
+	activationStillOpen(t, activation.generationDone)
 	c := root.delegateController
 	c.mu.Lock()
 	lease := c.live[coordinator.owningDelegateID].binding.lease
@@ -542,19 +645,14 @@ func TestCompletionAdmissionRetiresOnSameGenerationInput(t *testing.T) {
 		t.Fatalf("owner steer=%+v decode=%v, want steering into running generation", result, err)
 	}
 	releaseBatch()
-	var req llm.Request
-	select {
-	case req = <-continuation:
-	case <-time.After(30 * time.Second):
-		t.Fatal("accepted owner steer did not reach a continuation request")
-	}
+	req := <-continuation
 	if !requestContainsText(req, "follow-up-74ac") {
 		t.Fatal("continuation request did not carry admitted owner steering")
 	}
-	select {
-	case <-inspected:
-	case <-time.After(30 * time.Second):
-		t.Fatal("continuation did not persist a child-create tool result")
+	releaseContinuation()
+	inspection := <-inspected
+	if inspection.SessionID != coordinator.ID() {
+		t.Fatalf("inspection session=%s, want %s", inspection.SessionID, coordinator.ID())
 	}
 	c.mu.Lock()
 	next := c.live[lease.delegateID].binding.lease
@@ -585,6 +683,8 @@ func TestCompletionAdmissionRetiresOnSameGenerationInput(t *testing.T) {
 	if starts != 1 || children != 1 {
 		t.Fatalf("coordinator starts=%d children=%d, want same-generation child creation", starts, children)
 	}
+	releaseInspect()
+	incidentYielded(t, root, coordinator.ID(), activation)
 	t.Logf("coordinator=%s generation=%d lease unchanged, RunStarted=%d accepted done, admitted owner steer carried, child Created=%d", lease.delegateID, lease.generation, starts, children)
 }
 
@@ -661,7 +761,10 @@ func TestTerminalNotificationFollowsSettlement(t *testing.T) {
 			held, gate := make(chan *subagent, 1), make(chan struct{})
 			release := sync.OnceFunc(func() { close(gate) })
 			defer release()
-			adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("spawn", "TERMINAL-PUB") }, func(llm.Request) llm.Response { return finalResponse("root-finished") })
+			adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("spawn", "TERMINAL-PUB") },
+				func(llm.Request) llm.Response { return finalResponse("root-finished") },
+				// The notification response earns the receipt asserted below, not an unscripted adapter answer.
+				func(llm.Request) llm.Response { return finalResponse("done") })
 			output := publicationOutput("terminal-993f")
 			adapter.script("TERMINAL-PUB", func(llm.Request) llm.Response {
 				reason := disposition
@@ -673,15 +776,29 @@ func TestTerminalNotificationFollowsSettlement(t *testing.T) {
 			root := newMessagingRoot(t, adapter, func(cfg *SessionConfig) {
 				cfg.testOnly.subagentAfterFinalStatePublish = func(a *subagent) { held <- a; <-gate }
 			})
+			t.Cleanup(func() {
+				release()
+				root.Close()
+				root.sendersWG.Wait()
+			})
 			if _, err := root.ProcessInput(context.Background(), "start", nil); err != nil {
 				t.Fatal(err)
 			}
 			var sub *subagent
 			select {
 			case sub = <-held:
+			// TRIPWIRE: the scripted child sends its actual held settlement, only a hang reaches this guard.
 			case <-time.After(30 * time.Second):
 				t.Fatal("settlement boundary not reached")
 			}
+			sub.mu.Lock()
+			generationDone := sub.done
+			sub.mu.Unlock()
+			c := root.delegateController
+			c.mu.Lock()
+			lease := c.live[sub.sess.owningDelegateID].binding.lease
+			c.mu.Unlock()
+			activationStillOpen(t, generationDone)
 			events := publicationEvents(t, root)
 			prepared, finished := 0, 0
 			for _, e := range events {
@@ -712,10 +829,6 @@ func TestTerminalNotificationFollowsSettlement(t *testing.T) {
 			if disposition == "later error" {
 				// Inject the actual late outcome at the controller boundary while the
 				// real runner is held. Its later finish must not publish a second item.
-				c := root.delegateController
-				c.mu.Lock()
-				lease := c.live[sub.sess.owningDelegateID].binding.lease
-				c.mu.Unlock()
 				plans, err := c.FinishGeneration(lease, failed)
 				if err != nil {
 					t.Fatal(err)
@@ -725,7 +838,14 @@ func TestTerminalNotificationFollowsSettlement(t *testing.T) {
 				}
 			}
 			release()
-			awaitRootReport(t, root)
+			waitForTestSignal(t, generationDone, "captured terminal publication generation")
+			root.sendersWG.Wait()
+			sub.mu.Lock()
+			err := sub.err
+			sub.mu.Unlock()
+			if err != nil {
+				t.Fatal(err)
+			}
 			ids := rootAttentionFold(t, root).order
 			if !slices.Equal(ids, []string{delegateAttentionID(sub.sess.owningDelegateID + "/delivery/1")}) {
 				t.Fatalf("receiver=%v", ids)

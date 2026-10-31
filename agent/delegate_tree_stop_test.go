@@ -324,7 +324,7 @@ func TestDelegateControllerStopDrainsSteeringAndModelClaims(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CommitStart successor: %v", err)
 	}
-	if err := c.AttachRuntime(started.lease, steeringClaim.runtime); err != nil {
+	if err := attachRuntimeWithHandoffForTest(c, started.lease, steeringClaim.runtime); err != nil {
 		t.Fatalf("AttachRuntime successor: %v", err)
 	}
 	inputClaim, err := c.BeginStartInput(started.lease)
@@ -1436,7 +1436,7 @@ func startDelegateSuccessorGeneration(t *testing.T, c *delegateTreeController, d
 	if err != nil {
 		t.Fatalf("CommitStart successor: %v", err)
 	}
-	if err := c.AttachRuntime(started.lease, runtime); err != nil {
+	if err := attachRuntimeWithHandoffForTest(c, started.lease, runtime); err != nil {
 		t.Fatalf("AttachRuntime successor: %v", err)
 	}
 	inputClaim, err := c.BeginStartInput(started.lease)

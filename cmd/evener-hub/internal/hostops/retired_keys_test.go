@@ -48,6 +48,7 @@ func TestPriorBuildStoreLoadsAndDropsRetiredKeys(t *testing.T) {
 
 	// The boot pass is this file's rewrite trigger: it moves the pending record
 	// to interrupted and writes the store back.
+	pinBootPreservationClock(store, nowUTC())
 	moved, err := store.RecoverInterrupted()
 	if err != nil || moved != 1 {
 		t.Fatalf("RecoverInterrupted = %d/%v, want the one pending record moved", moved, err)

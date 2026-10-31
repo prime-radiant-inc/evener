@@ -6,6 +6,7 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/spf13/afero"
 )
@@ -139,6 +140,7 @@ func FuzzLoadStore(f *testing.F) {
 		if store == nil {
 			t.Fatalf("an accepted store came back nil")
 		}
+		pinBootPreservationClock(store, nowUTC())
 
 		before := store.Records()
 		sequenceBefore := store.Sequence()
@@ -257,6 +259,7 @@ func TestRepairedFuzzSeedsReachTheirIntendedArms(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open(pending/complete): %v", err)
 	}
+	pinBootPreservationClock(store, nowUTC())
 	moved, err := store.RecoverInterrupted()
 	if err != nil || moved != 1 {
 		t.Fatalf("RecoverInterrupted = %d, %v; want 1 moved", moved, err)
@@ -284,5 +287,67 @@ func TestRepairedFuzzSeedsReachTheirIntendedArms(t *testing.T) {
 		if got := store.Sequence(); got != 0 {
 			t.Fatalf("%s: the replacement sequence = %d, want the fresh store's 0", name, got)
 		}
+	}
+}
+
+// pinBootPreservationClock keeps age expiry out of boot-preservation fixtures.
+// RecoverInterrupted stamps moved records with raw wall time, so the anchor
+// must precede both the original updates and the pre-boot wall-clock bound.
+// Count, byte and other retention limits remain unchanged.
+func pinBootPreservationClock(store *Store, preBoot time.Time) {
+	records := store.Records()
+	if len(records) == 0 {
+		return
+	}
+	anchor := preBoot
+	for _, record := range records {
+		if record.UpdatedAt.Before(anchor) {
+			anchor = record.UpdatedAt
+		}
+	}
+	store.clock = func() time.Time { return anchor }
+}
+
+func TestBootPreservationClockBounds(t *testing.T) {
+	bound := time.Date(2040, time.January, 2, 0, 0, 0, 0, time.UTC)
+	past, future := bound.Add(-time.Hour), bound.Add(time.Hour)
+	for _, tc := range []struct {
+		name    string
+		updates [2]time.Time
+		want    time.Time
+	}{
+		{"before", [2]time.Time{past, past.Add(time.Minute)}, past},
+		{"after", [2]time.Time{future, future.Add(time.Minute)}, bound},
+		{"straddling", [2]time.Time{future, past}, past},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var doc map[string]any
+			if err := json.Unmarshal([]byte(priorShapeStoreJSON), &doc); err != nil {
+				t.Fatal(err)
+			}
+			for i, raw := range doc["records"].([]any) {
+				record := raw.(map[string]any)
+				record["createdAt"] = past.Format(time.RFC3339Nano)
+				record["updatedAt"] = tc.updates[i].Format(time.RFC3339Nano)
+			}
+			body, err := json.Marshal(doc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := StorePath(t.TempDir())
+			writeRawStore(t, path, 0o600, string(body))
+			store, err := Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := marshalRecords(t, store.Records())
+			pinBootPreservationClock(store, bound)
+			if got := store.now(); !got.Equal(tc.want) {
+				t.Errorf("boot-preservation clock = %v, want %v", got, tc.want)
+			}
+			if !bytes.Equal(before, marshalRecords(t, store.Records())) {
+				t.Error("pinning the clock changed fixture records")
+			}
+		})
 	}
 }

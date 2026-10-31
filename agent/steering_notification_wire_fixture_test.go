@@ -62,6 +62,10 @@ func TestNotificationReportProjection(t *testing.T) {
 			}
 			if strings.HasPrefix(kind, "waiting") {
 				adapter := newMessagingAdapter("WAIT-WORKER", "WAIT-TARGET")
+				returns := newActivationReturns()
+				yieldGate := make(chan struct{})
+				releaseYield := sync.OnceFunc(func() { close(yieldGate) })
+				defer releaseYield()
 				adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("spawn", "WAIT-WORKER") }, func(llm.Request) llm.Response { return finalResponse("root-finished") })
 				gate := make(chan struct{})
 				release := sync.OnceFunc(func() { close(gate) })
@@ -73,16 +77,28 @@ func TestNotificationReportProjection(t *testing.T) {
 					if strings.HasPrefix(kind, "waiting-empty") {
 						output = map[string]any{"message": "", "data": map[string]any{}, "artifacts": []string{}}
 					}
+					awaitSignal(t, yieldGate, "waiting projection activation capture")
 					return toolCallResponse(publicationCall("projection-"+kind, map[string]any{"message": message, "end_turn": true, "end_reason": "waiting_on_work", "waiting_on": id, "output": output}))
 				})
-				root := newMessagingRoot(t, adapter, nil)
+				root := newMessagingRoot(t, adapter, returns.configure)
+				t.Cleanup(func() { returns.close(t, root) })
 				if _, err := root.ProcessInput(t.Context(), "start", nil); err != nil {
 					t.Fatal(err)
 				}
 				// Release the held descendant before root.Close cleanup.
 				t.Cleanup(release)
-				waitForCondition(t, 30*time.Second, "waiting projection", func() bool { return len(rootAttentionFold(t, root).order) == 1 })
-				child := waitForSoleChildIdle(t, root)
+				adapter.waitForRequests(t, "WAIT-WORKER", 2)
+				children := root.subagents.sessions()
+				if len(children) != 1 {
+					t.Fatalf("waiting children = %d", len(children))
+				}
+				child := children[0]
+				activation := returns.take(t, child.ID())
+				releaseYield()
+				incidentYielded(t, root, child.ID(), activation)
+				if child.State() != SessionIdle || len(rootAttentionFold(t, root).order) != 1 {
+					t.Fatalf("waiting projection state = %s, attention = %v", child.State(), rootAttentionFold(t, root).order)
+				}
 				before, err := root.pendingNotificationIDs()
 				if err != nil {
 					t.Fatal(err)
@@ -121,6 +137,10 @@ func TestNotificationReportProjection(t *testing.T) {
 				}
 			})
 			t.Cleanup(func() { close(nextGate) })
+			sub := root.getSub(child.ID())
+			sub.mu.Lock()
+			generationDone := sub.done
+			sub.mu.Unlock()
 			writeTaskStoreFixture(t, child.stateDir, child.ID(), []task.Task{
 				{ID: 1, Description: "task-a", Status: task.TaskDone},
 				{ID: 2, Description: "task-b", Status: task.TaskInProgress},
@@ -163,11 +183,15 @@ func TestNotificationReportProjection(t *testing.T) {
 			}
 			if terminal {
 				release()
+				waitForTestSignal(t, generationDone, "captured projection terminal generation")
+				// No successor is admitted until the later explicit delegate_send.
+				root.sendersWG.Wait()
 			}
-			waitForCondition(t, 30*time.Second, "report receiver custody", func() bool {
-				ids, err := root.pendingNotificationIDs()
-				return err == nil && len(ids) == 1
-			})
+			// Updates have synchronous publication custody. Terminal kinds have
+			// joined the captured generation and its executor's publication tail.
+			if ids, err := root.pendingNotificationIDs(); err != nil || len(ids) != 1 {
+				t.Fatalf("report receiver custody = %v, error = %v", ids, err)
+			}
 			var packet *delegatestore.TerminalPacket
 			for _, e := range publicationEvents(t, root) {
 				if p := e.TerminalPrepared; p != nil {

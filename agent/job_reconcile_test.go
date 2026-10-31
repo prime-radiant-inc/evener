@@ -1,8 +1,11 @@
 package agent
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"os"
+	"slices"
 	"testing"
 	"time"
 
@@ -261,7 +264,8 @@ func TestReconcileOnRestoreRequeuesTerminalNotifications(t *testing.T) {
 			}
 
 			c := llm.NewClient()
-			c.Register(&fakeAdapter{name: "openai"})
+			adapter := &fakeAdapter{name: "openai"}
+			c.Register(adapter)
 			meta := schema.SessionMeta{
 				ID:        sessionID,
 				ProfileID: "openai",
@@ -275,21 +279,37 @@ func TestReconcileOnRestoreRequeuesTerminalNotifications(t *testing.T) {
 			}
 			defer sess.Close()
 
-			if got := sess.peekNotifications(); got != 1 {
-				t.Fatalf("peekNotifications = %d, want 1", got)
+			id := requireCanonicalShellNotification(t, sess, "job_done", 0)
+			if id != "shell:job_done:GEN1" {
+				t.Fatalf("attention identity=%q", id)
+			}
+			sess.Close()
+			sess, err = RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), meta, RestoreSessionConfig{StateDir: dir})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer sess.Close()
+			if got := requireCanonicalShellNotification(t, sess, "job_done", 0); got != id {
+				t.Fatalf("reopened ID=%q want %q", got, id)
 			}
 			var wakes int
 			sess.SetNotifyFunc(func() { wakes++ })
 			if wakes != 1 {
-				t.Fatalf("late notify wakes = %d, want 1", wakes)
+				t.Fatalf("late notify wakes=%d, want 1", wakes)
 			}
-			recs, err := sess.jobManager.store.Load()
-			if err != nil {
-				t.Fatalf("load jobs: %v", err)
+			adapter.steps = []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
+				observationRequest(t, req, []string{`job_id="job_done"`}, nil)
+				requireCanonicalShellNotification(t, sess, "job_done", 0)
+				return finalResponse("restored completion observed")
+			}}
+			if _, err := sess.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+				t.Fatal(err)
 			}
-			if got := recs["job_done"].NotifyState; got != jobstore.NotifyPending {
-				t.Fatalf("notify state = %q, want pending", got)
+			requireCanonicalShellNotification(t, sess, "job_done", 1)
+			if len(adapter.Requests()) != 1 || len(producerSourceEvents(t, sess.jobManager, jobstore.EventJobNotificationDelivered)) != 1 {
+				t.Fatal("restore duplicated the provider response or source custody acknowledgment")
 			}
+
 		})
 	}
 }
@@ -319,39 +339,53 @@ func TestJobManagerNotificationCallbackWakesSession(t *testing.T) {
 
 func TestJobManagerNotificationCallbackRegistrationRace(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai"})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{StateDir: dir})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer sess.Close()
-
+	s, adapter := newStatusNotificationSession(t, true)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		for range 100 {
-			sess.SetNotifyFunc(func() {})
-			sess.SetNotifyFunc(nil)
+			s.SetNotifyFunc(func() {})
+			s.SetNotifyFunc(nil)
 		}
 	}()
-	for range 100 {
-		sess.enqueueJobNotificationAndNotify(jobNotification{JobID: "job_done"})
+	var jobs, expected []string
+	for i := range 100 {
+		jobID := fmt.Sprintf("job_registration_%03d", i)
+		jobs = append(jobs, jobID)
+		expected = append(expected, "shell:"+jobID+":GEN_"+jobID)
+		appendPendingJobNotificationRecordWithProvenance(t, s.jobManager, s.ID(), jobID, nil)
+		if _, _, err := s.jobManager.persistStableShellAttention(jobID); err != nil {
+			t.Fatal(err)
+		}
 	}
 	<-done
-
-	// All 100 notifications must have been enqueued without corruption despite
-	// concurrent SetNotifyFunc toggle (tests pendingJobNotifsMu correctness).
-	if got := sess.peekNotifications(); got != 100 {
-		t.Fatalf("peekNotifications = %d, want 100", got)
+	ids, err := s.pendingNotificationIDs()
+	if err != nil || !slices.Equal(ids, expected) {
+		t.Fatalf("accepted IDs=%v error=%v, want %v", ids, err, expected)
 	}
-	// A late-registered notifyFunc must fire immediately when notifications are
-	// already pending (tests SetNotifyFunc immediate-wake contract).
+	for _, jobID := range jobs {
+		requireCanonicalShellNotification(t, s, jobID, 0)
+	}
 	var wakes int
-	sess.SetNotifyFunc(func() { wakes++ })
+	s.SetNotifyFunc(func() { wakes++ })
 	if wakes != 1 {
-		t.Fatalf("late-register wakes = %d, want 1", wakes)
+		t.Fatalf("late-register wakes=%d, want 1", wakes)
+	}
+	adapter.steps = []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
+		for _, jobID := range jobs {
+			observationRequest(t, req, []string{fmt.Sprintf(`job_id=%q`, jobID)}, nil)
+		}
+		return finalResponse("all completions observed")
+	}}
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatal(err)
+	}
+	for _, jobID := range jobs {
+		requireCanonicalShellNotification(t, s, jobID, 1)
+	}
+	assertNotificationPending(t, s, []string{})
+	if len(adapter.Requests()) != 1 {
+		t.Fatalf("provider requests=%d, want 1", len(adapter.Requests()))
 	}
 }
 

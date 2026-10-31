@@ -191,7 +191,8 @@ func TestNotificationScheduling(t *testing.T) {
 					select {
 					case req := <-delivered:
 						observationRequest(t, req, []string{payload}, nil)
-					case <-time.After(5 * time.Second):
+					// TRIPWIRE: the scripted receiver sends the actual request, only a hang reaches this guard.
+					case <-time.After(30 * time.Second):
 						t.Fatal("exact receiver did not reach provider without a parent turn")
 					}
 				}
@@ -324,15 +325,21 @@ func TestNotificationAtExecutorRelease(t *testing.T) {
 				},
 			}
 			done := make(chan error, 1)
+			joined := false
+			t.Cleanup(func() {
+				unblock()
+				if !joined {
+					if err := <-done; err != nil {
+						t.Error(err)
+					}
+				}
+				updateSessionTestConfig(s, func(cfg *testConfig) { cfg.notificationExecutionRelease = nil })
+			})
 			go func() {
 				_, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification)
 				done <- err
 			}()
-			select {
-			case <-boundary:
-			case <-time.After(5 * time.Second):
-				t.Fatal("executor did not reach the release lock boundary")
-			}
+			waitForTestSignal(t, boundary, "executor release lock boundary")
 			// The old input is blocked at release while another goroutine's append
 			// publishes through the real common readiness path.
 			observationEnqueue(t, s, "boundary-b", "boundary-next-82ac")
@@ -344,7 +351,9 @@ func TestNotificationAtExecutorRelease(t *testing.T) {
 				t.Fatal("idle publication did not claim the handoff wake")
 			}
 			unblock()
-			if err := <-done; err != nil {
+			err := <-done
+			joined = true
+			if err != nil {
 				t.Fatal(err)
 			}
 			if len(wakes) != 1 {
@@ -372,6 +381,11 @@ func TestNotificationAtExecutorRelease(t *testing.T) {
 			writes <- struct{}{}
 			return errors.New("controlled release failure")
 		}
+		t.Cleanup(func() {
+			h.clock.Drain()
+			h.sess.clientMutations.faults.BeforeEffectSnapshotRename = nil
+			h.sess.Close()
+		})
 		baselineTimers := h.clock.BlockedCount()
 		h.sess.releaseRunningTurnID(turnID)
 		<-writes
@@ -381,6 +395,7 @@ func TestNotificationAtExecutorRelease(t *testing.T) {
 			<-writes
 		}
 		h.clock.BlockUntil(baselineTimers + 1)
+		h.clock.Drain()
 		h.sess.mu.Lock()
 		retained := h.sess.notificationSchedule.releaseTurnID
 		h.sess.mu.Unlock()
@@ -393,11 +408,8 @@ func TestNotificationAtExecutorRelease(t *testing.T) {
 		h.sess.suspendNotificationWake()
 		h.sess.clientMutations.faults.BeforeEffectSnapshotRename = nil
 		h.clock.Advance(jobNotificationRetryMaxDelay)
-		select {
-		case <-h.woken:
-		case <-time.After(5 * time.Second):
-			t.Fatal("storage recovery did not recheck execution without user input")
-		}
+		waitForTestSignal(t, h.woken, "storage recovery recheck without user input")
+		h.clock.Drain()
 		if got := h.sess.clientMutations.snapshot().ActiveTurnID; got != "" {
 			t.Fatalf("recovered active turn = %q", got)
 		}
@@ -485,8 +497,41 @@ func TestNotificationReleaseStorageRecovery(t *testing.T) {
 	if len(started) != 2 {
 		t.Fatalf("shell sources=%d", len(started))
 	}
+	shellDone := make([]<-chan struct{}, len(started))
+	root.jobManager.mu.Lock()
+	for i, source := range started {
+		if run := root.jobManager.running[source.JobID]; run != nil {
+			shellDone[i] = run.done
+		}
+	}
+	root.jobManager.mu.Unlock()
+	t.Cleanup(func() {
+		releaseA()
+		releaseB()
+		for _, done := range shellDone {
+			if done != nil {
+				awaitSignal(t, done, "storage recovery shell cleanup finalizer")
+			}
+		}
+		clock.Drain()
+		root.Close()
+	})
+	for i, done := range shellDone {
+		if done == nil {
+			t.Fatalf("held shell %s has no finalizer", started[i].JobID)
+		}
+	}
 	releaseA()
-	waitForCondition(t, 3*time.Second, "first shell custody", func() bool { return producerRecordCount(t, root) == 1 })
+	waitForTestSignal(t, shellDone[0], "first shell terminal and custody finalizer")
+	if got := producerRecordCount(t, root); got != 1 {
+		t.Fatalf("first shell custody=%d, want 1", got)
+	}
+	first := producerSourceEvents(t, root.jobManager, jobstore.EventJobFinished)
+	firstAck := producerSourceEvents(t, root.jobManager, jobstore.EventJobNotificationDelivered)
+	if len(first) != 1 || len(firstAck) != 1 || first[0].JobID != started[0].JobID || firstAck[0].JobID != first[0].JobID || firstAck[0].TerminalGen != first[0].TerminalGen {
+		t.Fatalf("first shell source=%+v acknowledgment=%+v started=%+v", first, firstAck, started[0])
+	}
+	incidentPendingFacts(t, root.stateDir, root.ID(), stableShellAttentionID(first[0].JobID, first[0].TerminalGen))
 	<-wake
 	path := clientMutationFilePath(root.stateDir, root.ID())
 	backup := path + ".release-test-backup"
@@ -495,7 +540,7 @@ func TestNotificationReleaseStorageRecovery(t *testing.T) {
 		if !blocked {
 			return
 		}
-		if err := os.Remove(path); err != nil {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			t.Error(err)
 			return
 		}
@@ -505,7 +550,7 @@ func TestNotificationReleaseStorageRecovery(t *testing.T) {
 		}
 		blocked = false
 	}
-	defer repair()
+	t.Cleanup(repair)
 	a.script("root", func(req llm.Request) llm.Response {
 		if err := incidentJobPayload(req, started[0].JobID, "completed", "exit_zero"); err != nil {
 			t.Error(err)
@@ -516,16 +561,20 @@ func TestNotificationReleaseStorageRecovery(t *testing.T) {
 			}
 		}
 		releaseB()
-		waitForCondition(t, 3*time.Second, "late shell custody", func() bool { return producerRecordCount(t, root) == 2 })
+		awaitSignal(t, shellDone[1], "late shell terminal and custody finalizer")
+		fold, err := readDelegateAttentionFold(transcriptPath(root.stateDir, root.ID()), root.ID())
+		if err != nil || len(fold.order) != 2 {
+			t.Errorf("late shell custody=%v err=%v, want both shells", fold.order, err)
+		}
 		if err := os.Rename(path, backup); err != nil {
 			t.Error(err)
 			return finalResponse("filesystem-fixture-failed")
 		}
+		blocked = true
 		if err := os.Mkdir(path, 0o700); err != nil {
 			t.Error(err)
 			return finalResponse("filesystem-fixture-failed")
 		}
-		blocked = true
 		return finalResponse("release-first-observed-11")
 	}, func(req llm.Request) llm.Response {
 		for _, source := range started {
@@ -539,11 +588,23 @@ func TestNotificationReleaseStorageRecovery(t *testing.T) {
 	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 		t.Fatal(err)
 	}
+	finished := producerSourceEvents(t, root.jobManager, jobstore.EventJobFinished)
+	acks := producerSourceEvents(t, root.jobManager, jobstore.EventJobNotificationDelivered)
+	if len(finished) != 2 || len(acks) != 2 {
+		t.Fatalf("shell terminal sources=%+v acknowledgments=%+v", finished, acks)
+	}
+	for i, source := range finished {
+		if source.JobID != started[i].JobID || acks[i].JobID != source.JobID || acks[i].TerminalGen != source.TerminalGen {
+			t.Fatalf("shell source=%+v acknowledgment=%+v started=%+v", source, acks[i], started[i])
+		}
+	}
+	incidentPendingFacts(t, root.stateDir, root.ID(), stableShellAttentionID(finished[1].JobID, finished[1].TerminalGen))
 	for range runningTurnReleaseRetryLimit {
 		clock.BlockUntil(baseline + 1)
 		clock.Advance(jobNotificationRetryMaxDelay)
 	}
 	clock.BlockUntil(baseline + 1)
+	clock.Drain()
 	root.mu.Lock()
 	retained := root.notificationSchedule.releaseTurnID
 	root.mu.Unlock()
@@ -561,18 +622,15 @@ func TestNotificationReleaseStorageRecovery(t *testing.T) {
 	}
 	repair()
 	clock.Advance(jobNotificationRetryMaxDelay)
-	select {
-	case <-wake:
-	case <-time.After(3 * time.Second):
-		t.Fatal("storage repair did not wake retained work")
-	}
+	waitForTestSignal(t, wake, "storage repair retained-work wake")
+	clock.Drain()
 	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 		t.Fatal(err)
 	}
 	if len(a.requestsFor("root")) != 5 || root.clientMutations.snapshot().ActiveTurnID != "" {
 		t.Fatalf("repaired storage requests=%d active=%q retained=%q", len(a.requestsFor("root")), root.clientMutations.snapshot().ActiveTurnID, retained)
 	}
-	finished := producerSourceEvents(t, root.jobManager, jobstore.EventJobFinished)
+	finished = producerSourceEvents(t, root.jobManager, jobstore.EventJobFinished)
 	if len(finished) != 2 {
 		t.Fatalf("terminal sources=%+v", finished)
 	}

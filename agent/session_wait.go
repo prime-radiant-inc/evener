@@ -506,10 +506,19 @@ func (a *subagent) cancelYieldedActivation(lease delegateLease) {
 	}
 	c.mu.Unlock()
 	a.mu.Unlock()
+	var returned func()
+	if finish {
+		if factory := a.sess.cfg.testOnly.subagentActivationReturn; factory != nil {
+			returned = factory(a, lease)
+		}
+	}
 	if cancel != nil {
 		cancel()
 	}
 	if finish {
+		if returned != nil {
+			defer returned()
+		}
 		// Reuse only the existing canceled-run finalization tail. This cannot
 		// enter a model or tool call and owns no execution capacity.
 		ctx, cancel := context.WithCancel(a.sess.sessionContext())
@@ -630,7 +639,7 @@ func (c *delegateTreeController) abandonWaitingRuntimeRestore(lease delegateLeas
 	}
 }
 
-func (c *delegateTreeController) attachWaitingRuntime(lease delegateLease, sub *subagent) error {
+func (c *delegateTreeController) attachWaitingRuntime(lease delegateLease, sub *subagent) (bool, error) {
 	sub.mu.Lock()
 	defer sub.mu.Unlock()
 	c.mu.Lock()
@@ -638,31 +647,31 @@ func (c *delegateTreeController) attachWaitingRuntime(lease delegateLease, sub *
 	runtime := sub.sess
 	run, live, err := c.exactLeaseLocked(lease)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if c.closing || c.reclamationCoversLocked(lease.delegateID) || run.Phase != delegatestore.PhaseRunning || run.PendingStopSeq != 0 || !run.Resumable || live.recoveryRequired {
-		return errDelegateTargetBusy
+		return false, errDelegateTargetBusy
 	}
 	if blocked, _ := c.ancestorFenceLocked(run.Descriptor.ParentDelegateID); blocked {
-		return errDelegateTargetBusy
+		return false, errDelegateTargetBusy
 	}
 	if !live.binding.yielded || live.binding.runtime != nil && live.binding.runtime != runtime || live.runtime != nil && live.runtime != runtime || runtime.delegateController != c || runtime.owningDelegateID != lease.delegateID || runtime.id != run.Descriptor.ChildSessionID || c.hasDeliveryWorkForOwnerLocked(lease.delegateID) {
-		return errDelegateTargetBusy
+		return false, errDelegateTargetBusy
 	}
 	ownerID, owner, err := c.runtimeOwnerLocked(runtime)
 	if err != nil || owner != nil && owner != live || ownerID != "" && ownerID != lease.delegateID {
-		return errDelegateTargetBusy
+		return false, errDelegateTargetBusy
 	}
 	sub.bindYieldCancellationLocked(live.binding)
 	if sub.done == nil {
 		sub.done = make(chan struct{})
 	}
 	sub.startedAt, sub.endedAt = run.RunStartedAt, nil
-	c.setResidentRuntimeLocked(live, runtime)
+	recheck := c.setResidentRuntimeLocked(live, runtime)
 	live.binding.runtime = runtime
 	live.binding.ready = true
 	c.evidenceVersion++
-	return nil
+	return recheck, nil
 }
 
 // Reuse restore installation and its callback gate, but keep every new runtime's
@@ -674,15 +683,23 @@ func (s *Session) restoreWaitingDelegateGuarded(id string) (*subagent, func() er
 	expected := delegateLease{delegateID: id, generation: c.durable[id].Generation}
 	c.mu.Unlock()
 	gate := &owedBootstrapRestore{held: true, holdDrives: true, pending: make(map[*Session]func()), done: make(map[*subagent]bool)}
+	var recheck bool
 	finish := func() error {
-		defer gate.open()
+		defer func() {
+			gate.open()
+			if recheck {
+				c.recheckNotificationReceivers()
+				recheck = false
+			}
+		}()
 		var err error
 		for _, runtime := range gate.restored {
 			err = errors.Join(err, runtime.sub.sess.runDeferredRestoreSideEffects())
 		}
 		return err
 	}
-	_, sub, err := s.restoreColdDelegateAttentionRuntime(id, gate)
+	_, sub, released, err := s.restoreColdDelegateAttentionRuntime(id, gate)
+	recheck = released
 	if err != nil {
 		// A concurrent restore can win installation. Use its tracked object,
 		// never a discarded candidate. Otherwise preserve retryable uncertainty.

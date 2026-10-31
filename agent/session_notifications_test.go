@@ -181,6 +181,8 @@ func TestNotificationColdRetryHandoff(t *testing.T) {
 		{name: "initial_read_new_before_return", initialRead: true, fireBeforeReturn: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			var scheduledErr, oldRetryErr error
+			captureReceiverErrorLogs(t, os.ErrNotExist, func() error { return scheduledErr }, func() error { return oldRetryErr })
 			fixture := newColdStableDelegateFixture(t, "")
 			const id, payload = "retry-handoff-id-91", "retry-handoff-payload-91"
 			n := notification{ID: id, Message: llm.User(payload)}
@@ -241,8 +243,9 @@ func TestNotificationColdRetryHandoff(t *testing.T) {
 				if err := os.Rename(path, backup); err != nil {
 					t.Fatal(err)
 				}
-				if err := c.requestSessionWake(fixture.childID); !errors.Is(err, os.ErrNotExist) {
-					t.Fatalf("old retry setup error=%v, want ENOENT", err)
+				oldRetryErr = c.requestSessionWake(fixture.childID)
+				if !errors.Is(oldRetryErr, os.ErrNotExist) {
+					t.Fatalf("old retry setup error=%v, want ENOENT", oldRetryErr)
 				}
 				if err := recoverStorage(); err != nil {
 					t.Fatal(err)
@@ -278,7 +281,6 @@ func TestNotificationColdRetryHandoff(t *testing.T) {
 			}
 			scheduled, releaseSchedule := make(chan struct{}), make(chan struct{})
 			unblockSchedule := sync.OnceFunc(func() { close(releaseSchedule) })
-			var scheduledErr error
 			var scheduledState receiverState
 			var scheduleOnce sync.Once
 			root.cfg.testOnly.afterSessionWakeRecoveryScheduled = func(sessionID string, err error) {
@@ -534,17 +536,24 @@ func TestNotificationColdStopWaitsForWriterClose(t *testing.T) {
 		t.Fatal("Stop did not complete after writer close and cleanup")
 	}
 	assertNotificationRecords(t, path, n.ID, n.Message, 1)
-	resolutions := 0
 	for _, entry := range notificationRawEntries(t, path) {
 		if resolution := entry.Turn.AttentionResolution; resolution != nil && resolution.AttentionID == n.ID {
-			resolutions++
-			if resolution.Disposition != string(delegateAttentionDiscarded) {
-				t.Fatalf("Stop disposition = %q", resolution.Disposition)
+			t.Fatalf("modern Stop resolved preserved custody: %+v", resolution)
+		}
+		for _, id := range entry.Turn.ObservedNotificationIDs {
+			if id == n.ID {
+				t.Fatal("Stop granted observation without a provider response")
 			}
 		}
 	}
-	if resolutions != 1 {
-		t.Fatalf("raw Stop resolutions = %d, want 1", resolutions)
+	fold, err := readExistingDelegateAttentionFold(path, sessionID)
+	if err != nil || !reflect.DeepEqual(fold.pendingIDs(), []string{n.ID}) {
+		t.Fatalf("modern Stop pending=%v error=%v, want retained exact custody", fold.pendingIDs(), err)
+	}
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if fs.active != 0 || fs.peak != 1 {
+		t.Fatalf("cold writers after Stop: active=%d peak=%d", fs.active, fs.peak)
 	}
 }
 

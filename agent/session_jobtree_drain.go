@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"sort"
 	"strings"
 	"time"
@@ -1148,8 +1149,8 @@ func (s *Session) drainJobTreeWith(ctx context.Context, wake <-chan struct{}, re
 		// the announcement request. The model then answers the completion, and
 		// that reply is the run's answer exactly as a notification turn's is —
 		// discarding it printed the pre-drain answer and lost the real one.
-		// The delivered-notification count tells the two apart: the reply is
-		// kept only when the count grew during the turn.
+		// Successful canonical receipts tell the two apart: the reply is kept
+		// only when this input observed a notification for the first time.
 		//
 		// Under serve the session outlives the turn, background jobs genuinely
 		// report later, and none of this fires (TurnEndsProcess is the gate).
@@ -1225,15 +1226,24 @@ func (s *Session) drainJobTreeWith(ctx context.Context, wake <-chan struct{}, re
 						s.emitDiagnosticWarning(events.WarningData{Message: fmt.Sprintf("job announcement admission failed: %v", err)})
 						return lastResult, err
 					}
-					deliveredBefore := s.jobNotificationsDelivered()
+					observedBefore, err := s.drainObservedNotifications()
+					if err != nil {
+						return lastResult, err
+					}
 					res, perr := process(ctx, "", nil, EntryNotification)
 					if perr != nil {
 						s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf(
 							"undisposed-background-job announcement turn failed: %v", perr)})
-					} else if res != "" && s.jobNotificationsDelivered() != deliveredBefore {
-						// A completion rode this request: the model answered it,
-						// so this reply is the run's answer (see above).
-						lastResult = res
+					} else if res != "" {
+						newlyObserved, err := s.drainHasNewObservation(observedBefore)
+						if err != nil {
+							return lastResult, err
+						}
+						if newlyObserved {
+							// This input earned a successful canonical receipt,
+							// not just custody or repair of an older receipt.
+							lastResult = res
+						}
 					}
 					stallStart = time.Time{}
 					// A housekeeping turn ran; re-evaluate its resulting work.
@@ -1323,31 +1333,40 @@ func (s *Session) drainJobTreeWith(ctx context.Context, wake <-chan struct{}, re
 	}
 }
 
-// rematerializeDurablePendings re-enqueues this session's OWN durable terminal
-// notifications that are NotifyPending but absent from the in-memory queue, so
-// the next notification/drive turn can deliver and settle them.
-//
-// It closes a gap between the drain's two signals: quiescence is measured on the
-// durable ledger (outstandingDrainJobCount reads NotifyPending records) while
-// delivery consumes the existing shell notification queue and the receiver's
-// common notification readiness. A pending that survives only in the durable store — a revived
-// managed job whose deferred restore side effects were interrupted before
-// arm_notifications ran, or a finalize whose in-memory enqueue never landed —
-// would otherwise hold the drain open forever: counted as outstanding, but never
-// materialized for any turn to deliver.
-//
-// It re-enqueues exactly the records outstandingDrainJobCount holds the drain
-// open on (same owned-record filter), so counted == re-materializable and no
-// stranded pending is left behind. Like armPendingTerminalNotifications it does
-// NOT skip an already-injected record: an owned pending whose <job-notification>
-// block is already in history but was never marked Delivered (e.g. a crash
-// between appendSteeringTurnDurably and markJobNotificationsDelivered, or an interrupted
-// deferred restore) still counts as outstanding, and re-enqueuing it settles it —
-// the delivery path routes an already-injected record to injectedJobNotifs, which
-// marks it Delivered WITHOUT re-appending to history. Unlike arm it appends no
-// event, and the empty-queue guard keeps repeated drain kicks idempotent: once a
-// re-enqueued notification is delivered the record is Delivered and no longer
-// re-materializes.
+// drainObservedNotifications snapshots canonical successful-response receipts.
+// Clone the lifetime fold too, so an empty-StateDir input cannot mutate its own
+// before snapshot. Derived resolution/index repair is not a new observation.
+func (s *Session) drainObservedNotifications() (map[string]struct{}, error) {
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	fold, err := s.delegateAttentionFoldLocked()
+	if err != nil {
+		return nil, err
+	}
+	return maps.Clone(fold.observed), nil
+}
+
+// drainHasNewObservation compares the canonical fold under its lock, without
+// copying or returning the borrowed observed map. The before snapshot is owned.
+func (s *Session) drainHasNewObservation(before map[string]struct{}) (bool, error) {
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	fold, err := s.delegateAttentionFoldLocked()
+	if err != nil {
+		return false, err
+	}
+	for id := range fold.observed {
+		if _, earlier := before[id]; !earlier {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// rematerializeDurablePendings transfers this session's owned durable-only
+// shell completions to common receiver custody. The existing custody path owns
+// source acknowledgement, retry and lifecycle fencing. Repeated recovery uses
+// the same identity, including when custody survived before its acknowledgement.
 func (s *Session) rematerializeDurablePendings() error {
 	if s == nil || s.jobManager == nil {
 		return nil
@@ -1402,8 +1421,8 @@ func (s *Session) rematerializeDurablePendings() error {
 		if _, live := liveRunning[rec.JobID]; live {
 			continue
 		}
-		if jm.enqueue != nil {
-			jm.enqueue(jobNotificationFromRecord(rec))
+		if _, _, err := jm.persistStableShellAttention(rec.JobID); err != nil {
+			return err
 		}
 	}
 	return nil

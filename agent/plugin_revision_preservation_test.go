@@ -275,7 +275,8 @@ func testPluginRevisionPreservation(t *testing.T, migrate bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	child, cold, err := (delegateRuntime{owner: rootDelegate}).restoreIdle(started)
+	child, cold, recheck, err := (delegateRuntime{owner: rootDelegate}).restoreIdle(started)
+	t.Cleanup(func() { recheckNotificationsForTest(rootDelegate.delegateController, recheck) })
 	if err != nil || !cold {
 		t.Fatalf("restore cold delegate: cold=%v, err=%v", cold, err)
 	}

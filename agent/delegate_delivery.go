@@ -936,6 +936,10 @@ func (c *delegateTreeController) recheckNotificationReceivers() bool {
 		return false
 	}
 	c.mu.Lock()
+	if c.closing {
+		c.mu.Unlock()
+		return false
+	}
 	root := c.rootRuntime
 	ids := make([]string, 0, len(c.durable))
 	for id, aggregate := range c.durable {
@@ -973,13 +977,42 @@ func (c *delegateTreeController) recheckNotificationReceivers() bool {
 		sessionIDs = append(sessionIDs, c.durable[id].Descriptor.ChildSessionID)
 	}
 	c.mu.Unlock()
+	closed := func() bool {
+		c.mu.Lock()
+		closing := c.closing
+		c.mu.Unlock()
+		if closing {
+			return true
+		}
+		if root != nil {
+			root.mu.Lock()
+			closing = root.closingOrClosedLocked()
+			root.mu.Unlock()
+		}
+		return closing
+	}
+	if closed() {
+		return false
+	}
 	if root != nil {
+		if hook := root.cfg.testOnly.notificationRecheckBeforeDispatch; hook != nil {
+			hook()
+		}
+		if closed() {
+			return false
+		}
 		if err := root.dispatchNotificationWake(); err != nil {
 			slog.Warn("notification wake failed", "session_id", root.ID(), "error", err)
 		}
 	}
 	for _, id := range sessionIDs {
+		if closed() {
+			break
+		}
 		if err := c.requestSessionWake(id); err != nil {
+			if _, closing := errors.AsType[notificationWakeClosingError](err); closing {
+				break
+			}
 			slog.Warn("notification wake failed", "session_id", id, "error", err)
 		}
 	}
@@ -987,6 +1020,11 @@ func (c *delegateTreeController) recheckNotificationReceivers() bool {
 }
 
 func (s *Session) executeDelegateMutationPlans(plans delegateMutationPlans) error {
+	defer func() {
+		if plans.recheckNotifications && s != nil && s.delegateController != nil {
+			s.delegateController.recheckNotificationReceivers()
+		}
+	}()
 	if plans.retirementRelease != nil {
 		defer plans.retirementRelease()
 	}
@@ -1177,6 +1215,18 @@ func (s *Session) acceptDelegateDeliveryPlan(plan delegateDeliveryPlan) (delegat
 func (s *Session) replayDelegateDeliveries() error {
 	if s == nil || s.delegateController == nil {
 		return nil
+	}
+	if s.cfg.spawn.delegateController != nil {
+		s.delegateController.mu.Lock()
+		root := s.delegateController.rootRuntime
+		s.delegateController.mu.Unlock()
+		// Inherited executors do not own the shared source inventory. Its root
+		// pump retries receiver failures without failing an unrelated child's
+		// construction, request, or finalization. Keep the fallback when no root
+		// runtime exists, matching scheduleDelegateDeliveryRetry.
+		if root != nil && root != s {
+			return nil
+		}
 	}
 	release, err := s.beginRetirementMutation("delegate_delivery")
 	if err != nil {

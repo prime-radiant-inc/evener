@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/internal/toolname"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/sandbox"
@@ -399,8 +400,8 @@ func parseHookOutput(stdout string, exitCode int) parsedHookOutput {
 	}
 
 	// Try JSON parse
-	var parsed map[string]any
-	if err := json.Unmarshal([]byte(stdout), &parsed); err != nil {
+	parsed, err := tool.DecodeArguments([]byte(stdout))
+	if err != nil {
 		// Plain text: treat as system message
 		result.SystemMessage = stdout
 		return result

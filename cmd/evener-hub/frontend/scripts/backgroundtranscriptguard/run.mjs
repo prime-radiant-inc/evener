@@ -1699,15 +1699,28 @@ async function runEntryProductionJourney(driver, harnessUrl) {
 
   // ---- a real WebSocket gap, a turn completing during it, reconnect ----
   const reconnectTraceBefore = traceBytes();
+  const disconnectDeadline = Date.now() + 15000;
   await driver.send("Network.emulateNetworkConditions", {
     offline: true,
     latency: 0,
     downloadThroughput: 0,
     uploadThroughput: 0,
   });
-  // CDP offline does not close the live socket, so close the app's real hub
-  // /rpc WebSocket(s) at the transport level; the offline emulation then keeps
-  // the app from reconnecting until the network is restored below.
+  // CDP offline alone does not exclude reconnects. The Go fixture closes
+  // admission and joins every real handler before acknowledging this request.
+  const transportAction = async (action, deadline) => {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new Error(`transport ${action} exceeded the existing stage budget`);
+    const response = await fetch(new URL("/_background-transcript-transport", HUB_URL), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action }),
+      signal: AbortSignal.timeout(remaining),
+    });
+    if (!response.ok) throw new Error(`fixture transport ${action}: ${response.status} ${await response.text()}`);
+    if (!(await response.json()).ok) throw new Error(`fixture transport ${action} was not acknowledged`);
+  };
+  await transportAction("close", disconnectDeadline);
   const closedSockets = await evaluate(
     driver.send,
     `(() => {
@@ -1718,7 +1731,7 @@ async function runEntryProductionJourney(driver, harnessUrl) {
        return open.length;
      })()`,
   ).catch(() => -1);
-  const disconnected = await waitForDisconnected(driver);
+  const disconnected = await waitForDisconnected(driver, Math.max(0, disconnectDeadline - Date.now()));
   const offlineSample = await observedConnection(driver);
   driver.milestone("ws-broken", {
     disconnected,
@@ -1737,13 +1750,16 @@ async function runEntryProductionJourney(driver, harnessUrl) {
   driver.startTurn("target", GAP_SENTINEL);
   const gapAck = await waitForTurnComplete("target", GAP_SENTINEL, 60000);
   driver.milestone("gap-turn-completed", { sentinel: GAP_SENTINEL, turnId: gapAck.turnId, status: gapAck.status });
+  // Size the original adaptive allowance once, before the new open action.
+  const reconnectDeadline = Date.now() + driver.reactions.deadline(60000);
+  await transportAction("open", reconnectDeadline);
   await driver.send("Network.emulateNetworkConditions", {
     offline: false,
     latency: 0,
     downloadThroughput: -1,
     uploadThroughput: -1,
   });
-  await waitForPaneText(driver, SESSION_B, GAP_SENTINEL, 60000, "the gap turn arrived after reconnect");
+  await waitForPaneText(driver, SESSION_B, GAP_SENTINEL, 60000, "the gap turn arrived after reconnect", reconnectDeadline);
   // Correlate the NEW connection's target authoritative read and its applied
   // replacement window/cursor: the entry route publishes the repository's
   // accepted model through its subscription, so poll for the applied window.
@@ -1844,8 +1860,11 @@ async function runEntryProductionJourney(driver, harnessUrl) {
   await openSessionInCurrentShell(driver, SESSION_B);
   const newReading = await settledReading(driver, SESSION_B);
   driver.milestone("new-pane-latest", { before: closedReading, closedPanes, after: newReading });
+  driver.milestone("await-new-pane-screenshot-start");
   await driver.screenshot("new-pane-latest");
+  driver.milestone("await-new-pane-screenshot-finish");
   assertNewPaneLatest(closedReading, newReading);
+  driver.milestone("await-narrow-gap-text-start");
   await waitForPaneText(
     driver,
     SESSION_B,
@@ -1853,7 +1872,10 @@ async function runEntryProductionJourney(driver, harnessUrl) {
     30000,
     "preserved content after repeat activation at a narrow viewport",
   );
+  driver.milestone("await-narrow-gap-text-finish");
+  driver.milestone("await-narrow-restored-domain-start");
   const narrowAfter = await waitForRestoredDomain(driver, SESSION_B, laterPageSentinel);
+  driver.milestone("await-narrow-restored-domain-finish");
   const beforeItems = (narrowBefore?.items ?? []).map((item) => item.id).sort();
   const afterItems = (narrowAfter?.items ?? []).map((item) => item.id).sort();
   const contentPreserved = narrowViewportContentPreserved(narrowBefore, narrowAfter);
@@ -1936,8 +1958,8 @@ async function waitForNativeEntryEvidence(driver, predicate, label, ref = SESSIO
 }
 
 // waitForPaneText waits until the named pane's own text carries the marker.
-async function waitForPaneText(driver, ref, marker, timeoutMs, label) {
-  return driver.waitPage(paneContainsExpr(ref, [marker]), { timeoutMs, label });
+async function waitForPaneText(driver, ref, marker, timeoutMs, label, deadlineAt) {
+  return driver.waitPage(paneContainsExpr(ref, [marker]), { timeoutMs, label, deadlineAt });
 }
 
 // scrollSentinelIntoView scrolls the real port to the top until the wanted

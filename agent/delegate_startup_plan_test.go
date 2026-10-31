@@ -184,7 +184,8 @@ func TestRestoreDoesNotRepeatPersistedPlanSteering(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CommitStart: %v", err)
 	}
-	sub, restored, err := (delegateRuntime{owner: root}).restoreIdle(started)
+	sub, restored, recheck, err := (delegateRuntime{owner: root}).restoreIdle(started)
+	t.Cleanup(func() { recheckNotificationsForTest(root.delegateController, recheck) })
 	if err != nil {
 		t.Fatalf("restoreIdle: %v", err)
 	}
@@ -236,7 +237,8 @@ func TestRestoreAnnouncesAPlanThatWasNeverDelivered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CommitStart: %v", err)
 	}
-	sub, restored, err := (delegateRuntime{owner: root}).restoreIdle(started)
+	sub, restored, recheck, err := (delegateRuntime{owner: root}).restoreIdle(started)
+	t.Cleanup(func() { recheckNotificationsForTest(root.delegateController, recheck) })
 	if err != nil {
 		t.Fatalf("restoreIdle: %v", err)
 	}
@@ -317,7 +319,8 @@ func restoreFixtureDelegate(t *testing.T, root *Session, delegateID string) *sub
 	if err != nil {
 		t.Fatalf("CommitStart: %v", err)
 	}
-	sub, restored, err := (delegateRuntime{owner: root}).restoreIdle(started)
+	sub, restored, recheck, err := (delegateRuntime{owner: root}).restoreIdle(started)
+	t.Cleanup(func() { recheckNotificationsForTest(root.delegateController, recheck) })
 	if err != nil {
 		t.Fatalf("restoreIdle: %v", err)
 	}

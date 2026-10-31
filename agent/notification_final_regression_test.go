@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -156,7 +157,10 @@ func TestFinalCorrectionSelfWatchWait(t *testing.T) {
 	for _, mode := range []struct{ child, persistent bool }{{false, false}, {false, true}, {true, true}} {
 		t.Run(fmt.Sprintf("child_%v_persistent_%v", mode.child, mode.persistent), func(t *testing.T) {
 			child := mode.child
-			clock := agenttest.NewFakeClock()
+			clock := &notificationTickerClock{FakeClock: agenttest.NewFakeClock(), started: make(chan *notificationTicker, 1)}
+			returns := newActivationReturns()
+			yieldGate := make(chan struct{})
+			releaseYield := sync.OnceFunc(func() { close(yieldGate) })
 			a := finiteUpdateAdapter(t, "SELF-WAIT-85")
 			key := "root"
 			if child {
@@ -170,6 +174,9 @@ func TestFinalCorrectionSelfWatchWait(t *testing.T) {
 					t.Error("real watch creation returned no identity")
 				}
 				target <- id
+				if child {
+					awaitSignal(t, yieldGate, "self-watch activation capture")
+				}
 				return waitResponseFor("self-wait-85", id), nil
 			}, func(_ context.Context, req llm.Request) (llm.Response, error) {
 				found := false
@@ -188,10 +195,19 @@ func TestFinalCorrectionSelfWatchWait(t *testing.T) {
 			}
 			root := newMessagingRoot(t, a, func(cfg *SessionConfig) {
 				cfg.clock = clock
+				returns.configure(cfg)
 				if !mode.persistent {
 					cfg.StateDir = ""
 				}
 			})
+			var ticker *notificationTicker
+			defer func() {
+				releaseYield()
+				returns.close(t, root)
+				if ticker != nil {
+					waitForTestSignal(t, ticker.stopped, "self-watch timer cleanup")
+				}
+			}()
 			wakes := make(chan struct{}, 1)
 			root.SetNotifyFunc(func() {
 				select {
@@ -202,17 +218,15 @@ func TestFinalCorrectionSelfWatchWait(t *testing.T) {
 			if _, err := root.ProcessInput(context.Background(), "start-self-85", nil); err != nil {
 				t.Fatal(err)
 			}
-			var id string
-			select {
-			case id = <-target:
-			case <-time.After(3 * time.Second):
-				t.Fatal("script did not reach real timer wait")
-			}
+			ticker = <-clock.started
+			id := <-target
 			receiver := root
+			var initial *activationReturn
 			if child {
 				receiver = root.subagents.sessions()[0]
-				sub := root.getSub(receiver.ID())
-				waitForCondition(t, 3*time.Second, "self timer yielded", func() bool { sub.mu.Lock(); defer sub.mu.Unlock(); return !sub.running })
+				initial = returns.take(t, receiver.ID())
+				releaseYield()
+				incidentYielded(t, root, receiver.ID(), initial)
 			}
 			if err := receiver.validateWaitTarget(context.Background(), "watch:"+id); err != nil {
 				t.Fatal(err)
@@ -272,14 +286,15 @@ func TestFinalCorrectionSelfWatchWait(t *testing.T) {
 					t.Fatalf("lifetime-local wait not accepted: %+v", report)
 				}
 			}
-			clock.BlockUntil(1)
 			clock.Advance(time.Minute)
-			clock.Drain()
+			waitForTestSignal(t, ticker.stopped, "self-watch one-shot dispatch return")
 			if child {
-				waitForCondition(t, 3*time.Second, "self timer resumed and settled", func() bool {
-					return !delegateAggregateSnapshot(t, root.delegateController, receiver.owningDelegateID).CurrentRunOpen
-				})
-				root.sendersWG.Wait()
+				waitForTestSignal(t, initial.generationDone, "self-watch same generation completion")
+				resumed := returns.take(t, receiver.ID())
+				if resumed.lease != initial.lease || resumed.generationDone != initial.generationDone {
+					t.Fatalf("self-watch changed generation: initial=%+v resumed=%+v", initial, resumed)
+				}
+				incidentSettled(t, root, receiver.ID(), resumed)
 			} else {
 				awaitSignal(t, wakes, "timer readiness")
 				if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
@@ -294,6 +309,19 @@ func TestFinalCorrectionSelfWatchWait(t *testing.T) {
 				t.Fatalf("requests=%d want%d", got, wantRequests)
 			}
 			assertNotificationPending(t, receiver, []string{})
+			receiver.attentionMu.Lock()
+			fold, foldErr := receiver.delegateAttentionFoldLocked()
+			receiver.attentionMu.Unlock()
+			if foldErr != nil || len(fold.observed) != 1 {
+				t.Fatalf("self-watch successful response receipts=%v err=%v", fold.observed, foldErr)
+			}
+			if mode.persistent {
+				produced := producerSourceEvents(t, receiver.jobManager, jobstore.EventWatchSendPending)
+				if len(produced) != 1 || produced[0].WatchSend == nil || produced[0].WatchSend.Key.WatchID != id || produced[0].WatchSend.ReceiverSessionID != receiver.ID() || produced[0].WatchSend.ReceiverDelegateID != "" || produced[0].WatchSend.Key.VisibleSessionID != receiver.ID() {
+					t.Fatalf("self-watch routing=%+v", produced)
+				}
+				incidentNotificationFacts(t, root.stateDir, receiver.ID(), stableWatchAttentionID(*produced[0].WatchSend))
+			}
 		})
 	}
 }

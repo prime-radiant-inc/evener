@@ -761,15 +761,10 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 		return truncateResult(name, callID, err.Error(), true, defaultToolLimit(name))
 	}
 
-	var args map[string]any
-	if len(call.Arguments) > 0 {
-		if err := json.Unmarshal(call.Arguments, &args); err != nil {
-			msg := fmt.Sprintf("invalid tool arguments JSON: %v", err)
-			return truncateResult(name, callID, msg, true, t.Limit)
-		}
-	}
-	if args == nil {
-		args = map[string]any{}
+	args, decodeErr := DecodeArguments(call.Arguments)
+	if decodeErr != nil {
+		msg := fmt.Sprintf("invalid tool arguments JSON: %v", decodeErr)
+		return truncateResult(name, callID, msg, true, t.Limit)
 	}
 
 	// Normalize ask_user shorthand form (question + options) into batch form (questions array)
@@ -795,7 +790,7 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 		}
 	}
 
-	if err := t.Schema.Validate(args); err != nil {
+	if err := ValidateArguments(t.Schema, args); err != nil {
 		msg := fmt.Sprintf("tool args schema validation failed: %v", err)
 		return truncateResult(name, callID, msg, true, t.Limit)
 	}

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -64,11 +65,22 @@ func testNotificationCompetition(t *testing.T, broken bool, rounds int) {
 	c.mu.Unlock()
 	reached := make(chan int, 3*rounds)
 	release := make(chan struct{})
+	var runsMu sync.Mutex
+	var runs []<-chan struct{}
 	t.Cleanup(func() {
 		select {
 		case <-release:
 		default:
 			close(release)
+		}
+		// No healthy provider remains held, and the unrestorable receiver has
+		// no sender. Join the actual owning tails before root.Close.
+		root.sendersWG.Wait()
+		runsMu.Lock()
+		captured := slices.Clone(runs)
+		runsMu.Unlock()
+		for _, done := range captured {
+			awaitSignal(t, done, "competing receiver generation cleanup")
 		}
 	})
 	counts := make([]int, len(children)) // provider steps are serialized by fakeAdapter
@@ -110,6 +122,14 @@ func testNotificationCompetition(t *testing.T, broken bool, rounds int) {
 				reached <- actual
 				return finalResponse("unexpected request")
 			}
+			// Provider entry follows launch's done reset and precedes release.
+			sub := root.subagents.get(children[actual])
+			sub.mu.Lock()
+			done := sub.done
+			sub.mu.Unlock()
+			runsMu.Lock()
+			runs = append(runs, done)
+			runsMu.Unlock()
 			counts[actual]++
 			observationRequest(t, req, []string{fmt.Sprintf("%s-round-%d", markers[actual], counts[actual])}, nil)
 			reached <- actual
@@ -130,6 +150,7 @@ func testNotificationCompetition(t *testing.T, broken bool, rounds int) {
 				if actual != 0 {
 					t.Fatalf("first provider receiver = %d, want 0", actual)
 				}
+			// TRIPWIRE: the scripted provider reports real entry, only a hang reaches this guard.
 			case <-time.After(5 * time.Second):
 				t.Fatal("first receiver never acquired production capacity")
 			}
@@ -170,6 +191,7 @@ func testNotificationCompetition(t *testing.T, broken bool, rounds int) {
 		select {
 		case actual := <-reached:
 			got = append(got, actual)
+		// TRIPWIRE: release drives real scripted entries, only a hang reaches this guard.
 		case <-time.After(5 * time.Second):
 			t.Fatalf("production release stranded competing receivers: got %v, want %v", got, want)
 		}
@@ -177,6 +199,13 @@ func testNotificationCompetition(t *testing.T, broken bool, rounds int) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("actual provider receiver order = %v, want fair admission order %v", got, want)
 	}
+	runsMu.Lock()
+	captured := slices.Clone(runs)
+	runsMu.Unlock()
+	for _, done := range captured {
+		awaitSignal(t, done, "competing receiver generation")
+	}
+	root.sendersWG.Wait()
 	for i, childID := range children {
 		if broken && i == 1 {
 			continue

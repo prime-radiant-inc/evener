@@ -80,7 +80,7 @@ func seedOwnedDurablePending(t *testing.T, jm *jobManager, jobID string, jobType
 		reason = "exit_zero"
 	}
 	for _, ev := range []jobstore.Event{
-		{Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobType, OwnerSessionID: jm.sessionID, VisibleToSession: jm.sessionID, StartedAt: &started},
+		{Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobType, OwnerSessionID: jm.sessionID, VisibleToSession: jm.sessionID, ParentDelegateID: jm.parentDelegateID, StartedAt: &started},
 		{Kind: jobstore.EventJobFinished, TS: ended, JobID: jobID, Status: jobstore.StatusCompleted, Reason: reason, EndedAt: &ended, TerminalGen: "gen-" + jobID},
 		{Kind: jobstore.EventJobNotificationPending, TS: ended, JobID: jobID, TerminalGen: "gen-" + jobID},
 	} {
@@ -175,10 +175,12 @@ func TestDrainJobTreeRescansWhenAWakeLandsMidPass(t *testing.T) {
 
 // A producer obligation keeps drain open before receiver custody.
 func TestTreeHasOutstandingWorkCountsPendingDelegateDeliveries(t *testing.T) {
-	t.Parallel()
-	sess := newSession(t)
+	// Serial: seedPendingDeliverySource captures process-wide diagnostics.
+	clk := agenttest.NewFakeClock()
+	sess := newSession(t, withClock(clk))
+	sess.stopLaneResidueSweepTimer()
 
-	seedPendingDeliverySource(t, sess)
+	seedPendingDeliverySource(t, sess, clk)
 
 	outstanding, err := sess.treeHasOutstandingWork()
 	if err != nil {
@@ -208,10 +210,12 @@ func TestTreeHasOutstandingWorkCountsPendingDelegateDeliveries(t *testing.T) {
 // wrongly quiescing (an immediate nil-error return, independent of ctx) or
 // correctly blocking in waitDrainWake until cancel() reaches it.
 func TestDrainJobTreeWaitsWhileSourceDeliveryPending(t *testing.T) {
-	t.Parallel()
-	sess := newSession(t)
+	// Serial: seedPendingDeliverySource captures process-wide diagnostics.
+	clk := agenttest.NewFakeClock()
+	sess := newSession(t, withClock(clk))
+	sess.stopLaneResidueSweepTimer()
 
-	seedPendingDeliverySource(t, sess)
+	seedPendingDeliverySource(t, sess, clk)
 
 	kick := func(context.Context) error { return nil } // deliberately never flushes
 	process := func(context.Context, string, []ImageAttachment, EntryKind) (string, error) {
@@ -242,10 +246,12 @@ func TestDrainJobTreeWaitsWhileSourceDeliveryPending(t *testing.T) {
 
 // The drain replays source obligations rather than popping receiver placeholders.
 func TestKickDriveTreeReplaysPendingDelegateDeliveries(t *testing.T) {
-	t.Parallel()
-	sess := newSession(t)
+	// Serial: seedPendingDeliverySource captures process-wide diagnostics.
+	clk := agenttest.NewFakeClock()
+	sess := newSession(t, withClock(clk))
+	sess.stopLaneResidueSweepTimer()
 
-	seedPendingDeliverySource(t, sess)
+	seedPendingDeliverySource(t, sess, clk)
 
 	err := sess.kickDriveTree(context.Background())
 	if err != nil && !errors.Is(err, errDelegateStaleLease) {
@@ -254,18 +260,31 @@ func TestKickDriveTreeReplaysPendingDelegateDeliveries(t *testing.T) {
 	if sess.hasPendingDelegateDeliveries() {
 		t.Fatal("kickDriveTree did not flush the pending delegate delivery")
 	}
+	// Exercise the real missing-transcript retry before testing its teardown.
+	if got := clk.PendingCallbacks(); got != 1 {
+		t.Fatalf("armed wake retries=%d, want 1", got)
+	}
+	clk.Advance(jobNotificationRetryInitialDelay)
+	clk.Drain()
+	if got := clk.PendingCallbacks(); got != 1 {
+		t.Fatalf("rearmed wake retries=%d, want 1", got)
+	}
+	t.Log("real missing-transcript wake retry fired and rearmed before cleanup")
 }
 
 // Busy receivers may take custody, but only their own turn constructs a request.
 func TestKickDriveTreeAcceptsBusyChildDeliveryWithoutDrivingIt(t *testing.T) {
-	t.Parallel()
-	root := newSession(t)
-	child := newSession(t)
+	// Serial: seedPendingDeliverySource captures process-wide diagnostics.
+	clk := agenttest.NewFakeClock()
+	root := newSession(t, withClock(clk))
+	root.stopLaneResidueSweepTimer()
+	child := newSession(t, withClock(clk))
+	child.stopLaneResidueSweepTimer()
 	sub := &subagent{id: child.ID(), sess: child, running: true}
 	root.subagents.mu.Lock()
 	root.subagents.subs[child.ID()] = sub
 	root.subagents.mu.Unlock()
-	id := seedPendingDeliverySource(t, child)
+	id := seedPendingDeliverySource(t, child, clk)
 	if err := root.kickDriveTree(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -438,6 +457,9 @@ func TestCancelledManagedShellDrainStopsOnSessionClose(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatal("managed-job drain did not consume the controlled recheck")
 	}
+	// Resource rechecks do not pump notifications. A producer hint, not the
+	// tick above, owns a second kick.
+	sess.notify()
 	select {
 	case kick := <-kickEntered:
 		if kick != 2 {
@@ -465,6 +487,12 @@ func TestCancelledManagedShellDrainStopsOnSessionClose(t *testing.T) {
 	// fires on a genuine hang.
 	case <-time.After(30 * time.Second):
 		t.Fatal("DrainJobTree did not return after caller cancellation")
+	}
+	if signals := executor.signals.Load(); signals != 0 {
+		t.Fatalf("caller cancellation stopped the managed shell: signals=%d", signals)
+	}
+	if n, err := sess.jobManager.outstandingDrainJobCount(); err != nil || n != 1 {
+		t.Fatalf("managed shell after drain cancellation = %d, %v, want still live", n, err)
 	}
 
 	sess.Close()
@@ -544,7 +572,7 @@ func TestOutstandingDrainJobCountIgnoresForwardedDescendantPending(t *testing.T)
 	}
 }
 
-// TestRematerializeOwnedDrainJobPendings verifies the queue reconstruction uses
+// TestRematerializeOwnedDrainJobPendings verifies custody recovery uses
 // the same ownership and managed-job eligibility as durable drain accounting.
 // Reverting rematerialization to its former delegate-only filter would strand
 // the owned shell and fail this test.
@@ -569,19 +597,12 @@ func TestRematerializeOwnedDrainJobPendings(t *testing.T) {
 	if err := sess.rematerializeDurablePendings(); err != nil {
 		t.Fatalf("rematerializeDurablePendings: %v", err)
 	}
-	sess.pendingJobNotifsMu.Lock()
-	got := append([]jobNotification(nil), sess.pendingJobNotifs...)
-	sess.pendingJobNotifsMu.Unlock()
-	if len(got) != 1 {
-		t.Fatalf("rematerialized notifications = %+v, want one owned shell", got)
+	assertNotificationPending(t, sess, []string{"shell:shell-owned:gen-shell-owned"})
+	if got := sess.peekNotifications(); got != 0 {
+		t.Fatalf("rematerialization queued %d legacy notifications", got)
 	}
-	gotTypes := make(map[string]string, len(got))
-	for _, notification := range got {
-		gotTypes[notification.JobID] = notification.JobType
-	}
-	if gotTypes["shell-owned"] != "shell" {
-		t.Fatalf("rematerialized job ids and types = %v, want shell-owned shell", gotTypes)
-	}
+	requireNotificationState(t, jm, "shell-owned", jobstore.NotifyDelivered)
+	requireNotificationState(t, jm, "shell-forwarded", jobstore.NotifyPending)
 }
 
 // TestDrainSettlesRootDurableOnlyPending is the kata h8mq regression: a
@@ -657,6 +678,13 @@ func TestDrainSettlesAlreadyInjectedDurablePending(t *testing.T) {
 				t.Fatal(err)
 			}
 			id := "shell:" + tt.jobID + ":" + recs[tt.jobID].TerminalGen
+			// Seed the exact source payload at its custody-before-ack boundary.
+			// The shortened notification-like text above is not that payload and
+			// must not become a conflicting message under the real shell ID.
+			canonical := sess.formatJobNotificationReminder([]deliverableJobNotification{{
+				notification: jobNotificationFromRecord(recs[tt.jobID]),
+				terminalGen:  recs[tt.jobID].TerminalGen,
+			}})
 			if accepted, err := sess.notificationSourceAccepted(id); err != nil || accepted {
 				t.Fatalf("notification-like text established custody: %t, %v", accepted, err)
 			}
@@ -666,7 +694,7 @@ func TestDrainSettlesAlreadyInjectedDurablePending(t *testing.T) {
 			if accepted, err := sess.notificationSourceAccepted(id); err != nil || accepted {
 				t.Fatalf("watch identity established shell custody: %t, %v", accepted, err)
 			}
-			if err := sess.enqueueNotification(notification{ID: id, Message: llm.UserMachinery(injected)}); err != nil {
+			if err := sess.enqueueNotification(notification{ID: id, Message: llm.UserMachinery(canonical)}); err != nil {
 				t.Fatal(err)
 			}
 			if accepted, err := sess.notificationSourceAccepted(id); err != nil || !accepted {
@@ -690,6 +718,8 @@ func TestDrainSettlesAlreadyInjectedDurablePending(t *testing.T) {
 			if count != 1 || len(adapter.requestsFor("root")) != 1 {
 				t.Fatalf("receiver records=%d provider requests=%d, want 1 each", count, len(adapter.requestsFor("root")))
 			}
+			drainRequestNotice(t, adapter.requestsFor("root")[0], map[string]string{"job_id": tt.jobID, "job_type": "shell", "status": "completed"})
+			requireDrainShellObserved(t, sess, tt.jobID)
 		})
 	}
 }
@@ -724,42 +754,64 @@ func TestDrainSettlesChildDurableOnlyPending(t *testing.T) {
 		{name: "shell", jobID: "shell-child", typ: jobstore.JobShell},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			rootSteps := make([]func(llm.Request) llm.Response, 8)
-			for i := range rootSteps {
-				rootSteps[i] = func(llm.Request) llm.Response { return finalResponse("root-ack") }
+			const marker = "durable-shell-child-731a"
+			adapter := newMessagingAdapter(marker)
+			adapter.script("root",
+				func(llm.Request) llm.Response { return delegateToolResponse("create-child", marker) },
+				func(llm.Request) llm.Response { return finalResponse("root-ready") },
+			)
+			adapter.script(marker, func(llm.Request) llm.Response { return finalResponse("child-ready") })
+			root := newMessagingRoot(t, adapter, func(cfg *SessionConfig) { cfg.MaxSubagentDepth = 2 })
+			if _, err := root.ProcessInput(context.Background(), "create child", nil); err != nil {
+				t.Fatal(err)
 			}
-			root := newSession(t, withSteps(rootSteps...), withConfig(SessionConfig{}))
-
-			childSteps := make([]func(llm.Request) llm.Response, 8)
-			for i := range childSteps {
-				childSteps[i] = func(llm.Request) llm.Response { return finalResponse("child-ack") }
+			child := waitForSoleChildIdle(t, root)
+			if child.owningDelegateID == "" || child.delegateController != root.delegateController {
+				t.Fatal("fixture lacks stable delegate ownership")
 			}
-			child := newSession(t, withSteps(childSteps...), withConfig(SessionConfig{}))
-			childID := child.ID()
-
-			root.subagents.mu.Lock()
-			root.subagents.subs[childID] = &subagent{id: childID, sess: child}
-			root.subagents.mu.Unlock()
-			defer func() {
-				root.subagents.mu.Lock()
-				delete(root.subagents.subs, childID)
-				root.subagents.mu.Unlock()
-			}()
-
+			if _, err := root.DrainJobTree(context.Background(), drainWakeForTest(root)); err != nil {
+				t.Fatal(err)
+			}
 			seedOwnedDurablePending(t, child.jobManager, tt.jobID, tt.typ)
-			if p := child.peekNotifications(); p != 0 {
-				t.Fatalf("precondition: child in-memory queue must be empty, got %d", p)
-			}
+			id := "shell:" + tt.jobID + ":gen-" + tt.jobID
+			assertNotificationPending(t, child, []string{})
+			before := len(adapter.requestsFor(marker))
 
-			// TRIPWIRE: scripted in-process adapter steps for both sessions,
-			// no real I/O; only fires on a genuine hang (a wedged drain, the
-			// regression this test guards against).
+			// TRIPWIRE: scripted in-process provider and temporary journals.
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			if _, err := root.DrainJobTree(ctx, drainWakeForTest(root)); err != nil {
 				t.Fatalf("DrainJobTree wedged on a child's durable-only pending: %v", err)
 			}
 			requireNotificationState(t, child.jobManager, tt.jobID, jobstore.NotifyDelivered)
+			requireOwnedDrainAttentionObservedOnce(t, child, id)
+			if got := len(adapter.requestsFor(marker)); got != before+1 {
+				t.Fatalf("child requests = %d, want %d", got, before+1)
+			}
+			drainRequestNotice(t, adapter.requestsFor(marker)[before], map[string]string{"job_id": tt.jobID, "job_type": "shell", "status": "completed"})
+			if requestsContain(adapter.requestsFor("root"), `job_id="`+tt.jobID+`"`) {
+				t.Fatal("root provider request presented child-owned shell notification")
+			}
+			for _, entry := range notificationRawEntries(t, root.TranscriptPath()) {
+				if entry.Turn.AttentionID == id {
+					t.Fatal("root accepted child-owned shell notification")
+				}
+				for _, observed := range entry.Turn.ObservedNotificationIDs {
+					if observed == id {
+						t.Fatal("root observed child-owned shell notification")
+					}
+				}
+			}
+			if err := child.rematerializeDurablePendings(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := root.DrainJobTree(ctx, drainWakeForTest(root)); err != nil {
+				t.Fatal(err)
+			}
+			requireOwnedDrainAttentionObservedOnce(t, child, id)
+			if got := len(adapter.requestsFor(marker)); got != before+1 {
+				t.Fatalf("replay issued a duplicate child request: %d", got)
+			}
 		})
 	}
 }
@@ -792,8 +844,9 @@ func TestDrainJobTreeBatchesQueuedShellNotifications(t *testing.T) {
 	if len(requests) != 1 {
 		t.Fatalf("model requests = %d, want one batched notification turn", len(requests))
 	}
-	if !requestsContain(requests, `job_id="shell-batch-one"`, `job_id="shell-batch-two"`) {
-		t.Fatalf("batched request did not contain both shell notifications: %+v", requests)
+	for _, id := range []string{"shell-batch-one", "shell-batch-two"} {
+		drainRequestNotice(t, requests[0], map[string]string{"job_id": id, "job_type": "shell", "status": "completed"})
+		requireDrainShellObserved(t, sess, id)
 	}
 	requireNotificationState(t, jm, "shell-batch-one", jobstore.NotifyDelivered)
 	requireNotificationState(t, jm, "shell-batch-two", jobstore.NotifyDelivered)

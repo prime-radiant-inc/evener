@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/spf13/afero"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -55,7 +56,9 @@ func proveStableWatchRegistrationClear(t *testing.T) {
 	releaseReceiver := sync.OnceFunc(func() { close(receiverGate) })
 	a.finiteScript(marker, updateGate(sourceGate, updateReply(toolCallResponse(communicateCallArgs("terminal-97", map[string]any{"message": payload, "end_turn": true})))))
 	a.finiteScript("root", updateGate(receiverGate, updateReply(finalResponse("response-97"))))
+	clk := agenttest.NewFakeClock()
 	root := newMessagingRoot(t, a, func(cfg *SessionConfig) {
+		cfg.clock = clk
 		cfg.ForceRealIO = true
 		cfg.testOnly.disableDelegateIdleRelease = true
 	})
@@ -156,6 +159,9 @@ func proveStableWatchRegistrationClear(t *testing.T) {
 	}
 
 	fs.blocked.Store(false)
+	// Own the paced transport retry before asserting synchronous redrains.
+	clk.Advance(jobNotificationRetryInitialDelay)
+	clk.Drain()
 	for range 2 { // A second real drain must be idempotent.
 		if _, err := source.drainJobManagerWatchSends(ctx, jm); err != nil {
 			t.Fatal(err)

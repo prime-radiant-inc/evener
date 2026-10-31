@@ -964,3 +964,320 @@ func TestAttachUnderGateTerminalFailureStopsAParkedSupervisor(t *testing.T) {
 		t.Fatalf("EventFailed count after the parked supervisor retried = %d, want 1: the same terminal cause was announced twice for one host", got)
 	}
 }
+
+// The observation hooks pause only before admission, with no manager/gate lock
+// held. A committed replacement must retire that exact real loop, not merely
+// rely on the replacement still occupying the channel slot when it wakes.
+func TestCommittedAttachRetiresSupervisorAdmission(t *testing.T) {
+	for _, retry := range []bool{false, true} {
+		name := "initial"
+		if retry {
+			name = "backoff"
+		}
+		t.Run(name, func(t *testing.T) {
+			attempted, resume, exited := make(chan struct{}), make(chan struct{}), make(chan struct{}, 8)
+			var resumed, observed sync.Once
+			open := func() { resumed.Do(func() { close(resume) }) }
+			defer open()
+			var committed atomic.Bool
+			var staleClaims atomic.Int32
+			m, fr, host := attachUnderGateManager(t, Options{
+				sleep: func(ctx context.Context, _ time.Duration) error { return ctx.Err() },
+				beforeSuperviseClaim: func(_ string, isRetry bool) {
+					if isRetry == retry {
+						observed.Do(func() { close(attempted); <-resume })
+					}
+				},
+				afterSuperviseClaim: func(_ string, _ bool) {
+					if committed.Load() {
+						staleClaims.Add(1)
+					}
+				},
+				superviseExited: func(string) { exited <- struct{}{} },
+			})
+			first, err := m.Ensure(context.Background(), host.Name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var release func()
+			if !retry {
+				release, err = m.TryAcquire(host.Name, attachUnderGateCaller())
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer release()
+			}
+			first.markLost()
+			select {
+			case <-attempted:
+			case <-time.After(2 * time.Second):
+				t.Fatal("real supervisor never reached contested admission")
+			}
+			if retry {
+				release, err = m.TryAcquire(host.Name, attachUnderGateCaller())
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer release()
+			}
+			replacement, handoff, err := m.AttachUnderGate(context.Background(), host, attachUnderGateCaller(), true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			committed.Store(true)
+			// Do not start B yet, so the observed exit and every acquisition can
+			// only belong to A. Handoff remains under the operation gate.
+			release()
+			open()
+			select {
+			case <-exited:
+			case <-time.After(2 * time.Second):
+				t.Fatal("retired supervisor did not finish")
+			}
+			if got := staleClaims.Load(); got != 0 {
+				t.Fatalf("stale successful gate acquisitions = %d, want 0 (real %s admission reached)", got, name)
+			}
+			if first.supervised.Load() {
+				t.Fatal("retired loop retained supervision mark")
+			}
+			if supervisorLoops(m, host.Name) != 0 {
+				t.Fatal("retired loop retained registration")
+			}
+			if m.currentChannel(host.Name) != replacement || replacement.isClosed() {
+				t.Fatal("retired loop changed replacement")
+			}
+			if got := len(fr.recordedStarts()); got != 2 {
+				t.Fatalf("attach starts = %d, want 2", got)
+			}
+			// Validate the replacement's real handoff under a new operation hold.
+			release2, err := m.TryAcquire(host.Name, attachUnderGateCaller())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer release2()
+			if !handoff() {
+				t.Fatal("replacement handoff refused")
+			}
+		})
+	}
+}
+
+func awaitSupervisorSignal(t *testing.T, ch <-chan struct{}, label string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("%s did not finish", label)
+	}
+}
+
+// Release in the failed-attempt/select gap must still wake a healthy owner.
+// Cancellation must instead let that owner finish without any gate release.
+func TestSupervisorAdmissionWaitsForReleaseOrCancellation(t *testing.T) {
+	for _, mode := range []string{"release-before-select", "cancel-without-release", "close-while-waiting"} {
+		t.Run(mode, func(t *testing.T) {
+			waiting, resume, exited := make(chan struct{}), make(chan struct{}), make(chan struct{}, 8)
+			var firstWait atomic.Bool
+			var openOnce sync.Once
+			open := func() { openOnce.Do(func() { close(resume) }) }
+			defer open()
+			events := make(chan Event, 32)
+			m, fr, host := attachUnderGateManager(t, Options{
+				sleep: func(ctx context.Context, _ time.Duration) error { return ctx.Err() },
+				superviseGateWaiting: func(string) {
+					if firstWait.CompareAndSwap(false, true) {
+						close(waiting)
+						<-resume
+					}
+				},
+				superviseExited: func(string) { exited <- struct{}{} },
+				OnEvent:         func(ev Event) { events <- ev },
+			})
+			first, err := m.Ensure(context.Background(), host.Name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			waitForEvent(t, events, EventAttached)
+			release, err := m.TryAcquire(host.Name, attachUnderGateCaller())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer release()
+			first.markLost()
+			awaitSupervisorSignal(t, waiting, "real failed gate attempt")
+			var closeDone chan struct{}
+			switch mode {
+			case "release-before-select":
+				release() // hook still holds the waiter before its select
+			case "cancel-without-release":
+				m.stopSupervisor(host.Name)
+			case "close-while-waiting":
+				closeDone = make(chan struct{})
+				go func() { _ = m.Close(); close(closeDone) }()
+			}
+			open()
+			awaitSupervisorSignal(t, exited, "real supervisor cleanup")
+			if mode == "release-before-select" {
+				waitForEvent(t, events, EventAttached)
+				if current := m.currentChannel(host.Name); current == nil || current == first || current.isLost() {
+					t.Fatal("release did not restore a useful channel")
+				}
+				if got := len(fr.recordedStarts()); got != 2 {
+					t.Fatalf("real attach starts = %d, want 2", got)
+				}
+			} else {
+				if got := len(fr.recordedStarts()); got != 1 {
+					t.Fatalf("canceled waiter started %d bridges, want 1", got)
+				}
+				if first.supervised.Load() {
+					t.Fatal("canceled waiter retained mark")
+				}
+				m.mu.Lock()
+				refs := m.locks[host.Name].refs
+				m.mu.Unlock()
+				if mode == "cancel-without-release" && refs != 1 {
+					t.Fatalf("gate refs before operation release = %d, want only operation's reference", refs)
+				}
+				release()
+				if closeDone != nil {
+					awaitSupervisorSignal(t, closeDone, "Close join")
+					m.mu.Lock()
+					remaining := len(m.locks) + len(m.supervisors)
+					m.mu.Unlock()
+					if remaining != 0 {
+						t.Fatal("Close leaked gates or loops")
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestCommittedSuccessorOwnsAnEmptyReconnectSlot(t *testing.T) {
+	oldWaiting, oldResume, newWaiting, newResume := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var oldOpen, newOpen sync.Once
+	openOld := func() { oldOpen.Do(func() { close(oldResume) }) }
+	openNew := func() { newOpen.Do(func() { close(newResume) }) }
+	defer openOld()
+	defer openNew()
+	var retries atomic.Int32
+	exited, events := make(chan struct{}, 8), make(chan Event, 32)
+	m, fr, host := attachUnderGateManager(t, Options{
+		sleep: func(ctx context.Context, _ time.Duration) error { return ctx.Err() },
+		beforeSuperviseClaim: func(_ string, retry bool) {
+			if !retry {
+				return
+			}
+			switch retries.Add(1) {
+			case 1:
+				close(oldWaiting)
+				<-oldResume
+			case 2:
+				close(newWaiting)
+				<-newResume
+			}
+		},
+		superviseExited: func(string) { exited <- struct{}{} },
+		OnEvent:         func(ev Event) { events <- ev },
+	})
+	first, err := m.Ensure(context.Background(), host.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForEvent(t, events, EventAttached)
+	first.markLost()
+	awaitSupervisorSignal(t, oldWaiting, "A backoff admission")
+	release, err := m.TryAcquire(host.Name, attachUnderGateCaller())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	second, handoff, err := m.AttachUnderGate(context.Background(), host, attachUnderGateCaller(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !handoff() {
+		t.Fatal("B handoff refused")
+	}
+	release()
+	waitForEvent(t, events, EventAttached)
+	second.markLost()
+	awaitSupervisorSignal(t, newWaiting, "B backoff admission")
+	if m.currentChannel(host.Name) != nil {
+		t.Fatal("B did not clear its own slot")
+	}
+	openOld()
+	awaitSupervisorSignal(t, exited, "retired A cleanup")
+	if got := len(fr.recordedStarts()); got != 2 {
+		t.Fatalf("retired A reconnected empty slot: starts = %d, want 2", got)
+	}
+	if first.supervised.Load() || supervisorLoops(m, host.Name) != 1 {
+		t.Fatal("retired A mark/registration survived, or B lost ownership")
+	}
+	openNew()
+	waitForEvent(t, events, EventAttached)
+	awaitSupervisorSignal(t, exited, "successful B reconnect loop cleanup")
+	if got := len(fr.recordedStarts()); got != 3 {
+		t.Fatalf("real starts = %d, want A, B and B's reconnect", got)
+	}
+	if ch := m.currentChannel(host.Name); ch == nil || ch == second || ch.isLost() {
+		t.Fatal("B did not recover useful operation")
+	}
+	if supervisorLoops(m, host.Name) != 1 {
+		t.Fatal("successor supervision was duplicated or lost")
+	}
+}
+
+func TestAttachRollbackKeepsPredecessorRecovery(t *testing.T) {
+	attempted, resume := make(chan struct{}), make(chan struct{})
+	var observed atomic.Bool
+	var openOnce sync.Once
+	open := func() { openOnce.Do(func() { close(resume) }) }
+	defer open()
+	var drop atomic.Bool
+	events := make(chan Event, 32)
+	m, fr, host := attachUnderGateManager(t, Options{
+		sleep: func(ctx context.Context, _ time.Duration) error { return ctx.Err() },
+		beforeSuperviseClaim: func(_ string, _ bool) {
+			if observed.CompareAndSwap(false, true) {
+				close(attempted)
+				<-resume
+			}
+		},
+		afterPublish: func(_ string, ch *Channel) {
+			if drop.CompareAndSwap(true, false) {
+				ch.markLost()
+			}
+		},
+		OnEvent: func(ev Event) { events <- ev },
+	})
+	first, err := m.Ensure(context.Background(), host.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForEvent(t, events, EventAttached)
+	release, err := m.TryAcquire(host.Name, attachUnderGateCaller())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	first.markLost()
+	awaitSupervisorSignal(t, attempted, "A contested admission")
+	drop.Store(true)
+	if _, _, err := m.AttachUnderGate(context.Background(), host, attachUnderGateCaller(), true); !errors.Is(err, ErrSSHStart) {
+		t.Fatalf("tentative B drop = %v, want retryable transport failure", err)
+	}
+	if m.currentChannel(host.Name) != first || supervisorLoops(m, host.Name) != 1 || !first.supervised.Load() {
+		t.Fatal("rollback retired predecessor recovery")
+	}
+	release()
+	open()
+	waitForEvent(t, events, EventDetached)
+	waitForEvent(t, events, EventAttached)
+	if got := len(fr.recordedStarts()); got != 3 {
+		t.Fatalf("real starts = %d, want A, failed B and recovered C", got)
+	}
+	if ch := m.currentChannel(host.Name); ch == nil || ch == first || ch.isLost() {
+		t.Fatal("rollback did not recover useful operation")
+	}
+}

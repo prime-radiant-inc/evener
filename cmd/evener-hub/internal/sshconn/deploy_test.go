@@ -1930,8 +1930,12 @@ func TestDeployArtifactUnusableIsTerminal(t *testing.T) {
 	}
 	hostGate := m.hostLock(host.Name)
 	defer m.releaseHostLock(host.Name)
-	if more := m.reconnectOnce(context.Background(), host, hostGate); more {
+	beforeReconnectRuns := len(fr.recordedRuns())
+	if more := m.reconnectOnce(context.Background(), host, hostGate, registeredReconnectLoop(t, m, host, hostGate)); more {
 		t.Fatal("reconnectOnce asked for another attempt, so the supervisor would loop on the terminal refusal")
+	}
+	if len(fr.recordedRuns()) <= beforeReconnectRuns {
+		t.Fatal("eligible reconnect did not reach the external runner")
 	}
 }
 
@@ -2000,8 +2004,12 @@ func TestEnsureWrongArtifactAgainstRunningHubRefusesBeforeRestart(t *testing.T) 
 	host = registeredTestHost(t, m, host)
 	hostGate := m.hostLock(host.Name)
 	defer m.releaseHostLock(host.Name)
-	if more := m.reconnectOnce(context.Background(), host, hostGate); more {
+	beforeReconnectRuns := len(fr.recordedRuns())
+	if more := m.reconnectOnce(context.Background(), host, hostGate, registeredReconnectLoop(t, m, host, hostGate)); more {
 		t.Fatal("reconnectOnce asked for another attempt, so the supervisor would loop on the terminal refusal")
+	}
+	if len(fr.recordedRuns()) <= beforeReconnectRuns {
+		t.Fatal("eligible reconnect did not reach the external runner")
 	}
 	for _, argv := range fr.recordedRuns() {
 		if strings.Contains(strings.Join(argv, " "), "systemctl restart") {

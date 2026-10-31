@@ -3,14 +3,22 @@ package agent
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
+	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
+	"github.com/spf13/afero"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/appprojector"
+	"primeradiant.com/evener/llm"
 )
 
 // boundaryRecorder collects the events a served session emits. Registering a
@@ -98,13 +106,8 @@ func TestNotificationTurnAnnouncesOneNamedBoundary(t *testing.T) {
 // change exists for: content emitted before the boundary is attributed to the
 // turn before it.
 //
-// The steering-only wake's content is injectDrainedSteering's
-// EventSteeringInjected, emitted at the tail of acceptNotificationInput. Its
-// sibling shape — a job-notification wake — emits a reminder from the same
-// site, three lines below the boundary; the guard against the boundary being
-// buried inside that shape's `if len(jobNotifs) > 0` block is
-// TestNotificationTurnAnnouncesOneNamedBoundary above, which drives the shape
-// that block skips entirely.
+// This steering-only wake emits EventSteeringInjected. Terminal job messages
+// use canonical receiver custody instead, covered by the next test.
 func TestNotificationBoundaryPrecedesTheTurnsContent(t *testing.T) {
 	t.Parallel()
 	s := newTestSessionForEnvctx(t)
@@ -129,44 +132,50 @@ func TestNotificationBoundaryPrecedesTheTurnsContent(t *testing.T) {
 	}
 }
 
-// TestNotificationBoundaryPrecedesItsJobReminder is the ordering test for the
-// shape that actually emits a reminder. It matters more than it looks: the web
-// reducer attaches a steering item to whatever activeTurnId it currently
-// holds, so a reminder arriving before turn/started is either filed under the
-// previous turn or dropped outright when there is no active turn at all.
-//
-// It needs the full job-notification setup (a job manager plus a durable
-// record) because acceptNotificationInput drops a hand-made in-memory
-// notification as undeliverable and refuses the wake.
-func TestNotificationBoundaryPrecedesItsJobReminder(t *testing.T) {
+// A terminal source token migrates into canonical custody. Its one named
+// boundary must precede model output, without a duplicate synthetic reminder.
+func TestNotificationBoundaryPrecedesCanonicalJobContent(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	s := newTestSessionForEnvctx(t, withDir(dir))
+	a := &skillContinuationAdapter{}
+	s := observationSession(t, a, false)
 	rec := serveAndRecord(t, s)
-
-	jm, err := newJobManager(dir, s.ID(), s.enqueueJobNotification)
-	if err != nil {
-		t.Fatalf("newJobManager: %v", err)
-	}
-	s.jobManager = jm
-	appendPendingJobNotificationRecord(t, jm, s.ID())
+	appendPendingJobNotificationRecord(t, s.jobManager, s.ID())
 	s.enqueueJobNotification(jobNotification{JobID: "job_X", JobType: "shell", Status: "completed", OutputBytes: 42})
+	var id string
+	a.steps = []func(llm.Request) (llm.Response, error){func(req llm.Request) (llm.Response, error) {
+		observationRequest(t, req, []string{"job_X"}, nil)
+		ids, err := s.pendingNotificationIDs()
+		if err != nil || len(ids) != 1 {
+			t.Fatalf("before response pending=%v error=%v", ids, err)
+		}
+		id = ids[0]
+		for _, entry := range notificationRawEntries(t, s.TranscriptPath()) {
+			if len(entry.Turn.ObservedNotificationIDs) != 0 {
+				t.Fatal("custody granted observation before a provider response")
+			}
+		}
+		return toolCallResponse(communicateCallArgs("job-content", map[string]any{"message": "job-output-5", "end_turn": true})), nil
+	}}
 
 	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
 	}
-
-	kinds, _ := rec.snapshot()
+	assertNotificationObservedOnce(t, s.TranscriptPath(), id)
+	assertNotificationPending(t, s, []string{})
+	if len(a.Requests()) != 1 || producerRecordCount(t, s) != 1 || len(producerSourceEvents(t, s.jobManager, jobstore.EventJobNotificationDelivered)) != 1 {
+		t.Fatal("terminal job must produce one custody record, source ack and provider request")
+	}
+	kinds, starts := rec.snapshot()
 	started := indexOf(kinds, events.EventTurnStarted)
-	injected := indexOf(kinds, events.EventSteeringInjected)
-	if started < 0 {
-		t.Fatalf("no EventTurnStarted in %v", kinds)
+	content := indexOf(kinds, events.EventToolCallStart)
+	if len(starts) != 1 || !strings.HasPrefix(starts[0].TurnID, "turn_m") {
+		t.Fatalf("named boundaries=%+v, want one turn_m boundary", starts)
 	}
-	if injected < 0 {
-		t.Fatalf("no EventSteeringInjected in %v; this wake emitted no reminder, so it is not the shape under test", kinds)
+	if started < 0 || content < 0 || started >= content {
+		t.Fatalf("boundary=%d content=%d, want boundary before model output: %v", started, content, kinds)
 	}
-	if started > injected {
-		t.Fatalf("EventTurnStarted at %d came after the reminder at %d; the reminder would be filed under the previous turn, or dropped", started, injected)
+	if indexOf(kinds, events.EventSteeringInjected) != -1 {
+		t.Fatalf("canonical job also emitted a legacy reminder: %v", kinds)
 	}
 }
 
@@ -212,33 +221,34 @@ func TestRefusedNotificationWakeAnnouncesNoBoundary(t *testing.T) {
 	}
 }
 
-// TestRefusedDurableAppendAnnouncesNoBoundary pins the ordering
-// acceptNotificationInput's "persist before announcing" comment argues for.
-// appendSteeringTurnDurably is the turn's last refusal, and moving the mint and
-// the boundary above it costs twice: the refusal path returns no id, so the
-// deferred release in processOneInput never sees the one that was minted and it
-// leaks, and the projection is left holding an open active turn whose close
-// finishNotificationNoop's sessionEndEmitted then suppresses.
+// Failed receiver Sync must not announce a turn or dispatch the provider.
+// Retrying the same identity after recovery must remain useful, exactly once.
 func TestRefusedDurableAppendAnnouncesNoBoundary(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	s := newTestSessionForEnvctx(t, withDir(dir))
+	// Serial: capture the process-wide logger during intentional storage failure.
+	syncErr := errors.New("controlled receiver sync failure")
+	captureReceiverErrorLogs(t, syncErr)
+	a := &skillContinuationAdapter{}
+	s := observationSession(t, a, false)
 	rec := serveAndRecord(t, s)
-
-	jm, err := newJobManager(dir, s.ID(), s.enqueueJobNotification)
+	fs := &receiverBoundarySyncFS{Fs: afero.NewOsFs(), err: syncErr}
+	old := s.attachedTranscript()
+	w, _, err := transcript.OpenWriterForSessionWithFS(fs, s.TranscriptPath(), s.ID())
 	if err != nil {
-		t.Fatalf("newJobManager: %v", err)
+		t.Fatal(err)
 	}
-	s.jobManager = jm
-	appendPendingJobNotificationRecord(t, jm, s.ID())
-	s.enqueueJobNotification(jobNotification{JobID: "job_X", JobType: "shell", Status: "completed", OutputBytes: 42})
-
-	ctx := context.WithValue(context.Background(), sessionLifecycleFaultsKey{},
-		map[string]error{"append_notification": errors.New("append failed")})
-	if _, err := s.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
+	s.attachTranscript(w)
+	defer func() { _ = old.Close() }()
+	fs.fail.Store(true)
+	n := notification{ID: "refused-custody-5", Message: llm.User("refusal-payload-5")}
+	if err := s.enqueueNotification(n); !errors.Is(err, syncErr) {
+		t.Fatalf("acceptance error=%v, want actual Sync failure", err)
+	}
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
 	}
-
+	if len(a.Requests()) != 0 || fs.failures.Load() == 0 {
+		t.Fatalf("refused custody requests=%d Sync failures=%d", len(a.Requests()), fs.failures.Load())
+	}
 	if _, starts := rec.snapshot(); len(starts) != 0 {
 		t.Fatalf("a wake refused at its durable append announced %d boundaries, want 0", len(starts))
 	}
@@ -248,6 +258,97 @@ func TestRefusedDurableAppendAnnouncesNoBoundary(t *testing.T) {
 	if got := s.clientMutations.snapshot().ActiveTurnID; got != "" {
 		t.Fatalf("ActiveTurnID = %q after a refused wake; the id was minted above the refusal and leaked", got)
 	}
+	fs.fail.Store(false)
+	s = observationReopen(t, s, a)
+	rec = serveAndRecord(t, s)
+	if err := s.enqueueNotification(n); err != nil {
+		t.Fatal(err)
+	}
+	assertNotificationPending(t, s, []string{n.ID})
+	a.steps = []func(llm.Request) (llm.Response, error){func(req llm.Request) (llm.Response, error) {
+		observationRequest(t, req, []string{"refusal-payload-5"}, nil)
+		return llm.Response{Message: llm.Assistant("recovered-output-5")}, nil
+	}}
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatal(err)
+	}
+	assertNotificationObservedOnce(t, s.TranscriptPath(), n.ID)
+	assertNotificationRecords(t, s.TranscriptPath(), n.ID, n.Message, 1)
+	assertNotificationPending(t, s, []string{})
+	if len(a.Requests()) != 1 {
+		t.Fatalf("recovered requests=%d, want one", len(a.Requests()))
+	}
+	if _, starts := rec.snapshot(); len(starts) != 1 {
+		t.Fatalf("recovered boundaries=%d, want one", len(starts))
+	}
+}
+
+type receiverBoundarySyncFS struct {
+	afero.Fs
+	err      error
+	fail     atomic.Bool
+	failures atomic.Int64
+}
+
+func (fs *receiverBoundarySyncFS) OpenFile(path string, flag int, mode os.FileMode) (afero.File, error) {
+	f, err := fs.Fs.OpenFile(path, flag, mode)
+	if err != nil {
+		return nil, err
+	}
+	return &receiverBoundarySyncFile{File: f, fs: fs}, nil
+}
+
+type receiverBoundarySyncFile struct {
+	afero.File
+	fs *receiverBoundarySyncFS
+}
+
+func (f *receiverBoundarySyncFile) Sync() error {
+	if f.fs.fail.Load() {
+		f.fs.failures.Add(1)
+		return f.fs.err
+	}
+	return f.File.Sync()
+}
+
+// Storage-failure tests run serially and retain typed errors instead of
+// comparing warning prose. Install capture before session cleanups so its final
+// validation sees their logs too. Any warning without the injected cause fails.
+func captureReceiverErrorLogs(t *testing.T, cause error, stringified ...func() error) {
+	t.Helper()
+	logged := &reclaimLogCapture{Handler: slog.NewTextHandler(io.Discard, nil)}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(logged))
+	t.Cleanup(func() {
+		t.Helper()
+		defer slog.SetDefault(previous)
+		logged.mu.Lock()
+		defer logged.mu.Unlock()
+		for _, record := range logged.records {
+			if record.Level < slog.LevelWarn {
+				continue
+			}
+			var loggedErr error
+			record.Attrs(func(attr slog.Attr) bool {
+				if err, ok := attr.Value.Any().(error); ok {
+					loggedErr = errors.Join(loggedErr, err)
+				}
+				// Delegate attention warnings stringify the error before logging.
+				// Compare that structured attr to the separately checked typed cause.
+				if attr.Key == "error" && attr.Value.Kind() == slog.KindString {
+					for _, expected := range stringified {
+						if err := expected(); errors.Is(err, cause) && attr.Value.String() == err.Error() {
+							loggedErr = errors.Join(loggedErr, err)
+						}
+					}
+				}
+				return true
+			})
+			if !errors.Is(loggedErr, cause) {
+				t.Errorf("unexpected receiver log level=%v cause=%v, want %v", record.Level, loggedErr, cause)
+			}
+		}
+	})
 }
 
 // TestWakeStandsDownWhileAUserTurnIsClaimed is the ordinary-usage race, not an

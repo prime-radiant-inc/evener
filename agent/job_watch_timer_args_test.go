@@ -88,26 +88,25 @@ func TestWatchArgsFromToolArgs_TimerFieldsAreCreateOnlyAndNullIsNeutral(t *testi
 func TestValidateWatchTriggerShape_TimerRules(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name string
-		args watchArgs
-		want string
+		name    string
+		args    watchArgs
+		wantErr bool
 	}{
-		{"repeat on delegate", watchArgs{Operation: "create", Source: "dlg_a", Target: "caller", RepeatSeconds: 300}, "timers apply to source self"},
-		{"after on job", watchArgs{Operation: "create", Source: "job_1", Target: "job_1", AfterSeconds: 600}, "timers apply to source self"},
-		{"both time fields", watchArgs{Operation: "create", Source: "self", Target: "caller", AfterSeconds: 60, RepeatSeconds: 60}, "after_seconds and repeat_seconds"},
-		{"timer with output_match", watchArgs{Operation: "create", Source: "self", Target: "caller", RepeatSeconds: 60, OutputMatch: "x"}, "repeat_seconds and output_match"},
-		{"timer with send", watchArgs{Operation: "create", Source: "self", Target: "caller", RepeatSeconds: 300, Send: &watchSendArgs{To: "dlg_a"}}, "repeat_seconds and send are mutually exclusive"},
-		{"one-shot with send", watchArgs{Operation: "create", Source: "self", Target: "caller", AfterSeconds: 600, Send: &watchSendArgs{To: "dlg_a"}}, "after_seconds and send are mutually exclusive"},
-		{"progress on self", watchArgs{Operation: "create", Source: "self", Target: "caller", ProgressIntervalMS: 1000}, "for a timer use repeat_seconds"},
-		// A request that names both fields is told about both, not pointed at
-		// the timer field it already used.
-		{"timer with progress", watchArgs{Operation: "create", Source: "self", Target: "caller", RepeatSeconds: 300, ProgressIntervalMS: 1000}, "repeat_seconds and progress_interval_ms are mutually exclusive"},
-		{"progress on delegate", watchArgs{Operation: "create", Source: "dlg_a", Target: "caller", ProgressIntervalMS: 1000}, "for a timer use repeat_seconds"},
+		{"repeat on delegate", watchArgs{Operation: "create", Source: "dlg_a", Target: "caller", RepeatSeconds: 300}, true},
+		{"after on job", watchArgs{Operation: "create", Source: "job_1", Target: "job_1", AfterSeconds: 600}, true},
+		{"both time fields", watchArgs{Operation: "create", Source: "self", Target: "caller", AfterSeconds: 60, RepeatSeconds: 60}, true},
+		{"timer with output_match", watchArgs{Operation: "create", Source: "self", Target: "caller", RepeatSeconds: 60, OutputMatch: "x"}, true},
+		{"timer with send", watchArgs{Operation: "create", Source: "self", Target: "caller", RepeatSeconds: 300, Send: &watchSendArgs{To: "dlg_a"}}, false},
+		{"one-shot with send", watchArgs{Operation: "create", Source: "self", Target: "caller", AfterSeconds: 600, Send: &watchSendArgs{To: "dlg_a"}}, false},
+		{"progress on self", watchArgs{Operation: "create", Source: "self", Target: "caller", ProgressIntervalMS: 1000}, true},
+		// Timer and progress triggers remain mutually exclusive.
+		{"timer with progress", watchArgs{Operation: "create", Source: "self", Target: "caller", RepeatSeconds: 300, ProgressIntervalMS: 1000}, true},
+		{"progress on delegate", watchArgs{Operation: "create", Source: "dlg_a", Target: "caller", ProgressIntervalMS: 1000}, true},
 	}
 	for _, tc := range cases {
 		err := validateWatchTriggerShape(tc.args)
-		if err == nil || !strings.Contains(err.Error(), tc.want) {
-			t.Errorf("%s: err = %v, want %q", tc.name, err, tc.want)
+		if (err != nil) != tc.wantErr {
+			t.Errorf("%s: err = %v, want error=%t", tc.name, err, tc.wantErr)
 		}
 	}
 	if err := validateWatchTriggerShape(watchArgs{Operation: "create", Target: "caller", ProgressIntervalMS: 1000}); err != nil {

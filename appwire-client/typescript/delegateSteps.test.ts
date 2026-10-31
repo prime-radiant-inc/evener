@@ -120,7 +120,14 @@ test("reads the earlier results a send's wait carried, oldest first", () => {
     "earlier reply 2 of 2 · failed",
   ]);
   expect(delegateSendResponse({ raw, output: "" })).toBe("third");
-  expect(delegateSendEarlierResponses(subagentWireStep("call_send_2"))).toEqual([]);
+  const waited = subagentWireStep("call_send_2");
+  const recorded = waited.raw as { earlier_results: { status: string; output: string }[]; output: string };
+  expect(recorded.earlier_results).toHaveLength(1);
+  expect(recorded.earlier_results[0]?.status).toBe("completed");
+  expect(delegateSendEarlierResponses(waited)).toEqual([
+    { text: recorded.earlier_results[0]?.output, status: "completed" },
+  ]);
+  expect(delegateSendResponse(waited)).toBe(recorded.output);
   expect(delegateSendEarlierResponses({ raw: { ...raw, earlier_results: "nope" }, output: "" })).toEqual([]);
   expect(delegateSendEarlierResponses({ output: "no state" })).toEqual([]);
 });

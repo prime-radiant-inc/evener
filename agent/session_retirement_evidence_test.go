@@ -13,6 +13,7 @@ import (
 	"slices"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -1966,12 +1967,15 @@ func TestRetirementWatchFiredOneShot(t *testing.T) {
 			jm.mu.Lock()
 			key, cfg, ok := jm.watchConfigByIDLocked(registered.WatchID)
 			jm.mu.Unlock()
-			if !ok {
-				t.Fatal("timer not registered")
+			if !ok || !cfg.timer || !cfg.oneShot || cfg.timerSeconds != 60 || cfg.note != "original-timer-note" {
+				t.Fatal("one-shot timer lost its registration, mode, interval or note")
 			}
 			before, err := jm.store.LoadWatches()
 			if err != nil {
 				t.Fatal(err)
+			}
+			if before[registered.WatchID] == nil || before[registered.WatchID].Generation == "" {
+				t.Fatal("timer source generation missing")
 			}
 			entered, resume := make(chan struct{}), make(chan struct{})
 			if paused {
@@ -2005,18 +2009,19 @@ func TestRetirementWatchFiredOneShot(t *testing.T) {
 			} else if keep := <-done; keep {
 				t.Fatal("one-shot kept timer alive")
 			}
-			root.pendingJobNotifsMu.Lock()
-			pending := slices.Clone(root.pendingJobNotifs)
-			root.pendingJobNotifsMu.Unlock()
-			if len(pending) != 1 || pending[0].WatchID != registered.WatchID || !pending[0].Terminal || pending[0].Note != "original-timer-note" {
-				t.Fatalf("original timer source missing: %+v", pending)
+			produced := producerSourceEvents(t, jm, jobstore.EventWatchSendPending)
+			if len(produced) != 1 || produced[0].WatchSend == nil {
+				t.Fatalf("original timer source missing: %+v", produced)
 			}
+			source := *produced[0].WatchSend
+			if source.Key.WatchID != registered.WatchID || source.Key.WatchGeneration != before[registered.WatchID].Generation || !source.CallbackFrame || source.TriggerReason != "after" || source.DeliveryID == "" {
+				t.Fatalf("wrong one-shot source identity: %+v", source)
+			}
+			id := fmt.Sprintf("watch:%s:%d", source.DeliveryID, source.UpdateSeq)
+			pending := retirementNotificationCustody(t, root, id, 0)
 			assertRetirementEvidenceBlocked(t, c, "notification")
-			root.pendingJobNotifsMu.Lock()
-			unchanged := reflect.DeepEqual(pending, root.pendingJobNotifs)
-			root.pendingJobNotifsMu.Unlock()
-			if !unchanged {
-				t.Fatal("claim changed original pending timer source")
+			if !reflect.DeepEqual(pending, retirementNotificationCustody(t, root, id, 0)) || !reflect.DeepEqual(produced, producerSourceEvents(t, jm, jobstore.EventWatchSendPending)) {
+				t.Fatal("claim changed original timer custody or source")
 			}
 			after, err := jm.store.LoadWatches()
 			if err != nil {
@@ -2031,9 +2036,7 @@ func TestRetirementWatchFiredOneShot(t *testing.T) {
 			if !requestsContain(adapter.Requests(), registered.WatchID, "original-timer-note") {
 				t.Fatal("original timer frame did not reach provider")
 			}
-			if root.peekNotifications() != 0 {
-				t.Fatal("real notification turn did not settle timer")
-			}
+			retirementNotificationCustody(t, root, id, 1)
 			assertRetirementEvidenceEligible(t, c)
 		})
 	}
@@ -2041,10 +2044,11 @@ func TestRetirementWatchFiredOneShot(t *testing.T) {
 
 func TestRetirementWatchTerminalPendingSend(t *testing.T) {
 	t.Parallel()
+	clk := agenttest.NewFakeClockAt(time.Unix(1_700_000_000, 0))
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return finalResponse("terminal watch acknowledged") },
 	}}
-	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir()}), withAdapter(adapter))
+	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), clock: clk}), withAdapter(adapter))
 	c := retirementEvidenceController(t, root)
 	jm := root.jobManager
 	rec, err := jm.createShell(createShellOpts{Command: "original-watched-shell"})
@@ -2055,8 +2059,34 @@ func TestRetirementWatchTerminalPendingSend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "fixture-settled", nil); err != nil {
+	jm.mu.Lock()
+	shellDone := jm.running[rec.JobID].done
+	jm.mu.Unlock()
+	t.Cleanup(func() {
+		// The later-registered obstruction cleanup restores transport first.
+		if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "fixture-settled", nil); err != nil {
+			t.Error(err)
+		}
+		awaitSignal(t, shellDone, "pending-watch shell cleanup finalizer")
+		root.Close()
+		clk.Drain()
+	})
+	_, repairTranscript := retirementObstructReceiverTranscript(t, root)
+	finalizeErr := jm.finalize(rec.JobID, jobstore.StatusCompleted, "fixture-settled", nil)
+	var pathErr *os.PathError
+	if !errors.As(finalizeErr, &pathErr) || pathErr.Path != root.TranscriptPath() {
+		t.Fatalf("terminal custody did not encounter the receiver filesystem fault: %v", finalizeErr)
+	}
+	if err := repairTranscript(); err != nil {
 		t.Fatal(err)
+	}
+	shells, err := jm.store.Load()
+	if err != nil || shells[rec.JobID] == nil {
+		t.Fatalf("original terminal shell missing: %+v err=%v", shells, err)
+	}
+	originalShell := *shells[rec.JobID]
+	if originalShell.Status != jobstore.StatusCompleted || originalShell.TerminalGen == "" || originalShell.NotifyState != jobstore.NotifyPending {
+		t.Fatalf("original terminal shell not retained for custody retry: %+v", originalShell)
 	}
 	original, err := jm.store.LoadWatchSends()
 	if err != nil {
@@ -2072,12 +2102,43 @@ func TestRetirementWatchTerminalPendingSend(t *testing.T) {
 	if source.Key.WatchID != registered.WatchID || source.DeliveryID == "" || source.Key.WatchGeneration == "" {
 		t.Fatalf("missing source identity: %+v", source)
 	}
+	// Retry only this already-published shell. Its new lexical production is
+	// empty, so shell custody can finish without pumping the old watch source.
+	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "fixture-settled", nil); err != nil {
+		t.Fatal(err)
+	}
+	awaitSignal(t, shellDone, "pending-watch same terminal shell finalizer")
+	shells, err = jm.store.Load()
+	if err != nil || shells[rec.JobID] == nil {
+		t.Fatalf("retried terminal shell missing: %+v err=%v", shells, err)
+	}
+	shell := shells[rec.JobID]
+	if shell.TerminalGen != originalShell.TerminalGen || shell.Status != originalShell.Status || shell.Reason != originalShell.Reason || shell.NotifyState != jobstore.NotifyDelivered {
+		t.Fatalf("custody retry changed original terminal shell: before=%+v after=%+v", originalShell, shell)
+	}
+	finished := producerSourceEvents(t, jm, jobstore.EventJobFinished)
+	if len(finished) != 1 || finished[0].JobID != rec.JobID || finished[0].TerminalGen != originalShell.TerminalGen {
+		t.Fatalf("custody retry duplicated or replaced terminal production: %+v", finished)
+	}
+	beforeClaim, err := jm.store.LoadWatchSends()
+	if err != nil || !reflect.DeepEqual(original, beforeClaim) {
+		t.Fatalf("shell custody retry changed original watch source: %+v err=%v", beforeClaim, err)
+	}
 	jm.mu.Lock()
 	_, _, live := jm.watchConfigByIDLocked(registered.WatchID)
+	transportRetryArmed := jm.watchTransportRetry.active
 	jm.mu.Unlock()
 	if live {
 		t.Fatal("terminal watch still live")
 	}
+	c.mu.Lock()
+	activeBeforeClaim := len(c.active)
+	c.mu.Unlock()
+	if !transportRetryArmed || activeBeforeClaim != 0 || len(adapter.Requests()) != 0 || !clk.Now().Equal(time.Unix(1_700_000_000, 0)) {
+		t.Fatalf("watch evidence precondition: retry=%t active=%d requests=%d clock=%v", transportRetryArmed, activeBeforeClaim, len(adapter.Requests()), clk.Now())
+	}
+	shellID := stableShellAttentionID(rec.JobID, originalShell.TerminalGen)
+	retirementNotificationCustody(t, root, shellID, 0)
 	assertRetirementEvidenceBlocked(t, c, "watch")
 	after, err := jm.store.LoadWatchSends()
 	if err != nil {
@@ -2089,15 +2150,43 @@ func TestRetirementWatchTerminalPendingSend(t *testing.T) {
 	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 		t.Fatal(err)
 	}
-	if !requestsContain(adapter.Requests(), source.DeliveryID, "original-send-message") {
+	if !requestsContain(adapter.Requests(), "original-send-message") {
 		t.Fatal("original pending send never reached provider")
 	}
+	// DeliveryID is transport identity, deliberately stripped from model prose.
+	// The exact original ID must instead be in the canonical response receipt.
+	retirementNotificationCustody(t, root, fmt.Sprintf("watch:%s:%d", source.DeliveryID, source.UpdateSeq), 1)
+	retirementNotificationCustody(t, root, shellID, 1)
 	after, err = jm.store.LoadWatchSends()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(after.Pending) != 0 {
 		t.Fatalf("real turn left pending sends: %+v", after)
+	}
+	requestsBeforeRetry := len(adapter.Requests())
+	clk.Advance(jobNotificationRetryInitialDelay)
+	clk.Drain()
+	jm.mu.Lock()
+	retrying := jm.watchTransportRetry.active
+	jm.mu.Unlock()
+	c.mu.Lock()
+	activeAfterRetry := len(c.active)
+	c.mu.Unlock()
+	root.attentionMu.Lock()
+	callbacks := root.attentionCallbacks
+	root.attentionMu.Unlock()
+	if retrying || activeAfterRetry != 0 || callbacks != 0 || len(adapter.Requests()) != requestsBeforeRetry {
+		t.Fatalf("settled source retry left work: retry=%t leases=%d callbacks=%d requests=%d->%d", retrying, activeAfterRetry, callbacks, requestsBeforeRetry, len(adapter.Requests()))
+	}
+	retirementNotificationCustody(t, root, fmt.Sprintf("watch:%s:%d", source.DeliveryID, source.UpdateSeq), 1)
+	retirementNotificationCustody(t, root, shellID, 1)
+	afterRetry, err := jm.store.LoadWatchSends()
+	if err != nil || !reflect.DeepEqual(after, afterRetry) {
+		t.Fatalf("settled retry changed watch source: %+v err=%v", afterRetry, err)
+	}
+	if pending, err := root.pendingNotificationIDs(); err != nil || len(pending) != 0 {
+		t.Fatalf("settled retry created receiver work: %v err=%v", pending, err)
 	}
 	assertRetirementEvidenceEligible(t, c)
 }
@@ -2173,6 +2262,183 @@ func TestRetirementAutonomousNaming(t *testing.T) {
 	}
 }
 
+// The transcript, not a producer's acknowledged source or compatibility queue,
+// owns pending receiver work. Also read raw assistant receipts independently of
+// the fold so custody alone can never satisfy the observation assertion.
+func retirementNotificationCustody(t *testing.T, root *Session, id string, wantReceipts int) llm.Message {
+	t.Helper()
+	fold, err := readDelegateAttentionFold(root.TranscriptPath(), root.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, exists := fold.content[id]
+	observed := wantReceipts > 0
+	_, seen := fold.observed[id]
+	if !exists || seen != observed || slices.Contains(fold.pendingIDs(), id) == observed {
+		t.Fatalf("notification %s: custody=%v observed=%v want=%v pending=%v", id, exists, seen, observed, fold.pendingIDs())
+	}
+	assertAttentionResponseReceipts(t, root, id, wantReceipts)
+	return content
+}
+
+// Fail an actual readiness read without replacing the serializer, owner, queue,
+// or retry state. Restoration precedes every assertion and leaves the same file.
+func retirementScheduleNotificationRetry(t *testing.T, root *Session) {
+	t.Helper()
+	path := root.TranscriptPath()
+	held := path + ".retirement-retry-held"
+	if err := os.Rename(path, held); err != nil {
+		t.Fatal(err)
+	}
+	restore := sync.OnceFunc(func() {
+		if info, err := os.Stat(path); err == nil && info.IsDir() {
+			if err := os.Remove(path); err != nil {
+				t.Error(err)
+			}
+		}
+		if err := os.Rename(held, path); err != nil {
+			t.Error(err)
+		}
+	})
+	defer restore()
+	if err := os.Mkdir(path, 0700); err != nil {
+		t.Fatal(err)
+	}
+	err := root.requestNotificationWake()
+	restore()
+	var pathErr *os.PathError
+	if !errors.As(err, &pathErr) || pathErr.Path != path || !errors.Is(err, syscall.EISDIR) {
+		t.Fatalf("readiness did not report the directory read fault: %v", err)
+	}
+	root.mu.Lock()
+	retry := root.notificationSchedule.retry
+	root.mu.Unlock()
+	if !retry.active || retry.delay != 2*jobNotificationRetryInitialDelay {
+		t.Fatalf("readiness did not arm its initial retry: %+v", retry)
+	}
+}
+
+func TestRetirementNotificationRetryStaleAtEntry(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClockAt(time.Unix(1_700_000_000, 0))
+	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("stale retry source observed") },
+	}}
+	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), clock: clk}), withAdapter(adapter))
+	c := retirementEvidenceController(t, root)
+	if err := root.enqueueSystemNotificationFromSource("retirement-stale-entry", "opaque-stale-entry-payload"); err != nil {
+		t.Fatal(err)
+	}
+	retirementScheduleNotificationRetry(t, root)
+	if _, err := root.ProcessInputKind(t.Context(), "", nil, EntryNotification); err != nil {
+		t.Fatal(err)
+	}
+	retirementNotificationCustody(t, root, "retirement-stale-entry", 1)
+	joinRetirementTreeEmitters(root)
+	eligibleSince := clk.Now()
+	c.mu.Lock()
+	c.eligibleSince = eligibleSince
+	leaseBefore := c.nextLease
+	c.mu.Unlock()
+	root.mu.Lock()
+	retryBefore := root.notificationSchedule.retry
+	root.mu.Unlock()
+	if retryBefore.active {
+		t.Fatal("successful observation did not supersede retry")
+	}
+	clk.Advance(jobNotificationRetryInitialDelay)
+	clk.Drain()
+	c.mu.Lock()
+	leaseAfter, eligibleAfter := c.nextLease, c.eligibleSince
+	c.mu.Unlock()
+	root.mu.Lock()
+	retryAfter := root.notificationSchedule.retry
+	root.mu.Unlock()
+	root.attentionMu.Lock()
+	callbacks := root.attentionCallbacks
+	root.attentionMu.Unlock()
+	if leaseAfter != leaseBefore || !eligibleAfter.Equal(eligibleSince) || retryAfter != retryBefore || callbacks != 0 {
+		t.Fatalf("stale retry took admission or changed state: leases=%d->%d eligible=%v->%v retry=%+v->%+v callbacks=%d", leaseBefore, leaseAfter, eligibleSince, eligibleAfter, retryBefore, retryAfter, callbacks)
+	}
+	assertRetirementEvidenceEligible(t, c)
+}
+
+func TestRetirementNotificationRetrySupersededDuringAdmission(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClockAt(time.Unix(1_700_000_000, 0))
+	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("racing retry source observed") },
+	}}
+	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), clock: clk}), withAdapter(adapter))
+	c := retirementEvidenceController(t, root)
+	var wakes atomic.Int32
+	root.SetNotifyFunc(func() { wakes.Add(1) })
+	defer root.SetNotifyFunc(nil)
+	if err := root.enqueueSystemNotificationFromSource("retirement-racing-retry", "opaque-racing-retry-payload"); err != nil {
+		t.Fatal(err)
+	}
+	retirementScheduleNotificationRetry(t, root)
+	wakesBefore := wakes.Load()
+	c.mu.Lock()
+	leaseBefore := c.nextLease
+	c.mu.Unlock()
+	// This controller has no Run consumer. Discard only the synchronous
+	// enqueue/scheduling edges before awaiting this callback's admission.
+drainChanges:
+	for {
+		select {
+		case <-c.changed:
+		default:
+			break drainChanges
+		}
+	}
+	// Park beginAttentionCallback after the retirement lease is acquired but
+	// before its local callback registration completes. The entry precheck has
+	// already passed, so only the second check can detect this supersession.
+	root.attentionMu.Lock()
+	unlockAttention := sync.OnceFunc(root.attentionMu.Unlock)
+	finishRetry := sync.OnceFunc(func() {
+		unlockAttention()
+		clk.Drain()
+	})
+	defer finishRetry()
+	clk.Advance(jobNotificationRetryInitialDelay)
+	select {
+	case <-c.changed:
+	// TRIPWIRE: the fake-clock callback publishes its real lease, only a hang reaches this guard.
+	case <-time.After(5 * time.Second):
+		t.Fatal("retry did not publish retirement admission")
+	}
+	c.mu.Lock()
+	lease, activeBeforeRelease := c.nextLease, len(c.active)
+	blocker, admitted := c.active[leaseBefore+1]
+	c.mu.Unlock()
+	if lease != leaseBefore+1 || activeBeforeRelease != 1 || !admitted || blocker.Category != "notification" || blocker.SessionID != root.ID() {
+		t.Fatalf("retry admission identity: lease=%d previous=%d active=%d admitted=%t blocker=%+v", lease, leaseBefore, activeBeforeRelease, admitted, blocker)
+	}
+	root.suspendNotificationWake()
+	finishRetry()
+	c.mu.Lock()
+	active := len(c.active)
+	c.mu.Unlock()
+	root.attentionMu.Lock()
+	callbacks := root.attentionCallbacks
+	root.attentionMu.Unlock()
+	if active != 0 || callbacks != 0 || wakes.Load() != wakesBefore {
+		t.Fatalf("superseded acquired callback leaked ownership or woke: active=%d callbacks=%d wakes=%d->%d", active, callbacks, wakesBefore, wakes.Load())
+	}
+	retirementNotificationCustody(t, root, "retirement-racing-retry", 0)
+	assertRetirementEvidenceBlocked(t, c, "notification")
+	if _, err := root.ProcessInputKind(t.Context(), "", nil, EntryNotification); err != nil {
+		t.Fatal(err)
+	}
+	if !requestsContain(adapter.Requests(), "opaque-racing-retry-payload") {
+		t.Fatal("supersession lost original receiver work")
+	}
+	retirementNotificationCustody(t, root, "retirement-racing-retry", 1)
+	assertRetirementEvidenceEligible(t, c)
+}
+
 func TestRetirementAutonomousNotificationRetryWake(t *testing.T) {
 	t.Parallel()
 	for _, attachBefore := range []bool{true, false} {
@@ -2214,17 +2480,12 @@ func retirementNotificationRetryWake(t *testing.T, attachBefore bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if before[rec.JobID] == nil || before[rec.JobID].NotifyState != jobstore.NotifyPending || before[rec.JobID].TerminalGen == "" {
-		t.Fatalf("source not armed: %+v", before[rec.JobID])
+	if before[rec.JobID] == nil || before[rec.JobID].NotifyState != jobstore.NotifyDelivered || before[rec.JobID].TerminalGen == "" {
+		t.Fatalf("source did not transfer custody: %+v", before[rec.JobID])
 	}
-	// Existing drain/requeue owner APIs retain this exact terminal source and
-	// arm its actual backoff path; no test writes retry flags or queue entries.
-	original := root.drainJobNotifications()
-	if len(original) != 1 || original[0].JobID != rec.JobID {
-		t.Fatalf("source notification missing: %+v", original)
-	}
-	root.requeueJobNotifications(original)
-	clk.BlockUntil(1)
+	id := "shell:" + rec.JobID + ":" + before[rec.JobID].TerminalGen
+	retirementNotificationCustody(t, root, id, 0)
+	retirementScheduleNotificationRetry(t, root)
 	if attachBefore {
 		c.mu.Lock()
 		c.eligibleSince = clk.Now()
@@ -2241,9 +2502,9 @@ func retirementNotificationRetryWake(t *testing.T, attachBefore bool) {
 			t.Errorf("current retry did not hold admission and clear idle eligibility: %+v", state)
 		}
 	}
-	root.pendingJobNotifsMu.Lock()
-	active, delay := root.jobNotifyRetry.active, root.jobNotifyRetry.delay
-	root.pendingJobNotifsMu.Unlock()
+	root.mu.Lock()
+	active, delay := root.notificationSchedule.retry.active, root.notificationSchedule.retry.delay
+	root.mu.Unlock()
 	if active || delay != 2*jobNotificationRetryInitialDelay || wakes.Load() != wakesBefore+1 {
 		t.Errorf("current retry did not wake and advance backoff: active=%v delay=%v wakes=%d before=%d", active, delay, wakes.Load(), wakesBefore)
 	}
@@ -2276,6 +2537,7 @@ func retirementNotificationRetryWake(t *testing.T, attachBefore bool) {
 	if !requestsContain(adapter.Requests(), rec.JobID) || root.peekNotifications() != 0 {
 		t.Fatal("original source did not actually reach provider and settle")
 	}
+	retirementNotificationCustody(t, root, id, 1)
 	if claimErr != nil || claim != nil {
 		t.Fatalf("unsettled retry wake escaped: %+v %v", state, claimErr)
 	}
@@ -2287,15 +2549,13 @@ func TestRetirementAutonomousNotificationRetryEmptySource(t *testing.T) {
 	for _, settlement := range []string{"status-consume", "notification-turn"} {
 		t.Run(settlement, func(t *testing.T) {
 			clk := agenttest.NewFakeClockAt(time.Unix(1_700_000_000, 0))
-			adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-				func(llm.Request) llm.Response { return finalResponse("first settled") },
-				func(llm.Request) llm.Response { return finalResponse("second settled") },
-			}}
+			adapter := &fakeAdapter{name: "openai"}
 			root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), clock: clk}), withAdapter(adapter))
 			c := retirementEvidenceController(t, root)
 			var wakes atomic.Int32
 			root.SetNotifyFunc(func() { wakes.Add(1) })
-			armSource := func() string {
+			defer root.SetNotifyFunc(nil)
+			armSource := func() (string, string) {
 				t.Helper()
 				rec, err := root.jobManager.createShell(createShellOpts{Command: "retry-rearm-shell"})
 				if err != nil {
@@ -2304,76 +2564,104 @@ func TestRetirementAutonomousNotificationRetryEmptySource(t *testing.T) {
 				if err := root.jobManager.finalize(rec.JobID, jobstore.StatusCompleted, "fixture-settled", nil); err != nil {
 					t.Fatal(err)
 				}
-				queued := root.drainJobNotifications()
-				if len(queued) != 1 || queued[0].JobID != rec.JobID {
-					t.Fatalf("source queue: %+v", queued)
+				stored, err := root.jobManager.store.Load()
+				if err != nil {
+					t.Fatal(err)
 				}
-				root.requeueJobNotifications(queued)
-				return rec.JobID
+				source := stored[rec.JobID]
+				if source == nil || source.TerminalGen == "" || source.NotifyState != jobstore.NotifyDelivered {
+					t.Fatalf("source did not transfer custody: %+v", source)
+				}
+				id := "shell:" + rec.JobID + ":" + source.TerminalGen
+				retirementNotificationCustody(t, root, id, 0)
+				retirementScheduleNotificationRetry(t, root)
+				return rec.JobID, id
 			}
-			jobID := armSource()
+			jobID, id := armSource()
 			before, err := root.jobManager.store.Load()
 			if err != nil {
 				t.Fatal(err)
 			}
-			wantState := jobstore.NotifyDelivered
 			if settlement == "status-consume" {
-				call := llm.ToolCallData{ID: "original-status-consume", Name: "job_status", Arguments: []byte(`{"target":` + mustJSONString(jobID) + `}`)}
-				result := root.reg.ExecuteCall(context.Background(), root.env, call)
+				call := llm.ToolCallData{ID: "original-status-consume", Name: "job_status", Type: "function", Arguments: []byte(`{"target":` + mustJSONString(jobID) + `}`)}
+				// A status read alone must not manufacture receiver observation.
+				result := root.reg.ExecuteCall(t.Context(), root.env, call)
 				if result.IsError {
 					t.Fatal(result.Output)
 				}
-				if err := root.persistToolResults(context.Background(), []llm.ToolCallData{call}, []tooldefs.ExecResult{result}); err != nil {
-					t.Fatal(err)
-				}
-				wantState = jobstore.NotifyConsumed
-			} else if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+				retirementNotificationCustody(t, root, id, 0)
+				// Persist a real assistant/tool exchange, never a bare tool result.
+				adapter.steps = append(adapter.steps, func(llm.Request) llm.Response { return toolCallResponse(call) })
+			}
+			adapter.steps = append(adapter.steps,
+				func(llm.Request) llm.Response { return finalResponse("first settled") },
+				func(llm.Request) llm.Response { return finalResponse("second settled") })
+			if _, err := root.ProcessInputKind(t.Context(), "", nil, EntryNotification); err != nil {
 				t.Fatal(err)
 			}
-			after, err := root.jobManager.store.Load()
-			if err != nil {
-				t.Fatal(err)
+			wantReceipts := 1
+			if settlement == "status-consume" {
+				// Both the tool-call response and final response present this ID.
+				wantReceipts = 2
 			}
-			if got := after[jobID]; got == nil || got.TerminalGen != before[jobID].TerminalGen || got.NotifyState != wantState || root.peekNotifications() != 0 {
-				t.Fatalf("original receipt not settled: %+v", got)
+			retirementNotificationCustody(t, root, id, wantReceipts)
+			if !requestsContain(adapter.Requests(), jobID) {
+				t.Fatal("first source never reached provider")
 			}
 			if settlement == "status-consume" {
-				// Consumption does not reset the retry. Its original generation
-				// remains scheduled, so a preparing claim must not hide it.
-				assertRetirementEvidenceBlocked(t, c, "notification")
-				clk.Advance(jobNotificationRetryInitialDelay)
-				clk.Drain()
+				found := false
+				for _, req := range adapter.Requests() {
+					for _, msg := range req.Messages {
+						for _, part := range msg.Content {
+							if result := part.ToolResult; result != nil && result.ToolCallID == "original-status-consume" {
+								var status jobStatusResult
+								if err := json.Unmarshal(result.ToolState, &status); err != nil || result.IsError || status.JobID != jobID || status.Status != "completed" {
+									t.Fatalf("original status result: %+v err=%v", result, err)
+								}
+								found = true
+							}
+						}
+					}
+				}
+				if !found {
+					t.Fatal("provider never received the actual status result")
+				}
+			}
+			after, err := root.jobManager.store.Load()
+			if err != nil || !reflect.DeepEqual(before, after) {
+				t.Fatalf("observation changed acknowledged source identity: before=%+v after=%+v err=%v", before, after, err)
 			}
 			claim, state, err := c.TryClaim(true)
 			if err != nil || claim == nil {
 				t.Fatalf("empty settled retry claim: %+v %v", state, err)
 			}
-			// A notification turn invalidates its retry generation. Fire that
-			// stale callback behind real admission, then Abort and arm new work.
+			// Observation superseded the old timer. It must not rearm behind a
+			// real claim, and a new source must still wake after Abort.
 			clk.Advance(jobNotificationRetryInitialDelay)
 			clk.Drain()
-			root.pendingJobNotifsMu.Lock()
-			active := root.jobNotifyRetry.active
-			root.pendingJobNotifsMu.Unlock()
+			root.mu.Lock()
+			active := root.notificationSchedule.retry.active
+			root.mu.Unlock()
 			if err := c.Abort(claim, ""); err != nil {
 				t.Fatal(err)
 			}
 			if active {
 				t.Fatal("refused stale callback left retry active")
 			}
-			secondID := armSource()
+			secondJobID, secondID := armSource()
 			beforeWake := wakes.Load()
 			clk.Advance(jobNotificationRetryInitialDelay)
 			clk.Drain()
 			if wakes.Load() != beforeWake+1 {
 				t.Fatalf("retry did not rearm after Abort: before=%d after=%d", beforeWake, wakes.Load())
 			}
-			if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+			if _, err := root.ProcessInputKind(t.Context(), "", nil, EntryNotification); err != nil {
 				t.Fatal(err)
 			}
-			if !requestsContain(adapter.Requests(), secondID) {
+			if !requestsContain(adapter.Requests(), secondJobID) {
 				t.Fatal("rearmed original source did not reach provider")
 			}
+			retirementNotificationCustody(t, root, secondID, 1)
 			assertRetirementEvidenceEligible(t, c)
 		})
 	}
@@ -2424,14 +2712,11 @@ func TestRetirementAutonomousNotificationRetryOverlap(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if stored[rec.JobID] == nil || stored[rec.JobID].NotifyState != jobstore.NotifyPending {
-			t.Fatalf("overlapping source not armed: %+v", stored[rec.JobID])
+		if stored[rec.JobID] == nil || stored[rec.JobID].NotifyState != jobstore.NotifyDelivered || stored[rec.JobID].TerminalGen == "" {
+			t.Fatalf("overlapping source did not transfer custody: %+v", stored[rec.JobID])
 		}
-		queued := root.drainJobNotifications()
-		if len(queued) != 1 || queued[0].JobID != rec.JobID {
-			t.Fatalf("overlapping source queue: %+v", queued)
-		}
-		root.requeueJobNotifications(queued)
+		retirementNotificationCustody(t, root, "shell:"+rec.JobID+":"+stored[rec.JobID].TerminalGen, 0)
+		retirementScheduleNotificationRetry(t, root)
 		return rec.JobID, stored[rec.JobID].TerminalGen
 	}
 	var c *RetirementController
@@ -2461,6 +2746,7 @@ func TestRetirementAutonomousNotificationRetryOverlap(t *testing.T) {
 		if !requestsContain(adapter.Requests()[beforeRequests:], jobID) {
 			t.Fatal("original overlapping source did not reach provider")
 		}
+		retirementNotificationCustody(t, root, "shell:"+jobID+":"+terminalGen, 1)
 		// The paused callback outlives its own source's settlement.
 		assertRetirementEvidenceBlocked(t, c, "notification")
 	}
@@ -2469,16 +2755,16 @@ func TestRetirementAutonomousNotificationRetryOverlap(t *testing.T) {
 	// TRIPWIRE: hang guard only; the resumed callback is already unblocked,
 	// so settlement completes in microseconds absent a deadlock.
 	waitForCondition(t, 5*time.Second, "later notification callback settlement", func() bool {
-		root.pendingJobNotifsMu.Lock()
-		defer root.pendingJobNotifsMu.Unlock()
-		return root.jobNotifyCallbacks == 1
+		root.attentionMu.Lock()
+		defer root.attentionMu.Unlock()
+		return root.attentionCallbacks == 1
 	})
 	assertRetirementEvidenceBlocked(t, c, "notification")
 	close(resume[0])
 	clk.Drain()
-	root.pendingJobNotifsMu.Lock()
-	remaining := root.jobNotifyCallbacks
-	root.pendingJobNotifsMu.Unlock()
+	root.attentionMu.Lock()
+	remaining := root.attentionCallbacks
+	root.attentionMu.Unlock()
 	if remaining != 0 {
 		t.Fatalf("settled callbacks retained %d registrations", remaining)
 	}
@@ -2486,11 +2772,8 @@ func TestRetirementAutonomousNotificationRetryOverlap(t *testing.T) {
 }
 
 // A one-shot notification retry callback that fires inside a real TryClaim
-// preparing window is refused admission. Before the repair it returned with
-// jobNotifyRetry.active still set and no live timer, so the backoff chain was
-// dead once the window closed. This case requires the refusal to clear the
-// armed flag and synchronously re-arm the one-shot, so the next firing wakes
-// delivery of the original source.
+// preparing window is refused admission. It must rearm the current receiver
+// generation with backoff, then wake delivery of the same canonical source.
 func TestRetirementAutonomousNotificationRetryRefusedRearms(t *testing.T) {
 	t.Parallel()
 	clk := agenttest.NewFakeClockAt(time.Unix(1_700_000_000, 0))
@@ -2513,15 +2796,12 @@ func TestRetirementAutonomousNotificationRetryRefusedRearms(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if before[rec.JobID] == nil || before[rec.JobID].NotifyState != jobstore.NotifyPending || before[rec.JobID].TerminalGen == "" {
-		t.Fatalf("source not armed: %+v", before[rec.JobID])
+	if before[rec.JobID] == nil || before[rec.JobID].NotifyState != jobstore.NotifyDelivered || before[rec.JobID].TerminalGen == "" {
+		t.Fatalf("source did not transfer custody: %+v", before[rec.JobID])
 	}
-	queued := root.drainJobNotifications()
-	if len(queued) != 1 || queued[0].JobID != rec.JobID {
-		t.Fatalf("source notification missing: %+v", queued)
-	}
-	root.requeueJobNotifications(queued)
-	clk.BlockUntil(1)
+	id := "shell:" + rec.JobID + ":" + before[rec.JobID].TerminalGen
+	original := retirementNotificationCustody(t, root, id, 0)
+	retirementScheduleNotificationRetry(t, root)
 
 	// Park the real evidence pass inside its preparing window on the job
 	// manager's own lock; the live pending source keeps the grant refused.
@@ -2553,10 +2833,24 @@ func TestRetirementAutonomousNotificationRetryRefusedRearms(t *testing.T) {
 	if res.err != nil || res.claim != nil {
 		t.Fatalf("pending source escaped preparing: %+v %v", res.state, res.err)
 	}
+	if !reflect.DeepEqual(original, retirementNotificationCustody(t, root, id, 0)) {
+		t.Fatal("refused retry changed canonical custody")
+	}
+	root.mu.Lock()
+	retry := root.notificationSchedule.retry
+	root.mu.Unlock()
+	if !retry.active || retry.delay != 4*jobNotificationRetryInitialDelay {
+		t.Fatalf("refused current retry did not rearm with backoff: %+v", retry)
+	}
 
 	// The re-armed one-shot fires after the window closes and wakes delivery of
 	// the original source.
 	beforeWake := wakes.Load()
+	clk.Advance(jobNotificationRetryInitialDelay)
+	clk.Drain()
+	if wakes.Load() != beforeWake {
+		t.Fatal("refused retry ignored its doubled backoff")
+	}
 	clk.Advance(jobNotificationRetryInitialDelay)
 	clk.Drain()
 	if wakes.Load() != beforeWake+1 {
@@ -2575,6 +2869,7 @@ func TestRetirementAutonomousNotificationRetryRefusedRearms(t *testing.T) {
 	if !requestsContain(adapter.Requests(), rec.JobID) || root.peekNotifications() != 0 {
 		t.Fatal("original source did not reach provider and settle")
 	}
+	retirementNotificationCustody(t, root, id, 1)
 	assertRetirementEvidenceEligible(t, c)
 }
 
@@ -2729,13 +3024,8 @@ func TestRetirementSafetyUnreadableJobEvidence(t *testing.T) {
 
 func TestRetirementSafetyDurableShellNotification(t *testing.T) {
 	t.Parallel()
-	// The fixture arms a notification retry of its own -- the requeue below --
-	// and then reads eligibility, so it runs on a pinned clock: the fake clock
-	// is what lets that armed one-shot be settled deterministically before the
-	// read, the handshake the sibling retry tests in this file use. On the real
-	// clock that one-shot was armed unjoined and fired mid-body whenever the body
-	// outran the 250ms retry delay (the failing run's body was 2.17s), which is
-	// #4131.
+	// The filesystem fault arms a real receiver retry. A pinned clock lets us
+	// observe its superseded timer without racing eligibility against wall time.
 	clk := agenttest.NewFakeClockAt(time.Unix(1_700_000_000, 0))
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return finalResponse("durable receipt acknowledged") },
@@ -2754,15 +3044,14 @@ func TestRetirementSafetyDurableShellNotification(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := before[rec.JobID]; got == nil || got.NotifyState != jobstore.NotifyPending || got.TerminalGen == "" {
+	if got := before[rec.JobID]; got == nil || got.NotifyState != jobstore.NotifyDelivered || got.TerminalGen == "" {
 		t.Fatalf("original receipt missing: %+v", got)
 	}
-	// The real source owner hands out a queue batch. That is not a durable
-	// acknowledgement: the original terminal receipt still owes delivery.
-	batch := root.drainJobNotifications()
-	if len(batch) != 1 || batch[0].JobID != rec.JobID {
-		t.Fatalf("source batch missing: %+v", batch)
-	}
+	id := "shell:" + rec.JobID + ":" + before[rec.JobID].TerminalGen
+	// The source is acknowledged, but exact synced receiver custody remains
+	// unobserved and must still block a claim without changing either journal.
+	original := retirementNotificationCustody(t, root, id, 0)
+	retirementScheduleNotificationRetry(t, root)
 	claim, state, claimErr := c.TryClaim(true)
 	after, err := jm.store.Load()
 	if claim != nil {
@@ -2770,12 +3059,11 @@ func TestRetirementSafetyDurableShellNotification(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	root.requeueJobNotifications(batch)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(before, after) {
-		t.Fatal("claim changed original terminal receipt")
+	if !reflect.DeepEqual(before, after) || !reflect.DeepEqual(original, retirementNotificationCustody(t, root, id, 0)) {
+		t.Fatal("claim changed original source or receiver custody")
 	}
 	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 		t.Fatal(err)
@@ -2790,6 +3078,7 @@ func TestRetirementSafetyDurableShellNotification(t *testing.T) {
 	if !requestsContain(adapter.Requests(), rec.JobID) {
 		t.Fatal("original job never reached provider")
 	}
+	retirementNotificationCustody(t, root, id, 1)
 	if claimErr != nil || claim != nil {
 		t.Fatalf("unacknowledged original durable receipt escaped: %+v %v", state, claimErr)
 	}
@@ -2797,15 +3086,17 @@ func TestRetirementSafetyDurableShellNotification(t *testing.T) {
 	// Join real background work before measuring admission: even a brief stale
 	// lease would increment nextLease and clear eligibleSince (#4504).
 	joinRetirementTreeEmitters(root)
-	root.pendingJobNotifsMu.Lock()
-	retryBefore := root.jobNotifyRetry
-	root.pendingJobNotifsMu.Unlock()
-	if retryBefore.active {
-		t.Fatal("delivery did not supersede the armed retry")
-	}
 	var wakes atomic.Int32
 	root.SetNotifyFunc(func() { wakes.Add(1) })
 	defer root.SetNotifyFunc(nil)
+	// Registration performs a normal readiness read and may reset a completed
+	// retry generation. Measure only the stale timer after that work is done.
+	root.mu.Lock()
+	retryBefore := root.notificationSchedule.retry
+	root.mu.Unlock()
+	if retryBefore.active {
+		t.Fatal("delivery did not supersede the armed retry")
+	}
 	wakesBefore := wakes.Load()
 	eligibleSince := clk.Now()
 	c.mu.Lock()
@@ -2829,9 +3120,17 @@ func TestRetirementSafetyDurableShellNotification(t *testing.T) {
 	if !state.EligibleSince.Equal(eligibleSince) {
 		t.Errorf("superseded retry reset idle eligibility: before=%v after=%v", eligibleSince, state.EligibleSince)
 	}
-	root.pendingJobNotifsMu.Lock()
-	retryAfter, callbacks, pending := root.jobNotifyRetry, root.jobNotifyCallbacks, len(root.pendingJobNotifs)
-	root.pendingJobNotifsMu.Unlock()
+	root.mu.Lock()
+	retryAfter := root.notificationSchedule.retry
+	root.mu.Unlock()
+	root.attentionMu.Lock()
+	callbacks := root.attentionCallbacks
+	root.attentionMu.Unlock()
+	pendingIDs, err := root.pendingNotificationIDs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending := len(pendingIDs)
 	if retryAfter != retryBefore || callbacks != 0 || pending != 0 || wakes.Load() != wakesBefore {
 		t.Errorf("superseded retry did work: retry before=%+v after=%+v callbacks=%d pending=%d wakes=%d before=%d", retryBefore, retryAfter, callbacks, pending, wakes.Load(), wakesBefore)
 	}
@@ -2867,8 +3166,12 @@ func TestRetirementSafetyColdGoal(t *testing.T) {
 	if _, err := child.SetGoal(t.Context(), "original-cold-goal-objective"); err != nil {
 		t.Fatal(err)
 	}
-	if err := root.reclaimDelegateRuntimeCapacity(tree.maxRetainedTerminal); err != nil {
-		t.Fatal(err)
+	{
+		recheck, err := root.reclaimDelegateRuntimeCapacity(tree.maxRetainedTerminal)
+		recheckNotificationsForTest(root.delegateController, recheck)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	if tree.residentDelegateRuntime(d.DelegateID) != nil || root.subagents.get(d.ChildSessionID) != nil {
 		t.Fatal("real reclamation did not make delegate cold")
@@ -2930,8 +3233,12 @@ func TestRetirementSafetyColdGoal(t *testing.T) {
 	if settled == nil || settled.Objective != original.Goal.Objective || settled.Status != "complete" {
 		t.Fatalf("actual resumed tool did not settle original goal: %+v", settled)
 	}
-	if err := root.reclaimDelegateRuntimeCapacity(tree.maxRetainedTerminal); err != nil {
-		t.Fatal(err)
+	{
+		recheck, err := root.reclaimDelegateRuntimeCapacity(tree.maxRetainedTerminal)
+		recheckNotificationsForTest(root.delegateController, recheck)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	terminal, err := schema.LoadSessionMeta(root.stateDir, d.ChildSessionID)
 	if err != nil {
@@ -2959,8 +3266,12 @@ func TestRetirementSafetyColdJobEvidence(t *testing.T) {
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	d := retirementIdleDelegate(t, root)
-	if err := root.reclaimDelegateRuntimeCapacity(tree.maxRetainedTerminal); err != nil {
-		t.Fatal(err)
+	{
+		recheck, err := root.reclaimDelegateRuntimeCapacity(tree.maxRetainedTerminal)
+		recheckNotificationsForTest(root.delegateController, recheck)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	if tree.residentDelegateRuntime(d.DelegateID) != nil || root.subagents.get(d.ChildSessionID) != nil {
 		t.Fatal("real reclamation did not make delegate cold")
@@ -3005,8 +3316,32 @@ func TestRetirementSafetyColdJobEvidence(t *testing.T) {
 func TestRetirementEvidenceStableWatchSettlementPending(t *testing.T) {
 	fs := newAttentionSyncBarrierFS()
 	fixture := newStableWatchRuntimeFixture(t, fs)
-	old, _, originalAppend := seedSupersededStableWatchAckFailure(t, fixture, fs)
+	old, newer, originalAppend := seedSupersededStableWatchAckFailure(t, fixture, fs)
 	jm := fixture.sourceJM
+	cfg := fixture.onlyWatchConfig(t)
+	// Clear preserves produced frames, so settle the unrelated newer frame
+	// through real custody without running the old settlement retry batch.
+	accepted, err := jm.deliverPendingWatchSend(cfg, newer, false)
+	if err != nil || !accepted {
+		t.Fatalf("settle newer frame: accepted=%v err=%v", accepted, err)
+	}
+	journalBeforeClear, err := jm.store.LoadEvents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if countExactWatchSendEvents(journalBeforeClear, jobstore.EventWatchSendDelivered, newer) != 1 || countExactWatchSendEvents(journalBeforeClear, jobstore.EventWatchSendDelivered, old) != 0 {
+		t.Fatal("newer-frame settlement changed the old acknowledgement boundary")
+	}
+	if got := countAttentionEntries(t, fixture.rootTranscriptPath, stableWatchAttentionID(newer)); got != 1 {
+		t.Fatalf("newer receiver custody entries = %d, want 1", got)
+	}
+	pendingReceiverIDs, err := fixture.root.pendingNotificationIDs()
+	wantReceiverIDs := []string{stableWatchAttentionID(old), stableWatchAttentionID(newer)}
+	slices.Sort(pendingReceiverIDs)
+	slices.Sort(wantReceiverIDs)
+	if err != nil || !slices.Equal(pendingReceiverIDs, wantReceiverIDs) {
+		t.Fatalf("custody-only receiver pending IDs=%v err=%v, want exact unobserved IDs %v", pendingReceiverIDs, err, wantReceiverIDs)
+	}
 	jm.mu.Lock()
 	receiptHeld := jm.stableWatchReceipts[old.DeliveryID] != nil
 	retry, retryHeld := jm.stableWatchSettlementRetries[old.DeliveryID]
@@ -3017,7 +3352,6 @@ func TestRetirementEvidenceStableWatchSettlementPending(t *testing.T) {
 	if retry.state.DeliveryID != old.DeliveryID || retry.state.UpdateSeq != old.UpdateSeq {
 		t.Fatalf("settlement retry lost original identity: %+v vs %+v", retry.state, old)
 	}
-	cfg := fixture.onlyWatchConfig(t)
 	if _, err := jm.clearWatchByIDMatching(cfg.watchID, func(*watchConfig) bool { return true }, true); err != nil {
 		t.Fatalf("clear watch: %v", err)
 	}
@@ -3155,8 +3489,12 @@ func TestRetirementSafetyNotificationPinsDelegateResident(t *testing.T) {
 	sub.mu.Lock()
 	attentionRunDone := sub.done
 	sub.mu.Unlock()
-	if err := root.reclaimDelegateRuntimeCapacity(tree.maxRetainedTerminal); err != nil {
-		t.Fatal(err)
+	{
+		recheck, err := root.reclaimDelegateRuntimeCapacity(tree.maxRetainedTerminal)
+		recheckNotificationsForTest(root.delegateController, recheck)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	if tree.residentDelegateRuntime(d.DelegateID) == nil {
 		t.Fatal("pending shell attention did not pin the delegate resident")
@@ -3437,8 +3775,12 @@ func TestRetirementSafetyColdJobWatchContent(t *testing.T) {
 	if pending := settledAttn.pendingIDs(); len(pending) != 0 {
 		t.Fatalf("settled delegate still owes original shell attention: %v", pending)
 	}
-	if err := root2.reclaimDelegateRuntimeCapacity(tree2.maxRetainedTerminal); err != nil {
-		t.Fatal(err)
+	{
+		recheck, err := root2.reclaimDelegateRuntimeCapacity(tree2.maxRetainedTerminal)
+		recheckNotificationsForTest(root2.delegateController, recheck)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	if tree2.residentDelegateRuntime(d.DelegateID) != nil {
 		t.Fatal("settled original did not go cold again")
@@ -3588,7 +3930,8 @@ func TestRetirementWatchFiredRepeating(t *testing.T) {
 	t.Parallel()
 	clk := agenttest.NewFakeClockAt(time.Unix(1_700_000_000, 0))
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("repeat acknowledged") },
+		func(llm.Request) llm.Response { return finalResponse("first repeat acknowledged") },
+		func(llm.Request) llm.Response { return finalResponse("second repeat acknowledged") },
 	}}
 	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), clock: clk}), withAdapter(adapter))
 	c := retirementEvidenceController(t, root)
@@ -3600,56 +3943,51 @@ func TestRetirementWatchFiredRepeating(t *testing.T) {
 	jm.mu.Lock()
 	key, cfg, ok := jm.watchConfigByIDLocked(registered.WatchID)
 	jm.mu.Unlock()
-	if !ok {
-		t.Fatal("timer not registered")
+	if !ok || !cfg.timer || cfg.oneShot || cfg.timerSeconds != 60 || cfg.note != "repeating-timer-note" {
+		t.Fatal("repeating timer configuration lost its mode, interval or note")
 	}
-
-	// First tick: the fire delivers a non-terminal notification and keeps the
-	// timer armed; both the live registration and the pending frame block.
-	if keep := jm.fireProgressTick(key, cfg); !keep {
-		t.Fatal("repeating tick stopped the timer")
+	var previousID string
+	for tick := 1; tick <= 2; tick++ {
+		if keep := jm.fireProgressTick(key, cfg); !keep {
+			t.Fatalf("repeating tick %d stopped the timer", tick)
+		}
+		produced := producerSourceEvents(t, jm, jobstore.EventWatchSendPending)
+		if len(produced) != tick || produced[tick-1].WatchSend == nil {
+			t.Fatalf("tick %d did not produce one new source: %+v", tick, produced)
+		}
+		source := *produced[tick-1].WatchSend
+		if source.Key.WatchID != registered.WatchID || source.Key.WatchGeneration != cfg.generation || !source.CallbackFrame || source.TriggerReason != "repeat" || source.DeliveryID == "" {
+			t.Fatalf("wrong repeating source: %+v", source)
+		}
+		id := fmt.Sprintf("watch:%s:%d", source.DeliveryID, source.UpdateSeq)
+		if id == previousID {
+			t.Fatal("second tick reused an observed notification identity")
+		}
+		pending := retirementNotificationCustody(t, root, id, 0)
+		assertRetirementEvidenceBlocked(t, c, "watch")
+		assertRetirementEvidenceBlocked(t, c, "notification")
+		if !reflect.DeepEqual(pending, retirementNotificationCustody(t, root, id, 0)) || !reflect.DeepEqual(produced, producerSourceEvents(t, jm, jobstore.EventWatchSendPending)) {
+			t.Fatal("claim changed repeating source or receiver custody")
+		}
+		beforeRequests := len(adapter.Requests())
+		if _, err := root.ProcessInputKind(t.Context(), "", nil, EntryNotification); err != nil {
+			t.Fatal(err)
+		}
+		if !requestsContain(adapter.Requests()[beforeRequests:], registered.WatchID, "repeating-timer-note") {
+			t.Fatalf("tick %d did not reach provider", tick)
+		}
+		retirementNotificationCustody(t, root, id, 1)
+		// Observing a frame must not settle the live repeating registration.
+		assertRetirementEvidenceBlocked(t, c, "watch")
+		jm.mu.Lock()
+		_, current, live := jm.watchConfigByIDLocked(registered.WatchID)
+		unchanged := live && current == cfg && cfg.deliveries == tick
+		jm.mu.Unlock()
+		if !unchanged {
+			t.Fatalf("tick %d lost the registration or firing count", tick)
+		}
+		previousID = id
 	}
-	root.pendingJobNotifsMu.Lock()
-	pending := slices.Clone(root.pendingJobNotifs)
-	root.pendingJobNotifsMu.Unlock()
-	if len(pending) != 1 || pending[0].WatchID != registered.WatchID || pending[0].Terminal ||
-		pending[0].Note != "repeating-timer-note" || pending[0].Fires != 1 || pending[0].IntervalSeconds != 60 {
-		t.Fatalf("repeating tick notification wrong: %+v", pending)
-	}
-	assertRetirementEvidenceBlocked(t, c, "watch")
-	assertRetirementEvidenceBlocked(t, c, "notification")
-
-	// Settling the frame clears only the notification blocker; the live
-	// registration keeps retirement blocked.
-	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
-		t.Fatal(err)
-	}
-	if !requestsContain(adapter.Requests(), registered.WatchID, "repeating-timer-note") {
-		t.Fatal("repeating frame did not reach provider")
-	}
-	if root.peekNotifications() != 0 {
-		t.Fatal("real notification turn did not settle repeating tick")
-	}
-	assertRetirementEvidenceBlocked(t, c, "watch")
-
-	// A second tick after settlement proves the timer survived retirement
-	// pressure: it delivers again and stays armed.
-	if keep := jm.fireProgressTick(key, cfg); !keep {
-		t.Fatal("second repeating tick stopped the timer")
-	}
-	root.pendingJobNotifsMu.Lock()
-	second := slices.Clone(root.pendingJobNotifs)
-	root.pendingJobNotifsMu.Unlock()
-	if len(second) != 1 || second[0].WatchID != registered.WatchID || second[0].Terminal || second[0].Note != "repeating-timer-note" {
-		t.Fatalf("second tick notification wrong: %+v", second)
-	}
-	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
-		t.Fatal(err)
-	}
-	if root.peekNotifications() != 0 {
-		t.Fatal("second frame did not settle")
-	}
-	// Clearing through admission removes the last blocker.
 	if _, err := jm.clearWatchByID(registered.WatchID); err != nil {
 		t.Fatal(err)
 	}

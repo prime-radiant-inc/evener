@@ -237,9 +237,9 @@ func extendDelegateAttention(prior delegateAttentionFold, entries []transcript.E
 			if turn.Kind != schema.TurnSteering || turn.AttentionResolution != nil {
 				return delegateAttentionFold{}, fmt.Errorf("attention %q is not a steering turn", turn.AttentionID)
 			}
-			if previous, exists := fold.content[turn.AttentionID]; exists {
-				if !reflect.DeepEqual(previous, turn.Message) {
-					return delegateAttentionFold{}, fmt.Errorf("attention %q has conflicting content", turn.AttentionID)
+			if previous, exists := fold.turns[turn.AttentionID]; exists {
+				if err := validateDelegateAttentionIdentity(previous, turn.AttentionID, turn.Message, turn.NotificationProvenance); err != nil {
+					return delegateAttentionFold{}, err
 				}
 			} else {
 				fold.content[turn.AttentionID] = turn.Message
@@ -391,6 +391,21 @@ func appendColdDelegateNotificationDurablyWithOpen(path, expectedSessionID, atte
 	return appendColdDelegateAttentionMessageDurablyWithOpen(path, expectedSessionID, attentionID, llm.User(content), now, open)
 }
 
+// A duplicate owns the same message and provenance, including real nil
+// provenance. Neither missing metadata nor a matching body alone proves custody.
+func validateDelegateAttentionIdentity(previous schema.Turn, attentionID string, message llm.Message, causal *provenance.Causal) error {
+	if previous.AttentionID != attentionID {
+		return fmt.Errorf("attention %q has conflicting identity", attentionID)
+	}
+	if !reflect.DeepEqual(previous.Message, message) {
+		return fmt.Errorf("attention %q has conflicting content", attentionID)
+	}
+	if !reflect.DeepEqual(previous.NotificationProvenance, provenance.Clone(causal)) {
+		return fmt.Errorf("attention %q has conflicting provenance", attentionID)
+	}
+	return nil
+}
+
 func appendColdDelegateAttentionMessageDurablyWithOpen(path, expectedSessionID, attentionID string, message llm.Message, now time.Time, open delegateAttentionWriterOpener, causal ...*provenance.Causal) (appended bool, err error) {
 	if expectedSessionID == "" || attentionID == "" {
 		return false, errors.New("cold delegate attention identity is incomplete")
@@ -401,13 +416,17 @@ func appendColdDelegateAttentionMessageDurablyWithOpen(path, expectedSessionID, 
 	if open == nil {
 		return false, errors.New("cold delegate attention writer opener is nil")
 	}
+	var expectedProvenance *provenance.Causal
+	if len(causal) != 0 {
+		expectedProvenance = provenance.Clone(causal[0])
+	}
 	preflight, err := readDelegateAttentionFold(path, expectedSessionID)
 	if err != nil {
 		return false, err
 	}
-	if previous, exists := preflight.content[attentionID]; exists {
-		if !reflect.DeepEqual(previous, message) {
-			return false, fmt.Errorf("attention %q has conflicting content", attentionID)
+	if previous, exists := preflight.turns[attentionID]; exists {
+		if err := validateDelegateAttentionIdentity(previous, attentionID, message, expectedProvenance); err != nil {
+			return false, err
 		}
 	}
 	writer, entries, err := open(path, expectedSessionID)
@@ -419,9 +438,9 @@ func appendColdDelegateAttentionMessageDurablyWithOpen(path, expectedSessionID, 
 	if err != nil {
 		return false, err
 	}
-	if previous, exists := fold.content[attentionID]; exists {
-		if !reflect.DeepEqual(previous, message) {
-			return false, fmt.Errorf("attention %q has conflicting content", attentionID)
+	if previous, exists := fold.turns[attentionID]; exists {
+		if err := validateDelegateAttentionIdentity(previous, attentionID, message, expectedProvenance); err != nil {
+			return false, err
 		}
 		if err := writer.EstablishDurability(); err != nil {
 			return false, err
@@ -432,9 +451,7 @@ func appendColdDelegateAttentionMessageDurablyWithOpen(path, expectedSessionID, 
 	turn.Timestamp = now.UTC()
 	turn.AttentionID = attentionID
 	turn.StableTurnID = newQueueEntryID()
-	if len(causal) != 0 {
-		turn.NotificationProvenance = provenance.Clone(causal[0])
-	}
+	turn.NotificationProvenance = expectedProvenance
 	// The synced door is the durability owner's door: it records AND syncs,
 	// or errors. A read-back would find a retained (recorded but unsynced)
 	// line and wrongly call it durable, so this side of delegate attention asks
@@ -447,9 +464,12 @@ func appendColdDelegateAttentionMessageDurablyWithOpen(path, expectedSessionID, 
 	if err != nil {
 		return false, err
 	}
-	persisted, exists := verified.content[attentionID]
-	if !exists || !reflect.DeepEqual(persisted, message) {
+	persisted, exists := verified.turns[attentionID]
+	if !exists {
 		return false, fmt.Errorf("attention %q was not durably appended", attentionID)
+	}
+	if err := validateDelegateAttentionIdentity(persisted, attentionID, message, expectedProvenance); err != nil {
+		return false, err
 	}
 	return true, nil
 }
@@ -925,13 +945,13 @@ func (s *Session) coversPresentedAttention(ctx context.Context) bool {
 // attempt, a content-filter retry whose compaction then folds the steering
 // turn away) presented nothing the design may consume. Only a turn that
 // coversPresentedAttention stages.
-func (s *Session) stagePresentedAttentionCoverage(ctx context.Context, presentedTurns []schema.Turn) {
+func (s *Session) stagePresentedAttentionCoverage(ctx context.Context, presentedTurns []schema.Turn, verifier ...func(*llm.ToolResultData) bool) {
 	if !s.coversPresentedAttention(ctx) {
 		return
 	}
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
-	staged := inlineNotificationPresentations(presentedTurns)
+	staged := inlineNotificationPresentations(presentedTurns, verifier...)
 	if len(staged) != 0 {
 		// Old inline-only records have delivery commits but no canonical
 		// acceptance. They remain readable history, never new observations.
@@ -963,7 +983,11 @@ func (s *Session) stagePresentedAttentionCoverage(ctx context.Context, presented
 // inlineNotificationPresentations selects only carriers in this exact history
 // snapshot whose result is actually projected. A waiter or a commit in some
 // other snapshot cannot hide the canonical steering message or earn coverage.
-func inlineNotificationPresentations(turns []schema.Turn) map[string]struct{} {
+func inlineNotificationPresentations(turns []schema.Turn, verifier ...func(*llm.ToolResultData) bool) map[string]struct{} {
+	verify := delegateInlineBodyPresented
+	if len(verifier) != 0 && verifier[0] != nil {
+		verify = verifier[0]
+	}
 	var ids map[string]struct{}
 	for _, turn := range turns {
 		if turn.Kind != schema.TurnToolResults {
@@ -974,7 +998,7 @@ func inlineNotificationPresentations(turns []schema.Turn) map[string]struct{} {
 				continue
 			}
 			for _, part := range turn.Message.Content {
-				if part.Kind == llm.ContentToolResult && part.ToolResult != nil && part.ToolResult.ToolCallID == commit.ToolCallID && delegateInlineBodyPresented(part.ToolResult) {
+				if part.Kind == llm.ContentToolResult && part.ToolResult != nil && part.ToolResult.ToolCallID == commit.ToolCallID && verify(part.ToolResult) {
 					if ids == nil {
 						ids = make(map[string]struct{})
 					}
@@ -988,21 +1012,40 @@ func inlineNotificationPresentations(turns []schema.Turn) map[string]struct{} {
 }
 
 // Tool state is not presentation. It only supplies the original rendering to
-// compare with the actual bounded body. Any shaping loses inline coverage and
-// uses ordinary canonical delivery instead. UseNumber preserves JSON numbers
-// when the result includes structured output.
+// compare with the actual bounded body. This pure predicate accepts only whole
+// bodies. Recovery-backed tails require the session-tree check below.
+// UseNumber preserves JSON numbers when the result includes structured output.
 func delegateInlineBodyPresented(result *llm.ToolResultData) bool {
-	if result == nil || len(result.ToolState) == 0 {
-		return false
-	}
-	var state delegateSendResult
-	decoder := json.NewDecoder(bytes.NewReader(result.ToolState))
-	decoder.UseNumber()
-	if decoder.Decode(&state) != nil || state.DelegateID == "" {
+	state, ok := delegateInlineState(result)
+	if !ok {
 		return false
 	}
 	body, ok := result.Content.(string)
 	return ok && body == formatDelegateSend(state)
+}
+
+func delegateInlineState(result *llm.ToolResultData) (delegateSendResult, bool) {
+	var state delegateSendResult
+	if result == nil || len(result.ToolState) == 0 {
+		return state, false
+	}
+	decoder := json.NewDecoder(bytes.NewReader(result.ToolState))
+	decoder.UseNumber()
+	err := decoder.Decode(&state)
+	return state, err == nil && state.DelegateID != ""
+}
+
+func (s *Session) delegateInlineBodyPresented(result *llm.ToolResultData) bool {
+	state, ok := delegateInlineState(result)
+	if !ok {
+		return false
+	}
+	body, ok := result.Content.(string)
+	if !ok {
+		return false
+	}
+	complete := formatDelegateSend(state)
+	return body == complete || s.retainedDelegateInlineBodyPresented(result, complete)
 }
 
 // A fallback may only shrink an already bounded body. Keep the call/result
@@ -1330,10 +1373,9 @@ type delegateAttentionFoldCursor struct {
 // The returned fold is the one the next read resumes from, so callers must not
 // change it.
 func (c *delegateAttentionFoldCursor) read(path, sessionID string) (delegateAttentionFold, error) {
-	previous := *c
-	*c = delegateAttentionFoldCursor{}
 	f, err := os.Open(path)
 	if err != nil {
+		*c = delegateAttentionFoldCursor{}
 		if os.IsNotExist(err) {
 			return newDelegateAttentionFold(), nil
 		}
@@ -1342,8 +1384,18 @@ func (c *delegateAttentionFoldCursor) read(path, sessionID string) (delegateAtte
 	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil {
+		*c = delegateAttentionFoldCursor{}
 		return delegateAttentionFold{}, fmt.Errorf("stat delegate attention transcript: %w", err)
 	}
+	return c.readFile(f, info, sessionID)
+}
+
+// readFile resumes from the caller's freshly opened handle and its identity.
+// Custody queries establish durability against this same file before folding,
+// so a second pathname open must not select a different transcript.
+func (c *delegateAttentionFoldCursor) readFile(f *os.File, info os.FileInfo, sessionID string) (delegateAttentionFold, error) {
+	previous := *c
+	*c = delegateAttentionFoldCursor{}
 	if !info.Mode().IsRegular() {
 		// Only a regular file has offsets to resume from; anything else is
 		// folded as a stream, from its start, every time.

@@ -216,6 +216,12 @@ type Options struct {
 	// a dropped channel's supervisor, so a concurrent Ensure's retire-and-attach
 	// interleaving is exact rather than a race the sleep had to bias.
 	beforeSuperviseGate func(name string, ch *Channel)
+	// Admission observations run without manager/gate locks, except the
+	// successful-claim hook, which runs with the gate held and m.mu released.
+	beforeSuperviseClaim func(name string, retry bool)
+	afterSuperviseClaim  func(name string, retry bool)
+	// superviseGateWaiting runs after a failed claim, before the release select.
+	superviseGateWaiting func(name string)
 	// superviseExited, when set, runs after a supervisor goroutine has returned
 	// and released any gate it held. Tests use it to observe "the supervisor
 	// stood down" instead of sleeping long enough to hope it did.
@@ -2555,7 +2561,7 @@ func (t *lossWatchingTransport) Close() error {
 // It holds the host lock only around state inspection, channel teardown, and
 // one attach attempt. The backoff sleep happens with the lock released, so a
 // concurrent Ensure never waits behind a delay that can reach BackoffMax.
-func (m *Manager) supervise(ctx context.Context, host hostreg.Host, ch *Channel, lock *hostLockGate) {
+func (m *Manager) supervise(ctx context.Context, host hostreg.Host, ch *Channel, lock *hostLockGate, loop *supervisorLoop) {
 	select {
 	case <-ch.lost:
 	case <-ctx.Done():
@@ -2565,17 +2571,9 @@ func (m *Manager) supervise(ctx context.Context, host hostreg.Host, ch *Channel,
 	if m.opts.beforeSuperviseGate != nil {
 		m.opts.beforeSuperviseGate(host.Name, ch)
 	}
-	// A canceled loop no longer owns the host, and standing down needs no gate:
-	// return before contending for it. This covers the teardown ordering this
-	// path exists for — a loop is canceled, then its link is dropped, so the loop
-	// wakes on the drop with its context already canceled — and it stands down
-	// here instead of taking (or parking on) the gate it no longer owns. A loop
-	// canceled while already parked on Lock still takes the gate once, and the
-	// post-acquire check below returns it.
-	if ctx.Err() != nil {
+	if !m.acquireSupervisorGate(ctx, host.Name, lock, loop, false) {
 		return
 	}
-	lock.Lock()
 	lock.holdAs(hostops.Holder{Kind: hostops.HolderManager, Activity: "reconnect"})
 	// Ownership, not liveness, decides whether this supervisor still has work: the
 	// manager closing ends it, and a replaced channel means the replacement's
@@ -2612,7 +2610,7 @@ func (m *Manager) supervise(ctx context.Context, host hostreg.Host, ch *Channel,
 			// after the replacement's Attached.
 			return
 		}
-		if !m.reconnectOnce(ctx, host, lock) {
+		if !m.reconnectOnce(ctx, host, lock, loop) {
 			return
 		}
 		delay = nextBackoff(delay, m.opts.backoffMax())
@@ -2640,9 +2638,9 @@ func (m *Manager) supervise(ctx context.Context, host hostreg.Host, ch *Channel,
 // and released the lock no new supervisor can join the group, and every
 // supervisor that did join is observed by Close's Wait.
 //
-// Every live loop stays registered as its own entry: a replacement attach adds a
-// loop rather than overwriting the host's slot, so stopSupervisor can end a
-// predecessor still parked in backoff instead of leaking it.
+// Every eligible loop stays registered as its own entry. Committed attachment
+// removes predecessors before registering the replacement; each removed loop
+// still owns its reference and supervision mark until its own cleanup finishes.
 func (m *Manager) startSupervise(host hostreg.Host, ch *Channel, lock *hostLockGate) bool {
 	ctx, cancel := context.WithCancel(m.baseCtx)
 	loop := &supervisorLoop{host: host, cancel: cancel}
@@ -2727,7 +2725,7 @@ func (m *Manager) startSupervise(host hostreg.Host, ch *Channel, lock *hostLockG
 				m.opts.superviseExited(host.Name)
 			}
 		}()
-		m.supervise(ctx, host, ch, lock)
+		m.supervise(ctx, host, ch, lock, loop)
 	})
 	m.mu.Unlock()
 	return true
@@ -2748,8 +2746,8 @@ type supervisorLoop struct {
 // its own channel still looping, to repeat the same terminal outcome — a second
 // EventFailed for a host consumers were already told was finished — or, for a
 // terminal class the next attempt happens to pass, to announce an Attached after
-// that Failed. Cancelling all of them, not just the most recent, is what reaches
-// a predecessor parked in backoff after a replacement attach registered over it.
+// that Failed. Canceling the captured set reaches every eligible loop, including
+// recovery parked in backoff with no mapped channel.
 func (m *Manager) stopSupervisor(name string) {
 	m.mu.Lock()
 	loops := m.supervisors[name]
@@ -2760,11 +2758,49 @@ func (m *Manager) stopSupervisor(name string) {
 	}
 }
 
+// acquireSupervisorGate waits privately for release or cancellation. Membership
+// is the ownership token, including while a dropped channel's slot is empty.
+// Checking it and TryLock under m.mu makes retirement atomic with admission.
+// Never block on the host gate under m.mu: holders acquire those locks in the
+// opposite order. A release snapshot must precede the attempt to avoid a lost wake.
+func (m *Manager) acquireSupervisorGate(ctx context.Context, name string, lock *hostLockGate, loop *supervisorLoop, retry bool) bool {
+	for {
+		released := lock.releaseGeneration()
+		if m.opts.beforeSuperviseClaim != nil {
+			m.opts.beforeSuperviseClaim(name, retry)
+		}
+		m.mu.Lock()
+		_, eligible := m.supervisors[name][loop]
+		if m.closed || ctx.Err() != nil || !eligible {
+			m.mu.Unlock()
+			return false
+		}
+		acquired := lock.TryLock()
+		m.mu.Unlock()
+		if acquired {
+			if m.opts.afterSuperviseClaim != nil {
+				m.opts.afterSuperviseClaim(name, retry)
+			}
+			return true
+		}
+		if m.opts.superviseGateWaiting != nil {
+			m.opts.superviseGateWaiting(name)
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-released:
+		}
+	}
+}
+
 // reconnectOnce runs one re-attach attempt with the host lock held, and reports
 // whether another attempt is worth making. Every outcome that ends the
 // supervisor emits its own state event first.
-func (m *Manager) reconnectOnce(ctx context.Context, host hostreg.Host, lock *hostLockGate) bool {
-	lock.Lock()
+func (m *Manager) reconnectOnce(ctx context.Context, host hostreg.Host, lock *hostLockGate, loop *supervisorLoop) bool {
+	if !m.acquireSupervisorGate(ctx, host.Name, lock, loop, true) {
+		return false
+	}
 	lock.holdAs(hostops.Holder{Kind: hostops.HolderManager, Activity: "reconnect"})
 	defer lock.Unlock()
 
@@ -3003,9 +3039,10 @@ type hostLockEntry struct {
 // cleared by Unlock before the mutex is released, so a contender that fails
 // TryLock can never read a stale holder for a free gate — a free gate always
 // reads the zero Holder. It is an atomic pointer rather than a field under the
-// manager mutex so Unlock stays a lock-free operation, exactly as the plain
-// sync.Mutex it replaces was. The holder is published as the acquisition's very
-// next step (see TryAcquire and each holdAs call site): the one instant between
+// manager mutex so holder reads need no manager lock. Release notification
+// uses a separate mutex that never acquires the manager or host lock. The holder
+// is published as the acquisition's very next step (see TryAcquire and each
+// holdAs call site): the one instant between
 // a successful TryLock and the store is not observable as a holder, so a
 // contender landing exactly there reads the zero Holder and gets the safe
 // generic transient form, never a wrong operation id.
@@ -3013,6 +3050,19 @@ type hostLockGate struct {
 	mu     sync.Mutex
 	held   atomic.Bool
 	holder atomic.Pointer[hostops.Holder]
+	// releaseMu protects only the zero-value-safe release generation. Neither
+	// snapshot nor notification waits for the host gate or takes m.mu.
+	releaseMu sync.Mutex
+	released  chan struct{}
+}
+
+func (g *hostLockGate) releaseGeneration() <-chan struct{} {
+	g.releaseMu.Lock()
+	defer g.releaseMu.Unlock()
+	if g.released == nil {
+		g.released = make(chan struct{})
+	}
+	return g.released
 }
 
 // isHeld reports whether the gate is currently held, without disturbing the
@@ -3046,6 +3096,14 @@ func (g *hostLockGate) Unlock() {
 	g.holder.Store(nil)
 	g.held.Store(false)
 	g.mu.Unlock()
+	// Notify only after the raw unlock: a woken contender must see availability
+	// or a new holder whose later release will wake its next attempt.
+	g.releaseMu.Lock()
+	if g.released != nil {
+		close(g.released)
+	}
+	g.released = nil
+	g.releaseMu.Unlock()
 }
 
 // holdAs registers the holder of the current hold. Callers call it immediately
@@ -3107,11 +3165,9 @@ func (m *Manager) releaseHostLock(name string) {
 	m.mu.Unlock()
 }
 
-// lockHostCtx acquires the per-host gate, giving up when ctx is done. The host
-// lock itself is a plain sync.Mutex: Close and the reconnect supervisors take it
-// without a context and must not be made to fail, so a canceled waiter cannot be
-// woken out of Lock directly. This helper parks a goroutine on Lock instead and,
-// when the caller gives up first, has that goroutine hand the lock straight back
+// lockHostCtx acquires the per-host gate, giving up when ctx is done. The gate's
+// blocking Lock cannot be canceled, so this helper parks a goroutine on it.
+// When the caller gives up first, that goroutine hands the lock straight back
 // once it acquires it — the gate is never left held by a caller that returned.
 func lockHostCtx(ctx context.Context, mu *hostLockGate) error {
 	if err := ctx.Err(); err != nil {
@@ -3743,7 +3799,15 @@ func (m *Manager) attachEvent(name string, ch *Channel, s State) {
 	// it as soon as a consumer does, so it can pair the events.
 	m.mu.Lock()
 	m.announced[name] = ch
+	// Attachment has committed, so every preexisting loop is superseded. The
+	// new loop is registered only after this announcement. Provisional publish
+	// and rollback deliberately leave the predecessor eligible to recover.
+	loops := m.supervisors[name]
+	delete(m.supervisors, name)
 	m.mu.Unlock()
+	for loop := range loops {
+		loop.cancel()
+	}
 	m.emit(Event{Host: name, Kind: EventAttached, State: s})
 }
 

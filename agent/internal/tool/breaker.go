@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/big"
 	"strconv"
 	"strings"
 	"sync"
@@ -164,7 +165,7 @@ func canonicalArgumentBytes(name string, args []byte, normalize func(map[string]
 	}
 	canonical := canonicalizeValue(v, true, name == "shell")
 	// Apply the tool's own normalizer after canonicalizeValue, so it sees
-	// numbers already folded to int64 or float64 as dispatch's decoder gives
+	// exact numbers, as dispatch's decoder gives
 	// them. A normalizer error means dispatch rejects the call, so the
 	// un-normalized view still names it.
 	if object, isObject := canonical.(map[string]any); isObject && normalize != nil {
@@ -223,46 +224,44 @@ func canonicalizeValue(v any, topLevel, dropDescription bool) any {
 	}
 }
 
-// canonicalNumber folds a JSON number into a canonical Go representation so
-// equivalent literals share a fingerprint: within int64, "1", "1.0" and "1e0"
-// all fold, and an integer token that overflows int64 is kept as its exact
-// json.Number text rather than rounded through float64. ParseFloat is lossy
-// above 2^53, so rounding would let two distinct integers collapse to the same
-// float and therefore the same fingerprint, giving two different failing calls
-// one shared failure run. json.Number marshals as its raw literal, so the value
-// stays exact and distinct. The ParseInt path runs first, so every value that
-// fits int64 keeps its exact folded form, and the float path still serves
-// literals that are not integer-shaped.
-//
-// KNOWN LIMITATION. Only a BARE integer token overflows exactly. Suffixed
-// spellings of an integer beyond int64 -- "9223372036854775808.0",
-// "9223372036854775808e0" -- are not integer-shaped, so they still round
-// through ParseFloat. That has two narrow consequences of opposite severity.
-// A suffixed spelling does not fold with the bare form of the same number,
-// which is the safe direction: the breaker fires later than it otherwise
-// would. But two distinct integers beyond int64 written with the same suffix
-// still collapse to one fingerprint, which is the HARMFUL direction -- the same
-// collision class this fix closes for bare tokens, just narrower, because a
-// genuinely changed call is then treated as a repeat and parked rather than
-// executed. Folding them exactly needs arbitrary-precision parsing,
-// which is deliberately NOT done here: big.Rat materializes a token's exponent
-// before it can ask whether the value is an integer, so an eleven-byte
-// "1e1000000" expands to a million digits (measured: ~19ms and ~3MB against
-// ~3us through ParseFloat). This runs before argument validation on
-// model-supplied input, so that expansion is a CPU and memory amplification.
-// Do not reintroduce it without bounding the exponent first.
+// canonicalNumber folds ordinary decimal spellings without float64 rounding.
+// Canonicalization is only an optimization: retain the exact literal outside
+// this small work domain rather than expanding a model-controlled exponent.
+// These limits do not reject arguments or bound aggregate schema work.
 func canonicalNumber(n json.Number) any {
 	s := n.String()
 	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
 		return i
 	}
-	if isIntegerLiteral(s) {
+	if isIntegerLiteral(s) || len(s) > 1024 {
 		return n
 	}
-	if f, err := strconv.ParseFloat(s, 64); err == nil {
-		return f
+	mantissa, exponent := s, 0
+	if at := strings.IndexAny(s, "eE"); at >= 0 {
+		mantissa = s[:at]
+		e, err := strconv.Atoi(s[at+1:])
+		if err != nil || e < -1024 || e > 1024 {
+			return n
+		}
+		exponent = e
 	}
-	return n
+	places := 0
+	if at := strings.IndexByte(mantissa, '.'); at >= 0 {
+		places = len(mantissa) - at - 1
+	}
+	places = max(0, places-exponent)
+	r, ok := new(big.Rat).SetString(s)
+	if !ok {
+		return n
+	}
+	text := r.FloatString(places)
+	if strings.Contains(text, ".") {
+		text = strings.TrimRight(strings.TrimRight(text, "0"), ".")
+	}
+	if text == "-0" {
+		text = "0"
+	}
+	return json.Number(text)
 }
 
 // isIntegerLiteral reports whether s is an integer-shaped JSON number token: an

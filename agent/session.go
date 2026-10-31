@@ -826,14 +826,20 @@ type Session struct {
 	// notifyWakeHolds counts in-flight holdJobNotificationWake holds, and
 	// notifyWakeDeferred records that a wake was suppressed while held. Guarded
 	// by pendingJobNotifsMu.
-	notifyWakeHolds    int
-	notifyWakeDeferred bool
-	notifyFunc         func()
-	jobNotifyRetry     notificationRetry
+	notificationProgress *notificationProgress // protected by pendingJobNotifsMu
+	notifyWakeHolds      int
+	notifyWakeDeferred   bool
+	notifyFunc           func()
+	jobNotifyRetry       notificationRetry
 	// jobNotifyCallbacks counts in-flight scheduled notification retry
 	// callbacks, including callbacks begun before retirement controller
 	// attachment. Guarded by pendingJobNotifsMu.
 	jobNotifyCallbacks int
+
+	// testOnlyNotificationProgress observes unlocked retry/publication boundaries.
+	// Tests install it per session, then join callbacks before session cleanup.
+	// Atomic installation permits observation changes without callback races.
+	testOnlyNotificationProgress atomic.Pointer[notificationProgressObserver]
 
 	jobManager *jobManager
 
@@ -1237,14 +1243,52 @@ func (s *Session) holdJobNotificationWake() func() {
 		s.pendingJobNotifsMu.Lock()
 		s.notifyWakeHolds--
 		wake := s.notifyWakeHolds == 0 && s.notifyWakeDeferred
+		var progress *notificationProgress
 		if wake {
+			progress = s.joinNotificationProgressLocked()
 			s.notifyWakeDeferred = false
 		}
 		s.pendingJobNotifsMu.Unlock()
-		if wake {
-			s.notify()
+		if !wake {
+			return
 		}
+		s.observeNotificationProgress("release-dispatch")
+		candidate := false
+		if s.peekNotifications() > 0 {
+			// Record only a real legacy handoff, before calling out. Canonical
+			// hinted continues to mean canonical input, not legacy or progress.
+			s.mu.Lock()
+			s.pendingJobNotifsMu.Lock()
+			f := s.notifyFunc
+			if s.closingOrClosedLocked() {
+				f = nil
+			}
+			if f != nil {
+				progress.legacyHint = true
+			}
+			s.pendingJobNotifsMu.Unlock()
+			s.mu.Unlock()
+			if f != nil {
+				f()
+			}
+		} else if err := s.dispatchNotificationWake(); err != nil {
+			slog.Warn("notification wake failed", "session_id", s.ID(), "error", err)
+		} else {
+			candidate = true
+		}
+		s.finishNotificationProgress(progress, candidate)
 	}
+}
+
+// deferJobNotificationWake shares the existing group hold with canonical custody.
+func (s *Session) deferJobNotificationWake() bool {
+	s.pendingJobNotifsMu.Lock()
+	held := s.notifyWakeHolds > 0
+	if held {
+		s.notifyWakeDeferred = true
+	}
+	s.pendingJobNotifsMu.Unlock()
+	return held
 }
 
 func (s *Session) requeueJobNotifications(notifs []jobNotification) {
@@ -1293,18 +1337,12 @@ func (s *Session) countJobNotificationsDelivered(n int) {
 	s.jobNotifsDelivered += uint64(n)
 }
 
-// jobNotificationsDelivered reports the lifetime count of job notifications
-// delivered to the model.
-func (s *Session) jobNotificationsDelivered() uint64 {
-	s.pendingJobNotifsMu.Lock()
-	defer s.pendingJobNotifsMu.Unlock()
-	return s.jobNotifsDelivered
-}
-
 // SetNotifyFunc registers the callback the server uses to wake an idle session
 // when a job notification is pending. It mirrors SetKickFunc: the agent module
 // must not import server, so serve.go wires this callback into the server's input
 // channel.
+// The callback hands off the wake and returns. It must not call this Session's
+// Close inline: shutdown belongs to an external owner, after the handoff.
 func (s *Session) SetNotifyFunc(f func()) {
 	s.mu.Lock()
 	s.notifyFunc = f

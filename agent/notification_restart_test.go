@@ -4,13 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"sync"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
@@ -60,8 +60,47 @@ func incidentPendingFacts(t *testing.T, stateDir, sessionID, id string) {
 	}
 }
 
+// Read only after the captured activation's actual terminal tail returned.
+func restartPendingDelivery(t *testing.T, root *Session, receipt *activationReturn) string {
+	t.Helper()
+	finished, acknowledged := 0, 0
+	var delivery string
+	events := publicationEvents(t, root)
+	for _, event := range events {
+		if event.DelegateID != receipt.delegateID {
+			continue
+		}
+		if event.RunFinished != nil {
+			finished++
+			if event.RunFinished.Generation != receipt.lease.generation {
+				t.Fatalf("terminal source generation=%+v activation=%+v", event.RunFinished, receipt)
+			}
+			delivery = event.RunFinished.DeliveryID
+		}
+	}
+	// A yielded wait also publishes a legitimate nonterminal update. Its
+	// acknowledgment is distinct from this generation's RunFinished delivery.
+	for _, event := range events {
+		if event.DelegateID == receipt.delegateID && event.DeliveryAcknowledged != nil && event.DeliveryAcknowledged.DeliveryID == delivery {
+			acknowledged++
+		}
+	}
+	if finished != 1 || acknowledged != 1 || delivery == "" {
+		t.Fatalf("terminal source finishes=%d matching acknowledgments=%d delivery=%s", finished, acknowledged, delivery)
+	}
+	id := "delegate:" + delivery
+	incidentPendingFacts(t, root.stateDir, root.ID(), id)
+	return id
+}
+
 func TestNotificationOwnerHeldObserverEligible(t *testing.T) {
 	a := newMessagingAdapter("HELD-OBSERVER-11")
+	returns := newActivationReturns()
+	terminal := newWaitBoundary()
+	defer terminal.release()
+	yieldGate := make(chan struct{})
+	releaseYield := sync.OnceFunc(func() { close(yieldGate) })
+	defer releaseYield()
 	a.script("root", func(llm.Request) llm.Response {
 		return delegateToolCall("held-observer-11", map[string]any{"prompt": "HELD-OBSERVER-11", "watch_parent": true})
 	}, func(llm.Request) llm.Response { return finalResponse("held-owner-initial-11") })
@@ -72,17 +111,22 @@ func TestNotificationOwnerHeldObserverEligible(t *testing.T) {
 		if watchID == "" {
 			t.Errorf("watch tool result omitted identity: %s", lastToolResultText(req.Messages))
 		}
+		awaitSignal(t, yieldGate, "observer activation capture")
 		return waitResponseFor("observer-wait-11", "watch:"+watchID)
 	}, func(req llm.Request) llm.Response {
+		terminal.hold(t)
 		return finalResponse("observer-report-9a087bc1")
 	})
-	root := newMessagingRoot(t, a, nil)
+	root := newMessagingRoot(t, a, returns.configure)
+	t.Cleanup(func() { returns.close(t, root) })
 	if _, err := root.ProcessInput(context.Background(), "held-observer-start-11", nil); err != nil {
 		t.Fatal(err)
 	}
 	observer := root.subagents.sessions()[0]
 	a.waitForRequests(t, "HELD-OBSERVER-11", 2)
-	incidentYielded(t, root, observer.ID())
+	initial := returns.take(t, observer.ID())
+	releaseYield()
+	incidentYielded(t, root, observer.ID(), initial)
 	a.script("root", func(llm.Request) llm.Response {
 		return toolCallResponse(askUserCall("held-question-11", askUserArgsValid()))
 	})
@@ -93,23 +137,12 @@ func TestNotificationOwnerHeldObserverEligible(t *testing.T) {
 		t.Fatal("owner question was not held")
 	}
 	before := len(a.requestsFor("root"))
-	var reportID string
-	waitForCondition(t, 3*time.Second, "independent observer delivery while owner held", func() bool {
-		events := publicationEvents(t, root)
-		var delivery string
-		for _, e := range events {
-			if e.DelegateID == observer.owningDelegateID && e.RunFinished != nil && e.RunFinished.Generation == 1 {
-				delivery = e.RunFinished.DeliveryID
-			}
-		}
-		for _, e := range events {
-			if delivery != "" && e.DelegateID == observer.owningDelegateID && e.DeliveryAcknowledged != nil && e.DeliveryAcknowledged.DeliveryID == delivery {
-				reportID = "delegate:" + e.DeliveryAcknowledged.DeliveryID
-				return true
-			}
-		}
-		return false
-	})
+	resumed := terminal.take(t, returns, observer.ID())
+	assertWaitResume(t, initial, resumed)
+	activationStillOpen(t, resumed.generationDone)
+	terminal.release()
+	incidentSettled(t, root, observer.ID(), resumed)
+	reportID := restartPendingDelivery(t, root, resumed)
 	if len(a.requestsFor("root")) != before || root.askPendingCount() != 1 {
 		t.Fatal("observer report bypassed owner's human hold")
 	}
@@ -121,6 +154,10 @@ func TestNotificationOwnerHeldObserverEligible(t *testing.T) {
 		t.Fatalf("parent watch source=%+v", produced)
 	}
 	state := produced[0].WatchSend
+	acks := producerSourceEvents(t, root.jobManager, jobstore.EventWatchSendDelivered)
+	if len(acks) != 1 || acks[0].WatchSend == nil || stableWatchAttentionID(*acks[0].WatchSend) != stableWatchAttentionID(*state) {
+		t.Fatalf("observer trigger custody=%+v source=%+v", acks, state)
+	}
 	req := a.requestsFor("HELD-OBSERVER-11")[2]
 	fields := incidentWatchFields(req, state.Key.WatchID)
 	args, _ := json.Marshal(askUserArgsValid())
@@ -134,33 +171,28 @@ func TestNotificationOwnerHeldObserverEligible(t *testing.T) {
 
 func TestNotificationUnobservedReportAcrossCompaction(t *testing.T) {
 	a := newMessagingAdapter("COMPACT-WORKER-11")
-	root, _ := newCompactableSession(t)
+	returns := newActivationReturns()
+	root, _ := newCompactableSession(t, returns.configure)
+	t.Cleanup(func() { returns.close(t, root) })
 	root.client.Register(a)
 	a.rootID = root.ID()
-	gate := make(chan struct{})
-	release := sync.OnceFunc(func() { close(gate) })
-	defer release()
+	terminal := newWaitBoundary()
+	defer terminal.release()
 	a.script("root", func(llm.Request) llm.Response { return delegateToolResponse("compact-worker-11", "COMPACT-WORKER-11") }, func(llm.Request) llm.Response { return finalResponse("compact-root-initial-11") })
-	a.script("COMPACT-WORKER-11", func(llm.Request) llm.Response { <-gate; return finalResponse("unobserved-report-629da8c3") })
+	a.script("COMPACT-WORKER-11", func(llm.Request) llm.Response { terminal.hold(t); return finalResponse("unobserved-report-629da8c3") })
 	if _, err := root.ProcessInput(context.Background(), "compact-start-11", nil); err != nil {
 		t.Fatal(err)
 	}
 	worker := root.subagents.sessions()[0]
-	release()
-	var delivery string
-	waitForCondition(t, 3*time.Second, "real report receiver custody", func() bool {
-		for _, e := range publicationEvents(t, root) {
-			if e.DelegateID == worker.owningDelegateID && e.DeliveryAcknowledged != nil {
-				delivery = e.DeliveryAcknowledged.DeliveryID
-				return true
-			}
-		}
-		return false
-	})
-	id := "delegate:" + delivery
-	incidentPendingFacts(t, root.stateDir, root.ID(), id)
+	receipt := terminal.take(t, returns, worker.ID())
+	activationStillOpen(t, receipt.generationDone)
+	terminal.release()
+	incidentSettled(t, root, worker.ID(), receipt)
+	id := restartPendingDelivery(t, root, receipt)
 	compactAfterAttention(t, root)
-	incidentPendingFacts(t, root.stateDir, root.ID(), id)
+	if after := restartPendingDelivery(t, root, receipt); after != id {
+		t.Fatalf("compaction changed source custody: %s -> %s", id, after)
+	}
 	a.script("root", func(req llm.Request) llm.Response {
 		if !incidentDelegatePayload(req, worker.owningDelegateID, "unobserved-report-629da8c3") {
 			t.Error("designated post-compaction request omitted source or report")
@@ -169,7 +201,7 @@ func TestNotificationUnobservedReportAcrossCompaction(t *testing.T) {
 	})
 	wake, hint := newDrainWake()
 	root.SetNotifyFunc(hint)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	if _, err := root.DrainJobTree(ctx, wake); err != nil {
 		t.Fatal(err)
@@ -276,17 +308,19 @@ func truncateRestartDelegateSource(t *testing.T, path string, kind delegatestore
 func testNotificationDelegateRestartCut(t *testing.T, cut string) {
 	const key, payload = "RESTART-TERMINAL-11", "packet-5c8b439f"
 	a := newMessagingAdapter(key)
-	gate := make(chan struct{})
-	release := sync.OnceFunc(func() { close(gate) })
-	defer release()
+	returns := newActivationReturns()
+	terminal := newWaitBoundary()
+	defer terminal.release()
 	a.script("root", func(llm.Request) llm.Response { return delegateToolResponse("restart-terminal-11", key) }, func(llm.Request) llm.Response { return finalResponse("started-terminal-11") })
-	a.script(key, func(llm.Request) llm.Response { <-gate; return finalResponse(payload) })
-	root := newMessagingRoot(t, a, nil)
+	a.script(key, func(llm.Request) llm.Response { terminal.hold(t); return finalResponse(payload) })
+	root := newMessagingRoot(t, a, returns.configure)
+	t.Cleanup(func() { returns.close(t, root) })
 	if _, err := root.ProcessInput(context.Background(), "start-terminal-11", nil); err != nil {
 		t.Fatal(err)
 	}
-	a.waitForRequests(t, key, 1)
 	child := root.subagents.sessions()[0]
+	receipt := terminal.take(t, returns, child.ID())
+	activationStillOpen(t, receipt.generationDone)
 	if cut == "Stop request before completion" {
 		a.script("root", func(llm.Request) llm.Response {
 			args, _ := json.Marshal(map[string]any{"target": child.owningDelegateID, "max_wait_ms": 0})
@@ -296,26 +330,28 @@ func testNotificationDelegateRestartCut(t *testing.T, cut string) {
 			t.Fatal(err)
 		}
 	} else {
-		release()
-		waitForCondition(t, 3*time.Second, "terminal source settled", func() bool {
-			return !delegateAggregateSnapshot(t, root.delegateController, child.owningDelegateID).CurrentRunOpen
-		})
-		waitForCondition(t, 3*time.Second, "terminal receiver custody", func() bool { return producerRecordCount(t, root) == 1 })
+		terminal.release()
+		incidentSettled(t, root, child.ID(), receipt)
+		restartPendingDelivery(t, root, receipt)
 	}
+	// Stop must remain a mid-provider crash. Its prefix is copied while the
+	// actual child is still held, never after a synthetic terminal settlement.
 	copied := copyWaitingState(t, root.stateDir)
 	if cut == "terminal preparation before settlement" {
 		truncateRestartDelegateSource(t, delegateResourceStorePath(copied, root.ID()), delegatestore.EventDelegateRunFinished)
 		truncateRestartTranscript(t, transcriptPath(copied, root.ID()), func(turn schema.Turn) bool { return turn.AttentionID != "" })
 	}
-	release()
+	terminal.release()
+	incidentSettled(t, root, child.ID(), receipt)
 	root.Close()
 	beforeRoot, beforeChild := len(a.requestsFor("root")), len(a.requestsFor(key))
 	var received llm.Request
 	a.script("root", func(req llm.Request) llm.Response { received = req; return finalResponse("terminal-observed-11") })
-	restored := restoreWaitingCopy(t, root, copied)
+	restoredReturns := newActivationReturns()
+	restored := restoreWaitingJoinCopy(t, root, copied, restoredReturns)
 	wake, hint := newDrainWake()
 	restored.SetNotifyFunc(hint)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if _, err := restored.DrainJobTree(ctx, wake); err != nil {
 		t.Fatal(err)
@@ -396,6 +432,20 @@ func testNotificationShellRestartCut(t *testing.T, cut string) {
 	if jobID == "" {
 		t.Fatal("real shell identity missing")
 	}
+	root.jobManager.mu.Lock()
+	running := root.jobManager.running[jobID]
+	var shellDone <-chan struct{}
+	if running != nil {
+		shellDone = running.done
+	}
+	root.jobManager.mu.Unlock()
+	if shellDone == nil {
+		t.Fatalf("held shell %s has no actual finalizer", jobID)
+	}
+	defer func() {
+		releaseShell()
+		waitForTestSignal(t, shellDone, "restart shell cleanup finalizer")
+	}()
 	var copied string
 	var attempt llm.Request
 	if cut == "after wait checkpoint before executor release" {
@@ -411,15 +461,17 @@ func testNotificationShellRestartCut(t *testing.T, cut string) {
 		})
 	} else {
 		releaseShell()
-		waitForCondition(t, 3*time.Second, "real shell receiver custody", func() bool { return producerRecordCount(t, root) == 1 })
-		waitForCondition(t, 3*time.Second, "real shell source acknowledgement", func() bool {
-			return len(producerSourceEvents(t, root.jobManager, jobstore.EventJobNotificationDelivered)) == 1
-		})
+		waitForTestSignal(t, shellDone, "restart shell terminal and notification finalizer")
 		source := producerSourceEvents(t, root.jobManager, jobstore.EventJobFinished)
 		if len(source) != 1 || source[0].JobID != jobID {
 			t.Fatalf("source completion=%+v", source)
 		}
 		id := "shell:" + jobID + ":" + source[0].TerminalGen
+		incidentPendingFacts(t, root.stateDir, root.ID(), id)
+		acks := producerSourceEvents(t, root.jobManager, jobstore.EventJobNotificationDelivered)
+		if len(acks) != 1 || acks[0].JobID != jobID || acks[0].TerminalGen != source[0].TerminalGen {
+			t.Fatalf("shell custody acknowledgments=%+v source=%+v", acks, source)
+		}
 		switch cut {
 		case "after request snapshot before response", "after resume claim before checkpoint":
 			entered, gate := make(chan llm.Request, 1), make(chan struct{})
@@ -431,12 +483,21 @@ func testNotificationShellRestartCut(t *testing.T, cut string) {
 				return finalResponse("attempt-response-11")
 			})
 			done := make(chan error, 1)
-			go func() { _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); done <- err }()
-			select {
-			case attempt = <-entered:
-			case <-time.After(3 * time.Second):
-				t.Fatal("request snapshot missing")
-			}
+			ctx, cancel := context.WithCancel(context.Background())
+			joined := false
+			go func() { _, err := root.ProcessInputKind(ctx, "", nil, EntryNotification); done <- err }()
+			defer func() {
+				unblock()
+				cancel()
+				if !joined {
+					err := <-done
+					joined = true
+					if err != nil && !errors.Is(err, context.Canceled) {
+						t.Errorf("request snapshot cleanup: %v", err)
+					}
+				}
+			}()
+			attempt = <-entered
 			if err := incidentJobPayload(attempt, jobID, string(source[0].Status), source[0].Reason); err != nil {
 				t.Fatal(err)
 			}
@@ -453,7 +514,9 @@ func testNotificationShellRestartCut(t *testing.T, cut string) {
 				}
 			}
 			unblock()
-			if err := <-done; err != nil {
+			err := <-done
+			joined = true
+			if err != nil {
 				t.Fatal(err)
 			}
 		case "after response sync before receipt index", "after completed resume":
@@ -480,15 +543,16 @@ func testNotificationShellRestartCut(t *testing.T, cut string) {
 			}
 		}
 	}
-	root.Close()
 	releaseShell()
+	waitForTestSignal(t, shellDone, "original shell lifetime finalizer")
+	root.Close()
 	before := len(a.requestsFor("root"))
 	observed := make(chan llm.Request, 1)
 	a.script("root", func(req llm.Request) llm.Response { observed <- req; return finalResponse("recovered-11") })
 	restored := restoreWaitingCopy(t, root, copied)
 	wake, hint := newDrainWake()
 	restored.SetNotifyFunc(hint)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if _, err := restored.DrainJobTree(ctx, wake); err != nil {
 		t.Fatal(err)

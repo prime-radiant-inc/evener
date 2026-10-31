@@ -474,9 +474,10 @@ func TestShellBackgroundCompletionRetainsUnterminatedOutput(t *testing.T) {
 		t.Skip("unterminated-output fixture uses POSIX printf")
 	}
 	t.Parallel()
-	s := newTestSession(t)
-	notifications := make(chan jobNotification, 1)
-	s.jobManager.enqueue = func(n jobNotification) { notifications <- n }
+	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("unterminated output observed") },
+	}}
+	s := newSession(t, withAdapter(adapter), withConfig(minimalTestSessionConfig(t)))
 
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "c1",
@@ -496,37 +497,29 @@ func TestShellBackgroundCompletionRetainsUnterminatedOutput(t *testing.T) {
 		t.Fatal("background shell returned no job_id")
 	}
 
-	var notification jobNotification
-	select {
-	case notification = <-notifications:
-	// TRIPWIRE: "printf done" is a near-instant background command; the
-	// completion notification normally arrives in well under a second, so
-	// 30s only fires on a genuine hang.
-	case <-time.After(30 * time.Second):
-		t.Fatal("background shell completion notification did not arrive")
-	}
-	if notification.JobID != started.JobID ||
-		notification.Status != string(jobstore.StatusCompleted) ||
-		notification.Reason != "exit_zero" {
-		t.Fatalf("completion notification = %+v, want completed/exit_zero for %s", notification, started.JobID)
-	}
-	if notification.ExitCode == nil || *notification.ExitCode != 0 {
-		t.Fatalf("completion notification exit code = %v, want 0", notification.ExitCode)
-	}
-	if notification.OutputBytes != int64(len("done")) {
-		t.Fatalf("completion notification output bytes = %d, want %d", notification.OutputBytes, len("done"))
-	}
-	if notification.TranscriptRef != "job:"+started.JobID {
-		t.Fatalf("completion notification transcript ref = %q, want job ref", notification.TranscriptRef)
-	}
-
 	waitForShellDone(t, s.jobManager, started.JobID)
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatal(err)
+	}
+	requests := adapter.Requests()
+	if len(requests) != 1 {
+		t.Fatalf("completion provider requests = %d, want one", len(requests))
+	}
+	drainRequestNotice(t, requests[0], map[string]string{
+		"job_id": started.JobID, "job_type": "shell", "status": "completed",
+		"reason": "exit_zero", "exit_code": "0", "output_bytes": "4",
+		"transcript_ref": "job:" + started.JobID,
+	})
+	requireDrainShellObserved(t, s, started.JobID)
 	rec := loadShellRecord(t, s.jobManager, started.JobID)
 	if rec.Status != jobstore.StatusCompleted || rec.Reason != "exit_zero" {
 		t.Fatalf("job record = %+v, want completed/exit_zero", rec)
 	}
 	if rec.ExitCode == nil || *rec.ExitCode != 0 {
 		t.Fatalf("job exit code = %v, want 0", rec.ExitCode)
+	}
+	if rec.OutputBytes != int64(len("done")) {
+		t.Fatalf("job output bytes = %d, want %d", rec.OutputBytes, len("done"))
 	}
 
 	readRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{

@@ -1511,27 +1511,30 @@ func (a *subagent) clearDisposeGate() {
 // provider cannot pin its controller drive capacity until parent close.
 var driveTurnTimeout = 5 * time.Minute
 
-func (a *subagent) gateFatalRun(err error) error {
-	if a == nil || err == nil {
-		return nil
+func (a *subagent) stopOwnedWorkAfterRunError(err error) error {
+	if a == nil || err == nil || a.sess == nil {
+		return err
 	}
-	a.mu.Lock()
-	a.fatalRunGated = true
-	a.mu.Unlock()
 	// A failed child turn must not leave owned managed work alive. Preserve the
 	// retained run's error/state even if stopping races with a job-manager error.
-	if a.sess != nil {
-		_, cleanupErr := a.sess.stopDelegateSubtreeAndWait(a.sess)
-		return cleanupErr
-	}
-	return nil
-}
-
-func (a *subagent) gateFatalRunError(err error) error {
-	if cleanupErr := a.gateFatalRun(err); cleanupErr != nil {
+	if _, cleanupErr := a.sess.stopDelegateSubtreeAndWait(a.sess); cleanupErr != nil {
+		// Cleanup failure is infrastructure failure even when the original error
+		// is an ordinary missing-report sentinel.
+		a.mu.Lock()
+		a.fatalRunGated = true
+		a.mu.Unlock()
 		return errors.Join(err, fmt.Errorf("stop delegate-owned work: %w", cleanupErr))
 	}
 	return err
+}
+
+func (a *subagent) gateFatalRunError(err error) error {
+	if a != nil && err != nil {
+		a.mu.Lock()
+		a.fatalRunGated = true
+		a.mu.Unlock()
+	}
+	return a.stopOwnedWorkAfterRunError(err)
 }
 
 func (s *Session) subagentPrepareFault(point string) error {
@@ -1567,8 +1570,16 @@ func resetSubagentForRunLocked(sub *subagent, cancel context.CancelFunc, started
 }
 
 func (s *Session) launchSubagentRun(runCtx context.Context, sub *subagent, runCancel context.CancelFunc, input string, inputProvenance *provenance.Causal) {
+	var returned func()
+	if factory := sub.sess.cfg.testOnly.subagentActivationReturn; factory != nil {
+		lease, _ := runCtx.Value(delegateRunLeaseContextKey{}).(delegateLease)
+		returned = factory(sub, lease)
+	}
 	// Resume runs should also be independent of the caller's wait context.
 	go func() {
+		if returned != nil {
+			defer returned()
+		}
 		defer s.sendersWG.Done()
 		defer runCancel()
 		sub.run(runCtx, input, inputProvenance)
@@ -1808,7 +1819,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			break
 		}
 		if err != nil {
-			err = a.gateFatalRunError(err)
+			err = a.stopOwnedWorkAfterRunError(err)
 		}
 		finish = a.stableDelegateFinish(res, err)
 		decision, decisionErr := a.sess.delegateController.completionDecision(lease)

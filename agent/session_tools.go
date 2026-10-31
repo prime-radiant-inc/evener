@@ -826,7 +826,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		hi.ToolName = toolname.EvenerToClaude(call.Name)
 		hi.ToolUseID = call.ID
 		if !prep.RawArgumentsRejected && len(call.Arguments) > 0 {
-			_ = json.Unmarshal(call.Arguments, &hi.ToolInput)
+			hi.ToolInput, _ = tool.DecodeArguments(call.Arguments)
 		}
 
 		preResult := s.hookRunner.RunPreToolUse(s.apiLogContext(ctx), hi)
@@ -1096,7 +1096,9 @@ func applyUpdatedToolInput(call *llm.ToolCallData, updated map[string]any) error
 	}
 	args := map[string]any{}
 	if len(call.Arguments) > 0 {
-		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+		var err error
+		args, err = tool.DecodeArguments(call.Arguments)
+		if err != nil {
 			return err
 		}
 	}
@@ -1352,8 +1354,8 @@ func (s *Session) appendToolResultsWithDeliveryCommitsDurably(live, persisted ll
 	persistedTurn.Message = persisted
 	persistedTurn.SkillState = skillState.Clone()
 	// Only the final bounded output can establish a presentation binding.
-	// A clipped result becomes status-only, with ordinary canonical delivery
-	// still responsible for every packet in that result.
+	// An exact registry tail with verified full recovery is also presentation.
+	// Other shaping becomes status-only, leaving ordinary canonical delivery.
 	presentedCalls := make(map[string]bool)
 	liveContentCloned := false
 	for i, part := range liveTurn.Message.Content {
@@ -1364,7 +1366,7 @@ func (s *Session) appendToolResultsWithDeliveryCommitsDurably(live, persisted ll
 			if part.ToolResult.ToolCallID != binding.toolCallID {
 				continue
 			}
-			if delegateInlineBodyPresented(part.ToolResult) {
+			if s.delegateInlineBodyPresented(part.ToolResult) {
 				presentedCalls[binding.toolCallID] = true
 			} else {
 				if !liveContentCloned {
@@ -1385,7 +1387,7 @@ func (s *Session) appendToolResultsWithDeliveryCommitsDurably(live, persisted ll
 			if part.ToolResult.ToolCallID != binding.toolCallID {
 				continue
 			}
-			if !presentedCalls[binding.toolCallID] || !delegateInlineBodyPresented(part.ToolResult) {
+			if !presentedCalls[binding.toolCallID] || !s.delegateInlineBodyPresented(part.ToolResult) {
 				delete(presentedCalls, binding.toolCallID)
 				if !persistedContentCloned {
 					persistedTurn.Message.Content = slices.Clone(persistedTurn.Message.Content)
@@ -1864,7 +1866,7 @@ func optionalIntArg(args map[string]any, key string) *int {
 	if !ok {
 		return nil
 	}
-	if n, ok := v.(float64); ok {
+	if n, ok := approximateToolNumber(v); ok {
 		ni := int(n)
 		return &ni
 	}
@@ -1882,4 +1884,18 @@ func (s *Session) TasksWithError() ([]task.Task, error) {
 func (s *Session) Tasks() []task.Task {
 	tasks, _ := s.TasksWithError()
 	return tasks
+}
+
+// approximateToolNumber is only for legacy scalar readers that already consume
+// float64. Preserve their unchecked truncation, overflow and default branches.
+func approximateToolNumber(value any) (float64, bool) {
+	switch n := value.(type) {
+	case float64:
+		return n, true
+	case json.Number:
+		f, _ := n.Float64()
+		return f, true
+	default:
+		return 0, false
+	}
 }

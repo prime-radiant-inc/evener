@@ -218,28 +218,53 @@ func TestConcreteJobEventWatchIgnoresOtherJobsBeforeEveryCount(t *testing.T) {
 
 func TestReceiverWatchNotificationWithoutCallbackDoesNotNotifyOwner(t *testing.T) {
 	t.Parallel()
-	jm := newTestJM(t)
+	proof := newWatchCustodyProof(t)
+	jm := proof.jm
+	proof.root.subagents.track(&subagent{id: jm.sessionID, sess: jm.retirementOwner})
 	var notified []jobNotification
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
-
 	rec, err := jm.createShell(createShellOpts{Command: "sleep 30"})
 	if err != nil {
-		t.Fatalf("create shell: %v", err)
+		t.Fatal(err)
 	}
 	t.Cleanup(func() { finishRunningTestJob(t, jm, rec.JobID) })
 
-	if _, err := jm.configureWatch(watchArgs{
-		Source:            rec.JobID,
-		Target:            rec.JobID,
-		ReceiverSessionID: "ROOT",
-		OutputMatch:       "READY",
-	}); err != nil {
-		t.Fatalf("configure receiver watch: %v", err)
+	// Install through the supported caller, which derives the exact ancestor
+	// receiver and uses its controller, not an ownerless raw-manager callback.
+	if _, err := jobWatchTool(proof.root, map[string]any{
+		"operation": "create", "source": rec.JobID, "output_match": "READY",
+	}, 4096); err != nil {
+		t.Fatal(err)
 	}
-
-	feedJob(jm, rec.JobID, []byte("server READY\n"))
+	cfg := onlyWatchConfigForTest(t, jm)
+	if cfg.receiverSessionID != proof.root.ID() || jm.delegateController != proof.root.delegateController || jm.retirementOwner == nil {
+		t.Fatal("watch did not install on the supported Session/controller source")
+	}
+	jm.mu.Lock()
+	cfg.receiverNotify = nil // The process-local closure is unavailable, not the receiver identity.
+	jm.mu.Unlock()
+	const payload = "watch-missing-receiver-738e READY"
+	feedJob(jm, rec.JobID, []byte(payload+"\n"))
+	state := proof.pending(t, cfg, 1, 0)
+	if !state.CallbackFrame || state.Key.WatchTarget != rec.JobID || !strings.Contains(state.Frame, payload) {
+		t.Fatalf("retained original output callback = %+v", state)
+	}
 	if len(notified) != 0 {
 		t.Fatalf("owner notifications = %+v, want no fallback delivery", notified)
+	}
+	// A second actual transport attempt while the receiver filesystem remains
+	// unavailable must retain the exact original obligation, not mint a retry ID.
+	jm.dispatchProducedWatchSends()
+	again := proof.pending(t, cfg, 1, 0)
+	if again.DeliveryID != state.DeliveryID || again.Frame != state.Frame || again.ReceiverSessionID != state.ReceiverSessionID {
+		t.Fatal("unavailable receiver retry replaced the original destination or payload")
+	}
+	if producerRecordCount(t, jm.retirementOwner) != 0 {
+		t.Fatal("holder acquired substitute canonical custody")
+	}
+	proof.observe(t, state)
+	if len(notified) != 0 {
+		t.Fatal("receiver recovery notified the source holder")
 	}
 }
 
@@ -859,38 +884,39 @@ func TestWatchEventKindNamesResolve(t *testing.T) {
 
 func TestTerminalCatchupNoSendFiresNotification(t *testing.T) {
 	t.Parallel()
-	jm := newTestJM(t)
-	jobID := terminalShellWithOutput(t, jm, "line one\nserver ready\nline three\n")
-	// Capture only post-finalize notifications: the job-completion notification
-	// finalize enqueues is pre-existing and unrelated to catch-up.
+	proof := newWatchCustodyProof(t)
+	jm := proof.jm
+	const first, last = "hit-0a17", "hit-9c34"
+	jobID := terminalShellWithOutput(t, jm, first+"\nother-519f\n"+last+"\n")
 	var notified []jobNotification
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+	armedBefore := len(producerSourceEvents(t, jm, jobstore.EventJobNotificationPending))
 
-	res, err := jm.configureWatch(watchArgs{Target: jobID, OutputMatch: "ready"})
+	res, err := jm.configureWatch(proof.callbackArgs(watchArgs{Target: jobID, OutputMatch: "hit-[0-9a-f]{4}"}))
 	if err != nil {
 		t.Fatalf("configureWatch terminal catch-up: %v", err)
 	}
-	if res.Watching {
-		t.Fatalf("terminal catch-up must not install a live watch: %+v", res)
-	}
-	if !res.Fired || !res.TerminalCatchup {
-		t.Fatalf("result = %+v, want fired+terminal_catchup", res)
-	}
-	if res.Status != string(jobstore.StatusCompleted) {
-		t.Fatalf("status = %q, want %q", res.Status, jobstore.StatusCompleted)
+	if res.Watching || !res.Fired || !res.TerminalCatchup || res.Status != string(jobstore.StatusCompleted) {
+		t.Fatalf("result = %+v, want fired terminal catch-up on a completed job without live registration", res)
 	}
 	if jm.watchCount() != 0 {
 		t.Fatalf("watch count after catch-up = %d, want 0", jm.watchCount())
 	}
-	if len(notified) != 1 {
-		t.Fatalf("catch-up notifications = %d, want exactly 1: %+v", len(notified), notified)
+	deliveries := jm.pendingWatchSendDeliveries(nil)
+	if len(deliveries) != 1 || deliveries[0].cfg.send != nil {
+		t.Fatal("callback-only catch-up lost its retained source config or gained a Send")
 	}
-	// The frame carries the LAST matching line.
-	if !strings.Contains(notified[0].Reason, "output_match: server ready") {
-		t.Fatalf("notification reason = %q, want last matching line", notified[0].Reason)
+	cfg := deliveries[0].cfg
+	state := proof.pending(t, cfg, 1, 0)
+	if !state.CallbackFrame || state.NotificationJobID != "" || state.Key.WatchTarget != jobID || !strings.Contains(state.Frame, last) || strings.Contains(state.Frame, first) || cfg.conditionFires != 1 {
+		t.Fatalf("catch-up must produce exactly the last matching callback: %+v fires=%d", state, cfg.conditionFires)
 	}
-	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
-		t.Fatalf("a no-send catch-up must enqueue no watch-send pending; got %+v", pending)
+	if len(notified) != 0 || len(producerSourceEvents(t, jm, jobstore.EventJobNotificationPending)) != armedBefore {
+		t.Fatal("catch-up routed a legacy owner payload or rearmed shell completion")
+	}
+	proof.observe(t, state)
+	if jm.watchCount() != 0 || cfg.conditionFires != 1 || len(producerSourceEvents(t, jm, jobstore.EventJobNotificationPending)) != armedBefore {
+		t.Fatal("callback custody rearmed the watch or the owner shell notification")
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
@@ -445,6 +446,7 @@ func TestClearedWatchStartsAFreshAnnouncementEpisode(t *testing.T) {
 	}
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
 		TurnEndsProcess: true,
+		StateDir:        t.TempDir(),
 	}))
 	jobID = startUndisposedBackgroundShell(t, sess)
 
@@ -531,9 +533,66 @@ func TestClearedWatchStartsAFreshAnnouncementEpisode(t *testing.T) {
 	if len(reqs) != 5 {
 		t.Fatalf("model requests = %d, want 5 after one watch notification and two fresh-episode escalation turns", len(reqs))
 	}
-	last := reqs[2].Messages[len(reqs[2].Messages)-1].Text()
-	if !strings.Contains(last, "<job-notification") || !strings.Contains(last, `event="watch"`) {
-		t.Fatalf("request 3 did not carry the structured watch notification: %q", last)
+	drainRequestNotice(t, reqs[2], map[string]string{"job_type": "watch", "event": "watch", "watch_id": watched.watchID})
+	produced := producerSourceEvents(t, sess.jobManager, jobstore.EventWatchSendPending)
+	if len(produced) != 2 || produced[0].WatchSend == nil || produced[1].WatchSend == nil {
+		t.Fatalf("last firing plus budget notice source records = %+v", produced)
+	}
+	match, notice := *produced[0].WatchSend, *produced[1].WatchSend
+	if !match.CallbackFrame || !notice.CallbackFrame || match.UpdateSeq != 1 || notice.UpdateSeq != 2 || match.DeliveryID == "" || notice.DeliveryID == "" || match.DeliveryID == notice.DeliveryID || match.Key == notice.Key || match.CoalescedCount != 0 || notice.CoalescedCount != 0 {
+		t.Fatal("callback match and budget notice lost their separate identities")
+	}
+	noticeKey := notice.Key
+	noticeKey.ResolvedWatchedIdentity = match.Key.ResolvedWatchedIdentity
+	if match.Key.VisibleSessionID != sess.ID() || match.Key.ResolvedSendTo != runtimeMessageAliasCaller || match.ReceiverSessionID != sess.ID() || notice.ReceiverSessionID != sess.ID() || match.Key.WatchID != watched.watchID || match.Key.WatchGeneration != watched.generation || match.Key.WatchTarget != jobID || match.Key.ResolvedWatchedIdentity != jobID || match.TriggerIdentity != jobID || match.TriggerReason != "output_match: READY" || noticeKey != match.Key || notice.Key.ResolvedWatchedIdentity != "" || notice.TriggerIdentity != "" || notice.TriggerReason != "budget_exhausted" || notice.EndNotice {
+		t.Fatal("callback match/notice changed watch, source, condition or receiver binding")
+	}
+	if watched.conditionFires != watchDeliveryBudget {
+		t.Fatalf("condition fires = %d, want %d", watched.conditionFires, watchDeliveryBudget)
+	}
+	ended := producerSourceEvents(t, sess.jobManager, jobstore.EventWatchCleared)
+	if len(ended) != 1 || ended[0].WatchID != watched.watchID || ended[0].Watch == nil || ended[0].Watch.Generation != watched.generation || ended[0].Watch.EndReason != "budget_exhausted" || produced[0].Seq >= ended[0].Seq || ended[0].Seq >= produced[1].Seq {
+		t.Fatalf("source match/teardown/notice transition changed: %+v", ended)
+	}
+	states := []jobstore.WatchSendState{match, notice}
+	expected := make(map[string]string, len(states))
+	for _, state := range states {
+		// Construct canonical IDs from source fields independently of production's helper.
+		id := watchSourceID(state)
+		expected[id] = state.Frame
+		requireWatchSettlement(t, sess.jobManager, state, 1)
+	}
+	observations := map[string]int{watchSourceID(match): 3, watchSourceID(notice): 3}
+	requireWatchDeliveryReceipts(t, sess, expected, observations)
+	for _, req := range reqs[2:] {
+		requireWatchProviderPayloads(t, req, expected)
+	}
+	// This fixture holds the arming turn until callback production has finished.
+	// Check its final-firing-first batch, not a global arbitrary-event handoff.
+	for _, req := range reqs[2:] {
+		var text strings.Builder
+		for _, message := range req.Messages {
+			if message.Role == llm.RoleUser {
+				text.WriteString(message.Text())
+				text.WriteByte('\n')
+			}
+		}
+		if strings.Index(text.String(), match.Frame) >= strings.Index(text.String(), notice.Frame) {
+			t.Fatal("co-produced callback notice preceded its final firing")
+		}
+	}
+	if sess.jobManager.hasPendingWatchSends() {
+		t.Fatal("canonical custody did not settle both source obligations")
+	}
+	before := producerRecordCount(t, sess)
+	sourceBefore := len(loadJobStoreEvents(t, sess.jobManager))
+	sess.jobManager.dispatchProducedWatchSends()
+	requireWatchDeliveryReceipts(t, sess, expected, observations)
+	for _, state := range states {
+		requireWatchSettlement(t, sess.jobManager, state, 1)
+	}
+	if producerRecordCount(t, sess) != before || len(loadJobStoreEvents(t, sess.jobManager)) != sourceBefore || len(adapter.Requests()) != 5 {
+		t.Fatal("settled watch debt was redelivered or executed another turn")
 	}
 }
 
@@ -600,55 +659,79 @@ func startControlledBackgroundShell(t *testing.T, sess *Session, command string)
 // must return it.
 func TestOneShotDrainKeepsAnswerWhenCompletionRidesAnnouncement(t *testing.T) {
 	t.Parallel()
-	const answer = "FINAL-ANSWER: the build passed"
-	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse(answer) },
-	}}
-	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
-		TurnEndsProcess: true,
-	}))
-	jobID, releaseShell := startControlledBackgroundShell(t, sess, "controlled build")
+	for _, persistent := range []bool{false, true} {
+		name := "memory"
+		if persistent {
+			name = "persistent"
+		}
+		t.Run(name, func(t *testing.T) {
+			stateDir := ""
+			if persistent {
+				stateDir = t.TempDir()
+			}
+			const answer = "FINAL-ANSWER: the build passed"
+			adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+				func(llm.Request) llm.Response { return finalResponse(answer) },
+			}}
+			sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
+				TurnEndsProcess: true,
+				StateDir:        stateDir,
+			}))
+			jobID, releaseShell := startControlledBackgroundShell(t, sess, "controlled build")
 
-	// TRIPWIRE: every step is scripted or fed; 30s only fires on a hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	var completedOnAnnounce sync.Once
-	process := func(ctx context.Context, input string, images []ImageAttachment, kind EntryKind) (string, error) {
-		// The drain has queued the announcement and not yet opened the turn.
-		// Finish the job here so its notification is queued before
-		// acceptNotificationInput drains the queue: the gap production leaves
-		// between the pass's queue gate and the turn's own drain.
-		completedOnAnnounce.Do(func() {
-			// This runs on the drain goroutine; finalizeShell reports a miss with
-			// t.Error, and the result assertions on the test goroutine then fail
-			// the test.
-			finalizeShell(t, sess.jobManager, jobID, releaseShell)
+			// TRIPWIRE: every step is scripted or fed; 30s only fires on a hang.
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			var completedOnAnnounce sync.Once
+			process := func(ctx context.Context, input string, images []ImageAttachment, kind EntryKind) (string, error) {
+				// The drain has queued the announcement and not yet opened the turn.
+				// Finish the job here so its notification is queued before
+				// acceptNotificationInput drains the queue: the gap production leaves
+				// between the pass's queue gate and the turn's own drain.
+				completedOnAnnounce.Do(func() {
+					// This runs on the drain goroutine; finalizeShell reports a miss with
+					// t.Error, and the result assertions on the test goroutine then fail
+					// the test.
+					finalizeShell(t, sess.jobManager, jobID, releaseShell)
+				})
+				return sess.ProcessInputKind(ctx, input, images, kind)
+			}
+			done := make(chan drainResult, 1)
+			go func() {
+				res, err := sess.drainJobTreeWith(ctx, drainWakeForTest(sess), feedRechecks(ctx), sess.kickDriveTree, process)
+				done <- drainResult{res, err}
+			}()
+			var d drainResult
+			select {
+			case d = <-done:
+			case <-ctx.Done():
+				t.Fatal("drain did not return")
+			}
+			if d.err != nil {
+				t.Fatalf("drain error: %v", d.err)
+			}
+			reqs := adapter.Requests()
+			if len(reqs) != 1 {
+				t.Fatalf("model calls = %d, want exactly 1: the announcement carrying the completion", len(reqs))
+			}
+			announcements := 0
+			for _, turn := range sessionHistory(sess) {
+				if turn.Kind == schema.TurnSteering && turn.SteeringKind == events.SteeringKindNotification && turn.AttentionID == "" {
+					announcements++
+					if turn.Message.Role != llm.RoleUser || !strings.Contains(turn.Message.Text(), jobID) || !requestContainsText(reqs[0], turn.Message.Text()) {
+						t.Fatal("typed announcement did not name the shell and reach the provider request")
+					}
+				}
+			}
+			if announcements != 1 {
+				t.Fatalf("typed announcement turns = %d, want exactly one", announcements)
+			}
+			drainRequestNotice(t, reqs[0], map[string]string{"job_id": jobID, "job_type": "shell", "status": "command_exited_nonzero", "exit_code": "143"})
+			requireDrainShellObserved(t, sess, jobID)
+			if d.res != answer {
+				t.Fatalf("drain result = %q, want %q: the reply to a request that delivered the completion is the run's answer", d.res, answer)
+			}
 		})
-		return sess.ProcessInputKind(ctx, input, images, kind)
-	}
-	done := make(chan drainResult, 1)
-	go func() {
-		res, err := sess.drainJobTreeWith(ctx, drainWakeForTest(sess), feedRechecks(ctx), sess.kickDriveTree, process)
-		done <- drainResult{res, err}
-	}()
-	var d drainResult
-	select {
-	case d = <-done:
-	case <-ctx.Done():
-		t.Fatal("drain did not return")
-	}
-	if d.err != nil {
-		t.Fatalf("drain error: %v", d.err)
-	}
-	reqs := adapter.Requests()
-	if len(reqs) != 1 {
-		t.Fatalf("model calls = %d, want exactly 1: the announcement carrying the completion", len(reqs))
-	}
-	if !requestsContain(reqs, jobID, "cannot finish") || !requestsContain(reqs, jobID, "<job-notification") {
-		t.Fatalf("the one request must carry both the announcement and the completion, got: %v", reqs[0].Messages[1:])
-	}
-	if d.res != answer {
-		t.Fatalf("drain result = %q, want %q: the reply to a request that delivered the completion is the run's answer", d.res, answer)
 	}
 }
 

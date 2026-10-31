@@ -39,12 +39,37 @@ a failed delegate-journal commit. A launch claim is not observation and writes
 no consumed marker. The exact child schedules its own leased execution without
 a parent-model turn, and fresh owner work remains admissible after it settles.
 
+Ordinary bare-text or empty-response reporting exhaustion still stops and joins
+owned managed shells before terminal packet evidence is sampled. Successful
+cleanup does not set the fatal automatic-drive gate, so attention arriving after
+the generation's last request remains eligible once that generation is released.
+Cleanup failure retains the joined run error and sets that gate. Genuine fatal
+errors and attention/finalization/settlement infrastructure error gates retain
+their existing refusal and explicit `delegate_send` recovery behavior.
+
 Roots and delegates share receiver-scoped notification readiness
 (`agent/session_notifications.go`). Durable append publishes readiness after
 writer locks are released. Root callbacks use the existing server wake channel
 and serve loop. Delegate callbacks use the existing restore and leased start
 admission, not a parallel executor. Cold writers, restore and execution retain
 their existing exclusion and lifecycle fences.
+
+Wake callbacks hand off a message and return. They must not call their own
+`Session.Close` inline, because shutdown joins the operation delivering the
+wake. An external owner closes the session after the handoff.
+
+Releasing a finalization fence permits waiting admissions to retry immediately.
+The operation that released it carries its notification recheck past enclosing
+locks, reconstruction publication and all enclosing retirement and restore/start
+admissions, then runs the recheck synchronously before it completes. Capacity
+reclamation returns the effect through create or restoration to that operation's
+outer consumer. Recursive empty-to-pending wake passes return the effect to the
+original wake caller rather than consuming it inside an outer wake admission.
+The admission-release channel is not a tail-completion channel. An already-closing
+controller or root ends that old runtime's traversal, leaving persisted custody
+for restoration. Only the exact
+early controller-close refusal is classified as shutdown. Storage, target and
+retirement failures remain diagnostic errors.
 
 With nonempty `StateDir`, the transcript is canonical and its attention cursor
 is only a derived cache. Configured persistence with a missing, closed or failed
@@ -54,6 +79,15 @@ lifetime: acceptance, successful-response observation and resolution use the
 same admission path without claiming a disk record. Pending notifications
 survive in-process compaction, not restart. Custody still differs from model
 observation, and a failed provider response leaves the notification pending.
+
+Cold shell replay also recognizes the exact historical plain-user completion
+message with nil provenance for the same receiver, job and terminal generation.
+It preserves the original receipt unchanged, revalidates its presence and full
+message after writer open, and requires receiver durability and successful Close
+before acknowledging that source. A record damaged into precisely this old
+representation is indistinguishable from a historical receipt. All other
+message/provenance mismatches still refuse recovery. Fresh writes retain
+Machinery and source provenance, and recovery never invents observation.
 
 The durable path is:
 
@@ -106,6 +140,14 @@ policy survives restart, and completion clears the pending policy after applying
 it. Historical requests with a missing or false field retain their historical
 discard fold. No inbox append releases a user Stop, question, approval or subtree
 fence, and permanently closed destinations retain canonical closure handling.
+
+Leased model admission refuses a covering pending Stop as cancellation, even
+before its cancel plan reaches the runtime context. This applies before request
+binding and between binding and history projection, where refusal releases the
+model claim without consuming pending steering. Independent earlier refusals
+(closing, reclamation, stale or unavailable bindings, recovery and closed
+resumability) retain their errors. Other admission callers still return busy for
+Stop. Cancellation does not open a fence or reset the fatal automatic-drive gate.
 
 Child reports and updates wake a parent delegate waiting on work. The parent's
 next model request presents the pending notification without waiting for another

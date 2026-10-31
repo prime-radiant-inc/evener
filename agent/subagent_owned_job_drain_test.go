@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -1053,11 +1054,20 @@ func TestIdleFatalGatedWatchSendDropsAndDoesNotPinDrain(t *testing.T) {
 
 func TestSubagentFatalDriveTurnStopsOwnedShellAndSuppressesRedrive(t *testing.T) {
 	t.Parallel()
+	for _, deferred := range []bool{false, true} {
+		t.Run(fmt.Sprintf("deferred=%t", deferred), func(t *testing.T) {
+			testSubagentFatalDriveTurn(t, deferred)
+		})
+	}
+}
+
+func testSubagentFatalDriveTurn(t *testing.T, deferred bool) {
+	t.Helper()
 	driveErr := llm.ErrorFromHTTPStatus("openai", 403, "fatal notification turn", nil, nil)
 	enteredFatalDrive := make(chan struct{})
 	releaseFatalDrive := make(chan struct{})
 	var releaseFatalDriveOnce sync.Once
-	t.Cleanup(func() { releaseFatalDriveOnce.Do(func() { close(releaseFatalDrive) }) })
+	releaseProvider := func() { releaseFatalDriveOnce.Do(func() { close(releaseFatalDrive) }) }
 	adapter := &fakeErrAdapter{
 		name: "openai",
 		steps: []func(llm.Request) (llm.Response, error){
@@ -1094,7 +1104,10 @@ func TestSubagentFatalDriveTurnStopsOwnedShellAndSuppressesRedrive(t *testing.T)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	t.Cleanup(func() { parent.Close() })
+	t.Cleanup(func() {
+		releaseProvider()
+		parent.Close()
+	})
 	t.Cleanup(env.releaseJob)
 
 	result := parent.createDelegate(context.Background(), delegateArgs{
@@ -1123,26 +1136,57 @@ func TestSubagentFatalDriveTurnStopsOwnedShellAndSuppressesRedrive(t *testing.T)
 	statusBeforeDrive := child.status
 	doneBeforeDrive := child.done
 	child.mu.Unlock()
+	if deferred {
+		if !parent.takeSendDriveGuard(child) {
+			t.Fatal("could not hold the idle child's real drive guard")
+		}
+		t.Cleanup(func() { releaseDriveGuard(child) })
+	}
 	if err := armOwnedJobDrainAttention(child.sess, "delegate:fatal-drive-notification", "fatal-drive-notification"); err != nil {
 		t.Fatalf("arm fatal-drive attention: %v", err)
 	}
-	child.mu.Lock()
-	fatalDriveDone := child.done
-	child.mu.Unlock()
-	if fatalDriveDone == doneBeforeDrive {
-		t.Fatal("stable attention did not start a new delegate generation")
+	if deferred {
+		child.mu.Lock()
+		deferredDone := child.done
+		child.mu.Unlock()
+		if deferredDone != doneBeforeDrive {
+			t.Fatal("held drive guard admitted a new delegate generation")
+		}
+		select {
+		case <-env.started:
+			t.Fatal("held drive guard launched the owned shell")
+		default:
+		}
+		pending, err := child.sess.pendingDelegateAttentionIDs()
+		if err != nil || len(pending) != 1 || pending[0] != "delegate:fatal-drive-notification" {
+			t.Fatalf("refused wake custody = %v, %v, want exact fatal-drive notification", pending, err)
+		}
+		if !releaseDriveGuard(child) {
+			t.Fatal("real attention wake was not refused on the held drive guard")
+		}
+		if err := parent.delegateController.requestSessionWake(childID); err != nil {
+			t.Fatalf("retry after releasing drive guard: %v", err)
+		}
 	}
 	select {
 	case <-env.started:
 	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
 		t.Fatal("automatic notification drive did not launch its owned shell")
 	}
+	// A wake can defer admission. Shell start proves the new run published its
+	// channel, independently of whether this caller admitted the wake inline.
+	child.mu.Lock()
+	fatalDriveDone := child.done
+	child.mu.Unlock()
+	if fatalDriveDone == doneBeforeDrive {
+		t.Fatal("stable attention did not start a new delegate generation")
+	}
 	<-enteredFatalDrive
 	shellJobID := liveOwnedShellJobID(t, child.sess.jobManager)
 	child.sess.jobManager.mu.Lock()
 	shellDone := child.sess.jobManager.running[shellJobID].done
 	child.sess.jobManager.mu.Unlock()
-	releaseFatalDriveOnce.Do(func() { close(releaseFatalDrive) })
+	releaseProvider()
 	select {
 	case <-env.signaled:
 	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.

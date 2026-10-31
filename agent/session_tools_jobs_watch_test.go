@@ -10,7 +10,6 @@ import (
 
 	"primeradiant.com/evener/agent/internal/jobstore"
 	tooldefs "primeradiant.com/evener/agent/internal/tool"
-	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
@@ -824,26 +823,53 @@ func TestJobWatchListAndInspectReturnWatchIDs(t *testing.T) {
 
 func TestJobWatchCanImmediatelyWatchReturnedBackgroundShellJob(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withConfig(SessionConfig{
+	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("watch output observed") },
+	}}
+	s := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
 		MaxSubagentDepth: 1,
 		StateDir:         packageFixtureTempDir(t, "watch-state-*"),
 	}))
 	const token = "WATCH_OUTPUT_TOKEN_ONCE"
 
-	// Use a long-running shell so the job stays alive without a timing
-	// dependency. The token is injected directly via the output pipeline below
-	// to avoid the wall-clock race that made the original sleep-based approach
-	// flaky in CI.
+	// Hold the real shell through observation and replay. It cannot publish a
+	// competing terminal notification while appendJobOutput dispatches the match.
+	fifo, releaseShell := waitProducerFIFO(t)
+	var shellOut struct {
+		JobID string `json:"job_id"`
+	}
+	var shellDone <-chan struct{}
+	var run *runningJob
+	t.Cleanup(func() {
+		defer releaseShell()
+		if shellOut.JobID != "" {
+			if _, err := s.jobManager.stop(shellOut.JobID); err != nil {
+				t.Errorf("stop owned watch shell: %v", err)
+			}
+			if run == nil {
+				waitForShellDone(t, s.jobManager, shellOut.JobID)
+				return
+			}
+			waitForTestSignal(t, shellDone, "owned watch shell completion")
+			if got := runningJobCompletion(run.completion.Load()); got != runningJobCompletionDurable {
+				t.Errorf("owned watch shell completion = %v, want durable", got)
+			}
+		}
+	})
+	shellArgs, err := json.Marshal(map[string]any{
+		"command": fmt.Sprintf("read value < %q", fifo),
+		"mode":    "background",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","mode":"background"}`),
+		Arguments: shellArgs,
 	})
 	if shellRes.IsError {
 		t.Fatalf("shell returned error: %s", shellRes.Output)
-	}
-	var shellOut struct {
-		JobID string `json:"job_id"`
 	}
 	if err := json.Unmarshal(toolResultJSON(shellRes), &shellOut); err != nil {
 		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
@@ -851,10 +877,15 @@ func TestJobWatchCanImmediatelyWatchReturnedBackgroundShellJob(t *testing.T) {
 	if shellOut.JobID == "" {
 		t.Fatal("background shell returned no job_id")
 	}
-	t.Cleanup(func() {
-		_, _ = s.jobManager.stop(shellOut.JobID)
-		waitForShellDone(t, s.jobManager, shellOut.JobID)
-	})
+	s.jobManager.mu.Lock()
+	run = s.jobManager.running[shellOut.JobID]
+	if run != nil {
+		shellDone = run.done
+	}
+	s.jobManager.mu.Unlock()
+	if run == nil {
+		t.Fatalf("job %s is not running while its FIFO is held", shellOut.JobID)
+	}
 
 	watchArgs, err := json.Marshal(map[string]any{
 		"operation":    "create",
@@ -872,38 +903,51 @@ func TestJobWatchCanImmediatelyWatchReturnedBackgroundShellJob(t *testing.T) {
 	if watchRes.IsError {
 		t.Fatalf("job_watch returned error for returned job_id %s: %s", shellOut.JobID, watchRes.Output)
 	}
+	var created struct {
+		WatchID string `json:"watch_id"`
+	}
+	if err := json.Unmarshal(toolResultJSON(watchRes), &created); err != nil || created.WatchID == "" {
+		t.Fatalf("watch identity = %q, error %v", created.WatchID, err)
+	}
 
 	// Inject the token through the full output pipeline so watch matchers fire
 	// deterministically, without relying on the real shell process timing.
-	s.jobManager.mu.Lock()
-	run := s.jobManager.running[shellOut.JobID]
-	s.jobManager.mu.Unlock()
-	if run == nil {
-		t.Fatalf("job %s is not running after watch install", shellOut.JobID)
-	}
 	if _, err := s.jobManager.appendJobOutput(shellOut.JobID, run.output, []byte(token+"\n")); err != nil {
 		t.Fatalf("inject token into job output: %v", err)
 	}
 
-	// Observation enqueues a caller wake token on the notification queue (no
-	// synchronous delivery, spec §3). The live loop would wake and accept; here
-	// we wait for the wake and accept it, which renders the frame into the
-	// notification turn (a TurnSteering in history) and settles the pending.
-	if pending := s.peekNotifications(); pending == 0 {
-		t.Fatal("watch output match did not synchronously enqueue a notification")
+	// With no competing producer or receiver consumer, appendJobOutput returns
+	// after source persistence, synchronous dispatch and receiver custody ack.
+	pending := producerSourceEvents(t, s.jobManager, jobstore.EventWatchSendPending)
+	delivered := producerSourceEvents(t, s.jobManager, jobstore.EventWatchSendDelivered)
+	dropped := producerSourceEvents(t, s.jobManager, jobstore.EventWatchSendDropped)
+	if len(pending) != 1 || len(delivered) != 1 || len(dropped) != 0 {
+		t.Fatalf("watch source pending/delivered/dropped = %d/%d/%d, want 1/1/0", len(pending), len(delivered), len(dropped))
 	}
-	drainAndAccept(t, s)
-
-	s.mu.Lock()
-	deliveries := 0
-	for _, turn := range s.history {
-		if turn.Kind == schema.TurnSteering && strings.Contains(turn.Message.Text(), token) {
-			deliveries++
-		}
+	state, ack := pending[0].WatchSend, delivered[0].WatchSend
+	if state == nil || ack == nil || state.DeliveryID == "" || state.UpdateSeq == 0 || state.Key.WatchID != created.WatchID || state.ReceiverSessionID != s.ID() || ack.DeliveryID != state.DeliveryID || ack.UpdateSeq != state.UpdateSeq {
+		t.Fatalf("watch source identity/ack = %+v / %+v", state, ack)
 	}
-	s.mu.Unlock()
-	if deliveries != 1 {
-		t.Fatalf("watch deliveries containing %q = %d, want 1", token, deliveries)
+	wantID := fmt.Sprintf("watch:%s:%d", state.DeliveryID, state.UpdateSeq)
+	assertNotificationPending(t, s, []string{wantID})
+	if got := len(loadWatchSendRecord(t, s.jobManager).Pending); got != 0 {
+		t.Fatalf("watch source still pending after custody: %d", got)
+	}
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatal(err)
+	}
+	requests := adapter.Requests()
+	if len(requests) != 1 || !requestContainsText(requests[0], token) {
+		t.Fatalf("watch provider requests = %d, want one carrying output sentinel", len(requests))
+	}
+	drainRequestNotice(t, requests[0], map[string]string{"job_id": shellOut.JobID, "event": "watch", "watch_id": created.WatchID})
+	requireOwnedDrainAttentionObservedOnce(t, s, wantID)
+	assertNotificationPending(t, s, []string{})
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(adapter.Requests()); got != 1 {
+		t.Fatalf("watch replay issued a duplicate request: %d", got)
 	}
 }
 

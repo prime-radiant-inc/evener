@@ -92,6 +92,9 @@ func (s *Session) requestNotificationWake() error {
 // before returning a transport error. Best-effort callers log that failure,
 // rather than rejecting an already committed mutation or owning another retry.
 func (s *Session) dispatchNotificationWake() error {
+	if s.deferJobNotificationWake() {
+		return nil
+	}
 	s.mu.Lock()
 	releaseTurnID := s.notificationSchedule.releaseTurnID
 	s.mu.Unlock()
@@ -164,33 +167,60 @@ func (s *Session) scheduleNotificationRetry() {
 	r.delay = min(delay*2, jobNotificationRetryMaxDelay)
 	s.mu.Unlock()
 	s.sclock().AfterFunc(delay, func() {
+		// Superseded timers have no work and must not reset idle eligibility.
+		// Keep the second check below for supersession during admission.
+		s.mu.Lock()
+		if s.notificationSchedule.retry.generation != generation {
+			s.mu.Unlock()
+			return
+		}
+		s.mu.Unlock()
+		s.observeNotificationProgress("retry-admission-before")
 		release, err := s.beginAttentionCallback()
+		s.observeNotificationProgress("retry-admission-after")
 		s.mu.Lock()
 		current := s.notificationSchedule.retry.generation == generation
+		var progress *notificationProgress
 		if current {
+			s.pendingJobNotifsMu.Lock()
+			progress = s.joinNotificationProgressLocked()
+			s.pendingJobNotifsMu.Unlock()
 			s.notificationSchedule.retry.active = false
 			s.notificationSchedule.hinted = false
 		}
 		s.mu.Unlock()
+		s.observeNotificationProgress("retry-transition")
 		if !current {
 			if release != nil {
 				release()
+				s.observeNotificationProgress("custody-return")
 			}
 			return
 		}
 		if err != nil {
 			s.scheduleNotificationRetry()
+			s.finishNotificationProgress(progress, false)
 			return
 		}
-		defer release()
-		if !s.notificationStopHeld() {
-			if observe := s.cfg.testOnly.notificationRetryCallback; observe != nil {
-				observe()
+		func() {
+			defer func() {
+				release()
+				s.observeNotificationProgress("custody-return")
+			}()
+			if !s.notificationStopHeld() {
+				if observe := s.cfg.testOnly.notificationRetryCallback; observe != nil {
+					observe()
+				}
 			}
-		}
-		if err := s.dispatchNotificationWake(); err != nil {
+			s.observeNotificationProgress("retry-dispatch")
+			err = s.dispatchNotificationWake()
+		}()
+		if err != nil {
 			slog.Warn("notification wake failed", "session_id", s.ID(), "error", err)
 		}
+		s.observeNotificationProgress("retry-leave")
+		// The complete callback release above includes retirement custody.
+		s.finishNotificationProgress(progress, err == nil)
 	})
 }
 
@@ -403,37 +433,53 @@ func (c *delegateTreeController) enqueueNotification(ownerSessionID string, n no
 
 // requestSessionWake restores only the addressed receiver. The restore hold
 // excludes a cold writer or retirement until the resident adapter owns it.
+type notificationWakeClosingError struct{}
+
+func (notificationWakeClosingError) Error() string { return errDelegateTargetBusy.Error() }
+func (notificationWakeClosingError) Unwrap() error { return errDelegateTargetBusy }
+
 func (c *delegateTreeController) requestSessionWake(sessionID string) error {
+	recheck, err := c.requestSessionWakeEffect(sessionID)
+	if recheck {
+		c.recheckNotificationReceivers()
+	}
+	return err
+}
+
+// Recursive empty-to-pending passes return their effect to the original caller,
+// after every enclosing retirement admission and restore hold has unwound.
+func (c *delegateTreeController) requestSessionWakeEffect(sessionID string) (bool, error) {
+	var recheck bool
 	if c == nil {
-		return errDelegateDeliveryReceiverUnavailable
+		return false, errDelegateDeliveryReceiverUnavailable
 	}
 	release, err := c.beginRetirementMutation()
 	if err != nil {
-		return err
+		return recheck, err
 	}
 	defer release()
 	c.mu.Lock()
 	if c.closing {
 		c.mu.Unlock()
-		return errDelegateTargetBusy
+		return recheck, notificationWakeClosingError{}
 	}
 	if sessionID == c.rootSessionID {
 		root := c.rootRuntime
 		c.mu.Unlock()
 		if root != nil {
-			return root.dispatchNotificationWake()
+			return recheck, root.dispatchNotificationWake()
 		}
-		return errDelegateDeliveryReceiverUnavailable
+		return recheck, errDelegateDeliveryReceiverUnavailable
 	}
 	id := c.delegateOwnerOfSessionLocked(sessionID)
 	if id == "" {
 		c.mu.Unlock()
-		return errDelegateDeliveryReceiverUnavailable
+		return recheck, errDelegateDeliveryReceiverUnavailable
 	}
 	if live := c.live[id]; live != nil && live.runtime != nil {
 		receiver := live.runtime
 		c.mu.Unlock()
-		return receiver.releaseNotificationAdmission()
+		return recheck, receiver.releaseNotificationAdmission()
 	}
 	run := c.durable[id]
 	if run != nil && run.Phase == delegatestore.PhaseRunning && run.CurrentRunOpen {
@@ -442,7 +488,7 @@ func (c *delegateTreeController) requestSessionWake(sessionID string) error {
 		blocked := c.stopCoversLocked(id) || c.reclamationCoversLocked(id) || c.hasColdDeliveryWorkForOwnerLocked(id)
 		c.mu.Unlock()
 		if blocked || root == nil {
-			return nil
+			return recheck, nil
 		}
 		path, expectedID, pendingErr := delegateTranscriptPathFromRef(stateDir, ref)
 		var fold delegateAttentionFold
@@ -451,17 +497,18 @@ func (c *delegateTreeController) requestSessionWake(sessionID string) error {
 		}
 		if pendingErr != nil {
 			c.scheduleSessionWakeRetry(sessionID)
-			return pendingErr
+			return recheck, pendingErr
 		}
 		if len(fold.pendingIDs()) == 0 {
-			return nil
+			return recheck, nil
 		}
-		_, sub, restoreErr := root.restoreColdDelegateAttentionRuntime(id)
+		_, sub, released, restoreErr := root.restoreColdDelegateAttentionRuntime(id)
+		recheck = recheck || released
 		if restoreErr != nil {
 			c.scheduleSessionWakeRetry(sessionID)
-			return restoreErr
+			return recheck, restoreErr
 		}
-		return sub.sess.releaseNotificationAdmission()
+		return recheck, sub.sess.releaseNotificationAdmission()
 	}
 	// Restore can replay a committed receiver's still-unacknowledged source
 	// packet. Its deferred wake must not join the reconstruction it is inside.
@@ -469,7 +516,7 @@ func (c *delegateTreeController) requestSessionWake(sessionID string) error {
 	// on failure. This hold is receiver-scoped, not a fence on other receivers.
 	if c.attentionRestoreHeldLocked(id) {
 		c.mu.Unlock()
-		return nil
+		return recheck, nil
 	}
 	state := c.attention[id]
 	paused := state != nil && state.parked
@@ -491,11 +538,11 @@ func (c *delegateTreeController) requestSessionWake(sessionID string) error {
 		} else {
 			root.delegateAttentionWarningResolved(delegateAttentionEscalateLabel, id)
 		}
-		return err
+		return recheck, err
 	}
 	if !ready || paused || root == nil {
 		c.mu.Unlock()
-		return nil
+		return recheck, nil
 	}
 	ref := c.durable[id].Descriptor.TranscriptRef
 	stateDir := c.stateDir
@@ -520,7 +567,7 @@ func (c *delegateTreeController) requestSessionWake(sessionID string) error {
 				if hook := root.cfg.testOnly.afterSessionWakeRecoveryScheduled; hook != nil {
 					hook(sessionID, err)
 				}
-				return err
+				return recheck, err
 			}
 			// Acceptance may have coalesced behind this empty pass's hold.
 			// Clear revalidates custody but does not dispatch pending content.
@@ -532,14 +579,16 @@ func (c *delegateTreeController) requestSessionWake(sessionID string) error {
 			c.mu.Unlock()
 			holdingRestore = false
 			if pending {
-				return c.requestSessionWake(sessionID)
+				return c.requestSessionWakeEffect(sessionID)
 			}
-			return nil
+			return recheck, nil
 		}
 	}
 	var sub *subagent
 	if err == nil {
-		_, sub, err = root.restoreColdDelegateAttentionRuntime(id)
+		var released bool
+		_, sub, released, err = root.restoreColdDelegateAttentionRuntime(id)
+		recheck = recheck || released
 	}
 	if err != nil {
 		root.warnDelegateAttentionFailed(delegateAttentionRestoreLabel, id, err)
@@ -550,7 +599,7 @@ func (c *delegateTreeController) requestSessionWake(sessionID string) error {
 		if hook := root.cfg.testOnly.afterSessionWakeRecoveryScheduled; hook != nil {
 			hook(sessionID, err)
 		}
-		return err
+		return recheck, err
 	}
 	c.delegateAttentionRestored(id)
 	root.delegateAttentionWarningResolved(delegateAttentionRestoreLabel, id)
@@ -559,7 +608,7 @@ func (c *delegateTreeController) requestSessionWake(sessionID string) error {
 	}
 	// Callback installation can refuse before AttachIdleRuntime completes.
 	// Attachment releases that existing admission hold, as on the resident path.
-	return sub.sess.releaseNotificationAdmission()
+	return recheck, sub.sess.releaseNotificationAdmission()
 }
 
 func (c *delegateTreeController) scheduleSessionWakeRetry(sessionID string) {
@@ -705,4 +754,79 @@ func (c *delegateTreeController) notificationCustodyAndClosure(ownerSessionID, n
 	}
 	_, accepted = fold.content[notificationID]
 	return accepted, closed, nil
+}
+
+// notificationProgress joins only canonical retry and waking completion-release
+// publication. All fields and the Session pointer use pendingJobNotifsMu.
+// It is neither input admission nor an additional retirement lease.
+type notificationProgress struct {
+	users             int
+	progressCandidate bool
+	legacyHint        bool
+}
+
+// notificationProgressObserver is a test-only scheduling/observation seam. It
+// cannot replace admission, dispatch, custody release, or the publication claim.
+// Every call is outside owner locks, and a normal session leaves it nil.
+type notificationProgressObserver struct{ observe func(string) }
+
+func (s *Session) observeNotificationProgress(point string) {
+	if observer := s.testOnlyNotificationProgress.Load(); observer != nil {
+		observer.observe(point)
+	}
+}
+
+// Only registration allocates, never a finishing tail. Caller holds the pending
+// mutex, and if both locks are needed, the order is mu then pendingJobNotifsMu.
+func (s *Session) joinNotificationProgressLocked() *notificationProgress {
+	if s.notificationProgress == nil {
+		s.notificationProgress = &notificationProgress{}
+	}
+	p := s.notificationProgress
+	p.users++
+	return p
+}
+
+func (s *Session) finishNotificationProgress(p *notificationProgress, candidate bool) {
+	s.pendingJobNotifsMu.Lock()
+	p.progressCandidate = p.progressCandidate || candidate
+	p.users--
+	last := p.users == 0
+	s.pendingJobNotifsMu.Unlock()
+	if !last {
+		return
+	}
+	s.observeNotificationProgress("claim-before")
+	// Durable Stop reads must stay outside owner locks.
+	stopped := s.notificationStopHeld()
+	s.mu.Lock()
+	s.pendingJobNotifsMu.Lock()
+	if s.notificationProgress != p || p.users != 0 {
+		s.pendingJobNotifsMu.Unlock()
+		s.mu.Unlock()
+		return
+	}
+	if s.notifyWakeHolds > 0 {
+		s.notifyWakeDeferred = true
+		s.pendingJobNotifsMu.Unlock()
+		s.mu.Unlock()
+		return
+	}
+	// Detach before callback handoff. Reentry may join a fresh obligation,
+	// which this old claimant must never erase after returning from the call.
+	s.notificationProgress = nil
+	n := &s.notificationSchedule
+	var f func()
+	if p.progressCandidate && !stopped && !s.closingOrClosedLocked() &&
+		!n.running && len(s.askPending) == 0 && !n.paused && !n.nameBlocked &&
+		!n.retry.active && n.releaseTurnID == "" && !n.hinted &&
+		(!p.legacyHint || len(s.pendingJobNotifs) == 0) {
+		f = s.notifyFunc
+	}
+	s.pendingJobNotifsMu.Unlock()
+	s.mu.Unlock()
+	s.observeNotificationProgress("claim-after")
+	if f != nil {
+		f()
+	}
 }

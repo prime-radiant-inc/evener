@@ -14,6 +14,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
@@ -649,5 +650,107 @@ func TestEnsureDeployRefusesWithoutARecorder(t *testing.T) {
 		if strings.Contains(command, "cat >") || strings.Contains(command, "nohup") {
 			t.Fatalf("the refused attempt ran a mutating command anyway: %s", command)
 		}
+	}
+}
+
+func TestHostGateReleaseGenerations(t *testing.T) {
+	var gate hostLockGate // notification must work without construction
+	previous := gate.releaseGeneration()
+	for range 4 {
+		gate.Lock()
+		if gate.TryLock() {
+			t.Fatal("TryLock acquired a held gate")
+		}
+		select {
+		case <-previous:
+			t.Fatal("generation closed before release")
+		default:
+		}
+		gate.Unlock()
+		select {
+		case <-previous:
+		default:
+			t.Fatal("release did not close captured generation")
+		}
+		next := gate.releaseGeneration()
+		if next == previous {
+			t.Fatal("release reused generation")
+		}
+		previous = next
+	}
+}
+
+// Two real registrations can coexist before a replacement commits. Every waiter
+// rechecks availability after release, rather than mistaking notification for a
+// transferred lock. The losing contender must wait for the winner's release.
+func TestSupervisorAdmissionReleaseContention(t *testing.T) {
+	waiting := make(chan struct{}, 16)
+	m, _, host := attachUnderGateManager(t, Options{superviseGateWaiting: func(string) { waiting <- struct{}{} }})
+	gate := m.hostLock(host.Name)
+	defer m.releaseHostLock(host.Name)
+	first := registeredReconnectLoop(t, m, host, gate)
+	source := &Channel{lost: make(chan struct{}), done: make(chan struct{})}
+	if !m.startSupervise(host, source, gate) {
+		t.Fatal("second registration refused")
+	}
+	m.mu.Lock()
+	var second *supervisorLoop
+	for loop := range m.supervisors[host.Name] {
+		if loop != first {
+			second = loop
+		}
+	}
+	m.mu.Unlock()
+	if second == nil {
+		t.Fatal("second real registration missing")
+	}
+	release, err := m.TryAcquire(host.Name, attachUnderGateCaller())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	acquired, done := make(chan *supervisorLoop, 2), make(chan struct{}, 2)
+	allow := make(chan struct{})
+	defer close(allow)
+	for _, loop := range []*supervisorLoop{first, second} {
+		go func() {
+			if m.acquireSupervisorGate(m.baseCtx, host.Name, gate, loop, false) {
+				acquired <- loop
+				<-allow
+				gate.Unlock()
+			}
+			done <- struct{}{}
+		}()
+	}
+	awaitSupervisorSignal(t, waiting, "first contender's real failed attempt")
+	awaitSupervisorSignal(t, waiting, "second contender's real failed attempt")
+	release()
+	var winner *supervisorLoop
+	select {
+	case winner = <-acquired:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no contender acquired after release")
+	}
+	awaitSupervisorSignal(t, waiting, "losing contender's recheck")
+	allow <- struct{}{}
+	select {
+	case next := <-acquired:
+		if next == winner {
+			t.Fatal("same contender acquired twice")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("losing contender missed winner's release")
+	}
+	allow <- struct{}{}
+	awaitSupervisorSignal(t, done, "first contender completion")
+	awaitSupervisorSignal(t, done, "second contender completion")
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	refs, loops := m.locks[host.Name].refs, len(m.supervisors[host.Name])
+	m.mu.Unlock()
+	if refs != 1 || loops != 0 || source.supervised.Load() {
+		t.Fatalf("cleanup refs=%d loops=%d mark=%v", refs, loops, source.supervised.Load())
 	}
 }

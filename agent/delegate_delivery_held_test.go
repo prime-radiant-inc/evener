@@ -1,14 +1,25 @@
 package agent
 
 import (
+	"context"
 	"errors"
+	"io"
+	"io/fs"
+	"log"
+	"log/slog"
 	"os"
+	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
+	"time"
 
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/identifier"
 )
 
 func waitedResolution(t *testing.T, waiter *delegateInlineWaiter) delegateInlineResolution {
@@ -136,25 +147,124 @@ func TestCanonicalDeliveryAbandonedProjectionKeepsOrdinaryCustody(t *testing.T) 
 }
 
 func TestCanonicalDeliveryOwnerStopDoesNotRestoreProjectionClaims(t *testing.T) {
+	// Serial: capture expected missing-target errors through controller teardown.
+	logged := &reclaimLogCapture{Handler: slog.NewTextHandler(io.Discard, nil)}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(logged))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	snapshot := func() []slog.Record {
+		logged.mu.Lock()
+		defer logged.mu.Unlock()
+		return append([]slog.Record(nil), logged.records...)
+	}
 	c, _ := newDelegateControllerTestHarness(t, 3, 2)
 	root := attachDeliveryTestReceiver(t, c)
-	seedDelegateControllerRunning(t, c, "dlg_owner", "")
-	seedDelegateControllerIdle(t, c, "dlg_target", "dlg_owner")
-	ownerID := c.durable["dlg_owner"].Descriptor.ChildSessionID
-	owner := &Session{id: ownerID, stateDir: c.stateDir, delegateController: c, owningDelegateID: "dlg_owner"}
-	writer, err := transcript.NewWriter(transcriptPath(c.stateDir, ownerID), transcript.Header{SessionID: ownerID})
+	clk := agenttest.NewFakeClock()
+	root.clock = clk
+	ownerID := identifier.MustNewSessionID()
+	created := delegateControllerCreatedEvent("dlg_owner", "")
+	created.Created.Descriptor.ChildSessionID = ownerID
+	created.Created.Descriptor.TranscriptRef = "local:" + ownerID
+	c.mu.Lock()
+	_, err := c.appendLocked(created, delegateControllerRunStartedEvent("dlg_owner", 1, delegatestore.TriggerInitial, time.Unix(10, 0).UTC()))
+	if err == nil {
+		// Preserve the original synthetic binding: no runtime/executor debt.
+		c.live["dlg_owner"] = &delegateLiveState{binding: &delegateRuntimeBinding{
+			lease: delegateLease{delegateID: "dlg_owner", generation: 1}, cancel: func() {}, ready: true,
+			evidence: &delegateGenerationEvidence{requirement: delegateCompletionReportRequired},
+		}}
+	}
+	c.mu.Unlock()
 	if err != nil {
 		t.Fatal(err)
 	}
-	owner.attachTranscript(writer)
-	t.Cleanup(func() { _ = writer.Close() })
-	c.live["dlg_owner"].runtime = owner
+	seedDelegateControllerIdle(t, c, "dlg_target", "dlg_owner")
+	cfg := minimalTestSessionConfig(t)
+	cfg.StateDir = c.stateDir
+	cfg.AgentsDocPath = filepath.Join(t.TempDir(), "absent-agents.md")
+	cfg.spawn = spawnConfig{
+		sessionID: ownerID, delegateController: c, delegateRootSessionID: c.rootSessionID,
+		owningDelegateID: "dlg_owner", parentSessionID: root.ID(), parentDelegateID: "dlg_owner",
+		depth: 1, delegationAllowance: 1,
+	}
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	// A child does not own the independently allocated environment's process table.
+	t.Cleanup(env.Cleanup)
+	owner := newSession(t, withConfig(cfg), withEnv(env), withClock(clk))
 	ownerLease := delegateLease{delegateID: "dlg_owner", generation: 1}
-	actor := delegateActor{rootSessionID: "root-session", lease: &ownerLease}
+	ownerUnfinished := true
+	var reservation *delegateStartReservation
+	var targetLease *delegateLease
 	var commits []*delegateToolResultCommit
+	// Registered before publication/wakes, after child auto-Close and env cleanup.
+	// Only this test's exact operations need finishing if an assertion exits early.
+	t.Cleanup(func() {
+		if reservation != nil {
+			if err := c.AbortStart(reservation); err != nil {
+				t.Error(err)
+			}
+		}
+		for _, commit := range commits {
+			if _, err := commit.Complete(false); err != nil {
+				t.Error(err)
+			}
+		}
+		unfinished := 0
+		leases := []*delegateLease{targetLease}
+		if ownerUnfinished {
+			leases = append(leases, &ownerLease)
+		}
+		for _, lease := range leases {
+			if lease == nil {
+				continue
+			}
+			plans, err := c.FinishGeneration(*lease, delegateFinish{outcome: delegatestore.OutcomeCancelled, reason: "test_cleanup"})
+			if err != nil {
+				t.Error(err)
+			} else if err := root.executeDelegateMutationPlans(plans); err != nil {
+				t.Error(err)
+			}
+			unfinished++
+		}
+		c.mu.Lock()
+		resident := c.live["dlg_owner"] != nil && c.live["dlg_owner"].runtime == owner
+		c.mu.Unlock()
+		if !resident {
+			t.Error("constructed owner was not resident before controller Close")
+		}
+		before := snapshot()
+		if err := c.Close(context.Background()); err != nil {
+			t.Errorf("controller Close: %v", err)
+		}
+		c.mu.Lock()
+		closing := c.closing
+		c.mu.Unlock()
+		if !closing {
+			t.Error("controller Close did not fence the controller")
+		}
+		clk.Drain()
+		clk.Advance(jobNotificationRetryMaxDelay)
+		clk.Drain()
+		if got := clk.PendingCallbacks(); got != 0 {
+			t.Errorf("callbacks after controller Close/drain = %d, want zero", got)
+		}
+		if !reflect.DeepEqual(snapshot(), before) {
+			t.Error("controller Close/drain produced additional diagnostics")
+		}
+		t.Logf("controller Close returned, unfinished synthetic leases settled=%d, callbacks after drain=%d", unfinished, clk.PendingCallbacks())
+	})
+	if owner.ID() != ownerID || owner.stateDir != c.stateDir || owner.delegateController != c || owner.ownsDelegateController ||
+		owner.delegateRootSessionID != c.rootSessionID || owner.owningDelegateID != "dlg_owner" || owner.cfg.spawn.parentSessionID != root.ID() ||
+		owner.cfg.spawn.parentDelegateID != "dlg_owner" || owner.depth != 1 || owner.transcript == nil {
+		t.Fatal("constructed owner did not inherit child identity/controller ownership")
+	}
+	c.mu.Lock()
+	c.live["dlg_owner"].runtime = owner
+	c.mu.Unlock()
+	actor := delegateActor{rootSessionID: "root-session", lease: &ownerLease}
 	var first delegateDeliveryPlan
 	for i := range 2 {
-		reservation, err := c.ReserveStart(actor, "dlg_target")
+		reservation, err = c.ReserveStart(actor, "dlg_target")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -169,7 +279,10 @@ func TestCanonicalDeliveryOwnerStopDoesNotRestoreProjectionClaims(t *testing.T) 
 		if err != nil {
 			t.Fatal(err)
 		}
+		reservation = nil
+		targetLease = &started.lease
 		plan := finishDelegateDeliveryGeneration(t, c, started.lease, "result").deliveries[0]
+		targetLease = nil
 		if i == 0 {
 			first = plan
 		}
@@ -196,9 +309,11 @@ func TestCanonicalDeliveryOwnerStopDoesNotRestoreProjectionClaims(t *testing.T) 
 			t.Fatal(err)
 		}
 	}
+	commits = nil
 	if _, err := c.FinishGeneration(ownerLease, delegateFinish{outcome: delegatestore.OutcomeCancelled, reason: "cancelled"}); err != nil {
 		t.Fatal(err)
 	}
+	ownerUnfinished = false
 	for range 4 {
 		plans, err := c.Reconcile(emptyDelegateReconcileEvidence(c))
 		if err != nil {
@@ -228,6 +343,57 @@ func TestCanonicalDeliveryOwnerStopDoesNotRestoreProjectionClaims(t *testing.T) 
 	if work || targetClaims != 0 {
 		t.Fatalf("owner work=%t target claims=%d", work, targetClaims)
 	}
+	if got := clk.PendingCallbacks(); got != 1 {
+		t.Fatalf("armed real retry callbacks = %d, want one", got)
+	}
+	records := snapshot()
+	if len(records) != 3 {
+		t.Errorf("missing-target diagnostics = %d, want exactly three", len(records))
+	}
+	var restored string
+	var causes []error
+	targetID := c.durable["dlg_target"].Descriptor.ChildSessionID
+	for _, record := range records {
+		if record.Level != slog.LevelWarn {
+			t.Errorf("diagnostic level = %v, want WARN", record.Level)
+		}
+		attrs := make(map[string]any)
+		var keys []string
+		record.Attrs(func(attr slog.Attr) bool {
+			keys = append(keys, attr.Key)
+			attrs[attr.Key] = attr.Value.Any()
+			return true
+		})
+		sort.Strings(keys)
+		switch {
+		case reflect.DeepEqual(keys, []string{"action", "delegate", "error", "session"}):
+			action, actionOK := attrs["action"].(string)
+			cause, causeOK := attrs["error"].(string)
+			if !actionOK || action == "" || !causeOK || restored != "" || attrs["session"] != root.ID() || attrs["delegate"] != "dlg_target" {
+				t.Errorf("unexpected restore diagnostic attributes: %#v", attrs)
+			}
+			restored = cause
+		case reflect.DeepEqual(keys, []string{"error", "session_id"}):
+			cause, causeOK := attrs["error"].(error)
+			var pathErr *fs.PathError
+			if !causeOK || attrs["session_id"] != targetID || !errors.Is(cause, fs.ErrNotExist) || !errors.As(cause, &pathErr) ||
+				pathErr.Path != transcriptPath(c.stateDir, targetID) {
+				t.Errorf("unexpected typed missing-transcript diagnostic: %#v", attrs)
+			}
+			causes = append(causes, cause)
+		default:
+			t.Errorf("unexpected diagnostic attributes: %#v", attrs)
+		}
+	}
+	if len(causes) != 2 || restored == "" {
+		t.Errorf("restore/wake diagnostic counts = %t/%d, want one/two", restored != "", len(causes))
+	}
+	for _, cause := range causes {
+		if cause == nil || restored != cause.Error() {
+			t.Errorf("unpaired restore/wake cause: restore=%q wake=%v", restored, cause)
+		}
+	}
+	t.Logf("real missing-target retry armed, callbacks=%d, validated diagnostics=%d", clk.PendingCallbacks(), len(records))
 }
 
 func TestCanonicalDeliveryEarlierResultsRemainOrdered(t *testing.T) {
@@ -350,16 +516,34 @@ func TestCanonicalDeliveryFailedReceiverPreservesSourceFIFO(t *testing.T) {
 
 // seedPendingDeliverySource replaces receiver-queue-only fixtures with an actual
 // journal-backed producer obligation. It deliberately does not run transport.
-func seedPendingDeliverySource(t *testing.T, s *Session) string {
+func seedPendingDeliverySource(t *testing.T, s *Session, clk *agenttest.FakeClock) string {
 	t.Helper()
+	previous := slog.Default()
+	logged := &reclaimLogCapture{Handler: previous.Handler()}
+	previousWriter, previousFlags := log.Writer(), log.Flags()
+	// Do not wrap the default slog handler: SetDefault links it back to log.
+	slog.SetDefault(slog.New(slog.NewMultiHandler(slog.NewTextHandler(os.Stderr, nil), logged)))
+	t.Cleanup(func() {
+		slog.SetDefault(previous)
+		log.SetOutput(previousWriter)
+		log.SetFlags(previousFlags)
+	})
+	snapshot := func() []slog.Record {
+		logged.mu.Lock()
+		defer logged.mu.Unlock()
+		return append([]slog.Record(nil), logged.records...)
+	}
 	c, _ := newDelegateControllerTestHarness(t, 2, 1)
-	seedDelegateControllerIdle(t, c, "dlg_pending", "")
-	seedDelegateControllerDelivery(t, c, "dlg_pending")
-	old := s.delegateController
-	s.delegateController = c
 	c.rootSessionID = s.ID()
-	c.rootRuntime = s
-	t.Cleanup(func() { s.delegateController = old })
+	created := delegateControllerCreatedEvent("dlg_pending", "")
+	created.Created.Descriptor.OwnerSessionID = s.ID()
+	c.mu.Lock()
+	_, err := c.appendLocked(created)
+	c.mu.Unlock()
+	if err != nil {
+		t.Fatalf("seed pending delegate: %v", err)
+	}
+	seedDelegateControllerDelivery(t, c, "dlg_pending")
 	if s.transcript == nil {
 		s.stateDir = c.stateDir
 		writer, err := transcript.NewWriter(transcriptPath(s.stateDir, s.ID()), transcript.Header{SessionID: s.ID()})
@@ -369,5 +553,57 @@ func seedPendingDeliverySource(t *testing.T, s *Session) string {
 		s.attachTranscript(writer)
 		t.Cleanup(func() { _ = writer.Close() })
 	}
+	old := s.delegateController
+	s.delegateController = c
+	c.rootRuntime = s
+	// Close/join before restoring the Session pointer or closing its writer/store.
+	t.Cleanup(func() {
+		defer func() { s.delegateController = old }()
+		before := snapshot()
+		if err := c.Close(context.Background()); err != nil {
+			t.Errorf("temporary controller Close: %v", err)
+		}
+		clk.Drain()
+		clk.Advance(jobNotificationRetryMaxDelay)
+		clk.Drain()
+		c.mu.Lock()
+		closing := c.closing
+		c.mu.Unlock()
+		if !closing || clk.PendingCallbacks() != 0 {
+			t.Errorf("temporary controller closing=%t callbacks=%d, want true/0", closing, clk.PendingCallbacks())
+		}
+		if !reflect.DeepEqual(snapshot(), before) {
+			t.Errorf("temporary controller teardown added diagnostics: before=%d after=%d", len(before), len(snapshot()))
+		}
+		for _, record := range before {
+			attrs := make(map[string]any)
+			var keys []string
+			record.Attrs(func(attr slog.Attr) bool {
+				keys = append(keys, attr.Key)
+				attrs[attr.Key] = attr.Value.Any()
+				return true
+			})
+			sort.Strings(keys)
+			if record.Level != slog.LevelWarn {
+				t.Errorf("unexpected diagnostic level: %v", record.Level)
+			}
+			switch {
+			case reflect.DeepEqual(keys, []string{"action", "delegate", "error", "session"}):
+				cause, ok := attrs["error"].(string)
+				if attrs["action"] != delegateAttentionRestoreLabel || attrs["delegate"] != "dlg_pending" || attrs["session"] != s.ID() || !ok || cause == "" {
+					t.Errorf("unexpected restore diagnostic attributes: %#v", attrs)
+				}
+			case reflect.DeepEqual(keys, []string{"error", "session_id"}):
+				cause, ok := attrs["error"].(error)
+				var pathErr *fs.PathError
+				if !ok || attrs["session_id"] != "child-dlg_pending" || !errors.Is(cause, fs.ErrNotExist) || !errors.As(cause, &pathErr) || pathErr.Path != transcriptPath(c.stateDir, "child-dlg_pending") {
+					t.Errorf("unexpected typed missing-transcript diagnostic: %#v", attrs)
+				}
+			default:
+				t.Errorf("unexpected diagnostic attributes: %#v", attrs)
+			}
+		}
+		t.Logf("temporary controller cleanup before pointer restoration: closing=%t callbacks=%d diagnostics=%d", closing, clk.PendingCallbacks(), len(snapshot()))
+	})
 	return delegateDeliveryID("dlg_pending", 1)
 }

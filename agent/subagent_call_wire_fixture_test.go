@@ -63,8 +63,9 @@ const (
 
 // The waiting send's question, and the reply the delegate gives it.
 const (
-	subagentWireQuestion = "Is drain ordering safe now?"
-	subagentWireReply    = "Yes: tree settle now waits for the drain, and a test pins the order."
+	subagentWireQuestion   = "Is drain ordering safe now?"
+	subagentWireReply      = "Yes: tree settle now waits for the drain, and a test pins the order."
+	subagentWireFirstReply = "Fixed the race between tree settle and the drain."
 )
 
 // subagentWireSession is a session that can delegate, whose children block
@@ -73,15 +74,21 @@ const (
 // answer. The channel it returns closes when a child reaches that call. A
 // child answers through its result tool, and answers the waiting send's
 // question with subagentWireReply.
-func subagentWireSession(t *testing.T) (*Session, string, <-chan struct{}, func()) {
+func subagentWireSession(t *testing.T, inspectParent ...func(llm.Request)) (*Session, string, <-chan struct{}, func()) {
 	t.Helper()
 	stateDir := realTempDirForTest(t)
 	reached := make(chan struct{})
 	var reachedOnce, releaseOnce sync.Once
 	release := make(chan struct{})
 	answer := func() { releaseOnce.Do(func() { close(release) }) }
+	var s *Session
 	client := llm.NewClient()
 	client.Register(&agenttest.ScriptedAdapter{Provider: "openai", Responder: func(req llm.Request) llm.Response {
+		if s != nil && req.SessionID == s.ID() {
+			for _, inspect := range inspectParent {
+				inspect(req)
+			}
+		}
 		reachedOnce.Do(func() { close(reached) })
 		<-release
 		// The request carries the whole history, so only the generation the
@@ -89,11 +96,12 @@ func subagentWireSession(t *testing.T) (*Session, string, <-chan struct{}, func(
 		if requestContainsText(req, subagentWireQuestion) {
 			return finalResponse(subagentWireReply)
 		}
-		return finalResponse("Fixed the race between tree settle and the drain.")
+		return finalResponse(subagentWireFirstReply)
 	}})
 	profile := withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2"))
 	workspace := realTempDirForTest(t)
-	s, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(workspace), SessionConfig{
+	var err error
+	s, err = NewSession(client, profile, execenv.NewLocalExecutionEnvironment(workspace), SessionConfig{
 		StateDir:         stateDir,
 		MaxSubagentDepth: 2,
 		ForceRealIO:      true,
@@ -104,10 +112,15 @@ func subagentWireSession(t *testing.T) (*Session, string, <-chan struct{}, func(
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	// Cleanups run last-registered first: the child's model call returns
-	// before the session closes.
+	// Register before any launch. Release the provider and join its executor
+	// (including the owner's deferred cancellation) before closing the session.
 	t.Cleanup(s.Close)
-	t.Cleanup(answer)
+	t.Cleanup(func() {
+		answer()
+		executorsDone := make(chan struct{})
+		go func() { s.sendersWG.Wait(); close(executorsDone) }()
+		waitForTestSignal(t, executorsDone, "wire fixture executor cleanup")
+	})
 	return s, stateDir, reached, answer
 }
 
@@ -164,13 +177,13 @@ func TestSubagentCallWireFixtures(t *testing.T) {
 		args: map[string]any{"to": receipt.DelegateID, "message": "Also check drain ordering.", "intent": "Tell it to check drain ordering"},
 	}.run(t, s)
 	// Let the child answer, and send the question once the delegate is idle.
-	answer()
-	awaitDelegateIdle(t, s, receipt.DelegateID)
+	joinSubagentWireFirstReport(t, s, receipt, childRunning, answer)
 	waiting := subagentWireCall{
 		id:   "call_send_2",
 		tool: "delegate_send",
 		args: map[string]any{"to": receipt.DelegateID, "message": subagentWireQuestion, "max_wait_ms": 60000, "intent": "Ask whether drain ordering is safe"},
 	}.run(t, s)
+	memoryWaitChild(t, s, receipt.ChildSessionID)
 	calls := []subagentWireCall{
 		delegate,
 		steer,
@@ -219,17 +232,106 @@ func TestSubagentCallWireFixtures(t *testing.T) {
 	}, "the mobile-native tests that read it")
 }
 
-// awaitDelegateIdle waits until delegateID's generation has finished and the
-// delegate reads idle. It reads the controller's own state: the session's
-// event stream is best effort and could drop the idle event.
-func awaitDelegateIdle(t *testing.T, s *Session, delegateID string) {
+// Transport acknowledgement is not model observation. A later waiting send
+// carries the older report until a real parent request/response observes it.
+func TestSubagentCallWireEarlierResultsRequireParentObservation(t *testing.T) {
+	t.Parallel()
+	for _, observed := range []bool{false, true} {
+		name := "unobserved"
+		if observed {
+			name = "observed"
+		}
+		t.Run(name, func(t *testing.T) {
+			parentRequests := 0
+			s, _, childRunning, answer := subagentWireSession(t, func(req llm.Request) {
+				parentRequests++
+				observationRequest(t, req, []string{subagentWireFirstReply}, []string{subagentWireReply})
+			})
+			created := subagentWireCall{id: "create", tool: "delegate", args: map[string]any{"prompt": "first-report-37a1"}}.run(t, s)
+			var receipt stableDelegateCreateResult
+			if err := json.Unmarshal([]byte(created.output), &receipt); err != nil {
+				t.Fatal(err)
+			}
+			joinSubagentWireFirstReport(t, s, receipt, childRunning, answer)
+			id := "delegate:" + receipt.DelegateID + "/delivery/1"
+			observationReceipts(t, s, nil)
+			if observed {
+				if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+					t.Fatal(err)
+				}
+				observationReceipts(t, s, [][]string{{id}})
+			} else {
+				assertNotificationPending(t, s, []string{id})
+			}
+			sent := subagentWireCall{id: "send", tool: "delegate_send", args: map[string]any{"to": receipt.DelegateID, "message": subagentWireQuestion, "max_wait_ms": 60000}}.run(t, s)
+			var result delegateSendResult
+			if err := json.Unmarshal(sent.state, &result); err != nil {
+				t.Fatal(err)
+			}
+			wantEarlier := 1
+			if observed {
+				wantEarlier = 0
+			}
+			if len(result.EarlierResults) != wantEarlier || result.DelegateID != receipt.DelegateID || result.Output == nil || *result.Output != subagentWireReply {
+				t.Fatalf("waiting result = %+v, want earlier=%d and latest scripted reply", result, wantEarlier)
+			}
+			if !observed && (result.EarlierResults[0].DelegateID != receipt.DelegateID || result.EarlierResults[0].Output == nil || *result.EarlierResults[0].Output != subagentWireFirstReply) {
+				t.Fatalf("earlier result does not carry the first generation: %+v", result.EarlierResults)
+			}
+			if parentRequests != 1-wantEarlier {
+				t.Fatalf("parent requests = %d, want %d", parentRequests, 1-wantEarlier)
+			}
+			memoryWaitChild(t, s, receipt.ChildSessionID)
+		})
+	}
+}
+
+// joinSubagentWireFirstReport captures generation one while its provider is
+// held. No sibling exists and neither caller admits generation two until this
+// returns, so the root WG joins exactly this executor and its cancellation tail.
+func joinSubagentWireFirstReport(t *testing.T, s *Session, receipt stableDelegateCreateResult, childRunning <-chan struct{}, answer func()) {
 	t.Helper()
-	// TRIPWIRE: a hang guard only; the scripted child answers at once and its
-	// generation goes idle within milliseconds.
-	waitForCondition(t, 30*time.Second, "the delegate going idle after its child answered", func() bool {
-		aggregate := delegateAggregateSnapshot(t, s.delegateController, delegateID)
-		return aggregate.Phase == delegatestore.PhaseIdle && !aggregate.CurrentRunOpen
-	})
+	waitForTestSignal(t, childRunning, "first wire child provider entry")
+	sub := s.getSub(receipt.ChildSessionID)
+	if sub == nil {
+		t.Fatal("first wire child has no resident subagent")
+	}
+	c := s.delegateController
+	c.mu.Lock()
+	var lease delegateLease
+	if live := c.live[receipt.DelegateID]; live != nil && live.binding != nil && live.binding.runtime == sub.sess {
+		lease = live.binding.lease
+	}
+	c.mu.Unlock()
+	sub.mu.Lock()
+	done, running := sub.done, sub.running
+	sub.mu.Unlock()
+	if lease != (delegateLease{delegateID: receipt.DelegateID, generation: 1}) || done == nil || !running {
+		t.Fatalf("held first wire run = lease %+v done %p running %t", lease, done, running)
+	}
+	select {
+	case <-done:
+		t.Fatal("held first wire generation already finished")
+	default:
+	}
+	answer()
+	waitForTestSignal(t, done, "captured first wire generation completion")
+	executorsDone := make(chan struct{})
+	go func() { s.sendersWG.Wait(); close(executorsDone) }()
+	waitForTestSignal(t, executorsDone, "first wire executor tail")
+	aggregate := delegateAggregateSnapshot(t, c, lease.delegateID)
+	if aggregate.Generation != lease.generation || aggregate.Phase != delegatestore.PhaseIdle || aggregate.CurrentRunOpen {
+		t.Fatalf("joined first wire generation is not idle: %+v", aggregate)
+	}
+	want := "delegate:" + lease.delegateID + "/delivery/1"
+	assertNotificationPending(t, s, []string{want})
+	fold, err := readDelegateAttentionFold(s.TranscriptPath(), s.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fold.observed) != 0 || len(fold.resolutions) != 0 || fold.content[want].Text() == "" {
+		t.Fatalf("first wire report custody = %v observed=%v resolutions=%v", fold.order, fold.observed, fold.resolutions)
+	}
 }
 
 // subagentWireRunTimes are the run times a delegate_send result carries,

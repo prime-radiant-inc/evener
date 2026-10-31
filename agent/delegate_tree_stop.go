@@ -799,9 +799,13 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 	// all on return — LIFO, as the per-iteration defers did — rather than
 	// deferring inside the loop.
 	var retirementReleases []func()
+	var recheck bool
 	defer func() {
 		for _, retirementRelease := range slices.Backward(retirementReleases) {
 			retirementRelease()
+		}
+		if recheck {
+			c.recheckNotificationReceivers()
 		}
 	}()
 	for {
@@ -827,8 +831,11 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 			return err
 		}
 		plans, err := c.Reconcile(evidence)
+		recheck = recheck || plans.recheckNotifications
+		plans.recheckNotifications = false
 		if plans.retirementRelease != nil {
 			retirementReleases = append(retirementReleases, plans.retirementRelease)
+			plans.retirementRelease = nil
 		}
 		if err != nil {
 			if errors.Is(err, errDelegateTargetBusy) {

@@ -102,7 +102,8 @@ func TestRestoredDelegatePostStartPopulationEmitsTaskCorrection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CommitStart: %v", err)
 	}
-	sub, restored, err := (delegateRuntime{owner: root}).restoreIdle(started)
+	sub, restored, recheck, err := (delegateRuntime{owner: root}).restoreIdle(started)
+	t.Cleanup(func() { recheckNotificationsForTest(root.delegateController, recheck) })
 	if err != nil {
 		t.Fatalf("restoreIdle: %v", err)
 	}
@@ -2311,7 +2312,8 @@ func TestDelegateResourceRuntime_ColdIdleUsesCommittedConfigTemplatesAndToolCeil
 	defer func() {
 		_, _ = root.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(errors.New("test complete"), "construction_failed"))
 	}()
-	sub, restored, err := (delegateRuntime{owner: root}).restoreIdle(started)
+	sub, restored, recheck, err := (delegateRuntime{owner: root}).restoreIdle(started)
+	t.Cleanup(func() { recheckNotificationsForTest(root.delegateController, recheck) })
 	if err != nil {
 		t.Fatalf("restoreIdle: %v", err)
 	}
@@ -2354,7 +2356,8 @@ func TestDelegateResourceRuntime_ColdIdleInheritsLiveLifetimeContext(t *testing.
 	defer func() {
 		_, _ = root.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(errors.New("test complete"), "construction_failed"))
 	}()
-	sub, restored, err := (delegateRuntime{owner: root}).restoreIdle(started)
+	sub, restored, recheck, err := (delegateRuntime{owner: root}).restoreIdle(started)
+	t.Cleanup(func() { recheckNotificationsForTest(root.delegateController, recheck) })
 	if err != nil {
 		t.Fatalf("restoreIdle: %v", err)
 	}
@@ -2390,7 +2393,8 @@ func TestDelegateResourceRuntime_ColdIdleReusesExactSharedRootTaskStore(t *testi
 	defer func() {
 		_, _ = root.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(errors.New("test complete"), "construction_failed"))
 	}()
-	sub, _, err := (delegateRuntime{owner: root}).restoreIdle(started)
+	sub, _, recheck, err := (delegateRuntime{owner: root}).restoreIdle(started)
+	t.Cleanup(func() { recheckNotificationsForTest(root.delegateController, recheck) })
 	if err != nil {
 		t.Fatalf("restoreIdle: %v", err)
 	}
@@ -2421,7 +2425,9 @@ func TestDelegateResourceRuntime_ColdIdleUnavailableAncestorStoreFailsClosedProv
 	defer func() {
 		_, _ = root.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(errors.New("test complete"), "construction_failed"))
 	}()
-	if _, _, err := (delegateRuntime{owner: root}).restoreIdle(started); err == nil {
+	_, _, recheck, err := (delegateRuntime{owner: root}).restoreIdle(started)
+	t.Cleanup(func() { recheckNotificationsForTest(root.delegateController, recheck) })
+	if err == nil {
 		t.Fatal("missing shared task-store owner was accepted")
 	}
 	if got := len(fixture.adapter.Requests()); got != 0 {

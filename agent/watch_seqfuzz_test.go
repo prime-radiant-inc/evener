@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -14,6 +16,8 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/llm"
 )
 
 // TestWatchSeqFuzz is the stateful / sequence fuzz of the watch state machine —
@@ -28,7 +32,8 @@ import (
 //	   watchdog (a hang is a wedge). Each op runs under a recovering goroutine.
 //	O2 (watch-set consistency): every live watch has a non-empty watch_id and
 //	   generation; no watch_id is duplicated among the live set; no watch_id is
-//	   simultaneously live (jm.watches) and torn-down-but-flushing (terminalFlush);
+//	   live after its durable end. terminalFlush also retains active callback
+//	   sources: overlap must be the same config with an owed durable frame;
 //	   a cleared watch_id never reappears live (fresh ids are minted per install,
 //	   so a cleared id can never be reused).
 //	O3 (delivery budget): the budget is a circuit breaker on CONDITION fires. For
@@ -232,7 +237,7 @@ type ws_harness struct {
 
 const ws_sessionID = testOwnerSessionID
 
-func ws_newHarness(t *testing.T, rt *rapid.T) *ws_harness {
+func ws_newHarness(t *testing.T, rt interface{ Fatalf(string, ...any) }) *ws_harness {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "ws_seqfuzz")
 	if err != nil {
@@ -512,6 +517,7 @@ func ws_newModel() *ws_model {
 // ws_watchSnap is a read-only copy of the per-config oracle fields, taken under
 // jm.mu.
 type ws_watchSnap struct {
+	config     *watchConfig // identity only, never dereferenced outside jm.mu
 	watchID    string
 	generation string
 	target     string
@@ -519,6 +525,8 @@ type ws_watchSnap struct {
 	eventCount int
 	nextSeq    uint64
 	live       bool
+	retired    bool
+	pending    map[jobstore.WatchSendKey]jobstore.WatchSendState
 	// periodic marks a config whose progress timer counts deliveries that are not
 	// condition fires, which the budget deliberately does not bound (see O3).
 	periodic bool
@@ -538,32 +546,23 @@ func (m *ws_model) check(rt *rapid.T, h *ws_harness, _ ws_op, out ws_opOutcome, 
 
 	snaps := h.snapshotWatches()
 
-	// O2: watch-set consistency.
-	liveIDs := map[string]bool{}
-	flushIDs := map[string]bool{}
-	for _, s := range snaps {
-		if s.watchID == "" {
-			rt.Fatalf("step %d: watch config with empty watch_id (target=%q)", step, s.target)
-		}
-		if s.generation == "" {
-			rt.Fatalf("step %d: watch %s has empty generation", step, s.watchID)
-		}
-		if s.live {
-			if liveIDs[s.watchID] {
-				rt.Fatalf("step %d: watch_id %s appears twice among live watches", step, s.watchID)
-			}
-			liveIDs[s.watchID] = true
-			if m.clearedIDs[s.watchID] {
-				rt.Fatalf("step %d: cleared watch_id %s is live again", step, s.watchID)
-			}
-		} else {
-			flushIDs[s.watchID] = true
+	// O2: registration ends and pending custody are separate facts. Read the
+	// journal independently: losing a source from both maps must not hide it.
+	watches, err := h.jm.store.LoadWatches()
+	if err != nil {
+		rt.Fatalf("load watch registrations: %v", err)
+	}
+	for i := range snaps {
+		if record := watches[snaps[i].watchID]; record != nil {
+			snaps[i].retired = !record.Active
 		}
 	}
-	for id := range liveIDs {
-		if flushIDs[id] {
-			rt.Fatalf("step %d: watch_id %s is both live and torn-down (terminalFlush)", step, id)
-		}
+	sends, err := h.jm.store.LoadWatchSends()
+	if err != nil {
+		rt.Fatalf("load watch source journal: %v", err)
+	}
+	if err := ws_checkCustody(snaps, sends.Pending, m.clearedIDs); err != nil {
+		rt.Fatalf("step %d: %v", step, err)
 	}
 
 	// O3: delivery budget. A periodic tick counts a delivery without being a
@@ -628,7 +627,8 @@ func (h *ws_harness) snapshotWatches() []ws_watchSnap {
 }
 
 func ws_snapConfig(cfg *watchConfig, live bool) ws_watchSnap {
-	return ws_watchSnap{
+	snap := ws_watchSnap{
+		config:     cfg,
 		watchID:    cfg.watchID,
 		generation: cfg.generation,
 		target:     cfg.target,
@@ -637,5 +637,304 @@ func ws_snapConfig(cfg *watchConfig, live bool) ws_watchSnap {
 		nextSeq:    cfg.nextUpdateSeq,
 		live:       live,
 		periodic:   cfg.progressIntervalMS > 0,
+		pending:    make(map[jobstore.WatchSendKey]jobstore.WatchSendState, len(cfg.pending)),
+	}
+	for key, state := range cfg.pending {
+		snap.pending[key] = *state
+	}
+	return snap
+}
+
+// ws_checkCustody checks observations, not production routing decisions. A
+// durable end forbids a live registration even when a valid frame is owed.
+// Conversely, every owed journal frame must remain reachable until custody.
+func ws_checkCustody(snaps []ws_watchSnap, pending map[jobstore.WatchSendKey]*jobstore.WatchSendState, cleared map[string]bool) error {
+	live, flushing := map[string]ws_watchSnap{}, map[string]ws_watchSnap{}
+	reachable := map[jobstore.WatchSendKey]jobstore.WatchSendState{}
+	for _, s := range snaps {
+		if s.watchID == "" || s.generation == "" {
+			return fmt.Errorf("watch identity incomplete: id=%q generation=%q", s.watchID, s.generation)
+		}
+		set := flushing
+		if s.live {
+			if s.retired || cleared[s.watchID] {
+				return fmt.Errorf("retired watch %s is live", s.watchID)
+			}
+			set = live
+		}
+		if _, exists := set[s.watchID]; exists {
+			return fmt.Errorf("watch %s appears twice in one set", s.watchID)
+		}
+		set[s.watchID] = s
+		for key, state := range s.pending {
+			durable := pending[key]
+			if durable == nil || durable.DeliveryID != state.DeliveryID || durable.UpdateSeq != state.UpdateSeq || key.WatchID != s.watchID || key.WatchGeneration != s.generation {
+				return fmt.Errorf("watch %s pending frame lacks matching durable source", s.watchID)
+			}
+			reachable[key] = state
+		}
+	}
+	for id, s := range flushing {
+		if active, ok := live[id]; ok {
+			if active.config != s.config || active.generation != s.generation || len(s.pending) == 0 {
+				return fmt.Errorf("watch %s active/flush overlap is not one owed source", id)
+			}
+		}
+	}
+	for key, state := range pending {
+		if source, ok := reachable[key]; !ok || source.DeliveryID != state.DeliveryID || source.UpdateSeq != state.UpdateSeq {
+			return fmt.Errorf("watch %s durable pending frame disappeared from source maps", key.WatchID)
+		}
+	}
+	return nil
+}
+
+func TestWatchSeqFuzz_CustodyInvariant(t *testing.T) {
+	t.Parallel()
+	key := jobstore.WatchSendKey{WatchID: "watch_source", WatchGeneration: "generation"}
+	state := jobstore.WatchSendState{Key: key, DeliveryID: "delivery", UpdateSeq: 1}
+	config := &watchConfig{}
+	active := ws_watchSnap{config: config, watchID: key.WatchID, generation: key.WatchGeneration, live: true, pending: map[jobstore.WatchSendKey]jobstore.WatchSendState{key: state}}
+	flushing := active
+	flushing.live = false
+	pending := map[jobstore.WatchSendKey]*jobstore.WatchSendState{key: &state}
+	retired := active
+	retired.retired = true
+	other := flushing
+	other.config = &watchConfig{}
+	empty := active
+	empty.pending = nil
+	emptyFlush := empty
+	emptyFlush.live = false
+	tests := []struct {
+		name    string
+		snaps   []ws_watchSnap
+		pending map[jobstore.WatchSendKey]*jobstore.WatchSendState
+		wantErr bool
+	}{
+		{"active callback owes durable frame", []ws_watchSnap{active, flushing}, pending, false},
+		{"retired source still reachable", []ws_watchSnap{flushing}, pending, false},
+		{"live pending work disappeared", nil, pending, true},
+		{"retired watch stays live", []ws_watchSnap{retired, flushing}, pending, true},
+		{"different config reuses id", []ws_watchSnap{active, other}, pending, true},
+		{"shared pointer alone is insufficient", []ws_watchSnap{empty, emptyFlush}, map[jobstore.WatchSendKey]*jobstore.WatchSendState{}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ws_checkCustody(tt.snaps, tt.pending, nil)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("custody error=%v, want error=%t", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestWatchSeqFuzz_ActivePendingCallbackRetriesAutomatically(t *testing.T) {
+	t.Parallel()
+	h := ws_newHarness(t, t)
+	defer h.teardown()
+	stateDir := t.TempDir()
+	owner := newSession(t, withDir(t.TempDir()), withConfig(SessionConfig{StateDir: stateDir}), withClock(h.clk))
+	if err := owner.transcript.Close(); err != nil {
+		t.Fatal(err)
+	}
+	fs := newAttentionFailNextSyncFS()
+	writer, err := transcript.NewWriterWithFS(fs, transcriptPath(stateDir, owner.ID()), transcript.Header{SessionID: owner.ID()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner.attachTranscript(writer)
+	h.jm.sessionID, h.jm.retirementOwner = owner.ID(), owner
+	wakes := make(chan struct{}, 2)
+	owner.SetNotifyFunc(func() {
+		select {
+		case wakes <- struct{}{}:
+		default:
+		}
+	})
+	configured := h.applyConfigure(ws_op{targetSel: 1, events: []string{"*"}, outputMatch: "ready", progressMS: minWatchProgressIntervalMS})
+	if configured.installedID == "" {
+		t.Fatal("watch was not installed")
+	}
+	fs.failNextSync()
+	h.applyProgressTick(ws_op{tickSel: 55})
+	snaps := h.snapshotWatches()
+	sends, err := h.jm.store.LoadWatchSends()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snaps) != 2 || len(sends.Pending) != 1 {
+		t.Fatalf("active/owed snapshots=%d pending=%d, want 2/1", len(snaps), len(sends.Pending))
+	}
+	if err := ws_checkCustody(snaps, sends.Pending, nil); err != nil {
+		t.Fatal(err)
+	}
+	var frame *jobstore.WatchSendState
+	for _, state := range sends.Pending {
+		frame = state
+	}
+	// Advance only the paced transport retry, not the watch's progress cadence.
+	h.clk.Advance(jobNotificationRetryInitialDelay)
+	h.clk.Drain()
+	sends, err = h.jm.store.LoadWatchSends()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sends.Pending) != 0 {
+		t.Fatal("automatic retry left the source frame pending")
+	}
+	entries := notificationRawEntries(t, transcriptPath(stateDir, owner.ID()))
+	if len(entries) != 1 || entries[0].Turn.AttentionID != stableWatchAttentionID(*frame) {
+		t.Fatalf("receiver custody=%+v, want one exact frame", entries)
+	}
+	select {
+	case <-wakes:
+	default:
+		t.Fatal("automatic custody retry did not wake receiver")
+	}
+	snaps = h.snapshotWatches()
+	if len(snaps) != 1 || !snaps[0].live || snaps[0].watchID != configured.installedID {
+		t.Fatalf("settled active watch snapshots=%+v", snaps)
+	}
+	if err := ws_checkCustody(snaps, sends.Pending, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWatchSeqFuzz_RetirementRetainsPendingSource(t *testing.T) {
+	t.Parallel()
+	for _, action := range []string{"replace", "clear", "stop"} {
+		for _, send := range []int{0, 1} {
+			t.Run(fmt.Sprintf("%s/send=%d", action, send), func(t *testing.T) {
+				h := ws_newHarness(t, t)
+				defer h.teardown()
+				stateDir := t.TempDir()
+				var request llm.Request
+				owner := newSession(t, withDir(t.TempDir()), withConfig(SessionConfig{StateDir: stateDir}), withClock(h.clk), withSteps(func(req llm.Request) llm.Response {
+					request = req
+					return finalResponse("watch observed")
+				}))
+				if err := owner.transcript.Close(); err != nil {
+					t.Fatal(err)
+				}
+				fs := newAttentionFailNextSyncFS()
+				writer, err := transcript.NewWriterWithFS(fs, transcriptPath(stateDir, owner.ID()), transcript.Header{SessionID: owner.ID()})
+				if err != nil {
+					t.Fatal(err)
+				}
+				owner.attachTranscript(writer)
+				h.jm.sessionID, h.jm.retirementOwner = owner.ID(), owner
+				wakes := make(chan struct{}, 1)
+				owner.SetNotifyFunc(func() {
+					select {
+					case wakes <- struct{}{}:
+					default:
+					}
+				})
+				first := h.applyConfigure(ws_op{targetSel: 0, progressMS: minWatchProgressIntervalMS, sendSel: send})
+				if first.installedID == "" {
+					t.Fatal("first watch was not installed")
+				}
+				fs.failNextSync()
+				h.applyProgressTick(ws_op{})
+				sends, err := h.jm.store.LoadWatchSends()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(sends.Pending) != 1 {
+					t.Fatalf("initial pending sends=%d, want 1", len(sends.Pending))
+				}
+				var frame jobstore.WatchSendState
+				for _, state := range sends.Pending {
+					frame = *state
+				}
+				if frame.CallbackFrame != (send == 0) || frame.ReceiverSessionID != owner.ID() {
+					t.Fatalf("source callback=%t receiver=%q, want callback=%t receiver=%q", frame.CallbackFrame, frame.ReceiverSessionID, send == 0, owner.ID())
+				}
+				switch action {
+				case "replace":
+					second := h.applyConfigure(ws_op{targetSel: 0, outputMatch: "ready", sendSel: send})
+					if second.installedID == "" || second.installedID == first.installedID {
+						t.Fatal("replacement was not installed with fresh identity")
+					}
+				case "clear":
+					if _, err := h.jm.clearWatchByID(first.installedID); err != nil {
+						t.Fatal(err)
+					}
+				case "stop":
+					if _, err := h.jm.stop(h.jobIDs[0]); err != nil {
+						t.Fatal(err)
+					}
+				}
+				sends, err = h.jm.store.LoadWatchSends()
+				if err != nil {
+					t.Fatal(err)
+				}
+				retired := map[string]bool{first.installedID: action != "stop"}
+				if err := ws_checkCustody(h.snapshotWatches(), sends.Pending, retired); err != nil {
+					t.Error(err)
+				}
+				// Only the existing paced retry recovers transport. The following
+				// notification turn observes custody after the automatic wake.
+				h.clk.Advance(jobNotificationRetryInitialDelay)
+				h.clk.Drain()
+				sends, err = h.jm.store.LoadWatchSends()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(sends.Pending) != 0 {
+					t.Fatalf("automatic retry left %d retired source frames owed", len(sends.Pending))
+				}
+				for _, snap := range h.snapshotWatches() {
+					if snap.watchID == first.installedID {
+						// A job_stop request is not the source's terminal edge.
+						if action != "stop" || !snap.live || len(snap.pending) != 0 {
+							t.Fatal("settled historical source remains in watch maps")
+						}
+					}
+				}
+				entries := notificationRawEntries(t, transcriptPath(stateDir, owner.ID()))
+				id := stableWatchAttentionID(frame)
+				var message llm.Message
+				count := 0
+				for _, entry := range entries {
+					if entry.Turn.AttentionID == id {
+						count++
+						message = entry.Turn.Message
+					}
+				}
+				if count != 1 {
+					t.Fatalf("retired frame custody records=%d, want exactly one", count)
+				}
+				select {
+				case <-wakes:
+				default:
+					t.Fatal("automatic custody did not wake receiver")
+				}
+				if _, err := owner.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+					t.Fatal(err)
+				}
+				observed := 0
+				for _, got := range request.Messages {
+					if reflect.DeepEqual(got, message) {
+						observed++
+					}
+				}
+				if observed != 1 {
+					t.Fatalf("retired frame request occurrences=%d, want exactly one", observed)
+				}
+				assertAttentionResponseReceipts(t, owner, id, 1)
+				if action == "stop" {
+					if err := h.jm.finalize(h.jobIDs[0], jobstore.StatusCancelled, "cancelled", nil); err != nil {
+						t.Fatal(err)
+					}
+					for _, snap := range h.snapshotWatches() {
+						if snap.watchID == first.installedID {
+							t.Fatal("terminal source retained its stopped watch")
+						}
+					}
+				}
+			})
+		}
 	}
 }

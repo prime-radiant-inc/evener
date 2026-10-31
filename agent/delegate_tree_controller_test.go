@@ -495,6 +495,7 @@ var delegateControllerDormancyExpectedInventory = map[delegateControllerDormancy
 	{filename: "session_attention.go", function: "(*Session).resolveAttentionDurably", kind: "session attention method", symbol: "resolveAttentionDurablyForGeneration"}:                            1,
 	{filename: "session_notifications.go", function: "(*Session).ackNotifications", kind: "session attention method", symbol: "resolveAttentionDurably"}:                                            1,
 	{filename: "session_notifications.go", function: "(*delegateTreeController).enqueueNotification", kind: "lifecycle method", symbol: "CompleteDelivery"}:                                         1,
+	{filename: "session_notifications.go", function: "(*delegateTreeController).notificationCustodyAndClosure", kind: "lifecycle method", symbol: "CompleteDelivery"}:                               1,
 	{filename: "session_events.go", function: "(*Session).SetDescendantEventFunc", kind: "lifecycle method", symbol: "Snapshot"}:                                                                    1,
 	{filename: "session_tools_jobs.go", function: "stableDelegateRowsForSession", kind: "lifecycle method", symbol: "Snapshot"}:                                                                     1,
 	{filename: "delegate_tree_stop.go", function: "(*delegateTreeController).drainStopAbandonable", kind: "lifecycle method", symbol: "stopReconcileRequirements"}:                                  1,

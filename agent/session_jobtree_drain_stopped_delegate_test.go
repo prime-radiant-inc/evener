@@ -816,7 +816,7 @@ func TestDrainGraceDoesNotFenceSuccessorGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CommitStart successor: %v", err)
 	}
-	if err := f.root.delegateController.AttachRuntime(started.lease, f.child); err != nil {
+	if err := attachRuntimeWithHandoffForTest(f.root.delegateController, started.lease, f.child); err != nil {
 		t.Fatalf("AttachRuntime successor: %v", err)
 	}
 	if _, err := f.root.delegateController.BeginStartInput(started.lease); err != nil {
@@ -875,7 +875,7 @@ func TestDrainAbandonmentDoesNotFenceSuccessorGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CommitStart successor: %v", err)
 	}
-	if err := f.root.delegateController.AttachRuntime(started.lease, f.child); err != nil {
+	if err := attachRuntimeWithHandoffForTest(f.root.delegateController, started.lease, f.child); err != nil {
 		t.Fatalf("AttachRuntime successor: %v", err)
 	}
 	if _, err := f.root.delegateController.BeginStartInput(started.lease); err != nil {

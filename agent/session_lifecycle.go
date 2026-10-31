@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -1584,7 +1585,10 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// one-shot turn path is followed by DrainJobTree (cmd/evener run,
 		// drainForFinalization), and the drain's own turn gate reads the same
 		// two signals.
-		if noFollowUpOrQueued && !awaiting && ranKind != EntryNotification && !s.hasAcceptedTerminalCommunicate() {
+		// Ordinary delegates also hand a current accepted Done report to their
+		// report-preserving finalization drain before a new input clears it.
+		if noFollowUpOrQueued && !awaiting && ranKind != EntryNotification && !s.hasAcceptedTerminalCommunicate() &&
+			(!s.isSubagentSession() || s.communicateEndReason() != tool.CommunicateEndReasonDone) {
 			notificationsPending = s.peekNotifications() > 0 || s.notificationsRunnable()
 		}
 		action, skipGoalGate := selectDrainNextAction(drainInputs{
@@ -3315,22 +3319,44 @@ func classifyDurableNotifications(
 	return survivors, injected
 }
 
-func (s *Session) notificationSourceAccepted(sourceID string) (bool, error) {
+func (s *Session) notificationSourceAccepted(sourceID string) (accepted bool, err error) {
 	if sourceID == "" {
 		return false, nil
 	}
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
 	if s.stateDir != "" {
-		if err := s.attachedTranscript().EstablishDurability(); err != nil {
+		// A resident descriptor can outlive its pathname. Missing or replaced
+		// storage is uncertainty, not proof this source never reached custody.
+		f, openErr := os.Open(transcriptPath(s.stateDir, s.ID()))
+		if openErr != nil {
+			return false, openErr
+		}
+		defer func() {
+			err = errors.Join(err, f.Close())
+			if err != nil {
+				accepted = false
+			}
+		}()
+		info, statErr := f.Stat()
+		if statErr != nil {
+			return false, statErr
+		}
+		if err := s.attachedTranscript().EstablishDurabilityForFile(info); err != nil {
 			return false, err
 		}
+		fold, readErr := s.attentionFoldCursor.readFile(f, info, s.ID())
+		if readErr != nil {
+			return false, readErr
+		}
+		_, accepted = fold.content[sourceID]
+		return accepted, nil
 	}
 	fold, err := s.delegateAttentionFoldLocked()
 	if err != nil {
 		return false, err
 	}
-	_, accepted := fold.content[sourceID]
+	_, accepted = fold.content[sourceID]
 	return accepted, nil
 }
 

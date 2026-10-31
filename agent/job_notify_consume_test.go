@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -106,273 +109,314 @@ func (w *jobNotifyWatcher) await(t *testing.T, what string, cond func() bool) {
 	}
 }
 
-// TestTerminalJobStatusReadConsumesPendingNotification pins the consume rule: a
-// caller that reads a terminal job_status has LEARNED the job ended, so the
-// queued terminal notification must not interrupt it later with the same news.
-//
-// The learning is durable and has its own terminal-notification state
-// ("consumed"), distinct from "delivered": the jobstore's told-the-caller
-// invariant stays truthful, and forensics can still tell a notification the
-// model was shown from one the model went and looked up itself.
+func newStatusNotificationSession(t *testing.T, persistent bool) (*Session, *fakeAdapter) {
+	t.Helper()
+	adapter := &fakeAdapter{name: "openai"}
+	cfg := SessionConfig{}
+	if persistent {
+		cfg.StateDir = t.TempDir()
+	}
+	return newSession(t, withAdapter(adapter), withConfig(cfg)), adapter
+}
+
+func awaitCanonicalShellCustody(t *testing.T, watcher *jobNotifyWatcher, s *Session, jobID string) string {
+	t.Helper()
+	waitForShellDone(t, s.jobManager, jobID)
+	rec := loadShellRecord(t, s.jobManager, jobID)
+	id := "shell:" + jobID + ":" + rec.TerminalGen
+	watcher.await(t, "exact canonical shell custody", func() bool {
+		ids, err := s.pendingNotificationIDs()
+		return err == nil && slices.Contains(ids, id)
+	})
+	return requireCanonicalShellNotification(t, s, jobID, 0)
+}
+
+func terminalStatusCall(jobID string) llm.ToolCallData {
+	return llm.ToolCallData{ID: "status", Name: "job_status", Type: "function", Arguments: json.RawMessage(`{"target":` + mustJSONString(jobID) + `}`)}
+}
+
+func requireTerminalStatusResult(t *testing.T, req llm.Request, callID, jobID string) {
+	t.Helper()
+	for _, message := range req.Messages {
+		for _, part := range message.Content {
+			if part.ToolResult == nil || part.ToolResult.ToolCallID != callID {
+				continue
+			}
+			var result jobStatusResult
+			if err := json.Unmarshal(part.ToolResult.ToolState, &result); err != nil {
+				t.Fatal(err)
+			}
+			if result.JobID != jobID || result.Status != string(jobstore.StatusCompleted) {
+				t.Fatalf("terminal job_status state=%+v, want completed %s", result, jobID)
+			}
+			return
+		}
+	}
+	t.Fatalf("missing actual job_status result for call %s", callID)
+}
+
+func runOwnerStatusResponse(t *testing.T, s *Session, adapter *fakeAdapter, jobID string) {
+	t.Helper()
+	call := terminalStatusCall(jobID)
+	adapter.steps = []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			observationRequest(t, req, []string{fmt.Sprintf(`job_id=%q`, jobID)}, nil)
+			requireCanonicalShellNotification(t, s, jobID, 0)
+			return toolCallResponse(call)
+		},
+		func(req llm.Request) llm.Response {
+			requireTerminalStatusResult(t, req, call.ID, jobID)
+			requireCanonicalShellNotification(t, s, jobID, 1)
+			return finalResponse("continued")
+		},
+	}
+	output, err := s.ProcessInput(context.Background(), "finish after checking the job", nil)
+	if err != nil || output != "continued" {
+		t.Fatalf("ProcessInput=%q error=%v", output, err)
+	}
+	requireCanonicalShellNotification(t, s, jobID, 2)
+	if len(adapter.Requests()) != 2 {
+		t.Fatalf("provider requests=%d, want 2", len(adapter.Requests()))
+	}
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatal(err)
+	}
+	if len(adapter.Requests()) != 2 {
+		t.Fatal("an already observed completion started an extra response")
+	}
+	requireCanonicalShellNotification(t, s, jobID, 2)
+}
+
+// A real status tool round continues the current response. Receiver custody
+// alone is not observation, and persisted successful responses leave no extra
+// notification response to run.
 func TestPersistedTerminalJobStatusReadConsumesPendingNotification(t *testing.T) {
 	t.Parallel()
-	s := newTestSession(t)
+	s, adapter := newStatusNotificationSession(t, true)
 	watcher := newJobNotifyWatcher(s, nil)
 	jobID := startBackgroundShellJob(t, s, "printf 'consume me\\n'")
-
-	watcher.await(t, "terminal notification queued", func() bool {
-		return s.peekNotifications() > 0
-	})
-
-	call := llm.ToolCallData{
-		ID:        "status",
-		Name:      "job_status",
-		Arguments: json.RawMessage(`{"target":` + mustJSONString(jobID) + `}`),
-	}
-	result := s.reg.ExecuteCall(context.Background(), s.env, call)
-	if result.IsError {
-		t.Fatalf("job_status: %s", result.Output)
-	}
-
-	rec := loadShellRecord(t, s.jobManager, jobID)
-	if !rec.Status.IsTerminal() {
-		t.Fatalf("job status = %q, want terminal before asserting the consume", rec.Status)
-	}
-	if rec.NotifyState != jobstore.NotifyPending {
-		t.Fatalf("terminal_notification_state before result persistence = %q, want %q",
-			rec.NotifyState, jobstore.NotifyPending)
-	}
-	if err := s.persistToolResults(context.Background(), []llm.ToolCallData{call}, []tooldefs.ExecResult{result}); err != nil {
-		t.Fatalf("persistToolResults: %v", err)
-	}
-
-	rec = loadShellRecord(t, s.jobManager, jobID)
-	if rec.NotifyState != jobstore.NotifyConsumed {
-		t.Fatalf("terminal_notification_state = %q, want %q after a terminal job_status read",
-			rec.NotifyState, jobstore.NotifyConsumed)
-	}
-	if got := s.peekNotifications(); got != 0 {
-		t.Fatalf("pending notifications = %d, want 0 after persisted terminal status", got)
-	}
-
-	// The session goes idle and takes its notification turn: there must be
-	// nothing left to tell it about this job.
-	if proceed := s.acceptNotificationInput(context.Background(), ""); proceed {
-		t.Fatal("a notification turn ran after the caller already read the terminal status")
-	}
+	awaitCanonicalShellCustody(t, watcher, s, jobID)
+	runOwnerStatusResponse(t, s, adapter, jobID)
 }
 
 func TestPersistedTerminalJobStatusPreservesQueuedSelfWatchNotification(t *testing.T) {
 	t.Parallel()
-	s := newTestSession(t)
+	s, adapter := newStatusNotificationSession(t, true)
 	if _, err := jobWatchTool(s, map[string]any{
-		"operation": "create",
-		"source":    "self",
-		"events":    []any{"job.notification"},
+		"operation": "create", "source": "self", "events": []any{"job.notification"},
 	}, jobToolResultDefaultMaxChar); err != nil {
-		t.Fatalf("job_watch create: %v", err)
+		t.Fatal(err)
 	}
-
 	watcher := newJobNotifyWatcher(s, nil)
 	gate := filepath.Join(t.TempDir(), "release")
 	jobID := startBackgroundShellJob(t, s, "while [ ! -f "+gate+" ]; do sleep 0.02; done; printf 'watched done\\n'")
 	if err := os.WriteFile(gate, []byte("go\n"), 0o600); err != nil {
-		t.Fatalf("release job: %v", err)
+		t.Fatal(err)
 	}
-	waitForShellDone(t, s.jobManager, jobID)
-	watcher.await(t, "self watch and terminal notification queued", func() bool {
-		s.pendingJobNotifsMu.Lock()
-		defer s.pendingJobNotifsMu.Unlock()
-		if len(s.pendingJobNotifs) != 2 {
-			return false
-		}
-		for _, notification := range s.pendingJobNotifs {
-			if notification.JobID != jobID {
-				return false
-			}
-		}
-		return true
-	})
-
-	call := llm.ToolCallData{
-		ID:        "status",
-		Name:      "job_status",
-		Arguments: json.RawMessage(`{"target":` + mustJSONString(jobID) + `}`),
+	awaitCanonicalShellCustody(t, watcher, s, jobID)
+	source := producerSourceEvents(t, s.jobManager, jobstore.EventWatchSendPending)
+	if len(source) != 1 || source[0].WatchSend == nil {
+		t.Fatalf("watch source = %+v", source)
 	}
+	frame := source[0].WatchSend
+	watchID := fmt.Sprintf("watch:%s:%d", frame.DeliveryID, frame.UpdateSeq)
+	shellID := requireCanonicalShellNotification(t, s, jobID, 0)
+	ids, err := s.pendingNotificationIDs()
+	if err != nil || len(ids) != 2 || !slices.Contains(ids, shellID) || !slices.Contains(ids, watchID) {
+		t.Fatalf("pending identities=%v error=%v, want exact shell and watch", ids, err)
+	}
+	call := terminalStatusCall(jobID)
 	result := s.reg.ExecuteCall(context.Background(), s.env, call)
 	if result.IsError {
 		t.Fatalf("job_status: %s", result.Output)
 	}
 	if err := s.persistToolResults(context.Background(), []llm.ToolCallData{call}, []tooldefs.ExecResult{result}); err != nil {
-		t.Fatalf("persistToolResults: %v", err)
+		t.Fatal(err)
 	}
-
-	rec := loadShellRecord(t, s.jobManager, jobID)
-	if rec.NotifyState != jobstore.NotifyConsumed {
-		t.Errorf("terminal_notification_state = %q, want %q after owner status read",
-			rec.NotifyState, jobstore.NotifyConsumed)
+	requireCanonicalShellNotification(t, s, jobID, 0)
+	assertNotificationPending(t, s, ids)
+	adapter.steps = []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
+		observationRequest(t, req, []string{frame.Frame, fmt.Sprintf(`job_id=%q`, jobID)}, nil)
+		assertNotificationPending(t, s, ids)
+		return finalResponse("both notifications observed")
+	}}
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatal(err)
 	}
-	if got := s.peekNotifications(); got != 1 {
-		t.Errorf("pending notifications = %d, want the self-watch notification to remain", got)
-	}
-
-	historyLen := len(s.history)
-	if proceed := s.acceptNotificationInput(context.Background(), ""); !proceed {
-		t.Error("self-watch notification was not accepted after terminal status consumption")
-	}
-	if got := len(s.history); got != historyLen+1 {
-		t.Errorf("history turns = %d, want %d after self-watch delivery", got, historyLen+1)
-	} else if s.history[got-1].Kind != schema.TurnSteering {
-		t.Errorf("delivered self-watch turn kind = %q, want %q", s.history[got-1].Kind, schema.TurnSteering)
+	requireCanonicalShellNotification(t, s, jobID, 1)
+	assertNotificationObservedOnce(t, s.TranscriptPath(), watchID)
+	assertNotificationPending(t, s, []string{})
+	if len(adapter.Requests()) != 1 {
+		t.Fatalf("provider requests=%d, want 1", len(adapter.Requests()))
 	}
 }
 
 func TestTerminalJobStatusTranscriptFailureLeavesNotificationPending(t *testing.T) {
 	t.Parallel()
-	s := newTestSession(t)
+	s, adapter := newStatusNotificationSession(t, true)
 	watcher := newJobNotifyWatcher(s, nil)
 	jobID := startBackgroundShellJob(t, s, "printf 'persist me\\n'")
-
-	watcher.await(t, "terminal notification queued", func() bool {
-		return s.peekNotifications() > 0
-	})
-
-	fs := &transcriptWriteFailFS{Fs: afero.NewMemMapFs()}
-	writer, err := transcript.NewWriterWithFS(fs, "/session.jsonl", transcript.Header{SessionID: s.ID()})
+	id := awaitCanonicalShellCustody(t, watcher, s, jobID)
+	fs := statusWriteFailureFS{&transcriptWriteFailFS{Fs: afero.NewOsFs()}}
+	old := s.attachedTranscript()
+	writer, entries, err := transcript.OpenWriterForSessionWithFS(fs, s.TranscriptPath(), s.ID())
 	if err != nil {
-		t.Fatalf("NewWriterWithFS: %v", err)
+		t.Fatal(err)
 	}
-	s.transcript = writer
+	writer.TrackFailures(entries, s.fork.divergence)
+	s.mu.Lock()
+	s.setTranscriptLocked(writer)
+	s.mu.Unlock()
+	t.Cleanup(func() { fs.fail = false; _ = old.Close() })
 	fs.fail = true
-
-	call := llm.ToolCallData{
-		ID:        "status",
-		Name:      "job_status",
-		Arguments: json.RawMessage(`{"target":` + mustJSONString(jobID) + `}`),
-	}
+	call := terminalStatusCall(jobID)
 	result := s.reg.ExecuteCall(context.Background(), s.env, call)
 	if result.IsError {
 		t.Fatalf("job_status: %s", result.Output)
 	}
-
 	historyLen := len(s.history)
 	err = s.persistToolResults(context.Background(), []llm.ToolCallData{call}, []tooldefs.ExecResult{result})
 	if !errors.Is(err, errInjectedTranscriptWrite) {
-		t.Errorf("persistToolResults error = %v, want %v", err, errInjectedTranscriptWrite)
+		t.Fatalf("persistToolResults error=%v, want exact Write failure", err)
 	}
+	requireCanonicalShellNotification(t, s, jobID, 0)
+	assertNotificationPending(t, s, []string{id})
+	if len(s.history) != historyLen {
+		t.Fatal("failed tool result changed history")
+	}
+	if _, found := findToolResultInHistory(s.history, call.ID); found {
+		t.Fatal("failed result entered history")
+	}
+	for _, entry := range notificationRawEntries(t, s.TranscriptPath()) {
+		if _, found := findToolResultInHistory([]schema.Turn{entry.Turn}, call.ID); found {
+			t.Fatal("failed result entered disk transcript")
+		}
+	}
+	fs.fail = false
+	adapter.steps = []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
+		observationRequest(t, req, []string{fmt.Sprintf(`job_id=%q`, jobID)}, nil)
+		requireCanonicalShellNotification(t, s, jobID, 0)
+		return finalResponse("recovered notification observed")
+	}}
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatal(err)
+	}
+	requireCanonicalShellNotification(t, s, jobID, 1)
+	if len(adapter.Requests()) != 1 {
+		t.Fatalf("provider requests=%d want 1", len(adapter.Requests()))
+	}
+}
 
-	rec := loadShellRecord(t, s.jobManager, jobID)
-	if rec.NotifyState != jobstore.NotifyPending {
-		t.Errorf("terminal_notification_state = %q, want %q after transcript failure",
-			rec.NotifyState, jobstore.NotifyPending)
+type statusWriteFailureFS struct{ *transcriptWriteFailFS }
+
+func (fs statusWriteFailureFS) OpenFile(path string, flag int, mode os.FileMode) (afero.File, error) {
+	file, err := fs.Fs.OpenFile(path, flag, mode)
+	if err != nil {
+		return nil, err
 	}
-	if got := s.peekNotifications(); got != 1 {
-		t.Errorf("pending notifications = %d, want 1 after transcript failure", got)
-	}
-	if got := len(s.history); got != historyLen {
-		t.Errorf("history turns = %d, want %d after transcript failure", got, historyLen)
-	}
-	if _, ok := findToolResultInHistory(s.history, call.ID); ok {
-		t.Error("failed terminal job_status result entered live history")
-	}
+	return &transcriptWriteFailFile{File: file, fs: fs.transcriptWriteFailFS}, nil
 }
 
 func TestParentTerminalJobStatusReadLeavesChildNotificationPending(t *testing.T) {
 	t.Parallel()
-	parent := newTestSession(t)
-	child := newTestSession(t)
-	child.jobManager.forward = parent.jobManager.forwardEvent
-	child.jobManager.setParentJobID("job_PARENT")
-	parent.subagents.track(&subagent{id: child.ID(), sess: child, status: SubagentRunning})
-
+	const marker = "STATUS-ISOLATION-CHILD-731"
+	adapter := newMessagingAdapter(marker)
+	parent := newMessagingRoot(t, adapter, nil)
+	gate := filepath.Join(t.TempDir(), "release-shell")
+	responseGate := make(chan struct{})
+	releaseResponse := sync.OnceFunc(func() { close(responseGate) })
+	defer releaseResponse()
+	started := make(chan string, 1)
+	var child *Session
+	var jobID string
+	adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("status-child", marker) }, func(llm.Request) llm.Response { return finalResponse("child created") })
+	adapter.script(marker,
+		func(llm.Request) llm.Response {
+			return toolCallResponse(llm.ToolCallData{ID: "child-shell", Name: "shell", Type: "function", Arguments: json.RawMessage(`{"command":` + mustJSONString("while [ ! -f "+gate+" ]; do sleep 0.02; done; printf 'child done\\n'") + `,"mode":"background"}`)})
+		},
+		func(req llm.Request) llm.Response {
+			var result struct {
+				JobID string `json:"job_id"`
+			}
+			for _, message := range req.Messages {
+				for _, part := range message.Content {
+					if part.ToolResult != nil && part.ToolResult.ToolCallID == "child-shell" {
+						if err := json.Unmarshal(part.ToolResult.ToolState, &result); err != nil {
+							t.Errorf("decode actual shell tool state: %v", err)
+						}
+					}
+				}
+			}
+			started <- result.JobID
+			awaitSignal(t, responseGate, "parent status read before child response")
+			return finalResponse("continue after held response")
+		},
+		func(req llm.Request) llm.Response {
+			observationRequest(t, req, []string{fmt.Sprintf(`job_id=%q`, jobID)}, nil)
+			requireCanonicalShellNotification(t, child, jobID, 0)
+			return finalResponse("child observed own completion")
+		},
+	)
+	if _, err := parent.ProcessInput(context.Background(), "create a child status owner", nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case jobID = <-started:
+	case <-time.After(30 * time.Second): // TRIPWIRE: local scripted child provider and shell only.
+		t.Fatal("child never reached the held provider response")
+	}
+	children := parent.subagents.sessions()
+	if len(children) != 1 || jobID == "" {
+		t.Fatalf("children=%d jobID=%q", len(children), jobID)
+	}
+	child = children[0]
+	child.mu.Lock()
+	resume := child.notifyFunc
+	child.mu.Unlock()
+	if resume == nil {
+		t.Fatal("initialized child has no production wake callback")
+	}
 	watcher := newJobNotifyWatcher(child, nil)
-	jobID := startBackgroundShellJob(t, child, "printf 'child done\\n'")
-	watcher.await(t, "child terminal notification queued", func() bool {
-		return child.peekNotifications() > 0
+	if err := os.WriteFile(gate, []byte("go\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	id := awaitCanonicalShellCustody(t, watcher, child, jobID)
+	call := terminalStatusCall(jobID)
+	adapter.script("root", func(llm.Request) llm.Response {
+		requireCanonicalShellNotification(t, child, jobID, 0)
+		return toolCallResponse(call)
+	}, func(req llm.Request) llm.Response {
+		requireTerminalStatusResult(t, req, call.ID, jobID)
+		requireCanonicalShellNotification(t, child, jobID, 0)
+		return finalResponse("parent read child status")
 	})
-
-	call := llm.ToolCallData{
-		ID:        "status",
-		Name:      "job_status",
-		Arguments: json.RawMessage(`{"target":` + mustJSONString(jobID) + `}`),
+	if _, err := parent.ProcessInput(context.Background(), "read the child's terminal status", nil); err != nil {
+		t.Fatal(err)
 	}
-	result := parent.reg.ExecuteCall(context.Background(), parent.env, call)
-	if result.IsError {
-		t.Fatalf("parent job_status: %s", result.Output)
+	requireCanonicalShellNotification(t, child, jobID, 0)
+	assertNotificationPending(t, child, []string{id})
+	for _, entry := range notificationRawEntries(t, parent.TranscriptPath()) {
+		if entry.Turn.AttentionID == id || slices.Contains(entry.Turn.ObservedNotificationIDs, id) {
+			t.Fatal("parent adopted or observed child-owned attention")
+		}
 	}
-	if err := parent.persistToolResults(context.Background(), []llm.ToolCallData{call}, []tooldefs.ExecResult{result}); err != nil {
-		t.Fatalf("persistToolResults: %v", err)
-	}
-
-	rec := loadShellRecord(t, child.jobManager, jobID)
-	if rec.NotifyState != jobstore.NotifyPending {
-		t.Errorf("child terminal_notification_state = %q, want %q after parent status read",
-			rec.NotifyState, jobstore.NotifyPending)
-	}
-	if got := child.peekNotifications(); got != 1 {
-		t.Errorf("child pending notifications = %d, want 1 after parent status read", got)
+	child.SetNotifyFunc(resume)
+	releaseResponse()
+	waitForSoleChildIdle(t, parent)
+	waitForStableSupervisionRun(t, parent, child.ID())
+	requireCanonicalShellNotification(t, child, jobID, 1)
+	if len(adapter.requestsFor(marker)) != 3 || len(adapter.requestsFor("root")) != 4 {
+		t.Fatalf("requests child=%d parent=%d, want 3 and 4", len(adapter.requestsFor(marker)), len(adapter.requestsFor("root")))
 	}
 }
 
 func TestTerminalJobStatusReadContinuesCurrentTurn(t *testing.T) {
 	t.Parallel()
-
-	client := llm.NewClient()
-	adapter := &fakeAdapter{name: "openai"}
-	client.Register(adapter)
-	s, err := NewSession(
-		client,
-		NewOpenAIProfile("gpt-5.2"),
-		execenv.NewLocalExecutionEnvironment(t.TempDir()),
-		SessionConfig{
-			testOnly: testConfig{
-				skipGitSnapshot:     true,
-				minimalSystemPrompt: true,
-				noSyncJobStore:      true,
-			},
-		},
-	)
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	t.Cleanup(func() { s.Close() })
-
+	s, adapter := newStatusNotificationSession(t, false)
 	watcher := newJobNotifyWatcher(s, nil)
 	jobID := startBackgroundShellJob(t, s, "printf 'done\\n'")
-	watcher.await(t, "terminal notification queued", func() bool {
-		return s.peekNotifications() > 0
-	})
-
-	adapter.steps = []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response {
-			return llm.Response{Message: llm.Message{
-				Role: llm.RoleAssistant,
-				Content: []llm.ContentPart{{
-					Kind: llm.ContentToolCall,
-					ToolCall: &llm.ToolCallData{
-						ID:        "status",
-						Name:      "job_status",
-						Arguments: json.RawMessage(`{"target":` + mustJSONString(jobID) + `}`),
-						Type:      "function",
-					},
-				}},
-			}}
-		},
-		func(llm.Request) llm.Response { return finalResponse("continued") },
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	defer cancel()
-	output, err := s.ProcessInput(ctx, "finish after checking the job", nil)
-	if err != nil {
-		t.Fatalf("ProcessInput: %v", err)
-	}
-	if output != "continued" {
-		t.Fatalf("ProcessInput output = %q, want continued", output)
-	}
-	if got := len(adapter.Requests()); got != 2 {
-		t.Fatalf("provider requests = %d, want 2", got)
-	}
+	awaitCanonicalShellCustody(t, watcher, s, jobID)
+	runOwnerStatusResponse(t, s, adapter, jobID)
 }
 
 // TestRunningJobStatusReadLeavesNotificationArmed is the other half of the
@@ -462,16 +506,45 @@ func TestPersistedKeptForegroundShellIsNotRenotifiedOnRestore(t *testing.T) {
 // arms its notification.
 func TestUnpersistedKeptForegroundShellIsRenotifiedOnRestore(t *testing.T) {
 	t.Parallel()
-	s := newTestSession(t)
-	_, _, jobID := keptForegroundShellCall(t, s)
+	s := newQueuePersistTestSession(t, t.TempDir())
+	call, _, jobID := keptForegroundShellCall(t, s)
 	if err := s.jobManager.armPendingTerminalNotifications(); err != nil {
-		t.Fatalf("arm pending: %v", err)
+		t.Fatal(err)
 	}
-	if rec := loadShellRecord(t, s.jobManager, jobID); rec.NotifyState != jobstore.NotifyPending {
-		t.Fatalf("terminal_notification_state = %q, want %q for a reply that never persisted", rec.NotifyState, jobstore.NotifyPending)
+	id := requireCanonicalShellNotification(t, s, jobID, 0)
+	s.Close()
+	meta, err := schema.LoadSessionMeta(s.stateDir, s.id)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got := s.peekNotifications(); got != 1 {
-		t.Fatalf("restore queued %d notification(s), want 1 for a reply that never persisted", got)
+	adapter := &fakeAdapter{name: "openai"}
+	client := llm.NewClient()
+	client.Register(adapter)
+	restored, err := RestoreSessionFromMetaWithConfig(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), meta, RestoreSessionConfig{StateDir: s.stateDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(restored.Close)
+	if _, found := findToolResultInHistory(restored.history, call.ID); found {
+		t.Fatal("unpersisted foreground reply survived restore")
+	}
+	if got := requireCanonicalShellNotification(t, restored, jobID, 0); got != id {
+		t.Fatalf("restored ID=%q want %q", got, id)
+	}
+	adapter.steps = []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
+		observationRequest(t, req, []string{fmt.Sprintf(`job_id=%q`, jobID)}, nil)
+		requireCanonicalShellNotification(t, restored, jobID, 0)
+		return finalResponse("restored foreground completion observed")
+	}}
+	if _, err := restored.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatal(err)
+	}
+	requireCanonicalShellNotification(t, restored, jobID, 1)
+	if _, err := restored.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatal(err)
+	}
+	if len(adapter.Requests()) != 1 {
+		t.Fatalf("provider requests=%d want 1", len(adapter.Requests()))
 	}
 }
 
@@ -538,33 +611,86 @@ func TestKeptForegroundShellUnsyncedReplyLeavesNotificationUnsettled(t *testing.
 // that reply is persisted, its completion notification must stay pending.
 func TestBackgroundShellReplyWithTerminalStatusLeavesNotificationPending(t *testing.T) {
 	t.Parallel()
-	s := newTestSession(t)
-	watcher := newJobNotifyWatcher(s, nil)
-	jobID := startBackgroundShellJob(t, s, "printf 'finishes later\\n'")
-	watcher.await(t, "terminal notification queued", func() bool {
-		return s.peekNotifications() > 0
-	})
+	for _, beforeCustody := range []bool{false, true} {
+		t.Run(fmt.Sprintf("before_custody=%t", beforeCustody), func(t *testing.T) {
+			s, adapter := newStatusNotificationSession(t, true)
+			var jobID, id string
+			if beforeCustody {
+				// A real kept foreground completion is terminal but not yet armed.
+				// Persisting a background reply must not consume this source either.
+				_, _, jobID = keptForegroundShellCall(t, s)
+				rec := loadShellRecord(t, s.jobManager, jobID)
+				if !rec.Status.IsTerminal() || rec.TerminalGen == "" || rec.NotifyState != jobstore.NotifyNotArmed {
+					t.Fatalf("kept terminal source = %+v, want unarmed terminal generation", rec)
+				}
+				id = "shell:" + jobID + ":" + rec.TerminalGen
+				assertNotificationPending(t, s, []string{})
+			} else {
+				watcher := newJobNotifyWatcher(s, nil)
+				jobID = startBackgroundShellJob(t, s, "printf 'finishes later\\n'")
+				id = awaitCanonicalShellCustody(t, watcher, s, jobID)
+			}
 
-	reply, err := marshalShellToolResult(shellResult{
-		JobID:               jobID,
-		Type:                string(jobstore.JobShell),
-		Status:              string(jobstore.StatusFailed),
-		Reason:              "finalize_failed",
-		RunningInBackground: true,
-	}, 100000, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	state, err := json.Marshal(reply.State)
-	if err != nil {
-		t.Fatal(err)
-	}
-	call := llm.ToolCallData{ID: "fg-timeout", Name: "shell", Arguments: json.RawMessage(`{"command":"sleep 999"}`)}
-	result := tooldefs.ExecResult{ToolName: "shell", CallID: call.ID, Output: reply.Output, ToolState: state}
-	if err := s.persistToolResults(context.Background(), []llm.ToolCallData{call}, []tooldefs.ExecResult{result}); err != nil {
-		t.Fatalf("persistToolResults: %v", err)
-	}
-	if rec := loadShellRecord(t, s.jobManager, jobID); rec.NotifyState != jobstore.NotifyPending {
-		t.Fatalf("terminal_notification_state = %q after a background reply, want %q", rec.NotifyState, jobstore.NotifyPending)
+			reply, err := marshalShellToolResult(shellResult{
+				JobID:               jobID,
+				Type:                string(jobstore.JobShell),
+				Status:              string(jobstore.StatusFailed),
+				Reason:              "finalize_failed",
+				RunningInBackground: true,
+			}, 100000, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			state, err := json.Marshal(reply.State)
+			if err != nil {
+				t.Fatal(err)
+			}
+			call := llm.ToolCallData{ID: "fg-timeout", Name: "shell", Arguments: json.RawMessage(`{"command":"sleep 999"}`)}
+			result := tooldefs.ExecResult{ToolName: "shell", CallID: call.ID, Output: reply.Output, ToolState: state}
+			if err := s.persistToolResults(context.Background(), []llm.ToolCallData{call}, []tooldefs.ExecResult{result}); err != nil {
+				t.Fatalf("persistToolResults: %v", err)
+			}
+			if beforeCustody {
+				if rec := loadShellRecord(t, s.jobManager, jobID); rec.NotifyState != jobstore.NotifyNotArmed {
+					t.Fatalf("terminal_notification_state = %q after durable background reply, want %q", rec.NotifyState, jobstore.NotifyNotArmed)
+				}
+				assertNotificationPending(t, s, []string{})
+				persisted := false
+				for _, entry := range notificationRawEntries(t, s.TranscriptPath()) {
+					if entry.Turn.AttentionID == id || slices.Contains(entry.Turn.ObservedNotificationIDs, id) {
+						t.Fatal("unarmed completion was accepted or observed before arming")
+					}
+					if _, found := findToolResultInHistory([]schema.Turn{entry.Turn}, call.ID); found {
+						persisted = true
+					}
+				}
+				if !persisted {
+					t.Fatal("background reply did not reach the disk transcript")
+				}
+				if err := s.jobManager.armPendingTerminalNotifications(); err != nil {
+					t.Fatal(err)
+				}
+				if got := requireCanonicalShellNotification(t, s, jobID, 0); got != id {
+					t.Fatalf("armed ID=%q want original terminal ID %q", got, id)
+				}
+			}
+			requireCanonicalShellNotification(t, s, jobID, 0)
+			assertNotificationPending(t, s, []string{id})
+			adapter.steps = []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
+				observationRequest(t, req, []string{fmt.Sprintf(`job_id=%q`, jobID)}, nil)
+				requireCanonicalShellNotification(t, s, jobID, 0)
+				return finalResponse("later completion observed")
+			}}
+			if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+				t.Fatal(err)
+			}
+			requireCanonicalShellNotification(t, s, jobID, 1)
+			if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+				t.Fatal(err)
+			}
+			if len(adapter.Requests()) != 1 {
+				t.Fatalf("provider requests=%d want 1", len(adapter.Requests()))
+			}
+		})
 	}
 }

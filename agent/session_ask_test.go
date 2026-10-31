@@ -5095,12 +5095,15 @@ func TestAskUser_LiveStateAfterObserverYieldMatchesRestore(t *testing.T) {
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
 			func(req llm.Request) llm.Response { return toolCallResponse(loop) },
+			// Observer custody does not end the source's non-terminal round.
+			func(req llm.Request) llm.Response { return finalResponse("carrier finished") },
 		},
 	})
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
+	t.Cleanup(sess.Close)
 	// Stand sess in as dlg_source's runtime the way a real delegate child is:
 	// it uses the root's controller but does not own it. Releasing the
 	// controller NewSession built for it, and clearing ownership, is what keeps
@@ -5118,6 +5121,7 @@ func TestAskUser_LiveStateAfterObserverYieldMatchesRestore(t *testing.T) {
 	fixture.controller.mu.Lock()
 	fixture.controller.live["dlg_source"].runtime = sess
 	fixture.controller.live["dlg_source"].binding.runtime = sess
+	lease := fixture.controller.live["dlg_source"].binding.lease
 	fixture.controller.mu.Unlock()
 	if _, err := jobWatchToolWithContext(context.Background(), fixture.root, map[string]any{
 		"operation": "create",
@@ -5133,6 +5137,7 @@ func TestAskUser_LiveStateAfterObserverYieldMatchesRestore(t *testing.T) {
 	// TRIPWIRE: scripted model and deterministic local observer harness; this only trips on a genuine lifecycle deadlock.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	ctx = context.WithValue(ctx, delegateRunLeaseContextKey{}, lease)
 	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -5143,7 +5148,7 @@ func TestAskUser_LiveStateAfterObserverYieldMatchesRestore(t *testing.T) {
 		t.Fatalf("SetHumanNote: %v", err)
 	}
 	if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); err != nil || !ran {
-		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v, want the carrier round to yield for observer delivery", ran, err)
+		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v, want the carrier round to complete", ran, err)
 	}
 	if got := sess.askPendingCount(); got != 1 {
 		t.Fatalf("live askPendingCount after observer yield = %d, want 1", got)

@@ -8,7 +8,6 @@ import (
 	"reflect"
 	"sync"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
@@ -188,8 +187,18 @@ func testSubtreeStopCustodyObservedAfterRelease(t *testing.T) {
 		return finalResponse("observed-after-stop-release-731a")
 	})
 	root := newMessagingRoot(t, adapter, nil)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx, cancel := context.WithCancel(t.Context())
+	var interruptExited, toolExited chan struct{}
+	defer func() {
+		releaseModel()
+		cancel()
+		if toolExited != nil {
+			waitForTestSignal(t, toolExited, "registered Stop tool worker cleanup")
+		}
+		if interruptExited != nil {
+			waitForTestSignal(t, interruptExited, "human Stop worker cleanup")
+		}
+	}()
 	if _, err := root.ProcessInput(ctx, "start Stop custody fixture", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +215,12 @@ func testSubtreeStopCustodyObservedAfterRelease(t *testing.T) {
 	}
 	admitted := make(chan delegateStopResult, 1)
 	interruptDone := make(chan error, 1)
+	interruptExited = make(chan struct{})
+	admissionOutcome := make(chan struct{})
+	signalAdmissionOutcome := sync.OnceFunc(func() { close(admissionOutcome) })
 	go func() {
+		defer close(interruptExited)
+		defer signalAdmissionOutcome()
 		var stopErr error
 		_, interruptErr := child.InterruptClientMutation(ctx, appwire.TurnInterruptParams{ClientMutationID: "stop-custody-hold-731a"}, func() {
 			result, cancelPlan, _, err := root.delegateController.StopSubtree(rootDelegateActor(root.ID()), child.owningDelegateID)
@@ -216,6 +230,7 @@ func testSubtreeStopCustodyObservedAfterRelease(t *testing.T) {
 			}
 			executeDelegateCancelPlan(cancelPlan)
 			admitted <- result
+			signalAdmissionOutcome()
 			select {
 			case <-result.done:
 			case <-ctx.Done():
@@ -227,13 +242,14 @@ func testSubtreeStopCustodyObservedAfterRelease(t *testing.T) {
 		}
 		interruptDone <- stopErr
 	}()
+	waitForTestSignal(t, admissionOutcome, "human Stop admission or worker result")
 	var result delegateStopResult
 	select {
 	case result = <-admitted:
 	case err := <-interruptDone:
 		t.Fatalf("human Stop returned before subtree admission: %v", err)
-	case <-ctx.Done():
-		t.Fatal("human Stop did not admit subtree cancellation")
+	default:
+		t.Fatal("human Stop signaled without admission or a worker result")
 	}
 	if !child.notificationStopHeld() {
 		t.Fatal("human Stop did not establish its execution hold")
@@ -254,7 +270,9 @@ func testSubtreeStopCustodyObservedAfterRelease(t *testing.T) {
 	// The registered tool joins the same admitted Stop, not another policy or
 	// synthetic completion. Its fence cannot settle until the real run unwinds.
 	toolDone := make(chan error, 1)
+	toolExited = make(chan struct{})
 	go func() {
+		defer close(toolExited)
 		args, _ := json.Marshal(map[string]any{"target": child.owningDelegateID, "max_wait_ms": 5000})
 		out := root.execTool(ctx, llm.ToolCallData{ID: "real-subtree-stop", Name: "job_stop", Arguments: args, Type: "function"}, llm.FinishReasonToolCalls)
 		if out.IsError {
@@ -264,14 +282,12 @@ func testSubtreeStopCustodyObservedAfterRelease(t *testing.T) {
 		toolDone <- nil
 	}()
 	releaseModel()
-	select {
-	case <-stop.done:
-	case <-ctx.Done():
-		t.Fatal("real subtree Stop did not settle")
-	}
+	waitForTestSignal(t, stop.done, "real subtree Stop settlement")
+	waitForTestSignal(t, toolExited, "registered Stop tool worker return")
 	if err := <-toolDone; err != nil {
 		t.Fatal(err)
 	}
+	waitForTestSignal(t, interruptExited, "human Stop worker return")
 	if err := <-interruptDone; err != nil {
 		t.Fatalf("human Stop cancellation and wait: %v", err)
 	}
@@ -310,11 +326,7 @@ func testSubtreeStopCustodyObservedAfterRelease(t *testing.T) {
 	if _, err := child.AcceptClientMutationStart(appwire.TurnStartParams{ClientMutationID: "stop-custody-release-731a", Input: []appwire.InputItem{{Type: "text", Text: "continue"}}}); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case <-observed:
-	case <-ctx.Done():
-		t.Fatal("retained accepted frame did not reach the eligible provider")
-	}
+	waitForTestSignal(t, observed, "retained accepted frame at eligible provider")
 	waitForStableSupervisionRun(t, root, child.ID())
 	for _, id := range ids {
 		requireOwnedDrainAttentionObservedOnce(t, child, id)

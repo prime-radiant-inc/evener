@@ -31,11 +31,13 @@ const (
 type lintConfig struct {
 	Modules  []string
 	Parallel int
+	Verbose  bool
 }
 
 // parseLintConfig reads the env-only interface: MODULES (whitespace-split,
-// caller order preserved) and LINT_PARALLEL. An empty variable means its
-// default. The returned diagnostic is non-empty exactly when the
+// caller order preserved), LINT_PARALLEL and LINT_GOLANGCI_VERBOSE (exactly 1
+// enables verbose output). An empty variable means its default. The returned
+// diagnostic is non-empty exactly when the
 // configuration is unusable; the caller prints it and summarizes as a setup
 // failure without creating anything.
 func parseLintConfig(getenv func(string) string) (lintConfig, string) {
@@ -51,7 +53,7 @@ func parseLintConfig(getenv func(string) string) (lintConfig, string) {
 		}
 		parallel = n
 	}
-	return lintConfig{Modules: strings.Fields(modules), Parallel: parallel}, ""
+	return lintConfig{Modules: strings.Fields(modules), Parallel: parallel, Verbose: getenv("LINT_GOLANGCI_VERBOSE") == "1"}, ""
 }
 
 // isPositiveInteger accepts exactly the shell contract's ^[1-9][0-9]*$:
@@ -351,17 +353,20 @@ func moduleLint(getenv func(string) string, stdout, stderr io.Writer, signals <-
 		stdout:   stdout,
 		stderr:   stderr,
 		linter:   "golangci-lint",
-		newCmd:   golangciCmd,
+		newCmd:   func(module string) *exec.Cmd { return golangciCmd(module, cfg.Verbose) },
 		signals:  signals,
 		grace:    grace,
 	}
 	return r.run()
 }
 
-func golangciCmd(module string) *exec.Cmd {
+func golangciCmd(module string, verbose bool) *exec.Cmd {
 	// This runner already bounds child concurrency; disable the linter's
 	// process-global exclusion so every child can perform its module check.
 	cmd := exec.Command("golangci-lint", "run", "--allow-parallel-runners", "./...") //nolint:noctx // lifecycle is managed by the runner's process-group TERM/KILL escalation
+	if verbose {
+		cmd.Args = append(cmd.Args, "--verbose")
+	}
 	cmd.Dir = module
 	return cmd
 }

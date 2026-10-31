@@ -113,7 +113,8 @@ func seedWaitWatch(t *testing.T, sess *Session) {
 
 // A clean completion rests by the reason its communicate gave: awaiting only
 // when the agent needs a response, idle for a plain reply and for a wait on
-// work. The SessionEnd event carries the same state.
+// work. Settled inputs emit SessionEnd with the same state. Waiting yields a
+// completed execution without declaring the input complete before its waker.
 func TestProcessInput_CleanCompletionRestsByEndReason(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -150,17 +151,31 @@ func TestProcessInput_CleanCompletionRestsByEndReason(t *testing.T) {
 			<-doneCh
 			mu.Lock()
 			defer mu.Unlock()
-			ended := false
+			ended, communicated, completed := 0, 0, 0
+			wantReason := tc.reason
+			if wantReason == "" {
+				wantReason = "done"
+			}
 			for _, ev := range *eventsPtr {
 				if d, ok := ev.Data.(events.SessionEndData); ok && ev.Kind == events.EventSessionEnd && d.Reason == "input_complete" {
-					ended = true
+					ended++
 					if d.State != string(tc.want) {
 						t.Fatalf("SessionEnd.State = %q, want %q", d.State, tc.want)
 					}
 				}
+				if d, ok := ev.Data.(events.CommunicateData); ok && ev.Kind == events.EventCommunicate && d.EndTurn && d.EndReason == wantReason {
+					communicated++
+				}
+				if d, ok := ev.Data.(events.ExecutionEndedData); ok && ev.Kind == events.EventExecutionEnded && d.Status == string(schema.TurnCompleted) {
+					completed++
+				}
 			}
-			if !ended {
-				t.Fatal("no input_complete SessionEnd")
+			wantEnded := 1
+			if tc.reason == "waiting_on_work" {
+				wantEnded = 0
+			}
+			if ended != wantEnded || communicated != 1 || completed != 1 {
+				t.Fatalf("input_complete=%d accepted communicate=%d completed execution=%d, want %d/1/1", ended, communicated, completed, wantEnded)
 			}
 		})
 	}
@@ -307,9 +322,29 @@ func TestWireState_PendingParentWorkMakesIdleParentActive(t *testing.T) {
 		t.Fatalf("WireState idle = %q", got)
 	}
 	withNotification.enqueueJobNotification(jobNotification{})
+	if got := withNotification.WireState(); got != string(SessionIdle) {
+		t.Fatalf("unaccepted source token projected runnable receiver work: %q", got)
+	}
+	if err := withNotification.enqueueNotification(notification{ID: "wire-pending-5", Message: llm.User("wire-payload-5")}); err != nil {
+		t.Fatal(err)
+	}
+	assertNotificationPending(t, withNotification, []string{"wire-pending-5"})
 	if got := withNotification.WireState(); got != string(SessionProcessing) {
 		t.Fatalf("WireState with pending notification = %q, want %q", got, SessionProcessing)
 	}
+	if err := withNotification.ensureClientMutationStore(); err != nil {
+		t.Fatal(err)
+	}
+	if err := withNotification.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		snapshot.SteeringHeld = true
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := withNotification.WireState(); got != string(SessionIdle) {
+		t.Fatalf("Stop-held notification wire=%q, want idle", got)
+	}
+	assertNotificationPending(t, withNotification, []string{"wire-pending-5"})
 
 	withQueuedInput := newTestSessionForState(t)
 	if err := withQueuedInput.Enqueue(context.Background(), "queued follow-up"); err != nil {
@@ -320,26 +355,19 @@ func TestWireState_PendingParentWorkMakesIdleParentActive(t *testing.T) {
 	}
 }
 
-// TestWireState_AwaitingOutranksAutonomy pins the projection precedence rule:
-// the autonomy-in-flight override upgrades idle ONLY — awaiting is never
-// masked as "active". Today the settle suppressors keep the two from
-// coexisting at the settle itself, but a notification can land after the
-// session has settled awaiting, and the ask-user-question design makes the
-// coexistence routine: an asking session rests awaiting while its children
-// run and their completion notifications queue behind the entry gate. If the
-// override ever outranked awaiting, the question would read as "working"
-// forever while the wakes that could clear it stay gated on the very answer
-// the user was never told to give.
+// A pending human question gates accepted notification work. Its wire state
+// must still ask for the answer, rather than claiming that gated work is active.
 func TestWireState_AwaitingOutranksAutonomy(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return endReasonResponse("done", "needs_response") },
+		func(llm.Request) llm.Response { return toolCallResponse(askUserCall("ask-wire", askUserArgsValid())) },
 	}})
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{testOnly: immediateRestConfig()})
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(sess.Close)
 	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -349,8 +377,11 @@ func TestWireState_AwaitingOutranksAutonomy(t *testing.T) {
 	if got := sess.State(); got != SessionAwaiting {
 		t.Fatalf("state after clean completion = %q, want %q", got, SessionAwaiting)
 	}
-	// A job notification lands after the session settled awaiting.
-	sess.enqueueJobNotification(jobNotification{})
+	// Accepted custody cannot answer the pending human question.
+	if err := sess.enqueueNotification(notification{ID: "question-pending-5", Message: llm.User("question-payload-5")}); err != nil {
+		t.Fatal(err)
+	}
+	assertNotificationPending(t, sess, []string{"question-pending-5"})
 	if got := sess.WireState(); got != string(SessionAwaiting) {
 		t.Fatalf("WireState awaiting+pending notification = %q, want %q (awaiting outranks autonomy)", got, SessionAwaiting)
 	}

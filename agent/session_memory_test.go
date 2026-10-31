@@ -905,9 +905,13 @@ func TestMemoryContextLifecycleDelegate(t *testing.T) {
 	if len(child.sess.history) >= 14 {
 		t.Fatal("child history did not fold")
 	}
-	if _, err := child.sess.ProcessInput(context.Background(), "after child fold", nil); err != nil {
-		t.Fatal(err)
+	// An idle child needs a new owner-admitted generation, not a direct call
+	// using the lease its previous generation has already released.
+	postFold := (delegateRuntime{owner: s}).send(context.Background(), res.DelegateID, "after child fold", 60000).result
+	if postFold.Err != nil {
+		t.Fatal(postFold.Err)
 	}
+	child = memoryWaitChild(t, s, res.ChildSessionID)
 	if memoryContextCount(child.sess) != 1 {
 		t.Fatalf("child post-fold contexts=%d, want both indexes in one", memoryContextCount(child.sess))
 	}

@@ -85,6 +85,10 @@ type RetirementController struct {
 	// is in flight. It is nil in production and is installed before the controller
 	// is used concurrently, so it needs no lock of its own.
 	evidenceGate func()
+	// preparingObserved is a test-only observation of the published claim,
+	// outside mu and before evidence collection. It is nil in production and
+	// installed before concurrent use, and must not block.
+	preparingObserved func(*RetirementClaim)
 	// namingHeld counts the active leases that are a session namer naming its
 	// session: work that settles on its own within sessionNameTimeout, which
 	// a manual retire waits for (TryManualClaim). namingWake is closed, and
@@ -596,6 +600,9 @@ func (c *RetirementController) TryClaim(manual bool) (*RetirementClaim, Retireme
 	c.claim = &RetirementClaim{controller: c, root: c.root, generation: c.generation, tree: c.root.delegateController}
 	claim := c.claim
 	c.mu.Unlock()
+	if c.preparingObserved != nil {
+		c.preparingObserved(claim)
+	}
 	var blockers []RetirementBlocker
 	var evidenceErr error
 	if claim.tree != nil {

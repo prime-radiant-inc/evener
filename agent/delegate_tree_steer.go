@@ -193,7 +193,7 @@ func (c *delegateTreeController) AbortSteerPersistence(claim *delegateSteeringCl
 func (c *delegateTreeController) BeginModelRequest(lease delegateLease) (*delegateModelRequestClaim, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	_, live, err := c.admitLeaseLocked(lease, delegatestore.PhaseRunning)
+	_, live, err := c.admitLeaseWithStopErrorLocked(lease, context.Canceled, delegatestore.PhaseRunning)
 	if err != nil {
 		return nil, err
 	}
@@ -229,7 +229,7 @@ func (c *delegateTreeController) CompleteModelRequest(claim *delegateModelReques
 	if claim == nil || c.modelClaims[claim.token] != claim {
 		return nil, errDelegateStaleLease
 	}
-	_, live, err := c.admitLeaseLocked(claim.lease, delegatestore.PhaseRunning)
+	_, live, err := c.admitLeaseWithStopErrorLocked(claim.lease, context.Canceled, delegatestore.PhaseRunning)
 	if err != nil || live.binding.runtime != claim.runtime {
 		c.releaseModelClaimLocked(claim.token)
 		c.evidenceVersion++

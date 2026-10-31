@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -109,15 +110,21 @@ func TestDelegateAttentionDriveStaleSelectionPreservesNextOwnerRun(t *testing.T)
 
 // An accepted marker belongs to an exact reserved generation even when its
 // journal commit failed. Revalidating fresh selections must not discard that
-// existing reservation just because the transcript ID is already consumed.
+// existing reservation before a successful response observes its pending ID.
 func TestDelegateAttentionDriveRetriesAcceptedMarkerGeneration(t *testing.T) {
 	t.Parallel()
+	var root *Session
+	response := llm.Assistant("accepted-retry-response-sentinel")
 	fixture := newColdStableDelegateFixture(t, "")
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return finalResponse("warm result") },
-		func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("nothing to do")} },
+		func(req llm.Request) llm.Response {
+			assertStableSupervisionPresentingLease(t, root, fixture.delegateID, 2)
+			observationRequest(t, req, []string{"inspect completed work"}, nil)
+			return llm.Response{Message: response}
+		},
 	}
-	root := restoreSupervisionRoot(t, fixture, nil)
+	root = restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)
 	const attentionID = "attention:accepted-retry"
@@ -125,6 +132,7 @@ func TestDelegateAttentionDriveRetriesAcceptedMarkerGeneration(t *testing.T) {
 		t.Fatalf("append attention = appended:%t err:%v", appended, err)
 	}
 	controller := root.delegateController
+	t.Cleanup(func() { abortStableDelegateStartReservation(root, fixture.delegateID) })
 	if _, err := controller.openDelegateAttention(fixture.delegateID, attentionID); err != nil {
 		t.Fatalf("open attention: %v", err)
 	}
@@ -143,9 +151,21 @@ func TestDelegateAttentionDriveRetriesAcceptedMarkerGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(fold.pendingIDs()) != 0 || fold.resumeGenerations[attentionID] != 2 {
-		t.Fatalf("accepted attention = pending:%v generations:%v, want consumed generation 2", fold.pendingIDs(), fold.resumeGenerations)
+	if !reflect.DeepEqual(fold.pendingIDs(), []string{attentionID}) || len(fold.resolutions) != 0 || len(fold.resumeGenerations) != 0 {
+		t.Fatalf("accepted attention must remain unobserved: pending:%v resolutions:%v generations:%v", fold.pendingIDs(), fold.resolutions, fold.resumeGenerations)
 	}
+	controller.mu.Lock()
+	var reserved []uint64
+	for _, record := range controller.reservations {
+		if record.delegateID == fixture.delegateID && record.attentionID == attentionID && record.attentionAdmitted && record.attentionResolutionReady {
+			reserved = append(reserved, record.generation)
+		}
+	}
+	controller.mu.Unlock()
+	if !reflect.DeepEqual(reserved, []uint64{2}) {
+		t.Fatalf("accepted retry generations = %v, want exactly [2]", reserved)
+	}
+	assertAttentionResponseReceipts(t, sub.sess, attentionID, 0)
 	if got := supervisionRequestCount(fixture.adapter); got != 1 {
 		t.Fatalf("provider requests before commit retry = %d, want warm only", got)
 	}
@@ -167,13 +187,5 @@ func TestDelegateAttentionDriveRetriesAcceptedMarkerGeneration(t *testing.T) {
 	if got := supervisionRequestCount(fixture.adapter); got != 2 {
 		t.Fatalf("provider requests = %d, want warm plus one retried attention turn", got)
 	}
-	resolutions := 0
-	for _, entry := range readAttentionTranscriptEntries(t, sub.sess.TranscriptPath()) {
-		if resolution := entry.Turn.AttentionResolution; resolution != nil && resolution.AttentionID == attentionID {
-			resolutions++
-		}
-	}
-	if resolutions != 1 {
-		t.Fatalf("accepted attention resolution markers = %d, want one", resolutions)
-	}
+	assertStableSupervisionAttentionReceipt(t, root, sub, attentionID, 2, response)
 }

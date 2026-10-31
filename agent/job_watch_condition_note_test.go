@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 // TestConditionWatchNote_AcceptedAndSummarised proves a note is the watch's own
@@ -130,8 +131,16 @@ func TestStableReceiverWatchNote_RidesTheDurableFrame(t *testing.T) {
 
 	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "handoff"})
 
-	frame := fixture.requireOnePending(t).state.Frame
-	if !strings.Contains(frame, "note: watching for the handoff") {
-		t.Fatalf("stable-receiver frame lacks the note:\n%s", frame)
+	produced := producerSourceEvents(t, fixture.sourceJM, jobstore.EventWatchSendPending)
+	if len(produced) != 1 || !strings.Contains(produced[0].WatchSend.Frame, "watching for the handoff") {
+		t.Fatal("real producer did not persist the opaque watch note")
+	}
+	state := *produced[0].WatchSend
+	entries := notificationRawEntries(t, fixture.rootTranscriptPath)
+	if len(entries) != 1 || entries[0].Turn.AttentionID != stableWatchAttentionID(state) || !strings.Contains(entries[0].Turn.Message.Text(), "watching for the handoff") {
+		t.Fatal("watch note did not reach exact canonical receiver custody")
+	}
+	if countExactWatchSendEvents(loadJobStoreEvents(t, fixture.sourceJM), jobstore.EventWatchSendDelivered, state) != 1 {
+		t.Fatal("watch note custody did not receive exactly one source acknowledgement")
 	}
 }

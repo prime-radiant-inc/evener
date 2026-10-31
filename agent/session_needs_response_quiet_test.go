@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -170,22 +171,45 @@ func TestNeedsResponseStoppedTurnInsideTheQuietPeriodNeverArms(t *testing.T) {
 // the rest stays idle when the timer fires.
 func TestNeedsResponseWorkArrivingInsideTheQuietPeriodNeverArms(t *testing.T) {
 	t.Parallel()
-	sess, fake := newQuietPeriodSession(t, func(llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") })
-	evs, mu, done := collectEvents(sess)
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
-		t.Fatal(err)
-	}
-	sess.enqueueJobNotification(jobNotification{JobID: "job_late"})
-	fake.Advance(needsResponseQuietPeriodDefault)
-	fake.Drain()
-	if got := sess.State(); got != SessionIdle {
-		t.Fatalf("state = %q, want idle with a notification pending", got)
-	}
-	if got := settledStatesAfterClose(sess, evs, mu, done); len(got) != 0 {
-		t.Fatalf("status settled events = %v, want none", got)
+	for _, canonical := range []bool{false, true} {
+		name := "unaccepted_source_token"
+		if canonical {
+			name = "accepted_receiver_work"
+		}
+		t.Run(name, func(t *testing.T) {
+			sess, fake := newQuietPeriodSession(t, func(llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") })
+			evs, mu, done := collectEvents(sess)
+			// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+				t.Fatal(err)
+			}
+			fake.Advance(needsResponseQuietPeriodDefault / 2)
+			want := SessionAwaiting
+			if canonical {
+				if err := sess.enqueueNotification(notification{ID: "quiet-custody-5", Message: llm.User("quiet-payload-5")}); err != nil {
+					t.Fatal(err)
+				}
+				assertNotificationPending(t, sess, []string{"quiet-custody-5"})
+				want = SessionIdle
+			} else {
+				sess.enqueueJobNotification(jobNotification{JobID: "job_late"})
+				assertNotificationPending(t, sess, []string{})
+			}
+			fake.Advance(needsResponseQuietPeriodDefault)
+			fake.Drain()
+			if got := sess.State(); got != want {
+				t.Fatalf("state=%q want=%q, accepted=%t", got, want, canonical)
+			}
+			states := settledStatesAfterClose(sess, evs, mu, done)
+			if canonical && len(states) != 0 {
+				t.Fatalf("accepted work settled=%v, want none", states)
+			}
+			if !canonical && (len(states) != 1 || states[0] != string(SessionAwaiting)) {
+				t.Fatalf("unaccepted source settled=%v, want one awaiting", states)
+			}
+		})
 	}
 }
 
@@ -664,14 +688,24 @@ func TestFilteredWakeAfterATurnThatMovedOnStaysIdle(t *testing.T) {
 	}
 }
 
-// The rest a filtered wake re-arms still waits on work in flight: a wake
-// whose notification could not be recorded puts it back in the queue and
-// runs no turn, so the session stays idle past the fresh quiet period.
-func TestFilteredWakeThatRequeuesWorkInsideTheQuietPeriodStaysIdle(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
+// A storage-refused wake keeps accepted receiver custody, not a reconstructed
+// legacy queue. Pending work suppresses awaiting until storage recovers.
+func TestFilteredWakeWithRetainedCustodyInsideTheQuietPeriodStaysIdle(t *testing.T) {
+	// Serial: capture the process-wide logger during intentional missing storage.
+	captureReceiverErrorLogs(t, os.ErrNotExist)
 	fake := agenttest.NewFakeClock()
-	sess := newSession(t, withDir(dir), withClock(fake), withSteps(func(llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") }))
+	calls := 0
+	sess := newSession(t, withClock(fake), withConfig(SessionConfig{StateDir: t.TempDir()}), withSteps(
+		func(llm.Request) llm.Response {
+			calls++
+			return endReasonResponse("which?", "needs_response")
+		},
+		func(req llm.Request) llm.Response {
+			calls++
+			observationRequest(t, req, []string{"quiet-storage-payload-5"}, nil)
+			return endReasonResponse("recovered-output-5", "done")
+		},
+	))
 	evs, mu, done := collectEvents(sess)
 	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -680,27 +714,62 @@ func TestFilteredWakeThatRequeuesWorkInsideTheQuietPeriodStaysIdle(t *testing.T)
 		t.Fatal(err)
 	}
 	fake.Advance(needsResponseQuietPeriodDefault / 2)
-	jm, err := newJobManager(dir, sess.ID(), sess.enqueueJobNotification)
-	if err != nil {
-		t.Fatalf("newJobManager: %v", err)
+	n := notification{ID: "quiet-storage-5", Message: llm.User("quiet-storage-payload-5")}
+	if err := sess.enqueueNotification(n); err != nil {
+		t.Fatal(err)
 	}
-	sess.jobManager = jm
-	appendPendingJobNotificationRecord(t, jm, sess.ID())
-	sess.enqueueJobNotification(jobNotification{JobID: "job_X", JobType: "shell", Status: "completed", OutputBytes: 42})
-	appendFails := context.WithValue(ctx, sessionLifecycleFaultsKey{}, map[string]error{"append_notification": errors.New("append failed")})
-	if _, err := sess.ProcessInputKind(appendFails, "", nil, EntryNotification); err != nil {
-		t.Fatalf("refused wake: %v", err)
+	assertNotificationPending(t, sess, []string{n.ID})
+	path := sess.TranscriptPath()
+	backup := path + ".held"
+	if err := os.Rename(path, backup); err != nil {
+		t.Fatal(err)
 	}
-	if sess.peekNotifications() == 0 {
-		t.Fatal("the refused wake's notification was not requeued")
+	defer func() {
+		if _, err := os.Stat(backup); err == nil {
+			if err := os.Rename(backup, path); err != nil {
+				t.Error(err)
+			}
+		}
+	}()
+	if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing receiver wake error=%v, want os.ErrNotExist", err)
+	}
+	if calls != 1 || sess.peekNotifications() != 0 {
+		t.Fatalf("refused wake dispatched or rebuilt source queue: calls=%d legacy=%d", calls, sess.peekNotifications())
 	}
 	fake.Advance(2 * needsResponseQuietPeriodDefault)
 	fake.Drain()
 	if got := sess.State(); got != SessionIdle {
-		t.Fatalf("state = %q, want idle while the requeued notification waits", got)
+		t.Fatalf("state=%q, want idle while receiver storage recovers", got)
 	}
+	if err := os.Rename(backup, path); err != nil {
+		t.Fatal(err)
+	}
+	assertNotificationPending(t, sess, []string{n.ID})
+	assertNotificationRecords(t, path, n.ID, n.Message, 1)
+	if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("provider calls=%d, want initial plus recovered notification", calls)
+	}
+	assertNotificationObservedOnce(t, path, n.ID)
+	assertNotificationPending(t, sess, []string{})
 	if got := settledStatesAfterClose(sess, evs, mu, done); len(got) != 0 {
-		t.Fatalf("status settled events = %v, want none", got)
+		t.Fatalf("status settled events=%v, want none", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	boundaries := 0
+	for _, ev := range *evs {
+		if ev.Kind == events.EventTurnStarted {
+			boundaries++
+		}
+	}
+	// Direct ProcessInput's user boundary belongs to the server. Only the
+	// recovered notification announces one here, never the refused wake.
+	if boundaries != 1 {
+		t.Fatalf("notification boundaries=%d, want only recovered delivery", boundaries)
 	}
 }
 

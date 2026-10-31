@@ -25,7 +25,7 @@ jobs:
   # after the other on one runner they took over six. `web`, the required
   # check, passes only when both lanes do.
   web-unit:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -63,7 +63,7 @@ jobs:
       - uses: ./.github/actions/go-cache-save
 
   web-browser:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -122,7 +122,7 @@ jobs:
   web:
     if: always()
     needs: [web-unit, web-browser]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Require both frontend lanes
         env:
@@ -132,7 +132,7 @@ jobs:
           test "$(jq -r '[.[].result] | all(. == "success")' <<<"$RESULTS")" = true
 
   native:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -153,7 +153,7 @@ jobs:
         run: make test-native
 
   api-package:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -170,7 +170,7 @@ jobs:
         run: make test-api-package
 
   static-build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -194,7 +194,7 @@ jobs:
       - uses: ./.github/actions/go-cache-save
 
   lint-golangci:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -234,6 +234,8 @@ jobs:
           make tools-golangci
 
       - name: Lint (golangci-lint across all go.work modules)
+        env:
+          LINT_GOLANGCI_VERBOSE: '1'
         run: make lint-golangci
 
       # The tagged compile floors use the same golangci-lint binary, so they
@@ -251,7 +253,7 @@ jobs:
       - uses: ./.github/actions/go-cache-save
 
   lint-repository:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -282,7 +284,7 @@ jobs:
   # its own script directly and fails the lane on its own verdict, so both
   # gates keep their teeth.
   fuzz-checks:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -306,7 +308,7 @@ jobs:
   static:
     if: always()
     needs: [static-build, lint-golangci, lint-repository, fuzz-checks, api-package, native]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Require every static lane
         env:
@@ -325,7 +327,7 @@ jobs:
       fail-fast: false
       matrix:
         part: [hub, rest]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Record pull request candidate identity
         if: github.event_name == 'pull_request'
@@ -363,7 +365,7 @@ jobs:
   race-root:
     if: always()
     needs: [race-root-parts]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Require both root race lanes
         env:
@@ -379,7 +381,7 @@ jobs:
       max-parallel: 2
       matrix:
         scope: [agent, nonagent]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -388,14 +390,19 @@ jobs:
           go-cache-kind: race-${{ matrix.scope }}
 
       - name: Test (race detector — ${{ matrix.scope }})
-        run: make test-race RACE_SCOPE=${{ matrix.scope }}
+        run: |
+          if [ "${{ matrix.scope }}" = agent ]; then
+            flags="$(go env GOFLAGS 2>/dev/null || printf '%s' "${GOFLAGS:-}")"
+            export GOFLAGS="${flags:+$flags }-v"
+          fi
+          make test-race RACE_SCOPE=${{ matrix.scope }}
 
       - uses: ./.github/actions/go-cache-save
 
   race-modules:
     if: always()
     needs: [race-module-shards]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Require every non-root race lane
         env:
@@ -413,7 +420,7 @@ jobs:
       fail-fast: false
       matrix:
         scope: [root, nonroot]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -442,7 +449,7 @@ jobs:
   tests:
     if: always()
     needs: [tests-parts]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Require both test lanes
         env:
@@ -452,7 +459,7 @@ jobs:
           test "$(jq -r '[.[].result] | all(. == "success")' <<<"$RESULTS")" = true
 
   fuzz:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 

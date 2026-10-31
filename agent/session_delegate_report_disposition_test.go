@@ -22,19 +22,35 @@ func TestNotificationReportWakesPollingParent(t *testing.T) {
 func rootDispositionRegistry(t *testing.T, validate func(context.Context, string) error) (*tool.Registry, *[]events.CommunicateData) {
 	t.Helper()
 	delivered := []events.CommunicateData{}
+	s := newSession(t, withoutGitSnapshot(), withConfig(SessionConfig{
+		StateDir: t.TempDir(), testOnly: testConfig{minimalSystemPrompt: true},
+	}))
 	deps := &toolDeps{
 		emit: func(events.EventKind, events.EventData) {},
 		deliverCommunicate: func(data events.CommunicateData) error {
 			delivered = append(delivered, data)
 			return nil
 		},
-		abort:                  func(context.Context) error { return nil },
-		drainSteering:          func() []steeringMessage { return nil },
-		prependSteering:        func([]steeringMessage) {},
-		resultToolName:         func() string { return "communicate" },
-		setCommunicateTerminal: func(context.Context, schema.CommunicateInfo, string, string, any) (bool, error) { return true, nil },
-		offersEndReason:        true,
-		validateWaitTarget:     validate,
+		abort:           func(context.Context) error { return nil },
+		drainSteering:   func() []steeringMessage { return nil },
+		prependSteering: func([]steeringMessage) {},
+		resultToolName:  func() string { return "communicate" },
+		// Terminal capture owns publication, unlike a nonterminal update.
+		setCommunicateTerminal: func(ctx context.Context, info schema.CommunicateInfo, reply, output string, structured any) (bool, error) {
+			accepted, err := s.acceptCommunicateTerminal(ctx, info, reply, output, structured)
+			for {
+				select {
+				case event := <-s.Events():
+					if data, ok := event.Data.(events.CommunicateData); ok {
+						delivered = append(delivered, data)
+					}
+				default:
+					return accepted, err
+				}
+			}
+		},
+		offersEndReason:    true,
+		validateWaitTarget: validate,
 	}
 	reg := tool.NewRegistry()
 	if err := registerCommunicateTool(reg, deps); err != nil {

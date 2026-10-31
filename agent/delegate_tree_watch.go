@@ -276,6 +276,22 @@ type stableWatchBootstrapSnapshot struct {
 type stableWatchReceiverSnapshot struct {
 	sessionID     string
 	transcriptRef string
+	closed        bool
+}
+
+func (s stableWatchBootstrapSnapshot) receiver(state jobstore.WatchSendState) (stableWatchReceiverSnapshot, bool) {
+	receiver, ok := s.receiverByID[state.ReceiverDelegateID]
+	if state.ReceiverDelegateID == "" && state.CallbackFrame && !state.StableReceiver && receiver.sessionID != state.ReceiverSessionID {
+		// Local callbacks record the addressed session, not a delegate ID. Resolve
+		// only against known descriptors, never synthesize a transcript identity.
+		for _, candidate := range s.receiverByID {
+			if candidate.sessionID == state.ReceiverSessionID {
+				receiver, ok = candidate, true
+				break
+			}
+		}
+	}
+	return receiver, ok && receiver.sessionID != "" && receiver.transcriptRef != "" && receiver.sessionID == state.ReceiverSessionID
 }
 
 type stableWatchDeliveryIdentity struct {
@@ -298,7 +314,7 @@ func exactUnacknowledgedStableWatchSends(events []jobstore.Event) []jobstore.Wat
 		identity := stableWatchDeliveryIdentity{deliveryID: state.DeliveryID, updateSeq: state.UpdateSeq}
 		switch event.Kind {
 		case jobstore.EventWatchSendPending:
-			if !state.StableReceiver {
+			if !state.StableReceiver && !state.CallbackFrame {
 				continue
 			}
 			if _, settled := terminal[identity]; settled {
@@ -371,6 +387,7 @@ func (c *delegateTreeController) stableWatchBootstrapSnapshot() stableWatchBoots
 		receivers[id] = stableWatchReceiverSnapshot{
 			sessionID:     descriptor.ChildSessionID,
 			transcriptRef: descriptor.TranscriptRef,
+			closed:        aggregate.Phase == delegatestore.PhaseClosed && !aggregate.Resumable,
 		}
 	}
 	storePaths := make([]string, 0, len(paths))
@@ -401,7 +418,7 @@ func repairStableWatchStoreForBootstrap(snapshot stableWatchBootstrapSnapshot, s
 	pending := make([]jobstore.WatchSendState, 0, len(folded.Pending))
 	current := make(map[stableWatchDeliveryIdentity]struct{}, len(folded.Pending))
 	for _, state := range folded.Pending {
-		if state != nil && state.StableReceiver {
+		if state != nil && (state.StableReceiver || state.CallbackFrame) {
 			pending = append(pending, *state)
 			current[stableWatchDeliveryIdentity{deliveryID: state.DeliveryID, updateSeq: state.UpdateSeq}] = struct{}{}
 		}
@@ -417,8 +434,8 @@ func repairStableWatchStoreForBootstrap(snapshot stableWatchBootstrapSnapshot, s
 		if _, isCurrent := current[identity]; isCurrent {
 			continue
 		}
-		receiver, ok := snapshot.receiverByID[state.ReceiverDelegateID]
-		if !ok || receiver.sessionID == "" || receiver.transcriptRef == "" || receiver.sessionID != state.ReceiverSessionID {
+		receiver, ok := snapshot.receiver(state)
+		if !ok {
 			continue
 		}
 		path, sessionID, err := delegateTranscriptPathFromRef(snapshot.stateDir, receiver.transcriptRef)
@@ -439,6 +456,31 @@ func repairStableWatchStoreForBootstrap(snapshot stableWatchBootstrapSnapshot, s
 		if snapshot.now != nil {
 			now = snapshot.now()
 		}
+		open := snapshot.attentionOpen
+		if open == nil {
+			open = transcript.OpenWriterForSession
+		}
+		existingOpen := func(path, id string) (*transcript.Writer, []transcript.Entry, error) {
+			writer, entries, err := open(path, id)
+			if err != nil {
+				return nil, nil, err
+			}
+			found := false
+			for _, entry := range entries {
+				if entry.Turn.AttentionID != stableWatchAttentionID(state) {
+					continue
+				}
+				found = true
+			}
+			if !found {
+				// A predecessor that never reached custody must not be redelivered.
+				return nil, nil, errors.Join(fmt.Errorf("historical attention %q is no longer present", stableWatchAttentionID(state)), writer.Close())
+			}
+			return writer, entries, nil
+		}
+		if _, err := appendColdDelegateAttentionMessageDurablyWithOpen(path, sessionID, stableWatchAttentionID(state), llm.UserMachinery(stableWatchNotificationContent(state)), now, existingOpen, state.Provenance); err != nil {
+			return err
+		}
 		acknowledged := state
 		if err := store.Append(jobstore.Event{
 			Kind:      jobstore.EventWatchSendDelivered,
@@ -457,8 +499,8 @@ func repairStableWatchStoreForBootstrap(snapshot stableWatchBootstrapSnapshot, s
 		if exact == nil || exact.DeliveryID != state.DeliveryID || exact.UpdateSeq != state.UpdateSeq {
 			continue
 		}
-		receiver, ok := snapshot.receiverByID[state.ReceiverDelegateID]
-		if !ok || receiver.sessionID == "" || receiver.transcriptRef == "" || receiver.sessionID != state.ReceiverSessionID {
+		receiver, ok := snapshot.receiver(state)
+		if !ok {
 			return fmt.Errorf("stable watch receiver %q is unavailable", state.ReceiverDelegateID)
 		}
 		path, sessionID, err := delegateTranscriptPathFromRef(snapshot.stateDir, receiver.transcriptRef)
@@ -476,8 +518,23 @@ func repairStableWatchStoreForBootstrap(snapshot stableWatchBootstrapSnapshot, s
 		if open == nil {
 			open = transcript.OpenWriterForSession
 		}
-		if _, err := appendColdDelegateAttentionMessageDurablyWithOpen(path, sessionID, stableWatchAttentionID(state), llm.UserMachinery(stableWatchNotificationContent(state)), now, open, state.Provenance); err != nil {
-			return err
+		if receiver.closed {
+			accepted, err := stableWatchCustodyForBootstrap(path, sessionID, state, open)
+			if err != nil {
+				return err
+			}
+			if !accepted {
+				dropped := *exact
+				dropped.DiagnosticReason = "receiver permanently closed before custody"
+				if err := store.Append(jobstore.Event{Kind: jobstore.EventWatchSendDropped, TS: now, WatchSend: &dropped}); err != nil {
+					return err
+				}
+				continue
+			}
+		} else {
+			if _, err := appendColdDelegateAttentionMessageDurablyWithOpen(path, sessionID, stableWatchAttentionID(state), llm.UserMachinery(stableWatchNotificationContent(state)), now, open, state.Provenance); err != nil {
+				return err
+			}
 		}
 		if err := store.Append(jobstore.Event{
 			Kind:      jobstore.EventWatchSendDelivered,
@@ -488,4 +545,39 @@ func repairStableWatchStoreForBootstrap(snapshot stableWatchBootstrapSnapshot, s
 		}
 	}
 	return nil
+}
+
+// A closed receiver cannot take first custody. Prove acceptance or absence from
+// its existing transcript, then sync and close before settling the source.
+func stableWatchCustodyForBootstrap(path, sessionID string, state jobstore.WatchSendState, open delegateAttentionWriterOpener) (accepted bool, err error) {
+	preflight, err := readDelegateAttentionFold(path, sessionID)
+	if err != nil {
+		return false, err
+	}
+	if previous, exists := preflight.turns[stableWatchAttentionID(state)]; exists {
+		if err := validateDelegateAttentionIdentity(previous, stableWatchAttentionID(state), llm.UserMachinery(stableWatchNotificationContent(state)), state.Provenance); err != nil {
+			return false, err
+		}
+	}
+	// The reader treats missing files as empty. The resume opener requires an
+	// existing, correctly addressed transcript before absence can be trusted.
+	writer, entries, err := open(path, sessionID)
+	if err != nil {
+		return false, err
+	}
+	defer func() { err = errors.Join(err, writer.Close()) }()
+	fold, err := foldDelegateAttention(entries)
+	if err != nil {
+		return false, err
+	}
+	previous, accepted := fold.turns[stableWatchAttentionID(state)]
+	if accepted {
+		if err := validateDelegateAttentionIdentity(previous, stableWatchAttentionID(state), llm.UserMachinery(stableWatchNotificationContent(state)), state.Provenance); err != nil {
+			return false, err
+		}
+	}
+	if err := writer.EstablishDurability(); err != nil {
+		return false, err
+	}
+	return accepted, nil
 }
