@@ -458,6 +458,18 @@ jobs:
         with:
           go-cache-kind: tests-${{ matrix.scope }}
 
+      - name: Prepare enforcing sandbox for root tests
+        if: matrix.scope == 'root'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends bubblewrap
+          # Ubuntu 24.04 restricts unprivileged user namespaces by default.
+          # Enable the namespace backend, not an unsandboxed test fallback.
+          sudo sysctl -w kernel.unprivileged_userns_clone=1
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          bwrap --unshare-user --unshare-pid --die-with-parent --new-session \
+            --ro-bind / / --proc /proc --dev /dev --argv0 true -- true
+
       # The runner is this job's alone, but its checkout and cache restore are
       # still in the load average when the gate sizes its budgets; at 1.85
       # every Go budget came out as 2 of the 4 cores. Size them to the runner.
