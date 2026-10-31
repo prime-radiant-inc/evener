@@ -15,19 +15,29 @@ import { threadsStore, useThreadsStore } from "./threads";
 export function useThreadClaim(ref: string): void {
   useEffect(() => {
     let started = false;
+    let rejected = false;
     const tryStart = () => {
       if (started || connectionStore.getState().state !== "ready") return;
       started = true;
       threadsStore
         .getState()
         .ensureThread(ref)
-        .catch(() => {});
+        .catch(() => {
+          // `started` marks the call, not the claim: a rejected ensureThread
+          // rolled its own claim back, so releasing on unmount would consume
+          // another reader's ref-keyed hold and retire its lifecycle. A
+          // pending or settled claim still belongs to this mount.
+          rejected = true;
+        });
     };
     tryStart();
     const unsubscribe = connectionStore.subscribe(tryStart);
     return () => {
       unsubscribe();
-      if (started) threadsStore.getState().releaseThread(ref);
+      // started AND not rejected: a reader that never called ensureThread
+      // (mounted during reconnect, unmounted before readiness) owns nothing,
+      // and a rejected call rolled its own claim back.
+      if (started && !rejected) threadsStore.getState().releaseThread(ref);
     };
   }, [ref]);
 }
