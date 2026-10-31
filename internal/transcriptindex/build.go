@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"sort"
 	"strings"
 
@@ -484,6 +485,9 @@ func (b *builder) place(ordinal uint64, offset int64, entry *schema.Turn) (uint6
 	if err != nil {
 		return 0, err
 	}
+	if kind == turnKindExecution {
+		b.x.meta.LatestExecutionTurnSlot = slot + 1
+	}
 	switch kind {
 	case turnKindExecution, turnKindPrelude:
 		b.open[id] = slot
@@ -783,7 +787,7 @@ func (b *builder) attachCommunicationEcho(summary turnRecord, entry *schema.Turn
 		return err
 	}
 	items, parts := apptranscript.ProjectEntryParts(entry.TurnID, int(summary.AwaitingOrdinal)+1, *awaiting, nil, nil, nil)
-	for i := len(items) - 1; i >= 0; i-- {
+	for i := range slices.Backward(items) {
 		if items[i].Type != "agentMessage" {
 			continue
 		}

@@ -25,7 +25,7 @@ func TestSessionToolsIdentifiedPeerRefusesRuntimeBindings(t *testing.T) {
 	endpoint := serveWebSocketHTTP(t, server)
 	for range 2 { // Reconnect must repeat identification without inheriting a binding.
 		client := appwire.NewClient(dialRawAppWire(t, endpoint))
-		defer client.Close()
+		t.Cleanup(func() { _ = client.Close() })
 		client.Start(ctx)
 		if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 			t.Fatal(err)
@@ -42,14 +42,15 @@ func TestSessionToolsIdentifiedPeerRefusesRuntimeBindings(t *testing.T) {
 			}
 		}
 		_, err := client.IdentifySessionToolsPeer(ctx, appwire.SessionToolsPeerParams{HubID: "another-hub"})
-		var wire appwire.WireError
-		if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
+		wire, ok := errors.AsType[appwire.WireError](err)
+		if !ok || wire.Code != appwire.CodeConflict {
 			t.Fatalf("changing peer identity = %v, want conflict", err)
 		}
 		for _, hubID := range []string{"hub-peer", "another-hub"} {
 			binding := appwire.SessionBinding{BindingID: "binding", Ref: "local:workspace", InstanceID: "instance", HubID: hubID}
 			err := client.Request(ctx, appwire.MethodRuntimeSessionBind, binding, nil)
-			if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
+			wire, ok := errors.AsType[appwire.WireError](err)
+			if !ok || wire.Code != appwire.CodeConflict {
 				t.Fatalf("identified peer runtime bind for %q = %v, installs = %d, want conflict without installation", hubID, err, installs.Load())
 			}
 		}
@@ -100,7 +101,7 @@ func TestSessionToolsRemoteBindingAuthorityOrdering(t *testing.T) {
 		}
 		if err := IdentifySessionToolsPeer(ctx, "hub-a"); err == nil {
 			t.Fatal("identified peer after local binding")
-		} else if wire, ok := err.(appwire.WireError); !ok {
+		} else if wire, ok := errors.AsType[appwire.WireError](err); !ok {
 			t.Fatalf("identify error = %T: %v", err, err)
 		} else {
 			assertConflict(t, wire)

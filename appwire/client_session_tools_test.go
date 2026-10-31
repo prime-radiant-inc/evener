@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -121,7 +122,7 @@ func (*pendingInvokeOwner) Watch(context.Context, SessionWatchRequest) (<-chan S
 
 func TestSessionToolsCancelBeforeSetupAndAtCapacity(t *testing.T) {
 	for _, capacity := range []int{1, SessionToolsPendingLimit} {
-		t.Run(fmt.Sprint(capacity), func(t *testing.T) {
+		t.Run(strconv.Itoa(capacity), func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
 			transport := newMemoryTransport()
@@ -226,7 +227,7 @@ func TestSessionToolsUnwatchCancelsPendingSetupAtCapacity(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("watch setup did not start")
 	}
-	for i := 1; i < SessionToolsPendingLimit; i++ {
+	for range SessionToolsPendingLimit - 1 {
 		client.sessionTools.slots <- struct{}{}
 	}
 	unwatch := RequestMessage(NewIntID(-2), MethodRuntimeSessionUnwatch, SessionRuntimeRequest{BindingID: "binding", WatchID: "watch"})
@@ -236,7 +237,7 @@ func TestSessionToolsUnwatchCancelsPendingSetupAtCapacity(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("unwatch could not cancel pending setup at capacity")
 	}
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		select {
 		case <-transport.writes:
 		case <-ctx.Done():
@@ -408,8 +409,7 @@ func TestSessionToolsReplyWaitingForSlotStopsOnClientClose(t *testing.T) {
 	}
 	select {
 	case err := <-done:
-		var notSent RequestNotSentError
-		if !errors.As(err, &notSent) {
+		if _, ok := errors.AsType[RequestNotSentError](err); !ok {
 			t.Fatalf("reply after close = %T %v, want not-sent", err, err)
 		}
 	case <-time.After(2 * time.Second):

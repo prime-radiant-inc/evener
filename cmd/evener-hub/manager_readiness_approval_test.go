@@ -217,16 +217,25 @@ func TestE2E_ManagerReadinessRemoteApprovalSSH(t *testing.T) {
 			}
 			if item.EventKind == appwire.ThreadItemEventKindApprovalDecision {
 				approvalDecisions++
-				var raw struct {
-					ApprovalDecision struct {
-						EscalationID string `json:"escalationId"`
-						Approved     bool   `json:"approved"`
-						Tool         string `json:"tool"`
-						DeniedPath   string `json:"deniedPath"`
-					} `json:"approvalDecision"`
+				var raw map[string]map[string]json.RawMessage
+				if err := json.Unmarshal(item.Raw, &raw); err != nil {
+					t.Fatal(err)
 				}
-				if err := json.Unmarshal(item.Raw, &raw); err != nil || raw.ApprovalDecision.EscalationID != escalation.EscalationID || !raw.ApprovalDecision.Approved || raw.ApprovalDecision.Tool != "write_file" || raw.ApprovalDecision.DeniedPath != outside || item.Actor == nil || item.Actor.Kind != "manager" || item.Actor.ManagerRef != wantActor {
-					t.Fatalf("A saved approval decision differs from B actor/escalation: item=%+v decoded=%+v err=%v wantActor=%s", item, raw, err, wantActor)
+				decision := raw["approvalDecision"]
+				var escalationID, tool, deniedPath string
+				var approvedDecision bool
+				decodeErr := json.Unmarshal(decision["escalationId"], &escalationID)
+				if decodeErr == nil {
+					decodeErr = json.Unmarshal(decision["approved"], &approvedDecision)
+				}
+				if decodeErr == nil {
+					decodeErr = json.Unmarshal(decision["tool"], &tool)
+				}
+				if decodeErr == nil {
+					decodeErr = json.Unmarshal(decision["deniedPath"], &deniedPath)
+				}
+				if decodeErr != nil || escalationID != escalation.EscalationID || !approvedDecision || tool != "write_file" || deniedPath != outside || item.Actor == nil || item.Actor.Kind != "manager" || item.Actor.ManagerRef != wantActor {
+					t.Fatalf("A saved approval decision differs from B actor/escalation: item=%+v decoded=%+v err=%v wantActor=%s", item, decision, decodeErr, wantActor)
 				}
 			}
 		}
@@ -314,12 +323,8 @@ func assertSavedRemoteApprovalManager(t *testing.T, turns []appwire.Turn, manage
 				reads++
 			case "session_control":
 				var args struct {
-					Action    string `json:"action"`
-					Arguments struct {
-						Ref          string `json:"ref"`
-						EscalationID string `json:"escalationId"`
-						Approve      bool   `json:"approve"`
-					} `json:"arguments"`
+					Action    string                                 `json:"action"`
+					Arguments appwire.SandboxEscalationResolveParams `json:"arguments"`
 				}
 				var response appwire.SessionOperationResponse
 				if err := json.Unmarshal([]byte(call.ArgumentsJSON), &args); err != nil || args.Action != "approval" || args.Arguments.Ref != remoteRef || args.Arguments.EscalationID != escalationID || !args.Arguments.Approve {

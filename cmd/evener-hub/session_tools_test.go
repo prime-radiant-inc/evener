@@ -262,7 +262,7 @@ func TestSessionToolsAutomaticBindingLifecycleAndReconnect(t *testing.T) {
 			t.Fatalf("unsupported observation accepted: %+v", watch)
 		}
 	}
-	watchCtx, clear := context.WithCancel(ctx)
+	watchCtx, cancelWatch := context.WithCancel(ctx)
 	updates, err := first.client.Watch(watchCtx, appwire.SessionWatchRequest{Ref: ref, Events: []string{"status"}})
 	if err != nil {
 		t.Fatal(err)
@@ -287,7 +287,7 @@ func TestSessionToolsAutomaticBindingLifecycleAndReconnect(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("no live status observation")
 	}
-	clear()
+	cancelWatch()
 	select {
 	case _, ok := <-updates:
 		if ok {
@@ -379,7 +379,7 @@ func TestManagerAdmissionRealToolRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(session.Close)
-	ref := "local:" + session.WorkspaceID()
+	ref := "local:" + session.ID()
 	adapter.ref = ref
 	daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "test-token"})
 	t.Cleanup(daemon.Close)
@@ -565,21 +565,22 @@ func TestSessionToolsRuntimeIdentityReplacement(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	workDir := t.TempDir()
-	newRuntime := func(workspace string) (*agent.Session, *managerReadAdapter) {
+	newRuntime := func(ref string) (*agent.Session, *managerReadAdapter) {
 		t.Helper()
 		adapter := &managerReadAdapter{}
 		client := llm.NewClient()
 		client.Register(adapter)
-		session, err := agent.NewSession(client, provider.NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), agent.SessionConfig{WorkspaceID: workspace, StateDir: t.TempDir(), Sandbox: "off", Manager: true})
+		session, err := agent.NewSession(client, provider.NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), agent.SessionConfig{StateDir: t.TempDir(), Sandbox: "off", Manager: true})
 		if err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(session.Close)
-		adapter.ref = "local:" + session.WorkspaceID()
+		adapter.ref = ref
 		return session, adapter
 	}
 	first, firstAdapter := newRuntime("")
-	ref := "local:" + first.WorkspaceID()
+	ref := "local:" + first.ID()
+	firstAdapter.ref = ref
 	var current atomic.Pointer[agent.Session]
 	current.Store(first)
 	daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "test-token"})
@@ -651,7 +652,7 @@ func TestSessionToolsRuntimeIdentityReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertManagerRequestSurface(t, firstAdapter.requests[0], true)
-	replacement, replacementAdapter := newRuntime(first.WorkspaceID())
+	replacement, replacementAdapter := newRuntime(ref)
 	if replacement.ID() == first.ID() {
 		t.Fatal("runtime identity was not replaced")
 	}

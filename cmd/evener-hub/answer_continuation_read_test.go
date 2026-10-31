@@ -134,13 +134,7 @@ func TestAnswerContinuationReadRoutes(t *testing.T) {
 					t.Fatal(err)
 				}
 				data, _ := json.Marshal(response)
-				var verdict struct {
-					AnswerContinuation *struct {
-						AncestorTurnID  string `json:"ancestorTurnId"`
-						CandidateTurnID string `json:"candidateTurnId"`
-						Matches         bool   `json:"matches"`
-					} `json:"answerContinuation"`
-				}
+				var verdict appwire.ThreadReadResponse
 				if err := json.Unmarshal(data, &verdict); err != nil {
 					t.Fatal(err)
 				}
@@ -177,7 +171,7 @@ func TestAnswerContinuationReadRoutes(t *testing.T) {
 	for _, cause := range []error{context.Canceled, context.DeadlineExceeded} {
 		var readCtx context.Context
 		var stop context.CancelFunc
-		if cause == context.Canceled {
+		if errors.Is(cause, context.Canceled) {
 			readCtx, stop = context.WithCancel(ctx)
 			stop()
 		} else {

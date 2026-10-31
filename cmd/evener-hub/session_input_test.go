@@ -89,7 +89,7 @@ func TestManagerInputRealHubRuntimePersistsCallerNotTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer worker.Close()
-	workerRef := "local:" + worker.WorkspaceID()
+	workerRef := "local:" + worker.ID()
 	if workerRef == managerRef {
 		t.Fatal("worker unexpectedly shares the manager's identity")
 	}

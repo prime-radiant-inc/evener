@@ -139,10 +139,9 @@ func sessionMetaWriteLock(sessionID string) *sync.Mutex {
 // SessionMeta holds session metadata without the full conversation history.
 // The history is always recovered from the transcript JSONL file.
 type SessionMeta struct {
-	ID          string `json:"id"`                     // session identifier
-	WorkspaceID string `json:"workspace_id,omitempty"` // stable workspace identity across Clear and restart
-	ProfileID   string `json:"profile_id"`             // ID of the provider profile in use
-	Model       string `json:"model"`                  // model name the session is driving
+	ID        string `json:"id"`         // session identifier
+	ProfileID string `json:"profile_id"` // ID of the provider profile in use
+	Model     string `json:"model"`      // model name the session is driving
 	// CheapModel is the configured cheap/fast model for side calls, as a
 	// WithCheapModel ref ("provider/model" when cross-provider, else bare model).
 	// Empty when none is configured. Persisted so the cheap routing survives

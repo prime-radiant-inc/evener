@@ -29,7 +29,8 @@ func managerReadDefinition(def llm.ToolDefinition, ordinary bool) llm.ToolDefini
 		params["properties"] = props
 	}
 	hub := map[string]any{"type": "object", "additionalProperties": false}
-	if def.Name == "job_list" {
+	switch def.Name {
+	case "job_list":
 		hub = map[string]any{"type": "object", "anyOf": []any{
 			map[string]any{"type": "object", "additionalProperties": false, "required": []string{"mode"}, "properties": map[string]any{
 				"mode":             map[string]any{"type": "string", "enum": []string{"discovery"}},
@@ -60,35 +61,34 @@ func managerReadDefinition(def llm.ToolDefinition, ordinary bool) llm.ToolDefini
 			}},
 		}}
 		def.Description += " Manager hub discovery lists source-qualified sessions and sources, including empty hosts. Set hub.mode to discovery. Do not combine hub with ordinary job filters."
-	} else if def.Name == "model_list" {
+	case "model_list":
 		hub["properties"] = map[string]any{"host": map[string]any{"type": "string"}, "cwd": map[string]any{"type": "string"}, "refresh": map[string]any{"type": "boolean"}}
 		hub["required"] = []string{"host"}
 		def.Description += " Manager hub models lists the selected host's available models and diagnostics. refresh waits for a fresh catalog."
-	} else {
-		if def.Name == "read_transcript" {
-			// The decoder treats these explicit zero values like omitted fields.
-			// Keep those calls valid without allowing nonzero cross-branch bounds.
-			hub = map[string]any{"type": "object", "anyOf": []any{
-				map[string]any{"type": "object", "additionalProperties": false, "required": []string{"ref"}, "properties": map[string]any{
-					"ref":       map[string]any{"type": "string"},
-					"jobId":     map[string]any{"type": "string", "enum": []string{""}},
-					"cursor":    map[string]any{"type": "string"},
-					"itemLimit": map[string]any{"type": "integer"},
-					"maxBytes":  map[string]any{"type": "integer", "enum": []int{0}},
-				}},
-				map[string]any{"type": "object", "additionalProperties": false, "required": []string{"ref", "jobId"}, "properties": map[string]any{
-					"ref":         map[string]any{"type": "string"},
-					"jobId":       map[string]any{"type": "string", "minLength": 1},
-					"maxBytes":    map[string]any{"type": "integer"},
-					"beforeBytes": map[string]any{"type": "integer"},
-					"cursor":      map[string]any{"type": "string", "enum": []string{""}},
-					"itemLimit":   map[string]any{"type": "integer", "enum": []int{0}},
-				}},
-			}}
-		} else {
-			hub["properties"] = map[string]any{"ref": map[string]any{"type": "string"}, "jobId": map[string]any{"type": "string"}}
-			hub["required"] = []string{"ref"}
-		}
+	case "read_transcript":
+		// The decoder treats these explicit zero values like omitted fields.
+		// Keep those calls valid without allowing nonzero cross-branch bounds.
+		hub = map[string]any{"type": "object", "anyOf": []any{
+			map[string]any{"type": "object", "additionalProperties": false, "required": []string{"ref"}, "properties": map[string]any{
+				"ref":       map[string]any{"type": "string"},
+				"jobId":     map[string]any{"type": "string", "enum": []string{""}},
+				"cursor":    map[string]any{"type": "string"},
+				"itemLimit": map[string]any{"type": "integer"},
+				"maxBytes":  map[string]any{"type": "integer", "enum": []int{0}},
+			}},
+			map[string]any{"type": "object", "additionalProperties": false, "required": []string{"ref", "jobId"}, "properties": map[string]any{
+				"ref":         map[string]any{"type": "string"},
+				"jobId":       map[string]any{"type": "string", "minLength": 1},
+				"maxBytes":    map[string]any{"type": "integer"},
+				"beforeBytes": map[string]any{"type": "integer"},
+				"cursor":      map[string]any{"type": "string", "enum": []string{""}},
+				"itemLimit":   map[string]any{"type": "integer", "enum": []int{0}},
+			}},
+		}}
+		def.Description += " Manager hub reads a canonical owner ref. jobId selects job metadata in job_status, or bounded job output in read_transcript. read_transcript without jobId pages session history with cursor. Local JSONL, expansion, artifacts, and range arguments do not apply."
+	default:
+		hub["properties"] = map[string]any{"ref": map[string]any{"type": "string"}, "jobId": map[string]any{"type": "string"}}
+		hub["required"] = []string{"ref"}
 		def.Description += " Manager hub reads a canonical owner ref. jobId selects job metadata in job_status, or bounded job output in read_transcript. read_transcript without jobId pages session history with cursor. Local JSONL, expansion, artifacts, and range arguments do not apply."
 	}
 	props["hub"] = hub
@@ -136,8 +136,8 @@ func (s *Session) composeHubRegistry() {
 		s.hubOrdinary = map[string]*tool.RegisteredTool{}
 		for _, name := range []string{"job_list", "job_status", "read_transcript", "model_list", "job_watch", "delegate_send", "delegate", "job_stop", "session_control"} {
 			if base := s.reg.Get(name); base != nil {
-				copy := *base
-				s.hubOrdinary[name] = &copy
+				definition := *base
+				s.hubOrdinary[name] = &definition
 			} else {
 				s.hubOrdinary[name] = nil
 			}
@@ -307,8 +307,7 @@ func (s *Session) createHubDelegate(ctx context.Context, args map[string]any) (a
 	}})
 	if err != nil {
 		out.Created.Error = err.Error()
-		var wire appwire.WireError
-		if errors.As(err, &wire) {
+		if wire, ok := errors.AsType[appwire.WireError](err); ok {
 			var partial appwire.ThreadStartPartialErrorData
 			if body, marshalErr := json.Marshal(wire.Data); marshalErr == nil && json.Unmarshal(body, &partial) == nil {
 				out.Created.Ref, out.Created.InstanceID = partial.CreatedRef, partial.CreatedInstanceID
@@ -331,7 +330,10 @@ func (s *Session) createHubDelegate(ctx context.Context, args map[string]any) (a
 	hub.Watch.Ref = out.Created.Ref
 	watch, err := s.configureHubWatchRuntime(ctx, map[string]any{"operation": "create", "hub": hub.Watch})
 	if err != nil {
-		out.Watch = managerWatchStage{Status: "failed", Error: err.Error()}
+		out.Watch.Status = "failed"
+		out.Watch.Error = err.Error()
+		// The partial watch outcome is returned structurally to preserve the created identity.
+		//nolint:nilerr
 		return out, nil
 	}
 	out.Watch.Status = "attached"
@@ -352,7 +354,9 @@ func (s *Session) createHubDelegate(ctx context.Context, args map[string]any) (a
 	}
 	id, err := identifier.NewClientMutationID()
 	if err != nil {
-		out.Input = managerInputStage{Status: "notSubmitted", Error: err.Error()}
+		out.Input.Error = err.Error()
+		// The partial input outcome is returned structurally to preserve the created identity.
+		//nolint:nilerr
 		return out, nil
 	}
 	input, err := client.Invoke(ctx, appwire.SessionOperationRequest{Start: &appwire.TurnStartParams{
@@ -361,8 +365,7 @@ func (s *Session) createHubDelegate(ctx context.Context, args map[string]any) (a
 	}})
 	if err != nil {
 		out.Input = managerInputStage{Status: "unknown", Error: err.Error(), ClientMutationID: id}
-		var wire appwire.WireError
-		if errors.As(err, &wire) {
+		if wire, ok := errors.AsType[appwire.WireError](err); ok {
 			var detail appwire.ErrorData
 			if raw, marshalErr := json.Marshal(wire.Data); marshalErr == nil && json.Unmarshal(raw, &detail) == nil && detail.MutationOutcome == appwire.MutationOutcomeNotAccepted {
 				out.Input.Status = "notAccepted"
@@ -625,7 +628,8 @@ func (s *Session) invokeHubRead(ctx context.Context, name string, args map[strin
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	var request appwire.SessionOperationRequest
-	if name == "job_list" {
+	switch name {
+	case "job_list":
 		var mode struct {
 			Mode string `json:"mode"`
 		}
@@ -669,7 +673,7 @@ func (s *Session) invokeHubRead(ctx context.Context, name string, args map[strin
 		default:
 			return nil, appwire.InvalidParams("unknown Manager list mode")
 		}
-	} else if name == "model_list" {
+	case "model_list":
 		var p struct {
 			Host    string `json:"host"`
 			CWD     string `json:"cwd"`
@@ -682,7 +686,7 @@ func (s *Session) invokeHubRead(ctx context.Context, name string, args map[strin
 			return nil, appwire.InvalidParams("selected host is required")
 		}
 		request.Models = &appwire.ModelListParams{Harness: p.Host, CWD: p.CWD, Refresh: p.Refresh}
-	} else if name == "read_transcript" {
+	case "read_transcript":
 		var p struct {
 			Ref         string `json:"ref"`
 			JobID       string `json:"jobId"`
@@ -708,7 +712,7 @@ func (s *Session) invokeHubRead(ctx context.Context, name string, args map[strin
 			}
 			request.Turns = &appwire.ThreadTurnsListParams{Ref: p.Ref, Cursor: p.Cursor, ItemLimit: p.ItemLimit}
 		}
-	} else {
+	default:
 		var p struct {
 			Ref   string `json:"ref"`
 			JobID string `json:"jobId"`

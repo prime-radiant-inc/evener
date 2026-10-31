@@ -938,13 +938,18 @@ func hostHubKillCommand(addr, configPath, binaryPath string) string {
 	// The probe's answer is a pid per line or one of its two markers; the case
 	// guard keeps only numeric pids as kill candidates, so a marker can never
 	// reach `ps` or `kill`.
+	identityCheck := fmt.Sprintf(
+		`cmd=$(ps -ww -o command= -p "$pid" 2>/dev/null) || continue; `+
+			`printf '%%s\n' "$cmd" | awk -v executable=%s -v config=%s '$1 == executable && $2 == "hub" && $3 == "--config" && $4 == config { ok=1 } END { exit !ok }' || continue`,
+		shellquote.RemoteWord(binaryPath), shellquote.RemoteWord(configPath),
+	)
 	return fmt.Sprintf(
 		"pids=$( %s ); s=$?; "+
 			"if [ $s -ne 0 ]; then echo 'evener-hub deploy check cleanup: no listener probe is available on the host (lsof, ss, and /proc/net/tcp are all missing); refusing to conclude no hub is listening' >&2; exit $s; fi; "+
 			"for pid in $pids; do "+
 			"case \"$pid\" in ''|*[!0-9]*) continue;; esac; "+
-			"if ps -ww -o command= -p \"$pid\" 2>/dev/null | grep -F -e %s >/dev/null; then kill \"$pid\"; fi; done",
-		hostListenerProbeScript(port), shellquote.RemoteWord(configPath))
+			"%s; %s; kill \"$pid\"; done",
+		hostListenerProbeScript(port), identityCheck, identityCheck)
 }
 
 // TestHostHubKillCommandTargetsOnlyThisTestsHub pins the cleanup's precision

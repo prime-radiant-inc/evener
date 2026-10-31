@@ -2,6 +2,7 @@ package appserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -15,7 +16,7 @@ func (s *Server) NewInProcessTransport(parent context.Context) (appwire.Transpor
 	// Share the shutdown admission/count with socket handlers so Shutdown waits
 	// for both kinds of connection to withdraw their subscriptions.
 	if !s.beginWebSocket() {
-		return nil, fmt.Errorf("server is shutting down")
+		return nil, errors.New("server is shutting down")
 	}
 	if s.cfg.ConnectionAdmissionContext != nil {
 		parent = s.cfg.ConnectionAdmissionContext(parent)

@@ -19,7 +19,7 @@ func TestSessionToolsSelectedHubDoesNotFallBackAfterDisconnect(t *testing.T) {
 		clients.clients[hub] = &runtimeHubClient{
 			current: func() *agent.Session { return session },
 			session: session,
-			binding: appwire.SessionBinding{Ref: "local:" + session.WorkspaceID(), InstanceID: session.ID(), HubID: hub},
+			binding: appwire.SessionBinding{Ref: "local:" + session.ID(), InstanceID: session.ID(), HubID: hub},
 			client:  owners[hub],
 			ctx:     life,
 			cancel:  cancel,

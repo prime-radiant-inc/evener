@@ -30,6 +30,9 @@ type Window struct {
 	// the length only grows; a rebuild mints a new incarnation.
 	Incarnation string
 	Length      int64
+	// LatestExecutionTurnID is the newest recorded execution span at this
+	// window's snapshot, even when later gap or delivery spans exist.
+	LatestExecutionTurnID string
 }
 
 // Latest returns the newest limit items (see appwire.NormalizeTranscriptItemLimit).
@@ -45,8 +48,52 @@ func (x *Index) Latest(limit int) (Window, error) {
 		if err != nil {
 			return Window{}, err
 		}
-		return x.window(r, x.preludeCount()+x.items.n+uint64(len(flush)), limit, flush)
+		window, err := x.window(r, x.preludeCount()+x.items.n+uint64(len(flush)), limit, flush)
+		if err != nil {
+			return Window{}, err
+		}
+		window.LatestExecutionTurnID, err = x.latestExecutionTurnID()
+		return window, err
 	})
+}
+
+// latestExecutionTurnID reads the exact summary named by committed metadata;
+// it does not scan transcript bodies or trailing non-execution summaries.
+func (x *Index) latestExecutionTurnID() (string, error) {
+	record, found, err := latestExecutionRecord(x.meta.LatestExecutionTurnSlot, x.turns.n, func(slot uint64) (turnRecord, error) {
+		buf, err := x.turns.read(slot, 1)
+		if err != nil {
+			return turnRecord{}, err
+		}
+		return decodeTurn(buf), nil
+	})
+	if err != nil || !found {
+		return "", err
+	}
+	id, err := x.strings.get(record.ID)
+	if err != nil {
+		return "", err
+	}
+	return string(id), nil
+}
+
+// latestExecutionRecord validates the one-based locator and invokes read once
+// regardless of how many non-execution summaries trail the execution.
+func latestExecutionRecord(slot, turnCount uint64, read func(uint64) (turnRecord, error)) (turnRecord, bool, error) {
+	if slot == 0 {
+		return turnRecord{}, false, nil
+	}
+	if slot > turnCount {
+		return turnRecord{}, false, fmt.Errorf("locator %d exceeds %d turn records", slot, turnCount)
+	}
+	record, err := read(slot - 1)
+	if err != nil {
+		return turnRecord{}, false, err
+	}
+	if record.Kind != turnKindExecution || record.ID.Len == 0 {
+		return turnRecord{}, false, fmt.Errorf("slot %d is not an identified execution record", slot)
+	}
+	return record, true, nil
 }
 
 // ErrDerivedTotalsUnavailable reports that the sidecar cannot answer the
@@ -148,7 +195,12 @@ func (x *Index) LatestSince(limit int, held appwire.SnapshotIdentity) (Window, *
 		if ferr != nil {
 			return Window{}, ferr
 		}
-		return x.window(r, x.preludeCount()+x.items.n+uint64(len(flush)), limit, flush)
+		window, err := x.window(r, x.preludeCount()+x.items.n+uint64(len(flush)), limit, flush)
+		if err != nil {
+			return Window{}, err
+		}
+		window.LatestExecutionTurnID, err = x.latestExecutionTurnID()
+		return window, err
 	})
 	if err != nil || held.Incarnation != x.meta.Incarnation {
 		return window, nil, err

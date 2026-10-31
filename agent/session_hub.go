@@ -6,6 +6,7 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
+// SessionHubClient is the AppWire owner used by a session Manager.
 type SessionHubClient = appwire.SessionHubClient
 
 // SetHubClient installs only a runtime-private connection. Spawn and fork

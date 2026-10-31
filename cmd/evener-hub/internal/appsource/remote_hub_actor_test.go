@@ -2,8 +2,9 @@ package appsource
 
 import (
 	"encoding/json"
-	"primeradiant.com/evener/appwire"
 	"testing"
+
+	"primeradiant.com/evener/appwire"
 )
 
 // Each carrier projects remote-local actors without changing saved inputs.

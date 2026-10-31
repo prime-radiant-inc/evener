@@ -6,9 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"primeradiant.com/evener/agent/internal/agenttest"
 	"reflect"
 	"testing"
+
+	"primeradiant.com/evener/agent/internal/agenttest"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
@@ -24,7 +25,7 @@ func answerLinkRecords(t *testing.T, sess *Session) []schema.Turn {
 		t.Fatal(err)
 	}
 	var turns []schema.Turn
-	for _, line := range bytes.Split(data, []byte("\n")) {
+	for line := range bytes.SplitSeq(data, []byte("\n")) {
 		var kind struct {
 			Kind string `json:"kind"`
 		}
@@ -287,11 +288,11 @@ func TestAskUser_AnswerLinkJournalCopyIsolation(t *testing.T) {
 	if err != nil || !claim.SteeringCarrier {
 		t.Fatalf("claim=%+v err=%v", claim, err)
 	}
-	copy := sess.clientMutations.snapshot()
-	if !reflect.DeepEqual(copy.Journal["copy-link"].AnswerToTurnIDs, want) || len(want) == 0 {
-		t.Fatalf("claim lost question IDs: %+v", copy.Journal["copy-link"])
+	snapshot := sess.clientMutations.snapshot()
+	if !reflect.DeepEqual(snapshot.Journal["copy-link"].AnswerToTurnIDs, want) || len(want) == 0 {
+		t.Fatalf("claim lost question IDs: %+v", snapshot.Journal["copy-link"])
 	}
-	copy.Journal["copy-link"].AnswerToTurnIDs[0] = "unrelated"
+	snapshot.Journal["copy-link"].AnswerToTurnIDs[0] = "unrelated"
 	if got := sess.clientMutations.snapshot().Journal["copy-link"].AnswerToTurnIDs; !reflect.DeepEqual(got, want) {
 		t.Fatalf("snapshot mutation changed committed journal: got=%v want=%v", got, want)
 	}

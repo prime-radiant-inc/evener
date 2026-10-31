@@ -81,10 +81,7 @@ func TestManagerCreationReturnsPersistedMutationIdentity(t *testing.T) {
 			var out struct {
 				Created managerCreateStage `json:"created"`
 				Watch   managerWatchStage  `json:"watch"`
-				Input   struct {
-					Status           string `json:"status"`
-					ClientMutationID string `json:"clientMutationId"`
-				} `json:"input"`
+				Input   managerInputStage  `json:"input"`
 			}
 			found := false
 			for _, entry := range data.Entries {
@@ -117,8 +114,9 @@ func TestManagerCreationReturnsPersistedMutationIdentity(t *testing.T) {
 			if out.Input.Status != wantInput {
 				t.Fatalf("input status=%q want %q", out.Input.Status, wantInput)
 			}
+			clientMutationID := out.Input.ClientMutationID
 			if len(client.starts) == 0 {
-				if out.Input.ClientMutationID != "" {
+				if clientMutationID != "" {
 					t.Fatal("returned mutation ID before generation")
 				}
 				if stage == "watchFailed" && (out.Created.Ref == "" || out.Watch.Status != "failed") {
@@ -129,14 +127,14 @@ func TestManagerCreationReturnsPersistedMutationIdentity(t *testing.T) {
 				}
 				return
 			}
-			if out.Input.ClientMutationID == "" || out.Input.ClientMutationID != client.starts[0].ClientMutationID {
-				t.Fatalf("persisted mutation ID=%q, submitted=%q", out.Input.ClientMutationID, client.starts[0].ClientMutationID)
+			if clientMutationID == "" || clientMutationID != client.starts[0].ClientMutationID {
+				t.Fatalf("persisted mutation ID=%q, submitted=%q", clientMutationID, client.starts[0].ClientMutationID)
 			}
 			if out.Created.Ref == "" || out.Created.InstanceID != worker.ID() || out.Watch.Status != "attached" {
 				t.Fatalf("lost recovery identity: %+v", out)
 			}
 			if stage == "unknown" || stage == "missingReceipt" {
-				value, err := root.invokeHubInput(t.Context(), map[string]any{"to": out.Created.Ref, "input_mode": "start", "message": "worker-input", "client_mutation_id": out.Input.ClientMutationID, "expected_instance_id": out.Created.InstanceID})
+				value, err := root.invokeHubInput(t.Context(), map[string]any{"to": out.Created.Ref, "input_mode": "start", "message": "worker-input", "client_mutation_id": clientMutationID, "expected_instance_id": out.Created.InstanceID})
 				if err != nil {
 					t.Fatal(err)
 				}

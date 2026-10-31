@@ -234,8 +234,11 @@ func typedStopReadPID(path string) (int, error) {
 		return 0, nil // The publisher has not completed its record yet.
 	}
 	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil || pid <= 0 {
-		return 0, fmt.Errorf("invalid published PID %q: %v", data, err)
+	if err != nil {
+		return 0, fmt.Errorf("invalid published PID %q: %w", data, err)
+	}
+	if pid <= 0 {
+		return 0, fmt.Errorf("invalid published PID %q", data)
 	}
 	return pid, nil
 }

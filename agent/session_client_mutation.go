@@ -371,6 +371,7 @@ func (s *Session) AcceptClientMutationStart(params appwire.TurnStartParams) (app
 	return s.AcceptClientMutationStartAs(params, schema.SessionActor{Kind: "human"})
 }
 
+// AcceptClientMutationStartAs accepts or replays a start attributed to actor.
 func (s *Session) AcceptClientMutationStartAs(params appwire.TurnStartParams, actor schema.SessionActor) (appwire.TurnStartResponse, error) {
 	if err := validateSessionActor(actor); err != nil {
 		return appwire.TurnStartResponse{}, err

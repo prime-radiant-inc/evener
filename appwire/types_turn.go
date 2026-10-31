@@ -363,8 +363,11 @@ func (p ThreadReadParams) ValidateAnswerContinuation() error {
 }
 
 type ThreadReadResponse struct {
-	Thread             Thread                     `json:"thread"`
-	AnswerContinuation *AnswerContinuationVerdict `json:"answerContinuation,omitempty"`
+	Thread Thread `json:"thread"`
+	// LatestExecutionTurnID is the newest recorded execution span at Snapshot,
+	// regardless of later non-execution history turns.
+	LatestExecutionTurnID string                     `json:"latestExecutionTurnId,omitempty"`
+	AnswerContinuation    *AnswerContinuationVerdict `json:"answerContinuation,omitempty"`
 	// OlderCursor is set when itemLimit truncated the returned items; pass it
 	// to thread/turns/list to fetch the page just before the window. Empty means
 	// the response already includes the oldest item.

@@ -116,6 +116,7 @@ func (s *Session) AcceptClientMutationQueue(params appwire.TurnQueueParams) (app
 	return s.AcceptClientMutationQueueAs(params, schema.SessionActor{Kind: "human"})
 }
 
+// AcceptClientMutationQueueAs accepts or replays a queued input attributed to actor.
 func (s *Session) AcceptClientMutationQueueAs(params appwire.TurnQueueParams, actor schema.SessionActor) (appwire.TurnQueueResponse, error) {
 	var response appwire.TurnQueueResponse
 	lookup, err := s.acceptClientMutation(clientMutationSpec{
@@ -721,6 +722,7 @@ func (s *Session) AcceptClientMutationSteer(params appwire.TurnSteerParams) (app
 	return s.AcceptClientMutationSteerAs(params, schema.SessionActor{Kind: "human"})
 }
 
+// AcceptClientMutationSteerAs accepts or replays steering attributed to actor.
 func (s *Session) AcceptClientMutationSteerAs(params appwire.TurnSteerParams, actor schema.SessionActor) (appwire.TurnSteerResponse, error) {
 	var response appwire.TurnSteerResponse
 	lookup, err := s.acceptClientMutation(clientMutationSpec{
@@ -824,6 +826,7 @@ func (s *Session) AcceptClientMutationDrainAsSteer(params appwire.TurnDrainAsSte
 	return s.AcceptClientMutationDrainAsSteerAs(params, schema.SessionActor{Kind: "human"})
 }
 
+// AcceptClientMutationDrainAsSteerAs accepts or replays drain-and-steer attributed to actor.
 func (s *Session) AcceptClientMutationDrainAsSteerAs(params appwire.TurnDrainAsSteerParams, actor schema.SessionActor) (appwire.TurnDrainAsSteerResponse, error) {
 	var response appwire.TurnDrainAsSteerResponse
 	var consumedClientMutationIDs []string
@@ -948,6 +951,7 @@ func (s *Session) AcceptClientMutationPromoteQueuedAsSteer(params appwire.TurnPr
 	return s.AcceptClientMutationPromoteQueuedAsSteerAs(params, schema.SessionActor{Kind: "human"})
 }
 
+// AcceptClientMutationPromoteQueuedAsSteerAs accepts or replays promotion attributed to actor.
 func (s *Session) AcceptClientMutationPromoteQueuedAsSteerAs(params appwire.TurnPromoteQueuedAsSteerParams, actor schema.SessionActor) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
 	var response appwire.TurnPromoteQueuedAsSteerResponse
 	lookup, err := s.acceptClientMutation(clientMutationSpec{

@@ -2,9 +2,10 @@ package agent
 
 import (
 	"context"
-	"primeradiant.com/evener/agent/internal/agenttest"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/agent/internal/agenttest"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
@@ -57,7 +58,7 @@ func TestManagerForkAsideDoNotInheritRole(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for cycle := 0; cycle < 2; cycle++ {
+			for cycle := range 2 {
 				childMeta, err := schema.LoadSessionMeta(stateDir, childID)
 				if err != nil {
 					t.Fatal(err)
@@ -103,7 +104,7 @@ func TestDelegateManagerRoleNotInheritedOnCreateOrResume(t *testing.T) {
 	if result.Err != nil {
 		t.Fatal(result.Err)
 	}
-	for cycle := 0; cycle < 2; cycle++ {
+	for cycle := range 2 {
 		sub := root.getSub(result.ChildSessionID)
 		if sub == nil {
 			t.Fatal("missing child runtime")

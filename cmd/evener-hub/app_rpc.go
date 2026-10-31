@@ -1062,9 +1062,6 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 			if msg.Request.Method == appwire.MethodThreadRead && deletionFenceError(cfg, params.Ref, params.ThreadID, "") != nil {
 				return notSubscribe
 			}
-			if msg.Request.Method == appwire.MethodThreadRead && !params.Subscribe {
-				return notSubscribe
-			}
 			source, err := sourceForThread(sources, params.Ref, params.ThreadID)
 			if err != nil {
 				if _, parseErr := appwire.ParseRef(strings.TrimSpace(params.Ref)); params.Ref != "" && parseErr != nil {
@@ -1076,6 +1073,10 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 					}
 				}
 				return appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionUnresolved}
+			}
+			if msg.Request.Method == appwire.MethodThreadRead && !params.Subscribe &&
+				(!sourceSupportsThreadRelay(source) || !relayOnThreadRead(source)) {
+				return notSubscribe
 			}
 			// Stable refs and current IDs name one pending admission, but
 			// must not rewrite the relay's notification delivery identity.
@@ -1552,17 +1553,7 @@ func registerThreadHandlers(
 		if params.ManagerProof != nil {
 			return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.InvalidParams("actor metadata is not a human input argument")
 		}
-		if err := requireClientMutationID(params.ClientMutationID); err != nil {
-			return appwire.TurnPromoteQueuedAsSteerResponse{}, err
-		}
-		if strings.TrimSpace(params.ExpectedEntryID) == "" {
-			return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.InvalidParams("expectedEntryId is required")
-		}
-		resp, err := relayOwnedMutation(ctx, cfg, sources, params.Ref, "", params.ClientMutationID, func(source appsource.Source) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
-			return source.PromoteQueuedAsSteer(ctx, params)
-		})
-		err = adoptCallerMutationResult(&resp.Receipt, err, params.ClientMutationID)
-		return resp, err
+		return promoteQueuedControl(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnCancelQueued, func(ctx context.Context, params appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
 		if params.Index < 0 {
@@ -1581,15 +1572,7 @@ func registerThreadHandlers(
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadClear, func(ctx context.Context, params appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
-		if err := requireClientMutationID(params.ClientMutationID); err != nil {
-			return appwire.ThreadClearResponse{}, err
-		}
-		if strings.TrimSpace(params.ExpectedInstanceID) == "" {
-			return appwire.ThreadClearResponse{}, appwire.InvalidParams("expectedInstanceId is required")
-		}
-		resp, err := clearThreadWithResume(ctx, cfg, sources, params)
-		err = adoptCallerMutationResult(&resp.Receipt, err, params.ClientMutationID)
-		return resp, err
+		return clearThreadControl(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadCompactStart, func(ctx context.Context, params appwire.ThreadCompactStartParams) (appwire.EmptyResponse, error) {
 		return appwire.EmptyResponse{}, compactThreadWithResume(ctx, cfg, sources, params)

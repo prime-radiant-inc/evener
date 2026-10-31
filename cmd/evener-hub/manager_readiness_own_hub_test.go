@@ -38,7 +38,7 @@ func TestE2E_ManagerReadinessOwnHubFirstInputSSH(t *testing.T) {
 	t.Cleanup(provider.Close)
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
-	a, aHuman, _, hostDir, bAddr, _ := startManagerAcceptanceSSHFixture(t, provider, ctx)
+	a, aHuman, _, hostDir, bAddr, _ := startManagerAcceptanceSSHFixture(ctx, t, provider)
 
 	bToken, err := os.ReadFile(hostDir + "/state/auth-token")
 	if err != nil {

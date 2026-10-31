@@ -1,6 +1,7 @@
 package hubcore
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -44,9 +45,9 @@ func (s *HubIdentityStore) HubID() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	var id string
-	if err := db.QueryRow(`SELECT hub_id FROM hub_identity WHERE singleton = 1`).Scan(&id); err == nil && id != "" {
+	if err := db.QueryRowContext(context.Background(), `SELECT hub_id FROM hub_identity WHERE singleton = 1`).Scan(&id); err == nil && id != "" {
 		return id, nil
 	} else if !errors.Is(err, sql.ErrNoRows) && err != nil {
 		return "", fmt.Errorf("read hub identity: %w", err)
@@ -55,7 +56,7 @@ func (s *HubIdentityStore) HubID() (string, error) {
 	if _, err := db.Exec(`INSERT INTO hub_identity (singleton, hub_id) VALUES (1, ?) ON CONFLICT(singleton) DO NOTHING`, id); err != nil { //nolint:noctx // local file DB
 		return "", fmt.Errorf("persist hub identity: %w", err)
 	}
-	if err := db.QueryRow(`SELECT hub_id FROM hub_identity WHERE singleton = 1`).Scan(&id); err != nil {
+	if err := db.QueryRowContext(context.Background(), `SELECT hub_id FROM hub_identity WHERE singleton = 1`).Scan(&id); err != nil {
 		return "", fmt.Errorf("reread hub identity: %w", err)
 	}
 	return id, nil

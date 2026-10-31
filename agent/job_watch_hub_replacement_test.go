@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"strconv"
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/jobstore"
@@ -68,7 +69,7 @@ func TestHubWatchReplacementAtCapacity(t *testing.T) {
 	t.Parallel()
 	root := newMessagingRoot(t, newMessagingAdapter(), func(c *SessionConfig) { c.Manager = true })
 	jm := root.jobManager
-	for i := 0; i < maxLiveWatches; i++ {
+	for i := range maxLiveWatches {
 		if _, err := jm.configureHubWatch(fmt.Sprintf("local:worker-%d", i), "instance", "boot", "local:manager", []string{"question"}, false); err != nil {
 			t.Fatal(err)
 		}
@@ -89,7 +90,7 @@ func TestHubWatchReplacementAtCapacity(t *testing.T) {
 func TestHubWatchReplacementSubscriptionLifetime(t *testing.T) {
 	t.Parallel()
 	for _, lateOldInstall := range []bool{false, true} {
-		t.Run(fmt.Sprint(lateOldInstall), func(t *testing.T) {
+		t.Run(strconv.FormatBool(lateOldInstall), func(t *testing.T) {
 			root := newMessagingRoot(t, newMessagingAdapter(), func(c *SessionConfig) { c.Manager = true })
 			jm := root.jobManager
 			old, err := jm.configureHubWatch("local:worker", "instance", "boot", "local:manager", []string{"question"}, false)

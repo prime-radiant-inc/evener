@@ -206,13 +206,13 @@ func (s *RemoteHubSource) StopJob(ctx context.Context, request appwire.SessionSt
 		return appwire.SessionStopResponse{}, err
 	}
 	if request.Job != nil {
-		copy := *request.Job
-		copy.Ref = remoteRef.String()
-		request.Job = &copy
+		remoteJob := *request.Job
+		remoteJob.Ref = remoteRef.String()
+		request.Job = &remoteJob
 	} else if request.OwnedDelegate != nil {
-		copy := *request.OwnedDelegate
-		copy.Ref = remoteRef.String()
-		request.OwnedDelegate = &copy
+		remoteDelegate := *request.OwnedDelegate
+		remoteDelegate.Ref = remoteRef.String()
+		request.OwnedDelegate = &remoteDelegate
 	}
 	var out appwire.SessionStopResponse
 	err = s.call(ctx, appwire.MethodEvenerJobsStop, request, &out)

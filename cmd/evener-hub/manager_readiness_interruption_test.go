@@ -246,7 +246,7 @@ func newReadinessInterruptionFixture(t *testing.T) *readinessInterruptionFixture
 		return session
 	}
 	worker, manager := newSession(workerProvider, false), newSession(managerProvider, true)
-	workerRef, managerRef := "local:"+worker.WorkspaceID(), "local:"+manager.WorkspaceID()
+	workerRef, managerRef := "local:"+worker.ID(), "local:"+manager.ID()
 	managerProvider.ref = workerRef
 	gate := newReadinessContinuationGate()
 	makeDaemon := func(session *agent.Session, ref string, manager bool) (*daemonserver.Server, *httptest.Server) {

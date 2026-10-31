@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -137,13 +138,9 @@ func (jm *jobManager) onHubObservationLookup(watchID string, update appwire.Sess
 		if !cfg.hubTurnBound {
 			cfg.hubTurnID = read.Thread.Evener.ActiveTurnID
 			if cfg.hubTurnID == "" {
-				// A fresh idle watch catches up only with the latest work, never
-				// an older done hidden behind later unfinished work.
-				for _, turn := range read.Thread.Turns {
-					if turn.ID != appwire.SystemPreludeTurnID {
-						cfg.hubTurnID = turn.ID
-					}
-				}
+				// The indexed read classifies execution spans independently of the
+				// item window, which may end with non-execution history turns.
+				cfg.hubTurnID = read.LatestExecutionTurnID
 			}
 			cfg.hubTurnBound = cfg.hubTurnID != ""
 		}
@@ -251,13 +248,7 @@ func (jm *jobManager) onHubObservationLookup(watchID string, update appwire.Sess
 	if event == "" && len(cfg.events) == 1 {
 		event = cfg.events[0]
 	}
-	selected := false
-	for _, selector := range cfg.events {
-		if selector == event {
-			selected = true
-			break
-		}
-	}
+	selected := slices.Contains(cfg.events, event)
 	if !m.CausalKnown {
 		complete = false
 		event = "replay gap: unknown causality"

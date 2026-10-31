@@ -47,7 +47,7 @@ func TestInProcessProtocolAndErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer transport.Close()
-	if msg := inProcessRequest(t, transport, 1, "test/read", struct{}{}); msg.Error == nil || msg.Error.Error.Message != "initialize required" {
+	if msg := inProcessRequest(t, transport, 1, "test/read", struct{}{}); msg.Error == nil || msg.Error.Error.Code != appwire.CodeInvalidRequest {
 		t.Fatalf("uninitialized = %+v", msg)
 	}
 	if msg := inProcessRequest(t, transport, 2, appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: "incompatible"}); msg.Error == nil {
@@ -59,7 +59,7 @@ func TestInProcessProtocolAndErrors(t *testing.T) {
 	HandleTyped(server.Router(), "test/error", func(context.Context, struct{}) (struct{}, error) {
 		return struct{}{}, appwire.InvalidParams("preserved error")
 	})
-	if msg := inProcessRequest(t, transport, 4, "test/error", struct{}{}); msg.Error == nil || msg.Error.Error.Message != "preserved error" {
+	if msg := inProcessRequest(t, transport, 4, "test/error", struct{}{}); msg.Error == nil || msg.Error.Error.Code != appwire.CodeInvalidParams {
 		t.Fatalf("handler error = %+v", msg)
 	}
 }

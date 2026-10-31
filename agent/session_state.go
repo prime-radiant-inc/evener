@@ -327,7 +327,6 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 	skills.PinnedNoteGen = s.pinnedNoteGen
 	return schema.SessionMeta{
 		ID:                       s.id,
-		WorkspaceID:              s.cfg.WorkspaceID,
 		ProfileID:                s.profile.ID(),
 		Model:                    s.profile.Model(),
 		CheapModel:               s.profile.CheapModelRefString(),

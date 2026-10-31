@@ -46,7 +46,7 @@ func TestHistoryReadLatestIsTheIndexWindowRegrouped(t *testing.T) {
 	hx.recordAssistant(t, "r_2", "model-a", "four")
 	recorded := hx.writer.RecordedLength()
 
-	turns, older, snapshot, overlay, err := hx.history.latest(hx.history.capture(), "local:th_history", 3)
+	turns, older, snapshot, _, overlay, err := hx.history.latest(hx.history.capture(), "local:th_history", 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestHistoryReadDropsAStreamCoveredAfterTheCut(t *testing.T) {
 	}
 
 	hx.recordAssistant(t, "r_1", "", "the whole answer")
-	turns, _, _, overlay, err := hx.history.latest(captured, "local:th_history", 10)
+	turns, _, _, _, overlay, err := hx.history.latest(captured, "local:th_history", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestHistoryReadBeforeWithAnotherIncarnationsCursorIsStale(t *testing.T) {
 	hx := newHistoryHarness(t)
 	hx.record(t, "one")
 	hx.record(t, "two")
-	_, older, snapshot, _, err := hx.history.latest(hx.history.capture(), "local:th_history", 1)
+	_, older, snapshot, _, _, err := hx.history.latest(hx.history.capture(), "local:th_history", 1)
 	if err != nil || older == "" {
 		t.Fatalf("latest = cursor %q, %v; want an older cursor", older, err)
 	}
@@ -173,7 +173,7 @@ func TestHistoryReadOfAFailedThreadNamesTheOrdinal(t *testing.T) {
 	hx.record(t, "zeroth")
 	first := hx.record(t, "first")
 	hx.updatesThrough(t, first.Offset+first.Length)
-	_, older, _, _, err := hx.history.latest(hx.history.capture(), "local:th_history", 1)
+	_, older, _, _, _, err := hx.history.latest(hx.history.capture(), "local:th_history", 1)
 	if err != nil || older == "" {
 		t.Fatalf("latest = cursor %q, %v; want an older cursor", older, err)
 	}
@@ -197,7 +197,7 @@ func TestHistoryReadOfAFailedThreadNamesTheOrdinal(t *testing.T) {
 			t.Fatalf("%s = %+v, want historyFailed naming entry %d", label, wireErr, bad.Ordinal)
 		}
 	}
-	_, _, _, _, err = hx.history.latest(hx.history.capture(), "local:th_history", 10)
+	_, _, _, _, _, err = hx.history.latest(hx.history.capture(), "local:th_history", 10)
 	assertFailed("latest", err)
 	_, _, _, err = hx.history.before("local:th_history", appwire.ThreadTurnsListParams{Cursor: older, ItemLimit: 10})
 	assertFailed("before", err)

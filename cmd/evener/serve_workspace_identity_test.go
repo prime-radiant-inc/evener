@@ -14,23 +14,19 @@ import (
 
 func TestWorkspaceIdentityClearKeepsReferenceAndChangesInstance(t *testing.T) {
 	deps, state, args := newClearServeDeps(t)
-	var gotRef, oldWorkspaceID, newWorkspaceID string
+	args = append(args, "--manager")
+	var gotRef string
 	obs := runClearAttempt(t, deps, state, args, func(obs *clearObservation) {
 		read := clearThreadRead(t, state.srv)
 		gotRef = read.Thread.Evener.Ref
-		oldWorkspaceID = state.session(0).WorkspaceID()
-		newWorkspaceID = state.session(1).WorkspaceID()
+		if !state.session(0).Meta().Manager || !state.session(1).Meta().Manager {
+			t.Errorf("Manager = initial:%t cleared:%t, want true for both", state.session(0).Meta().Manager, state.session(1).Meta().Manager)
+		}
 	})
 	if obs.clearErr != nil {
 		t.Fatalf("clear: %v", obs.clearErr)
 	}
 	wantRef := "local:" + obs.oldSessionID
-	if oldWorkspaceID != obs.oldSessionID {
-		t.Fatalf("initial workspace ID = %q, want %q", oldWorkspaceID, obs.oldSessionID)
-	}
-	if newWorkspaceID != oldWorkspaceID {
-		t.Fatalf("cleared workspace ID = %q, want retained %q", newWorkspaceID, oldWorkspaceID)
-	}
 	if obs.newSessionID == obs.oldSessionID {
 		t.Fatalf("clear instance ID did not change: %q", obs.newSessionID)
 	}
@@ -41,8 +37,8 @@ func TestWorkspaceIdentityClearKeepsReferenceAndChangesInstance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load cleared metadata: %v", err)
 	}
-	if meta.WorkspaceID != oldWorkspaceID {
-		t.Fatalf("persisted cleared workspace ID = %q, want %q", meta.WorkspaceID, oldWorkspaceID)
+	if !meta.Manager {
+		t.Fatal("cleared session metadata lost Manager=true")
 	}
 
 	installServeScriptedProvider(t, &scriptedProvider{name: "openai"})
@@ -50,11 +46,17 @@ func TestWorkspaceIdentityClearKeepsReferenceAndChangesInstance(t *testing.T) {
 	resume := defaultServeDeps()
 	resume.ensureConfigDirs = func() error { return nil }
 	resume.seedMarketplaces = func(context.Context) error { return nil }
+	resume.bridge = deps.bridge
+	resume.newServer = func(cfg server.ServerConfig) serveServer {
+		state.srv = &clearIdentityServer{Server: server.NewServer(cfg), state: state}
+		return state.srv
+	}
 	resume.notifyContext = func(ctx context.Context, _ ...os.Signal) (context.Context, context.CancelFunc) {
 		ctx, cancel = context.WithCancel(ctx)
 		return ctx, cancel
 	}
 	preparedRef := ""
+	var restartedPublicRef string
 	prepare := resume.prepareAppIdentity
 	resume.prepareAppIdentity = func(sourceID, threadID, ref, transcriptPath string) (server.PreparedAppIdentity, error) {
 		preparedRef = ref
@@ -64,6 +66,14 @@ func TestWorkspaceIdentityClearKeepsReferenceAndChangesInstance(t *testing.T) {
 		return prepare(sourceID, threadID, ref, transcriptPath)
 	}
 	resume.serveHTTP = func(*http.Server, net.Listener) error {
+		read := clearThreadRead(t, state.srv)
+		restartedPublicRef = read.Thread.Evener.Ref
+		if read.Thread.ID != obs.newSessionID {
+			t.Errorf("restarted public instance ID = %q, want %q", read.Thread.ID, obs.newSessionID)
+		}
+		if !read.Thread.Evener.Manager {
+			t.Error("restarted public projection lost Manager=true")
+		}
 		cancel()
 		return http.ErrServerClosed
 	}
@@ -75,12 +85,23 @@ func TestWorkspaceIdentityClearKeepsReferenceAndChangesInstance(t *testing.T) {
 	if err := runServeWithDeps(resumeArgs, resume); err != nil {
 		t.Fatalf("restart cleared session: %v", err)
 	}
-	if preparedRef != wantRef {
-		t.Fatalf("restart prepared workspace ref = %q, want %q", preparedRef, wantRef)
+	newRef := "local:" + obs.newSessionID
+	if preparedRef != newRef {
+		t.Fatalf("restart prepared boot ref = %q, want current session ref %q", preparedRef, newRef)
+	}
+	if restartedPublicRef != newRef {
+		t.Fatalf("restarted public ref = %q, want current session ref %q", restartedPublicRef, newRef)
+	}
+	meta, err = schema.LoadSessionMeta(args[7], obs.newSessionID)
+	if err != nil {
+		t.Fatalf("load restarted metadata: %v", err)
+	}
+	if !meta.Manager {
+		t.Fatal("restarted session metadata lost Manager=true")
 	}
 }
 
-func TestWorkspaceIdentityLegacyResumePersistsBeforeReferencePreparation(t *testing.T) {
+func TestLegacyMetadataResumePreparesCurrentSessionReference(t *testing.T) {
 	installServeScriptedProvider(t, &scriptedProvider{name: "openai"})
 	stateDir := t.TempDir()
 	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
@@ -97,13 +118,6 @@ func TestWorkspaceIdentityLegacyResumePersistsBeforeReferencePreparation(t *test
 	preparedRef := ""
 	prepare := deps.prepareAppIdentity
 	deps.prepareAppIdentity = func(sourceID, threadID, ref, transcriptPath string) (server.PreparedAppIdentity, error) {
-		meta, err := schema.LoadSessionMeta(stateDir, sessionID)
-		if err != nil {
-			t.Fatalf("load metadata before reference publication: %v", err)
-		}
-		if meta.WorkspaceID != sessionID {
-			t.Fatalf("workspace identity at reference preparation = %q, want saved session ID %q", meta.WorkspaceID, sessionID)
-		}
 		preparedRef = ref
 		return prepare(sourceID, threadID, ref, transcriptPath)
 	}
@@ -120,35 +134,20 @@ func TestWorkspaceIdentityLegacyResumePersistsBeforeReferencePreparation(t *test
 		t.Fatalf("resume old-format session: %v", err)
 	}
 	if want := "local:" + sessionID; preparedRef != want {
-		t.Fatalf("prepared workspace ref = %q, want %q", preparedRef, want)
+		t.Fatalf("prepared session ref = %q, want %q", preparedRef, want)
 	}
 }
 
-func TestWorkspaceIdentityLegacyClearRestartKeepsPublicReference(t *testing.T) {
+func TestLegacyClearKeepsLiveAliasAndRestartUsesCurrentSessionRef(t *testing.T) {
 	stateDir := t.TempDir()
 	const originalSessionID = "02wMz5Txv1C3Hut0M8GCeB"
 	seedResumableSession(t, stateDir, originalSessionID, originalSessionID)
-	legacyMeta, err := schema.LoadSessionMeta(stateDir, originalSessionID)
-	if err != nil {
-		t.Fatalf("load legacy fixture metadata: %v", err)
-	}
-	if legacyMeta.WorkspaceID != "" {
-		t.Fatalf("legacy fixture workspace ID = %q, want omitted", legacyMeta.WorkspaceID)
-	}
-
 	deps, state, baseArgs := newClearServeDeps(t)
 	baseArgs[7] = stateDir
 	args := append(append([]string(nil), baseArgs...), "--resume", originalSessionID)
 	var initialPreparedRef string
 	prepare := deps.prepareAppIdentity
 	deps.prepareAppIdentity = func(sourceID, threadID, ref, transcriptPath string) (server.PreparedAppIdentity, error) {
-		meta, err := schema.LoadSessionMeta(stateDir, originalSessionID)
-		if err != nil {
-			t.Fatalf("load legacy metadata before identity preparation: %v", err)
-		}
-		if meta.WorkspaceID != originalSessionID {
-			t.Fatalf("workspace identity before initial preparation = %q, want %q", meta.WorkspaceID, originalSessionID)
-		}
 		if threadID == originalSessionID {
 			initialPreparedRef = ref
 		}
@@ -165,6 +164,9 @@ func TestWorkspaceIdentityLegacyClearRestartKeepsPublicReference(t *testing.T) {
 		if initialRead.Thread.ID != originalSessionID {
 			t.Errorf("initial public instance ID = %q, want restored ID %q", initialRead.Thread.ID, originalSessionID)
 		}
+		if initialRead.Thread.Evener.Manager {
+			t.Error("legacy non-Manager session projected Manager=true")
+		}
 		clearErr = state.srv.clear(context.Background(), appwire.ThreadClearParams{
 			Ref:                initialPublicRef,
 			ClientMutationID:   "legacy-clear",
@@ -173,7 +175,11 @@ func TestWorkspaceIdentityLegacyClearRestartKeepsPublicReference(t *testing.T) {
 		if clearErr == nil {
 			replacement := state.session(0)
 			replacementID = replacement.ID()
-			clearedPublicRef = clearThreadRead(t, state.srv).Thread.Evener.Ref
+			cleared := clearThreadRead(t, state.srv)
+			clearedPublicRef = cleared.Thread.Evener.Ref
+			if cleared.Thread.Evener.Manager {
+				t.Error("legacy Clear projection changed non-Manager session to Manager")
+			}
 		}
 		state.srv.shutdown()
 		return http.ErrServerClosed
@@ -198,8 +204,8 @@ func TestWorkspaceIdentityLegacyClearRestartKeepsPublicReference(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load replacement metadata: %v", err)
 	}
-	if replacementMeta.WorkspaceID != originalSessionID {
-		t.Fatalf("replacement workspace ID = %q, want %q", replacementMeta.WorkspaceID, originalSessionID)
+	if replacementMeta.ID != replacementID {
+		t.Fatalf("replacement metadata ID = %q, want %q", replacementMeta.ID, replacementID)
 	}
 
 	restartDeps, restartState, _ := newClearServeDeps(t)
@@ -218,14 +224,18 @@ func TestWorkspaceIdentityLegacyClearRestartKeepsPublicReference(t *testing.T) {
 		read := clearThreadRead(t, restartState.srv)
 		restartPublicRef = read.Thread.Evener.Ref
 		restartPublicInstanceID = read.Thread.ID
+		if read.Thread.Evener.Manager {
+			t.Error("restarted legacy projection changed non-Manager session to Manager")
+		}
 		restartState.srv.shutdown()
 		return http.ErrServerClosed
 	}
 	if err := runServeWithDeps(restartArgs, restartDeps); err != nil {
 		t.Fatalf("restart cleared legacy session: %v", err)
 	}
-	if restartPreparedRef != wantRef || restartPublicRef != wantRef {
-		t.Fatalf("restarted prepared/public refs = %q/%q, want %q", restartPreparedRef, restartPublicRef, wantRef)
+	newRef := "local:" + replacementID
+	if restartPreparedRef != newRef || restartPublicRef != newRef {
+		t.Fatalf("restarted prepared/public refs = %q/%q, want current session ref %q", restartPreparedRef, restartPublicRef, newRef)
 	}
 	if restartPublicInstanceID != replacementID {
 		t.Fatalf("restarted public instance ID = %q, want replacement %q", restartPublicInstanceID, replacementID)

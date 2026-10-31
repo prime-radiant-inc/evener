@@ -40,8 +40,6 @@ var shownMetaFields = []string{
 // SessionMeta field on neither list fails TestShownMetaFieldsCoverSessionMeta,
 // which is what forces the next added field to be classified.
 var notShownMetaFields = []string{
-	// Manager projection reads this separately; navigation retains transcript ID.
-	"WorkspaceID",
 	// Manager is the session's start-time property; the projected thread
 	// carries it, no navigation row does.
 	"Manager",

@@ -62,7 +62,7 @@ func TestE2E_ManagerReadinessSavedAttributionAndReplaySSH(t *testing.T) {
 // fixture in both directions. B's identity comes from its configured store.
 func startManagerReadinessAttachedFixture(ctx context.Context, t *testing.T, provider *fakellm.Server) (hubStack, *appwire.Client, hubStack, *appwire.Client, string, string) {
 	t.Helper()
-	a, aHuman, _, hostDir, bAddr, _ := startManagerAcceptanceSSHFixture(t, provider, ctx)
+	a, aHuman, _, hostDir, bAddr, _ := startManagerAcceptanceSSHFixture(ctx, t, provider)
 	tokenBytes, err := os.ReadFile(filepath.Join(hostDir, "state", "auth-token"))
 	if err != nil {
 		t.Fatal(err)

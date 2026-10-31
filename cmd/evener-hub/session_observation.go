@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/identifier"
@@ -24,12 +25,7 @@ func validSessionWatch(request appwire.SessionWatchRequest) error {
 }
 
 func sessionWatchSelected(request appwire.SessionWatchRequest, event string) bool {
-	for _, selected := range request.Events {
-		if selected == event {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(request.Events, event)
 }
 
 func observationMetadata(item appwire.ThreadItem, ref, instance, generation string) appwire.SessionObservationMetadata {

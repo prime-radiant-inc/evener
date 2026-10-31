@@ -223,6 +223,9 @@ hub subscriptions as human clients. For an existing remote worker, attach
 `job_watch(operation="create", hub={ref:"HOST:WORKSPACE_ID",events:["question"],completion:true})`
 before sending input. Remote question/answer/completion and saved Manager
 attribution are checked through real two-hub SSH acceptance, without a browser.
+An idle completion watch anchors to the latest execution identity in the same
+indexed history cut as its snapshot, not a later model-change or delivery turn;
+an active turn takes precedence, and empty history supplies no anchor.
 Clearing a Manager watch leaves human subscribers attached. Local no-browser
 sandbox approval is qualified; approval caused by a live remote prompt remains
 unexercised end to end.

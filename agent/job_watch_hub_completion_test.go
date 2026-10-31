@@ -87,10 +87,12 @@ func TestManagerWatchIdleLatestWork(t *testing.T) {
 			accepted := true
 			m := appwire.SessionObservationMetadata{GenerationID: "1@worker", TurnID: "A", EntryID: "old", EndTurn: true, EndReason: "done", TerminalAccepted: &accepted, CausalKnown: true}
 			turns := []appwire.Turn{{ID: "A", Items: []appwire.ThreadItem{{Observation: &m}}}}
+			latestExecution := "A"
 			if unfinished {
 				turns = append(turns, appwire.Turn{ID: "B"})
+				latestExecution = "B"
 			}
-			if err := jm.onHubObservation(w.WatchID, appwire.SessionWatchUpdate{Metadata: appwire.SessionObservationMetadata{Ref: "local:worker", InstanceID: "instance", GenerationID: "2@worker"}, Snapshot: &appwire.ThreadReadResponse{BootGeneration: "2@worker", Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: "local:worker", InstanceID: "instance"}, Turns: turns}}}); err != nil {
+			if err := jm.onHubObservation(w.WatchID, appwire.SessionWatchUpdate{Metadata: appwire.SessionObservationMetadata{Ref: "local:worker", InstanceID: "instance", GenerationID: "2@worker"}, Snapshot: &appwire.ThreadReadResponse{BootGeneration: "2@worker", LatestExecutionTurnID: latestExecution, Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: "local:worker", InstanceID: "instance"}, Turns: turns}}}); err != nil {
 				t.Fatal(err)
 			}
 			if managerWatchActive(jm, w.WatchID) != unfinished {

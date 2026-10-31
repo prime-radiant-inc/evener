@@ -45,12 +45,7 @@ func checkAnswerLinkLiveAndSaved(t *testing.T, kind schema.TurnKind) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		var item struct {
-			Observation *struct {
-				TurnID          string   `json:"turnId"`
-				AnswerToTurnIDs []string `json:"answerToTurnIds"`
-			} `json:"observation"`
-		}
+		var item appwire.ThreadItem
 		if err := json.Unmarshal(raw, &item); err != nil {
 			t.Fatal(err)
 		}

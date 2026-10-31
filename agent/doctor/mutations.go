@@ -9,6 +9,8 @@ import (
 	"os"
 	"sort"
 	"strings"
+
+	"primeradiant.com/evener/appwire"
 )
 
 // clientMutationStoreVersion is the only snapshot version the runtime writes
@@ -219,19 +221,14 @@ type clientMutationStoreQueueEntry struct {
 }
 
 type clientMutationStorePending struct {
-	Actor            clientMutationStoreWireActor `json:"actor"`
-	ClientMutationID string                       `json:"client_mutation_id"`
-	Method           string                       `json:"method"`
-	Input            []json.RawMessage            `json:"input"`
-	ExecutionState   string                       `json:"execution_state"`
-	TurnID           string                       `json:"turn_id"`
-	QueueEntryIDs    []string                     `json:"queue_entry_ids"`
-	ProjectionState  string                       `json:"projection_state"`
-}
-
-type clientMutationStoreWireActor struct {
-	Kind       string `json:"kind"`
-	ManagerRef string `json:"managerRef"`
+	Actor            appwire.SessionActor `json:"actor"`
+	ClientMutationID string               `json:"client_mutation_id"`
+	Method           string               `json:"method"`
+	Input            []json.RawMessage    `json:"input"`
+	ExecutionState   string               `json:"execution_state"`
+	TurnID           string               `json:"turn_id"`
+	QueueEntryIDs    []string             `json:"queue_entry_ids"`
+	ProjectionState  string               `json:"projection_state"`
 }
 
 func decodeClientMutationStore(data []byte, path, sessionID string) (clientMutationStoreFile, error) {

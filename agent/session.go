@@ -1490,9 +1490,6 @@ type forkInfo struct {
 // ID returns the session's identifier.
 func (s *Session) ID() string { return s.id }
 
-// WorkspaceID returns the stable workspace identity persisted in session metadata.
-func (s *Session) WorkspaceID() string { return s.cfg.WorkspaceID }
-
 func (s *Session) apiLogContext(ctx context.Context) context.Context {
 	return llm.WithAPILogContext(ctx, s.id)
 }

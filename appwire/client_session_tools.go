@@ -161,23 +161,23 @@ func (c *Client) receiveSessionRequest(ctx context.Context, req Request) {
 	decoder := json.NewDecoder(bytes.NewReader(req.Params))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&p); err != nil {
-		c.sendSessionFrameOrClose(ctx, ErrorMessage(req.ID, InvalidParams(err.Error())))
+		_ = c.sendSessionFrameOrClose(ctx, ErrorMessage(req.ID, InvalidParams(err.Error())))
 		return
 	}
 	if p.BindingID == "" || p.BindingID != state.binding.BindingID {
-		c.sendSessionFrameOrClose(ctx, ErrorMessage(req.ID, InvalidRequest("stale runtime binding")))
+		_ = c.sendSessionFrameOrClose(ctx, ErrorMessage(req.ID, InvalidRequest("stale runtime binding")))
 		return
 	}
 	// Cleanup must remain available even when all operation slots are occupied.
 	if req.Method == MethodRuntimeSessionUnwatch {
-		value, err := c.handleSessionRequest(ctx, state, req.Method, p, nil, nil)
+		value, err := c.handleSessionRequest(ctx, nil, state, req.Method, p, nil)
 		c.respondSessionRequest(ctx, req.ID, value, err)
 		return
 	}
 	select {
 	case state.slots <- struct{}{}:
 	default:
-		c.sendSessionFrameOrClose(ctx, ErrorMessage(req.ID, Unavailable("session request limit reached")))
+		_ = c.sendSessionFrameOrClose(ctx, ErrorMessage(req.ID, Unavailable("session request limit reached")))
 		return
 	}
 	var watchCtx context.Context
@@ -236,7 +236,7 @@ func (c *Client) receiveSessionRequest(ctx context.Context, req Request) {
 			cancel()
 			<-state.slots
 		}()
-		value, err := c.handleSessionRequest(callCtx, state, req.Method, p, watchCtx, watchCancel)
+		value, err := c.handleSessionRequest(callCtx, watchCtx, state, req.Method, p, watchCancel)
 		c.respondSessionRequest(ctx, req.ID, value, err)
 	}()
 }
@@ -247,13 +247,13 @@ func (c *Client) respondSessionRequest(ctx context.Context, id ID, value any, er
 		if !errors.As(err, &wire) {
 			wire = Unavailable(err.Error())
 		}
-		c.sendSessionFrameOrClose(ctx, ErrorMessage(id, wire))
+		_ = c.sendSessionFrameOrClose(ctx, ErrorMessage(id, wire))
 	} else {
-		c.sendSessionFrameOrClose(ctx, ResponseMessage(id, value))
+		_ = c.sendSessionFrameOrClose(ctx, ResponseMessage(id, value))
 	}
 }
 
-func (c *Client) handleSessionRequest(ctx context.Context, s *clientSessionTools, method string, p SessionRuntimeRequest, watchCtx context.Context, cancel context.CancelFunc) (any, error) {
+func (c *Client) handleSessionRequest(ctx, watchCtx context.Context, s *clientSessionTools, method string, p SessionRuntimeRequest, cancel context.CancelFunc) (any, error) {
 	switch method {
 	case MethodRuntimeSessionState:
 		if p.Operation != nil || p.Watch != nil || p.WatchID != "" {

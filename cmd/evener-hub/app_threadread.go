@@ -261,6 +261,7 @@ func pastEntryItemReadResponse(ctx context.Context, cfg hubcore.WebConfig, param
 		thread = stampItemPageTurns(cfg, entry, thread)
 		thread = stampDerivedTotalsWith(cfg, entry, thread, page.Derived)
 		response.Thread = thread
+		response.LatestExecutionTurnID = page.LatestExecutionTurnID
 		return response, nil
 	}, itemLimit)
 	if packErr != nil {
@@ -285,10 +286,11 @@ var pastTranscriptIndexes = transcriptindex.NewCacheWithOpen(transcriptindex.Def
 // pastItemPage is one window of a daemonless session's history, read from its
 // transcript index.
 type pastItemPage struct {
-	Candidates []appitempaging.TranscriptItemCandidate
-	Identity   appitempaging.CursorIdentity
-	Exhausted  bool
-	Snapshot   appwire.SnapshotIdentity
+	Candidates            []appitempaging.TranscriptItemCandidate
+	LatestExecutionTurnID string
+	Identity              appitempaging.CursorIdentity
+	Exhausted             bool
+	Snapshot              appwire.SnapshotIdentity
 	// Changes is what changed since the client's held snapshot, when the
 	// index could answer for it; nil sends the window as a full replacement.
 	Changes *transcriptindex.Changes
@@ -322,10 +324,11 @@ func (p pastItemPage) history() appsource.HistoryIdentity {
 
 func pastItemPageFromWindow(entry hubcore.PastEntry, window transcriptindex.Window) pastItemPage {
 	return pastItemPage{
-		Candidates: window.Candidates,
-		Identity:   pastCursorIdentity(entry, window.Incarnation),
-		Exhausted:  !window.HasOlder,
-		Snapshot:   appwire.SnapshotIdentity{Incarnation: window.Incarnation, Length: window.Length},
+		Candidates:            window.Candidates,
+		LatestExecutionTurnID: window.LatestExecutionTurnID,
+		Identity:              pastCursorIdentity(entry, window.Incarnation),
+		Exhausted:             !window.HasOlder,
+		Snapshot:              appwire.SnapshotIdentity{Incarnation: window.Incarnation, Length: window.Length},
 	}
 }
 

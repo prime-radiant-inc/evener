@@ -4586,6 +4586,11 @@ export interface ThreadReadParams {
 
 export interface ThreadReadResponse {
   thread: Thread;
+  /**
+   * LatestExecutionTurnID is the newest recorded execution span at Snapshot,
+   * regardless of later non-execution history turns.
+   */
+  latestExecutionTurnId?: string;
   answerContinuation?: AnswerContinuationVerdict;
   /**
    * OlderCursor is set when itemLimit truncated the returned items; pass it

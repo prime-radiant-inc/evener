@@ -219,13 +219,13 @@ func stopJobControl(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 			if ownerErr != nil || job.Data.JobID != request.Job.JobID || job.Data.OwnerSessionID != summary.Context.SessionID || jobOwner.ThreadID != summary.Context.SessionID || job.Data.Type != "shell" || job.Data.Terminal {
 				return out, appwire.InvalidParams("job is not a live shell owned by the addressed session")
 			}
-			copy := *request.Job
-			copy.Ref = ownerRef
-			request.Job = &copy
+			updatedJob := *request.Job
+			updatedJob.Ref = ownerRef
+			request.Job = &updatedJob
 		} else {
-			copy := *request.OwnedDelegate
-			copy.Ref = ownerRef
-			request.OwnedDelegate = &copy
+			delegate := *request.OwnedDelegate
+			delegate.Ref = ownerRef
+			request.OwnedDelegate = &delegate
 		}
 		return stopper.StopJob(ctx, request)
 	})

@@ -114,8 +114,7 @@ func TestManagerAcceptanceCleanupReapsDaemonAfterHubProofFailure(t *testing.T) {
 		cmd.Env = withoutEnv(os.Environ(), sandboxtest.RootVar, "TMPDIR", "TMP", "TEMP", "EVENER_HOST_TEMP_BASES")
 		cmd.Env = append(cmd.Env, managerCleanupCompositionChildEnv+"=1", managerCleanupCompositionReportEnv+"="+reportPath, liveStackWarmEnv+"=1")
 		output, runErr := cmd.CombinedOutput()
-		var exitErr *exec.ExitError
-		if !errors.As(runErr, &exitErr) {
+		if _, ok := errors.AsType[*exec.ExitError](runErr); !ok {
 			t.Fatalf("composition child exit = %v, want graceful-proof failure; output:\n%s", runErr, output)
 		}
 		var result managerCleanupCompositionResult
@@ -199,7 +198,7 @@ func TestManagerAcceptanceCleanupReapsDaemonAfterHubProofFailure(t *testing.T) {
 	select {
 	case waitErr := <-hubWait:
 		hubWaited = true
-		if exitErr, ok := waitErr.(*exec.ExitError); ok {
+		if exitErr, ok := errors.AsType[*exec.ExitError](waitErr); ok {
 			if status, ok := exitErr.Sys().(syscall.WaitStatus); ok && status.Signaled() && status.Signal() == syscall.SIGKILL {
 				result.HubExited = true
 				result.HubSignal = "killed"
@@ -207,7 +206,7 @@ func TestManagerAcceptanceCleanupReapsDaemonAfterHubProofFailure(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		_ = hub.Process.Kill()
-		_ = <-hubWait
+		<-hubWait
 		hubWaited = true
 	}
 	daemonWait := make(chan error, 1)
@@ -218,7 +217,7 @@ func TestManagerAcceptanceCleanupReapsDaemonAfterHubProofFailure(t *testing.T) {
 		result.DaemonExited = waitErr == nil
 	case <-time.After(3 * time.Second):
 		_ = daemon.Process.Signal(syscall.SIGTERM)
-		_ = <-daemonWait
+		<-daemonWait
 		daemonWaited = true
 	}
 	data, marshalErr := json.Marshal(result)
@@ -412,7 +411,7 @@ func TestStopHostListenerReapsOwnedProcessAfterProofFailure(t *testing.T) {
 		result.ProcessSignal = "released"
 	}
 	waited = true
-	if exitErr, ok := waitErr.(*exec.ExitError); ok {
+	if exitErr, ok := errors.AsType[*exec.ExitError](waitErr); ok {
 		if status, ok := exitErr.Sys().(syscall.WaitStatus); ok && status.Signaled() && status.Signal() == syscall.SIGKILL {
 			result.ProcessSignal = "killed"
 		}

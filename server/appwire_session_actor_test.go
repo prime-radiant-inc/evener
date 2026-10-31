@@ -52,10 +52,10 @@ func TestManagerInputProofAuthenticatesBindingButLabelsCaller(t *testing.T) {
 	session := newNotesTestSession(t)
 	s := NewServer(ServerConfig{})
 	defer s.Close()
-	s.SetAppIdentity("local", session.WorkspaceID())
+	s.SetAppIdentity("local", session.ID())
 	s.SetSessionTools(func() *agent.Session { return session })
 	client := dialServerAppWire(t, s)
-	workerRef := "local:" + session.WorkspaceID()
+	workerRef := "local:" + session.ID()
 	binding := appwire.SessionBinding{Ref: workerRef, InstanceID: session.ID(), HubID: "hub", BindingID: "worker-binding"}
 	var bound appwire.SessionBinding
 	if err := client.Request(t.Context(), appwire.MethodRuntimeSessionBind, binding, &bound); err != nil {

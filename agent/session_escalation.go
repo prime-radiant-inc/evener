@@ -237,6 +237,7 @@ func (s *Session) ResolveSandboxEscalation(id string, approve bool) error {
 	return s.ResolveSandboxEscalationAs(id, approve, schema.SessionActor{Kind: "human"})
 }
 
+// ResolveSandboxEscalationAs delivers a sandbox decision attributed to actor.
 func (s *Session) ResolveSandboxEscalationAs(id string, approve bool, actor schema.SessionActor) error {
 	if err := validateSessionActor(actor); err != nil {
 		return err

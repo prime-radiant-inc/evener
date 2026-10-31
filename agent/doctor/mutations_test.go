@@ -2,6 +2,7 @@ package doctor
 
 import (
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -112,8 +113,9 @@ func TestMutations_AcceptsPersistedActorWithoutDroppingStrictness(t *testing.T) 
 		t.Fatalf("actor-bearing store must decode: report=%+v err=%v", report, err)
 	}
 	body = strings.Replace(body, `"manager_ref":"local:manager"`, `"manager_ref":"local:manager","forged":"value"`, 1)
-	if _, err := decodeClientMutationStore([]byte(strings.ReplaceAll(body, "%SID%", sidA)), "mutation.json", sidA); err == nil || !strings.Contains(err.Error(), "unknown field") {
-		t.Fatalf("unknown actor field accepted: %v", err)
+	rejected, err := decodeClientMutationStore([]byte(strings.ReplaceAll(body, "%SID%", sidA)), "mutation.json", sidA)
+	if err == nil || !reflect.DeepEqual(rejected, clientMutationStoreFile{}) {
+		t.Fatalf("unknown actor field returned usable store: report=%+v err=%v", rejected, err)
 	}
 }
 

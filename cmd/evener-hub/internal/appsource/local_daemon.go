@@ -477,8 +477,11 @@ func (s *LocalDaemonSource) AcquireRelaySession(ref appwire.Ref) (RelaySessionRo
 					}
 					return nil, nil, localDaemonInitializeError(initializeErr)
 				}
-				if binding.BindingID != "" && client.Features().SessionTools {
-					if bindErr := client.BindSessionTools(ctx); bindErr == nil {
+				if binding.BindingID != "" {
+					if !client.Features().SessionTools {
+						// Keep HubID stable so reconciliation does not recycle this connection.
+						binding.BindingID = ""
+					} else if bindErr := client.BindSessionTools(ctx); bindErr == nil {
 						s.sessionToolsMu.Lock()
 						if bindingLifetime != nil && bindingLifetime.Err() != nil {
 							s.sessionToolsMu.Unlock()
@@ -487,6 +490,7 @@ func (s *LocalDaemonSource) AcquireRelaySession(ref appwire.Ref) (RelaySessionRo
 						}
 						s.sessionToolsMu.Unlock()
 					} else {
+						binding.BindingID = ""
 						binding.HubID = ""
 					}
 				}

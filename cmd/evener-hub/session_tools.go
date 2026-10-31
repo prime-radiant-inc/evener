@@ -408,9 +408,10 @@ func statusFollowUp(ref string) appwire.SessionStatusFollowUp {
 }
 
 func (o *sessionOperations) Read(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-	// The upstream relay may still need a snapshot handoff, but only a caller
-	// that requested a subscription owns downstream admission and delivery.
-	return o.read(ctx, params, params.Subscribe)
+	// An ordinary thread/read retains its default downstream subscription when
+	// the source hands off a live relay. Internal Manager snapshot reads call
+	// read(..., false) directly and do not capture.
+	return o.read(ctx, params, true)
 }
 
 func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadParams, capture bool) (appwire.ThreadReadResponse, error) {
@@ -571,10 +572,12 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 		if pastPage != nil {
 			resp.Thread.Turns = pastPage.Thread.Turns
 			resp.OlderCursor = pastPage.OlderCursor
+			resp.LatestExecutionTurnID = pastPage.LatestExecutionTurnID
 			resp = withReadHistoryIdentity(resp, fallbackHistoryIdentity(read.response, *pastPage))
 			resp.Thread = enrichSourcedThreadImages(source, resp.Thread)
 			annotateThreadProjects([]appwire.Thread{resp.Thread})
 		} else {
+			latestExecutionTurnID := resp.LatestExecutionTurnID
 			candidates, candidateErr := sourceItemCandidateResultForRead(ctx, source, params, resp)
 			if candidateErr != nil {
 				read.finish(false)
@@ -594,6 +597,7 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 				return appwire.ThreadReadResponse{}, packErr
 			}
 			resp = withReadHistoryIdentity(packed, read.response)
+			resp.LatestExecutionTurnID = latestExecutionTurnID
 			resp.Changes = withDroppedWindowItems(source, resp.Changes, candidates, resp.Thread)
 		}
 	} else {

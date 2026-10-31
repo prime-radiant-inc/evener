@@ -254,8 +254,8 @@ func TestManagerRequestActualPolicyMatrix(t *testing.T) {
 					var control *llm.ToolDefinition
 					for _, definition := range req.Tools {
 						if definition.Name == "session_control" {
-							copy := definition
-							control = &copy
+							controlDefinition := definition
+							control = &controlDefinition
 						}
 					}
 					if (control != nil) != (stage.manager && mode != "allowlist") {
@@ -275,8 +275,8 @@ func TestManagerRequestActualPolicyMatrix(t *testing.T) {
 					var found *llm.ToolDefinition
 					for _, def := range req.Tools {
 						if def.Name == name {
-							copy := def
-							found = &copy
+							foundDefinition := def
+							found = &foundDefinition
 						}
 					}
 					denied := mode == "denied" || mode == "allowlist"

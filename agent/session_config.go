@@ -30,9 +30,6 @@ type SessionConfig struct {
 	// sandbox, so the scratch the sandbox mints is named after the session.
 	// Empty lets NewSession mint one. Not persisted.
 	SessionID string `json:"-"`
-	// WorkspaceID is the stable human-facing workspace identity. It is runtime
-	// bootstrap input and is persisted in SessionMeta, not in ConfigSnapshot.
-	WorkspaceID string `json:"-"`
 
 	// StartupModelListing is a live listing the launcher already fetched for
 	// the session's model instance. NewSession reuses it instead of asking the

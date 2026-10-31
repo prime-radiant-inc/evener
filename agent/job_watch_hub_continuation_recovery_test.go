@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"sync/atomic"
 	"testing"
 
@@ -195,7 +196,7 @@ func TestManagerWatchContinuationRecoveryTransient(t *testing.T) {
 func TestManagerWatchContinuationRecoveryExhaustion(t *testing.T) {
 	t.Parallel()
 	for _, replay := range []bool{true, false} {
-		t.Run(fmt.Sprint(replay), func(t *testing.T) {
+		t.Run(strconv.FormatBool(replay), func(t *testing.T) {
 			t.Parallel()
 			f := newContinuationRecoveryFixture(t, replay)
 			f.peer.invoke = func(context.Context, appwire.SessionOperationRequest, int) (appwire.SessionOperationResponse, error) {
@@ -417,7 +418,7 @@ func TestManagerWatchContinuationRecoveryCancellation(t *testing.T) {
 func TestManagerWatchContinuationRecoveryPendingDedup(t *testing.T) {
 	t.Parallel()
 	for _, replay := range []bool{true, false} {
-		t.Run(fmt.Sprint(replay), func(t *testing.T) {
+		t.Run(strconv.FormatBool(replay), func(t *testing.T) {
 			t.Parallel()
 			f := newContinuationRecoveryFixture(t, replay)
 			question := f.initial.Metadata

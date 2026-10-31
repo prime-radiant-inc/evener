@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -67,11 +68,8 @@ func TestE2E_ManagerLocalQuestionLoop(t *testing.T) {
 			t.Fatalf("unexpected provider request: %v", call.Texts())
 		}
 		var outcome struct {
-			Created struct {
-				Ref        string `json:"ref"`
-				InstanceID string `json:"instanceId"`
-			} `json:"created"`
-			Watch struct {
+			Created appwire.ManagerView `json:"created"`
+			Watch   struct {
 				WatchID string `json:"watch_id"`
 			} `json:"watch"`
 			Input struct {
@@ -277,9 +275,8 @@ func TestE2E_ManagerNoBrowserSandboxApproval(t *testing.T) {
 		}
 		var outcome struct {
 			Created struct {
-				Status     string `json:"status"`
-				Ref        string `json:"ref"`
-				InstanceID string `json:"instanceId"`
+				Status string `json:"status"`
+				appwire.ManagerView
 			} `json:"created"`
 			Watch struct {
 				Status  string `json:"status"`
@@ -506,8 +503,7 @@ func TestManagerCreateWatchFailure(t *testing.T) {
 
 func managerToolResult(call *fakellm.Call, out any) bool {
 	messages, _ := call.Body["messages"].([]any)
-	for i := len(messages) - 1; i >= 0; i-- {
-		raw := messages[i]
+	for _, raw := range slices.Backward(messages) {
 		message, _ := raw.(map[string]any)
 		if message["role"] != "tool" {
 			continue
@@ -520,8 +516,8 @@ func managerToolResult(call *fakellm.Call, out any) bool {
 
 func managerToolRefusal(call *fakellm.Call) string {
 	messages, _ := call.Body["messages"].([]any)
-	for i := len(messages) - 1; i >= 0; i-- {
-		message, _ := messages[i].(map[string]any)
+	for _, raw := range slices.Backward(messages) {
+		message, _ := raw.(map[string]any)
 		if message["role"] != "tool" {
 			continue
 		}

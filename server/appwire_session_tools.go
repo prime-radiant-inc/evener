@@ -20,8 +20,10 @@ func (s *Server) SetSessionTools(current func() *agent.Session) {
 		if session == nil {
 			return appwire.Unavailable("runtime unavailable")
 		}
-		expected := appwire.Ref{SourceID: "local", ThreadID: session.WorkspaceID()}.String()
-		if binding.Ref != expected || binding.InstanceID != session.ID() {
+		s.mu.RLock()
+		expectedRef, threadID := s.appRef, s.appThreadID
+		s.mu.RUnlock()
+		if expectedRef == "" || threadID != session.ID() || binding.Ref != expectedRef || binding.InstanceID != session.ID() {
 			return appwire.InvalidRequest("binding does not name this live runtime")
 		}
 		mu.Lock()
@@ -32,16 +34,17 @@ func (s *Server) SetSessionTools(current func() *agent.Session) {
 			}
 			selectedSession = session
 			clients = &runtimeHubClients{clients: map[string]*runtimeHubClient{}}
-			session.SetHubClient(clients)
+			registry := clients
+			session.SetHubClient(registry)
 			s.mu.Lock()
 			s.resolveManagerActor = func(proof appwire.SessionActorProof) (schema.SessionActor, error) {
-				clients.mu.Lock()
-				defer clients.mu.Unlock()
+				registry.mu.Lock()
+				defer registry.mu.Unlock()
 				caller, err := appwire.ParseRef(proof.CallerRef)
 				if err != nil || caller.String() != proof.CallerRef || proof.BindingID == "" || proof.Actor.Kind != "manager" || proof.Actor.ManagerRef != "" {
 					return schema.SessionActor{}, appwire.InvalidRequest("Manager actor is not authenticated by the live binding")
 				}
-				for _, client := range clients.clients {
+				for _, client := range registry.clients {
 					if client.binding.BindingID == proof.BindingID && client.valid() == nil && client.binding.Ref != proof.CallerRef {
 						return schema.SessionActor{Kind: "manager", ManagerRef: proof.CallerRef}, nil
 					}

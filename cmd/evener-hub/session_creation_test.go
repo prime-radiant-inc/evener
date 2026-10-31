@@ -66,10 +66,7 @@ func TestManagerCreatePostSpawnFailure(t *testing.T) {
 			if marshalErr != nil {
 				t.Fatal(marshalErr)
 			}
-			var partial struct {
-				CreatedRef        string `json:"createdRef"`
-				CreatedInstanceID string `json:"createdInstanceId"`
-			}
+			var partial appwire.ThreadStartPartialErrorData
 			if err := json.Unmarshal(raw, &partial); err != nil {
 				t.Fatal(err)
 			}
@@ -111,10 +108,7 @@ func TestManagerCreatePostSpawnFailureNoSpawnEvidence(t *testing.T) {
 	if marshalErr != nil {
 		t.Fatal(marshalErr)
 	}
-	var partial struct {
-		CreatedRef        string `json:"createdRef"`
-		CreatedInstanceID string `json:"createdInstanceId"`
-	}
+	var partial appwire.ThreadStartPartialErrorData
 	if err := json.Unmarshal(raw, &partial); err != nil {
 		t.Fatal(err)
 	}

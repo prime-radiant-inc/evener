@@ -4557,6 +4557,7 @@ Underlying Go kind: `string` (no struct fields).
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `thread` | [appwire.Thread](#thread) |  |  |
+| `latestExecutionTurnId` | string | yes |  |
 | `answerContinuation` | \*[appwire.AnswerContinuationVerdict](#answercontinuationverdict) | yes |  |
 | `olderCursor` | string | yes |  |
 | `requestGeneration` | uint64 | yes |  |

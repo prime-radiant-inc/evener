@@ -27,10 +27,10 @@ import (
 const (
 	// formatVersion is the sidecar's layout. projectionID names the projection
 	// its records reproduce; either changing rebuilds every index.
-	formatVersion = 6
+	formatVersion = 7
 	// Dedicated COMMUNICATE records consume inherited call reconstruction.
 	// Older sidecars can contain duplicate messages from ordinary forks.
-	projectionID = "transcript-read-model-v10"
+	projectionID = "transcript-read-model-v11"
 
 	// tailBytes is how much of the covered prefix's end validation compares,
 	// the check the attention fold cursor uses (agent/session_attention.go).
@@ -182,7 +182,10 @@ type meta struct {
 	HeaderLength int64  `json:"header_length"` // 0: no header yet
 	Items        uint64 `json:"items"`
 	Turns        uint64 `json:"turns"`
-	Updates      uint64 `json:"updates"`
+	// LatestExecutionTurnSlot is the one-based turn-table slot of the latest
+	// execution summary; zero means the covered transcript has no execution.
+	LatestExecutionTurnSlot uint64 `json:"latest_execution_turn_slot,omitempty"`
+	Updates                 uint64 `json:"updates"`
 	// UpdatesFile names the update log's file in the build ("" is the
 	// first, updatesFile); a cut writes the kept records to a new file.
 	// UpdatesFrom is the offset from which the log holds every update: those
@@ -626,6 +629,9 @@ func (x *Index) adopt(m meta) error {
 		if err := x.stopBufferingStrings(); err != nil {
 			return err
 		}
+	}
+	if _, err := x.latestExecutionTurnID(); err != nil {
+		return fmt.Errorf("%w: invalid latest execution locator: %w", errCorrupt, err)
 	}
 	return x.readHeader()
 }
@@ -1258,6 +1264,9 @@ func (x *Index) stopBufferingStrings() error {
 
 // publishMeta writes the covered state.
 func (x *Index) publishMeta() error {
+	if _, err := x.latestExecutionTurnID(); err != nil {
+		return fmt.Errorf("publish invalid latest execution locator: %w", err)
+	}
 	sum, err := x.tailSum(x.meta.Length)
 	if err != nil {
 		return err

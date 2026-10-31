@@ -196,7 +196,7 @@ func SessionScratchTreeRootIDs(ctx context.Context, extraBases ...string) []stri
 // readScratchTreeRootIDs returns only a complete base scan. The directory is
 // closed even when the context ends inside a batch or a read fails.
 func readScratchTreeRootIDs(ctx context.Context, dir scratchTreeDirectory) ([]string, bool) {
-	defer dir.Close()
+	defer func() { _ = dir.Close() }()
 	var ids []string
 	for {
 		if ctx.Err() != nil {

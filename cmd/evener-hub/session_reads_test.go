@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -26,7 +27,6 @@ import (
 type managerReadSource struct {
 	*scriptedAppSource
 	tasks                []appwire.Task
-	turns                []appwire.Turn
 	pages                map[string]appwire.ThreadTurnsListResponse
 	turnCalls            []appwire.ThreadTurnsListParams
 	output               map[string]string
@@ -373,7 +373,7 @@ func TestManagerReadTaskSnapshot(t *testing.T) {
 	long := strings.Repeat("complete task instructions and notes ", 300)
 	local.tasks = make([]appwire.Task, 6)
 	for i := range local.tasks {
-		local.tasks[i] = appwire.Task{ID: i + 1, Type: appwire.TaskTypeImplement, Description: fmt.Sprintf("task-%d", i), Prompt: long + fmt.Sprint(i), Status: appwire.TaskOpen, Notes: []string{long}}
+		local.tasks[i] = appwire.Task{ID: i + 1, Type: appwire.TaskTypeImplement, Description: fmt.Sprintf("task-%d", i), Prompt: long + strconv.Itoa(i), Status: appwire.TaskOpen, Notes: []string{long}}
 	}
 	firstResult := managerInvoke(t, owner, caller, appwire.SessionOperationRequest{Tasks: &appwire.SessionTasksRequest{Ref: "local:shared", Limit: 2}})
 	first := firstResult.Tasks
@@ -421,8 +421,7 @@ func TestManagerReadTaskSnapshot(t *testing.T) {
 	changed, err := owner.Invoke(t.Context(), caller, appwire.SessionOperationRequest{Tasks: &appwire.SessionTasksRequest{Ref: "local:shared", Offset: 2, Limit: 2, Snapshot: first.Snapshot}})
 	changedPageReturned := err == nil && changed.Tasks != nil && len(changed.Tasks.Data) > 0
 	snapshotChanged := false
-	var wire appwire.WireError
-	if errors.As(err, &wire) {
+	if wire, ok := errors.AsType[appwire.WireError](err); ok {
 		encoded, _ := json.Marshal(wire.Data)
 		var detail struct {
 			Reason string `json:"reason"`
@@ -481,14 +480,14 @@ func TestManagerReadTaskPageRespectsSerializedCap(t *testing.T) {
 	long := strings.Repeat("unabridged prompt text ", 300)
 	local.tasks = make([]appwire.Task, 60)
 	for i := range local.tasks {
-		local.tasks[i] = appwire.Task{ID: i + 1, Type: appwire.TaskTypeImplement, Status: appwire.TaskOpen, Prompt: long + fmt.Sprint(i)}
+		local.tasks[i] = appwire.Task{ID: i + 1, Type: appwire.TaskTypeImplement, Status: appwire.TaskOpen, Prompt: long + strconv.Itoa(i)}
 	}
 	first := managerInvoke(t, owner, caller, appwire.SessionOperationRequest{Tasks: &appwire.SessionTasksRequest{Ref: "local:shared"}})
 	if first.Tasks == nil || first.Tasks.NextOffset == nil || *first.Tasks.NextOffset >= 50 || *first.Tasks.NextOffset < 1 || len(first.FollowUps) != 1 {
 		t.Fatalf("large task page did not report a bounded continuation: %+v", first.Tasks)
 	}
 	for i, task := range first.Tasks.Data {
-		if task.Prompt != long+fmt.Sprint(i) {
+		if task.Prompt != long+strconv.Itoa(i) {
 			t.Fatalf("task %d was clipped to fit the cap", i)
 		}
 	}
@@ -498,7 +497,7 @@ func TestManagerReadTaskPageRespectsSerializedCap(t *testing.T) {
 	}
 	next := *first.Tasks.NextOffset
 	second := managerInvoke(t, owner, caller, appwire.SessionOperationRequest{Tasks: &appwire.SessionTasksRequest{Ref: "local:shared", Offset: next, Snapshot: first.Tasks.Snapshot}})
-	if second.Tasks == nil || len(second.Tasks.Data) == 0 || second.Tasks.Data[0].ID != next+1 || second.Tasks.Data[0].Prompt != long+fmt.Sprint(next) {
+	if second.Tasks == nil || len(second.Tasks.Data) == 0 || second.Tasks.Data[0].ID != next+1 || second.Tasks.Data[0].Prompt != long+strconv.Itoa(next) {
 		t.Fatalf("continuation skipped or clipped task %d: %+v", next, second.Tasks)
 	}
 }
@@ -522,7 +521,7 @@ func TestManagerReadRefreshAcrossPages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	local.pages[""], local.pages[firstCursor], local.pages[secondCursor] = local.pages[""], local.pages["older-1"], local.pages["older-2"]
+	local.pages[firstCursor], local.pages[secondCursor] = local.pages["older-1"], local.pages["older-2"]
 	initial := local.pages[""]
 	initial.NextCursor = firstCursor
 	local.pages[""] = initial
@@ -531,7 +530,7 @@ func TestManagerReadRefreshAcrossPages(t *testing.T) {
 	local.pages[firstCursor] = secondPage
 	visible := map[string]bool{}
 	cursor := ""
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		read := managerInvoke(t, owner, caller, appwire.SessionOperationRequest{Turns: &appwire.ThreadTurnsListParams{Ref: ref, Cursor: cursor, ItemLimit: 1}})
 		page := read.Turns
 		if page == nil || len(page.Data) != 1 {
@@ -553,7 +552,7 @@ func TestManagerReadRefreshAcrossPages(t *testing.T) {
 	local.jobs = map[string]appwire.JobActivityJob{"job-1": {JobID: "job-1", OwnerRef: ref, Command: longQuestion}}
 	current := int64(len(local.output["job-1"]))
 	var pieces []string
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		read := managerInvoke(t, owner, caller, appwire.SessionOperationRequest{JobOutput: &appwire.JobsOutputParams{Ref: ref, JobID: "job-1", MaxBytes: 32, BeforeBytes: &current}})
 		out := read.JobOutput
 		if out == nil {

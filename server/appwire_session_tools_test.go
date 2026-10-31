@@ -20,10 +20,10 @@ func TestSessionToolsRealConnectionBinding(t *testing.T) {
 	t.Parallel()
 	session := newNotesTestSession(t)
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", session.WorkspaceID())
+	srv.SetAppIdentity("local", session.ID())
 	srv.SetSessionTools(func() *agent.Session { return session })
 	client := dialServerAppWire(t, srv)
-	binding := appwire.SessionBinding{Ref: "local:" + session.WorkspaceID(), InstanceID: session.ID(), HubID: "hub-test", BindingID: "connection-test"}
+	binding := appwire.SessionBinding{Ref: "local:" + session.ID(), InstanceID: session.ID(), HubID: "hub-test", BindingID: "connection-test"}
 	var bound appwire.SessionBinding
 	forged := binding
 	forged.InstanceID = "another-instance"
@@ -52,11 +52,11 @@ func TestSessionToolsLiveBindingCannotBeDisplaced(t *testing.T) {
 	}
 	t.Cleanup(session.Close)
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", session.WorkspaceID())
+	srv.SetAppIdentity("local", session.ID())
 	srv.SetSessionTools(func() *agent.Session { return session })
 	httpServer := httptest.NewServer(srv)
 	t.Cleanup(httpServer.Close)
-	binding := appwire.SessionBinding{Ref: "local:" + session.WorkspaceID(), InstanceID: session.ID(), HubID: "hub-a", BindingID: "first"}
+	binding := appwire.SessionBinding{Ref: "local:" + session.ID(), InstanceID: session.ID(), HubID: "hub-a", BindingID: "first"}
 	claimed := binding
 	claimed.BindingID = "second"
 	firstOwner := &bindingProbeOwner{}
@@ -178,7 +178,7 @@ func TestSessionToolsAuthoritySelection(t *testing.T) {
 	states := map[string]*authorityState{}
 	for _, hub := range []string{"hub-a", "hub-b"} {
 		life, cancel := context.WithCancel(t.Context())
-		defer cancel()
+		t.Cleanup(cancel)
 		state := &authorityState{}
 		states[hub] = state
 		clients.clients[hub] = &runtimeHubClient{current: func() *agent.Session { return session }, session: session, binding: appwire.SessionBinding{InstanceID: session.ID(), HubID: hub}, client: state, ctx: life, cancel: cancel}
@@ -215,7 +215,7 @@ func TestSessionToolsConflictingEnabledHubAfterSelection(t *testing.T) {
 	states := map[string]*authorityState{}
 	for _, hub := range []string{"hub-a", "hub-b"} {
 		life, cancel := context.WithCancel(t.Context())
-		defer cancel()
+		t.Cleanup(cancel)
 		state := &authorityState{}
 		states[hub] = state
 		clients.clients[hub] = &runtimeHubClient{current: func() *agent.Session { return session }, session: session, binding: appwire.SessionBinding{InstanceID: session.ID(), HubID: hub}, client: state, ctx: life, cancel: cancel}

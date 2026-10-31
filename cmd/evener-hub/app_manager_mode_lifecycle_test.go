@@ -105,8 +105,8 @@ func TestManagerModeClearColdRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if "local:"+meta.WorkspaceID != ref || !meta.Manager {
-		t.Fatalf("persisted identity = %q, want %q", meta.WorkspaceID, ref)
+	if meta.ID != instance || !meta.Manager {
+		t.Fatalf("persisted ID/Manager = %q/%t, want %q/true", meta.ID, meta.Manager, instance)
 	}
 	roster.Refresh()
 	live, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: ref})

@@ -308,7 +308,6 @@ func writeForkChildWithConfig(fs afero.Fs, stateDir, parentID string, parentHead
 	memorySaveUnavailable := childConfig.DisableMemory || (parentMeta.MemorySaveUnavailable && !parentMeta.IsSubagent)
 	childMeta := schema.SessionMeta{
 		ID:                    childID,
-		WorkspaceID:           childID,
 		ProfileID:             parentMeta.ProfileID,
 		Model:                 parentMeta.Model,
 		CheapModel:            parentMeta.CheapModel,

@@ -58,19 +58,18 @@ func managerParametersSchema(t reflect.Type) map[string]any {
 	case reflect.Struct:
 		props := map[string]any{}
 		required := []string{}
-		for i := 0; i < t.NumField(); i++ {
-			f := t.Field(i)
+		for f := range t.Fields() {
 			tag := strings.Split(f.Tag.Get("json"), ",")
 			key := tag[0]
 			if !f.IsExported() || key == "" || key == "-" || key == "managerProof" || key == "threadId" {
 				continue
 			}
 			property := managerParametersSchema(f.Type)
-			if key == "kind" && t == reflect.TypeOf(appwire.ArchiveParams{}) {
+			if key == "kind" && t == reflect.TypeFor[appwire.ArchiveParams]() {
 				property["const"] = "session"
 			}
 			props[key] = property
-			if !strings.Contains(f.Tag.Get("json"), "omitempty") || key == "ref" && t == reflect.TypeOf(appwire.ThreadResumeParams{}) {
+			if !strings.Contains(f.Tag.Get("json"), "omitempty") || key == "ref" && t == reflect.TypeFor[appwire.ThreadResumeParams]() {
 				required = append(required, key)
 			}
 		}

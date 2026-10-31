@@ -158,9 +158,10 @@ func testManagerWatchSharedRemoteSubscribersAndAliases(t *testing.T, malformed *
 		if err := json.Unmarshal(raw, &fields); err != nil {
 			t.Fatal(err)
 		}
-		if alias == "threadId" {
+		switch alias {
+		case "threadId":
 			delete(fields, "ref")
-		} else if alias == "ref-precedence" {
+		case "ref-precedence":
 			fields["threadId"] = "child-thread"
 			if target == "child-thread" {
 				fields["threadId"] = "root-thread"

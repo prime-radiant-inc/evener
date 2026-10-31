@@ -145,18 +145,29 @@ describe("your message", () => {
 		...over,
 	});
 
-	it("labels Manager input from actor metadata instead of the message text", () => {
+	it.each([undefined, "steered"] as const)("routes actor identity for input with origin %s", (origin) => {
+		const managerRef = "local:manager-origin";
 		const manager = render(
 			<TimelineItem
-				item={user({ actor: { kind: "manager", managerRef: "local:manager-origin" } })}
+				item={user({ origin, actor: { kind: "manager", managerRef } })}
 				hubId="hub"
 				sessionRef="local:worker"
 			/>,
 		);
-		expect(renderedText(manager)).toContain("Manager · local:manager-origin");
-		expect(pressable(manager, "Manager · local:manager-origin: Ship it")).toBeDefined();
-		const human = render(<TimelineItem item={user({ actor: { kind: "human" } })} hubId="hub" sessionRef="s" />);
-		expect(pressable(human, "You: Ship it")).toBeDefined();
+		expect(renderedText(manager)).toContain(managerRef);
+		const [managerAction] = manager.root.findAll((node) => typeof node.props.onLongPress === "function");
+		expect(managerAction?.props.accessibilityLabel).toContain(managerRef);
+		const human = render(
+			<TimelineItem
+				item={user({ origin, actor: { kind: "human", managerRef } })}
+				hubId="hub"
+				sessionRef="local:worker"
+			/>,
+		);
+		expect(renderedText(human)).not.toContain(managerRef);
+		const [humanAction] = human.root.findAll((node) => typeof node.props.onLongPress === "function");
+		expect(humanAction?.props.accessibilityLabel).toEqual(expect.any(String));
+		expect(humanAction?.props.accessibilityLabel).not.toContain(managerRef);
 	});
 
 	it("sits right-aligned in a bubble at most 85% wide with an 18pt continuous radius", () => {

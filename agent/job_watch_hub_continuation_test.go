@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -62,10 +63,13 @@ func TestManagerWatchAnswerContinuationReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer index.Close()
+	assertManagerLockAvailable := func() {
+		jm.mu.Lock()
+		defer jm.mu.Unlock()
+	}
 	lookup := func(_, _, _, ancestor, candidate string) (bool, error) {
 		// A real index call also proves no lookup holds jm.mu.
-		jm.mu.Lock()
-		jm.mu.Unlock()
+		assertManagerLockAvailable()
 		matches, _, err := index.AnswerContinuation(context.Background(), ancestor, candidate, nil)
 		return matches, err
 	}
@@ -75,8 +79,7 @@ func TestManagerWatchAnswerContinuationReplay(t *testing.T) {
 	}
 	var winner appwire.SessionWatchUpdate
 	for {
-		for i := len(window.Candidates) - 1; i >= 0; i-- {
-			c := window.Candidates[i]
+		for _, c := range slices.Backward(window.Candidates) {
 			if c.Item.Observation == nil || c.Item.Observation.TerminalAccepted == nil {
 				continue
 			}
@@ -115,7 +118,7 @@ func TestManagerWatchAnswerContinuationReplay(t *testing.T) {
 	for _, cause := range []error{context.Canceled, context.DeadlineExceeded} {
 		var ctx context.Context
 		var cancel context.CancelFunc
-		if cause == context.Canceled {
+		if errors.Is(cause, context.Canceled) {
 			ctx, cancel = context.WithCancel(t.Context())
 			cancel()
 		} else {

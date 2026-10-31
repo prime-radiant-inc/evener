@@ -1,11 +1,12 @@
 package hub
 
 import (
+	"testing"
+
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
-	"testing"
 )
 
 func TestManagerObservationAnswerIsNotCommunicate(t *testing.T) {

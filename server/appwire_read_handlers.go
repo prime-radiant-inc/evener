@@ -231,13 +231,14 @@ func (s *Server) finishAppThreadRead(params appwire.ThreadReadParams, cut appThr
 	}
 	response := cut.response
 	if params.IncludeTurns && cut.history != nil {
-		turns, olderCursor, snapshot, overlay, err := cut.history.latest(cut.capture, cut.history.ref, params.ItemLimit)
+		turns, olderCursor, snapshot, latestExecutionTurnID, overlay, err := cut.history.latest(cut.capture, cut.history.ref, params.ItemLimit)
 		if err != nil {
 			return appwire.ThreadReadResponse{}, appwire.WithHistoryReadIdentity(appserver.WireError(err), response.BootGeneration, response.Epoch)
 		}
 		response.Thread.Turns = turns
 		response.OlderCursor = olderCursor
 		response.Snapshot = &snapshot
+		response.LatestExecutionTurnID = latestExecutionTurnID
 		response.Overlay = overlay
 	}
 	if err := appwire.ValidateThreadReadItemResponse(response); err != nil {

@@ -1,6 +1,7 @@
 package appprojector_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"path/filepath"
 	"reflect"
@@ -97,7 +98,7 @@ func TestManagerObservationLiveReplayStructure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(liveJSON) != string(replayJSON) {
+	if !bytes.Equal(liveJSON, replayJSON) {
 		t.Fatalf("live observation %s != replay %s", liveJSON, replayJSON)
 	}
 }

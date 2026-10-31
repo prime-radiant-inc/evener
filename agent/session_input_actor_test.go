@@ -2,10 +2,11 @@ package agent
 
 import (
 	"context"
-	"primeradiant.com/evener/agent/internal/agenttest"
 	"sync"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/agent/internal/agenttest"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/tool"

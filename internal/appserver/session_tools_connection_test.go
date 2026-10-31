@@ -59,7 +59,7 @@ func TestSessionToolsReconnectRestoresSingleRuntime(t *testing.T) {
 	endpoint := serveWebSocketHTTP(t, server)
 	for range 2 {
 		client := appwire.NewClient(dialRawAppWire(t, endpoint))
-		defer client.Close()
+		t.Cleanup(func() { _ = client.Close() })
 		owner := &lifetimeSessionWatchOwner{started: make(chan context.Context, 1), updates: make(chan appwire.SessionWatchUpdate, 1)}
 		client.SetSessionTools(appwire.SessionBinding{Ref: "local:workspace", InstanceID: "instance", HubID: "hub", BindingID: "binding"}, owner)
 		client.Start(ctx)

@@ -43,7 +43,7 @@ func TestE2E_ManagerAcceptance(t *testing.T) {
 	t.Cleanup(provider.Close)
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
-	local, human, _, hostDir, addr, remoteHost := startManagerAcceptanceSSHFixture(t, provider, ctx)
+	local, human, _, hostDir, addr, remoteHost := startManagerAcceptanceSSHFixture(ctx, t, provider)
 	if _, err := clientRequest[appwire.LaunchConfigResolved](ctx, human, appwire.MethodEvenerLaunchSetLayer, appwire.LaunchConfigSetLayerParams{CWD: local.workDir, Layer: "global", Config: appwire.LaunchConfigLayer{Sandbox: "restricted"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -766,7 +766,7 @@ func acceptanceWatchCompleted(watches appwire.SessionWatchesResponse, watchID st
 // startManagerAcceptanceSSHFixture owns the disposable A-to-B localhost SSH
 // setup shared by the original acceptance and readiness tests. It creates no
 // sessions; each caller owns those through the returned human client.
-func startManagerAcceptanceSSHFixture(t *testing.T, provider *fakellm.Server, ctx context.Context) (hubStack, *appwire.Client, *hostSSH, string, string, string) {
+func startManagerAcceptanceSSHFixture(ctx context.Context, t *testing.T, provider *fakellm.Server) (hubStack, *appwire.Client, *hostSSH, string, string, string) {
 	t.Helper()
 	local := startHubStack(t, provider)
 	human := local.dialRPC(ctx, t)

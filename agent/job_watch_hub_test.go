@@ -371,7 +371,7 @@ func TestManagerWatchCompletionAfterEarlierSameEntryObservation(t *testing.T) {
 	accepted := true
 	terminal := first
 	terminal.EndTurn, terminal.EndReason, terminal.TerminalAccepted = true, "done", &accepted
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		if err := jm.onHubObservation(watch.WatchID, appwire.SessionWatchUpdate{Event: "communicate", Metadata: terminal}); err != nil {
 			t.Fatal(err)
 		}

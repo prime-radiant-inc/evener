@@ -158,7 +158,7 @@ func TestManagerObservationReconnectBeyondLatestPage(t *testing.T) {
 		t.Fatal("shared owner never attempted reconnect")
 	}
 	communicate("B", "watched-done", true)
-	for i := 0; i < 95; i++ {
+	for i := range 95 {
 		appendEntry(schema.Turn{TurnID: "C", TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User(fmt.Sprintf("later-item-%d", i))})
 	}
 	communicate("C", "newer-done", true)

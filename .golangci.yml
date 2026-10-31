@@ -204,6 +204,17 @@ linters:
         linters:
           - revive
 
+      # SessionOperationRequest mirrors operation keys from the tool variants.
+      - path: ^appwire/session_tools\.go$
+        source: 'json:"(vision_model|reasoning_effort|drain_queue|promote_queued|cancel_queued|human_notes|remove_url|owned_delegate|force_stop)(,omitempty)?"'
+        linters:
+          - tagliatelle
+      # Manager read/partial-outcome schemas retain their existing AppWire fields.
+      - path: ^agent/session_tools_hub\.go$
+        source: 'json:"(instanceId|clientMutationId|jobId|itemLimit|maxBytes|beforeBytes)(,omitempty)?"'
+        linters:
+          - tagliatelle
+
 formatters:
   enable:
     - gofmt
