@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -54,40 +55,42 @@ func TestDelegateDisposalHint_DelegateSendReportsFinalWorktreeState(t *testing.T
 
 			var created delegateCreateResult
 			var sendOutput string
-			parentAdapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-				func(llm.Request) llm.Response {
-					args, err := json.Marshal(map[string]any{
-						"prompt":    "Create CHILD_WORK.txt in your worktree and report completion.",
-						"isolation": "worktree",
-						"name":      "disposal-hint-e2e",
-					})
-					if err != nil {
-						t.Fatalf("marshal delegate args: %v", err)
+			createArgs, err := json.Marshal(map[string]any{
+				"prompt":    "Create CHILD_WORK.txt in your worktree and report completion.",
+				"isolation": "worktree",
+				"name":      "disposal-hint-e2e",
+			})
+			if err != nil {
+				t.Fatalf("marshal delegate args: %v", err)
+			}
+			parentAdapter := &agenttest.ScriptedAdapter{Provider: "openai", Responder: func(req llm.Request) llm.Response {
+				if created.DelegateID == "" {
+					if creationOutput := toolResultTextForCall(req, "create-worktree"); creationOutput != "" {
+						if err := json.Unmarshal([]byte(creationOutput), &created); err != nil {
+							t.Errorf("decode delegate creation result %q: %v", creationOutput, err)
+							return communicateWithDefaultOutput("delegate creation result could not be decoded")
+						}
+						return communicateWithDefaultOutput("child created")
 					}
-					return agenttest.ToolCallResponse(llm.ToolCallData{ID: "create-worktree", Name: "delegate", Arguments: args, Type: "function"})
-				},
-				func(req llm.Request) llm.Response {
-					creationOutput := toolResultTextForCall(req, "create-worktree")
-					if err := json.Unmarshal([]byte(creationOutput), &created); err != nil {
-						t.Fatalf("decode delegate creation result %q: %v", creationOutput, err)
-					}
-					return communicateWithDefaultOutput("child created")
-				},
-				func(llm.Request) llm.Response {
+					return agenttest.ToolCallResponse(llm.ToolCallData{ID: "create-worktree", Name: "delegate", Arguments: createArgs, Type: "function"})
+				}
+				if output := toolResultTextForCall(req, "send-worktree"); output != "" {
+					sendOutput = output
+					return communicateWithDefaultOutput("delegate result received")
+				}
+				if latestUserMessageText(req) == "fetch final child result" {
 					args, err := json.Marshal(map[string]any{
 						"to":          created.DelegateID,
 						"message":     "Report completion and make no further filesystem changes.",
 						"max_wait_ms": 60_000,
 					})
 					if err != nil {
-						t.Fatalf("marshal delegate_send args: %v", err)
+						t.Errorf("marshal delegate_send args: %v", err)
+						return communicateWithDefaultOutput("delegate_send args could not be encoded")
 					}
 					return agenttest.ToolCallResponse(llm.ToolCallData{ID: "send-worktree", Name: "delegate_send", Arguments: args, Type: "function"})
-				},
-				func(req llm.Request) llm.Response {
-					sendOutput = toolResultTextForCall(req, "send-worktree")
-					return communicateWithDefaultOutput("delegate result received")
-				},
+				}
+				return communicateWithDefaultOutput("delegate notification received")
 			}}
 			repo.s.client.Register(parentAdapter)
 
@@ -150,6 +153,15 @@ func toolResultTextForCall(req llm.Request, callID string) string {
 			if part.ToolResult != nil && part.ToolResult.ToolCallID == callID {
 				return fmt.Sprint(part.ToolResult.Content)
 			}
+		}
+	}
+	return ""
+}
+
+func latestUserMessageText(req llm.Request) string {
+	for _, message := range slices.Backward(req.Messages) {
+		if message.Role == llm.RoleUser {
+			return message.Text()
 		}
 	}
 	return ""
