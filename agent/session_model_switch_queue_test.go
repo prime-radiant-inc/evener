@@ -10,6 +10,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -534,12 +535,14 @@ func TestSupersededLoopTopApplicationAppliesTheNewerQueuedPick(t *testing.T) {
 	}
 }
 
-// TestSupersededApplicationDoesNotPublishOverANewerPick pins the publication
-// phase's ordering: a queued application that committed its swap, then lost to
-// a newer at-rest pick that committed and published while the older one's
-// publication was pending, must not publish its stale model last - the marker
-// and the model-changed event have to land in swap order.
-func TestSupersededApplicationDoesNotPublishOverANewerPick(t *testing.T) {
+// TestCommittedSwitchPublicationsLandInCommitOrder pins the publication lock's
+// span: a queued application that committed its swap publishes before a newer
+// at-rest pick that arrives while the older application sits between its swap
+// and its publication. The newer pick's application cannot commit inside that
+// window, so both publications land - the older first, the newer last - and
+// subscribers end on the newer model without the older one ever publishing
+// over it.
+func TestCommittedSwitchPublicationsLandInCommitOrder(t *testing.T) {
 	dir := t.TempDir()
 	listModels := attemptRecordingLiveModels("openai", "gpt-5.2", "gpt-5.4", "gpt-4.1-mini")
 	adapter := &fakeAdapter{
@@ -561,9 +564,10 @@ func TestSupersededApplicationDoesNotPublishOverANewerPick(t *testing.T) {
 			return agenttest.CommunicateResponse(true, "first turn done")
 		},
 	}
-	// Gate the queued application's publication; the newer pick commits and
-	// publishes while it is parked, then releases it. One-shot: the newer
-	// pick's own publication passes the gate without parking.
+	// Gate the queued application between its swap and its publication: the
+	// newer pick's application then waits on the publication lock until the
+	// older application has told its story. One-shot: the newer pick's own
+	// publication passes the gate without parking.
 	releaseAPublish := make(chan struct{})
 	aPublishEntered := make(chan struct{}, 1)
 	hookOnce := make(chan struct{}, 1)
@@ -579,27 +583,32 @@ func TestSupersededApplicationDoesNotPublishOverANewerPick(t *testing.T) {
 	})
 
 	evs, stop := captureEvents(s)
+	newerDone := make(chan error, 1)
 	go func() {
 		<-aPublishEntered
-		if err := s.SetModel("gpt-4.1-mini"); err != nil {
-			t.Errorf("newer pick: %v", err)
-		}
+		// Release the older application first: its publication owns the lock,
+		// and the newer pick's application waits behind it.
 		close(releaseAPublish)
+		newerDone <- s.SetModel("gpt-4.1-mini")
 	}()
 
 	if _, err := s.ProcessInput(context.Background(), "the only turn", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
+	if err := <-newerDone; err != nil {
+		t.Fatalf("newer pick: %v", err)
+	}
 	stop()
 
-	var last events.ModelChangedData
+	var order []string
 	for _, ev := range *evs {
 		if d, ok := ev.Data.(events.ModelChangedData); ok {
-			last = d
+			order = append(order, d.NewModel)
 		}
 	}
-	if last.NewModel != "gpt-4.1-mini" {
-		t.Fatalf("the last thread/model/changed named model %q; the newer pick's publication landed before the older application's, so the older one must not publish over it (%q)", last.NewModel, "gpt-4.1-mini")
+	want := []string{"gpt-5.4", "gpt-4.1-mini"}
+	if len(order) != 2 || order[0] != want[0] || order[1] != want[1] {
+		t.Fatalf("model-changed publications = %v, want the committed switch's publication to land before the newer pick's (%v)", order, want)
 	}
 	if got := s.Profile().Model(); got != "gpt-4.1-mini" {
 		t.Fatalf("profile model = %q, want the newer pick (%q)", got, "gpt-4.1-mini")
@@ -695,5 +704,123 @@ func TestNewerPickReconcilesToolsAgainstTheProfileItActuallyReplaces(t *testing.
 	}
 	if got := s.Profile().Model(); got != "gemini-2.5-pro" {
 		t.Fatalf("profile model = %q; the newer pick must own the outcome (%q)", got, "gemini-2.5-pro")
+	}
+}
+
+// TestACommittedSwitchPublishesEvenWhenANewerQueuedPickLaterFails pins the
+// publication contract behind the watermark: a queued pick's store advances
+// the acceptance watermark, but the queued pick can still fail its deferred
+// validation at the boundary it was waiting for. Suppressing an already
+// committed switch's publication because a newer pick queued would then leave
+// the session running a model no marker or event ever named - subscribers
+// keep showing the previous model with nothing to correct them. A switch that
+// has committed its swap must publish; supersession belongs before the swap,
+// never after it.
+func TestACommittedSwitchPublishesEvenWhenANewerQueuedPickLaterFails(t *testing.T) {
+	dir := t.TempDir()
+	openaiAdapter := &fakeAdapter{
+		name: "openai",
+		liveModels: func(context.Context) ([]registry.Model, error) {
+			return []registry.Model{{ID: "gpt-5.2"}, {ID: "gpt-5.4"}}, nil
+		},
+	}
+	glmAdapter := &fakeAdapter{
+		name: "glm",
+		liveModels: func(context.Context) ([]registry.Model, error) {
+			return []registry.Model{{ID: "glm-test"}}, nil
+		},
+	}
+	s := newSession(t,
+		withAdapter(openaiAdapter),
+		withAdapter(glmAdapter),
+		withDir(dir),
+		withConfig(SessionConfig{
+			StateDir:         dir,
+			MaxSubagentDepth: 1,
+			ResolveProfile:   testResolver,
+			testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+		}))
+	// Pre-condition: a user document is unrepresentable for the OpenAIChat
+	// target, so the newer pick's deferred application must fail at the
+	// boundary it queues for.
+	if len(unrepresentableHistoryKinds([]schema.Turn{documentTurn()}, registry.ProtocolOpenAIChat)) == 0 {
+		t.Fatal("pre-condition: a user document must be unrepresentable for the queued pick's OpenAIChat target")
+	}
+	s.appendTurn(schema.TurnUserInput, documentTurn().Message)
+
+	releaseAPublish := make(chan struct{})
+	aPublishEntered := make(chan struct{}, 1)
+	hookOnce := make(chan struct{}, 1)
+	updateSessionTestConfig(s, func(cfg *testConfig) {
+		cfg.beforeModelSwitchPublish = func() {
+			select {
+			case hookOnce <- struct{}{}:
+				aPublishEntered <- struct{}{}
+				<-releaseAPublish
+			default:
+			}
+		}
+	})
+	openaiAdapter.steps = []func(llm.Request) llm.Response{
+		// Turn 1: pick A mid-turn; the pick queues for this turn's boundary.
+		func(llm.Request) llm.Response {
+			if err := s.SetModel("gpt-5.4"); err != nil {
+				t.Errorf("mid-turn pick of A: %v", err)
+			}
+			return agenttest.CommunicateResponse(true, "first turn done")
+		},
+		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "queued turn done") },
+	}
+	// Serve the session through this test's own lossless consumer: one drain
+	// owns the events, so nothing races the capture for them.
+	var evMu sync.Mutex
+	evs := []events.SessionEvent{}
+	drained := make(chan struct{})
+	s.ConsumeEventsLossless(func(ev events.SessionEvent) {
+		evMu.Lock()
+		evs = append(evs, ev)
+		evMu.Unlock()
+	}, func() { close(drained) })
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	queueOneMutation(t, s, "cm-committed-publish", "the message queued behind the first turn")
+
+	// The RPC-side goroutine: while A's application sits between its swap and
+	// its publication, the newer pick arrives and queues for the next
+	// boundary. One-shot hook: A's own publication is the one parked.
+	go func() {
+		<-aPublishEntered
+		if err := s.SetModel("glm/glm-test"); err != nil {
+			t.Errorf("queued pick of B: %v", err)
+		}
+		close(releaseAPublish)
+	}()
+
+	// The one input drains turn 1, applies A at the boundary (parked, then
+	// released past B's queueing), runs the queued message on A's model, and
+	// at its tail pops B - whose deferred history check fails there, so the
+	// pick is dropped with a warning, not a switch.
+	if _, err := s.ProcessInput(context.Background(), "the first message", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	s.Close()
+	<-drained
+
+	var last events.ModelChangedData
+	sawModelChanged := false
+	evMu.Lock()
+	for _, ev := range evs {
+		if d, ok := ev.Data.(events.ModelChangedData); ok {
+			last = d
+			sawModelChanged = true
+		}
+	}
+	evMu.Unlock()
+	if !sawModelChanged || last.NewModel != "gpt-5.4" {
+		t.Fatalf("the last thread/model/changed named %q (seen any = %t); the session runs the committed switch's model %q even though the newer queued pick failed its deferred history check, so the committed switch's publication must not be suppressed", last.NewModel, sawModelChanged, "gpt-5.4")
+	}
+	if got := s.Profile().Model(); got != "gpt-5.4" {
+		t.Fatalf("profile model = %q, want the committed switch's model %q; the failed queued pick must not swap", got, "gpt-5.4")
 	}
 }
