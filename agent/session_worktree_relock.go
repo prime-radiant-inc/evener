@@ -10,6 +10,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/worktree"
+	"primeradiant.com/evener/agent/schema"
 )
 
 // Resume re-lock (auto-delegate-lane-disposal spec §P3 "Session resume re-locks
@@ -259,6 +260,10 @@ func (s *Session) validateDrivenDelegateLane(sub *subagent) bool {
 		if delegate.delegateID != delegateID || delegate.descriptor.WorkingDir == "" {
 			continue
 		}
+		// The launch this validation gates is itself parent activity: record
+		// it in the evidence the orphan reclaim reads before adopting the
+		// lane, or a child-only wake would leave a stale parent looking dead.
+		s.refreshOwnActivityEvidence()
 		local, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)
 		if !ok {
 			return true // local git worktrees are a local-env-only feature
@@ -272,6 +277,23 @@ func (s *Session) validateDrivenDelegateLane(sub *subagent) bool {
 		return true
 	}
 	return true
+}
+
+// refreshOwnActivityEvidence updates the last-activity signal the session
+// listings and the orphan reclaim both read — the session transcript's mtime
+// (the doctor's LastActivity). An automatic delegate launch runs on this
+// session's machinery without running this session's own turn, so the evidence
+// would otherwise stay stale while the session is demonstrably alive, and the
+// orphan arm could judge a parent that just launched its child long-inactive
+// and release the child's lane under the running turn. Best-effort: a session
+// with nothing persisted has no evidence to refresh, and the arm disarms
+// without a state directory anyway.
+func (s *Session) refreshOwnActivityEvidence() {
+	if s == nil {
+		return
+	}
+	now := s.sclock().Now()
+	_ = os.Chtimes(schema.SessionTranscriptPath(s.stateDir, s.id), now, now)
 }
 
 // retryPendingReLocks re-attempts the resume re-lock for lanes whose first

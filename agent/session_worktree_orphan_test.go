@@ -682,3 +682,93 @@ func TestWorktreePrune_OrphanArmRestoresWhenParentWakesDuringRelease(t *testing.
 		t.Errorf("the resumed parent's lock was not restored: %q", reason)
 	}
 }
+
+// A child-only wake is still parent activity. A notification drive runs the
+// child's turn on the parent's own machinery and never touches the parent's
+// transcript — the child's session writes the turn, and the parent runs no
+// turn of its own — so the inactivity evidence the arm reads stays stale
+// while the parent is demonstrably alive. An automatic launch therefore
+// records its activity in that evidence before it validates the lane: a real
+// notification drive interleaved between the prune's eligibility check and
+// its lock claim leaves the release-time recheck seeing a live parent, and
+// the lane is spared with the running child's lock intact.
+func TestWorktreePrune_OrphanArmSparesLaneWhenWakeInterleavesRelease(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	var lanePath string
+	// One state root, the shipped shape: the arm resolves a foreign parent's
+	// evidence through the pruning session's state dir, so the parent must
+	// live in that same root for the prune to see it at all. The fixture
+	// bootstraps the parent straight into the pruning session's root.
+	fixture := newColdDelegateFixtureConfiguredInState(t, "", r.stateDir, func(d *delegatestore.Descriptor) {
+		d.Isolation = "worktree"
+		lanePath = r.delegateLane(t, "orphan-wake-interleaved", "dlg_waketest0000002", "034placeholder000000006")
+		d.WorkingDir = lanePath
+	})
+	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, r.stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root.Close()
+	wtGit(t, r.mainRoot, "worktree", "unlock", lanePath)
+	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", worktree.FormatDelegateMarker(fixture.delegateID, fixture.meta.ID), lanePath)
+	// The sidecar must name the same delegate the marker does, or the sweep's
+	// provenance check refuses the lane before the release.
+	if err := worktree.UpdateSidecar(r.metaDir(t, r.canonicalMain(t)), "orphan-wake-interleaved", func(sc *worktree.Sidecar) {
+		sc.DelegateID = fixture.delegateID
+	}); err != nil {
+		t.Fatalf("align the sidecar's delegate: %v", err)
+	}
+	finish := func(llm.Request) llm.Response {
+		return agenttest.FinalResponse("done")
+	}
+	fixture.adapter.steps = []func(llm.Request) llm.Response{finish}
+	first := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "first turn", 10_000)
+	if first.result.Err != nil {
+		t.Fatalf("first send: %v", first.result.Err)
+	}
+	sub := root.subagents.get(fixture.childID)
+	if sub == nil || sub.sess == nil {
+		t.Fatalf("delegate %s is not retained after its run", fixture.childID)
+	}
+	// The parent session is long-idle: its transcript has not been touched
+	// since the fixture created it, which is what the orphan arm reads.
+	parentTranscript := schema.SessionTranscriptPath(fixture.stateDir, fixture.meta.ID)
+	stale := time.Now().Add(-30 * 24 * time.Hour)
+	if err := os.Chtimes(parentTranscript, stale, stale); err != nil {
+		t.Fatalf("backdate the parent's transcript: %v", err)
+	}
+	// The wake interleaves with the release: the seam fires after the
+	// eligibility plan, before the claim, and a real notification drive runs
+	// there — the child's turn, launched by the parent's own machinery, with
+	// no parent turn to touch the transcript.
+	driveLaunched := make(chan bool)
+	wakeLaunched := false
+	r.s.worktreeBeforeStrandedMarkerRelease = func(p string) {
+		if p != lanePath {
+			return
+		}
+		go func() {
+			fixture.adapter.steps = []func(llm.Request) llm.Response{finish}
+			driveLaunched <- root.driveSubagentNotificationTurn(sub)
+		}()
+		wakeLaunched = <-driveLaunched
+	}
+
+	out, err := r.pruneOrphanedOp(t, 7)
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if !wakeLaunched {
+		t.Fatalf("the notification wake never launched its turn: %+v", out)
+	}
+	if findPruneEntry(t, pruneEntries(t, out, "removed"), "orphan-wake-interleaved") != nil {
+		t.Fatalf("a lane with a running child was collected: %+v", out)
+	}
+	if e := findPruneEntry(t, pruneEntries(t, out, "unlocked"), "orphan-wake-interleaved"); e != nil {
+		t.Fatalf("a lane with a running child was reported unlocked: %+v", e)
+	}
+	if _, locked, reason := r.laneLocked(t, lanePath); !locked {
+		t.Errorf("the running child's lock was not restored: %q", reason)
+	}
+}

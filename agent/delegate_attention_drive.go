@@ -185,6 +185,11 @@ func (s *Session) launchAcceptedDelegateAttention(sub *subagent, started delegat
 	if s == nil || sub == nil || sub.sess == nil || s.delegateController == nil {
 		return errDelegateDeliveryReceiverUnavailable
 	}
+	if started.descriptor.Isolation == "worktree" {
+		// This launch is parent activity the orphan arm's evidence cannot see
+		// on its own: record it before adopting the lane.
+		s.refreshOwnActivityEvidence()
+	}
 	if err := s.reviveValidateIsolationLane(started); err != nil {
 		return err
 	}
