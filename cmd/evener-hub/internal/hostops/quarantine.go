@@ -948,28 +948,34 @@ func custodyForCorruptStore(fs afero.Fs, path string, epoch uint64, now time.Tim
 // reached, and carrying it would leave the replacement unable to allocate.
 const maxPlausibleAllocatorFloor = 1 << 62
 
-// leadingRegions returns the top-level members of a JSON object that decode
-// whole, in file order, stopping at the first syntax error. A file truncated
-// after its allocator mark still yields the mark.
-func leadingRegions(raw []byte) map[string]json.RawMessage {
-	regions := map[string]json.RawMessage{}
+// jsonMember is one top-level member of a JSON object.
+type jsonMember struct {
+	name  string
+	value json.RawMessage
+}
+
+// leadingMembers returns the top-level members of a JSON object that decode
+// whole, in file order and counting repeats, stopping at the first syntax
+// error. A file truncated after its allocator mark still yields the mark.
+func leadingMembers(raw []byte) []jsonMember {
+	var members []jsonMember
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	if token, err := decoder.Token(); err != nil || token != json.Delim('{') {
-		return regions
+		return members
 	}
 	for decoder.More() {
 		key, err := decoder.Token()
 		name, isName := key.(string)
 		if err != nil || !isName {
-			return regions
+			return members
 		}
 		var value json.RawMessage
 		if decoder.Decode(&value) != nil {
-			return regions
+			return members
 		}
-		regions[name] = value
+		members = append(members, jsonMember{name: name, value: value})
 	}
-	return regions
+	return members
 }
 
 // recoverAllocatorFloor reads the highest allocator id a corrupt store file
@@ -981,33 +987,36 @@ func recoverAllocatorFloor(fs afero.Fs, path string) uint64 {
 	if err != nil {
 		return 0
 	}
-	regions := leadingRegions(raw)
 	var floor uint64
 	raise := func(n uint64) {
 		if n <= maxPlausibleAllocatorFloor {
 			floor = max(floor, n)
 		}
 	}
-	// Each region is read on its own, so one malformed region cannot discard
-	// the evidence the others show.
-	var declared uint64
-	if json.Unmarshal(regions["allocatorHighWaterMark"], &declared) == nil {
-		raise(declared)
-	}
-	for _, name := range []string{"records", "tombstones"} {
-		var items []json.RawMessage
-		if json.Unmarshal(regions[name], &items) != nil {
-			continue
-		}
-		for _, item := range items {
-			var row struct {
-				ID string `json:"id"`
+	// Each member is read on its own, so one malformed or repeated member cannot
+	// discard or lower the evidence the others show.
+	for _, member := range leadingMembers(raw) {
+		switch member.name {
+		case "allocatorHighWaterMark":
+			var declared uint64
+			if json.Unmarshal(member.value, &declared) == nil {
+				raise(declared)
 			}
-			if json.Unmarshal(item, &row) != nil {
+		case "records", "tombstones":
+			var items []json.RawMessage
+			if json.Unmarshal(member.value, &items) != nil {
 				continue
 			}
-			if n, err := parseAllocatorID(row.ID); err == nil {
-				raise(n)
+			for _, item := range items {
+				var row struct {
+					ID string `json:"id"`
+				}
+				if json.Unmarshal(item, &row) != nil {
+					continue
+				}
+				if n, err := parseAllocatorID(row.ID); err == nil {
+					raise(n)
+				}
 			}
 		}
 	}
