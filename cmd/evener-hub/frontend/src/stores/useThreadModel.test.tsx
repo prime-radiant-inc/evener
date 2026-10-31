@@ -93,6 +93,38 @@ test("an unmount after a rejected claim never releases another reader's hold", a
   expect(foregroundHolds(ref)).toBe(0);
 });
 
+test("a reader mounted during reconnect and unmounted before readiness releases nothing", async () => {
+  const ref = "ref_claim_reconnect";
+  const owner = connectReadyFakeClient((fake) => {
+    fake.on("thread/read", (params: { requestGeneration?: number }) =>
+      readResponse(ref, {}, params.requestGeneration ?? 1),
+    );
+    fake.on("thread/unsubscribe", () => ({}));
+  });
+  const holder = render(<ClaimingSession ref={ref} />);
+  await vi.waitFor(() => expect(threadsStore.getState().threads.has(ref)).toBe(true));
+  expect(foregroundHolds(ref)).toBe(1);
+
+  // The connection drops: a second reader mounts into the reconnect window
+  // and unmounts before readiness ever returns. It never called ensureThread,
+  // so its cleanup must not touch the owner's hold.
+  act(() => {
+    owner.emitStateChange("closed");
+  });
+  const transient = render(<ClaimingSession ref={ref} />);
+  expect(connectionStore.getState().state).not.toBe("ready");
+  act(() => {
+    transient.unmount();
+  });
+  expect(foregroundHolds(ref)).toBe(1);
+  expect(threadsStore.getState().threads.has(ref)).toBe(true);
+
+  act(() => {
+    holder.unmount();
+  });
+  expect(foregroundHolds(ref)).toBe(0);
+});
+
 test("a claim that acquires still releases on unmount", async () => {
   const ref = "ref_claim_release";
   connectReadyFakeClient((fake) => {

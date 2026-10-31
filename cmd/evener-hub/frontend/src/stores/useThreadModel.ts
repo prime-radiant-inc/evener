@@ -34,7 +34,10 @@ export function useThreadClaim(ref: string): void {
     const unsubscribe = connectionStore.subscribe(tryStart);
     return () => {
       unsubscribe();
-      if (!rejected) threadsStore.getState().releaseThread(ref);
+      // started AND not rejected: a reader that never called ensureThread
+      // (mounted during reconnect, unmounted before readiness) owns nothing,
+      // and a rejected call rolled its own claim back.
+      if (started && !rejected) threadsStore.getState().releaseThread(ref);
     };
   }, [ref]);
 }
