@@ -308,8 +308,12 @@ func TestServeModelSwitch_SubscribedClientLearnsSwitchAtRest(t *testing.T) {
 // switch must also reach subscribed clients as thread/model/changed when it
 // applies.
 func TestServeModelSwitch_MidTurnSetQueuesUntilNextTurn(t *testing.T) {
-	firstArrived := make(chan struct{})
+	// Buffered so the provider's nonblocking send cannot lose the arrival
+	// signal to a test that has not started receiving yet.
+	firstArrived := make(chan struct{}, 1)
 	releaseFirst := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseFirstNow := func() { releaseOnce.Do(func() { close(releaseFirst) }) }
 	provider := &scriptedProvider{
 		name: "openai",
 		steps: []func(llm.Request) llm.Response{
@@ -340,6 +344,9 @@ func TestServeModelSwitch_MidTurnSetQueuesUntilNextTurn(t *testing.T) {
 	}()
 	entry := waitForServeTestRendezvous(t, runDir)
 	t.Cleanup(func() {
+		// An early failure strands the provider step on releaseFirst; release
+		// it exactly once alongside the daemon shutdown.
+		releaseFirstNow()
 		select {
 		case <-done:
 		default:
@@ -393,7 +400,7 @@ func TestServeModelSwitch_MidTurnSetQueuesUntilNextTurn(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("ThreadModelSet during an active turn: %v", err)
 	}
-	close(releaseFirst)
+	releaseFirstNow()
 
 	if err := waitServeTurn(ctx, frames.turnDone, first.Turn.ID); err != nil {
 		t.Fatalf("first turn completion: %v", err)

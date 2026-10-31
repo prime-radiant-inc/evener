@@ -687,12 +687,12 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		s.mu.Lock()
 		s.goalInTurn = false
 		s.mu.Unlock()
-		// The last act before going idle: a switch queued while this input
-		// ran whose boundary already passed (the pick landed after the final
-		// turn settled but before this clear) would otherwise wait for a
-		// turn that nothing schedules. The session is idle here, so the
-		// switch applies now and its marker is persisted before the process
-		// can retire.
+		// The last act before going idle: a switch queued while this input ran
+		// whose moment already passed (the pick landed after the final turn
+		// returned, so no further turn of this input applies it) would
+		// otherwise wait for a turn that nothing schedules. The session is idle
+		// here, so the switch applies now and its marker is persisted before
+		// the process can retire. Between-turn picks are the loop site above's.
 		s.applyPendingModelSwitch()
 	}()
 
@@ -766,6 +766,14 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// does not — /par #4).
 		ranKind := nextKind
 		ranClientMutation := queuedClientMutationFromContext(processCtx)
+		// A model switch queued during the previous turn - or picked in the
+		// window after that turn settled but before this one starts - applies
+		// here, and only here: the previous processOneInput has returned, so
+		// its deferred settlement (attention finalizers included) already ran
+		// and cannot clobber the switch's own recovery, and this turn has not
+		// been admitted yet, so it opens on the picked model with the switch
+		// marker between the two turns.
+		s.applyPendingModelSwitch()
 		out, progressed, err := s.processOneInput(processCtx, next, nextImages, nextKind, nextProvenance)
 		// The durable name of the turn that just ran, read before this turn's
 		// completion below releases it. An interrupt's marker is that turn's

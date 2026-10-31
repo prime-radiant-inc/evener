@@ -1725,7 +1725,8 @@ func (s *Session) queueModelSwitch(model string) error {
 	client := s.client
 	s.mu.Unlock()
 
-	if _, err = resolveModelSwitchTarget(client, nextProfile, s.id, *s.providerAdapterTimeout(), primedInstance, primedListing); err != nil {
+	_, primedInstance, primedListing, err = resolveModelSwitchTarget(client, nextProfile, s.id, *s.providerAdapterTimeout(), primedInstance, primedListing)
+	if err != nil {
 		return err
 	}
 
@@ -1744,12 +1745,14 @@ func (s *Session) queueModelSwitch(model string) error {
 	return nil
 }
 
-// applyPendingModelSwitch applies a queued switch once no rounds remain: its
-// guard is the PROCESSING state alone, not turnInFlightLocked, because it runs
-// at the turn boundary where goalInTurn is still set for the input call that
-// owns the boundary. A failed application is reported as a warning and
-// dropped, not retried: the invalid choice stays visible in the transcript
-// while a re-pick re-enters the normal path.
+// applyPendingModelSwitch applies a queued switch once no rounds remain. Its
+// callers are the input loop's two ownership points: before admitting each
+// turn (where the previous turn's deferred settlement has already run) and at
+// the idle tail after the input drains. The guard is the PROCESSING state
+// alone, not turnInFlightLocked, because goalInTurn is still set at both
+// sites for the input call that owns them. A failed application is reported
+// as a warning and dropped, not retried: the invalid choice stays visible in
+// the transcript while a re-pick re-enters the normal path.
 func (s *Session) applyPendingModelSwitch() {
 	s.mu.Lock()
 	if s.state == SessionProcessing {
@@ -1817,7 +1820,7 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 	// the membership preflight below (see resolveModelSwitchTarget) — this
 	// rejects before any state changes when the target instance can
 	// enumerate its models and the requested model isn't among them.
-	nextProfile, err = resolveModelSwitchTarget(client, nextProfile, s.id, *s.providerAdapterTimeout(), primedInstance, primedListing)
+	nextProfile, _, _, err = resolveModelSwitchTarget(client, nextProfile, s.id, *s.providerAdapterTimeout(), primedInstance, primedListing)
 	if err != nil {
 		return err
 	}
