@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -156,7 +155,7 @@ func TestManagerWatchRuntimeRebindAndCallerReplacement(t *testing.T) {
 				if event.WatchSend == nil || event.WatchSend.Key.WatchID != watchID {
 					continue
 				}
-				if strings.Contains(event.WatchSend.TriggerReason, "interrupted") {
+				if event.WatchSend.TriggerIdentity == ref+"#interruption" && !event.WatchSend.EndNotice {
 					interruptions++
 				}
 				if event.WatchSend.EndNotice {
@@ -250,7 +249,7 @@ func TestManagerWatchUnrecoverableRebindEndsDurably(t *testing.T) {
 		t.Fatalf("subscription attempts=%d, want 2", got)
 	}
 	for _, event := range loadJobStoreEvents(t, root.jobManager) {
-		if event.WatchSend != nil && event.WatchSend.EndNotice && strings.Contains(event.WatchSend.TriggerReason, "re-register") {
+		if event.WatchSend != nil && event.WatchSend.Key.WatchID != "" && event.WatchSend.TriggerIdentity == ref+"#ended" && event.WatchSend.EndNotice {
 			return
 		}
 	}
@@ -344,7 +343,7 @@ func TestManagerWatchCompletionAndRestart(t *testing.T) {
 	events := loadJobStoreEvents(t, jm)
 	completions := 0
 	for _, event := range events {
-		if event.WatchSend != nil && strings.Contains(event.WatchSend.TriggerReason, "completed") {
+		if event.WatchSend != nil && event.WatchSend.Key.WatchID == watch.WatchID && event.WatchSend.TriggerIdentity == "worker-instance/7@worker/accepted-done::completed" && !event.WatchSend.EndNotice {
 			completions++
 		}
 	}
@@ -381,7 +380,7 @@ func TestManagerWatchCompletionAfterEarlierSameEntryObservation(t *testing.T) {
 	}
 	completions := 0
 	for _, event := range loadJobStoreEvents(t, jm) {
-		if event.WatchSend != nil && strings.Contains(event.WatchSend.TriggerReason, "completed") {
+		if event.WatchSend != nil && event.WatchSend.Key.WatchID == watch.WatchID && event.WatchSend.TriggerIdentity == instance+"/"+generation+"/result:communicate:completed" && !event.WatchSend.EndNotice {
 			completions++
 		}
 	}
@@ -400,9 +399,10 @@ func TestManagerWatchUnknownCausalityReplay(t *testing.T) {
 	}
 	for _, tc := range []struct {
 		id    string
+		event string
 		known bool
-	}{{"old-unstamped", false}, {"current-stamped", true}} {
-		if err := jm.onHubObservation(watch.WatchID, appwire.SessionWatchUpdate{Metadata: appwire.SessionObservationMetadata{Ref: ref, InstanceID: "worker-instance", GenerationID: generation, EntryID: tc.id, CausalKnown: tc.known}}); err != nil {
+	}{{"old-unstamped", "status", false}, {"current-stamped", "communicate", true}} {
+		if err := jm.onHubObservation(watch.WatchID, appwire.SessionWatchUpdate{Event: tc.event, Metadata: appwire.SessionObservationMetadata{Ref: ref, InstanceID: "worker-instance", GenerationID: generation, EntryID: tc.id, CausalKnown: tc.known}}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -412,10 +412,10 @@ func TestManagerWatchUnknownCausalityReplay(t *testing.T) {
 		if event.WatchSend == nil {
 			continue
 		}
-		if strings.Contains(event.WatchSend.TriggerReason, "replay gap") {
+		if event.WatchSend.Key.WatchID == watch.WatchID && event.WatchSend.TriggerIdentity == "worker-instance/7@worker/old-unstamped:status" && !event.WatchSend.EndNotice {
 			gaps++
 		}
-		if strings.Contains(event.WatchSend.TriggerReason, "communicate") {
+		if event.WatchSend.Key.WatchID == watch.WatchID && event.WatchSend.TriggerIdentity == "worker-instance/7@worker/current-stamped:communicate" && !event.WatchSend.EndNotice {
 			qualified++
 		}
 	}
@@ -549,7 +549,7 @@ func TestManagerWatchSnapshotLiveRaceAndPendingIdentity(t *testing.T) {
 	}
 	completions := 0
 	for _, event := range loadJobStoreEvents(t, jm) {
-		if event.WatchSend != nil && strings.Contains(event.WatchSend.TriggerReason, "completed") {
+		if event.WatchSend != nil && event.WatchSend.Key.WatchID == watch.WatchID && event.WatchSend.TriggerIdentity == "worker-instance/7@worker/terminal-1:communicate:completed" && !event.WatchSend.EndNotice {
 			completions++
 		}
 	}

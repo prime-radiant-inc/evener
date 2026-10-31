@@ -197,7 +197,7 @@ func TestManagerRequestActualPolicyMatrix(t *testing.T) {
 				build := func(manager bool) (*Session, *messagingAdapter) {
 					adapter := newMessagingAdapter()
 					adapter.script("root", func(llm.Request) llm.Response { return agenttest.FinalResponse("capture") })
-					root := newMessagingRoot(t, adapter, func(cfg *SessionConfig) { cfg.Manager = manager })
+					root := newManagerPromptRoot(t, adapter, func(cfg *SessionConfig) { cfg.Manager = manager })
 					root.mu.Lock()
 					switch mode {
 					case "absent":

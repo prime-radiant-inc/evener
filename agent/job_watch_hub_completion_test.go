@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"strings"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -64,7 +63,7 @@ func TestManagerWatchCompletionExecutionBoundary(t *testing.T) {
 			}
 			completed := 0
 			for _, event := range loadJobStoreEvents(t, jm) {
-				if event.WatchSend != nil && strings.Contains(event.WatchSend.TriggerReason, "completed") {
+				if event.WatchSend != nil && event.WatchSend.Key.WatchID == w.WatchID && event.WatchSend.TriggerIdentity == "worker-instance/2@worker/winner:communicate:completed" && !event.WatchSend.EndNotice {
 					completed++
 				}
 			}

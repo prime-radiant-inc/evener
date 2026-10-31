@@ -421,10 +421,9 @@ func managerWatchNotices(turns []appwire.Turn, watchID string) int {
 	return count
 }
 
-// A watch rejected after a successful empty launch must leave the new worker
-// empty. In particular, the adapter must not reinterpret a watch refusal as a
-// failed launch or submit the task despite having no observer.
-func TestManagerCreateWatchFailure(t *testing.T) {
+// Invalid selectors are rejected before the hub creates a worker. The separate
+// in-process creation test covers a watch refusal after successful creation.
+func TestManagerCreateRejectsInvalidWatchSelectorBeforeCreate(t *testing.T) {
 	e2ecap.RequireLoopbackBind(t)
 	e2ecap.RequireProcessInspect(t)
 	if testing.Short() {
@@ -440,7 +439,51 @@ func TestManagerCreateWatchFailure(t *testing.T) {
 	defer cancel()
 	client := stack.dialRPC(ctx, t)
 	const task = "EVENER-NOT-SUBMITTED-4D"
-	startManagerThread(ctx, t, client, stack, "EVENER-MANAGER-WATCH-FAILURE-4D")
+	managerRef := startManagerThread(ctx, t, client, stack, "EVENER-MANAGER-WATCH-FAILURE-4D")
+	listRoster := func(listCtx context.Context) (map[string]appwire.Thread, error) {
+		threads := make(map[string]appwire.Thread)
+		cursor := ""
+		for {
+			page, err := clientRequest[appwire.ThreadListResponse](listCtx, client, appwire.MethodThreadList, appwire.ThreadListParams{Cursor: cursor, Limit: 100})
+			if err != nil {
+				return nil, err
+			}
+			for _, thread := range page.Data {
+				threads[thread.Evener.Ref] = thread
+			}
+			if page.NextCursor == "" {
+				return threads, nil
+			}
+			cursor = page.NextCursor
+		}
+	}
+	before, err := listRoster(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, managerPresent := before[managerRef]
+	if !managerPresent || !manager.Evener.Manager || manager.Evener.InstanceID == "" {
+		t.Fatalf("Manager identity missing from initial hub roster: ref=%q roster=%v", managerRef, before)
+	}
+	// If a regression creates a worker despite rejecting this request, shut it
+	// down before the earlier Manager/stack cleanup runs.
+	t.Cleanup(func() {
+		cleanupCtx, done := context.WithTimeout(context.Background(), 20*time.Second)
+		defer done()
+		after, err := listRoster(cleanupCtx)
+		if err != nil {
+			t.Errorf("list hub roster for unexpected-worker cleanup: %v", err)
+			return
+		}
+		for ref := range after {
+			if _, existed := before[ref]; existed {
+				continue
+			}
+			if _, err := clientRequest[appwire.EmptyResponse](cleanupCtx, client, appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: ref}); err != nil {
+				t.Errorf("shutdown unexpected worker %q: %v", ref, err)
+			}
+		}
+	})
 	opening, err := provider.Next(ctx.Done())
 	if err != nil {
 		t.Fatal(err)
@@ -456,49 +499,61 @@ func TestManagerCreateWatchFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var outcome struct {
-		Created struct {
-			Ref string `json:"ref"`
-		} `json:"created"`
-		Watch struct {
-			Error string `json:"error"`
-		} `json:"watch"`
-		Input struct {
-			Disposition string `json:"disposition"`
-		} `json:"input"`
+	call.RespondToolCall("communicate", communicateArgs("invalid selector handled"))
+	awaitThread(ctx, t, client, managerRef, "Manager idle after selector rejection", func(thread appwire.Thread) bool {
+		return thread.Status.Type == appwire.ThreadStatusIdle
+	})
+	turns, err := readTranscriptTurns(ctx, client, managerRef, "full")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !managerToolResult(call, &outcome) {
-		t.Fatalf("delegate result missing: %v", call.Texts())
-	}
-	createdRef := outcome.Created.Ref
-	if createdRef != "" {
-		t.Cleanup(func() {
-			shutdownCtx, done := context.WithTimeout(context.Background(), 20*time.Second)
-			defer done()
-			if _, err := clientRequest[appwire.EmptyResponse](shutdownCtx, client, appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: createdRef}); err != nil {
-				t.Errorf("worker shutdown: %v", err)
+	submittedSelector, rejectedBeforeDispatch := false, false
+	for _, turn := range turns {
+		for _, item := range turn.Items {
+			if item.ToolName != "delegate" {
+				continue
 			}
-		})
-	}
-	watchErr := outcome.Watch.Error
-	submittedInputs := 0
-	if createdRef != "" {
-		read, readErr := clientRequest[appwire.ThreadReadResponse](ctx, client, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: createdRef, IncludeTurns: true})
-		if readErr != nil {
-			t.Fatal(readErr)
-		}
-		for _, turn := range read.Thread.Turns {
-			for _, item := range turn.Items {
-				if item.Type == "userMessage" {
-					submittedInputs++
-				}
+			var args struct {
+				Prompt string `json:"prompt"`
+				Hub    struct {
+					CWD   string `json:"cwd"`
+					Model string `json:"model"`
+					Watch struct {
+						Events []string `json:"events"`
+					} `json:"watch"`
+				} `json:"hub"`
+			}
+			if err := json.Unmarshal([]byte(item.ArgumentsJSON), &args); err != nil {
+				continue
+			}
+			if args.Prompt != task || args.Hub.CWD != stack.workDir || args.Hub.Model != stack.model || !slices.Equal(args.Hub.Watch.Events, []string{"not-a-watch-event"}) {
+				continue
+			}
+			submittedSelector = true
+			if item.PrevalOnly && item.Error != "" {
+				rejectedBeforeDispatch = true
 			}
 		}
 	}
-	if createdRef == "" || submittedInputs != 0 || watchErr == "" || outcome.Input.Disposition != "" {
-		t.Fatalf("partial creation misreported: createdRef=%q submittedInputs=%d watchErr=%q input=%+v", createdRef, submittedInputs, watchErr, outcome.Input)
+	if !submittedSelector || !rejectedBeforeDispatch {
+		t.Fatalf("invalid selector was not recorded as a pre-dispatch rejection: submitted=%v rejected=%v turns=%+v", submittedSelector, rejectedBeforeDispatch, turns)
 	}
-	call.RespondToolCall("communicate", communicateArgs("creation was partial"))
+	after, err := listRoster(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("hub roster changed after rejected selector: before=%v after=%v", before, after)
+	}
+	for ref, prior := range before {
+		current, ok := after[ref]
+		if !ok || current.Evener.InstanceID != prior.Evener.InstanceID {
+			t.Fatalf("hub roster identity changed after rejected selector: ref=%q before=%+v after=%+v", ref, prior.Evener, current.Evener)
+		}
+	}
+	if !after[managerRef].Evener.Manager {
+		t.Fatalf("Manager role missing after rejected selector: before=%+v after=%+v", manager.Evener, after[managerRef].Evener)
+	}
 }
 
 func managerToolResult(call *fakellm.Call, out any) bool {

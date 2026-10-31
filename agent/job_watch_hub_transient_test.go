@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"strings"
 	"sync"
 	"testing"
 
@@ -104,7 +103,7 @@ func TestManagerWatchResolvesTransientFailureWithoutRebind(t *testing.T) {
 	jm := root.jobManager
 	noticed := false
 	for _, event := range loadJobStoreEvents(t, jm) {
-		if event.WatchSend != nil && event.WatchSend.EndNotice && strings.Contains(event.WatchSend.TriggerReason, "re-register") {
+		if event.WatchSend != nil && event.WatchSend.TriggerIdentity == ref+"#ended" && event.WatchSend.EndNotice {
 			noticed = true
 		}
 	}

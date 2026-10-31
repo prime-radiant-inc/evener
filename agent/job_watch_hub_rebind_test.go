@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"strings"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -38,10 +37,19 @@ func TestManagerWatchRebindDeliversNewQuestionAfterEarlierOne(t *testing.T) {
 			},
 		}
 	}
-	deliveries := func() int {
+	deliveries := func(entryID string) int {
 		n := 0
 		for _, event := range loadJobStoreEvents(t, jm) {
-			if event.WatchSend != nil && strings.Contains(event.WatchSend.TriggerReason, "question") {
+			if event.WatchSend != nil && event.WatchSend.Key.WatchID == watch.WatchID && event.WatchSend.TriggerIdentity == instance+"/"+generation+"/"+entryID+":question" && !event.WatchSend.EndNotice {
+				n++
+			}
+		}
+		return n
+	}
+	totalDeliveries := func() int {
+		n := 0
+		for _, event := range loadJobStoreEvents(t, jm) {
+			if event.WatchSend != nil && event.WatchSend.Key.WatchID == watch.WatchID && !event.WatchSend.EndNotice {
 				n++
 			}
 		}
@@ -52,7 +60,7 @@ func TestManagerWatchRebindDeliversNewQuestionAfterEarlierOne(t *testing.T) {
 	if err := jm.onHubObservation(watch.WatchID, question("question-wg_aaa-1")); err != nil {
 		t.Fatal(err)
 	}
-	if got := deliveries(); got != 1 {
+	if got := deliveries("question-wg_aaa-1"); got != 1 {
 		t.Fatalf("deliveries after the first question = %d, want 1", got)
 	}
 
@@ -61,7 +69,7 @@ func TestManagerWatchRebindDeliversNewQuestionAfterEarlierOne(t *testing.T) {
 	if err := jm.onHubObservation(watch.WatchID, question("question-wg_aaa-1")); err != nil {
 		t.Fatal(err)
 	}
-	if got := deliveries(); got != 1 {
+	if got := deliveries("question-wg_aaa-1"); got != 1 {
 		t.Fatalf("deliveries after repeating the same identity = %d, want 1", got)
 	}
 
@@ -71,7 +79,16 @@ func TestManagerWatchRebindDeliversNewQuestionAfterEarlierOne(t *testing.T) {
 	if err := jm.onHubObservation(watch.WatchID, question("question-wg_bbb-1")); err != nil {
 		t.Fatal(err)
 	}
-	if got := deliveries(); got != 2 {
-		t.Fatalf("deliveries after a rebind question = %d, want 2: the new subscription's first question was treated as already seen", got)
+	if got := deliveries("question-wg_bbb-1"); got != 1 {
+		t.Fatalf("deliveries after a rebind question = %d, want 1 for its new identity", got)
+	}
+	if got := deliveries("question-wg_aaa-1"); got != 1 {
+		t.Fatalf("deliveries for the earlier identity after rebind = %d, want 1", got)
+	}
+	if got := deliveries("question-wg_bbb-1"); got != 1 {
+		t.Fatalf("deliveries for the rebind identity = %d, want 1", got)
+	}
+	if got := totalDeliveries(); got != 2 {
+		t.Fatalf("total non-end deliveries after rebind = %d, want 2", got)
 	}
 }

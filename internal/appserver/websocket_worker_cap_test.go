@@ -522,24 +522,19 @@ func TestServeWebSocketConcurrentRequestsHaveATotalCap(t *testing.T) {
 	client := dialAppWireClient(t, httpServer)
 	ctx := context.Background()
 
-	const launched = concurrentRequestTotalCap
-	earlyResults := make(chan error, launched)
-	for range concurrentRequestTotalCap {
+	earlyResults := make(chan error, concurrentRequestTotalCap)
+	var earlyResult string
+	for observedStarts := range concurrentRequestTotalCap {
 		go func() {
 			_, err := client.ThreadList(ctx, appwire.ThreadListParams{})
 			earlyResults <- err
 		}()
-	}
-	observedStarts := 0
-	var earlyResult string
-	for observedStarts < concurrentRequestTotalCap {
 		// Keep the existing five-second deadlock tripwire per handler start;
 		// it diagnoses failure to fill this request's own pool, not scheduling.
 		timer := time.NewTimer(5 * time.Second)
 		for {
 			select {
 			case <-listsStarted:
-				observedStarts++
 				timer.Stop()
 				goto nextStart
 			case err := <-earlyResults:
@@ -547,7 +542,7 @@ func TestServeWebSocketConcurrentRequestsHaveATotalCap(t *testing.T) {
 					earlyResult = fmt.Sprintf("%v", err)
 				}
 			case <-timer.C:
-				t.Fatalf("timed out waiting for a request in a pool of its own to park: launched=%d observed_starts=%d hook_decisions=%d early_thread_list_result=%q", launched, observedStarts, hookDecisions.Load(), earlyResult)
+				t.Fatalf("timed out waiting for a request in a pool of its own to park: launched=%d observed_starts=%d hook_decisions=%d early_thread_list_result=%q", observedStarts+1, observedStarts, hookDecisions.Load(), earlyResult)
 			}
 		}
 	nextStart:

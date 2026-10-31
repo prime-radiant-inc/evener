@@ -231,8 +231,8 @@ func hubWatchSelectorSchema(extraProperties map[string]any, required []string) m
 		"additionalProperties": false,
 		"properties":           properties,
 		"anyOf": []any{
-			map[string]any{"required": []string{"events"}, "properties": map[string]any{"events": map[string]any{"minItems": 1}}},
-			map[string]any{"required": []string{"completion"}, "properties": map[string]any{"completion": map[string]any{"const": true}}},
+			map[string]any{"type": "object", "required": []string{"events"}, "properties": map[string]any{"events": map[string]any{"type": "array", "minItems": 1}}},
+			map[string]any{"type": "object", "required": []string{"completion"}, "properties": map[string]any{"completion": map[string]any{"type": "boolean", "const": true}}},
 		},
 	}
 	if len(required) > 0 {
