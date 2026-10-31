@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BurntSushi/toml"
+
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 )
@@ -19,36 +21,49 @@ import (
 // hostRecordSet is the machine-managed record family the hub keeps beside its
 // [[hosts]]: the per-host identity records, the generation high-water marks,
 // the mutation receipts, the removal tombstones, the pruned, staged and
-// teardown-repair records, and the cross-file commit bookkeeping. Today the
-// family is hub.toml's reserved sections; the maps carry the same keys either
-// way.
+// teardown-repair records, and the cross-file commit bookkeeping an earlier
+// build wrote. The operation store holds the family; the toml tags name the
+// reserved hub.toml sections that held it before, which the legacy reader
+// (decodeLegacyRecords) still decodes.
 type hostRecordSet struct {
-	HostRecords      map[string]HostRecord
-	Generations      map[string]HostGeneration
-	MutationReceipts map[string]HostMutationReceipt
-	Tombstones       map[string]HostTombstone
-	PrunedReceipts   map[string]PrunedReceiptMarker
-	StagedReceipts   map[string]HostStagedReceipt
-	TeardownRemnants map[string]HostTeardownRemnant
-	TeardownAttempts map[string]HostTeardownAttempt
-	PendingStoreSync map[string]HostStoreSyncIntent
-	MirrorCommits    map[string]HostMirrorCommit
+	HostRecords      map[string]HostRecord          `toml:"host_records"`
+	Generations      map[string]HostGeneration      `toml:"generations"`
+	MutationReceipts map[string]HostMutationReceipt `toml:"mutation_receipts"`
+	Tombstones       map[string]HostTombstone       `toml:"tombstones"`
+	PrunedReceipts   map[string]PrunedReceiptMarker `toml:"pruned_receipts"`
+	StagedReceipts   map[string]HostStagedReceipt   `toml:"staged_receipts"`
+	TeardownRemnants map[string]HostTeardownRemnant `toml:"teardown_remnants"`
+	TeardownAttempts map[string]HostTeardownAttempt `toml:"teardown_attempts"`
+	PendingStoreSync map[string]HostStoreSyncIntent `toml:"pending_store_sync"`
+	MirrorCommits    map[string]HostMirrorCommit    `toml:"mirror_commits"`
 }
 
-// recordSet projects the reserved sections a decoded hub.toml carries.
-func (c Config) recordSet() hostRecordSet {
-	return hostRecordSet{
-		HostRecords:      c.HostRecords,
-		Generations:      c.Generations,
-		MutationReceipts: c.MutationReceipts,
-		Tombstones:       c.Tombstones,
-		PrunedReceipts:   c.PrunedReceipts,
-		StagedReceipts:   c.StagedReceipts,
-		TeardownRemnants: c.TeardownRemnants,
-		TeardownAttempts: c.TeardownAttempts,
-		PendingStoreSync: c.PendingStoreSync,
-		MirrorCommits:    c.MirrorCommits,
+// decodeLegacyRecords reads the reserved record sections an earlier build kept
+// in hub.toml. Every record must be one this build writes, and a reserved
+// section carrying a field this build does not decode is refused rather than
+// dropped by the next rewrite. A document with no such section decodes to an
+// empty set.
+func decodeLegacyRecords(name, data string) (hostRecordSet, error) {
+	var set hostRecordSet
+	metadata, err := toml.Decode(data, &set)
+	if err != nil {
+		return hostRecordSet{}, fmt.Errorf("parse config %s: %w", name, err)
 	}
+	// The retired crash-fencing bootstrap keys decode into HostRecord's retired
+	// fields so an earlier file still loads; they are dropped here so no record
+	// carries them forward.
+	for hostName, record := range set.HostRecords {
+		set.HostRecords[hostName] = record.withoutRetiredFencingFields()
+	}
+	if err := validateHostRecordSet(set); err != nil {
+		return hostRecordSet{}, err
+	}
+	for _, key := range metadata.Undecoded() {
+		if len(key) > 1 && slices.Contains(reservedRecordSections, key[0]) {
+			return hostRecordSet{}, fmt.Errorf("config %s: reserved record %s carries a field this build does not decode; refusing rather than dropping it on the next rewrite", name, key.String())
+		}
+	}
+	return set, nil
 }
 
 // highWaterMarks maps the generation records onto the registry's high-water
@@ -113,7 +128,11 @@ func (s hubTOMLRecordStore) load() (hostRecordDocument, bool) {
 	if err != nil {
 		return hostRecordDocument{}, false
 	}
-	return hostRecordDocument{Hosts: hostRegistryEntries(cfg), Records: cfg.recordSet()}, true
+	records, err := decodeLegacyRecords(s.path, string(raw))
+	if err != nil {
+		return hostRecordDocument{}, false
+	}
+	return hostRecordDocument{Hosts: hostEntriesWithIdentity(cfg.Hosts, records), Records: records}, true
 }
 
 func (s hubTOMLRecordStore) hosts() ([]hostreg.Host, bool) {
@@ -137,26 +156,20 @@ func (s hubTOMLRecordStore) commit(entries, known []hostreg.Host, records hostTO
 	return writeHubTOMLHostsRecords(s.path, entries, known, records)
 }
 
-// hostRegistryEntries maps the validated [[hosts]] entries onto the host
-// registry's values. runMain hands the result to hostreg.New (the registry
-// sshconn consumes) and to the web config's RemoteHosts (one source per host),
-// so this mapping is the last place a configured field can be lost before
-// either consumer sees it: every field belongs here, including the host's
-// non-default locations (EvenerPath, ConfigPath, Addr) that keep the SSH
-// manager attaching with the host's own hub.toml and probing its own listener.
+// hostEntriesWithIdentity maps the validated [[hosts]] entries onto the host
+// registry's values and restores each host's persisted identity from records.
+// runMain hands the result to hostreg.New (the registry sshconn consumes) and to
+// the web config's RemoteHosts (one source per host), so this mapping is the
+// last place a configured field can be lost before either consumer sees it:
+// every field belongs here, including the host's non-default locations
+// (EvenerPath, ConfigPath, Addr) that keep the SSH manager attaching with the
+// host's own hub.toml and probing its own listener.
 //
-// It is also where the file's machine records join the entry: the persisted
-// (generation, incarnation id, presence epoch) triple is restored onto the
-// entry, so the boot load keeps the identity the file recorded instead of
-// minting a new one (registry spec 08 §15: "The boot load restores persisted
-// generations before the store serves any request"). A file that carries no
-// record leaves the zeros hostreg.New fills at load.
-func hostRegistryEntries(cfg Config) []hostreg.Host {
-	return hostEntriesWithIdentity(cfg.Hosts, cfg.recordSet())
-}
-
-// hostEntriesWithIdentity maps configured [[hosts]] onto registry values and
-// restores each host's persisted identity from records.
+// The persisted (generation, incarnation id, presence epoch) triple is restored
+// onto the entry, so the boot load keeps the identity the records hold instead
+// of minting a new one (registry spec 08 §15: "The boot load restores persisted
+// generations before the store serves any request"). A host the records hold
+// nothing for leaves the zeros hostreg.New fills at load.
 func hostEntriesWithIdentity(configured []HostConfig, records hostRecordSet) []hostreg.Host {
 	entries := make([]hostreg.Host, 0, len(configured))
 	for _, h := range configured {
@@ -669,10 +682,10 @@ func hostConfigFingerprint(configured []HostConfig, name string) string {
 
 // hostBootDocument is the host set and the records startup builds the host
 // registry from. A store that holds the records is their home; otherwise the
-// records are the ones hub.toml still carries. Records the store holds but this
+// records are legacy, the ones hub.toml's reserved sections still carry. Records the store holds but this
 // build cannot read are not guessed at: the hosts come up with identities
 // minted at load, and the manager keeps host changes paused (bootStoreRecords).
-func hostBootDocument(cfg Config, ops *hostops.Store) hostRecordDocument {
+func hostBootDocument(cfg Config, legacy hostRecordSet, ops *hostops.Store) hostRecordDocument {
 	if ops != nil {
 		if _, _, imported := ops.HostRecords(); imported {
 			set, err := hostOpsRecordStore{ops: ops}.records()
@@ -683,5 +696,72 @@ func hostBootDocument(cfg Config, ops *hostops.Store) hostRecordDocument {
 			return hostRecordDocument{Hosts: hostEntriesWithIdentity(cfg.Hosts, set), Records: set}
 		}
 	}
-	return hostRecordDocument{Hosts: hostRegistryEntries(cfg), Records: cfg.recordSet()}
+	return hostRecordDocument{Hosts: hostEntriesWithIdentity(cfg.Hosts, legacy), Records: legacy}
+}
+
+// readLegacyRecords reads the reserved record sections the hub.toml at path
+// still carries. A missing or empty file carries none.
+func readLegacyRecords(path string) (hostRecordSet, error) {
+	if strings.TrimSpace(path) == "" {
+		return hostRecordSet{}, nil
+	}
+	raw, err := configReadFile(path)
+	switch {
+	case errors.Is(err, os.ErrNotExist), err == nil && len(raw) == 0:
+		return hostRecordSet{}, nil
+	case err != nil:
+		return hostRecordSet{}, fmt.Errorf("read %s: %w", path, err)
+	}
+	return decodeLegacyRecords(path, string(raw))
+}
+
+// readLegacyTeardownFences reads the teardown remnants and attempts of the
+// reserved sections independently of each other and of every other section, one
+// record at a time, ignoring fields this build does not decode. They fence
+// lifecycle actions on their own, so a record that makes the whole set
+// unreadable must not hide them. A remnant that cannot be read in full but names
+// its host and is still open keeps that host fenced through a stand-in that
+// carries only the host.
+func readLegacyTeardownFences(path string) (map[string]HostTeardownRemnant, map[string]HostTeardownAttempt) {
+	remnants := map[string]HostTeardownRemnant{}
+	attempts := map[string]HostTeardownAttempt{}
+	raw, err := configReadFile(path)
+	if err != nil {
+		return remnants, attempts
+	}
+	var remnantSection struct {
+		Remnants map[string]toml.Primitive `toml:"teardown_remnants"`
+	}
+	if metadata, err := toml.Decode(string(raw), &remnantSection); err == nil {
+		for key, primitive := range remnantSection.Remnants {
+			var remnant HostTeardownRemnant
+			if metadata.PrimitiveDecode(primitive, &remnant) == nil {
+				remnants[key] = remnant
+				continue
+			}
+			var partial struct {
+				Host     string         `toml:"host"`
+				Resolved toml.Primitive `toml:"resolved"`
+			}
+			if metadata.PrimitiveDecode(primitive, &partial) != nil || strings.TrimSpace(partial.Host) == "" {
+				continue
+			}
+			if metadata.IsDefined("teardown_remnants", key, "resolved") {
+				continue
+			}
+			remnants[key] = HostTeardownRemnant{Host: partial.Host}
+		}
+	}
+	var attemptSection struct {
+		Attempts map[string]toml.Primitive `toml:"teardown_attempts"`
+	}
+	if metadata, err := toml.Decode(string(raw), &attemptSection); err == nil {
+		for key, primitive := range attemptSection.Attempts {
+			var attempt HostTeardownAttempt
+			if metadata.PrimitiveDecode(primitive, &attempt) == nil {
+				attempts[key] = attempt
+			}
+		}
+	}
+	return remnants, attempts
 }

@@ -55,8 +55,14 @@ export type DraftPayload = {
 };
 
 // One store call for all four routes; "drain" is the store's drainAsSteer.
-export function submitDraftToStore(route: DraftRoute, ref: string, draft: DraftPayload): Promise<void> {
+export function submitDraftToStore(
+  route: DraftRoute,
+  ref: string,
+  draft: DraftPayload,
+  compositionOwnerId?: string,
+): Promise<void> {
   const store = threadsStore.getState();
   const args = [ref, draft.text, draft.attachments, draft.skillNames, draft.commandNames, draft.mentions] as const;
-  return route === "drain" ? store.drainAsSteer(...args) : store[route](...args);
+  const call = (method: (typeof store)["send"] | (typeof store)["drainAsSteer"]) => method(...args, compositionOwnerId);
+  return route === "drain" ? call(store.drainAsSteer) : call(store[route]);
 }

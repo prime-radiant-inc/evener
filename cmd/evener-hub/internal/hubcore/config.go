@@ -139,6 +139,11 @@ type WebConfig struct {
 	// edit and remove refuse as unavailable until the hub is started with a
 	// store that opens.
 	RemoteHostOpsUnavailable bool
+	// RemoteHostRecordsUnreadable marks a hub whose startup could not read the
+	// record sections an earlier build left in hub.toml, so its registry was
+	// built without the persisted identities. Nothing is settled or moved from
+	// that registry, and host changes pause.
+	RemoteHostRecordsUnreadable bool
 	// RemoteHostClient returns an attached, initialized AppWire client for a
 	// remote host, attaching over SSH on first use (component 04). nil
 	// disables remote hosts (tests).

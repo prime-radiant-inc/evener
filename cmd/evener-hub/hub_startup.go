@@ -159,7 +159,10 @@ type hubRuntime struct {
 	// its hosts and refuses host changes until it is started with a store that
 	// opens. openOps opens the store (a test replaces it).
 	opsUnavailable bool
-	openOps        func() (*hostops.Store, error)
+	// recordsUnreadable marks a start that could not read hub.toml's record
+	// sections (see hubcore.WebConfig.RemoteHostRecordsUnreadable).
+	recordsUnreadable bool
+	openOps           func() (*hostops.Store, error)
 
 	resumeLocks               *hubcore.ResumeLocks
 	deletionStore             *hubcore.DeletionStore
@@ -473,7 +476,15 @@ func (r *hubRuntime) connectHosts() (func(), error) {
 	// when its custody can be shown whole; one whose custody cannot is left as it
 	// is until it is repaired (openHostOpsStore).
 	r.openOpsStore()
-	boot := hostBootDocument(cfg, r.opsStore)
+	legacy, err := readLegacyRecords(r.opts.configPath)
+	if err != nil {
+		// The reserved sections an earlier build wrote cannot be read. The hosts
+		// come up with identities minted at load, and the manager keeps host
+		// changes paused instead of moving records it cannot read.
+		r.logf("hub.toml record sections unreadable; hosts keep serving and host changes pause: %v", err)
+		r.recordsUnreadable = true
+	}
+	boot := hostBootDocument(cfg, legacy, r.opsStore)
 	r.hostEntries = boot.Hosts
 	// Config loading already validated these through hostreg.New; build the
 	// real registry used by the SSH manager and handle the (impossible) error
@@ -481,7 +492,6 @@ func (r *hubRuntime) connectHosts() (func(), error) {
 	// counters first, so a hub.toml host with no persisted record is minted
 	// above every mark the records carry (registry spec 08 §1) rather than below
 	// a mark another name retained.
-	var err error
 	r.hostRegistry, err = hostreg.NewSeeded(r.hostEntries, boot.Records.highWaterMarks())
 	if err != nil {
 		return nil, fmt.Errorf("validate hosts: %w", err)
@@ -627,11 +637,12 @@ func (r *hubRuntime) buildWeb(appwireTrace *appserver.WebSocketTrace) (*WebServe
 		// The one live registry the SSH manager dials through, shared with the
 		// attach handler and the host-management surface, and the selected
 		// hub.toml path the host surface rewrites in place (machine-managed).
-		RemoteHostRegistry:       r.hostRegistry,
-		RemoteHostSSHManager:     sshManager,
-		RemoteHostConfigPath:     r.opts.configPath,
-		RemoteHostOpsStore:       r.opsStore,
-		RemoteHostOpsUnavailable: r.opsUnavailable,
+		RemoteHostRegistry:          r.hostRegistry,
+		RemoteHostSSHManager:        sshManager,
+		RemoteHostConfigPath:        r.opts.configPath,
+		RemoteHostOpsStore:          r.opsStore,
+		RemoteHostOpsUnavailable:    r.opsUnavailable,
+		RemoteHostRecordsUnreadable: r.recordsUnreadable,
 		// This hub's own running identity and the two owner-adjustable
 		// deploy-pipeline knobs: the probe deadline the plan's gated probe
 		// uses, and the minimum free space evener/host/running's health

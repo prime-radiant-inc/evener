@@ -77,57 +77,6 @@ type Config struct {
 	// client can show the hub's own machine's roots beside a host's. Blank
 	// entries are dropped at load; an absent key means the machine has none.
 	Roots []string `toml:"roots,omitempty"`
-	// HostRecords and Generations are hub.toml's machine-managed per-host
-	// records (registry spec 08 §6's reserved-key layout). They live beside
-	// [[hosts]], never inside an entry, because they must survive a host edit:
-	// an edit rewrites the entry's configured fields and nothing here. The
-	// zero/absent value is the compatibility default for a file written before
-	// the records existed — see app_host_records.go.
-	HostRecords map[string]HostRecord     `toml:"host_records"`
-	Generations map[string]HostGeneration `toml:"generations"`
-	// MutationReceipts is hub.toml's durable mutation-receipt section (registry
-	// spec 08 §5/§6), keyed by the five-part scoped receipt key. Like the two
-	// records above it lives beside [[hosts]] and survives every host edit; the
-	// absent value is the compatibility default for a file written before
-	// receipts existed.
-	MutationReceipts map[string]HostMutationReceipt `toml:"mutation_receipts"`
-	// Tombstones is hub.toml's durable removed-host section (registry spec 08
-	// §6/§15), keyed by host name. It lives beside [[hosts]]; a tombstone and
-	// its removal are one atomic write, and the absent value is the
-	// compatibility default for a file written before tombstones existed.
-	Tombstones map[string]HostTombstone `toml:"tombstones"`
-	// PrunedReceipts is hub.toml's durable pruned-marker section (registry spec
-	// 08 §6), keyed by the full five-part scoped receipt key. Each marker is
-	// the bounded proof that a superseded receipt was compacted away.
-	PrunedReceipts map[string]PrunedReceiptMarker `toml:"pruned_receipts"`
-	// StagedReceipts is hub.toml's durable staged-receipt marker section
-	// (registry spec 08 §5), keyed by host name: the transient marker one
-	// commit's step-(2) write carries until its post-commit write replaces it
-	// with the finalized receipt. At most one marker per host.
-	StagedReceipts map[string]HostStagedReceipt `toml:"staged_receipts"`
-	// TeardownRemnants is hub.toml's durable teardown-remnant section (registry
-	// spec 08 §6), keyed by the server-generated remnantId: the open remnants a
-	// committed-with-teardown-failure left behind and the typed resolved records
-	// their clearances wrote.
-	TeardownRemnants map[string]HostTeardownRemnant `toml:"teardown_remnants"`
-	// TeardownAttempts is hub.toml's durable teardown-attempt section (registry
-	// spec 08 §6), keyed by the server-generated attempt id: the claim a retry
-	// or recover writes beside the remnant it claims.
-	TeardownAttempts map[string]HostTeardownAttempt `toml:"teardown_attempts"`
-	// PendingStoreSync is hub.toml's cross-file commit intent section
-	// (deploy-pipeline spec 08b §9), keyed by host name: the exact store rows a
-	// commit's swap is deleting or invalidating, plus the hub.toml generation
-	// the intent belongs to. The mutation's atomic write carries it, the store's
-	// purge applies it after the swap, and a follow-up atomic write clears it.
-	// At most one intent per host.
-	PendingStoreSync map[string]HostStoreSyncIntent `toml:"pending_store_sync"`
-	// MirrorCommits is hub.toml's generation-mirror commit-marker section
-	// (deploy-pipeline spec 08b §4), keyed by host name: the (hub.toml
-	// generation, store-mirror generation) pair every hub.toml commit that also
-	// advances a mirrored store-side generation writes. Boot reconciles the
-	// store mirror against the file's marks with these as the authorization
-	// evidence.
-	MirrorCommits map[string]HostMirrorCommit `toml:"mirror_commits"`
 
 	// PluginAutoUpgrade is the global on/off switch for the background plugin
 	// auto-upgrade daemon (design doc §9.1). Defaults to on: the meaningful
@@ -356,17 +305,6 @@ func decodeConfig(name, data string) (Config, error) {
 		}
 	}
 	cfg.addrPresent = metadata.IsDefined("addr")
-	// The retired crash-fencing bootstrap keys decode into HostRecord's retired
-	// fields (the type documents them) so a hub.toml the bootstrap build wrote
-	// still loads: the reserved-record rule below refuses a reserved field this
-	// build does not decode, and the removed first-contact caller persisted those
-	// keys. Drop them from the loaded document here, so no in-memory record
-	// carries them and every rewrite derived from this config re-emits the
-	// record without them — the next write drops the keys, rather than the
-	// preservation rule keeping them alive forever.
-	for hostName, record := range cfg.HostRecords {
-		cfg.HostRecords[hostName] = record.withoutRetiredFencingFields()
-	}
 	// DaemonIdleTimeout is a duration STRING. BurntSushi/toml decodes a bare
 	// integer as a nanosecond count without error, so `daemon_idle_timeout =
 	// 3600` (plausible shorthand for one hour) would silently arm a 3.6µs idle
@@ -402,30 +340,6 @@ func decodeConfig(name, data string) (Config, error) {
 	}
 	if err := validateHostConfigs(cfg.Hosts); err != nil {
 		return cfg, fmt.Errorf("validate hosts: %w", err)
-	}
-	// The machine records are decoded as plain tables, so a record the hub's
-	// writer never emits — an incomplete one, a live record disagreeing with
-	// the name's high-water triple, a shape this build cannot decode — is
-	// refused here rather than read as one of its halves, and is never dropped
-	// by the next rewrite.
-	if err := validateHostRecordSet(cfg.recordSet()); err != nil {
-		return cfg, err
-	}
-	// Every field of a reserved record must decode: the two tables are decoded
-	// into typed structs and rebuilt on every rewrite, so a field this build does
-	// not know would be silently dropped by the next write. Spec 08 §6 is
-	// explicit that forward preservation is not offered — "a reserved value whose
-	// shape this build cannot decode is refused loudly before any rewrite" — and
-	// a downgrade meeting a newer record must refuse to rewrite rather than
-	// preserve or drop it. Unknown keys outside the reserved set stay the
-	// operator's data and are not this check's business.
-	for _, key := range metadata.Undecoded() {
-		if len(key) > 1 && (key[0] == "host_records" || key[0] == "generations" || key[0] == "mutation_receipts" ||
-			key[0] == "tombstones" || key[0] == "pruned_receipts" || key[0] == "staged_receipts" ||
-			key[0] == "teardown_remnants" || key[0] == "teardown_attempts" ||
-			key[0] == "pending_store_sync" || key[0] == "mirror_commits") {
-			return cfg, fmt.Errorf("config %s: reserved record %s carries a field this build does not decode; refusing rather than dropping it on the next rewrite", name, key.String())
-		}
 	}
 	if err := validatePublicURL(cfg.PublicURL); err != nil {
 		return cfg, &EndpointValidationError{Source: "config", Err: fmt.Errorf("validate public_url: %w", err)}

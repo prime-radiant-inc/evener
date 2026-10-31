@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 const (
@@ -40,6 +41,7 @@ const (
 	visionSideChannelOwnedTimeout
 	visionSideChannelParentCanceled
 	visionSideChannelProviderFailure
+	visionSideChannelUndeliverableDocument
 )
 
 type visionSideChannelResult struct {
@@ -233,10 +235,42 @@ func sessionModelTakesRequestMedia(part llm.ContentPart, profile *provider.Profi
 	case llm.ContentImage:
 		return profile.AcceptsImageInput()
 	case llm.ContentDocument:
-		return profile.AcceptsDocumentInput()
+		return profile.AcceptsDocumentInput(part.Document)
 	default:
 		return false
 	}
+}
+
+// visionRouteDeliversDocuments reports whether the route the side-channel
+// executes on can represent this user-message document part: the protocol's
+// adapter must write the payload in a form the wire carries
+// (llm.DeliversUserMessageDocuments — inline bytes ride the Responses,
+// Anthropic, Google and Chat builders; a URL rides the first three, and chat
+// has no URL file mechanism). Chat is held to one more test: its file part
+// is a gateway extension rather than a wire contract, so only a row that
+// declares pdf input vouches that this endpoint speaks it. A route that does
+// not resolve is allowed through, mirroring visionRouteReasoning's
+// degrade-to-send: the provider answers for itself, and reporting vision
+// unavailable over a resolution failure would bury a config problem in a
+// per-file steering message.
+func (s *Session) visionRouteDeliversDocuments(profile *provider.Profile, providerName, modelID string, doc *llm.DocumentData) bool {
+	var res registry.Resolved
+	if providerName == profile.ID() && modelID == profile.Model() {
+		res = profile.Resolved()
+	} else {
+		resolved, err := s.client.Resolve(providerName + "/" + modelID)
+		if err != nil {
+			return true
+		}
+		res = resolved
+	}
+	if !llm.DeliversUserMessageDocuments(res, doc) {
+		return false
+	}
+	if res.Protocol == registry.ProtocolOpenAIChat {
+		return res.Caps.AcceptsModality("pdf")
+	}
+	return true
 }
 
 // applyVisionRouteEffort clamps the fixed low vision cap to the route's
@@ -317,6 +351,22 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 		}}
 	}
 
+	// A document whose route cannot represent it never reaches that route:
+	// the route's row must claim pdf input and its wire must carry the
+	// payload (visionRouteDeliversDocuments), or the model would be asked to
+	// describe bytes it never saw — the provider answers an error the round
+	// reports as a vision failure (#5472), or worse, a confident description
+	// of a document it was not given (#4213). When the session model can
+	// carry the document — the same test the retry leg below applies — route
+	// there instead, exactly as that leg does after a failed attempt. Only
+	// when neither route can represent the document is it undeliverable.
+	if mediaPart.Kind == llm.ContentDocument && !s.visionRouteDeliversDocuments(profile, routeProvider, routeModel, mediaPart.Document) {
+		if !sessionModelTakesRequestMedia(mediaPart, profile) {
+			return visionSideChannelResult{outcome: visionSideChannelUndeliverableDocument}
+		}
+		routeProvider, routeModel = profile.ID(), profile.Model()
+	}
+
 	visionTimeout := s.visionSideChannelDuration()
 	var visionCtx context.Context
 	var cancel context.CancelFunc
@@ -360,8 +410,8 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 		// model can see the media (a raster image needs image input, the one
 		// user-message shape every protocol vouches for; a document needs the
 		// row's pdf input plus an adapter that represents a user-message
-		// document, which the Anthropic and Responses builders do): try the
-		// description once on it before declaring vision unavailable. The
+		// document, which llm.DeliversUserMessageDocuments vouches for): try
+		// the description once on it before declaring vision unavailable. The
 		// effort must fit the session model's ladder, not the failed route's.
 		// A model that cannot see the media never gets the doomed request:
 		// providers reject it, and the ones that do not answer with confident

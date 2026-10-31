@@ -177,7 +177,7 @@ func (m *hubHostManager) hostTOMLFingerprint(name string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	for _, entry := range hostRegistryEntries(cfg) {
+	for _, entry := range hostEntriesWithIdentity(cfg.Hosts, hostRecordSet{}) {
 		if entry.Name == name {
 			fingerprint := hostEntryFingerprint(entry)
 			return fingerprint, fingerprint != ""

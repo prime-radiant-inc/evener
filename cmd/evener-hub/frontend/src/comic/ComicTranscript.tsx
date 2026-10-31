@@ -116,6 +116,7 @@ export function ComicTranscript({
   const anchor = useRef<ComicReadingPosition>(reader.position ?? { mode: "end", sessionRef, path: [] });
   const restoring = useRef(!!reader.position);
   const commanded = useRef<number | undefined>(undefined);
+  const pendingIndexPlacement = useRef(false);
   const savedOffset = useRef<number | undefined>(undefined);
   const moving = useRef(false);
   const movementStart = useRef<number | undefined>(undefined);
@@ -196,11 +197,21 @@ export function ComicTranscript({
     [openingRefs],
   );
 
-  const save = useCallback((position: ComicReadingPosition) => {
-    anchor.current = position;
-    savedOffset.current = list.current?.getScrollElement()?.scrollTop;
-    latest.current.reader.save(position);
+  const cancelIndexPlacement = useCallback(() => {
+    if (!pendingIndexPlacement.current) return;
+    pendingIndexPlacement.current = false;
+    committed.current?.cancelPendingScroll();
   }, []);
+
+  const save = useCallback(
+    (position: ComicReadingPosition) => {
+      cancelIndexPlacement();
+      anchor.current = position;
+      savedOffset.current = list.current?.getScrollElement()?.scrollTop;
+      latest.current.reader.save(position);
+    },
+    [cancelIndexPlacement],
+  );
 
   const captureMovement = useCallback(
     (port: HTMLElement) => {
@@ -218,6 +229,7 @@ export function ComicTranscript({
   );
 
   useLayoutEffect(() => {
+    cancelIndexPlacement();
     anchor.current = reader.position ?? { mode: "end", sessionRef, path: [] };
     restoring.current = !!reader.position;
     moving.current = false;
@@ -227,8 +239,9 @@ export function ComicTranscript({
     revision.current += 1;
     return () => {
       revision.current += 1;
+      cancelIndexPlacement();
     };
-  }, [reader, sessionRef]);
+  }, [reader, sessionRef, cancelIndexPlacement]);
 
   useLayoutEffect(() => {
     const container = host.current;
@@ -356,12 +369,14 @@ export function ComicTranscript({
       if (position.mode === "end") {
         const lastPanel = current.rows.reduce((last, row, index) => (row.kind === "panels" ? index : last), -1);
         if (rowIndex < lastPanel) {
+          pendingIndexPlacement.current = true;
           list.current?.scrollToIndex(rowIndex, { align: "end" });
           commanded.current = port.scrollTop;
           return;
         }
         const bottom = Math.max(0, port.scrollHeight - port.clientHeight);
-        if (Math.abs(port.scrollTop - bottom) > 1) layout.scrollToOffset(bottom);
+        if (pendingIndexPlacement.current || Math.abs(port.scrollTop - bottom) > 1) layout.scrollToOffset(bottom);
+        pendingIndexPlacement.current = false;
         commanded.current = port.scrollTop;
         return;
       }
@@ -378,6 +393,7 @@ export function ComicTranscript({
           (flow?.kind === "strip" || Number(node.dataset.comicStart) === slice?.start),
       );
       if (!source) {
+        pendingIndexPlacement.current = true;
         list.current?.scrollToIndex(rowIndex, { align: "start" });
         commanded.current = port.scrollTop;
         return;
@@ -392,7 +408,10 @@ export function ComicTranscript({
         setTailSpace((space) => space + shortage);
         return;
       }
-      if (Math.abs(delta) > 1) layout.scrollToOffset(port.scrollTop + delta);
+      // Measurement can place the source exactly while our earlier index
+      // command still targets its row top. Consume that command even at zero delta.
+      if (pendingIndexPlacement.current || Math.abs(delta) > 1) layout.scrollToOffset(port.scrollTop + delta);
+      pendingIndexPlacement.current = false;
       commanded.current = port.scrollTop;
       restoring.current = false;
     },
@@ -419,6 +438,7 @@ export function ComicTranscript({
       movementStart.current = event ? port.scrollTop : undefined;
       setTailSpace(0);
       commanded.current = undefined;
+      pendingIndexPlacement.current = false;
       committed.current?.cancelPendingScroll();
       for (const snapshot of latest.current.snapshots.values()) snapshot.history.cancelOlder();
       cancelAnimationFrame(frame);
@@ -685,6 +705,7 @@ export function ComicTranscript({
     movementStart.current = undefined;
     commanded.current = undefined;
     setTailSpace(0);
+    pendingIndexPlacement.current = false;
     committed.current?.cancelPendingScroll();
     for (const snapshot of latest.current.snapshots.values()) snapshot.history.cancelOlder();
   }

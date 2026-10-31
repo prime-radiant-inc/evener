@@ -10,9 +10,10 @@ import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { resetActivitySidebarStoreForTests } from "../../shell/activitybar/activitySidebarStore";
 import { ClientProvider } from "../../shell/clientContext";
 import { urlToPane } from "../../shell/routing";
+import { openNestedSessionWithOwner } from "../../shell/sessionPlacement";
 import * as StatusBarModule from "../../shell/statusbar/StatusBar";
 import { resetMobileViewportForTests } from "../../shell/useIsMobile";
-import { resetWorkspaceStoreForTests } from "../../shell/workspace";
+import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { resetActivityPanelStoreForTests } from "../../stores/activityPanel";
 import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
@@ -324,6 +325,237 @@ test("a fenced remote session's Send drives the resume and then dispatches", asy
   expect(requests.filter(({ method }) => method === "thread/resume")).toHaveLength(1);
   const starts = requests.filter(({ method }) => method === "turn/start");
   expect(starts[0]?.params).toEqual(expect.objectContaining({ ref: resumedRef }));
+});
+
+// A resumed conversation replaces this pane's route. The retargeted rows keep
+// their composition owner - this pane's seat - so the replacement pane must be
+// placed under the SAME seat, or a refusal after the resume bounces a row the
+// authoring composer can never restore.
+test("a resume carries the authoring pane's seat to the resumed conversation", async ({ onTestFinished }) => {
+  onTestFinished(stubSessionSlots);
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
+  const ref = "remote:stable-seat";
+  const resumedRef = "remote:current-seat";
+  const client = new AppwireClient({
+    url: "ws://hub/rpc",
+    socketFactory: () => {
+      const socket = new FakeSocket({ autoInitialize: true });
+      const send = socket.send.bind(socket);
+      socket.send = (raw) => {
+        send(raw);
+        const request = JSON.parse(raw);
+        let result: unknown = {};
+        if (request.id) {
+          switch (request.method) {
+            case "thread/read":
+              result =
+                request.params.ref === resumedRef
+                  ? readResponse(resumedRef, {
+                      status: { type: "idle" },
+                      evener: {
+                        ref: resumedRef,
+                        capabilities: CAPABILITIES,
+                        mutationStateAuthoritative: true,
+                        queue: { revision: 1 },
+                      },
+                    })
+                  : readResponse(ref, {
+                      status: { type: "notLoaded" },
+                      evener: {
+                        ref,
+                        capabilities: CAPABILITIES,
+                        resumeRequired: true,
+                        mutationStateAuthoritative: false,
+                        queue: { revision: 0 },
+                      },
+                    });
+              break;
+            case "thread/resume":
+              result = readResponse(resumedRef, { status: { type: "idle" } });
+              break;
+            case "thread/turns/list":
+              result = { data: [], nextCursor: null };
+              break;
+            case "turn/start":
+              result = {
+                turn: { id: "resumed-turn", status: "inProgress", itemsView: "full" },
+                receipt: {
+                  clientMutationId: request.params.clientMutationId,
+                  disposition: "applied",
+                  threadId: `thr_${resumedRef}`,
+                  projectionState: "reflected",
+                },
+              };
+              break;
+          }
+          socket.receive({ id: request.id, result });
+        }
+      };
+      queueMicrotask(() => socket.open());
+      return socket;
+    },
+  });
+  onTestFinished(() => client.close());
+  connectionStore.getState().connect(client);
+  await client.connect();
+  // The shell's committed record for this pane, carrying its durable seat.
+  const authorSeat = "author-seat";
+  workspaceStore.setState({
+    panes: [{ id: "p1", type: "session", params: { ref }, slot: "main", composerSeatId: authorSeat }],
+    focusedPaneId: "p1",
+  });
+  window.history.replaceState({}, "", `/s/${encodeURIComponent(ref)}`);
+  const subscribe = (notify: () => void) => {
+    window.addEventListener("popstate", notify);
+    return () => window.removeEventListener("popstate", notify);
+  };
+  function RoutedSession() {
+    const pathname = useSyncExternalStore(subscribe, () => window.location.pathname);
+    const route = urlToPane(pathname);
+    if (route?.type !== "session") throw new Error("expected session route");
+    // Production removes the author pane when the resumed route places a NEW
+    // pane (replacePrimary's new-main arm); this mount renders only the
+    // author pane, and the replacePrimary below plays AppShell's placement,
+    // so the harness never re-commits the author's record in place.
+    if ((route.params as { ref: string }).ref !== ref) return null;
+    return <Session params={route.params as { ref: string }} paneId="p1" focused={true} />;
+  }
+  render(
+    <ClientProvider client={client}>
+      <RoutedSession />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  await resumeViaSend(ref, "the pressed text");
+  await waitFor(() => expect(window.location.pathname).toBe(`/s/${encodeURIComponent(resumedRef)}`));
+  // AppShell's route placement replaces the removed author pane; the
+  // replacement pane is placed under the authoring seat, so the retargeted
+  // rows restore into it.
+  const replacementId = workspaceStore.getState().replacePrimary("session", { ref: resumedRef });
+  const replacement = workspaceStore.getState().panes.find((pane) => pane.id === replacementId);
+  expect(replacement?.composerSeatId).toBe(authorSeat);
+});
+
+// A nested session resumed under a new ref carries its authoring seat to the
+// resumed pane's placement AND closes the superseded pane in the same
+// transition: the two-live-panes invariant. The resumed composer auto-restores
+// the retargeted work its seat owns.
+test("a nested resume carries the authoring seat and closes the superseded pane", async ({ onTestFinished }) => {
+  onTestFinished(stubSessionSlots);
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
+  const ownerRef = "remote:owner";
+  const ref = "remote:nested-old";
+  const resumedRef = "remote:nested-new";
+  const authorSeat = "nested-author-seat";
+  workspaceStore.setState({
+    panes: [
+      { id: "p-owner", type: "session", params: { ref: ownerRef }, slot: "main", composerSeatId: "owner-seat" },
+      { id: "p-nested", type: "session", params: { ref }, slot: "secondary", composerSeatId: authorSeat },
+    ],
+    focusedPaneId: "p-nested",
+  });
+  const client = new AppwireClient({
+    url: "ws://hub/rpc",
+    socketFactory: () => {
+      const socket = new FakeSocket({ autoInitialize: true });
+      const send = socket.send.bind(socket);
+      socket.send = (raw) => {
+        send(raw);
+        const request = JSON.parse(raw);
+        if (!request.id) return;
+        let result: unknown = {};
+        switch (request.method) {
+          case "thread/read":
+            result =
+              request.params.ref === resumedRef
+                ? readResponse(resumedRef, {
+                    status: { type: "idle" },
+                    evener: {
+                      ref: resumedRef,
+                      capabilities: CAPABILITIES,
+                      mutationStateAuthoritative: true,
+                      queue: { revision: 1 },
+                    },
+                  })
+                : readResponse(ref, {
+                    status: { type: "notLoaded" },
+                    evener: {
+                      ref,
+                      capabilities: CAPABILITIES,
+                      resumeRequired: true,
+                      mutationStateAuthoritative: false,
+                      queue: { revision: 0 },
+                    },
+                  });
+            break;
+          case "thread/resume":
+            result = readResponse(resumedRef, { status: { type: "idle" } });
+            break;
+          case "thread/turns/list":
+            result = { data: [], nextCursor: null };
+            break;
+          case "turn/start":
+            result = {
+              turn: { id: "resumed-turn", status: "inProgress", itemsView: "full" },
+              receipt: {
+                clientMutationId: request.params.clientMutationId,
+                disposition: "applied",
+                threadId: `thr_${resumedRef}`,
+                projectionState: "reflected",
+              },
+            };
+            break;
+        }
+        socket.receive({ id: request.id, result });
+      };
+      queueMicrotask(() => socket.open());
+      return socket;
+    },
+  });
+  onTestFinished(() => client.close());
+  connectionStore.getState().connect(client);
+  await client.connect();
+  window.history.replaceState({}, "", `/s/${encodeURIComponent(ref)}`);
+  const subscribe = (notify: () => void) => {
+    window.addEventListener("popstate", notify);
+    return () => window.removeEventListener("popstate", notify);
+  };
+  function RoutedSession() {
+    const pathname = useSyncExternalStore(subscribe, () => window.location.pathname);
+    const route = urlToPane(pathname);
+    if (route?.type !== "session") throw new Error("expected session route");
+    // Production closes the superseded pane in the resume transition and
+    // AppShell places a NEW pane for the resumed route (played by the
+    // openNestedSessionWithOwner call below); this mount renders only the
+    // superseded pane, so the harness never re-commits its record.
+    if ((route.params as { ref: string }).ref !== ref) return null;
+    return <Session params={route.params as { ref: string }} paneId="p-nested" focused={true} />;
+  }
+  render(
+    <ClientProvider client={client}>
+      <RoutedSession />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  await resumeViaSend(ref, "the nested text");
+  await waitFor(() => expect(window.location.pathname).toBe(`/s/${encodeURIComponent(resumedRef)}`));
+  // The superseded nested pane closes in the same transition.
+  await waitFor(() => {
+    expect(workspaceStore.getState().panes.find((pane) => pane.id === "p-nested")).toBeUndefined();
+  });
+  // The resumed route places the way AppShell does for a nested session, and
+  // the new pane takes the authoring seat, so the retargeted work restores.
+  openNestedSessionWithOwner(resumedRef, ownerRef);
+  const resumedPane = workspaceStore
+    .getState()
+    .panes.find((pane) => pane.type === "session" && (pane.params as { ref?: string }).ref === resumedRef);
+  if (!resumedPane?.composerSeatId) throw new Error("resumed pane lacks a seat");
+  expect(resumedPane.composerSeatId).toBe(authorSeat);
+  // The hard invariant: exactly one live pane holds the authoring seat.
+  const holders = workspaceStore.getState().panes.filter((pane) => pane.composerSeatId === authorSeat);
+  expect(holders).toHaveLength(1);
 });
 
 // A merely-resumable local session needs no special UI: sending a prompt resumes

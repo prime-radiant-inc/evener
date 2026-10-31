@@ -1400,8 +1400,8 @@ test("a live origin replaced before its first summary resolves still retires sta
   expect(screen.getByRole("button", { name: "Return to previous view" })).toBeTruthy();
 });
 
-// appShellTestUtils.tsx's installMobileViewport, verbatim: the mobile query
-// matches, every other query (the reduced-motion read included) does not.
+// Match the mobile browser query and publish the viewport for this standalone
+// Zoom mount, which has no AppShell media-query listener.
 function installMobileViewport(): void {
   vi.stubGlobal(
     "matchMedia",
@@ -1412,6 +1412,7 @@ function installMobileViewport(): void {
       removeEventListener: () => {},
     })),
   );
+  transcriptDisplayStore.getState().setViewport("mobile");
 }
 
 test("a replaced nested origin never renders a non-leaf column on the phone", async () => {
