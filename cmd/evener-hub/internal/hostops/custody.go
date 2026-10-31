@@ -358,6 +358,27 @@ type custodyDocument struct {
 	HostRecords json.RawMessage `json:"hostRecords"`
 }
 
+// custodyIOError marks a failure to reach the corrupt file's bytes, as opposed
+// to a failure in what they say. The first leaves the file where it is to be
+// retried; only the second can make its custody unproven.
+type custodyIOError struct{ err error }
+
+func (e *custodyIOError) Error() string { return e.err.Error() }
+func (e *custodyIOError) Unwrap() error { return e.err }
+
+// accountedPrefix is the highest id this custody file accounts for without
+// evidence: its floor, its allocator mark, and any id it handed out. A file
+// written before allocatorFloor existed has the last two only.
+func (c custodyFile) accountedPrefix() uint64 {
+	prefix := max(c.AllocatorFloor, c.AllocatorHighWaterMark)
+	for _, row := range c.RecordIDs {
+		if allocated, err := parseAllocatorID(row.RecordID); err == nil {
+			prefix = max(prefix, allocated)
+		}
+	}
+	return prefix
+}
+
 // readStoreForCustody decodes a corrupt store file for the custody snapshot. It
 // keeps the byte-level rules (valid UTF-8, no lone surrogate escape, no key
 // named twice) and the strict decode of everything custody stands on — the
@@ -374,14 +395,14 @@ func readStoreForCustody(fs afero.Fs, path string) (snapshot, error) {
 	// custody artifacts that wedge every later boot.
 	info, err := lstat(fs, path)
 	if err != nil {
-		return snapshot{}, fmt.Errorf("stat corrupt store %s: %w", path, err)
+		return snapshot{}, &custodyIOError{fmt.Errorf("stat corrupt store %s: %w", path, err)}
 	}
 	if err := rejectNonStoreFileKind(path, info); err != nil {
 		return snapshot{}, err
 	}
 	raw, err := afero.ReadFile(fs, path)
 	if err != nil {
-		return snapshot{}, fmt.Errorf("read corrupt store %s: %w", path, err)
+		return snapshot{}, &custodyIOError{fmt.Errorf("read corrupt store %s: %w", path, err)}
 	}
 	if err := checkQuarantineBytes(raw); err != nil {
 		return snapshot{}, fmt.Errorf("%s: %w", path, err)
@@ -943,7 +964,7 @@ func replacementState(custody custodyFile, floor uint64) (snapshot, error) {
 		Version: storeVersion,
 		// A custody file written before allocatorFloor existed accounts for every
 		// id up to its mark.
-		AllocatorFloor:         max(custody.AllocatorFloor, custody.AllocatorHighWaterMark),
+		AllocatorFloor:         custody.accountedPrefix(),
 		AllocatorHighWaterMark: allocated,
 		Records:                records,
 		Boundaries:             map[string]Boundary{},
