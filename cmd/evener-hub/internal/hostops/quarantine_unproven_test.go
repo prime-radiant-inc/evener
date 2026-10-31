@@ -224,7 +224,7 @@ func TestCorruptFileWithAFloorAboveItsMarkIsSetAsideUnproven(t *testing.T) {
 // proven quarantine produced, optionally after its quarantine artifacts are
 // gone, and requires the next open to quarantine it with proven custody and
 // keep the host records.
-func requireProvenSecondQuarantine(t *testing.T, cleanArtifacts, legacyFiles bool) {
+func requireProvenSecondQuarantine(t *testing.T, cleanArtifacts bool, legacy string) {
 	t.Helper()
 	path := StorePath(t.TempDir())
 	writeRawStore(t, path, 0o600, quarantinedStoreJSON)
@@ -235,9 +235,9 @@ func requireProvenSecondQuarantine(t *testing.T, cleanArtifacts, legacyFiles boo
 	if err := first.ImportHostRecords(familyOf("first"), HostMirror{}); err != nil {
 		t.Fatalf("ImportHostRecords: %v", err)
 	}
-	if legacyFiles {
-		// Files an earlier build wrote carry no allocatorFloor; a healthy open
-		// of them must record the floor in the store itself.
+	if legacy != "" {
+		// Files an earlier build wrote carry no allocatorFloor; opening them,
+		// healthy or rebuilt from custody, must record the floor in the store.
 		floorKey := regexp.MustCompile(`,"allocatorFloor":[0-9]+|"allocatorFloor":[0-9]+,`)
 		writeRawStore(t, path, 0o600, floorKey.ReplaceAllString(string(mustReadFile(t, path)), ""))
 		custodyPath, custodyBody := quarantineArtifact(t, filepath.Dir(path), ".custody-")
@@ -247,11 +247,16 @@ func requireProvenSecondQuarantine(t *testing.T, cleanArtifacts, legacyFiles boo
 		if err := forgetStore(path); err != nil {
 			t.Fatal(err)
 		}
+		if legacy == "rebuild" {
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+		}
 		if _, err := Open(path); err != nil {
-			t.Fatalf("healthy open of the legacy files: %v", err)
+			t.Fatalf("open of the legacy files: %v", err)
 		}
 	}
-	if cleanArtifacts || legacyFiles {
+	if cleanArtifacts || legacy != "" {
 		for _, infix := range []string{".custody-", ".quarantined-"} {
 			artifact, _ := quarantineArtifact(t, filepath.Dir(path), infix)
 			if err := os.Remove(artifact); err != nil {
@@ -276,7 +281,9 @@ func requireProvenSecondQuarantine(t *testing.T, cleanArtifacts, legacyFiles boo
 	if signal := second.Quarantine(); signal == nil || signal.Unproven || signal.QuarantineEpoch != 2 {
 		t.Fatalf("Quarantine() = %+v, want a proven quarantine at epoch 2", signal)
 	}
-	if family, _, _ := second.HostRecords(); len(family.Hosts) == 0 {
+	// A rebuild from custody carries only the records the custody held, which
+	// predate the import above.
+	if family, _, _ := second.HostRecords(); legacy != "rebuild" && len(family.Hosts) == 0 {
 		t.Fatal("the host records were dropped")
 	}
 }
@@ -284,17 +291,22 @@ func requireProvenSecondQuarantine(t *testing.T, cleanArtifacts, legacyFiles boo
 // A replacement carrying ownership imports is quarantined again with proven
 // custody: its imports are the same identities the first custody handed out.
 func TestSecondQuarantineKeepsOwnershipImportsAsTheirOwnLineage(t *testing.T) {
-	requireProvenSecondQuarantine(t, false, false)
+	requireProvenSecondQuarantine(t, false, "")
 }
 
 // The ids a proven quarantine discarded stay accounted for after its artifacts
 // are cleaned away.
 func TestSecondQuarantineAfterArtifactCleanupAccountsForDiscardedIDs(t *testing.T) {
-	requireProvenSecondQuarantine(t, true, false)
+	requireProvenSecondQuarantine(t, true, "")
 }
 
 // Files an earlier build wrote, with no allocatorFloor, still account for the
 // ids their proven quarantine dropped.
 func TestSecondQuarantineOverLegacyCustodyAccountsForDiscardedIDs(t *testing.T) {
-	requireProvenSecondQuarantine(t, false, true)
+	requireProvenSecondQuarantine(t, false, "healthy")
+}
+
+// A replacement rebuilt from legacy custody records the floor too.
+func TestSecondQuarantineOverRebuiltLegacyCustodyAccountsForDiscardedIDs(t *testing.T) {
+	requireProvenSecondQuarantine(t, false, "rebuild")
 }
