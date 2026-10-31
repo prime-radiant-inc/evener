@@ -61,6 +61,33 @@ func TestRemoteManagerActorNamespace(t *testing.T) {
 				}
 				check(t, response.Data[0])
 			})
+			t.Run("read_changes_and_overlay", func(t *testing.T) {
+				nonlocal := appwire.ThreadItem{Type: "userMessage", Text: "other", Actor: &appwire.SessionActor{Kind: "manager", ManagerRef: "hub-a-id:manager-on-a"}}
+				response := appwire.ThreadReadResponse{
+					Thread: appwire.Thread{ID: "worker", Source: "local", Evener: appwire.EvenerThread{Ref: "local:worker"}},
+					Changes: &appwire.HistoryChanges{Items: []appwire.ThreadItem{item(), nonlocal}, Turns: []appwire.Turn{{ID: "turn-2", Items: []appwire.ThreadItem{item(), nonlocal}}}},
+					Overlay: []appwire.OverlayItem{{Key: "stream:1", Kind: appwire.OverlayStream, Item: item()}, {Key: "stream:2", Kind: appwire.OverlayStream, Item: nonlocal}},
+				}
+				original := *item().Actor
+				if err := s.translateOut(nil, &response); err != nil {
+					t.Fatal(err)
+				}
+				for _, projected := range []appwire.ThreadItem{
+					response.Changes.Items[0], response.Changes.Turns[0].Items[0], response.Overlay[0].Item,
+				} {
+					check(t, projected)
+				}
+				for _, projected := range []appwire.ThreadItem{
+					response.Changes.Items[1], response.Changes.Turns[0].Items[1], response.Overlay[1].Item,
+				} {
+					if projected.Actor.ManagerRef != "hub-a-id:manager-on-a" || projected.Text != "other" {
+						t.Errorf("nonlocal item changed: %+v", projected)
+					}
+				}
+				if savedActor != original {
+					t.Errorf("original actor changed: before=%+v after=%+v", original, savedActor)
+				}
+			})
 			for _, method := range []string{appwire.NotifyHistoryUpdated} {
 				t.Run(method, func(t *testing.T) {
 					fields := map[string]any{"ref": "local:worker", "threadId": "worker"}

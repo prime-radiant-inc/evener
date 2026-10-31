@@ -663,14 +663,17 @@ func (s *RemoteHubSource) translateOutWithCapabilities(out any, forwarded func()
 		}
 		response.Thread = thread
 		for i := range response.Overlay {
+			s.translateItemActor(&response.Overlay[i].Item)
 			s.translateItemAuthorship(&response.Overlay[i].Item)
 		}
 		if response.Changes != nil {
 			for i := range response.Changes.Items {
+				s.translateItemActor(&response.Changes.Items[i])
 				s.translateItemAuthorship(&response.Changes.Items[i])
 			}
 			for i := range response.Changes.Turns {
 				for j := range response.Changes.Turns[i].Items {
+					s.translateItemActor(&response.Changes.Turns[i].Items[j])
 					s.translateItemAuthorship(&response.Changes.Turns[i].Items[j])
 				}
 			}
