@@ -27,6 +27,21 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	}
 	defer release()
 	descriptor := cloneDelegateStartDescriptor(started.descriptor)
+	// An isolated delegate's lane must carry this session's marker before any
+	// revive path — retained runtimes included — hands it back to a child:
+	// close-time disposal, the orphan arm (#5471), and the documented manual
+	// unlock can all leave a kept lane unlocked, and another session may have
+	// adopted it since. The lane is re-locked, or the revival refused.
+	if descriptor.Isolation == "worktree" && descriptor.WorkingDir != "" {
+		if local, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment); ok {
+			if err := s.reviveRevalidateDelegateLane(local, isolationLane{
+				delegateID: started.lease.delegateID,
+				path:       descriptor.WorkingDir,
+			}); err != nil {
+				return nil, false, err
+			}
+		}
+	}
 	if retained := s.subagents.get(descriptor.ChildSessionID); retained != nil && retained.sess != nil {
 		return retained, false, nil
 	}

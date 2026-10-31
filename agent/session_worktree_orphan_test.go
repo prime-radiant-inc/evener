@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"os"
 	"testing"
 	"time"
@@ -337,5 +338,114 @@ func TestWorktreePrune_OrphanArmResolvesNestedParentJournal(t *testing.T) {
 	}
 	if _, locked, reason := r.laneLocked(t, lane); locked {
 		t.Errorf("nested delegate's lane still locked: %q", reason)
+	}
+}
+
+// A session without a state directory cannot judge any parent's activity:
+// the transcript stat would resolve against the process working directory
+// and answer "missing" even for a live, running parent — the arm would treat
+// every foreign delegate lane as orphaned. The arm disarms instead.
+func TestOrphanArmDisarmsWithoutStateDir(t *testing.T) {
+	t.Parallel()
+	s := &Session{id: "034nonpersistentses0000", stateDir: ""}
+	if _, ok := s.orphanedDelegateMarker(context.Background(),
+		worktree.FormatDelegateMarker("dlg_034somebody00000", "034someparent000000000"),
+		7*24*time.Hour, time.Now(), nil); ok {
+		t.Fatal("the orphan arm claimed a lane without a state directory")
+	}
+}
+
+// The arm's safety contract runs both directions: a released lane must be
+// re-locked by the parent's own revival. Close-time disposal, the orphan arm,
+// and the documented manual unlock all leave a kept lane unlocked, so a
+// delegate_send that restarts the child must re-take the marker before the
+// child runs another turn in it.
+func TestDelegateReviveReLocksUnlockedLane(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	var lanePath string
+	fixture := newColdDelegateFixtureConfigured(t, "", func(d *delegatestore.Descriptor) {
+		d.Isolation = "worktree"
+		lanePath = r.delegateLane(t, "revive-unlocked", "dlg_revivetest00000", "034placeholder000000000")
+		d.WorkingDir = lanePath
+	})
+	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root.Close()
+	wtGit(t, r.mainRoot, "worktree", "unlock", lanePath)
+
+	reservation, err := root.delegateController.ReserveStart(rootDelegateActor(root.id), fixture.delegateID)
+	if err != nil {
+		t.Fatalf("ReserveStart: %v", err)
+	}
+	started, err := root.delegateController.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("CommitStart: %v", err)
+	}
+	sub, restored, err := (delegateRuntime{owner: root}).restoreIdle(started)
+	if err != nil {
+		t.Fatalf("revive an unlocked lane: %v", err)
+	}
+	if restored {
+		sub.sess.discardRestoredCandidate()
+	}
+	_, _ = root.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(context.Canceled, "test_cleanup"))
+
+	_, locked, reason := r.laneLocked(t, lanePath)
+	if !locked {
+		t.Fatal("revived delegate's lane left unlocked")
+	}
+	m, ok := worktree.ParseMarker(reason)
+	if !ok || m.DelegateID != fixture.delegateID || m.SessionID != root.id {
+		t.Fatalf("revived lane's lock = %q, want this session's marker for %s", reason, fixture.delegateID)
+	}
+}
+
+// A lane the release exposed may have been adopted by another session since.
+// Revival refuses rather than run the child in a checkout someone else owns,
+// and never displaces the newer lock.
+func TestDelegateReviveRefusesForeignLockedLane(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	var lanePath string
+	fixture := newColdDelegateFixtureConfigured(t, "", func(d *delegatestore.Descriptor) {
+		d.Isolation = "worktree"
+		lanePath = r.delegateLane(t, "revive-foreign", "dlg_revivetest00001", "034placeholder000000001")
+		d.WorkingDir = lanePath
+	})
+	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root.Close()
+	const foreignSID = "034somebodyelse00000000000"
+	wtGit(t, r.mainRoot, "worktree", "unlock", lanePath)
+	// The way a real adoption locks: another session switches in and locks
+	// under its own session marker. (A delegate marker's identity is its
+	// delegate id — lockstate classifies the same dlg id as that delegate's
+	// own marker whatever session id it carries — so this is the shape that
+	// genuinely belongs to someone else.)
+	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", worktree.FormatSessionMarker(foreignSID), lanePath)
+
+	reservation, err := root.delegateController.ReserveStart(rootDelegateActor(root.id), fixture.delegateID)
+	if err != nil {
+		t.Fatalf("ReserveStart: %v", err)
+	}
+	started, err := root.delegateController.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("CommitStart: %v", err)
+	}
+	if _, _, err := (delegateRuntime{owner: root}).restoreIdle(started); err == nil {
+		t.Fatal("revive proceeded into a lane held by another session")
+	}
+
+	_, locked, reason := r.laneLocked(t, lanePath)
+	if !locked {
+		t.Fatal("the foreign lock was displaced")
+	}
+	if m, ok := worktree.ParseMarker(reason); !ok || m.SessionID != foreignSID {
+		t.Fatalf("foreign lock = %q, want the other session's marker", reason)
 	}
 }

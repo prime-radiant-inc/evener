@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -40,6 +41,80 @@ const (
 	// unlocked — an exposed own lane. Warned once and queued for one retry.
 	reLockFailed
 )
+
+// delegateLaneLockPlan is the EvDelegateRevive decision for one isolation
+// lane's git lock — the shared classification the resume re-lock and delegate
+// revival both apply, so the two cannot diverge on what an unlocked or
+// foreign-held lane means.
+type delegateLaneLockPlan int
+
+const (
+	// delegateLaneGone: the lane directory no longer exists (disposed or
+	// collected). Nothing to lock; revival's environment reconstruction fails
+	// loudly into the construction-failed closure.
+	delegateLaneGone delegateLaneLockPlan = iota
+	// delegateLaneNoRepo: the directory exists but no longer belongs to a git
+	// repository, so there is no lock to manage.
+	delegateLaneNoRepo
+	// delegateLaneUnlocked: the lane carries no lock — Decide(EvDelegateRevive)
+	// maps it to lock, re-taking this session's delegate marker.
+	delegateLaneUnlocked
+	// delegateLaneAdopt: the lane already carries this session's own delegate
+	// marker.
+	delegateLaneAdopt
+	// delegateLaneRefuse: the lane carries another session's marker (or a
+	// plain session marker) — not this session's to touch.
+	delegateLaneRefuse
+	// delegateLaneUnverifiable: the lane is present but its lock state could
+	// not be read.
+	delegateLaneUnverifiable
+)
+
+// inspectDelegateLaneLock classifies one isolation lane's git lock through the
+// shared EvDelegateRevive core. A present lane whose lock state cannot be read
+// reports delegateLaneUnverifiable with the error.
+func (s *Session) inspectDelegateLaneLock(local *execenv.LocalExecutionEnvironment, lane isolationLane) (delegateLaneLockPlan, error) {
+	lanePath := filepath.Clean(lane.path)
+	if _, err := os.Stat(filepath.Join(lanePath, ".git")); err != nil {
+		return delegateLaneGone, nil
+	}
+	controlEnv, _, done, ok := laneControlEnv(local, lanePath)
+	if !ok {
+		return delegateLaneNoRepo, nil
+	}
+	defer done()
+	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
+	locked, reason, lsErr := lockStateOf(run, lanePath)
+	if lsErr != nil {
+		return delegateLaneUnverifiable, lsErr
+	}
+	st := worktree.Unlocked
+	if locked {
+		st = worktree.ClassifyReason(reason, s.id, lane.delegateID)
+	}
+	switch worktree.Decide(worktree.EvDelegateRevive, st) {
+	case worktree.ActLock:
+		return delegateLaneUnlocked, nil
+	case worktree.ActAdopt:
+		return delegateLaneAdopt, nil
+	default:
+		return delegateLaneRefuse, nil
+	}
+}
+
+// lockDelegateLane takes this session's evener:dlg: marker on an unlocked
+// lane, through the same control env the other lock-taking paths use.
+func (s *Session) lockDelegateLane(local *execenv.LocalExecutionEnvironment, lane isolationLane) error {
+	lanePath := filepath.Clean(lane.path)
+	controlEnv, _, done, ok := laneControlEnv(local, lanePath)
+	if !ok {
+		return errors.New("delegate lane is no longer part of a git repository")
+	}
+	defer done()
+	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
+	_, err := run("worktree", "lock", "--reason", worktree.FormatDelegateMarker(lane.delegateID, s.id), lanePath)
+	return err
+}
 
 // resumeReLockOwnLanes re-locks this restored session's own undisposed isolation
 // lanes (spec §P3 resume re-lock). It runs post-init (the jobstore must exist to
@@ -109,36 +184,54 @@ func (s *Session) undisposedOwnedLanes() []isolationLane {
 // OwnDelegate→adopt there. A missing lane directory or a foreign lock is a clean
 // skip; only a present, unverifiable-or-lock-failing lane is a retriable failure.
 func (s *Session) reLockOwnLane(local *execenv.LocalExecutionEnvironment, lane isolationLane) reLockOutcome {
-	lanePath := filepath.Clean(lane.path)
-	if _, err := os.Stat(filepath.Join(lanePath, ".git")); err != nil {
-		return reLockSkipped // lane directory gone (disposed/pruned): nothing to re-lock
-	}
-	controlEnv, _, done, ok := laneControlEnv(local, lanePath)
-	if !ok {
-		return reLockSkipped // no longer part of a git repository
-	}
-	defer done()
-	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
-
-	locked, reason, lsErr := lockStateOf(run, lanePath)
-	if lsErr != nil {
+	plan, inspectErr := s.inspectDelegateLaneLock(local, lane)
+	if inspectErr != nil {
 		return reLockFailed // present but unverifiable: an exposed lane; retry
 	}
-	st := worktree.Unlocked
-	if locked {
-		st = worktree.ClassifyReason(reason, s.id, lane.delegateID)
-	}
-	switch worktree.Decide(worktree.EvDelegateRevive, st) {
-	case worktree.ActLock:
-		marker := worktree.FormatDelegateMarker(lane.delegateID, s.id)
-		if _, err := run("worktree", "lock", "--reason", marker, lanePath); err != nil {
+	switch plan {
+	case delegateLaneAdopt:
+		return reLockDone // already carries our own dlg marker (lock held across resume)
+	case delegateLaneGone, delegateLaneNoRepo, delegateLaneRefuse:
+		// Gone (disposed/pruned), lockless to manage, or someone else's —
+		// not ours to touch, spec §9 Guards.
+		return reLockSkipped
+	case delegateLaneUnlocked:
+		if err := s.lockDelegateLane(local, lane); err != nil {
 			return reLockFailed // still unlocked and exposed: retry
 		}
 		return reLockDone
-	case worktree.ActAdopt:
-		return reLockDone // already carries our own dlg marker (lock held across resume)
-	default: // ActRefuse: foreign / a plain session marker — not ours to touch
-		return reLockSkipped
+	default: // delegateLaneUnverifiable always carries inspectErr above
+		return reLockFailed
+	}
+}
+
+// reviveRevalidateDelegateLane re-establishes this session's evener:dlg:
+// marker on an isolated delegate's lane before a revive hands the lane back to
+// a child runtime — retained runtimes included. Close-time disposal leaves a
+// kept changed lane unlocked ("switch-able until revived", spec §9 Guards),
+// and prune's orphan arm (#5471) and the documented manual unlock can release
+// a resumable delegate's lane; an unlocked lane is re-locked, a lane already
+// carrying this session's marker is adopted, and a lane held by anyone else is
+// a refusal: revival never runs a child in a checkout another session owns.
+// A gone lane is not refused here — the caller's environment reconstruction
+// fails it loudly into the construction-failed closure.
+func (s *Session) reviveRevalidateDelegateLane(local *execenv.LocalExecutionEnvironment, lane isolationLane) error {
+	plan, inspectErr := s.inspectDelegateLaneLock(local, lane)
+	if inspectErr != nil {
+		return fmt.Errorf("revalidating delegate lane %s at %s: %w", lane.delegateID, lane.path, inspectErr)
+	}
+	switch plan {
+	case delegateLaneGone, delegateLaneAdopt:
+		return nil
+	case delegateLaneUnlocked:
+		if err := s.lockDelegateLane(local, lane); err != nil {
+			return fmt.Errorf("re-locking delegate lane %s at %s: %w", lane.delegateID, lane.path, err)
+		}
+		return nil
+	case delegateLaneNoRepo:
+		return fmt.Errorf("delegate lane %s at %s is no longer part of a git repository", lane.delegateID, lane.path)
+	default: // delegateLaneRefuse
+		return fmt.Errorf("delegate lane %s at %s is held by another session", lane.delegateID, lane.path)
 	}
 }
 

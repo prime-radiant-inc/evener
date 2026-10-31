@@ -53,6 +53,14 @@ func (s *Session) orphanedDelegateMarker(ctx context.Context, reason string, min
 	if !ok || m.DelegateID == "" || m.SessionID == "" || m.SessionID == s.id {
 		return worktree.Marker{}, false
 	}
+	if s.stateDir == "" {
+		// A session without a state directory cannot see any parent's
+		// transcript or journal — the paths would resolve against the process
+		// working directory and answer "missing" for a live parent — while the
+		// sweep still enumerates lanes from the default state home. The arm
+		// disarms rather than treat every foreign parent as gone.
+		return worktree.Marker{}, false
+	}
 	// The cheap activity signal first: a parent whose session directory is
 	// gone, or whose transcript has been inactive past the operator's
 	// threshold, cannot act as the disposer.
