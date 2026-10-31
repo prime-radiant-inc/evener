@@ -2990,7 +2990,12 @@ export async function retryBlockedMutation(
   // it in the database.
   const captureRead = runtime.storage.getOutboxWithStopEpoch(clientMutationId);
   await runtime.start;
-  const { record, stopEpoch } = await captureRead;
+  // The capture is the click's PAIR: the row's destination epoch and, for a
+  // retargeted resend, the still-displayed ref's. A Stop on either ref that
+  // commits after this snapshot and before the release write below compares
+  // newer against its half and the release refuses - the same commit-order
+  // comparison the enqueue barrier carries, now on both refs the row crosses.
+  const { record, stopEpoch, displayedStopEpoch } = await captureRead;
   if (record?.state !== "blockedUnknown" && record?.state !== "canceled") return false;
   // Only an explicit user Retry releases a canceled row (the one reversal the
   // design allows); background retry modes exist for delivery-uncertain rows
@@ -3048,7 +3053,7 @@ export async function retryBlockedMutation(
     // fallback send must see it before the async refresh can.
     const released = await trackOutboxWrite(
       record.targetRef,
-      () => runtime.storage.releaseCanceled(clientMutationId, { stopEpoch }),
+      () => runtime.storage.releaseCanceled(clientMutationId, { stopEpoch, displayedStopEpoch }),
       // The released row keeps the id it is reopened under, and is undelivered
       // work: it is reopened for a fresh dispatch.
       (didRelease) => (didRelease ? { clientMutationId, undelivered: true } : undefined),
@@ -3071,6 +3076,39 @@ export async function retryBlockedMutation(
   );
   if (!isCurrentMutationRuntime(runtime) || currentDispatchClient() !== client || dispatchReadyEpoch !== epoch)
     return false;
+  // A blockedUnknown row that is STILL parked after the reconciliation above is
+  // one the crossed-Stop fence held - no automatic path may reopen it, and the
+  // user's Retry click is the one authorization that can. It runs after the
+  // resync deliberately: an innocent parked row must first get its fresh
+  // authoritative read (which may settle it delivered, reopen it, or keep it
+  // waiting on authority - all outcomes this click must not preempt), and the
+  // crossed row's own read may still settle it by receipt. Only the held row
+  // reauthorizes, under its original mutation ID with the attempt evidence
+  // preserved (the daemon's journal can still replay the first attempt's
+  // receipt). The click's capture pair validates both refs: a Stop that landed
+  // on either inside the capture-to-release window refuses the
+  // reauthorization and the row stays parked for it. A refused
+  // reauthorization falls through to the decision read below - the row it
+  // left parked reports itself. Background retry modes never take this branch.
+  if (record.state === "blockedUnknown" && mode === "user") {
+    const held = await runtime.storage.getOutbox(clientMutationId);
+    if (held?.state === "blockedUnknown") {
+      const released = await trackOutboxWrite(
+        record.targetRef,
+        () => runtime.storage.reauthorizeBlockedMutation(clientMutationId, { stopEpoch, displayedStopEpoch }),
+        // The reauthorized row keeps the id it reopens under, and is undelivered
+        // work: it reopens for a fresh dispatch.
+        (didRelease) => (didRelease ? { clientMutationId, undelivered: true } : undefined),
+      );
+      if (released) {
+        notifyMutationPersistence([record.targetRef]);
+        // The resync-and-dispatch tail above already ran its dispatch pass, so
+        // the reopened row drives its own - the same kick a resend gives its
+        // fresh row.
+        handleDiscoveredMutations(runtime, [record.targetRef]);
+      }
+    }
+  }
   const current = await runtime.storage.getOutbox(clientMutationId);
   return current?.state !== "blockedUnknown" && current?.state !== "canceled";
 }

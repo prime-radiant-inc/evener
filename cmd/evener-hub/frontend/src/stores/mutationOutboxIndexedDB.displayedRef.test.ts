@@ -221,4 +221,114 @@ describe("retargeted resend rows' displayed-ref fence", () => {
     expect(await storage.unmarkAttempted(sent.record.clientMutationId)).toBe(true);
     storage.close();
   });
+
+  test("a release whose displayed capture went stale inside the click's window refuses instead of absorbing the newer Stop", async () => {
+    const storage = store();
+    const row = await seedRetargetedResend(storage);
+    // A Stop on the displayed ref cancels the unattempted resend.
+    await storage.enqueueInterruptAndCancel(interruptIntent(DISPLAYED));
+    expect(await storage.getOutbox(row.clientMutationId)).toMatchObject({ state: "canceled" });
+    // The Retry click's capture PAIR: the destination epoch, and the
+    // displayed ref's post-Stop epoch.
+    const capture = await storage.getOutboxWithStopEpoch(row.clientMutationId);
+    expect(capture).toMatchObject({ stopEpoch: 0, displayedStopEpoch: 1 });
+    // A second Stop lands on the displayed ref inside the capture-to-release
+    // window: its cancel scan skips the already-canceled row, and the
+    // destination epoch never moved - the displayed epoch's bump is the one
+    // trace the release must catch.
+    await storage.enqueueInterruptAndCancel(interruptIntent(DISPLAYED));
+    expect(
+      await storage.releaseCanceled(row.clientMutationId, {
+        stopEpoch: capture.stopEpoch,
+        displayedStopEpoch: capture.displayedStopEpoch,
+      }),
+    ).toBe(false);
+    expect(await storage.getOutbox(row.clientMutationId)).toMatchObject({ state: "canceled" });
+    // Liveness control: a Retry clicked after the newer Stop captures its
+    // epoch and is the deliberate post-Stop send - it releases, and the
+    // refresh absorbs nothing: both baselines read the epochs as they stand.
+    const fresh = await storage.getOutboxWithStopEpoch(row.clientMutationId);
+    expect(
+      await storage.releaseCanceled(row.clientMutationId, {
+        stopEpoch: fresh.stopEpoch,
+        displayedStopEpoch: fresh.displayedStopEpoch,
+      }),
+    ).toBe(true);
+    expect(await storage.getOutbox(row.clientMutationId)).toMatchObject({
+      state: "submitting",
+      stopEpochAtEnqueue: 0,
+      displayedStopEpochAtEnqueue: 2,
+    });
+    storage.close();
+  });
+
+  test("an explicit reauthorization reopens a Stop-crossed blockedUnknown row under its original mutation ID with its attempt evidence", async () => {
+    const storage = store();
+    const row = await seedRetargetedResend(storage);
+    await storage.markAttempted(row.clientMutationId);
+    await storage.markUnknown(row.clientMutationId, "blockedUnknown");
+    await storage.enqueueInterruptAndCancel(interruptIntent(DISPLAYED));
+    expect(await storage.getOutbox(row.clientMutationId)).toMatchObject({ state: "blockedUnknown" });
+    // The reviewer's premise: authoritative reads never mention the mutation
+    // ID, so the reconcile fence holds the crossed row and no receipt can
+    // ever settle it. Automatic reconciliation decides nothing for it.
+    expect(await storage.restoreProvenAbsent(DESTINATION, new Set())).not.toContain(row.clientMutationId);
+    expect(await storage.getOutbox(row.clientMutationId)).toMatchObject({
+      state: "blockedUnknown",
+      attempted: true,
+    });
+    // The user's click: its capture reads the post-Stop epochs, and the
+    // reauthorization deliberately outranks the crossed Stop - under the
+    // ORIGINAL mutation ID, with the attempt evidence preserved.
+    const capture = await storage.getOutboxWithStopEpoch(row.clientMutationId);
+    expect(
+      await storage.reauthorizeBlockedMutation(row.clientMutationId, {
+        stopEpoch: capture.stopEpoch,
+        displayedStopEpoch: capture.displayedStopEpoch,
+      }),
+    ).toBe(true);
+    expect(await storage.getOutbox(row.clientMutationId)).toMatchObject({
+      state: "submitting",
+      clientMutationId: row.clientMutationId,
+      attempted: true,
+      stopEpochAtEnqueue: capture.stopEpoch,
+      displayedStopEpochAtEnqueue: capture.displayedStopEpoch,
+    });
+    // The row proceeds: it is the ref's dispatchable head again.
+    expect(await storage.nextDispatchable(DESTINATION)).toMatchObject({
+      clientMutationId: row.clientMutationId,
+    });
+    storage.close();
+  });
+
+  test("a reauthorization whose capture a newer displayed Stop outranks refuses and keeps the row parked", async () => {
+    const storage = store();
+    const row = await seedRetargetedResend(storage);
+    await storage.markAttempted(row.clientMutationId);
+    await storage.markUnknown(row.clientMutationId, "blockedUnknown");
+    await storage.enqueueInterruptAndCancel(interruptIntent(DISPLAYED));
+    // The click's capture, then a second Stop inside the capture-to-release
+    // window: the reauthorization must refuse the click for the newer Stop.
+    const capture = await storage.getOutboxWithStopEpoch(row.clientMutationId);
+    await storage.enqueueInterruptAndCancel(interruptIntent(DISPLAYED));
+    expect(
+      await storage.reauthorizeBlockedMutation(row.clientMutationId, {
+        stopEpoch: capture.stopEpoch,
+        displayedStopEpoch: capture.displayedStopEpoch,
+      }),
+    ).toBe(false);
+    expect(await storage.getOutbox(row.clientMutationId)).toMatchObject({ state: "blockedUnknown" });
+    expect(await storage.nextDispatchable(DESTINATION)).toBeUndefined();
+    // Liveness control: a click whose capture reads the newer Stop still
+    // reauthorizes - it is the deliberate post-Stop send.
+    const fresh = await storage.getOutboxWithStopEpoch(row.clientMutationId);
+    expect(
+      await storage.reauthorizeBlockedMutation(row.clientMutationId, {
+        stopEpoch: fresh.stopEpoch,
+        displayedStopEpoch: fresh.displayedStopEpoch,
+      }),
+    ).toBe(true);
+    expect(await storage.getOutbox(row.clientMutationId)).toMatchObject({ state: "submitting" });
+    storage.close();
+  });
 });

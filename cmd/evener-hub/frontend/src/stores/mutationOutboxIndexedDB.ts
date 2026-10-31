@@ -29,6 +29,7 @@ type MutationOutboxOperation =
   | "cancelUnattempted"
   | "discardCanceled"
   | "releaseCanceled"
+  | "reauthorizeBlocked"
   | "settleReceipt"
   | "transferToRecovery"
   | "updateRecoveryInput"
@@ -100,6 +101,15 @@ export interface MutationOutboxIndexedDBOptions {
 // carries) and the displayed ref's, which this barrier names.
 export interface DisplayedRecoveryStopBarrier extends MutationStopBarrier {
   targetRef: string;
+}
+
+// The Retry click's capture pair: the destination stop epoch every release
+// barrier already carries, plus the displayed ref's epoch for a row that
+// crosses a still-displayed session. The displayed half is optional only for
+// callers that predate it - the Retry path itself always captures both, and
+// the release below validates every half it was given.
+export interface RetryStopBarrier extends MutationStopBarrier {
+  displayedStopEpoch?: number;
 }
 
 const DATABASE_NAME = "evener-mutation-outbox";
@@ -357,7 +367,7 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
   // event delivery (the retry-lookup seams the note-draft tests hold).
   async getOutboxWithStopEpoch(
     clientMutationId: string,
-  ): Promise<{ record: MutationOutboxRecord | undefined; stopEpoch: number }> {
+  ): Promise<{ record: MutationOutboxRecord | undefined; stopEpoch: number; displayedStopEpoch: number }> {
     return this.#read([OUTBOX_STORE, SEQUENCE_STORE], async (transaction) => {
       // The sequences row is keyed by the ref, which only the row read
       // carries - but the pair must issue together, so the epoch side reads
@@ -375,7 +385,14 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
       const stopEpoch = record
         ? (sequences.find((sequence) => sequence.targetRef === record.targetRef)?.stopEpoch ?? 0)
         : 0;
-      return { record, stopEpoch };
+      // The displayed half of the same snapshot: a retargeted resend carries
+      // the ref its pane still displays, and a Stop can land on that ref
+      // between this capture and the caller's release write. A row with no
+      // displayed ref has no second epoch to compare and reads zero.
+      const displayedStopEpoch = record?.displayedRef
+        ? (sequences.find((sequence) => sequence.targetRef === record.displayedRef)?.stopEpoch ?? 0)
+        : 0;
+      return { record, stopEpoch, displayedStopEpoch };
     });
   }
 
@@ -521,12 +538,26 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
   // the row stays canceled for the newer Stop. A capture taken after the
   // newest Stop compares equal and releases: that Retry is §4's deliberate
   // post-Stop send. A caller passing no barrier at all is unchanged.
-  async releaseCanceled(clientMutationId: string, barrier?: MutationStopBarrier): Promise<boolean> {
+  async releaseCanceled(clientMutationId: string, barrier?: RetryStopBarrier): Promise<boolean> {
     return this.#write([OUTBOX_STORE, SEQUENCE_STORE], "releaseCanceled", async (transaction) => {
       const store = transaction.objectStore(OUTBOX_STORE);
       const record = await requestResult<MutationOutboxRecord | undefined>(store.get(clientMutationId));
       if (record?.state !== "canceled") return false;
       if (barrier !== undefined && (await this.#stopEpochOf(transaction, record.targetRef)) > barrier.stopEpoch) {
+        return false;
+      }
+      // The displayed half of the same capture-to-release comparison: a Stop
+      // on the displayed ref inside the click's window bumped that ref's
+      // epoch past the capture, and its cancel scan skipped this row (already
+      // canceled) - the destination-only comparison above cannot see it, so
+      // this one is the only fence between that Stop and a dispatch that
+      // would absorb it into refreshed baselines. A caller that captured no
+      // displayed epoch keeps its prior meaning.
+      if (
+        barrier?.displayedStopEpoch !== undefined &&
+        record.displayedRef !== undefined &&
+        (await this.#stopEpochOf(transaction, record.displayedRef)) > barrier.displayedStopEpoch
+      ) {
         return false;
       }
       // The release is the user deliberately sending after a Stop (§4's
@@ -548,6 +579,71 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
           ...(record.displayedRef === undefined
             ? {}
             : { displayedStopEpochAtEnqueue: await this.#stopEpochOf(transaction, record.displayedRef) }),
+        }),
+      );
+      return true;
+    });
+  }
+
+  // The one release of a blockedUnknown row: an explicit user Retry, and only
+  // for a row the crossed-Stop fence actually holds. Automatic reconciliation
+  // decides every innocent blockedUnknown row itself (reopen it, settle it
+  // from a receipt, or keep it waiting on authority), and the manual retry
+  // owes those rows their fresh authoritative read - so a reauthorization
+  // that also reopened them would bypass that refresh. The crossed fence's
+  // rows are exactly the ones no read can reopen: restoreProvenAbsent
+  // deliberately decides nothing for an attempted row a Stop crossed, because
+  // absence from a bounded read proves nothing, so a row the hub never
+  // accepted and no receipt will ever name would otherwise park its
+  // destination's FIFO forever. The user's click is the authorization: it
+  // re-sends the row under its ORIGINAL mutation ID with its attempt evidence
+  // preserved, so the daemon's journal can still replay the first attempt's
+  // receipt and dedupe the resend. The barrier is the click's capture pair:
+  // the crossed Stop the row already sat behind predates the capture and is
+  // the very Stop this click deliberately outranks, while a Stop that landed
+  // on either ref inside the capture-to-release window compares newer and
+  // refuses - the row stays parked for it.
+  async reauthorizeBlockedMutation(clientMutationId: string, barrier: RetryStopBarrier): Promise<boolean> {
+    return this.#write([OUTBOX_STORE, SEQUENCE_STORE], "reauthorizeBlocked", async (transaction) => {
+      const store = transaction.objectStore(OUTBOX_STORE);
+      const record = await requestResult<MutationOutboxRecord | undefined>(store.get(clientMutationId));
+      if (record?.state !== "blockedUnknown") return false;
+      const stopEpoch = await this.#stopEpochOf(transaction, record.targetRef);
+      const displayedStopEpoch =
+        record.displayedRef === undefined ? undefined : await this.#stopEpochOf(transaction, record.displayedRef);
+      // The crossed-fence precondition: at least one of the row's baselines
+      // lags its ref's current epoch. An innocent row (both baselines
+      // current) answers false and keeps its reconcile-driven outcomes.
+      if (
+        stopEpoch <= (record.stopEpochAtEnqueue ?? 0) &&
+        (displayedStopEpoch === undefined || displayedStopEpoch <= (record.displayedStopEpochAtEnqueue ?? 0))
+      ) {
+        return false;
+      }
+      if (stopEpoch > barrier.stopEpoch) return false;
+      if (
+        barrier.displayedStopEpoch !== undefined &&
+        record.displayedRef !== undefined &&
+        displayedStopEpoch !== undefined &&
+        displayedStopEpoch > barrier.displayedStopEpoch
+      ) {
+        return false;
+      }
+      // The reauthorization is the user deliberately sending past the Stop
+      // the row sat behind (the same §4 exemption releaseCanceled carries),
+      // so BOTH baselines refresh to the current epochs of the row's two
+      // refs - the row's next refusal redelivers instead of re-parking
+      // against the very Stop this click outranked. Everything else about
+      // the row, including the mutation ID and the attempt evidence, is
+      // preserved as it stands.
+      await requestResult(
+        store.put({
+          ...record,
+          state: "submitting",
+          stopEpochAtEnqueue: stopEpoch,
+          ...(record.displayedRef === undefined || displayedStopEpoch === undefined
+            ? {}
+            : { displayedStopEpochAtEnqueue: displayedStopEpoch }),
         }),
       );
       return true;

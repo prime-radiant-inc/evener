@@ -245,7 +245,7 @@ class SettleAfterRetryLookup extends MutationOutboxIndexedDB {
 
   override async getOutboxWithStopEpoch(
     clientMutationId: string,
-  ): Promise<{ record: MutationOutboxRecord | undefined; stopEpoch: number }> {
+  ): Promise<{ record: MutationOutboxRecord | undefined; stopEpoch: number; displayedStopEpoch: number }> {
     const capture = await super.getOutboxWithStopEpoch(clientMutationId);
     // The retry's first read of a still-blocked record is the click-time
     // capture (§4's release barrier), so it takes the first blocked-lookup
@@ -314,7 +314,7 @@ class RetryPersistenceReadCounter extends MutationOutboxIndexedDB {
 
   override async getOutboxWithStopEpoch(
     clientMutationId: string,
-  ): Promise<{ record: MutationOutboxRecord | undefined; stopEpoch: number }> {
+  ): Promise<{ record: MutationOutboxRecord | undefined; stopEpoch: number; displayedStopEpoch: number }> {
     const capture = await super.getOutboxWithStopEpoch(clientMutationId);
     this.#noteLookup(capture.record);
     return capture;
