@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/spf13/afero"
@@ -114,8 +115,8 @@ func createdID(t *testing.T, store *Store) uint64 {
 
 // The replacement's ids start above every id an earlier store could have
 // issued without the corrupt bytes being read: garbage, a declared mark and a
-// repeated member all get the same floor, and a second unproven set-aside
-// starts above the first replacement's range.
+// repeated member all get the same floor, and a second set-aside starts above
+// the ids the first replacement issued.
 func TestUnprovenSetAsideFloorIsIndependentOfTheCorruptBytes(t *testing.T) {
 	bodies := map[string]string{
 		"binary garbage":    "\x00\xff\xfe not json at all \x01",
@@ -131,8 +132,9 @@ func TestUnprovenSetAsideFloorIsIndependentOfTheCorruptBytes(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Open: %v", err)
 			}
-			if id := createdID(t, first); id <= allocatorEpochStride {
-				t.Fatalf("first replacement issued id %d, want one above the epoch stride", id)
+			firstID := createdID(t, first)
+			if firstID <= allocatorEpochStride {
+				t.Fatalf("first replacement issued id %d, want one above the epoch stride", firstID)
 			}
 			// Corrupt the replacement as well, after it has issued ids.
 			if err := forgetStore(path); err != nil {
@@ -143,9 +145,44 @@ func TestUnprovenSetAsideFloorIsIndependentOfTheCorruptBytes(t *testing.T) {
 			if err != nil {
 				t.Fatalf("second Open: %v", err)
 			}
-			if id := createdID(t, second); id <= 2*allocatorEpochStride {
-				t.Fatalf("second replacement issued id %d, want one above the second epoch's stride", id)
+			if id := createdID(t, second); id <= firstID {
+				t.Fatalf("second replacement issued id %d, want one above the first replacement's %d", id, firstID)
 			}
 		})
+	}
+}
+
+// A store opened over an unproven set-aside skips a wide id range. Corrupting
+// only a region the quarantine discards, later, must not make that skipped
+// range look like lost records: the host records survive a proven quarantine.
+func TestSkippedIDRangeDoesNotMakeALaterQuarantineUnproven(t *testing.T) {
+	path := StorePath(t.TempDir())
+	writeRawStore(t, path, 0o600, truncatedStoreJSON)
+	unproven, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := unproven.ImportHostRecords(familyOf("first"), HostMirror{}); err != nil {
+		t.Fatalf("ImportHostRecords: %v", err)
+	}
+	raw := string(mustReadFile(t, path))
+	broken := strings.Replace(raw, `"tokens":[]`, `"tokens":7`, 1)
+	if broken == raw {
+		t.Fatalf("the fixture carries no tokens region:\n%s", raw)
+	}
+	writeRawStore(t, path, 0o600, broken)
+	if err := forgetStore(path); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open over the corrupted replacement: %v", err)
+	}
+	if signal := reopened.Quarantine(); signal == nil || signal.Unproven || signal.QuarantineEpoch != 2 {
+		t.Fatalf("Quarantine() = %+v, want a proven quarantine at epoch 2", signal)
+	}
+	if family, _, _ := reopened.HostRecords(); len(family.Hosts) == 0 {
+		t.Fatal("the host records were dropped")
 	}
 }
