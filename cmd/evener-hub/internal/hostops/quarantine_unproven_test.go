@@ -235,7 +235,23 @@ func requireProvenSecondQuarantine(t *testing.T, cleanArtifacts, legacyFiles boo
 	if err := first.ImportHostRecords(familyOf("first"), HostMirror{}); err != nil {
 		t.Fatalf("ImportHostRecords: %v", err)
 	}
-	if cleanArtifacts {
+	if legacyFiles {
+		// Files an earlier build wrote carry no allocatorFloor; a healthy open
+		// of them must record the floor in the store itself.
+		floorKey := regexp.MustCompile(`,"allocatorFloor":[0-9]+|"allocatorFloor":[0-9]+,`)
+		writeRawStore(t, path, 0o600, floorKey.ReplaceAllString(string(mustReadFile(t, path)), ""))
+		custodyPath, custodyBody := quarantineArtifact(t, filepath.Dir(path), ".custody-")
+		if err := os.WriteFile(custodyPath, floorKey.ReplaceAll(custodyBody, nil), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := forgetStore(path); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Open(path); err != nil {
+			t.Fatalf("healthy open of the legacy files: %v", err)
+		}
+	}
+	if cleanArtifacts || legacyFiles {
 		for _, infix := range []string{".custody-", ".quarantined-"} {
 			artifact, _ := quarantineArtifact(t, filepath.Dir(path), infix)
 			if err := os.Remove(artifact); err != nil {
@@ -244,15 +260,6 @@ func requireProvenSecondQuarantine(t *testing.T, cleanArtifacts, legacyFiles boo
 		}
 	}
 	raw := string(mustReadFile(t, path))
-	floorKey := regexp.MustCompile(`,"allocatorFloor":[0-9]+|"allocatorFloor":[0-9]+,`)
-	if legacyFiles {
-		// Files an earlier build wrote carry no allocatorFloor.
-		raw = floorKey.ReplaceAllString(raw, "")
-		custodyPath, custodyBody := quarantineArtifact(t, filepath.Dir(path), ".custody-")
-		if err := os.WriteFile(custodyPath, floorKey.ReplaceAll(custodyBody, nil), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
 	broken := strings.Replace(raw, `"tokens":[]`, `"tokens":7`, 1)
 	if broken == raw {
 		t.Fatalf("the fixture carries no tokens region:\n%s", raw)
