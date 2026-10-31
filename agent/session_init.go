@@ -599,6 +599,16 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	if err != nil {
 		return nil, err
 	}
+	// initSessionState minted this root's process livelock as its last step,
+	// so every failure below this point — a fallible constructor step after
+	// init — must give it back: a construction that never came to life must
+	// not hold false-live evidence until process exit (review round 6,
+	// finding 4). On success the normal close path releases it.
+	defer func() {
+		if !initComplete {
+			s.releaseSessionLivelock()
+		}
+	}()
 
 	// initSessionState (via initMCP) may have set s.mcpMgr to a manager holding
 	// live server connections; every error return below this point must close
@@ -789,8 +799,12 @@ type RestoreSessionConfig struct {
 	// the live parent's, replacing whatever the delegate saved.
 	parentMemoryProjectID string
 	StateDir              string
-	Project               identifier.Project
-	ResolveProfile        func(ref string) (*provider.Profile, error)
+	// RendezvousDir is the hosting daemon's rendezvous run directory, the
+	// same field SessionConfig carries — see its doc there. The host that
+	// resolved it for its own registration supplies it here too.
+	RendezvousDir  string
+	Project        identifier.Project
+	ResolveProfile func(ref string) (*provider.Profile, error)
 	// StartupModelListing reuses a listing the launcher already fetched for
 	// this session's model instance instead of fetching it again.
 	StartupModelListing     *StartupModelListing
@@ -945,6 +959,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 	cfg.LifetimeContext = restoreCfg.LifetimeContext
 	cfg.StateDir = canonicalStateDir(restoreCfg.StateDir)
+	cfg.RendezvousDir = restoreCfg.RendezvousDir
 	cfg.Project = restoreCfg.Project
 	cfg.ResolveProfile = restoreCfg.ResolveProfile
 	cfg.AcquireSessionOwnership = restoreCfg.AcquireSessionOwnership
@@ -1346,6 +1361,15 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if err != nil {
 		return nil, err
 	}
+	// The restore twin of NewSession's post-init livelock release: the mint
+	// happened inside initSessionState, and any restore-replay failure below
+	// must not leave the restored root reading live until process exit
+	// (review round 6, finding 4).
+	defer func() {
+		if !restoreComplete {
+			s.releaseSessionLivelock()
+		}
+	}()
 
 	// initSessionState (via initMCP) may have set s.mcpMgr to a manager holding
 	// live server connections; every error return below this point must close
@@ -1776,6 +1800,13 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		// prompt carrying their complete instructions was admitted.
 		s.seedFrozenSkillPreloads()
 	}
+
+	// Take the root session's process livelock (issue #5471): the lifetime
+	// flock whose release-by-OS at process death is what a later prune's
+	// owner-liveness REPORTING reads. Root sessions only, non-blocking, and
+	// silent on failure — nothing gates or retries on it (see
+	// acquireSessionLivelock).
+	s.acquireSessionLivelock()
 
 	return s.promptSourceLog, nil
 }

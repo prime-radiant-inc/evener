@@ -653,11 +653,16 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// for its own timeout -- is reached by nothing else: without this the
 		// only cancellation it ever sees arrives after the wait it is holding
 		// up. A turn is already cancelled directly (turnCtx derives from ctx).
-		LifetimeContext:             ctx,
-		MaxToolRoundsPerInput:       cmdutil.MaxRoundsToConfig(*lf.maxRounds),
-		ShareTasksWithChildren:      *lf.shareTaskStore,
-		ResultToolName:              *lf.resultToolName,
-		StateDir:                    sd,
+		LifetimeContext:        ctx,
+		MaxToolRoundsPerInput:  cmdutil.MaxRoundsToConfig(*lf.maxRounds),
+		ShareTasksWithChildren: *lf.shareTaskStore,
+		ResultToolName:         *lf.resultToolName,
+		StateDir:               sd,
+		// runDir is the directory THIS daemon registers its rendezvous entry
+		// in, so it is also the one the session's owner-liveness probe reads
+		// (issue #5471): a non-default --run-dir must reach the probe or
+		// older daemons' verifiable live entries go unseen.
+		RendezvousDir:               runDir,
 		AcquireSessionOwnership:     reserveSession,
 		Project:                     project,
 		SystemPromptFile:            *lf.systemPrompt,
@@ -722,6 +727,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			DisableMemory:               *lf.disableMemory,
 			LifetimeContext:             ctx,
 			StateDir:                    sd,
+			RendezvousDir:               runDir,
 			Project:                     project,
 			ResolveProfile:              sessionCfg.ResolveProfile,
 			StartupModelListing:         startupListing,

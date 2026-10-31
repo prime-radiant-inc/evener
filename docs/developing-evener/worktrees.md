@@ -73,7 +73,10 @@ What this means day to day:
   is left behind. This is intentional fail-safe behavior: a stale lock just means
   nobody has confirmed the work is abandoned yet. The lock names its former owner, so
   a human (or an agent that has verified the owner is really gone) can clear it with
-  `git worktree unlock` and let `prune` collect it afterward. If the same session
+  `git worktree unlock` and let `prune` collect it afterward — and for a delegate
+  marker, `prune`'s skip reason now carries the owner-liveness verdict that makes the
+  "verified the owner is really gone" step evidence-based (see the recovery recipe in
+  the limitations below). If the same session
   resumes later, it recognizes its own lock and picks the worktree back up rather than
   erroring. A session's *own* marker on a lane it is not occupying is the one piece of
   that residue evener can attribute with certainty: it does not block a `prune`
@@ -98,7 +101,10 @@ managed worktree and removes the ones that are simultaneously: unlocked, not cur
 in use by any live shell job or delegate under this session, clean (no uncommitted
 changes), and either untouched since creation or already merged into the branch it
 was created from. Everything else is reported with a reason instead of being touched —
-locked, dirty, unmerged, checked out somewhere else, or too new to judge yet. `prune`
+locked, dirty, unmerged, checked out somewhere else, or too new to judge yet; a locked
+*delegate* lane's reason also carries the owner-liveness verdict (`owner-live`,
+`owner-dead-looking`, `owner-unverifiable`) — the evidence for the manual unlock
+recipe in the limitations below, never a collection trigger. `prune`
 never takes `force`; anything it declines to remove is `remove`'s job, or a deliberate
 unlock.
 
@@ -251,8 +257,31 @@ These are documented trade-offs, not bugs:
   session's *own* marker on a lane it is not occupying: that marker does not block a
   `prune` candidate, so `prune` reclaims the lane and releases it — the session itself
   is the one thing whose non-occupancy it can attest without guessing. A lane `prune`
-  skips keeps its lock, and another session's marker has no liveness signal at all and
-  still needs a deliberate unlock.
+  skips keeps its lock. For a *delegate* marker — a lane owned by another session's
+  tree — the skip reason reports the owner-liveness verdict prune can prove:
+  `owner-live` (the tree's root process holds its process livelock, or a
+  rendezvous entry of one of the tree's sessions — the root's own, or an
+  independently resumed coordinator's — names a pid verified to still be the
+  daemon that registered it), `owner-dead-looking` (the root's livelock file
+  exists but the flock is free — the OS released it at process death — and no
+  verified rendezvous pid is live), or `owner-unverifiable` (the root cannot
+  be resolved, predates livelocks, or a rendezvous entry's daemon identity
+  cannot be established). The verdict never collects anything by itself.
+  The one-time bulk recovery recipe for a dead-owner pile:
+  1. Run `manage_worktree prune` and read the skipped list: every
+     `owner-dead-looking` lane is a candidate; every `owner-live` lane is not.
+  2. Before unlocking, confirm each dead-looking root is really finished and not
+     merely *idle*: an idle-retired, resumable root also releases its livelock and
+     looks dead-looking, and unlocking its delegates' lanes would expose preserved,
+     resumable work to collection. A root is safe to unlock for when you know its
+     session will not be resumed — a one-shot tree long finished, or a session you
+     have decided to abandon.
+  3. Unlock the confirmed lanes' markers: `git worktree unlock <lane-path>` from the
+     main checkout, once per lane (the skip reason's marker names the delegate id and
+     the owner session id for the audit trail).
+  4. Run `manage_worktree prune` again: the now-unlocked, clean, merged-or-unchanged
+     lanes are collected like any other residue; anything still not disposable is
+     reported with its reason and stays for `remove` or a human.
 - **A session whose working directory is deleted out from under it refuses honestly.**
   If the lane a session is standing in is removed from the main checkout while the
   session keeps running, the session's working directory no longer exists, and every
