@@ -10,6 +10,7 @@ import (
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/worktree"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 // REAL-git integration tests for the orphaned-delegate reclaim arm (#5471):
@@ -447,5 +448,95 @@ func TestDelegateReviveRefusesForeignLockedLane(t *testing.T) {
 	}
 	if m, ok := worktree.ParseMarker(reason); !ok || m.SessionID != foreignSID {
 		t.Fatalf("foreign lock = %q, want the other session's marker", reason)
+	}
+}
+
+// A retained child is the other revive path: a second delegate_send returns
+// the resident child without reconstructing it, so that return must carry the
+// same lane revalidation — the arm's released lock cannot be left off a child
+// that is about to run another turn.
+func TestDelegateSendReLocksUnlockedLaneForRetainedChild(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	var lanePath string
+	fixture := newColdDelegateFixtureConfigured(t, "", func(d *delegatestore.Descriptor) {
+		d.Isolation = "worktree"
+		lanePath = r.delegateLane(t, "revive-retained", "dlg_revivetest00002", "034placeholder000000002")
+		d.WorkingDir = lanePath
+	})
+	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root.Close()
+	// The lane was cut under a stand-in identity; re-lock it under the delegate
+	// that owns it, the shape a real spawn leaves.
+	wtGit(t, r.mainRoot, "worktree", "unlock", lanePath)
+	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", worktree.FormatDelegateMarker(fixture.delegateID, fixture.meta.ID), lanePath)
+	finish := func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("done")}
+	}
+	fixture.adapter.steps = []func(llm.Request) llm.Response{finish}
+	first := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "first turn", 10_000)
+	if first.result.Err != nil {
+		t.Fatalf("first send: %v", first.result.Err)
+	}
+	if sub := root.subagents.get(fixture.childID); sub == nil || sub.sess == nil {
+		t.Fatalf("delegate %s is not retained after its run", fixture.childID)
+	}
+	// The end state the orphan arm and the manual unlock leave.
+	wtGit(t, r.mainRoot, "worktree", "unlock", lanePath)
+
+	fixture.adapter.steps = []func(llm.Request) llm.Response{finish}
+	second := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "second turn", 10_000)
+	if second.result.Err != nil {
+		t.Fatalf("second send: %v", second.result.Err)
+	}
+
+	_, locked, reason := r.laneLocked(t, lanePath)
+	if !locked {
+		t.Fatal("retained child ran another turn without the lane re-locked")
+	}
+	m, ok := worktree.ParseMarker(reason)
+	if !ok || m.DelegateID != fixture.delegateID || m.SessionID != root.id {
+		t.Fatalf("re-locked lane's lock = %q, want this session's marker for %s", reason, fixture.delegateID)
+	}
+}
+
+// A removed lane must fail revival loudly. The arm (or dispose) removes only
+// lanes the ordinary gates judged disposable, but a cold delegate's environment
+// reconstruction does not validate that the recorded working directory still
+// exists, so without this refusal a send could launch the provider into a
+// checkout that is no longer there.
+func TestDelegateReviveRefusesGoneLane(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	var lanePath string
+	fixture := newColdDelegateFixtureConfigured(t, "", func(d *delegatestore.Descriptor) {
+		d.Isolation = "worktree"
+		lanePath = r.delegateLane(t, "revive-gone", "dlg_revivetest00003", "034placeholder000000003")
+		d.WorkingDir = lanePath
+	})
+	root, err := restoreDelegateResourceBootstrapSessionWithTestConfig(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir, testConfig{sandboxProber: unsandboxedProber(fixture.workspace)})
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root.Close()
+	// What a collection leaves: no checkout directory at all — removed while
+	// this parent stays resident, the shape an armed prune leaves behind.
+	if err := os.RemoveAll(lanePath); err != nil {
+		t.Fatalf("remove the collected lane's directory: %v", err)
+	}
+	reservation, err := root.delegateController.ReserveStart(rootDelegateActor(root.id), fixture.delegateID)
+	if err != nil {
+		t.Fatalf("ReserveStart: %v", err)
+	}
+	started, err := root.delegateController.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("CommitStart: %v", err)
+	}
+	_, _, err = (delegateRuntime{owner: root}).restoreIdle(started)
+	if err == nil {
+		t.Fatal("revive proceeded into a removed lane")
 	}
 }

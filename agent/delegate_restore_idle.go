@@ -27,20 +27,8 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	}
 	defer release()
 	descriptor := cloneDelegateStartDescriptor(started.descriptor)
-	// An isolated delegate's lane must carry this session's marker before any
-	// revive path — retained runtimes included — hands it back to a child:
-	// close-time disposal, the orphan arm (#5471), and the documented manual
-	// unlock can all leave a kept lane unlocked, and another session may have
-	// adopted it since. The lane is re-locked, or the revival refused.
-	if descriptor.Isolation == "worktree" && descriptor.WorkingDir != "" {
-		if local, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment); ok {
-			if err := s.reviveRevalidateDelegateLane(local, isolationLane{
-				delegateID: started.lease.delegateID,
-				path:       descriptor.WorkingDir,
-			}); err != nil {
-				return nil, false, err
-			}
-		}
+	if err := s.reviveValidateIsolationLane(started); err != nil {
+		return nil, false, err
 	}
 	if retained := s.subagents.get(descriptor.ChildSessionID); retained != nil && retained.sess != nil {
 		return retained, false, nil
@@ -283,6 +271,32 @@ func (s *Session) sharedRestoreEnvironment(descriptor delegatestore.Descriptor) 
 	return nil
 }
 
+// reviveValidateIsolationLane re-establishes an isolated delegate's lane lock
+// before a revive path hands the lane back to a child. Every path funnels
+// through it — restoreIdle's retained and reconstructed children, and
+// restoreIdleForSend's existing-child return. Close-time disposal leaves a
+// kept changed lane unlocked ("switch-able until revived", spec §9 Guards),
+// and prune's orphan arm (#5471) and the documented manual unlock can release
+// a resumable delegate's lane; an unlocked lane is re-locked, a lane still
+// carrying this session's marker is adopted, a lane held by anyone else is a
+// refusal, and a removed lane fails the revival before any environment is
+// built on a checkout that is no longer there. Non-isolated delegates and
+// non-local environments are not gated.
+func (s *Session) reviveValidateIsolationLane(started delegateStartCommit) error {
+	descriptor := started.descriptor
+	if descriptor.Isolation != "worktree" || descriptor.WorkingDir == "" {
+		return nil
+	}
+	local, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		return nil // local git worktrees are a local-env-only feature
+	}
+	return s.reviveRevalidateDelegateLane(local, isolationLane{
+		delegateID: started.lease.delegateID,
+		path:       descriptor.WorkingDir,
+	})
+}
+
 func (runtime delegateRuntime) restoreIdleForSend(started delegateStartCommit) (*subagent, bool, func(*subagent, error), error) {
 	s := runtime.owner
 	finish := func(*subagent, error) {}
@@ -305,6 +319,9 @@ func (runtime delegateRuntime) restoreIdleForSend(started delegateStartCommit) (
 	}
 	if !leader {
 		if existing != nil {
+			if err := s.reviveValidateIsolationLane(started); err != nil {
+				return nil, false, finish, err
+			}
 			return existing, false, finish, nil
 		}
 		reconstructed, waitErr := pending.wait()

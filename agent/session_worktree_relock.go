@@ -211,18 +211,22 @@ func (s *Session) reLockOwnLane(local *execenv.LocalExecutionEnvironment, lane i
 // kept changed lane unlocked ("switch-able until revived", spec §9 Guards),
 // and prune's orphan arm (#5471) and the documented manual unlock can release
 // a resumable delegate's lane; an unlocked lane is re-locked, a lane already
-// carrying this session's marker is adopted, and a lane held by anyone else is
-// a refusal: revival never runs a child in a checkout another session owns.
-// A gone lane is not refused here — the caller's environment reconstruction
-// fails it loudly into the construction-failed closure.
+// carrying this session's marker is adopted, and a lane held by anyone else —
+// or removed outright — is a refusal: revival never runs a child in a
+// checkout another session owns, and never builds one on a directory that is
+// no longer there, because the caller's environment reconstruction cannot be
+// relied on to notice (an unsandboxed clone does not validate its working
+// directory).
 func (s *Session) reviveRevalidateDelegateLane(local *execenv.LocalExecutionEnvironment, lane isolationLane) error {
 	plan, inspectErr := s.inspectDelegateLaneLock(local, lane)
 	if inspectErr != nil {
 		return fmt.Errorf("revalidating delegate lane %s at %s: %w", lane.delegateID, lane.path, inspectErr)
 	}
 	switch plan {
-	case delegateLaneGone, delegateLaneAdopt:
+	case delegateLaneAdopt:
 		return nil
+	case delegateLaneGone:
+		return fmt.Errorf("delegate lane %s at %s is gone; refusing revival into a removed checkout", lane.delegateID, lane.path)
 	case delegateLaneUnlocked:
 		if err := s.lockDelegateLane(local, lane); err != nil {
 			return fmt.Errorf("re-locking delegate lane %s at %s: %w", lane.delegateID, lane.path, err)
