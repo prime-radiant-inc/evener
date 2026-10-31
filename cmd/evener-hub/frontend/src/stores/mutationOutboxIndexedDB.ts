@@ -531,11 +531,25 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
       }
       // The release is the user deliberately sending after a Stop (§4's
       // exemption), so it re-authorizes the row past the Stop its fence
-      // captured: the capture refreshes to the current epoch, and the row's
-      // next refusal redelivers instead of re-canceling. The barrier above
-      // still fences a Stop newer than this press.
+      // captured: BOTH captures refresh to the current epochs of the row's
+      // two refs, and the row's next refusal redelivers instead of
+      // re-canceling. A stale displayed capture would make that refusal
+      // re-cancel the retried row against the very Stop this release
+      // outranked - including an ordinary recovery send, whose displayed ref
+      // is its target. When the two refs are the same, the pair reads the
+      // same epoch from this transaction and stays consistent. The barrier
+      // above still fences a Stop newer than this press.
       const stopEpoch = await this.#stopEpochOf(transaction, record.targetRef);
-      await requestResult(store.put({ ...record, state: "submitting", stopEpochAtEnqueue: stopEpoch }));
+      await requestResult(
+        store.put({
+          ...record,
+          state: "submitting",
+          stopEpochAtEnqueue: stopEpoch,
+          ...(record.displayedRef === undefined
+            ? {}
+            : { displayedStopEpochAtEnqueue: await this.#stopEpochOf(transaction, record.displayedRef) }),
+        }),
+      );
       return true;
     });
   }
@@ -918,11 +932,14 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
   // Preserve the original mutation ID and entire payload so the daemon's
   // durable journal can replay its receipt, or the original instance fence
   // can reject a retry after a clear. Known IDs stay on the receipt path.
-  // Returns the IDs this pass decided - each reopened to submitting, or, for
-  // a retargeted resend whose displayed ref or destination took a Stop while
-  // the row sat attempted and uncertain, held canceled instead: the same
-  // dual-ref fence the refusal rollback carries. Either decision changes the
-  // row, so the caller notifies the ref for either.
+  // Returns the IDs this pass decided: each reopened to submitting, or - for
+  // a retargeted resend that took a Stop on either ref it crosses while it
+  // sat parked and provably unattempted - held canceled outright. An
+  // ATTEMPTED row the same fence stops is not decided at all: its attempt may
+  // already be delivered with the response lost, and absence from a bounded
+  // read proves nothing, so the crossed Stop fences redispatch only - the row
+  // stays delivery-uncertain for a receipt or refusal to settle, the same
+  // truth the refusal rollback's fence derives from an actual refusal.
   async restoreProvenAbsent(targetRef: string, authoritativeIds: ReadonlySet<string>): Promise<string[]> {
     return this.#write([OUTBOX_STORE, SEQUENCE_STORE], undefined, async (transaction) => {
       const store = transaction.objectStore(OUTBOX_STORE);
@@ -932,21 +949,28 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
         if (record.targetRef !== targetRef) continue;
         if (record.state !== "blockedUnknown") continue;
         if (authoritativeIds.has(record.clientMutationId)) continue;
-        // The reconcile's absence proof is the same proof an in-band refusal
-        // carries, so a retargeted resend gets the same fence at this
-        // reopen: a Stop that landed on either ref the send crosses while
-        // the row sat attempted holds the row canceled, never dispatchable
-        // ahead of it. Ordinary rows keep the reconcile's pre-existing
-        // behavior - their own cancel scan already reached them while
-        // unattempted.
+        // The dual-ref fence at the reconcile seam: a Stop that landed on
+        // either ref the send crosses while the row sat parked must stop this
+        // reopen - the row would otherwise re-dispatch ahead of a Stop the
+        // user pressed. What the fence may DECIDE depends on what the row
+        // proves: an unattempted row provably never reached the hub, so the
+        // Stop's verdict is truthful cancellation; an attempted row may
+        // already be delivered with its response lost, and a bounded read
+        // that omits it proves nothing, so the fence keeps it
+        // delivery-uncertain - parked, never re-dispatched, still settleable
+        // by a receipt or a refusal. Ordinary rows keep the reconcile's
+        // pre-existing behavior - their own cancel scan already reached them
+        // while unattempted.
         if (record.displayedRef !== undefined) {
           const stopEpoch = await this.#stopEpochOf(transaction, record.targetRef);
           if (
             stopEpoch > (record.stopEpochAtEnqueue ?? 0) ||
             (await this.#displayedStopAdvanced(transaction, record))
           ) {
-            await requestResult(store.put({ ...record, state: "canceled" }));
-            restored.push(record.clientMutationId);
+            if (record.attempted === false) {
+              await requestResult(store.put({ ...record, state: "canceled" }));
+              restored.push(record.clientMutationId);
+            }
             continue;
           }
         }

@@ -127,18 +127,31 @@ describe("retargeted resend rows' displayed-ref fence", () => {
     storage.close();
   });
 
-  test("a reconcile reopen holds an uncertain parked row canceled after a Stop on the displayed ref", async () => {
+  test("a reconcile keeps a Stop-crossed attempted row delivery-uncertain, never canceled", async () => {
     const storage = store();
     const row = await seedRetargetedResend(storage);
     await storage.markAttempted(row.clientMutationId);
     await storage.markUnknown(row.clientMutationId, "blockedUnknown");
     await storage.enqueueInterruptAndCancel(interruptIntent(DISPLAYED));
     expect(await storage.getOutbox(row.clientMutationId)).toMatchObject({ state: "blockedUnknown" });
-    // The authoritative read proves the row never reached the hub, so the
-    // reopen could make it dispatchable - unless a Stop crossed it.
+    // The attempt may already be delivered with its response lost, and
+    // absence from a bounded read proves nothing: the crossed Stop fences
+    // redispatch only, so the fence decides nothing for this row.
     const restored = await storage.restoreProvenAbsent(DESTINATION, new Set());
-    expect(restored).toContain(row.clientMutationId);
-    expect(await storage.getOutbox(row.clientMutationId)).toMatchObject({ state: "canceled" });
+    expect(restored).not.toContain(row.clientMutationId);
+    expect(await storage.getOutbox(row.clientMutationId)).toMatchObject({
+      state: "blockedUnknown",
+      attempted: true,
+    });
+    // The held state parks the ref's FIFO - nothing re-dispatches ahead of
+    // the Stop - and a second reconcile pass holds the same line.
+    expect(await storage.nextDispatchable(DESTINATION)).toBeUndefined();
+    await storage.restoreProvenAbsent(DESTINATION, new Set());
+    expect(await storage.getOutbox(row.clientMutationId)).toMatchObject({ state: "blockedUnknown" });
+    // The row's truth stays open: a receipt for the attempt that was
+    // accepted at the hub with its response lost still establishes delivery.
+    expect(await storage.settleReceipt(row.clientMutationId, "reflected")).toBe(true);
+    expect(await storage.getOutbox(row.clientMutationId)).toBeUndefined();
     storage.close();
   });
 
@@ -150,6 +163,62 @@ describe("retargeted resend rows' displayed-ref fence", () => {
     const restored = await storage.restoreProvenAbsent(DESTINATION, new Set());
     expect(restored).toContain(row.clientMutationId);
     expect(await storage.getOutbox(row.clientMutationId)).toMatchObject({ state: "submitting" });
+    storage.close();
+  });
+
+  test("an explicit Retry refreshes the displayed epoch so a refused retry paces instead of re-canceling", async () => {
+    const storage = store();
+    const row = await seedRetargetedResend(storage);
+    // A Stop cancels the unattempted resend; the user explicitly retries it.
+    await storage.enqueueInterruptAndCancel(interruptIntent(DISPLAYED));
+    expect(await storage.getOutbox(row.clientMutationId)).toMatchObject({ state: "canceled" });
+    const capture = await storage.getOutboxWithStopEpoch(row.clientMutationId);
+    expect(await storage.releaseCanceled(row.clientMutationId, { stopEpoch: capture.stopEpoch })).toBe(true);
+    const retried = await storage.getOutbox(row.clientMutationId);
+    // The reauthorization refreshes BOTH fence baselines: the destination's,
+    // and the displayed ref's - whose Stop this explicit Retry outranked. A
+    // stale displayed capture would make the row's next refusal rollback
+    // re-cancel it against that very Stop.
+    expect(retried).toMatchObject({
+      state: "submitting",
+      stopEpochAtEnqueue: capture.stopEpoch,
+      displayedStopEpochAtEnqueue: 1,
+    });
+    // The retried row attempts, and the hub answers with an automatic
+    // backpressure refusal: the refusal must reopen the row for its paced
+    // retry, not re-cancel it.
+    await storage.markAttempted(row.clientMutationId);
+    expect(await storage.unmarkAttempted(row.clientMutationId)).toBe(true);
+    expect(await storage.getOutbox(row.clientMutationId)).toMatchObject({
+      state: "submitting",
+      attempted: false,
+    });
+    storage.close();
+  });
+
+  test("an explicit Retry of an ordinary recovery send keeps both baselines consistent", async () => {
+    const storage = store();
+    // An ordinary (non-retargeted) recovery send: the displayed ref IS the
+    // destination, so the two baselines must move together.
+    const original = await storage.enqueueIntent(intent("hello", DISPLAYED));
+    await storage.transferToRecovery(original.clientMutationId, "rejected");
+    const sent = await storage.resendRecoveryResult(
+      original.clientMutationId,
+      intent("hello", DISPLAYED),
+      undefined,
+      undefined,
+      undefined,
+      { stopEpoch: 0, targetRef: DISPLAYED },
+    );
+    if (sent.status !== "sent") throw new Error(`resend did not send: ${sent.status}`);
+    await storage.enqueueInterruptAndCancel(interruptIntent(DISPLAYED));
+    const capture = await storage.getOutboxWithStopEpoch(sent.record.clientMutationId);
+    expect(await storage.releaseCanceled(sent.record.clientMutationId, { stopEpoch: capture.stopEpoch })).toBe(true);
+    const retried = await storage.getOutbox(sent.record.clientMutationId);
+    expect(retried?.state).toBe("submitting");
+    expect(retried?.displayedStopEpochAtEnqueue).toBe(retried?.stopEpochAtEnqueue);
+    await storage.markAttempted(sent.record.clientMutationId);
+    expect(await storage.unmarkAttempted(sent.record.clientMutationId)).toBe(true);
     storage.close();
   });
 });
