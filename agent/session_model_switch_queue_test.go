@@ -40,12 +40,6 @@ func (a *gatedListingAdapter) LiveModels(context.Context) ([]registry.Model, err
 	return fn()
 }
 
-func (a *gatedListingAdapter) listingCall() int {
-	a.modelsMu.Lock()
-	defer a.modelsMu.Unlock()
-	return a.modelsIdx
-}
-
 // The queue's application point is the input loop, not the processing
 // boundary: a pick that lands after a turn's boundary but before the next
 // turn starts must still apply to that next turn, and a queued switch must
@@ -204,7 +198,7 @@ func TestQueuedMidTurnSwitchEnumeratesTheLiveListingOnce(t *testing.T) {
 // instead, and the running turn keeps the model it was admitted with.
 func TestAtRestPickDoesNotSwapUnderATurnThatStartedWhileItValidated(t *testing.T) {
 	dir := t.TempDir()
-	adapter := &gatedListingAdapter{fakeAdapter: fakeAdapter{name: "openai"}}
+	adapter := &gatedListingAdapter{name: "openai"}
 	releasePickPreflight := make(chan struct{})
 	releaseRefetch := make(chan struct{})
 	refetchCalled := make(chan struct{}, 1)
@@ -302,7 +296,7 @@ func TestAtRestPickDoesNotSwapUnderATurnThatStartedWhileItValidated(t *testing.T
 // when it resumes instead of overwriting the newer choice.
 func TestSupersededPendingApplicationDoesNotOverwriteANewerPick(t *testing.T) {
 	dir := t.TempDir()
-	adapter := &gatedListingAdapter{fakeAdapter: fakeAdapter{name: "openai"}}
+	adapter := &gatedListingAdapter{name: "openai"}
 	releaseTailFetch := make(chan struct{})
 	tailFetchCalled := make(chan struct{}, 1)
 	newerPicked := make(chan struct{}, 1)
@@ -362,7 +356,7 @@ func TestSupersededPendingApplicationDoesNotOverwriteANewerPick(t *testing.T) {
 // must not overwrite the newer pick's queued choice when it finishes late.
 func TestConcurrentMidTurnPicksLastAcceptedChoiceWins(t *testing.T) {
 	dir := t.TempDir()
-	adapter := &gatedListingAdapter{fakeAdapter: fakeAdapter{name: "openai"}}
+	adapter := &gatedListingAdapter{name: "openai"}
 	releaseSlowListing := make(chan struct{})
 	aListingCalled := make(chan struct{}, 1)
 	s := newSession(t, withAdapter(adapter), withDir(dir), withConfig(SessionConfig{
@@ -480,7 +474,7 @@ func TestRejectedPickDoesNotCancelAnEarlierQueuedPick(t *testing.T) {
 // the turn the loop is about to admit.
 func TestSupersededLoopTopApplicationAppliesTheNewerQueuedPick(t *testing.T) {
 	dir := t.TempDir()
-	adapter := &gatedListingAdapter{fakeAdapter: fakeAdapter{name: "openai"}}
+	adapter := &gatedListingAdapter{name: "openai"}
 	releaseLoopFetch := make(chan struct{})
 	loopFetchCalled := make(chan struct{}, 1)
 	s := newSession(t, withAdapter(adapter), withDir(dir), withConfig(SessionConfig{
@@ -625,8 +619,8 @@ func TestCommittedSwitchPublicationsLandInCommitOrder(t *testing.T) {
 // re-registers the tools that switch removed.
 func TestNewerPickReconcilesToolsAgainstTheProfileItActuallyReplaces(t *testing.T) {
 	dir := t.TempDir()
-	googleAdapter := &gatedListingAdapter{fakeAdapter: fakeAdapter{name: "google"}}
-	openaiAdapter := &gatedListingAdapter{fakeAdapter: fakeAdapter{name: "openai"}}
+	googleAdapter := &gatedListingAdapter{name: "google"}
+	openaiAdapter := &gatedListingAdapter{name: "openai"}
 	s := newSession(t,
 		withAdapter(googleAdapter),
 		withAdapter(openaiAdapter),
