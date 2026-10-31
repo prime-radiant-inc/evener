@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -845,6 +846,180 @@ func TestDelegateLaunchAdoptsSiblingWonLaneAfterLockLoss(t *testing.T) {
 	m, ok := worktree.ParseMarker(reason)
 	if !ok || m.DelegateID != lane.fixture.delegateID || m.SessionID != lane.fixture.meta.ID {
 		t.Fatalf("shared lane's lock = %q, want the lane-owning delegate's marker naming its parent session", reason)
+	}
+}
+
+// spawnRetainedDelegateLane builds the smallest tree the orphan arm can
+// misjudge: one isolation delegate whose lane is locked under its parent's
+// marker and whose first turn finished, leaving the delegate retained and the
+// parent idle. No other child exists, so nothing in the tree can refresh the
+// parent's activity evidence on its own. The fixture lives in the repo
+// harness's state dir, so the harness session's prune reads the same parent
+// evidence the arm reads.
+func spawnRetainedDelegateLane(t *testing.T, r *wtRepo, laneName, standInDlg, standInSID string, secondTurn func(llm.Request) llm.Response) (coldDelegateFixture, *Session, string) {
+	t.Helper()
+	var lanePath string
+	fixture := newColdDelegateFixtureConfiguredInState(t, "", r.stateDir, func(d *delegatestore.Descriptor) {
+		d.Isolation = "worktree"
+		d.ToolNameCeiling = []string{"communicate"}
+		lanePath = r.delegateLane(t, laneName, standInDlg, standInSID)
+		d.WorkingDir = lanePath
+	})
+	root, err := restoreDelegateResourceBootstrapSessionWithTestConfig(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir, testConfig{
+		sandboxProber:              unsandboxedProber(fixture.workspace),
+		disableDelegateIdleRelease: true,
+	})
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	t.Cleanup(root.Close)
+	// The lane ends locked under the real delegate's marker, the state a
+	// live parent's isolation spawn leaves.
+	wtGit(t, r.mainRoot, "worktree", "unlock", lanePath)
+	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", worktree.FormatDelegateMarker(fixture.delegateID, fixture.meta.ID), lanePath)
+	finish := func(llm.Request) llm.Response {
+		return agenttest.FinalResponse("done")
+	}
+	// Both turns are scripted up front: the fake adapter serves its steps by
+	// a cursor that survives reassignment, so a later slice replacement after
+	// the cursor would never be served.
+	fixture.adapter.steps = []func(llm.Request) llm.Response{finish, secondTurn}
+	first := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "first turn", 10_000)
+	if first.result.Err != nil || first.commit == nil {
+		t.Fatalf("first send: %+v", first.result)
+	}
+	// Acknowledge the report the way the parent's delegate_send does, or the
+	// finished generation never finalizes and no later start is admitted.
+	plans, err := first.commit.Complete(true)
+	if err != nil {
+		t.Fatalf("acknowledge the first turn: %v", err)
+	}
+	if err := root.executeDelegateMutationPlans(plans); err != nil {
+		t.Fatalf("apply the first turn's acknowledgment: %v", err)
+	}
+	return fixture, root, lanePath
+}
+
+// A delegate turn that outlasts the operator's inactivity threshold keeps its
+// marker parent idle — the parent runs no turn of its own while it waits — so
+// the activity evidence the orphan reclaim reads goes stale mid-task even
+// though the tree is alive and working. The launch validation refreshes that
+// evidence once per launch; the turn's own ongoing activity reports must keep
+// it fresh, or a foreign session's prune — whose live-work view cannot see the
+// running turn's work under the lane — judges the parent long-inactive and
+// collects the clean, unchanged checkout mid-task.
+func TestWorktreePrune_OrphanArmSparesLaneWhileDelegateReportsActivity(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+
+	// The delegate's second turn wedges inside its first model call: the
+	// delegate is running, the tree is alive, and the parent stays idle.
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var wedgeOnce sync.Once
+	wedge := func(llm.Request) llm.Response {
+		wedgeOnce.Do(func() { close(entered) })
+		<-release
+		return agenttest.FinalResponse("done")
+	}
+	fixture, root, lanePath := spawnRetainedDelegateLane(t, r, "active-delegate-lane", "dlg_orphanactive000001", "034orphanactive0001", wedge)
+	parentTranscript := schema.SessionTranscriptPath(fixture.stateDir, fixture.meta.ID)
+
+	sendOutcome := make(chan delegateSendOutcome, 1)
+	go func() {
+		outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "long turn", 60_000)
+		sendOutcome <- outcome
+	}()
+	select {
+	case <-entered:
+	case outcome := <-sendOutcome:
+		t.Fatalf("the long turn's send returned before it started: %+v", outcome.result)
+	case <-time.After(10 * time.Second):
+		delegateSub := root.subagents.get(fixture.childID)
+		var running, driving, subClosed bool
+		present := delegateSub != nil
+		if present {
+			delegateSub.mu.Lock()
+			running, driving, subClosed = delegateSub.running, delegateSub.driving, delegateSub.closed
+			delegateSub.mu.Unlock()
+		}
+		t.Fatalf("the delegate's long turn never started (sub present=%v running=%v driving=%v closed=%v)",
+			present, running, driving, subClosed)
+	}
+
+	// The parent has now been idle past the operator's threshold: nothing of
+	// its own has touched its transcript since the launch refreshed it.
+	stale := time.Now().Add(-30 * 24 * time.Hour)
+	if err := os.Chtimes(parentTranscript, stale, stale); err != nil {
+		t.Fatalf("backdate the parent's transcript: %v", err)
+	}
+
+	// The running turn reports activity through the production closure its
+	// send installed — the same path its own phase reports take — once the
+	// report publication floor has cleared since the turn started.
+	delegateSub := root.subagents.get(fixture.childID)
+	if delegateSub == nil || delegateSub.sess == nil {
+		t.Fatalf("delegate %s is not retained after its run", fixture.childID)
+	}
+	time.Sleep(delegateActivityPublishInterval + 200*time.Millisecond)
+	delegateSub.sess.mu.Lock()
+	activity := delegateSub.sess.cfg.spawn.parentJobActivity
+	delegateSub.sess.mu.Unlock()
+	if activity == nil {
+		t.Fatal("the running delegate carries no parent activity binding")
+	}
+	activity(fixture.delegateID, jobPhaseToolRunning)
+
+	// The ongoing report is the parent's activity evidence now: a parent
+	// whose delegate works is not inactive, whatever its own transcript last
+	// recorded.
+	info, err := os.Stat(parentTranscript)
+	if err != nil {
+		t.Fatalf("stat the parent's transcript: %v", err)
+	}
+	if !info.ModTime().After(stale) {
+		t.Fatal("the running delegate's ongoing activity did not refresh the lane owner's evidence")
+	}
+
+	// A foreign session's prune — armed with a threshold the backdate crosses
+	// but the refresh does not — must not release or collect the lane.
+	out, err := r.pruneOrphanedOp(t, 7)
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if findPruneEntry(t, pruneEntries(t, out, "removed"), "active-delegate-lane") != nil {
+		t.Fatalf("an active delegate's lane was reclaimed mid-activity: %+v", out)
+	}
+	if findPruneEntry(t, pruneEntries(t, out, "unlocked"), "active-delegate-lane") != nil {
+		t.Fatalf("an active delegate's lane was released by the orphan arm: %+v", out)
+	}
+	_, locked, reason := r.laneLocked(t, lanePath)
+	if !locked {
+		t.Fatalf("the active delegate's lane lost its lock: %q", reason)
+	}
+	m, ok := worktree.ParseMarker(reason)
+	if !ok || m.DelegateID != fixture.delegateID || m.SessionID != fixture.meta.ID {
+		t.Fatalf("the active delegate's lane lock = %q, want the delegate marker naming its parent session", reason)
+	}
+
+	// The turn finishes cleanly once released.
+	close(release)
+	select {
+	case outcome := <-sendOutcome:
+		if outcome.result.Err != nil {
+			t.Fatalf("the long turn failed after the prune: %v", outcome.result.Err)
+		}
+		if outcome.commit != nil {
+			plans, err := outcome.commit.Complete(true)
+			if err != nil {
+				t.Fatalf("acknowledge the long turn: %v", err)
+			}
+			if err := root.executeDelegateMutationPlans(plans); err != nil {
+				t.Fatalf("apply the long turn's acknowledgment: %v", err)
+			}
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the long turn never finished after release")
 	}
 }
 

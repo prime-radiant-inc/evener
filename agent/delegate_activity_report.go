@@ -132,6 +132,29 @@ func (c *delegateTreeController) ReportActivityPhase(lease delegateLease, at tim
 	live.activityPublishedAt = at
 	plan := c.capturedPlanLocked(aggregate.DelegateID)
 	c.mu.Unlock()
+	// The published report doubles as the marker parent's activity evidence
+	// while the turn runs; the refresh rides this publication, so the floor
+	// that bounds it bounds the refresh too.
+	c.refreshLaneParentActivityEvidence(aggregate.DelegateID)
 	c.emitDelegateUpdate(plan)
 	return nil
+}
+
+// refreshLaneParentActivityEvidence records a running delegate's ongoing
+// activity in the last-activity evidence the orphan reclaim and the session
+// listings read: the transcript mtime of the session its lane's marker names.
+// A turn that outlasts the operator's inactivity threshold leaves its marker
+// parent idle — the parent runs no turn of its own while it waits — so the
+// once-per-launch refresh (revalidateLaneForLaunch) goes stale mid-task, and a
+// foreign prune, whose live-work view cannot see the turn's work under the
+// lane, could judge the parent long-inactive and release the lane under the
+// running turn. Best-effort, like the launch refresh: a delegate with no
+// isolation lane, and a tree with no root runtime or state directory, has no
+// evidence to refresh.
+func (c *delegateTreeController) refreshLaneParentActivityEvidence(delegateID string) {
+	lane, ok := c.isolatedLaneForDelegate(delegateID)
+	if !ok {
+		return
+	}
+	c.rootRuntime.refreshActivityEvidence(lane.markerSessionID)
 }
