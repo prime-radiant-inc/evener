@@ -18,6 +18,7 @@ import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../../stores/threads";
+import { getToasts } from "../../../widgets/toast/store";
 import { createTestComposerSource } from "../testing/composerSource";
 import { replaceEditorText } from "../testing/editor";
 import { Composer } from "./Composer";
@@ -242,7 +243,7 @@ async function runStopMatrixCase(stop: StopOrigin, phase: StopPhase): Promise<vo
   const resumed = `local:matrix-${phase}-${stop}`;
   const fake = new FakeClient("ready");
   const wired = wireFake(fake, resumed, phase === "hydration" ? { gateDestinationRead: true } : {});
-  await stageRetargetedSend(storage, fake, resumed);
+  const recoveryId = await stageRetargetedSend(storage, fake, resumed);
   const peer = new MutationOutboxIndexedDB();
   try {
     if (phase === "persistence") storage.armHold();
@@ -259,11 +260,12 @@ async function runStopMatrixCase(stop: StopOrigin, phase: StopPhase): Promise<vo
     else wired.releaseRead();
     await flushPendingTurnsProjectionForTests();
     await waitFor(() => expect(wired.delivered).toHaveLength(0));
-    // The resent row is born canceled on the destination: a Stop on either
-    // owner cancels the Send rather than letting it dispatch after the Stop.
-    const rows = await storage.listOutbox(resumed);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ state: "canceled", targetRef: resumed });
+    // A Stop on either owner fences the Send mid-press: it answers not-sent,
+    // so no destination row exists and the composition's only durable copy
+    // stays in the recovery tray on the session the user is looking at - the
+    // composer never takes the success path, never a silent clear.
+    expect(await storage.listOutbox(resumed)).toEqual([]);
+    expect(await storage.getRecovery(recoveryId)).toBeDefined();
   } finally {
     storage.finishHold();
     wired.releaseRead();
@@ -314,7 +316,7 @@ test("a stop while the press-time destination read is delayed cancels the send",
   const resumed = "local:stop-read";
   const fake = new FakeClient("ready");
   const wired = wireFake(fake, resumed);
-  await stageRetargetedSend(storage, fake, resumed);
+  const recoveryId = await stageRetargetedSend(storage, fake, resumed);
   const peer = new MutationOutboxIndexedDB();
   try {
     storage.armHold();
@@ -329,9 +331,11 @@ test("a stop while the press-time destination read is delayed cancels the send",
     storage.finishHold();
     await flushPendingTurnsProjectionForTests();
     await waitFor(() => expect(wired.delivered).toHaveLength(0));
-    const rows = await storage.listOutbox(resumed);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ state: "canceled", targetRef: resumed });
+    // The Stop belongs after the press's capture request, so it fences the
+    // Send rather than becoming its baseline: the press answers not-sent and
+    // the composition stays in the recovery tray, no invisible canceled row.
+    expect(await storage.listOutbox(resumed)).toEqual([]);
+    expect(await storage.getRecovery(recoveryId)).toBeDefined();
   } finally {
     storage.finishHold();
     peer.close();
@@ -489,4 +493,34 @@ test("a watched-only destination still routes its Send", async () => {
   await waitFor(() => expect(wired.methods).toContain("turn/start"));
   expect(wired.delivered[wired.methods.indexOf("turn/start")]).toMatchObject({ ref: resumed });
   threadsStore.getState().releaseWatchedThread(resumed);
+});
+
+test("a retargeted Send whose destination admits neither reports the refusal instead of exiting silently", async () => {
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  const storage = new MutationOutboxIndexedDB();
+  const resumed = "local:neither-destination";
+  const fake = new FakeClient("ready");
+  const wired = wireFake(fake, resumed);
+  const recoveryId = await stageRetargetedSend(storage, fake, resumed);
+  // A reader on the resumed session has it open, and a Stop it is still
+  // draining makes the destination admit neither a fresh send nor a queue.
+  await threadsStore.getState().ensureThread(resumed);
+  threadsStore.setState((state) => ({ stoppingRefs: new Set([...state.stoppingRefs, resumed]) }));
+  const before = getToasts().length;
+  await act(async () => {
+    fireEvent.click(submitButton());
+  });
+  await flushPendingTurnsProjectionForTests();
+  // No dispatch happened, and the composition stays in the recovery tray.
+  expect(wired.delivered).toHaveLength(0);
+  expect(await storage.listOutbox(resumed)).toEqual([]);
+  expect(await storage.getRecovery(recoveryId)).toBeDefined();
+  // The press is observable as a deliberate refusal.
+  const after = getToasts().slice(before);
+  // Exactly one error toast, and it is the deliberate destination refusal -
+  // keyed by its reason, the channel the toast store documents for telling
+  // same-kind toasts apart without reading copy - not the generic failure
+  // wrapper that embeds the raw exception text.
+  expect(after.filter((toast) => toast.kind === "error")).toHaveLength(1);
+  expect(after.filter((toast) => toast.reason === "destination-refused")).toHaveLength(1);
 });

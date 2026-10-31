@@ -46,6 +46,19 @@ import {
   withRecoveryDestinationClaim,
 } from "./submitProtocol";
 
+// The retargeted recovery Send's destination refusal, branded so the
+// submission's catch can tell it from every other failure: the destination
+// admits neither a fresh send nor a queue, so the press could not route. The
+// brand - and the ref it carries, the one datum the user needs, since they
+// are looking at a different session than the one that refused - is the
+// observable contract; the catch keys feedback on the class, never the
+// message.
+class DestinationRouteRefused extends Error {
+  constructor(readonly ref: string) {
+    super(`Send is not available for the destination session (${ref})`);
+  }
+}
+
 type BusyAction = "submit" | "steer" | "interrupt" | "drain" | null;
 
 /** Shared actions retain source ownership and the thread store's mutation policy. */
@@ -476,6 +489,7 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
       submittedRecoveryId === null ? undefined : captureRecoverySendIntent(ref, submittedRecoveryId);
     let recoveryResendRefused = false;
     let recoveryAlreadySent = false;
+    let recoveryFenced = false;
     const recoveryWriteRefusal = new Error("Recovery persistence was refused");
     const recoveryAlreadySentRefusal = new Error("Recovery source was already consumed");
     // The UI-side half of the skillInput gate (threads.ts's composerMutationIntent
@@ -504,7 +518,16 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
           commandNames: submittedCommandNames,
           recoveryId: submittedRecoveryId ?? undefined,
           onFailure: (err) => {
-            if (err === recoveryWriteRefusal || err === recoveryAlreadySentRefusal) return;
+            // The branded destination refusal has its own deliberate
+            // feedback in the submission's catch: this generic wrapper must
+            // not double-report it, nor surface the raw exception text this
+            // path embeds.
+            if (
+              err === recoveryWriteRefusal ||
+              err === recoveryAlreadySentRefusal ||
+              err instanceof DestinationRouteRefused
+            )
+              return;
             const label = kind === "send" ? "Send" : kind === "queue" ? "Queue" : kind === "steer" ? "Steer" : "Drain";
             toasts.push("error", sessionActionError(`${label} failed`, err));
           },
@@ -557,15 +580,20 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
                   // is the destination fence - it was captured with the row in
                   // one readonly transaction, ordered before any Stop pressed
                   // after the press.
-                  Promise.resolve({ stopEpoch: durable.stopEpoch }),
+                  { stopEpoch: durable.stopEpoch },
                   { [submittedRecoveryId]: committedRevision },
                   source.compositionOwnerId,
                   pressedRecoveryIntent?.displayedBarrier,
                 );
                 if (outcome.status !== "sent") {
+                  // A not-sent outcome answers the press as a refusal: the
+                  // composition never left the recovery tray (a fenced
+                  // resend's source rows stayed put), so the composer must
+                  // not take the success path - no clear, no consumed guard.
                   recoveryResendRefused = outcome.status === "refused";
                   recoveryAlreadySent = outcome.status === "consumed";
-                  throw recoveryResendRefused ? recoveryWriteRefusal : recoveryAlreadySentRefusal;
+                  recoveryFenced = outcome.status === "fenced";
+                  throw recoveryResendRefused || recoveryFenced ? recoveryWriteRefusal : recoveryAlreadySentRefusal;
                 }
                 // The resend transaction consumed the recovery row, so a remount
                 // can no longer restore it. Keep the guard until here rather than
@@ -624,9 +652,22 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
       submissionFailed = true;
       // A refused recovery resend keeps its composer payload. Ordinary sends
       // retain the store's existing eligible direct-dispatch fallback policy.
-      if (source.alive && recoveryResendRefused) pushRecoveryRefusal("changed");
+      if (source.alive && recoveryFenced) pushRecoveryRefusal("fenced");
+      else if (source.alive && recoveryResendRefused) pushRecoveryRefusal("changed");
       else if (source.alive && recoveryAlreadySent) pushRecoveryRefusal("consumed");
-      else if (error !== recoveryWriteRefusal && error !== recoveryAlreadySentRefusal) return;
+      else if (error instanceof DestinationRouteRefused) {
+        // The press could not route on the destination: the composition is
+        // still in the recovery tray. The refusal is deliberate, named
+        // feedback - one error toast with a reason key callers and tests can
+        // match without reading copy - never the generic failure wrapper
+        // that embeds the raw exception text.
+        if (source.alive)
+          toasts.push(
+            "error",
+            `Send is not available for the destination session (${error.ref})`,
+            "destination-refused",
+          );
+      } else if (error !== recoveryWriteRefusal && error !== recoveryAlreadySentRefusal) return;
     } finally {
       setBusyAction(null);
       releaseInFlightRecovery();
@@ -699,7 +740,7 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     if (kind !== "send" && kind !== "queue") return kind;
     const allowed = liveAvailability(targetRef);
     if (!allowed.canSend && !allowed.canQueue) {
-      throw new Error(`Send is not available for the destination session (${targetRef})`);
+      throw new DestinationRouteRefused(targetRef);
     }
     return allowed.canQueue ? "queue" : "send";
   }

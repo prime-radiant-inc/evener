@@ -786,22 +786,13 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     tabB.close();
   });
 
-  // #5182 M1, the store-level shape: an attempted retargeted resend parked
-  // blockedUnknown behind a crossed Stop. The reconcile fence holds it
-  // delivery-uncertain on purpose, so when the hub never accepted the
-  // mutation no receipt can ever settle it - the user's explicit Retry click
-  // is the one authorization that may reauthorize it, and the send must
-  // proceed and dispatch.
-  test("a Retry reauthorizes a Stop-crossed blockedUnknown retargeted resend and dispatches it", async () => {
-    const storage = new MutationOutboxIndexedDB();
-    setMutationStorageForTests(storage);
-    const fake = connectMutationClient();
-    await ensureActiveMutationTarget(fake, "ref_a");
-    onTurnStart(fake);
-    fake.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
-
-    // A recovery row a peer retargeted to ref_a, resent while its pane still
-    // displayed ref_b: the fresh outbox row crosses both refs.
+  // The retargeted-resend seed the #5182 fence tests share: a recovery row a
+  // peer retargeted to ref_a, resent while its pane still displayed ref_b - the
+  // fresh outbox row crosses both refs, born under the destination identity
+  // the Retry press must match.
+  async function seedRetargetedResendToRefA(
+    storage: MutationOutboxIndexedDB,
+  ): Promise<{ clientMutationId: string; threadId: string }> {
     const original = await storage.enqueueIntent({
       targetRef: "ref_b",
       threadId: "thr_b",
@@ -825,15 +816,34 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
       undefined,
       undefined,
       undefined,
-      { stopEpoch: 0, targetRef: "ref_b" },
+      { stopEpoch: 0, displayedRef: "ref_b" },
     );
     if (sent.status !== "sent") throw new Error(`resend did not send: ${sent.status}`);
+    return { clientMutationId: sent.record.clientMutationId, threadId: "thr_ref_a" };
+  }
+
+  // #5182 M1, the store-level shape: an attempted retargeted resend parked
+  // blockedUnknown behind a crossed Stop. The reconcile fence holds it
+  // delivery-uncertain on purpose, so when the hub never accepted the
+  // mutation no receipt can ever settle it - the user's explicit Retry click
+  // is the one authorization that may reauthorize it, and the send must
+  // proceed and dispatch.
+  test("a Retry reauthorizes a Stop-crossed blockedUnknown retargeted resend and dispatches it", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    onTurnStart(fake);
+    fake.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+
+    const seeded = await seedRetargetedResendToRefA(storage);
+    const clientMutationId = seeded.clientMutationId;
 
     // The resend attempts, its outcome goes unknown, and a Stop lands on the
     // still-displayed ref_b: the cancel scan skips the attempted row and the
     // reconcile fence holds it - no automatic path reopens it.
-    await storage.markAttempted(sent.record.clientMutationId);
-    await storage.markUnknown(sent.record.clientMutationId, "blockedUnknown");
+    await storage.markAttempted(clientMutationId);
+    await storage.markUnknown(clientMutationId, "blockedUnknown");
     await storage.enqueueInterruptAndCancel({
       targetRef: "ref_b",
       method: "turn/interrupt",
@@ -841,21 +851,21 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
       attachments: [],
       optimisticDisplay: { method: "turn/interrupt" },
     });
-    expect((await storage.getOutbox(sent.record.clientMutationId))?.state).toBe("blockedUnknown");
-    expect(await storage.restoreProvenAbsent("ref_a", new Set())).not.toContain(sent.record.clientMutationId);
+    expect((await storage.getOutbox(clientMutationId))?.state).toBe("blockedUnknown");
+    expect(await storage.restoreProvenAbsent("ref_a", new Set())).not.toContain(clientMutationId);
 
     // The user's explicit Retry: the click reauthorizes the parked row under
     // its original mutation ID and the send proceeds and dispatches.
-    expect(await retryBlockedMutation(sent.record.clientMutationId)).toBe(true);
+    expect(await retryBlockedMutation(clientMutationId)).toBe(true);
     await flushUntilArrived("the reauthorized resend to dispatch", () =>
       fake.calls.some(
         (call) =>
           call.method === "turn/start" &&
-          (call.params as { clientMutationId?: string }).clientMutationId === sent.record.clientMutationId,
+          (call.params as { clientMutationId?: string }).clientMutationId === clientMutationId,
       ),
     );
     // The re-sent row is the SAME send: the row left its parked state.
-    expect((await storage.getOutbox(sent.record.clientMutationId))?.state).not.toBe("blockedUnknown");
+    expect((await storage.getOutbox(clientMutationId))?.state).not.toBe("blockedUnknown");
   });
 
   // #5182 M2, the store-level shape: for a canceled retargeted resend, a Stop
@@ -872,34 +882,8 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     onTurnStart(fake);
     fake.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
 
-    // The same retargeted-resend seed: the row crosses ref_a (destination)
-    // and ref_b (still displayed).
-    const original = await storage.enqueueIntent({
-      targetRef: "ref_b",
-      threadId: "thr_b",
-      method: "turn/start",
-      payload: { ref: "ref_b", input: [{ type: "text", text: "hello" }] },
-      attachments: [],
-      optimisticDisplay: null,
-    });
-    await storage.transferToRecovery(original.clientMutationId, "rejected");
-    await storage.retargetOutbox("ref_b", "ref_a", { threadId: "thr_ref_a" });
-    const sent = await storage.resendRecoveryResult(
-      original.clientMutationId,
-      {
-        targetRef: "ref_a",
-        threadId: "thr_ref_a",
-        method: "turn/start",
-        payload: { ref: "ref_a", input: [{ type: "text", text: "hello" }] },
-        attachments: [],
-        optimisticDisplay: null,
-      },
-      undefined,
-      undefined,
-      undefined,
-      { stopEpoch: 0, targetRef: "ref_b" },
-    );
-    if (sent.status !== "sent") throw new Error(`resend did not send: ${sent.status}`);
+    const seeded = await seedRetargetedResendToRefA(storage);
+    const clientMutationId = seeded.clientMutationId;
 
     // A Stop on the still-displayed ref_b cancels the unattempted resend.
     await storage.enqueueInterruptAndCancel({
@@ -909,7 +893,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
       attachments: [],
       optimisticDisplay: { method: "turn/interrupt" },
     });
-    expect((await storage.getOutbox(sent.record.clientMutationId))?.state).toBe("canceled");
+    expect((await storage.getOutbox(clientMutationId))?.state).toBe("canceled");
 
     // The release seam: the retry has read the row, captured its pair, and
     // passed its press-time checks; its release write waits at the seam.
@@ -922,7 +906,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     };
 
     // The user's Retry click.
-    const retry = retryBlockedMutation(sent.record.clientMutationId);
+    const retry = retryBlockedMutation(clientMutationId);
     await releaseReached.promise;
 
     // The second tab's Stop lands on the DISPLAYED ref inside the window:
@@ -943,7 +927,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
       // the Stop that claimed it, and nothing dispatches.
       releaseGate.resolve();
       expect(await retry).toBe(false);
-      expect((await storage.getOutbox(sent.record.clientMutationId))?.state).toBe("canceled");
+      expect((await storage.getOutbox(clientMutationId))?.state).toBe("canceled");
       await flushIndexedDBUntil(() => false);
       expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
     } finally {
@@ -953,7 +937,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     // Liveness control: a Retry pressed AFTER the newer Stop captures the
     // post-Stop displayed epoch and is the deliberate post-Stop send - it
     // releases and dispatches.
-    expect(await retryBlockedMutation(sent.record.clientMutationId)).toBe(true);
+    expect(await retryBlockedMutation(clientMutationId)).toBe(true);
     await flushUntilArrived("the deliberate post-Stop retry to dispatch", () =>
       fake.calls.some((call) => call.method === "turn/start"),
     );

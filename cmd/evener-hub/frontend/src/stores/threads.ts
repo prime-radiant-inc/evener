@@ -126,9 +126,10 @@ import {
   type MutationOutboxRecord,
   type MutationRecoveryRecord,
   type MutationStopBarrier,
+  type MutationStopCapture,
 } from "./mutationOutbox";
 import {
-  type DisplayedRecoveryStopBarrier,
+  type DisplayedRecoveryStopCapture,
   MutationOutboxIndexedDB,
   type MutationRecoveryResendResult,
   type RetargetedMutations,
@@ -3091,22 +3092,22 @@ export async function retryBlockedMutation(
   // reauthorization falls through to the decision read below - the row it
   // left parked reports itself. Background retry modes never take this branch.
   if (record.state === "blockedUnknown" && mode === "user") {
-    const held = await runtime.storage.getOutbox(clientMutationId);
-    if (held?.state === "blockedUnknown") {
-      const released = await trackOutboxWrite(
-        record.targetRef,
-        () => runtime.storage.reauthorizeBlockedMutation(clientMutationId, { stopEpoch, displayedStopEpoch }),
-        // The reauthorized row keeps the id it reopens under, and is undelivered
-        // work: it reopens for a fresh dispatch.
-        (didRelease) => (didRelease ? { clientMutationId, undelivered: true } : undefined),
-      );
-      if (released) {
-        notifyMutationPersistence([record.targetRef]);
-        // The resync-and-dispatch tail above already ran its dispatch pass, so
-        // the reopened row drives its own - the same kick a resend gives its
-        // fresh row.
-        handleDiscoveredMutations(runtime, [record.targetRef]);
-      }
+    // The reauthorization itself refuses every row that is no longer parked
+    // delivery-uncertain behind a crossed fence, inside its own transaction
+    // on a fresher read - no pre-read needed.
+    const released = await trackOutboxWrite(
+      record.targetRef,
+      () => runtime.storage.reauthorizeBlockedMutation(clientMutationId, { stopEpoch, displayedStopEpoch }),
+      // The reauthorized row keeps the id it reopens under, and is undelivered
+      // work: it reopens for a fresh dispatch.
+      (didRelease) => (didRelease ? { clientMutationId, undelivered: true } : undefined),
+    );
+    if (released) {
+      notifyMutationPersistence([record.targetRef]);
+      // The resync-and-dispatch tail above already ran its dispatch pass, so
+      // the reopened row drives its own - the same kick a resend gives its
+      // fresh row.
+      handleDiscoveredMutations(runtime, [record.targetRef]);
     }
   }
   const current = await runtime.storage.getOutbox(clientMutationId);
@@ -3199,8 +3200,9 @@ export function captureRecoveryStopBarrier(targetRef: string): Promise<MutationS
  * lands inside those waits cannot move the destination under the press. */
 export function readRecoveryWithStopEpoch(
   clientMutationId: string,
-): Promise<{ record: MutationRecoveryRecord | undefined; stopEpoch: number }> {
-  const capture = requireMutationRuntime().storage.getRecoveryWithStopEpoch(clientMutationId);
+  displayedRef?: string,
+): Promise<{ record: MutationRecoveryRecord | undefined; stopEpoch: number; displayedStopEpoch: number }> {
+  const capture = requireMutationRuntime().storage.getRecoveryWithStopEpoch(clientMutationId, displayedRef);
   // The capture can fail while the Send is still awaiting its recovery write.
   // Keep that rejection for the sender without an unhandled interim promise.
   void capture.catch(() => undefined);
@@ -3300,10 +3302,10 @@ export async function resendRecoveryMutation(
   skillNames?: readonly string[],
   commandNames?: readonly string[],
   mentions?: readonly ComposerMention[],
-  barrierRead = captureRecoveryStopBarrier(targetRef),
+  barrierRead: MutationStopCapture | Promise<MutationStopCapture> = captureRecoveryStopBarrier(targetRef),
   expectedRecoveryRevisions?: Readonly<Record<string, number>>,
   compositionOwnerId?: string,
-  displayedBarrierRead?: Promise<DisplayedRecoveryStopBarrier>,
+  displayedBarrierRead?: DisplayedRecoveryStopCapture | Promise<DisplayedRecoveryStopCapture>,
 ): Promise<MutationRecoveryResendResult> {
   const runtime = requireMutationRuntime();
   await runtime.start;

@@ -5,13 +5,8 @@
 
 import type { ComposerMention } from "@evener/appwire-client";
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
-import type { DisplayedRecoveryStopBarrier } from "../../../stores/mutationOutboxIndexedDB";
-import {
-  captureRecoveryStopBarrier,
-  type InputAttachment,
-  readRecoveryWithStopEpoch,
-  threadsStore,
-} from "../../../stores/threads";
+import type { DisplayedRecoveryStopCapture } from "../../../stores/mutationOutboxIndexedDB";
+import { type InputAttachment, readRecoveryWithStopEpoch, threadsStore } from "../../../stores/threads";
 import { acquireUnreadThreadClaim } from "../../../stores/useThreadModel";
 import { pushToast } from "../../../widgets/toast/store";
 
@@ -44,11 +39,15 @@ export function pushSelectionRefusal(refusal: SelectionRefusal): void {
 }
 
 // A recovery row that another surface changed ("changed") or already sent
-// ("consumed") under this one.
-export type RecoveryRefusal = "changed" | "consumed";
+// ("consumed") under this one, or a Stop that crossed the send before it
+// left ("fenced") - the press answered not-sent and the composition stayed
+// in the recovery tray.
+export type RecoveryRefusal = "changed" | "consumed" | "fenced";
 
 export function pushRecoveryRefusal(refusal: RecoveryRefusal): void {
   if (refusal === "changed") pushToast("info", "This message changed in another tab. Refresh and try again.", refusal);
+  else if (refusal === "fenced")
+    pushToast("info", "A Stop crossed this send; it is still in the recovery tray.", refusal);
   else pushToast("info", "This message was already sent in another tab.", refusal);
 }
 
@@ -75,39 +74,34 @@ export function submitDraftToStore(
   return route === "drain" ? call(store.drainAsSteer) : call(store[route]);
 }
 
-/** The recovery Send's synchronous intent: the two press-time captures a
- * recovery resend fences on, both requested in the press's own synchronous
+/** The recovery Send's synchronous intent: the press-time capture pair a
+ * recovery resend fences on, requested in the press's own synchronous
  * prefix - before any await - so a Stop the user presses while the Send waits
  * on persistence or destination hydration stays in the fence's future.
  *
+ * Both halves read ONE readonly snapshot (readRecoveryWithStopEpoch):
  * - displayedBarrier: the displayed ref's Stop fence, captured from the ref
  *   this pane renders, INDEPENDENTLY of the row's durable destination. After
  *   a peer retarget followed by an autosave reconciliation the two differ,
  *   and a Stop on the still-displayed session names the displayed ref, so
  *   deriving this capture from the destination would leave that Stop's epoch
- *   fenced by nothing.
- * - durableSnapshot: the row and its current destination's Stop epoch from
- *   one readonly storage snapshot (readRecoveryWithStopEpoch), which serves
- *   as both the send's destination and the destination fence's baseline - a
- *   peer retarget that lands inside the send's own waits cannot move the
- *   destination under the press, and one that lands between the press and
- *   the resend is caught by the caller's target comparison. */
+ *   fenced by nothing. One snapshot means one transaction per press, and
+ *   both fence halves read one consistent baseline.
+ * - durableSnapshot: the row and its current destination's Stop epoch, which
+ *   serves as both the send's destination and the destination fence's
+ *   baseline - a peer retarget that lands inside the send's own waits cannot
+ *   move the destination under the press, and one that lands between the
+ *   press and the resend is caught by the caller's target comparison. */
 export interface PressedRecoverySendIntent {
-  readonly displayedBarrier: Promise<DisplayedRecoveryStopBarrier>;
+  readonly displayedBarrier: Promise<DisplayedRecoveryStopCapture>;
   readonly durableSnapshot: Promise<{ record: MutationRecoveryRecord | undefined; stopEpoch: number }>;
 }
 
 export function captureRecoverySendIntent(displayedRef: string, recoveryId: string): PressedRecoverySendIntent {
-  const displayedBarrier: Promise<DisplayedRecoveryStopBarrier> = captureRecoveryStopBarrier(displayedRef).then(
-    (barrier) => ({ ...barrier, targetRef: displayedRef }),
-  );
-  // The capture can fail before the Send reaches its resend; keep that
-  // rejection for the sender without an unhandled interim promise, the same
-  // guard captureRecoveryStopBarrier gives its own capture.
-  void displayedBarrier.catch(() => undefined);
+  const snapshot = readRecoveryWithStopEpoch(recoveryId, displayedRef);
   return {
-    displayedBarrier,
-    durableSnapshot: readRecoveryWithStopEpoch(recoveryId),
+    displayedBarrier: snapshot.then((capture) => ({ stopEpoch: capture.displayedStopEpoch, displayedRef })),
+    durableSnapshot: snapshot.then((capture) => ({ record: capture.record, stopEpoch: capture.stopEpoch })),
   };
 }
 

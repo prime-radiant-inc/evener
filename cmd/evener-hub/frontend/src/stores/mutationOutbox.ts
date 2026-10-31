@@ -33,6 +33,7 @@ export type {
   MutationClientLookup,
   MutationOutboxOptions,
   MutationStopBarrier,
+  MutationStopCapture,
 } from "@evener/appwire-client/state/mutation";
 export {
   acceptedRecord,
