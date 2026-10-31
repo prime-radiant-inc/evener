@@ -335,6 +335,7 @@ beforeEach(() => {
   // clearing it so DockHost cannot restore the prior test's layout.
   installLocalStorage(new MemoryStorage());
   localStorage.clear();
+  initTranscriptDisplay();
   // The settings pane's last-visited-section memory (prefs.ts's
   // lastSettingsSection) is a module-singleton field backed by this same
   // storage: rehydrate against the cleared storage, or one test's settings
