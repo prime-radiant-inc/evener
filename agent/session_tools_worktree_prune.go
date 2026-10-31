@@ -105,6 +105,10 @@ type laneSweepPolicy struct {
 	// model-facing prune sets it: it is a tool call serialized against the
 	// session's own create/switch, whereas the timer-driven residue sweep can run
 	// between a switch taking its marker and recording the lane as current.
+	// It is also the switch that turns on the owner-liveness verdict annotation
+	// on skipped delegate lanes: the residue sweep discards every skip reason
+	// it builds, so the probe's rendezvous scan and session-meta walk would be
+	// pure cost there — including during a budgeted close.
 	reclaimStrandedOwnMarker bool
 	// lockFiles is the control environment's file layer, through which the sweep
 	// proves the control policy lets it write the registry before it releases a
@@ -208,8 +212,11 @@ func (s *Session) collectRegisteredLanes(ctx context.Context, run worktree.GitRu
 				// acting on it is the manual recipe in
 				// docs/developing-evener/worktrees.md (a model or human
 				// decision). Plain session markers and reasonless locks
-				// keep their bare reason.
-				if m, ok := worktree.ParseMarker(e.LockReason); ok && m.DelegateID != "" {
+				// keep their bare reason. The probe runs only for the
+				// model-facing prune (reclaimStrandedOwnMarker, the policy's
+				// model-facing-only field): the automatic residue sweeps
+				// discard every skip reason, so the probe there is pure cost.
+				if m, ok := worktree.ParseMarker(e.LockReason); ok && m.DelegateID != "" && policy.reclaimStrandedOwnMarker {
 					reason = fmt.Sprintf("locked (%s); %s", e.LockReason, s.delegateLaneOwnerLiveness(m))
 				}
 			}

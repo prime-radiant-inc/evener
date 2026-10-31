@@ -134,3 +134,77 @@ func TestWorktreePruneReportsUnverifiableDelegateLaneOwner(t *testing.T) {
 	path := lockLaneWithDelegateMarker(t, r, "unverifiable-owner-lane", "dlg_reportunver01", missingOwner)
 	requireLaneReportedSkippedAndKept(t, r, "unverifiable-owner-lane", path, "locked ("+marker+"); owner-unverifiable")
 }
+
+// TestLaneResidueSweepSkipsOwnerLivenessProbes: the automatic residue sweeps
+// (startup and close, runLaneResidueSweep) discard every skip reason they
+// build, so the owner-liveness verdict annotation there is pure cost — a
+// rendezvous scan plus a session-meta walk per locked delegate lane, on every
+// sweep, including during budgeted close. The verdict is the model-facing
+// prune's reporting contract (issue #5471), so the gate is the policy: the
+// residue policy leaves reclaimStrandedOwnMarker (the model-facing-only
+// field) unset. Under the residue policy the built skip reason must stay the
+// bare locked marker — no probe — while the model-facing prune on the very
+// same lane still reports the verdict. The lane is collected by neither.
+func TestLaneResidueSweepSkipsOwnerLivenessProbes(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	hermeticRendezvous(t, r)
+	owner := identifier.MustNewSessionID()
+	seedOwnerRootSession(t, r.stateDir, owner)
+	// Present-but-free livelock: dead-looking evidence a probe would report.
+	if err := os.MkdirAll(schema.SessionsDir(r.stateDir), 0o755); err != nil {
+		t.Fatalf("mkdir sessions dir: %v", err)
+	}
+	if err := os.WriteFile(schema.SessionLivelockPath(r.stateDir, owner), nil, 0o600); err != nil {
+		t.Fatalf("seed free livelock: %v", err)
+	}
+
+	marker := worktree.FormatDelegateMarker("dlg_sweepskip01", owner)
+	path := lockLaneWithDelegateMarker(t, r, "sweep-skipped-lane", "dlg_sweepskip01", owner)
+
+	// The residue sweep's own call: the same snapshot, runner, listing, metaDir
+	// and policy runLaneResidueSweep passes collectRegisteredLanes.
+	st := r.s.worktreeStateSnapshot()
+	if st.env == nil || st.mainRepoRoot == "" || st.worktreeRoot == "" {
+		t.Fatalf("worktree state snapshot unusable: %+v", st)
+	}
+	run, done, err := r.s.worktreeControlRun(t.Context(), st.mainRepoRoot)
+	if err != nil {
+		t.Fatalf("control run: %v", err)
+	}
+	defer done()
+	projectDir := filepath.Join(st.worktreeRoot, st.project.ID)
+	out, err := run("worktree", "list", "--porcelain")
+	if err != nil {
+		t.Fatalf("list worktrees: %v", err)
+	}
+	managed := managedPorcelainEntries(worktree.ParsePorcelain(out), projectDir)
+	removed, skipped, err := r.s.collectRegisteredLanes(t.Context(), run, managed, metaDirForProject(projectDir), r.s.residueSweepPolicy())
+	if err != nil {
+		t.Fatalf("residue sweep pass: %v", err)
+	}
+
+	var entry *WorktreePruneEntry
+	for i := range skipped {
+		if skipped[i].Name == "sweep-skipped-lane" {
+			entry = &skipped[i]
+		}
+	}
+	if entry == nil {
+		t.Fatalf("sweep-skipped-lane not skipped by the residue policy: %+v", skipped)
+	}
+	if entry.Reason != "locked ("+marker+")" {
+		t.Errorf("residue sweep reason = %q, want the bare %q: the owner-liveness probe must not run under the residue policy", entry.Reason, "locked ("+marker+")")
+	}
+	for _, e := range removed {
+		if e.Name == "sweep-skipped-lane" {
+			t.Errorf("residue sweep collected a locked lane: %+v", e)
+		}
+	}
+	if _, statErr := os.Stat(filepath.Join(path, ".git")); statErr != nil {
+		t.Errorf("sweep-skipped-lane worktree removed: %v", statErr)
+	}
+
+	// The model-facing prune on the same lane still reports the verdict.
+	requireLaneReportedSkippedAndKept(t, r, "sweep-skipped-lane", path, "locked ("+marker+"); owner-dead-looking")
+}
