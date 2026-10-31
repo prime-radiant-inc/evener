@@ -948,6 +948,30 @@ func custodyForCorruptStore(fs afero.Fs, path string, epoch uint64, now time.Tim
 // reached, and carrying it would leave the replacement unable to allocate.
 const maxPlausibleAllocatorFloor = 1 << 62
 
+// leadingRegions returns the top-level members of a JSON object that decode
+// whole, in file order, stopping at the first syntax error. A file truncated
+// after its allocator mark still yields the mark.
+func leadingRegions(raw []byte) map[string]json.RawMessage {
+	regions := map[string]json.RawMessage{}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	if token, err := decoder.Token(); err != nil || token != json.Delim('{') {
+		return regions
+	}
+	for decoder.More() {
+		key, err := decoder.Token()
+		name, isName := key.(string)
+		if err != nil || !isName {
+			return regions
+		}
+		var value json.RawMessage
+		if decoder.Decode(&value) != nil {
+			return regions
+		}
+		regions[name] = value
+	}
+	return regions
+}
+
 // recoverAllocatorFloor reads the highest allocator id a corrupt store file
 // that is still a JSON object shows: its declared high-water mark and every
 // canonical record or tombstone id, ignoring every other region. It returns
@@ -957,10 +981,7 @@ func recoverAllocatorFloor(fs afero.Fs, path string) uint64 {
 	if err != nil {
 		return 0
 	}
-	var regions map[string]json.RawMessage
-	if json.Unmarshal(raw, &regions) != nil {
-		return 0
-	}
+	regions := leadingRegions(raw)
 	var floor uint64
 	raise := func(n uint64) {
 		if n <= maxPlausibleAllocatorFloor {

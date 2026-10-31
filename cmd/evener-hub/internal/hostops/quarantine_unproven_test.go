@@ -44,6 +44,13 @@ func TestCorruptStoreWithIncompleteCustodyIsSetAsideAndHostChangesResume(t *test
 		t.Fatalf("Open: %v", err)
 	}
 	requireUnprovenReplacement(t, store, path, []byte(truncatedStoreJSON))
+	// The truncated file still shows its declared mark, which the replacement
+	// allocates above.
+	if records := store.Records(); len(records) != 1 {
+		t.Fatalf("records = %+v", records)
+	} else if id, err := parseAllocatorID(records[0].ID); err != nil || id <= 2 {
+		t.Fatalf("the replacement allocated id %q, want one above the truncated file's mark of 2", records[0].ID)
+	}
 
 	// The next boot reopens the replacement and still reports the unproven set-aside.
 	again, err := Open(path)
