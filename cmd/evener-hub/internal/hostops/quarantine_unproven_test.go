@@ -196,3 +196,25 @@ func TestSkippedIDRangeDoesNotMakeALaterQuarantineUnproven(t *testing.T) {
 		t.Fatal("the host records were dropped")
 	}
 }
+
+// A corrupt file whose own allocatorFloor sits above its high-water mark must
+// not mask missing ids into a custody the replacement cannot build: it takes the
+// unproven set-aside, and every later open serves.
+func TestCorruptFileWithAFloorAboveItsMarkIsSetAsideUnproven(t *testing.T) {
+	path := StorePath(t.TempDir())
+	body := `{"version":1,"sequence":0,"allocatorHighWaterMark":0,"allocatorFloor":1,"records":[],"boundaries":{},"tombstones":[`
+	writeRawStore(t, path, 0o600, body+`]}`)
+
+	first, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if signal := first.Quarantine(); signal == nil || !signal.Unproven {
+		t.Fatalf("Quarantine() = %+v, want an unproven signal", signal)
+	}
+	for range 2 {
+		if _, err := Open(path); err != nil {
+			t.Fatalf("a later Open failed: %v", err)
+		}
+	}
+}

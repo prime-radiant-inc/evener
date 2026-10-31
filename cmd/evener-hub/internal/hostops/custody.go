@@ -505,6 +505,10 @@ func custodyFromStore(state snapshot, path string, epoch uint64, now time.Time, 
 	if state.Version != storeVersion {
 		return custodyFile{}, fmt.Errorf("%w: unsupported store version %d", ErrQuarantineIncomplete, state.Version)
 	}
+	if state.AllocatorFloor > state.AllocatorHighWaterMark {
+		return custodyFile{}, fmt.Errorf("%w: allocator floor %d is above the allocator high-water mark %d",
+			ErrQuarantineIncomplete, state.AllocatorFloor, state.AllocatorHighWaterMark)
+	}
 	ids := make(map[uint64]bool, len(state.Records)+len(state.Tombstones))
 	previous := ""
 	for _, record := range state.Records {
