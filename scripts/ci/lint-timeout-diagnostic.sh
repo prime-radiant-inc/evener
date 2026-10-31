@@ -138,7 +138,7 @@ for arm in A C; do
 done
 phase A-linux "$work/head" A linux 4
 phase A-darwin "$work/head" A darwin 4
-phase C-linux "$work/head" C linux 4
+phase C-linux "$work/head" C linux 2
 phase C-darwin-parallel2 "$work/head" C darwin 2
 [[ $(wc -l <"$evidence/phases.tsv") -eq 4 ]]
 kill -0 "$sampler"
