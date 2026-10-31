@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/worktree"
 	"primeradiant.com/evener/agent/schema"
@@ -474,7 +475,7 @@ func TestDelegateSendReLocksUnlockedLaneForRetainedChild(t *testing.T) {
 	wtGit(t, r.mainRoot, "worktree", "unlock", lanePath)
 	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", worktree.FormatDelegateMarker(fixture.delegateID, fixture.meta.ID), lanePath)
 	finish := func(llm.Request) llm.Response {
-		return llm.Response{Message: llm.Assistant("done")}
+		return agenttest.FinalResponse("done")
 	}
 	fixture.adapter.steps = []func(llm.Request) llm.Response{finish}
 	first := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "first turn", 10_000)
@@ -538,5 +539,104 @@ func TestDelegateReviveRefusesGoneLane(t *testing.T) {
 	_, _, err = (delegateRuntime{owner: root}).restoreIdle(started)
 	if err == nil {
 		t.Fatal("revive proceeded into a removed lane")
+	}
+}
+
+// The arm's residue can wake a retained child through the automatic paths
+// too, not just an explicit send: a notification-driven drive turn launches
+// on the retained child's session. That launch revalidates the lane the same
+// way — the released lock is re-taken before the turn runs.
+func TestDelegateWakeReLocksUnlockedLane(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	var lanePath string
+	fixture := newColdDelegateFixtureConfigured(t, "", func(d *delegatestore.Descriptor) {
+		d.Isolation = "worktree"
+		lanePath = r.delegateLane(t, "wake-relock", "dlg_waketest0000000", "034placeholder000000004")
+		d.WorkingDir = lanePath
+	})
+	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root.Close()
+	wtGit(t, r.mainRoot, "worktree", "unlock", lanePath)
+	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", worktree.FormatDelegateMarker(fixture.delegateID, fixture.meta.ID), lanePath)
+	finish := func(llm.Request) llm.Response {
+		return agenttest.FinalResponse("done")
+	}
+	fixture.adapter.steps = []func(llm.Request) llm.Response{finish}
+	first := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "first turn", 10_000)
+	if first.result.Err != nil {
+		t.Fatalf("first send: %v", first.result.Err)
+	}
+	sub := root.subagents.get(fixture.childID)
+	if sub == nil || sub.sess == nil {
+		t.Fatalf("delegate %s is not retained after its run", fixture.childID)
+	}
+	// The end state the orphan arm and the manual unlock leave.
+	wtGit(t, r.mainRoot, "worktree", "unlock", lanePath)
+
+	fixture.adapter.steps = []func(llm.Request) llm.Response{finish}
+	if !root.driveSubagentNotificationTurn(sub) {
+		t.Fatal("notification drive skipped the idle child")
+	}
+
+	_, locked, reason := r.laneLocked(t, lanePath)
+	if !locked {
+		t.Fatal("notification turn launched without the lane re-locked")
+	}
+	m, ok := worktree.ParseMarker(reason)
+	if !ok || m.DelegateID != fixture.delegateID || m.SessionID != root.id {
+		t.Fatalf("re-locked lane's lock = %q, want this session's marker for %s", reason, fixture.delegateID)
+	}
+}
+
+// And when someone else holds the released lane, the automatic wake must not
+// launch into their checkout: the drive reports not-launched and the newer
+// lock is never touched.
+func TestDelegateWakeRefusesForeignHeldLane(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	var lanePath string
+	fixture := newColdDelegateFixtureConfigured(t, "", func(d *delegatestore.Descriptor) {
+		d.Isolation = "worktree"
+		lanePath = r.delegateLane(t, "wake-foreign", "dlg_waketest0000001", "034placeholder000000005")
+		d.WorkingDir = lanePath
+	})
+	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root.Close()
+	wtGit(t, r.mainRoot, "worktree", "unlock", lanePath)
+	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", worktree.FormatDelegateMarker(fixture.delegateID, fixture.meta.ID), lanePath)
+	finish := func(llm.Request) llm.Response {
+		return agenttest.FinalResponse("done")
+	}
+	fixture.adapter.steps = []func(llm.Request) llm.Response{finish}
+	first := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "first turn", 10_000)
+	if first.result.Err != nil {
+		t.Fatalf("first send: %v", first.result.Err)
+	}
+	sub := root.subagents.get(fixture.childID)
+	if sub == nil || sub.sess == nil {
+		t.Fatalf("delegate %s is not retained after its run", fixture.childID)
+	}
+	const foreignSID = "034somebodyelse00000000001"
+	wtGit(t, r.mainRoot, "worktree", "unlock", lanePath)
+	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", worktree.FormatSessionMarker(foreignSID), lanePath)
+
+	fixture.adapter.steps = []func(llm.Request) llm.Response{finish}
+	if root.driveSubagentNotificationTurn(sub) {
+		t.Fatal("notification drive launched into a lane held by another session")
+	}
+
+	_, locked, reason := r.laneLocked(t, lanePath)
+	if !locked {
+		t.Fatal("the foreign lock was displaced")
+	}
+	if m, ok := worktree.ParseMarker(reason); !ok || m.SessionID != foreignSID {
+		t.Fatalf("foreign lock = %q, want the other session's marker", reason)
 	}
 }

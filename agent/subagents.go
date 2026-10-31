@@ -1415,6 +1415,9 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 			release()
 		}
 	}()
+	if !s.validateDrivenDelegateLane(sub) {
+		return false
+	}
 	sub.mu.Lock()
 	if sub.sess == nil || sub.closed || sub.running || sub.driving || sub.disposeGated || sub.fatalRunGated || sub.finalizing || s.childCommittedSendStart(sub.sess.id) {
 		sub.mu.Unlock()

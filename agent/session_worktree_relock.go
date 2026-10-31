@@ -239,6 +239,41 @@ func (s *Session) reviveRevalidateDelegateLane(local *execenv.LocalExecutionEnvi
 	}
 }
 
+// validateDrivenDelegateLane re-checks an isolated delegate's lane before an
+// automatic launch — a notification-driven drive turn — hands the retained
+// child another turn in it. The releases that threaten revival (close-time
+// disposal, prune's orphan arm, the documented manual unlock) threaten the
+// drive just the same: an unlocked lane is re-locked, and a lane held by
+// anyone else or removed outright refuses the launch — the drive reports
+// not-launched (its notifications stay queued) and the lane is never touched.
+// A child that is not an isolated delegate has no lane to validate.
+func (s *Session) validateDrivenDelegateLane(sub *subagent) bool {
+	if s == nil || sub == nil || sub.sess == nil || s.delegateController == nil {
+		return true
+	}
+	delegateID := sub.sess.owningDelegateID
+	if delegateID == "" {
+		return true
+	}
+	for _, delegate := range s.delegateController.ownedStableWorktreeSnapshots(s) {
+		if delegate.delegateID != delegateID || delegate.descriptor.WorkingDir == "" {
+			continue
+		}
+		local, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)
+		if !ok {
+			return true // local git worktrees are a local-env-only feature
+		}
+		if err := s.reviveRevalidateDelegateLane(local, isolationLane{delegateID: delegateID, path: delegate.descriptor.WorkingDir}); err != nil {
+			s.emit(events.WarningData{
+				Message: fmt.Sprintf("delegate %s's lane at %s failed revalidation before a notification turn: %v", delegateID, delegate.descriptor.WorkingDir, err),
+			})
+			return false
+		}
+		return true
+	}
+	return true
+}
+
 // retryPendingReLocks re-attempts the resume re-lock for lanes whose first
 // attempt failed (spec §P3: "warning + one retry"). It drains pendingReLock
 // (a single retry — a lane still failing is not re-queued) and warns once per

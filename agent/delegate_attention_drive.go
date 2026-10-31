@@ -185,6 +185,9 @@ func (s *Session) launchAcceptedDelegateAttention(sub *subagent, started delegat
 	if s == nil || sub == nil || sub.sess == nil || s.delegateController == nil {
 		return errDelegateDeliveryReceiverUnavailable
 	}
+	if err := s.reviveValidateIsolationLane(started); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
