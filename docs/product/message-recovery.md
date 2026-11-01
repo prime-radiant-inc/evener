@@ -82,13 +82,21 @@ Close flushes, never drops - a close during a pending write keeps every
 keystroke, because the final write carries the closing snapshot rather than an
 older capture some in-flight write holds. The flush's guard decisions read the
 write chain's state at the flush's own turn: a source-owned write that was
-mid-flight at disposal settles first and records its returned revision, its
-row, and its committed composition into the pane's continuity refs, so the
-flush settles after its own writes - onto the very row they advanced - rather
-than deciding from a disposal-time snapshot. A close whose composition the
-durable row holds at the chain's own turn writes nothing: an unchanged echo
-would stale every peer lease on the row, and writing after another tab sent or
-dismissed the row would resurrect a settled message. An empty composition
+mid-flight at disposal settles first and records the row and revision it
+committed into the pane's continuity refs, so the flush settles after its own
+writes - onto the very row they advanced - rather than deciding from a
+disposal-time snapshot. Whether the flush owes a write is decided by the
+durable row itself, in the representation the row persists - its composer
+text, so a built-in invocation (/queue, /steer) compares against the
+invocation the row holds rather than the parsed body it submits. The live row
+answers while it still carries the chain's own revision; a row that moved
+under a peer, or no row at all, is answered by the chain's last-known row
+snapshot; and a row the pane's own mid-flight discard deleted as it settled is
+answered by nothing - the flush owes the composition a fresh durable home. A
+close whose composition the durable row already holds writes nothing: an
+unchanged echo would stale every peer lease on the row, and writing after
+another tab sent or dismissed the row would resurrect a settled message. An
+empty composition
 closes through the guarded discard carrying the revision the pane's own
 pending write returned, and the discard's outcome is settled either way: a
 refused discard means the row moved under a writer the closing pane can no
@@ -110,7 +118,8 @@ preserves under the resumed ref - the ref every live pane and projection names
 - and the update and preserve paths notify and refresh the row's ref rather
 than the closing pane's. A preserve never duplicates content the durable row
 already holds: a row already carrying the identical composition is reused as
-the preserved row, an unchanged close writes nothing at the chain's own turn,
+the preserved row, an unchanged close writes nothing when the durable row
+answers with the same composition,
 and where a peer's advanced row and a pane's preserved composition do
 coexist, the peer's row keeps that peer's work and the newest composition
 wins automatic restoration. A close that follows the pane's own mid-flight

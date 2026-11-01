@@ -116,9 +116,16 @@ except where a line says so itself.
   saves use. Close flushes, never drops - a close during a pending write keeps
   every keystroke. The flush's guards read the write chain's state at the
   flush's own turn: a source-owned write mid-flight at disposal settles first
-  and records its revision, row and committed composition, and the flush
-  settles onto the row its own chain advanced. A close whose composition the
-  durable row holds at the chain's own turn writes nothing; an empty
+  and records the row and revision it committed, and the flush settles onto
+  the row its own chain advanced. Whether the flush owes a write is decided
+  by the durable row itself, in the representation the row persists (its
+  composer text, so a built-in /queue or /steer invocation compares as the
+  invocation, not the parsed body): the live row answers while it still
+  carries the chain's own revision; a row that moved under a peer, or no row
+  at all, is answered by the chain's last-known row snapshot; and a row the
+  pane's own mid-flight discard deleted as it settled is answered by nothing -
+  the flush owes the composition a fresh durable home. A close whose
+  composition the durable row already holds writes nothing; an empty
   composition closes through the guarded discard carrying the pending write's
   returned revision, its refusal settled (the row belongs to a writer the
   closing pane cannot name); a leased composition through the save CAS; and a
@@ -139,8 +146,8 @@ except where a line says so itself.
 - A preserve follows its row's own durable identity - a row a resume
   retargeted preserves under the resumed ref - and never duplicates content
   the durable row already holds: a row already carrying the identical
-  composition is reused, an unchanged close writes nothing at the chain's own
-  turn, and where a peer's advanced row and a pane's preserved composition
+  composition is reused, an unchanged close writes nothing when the durable
+  row answers with the same composition, and where a peer's advanced row and a pane's preserved composition
   coexist, the peer's row keeps its own work and the newest composition wins
   automatic restoration. A close that follows the pane's own mid-flight write
   settles onto the row that write advanced in place; the row a peer advanced

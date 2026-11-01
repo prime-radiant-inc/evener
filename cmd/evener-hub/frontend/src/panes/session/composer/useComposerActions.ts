@@ -230,9 +230,9 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     const visible = materializeSelectionReferences({ ...recovered, skillNames: restoredSkillNames(recovered) });
     Object.assign(recovered, visible);
     recoveryOwnsLocalDraftRef.current = false;
-    // The restored row already holds this composition on the durable side;
-    // adopting it records that, so an unchanged close owes no final write.
-    adoptRestoredRecovery(record, recovered);
+    // Adoption is a lease transfer alone; the close's flush reads the
+    // restored row itself to decide whether an unchanged close owes a write.
+    adoptRestoredRecovery(record);
     // Restoration replaces this mount's local owner without editing the
     // shared recovery draft that an earlier mount may still be submitting.
     draftEditRevisionRef.current += 1;
