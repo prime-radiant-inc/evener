@@ -21,15 +21,14 @@ func TestManagerJobWatchOrdinaryBranchDecidedAtCompose(t *testing.T) {
 	adapter.script("root", func(llm.Request) llm.Response { return agenttest.FinalResponse("idle") })
 	root := newManagerPromptRoot(t, adapter, func(cfg *SessionConfig) { cfg.Manager = true })
 
-	stub := tool.RegisteredTool{
-		Tool: llm.Tool{Definition: llm.ToolDefinition{
-			Name:        "job_watch",
-			Description: "stub ordinary job_watch",
-			Parameters:  map[string]any{"properties": map[string]any{}},
-		}},
-		Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
-			return "stub ordinary job_watch ran", nil
-		},
+	stub := tool.RegisteredTool{}
+	stub.Tool.Definition = llm.ToolDefinition{
+		Name:        "job_watch",
+		Description: "stub ordinary job_watch",
+		Parameters:  map[string]any{"properties": map[string]any{}},
+	}
+	stub.Exec = func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+		return "stub ordinary job_watch ran", nil
 	}
 	root.mu.Lock()
 	root.reg.Remove("job_watch")
