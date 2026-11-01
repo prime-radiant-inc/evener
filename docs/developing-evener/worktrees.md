@@ -87,12 +87,14 @@ What this means day to day:
   cannot act, and only when the caller passes `orphaned_delegate_days`: the
   parent's store records the delegate's isolation disposal, or the parent
   session is gone or has been inactive at least that many days with no live
-  process proven to host its tree — a held livelock, or, where no livelock
-  answers (a daemon from before livelock support), a live owner the liveness
-  oracle proves through its rendezvous entry. A proven-live owner outranks
-  the transcript clock: a daemon from before the activity refresh leaves a
-  live tree's evidence stale for a whole long command's run, so a live owner
-  never loses its lane to the inactivity
+  process proven to host its tree — and none that cannot be ruled out. A
+  held livelock proves the owner live; where no livelock answers (a daemon
+  from before livelock support), so does a live owner the liveness oracle
+  proves through its rendezvous entry — and where that identity cannot be
+  verified, the unresolved doubt of one. A proven-live owner, or one that
+  cannot be ruled out, outranks the transcript clock: a daemon from before
+  the activity refresh leaves a live tree's evidence stale for a whole long
+  command's run, so a live owner never loses its lane to the inactivity
   clock. The released
   lane still has to pass the ordinary removal gates, and a lane holding
   unmerged work is unlocked but kept.
@@ -123,7 +125,8 @@ never takes `force`; anything it declines to remove is `remove`'s job, or a deli
   unlock. With `orphaned_delegate_days` it also releases the lock of a delegate
   lane whose parent provably cannot act — the parent's isolation disposal
   already ran, or the parent session is gone or long-inactive with no live
-  process proven to host its tree — and then judges
+  process proven to host its tree, and none that cannot be ruled out — and
+  then judges
   the lane by these same gates; a work-holding orphan is unlocked and reported
   kept.
 

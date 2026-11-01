@@ -200,18 +200,20 @@ func (s *Session) parentStillInactive(m worktree.Marker, minInactivity time.Dura
 }
 
 // parentProvenLive reports whether a live process is proven to host the
-// lane's parent tree — the durable witness against the inactivity clock. The
-// marker names the immediate parent, but a subagent never takes a livelock:
-// only the hosting root's process does, so the parent is resolved to its
-// tree root and the root's livelock is probed. A parent whose chain cannot
-// be resolved (a missing meta — the seeded residue shape) keeps its own
-// livelock probed: a root parent's livelock is its own. A held livelock is
-// conclusive, and a livelock whose state cannot be read is not a license to
-// release, so it reads as held. Without a held livelock — the flock free, or
-// no file at all: a daemon from before livelock support, or a resumed
-// process that could not take the flock — the liveness oracle's rendezvous
-// evidence is the remaining witness, and an owner it proves live withholds
-// the release too.
+// lane's parent tree, or cannot be ruled out — the durable witness against
+// the inactivity clock. The marker names the immediate parent, but a
+// subagent never takes a livelock: only the hosting root's process does, so
+// the parent is resolved to its tree root and the root's livelock is probed.
+// A parent whose chain cannot be resolved (a missing meta — the seeded
+// residue shape) keeps its own livelock probed: a root parent's livelock is
+// its own. A held livelock is conclusive, and a livelock whose state cannot
+// be read is not a license to release, so it reads as held. Without a held
+// livelock — the flock free, or no file at all: a daemon from before livelock
+// support, or a resumed process that could not take the flock — the liveness
+// oracle's rendezvous evidence is the remaining witness: an owner it proves
+// live withholds the release, and so does its unresolved doubt — an
+// attributed live pid that may still be the tree's daemon — because
+// uncertainty about a live owner is not permission to release.
 func (s *Session) parentProvenLive(m worktree.Marker) bool {
 	if s == nil || s.stateDir == "" || m.SessionID == "" {
 		return false
@@ -227,7 +229,8 @@ func (s *Session) parentProvenLive(m worktree.Marker) bool {
 	if held {
 		return true
 	}
-	return s.delegateLaneOwnerLiveness(m) == ownerLive
+	verdict, liveDoubt := s.delegateLaneOwnerLivenessDetail(m)
+	return verdict == ownerLive || liveDoubt
 }
 
 // restoreOrphanedDelegateMarker puts the marker back after a release whose

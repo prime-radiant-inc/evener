@@ -45,7 +45,9 @@ func SessionLivelockPath(dir, id string) string {
 // One automated use is allowed, and it withholds rather than takes: an owner
 // proven live — a HELD livelock, or the liveness oracle's rendezvous
 // evidence where no livelock answers, as for a daemon from before livelock
-// support — stops the prune's orphan arm from releasing a live owner's lane
+// support — or left in unresolved doubt of liveness (an attributed live
+// pid that may still be the tree's daemon) stops the prune's orphan arm
+// from releasing a live owner's lane
 // on stale-evidence inactivity: a daemon from before the activity-evidence
 // refresh leaves a live tree's transcript stale for a whole long command's
 // run. The opposite direction stays forbidden: an owner not proven live is
