@@ -150,6 +150,16 @@ func worktreePruneEntryToMap(e WorktreePruneEntry) map[string]any {
 	}
 }
 
+// worktreePruneEntryMaps renders a prune report list into its tool result
+// shape.
+func worktreePruneEntryMaps(es []WorktreePruneEntry) []map[string]any {
+	out := make([]map[string]any, len(es))
+	for i, e := range es {
+		out[i] = worktreePruneEntryToMap(e)
+	}
+	return out
+}
+
 // worktreeList performs the list operation (spec §5 list, all three steps):
 // enumerate managed worktrees from `git worktree list --porcelain` (never
 // running `git worktree prune`), filter with the same prefix-collision-safe,

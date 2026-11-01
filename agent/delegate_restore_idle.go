@@ -27,6 +27,9 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	}
 	defer release()
 	descriptor := cloneDelegateStartDescriptor(started.descriptor)
+	if err := s.reviveValidateIsolationLane(started); err != nil {
+		return nil, false, err
+	}
 	if retained := s.subagents.get(descriptor.ChildSessionID); retained != nil && retained.sess != nil {
 		return retained, false, nil
 	}
@@ -268,6 +271,32 @@ func (s *Session) sharedRestoreEnvironment(descriptor delegatestore.Descriptor) 
 	return nil
 }
 
+// reviveValidateIsolationLane re-establishes the tree's claim on the lane a
+// delegate's turn runs in before a revive path hands the lane back to a
+// child. Every path funnels through it — restoreIdle's retained and
+// reconstructed children, and restoreIdleForSend's existing-child return.
+// Close-time disposal leaves a kept changed lane unlocked ("switch-able until
+// revived", spec §9 Guards), and prune's orphan arm (#5471) and the
+// documented manual unlock can release a resumable delegate's lane; an
+// unlocked lane is re-locked, a lane still carrying this session's marker is
+// adopted, a lane held by anyone else is a refusal, and a removed lane fails
+// the revival before any environment is built on a checkout that is no longer
+// there. A non-isolated delegate that shares an isolated ancestor's checkout
+// validates that ancestor's lane; a delegate with no lane of this tree's own
+// and a non-local environment are not gated.
+func (s *Session) reviveValidateIsolationLane(started delegateStartCommit) error {
+	if err := s.revalidateLaneForLaunch(started.lease.delegateID); err != nil {
+		return err
+	}
+	// The lane revalidated — including the ungated shapes, where the delegate
+	// now has no lane of its own to fail — so any drain-abandonment stamp a
+	// notification-drive refusal left on this delegate is resolved: drives and
+	// drains wait on the child again instead of skipping it until the next
+	// generation.
+	s.clearDrainAbandonedDelegate(started.lease.delegateID)
+	return nil
+}
+
 func (runtime delegateRuntime) restoreIdleForSend(started delegateStartCommit) (*subagent, bool, func(*subagent, error), error) {
 	s := runtime.owner
 	finish := func(*subagent, error) {}
@@ -290,6 +319,9 @@ func (runtime delegateRuntime) restoreIdleForSend(started delegateStartCommit) (
 	}
 	if !leader {
 		if existing != nil {
+			if err := s.reviveValidateIsolationLane(started); err != nil {
+				return nil, false, finish, err
+			}
 			return existing, false, finish, nil
 		}
 		reconstructed, waitErr := pending.wait()

@@ -185,6 +185,15 @@ func (s *Session) launchAcceptedDelegateAttention(sub *subagent, started delegat
 	if s == nil || sub == nil || sub.sess == nil || s.delegateController == nil {
 		return errDelegateDeliveryReceiverUnavailable
 	}
+	if err := s.reviveValidateIsolationLane(started); err != nil {
+		// The refused lane strands the attention this drive owed exactly as
+		// a refused notification drive strands its pending: without the
+		// stamp every later drive retries the revalidation and the drain
+		// counts the owed attention as live deliverable work. A later revive
+		// that revalidates the lane successfully clears it.
+		s.recordDrainAbandonedChildOnLaneRefusal(sub, "its lane failed revalidation before an attention launch")
+		return err
+	}
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
