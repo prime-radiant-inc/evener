@@ -292,6 +292,21 @@ func (m SessionMeta) HomeDir() string {
 	return m.EnvInfo.WorkingDir
 }
 
+// RestoredScratchTreeRoot is the root session whose scratch tree this
+// session's scratch lives in: the tree its meta names for a delegate — kept
+// when the delegate is resumed on its own (`serve --resume <delegate>`) — or
+// the session itself. A caller that must reconstruct a session's scratch
+// directory from its meta (the daemon reopening its scratch, the hub serving
+// one) reads this, so both name the same tree.
+func (m SessionMeta) RestoredScratchTreeRoot() string {
+	for _, root := range []string{m.ScratchTreeRootID, m.JobTreeRootSessionID} {
+		if root = strings.TrimSpace(root); m.IsSubagent && ValidateSessionID(root) == nil {
+			return root
+		}
+	}
+	return m.ID
+}
+
 // CumulativeUsage is a deliberately lossy snapshot of an llm.Usage kept in
 // SessionMeta so per-session token totals survive daemon restart and resume.
 // Conversion from llm.Usage drops Raw and the reasoning/cache-write pointers;

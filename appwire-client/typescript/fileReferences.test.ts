@@ -10,6 +10,7 @@ import {
 import {
   bindArtifactPath,
   bindFilePath,
+  bindScratchPath,
   bindServedPath,
   type FileReference,
   findFileReferences,
@@ -554,10 +555,52 @@ describe("bindServedPath", () => {
     });
   });
 
-  it("serves nothing outside both roots, or when no artifacts directory is advertised", () => {
-    expect(bindServedPath("/etc/passwd", cwd, artifactsDir)).toBeUndefined();
+  it("falls back to the scratch directory after the working directory and artifacts", () => {
+    const scratchDir = "/tmp/evener-scratch-s1/s1";
+    expect(bindServedPath(`${scratchDir}/shot.png`, cwd, artifactsDir, scratchDir)).toMatchObject({
+      path: "shot.png",
+      cwd: scratchDir,
+      root: "scratch",
+    });
+    expect(bindServedPath("/work/a/docs/plan.md", cwd, artifactsDir, scratchDir)).toMatchObject({
+      path: "docs/plan.md",
+      cwd,
+    });
+  });
+
+  it("serves nothing outside every root, or when a root is not advertised", () => {
+    const scratchDir = "/tmp/evener-scratch-s1/s1";
+    expect(bindServedPath("/etc/passwd", cwd, artifactsDir, scratchDir)).toBeUndefined();
     expect(bindServedPath(`${artifactsDir}/report.md`, cwd, undefined)).toBeUndefined();
     expect(bindServedPath(`${artifactsDir}/report.md`, cwd)).toBeUndefined();
+    expect(bindServedPath(`${scratchDir}/shot.png`, cwd, artifactsDir, undefined)).toBeUndefined();
+  });
+});
+
+describe("scratch-rooted references", () => {
+  const scratchDir = "/tmp/evener-scratch-s1/s1";
+
+  it("binds an absolute scratch path relative to the scratch directory", () => {
+    expect(bindScratchPath(`${scratchDir}/shot-1.png`, scratchDir)).toEqual({
+      path: "shot-1.png",
+      cwd: scratchDir,
+      readTarget: `${scratchDir}/shot-1.png`,
+      provenance: "absolute",
+      root: "scratch",
+    });
+  });
+
+  it("refuses a path outside the scratch directory, a traversal, and a missing root", () => {
+    for (const value of [
+      "/etc/passwd",
+      "/tmp/evener-scratch-s2/s2/shot.png",
+      `${scratchDir}/../s2/shot.png`,
+      `${scratchDir}/../../etc/passwd`,
+      `${scratchDir}/`,
+    ]) {
+      expect(bindScratchPath(value, scratchDir)).toBeUndefined();
+    }
+    expect(bindScratchPath("shot.png", "")).toBeUndefined();
   });
 });
 
@@ -574,6 +617,7 @@ describe("rebindFileReference on an artifacts reference", () => {
 
 describe("resolveFileLink", () => {
   const artifactsDir = "/state/projects/p/sessions/s1/artifacts";
+  const scratchDir = "/tmp/evener-scratch-s1/s1";
 
   it("binds a plain markdown path against the working directory", () => {
     expect(resolveFileLink("docs/plan.md", cwd, artifactsDir)).toMatchObject({ path: "docs/plan.md", cwd });
@@ -589,9 +633,14 @@ describe("resolveFileLink", () => {
       cwd: artifactsDir,
       root: "artifacts",
     });
+    expect(resolveFileLink(`file://${scratchDir}/shot.png`, cwd, artifactsDir, scratchDir)).toMatchObject({
+      path: "shot.png",
+      cwd: scratchDir,
+      root: "scratch",
+    });
   });
 
-  it("names nothing for a destination outside both roots, a non-file scheme, or a malformed file URL", () => {
+  it("names nothing for a destination outside every root, a non-file scheme, or a malformed file URL", () => {
     for (const href of [
       "file:///etc/passwd",
       "file://server/share/report.md",
@@ -599,7 +648,9 @@ describe("resolveFileLink", () => {
       "https://example.com/docs/plan.md",
       "javascript:alert(1)",
     ]) {
-      expect(resolveFileLink(href, cwd, artifactsDir)).toBeUndefined();
+      expect(resolveFileLink(href, cwd, artifactsDir, scratchDir)).toBeUndefined();
     }
+    // A scratch destination binds only when the thread advertises the root.
+    expect(resolveFileLink(`file://${scratchDir}/shot.png`, cwd, artifactsDir)).toBeUndefined();
   });
 });

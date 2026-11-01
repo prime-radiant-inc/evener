@@ -1054,6 +1054,42 @@ describe("native file URL links", () => {
 		expect(result.markdown).toContain(reportURL);
 	});
 
+	// A tool writes a screenshot into the session's scratch directory and names
+	// it by absolute path, in code or prose. The hub serves that directory, and
+	// the thread snapshot names it, so the phone binds those paths like the web
+	// does.
+	it("binds a code-span scratch path to the session-local file", () => {
+		const scratchDir = "/tmp/evener-scratch-s1/s1";
+		const shot = `${scratchDir}/shot-6-message-link-fixed.png`;
+		const result = renderMarkdownFileReferences(`- \`${shot}\` — the fix`, cwd, undefined, scratchDir);
+		const reference = [...result.references.values()][0];
+		expect(reference).toMatchObject({
+			path: "shot-6-message-link-fixed.png",
+			cwd: scratchDir,
+			readTarget: shot,
+			root: "scratch",
+		});
+	});
+
+	it("binds a file URL inside the session scratch", () => {
+		const scratchDir = "/tmp/evener-scratch-s1/s1";
+		const shot = `${scratchDir}/shot-6-message-link-fixed.png`;
+		const result = renderMarkdownFileReferences(`[the fix](file://${shot})`, cwd, undefined, scratchDir);
+		const reference = [...result.references.values()][0];
+		expect(reference).toMatchObject({
+			path: "shot-6-message-link-fixed.png",
+			cwd: scratchDir,
+			readTarget: shot,
+			root: "scratch",
+		});
+	});
+
+	it("binds nothing when the snapshot advertises no scratch directory", () => {
+		const shot = "/tmp/evener-scratch-s1/s1/shot-6-message-link-fixed.png";
+		const result = renderMarkdownFileReferences(`- \`${shot}\` — the fix`, cwd);
+		expect(result.references.size).toBe(0);
+	});
+
 	// CommonMark gives an autolink's text no entity or escape processing: what
 	// sits between the angles is the URL. A file whose name looks like an entity
 	// therefore names that file, and a bracket in the name must not break the

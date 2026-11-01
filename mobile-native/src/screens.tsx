@@ -1409,6 +1409,7 @@ function ConversationScreenView({
 	// Map, and each message's chips skip re-reading its markdown.
 	const documentCwd = conversation?.cwd ?? "";
 	const artifactsDir = conversation?.artifactsDir;
+	const scratchDir = conversation?.scratchDir;
 	const turns = conversation?.turns;
 	const writesKey = useMemo(() => JSON.stringify([...fileWrites(turns ?? [], documentCwd)]), [turns, documentCwd]);
 	const writes = useMemo(() => new Map<string, string>(JSON.parse(writesKey) as [string, string][]), [writesKey]);
@@ -1432,9 +1433,9 @@ function ConversationScreenView({
 	const fileContext = useMemo<NativeFileOpenContext | undefined>(
 		() =>
 			documentCwd && route.params.hubId && isValidTranscriptRef(route.params.ref)
-				? { cwd: documentCwd, artifactsDir, openFile }
+				? { cwd: documentCwd, artifactsDir, scratchDir, openFile }
 				: undefined,
-		[documentCwd, route.params.hubId, route.params.ref, artifactsDir, openFile],
+		[documentCwd, route.params.hubId, route.params.ref, artifactsDir, scratchDir, openFile],
 	);
 	const openDocument = useCallback(
 		(path: string, updatedAt: string | undefined) => {

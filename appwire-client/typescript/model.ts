@@ -503,6 +503,12 @@ export interface ThreadModel {
   // cwd or inside this directory, so a link's destination is checked against
   // both rather than guessed at.
   artifactsDir?: string;
+  // The session's named scratch directory on the hub that serves it (wire
+  // Thread.evener.scratchDir), absent when no local path names one. An
+  // absolute path a tool named — a screenshot, session-local output — is
+  // openable through the doc pane only when it resolves inside cwd, this
+  // model's artifacts directory, or this directory.
+  scratchDir?: string;
   gitBranch?: string;
   projectPath?: string;
   // When the session began and when its state was last written, as ISO

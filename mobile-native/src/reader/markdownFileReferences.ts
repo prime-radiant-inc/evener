@@ -22,6 +22,11 @@ export interface NativeFileOpenContext {
 	 * serves. A link inside it opens as a document just as one inside `cwd`
 	 * does. Absent until the thread snapshot advertises one. */
 	readonly artifactsDir?: string;
+	/** The session's named scratch directory, the third root the hub serves.
+	 * An absolute path inside it (a screenshot, session-local output) opens as
+	 * a document the same way. Absent until the thread snapshot advertises
+	 * one. */
+	readonly scratchDir?: string;
 	openFile(reference: FileReference): void;
 }
 export interface MarkdownFileRender {
@@ -35,10 +40,10 @@ export interface MarkdownFileRender {
  * copied path or a review naming only `report.md` would point at the wrong one. */
 export function namedFileTarget(reference: {
 	readonly path: string;
-	readonly root?: "artifacts";
+	readonly root?: "artifacts" | "scratch";
 	readonly readTarget?: string;
 }): string {
-	return reference.root === "artifacts" && reference.readTarget ? reference.readTarget : reference.path;
+	return reference.root !== undefined && reference.readTarget ? reference.readTarget : reference.path;
 }
 interface Source {
 	text: string;
@@ -469,14 +474,14 @@ function candidates(markdown: string): readonly Candidate[] {
 	return found;
 }
 
-function boundCandidates(markdown: string, cwd: string, artifactsDir?: string) {
+function boundCandidates(markdown: string, cwd: string, artifactsDir?: string, scratchDir?: string) {
 	return candidates(markdown).flatMap((candidate) => {
 		// A link destination may be a file URL, which the path parser refuses,
 		// so links bind through the shared resolver the web transcript uses.
 		const reference =
 			candidate.surface === "link"
-				? resolveFileLink(candidate.value, cwd, artifactsDir)
-				: parseFileReference(candidate.value, candidate.surface, cwd);
+				? resolveFileLink(candidate.value, cwd, artifactsDir, scratchDir)
+				: parseFileReference(candidate.value, candidate.surface, cwd, { artifactsDir, scratchDir });
 		return reference ? [{ candidate, reference }] : [];
 	});
 }
@@ -484,27 +489,35 @@ export function markdownFileReferences(
 	markdown: string,
 	cwd: string,
 	artifactsDir?: string,
+	scratchDir?: string,
 ): Array<{ reference: FileReference; surface: "prose" | "code" | "link" }> {
-	return boundCandidates(markdown, cwd, artifactsDir).map(({ candidate, reference }) => ({
+	return boundCandidates(markdown, cwd, artifactsDir, scratchDir).map(({ candidate, reference }) => ({
 		reference,
 		surface: candidate.surface,
 	}));
 }
 let renderGeneration = 0;
-export function renderMarkdownFileReferences(markdown: string, cwd: string, artifactsDir?: string): MarkdownFileRender {
+export function renderMarkdownFileReferences(
+	markdown: string,
+	cwd: string,
+	artifactsDir?: string,
+	scratchDir?: string,
+): MarkdownFileRender {
 	const generation = ++renderGeneration;
 	const references = new Map<string, FileReference>();
-	const replacements = boundCandidates(markdown, cwd, artifactsDir).map(({ candidate, reference }, index) => {
-		const id = `evener-file:${generation}-${index}`;
-		references.set(id, reference);
-		let replacement: string;
-		if (candidate.referenceSuffix) replacement = `(${id})`;
-		else if (candidate.display !== undefined) replacement = `[${proseLabel(candidate.display)}](${id})`;
-		else if (candidate.label === undefined) replacement = id;
-		else
-			replacement = `[${candidate.surface === "prose" ? candidate.label : markdown.slice(candidate.start, candidate.end)}](${id})`;
-		return { ...candidate, replacement };
-	});
+	const replacements = boundCandidates(markdown, cwd, artifactsDir, scratchDir).map(
+		({ candidate, reference }, index) => {
+			const id = `evener-file:${generation}-${index}`;
+			references.set(id, reference);
+			let replacement: string;
+			if (candidate.referenceSuffix) replacement = `(${id})`;
+			else if (candidate.display !== undefined) replacement = `[${proseLabel(candidate.display)}](${id})`;
+			else if (candidate.label === undefined) replacement = id;
+			else
+				replacement = `[${candidate.surface === "prose" ? candidate.label : markdown.slice(candidate.start, candidate.end)}](${id})`;
+			return { ...candidate, replacement };
+		},
+	);
 	let rendered = markdown;
 	for (const range of replacements.reverse())
 		rendered = rendered.slice(0, range.start) + range.replacement + rendered.slice(range.end);

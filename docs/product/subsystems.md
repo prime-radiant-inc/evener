@@ -183,6 +183,10 @@ rebuild. Browser DocPane, native Reader, raw HTTP, image HTTP and the native
 share download retain the same owning-session boundary; the download format
 serves the whole file where a pane read stops at its cap. See
 [session document reads](../evener-hub-web-routing.md#session-document-reads).
+Served roots are the session's working directory, its retained artifacts
+directory, and its named scratch directory (absolute paths only, each resolved
+by the same containment check and announced on the thread it serves), so a
+screenshot or report a tool named by path opens the same way on every client.
 
 ## Capabilities and configuration
 

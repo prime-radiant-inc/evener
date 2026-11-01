@@ -15,6 +15,7 @@ export function AgentMarkdown({ source, live = false }: { source: string; live?:
   const sessionRef = thread?.ref;
   const cwd = thread?.cwd;
   const artifactsDir = thread?.artifactsDir;
+  const scratchDir = thread?.scratchDir;
   const root = useRef<HTMLDivElement>(null);
   const [portals, setPortals] = useState<ReactNode[]>([]);
   // Portal updates must not replace the innerHTML that owns their mount points.
@@ -31,14 +32,19 @@ export function AgentMarkdown({ source, live = false }: { source: string; live?:
     const qualifiedRef = sessionRef?.includes(":") ? sessionRef : `local:${sessionRef ?? ""}`;
     const context =
       sessionRef && isValidTranscriptRef(qualifiedRef) && cwd && sourcePaneId
-        ? { sessionRef, cwd, sourcePaneId, artifactsDir }
+        ? { sessionRef, cwd, sourcePaneId, artifactsDir, scratchDir }
         : undefined;
     if (context) {
       // Only authored eligible anchors get the existing OpenButton. Capture
       // destinations before the DOM adapter rewrites hrefs or generates links.
       for (const link of element.querySelectorAll<HTMLAnchorElement>("a[href]")) {
         if (link.closest(`pre, [data-entity-host], [${MERMAID_DIAGRAM_ATTR}]`)) continue;
-        const reference = resolveAnchorReference(link.getAttribute("href") ?? "", context.cwd, context.artifactsDir);
+        const reference = resolveAnchorReference(
+          link.getAttribute("href") ?? "",
+          context.cwd,
+          context.artifactsDir,
+          context.scratchDir,
+        );
         if (!reference) continue;
         const request = { session: context.sessionRef, reference, sourcePaneId: context.sourcePaneId };
         const slot = document.createElement("span");
@@ -61,7 +67,7 @@ export function AgentMarkdown({ source, live = false }: { source: string; live?:
       restoreFiles();
       for (const slot of slots) slot.remove();
     };
-  }, [source, live, sessionRef, cwd, artifactsDir, sourcePaneId]);
+  }, [source, live, sessionRef, cwd, artifactsDir, scratchDir, sourcePaneId]);
 
   return (
     <>

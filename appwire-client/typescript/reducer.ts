@@ -1190,6 +1190,7 @@ function threadFields(resp: ThreadReadResponse, ref: string, now: number): Omit<
     // Present-and-undefined clears it; the key is then dropped so a model
     // without a root keeps the shape it had before this field existed.
     artifactsDir: thread.evener.artifactsDir || undefined,
+    scratchDir: thread.evener.scratchDir || undefined,
     modelProvider: thread.modelProvider,
     // Thread has no separate "model id" field on the wire snapshot — only
     // ModelProvider, which appwire/types_thread.go documents as overloaded to
@@ -1256,6 +1257,7 @@ function threadFields(resp: ThreadReadResponse, ref: string, now: number): Omit<
   // Present-and-undefined clears it; the key is then dropped so a model
   // without a root keeps the shape it had before this field existed.
   if (fields.artifactsDir === undefined) delete fields.artifactsDir;
+  if (fields.scratchDir === undefined) delete fields.scratchDir;
   return fields;
 }
 
@@ -2911,11 +2913,12 @@ export function applyReadResponse<M extends ThreadModel>(
   };
   const { runningTurnId: _previous, ...base } = model;
   // The spread keeps any field this read omits. A snapshot that no longer
-  // advertises an artifacts root must clear the previous one, or link actions
-  // stay aimed at a directory the hub no longer serves.
+  // advertises a served root (artifacts, scratch) must clear the previous
+  // one, or link actions stay aimed at a directory the hub no longer serves.
   const clearedArtifacts = fields.artifactsDir === undefined ? { artifactsDir: undefined } : {};
+  const clearedScratch = fields.scratchDir === undefined ? { scratchDir: undefined } : {};
   let next = withDisplay(
-    { ...base, ...fields, ...clearedArtifacts, ...runningTurn(resp.thread), olderCursor },
+    { ...base, ...fields, ...clearedArtifacts, ...clearedScratch, ...runningTurn(resp.thread), olderCursor },
     history,
     overlayRecord(resp.overlay),
   );
@@ -3041,15 +3044,19 @@ export function applyReadModel<M extends ThreadModel>(model: M, fresh: ThreadMod
   } = fresh;
   const { runningTurnId: _previous, ...base } = model;
   // Same rule as applyReadResponse: a freshly hydrated model that carries no
-  // artifacts root must clear the previous one, or the spread keeps it and
-  // link actions stay aimed at a directory the snapshot no longer names.
+  // served root (artifacts, scratch) must clear the previous one, or the
+  // spread keeps it and link actions stay aimed at a directory the snapshot
+  // no longer names.
   const clearedArtifacts =
     fresh.artifactsDir === undefined && model.artifactsDir !== undefined ? { artifactsDir: undefined } : {};
+  const clearedScratch =
+    fresh.scratchDir === undefined && model.scratchDir !== undefined ? { scratchDir: undefined } : {};
   let next = withDisplay(
     {
       ...base,
       ...fields,
       ...clearedArtifacts,
+      ...clearedScratch,
       ...(freshRunningTurnId ? { runningTurnId: freshRunningTurnId } : {}),
       olderCursor,
     },

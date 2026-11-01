@@ -239,20 +239,21 @@ export function fileURLToPath(fileURL: string): string {
 // A markdown link is already a path, which binds against the session's working
 // directory. A file URL carries a scheme the path parser refuses, so its
 // destination is decoded and bound against the working directory and then the
-// session's retained artifacts directory (the second root the hub's document
-// routes serve). A destination outside both roots names nothing the hub can
-// open, so a client leaves it an ordinary link rather than promising a
-// document. The web transcript and the phone's Reader both bind through this,
-// so the same link opens the same document on either client.
+// session's retained artifacts and scratch directories (the other roots the
+// hub's document routes serve). A destination outside every root names nothing
+// the hub can open, so a client leaves it an ordinary link rather than
+// promising a document. The web transcript and the phone's Reader both bind
+// through this, so the same link opens the same document on either client.
 export function resolveFileLink(
   href: string,
   cwd: string,
   artifactsDir: string | undefined,
+  scratchDir: string | undefined,
 ): FileReference | undefined {
   const reference = parseFileReference(href, "link", cwd);
   if (reference !== undefined) return reference;
   const filePath = fileURLToPath(href);
-  return filePath === "" ? undefined : bindServedPath(filePath, cwd, artifactsDir);
+  return filePath === "" ? undefined : bindServedPath(filePath, cwd, artifactsDir, scratchDir);
 }
 
 // cwdRelative expresses a file path relative to the session's folder, or
