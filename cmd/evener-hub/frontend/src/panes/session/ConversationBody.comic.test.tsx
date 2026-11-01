@@ -543,11 +543,11 @@ test.each([false, true])("Comic keeps one menu with mobile=%s", async (mobile) =
   await presentation("comic");
   const menus = screen.getAllByRole("button", { name: "Session actions" });
   expect(menus).toHaveLength(1);
-  expect(!!menus[0]?.closest("[data-comic-composer]")).toBe(mobile);
+  expect(menus[0]?.closest("[data-composer]")).not.toBeNull();
   const statuses = screen.getAllByTestId("liveness-line");
   expect(statuses).toHaveLength(1);
   expect(statuses[0]?.textContent).toBe("Quiet ~5m");
-  expect(!!statuses[0]?.closest("[data-comic-composer]")).toBe(mobile);
+  expect(statuses[0]?.closest("[data-composer]")).toBeNull();
   expect(screen.getByRole("button", { name: "Jump to latest" }).textContent).toBe(mobile ? "Latest" : "Jump to latest");
   await waitFor(() =>
     expect(screen.getByLabelText("Comic font unavailable").textContent).toBe(
@@ -665,11 +665,11 @@ test("the live Comic menu returns to Standard without replacing the pane", async
   const fake = await setup();
   await mount(fake);
   await presentation("comic");
-  expect(document.querySelector("[data-comic-composer]")).not.toBeNull();
+  expect(document.querySelector("[data-comic-font]")).not.toBeNull();
   fireEvent.click(screen.getByRole("button", { name: /session actions/i }));
   fireEvent.click(screen.getByRole("menuitem", { name: /verbosity/i }));
   await act(async () => fireEvent.click(screen.getByRole("radio", { name: "Standard" })));
-  expect(document.querySelector("[data-comic-composer]")).toBeNull();
+  expect(document.querySelector("[data-comic-font]")).toBeNull();
   expect(workspaceStore.getState().panes.filter((p) => p.id === paneId)).toHaveLength(1);
 });
 
@@ -710,7 +710,7 @@ test("restart-required Comic keeps its recovery explanation and menu without sub
   await presentation("comic");
   expect(document.querySelector('[data-reason="version-mismatch"]')).not.toBeNull();
   expect(screen.getAllByRole("button", { name: /session actions/i })).toHaveLength(1);
-  expect(document.querySelector("[data-comic-composer]")).not.toBeNull();
+  expect(document.querySelector("[data-comic-font]")).not.toBeNull();
   expect(fake.calls.filter((c) => c.method === "thread/resume" || c.method === "turn/start")).toEqual([]);
 });
 
@@ -722,7 +722,7 @@ test.each(["loading", "deleted"])("%s keeps the pane's presentation control reac
   fireEvent.click(screen.getByRole("button", { name: /verbosity/i }));
   await act(async () => fireEvent.click(screen.getByRole("radio", { name: "Standard" })));
   expect(transcriptDisplayStore.getState().presentation.desktop).toBe("standard");
-  expect(document.querySelector("[data-comic-composer]")).toBeNull();
+  expect(document.querySelector("[data-comic-font]")).toBeNull();
   expect(workspaceStore.getState().panes.find((p) => p.id === paneId)?.params).toEqual({ ref });
 });
 
@@ -777,7 +777,7 @@ test("a selected recovery owner and its structured attachment survive both modes
     ],
   });
   await presentation("comic");
-  expect(document.querySelector("[data-comic-composer]")).not.toBeNull();
+  expect(document.querySelector("[data-comic-font]")).not.toBeNull();
   expect(lifetime().composer).toBe(source);
   await presentation("standard");
   expect(preservedDraft()).toEqual(before);
@@ -856,7 +856,7 @@ test.each([false, true])("question answers and approvals hand off through the me
   expect(
     within(screen.getByRole("group", { name: /sandbox approval/i })).getAllByRole("button", { name: /allow/i }),
   ).toHaveLength(1);
-  expect(document.querySelector("[data-comic-composer] form")?.hasAttribute("inert")).toBe(true);
+  expect(document.querySelector('[data-testid="composer-input-card"]')?.hasAttribute("hidden")).toBe(true);
   await choosePresentation("Standard");
   expect((screen.getByRole("radio", { name: /ALPHA/ }) as HTMLInputElement).checked).toBe(true);
   expect(document.querySelector('[contenteditable="true"]')?.closest("[hidden][inert]")).toBeInstanceOf(HTMLElement);
@@ -892,14 +892,14 @@ test("whole-pane selection preserves the workspace identity and exact structured
   const panes = workspaceStore.getState().panes;
   const url = window.location.href;
   await presentation("comic");
-  expect(document.querySelector(`[data-comic-composer="${ref}"]`)).not.toBeNull();
+  expect(document.querySelector(`[data-composer="${ref}"]`)).not.toBeNull();
   expect(screen.getAllByRole("textbox", { name: "Message" })).toHaveLength(1);
   expect(lifetime().composer).toBe(source);
   expect(preservedDraft()).toEqual(before);
   expect(document.querySelector('[data-testid="transcript-virtual-list"]')).toBeNull();
   expect(screen.getAllByRole("button", { name: /session actions/i })).toHaveLength(1);
   await presentation("standard");
-  expect(document.querySelector("[data-comic-composer]")).toBeNull();
+  expect(document.querySelector("[data-comic-font]")).toBeNull();
   expect(preservedDraft()).toEqual(before);
   expect(readComposerDraft(ref)).toMatchObject({
     text: before?.text,
@@ -921,9 +921,9 @@ test("switching viewport uses its presentation without reconnecting and submits 
   replaceEditorText(editor(), "queued from either view");
   const source = lifetime().composer;
   act(() => transcriptDisplayStore.getState().setPresentation("mobile", "comic"));
-  expect(document.querySelector("[data-comic-composer]")).toBeNull();
+  expect(document.querySelector("[data-comic-font]")).toBeNull();
   await act(async () => transcriptDisplayStore.getState().setViewport("mobile"));
-  expect(document.querySelector("[data-comic-composer]")).not.toBeNull();
+  expect(document.querySelector("[data-comic-font]")).not.toBeNull();
   expect(lifetime().composer).toBe(source);
   fireEvent.click(screen.getByTestId("composer-submit"));
   await waitFor(async () => expect(await storage.listOutbox(ref)).toHaveLength(1));

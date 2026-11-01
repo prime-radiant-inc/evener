@@ -5,6 +5,7 @@ import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { askDockStore, resetAskDockStoreForTests } from "../panes/session/composer/askDock/askDockStore";
 import { ackAskUserCall } from "../panes/session/composer/askDock/askDockTestUtils";
+import { Composer } from "../panes/session/composer/Composer";
 import { resetComposerFocusStoreForTests } from "../panes/session/composer/composerFocus";
 import { readComposerDraft, writeComposerDraft } from "../panes/session/composer/draft";
 import { resetPendingTurnsStoreForTests } from "../panes/session/composer/queue/pendingTurnsStore";
@@ -20,7 +21,6 @@ import { connectionStore, resetConnectionStoreForTests } from "../stores/connect
 import { MutationOutboxIndexedDB } from "../stores/mutationOutboxIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../stores/threads";
 import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../stores/transcriptDisplay";
-import { ComicComposer } from "./ComicComposer";
 import { ComicInteractions } from "./ComicInteractions";
 
 const firstRef = "local:interaction-A";
@@ -169,9 +169,10 @@ test("actual batches alone make ordinary input inert and preserve structured dra
   expect(editor().closest("[inert]")).toBeNull();
   ask(fake);
   expect(screen.getAllByRole("tab")).toHaveLength(3);
-  expect(view.container.querySelector("[data-comic-composer] form")?.hasAttribute("inert")).toBe(true);
-  expect(view.container.querySelector("[data-comic-composer] form")?.hasAttribute("hidden")).toBe(true);
-  fireEvent.submit(view.container.querySelector("[data-comic-composer] form")!);
+  const form = view.container.querySelector<HTMLFormElement>('[data-testid="composer-form"]');
+  expect(form).not.toBeNull();
+  expect(view.container.querySelector('[data-testid="composer-input-card"]')?.hasAttribute("hidden")).toBe(true);
+  fireEvent.submit(form!);
   expect(fake.calls.filter((call) => call.method === "turn/start" || call.method === "turn/queue")).toEqual([]);
   await act(async () => {
     expect(await storage.listOutbox(firstRef)).toEqual([]);
@@ -308,7 +309,7 @@ test.each(["completion", "error"])("late approval %s stays attached to the origi
     workspaceStore.getState().panes.find((pane) => pane.id === "interaction-pane")!,
   ).composer!;
   await waitFor(() =>
-    expect(view.container.querySelector("[data-comic-composer]")?.getAttribute("data-comic-composer")).toBe(secondRef),
+    expect(view.container.querySelector("[data-composer]")?.getAttribute("data-composer")).toBe(secondRef),
   );
   replaceEditorText(editor(), "B_DRAFT");
   selectEditorText(editor(), 1, 3);
@@ -413,10 +414,10 @@ test("late answer receipt cannot focus or change the second source", async () =>
   const secondSource = createComposerSourceState(secondRef, "answer-second");
   sources.push(firstSource, secondSource);
   const surface = (source: ComposerSourceState) => (
-    <>
+    <ClientProvider client={connectionStore.getState().client!}>
       <ComicInteractions sessionRef={source.ref} />
-      <ComicComposer key={source.ref} source={source} />
-    </>
+      <Composer key={source.ref} ref={source.ref} source={source} focused={false} />
+    </ClientProvider>
   );
   const view = render(surface(firstSource));
   act(() => ackAskUserCall(fake, firstRef, "turn_1", "one", "call-one"));

@@ -1,4 +1,7 @@
 import "fake-indexeddb/auto";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ThreadTurnsListResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireThread } from "@evener/appwire-client/testing/notifications";
@@ -361,6 +364,20 @@ test.each(
     expect(pagingByRef.get(child)?.paneConsumers.size ?? 0).toBe(0);
   },
 );
+
+test("comic mode mounts the shared Composer with attach and the in-card menu", async () => {
+  const { mount } = setup(2);
+  const mounted = mount("shared-composer");
+  await waitFor(() => expect(mounted.container.querySelector('[data-testid="composer-form"]')).not.toBeNull());
+  expect(mounted.container.querySelector('[data-testid="composer-attach"]')).not.toBeNull();
+  expect(mounted.container.querySelector('[data-testid="session-chrome-inline"]')).not.toBeNull();
+  expect(within(mounted.container).getByRole("textbox", { name: "Message" })).toBeDefined();
+  expect(mounted.container.querySelector("[data-comic-composer]")).toBeNull();
+  // The shared composer owns no font of its own: it inherits the tokens the
+  // comic root swaps, so the input surface renders in the comic face.
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "comic.module.css"), "utf8");
+  expect(css).toMatch(/--font-sans:\s*var\(--comic-font\)/);
+});
 
 test("Comic registers focused-seat transcript actions outside its scroll port", async () => {
   // Initial end-follow must see the same geometry as the keyboard actions.

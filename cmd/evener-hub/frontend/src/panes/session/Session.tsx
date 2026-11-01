@@ -213,7 +213,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
           <PaneScaffold
             paneId={paneId}
             focused={paneFocused}
-            focusSelector='[data-composer] [role="textbox"], [data-comic-composer] [role="textbox"]'
+            focusSelector='[data-composer] [role="textbox"]'
             scaffoldMarker={`session:${ref}`}
             title={title}
             bodyScroll={presentation !== "comic"}

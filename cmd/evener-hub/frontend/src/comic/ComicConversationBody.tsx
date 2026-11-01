@@ -1,6 +1,7 @@
 import { useEffect, useId, useState } from "react";
 import type { ConversationParts, ConversationSeat } from "../panes/session/ConversationBody";
 import { SessionChrome } from "../panes/session/chrome/SessionChrome";
+import { Composer } from "../panes/session/composer/Composer";
 import { NOW_TICK_MS, useNowTick } from "../panes/session/liveness";
 import { PendingChips } from "../panes/session/pending/PendingChips";
 import { LivenessLine } from "../panes/session/transcript/flow/LivenessLine";
@@ -11,7 +12,6 @@ import { useIsMobile } from "../shell/useIsMobile";
 import { useThreadsStore } from "../stores/threads";
 import { TranscriptRenderProvider } from "../transcriptDisplay/renderContext";
 import { Cadence, InlineNotice, Select } from "../widgets";
-import { ComicComposer } from "./ComicComposer";
 import { ComicInteractions } from "./ComicInteractions";
 import { ComicSessionContent } from "./ComicSession";
 import styles from "./comic.module.css";
@@ -115,21 +115,18 @@ export function ComicConversationBody({
           ),
           footer: (
             <>
-              {(!isMobile || !seat.composerSource) && liveness}
+              {liveness}
               <PendingChips sessionRef={ref} />
               {seat.composerSource && (
-                <ComicComposer
-                  source={seat.composerSource}
+                <Composer
+                  ref={ref}
                   paneId={seat.viewFallbackId}
-                  headingStatus={isMobile ? liveness : undefined}
-                  sessionActions={
-                    isMobile && seat.sessionMenu ? (
-                      <SessionChrome ref={ref} paneId={seat.viewFallbackId} placement="menu" />
-                    ) : undefined
-                  }
+                  source={seat.composerSource}
+                  focused={seat.focused}
+                  mountAutofocus={seat.mountAutofocus}
                 />
               )}
-              {seat.sessionMenu && (!isMobile || !seat.composerSource) && (
+              {!seat.composerSource && seat.sessionMenu && (
                 <SessionChrome ref={ref} paneId={seat.viewFallbackId} placement="menu" />
               )}
             </>
