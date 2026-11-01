@@ -711,9 +711,6 @@ func (b *builder) completeCommunications(slot uint64, entry *schema.Turn, c cont
 			continue
 		}
 		id := part.ToolResult.ToolCallID
-		if part.ToolResult.Name != "" && part.ToolResult.Name != "communicate" {
-			continue
-		}
 		if apptranscript.CommunicateTerminalAccepted(*entry, id) == nil {
 			continue
 		}

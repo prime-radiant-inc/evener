@@ -1,8 +1,10 @@
 package transcriptindex
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/provenance"
@@ -83,6 +85,68 @@ func TestEchoingCommunicateRetainsTerminalEvidence(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestCommunicateAcceptanceSurvivesRegistryTruncationAndReplay(t *testing.T) {
+	t.Parallel()
+	fx := newFormatFixture(t, "communicate echoes")
+	fx.lines = fx.lines[:4]
+	fx.lines[2].turn.Communicate.EndTurn = true
+	content := `{"accepted":true,"end_turn":true,"inbox":["` + strings.Repeat("x", 5100) + `"]}`
+	// The registry's default result limit is 5,000 characters. Persist exactly
+	// the display value that persistToolResults receives after that truncation.
+	truncated := content[:5000]
+	if json.Valid([]byte(truncated)) {
+		t.Fatal("fixture content was not invalidated by registry truncation")
+	}
+	part := fx.lines[3].turn.Message.Content[0]
+	part.ToolResult.Content = truncated
+	part.ToolResult.ToolState = json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":true}`)
+	fx.lines[3].turn.Message.Content[0] = part
+	path := writeFixture(t, fx)
+	x := openIndex(t, path, filepath.Join(t.TempDir(), "index"))
+	window, err := x.Latest(20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range window.Candidates {
+		if candidate.Item.Type == "agentMessage" {
+			obs := candidate.Item.Observation
+			if obs == nil || obs.TerminalAccepted == nil || !*obs.TerminalAccepted {
+				t.Fatalf("replayed terminal acceptance = %+v", obs)
+			}
+			return
+		}
+	}
+	t.Fatal("replay omitted communicate message")
+}
+
+func TestRenamedCommunicateResultRetainsTerminalAcceptance(t *testing.T) {
+	t.Parallel()
+	fx := newFormatFixture(t, "communicate echoes")
+	fx.lines = fx.lines[:4]
+	fx.lines[1].turn.Message.Content[2] = call("ek1", "deliver_result", `{"message":"same words","end_turn":true}`)
+	fx.lines[2].turn.Communicate.EndTurn = true
+	part := result("ek1", "deliver_result", `{"accepted":true,"end_turn":true}`)
+	part.ToolResult.Content = "display output is not verdict evidence"
+	part.ToolResult.ToolState = json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":true}`)
+	fx.lines[3].turn.Message.Content[0] = part
+	path := writeFixture(t, fx)
+	x := openIndex(t, path, filepath.Join(t.TempDir(), "index"))
+	window, err := x.Latest(20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range window.Candidates {
+		if candidate.Item.Type == "agentMessage" {
+			obs := candidate.Item.Observation
+			if obs == nil || obs.TerminalAccepted == nil || !*obs.TerminalAccepted {
+				t.Fatalf("renamed result acceptance = %+v", obs)
+			}
+			return
+		}
+	}
+	t.Fatal("replay omitted communicate message")
 }
 
 func TestEchoingCommunicateBatchRetainsAcceptedWinner(t *testing.T) {

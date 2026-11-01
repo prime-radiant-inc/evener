@@ -61,8 +61,15 @@ func CommunicateTerminalAccepted(entry schema.Turn, callID string) *bool {
 			continue
 		}
 		result := part.ToolResult
-		if result.ToolCallID != callID || result.IsError || result.Name != "" && result.Name != "communicate" {
+		if result.ToolCallID != callID || result.IsError {
 			continue
+		}
+		var typedState struct {
+			Accepted *bool `json:"communicate_accepted"`
+			EndTurn  *bool `json:"communicate_end_turn"`
+		}
+		if json.Unmarshal(result.ToolState, &typedState) == nil && typedState.Accepted != nil && typedState.EndTurn != nil && *typedState.EndTurn {
+			return typedState.Accepted
 		}
 		var encoded []byte
 		switch value := result.Content.(type) {
