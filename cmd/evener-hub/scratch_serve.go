@@ -44,19 +44,22 @@ func sessionScratchRoot(ctx context.Context, cfg hubcore.WebConfig, ref string) 
 }
 
 // scratchDirFromMeta answers the scratch directory meta's session names when
-// one exists on disk. The tree root comes from the meta itself — the session's
-// own id, or the root that spawned a delegate — and the bases are the ones the
-// allocator chooses between and the removal path reclaims from: the temp dir
-// the session's daemon recorded, this process's own, then the user cache dir.
-// The first existing real directory wins; anything else (no scratch yet, a
-// cleaned tree, a symlink or file planted at the path) serves nothing.
+// one exists on disk. Both identity components come from the meta itself —
+// the tree through RestoredScratchTreeRoot, the directory's owning session
+// through RestoredScratchDirSession, which resolves the owner a delegate
+// that shares its parent's environment records — and the bases are the ones
+// the allocator chooses between and the removal path reclaims from: the temp
+// dir the session's daemon recorded, this process's own, then the user cache
+// dir. The first existing real directory wins; anything else (no scratch yet,
+// a cleaned tree, a symlink or file planted at the path) serves nothing.
 func scratchDirFromMeta(meta schema.SessionMeta) string {
 	if schema.ValidateSessionID(meta.ID) != nil {
 		return ""
 	}
 	treeRoot := meta.RestoredScratchTreeRoot()
+	owner := meta.RestoredScratchDirSession()
 	for _, base := range agentsandbox.SessionScratchTreeBases(meta.ScratchTempDir) {
-		dir := agentsandbox.SessionScratchDirPath(base, treeRoot, meta.ID)
+		dir := agentsandbox.SessionScratchDirPath(base, treeRoot, owner)
 		if dir == "" {
 			continue
 		}

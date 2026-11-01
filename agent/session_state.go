@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
@@ -323,6 +324,17 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 	if root := s.scratchTreeRootID(); root != s.id {
 		scratchTreeRootID = root
 	}
+	// A delegate that shares its parent's environment writes into the parent's
+	// scratch directory, so the directory's owning session is the one the
+	// environment's scratch identity names, not this session's own id; an
+	// isolated delegate's identity is its own and records nothing. This runs
+	// under s.mu, so it reads s.env directly rather than through currentEnv.
+	scratchDirSessionID := ""
+	if local, ok := s.env.(*execenv.LocalExecutionEnvironment); ok {
+		if _, session := local.ScratchIdentity(); session != "" && session != s.id {
+			scratchDirSessionID = session
+		}
+	}
 	skills := s.skillLifecycle.Clone()
 	skills.PinnedNoteGen = s.pinnedNoteGen
 	return schema.SessionMeta{
@@ -366,6 +378,7 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 		JobTreeRootSessionID:     jobTreeRootSessionID,
 		ScratchTempDir:           sandbox.ProcessScratchTempDir(),
 		ScratchTreeRootID:        scratchTreeRootID,
+		ScratchDirSessionID:      scratchDirSessionID,
 		JobTreeRevision:          jobTreeRevision,
 		EnvContext:               s.envContextState,
 	}

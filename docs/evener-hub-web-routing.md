@@ -129,7 +129,10 @@ root>/<sessionID>`, under the temp base the session's daemon recorded, this
 hub's own, or the user cache dir). Tools write screenshots and other
 session-local output there and name those files by absolute path in messages
 and tool results, so the transcript turns such a path into a document read the
-same way. The scratch directory is a third boundary beside the other two,
+same way. The `<sessionID>` in that path is the session that owns the
+directory, not always the requested one: a delegate that shares its parent's
+environment writes into the parent's scratch, so its meta records that owner
+and serving resolves through the record. The scratch directory is a third boundary beside the other two,
 never a widening of them: the same containment check resolves it, the read
 opens through whichever root accepted the path, a session fenced for deletion
 serves nothing from it, and a scratch directory that no longer exists on disk

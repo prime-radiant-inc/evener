@@ -159,6 +159,46 @@ func TestDelegateRestoreLeavesTheHandedEnvironmentUnnamed(t *testing.T) {
 	}
 }
 
+// TestSharedEnvDelegateMetaRecordsTheScratchOwner: a delegate handed its
+// parent's environment writes into that parent's scratch directory, so its
+// meta must record the session the environment names as the directory's owner —
+// the hub serves the delegate's scratch through that record.
+func TestSharedEnvDelegateMetaRecordsTheScratchOwner(t *testing.T) {
+	delegate := artifactRestoreMeta(t)
+	delegate.IsSubagent = true
+	rootID := artifactRestoreMeta(t).ID
+	parent := artifactRestoreMeta(t).ID
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	env.SetScratchIdentity(rootID, parent)
+	sess, err := RestoreSessionFromMetaWithConfig(newArtifactTestClient(), NewOpenAIProfile("gpt-5.2"), env, delegate, artifactRestoreConfig(t, t.TempDir()))
+	if err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	t.Cleanup(sess.Close)
+	if got := sess.Meta().ScratchDirSessionID; got != parent {
+		t.Errorf("shared-env delegate meta records scratch dir session %q, want the environment owner %q", got, parent)
+	}
+}
+
+// TestSelfOwnedScratchMetaRecordsNoScratchOwner: a delegate resumed as the root
+// of its tree names its environment after itself, and every session whose
+// environment names it after itself owns its scratch; the meta records no
+// owner beyond the session.
+func TestSelfOwnedScratchMetaRecordsNoScratchOwner(t *testing.T) {
+	meta := artifactRestoreMeta(t)
+	rootID := artifactRestoreMeta(t).ID
+	meta.IsSubagent = true
+	meta.JobTreeRootSessionID = rootID
+	sess, err := RestoreSessionFromMetaWithConfig(newArtifactTestClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), meta, artifactRestoreConfig(t, t.TempDir()))
+	if err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	t.Cleanup(sess.Close)
+	if got := sess.Meta().ScratchDirSessionID; got != "" {
+		t.Errorf("a session that owns its scratch records scratch dir session %q, want none", got)
+	}
+}
+
 // TestMetaRecordsTheScratchTempDir: the hub removes an archived session's tree
 // from its own temp dir, which a daemon started with another TMPDIR does not
 // use. The meta records the daemon's temp dir so the hub looks there too.

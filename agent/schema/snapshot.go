@@ -275,6 +275,13 @@ type SessionMeta struct {
 	// session's scratch lives in, when that is not the session itself: a
 	// delegate's root, kept when the delegate is resumed on its own.
 	ScratchTreeRootID string `json:"scratch_tree_root_id,omitempty"`
+	// ScratchDirSessionID names the session whose directory in the scratch
+	// tree this session's scratch actually occupies, when that is not the
+	// session itself: a delegate that shares its parent's environment writes
+	// into the parent's scratch, while an isolated delegate owns its own
+	// directory. Empty on metas written before it existed and for every
+	// session that owns its scratch.
+	ScratchDirSessionID string `json:"scratch_dir_session_id,omitempty"`
 	// JobTreeRevision is the latest authoritative root-scoped job/activity tree
 	// revision observed by this session's shared lifecycle clock. Persisted so
 	// exited activity-tree responses can report the same authoritative revision
@@ -303,6 +310,21 @@ func (m SessionMeta) RestoredScratchTreeRoot() string {
 		if root = strings.TrimSpace(root); m.IsSubagent && ValidateSessionID(root) == nil {
 			return root
 		}
+	}
+	return m.ID
+}
+
+// RestoredScratchDirSession is the session whose directory in the scratch tree
+// this session's scratch occupies: the owner its meta records for a delegate
+// that shares its parent's environment, or the session itself. A caller that
+// must reconstruct a session's scratch directory from its meta (the hub
+// serving one) reads this beside RestoredScratchTreeRoot, so both name the
+// same directory the session's daemon writes into. The field has no lineage
+// gate: a session records an owner exactly when its environment names one,
+// and an unparsable owner is ignored, like an unparsable tree root.
+func (m SessionMeta) RestoredScratchDirSession() string {
+	if owner := strings.TrimSpace(m.ScratchDirSessionID); ValidateSessionID(owner) == nil {
+		return owner
 	}
 	return m.ID
 }

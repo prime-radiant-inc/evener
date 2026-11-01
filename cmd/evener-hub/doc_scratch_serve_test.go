@@ -60,6 +60,34 @@ func scratchTreePath(base, rootID, sessionID string) string {
 	return agentsandbox.SessionScratchDirPath(base, rootID, sessionID)
 }
 
+// delegateScratchTestServer seeds a past delegate session with the given meta,
+// lays out its scratch tree — the directory owned by servedSessionID, which
+// the doc route should serve, and the tree root's own directory, which it must
+// fence out — and returns the WebServer, the delegate's id, and both
+// directories for the test to plant files in.
+func delegateScratchTestServer(t *testing.T, meta schema.SessionMeta, base, treeRoot, servedSessionID string) (*WebServer, string, string, string) {
+	t.Helper()
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "project-docs-0000000000")
+	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.SaveSessionMeta(proj, meta); err != nil {
+		t.Fatal(err)
+	}
+	served := scratchTreePath(base, treeRoot, servedSessionID)
+	if err := os.MkdirAll(served, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rootScratch := scratchTreePath(base, treeRoot, treeRoot)
+	if err := os.MkdirAll(rootScratch, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	idx := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Past: idx})
+	return web, meta.ID, served, rootScratch
+}
+
 func TestDocFile_Raw_ServesSessionScratch(t *testing.T) {
 	t.Parallel()
 	web, _, session, scratch := docScratchTestServer(t)
@@ -254,31 +282,16 @@ func TestDocFile_AbsentScratchDirIsNotServed(t *testing.T) {
 // through that record without serving anything from the root's scratch.
 func TestDocFile_DelegateScratchResolvesThroughTheTreeRoot(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
 	base := t.TempDir()
-	proj := filepath.Join(root, "projects", "project-docs-0000000000")
 	delegate := hubtest.SessionID(t)
 	treeRoot := hubtest.SessionID(t)
-	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
+	web, delegateID, delegateScratch, rootScratch := delegateScratchTestServer(t, schema.SessionMeta{
 		ID: delegate, UpdatedAt: time.Now(), OriginalPrompt: "delegate",
 		EnvInfo:           schema.EnvironmentInfo{WorkingDir: t.TempDir()},
 		ScratchTempDir:    base,
 		ScratchTreeRootID: treeRoot,
 		IsSubagent:        true,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	delegateScratch := scratchTreePath(base, treeRoot, delegate)
-	if err := os.MkdirAll(delegateScratch, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	rootScratch := scratchTreePath(base, treeRoot, treeRoot)
-	if err := os.MkdirAll(rootScratch, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	}, base, treeRoot, delegate)
 	content := []byte("delegate evidence")
 	target := filepath.Join(delegateScratch, "report.md")
 	if err := os.WriteFile(target, content, 0o644); err != nil {
@@ -288,18 +301,56 @@ func TestDocFile_DelegateScratchResolvesThroughTheTreeRoot(t *testing.T) {
 	if err := os.WriteFile(secret, []byte("ROOT SESSION SECRET"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	idx := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Past: idx})
-	rec := docRawRequest(t, web, delegate, target)
+	rec := docRawRequest(t, web, delegateID, target)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("delegate scratch file should be served, got %d body=%q", rec.Code, rec.Body.String())
 	}
 	if !bytes.Equal(rec.Body.Bytes(), content) {
 		t.Fatalf("body=%q, want %q", rec.Body.Bytes(), content)
 	}
-	rec = docRawRequest(t, web, delegate, secret)
+	rec = docRawRequest(t, web, delegateID, secret)
 	if rec.Code == http.StatusOK || bytes.Contains(rec.Body.Bytes(), []byte("ROOT SESSION SECRET")) {
 		t.Fatalf("the root session's scratch must stay unreachable from the delegate, got %d body=%q", rec.Code, rec.Body.String())
+	}
+}
+
+// A delegate that shares its parent's environment writes into the directory of
+// the session that owns that environment, which its meta records; the doc route
+// resolves the delegate's scratch through that record, still fenced to the
+// owner's directory alone.
+func TestDocFile_SharedEnvDelegateServesTheEnvOwnerScratch(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	delegate := hubtest.SessionID(t)
+	treeRoot := hubtest.SessionID(t)
+	envOwner := hubtest.SessionID(t)
+	web, delegateID, ownerScratch, rootScratch := delegateScratchTestServer(t, schema.SessionMeta{
+		ID: delegate, UpdatedAt: time.Now(), OriginalPrompt: "shared-env delegate",
+		EnvInfo:             schema.EnvironmentInfo{WorkingDir: t.TempDir()},
+		ScratchTempDir:      base,
+		ScratchTreeRootID:   treeRoot,
+		ScratchDirSessionID: envOwner,
+		IsSubagent:          true,
+	}, base, treeRoot, envOwner)
+	content := []byte("shared env evidence")
+	target := filepath.Join(ownerScratch, "report.md")
+	if err := os.WriteFile(target, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(rootScratch, "root-secret.md")
+	if err := os.WriteFile(secret, []byte("ROOT SESSION SECRET"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec := docRawRequest(t, web, delegateID, target)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("shared-env delegate's scratch file should be served, got %d body=%q", rec.Code, rec.Body.String())
+	}
+	if !bytes.Equal(rec.Body.Bytes(), content) {
+		t.Fatalf("body=%q, want %q", rec.Body.Bytes(), content)
+	}
+	rec = docRawRequest(t, web, delegateID, secret)
+	if rec.Code == http.StatusOK || bytes.Contains(rec.Body.Bytes(), []byte("ROOT SESSION SECRET")) {
+		t.Fatalf("the tree root's scratch must stay unreachable from the delegate, got %d body=%q", rec.Code, rec.Body.String())
 	}
 }
 
