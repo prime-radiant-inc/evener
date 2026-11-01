@@ -359,7 +359,7 @@ export interface TranscriptReaderResult {
 }
 
 export interface TranscriptReader {
-  openLocal(limit: number): Promise<TranscriptReaderResult>;
+  openLocal(limit: number, options?: { certifyOnly?: boolean }): Promise<TranscriptReaderResult>;
   getSnapshot(): ThreadModel | undefined;
   /** @internal Reports retained body ownership without exposing payloads. */
   getRetentionSnapshotForTesting(): {
@@ -1674,7 +1674,7 @@ export class TranscriptRepository {
           cachedPayloadCount: cut?.cacheRows.length ?? 0,
         };
       },
-      openLocal: async (limit) => {
+      openLocal: async (limit, options) => {
         if (!active || !this.#acceptsLifetime(lifetime)) return { status: "recovery-needed" };
         let cut = openingState;
         if (!cut) {
@@ -1761,12 +1761,15 @@ export class TranscriptRepository {
           // disarm point reading the debt as already satisfied.
           let owedSatisfiedByFill = false;
           let unreconciledFromFill: Set<string> | undefined;
-          if (
-            window.complete &&
-            latestStart &&
-            window.rows.length < limit &&
-            (loadedBelowWindow || (this.#windowedBaseline && this.#recordedRangeOwed && this.#hasUnpresentedOwed()))
-          ) {
+          // A certification open's contract is to certify what its caller's
+          // publication established, not to promote additional recorded
+          // ranges: the owed fill — with its durable pull, contiguity walk
+          // and resolution — belongs to the promotion and recovery opens, so
+          // a certifying open never pays for it and keeps the timing
+          // envelope its caller's own deadlines assume.
+          const owedFillEligible =
+            !options?.certifyOnly && this.#windowedBaseline && this.#recordedRangeOwed && this.#hasUnpresentedOwed();
+          if (window.complete && latestStart && window.rows.length < limit && (loadedBelowWindow || owedFillEligible)) {
             // Durable rows below the certified window that the opening cut had
             // loaded. The certified older query is scoped to connected
             // certificates and deliberately refuses numeric adjacency, so its
@@ -1825,7 +1828,7 @@ export class TranscriptRepository {
             // past the contiguity floor are disconnected islands behind an
             // uncertified gap: they are not owed to the display, and the
             // server-paging machinery that owns cursors speaks for them.
-            if (this.#windowedBaseline && this.#recordedRangeOwed) {
+            if (owedFillEligible) {
               this.#resolveOwedFromRows(durableOlder, this.#model, connectedToWindow);
             }
             // The owed fill is measured from the pull itself: identities the
@@ -1833,8 +1836,7 @@ export class TranscriptRepository {
             // the range a plain windowed replace dropped, however much of it
             // the opening cut also loaded.
             const owedFromRecord =
-              this.#windowedBaseline &&
-              this.#recordedRangeOwed &&
+              owedFillEligible &&
               durableOlder.some(
                 (row) =>
                   comparePosition(row.position, latestStart) < 0 &&

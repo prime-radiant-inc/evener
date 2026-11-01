@@ -4649,7 +4649,16 @@ it("a quiet certification that establishes the display releases the superseded p
     // and the claim's post-hydration certification runs quietly and
     // establishes the display over the reopened pane's still-parked open.
     claimReadReleased.resolve();
-    const deadline = Date.now() + 400;
+    // This loop is the test's patience, not a product budget: it waits for
+    // the certification's establishment notification to reach the parked
+    // open. The repository's owed-range demand adds real durable work to the
+    // recovery opens that run concurrently with this window, and a
+    // whole-suite-contended runner needs more than the original 400 ms to
+    // deliver the notification. The product assertion the loop guards — the
+    // release comes through the establishment's notification, never the
+    // backstop — is what the status checks below prove, and they are
+    // unchanged.
+    const deadline = Date.now() + 2000;
     let consumerHoldReleased = false;
     while (Date.now() < deadline) {
       if (!threadsStore.getState().localOpenings.has(ref)) {

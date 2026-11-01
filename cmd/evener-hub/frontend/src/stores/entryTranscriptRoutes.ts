@@ -580,7 +580,12 @@ export async function openEntryTranscript(
         entryTranscriptQuietOpenings.get(ref) === openingToken);
     const established = fixture.lastLocalOpenUsable && repository.holdsEstablishedView();
     let stalled = false;
-    const localRead = reader.openLocal(200);
+    // An open that certifies a just-awaited publication runs the local read
+    // in its certify-only shape: the promotion of recorded ranges below the
+    // window belongs to the recovery and promotion opens, so the
+    // certification keeps the timing envelope the publication's own
+    // deadlines (its release waits, its pinned certification opens) assume.
+    const localRead = reader.openLocal(200, { certifyOnly: exceptRegistration !== undefined });
     const restore = established ? localRead : undefined;
     // Only the ordinary open arms the storage backstop: an established
     // restore races the stalled-open window alone, and one clearable timer
