@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 import { type NavigationActionCheckpoint, nativeNavigationActions } from "./navigationActionRepository";
 import { NavigationActions } from "./navigationActions";
 

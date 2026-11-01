@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"regexp"
 	"sync"
 	"testing"
@@ -34,10 +35,10 @@ func testActivationReturnSiblings(t *testing.T) {
 	defer releaseSecond()
 	defer releaseSibling()
 	var jobID string
-	a.script("root", func(llm.Request) llm.Response { return delegateToolResponse("return-a", "RETURN-A") }, func(llm.Request) llm.Response { return delegateToolResponse("return-b", "RETURN-B") }, func(llm.Request) llm.Response { return finalResponse("root-return") })
+	a.script("root", func(llm.Request) llm.Response { return delegateToolResponse("return-a", "RETURN-A") }, func(llm.Request) llm.Response { return delegateToolResponse("return-b", "RETURN-B") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("root-return") })
 	a.script("RETURN-A", func(llm.Request) llm.Response {
 		awaitSignal(t, firstGate, "first provider release")
-		return finalResponse("first-return")
+		return agenttest.FinalResponse("first-return")
 	}, func(llm.Request) llm.Response {
 		awaitSignal(t, yieldGate, "yield provider release")
 		return incidentShellResponse("return-shell", fifo)
@@ -50,7 +51,7 @@ func testActivationReturnSiblings(t *testing.T) {
 	})
 	a.script("RETURN-B", func(llm.Request) llm.Response {
 		awaitSignal(t, siblingGate, "sibling release")
-		return finalResponse("sibling-return")
+		return agenttest.FinalResponse("sibling-return")
 	})
 	root := newMessagingRoot(t, a, receipts.configure)
 	t.Cleanup(func() { receipts.close(t, root) })
@@ -83,7 +84,7 @@ func testActivationReturnSiblings(t *testing.T) {
 	activationStillOpen(t, b.returned)
 	a.script("root", func(llm.Request) llm.Response {
 		return delegateSendResponse("return-next", owner.owningDelegateID, "next-generation", 0)
-	}, func(llm.Request) llm.Response { return finalResponse("root-next") })
+	}, func(llm.Request) llm.Response { return agenttest.FinalResponse("root-next") })
 	if _, err := root.ProcessInput(t.Context(), "next", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +127,7 @@ func testActivationReturnCancel(t *testing.T, stale bool) {
 	gate := make(chan struct{})
 	release := sync.OnceFunc(func() { close(gate) })
 	defer release()
-	a.script("root", func(llm.Request) llm.Response { return delegateToolResponse("return-cancel", "RETURN-CANCEL") }, func(llm.Request) llm.Response { return finalResponse("root-cancel") })
+	a.script("root", func(llm.Request) llm.Response { return delegateToolResponse("return-cancel", "RETURN-CANCEL") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("root-cancel") })
 	a.script("RETURN-CANCEL", func(llm.Request) llm.Response {
 		awaitSignal(t, gate, "cancel provider release")
 		return incidentShellResponse("cancel-shell", fifo)
@@ -185,7 +186,9 @@ func testActivationReturnError(t *testing.T) {
 	scriptedErr := errors.New("error-2859")
 	a.finiteScript("root", func(context.Context, llm.Request) (llm.Response, error) {
 		return delegateToolResponse("return-error", "RETURN-ERROR"), nil
-	}, func(context.Context, llm.Request) (llm.Response, error) { return finalResponse("root-error"), nil })
+	}, func(context.Context, llm.Request) (llm.Response, error) {
+		return agenttest.FinalResponse("root-error"), nil
+	})
 	a.finiteScript("RETURN-ERROR", func(context.Context, llm.Request) (llm.Response, error) {
 		awaitSignal(t, gate, "error provider release")
 		return llm.Response{}, scriptedErr

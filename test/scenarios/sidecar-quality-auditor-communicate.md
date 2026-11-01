@@ -77,7 +77,7 @@ go run ./cmd/evener doctor transcript "$OBSERVER_REF" --count delegate_send  # e
   the callback to the parent").
 - The draft body is capped at 1000 characters inside the frame's
   `event: message:` field (`maxMessageChars` in
-  `agent/job_watch.go#writeCommunicateWatchEvent`), with
+  `agent/watch_frame.go#writeCommunicateWatchEvent`), with
   `truncated: true` when it is cut. Keep the draft short so the TODO
   stays inside the window.
 

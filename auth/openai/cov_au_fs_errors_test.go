@@ -10,12 +10,13 @@ import (
 	"time"
 
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/envvars/userdirs"
 )
 
-// TestDefaultStateDirWithStateHomeFallsBackToTempDir covers the arm where the
-// home directory cannot be resolved (HOME unset), so the state dir is rooted at
-// the OS temp dir.
-func TestDefaultStateDirWithStateHomeFallsBackToTempDir(t *testing.T) {
+// TestDefaultStateDirWithStateHomeReportsNoStateHome covers the arm where the
+// home directory cannot be resolved (HOME unset): the state dir is an error,
+// not a temp-dir guess.
+func TestDefaultStateDirWithStateHomeReportsNoStateHome(t *testing.T) {
 	t.Setenv(envvars.XDGStateHome.Name, "")
 	t.Setenv("HOME", "")
 
@@ -23,9 +24,8 @@ func TestDefaultStateDirWithStateHomeFallsBackToTempDir(t *testing.T) {
 		t.Skip("os.UserHomeDir still resolves with HOME unset on this platform")
 	}
 
-	want := filepath.Join(os.TempDir(), ".local", "state", "evener")
-	if got := DefaultStateDirWithStateHome(""); got != want {
-		t.Fatalf("DefaultStateDirWithStateHome(\"\") = %q, want %q", got, want)
+	if got, err := DefaultStateDirWithStateHome(""); !errors.Is(err, userdirs.ErrNoStateHome) || got != "" {
+		t.Fatalf("DefaultStateDirWithStateHome(\"\") = %q, %v, want ErrNoStateHome", got, err)
 	}
 }
 

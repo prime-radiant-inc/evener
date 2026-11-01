@@ -26,7 +26,7 @@ func rootDispositionRegistry(t *testing.T, validate func(context.Context, string
 		StateDir: t.TempDir(), testOnly: testConfig{minimalSystemPrompt: true},
 	}))
 	deps := &toolDeps{
-		emit: func(events.EventKind, events.EventData) {},
+		emit: func(events.EventData) {},
 		deliverCommunicate: func(data events.CommunicateData) error {
 			delivered = append(delivered, data)
 			return nil

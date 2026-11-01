@@ -277,7 +277,7 @@ type NavigationSessionSummary struct {
 	// appwire.SearchResult.Archived reports for a live hit). It sits BESIDE Live
 	// rather than replacing it: a session archived while it is still running
 	// stays reachable through a pin, and this flag lets a client suppress the
-	// row's unread dot for it (#4199). Absent when it is not, and from an
+	// row's unread dot for it. Absent when it is not, and from an
 	// older hub.
 	Archived      bool       `json:"archived,omitempty"`
 	UpdatedAt     *time.Time `json:"updated_at,omitempty"`

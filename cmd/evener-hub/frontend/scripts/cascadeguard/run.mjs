@@ -5,6 +5,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Driver } from "../skillguard/run.mjs";
 import { evaluate, navigateTo, queryAccessibilityTree, REFUSED_BUTTON_SELECTOR } from "../browserGuardCdp.mjs";
+import { revealControlStep } from "./revealControl.mjs";
 import { attentionJourney } from "./attention.mjs";
 
 const fixture = JSON.parse(readFileSync(0, "utf8"));
@@ -215,7 +216,7 @@ const sourcePortExpr = `${driver.paneScopeExpr(fixture.rootRef)}?.querySelector(
 const sourceReadingPointExpr = readingPointExpr(sourcePortExpr);
 
 // The reader-reflow rule (docs/superpowers/specs/2026-10-04-shared-transcript-
-// reader-reflow-design.md, readingPointOffset in useTranscriptScroll.ts): where
+// reader-reflow-design.md, readingPointOffset in viewAnchor.ts): where
 // the entry that held the reading point should start relative to the viewport
 // top after a reflow. Also evaluated in the page, so it stays self-contained.
 // When the entry did not reflow (same width and height), the reading line
@@ -393,7 +394,7 @@ async function openSourceVerbosity() {
   await driver.clickAt(verbosity.x, verbosity.y);
   return wait(`(() => {
     const panel = document.querySelector('[data-testid="transcript-detail-control"]');
-    const selected = panel?.querySelector('[role="radio"][aria-checked="true"]')?.textContent.trim();
+    const selected = panel?.querySelector('section[aria-label="Transcript detail editor"] [role="radio"][aria-checked="true"]')?.textContent.trim();
     return selected ? { selected, local:panel.textContent.includes('Local Desktop view') } : null;
   })()`, "the real Verbosity dialog exposes its current preset");
 }
@@ -431,7 +432,7 @@ async function nativePositioningInterruption(input) {
   assert.ok(["Chat", "Tools"].includes(original.selected), "the native interruption starts from a real Chat or Tools preset");
   if (original.selected !== "Chat") {
     await clickVerbosityChoice("Chat");
-    await wait('document.querySelector("[data-testid=transcript-detail-control] [role=radio][aria-checked=true]")?.textContent.trim() === "Chat"', "the real source has a Chat baseline before the measurement hold");
+    await wait(`document.querySelector('[data-testid="transcript-detail-control"] section[aria-label="Transcript detail editor"] [role="radio"][aria-checked="true"]')?.textContent.trim() === "Chat"`, "the real source has a Chat baseline before the measurement hold");
   }
   const before = await settledReadingPoint(sourcePortExpr, "native interruption before width");
   assert.ok(!before.followingBottom && before.height > before.viewport && before.offset < -100,
@@ -451,7 +452,7 @@ async function nativePositioningInterruption(input) {
     await wait(`window.innerWidth === 920 && (${sourcePortExpr})?.clientWidth !== ${before.width}`, "interruption preparation changes actual source width");
     const other = "Tools";
     await clickVerbosityChoice(other);
-    await wait(`document.querySelector('[data-testid="transcript-detail-control"] [role="radio"][aria-checked="true"]')?.textContent.trim() === ${q(other)}`, "the real source preset change is published");
+    await wait(`document.querySelector('[data-testid="transcript-detail-control"] section[aria-label="Transcript detail editor"] [role="radio"][aria-checked="true"]')?.textContent.trim() === ${q(other)}`, "the real source preset change is published");
     await key("Escape", 27);
     await wait('document.querySelector("[data-testid=transcript-detail-control]") === null', "Verbosity closes before input reaches the source port");
     observation.prepared = await wait(`(() => {
@@ -576,7 +577,7 @@ async function nativePositioningInterruption(input) {
   })()`);
   await openSourceVerbosity();
   await clickVerbosityChoice(original.local ? original.selected : "Use hub default", original.local ? "radio" : "button");
-  await wait(`document.querySelector('[data-testid="transcript-detail-control"] [role="radio"][aria-checked="true"]')?.textContent.trim() === ${q(original.selected)}`, "native UI restores the original source preset");
+  await wait(`document.querySelector('[data-testid="transcript-detail-control"] section[aria-label="Transcript detail editor"] [role="radio"][aria-checked="true"]')?.textContent.trim() === ${q(original.selected)}`, "native UI restores the original source preset");
   await key("Escape", 27);
   await wait('document.querySelector("[data-testid=transcript-detail-control]") === null', "restored Verbosity dialog closes");
   await driver.send("Emulation.setDeviceMetricsOverride", { width:1000, height:900, deviceScaleFactor:1, mobile:false });
@@ -1054,6 +1055,13 @@ async function dottedAncestorJourney() {
   await drill(fixture.edges[2], 3);
   await dottedAncestorStatus(fixture.refs[1]);
   await pinSourceDom();
+  // A remounted reader shows its first rows at the top before it moves to the
+  // end of the transcript; Return's baseline is the settled end, not that
+  // interval.
+  await wait(`(() => {
+    const port = ${sourcePortExpr};
+    return port && port.clientHeight > 0 && port.scrollHeight - port.clientHeight - port.scrollTop <= 4;
+  })()`, "the remounted source reader rests at the end of its transcript");
   await returnToSource();
 }
 
@@ -1568,28 +1576,13 @@ async function reveal(edge, container) {
   await wait(`document.querySelector(${q(selector)}) !== null || [...document.querySelectorAll(${q(`${container} button`)})].some(b => b.textContent.trim().startsWith('Inactive subagents ('))`, "real direct delegate collection");
   for (let boundary = 0; boundary < 10; boundary++) {
     if (await read(`document.querySelector(${q(selector)}) !== null`)) return selector;
-    // The control is found and activated in one page turn. Scrolling a Show or
-    // Load more control into view can make the page boundary under it load the
-    // next page by itself; when that page lands it removes the boundary and the
-    // list shifts, so a press measured before it can land on a neighbouring
-    // delegate row and drill into it (#3804). The click still requires the
-    // control to be the topmost element at its center, as a real press would.
-    const step = await wait(`(() => {
-      if (document.querySelector(${q(selector)})) return { revealed: true };
-      const buttons = [...document.querySelectorAll(${q(`${container} button`)})];
-      const fold = buttons.find(n => !n.matches(${q(REFUSED_BUTTON_SELECTOR)}) && n.textContent.trim().startsWith('Inactive subagents ('));
-      // AgentsTab renders current rows before the fold, inactive rows after it.
-      // Recheck that rendered state here as either collection can change.
-      const inactiveVisible = fold && [...document.querySelectorAll(${q(`${container} [data-activity-anchor]`)})].some(n => !!(fold.compareDocumentPosition(n) & Node.DOCUMENT_POSITION_FOLLOWING));
-      const b = fold && !inactiveVisible ? fold : buttons.find(n => !n.matches(${q(REFUSED_BUTTON_SELECTOR)}) && (n.textContent.trim().startsWith('Show ') || n.textContent.trim() === 'Load more subagents'));
-      if (!b) return null;
-      b.scrollIntoView({ block: 'center' });
-      const r = b.getBoundingClientRect();
-      if (!b.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2))) return null;
-      const before = document.querySelector(${q(container)}).textContent;
-      b.click();
-      return { before };
-    })()`, "real disclosure or direct page boundary");
+    // The control is found and activated in one page turn (see
+    // revealControlStep). Scrolling a Show or Load more control into view can
+    // make the page boundary under it load the next page by itself; when that
+    // page lands it removes the boundary and the list shifts, so a press
+    // measured before it can land on a neighbouring delegate row and drill into
+    // it (#3804).
+    const step = await wait(revealControlStep(selector, container, REFUSED_BUTTON_SELECTOR), "real disclosure or direct page boundary");
     if (step.revealed) return selector;
     await wait(`document.querySelector(${q(selector)}) !== null || document.querySelector(${q(container)}).textContent !== ${q(step.before)}`, "direct collection progresses");
   }

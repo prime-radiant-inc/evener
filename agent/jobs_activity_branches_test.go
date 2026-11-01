@@ -53,18 +53,6 @@ func TestActivityUsageFromCumulative(t *testing.T) {
 	}
 }
 
-func TestCloneInt64(t *testing.T) {
-	t.Parallel()
-	if got := cloneInt64(nil); got != nil {
-		t.Fatalf("cloneInt64(nil) = %v, want nil", got)
-	}
-	v := int64(42)
-	got := cloneInt64(&v)
-	if got == nil || *got != 42 || got == &v {
-		t.Fatalf("cloneInt64 = %v, want distinct copy of 42", got)
-	}
-}
-
 func TestActivityOwnedRecords(t *testing.T) {
 	t.Parallel()
 	// Empty sessionID or no records returns records as-is.
@@ -183,8 +171,8 @@ func TestProjectStableActivityDelegate_TerminalPacketMetadata(t *testing.T) {
 	row := delegateSnapshotWithPacket("dlg_1", "root", "child", "inspect", packet, outcome)
 	snap := activitySessionSnapshot{
 		SessionID: "root", Ref: "local:root", RootID: "root",
-		StableDelegates: map[string]delegateSnapshot{"dlg_1": row},
-		Children:        map[string]*activitySessionSnapshot{"child": {SessionID: "child", Ref: "local:child"}},
+		Delegates: map[string]delegateSnapshot{"dlg_1": row},
+		Children:  map[string]*activitySessionSnapshot{"child": {SessionID: "child", Ref: "local:child"}},
 	}
 	delegate := projectStableActivityDelegate(snap, row, newActivityBudget(), 0, nil, 0)
 	if delegate.Outcome != "completed" || delegate.Reason != "done" || !delegate.Terminal {
@@ -228,7 +216,7 @@ func TestProjectStableActivityDelegate_InvalidMetadata(t *testing.T) {
 	row := delegateSnapshotWithPacket("dlg_1", "root", "child", "inspect", packet, nil)
 	snap := activitySessionSnapshot{
 		SessionID: "root", Ref: "local:root", RootID: "root",
-		StableDelegates: map[string]delegateSnapshot{"dlg_1": row},
+		Delegates: map[string]delegateSnapshot{"dlg_1": row},
 	}
 	delegate := projectStableActivityDelegate(snap, row, newActivityBudget(), 0, nil, 0)
 	if delegate.Branch.Error == "" || !strings.Contains(delegate.Branch.Error, "metadata is invalid") {
@@ -245,8 +233,8 @@ func TestProjectStableActivityDelegate_ChildMismatchErrors(t *testing.T) {
 	// Child loaded with wrong SessionID/Ref.
 	snap := activitySessionSnapshot{
 		SessionID: "root", Ref: "local:root", RootID: "root",
-		StableDelegates: map[string]delegateSnapshot{"dlg_1": row},
-		Children:        map[string]*activitySessionSnapshot{"child": {SessionID: "wrong", Ref: "local:wrong"}},
+		Delegates: map[string]delegateSnapshot{"dlg_1": row},
+		Children:  map[string]*activitySessionSnapshot{"child": {SessionID: "wrong", Ref: "local:wrong"}},
 	}
 	delegate := projectStableActivityDelegate(snap, row, newActivityBudget(), 0, nil, 0)
 	if delegate.Branch.Error == "" || !strings.Contains(delegate.Branch.Error, "child link does not match") {
@@ -259,7 +247,7 @@ func TestProjectStableActivityDelegate_ChildUnavailable(t *testing.T) {
 	row := stableActivitySnapshot("dlg_1", "root", "child", "inspect")
 	snap := activitySessionSnapshot{
 		SessionID: "root", Ref: "local:root", RootID: "root",
-		StableDelegates: map[string]delegateSnapshot{"dlg_1": row},
+		Delegates: map[string]delegateSnapshot{"dlg_1": row},
 		// No Children map entry for "child".
 	}
 	delegate := projectStableActivityDelegate(snap, row, newActivityBudget(), 0, nil, 0)
@@ -278,7 +266,7 @@ func TestProjectStableActivityDelegate_DepthTruncated(t *testing.T) {
 	row := stableActivitySnapshot("dlg_1", "root", "child", "inspect")
 	snap := activitySessionSnapshot{
 		SessionID: "root", Ref: "local:root", RootID: "root",
-		StableDelegates: map[string]delegateSnapshot{"dlg_1": row},
+		Delegates: map[string]delegateSnapshot{"dlg_1": row},
 		// Nothing under the bound is loaded, so there is no child entry.
 		Children: map[string]*activitySessionSnapshot{},
 	}
@@ -315,7 +303,7 @@ func TestProjectStableActivityDelegate_MalformedChildLink(t *testing.T) {
 	}
 	snap := activitySessionSnapshot{
 		SessionID: "root", Ref: "local:root", RootID: "root",
-		StableDelegates: map[string]delegateSnapshot{"dlg_1": row},
+		Delegates: map[string]delegateSnapshot{"dlg_1": row},
 	}
 	delegate := projectStableActivityDelegate(snap, row, newActivityBudget(), 0, nil, 0)
 	if delegate.Branch.Error == "" {
@@ -328,8 +316,8 @@ func TestProjectStableActivityDelegate_ErrorFromParentSnapshot(t *testing.T) {
 	row := stableActivitySnapshot("dlg_1", "root", "child", "inspect")
 	snap := activitySessionSnapshot{
 		SessionID: "root", Ref: "local:root", RootID: "root",
-		StableDelegates: map[string]delegateSnapshot{"dlg_1": row},
-		Errors:          map[string]error{"child": errActivityHistoryUnavailable},
+		Delegates: map[string]delegateSnapshot{"dlg_1": row},
+		Errors:    map[string]error{"child": errActivityHistoryUnavailable},
 	}
 	delegate := projectStableActivityDelegate(snap, row, newActivityBudget(), 0, nil, 0)
 	if delegate.Branch.Error != errActivityHistoryUnavailable.Error() {
@@ -343,8 +331,8 @@ func TestProjectStableActivityDelegate_OutcomeWithoutEndedAt(t *testing.T) {
 	row := delegateSnapshotWithPacket("dlg_1", "root", "child", "inspect", nil, outcome)
 	snap := activitySessionSnapshot{
 		SessionID: "root", Ref: "local:root", RootID: "root",
-		StableDelegates: map[string]delegateSnapshot{"dlg_1": row},
-		Children:        map[string]*activitySessionSnapshot{"child": {SessionID: "child", Ref: "local:child"}},
+		Delegates: map[string]delegateSnapshot{"dlg_1": row},
+		Children:  map[string]*activitySessionSnapshot{"child": {SessionID: "child", Ref: "local:child"}},
 	}
 	delegate := projectStableActivityDelegate(snap, row, newActivityBudget(), 0, nil, 0)
 	if delegate.RunEndedAt != "" {
@@ -993,8 +981,8 @@ func TestProjectActivitySession_CycleDetected(t *testing.T) {
 	a.Children = map[string]*activitySessionSnapshot{"b": b}
 	b.Children = map[string]*activitySessionSnapshot{"a": a}
 	// Both have delegates so the projection recurses into children.
-	a.StableDelegates = map[string]delegateSnapshot{"dlg_a": stableActivitySnapshot("dlg_a", "a", "b", "task")}
-	b.StableDelegates = map[string]delegateSnapshot{"dlg_b": stableActivitySnapshot("dlg_b", "b", "a", "task")}
+	a.Delegates = map[string]delegateSnapshot{"dlg_a": stableActivitySnapshot("dlg_a", "a", "b", "task")}
+	b.Delegates = map[string]delegateSnapshot{"dlg_b": stableActivitySnapshot("dlg_b", "b", "a", "task")}
 	got := projectActivitySession(*a, newActivityBudget())
 	// The cycle should produce a branch error on the second visit.
 	// At least the top-level session should have projected.
@@ -1050,37 +1038,6 @@ func TestProjectActivityJob_DescriptionFallback(t *testing.T) {
 	}
 }
 
-func TestCloneActivityRecord(t *testing.T) {
-	t.Parallel()
-	if cloneActivityRecord(nil) != nil {
-		t.Fatal("nil record should return nil")
-	}
-	ended := time.Unix(10, 0)
-	exit := 0
-	last := time.Unix(20, 0)
-	rec := &jobstore.JobRecord{
-		JobID: "j1", StartedAt: time.Unix(5, 0),
-		EndedAt: &ended, ExitCode: &exit, LastActivity: &last,
-	}
-	clone := cloneActivityRecord(rec)
-	if clone.JobID != "j1" {
-		t.Fatalf("clone = %+v", clone)
-	}
-	// Verify the pointers are distinct copies.
-	clone.EndedAt = nil
-	if rec.EndedAt == nil {
-		t.Fatal("mutating clone affected original EndedAt")
-	}
-	clone.ExitCode = nil
-	if rec.ExitCode == nil {
-		t.Fatal("mutating clone affected original ExitCode")
-	}
-	clone.LastActivity = nil
-	if rec.LastActivity == nil {
-		t.Fatal("mutating clone affected original LastActivity")
-	}
-}
-
 func TestMergeActivityRecords_NilAndEmpty(t *testing.T) {
 	t.Parallel()
 	// Nil durable + nil live = empty.
@@ -1127,7 +1084,7 @@ func TestSnapshotPersistedRevision(t *testing.T) {
 	child := &activitySessionSnapshot{SessionID: "child", Revision: 10}
 	snap = &activitySessionSnapshot{
 		SessionID: "root", RootID: "root", Revision: 5,
-		StableDelegates: map[string]delegateSnapshot{
+		Delegates: map[string]delegateSnapshot{
 			"dlg_1": {id: "dlg_1", revision: 8},
 		},
 		Children: map[string]*activitySessionSnapshot{"child": child},
@@ -1138,7 +1095,7 @@ func TestSnapshotPersistedRevision(t *testing.T) {
 	// Non-matching root node returns delegate revision only.
 	snap = &activitySessionSnapshot{
 		SessionID: "root", RootID: "other", Revision: 100,
-		StableDelegates: map[string]delegateSnapshot{
+		Delegates: map[string]delegateSnapshot{
 			"dlg_1": {id: "dlg_1", revision: 3},
 		},
 	}
@@ -1151,14 +1108,14 @@ func TestActivityFilterSnapshotToDelegate(t *testing.T) {
 	t.Parallel()
 	base := activitySessionSnapshot{
 		SessionID: "root", Ref: "local:root", RootID: "root", Revision: 7,
-		Jobs:            []*jobstore.JobRecord{{JobID: "j1", OwnerSessionID: "root"}},
-		StableDelegates: map[string]delegateSnapshot{"dlg_1": stableActivitySnapshot("dlg_1", "root", "child", "task")},
-		Diagnostics:     []string{"diag1"},
+		Jobs:        []*jobstore.JobRecord{{JobID: "j1", OwnerSessionID: "root"}},
+		Delegates:   map[string]delegateSnapshot{"dlg_1": stableActivitySnapshot("dlg_1", "root", "child", "task")},
+		Diagnostics: []string{"diag1"},
 	}
 	child := &activitySessionSnapshot{SessionID: "child", Ref: "local:child"}
 	filtered := activityFilterSnapshotToDelegate(base, "dlg_1", child)
-	if len(filtered.StableDelegates) != 1 || filtered.StableDelegates["dlg_1"].descriptor.ChildSessionID != "child" {
-		t.Fatalf("filtered stable delegates = %+v", filtered.StableDelegates)
+	if len(filtered.Delegates) != 1 || filtered.Delegates["dlg_1"].descriptor.ChildSessionID != "child" {
+		t.Fatalf("filtered stable delegates = %+v", filtered.Delegates)
 	}
 	if len(filtered.Jobs) != 0 {
 		t.Fatalf("filtered jobs = %v, want empty (filtered to delegate only)", filtered.Jobs)
@@ -1174,7 +1131,7 @@ func TestActivityFilterSnapshotToDelegate(t *testing.T) {
 	}
 	// Missing delegateID results in no stable delegates or children.
 	filtered2 := activityFilterSnapshotToDelegate(base, "dlg_missing", child)
-	if len(filtered2.StableDelegates) != 0 || len(filtered2.Children) != 0 {
+	if len(filtered2.Delegates) != 0 || len(filtered2.Children) != 0 {
 		t.Fatalf("missing delegate should produce empty maps")
 	}
 }
@@ -1219,7 +1176,7 @@ func TestJobActivityTree_LiveContinuationRejectedAfterRevisionChanges(t *testing
 	// continuation minted above stale.
 	s.jobActivityClock.nextRevision()
 
-	if _, err := s.JobActivityTree(appwire.JobsListParams{Continuation: token}); err == nil {
+	if _, err := s.JobActivityTree(t.Context(), appwire.JobsListParams{Continuation: token}); err == nil {
 		t.Fatal("expected the stale live continuation to be rejected")
 	} else if !strings.Contains(err.Error(), "live session changed") {
 		t.Fatalf("error = %v, want a live-session-changed staleness error", err)
@@ -1233,7 +1190,7 @@ func TestJobActivityTree_LiveContinuationRejectedAfterRevisionChanges(t *testing
 		SessionID: s.ID(),
 		Revision:  activityCurrentRootRevision(s.jobActivityClock),
 	}
-	if _, err := s.JobActivityTree(appwire.JobsListParams{Continuation: encodeActivityContinuation(fresh)}); err != nil {
+	if _, err := s.JobActivityTree(t.Context(), appwire.JobsListParams{Continuation: encodeActivityContinuation(fresh)}); err != nil {
 		t.Fatalf("continuation minted against the current revision was rejected: %v", err)
 	}
 }
@@ -1285,7 +1242,7 @@ func TestJobActivityTree_LiveRootChildContinuationSurvivesHistoricalEpochs(t *te
 	descriptor.ChildSessionID = childID
 	descriptor.TranscriptRef = encodeRef("", childID)
 	started := time.Unix(10, 0).UTC()
-	finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{
+	finish := delegateFinishFromRun(delegateTerminalRunInputs{
 		result:                  "complete",
 		communicated:            true,
 		structuredResultPresent: true,
@@ -1308,11 +1265,11 @@ func TestJobActivityTree_LiveRootChildContinuationSurvivesHistoricalEpochs(t *te
 
 	// Warm the delegate fold cache, then restamp that journal so the child's
 	// next historical read reports a nonzero generation.
-	if _, err := s.JobActivityTree(appwire.JobsListParams{}); err != nil {
+	if _, err := s.JobActivityTree(t.Context(), appwire.JobsListParams{}); err != nil {
 		t.Fatalf("warm the fold caches: %v", err)
 	}
 	bumpFoldGeneration(t, filepath.Join(jobsDir(stateDir, s.ID()), "delegates.jsonl"), func() {
-		if _, err := s.JobActivityTree(appwire.JobsListParams{}); err != nil {
+		if _, err := s.JobActivityTree(t.Context(), appwire.JobsListParams{}); err != nil {
 			t.Fatalf("observe the delegate journal gone: %v", err)
 		}
 	})
@@ -1336,7 +1293,7 @@ func TestJobActivityTree_LiveRootChildContinuationSurvivesHistoricalEpochs(t *te
 		DelegatesEpoch: childBase.snapshot.DelegatesEpoch,
 		Revision:       activityCurrentRootRevision(s.jobActivityClock),
 	})
-	if _, err := s.JobActivityTree(appwire.JobsListParams{Continuation: token}); err != nil {
+	if _, err := s.JobActivityTree(t.Context(), appwire.JobsListParams{Continuation: token}); err != nil {
 		t.Fatalf("live root's own continuation into its untouched closed child was rejected: %v", err)
 	}
 }
@@ -1361,7 +1318,7 @@ func TestJobActivityTree_LiveRootChildContinuationRejectedAfterTheChildIsRewritt
 	descriptor.ChildSessionID = childID
 	descriptor.TranscriptRef = encodeRef("", childID)
 	started := time.Unix(40, 0).UTC()
-	finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{
+	finish := delegateFinishFromRun(delegateTerminalRunInputs{
 		result:                  "complete",
 		communicated:            true,
 		structuredResultPresent: true,
@@ -1379,7 +1336,7 @@ func TestJobActivityTree_LiveRootChildContinuationRejectedAfterTheChildIsRewritt
 	})
 	savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Child", s.ID(), 0)
 
-	if _, err := s.JobActivityTree(appwire.JobsListParams{}); err != nil {
+	if _, err := s.JobActivityTree(t.Context(), appwire.JobsListParams{}); err != nil {
 		t.Fatalf("warm the fold caches: %v", err)
 	}
 	childBase, err := loadHistoricalActivityBase(stateDir, childID, true, newHistoricalActivityCache(context.Background(), s.ID()))
@@ -1407,7 +1364,7 @@ func TestJobActivityTree_LiveRootChildContinuationRejectedAfterTheChildIsRewritt
 		}
 	})
 
-	if _, err := s.JobActivityTree(appwire.JobsListParams{Continuation: token}); err == nil {
+	if _, err := s.JobActivityTree(t.Context(), appwire.JobsListParams{Continuation: token}); err == nil {
 		t.Fatal("resumed into a closed child whose journal was rewritten; want the continuation refused")
 	} else if !strings.Contains(err.Error(), "underlying journal changed") {
 		t.Fatalf("error = %v, want a journal-changed staleness error", err)
@@ -1421,7 +1378,7 @@ func seedRetainedActivityDelegate(t *testing.T, s *Session, delegateID string) {
 	t.Helper()
 	descriptor := stableReadonlyDescriptor(s, delegateID)
 	started := time.Unix(30, 0).UTC()
-	finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{
+	finish := delegateFinishFromRun(delegateTerminalRunInputs{
 		result:                  "complete",
 		communicated:            true,
 		structuredResultPresent: true,
@@ -1450,7 +1407,7 @@ func TestJobActivityTree_LiveContinuationRejectedAfterADelegateAppears(t *testin
 		withoutGitSnapshot(),
 	)
 	seedRetainedActivityDelegate(t, s, "dlg_b")
-	page, err := s.JobActivityTree(appwire.JobsListParams{})
+	page, err := s.JobActivityTree(t.Context(), appwire.JobsListParams{})
 	if err != nil {
 		t.Fatalf("first page: %v", err)
 	}
@@ -1468,7 +1425,7 @@ func TestJobActivityTree_LiveContinuationRejectedAfterADelegateAppears(t *testin
 	// A delegate created now sorts ahead of dlg_b and shifts it by one.
 	seedRetainedActivityDelegate(t, s, "dlg_a")
 
-	resumed, err := s.JobActivityTree(appwire.JobsListParams{Continuation: token})
+	resumed, err := s.JobActivityTree(t.Context(), appwire.JobsListParams{Continuation: token})
 	if err == nil {
 		delivered := make([]string, 0, len(resumed.Root.Entries))
 		for _, entry := range resumed.Root.Entries {

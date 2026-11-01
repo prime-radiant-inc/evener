@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/spf13/afero"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
@@ -22,7 +23,7 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-type stableDelegateShellTree struct {
+type delegateShellTree struct {
 	controller *delegateTreeController
 	root       *Session
 	child      *Session
@@ -32,9 +33,9 @@ type stableDelegateShellTree struct {
 	grandJM    *jobManager
 }
 
-func TestStableDelegateShell_ParentDelegateIDReplacesSyntheticParentJob(t *testing.T) {
-	tree := newStableDelegateShellTree(t)
-	rec := createStableDelegateShell(t, tree.childJM, "typed parent")
+func TestDelegateShell_ParentDelegateIDReplacesSyntheticParentJob(t *testing.T) {
+	tree := newDelegateShellTree(t)
+	rec := createDelegateShell(t, tree.childJM, "typed parent")
 
 	stored := loadStableShellRecord(t, tree.childJM, rec.JobID)
 	fields := stableShellRecordFields(t, stored)
@@ -49,10 +50,10 @@ func TestStableDelegateShell_ParentDelegateIDReplacesSyntheticParentJob(t *testi
 	}
 }
 
-func TestStableDelegateShell_CompletionAttentionReachesDirectOwner(t *testing.T) {
-	tree := newStableDelegateShellTree(t)
-	rec := createStableDelegateShell(t, tree.childJM, "notify direct owner")
-	finishStableDelegateShell(t, tree.childJM, rec.JobID)
+func TestDelegateShell_CompletionAttentionReachesDirectOwner(t *testing.T) {
+	tree := newDelegateShellTree(t)
+	rec := createDelegateShell(t, tree.childJM, "notify direct owner")
+	finishDelegateShell(t, tree.childJM, rec.JobID)
 
 	stored := loadStableShellRecord(t, tree.childJM, rec.JobID)
 	attentionID := stableShellAttentionID(rec.JobID, stored.TerminalGen)
@@ -82,8 +83,8 @@ func TestStableDelegateShell_CompletionAttentionReachesDirectOwner(t *testing.T)
 		t.Fatalf("direct owner retained %d legacy shell notifications", got)
 	}
 
-	retryTree := newStableDelegateShellTree(t)
-	retryRec := createStableDelegateShell(t, retryTree.childJM, "retry direct owner arm")
+	retryTree := newDelegateShellTree(t)
+	retryRec := createDelegateShell(t, retryTree.childJM, "retry direct owner arm")
 	readCalls := 0
 	injected := errors.New("injected stable shell arm failure")
 	retryTree.child.cfg.testOnly.delegateAttentionReadFold = func(path, sessionID string) (delegateAttentionFold, error) {
@@ -118,12 +119,12 @@ func TestStableDelegateShell_CompletionAttentionReachesDirectOwner(t *testing.T)
 	}
 }
 
-func TestStableDelegateShell_CompletionUsesExactDurableAttention(t *testing.T) {
-	tree := newStableDelegateShellTree(t)
+func TestDelegateShell_CompletionUsesExactDurableAttention(t *testing.T) {
+	tree := newDelegateShellTree(t)
 	path := transcriptPath(tree.controller.stateDir, tree.child.ID())
-	rec := createStableDelegateShell(t, tree.childJM, "exact durable attention")
+	rec := createDelegateShell(t, tree.childJM, "exact durable attention")
 	lease := delegateLease{delegateID: "dlg_child", generation: 1}
-	finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{result: "owner idle", communicated: true})
+	finish := delegateFinishFromRun(delegateTerminalRunInputs{result: "owner idle", communicated: true})
 	continued, _, err := tree.controller.prepareSettlementForTest(lease, finish.packet)
 	if err != nil || continued {
 		t.Fatalf("settle owning delegate generation = continued:%t err:%v", continued, err)
@@ -132,7 +133,7 @@ func TestStableDelegateShell_CompletionUsesExactDurableAttention(t *testing.T) {
 	if err != nil {
 		t.Fatalf("finish owning delegate generation: %v", err)
 	}
-	finishStableDelegateShell(t, tree.childJM, rec.JobID)
+	finishDelegateShell(t, tree.childJM, rec.JobID)
 
 	stored := loadStableShellRecord(t, tree.childJM, rec.JobID)
 	attentionID := "shell:" + rec.JobID + ":" + stored.TerminalGen
@@ -152,9 +153,9 @@ func TestStableDelegateShell_CompletionUsesExactDurableAttention(t *testing.T) {
 	}
 }
 
-func TestStableDelegateShell_AncestorCanSeeDescendantShell(t *testing.T) {
-	tree := newStableDelegateShellTree(t)
-	rec := createStableDelegateShell(t, tree.grandJM, "visible descendant")
+func TestDelegateShell_AncestorCanSeeDescendantShell(t *testing.T) {
+	tree := newDelegateShellTree(t)
+	rec := createDelegateShell(t, tree.grandJM, "visible descendant")
 
 	out, err := jobListTool(tree.root, map[string]any{"include_descendants": true}, 1<<20)
 	if err != nil {
@@ -178,9 +179,9 @@ func TestStableDelegateShell_AncestorCanSeeDescendantShell(t *testing.T) {
 	}
 }
 
-func TestStableDelegateShell_AncestorCannotControlWithoutDirectDelegateHandle(t *testing.T) {
-	tree := newStableDelegateShellTree(t)
-	rec := createStableDelegateShell(t, tree.grandJM, "direct edge only")
+func TestDelegateShell_AncestorCannotControlWithoutDirectDelegateHandle(t *testing.T) {
+	tree := newDelegateShellTree(t)
+	rec := createDelegateShell(t, tree.grandJM, "direct edge only")
 	var signals atomic.Int32
 	tree.grandJM.setShellSignal(tree.grandJM.running[rec.JobID], func() { signals.Add(1) })
 
@@ -198,9 +199,9 @@ func TestStableDelegateShell_AncestorCannotControlWithoutDirectDelegateHandle(t 
 	}
 }
 
-func TestStableDelegateShell_OutputStatusWatchAndStopRemainJobAddressed(t *testing.T) {
-	tree := newStableDelegateShellTree(t)
-	rec := createStableDelegateShell(t, tree.childJM, "job controls")
+func TestDelegateShell_OutputStatusWatchAndStopRemainJobAddressed(t *testing.T) {
+	tree := newDelegateShellTree(t)
+	rec := createDelegateShell(t, tree.childJM, "job controls")
 	var signals atomic.Int32
 	tree.childJM.setShellSignal(tree.childJM.running[rec.JobID], func() { signals.Add(1) })
 	output := tree.childJM.running[rec.JobID].output
@@ -250,9 +251,9 @@ func TestStableDelegateShell_OutputStatusWatchAndStopRemainJobAddressed(t *testi
 	}
 }
 
-func TestStableDelegateShell_RestartRepairsCompletionAttentionOnce(t *testing.T) {
-	tree := newStableDelegateShellTree(t)
-	rec := createStableDelegateShell(t, tree.childJM, "repair after restart")
+func TestDelegateShell_RestartRepairsCompletionAttentionOnce(t *testing.T) {
+	tree := newDelegateShellTree(t)
+	rec := createDelegateShell(t, tree.childJM, "repair after restart")
 	run := tree.childJM.running[rec.JobID]
 	if err := run.output.Close(); err != nil {
 		t.Fatalf("close crashed shell output: %v", err)
@@ -279,7 +280,7 @@ func TestStableDelegateShell_RestartRepairsCompletionAttentionOnce(t *testing.T)
 	t.Cleanup(func() { _ = restoredJM.closeStoreOnly() })
 	restoredJM.delegateController = tree.controller
 	tree.child.jobManager = restoredJM
-	bindStableDelegateActivity(tree.child, tree.controller, delegateLease{delegateID: "dlg_child", generation: 1})
+	bindDelegateActivity(tree.child, tree.controller, delegateLease{delegateID: "dlg_child", generation: 1})
 	if err := restoredJM.recoverForwardedTerminalEvents(); err != nil {
 		t.Fatalf("recover forwarded terminal shell: %v", err)
 	}
@@ -327,8 +328,8 @@ func TestStableDelegateShell_RestartRepairsCompletionAttentionOnce(t *testing.T)
 	}
 }
 
-func TestStableDelegateShell_ColdRestartRearmsExactCompletionAttention(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
+func TestDelegateShell_ColdRestartRearmsExactCompletionAttention(t *testing.T) {
+	fixture := newColdDelegateFixture(t, "")
 	childJM, err := newJobManagerNoSync(fixture.stateDir, fixture.childID, nil)
 	if err != nil {
 		t.Fatalf("open cold child job manager: %v", err)
@@ -359,7 +360,7 @@ func TestStableDelegateShell_ColdRestartRearmsExactCompletionAttention(t *testin
 				t.Error("cold child request omitted the exact durable terminal block")
 			}
 			close(attentionSeen)
-			return communicateResponse(true, "cold shell completion handled")
+			return agenttest.CommunicateResponse(true, "cold shell completion handled")
 		},
 		func(llm.Request) llm.Response {
 			select {
@@ -367,7 +368,7 @@ func TestStableDelegateShell_ColdRestartRearmsExactCompletionAttention(t *testin
 			default:
 				t.Error("root completion request preceded child shell observation")
 			}
-			return communicateResponse(true, "root drained cold shell delegate completion")
+			return agenttest.CommunicateResponse(true, "root drained cold shell delegate completion")
 		},
 	}
 	root := restoreSupervisionRoot(t, fixture, nil)
@@ -422,7 +423,7 @@ func TestStableDelegateShell_ColdRestartRearmsExactCompletionAttention(t *testin
 	}
 }
 
-func newStableDelegateShellTree(t *testing.T) *stableDelegateShellTree {
+func newDelegateShellTree(t *testing.T) *delegateShellTree {
 	t.Helper()
 	controller, _ := newDelegateControllerTestHarness(t, 3, 1)
 	seedDelegateControllerRunning(t, controller, "dlg_child", "")
@@ -446,17 +447,17 @@ func newStableDelegateShellTree(t *testing.T) *stableDelegateShellTree {
 	root := &Session{
 		id: "root-session", stateDir: controller.stateDir, jobManager: rootJM,
 		delegateController: controller, delegateRootSessionID: "root-session",
-		subagents: newSubagentManager(nil, 0), state: SessionIdle,
+		subagents: newSubagentManager(0), state: SessionIdle,
 	}
 	child := &Session{
 		id: "child-dlg_child", stateDir: controller.stateDir, jobManager: childJM,
 		delegateController: controller, delegateRootSessionID: "root-session", owningDelegateID: "dlg_child",
-		subagents: newSubagentManager(nil, 0), state: SessionIdle,
+		subagents: newSubagentManager(0), state: SessionIdle,
 	}
 	grandchild := &Session{
 		id: "child-dlg_grandchild", stateDir: controller.stateDir, jobManager: grandJM,
 		delegateController: controller, delegateRootSessionID: "root-session", owningDelegateID: "dlg_grandchild",
-		subagents: newSubagentManager(nil, 0), state: SessionIdle,
+		subagents: newSubagentManager(0), state: SessionIdle,
 	}
 	for _, session := range []*Session{root, child, grandchild} {
 		writer, err := transcript.NewWriter(transcriptPath(controller.stateDir, session.ID()), transcript.Header{SessionID: session.ID()})
@@ -478,10 +479,10 @@ func newStableDelegateShellTree(t *testing.T) *stableDelegateShellTree {
 	controller.live["dlg_grandchild"].runtime = grandchild
 	controller.live["dlg_grandchild"].binding.runtime = grandchild
 	controller.mu.Unlock()
-	bindStableDelegateActivity(child, controller, delegateLease{delegateID: "dlg_child", generation: 1})
-	bindStableDelegateActivity(grandchild, controller, delegateLease{delegateID: "dlg_grandchild", generation: 1})
+	bindDelegateActivity(child, controller, delegateLease{delegateID: "dlg_child", generation: 1})
+	bindDelegateActivity(grandchild, controller, delegateLease{delegateID: "dlg_grandchild", generation: 1})
 
-	tree := &stableDelegateShellTree{
+	tree := &delegateShellTree{
 		controller: controller, root: root, child: child, grandchild: grandchild,
 		rootJM: rootJM, childJM: childJM, grandJM: grandJM,
 	}
@@ -505,7 +506,7 @@ func newStableDelegateShellTree(t *testing.T) *stableDelegateShellTree {
 	return tree
 }
 
-func createStableDelegateShell(t *testing.T, jm *jobManager, description string) *jobstore.JobRecord {
+func createDelegateShell(t *testing.T, jm *jobManager, description string) *jobstore.JobRecord {
 	t.Helper()
 	rec, err := jm.createShell(createShellOpts{Command: "sleep 30", Description: description})
 	if err != nil {
@@ -514,7 +515,7 @@ func createStableDelegateShell(t *testing.T, jm *jobManager, description string)
 	return rec
 }
 
-func finishStableDelegateShell(t *testing.T, jm *jobManager, jobID string) {
+func finishDelegateShell(t *testing.T, jm *jobManager, jobID string) {
 	t.Helper()
 	code := 0
 	if err := jm.finalize(jobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
@@ -559,10 +560,10 @@ func loadStableShellRecord(t *testing.T, jm *jobManager, jobID string) *jobstore
 
 // A receiver wake closes the real source descriptor after custody, before ack.
 func TestShellReplayPreservesAcceptedMachineryMessage(t *testing.T) {
-	tree := newStableDelegateShellTree(t)
+	tree := newDelegateShellTree(t)
 	causal := provenance.WithWatch(nil, "opaque-shell-watch-59bf", "opaque-shell-generation-723a", "opaque-shell-delivery-b453", tree.child.ID(), "opaque-origin-job-26ea")
 	tree.childJM.currentProvenance = func() *provenance.Causal { return causal }
-	rec := createStableDelegateShell(t, tree.childJM, "opaque-shell-4c72")
+	rec := createDelegateShell(t, tree.childJM, "opaque-shell-4c72")
 	tree.child.SetNotifyFunc(func() { _ = tree.childJM.store.Close() })
 	code := 0
 	if err := tree.childJM.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code); err == nil {
@@ -639,10 +640,10 @@ func TestShellReplayPreservesAcceptedMachineryMessage(t *testing.T) {
 }
 
 func TestShellBootstrapReplaysHistoricalReceiptAfterInterruptedAck(t *testing.T) {
-	setup := func(t *testing.T, withProvenance bool) (coldStableDelegateFixture, stableShellAttentionBootstrapTarget, *jobstore.JobRecord, string) {
+	setup := func(t *testing.T, withProvenance bool) (coldDelegateFixture, stableShellAttentionBootstrapTarget, *jobstore.JobRecord, string) {
 		t.Helper()
 		var descriptor delegatestore.Descriptor
-		fixture := newColdStableDelegateFixtureConfigured(t, "", func(d *delegatestore.Descriptor) {
+		fixture := newColdDelegateFixtureConfigured(t, "", func(d *delegatestore.Descriptor) {
 			descriptor = cloneDelegateStartDescriptor(*d)
 		})
 		jm, err := newJobManagerNoSync(fixture.stateDir, fixture.childID, nil)
@@ -731,7 +732,7 @@ func TestShellBootstrapReplaysHistoricalReceiptAfterInterruptedAck(t *testing.T)
 						t.Error("child request omitted input-derived shell identity or payload")
 					}
 					close(seen)
-					return communicateResponse(true, "historical shell completion handled")
+					return agenttest.CommunicateResponse(true, "historical shell completion handled")
 				},
 				func(llm.Request) llm.Response {
 					select {
@@ -739,7 +740,7 @@ func TestShellBootstrapReplaysHistoricalReceiptAfterInterruptedAck(t *testing.T)
 					default:
 						t.Error("root completion preceded historical shell observation")
 					}
-					return communicateResponse(true, "historical shell completion drained")
+					return agenttest.CommunicateResponse(true, "historical shell completion drained")
 				},
 			}
 			root := restoreSupervisionRoot(t, fixture, nil)
@@ -779,7 +780,7 @@ func TestShellBootstrapReplaysHistoricalReceiptAfterInterruptedAck(t *testing.T)
 			assertSource(t, target, record, jobstore.NotifyDelivered)
 		})
 	}
-	seedHistorical := func(t *testing.T, fixture coldStableDelegateFixture, record *jobstore.JobRecord, content string) (string, string, []byte) {
+	seedHistorical := func(t *testing.T, fixture coldDelegateFixture, record *jobstore.JobRecord, content string) (string, string, []byte) {
 		t.Helper()
 		path := transcriptPath(fixture.stateDir, fixture.childID)
 		id := stableShellAttentionID(record.JobID, record.TerminalGen)
@@ -792,7 +793,7 @@ func TestShellBootstrapReplaysHistoricalReceiptAfterInterruptedAck(t *testing.T)
 		}
 		return path, id, before
 	}
-	assertPendingUnchanged := func(t *testing.T, fixture coldStableDelegateFixture, target stableShellAttentionBootstrapTarget, record *jobstore.JobRecord, path string, before []byte) {
+	assertPendingUnchanged := func(t *testing.T, fixture coldDelegateFixture, target stableShellAttentionBootstrapTarget, record *jobstore.JobRecord, path string, before []byte) {
 		t.Helper()
 		after, err := os.ReadFile(path)
 		if err != nil || !bytes.Equal(after, before) {

@@ -412,7 +412,7 @@ func TestSkillActivation_RestoredSelectionAdmissionGatesNextDispatch(t *testing.
 	}
 	// The metadata store is read-only for the restore: the reconciliation can
 	// read the durable prepared record but cannot persist an admission.
-	metaPath := filepath.Join(stateDir, sessionsSubdir, s.Meta().ID+".meta.json")
+	metaPath := schema.SessionMetaPath(stateDir, s.Meta().ID)
 	if err := os.Remove(metaPath); err != nil {
 		t.Fatalf("remove meta file: %v", err)
 	}

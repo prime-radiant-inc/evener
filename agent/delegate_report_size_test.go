@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -62,19 +63,19 @@ func runLargeDelegateReportDelivery(t *testing.T, report string) (*Session, stri
 			id := deferredHeadDelegateID.FindString(deferredHeadToolResults(req.Messages))
 			return delegateSendResponse("send", id, "Do the second part.", 60_000)
 		},
-		func(llm.Request) llm.Response { return finalResponse("reports received") })
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("reports received") })
 	adapter.script("Do the first part.",
 		func(llm.Request) llm.Response {
 			select {
 			case <-releaseFirstReport:
 			case <-ctx.Done():
 				t.Errorf("first report was never released: %v", ctx.Err())
-				return finalResponse("fixture cancelled")
+				return agenttest.FinalResponse("fixture cancelled")
 			}
-			return toolCallResponse(communicateCall("child_first", "first generation report"))
+			return agenttest.ToolCallResponse(communicateCall("child_first", "first generation report"))
 		},
 		func(llm.Request) llm.Response {
-			return toolCallResponse(communicateCall("child_second", report))
+			return agenttest.ToolCallResponse(communicateCall("child_second", report))
 		})
 
 	var sess *Session
@@ -303,7 +304,7 @@ func TestDelegateReportPastDeliveryBudgetCarriesRetainedArtifact(t *testing.T) {
 		t.Fatal("closing the child expired the live root's artifact capability")
 	}
 	root.Close()
-	if _, err := execReadTranscript(newToolDeps(root), map[string]any{"transcript_ref": ref}); err == nil || !strings.Contains(err.Error(), "artifact_expired") {
+	if _, err := execReadTranscript(context.Background(), newToolDeps(root), map[string]any{"transcript_ref": ref}); err == nil || !strings.Contains(err.Error(), "artifact_expired") {
 		t.Fatalf("root-close artifact read=%v, want artifact_expired", err)
 	}
 }
@@ -324,7 +325,7 @@ func retainedArtifactText(t *testing.T, root *Session, ref string) string {
 func readRetainedArtifactText(root *Session, ref string) (string, error) {
 	var complete strings.Builder
 	for offset := 0; ; {
-		value, err := execReadTranscript(newToolDeps(root), map[string]any{"transcript_ref": ref, "offset_bytes": float64(offset)})
+		value, err := execReadTranscript(context.Background(), newToolDeps(root), map[string]any{"transcript_ref": ref, "offset_bytes": float64(offset)})
 		if err != nil {
 			return "", err
 		}

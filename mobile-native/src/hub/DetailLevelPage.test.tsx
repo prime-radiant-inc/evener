@@ -24,7 +24,6 @@ vi.mock("../ConnectionProvider", () => ({ useConnection: () => ({ state: "ready"
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 const ADVANCED = {
 	roundTimings: false,

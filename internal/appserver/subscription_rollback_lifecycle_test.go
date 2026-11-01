@@ -5,31 +5,48 @@ import (
 	"testing"
 )
 
-func TestSubscriptionLifecycleUnsubscribeRawFallback(t *testing.T) {
+func TestUnsubscribeRawFallbackThenResolvedLifecycle(t *testing.T) {
 	s := NewServer(ServerConfig{})
 	c := &Connection{id: "conn", server: s}
 	s.conns[c.id] = c
 	s.subs.subscribeOwned(c.id, "current", "stable", false)
 	s.subs.subscribeOwned(c.id, "stable", "stable", false)
 	ctx := context.WithValue(t.Context(), connectionContextKey{}, c)
-	UnsubscribeLifecycle(ctx, "current")
+	Unsubscribe(ctx, "current")
 	if s.subs.IsSubscribed(c.id, "current") || !s.subs.IsSubscribed(c.id, "stable") {
 		t.Fatal("unresolved unsubscribe must retain raw-key semantics")
 	}
-	ctx = context.WithValue(ctx, subscriptionLifecycleContextKey{}, "stable")
-	UnsubscribeLifecycle(ctx, "current")
+	ctx = context.WithValue(ctx, unsubscribeTargetContextKey{}, unsubscribeTarget{key: "stable"})
+	Unsubscribe(ctx, "current")
 	if s.subs.IsSubscribed(c.id, "stable") {
 		t.Fatal("resolved unsubscribe ignored ingress lifecycle identity")
 	}
 }
 
-func TestSubscriptionLifecycleUnsubscribeDeliveryAliasMatchesLifecycle(t *testing.T) {
-	s := NewSubscriptions()
-	s.subscribeOwned("conn", "current", "stable", false)
-	s.subscribeOwned("conn", "other", "other", false)
-	s.UnsubscribeLifecycleAlias("conn", "current", "stable")
-	if s.IsSubscribed("conn", "current") || !s.IsSubscribed("conn", "other") {
-		t.Fatal("delivery/lifecycle unsubscribe did not isolate the requested owner")
+// An unresolved ref carries a second identity: its admissions are canceled with
+// the first's, but only the subscription registered under the first identity is
+// withdrawn.
+func TestUnsubscribeUnresolvedAliasCancelsBothAdmissionsAndRemovesOnlyTheKey(t *testing.T) {
+	s := NewServer(ServerConfig{})
+	c := &Connection{id: "conn", server: s}
+	s.conns[c.id] = c
+	s.subs.subscribeOwned(c.id, "current", "stable", false)
+	s.subs.subscribeOwned(c.id, "other", "other", false)
+	byKey := c.beginSubscriptionAdmission("read-1", "current")
+	byAlias := c.beginSubscriptionAdmission("read-2", "stable")
+	unrelated := c.beginSubscriptionAdmission("read-3", "other")
+	ctx := context.WithValue(t.Context(), connectionContextKey{}, c)
+	ctx = context.WithValue(ctx, unsubscribeTargetContextKey{}, unsubscribeTarget{key: "current", aliasKey: "stable"})
+
+	Unsubscribe(ctx, "current")
+
+	if s.subs.IsSubscribed(c.id, "current") || !s.subs.IsSubscribed(c.id, "other") {
+		t.Fatal("unresolved unsubscribe did not isolate the requested key")
+	}
+	c.admissionMu.Lock()
+	defer c.admissionMu.Unlock()
+	if !byKey.canceled || !byAlias.canceled || unrelated.canceled {
+		t.Fatalf("admission cancellation = (key %t, alias %t, unrelated %t), want (true, true, false)", byKey.canceled, byAlias.canceled, unrelated.canceled)
 	}
 }
 

@@ -15,24 +15,24 @@ import (
 // after every archive and daemon exit and at startup, so it also catches
 // sessions that aged into the archive and daemons that exited while the hub
 // was down. It visits only the trees that exist, not every recorded session.
-func reconcileArchivedScratch(cfg hubcore.WebConfig, now time.Time) {
-	if cfg.Past == nil || cfg.Archive == nil {
+func reconcileArchivedScratch(past *hubcore.PastIndex, archive *hubcore.ArchiveStore, roster *hubcore.Roster, now time.Time) {
+	if past == nil || archive == nil {
 		return
 	}
-	decisions, err := cfg.Archive.Decisions()
+	decisions, err := archive.Decisions()
 	if err != nil {
 		return
 	}
-	daemonTempDirs := recordedScratchTempDirs(cfg.Past)
+	daemonTempDirs := recordedScratchTempDirs(past)
 	for _, id := range agentsandbox.SessionScratchTreeRootIDs(daemonTempDirs...) {
-		entry, known := cfg.Past.FindIndexed(id)
+		entry, known := past.FindIndexed(id)
 		if !known {
 			continue
 		}
 		// A daemon that died stays listed, marked Crashed; only a running one
 		// keeps its session's scratch.
-		if cfg.Roster != nil {
-			if live, listed := cfg.Roster.Find(id); listed && !live.Crashed {
+		if roster != nil {
+			if live, listed := roster.Find(id); listed && !live.Crashed {
 				continue
 			}
 		}
@@ -59,12 +59,14 @@ func recordedScratchTempDirs(past *hubcore.PastIndex) []string {
 // scratchReconciler runs reconcileArchivedScratch on its own goroutine, one
 // pass at a time. Kicks that land during a pass collapse into one more pass.
 type scratchReconciler struct {
-	cfg  hubcore.WebConfig
-	kick chan struct{}
+	past    *hubcore.PastIndex
+	archive *hubcore.ArchiveStore
+	roster  *hubcore.Roster
+	kick    chan struct{}
 }
 
-func newScratchReconciler(cfg hubcore.WebConfig) *scratchReconciler {
-	return &scratchReconciler{cfg: cfg, kick: make(chan struct{}, 1)}
+func newScratchReconciler(past *hubcore.PastIndex, archive *hubcore.ArchiveStore, roster *hubcore.Roster) *scratchReconciler {
+	return &scratchReconciler{past: past, archive: archive, roster: roster, kick: make(chan struct{}, 1)}
 }
 
 // Kick asks for a reconcile pass without waiting for it.
@@ -82,7 +84,7 @@ func (r *scratchReconciler) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-r.kick:
-			reconcileArchivedScratch(r.cfg, time.Now())
+			reconcileArchivedScratch(r.past, r.archive, r.roster, time.Now())
 		}
 	}
 }

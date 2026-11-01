@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/identifier"
 )
 
 func envValue(env []string, name string) (string, bool) {
@@ -848,7 +850,7 @@ func TestEnvFloorRedirectsGoCachesForAGoEnvFileLinkedIntoTmp(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	if !pathUnder(resolveExistingPrefix(dir), "/tmp") {
+	if !identifier.PathUnder(resolveExistingPrefix(dir), "/tmp") {
 		t.Skip("/tmp is itself a link on this host, which never uses the overlay")
 	}
 	target := filepath.Join(dir, "go.env")
@@ -880,7 +882,7 @@ func TestEnvFloorRedirectsGoCachesForAGoEnvFileLinkedThroughTmp(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	if !pathUnder(resolveExistingPrefix(dir), "/tmp") {
+	if !identifier.PathUnder(resolveExistingPrefix(dir), "/tmp") {
 		t.Skip("/tmp is itself a link on this host, which never uses the overlay")
 	}
 	realDir, err := os.MkdirTemp("/var/tmp", "evener-goenv-real-")

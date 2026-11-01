@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"maps"
 	"os"
-	"path/filepath"
 	"slices"
 	"sort"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/schema"
 )
 
 type coldDelegateAttentionRef struct {
@@ -22,7 +22,7 @@ type coldDelegateAttentionRef struct {
 // derived attention projection. Resident readiness belongs to Session. New
 // attention resets failed restoration, not successful-admission fairness.
 type delegateAttentionState struct {
-	retry notificationRetry
+	retry backoffTimer
 	// wakeIDs are the transcript attention IDs this delegate still owes, each
 	// delivered, escalated or forgotten on its own.
 	wakeIDs map[string]struct{}
@@ -199,20 +199,6 @@ func (c *delegateTreeController) reconcileDelegateAttentionFromTranscripts() err
 	}
 	c.attention = rebuilt
 	return nil
-}
-
-func (c *delegateTreeController) noteDelegateAttention(delegateID, attentionID string) bool {
-	if c == nil {
-		return false
-	}
-	release, err := c.beginRetirementMutation()
-	if err != nil {
-		return false
-	}
-	defer release()
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.noteDelegateAttentionLocked(delegateID, attentionID)
 }
 
 // openDelegateAttention serializes a transcript-derived open against accepted
@@ -823,7 +809,7 @@ func (c *delegateTreeController) idleDelegateRestoreCommit(delegateID string) (d
 		lease:          delegateLease{delegateID: delegateID, generation: aggregate.Generation},
 		ctx:            context.Background(),
 		descriptor:     descriptor,
-		transcriptPath: filepath.Join(c.stateDir, sessionsSubdir, descriptor.ChildSessionID+".transcript.jsonl"),
+		transcriptPath: schema.SessionTranscriptPath(c.stateDir, descriptor.ChildSessionID),
 		worktreePath:   worktreePath,
 	}, descriptor.ParentDelegateID, nil
 }

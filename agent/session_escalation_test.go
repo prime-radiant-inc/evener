@@ -587,7 +587,7 @@ func TestEscalation_EmitsResolvedEventOnTurnInterrupt(t *testing.T) {
 // guarantees. Unlike resolve/interrupt (paths 1-2 above, where the session
 // outlives the emit and exactly-once delivery is deterministic), close races
 // the convergence defer against its own teardown: cancelAllEscalations
-// unblocks the waiter (session_lifecycle.go:180) and Close then proceeds to
+// unblocks the waiter and Close then proceeds to
 // close the event stream, so the defer's emit lands only if it reaches
 // sendEvent before eventsClosed flips — sendEvent drops post-close sends by
 // design (best-effort, accepted at review). This test's escalation goroutine

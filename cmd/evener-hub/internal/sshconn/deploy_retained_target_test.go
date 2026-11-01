@@ -125,7 +125,7 @@ func TestRetainedDeploymentInstallTargetBoundary(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, _, err := m.DeployForOperation(t.Context(), host, facts, false, nil); err == nil || writes != 1 {
+			if _, _, err := m.DeployForOperation(t.Context(), host, facts, false, nil, nil); err == nil || writes != 1 {
 				t.Fatalf("first deployment did not fail during short transfer: err=%v writes=%d", err, writes)
 			}
 			prior := m.pendingRestart(host.Name)
@@ -196,7 +196,7 @@ func TestRetainedDeploymentInstallTargetBoundary(t *testing.T) {
 					}
 					return saved(ctx, argv, in)
 				}
-				_, _, failure := m.DeployForOperation(ctx, host, facts, false, nil)
+				_, _, failure := m.DeployForOperation(ctx, host, facts, false, nil, nil)
 				cancel()
 				if mode == "endpoint-schema" {
 					if !errors.Is(failure, ErrEndpointMigration) || !isTerminal(failure) {
@@ -216,7 +216,7 @@ func TestRetainedDeploymentInstallTargetBoundary(t *testing.T) {
 				}
 				fr.runFn = saved
 			}
-			got, after, err := m.DeployForOperation(t.Context(), host, facts, false, nil)
+			got, after, err := m.DeployForOperation(t.Context(), host, facts, false, nil, nil)
 			if strings.HasSuffix(mode, "during-build") {
 				if afterRetarget == nil || !reflect.DeepEqual(afterRetarget, retainedTargetSnapshot(t, root)) {
 					t.Errorf("push changed an installation after build-time retarget: writes=%d err=%v", writes, err)
@@ -317,7 +317,7 @@ func TestOrdinaryPushTargetDuringBuild(t *testing.T) {
 				return writeStageBinary(ctx, goos, goarch, out)
 			}
 			m := newTestManager(t, testRegistry(t, host), fr, Options{BuildBinary: build})
-			got, err := m.deployPush(t.Context(), host, Preflight{OS: "linux", Arch: "amd64"}, func(string) error { recorded++; return nil })
+			got, err := m.deployPush(t.Context(), host, Preflight{OS: "linux", Arch: "amd64"}, func(string) error { recorded++; return nil }, nil)
 			if mode == "honest-push" {
 				data, readErr := os.ReadFile(target)
 				if err != nil || got != target || writes != 1 || recorded != 1 || readErr != nil || string(data) != "staged-binary" {
@@ -347,7 +347,7 @@ func TestRetainedInstallerFallbackRefusesBeforeRecording(t *testing.T) {
 			_, err := m.deploy(t.Context(), host, Preflight{OS: "other-os", Arch: "other-arch"}, func(string) error {
 				recorded++
 				return nil
-			}, host.EvenerPath)
+			}, &host.EvenerPath)
 			if !Terminal(err) || !strings.Contains(fmt.Sprint(err), "installer fallback") || recorded != 0 || len(fr.recordedRuns()) != 0 {
 				t.Fatalf("retained installer dispatch was not refused before effects: err=%v recorded=%d commands=%q", err, recorded, fr.recordedRuns())
 			}

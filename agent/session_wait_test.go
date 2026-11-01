@@ -206,7 +206,7 @@ func TestWaitCheckpointRecovery(t *testing.T) {
 				t.Fatal(err)
 			}
 			// Verify the persisted evidence independently of the recovery predicate.
-			data, err := readTranscriptFull(path, "")
+			data, err := readTranscriptFull(t.Context(), path, "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -339,7 +339,7 @@ func TestWaitCheckpointRecovery(t *testing.T) {
 				t.Fatalf("interrupted execution did not retain runtime_lost semantics: %+v", run)
 			}
 			if tc.name == "safe completed batch" {
-				data, err := readTranscriptFull(path, "")
+				data, err := readTranscriptFull(t.Context(), path, "")
 				if err != nil {
 					t.Fatal(err)
 				}

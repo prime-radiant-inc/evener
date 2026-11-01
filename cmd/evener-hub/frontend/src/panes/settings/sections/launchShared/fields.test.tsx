@@ -3,9 +3,10 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { connectionStore } from "../../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { resetExtensionsStoreForTests } from "../../../../stores/extensions";
+import { connectReadyFakeClient } from "../../../../testing/connectionTestUtils";
 import * as catalogClientModule from "../../../../widgets/modelCatalog/catalogClient";
 import { PromptCompositeField, ScalarField } from "./fields";
 
@@ -19,14 +20,8 @@ let fetchModelCatalog: typeof catalogClientModule.fetchModelCatalog;
 // store's own completePaths - so a test that OPENS a picker panel needs a
 // connected client behind it (the same convention dirListSetting.test.tsx and
 // MarketplacesSection.test.tsx use).
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  return fake;
-}
-
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetExtensionsStoreForTests();
   resetCredentialsStoreForTests();
   fetchModelCatalog = vi
@@ -155,7 +150,7 @@ describe("ScalarField: a browsable path kind renders the path picker", () => {
 
   test("a file-kind field browses the value's own directory with files included", async () => {
     const user = userEvent.setup();
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/paths/complete", (params) => {
       expect(params).toEqual({ prefix: "/etc/", includeFiles: true });
       return { data: ["/etc/ssl/", "/etc/prompt.md"] };
@@ -186,7 +181,7 @@ describe("ScalarField: a browsable path kind renders the path picker", () => {
   test("an outputFile field lists files, so an existing target can be picked", async () => {
     const user = userEvent.setup();
     const calls: Array<{ prefix: string; includeFiles?: boolean }> = [];
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/paths/complete", (params) => {
       calls.push(params);
       return { data: ["/tmp/traces/", "/tmp/trace.jsonl"] };
@@ -201,7 +196,7 @@ describe("ScalarField: a browsable path kind renders the path picker", () => {
   test("picking a file row reports it via onChange", async () => {
     const user = userEvent.setup();
     const onChange = vi.fn();
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/paths/complete", () => ({ data: ["/tmp/atif.json"] }));
     render(<ScalarField option={pathOption()} layer="global" value="/tmp/old.json" onChange={onChange} />);
 
@@ -662,7 +657,7 @@ describe("PromptCompositeField", () => {
   test("picking a file reports it via onFileChange even when mode is 'inline' (inactive fields stay editable)", async () => {
     const user = userEvent.setup();
     const onFileChange = vi.fn();
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/paths/complete", () => ({ data: ["/etc/prompt.md"] }));
     render(
       <PromptCompositeField

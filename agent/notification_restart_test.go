@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"regexp"
 	"slices"
 	"sync"
@@ -42,7 +43,7 @@ func TestNotificationRestartCuts(t *testing.T) {
 
 func incidentPendingFacts(t *testing.T, stateDir, sessionID, id string) {
 	t.Helper()
-	data, err := readTranscriptFull(transcriptPath(stateDir, sessionID), "")
+	data, err := readTranscriptFull(t.Context(), transcriptPath(stateDir, sessionID), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,9 +104,9 @@ func TestNotificationOwnerHeldObserverEligible(t *testing.T) {
 	defer releaseYield()
 	a.script("root", func(llm.Request) llm.Response {
 		return delegateToolCall("held-observer-11", map[string]any{"prompt": "HELD-OBSERVER-11", "watch_parent": true})
-	}, func(llm.Request) llm.Response { return finalResponse("held-owner-initial-11") })
+	}, func(llm.Request) llm.Response { return agenttest.FinalResponse("held-owner-initial-11") })
 	a.script("HELD-OBSERVER-11", func(llm.Request) llm.Response {
-		return toolCallResponse(llm.ToolCallData{ID: "held-observer-watch-11", Name: "job_watch", Type: "function", Arguments: json.RawMessage(`{"operation":"create","source":"parent","events":["assistant.tool"],"event_filter":{"tool_name":"ask_user","status":"ok"},"note":"observer-7a32bd90"}`)})
+		return agenttest.ToolCallResponse(llm.ToolCallData{ID: "held-observer-watch-11", Name: "job_watch", Type: "function", Arguments: json.RawMessage(`{"operation":"create","source":"parent","events":["assistant.tool"],"event_filter":{"tool_name":"ask_user","status":"ok"},"note":"observer-7a32bd90"}`)})
 	}, func(req llm.Request) llm.Response {
 		watchID := regexp.MustCompile(`watch_[A-Za-z0-9_]{10,}`).FindString(lastToolResultText(req.Messages))
 		if watchID == "" {
@@ -115,7 +116,7 @@ func TestNotificationOwnerHeldObserverEligible(t *testing.T) {
 		return waitResponseFor("observer-wait-11", "watch:"+watchID)
 	}, func(req llm.Request) llm.Response {
 		terminal.hold(t)
-		return finalResponse("observer-report-9a087bc1")
+		return agenttest.FinalResponse("observer-report-9a087bc1")
 	})
 	root := newMessagingRoot(t, a, returns.configure)
 	t.Cleanup(func() { returns.close(t, root) })
@@ -128,7 +129,7 @@ func TestNotificationOwnerHeldObserverEligible(t *testing.T) {
 	releaseYield()
 	incidentYielded(t, root, observer.ID(), initial)
 	a.script("root", func(llm.Request) llm.Response {
-		return toolCallResponse(askUserCall("held-question-11", askUserArgsValid()))
+		return agenttest.ToolCallResponse(askUserCall("held-question-11", askUserArgsValid()))
 	})
 	if _, err := root.ProcessInput(context.Background(), "held-question-start-11", nil); err != nil {
 		t.Fatal(err)
@@ -178,8 +179,11 @@ func TestNotificationUnobservedReportAcrossCompaction(t *testing.T) {
 	a.rootID = root.ID()
 	terminal := newWaitBoundary()
 	defer terminal.release()
-	a.script("root", func(llm.Request) llm.Response { return delegateToolResponse("compact-worker-11", "COMPACT-WORKER-11") }, func(llm.Request) llm.Response { return finalResponse("compact-root-initial-11") })
-	a.script("COMPACT-WORKER-11", func(llm.Request) llm.Response { terminal.hold(t); return finalResponse("unobserved-report-629da8c3") })
+	a.script("root", func(llm.Request) llm.Response { return delegateToolResponse("compact-worker-11", "COMPACT-WORKER-11") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("compact-root-initial-11") })
+	a.script("COMPACT-WORKER-11", func(llm.Request) llm.Response {
+		terminal.hold(t)
+		return agenttest.FinalResponse("unobserved-report-629da8c3")
+	})
 	if _, err := root.ProcessInput(context.Background(), "compact-start-11", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +201,7 @@ func TestNotificationUnobservedReportAcrossCompaction(t *testing.T) {
 		if !incidentDelegatePayload(req, worker.owningDelegateID, "unobserved-report-629da8c3") {
 			t.Error("designated post-compaction request omitted source or report")
 		}
-		return finalResponse("compact-report-consumed-11")
+		return agenttest.FinalResponse("compact-report-consumed-11")
 	})
 	wake, hint := newDrainWake()
 	root.SetNotifyFunc(hint)
@@ -311,8 +315,8 @@ func testNotificationDelegateRestartCut(t *testing.T, cut string) {
 	returns := newActivationReturns()
 	terminal := newWaitBoundary()
 	defer terminal.release()
-	a.script("root", func(llm.Request) llm.Response { return delegateToolResponse("restart-terminal-11", key) }, func(llm.Request) llm.Response { return finalResponse("started-terminal-11") })
-	a.script(key, func(llm.Request) llm.Response { terminal.hold(t); return finalResponse(payload) })
+	a.script("root", func(llm.Request) llm.Response { return delegateToolResponse("restart-terminal-11", key) }, func(llm.Request) llm.Response { return agenttest.FinalResponse("started-terminal-11") })
+	a.script(key, func(llm.Request) llm.Response { terminal.hold(t); return agenttest.FinalResponse(payload) })
 	root := newMessagingRoot(t, a, returns.configure)
 	t.Cleanup(func() { returns.close(t, root) })
 	if _, err := root.ProcessInput(context.Background(), "start-terminal-11", nil); err != nil {
@@ -324,8 +328,8 @@ func testNotificationDelegateRestartCut(t *testing.T, cut string) {
 	if cut == "Stop request before completion" {
 		a.script("root", func(llm.Request) llm.Response {
 			args, _ := json.Marshal(map[string]any{"target": child.owningDelegateID, "max_wait_ms": 0})
-			return toolCallResponse(llm.ToolCallData{ID: "restart-stop-11", Name: "job_stop", Type: "function", Arguments: args})
-		}, func(llm.Request) llm.Response { return finalResponse("stop-accepted-11") })
+			return agenttest.ToolCallResponse(llm.ToolCallData{ID: "restart-stop-11", Name: "job_stop", Type: "function", Arguments: args})
+		}, func(llm.Request) llm.Response { return agenttest.FinalResponse("stop-accepted-11") })
 		if _, err := root.ProcessInput(context.Background(), "stop-11", nil); err != nil {
 			t.Fatal(err)
 		}
@@ -346,7 +350,10 @@ func testNotificationDelegateRestartCut(t *testing.T, cut string) {
 	root.Close()
 	beforeRoot, beforeChild := len(a.requestsFor("root")), len(a.requestsFor(key))
 	var received llm.Request
-	a.script("root", func(req llm.Request) llm.Response { received = req; return finalResponse("terminal-observed-11") })
+	a.script("root", func(req llm.Request) llm.Response {
+		received = req
+		return agenttest.FinalResponse("terminal-observed-11")
+	})
 	restoredReturns := newActivationReturns()
 	restored := restoreWaitingJoinCopy(t, root, copied, restoredReturns)
 	wake, hint := newDrainWake()
@@ -423,7 +430,7 @@ func testNotificationShellRestartCut(t *testing.T, cut string) {
 		if waiting {
 			return waitResponseFor("restart-wait-11", jobID)
 		}
-		return finalResponse("initial-restart-11")
+		return agenttest.FinalResponse("initial-restart-11")
 	})
 	root := newMessagingRoot(t, a, nil)
 	if _, err := root.ProcessInput(context.Background(), "restart-start-11", nil); err != nil {
@@ -480,7 +487,7 @@ func testNotificationShellRestartCut(t *testing.T, cut string) {
 			a.script("root", func(req llm.Request) llm.Response {
 				entered <- req
 				<-gate
-				return finalResponse("attempt-response-11")
+				return agenttest.FinalResponse("attempt-response-11")
 			})
 			done := make(chan error, 1)
 			ctx, cancel := context.WithCancel(context.Background())
@@ -520,7 +527,10 @@ func testNotificationShellRestartCut(t *testing.T, cut string) {
 				t.Fatal(err)
 			}
 		case "after response sync before receipt index", "after completed resume":
-			a.script("root", func(req llm.Request) llm.Response { attempt = req; return finalResponse("response-synced-11") })
+			a.script("root", func(req llm.Request) llm.Response {
+				attempt = req
+				return agenttest.FinalResponse("response-synced-11")
+			})
 			if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 				t.Fatal(err)
 			}
@@ -548,7 +558,7 @@ func testNotificationShellRestartCut(t *testing.T, cut string) {
 	root.Close()
 	before := len(a.requestsFor("root"))
 	observed := make(chan llm.Request, 1)
-	a.script("root", func(req llm.Request) llm.Response { observed <- req; return finalResponse("recovered-11") })
+	a.script("root", func(req llm.Request) llm.Response { observed <- req; return agenttest.FinalResponse("recovered-11") })
 	restored := restoreWaitingCopy(t, root, copied)
 	wake, hint := newDrainWake()
 	restored.SetNotifyFunc(hint)
@@ -590,7 +600,7 @@ func testNotificationShellRestartCut(t *testing.T, cut string) {
 		t.Fatalf("source custody acks=%+v", acks)
 	}
 	if waiting {
-		data, err := readTranscriptFull(transcriptPath(copied, root.ID()), "")
+		data, err := readTranscriptFull(t.Context(), transcriptPath(copied, root.ID()), "")
 		if err != nil {
 			t.Fatal(err)
 		}

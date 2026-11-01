@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"primeradiant.com/evener/gittest"
+
 	"github.com/spf13/afero"
 
 	"primeradiant.com/evener/agent/events"
@@ -144,20 +146,18 @@ func FuzzSessionAuxExactProgram(f *testing.F) {
 			s.hookRunner = runner
 			s.runNotificationHook(context.Background(), "notice")
 			_ = s.Events()
-			_ = warningHookMessage((*events.WarningData)(nil))
-			_ = warningHookMessage(&events.WarningData{Message: "pointer"})
 			_ = warningHookMessage(events.SessionEndData{Reason: "done"})
 			var nilSession *Session
-			nilSession.emitWithProvenance(events.EventWarning, events.WarningData{}, nil)
+			nilSession.emitWithProvenance(events.WarningData{}, nil)
 		case 19:
 			s := newSession(t)
 			repo := t.TempDir()
-			runGitCmd(t, repo, "init")
+			gittest.Run(t, repo, "init")
 			if err := os.WriteFile(filepath.Join(repo, "tracked"), []byte("x"), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			runGitCmd(t, repo, "add", "tracked")
-			runGitCmd(t, repo, "commit", "-m", "seed")
+			gittest.Run(t, repo, "add", "tracked")
+			gittest.Run(t, repo, "commit", "-m", "seed")
 			base := s.currentEnv().(*execenv.LocalExecutionEnvironment)
 			s.swapEnvAndRefresh(base.WithWorkingDirectory(repo), nil)
 		}
@@ -171,7 +171,7 @@ func FuzzForkExactFaultProgram(f *testing.F) {
 	f.Fuzz(func(t *testing.T, op byte) {
 		if op%10 < 2 {
 			fs, state, id := afero.NewMemMapFs(), "/state", "parent"
-			dir := filepath.Join(state, sessionsSubdir)
+			dir := schema.SessionsDir(state)
 			if err := fs.MkdirAll(dir, 0o755); err != nil {
 				t.Fatal(err)
 			}
@@ -223,7 +223,7 @@ func FuzzForkExactFaultProgram(f *testing.F) {
 			return
 		}
 		if mode == 3 {
-			_ = fs.Remove(filepath.Join(state, sessionsSubdir, id+".meta.json"))
+			_ = fs.Remove(schema.SessionMetaPath(state, id))
 		}
 		if mode == 9 {
 			_, _ = forkSessionWithDeps(fs, state, id, 4, "edit", "", deps)
@@ -257,7 +257,7 @@ func fuzzAuxParentFS(t *testing.T) (afero.Fs, string, string) {
 	t.Helper()
 	fs := afero.NewMemMapFs()
 	const state, id = "/state", "parent"
-	w, err := transcript.NewWriterWithFS(fs, filepath.Join(state, sessionsSubdir, id+".transcript.jsonl"), transcript.Header{SessionID: id})
+	w, err := transcript.NewWriterWithFS(fs, schema.SessionTranscriptPath(state, id), transcript.Header{SessionID: id})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,7 +308,7 @@ func fuzzAuxForkCorrupt(t *testing.T) {
 func fuzzAuxForkSuccess(t *testing.T, label bool) {
 	fs := afero.NewMemMapFs()
 	const state, id = "/state", "parent"
-	path := filepath.Join(state, sessionsSubdir, id+".transcript.jsonl")
+	path := schema.SessionTranscriptPath(state, id)
 	w, err := transcript.NewWriterWithFS(fs, path, transcript.Header{SessionID: id, ProfileID: "p", Model: "m"})
 	if err != nil {
 		t.Fatal(err)
@@ -336,7 +336,7 @@ func fuzzAuxForkSuccess(t *testing.T, label bool) {
 	if err != nil || child == "" {
 		t.Fatalf("fork = %q, %v", child, err)
 	}
-	data, _ := afero.ReadFile(fs, filepath.Join(state, sessionsSubdir, child+".transcript.jsonl"))
+	data, _ := afero.ReadFile(fs, schema.SessionTranscriptPath(state, child))
 	if !bytes.Contains(data, []byte("edit")) {
 		t.Fatal("edited turn absent")
 	}

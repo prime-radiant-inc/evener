@@ -7,26 +7,8 @@ import (
 	"path/filepath"
 
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/envvars/userdirs"
 )
-
-// homeRootFiles are the basenames evener-migrate moves out of a legacy
-// (~/.serf) or interim (~/.evener) home root into their final XDG homes:
-// providers.toml/credentials.toml/hub.toml/launch.toml into the config root,
-// auth-token/index.db/hub.lock/run/deletions into the state root (see
-// cmd/evener-migrate). checkLegacyDataDirs below uses the identical list to
-// decide whether either home root still holds real, unmigrated data, so the
-// two tools always agree on what "migrated" means.
-var homeRootFiles = []string{
-	"providers.toml",
-	"credentials.toml",
-	"hub.toml",
-	"launch.toml",
-	"auth-token",
-	"index.db",
-	"hub.lock",
-	"run",
-	"deletions",
-}
 
 // ErrLegacySerfData identifies a launch stopped by a Serf config or state
 // directory that has not been migrated to Evener's.
@@ -48,7 +30,7 @@ var ErrLegacySerfData = errors.New("legacy Serf data")
 //   - the XDG config root (~/.config/serf → ~/.config/evener)
 //   - the XDG state root (~/.local/state/serf → ~/.local/state/evener)
 //   - the legacy home root (~/.serf), which pre-rename held the files
-//     homeRootFiles now names
+//     userdirs.HomeRootFiles names
 //   - the interim home root (~/.evener), the post-rename/pre-consolidation
 //     location for the same files
 //
@@ -68,7 +50,7 @@ var ErrLegacySerfData = errors.New("legacy Serf data")
 func checkLegacyDataDirs() error {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return nil //nolint:nilerr // no home directory to compare against; DefaultStateRoot/DefaultConfigRoot already degrade gracefully in this case, so let that fallback behavior proceed rather than erroring here too
+		return nil //nolint:nilerr // no home directory to compare against; the state and config root resolvers report this case themselves, so do not error here too
 	}
 
 	type pair struct {
@@ -85,9 +67,9 @@ func checkLegacyDataDirs() error {
 		target: filepath.Join(configBase, "evener"),
 	})
 
-	stateBase := envvars.XDGStateHome.Getenv()
-	if stateBase == "" {
-		stateBase = filepath.Join(home, ".local", "state")
+	stateBase, err := userdirs.StateHome(envvars.XDGStateHome.Getenv(), func() (string, error) { return home, nil })
+	if err != nil {
+		return err
 	}
 	pairs = append(pairs, pair{
 		legacy: filepath.Join(stateBase, "serf"),
@@ -119,12 +101,12 @@ func checkLegacyDataDirs() error {
 	return nil
 }
 
-// firstUnmigratedHomeRootFile reports the first homeRootFiles entry still
+// firstUnmigratedHomeRootFile reports the first userdirs.HomeRootFiles entry still
 // present directly under root, if any.
 func firstUnmigratedHomeRootFile(root string) (string, bool) {
-	for _, name := range homeRootFiles {
-		if _, err := os.Lstat(filepath.Join(root, name)); err == nil {
-			return name, true
+	for _, hf := range userdirs.HomeRootFiles {
+		if _, err := os.Lstat(filepath.Join(root, hf.Name)); err == nil {
+			return hf.Name, true
 		}
 	}
 	return "", false

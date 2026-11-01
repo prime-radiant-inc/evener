@@ -157,7 +157,7 @@ func TestInlineAndEarlierResultsCarrySummary(t *testing.T) {
 	packet := delegatestore.TerminalPacket{Kind: delegatestore.PacketReported, Message: []byte(`"finished"`), Metadata: metadata}
 
 	current := sendMessageResult{DelegateID: "dlg_target", Type: "delegate"}
-	populateStableDelegateSendResult(&current, packet)
+	populateDelegateSendResult(&current, packet)
 	if current.ReportSummary == nil {
 		t.Fatal("current result has no typed report summary")
 	}

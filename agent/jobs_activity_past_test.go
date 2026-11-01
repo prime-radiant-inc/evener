@@ -19,7 +19,7 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
-func TestLoadSessionJobActivityTree_FollowsOnlyStableDelegateChildren(t *testing.T) {
+func TestLoadSessionJobActivityTree_FollowsOnlyDelegateChildren(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 	rootID := "rootpast"
@@ -28,7 +28,7 @@ func TestLoadSessionJobActivityTree_FollowsOnlyStableDelegateChildren(t *testing
 	started := time.Unix(100, 0).UTC()
 	ended := started.Add(time.Second)
 
-	writePastStableDelegates(t, stateDir, rootID,
+	writePastDelegates(t, stateDir, rootID,
 		pastStableDescriptor(rootID, childID, "child task"),
 		pastStableDescriptor(rootID, strayID, "stray task"),
 	)
@@ -73,7 +73,7 @@ func TestLoadSessionJobActivityTree_RejectsOutOfStateDirChild(t *testing.T) {
 	outsideStateDir := t.TempDir()
 	started := time.Unix(200, 0).UTC()
 
-	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "outside"))
+	writePastDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "outside"))
 	s1cov_writeJobLog(t, stateDir, rootID,
 		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root", Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started},
 	)
@@ -112,7 +112,7 @@ func TestLoadSessionJobActivityTree_UsesMaxPersistedRootRevisionAcrossDescendant
 	rootID := "rootrevision"
 	childID := "childrevision"
 	started := time.Unix(250, 0).UTC()
-	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "revision"))
+	writePastDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "revision"))
 	s1cov_writeJobLog(t, stateDir, rootID,
 		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root", Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started},
 	)
@@ -144,7 +144,7 @@ func TestLoadSessionJobActivityTree_ReadsSharedDelegateJournalOncePerRoot(t *tes
 	child2ID := "child2once"
 	started := time.Unix(300, 0).UTC()
 
-	writePastStableDelegates(t, stateDir, rootID,
+	writePastDelegates(t, stateDir, rootID,
 		pastStableDescriptor(rootID, child1ID, "child1 task"),
 		pastStableDescriptor(child1ID, child2ID, "child2 task"),
 	)
@@ -197,7 +197,7 @@ func TestLoadSessionJobActivityTree_StopsOpeningLaterSessionsAfterCancellation(t
 	child2ID := "child2cancel"
 	started := time.Unix(400, 0).UTC()
 
-	writePastStableDelegates(t, stateDir, rootID,
+	writePastDelegates(t, stateDir, rootID,
 		pastStableDescriptor(rootID, child1ID, "child1 task"),
 		pastStableDescriptor(rootID, child2ID, "child2 task"),
 	)
@@ -310,7 +310,7 @@ func TestLoadSessionJobActivityTree_StopsRecursingOnceWorkBudgetExhausted(t *tes
 		))
 		savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Child", rootID, 0)
 	}
-	writePastStableDelegates(t, stateDir, rootID, descriptors...)
+	writePastDelegates(t, stateDir, rootID, descriptors...)
 
 	var scannedPaths []string
 	original := scanJobJournal
@@ -395,7 +395,7 @@ func TestLoadSessionJobActivityTree_ContinuationReportsTokenRevisionWithoutFullW
 		))
 		savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Wide", rootID, 0)
 	}
-	writePastStableDelegates(t, stateDir, rootID, descriptors...)
+	writePastDelegates(t, stateDir, rootID, descriptors...)
 
 	const tokenRevision = 7
 	cont := activityContinuation{
@@ -471,7 +471,7 @@ func TestLoadSessionJobActivityTree_BoundsRecursionDepth(t *testing.T) {
 			descriptors = append(descriptors, pastStableDescriptor(id, sessionIDs[i+1], "next"))
 		}
 	}
-	writePastStableDelegates(t, stateDir, sessionIDs[0], descriptors...)
+	writePastDelegates(t, stateDir, sessionIDs[0], descriptors...)
 
 	var scannedPaths []string
 	original := scanJobJournal
@@ -589,9 +589,9 @@ func TestLoadSessionJobActivityTree_ContinuationAtMaxDepthLoadsTargetsOwnChildre
 			descriptors = append(descriptors, pastStableDescriptor(id, sessionIDs[i+1], "next"))
 		}
 	}
-	writePastStableDelegates(t, stateDir, sessionIDs[0], descriptors...)
+	writePastDelegates(t, stateDir, sessionIDs[0], descriptors...)
 
-	// writePastStableDelegates assigns delegate IDs as "dlg_" + childSessionID.
+	// writePastDelegates assigns delegate IDs as "dlg_" + childSessionID.
 	path := make([]string, activityMaxNewDepth)
 	for i := range path {
 		path[i] = "dlg_" + sessionIDs[i+1]
@@ -671,7 +671,7 @@ func TestLoadSessionJobActivityTree_PropagatesCancellationFromDescendant(t *test
 	child2ID := "child2desccancel"
 	started := time.Unix(800, 0).UTC()
 
-	writePastStableDelegates(t, stateDir, rootID,
+	writePastDelegates(t, stateDir, rootID,
 		pastStableDescriptor(rootID, child1ID, "child1 task"),
 		pastStableDescriptor(child1ID, child2ID, "child2 task"),
 	)
@@ -749,7 +749,7 @@ func TestBuildActivityContinuationAt_ExhaustedBudgetStopsBeforeLoadingMoreHops(t
 	rootID := "budgetpathroot"
 	childID := "budgetpathchild"
 	started := time.Unix(6_000_000_000, 0).UTC()
-	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "task"))
+	writePastDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "task"))
 	s1cov_writeJobLog(t, stateDir, rootID,
 		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root", Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started},
 	)
@@ -765,10 +765,10 @@ func TestBuildActivityContinuationAt_ExhaustedBudgetStopsBeforeLoadingMoreHops(t
 	cache := newHistoricalActivityCache(context.Background(), rootID)
 	cache.budget.usedWork = cache.budget.maxWorkUnits // pre-exhausted
 
-	// Path holds the DELEGATE ID (writePastStableDelegates assigns
+	// Path holds the DELEGATE ID (writePastDelegates assigns
 	// "dlg_" + childSessionID here), not the child session ID itself --
 	// buildActivityContinuationAt looks each hop up in
-	// loaded.snapshot.StableDelegates, which is keyed by delegate ID.
+	// loaded.snapshot.Delegates, which is keyed by delegate ID.
 	cont := activityContinuation{Version: activityContinuationVersion, RootID: rootID, SessionID: childID, Path: []string{"dlg_" + childID}}
 	root := activitySessionLocator{stateDir: stateDir, sessionID: rootID}
 	if _, _, _, err := buildActivityContinuationAt(root, cont, 0, map[string]bool{rootID: true}, false, cache); err == nil {
@@ -785,7 +785,7 @@ func TestBuildActivityContinuationAt_ExhaustedBudgetStopsBeforeLoadingMoreHops(t
 func TestLoadSessionJobActivityTree_OversizedDelegateJournalLineDegradesWithDiagnostic(t *testing.T) {
 	stateDir := t.TempDir()
 	rootID := "activitypathologicaldelegateroot"
-	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, "child1", "a task long enough to exceed a tiny test line cap"))
+	writePastDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, "child1", "a task long enough to exceed a tiny test line cap"))
 	started := time.Unix(7_000_000_000, 0).UTC()
 	s1cov_writeJobLog(t, stateDir, rootID,
 		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root", Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started},
@@ -830,9 +830,9 @@ func pastStableDescriptor(ownerSessionID, childSessionID, task string) delegates
 	}
 }
 
-func writePastStableDelegates(t *testing.T, stateDir, rootSessionID string, descriptors ...delegatestore.Descriptor) {
+func writePastDelegates(t *testing.T, stateDir, rootSessionID string, descriptors ...delegatestore.Descriptor) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Join(stateDir, sessionsSubdir), 0o755); err != nil {
+	if err := os.MkdirAll(schema.SessionsDir(stateDir), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	for _, descriptor := range descriptors {
@@ -1236,7 +1236,7 @@ func TestLoadSessionJobActivityTree_SizeTrimKeepsNestedEntryOverflowedByASibling
 	childID := "siblingoveragechild"
 	started := time.Unix(4000, 0).UTC()
 
-	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "child task"))
+	writePastDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "child task"))
 	s1cov_writeJobLog(t, stateDir, rootID, jobstore.Event{
 		Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root_big",
 		Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID,
@@ -1306,7 +1306,7 @@ func TestLoadSessionJobActivityTree_SizeTrimSkipsNestedEntryLargerThanAPage(t *t
 	childID := "nestedoversizedchild"
 	started := time.Unix(5000, 0).UTC()
 
-	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "child task"))
+	writePastDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "child task"))
 	s1cov_writeJobLog(t, stateDir, rootID, jobstore.Event{
 		Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root_small",
 		Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID,
@@ -1420,7 +1420,7 @@ func TestLoadSessionJobActivityTree_NestedContinuationSurvivesNonzeroFoldEpochs(
 	const childJobCount = 40
 	description := strings.Repeat("e", 250_000)
 
-	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "child task"))
+	writePastDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "child task"))
 	s1cov_writeJobLog(t, stateDir, rootID, jobstore.Event{
 		Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root_small",
 		Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID,
@@ -1699,7 +1699,7 @@ func TestLoadSessionJobActivityTree_TrimmingADelegateKeepsItsChildReachable(t *t
 	description := strings.Repeat("s", 250_000)
 	started := time.Unix(12000, 0).UTC()
 
-	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "child task"))
+	writePastDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "child task"))
 	rootEvents := make([]jobstore.Event, 0, rootJobCount)
 	for i := range rootJobCount {
 		ts := started.Add(time.Duration(i) * time.Second)
@@ -1821,7 +1821,7 @@ func TestLoadSessionJobActivityTree_ResumedPageMintsADecodablePath(t *testing.T)
 			descriptors = append(descriptors, pastStableDescriptor(id, sessionIDs[i+1], "next"))
 		}
 	}
-	writePastStableDelegates(t, stateDir, sessionIDs[0], descriptors...)
+	writePastDelegates(t, stateDir, sessionIDs[0], descriptors...)
 
 	// Resume two hops down, which is what makes the absolute path the trim
 	// mints longer than the depth budget alone would allow.
@@ -1910,7 +1910,7 @@ func seedAbsentJournalActivityRoot(t *testing.T, stateDir, rootID string, delega
 		savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Child", rootID, 0)
 	}
 	savePastActivityMeta(t, stateDir, rootID, "Root")
-	writePastStableDelegates(t, stateDir, rootID, descriptors...)
+	writePastDelegates(t, stateDir, rootID, descriptors...)
 	rootJobsPath := filepath.Join(jobsDir(stateDir, rootID), "jobs.jsonl")
 	if _, err := os.Stat(rootJobsPath); !os.IsNotExist(err) {
 		t.Fatalf("stat %s: %v, want the journal absent", rootJobsPath, err)
@@ -2161,7 +2161,7 @@ func TestLoadSessionJobActivityTree_PagesWithAnUnreadableDelegateJournal(t *test
 	}
 	s1cov_writeJobLog(t, stateDir, rootID, events...)
 	savePastActivityMeta(t, stateDir, rootID, "Root")
-	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, "unreadablepagingchild", "task"))
+	writePastDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, "unreadablepagingchild", "task"))
 	savePastActivityMetaWithTreeRevision(t, stateDir, "unreadablepagingchild", "Child", rootID, 0)
 
 	// Unreadable before the first page is built, and still unreadable when

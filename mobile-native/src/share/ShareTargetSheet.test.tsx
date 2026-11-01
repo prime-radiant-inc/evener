@@ -3,7 +3,7 @@ import type { AnyNotification, SearchResponse } from "@evener/appwire-client";
 import type { ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 import { DraftLibrary } from "../draftLibrary";
 import { DraftRepository } from "../draftRepository";
 import { DraftDocument } from "../draftDocument";

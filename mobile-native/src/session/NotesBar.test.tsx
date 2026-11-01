@@ -6,7 +6,6 @@ import { NotesBar } from "./NotesBar";
 import type { NotesBarPreview } from "./sessionNotes";
 
 vi.mock("react-native", async () => (await import("../renderNative.testkit")).nativeModuleMock());
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 const palette = paletteFor("light");
 

@@ -215,7 +215,7 @@ func TestDelegateAttentionWake_StoppingAncestorParksAttentionForLaterDelivery(t 
 // the fixture's child delegate. Closing the child's resumability fences the
 // attention off for good, which the root must then escalate.
 type fencedGrandchildAttention struct {
-	fixture              coldStableDelegateFixture
+	fixture              coldDelegateFixture
 	root                 *Session
 	grandchildDelegateID string
 	grandchildSessionID  string
@@ -224,7 +224,7 @@ type fencedGrandchildAttention struct {
 
 func newFencedGrandchildAttention(t *testing.T) fencedGrandchildAttention {
 	t.Helper()
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	grandchildDelegateID := identifier.MustNewDelegateID()
 	grandchildSessionID := identifier.MustNewSessionID()
 
@@ -422,13 +422,13 @@ func TestDelegateAttentionWake_PermanentClosedAncestorEscalatesToRootOnce(t *tes
 	}
 }
 
-// TestStableDelegateAttention_ColdRestoreEscalatesFencedDescendantOnce covers
+// TestDelegateAttention_ColdRestoreEscalatesFencedDescendantOnce covers
 // the cold variant: restart with a permanently closed ancestor and an idle
 // descendant holding pending attention. Bootstrap must transfer the original
 // message to the root transcript under its original identity, resolve the
 // source, arm no wake (no retry loop), and a second bootstrap over the same
 // durable state must not duplicate anything.
-func TestStableDelegateAttention_ColdRestoreEscalatesFencedDescendantOnce(t *testing.T) {
+func TestDelegateAttention_ColdRestoreEscalatesFencedDescendantOnce(t *testing.T) {
 	c, journalPath := newDelegateControllerTestHarness(t, 3, 1)
 	seedStableAttentionRepairDelegate(t, c, "dlg_parent", "", true)
 	seedStableAttentionRepairDelegate(t, c, "dlg_child", "dlg_parent", true)
@@ -496,7 +496,7 @@ func TestStableDelegateAttention_ColdRestoreEscalatesFencedDescendantOnce(t *tes
 	}
 }
 
-// TestStableDelegateAttention_EscalationCrashWindowSurvivesCascadeAndGrowth
+// TestDelegateAttention_EscalationCrashWindowSurvivesCascadeAndGrowth
 // pins the crash window BETWEEN the root transfer and the source resolution:
 // the transfer for attention A is durable in the root transcript, the source
 // is still pending, a further ancestor closes (the causally-linked cascade
@@ -505,7 +505,7 @@ func TestStableDelegateAttention_ColdRestoreEscalatesFencedDescendantOnce(t *tes
 // identity and content are immutable, so A replays as a no-op and B gets its
 // own transfer -- with exactly one root copy of each and both sources
 // resolved. The batch-hash design failed this permanently.
-func TestStableDelegateAttention_EscalationCrashWindowSurvivesCascadeAndGrowth(t *testing.T) {
+func TestDelegateAttention_EscalationCrashWindowSurvivesCascadeAndGrowth(t *testing.T) {
 	c, journalPath := newDelegateControllerTestHarness(t, 4, 1)
 	seedStableAttentionRepairDelegate(t, c, "dlg_grand", "", true)
 	seedStableAttentionRepairDelegate(t, c, "dlg_parent", "dlg_grand", true)

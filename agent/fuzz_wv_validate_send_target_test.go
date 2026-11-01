@@ -20,8 +20,8 @@ func FuzzWvValidateSendTarget(f *testing.F) {
 	f.Add("not-prefixed")
 
 	f.Fuzz(func(t *testing.T, target string) {
-		err := validateWatchSendDeliveryTarget(target, watchArgs{})
-		err2 := validateWatchSendDeliveryTarget(target, watchArgs{})
+		err := validateWatchSendDeliveryTarget(target)
+		err2 := validateWatchSendDeliveryTarget(target)
 		if (err == nil) != (err2 == nil) || (err != nil && err.Error() != err2.Error()) {
 			t.Fatalf("non-deterministic: %v vs %v", err, err2)
 		}

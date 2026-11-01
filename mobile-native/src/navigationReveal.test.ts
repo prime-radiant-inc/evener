@@ -1,7 +1,7 @@
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { expect, it } from "vitest";
 import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 import { NavigationPages } from "./navigationPages";
 import { locateSession, revealNavigationRow } from "./navigationReveal";
 

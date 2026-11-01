@@ -253,7 +253,7 @@ func (p *watchCustodyProof) observe(t *testing.T, state jobstore.WatchSendState)
 	before := len(p.adapter.requestsFor("root"))
 	p.adapter.script("root", func(req llm.Request) llm.Response {
 		observationRequest(t, req, []string{wantContent}, nil)
-		return finalResponse("custody-response-930e")
+		return agenttest.FinalResponse("custody-response-930e")
 	})
 	if _, err := p.root.ProcessInput(context.Background(), "custody-observe-a8f0", nil); err != nil {
 		t.Fatal(err)

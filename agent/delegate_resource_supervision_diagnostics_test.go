@@ -21,14 +21,14 @@ import (
 // run, and must not hang behind the very locks a failed run may hold.
 func TestStableSupervisionFailureSnapshotCapturesPendingAttention(t *testing.T) {
 	t.Parallel()
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("warm result") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 	}
 	root := restoreSupervisionRoot(t, fixture, nil)
 	// A served root can recheck after quiescence and arm a retry for the
 	// diagnostic append, so leave its wake consumer unstarted.
-	sub := warmStableDelegateUnservedRoot(t, root, fixture)
+	sub := warmDelegateUnservedRoot(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)
 	// Keep admission refused while inspecting the warm run's finished channel.
 	if !sub.trySetDisposeGate() {
@@ -136,9 +136,9 @@ func TestStableSupervisionFailureSnapshotCapturesAttentionReservation(t *testing
 	t.Parallel()
 	var root *Session
 	response := llm.Assistant("reservation-response-sentinel")
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("warm result") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(req llm.Request) llm.Response {
 			assertStableSupervisionPresentingLease(t, root, fixture.delegateID, 2)
 			observationRequest(t, req, []string{"reservation-sentinel"}, nil)
@@ -156,7 +156,7 @@ func TestStableSupervisionFailureSnapshotCapturesAttentionReservation(t *testing
 	if err != nil {
 		t.Fatalf("reserve attention: %v", err)
 	}
-	t.Cleanup(func() { abortStableDelegateStartReservation(root, fixture.delegateID) })
+	t.Cleanup(func() { abortDelegateStartReservation(root, fixture.delegateID) })
 	snapshot := uncontendedStableSupervisionSnapshot(t, root, sub, fixture.adapter)
 	wantReservation := []map[string]any{{"generation": uint64(2), "attention_id": attentionID, "admitted": false, "resolution_ready": false}}
 	if !reflect.DeepEqual(snapshot["attention_reservations"], wantReservation) || !reflect.DeepEqual(snapshot["pending_attention_ids"], []string{attentionID}) {
@@ -206,9 +206,9 @@ func TestStableSupervisionFailureSnapshotCapturesSettlementClaim(t *testing.T) {
 	t.Parallel()
 	var root *Session
 	response := llm.Assistant("settlement-response-sentinel")
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("warm result") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(req llm.Request) llm.Response {
 			assertStableSupervisionPresentingLease(t, root, fixture.delegateID, 2)
 			observationRequest(t, req, []string{"settlement-sentinel"}, nil)
@@ -324,9 +324,9 @@ func assertStableSupervisionAttentionReceipt(t *testing.T, root *Session, sub *s
 
 func TestStableSupervisionFailureSnapshotCapturesArmRetryIDs(t *testing.T) {
 	t.Parallel()
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("warm result") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(req llm.Request) llm.Response {
 			observationRequest(t, req, []string{"arm-retry-sentinel-attention:diagnostic-z", "arm-retry-sentinel-attention:diagnostic-a"}, nil)
 			return llm.Response{Message: llm.Assistant("no action")}
@@ -408,9 +408,9 @@ func TestStableSupervisionFailureSnapshotCapturesNotificationPayload(t *testing.
 	var root *Session
 	presented := make(chan llm.Request, 1)
 	response := llm.Assistant("notification acknowledged")
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("warm result") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(req llm.Request) llm.Response {
 			assertStableSupervisionPresentingLease(t, root, fixture.delegateID, 2)
 			presented <- req

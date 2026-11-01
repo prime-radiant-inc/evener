@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"slices"
 	"testing"
 	"time"
@@ -300,7 +301,7 @@ func TestReconcileOnRestoreRequeuesTerminalNotifications(t *testing.T) {
 			adapter.steps = []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
 				observationRequest(t, req, []string{`job_id="job_done"`}, nil)
 				requireCanonicalShellNotification(t, sess, "job_done", 0)
-				return finalResponse("restored completion observed")
+				return agenttest.FinalResponse("restored completion observed")
 			}}
 			if _, err := sess.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 				t.Fatal(err)
@@ -375,7 +376,7 @@ func TestJobManagerNotificationCallbackRegistrationRace(t *testing.T) {
 		for _, jobID := range jobs {
 			observationRequest(t, req, []string{fmt.Sprintf(`job_id=%q`, jobID)}, nil)
 		}
-		return finalResponse("all completions observed")
+		return agenttest.FinalResponse("all completions observed")
 	}}
 	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 		t.Fatal(err)

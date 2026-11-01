@@ -2,9 +2,9 @@
 // independently of the plugin and marketplace inventory reads.
 
 import type { AppwireClientLike } from "@evener/appwire-client";
+import { LOCAL_HOST } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
 import { connectionStore, useConnectionStore } from "../../../../stores/connection";
-import { LOCAL_HOST } from "../../../../stores/hostRouting";
 import { Button, InlineNotice, SegmentedControl, Skeleton } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { HostScopedSurface } from "../hostScopedSurface";

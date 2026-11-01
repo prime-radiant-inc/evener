@@ -30,7 +30,7 @@ func TestNotificationReplayProvenance(t *testing.T) {
 				continue
 			}
 			t.Run(fmt.Sprintf("%s/receiver=%s", source, metadata), func(t *testing.T) {
-				f := newColdStableDelegateFixture(t, "")
+				f := newColdDelegateFixture(t, "")
 				jm, err := newJobManagerNoSync(f.stateDir, f.childID, nil)
 				if err != nil {
 					t.Fatal(err)
@@ -177,7 +177,7 @@ func TestNotificationReplayClosedCallback(t *testing.T) {
 	t.Parallel()
 	for _, accepted := range []bool{false, true} {
 		t.Run(fmt.Sprintf("already_custodied=%t", accepted), func(t *testing.T) {
-			f := newColdStableDelegateFixture(t, "")
+			f := newColdDelegateFixture(t, "")
 			jm, err := newJobManagerNoSync(f.stateDir, f.childID, nil)
 			if err != nil {
 				t.Fatal(err)
@@ -269,7 +269,7 @@ func TestNotificationReplayClosedCallback(t *testing.T) {
 	}
 }
 
-func replayValidationCloseDelegate(t *testing.T, f coldStableDelegateFixture) {
+func replayValidationCloseDelegate(t *testing.T, f coldDelegateFixture) {
 	t.Helper()
 	store, err := delegatestore.Open(delegateResourceStorePath(f.stateDir, f.meta.ID))
 	if err != nil {
@@ -296,7 +296,7 @@ func TestNotificationReplayHistoricalClosedCallback(t *testing.T) {
 	t.Parallel()
 	for _, accepted := range []bool{false, true} {
 		t.Run(fmt.Sprintf("already_custodied=%t", accepted), func(t *testing.T) {
-			f := newColdStableDelegateFixture(t, "")
+			f := newColdDelegateFixture(t, "")
 			jm, err := newJobManagerNoSync(f.stateDir, f.childID, nil)
 			if err != nil {
 				t.Fatal(err)
@@ -399,7 +399,7 @@ func TestNotificationReplayClosedCallbackUncertainCustody(t *testing.T) {
 	for _, accepted := range []bool{false, true} {
 		for _, boundary := range []string{"missing", "identity", "missing_during_open", "sync", "close"} {
 			t.Run(fmt.Sprintf("already_custodied=%t/%s", accepted, boundary), func(t *testing.T) {
-				f := newColdStableDelegateFixture(t, "")
+				f := newColdDelegateFixture(t, "")
 				jm, err := newJobManagerNoSync(f.stateDir, f.childID, nil)
 				if err != nil {
 					t.Fatal(err)

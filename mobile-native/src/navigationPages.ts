@@ -13,7 +13,7 @@ import {
 	type ResourceKey,
 	snapshotResource,
 } from "@evener/appwire-client/state/navigation";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 import { reconnectDelay } from "./hubConnection";
 import { singleFlight } from "./singleFlight";
 

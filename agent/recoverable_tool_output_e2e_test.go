@@ -197,7 +197,7 @@ func task7RunningOutput(t *testing.T, s *Session, jobID string) *jobstore.Output
 // task7AwaitOutputBytes polls OutputStore.Len rather than awaiting a signal
 // because jobstore.OutputStore emits no "bytes appended" event of its own: the
 // only production notification path for new job output is the output_match
-// watch matcher (job_watch.go feedJobOutputWithProvenance), which fires on a
+// watch matcher (feedJobOutputWithProvenance), which fires on a
 // regex match against content, not on reaching an exact lifetime byte count.
 // Rigging a watch here to stand in for a byte-count wait would test the watch
 // subsystem instead of the output store, so this stays a bounded poll per

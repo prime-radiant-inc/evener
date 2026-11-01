@@ -194,7 +194,7 @@ func TestHandleAppJobsListNilFunc(t *testing.T) {
 func TestHandleAppJobsList(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetJobsFunc(func(got appwire.JobsListParams) (any, error) {
+	srv.SetJobsFunc(func(_ context.Context, got appwire.JobsListParams) (any, error) {
 		if got.Ref != "local:root" || got.Continuation != "next" {
 			t.Fatalf("params=%+v", got)
 		}
@@ -229,7 +229,7 @@ func TestHandleAppJobsList(t *testing.T) {
 func TestHandleAppJobsListSourceError(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetJobsFunc(func(appwire.JobsListParams) (any, error) {
+	srv.SetJobsFunc(func(context.Context, appwire.JobsListParams) (any, error) {
 		return nil, errors.New("jobstore: parse event line 3: unexpected end of JSON input")
 	})
 
@@ -456,5 +456,29 @@ func TestServerAppWireModelListEmptyDataIsArray(t *testing.T) {
 	}
 	if out.Data == nil {
 		t.Fatal("model/list data = nil, want an empty JSON array")
+	}
+}
+
+// The request context reaches the jobs source, so cancelling the request can
+// stop the read.
+func TestHandleAppJobsListPassesRequestContext(t *testing.T) {
+	type ctxKey struct{}
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	var sawMarker bool
+	srv.SetJobsFunc(func(ctx context.Context, _ appwire.JobsListParams) (any, error) {
+		sawMarker = ctx.Value(ctxKey{}) != nil
+		return appwire.JobActivityTree{}, nil
+	})
+
+	conn := srv.AppServer().NewConnection("test")
+	ctx := context.WithValue(context.Background(), ctxKey{}, true)
+	conn.HandleMessage(ctx, appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	resp := conn.HandleMessage(ctx, appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodEvenerJobsList, appwire.JobsListParams{}))
+	if resp.Kind() != appwire.MessageResponse {
+		t.Fatalf("resp=%v (%+v)", resp.Kind(), resp.Error)
+	}
+	if !sawMarker {
+		t.Fatal("jobs source did not receive the request context")
 	}
 }

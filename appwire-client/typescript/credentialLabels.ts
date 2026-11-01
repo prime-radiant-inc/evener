@@ -89,7 +89,7 @@ export function credentialLayers(instance: InstanceEntry): CredentialLayerView[]
 }
 
 // keylessByDesign: the instance holds no credential and none is wanted -
-// the hub's credentialRequired gate (InstanceEntry, appwire/types.go) says
+// the hub's credentialRequired gate (InstanceEntry, appwire/types_auth_commands.go) says
 // there is nothing to look for, as with an auth-none provider or a gateway
 // on the optional-bearer scheme. Both halves of the display key on this one
 // bit: the words activeSourceLabel returns and the heading's status dot,
@@ -170,7 +170,7 @@ export interface InstanceProviderGroup {
 // first-seen order from the RPC response - never re-sorted client-side
 // (parity-m7-settings.md §7b). providerId, not `base`, is the grouping
 // key: `base` is blank whenever an instance's own name already is the
-// registry id (InstanceEntry, appwire/types.go), so a custom-named
+// registry id (InstanceEntry, appwire/types_auth_commands.go), so a custom-named
 // instance built on a curated provider (base: "groq") lands in the SAME
 // group as that provider's own implicit instance, not a group of its own.
 export function groupByProvider(instances: InstanceEntry[]): InstanceProviderGroup[] {
@@ -276,4 +276,15 @@ export const FINGERPRINT_UNAVAILABLE_TEST_MESSAGE = endpointUncheckable("the tes
 // rule instanceDialogs applies to a write.
 export function fingerprintUnavailable(row: InstanceEntry | undefined): boolean {
   return row !== undefined && (row.baseUrl ?? "") !== "" && (row.endpointFingerprint ?? "") === "";
+}
+
+// A provider such as OpenRouter lists hundreds of models. Each app mounts at
+// most this many switches at once and offers a search to reach the rest.
+export const MODEL_LIST_CAP = 50;
+
+// The models whose id contains the search text, case-insensitively; a blank
+// search keeps the list as it is.
+export function filterModels<T extends { id: string }>(models: readonly T[], search: string): readonly T[] {
+  const query = search.trim().toLowerCase();
+  return query ? models.filter((model) => model.id.toLowerCase().includes(query)) : models;
 }

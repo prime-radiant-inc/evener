@@ -91,7 +91,7 @@ func TestRetainedDeployRepairRequiresRealEndpointEvidence(t *testing.T) {
 			}
 			intent := m.deploymentIntent(false, hubIdentity{})
 			intent.binding = newEffectBinding(host, guard)
-			if _, _, err := m.deployForOperation(t.Context(), host, facts, intent); err == nil {
+			if _, _, err := m.deployForOperation(t.Context(), host, facts, intent, nil); err == nil {
 				t.Fatal("interrupted write succeeded")
 			}
 			retained := m.pendingRestart(host.Name)
@@ -99,7 +99,7 @@ func TestRetainedDeployRepairRequiresRealEndpointEvidence(t *testing.T) {
 				t.Fatalf("missing recorded owner: writes=%d pending=%+v", writes, retained)
 			}
 			corrupt, repair = true, true
-			_, after, err := m.deployForOperation(t.Context(), host, Preflight{Host: host.Name, OS: "linux", Arch: "amd64", Home: "/home/dev", UID: "1000"}, retained)
+			_, after, err := m.deployForOperation(t.Context(), host, Preflight{Host: host.Name, OS: "linux", Arch: "amd64", Home: "/home/dev", UID: "1000"}, retained, nil)
 			if mode == "valid" {
 				if err != nil || writes != 2 || reads < 2 || after.HubEndpointSchema != 1 || m.pendingRestart(host.Name).active() {
 					t.Fatalf("repair: err=%v writes=%d reads=%d facts=%+v pending=%+v", err, writes, reads, after, m.pendingRestart(host.Name))
@@ -312,7 +312,7 @@ func TestRetainedTargetReinstallEvidence(t *testing.T) {
 			}
 			intent := m.deploymentIntent(false, hubIdentity{})
 			intent.binding = newEffectBinding(host, guard)
-			if _, _, err := m.deployForOperation(t.Context(), host, facts, intent); err == nil {
+			if _, _, err := m.deployForOperation(t.Context(), host, facts, intent, nil); err == nil {
 				t.Fatal("initial write did not retain a failed deployment")
 			} else if realPaths {
 				t.Logf("initial interrupted deployment: %v", err)
@@ -332,16 +332,11 @@ func TestRetainedTargetReinstallEvidence(t *testing.T) {
 			repair, selected.executableAbsent = true, true
 			selected.initialUnavailable = mode == "live-unresponsive"
 			selected.stopped = strings.HasPrefix(mode, "stopped")
-			if mode == "live" {
-				if argv, err := m.recoverHubArgv(t.Context(), host, "4242"); err == nil || argv != nil || missingResolutions != 1 {
-					t.Fatalf("ordinary argv recovery accepted absent executable: argv=%q err=%v missing-resolutions=%d", argv, err, missingResolutions)
-				}
-			}
 			if mode == "target-mismatch" {
 				host.EvenerPath = "/other/bin/evener"
 				m.setResolvedTarget(host.Name, host.EvenerPath)
 			}
-			_, _, err = m.deployForOperation(t.Context(), host, Preflight{Host: host.Name, OS: "linux", Arch: "amd64", UID: "1000", ExecutableMissing: true}, retained)
+			_, _, err = m.deployForOperation(t.Context(), host, Preflight{Host: host.Name, OS: "linux", Arch: "amd64", UID: "1000", ExecutableMissing: true}, retained, nil)
 			if mode == "live" || mode == "live-unresponsive" || mode == "live-unresponsive-health-returns" || mode == "live-trailing-space" || mode == "stopped" {
 				if err != nil || writes != 2 || postReads == 0 || m.pendingRestart(host.Name).active() {
 					t.Fatalf("repair: err=%v writes=%d proc=%d post=%d pending=%+v", err, writes, procReads, postReads, m.pendingRestart(host.Name))
@@ -349,9 +344,9 @@ func TestRetainedTargetReinstallEvidence(t *testing.T) {
 				if (mode == "live" || strings.HasPrefix(mode, "live-unresponsive")) && procReads < 2 || mode == "stopped" && procReads != 0 {
 					t.Fatalf("wrong resolver authority: proc=%d mode=%s", procReads, mode)
 				}
-				if mode == "live" && missingResolutions != 3 {
-					// Ordinary recovery and both pre/post-build destination probes refuse
-					// the absent file before resolving its existing parent directory.
+				if mode == "live" && missingResolutions != 2 {
+					// Both pre/post-build destination probes refuse the absent file
+					// before resolving its existing parent directory.
 					t.Fatalf("unexpected absent executable resolutions: missing-resolutions=%d", missingResolutions)
 				}
 				if realPaths {

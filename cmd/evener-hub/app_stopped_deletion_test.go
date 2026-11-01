@@ -60,10 +60,7 @@ func markStoppedTargetDeleted(t *testing.T, cfg hubcore.WebConfig, id string, st
 
 func assertStoppedTargetDeletedError(t *testing.T, err error) {
 	t.Helper()
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
-		t.Fatalf("deleted stopped target error = %v, want CodeUnavailable", err)
-	}
+	wire := requireWireError(t, err, appwire.CodeUnavailable)
 	dataJSON, marshalErr := json.Marshal(wire.Data)
 	if marshalErr != nil {
 		t.Fatal(marshalErr)
@@ -122,7 +119,7 @@ func TestHubRPCConfirmedStoppedDeletionRecheckedUnderLock(t *testing.T) {
 					release := sync.OnceFunc(lock.Unlock)
 					defer release()
 					server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", SourceID: "local"})
-					registerThreadHandlers(server, cfg, newHubSourceRegistry(cfg), hubRelayFunctions{}, nil)
+					registerThreadHandlers(server, cfg, newHubSourceRegistry(cfg), nil, nil)
 					params, err := json.Marshal(map[string]string{"ref": "local:" + id})
 					if err != nil {
 						t.Fatal(err)

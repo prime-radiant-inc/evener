@@ -82,7 +82,7 @@ func (s *Session) persistWaitCheckpointThrough(checkpoint schema.WaitCheckpointI
 	}()
 	if appended {
 		if err != nil {
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+			s.emit(events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 		}
 		s.surfaceTranscriptWarnings()
 	}
@@ -418,7 +418,7 @@ func (s *Session) claimWaitResumption(turnID string) error {
 			return nil // Stop or settlement, not a resumption of this wait.
 		}
 	}
-	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id), "")
+	data, err := readTranscriptFull(context.Background(), transcriptPath(s.stateDir, s.id), "")
 	if err != nil {
 		return err
 	}
@@ -590,7 +590,7 @@ func (s *Session) resumeYieldedDelegate(sub *subagent) (bool, bool) {
 	sub.mu.Unlock()
 	// No fallible admission remains after the atomic handoff. Direct Stop now
 	// either prevented it or cancels this exact executor before it reads input.
-	bindStableDelegateActivity(sub.sess, c, lease)
+	bindDelegateActivity(sub.sess, c, lease)
 	launched = true
 	s.launchSubagentRun(runCtx, sub, runCancel, "", descriptorProvenance(descriptor))
 	s.startDelegateQuietWatchdog(runCtx, lease)

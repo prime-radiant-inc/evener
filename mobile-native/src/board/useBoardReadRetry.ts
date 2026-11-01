@@ -1,7 +1,7 @@
 // A Board controller's own retry for its failed reads, shared by the Board
 // and the Session's read of the fleet (useFleet).
 import { useEffect, useState } from "react";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 import { reconnectDelay } from "../hubConnection";
 import type { BoardController, BoardSnapshot } from "./boardData";
 

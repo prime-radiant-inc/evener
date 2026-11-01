@@ -19,6 +19,7 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"primeradiant.com/evener/agent/sandbox/sandboxtest"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
 	"primeradiant.com/evener/test/e2e/fakellm"
 )
@@ -28,6 +29,16 @@ const backgroundJobsBrowserCount = 151
 // TestMain scrubs product EVENER_* variables and removes its redirected root.
 // Capture the supplied evidence destination before that environment redirect.
 var backgroundJobsArtifactRoot = os.Getenv("EVENER_SCRATCH_DIR")
+
+// backgroundJobsEvidenceRoot is where the guards keep evidence that must outlive
+// the test: the supplied destination, else the kept temp dir (the redirected
+// test temp root is removed when the test ends).
+func backgroundJobsEvidenceRoot() string {
+	if backgroundJobsArtifactRoot != "" {
+		return backgroundJobsArtifactRoot
+	}
+	return sandboxtest.KeptTempDir()
+}
 
 // The only scripted boundary is the provider. Jobs, journal eligibility, paging,
 // subscriptions, output and browser state all belong to the real stack.
@@ -45,11 +56,7 @@ func TestBackgroundJobsBrowser(t *testing.T) {
 	t.Cleanup(provider.Close)
 	stack := startHubStack(t, provider)
 	client := stack.dialRPC(ctx, t)
-	artifactRoot := backgroundJobsArtifactRoot
-	if artifactRoot == "" {
-		artifactRoot = sandboxtest.KeptTempDir()
-	}
-	artifacts, err := os.MkdirTemp(artifactRoot, "backgroundjobsguard-")
+	artifacts, err := os.MkdirTemp(backgroundJobsEvidenceRoot(), "backgroundjobsguard-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +68,7 @@ func TestBackgroundJobsBrowser(t *testing.T) {
 		}
 	}
 	rounds := 200
-	started, err := client.ThreadStart(ctx, appwire.ThreadStartParams{
+	started, err := appwiretest.ThreadStart(ctx, client, appwire.ThreadStartParams{
 		Harness: "evener", CWD: stack.workDir, Model: stack.model,
 		Input:           []appwire.InputItem{{Type: "text", Text: "BACKGROUND_JOBS_PRODUCER"}},
 		LaunchOverrides: &appwire.LaunchConfigLayer{Sandbox: "off", MaxRounds: &rounds},

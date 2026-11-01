@@ -249,7 +249,6 @@ const (
 	opProcessInterrupted
 	opSteer
 	opEnqueue
-	opFollowUp
 	opSetGoal
 	opClearGoal
 	opAdvanceClock
@@ -262,7 +261,7 @@ const (
 )
 
 var allLifecycleOps = []lifecycleOpCode{
-	opProcessInput, opProcessInterrupted, opSteer, opEnqueue, opFollowUp,
+	opProcessInput, opProcessInterrupted, opSteer, opEnqueue,
 	opSetGoal, opClearGoal, opAdvanceClock, opDelegate, opBackgroundShell,
 	opBackgroundDelegate, opObserve, opLLMError, opClose,
 }
@@ -372,7 +371,7 @@ func drawLifecycleArtifact(rt *rapid.T) lifecycleArtifact {
 			if code == opLLMError {
 				rec.FaultKind = rapid.IntRange(0, int(numFaultKinds)-1).Draw(rt, "faultKind")
 			}
-		case opSteer, opEnqueue, opFollowUp, opSetGoal:
+		case opSteer, opEnqueue, opSetGoal:
 			rec.Text = rapid.SampledFrom(inputTexts).Draw(rt, "text")
 		case opAdvanceClock:
 			rec.Dur = int64(rapid.IntRange(0, int(5*time.Minute)).Draw(rt, "durNS"))
@@ -635,10 +634,6 @@ func applyOp(sess *Session, clk *agenttest.FakeClock, op opRecord, cancelAt *int
 		ctx, cancel := context.WithTimeout(context.Background(), lifecycleCallTimeout)
 		defer cancel()
 		_ = sess.Enqueue(ctx, op.Text)
-	case opFollowUp:
-		if err := sess.FollowUp(op.Text); err != nil {
-			panic(fmt.Sprintf("FollowUp unexpectedly failed: %v", err))
-		}
 	case opSetGoal:
 		ctx, cancel := context.WithTimeout(context.Background(), lifecycleCallTimeout)
 		defer cancel()
@@ -991,8 +986,6 @@ func opName(c lifecycleOpCode) string {
 		return "steer"
 	case opEnqueue:
 		return "enqueue"
-	case opFollowUp:
-		return "followup"
 	case opSetGoal:
 		return "set_goal"
 	case opClearGoal:

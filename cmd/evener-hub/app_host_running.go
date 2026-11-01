@@ -35,9 +35,9 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
-	"primeradiant.com/evener/cmd/evener-hub/internal/fsdurability"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/execsupport/fsatomic"
 	"primeradiant.com/evener/internal/appserver"
 )
 
@@ -143,10 +143,10 @@ func (m *hubHostManager) admitPresentedEpoch(epoch appwire.FencingEpoch) error {
 	if epoch.BootID == "" || epoch.OpSeq == 0 {
 		return wireRefusal(appwire.Unavailable, errProbeEpochMissing)
 	}
-	if m.cfg.ops == nil {
+	if m.opsStore() == nil {
 		return appwire.Unavailable("evener/host/running: no operation store is configured, so the presented fencing epoch cannot be persisted; refusing rather than authorizing an unfenced write")
 	}
-	err := m.cfg.ops.AdmitGuardEpoch(hostops.GuardEpoch{BootID: epoch.BootID, OpSeq: epoch.OpSeq})
+	err := m.opsStore().AdmitGuardEpoch(hostops.GuardEpoch{BootID: epoch.BootID, OpSeq: epoch.OpSeq})
 	switch {
 	case err == nil:
 		return nil
@@ -256,7 +256,7 @@ func hostStateRootWriteProbe(dir string) error {
 		cleanup()
 		return fmt.Errorf("write probe temp in %s: %w", dir, err)
 	}
-	if err := file.Sync(); err != nil && !fsdurability.SyncUnsupported(err) {
+	if err := file.Sync(); err != nil && !fsatomic.SyncUnsupported(err) {
 		_ = file.Close()
 		cleanup()
 		return fmt.Errorf("sync probe temp in %s: %w", dir, err)
@@ -289,7 +289,7 @@ func syncProbeDir(dir string) error {
 		return err
 	}
 	defer func() { _ = handle.Close() }()
-	if err := handle.Sync(); err != nil && !fsdurability.SyncUnsupported(err) {
+	if err := handle.Sync(); err != nil && !fsatomic.SyncUnsupported(err) {
 		return err
 	}
 	return nil

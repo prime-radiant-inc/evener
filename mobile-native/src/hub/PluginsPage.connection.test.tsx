@@ -14,7 +14,7 @@ import { expect, it, vi } from "vitest";
 import type { ConnectionState, MarketplaceEntry, PluginEntry } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { createHubWriteGate, createMarketplacesStore } from "@evener/appwire-client/state/extensions";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { MarketplaceBrowser } from "../MarketplaceBrowser";
 import { PluginsPage } from "./PluginsPage";
@@ -34,7 +34,6 @@ vi.mock("@react-navigation/native", async () => {
 	const { useEffect } = await import("react");
 	return { useFocusEffect: (effect: () => undefined | (() => void)) => useEffect(effect, [effect]) };
 });
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 const props = {
 	route: { params: { hubId: "hub-1" } },

@@ -45,7 +45,7 @@ func outstandingWorkReasons(s *Session) []string {
 		reasons = append(reasons, "hasPendingDelegateAttentionArmRetry")
 	}
 	if s.notificationWorkPending() {
-		reasons = append(reasons, "hasPendingStableDelegateAttention")
+		reasons = append(reasons, "hasPendingDelegateAttention")
 	}
 	for _, sub := range s.liveDirectSubagents() {
 		sub.mu.Lock()
@@ -626,7 +626,7 @@ func TestDrainSettlesRootDurableOnlyPending(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			steps := make([]func(llm.Request) llm.Response, 6)
 			for i := range steps {
-				steps[i] = func(llm.Request) llm.Response { return finalResponse("ack") }
+				steps[i] = func(llm.Request) llm.Response { return agenttest.FinalResponse("ack") }
 			}
 			sess := newSession(t, withSteps(steps...), withConfig(SessionConfig{}))
 			jm := sess.jobManager
@@ -758,9 +758,9 @@ func TestDrainSettlesChildDurableOnlyPending(t *testing.T) {
 			adapter := newMessagingAdapter(marker)
 			adapter.script("root",
 				func(llm.Request) llm.Response { return delegateToolResponse("create-child", marker) },
-				func(llm.Request) llm.Response { return finalResponse("root-ready") },
+				func(llm.Request) llm.Response { return agenttest.FinalResponse("root-ready") },
 			)
-			adapter.script(marker, func(llm.Request) llm.Response { return finalResponse("child-ready") })
+			adapter.script(marker, func(llm.Request) llm.Response { return agenttest.FinalResponse("child-ready") })
 			root := newMessagingRoot(t, adapter, func(cfg *SessionConfig) { cfg.MaxSubagentDepth = 2 })
 			if _, err := root.ProcessInput(context.Background(), "create child", nil); err != nil {
 				t.Fatal(err)
@@ -821,7 +821,7 @@ func TestDrainJobTreeBatchesQueuedShellNotifications(t *testing.T) {
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(llm.Request) llm.Response{
-			func(llm.Request) llm.Response { return finalResponse("batch handled") },
+			func(llm.Request) llm.Response { return agenttest.FinalResponse("batch handled") },
 		},
 	}
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{}))
@@ -831,8 +831,7 @@ func TestDrainJobTreeBatchesQueuedShellNotifications(t *testing.T) {
 
 	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a
 	// genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	result, err := sess.DrainJobTree(ctx, drainWakeForTest(sess))
 	if err != nil {
 		t.Fatalf("DrainJobTree: %v", err)
@@ -865,7 +864,7 @@ func TestDrainJobTreeConsumesRootDelegateAttentionBeforeCompletion(t *testing.T)
 		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
 		withSteps(func(req llm.Request) llm.Response {
 			requestSawAttention = requestContainsText(req, content)
-			return toolCallResponse(communicateCall("root-attention-drain", "root attention drained"))
+			return agenttest.ToolCallResponse(communicateCall("root-attention-drain", "root attention drained"))
 		}),
 	)
 	if _, err := root.appendDelegateNotificationDurably(attentionID, content); err != nil {
@@ -910,7 +909,7 @@ func TestDrainJobTreeWaitsForRunningDelegate(t *testing.T) {
 	// result-tool path rather than a bare-text turn error.
 	steps := make([]func(llm.Request) llm.Response, 12)
 	for i := range steps {
-		steps[i] = func(llm.Request) llm.Response { return finalResponse("done") }
+		steps[i] = func(llm.Request) llm.Response { return agenttest.FinalResponse("done") }
 	}
 	stateDir := t.TempDir()
 	sess := newSession(t, withDir(stateDir), withSteps(steps...), withConfig(SessionConfig{
@@ -929,8 +928,7 @@ func TestDrainJobTreeWaitsForRunningDelegate(t *testing.T) {
 
 	// TRIPWIRE: scripted in-process adapter steps for both the root and the
 	// delegate child, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.DrainJobTree(ctx, drainWakeForTest(sess)); err != nil {
 		t.Fatalf("DrainJobTree: %v", err)
 	}
@@ -955,7 +953,7 @@ func TestDrainJobTreeWaitsForForegroundPromotedShell(t *testing.T) {
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(llm.Request) llm.Response{
-			func(llm.Request) llm.Response { return finalResponse("foreground shell handled") },
+			func(llm.Request) llm.Response { return agenttest.FinalResponse("foreground shell handled") },
 		},
 	}
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
@@ -1009,8 +1007,7 @@ func TestDrainJobTreeWaitsForForegroundPromotedShell(t *testing.T) {
 	releaseShell()
 	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a
 	// genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	result, err := sess.DrainJobTree(ctx, drainWakeForTest(sess))
 	if err != nil {
 		t.Fatalf("DrainJobTree: %v", err)
@@ -1036,7 +1033,7 @@ func TestDrainJobTreeWaitsForForegroundPromotedShell(t *testing.T) {
 // tell a one-shot drain that the model explicitly awaits this job.
 func TestDrainDoesNotExcuseFiredReadinessWatch(t *testing.T) {
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("readiness acknowledged") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("readiness acknowledged") },
 	}}
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{TurnEndsProcess: true}))
 	shell := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{

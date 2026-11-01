@@ -9,7 +9,7 @@ import {
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createRef, type RefObject, StrictMode, useRef, useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { connectionStore } from "../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
 import { sessionActivitySnapshot } from "../../../stores/sessionActivity";
 import { activityClient, activitySummary } from "../../../stores/sessionActivityTestUtils";
 import { threadsStore } from "../../../stores/threads";
@@ -24,6 +24,7 @@ import {
   transitionTranscriptViews,
 } from "./flow/transcriptViewRegistry";
 import * as flowModule from "./flow/useTranscriptScroll";
+import * as registrationModule from "./flow/useTranscriptViewRegistration";
 import { TranscriptBody, transcriptAnchorEntriesForRows, transcriptRowsForProjection } from "./TranscriptBody";
 import { installTranscriptGeometry } from "./transcriptReadingGeometryTestUtils";
 import { threadFingerprintForItem } from "./types";
@@ -1306,10 +1307,10 @@ describe("trailingRow", () => {
 
 describe("trailingRow scroll coordination", () => {
   test("the view registration's rendered row count includes the trailing row", async () => {
-    const realRegistration = flowModule.useTranscriptViewRegistration;
+    const realRegistration = registrationModule.useTranscriptViewRegistration;
     const capturedCounts: Array<number | undefined> = [];
     const spy = vi
-      .spyOn(flowModule, "useTranscriptViewRegistration")
+      .spyOn(registrationModule, "useTranscriptViewRegistration")
       .mockImplementation((options: Parameters<typeof realRegistration>[0]) => {
         capturedCounts.push(options.renderedRowCount);
         return realRegistration(options);
@@ -1454,7 +1455,7 @@ test.each([
     ]);
   } finally {
     cleanup();
-    connectionStore.setState({ client: null, state: "idle" });
+    resetConnectionStoreForTests();
   }
 });
 

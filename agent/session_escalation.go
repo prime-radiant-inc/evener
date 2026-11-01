@@ -204,14 +204,14 @@ func (s *Session) escalateOnSandboxDenial(ctx context.Context, callName string, 
 		s.mu.Lock()
 		delete(s.pendingEscalations, id)
 		s.mu.Unlock()
-		s.emit(events.EventSandboxEscalationResolved, events.SandboxEscalationResolvedData{EscalationID: id})
+		s.emit(events.SandboxEscalationResolvedData{EscalationID: id})
 	}()
 
 	// Emit the card BEFORE blocking so RecordAppEvent → Broadcast pushes it to the
 	// human, then the goroutine waits. The payload carries the FULL denied path for
 	// informed consent (only non-sensitive, grant-curable denials reach here; a
 	// sensitive path would degrade to "<denied>") — never file contents.
-	s.emit(events.EventSandboxEscalationRequested, data)
+	s.emit(data)
 
 	select {
 	case d, decided := <-ch:

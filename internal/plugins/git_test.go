@@ -3,44 +3,26 @@ package plugins
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
+
+	"primeradiant.com/evener/gittest"
 )
 
 // makeGitRepo initialises a git repo at dir with one file and returns its HEAD sha.
 func makeGitRepo(t *testing.T, dir string, file, content string) string {
 	t.Helper()
-	if !gitAvailable() {
-		t.Skip("git not available")
-	}
+	skipWithoutGit(t)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	gitIn(t, dir, "init", "-q", "-b", "main")
+	gittest.Run(t, dir, "init", "-q", "-b", "main")
 	if err := os.WriteFile(filepath.Join(dir, file), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	gitIn(t, dir, "add", ".")
-	gitIn(t, dir, "commit", "-q", "-m", "init")
-	return gitIn(t, dir, "rev-parse", "HEAD")
-}
-
-// gitIn runs git in dir with a fixed identity, failing the test on error, and
-// returns its trimmed output.
-func gitIn(t *testing.T, dir string, args ...string) string {
-	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
-		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
-		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %v: %v\n%s", args, err, out)
-	}
-	return strings.TrimSpace(string(out))
+	gittest.Run(t, dir, "add", ".")
+	gittest.Run(t, dir, "commit", "-q", "-m", "init")
+	return gittest.Run(t, dir, "rev-parse", "HEAD")
 }
 
 func TestGitClone_CopiesRepoAtSha(t *testing.T) {
@@ -64,7 +46,7 @@ func TestGitClone_CopiesRepoAtSha(t *testing.T) {
 func TestGitRefNamesBranch_IgnoresATagInTheBranchNamespace(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "src")
 	makeGitRepo(t, dir, "file.txt", "hello")
-	gitIn(t, dir, "tag", "refs/heads/x")
+	gittest.Run(t, dir, "tag", "refs/heads/x")
 
 	branch, err := gitRefNamesBranch(context.Background(), dir, "x")
 	if err != nil {
@@ -76,17 +58,15 @@ func TestGitRefNamesBranch_IgnoresATagInTheBranchNamespace(t *testing.T) {
 }
 
 func TestGitClone_ShaPinIsNotShadowedByATag(t *testing.T) {
-	if !gitAvailable() {
-		t.Skip("git not available")
-	}
+	skipWithoutGit(t)
 	src := filepath.Join(t.TempDir(), "src")
 	first := makeGitRepo(t, src, "file.txt", "v1")
 	short := first[:7]
 	if err := os.WriteFile(filepath.Join(src, "file.txt"), []byte("v2"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	gitIn(t, src, "commit", "-qam", "v2")
-	gitIn(t, src, "tag", short)
+	gittest.Run(t, src, "commit", "-qam", "v2")
+	gittest.Run(t, src, "tag", short)
 
 	dst := filepath.Join(t.TempDir(), "dst")
 	if err := gitClone(context.Background(), src, dst, "", short); err != nil {
@@ -102,9 +82,7 @@ func TestGitClone_ShaPinIsNotShadowedByATag(t *testing.T) {
 }
 
 func TestGitSparseClone_ShaPinIsNotShadowedByATag(t *testing.T) {
-	if !gitAvailable() {
-		t.Skip("git not available")
-	}
+	skipWithoutGit(t)
 	src := filepath.Join(t.TempDir(), "src")
 	makeGitRepo(t, src, "README.md", "root")
 	if err := os.MkdirAll(filepath.Join(src, "plugins"), 0o755); err != nil {
@@ -113,15 +91,15 @@ func TestGitSparseClone_ShaPinIsNotShadowedByATag(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(src, "plugins", "plugin.txt"), []byte("v1"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	gitIn(t, src, "add", "plugins")
-	gitIn(t, src, "commit", "-qm", "v1")
-	first := gitIn(t, src, "rev-parse", "HEAD")
+	gittest.Run(t, src, "add", "plugins")
+	gittest.Run(t, src, "commit", "-qm", "v1")
+	first := gittest.Run(t, src, "rev-parse", "HEAD")
 	short := first[:7]
 	if err := os.WriteFile(filepath.Join(src, "plugins", "plugin.txt"), []byte("v2"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	gitIn(t, src, "commit", "-qam", "v2")
-	gitIn(t, src, "tag", short)
+	gittest.Run(t, src, "commit", "-qam", "v2")
+	gittest.Run(t, src, "tag", short)
 
 	dst := filepath.Join(t.TempDir(), "dst")
 	if err := gitSparseClone(context.Background(), src, dst, "plugins", "", short); err != nil {
@@ -147,9 +125,7 @@ func TestGitClone_RejectsFlagLikeArgs(t *testing.T) {
 }
 
 func TestFetchPluginSource_RejectsExtTransport(t *testing.T) {
-	if !gitAvailable() {
-		t.Skip("git not available")
-	}
+	skipWithoutGit(t)
 	marker := filepath.Join(t.TempDir(), "PWNED")
 	dst := filepath.Join(t.TempDir(), "out")
 	url := "ext::sh -c \"touch " + marker + "\""

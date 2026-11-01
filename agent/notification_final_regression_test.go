@@ -30,13 +30,13 @@ func TestFinalCorrectionNonpersistentAutonomy(t *testing.T) {
 			a := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 				func(llm.Request) llm.Response {
 					if hold == "question" {
-						return toolCallResponse(askUserCall("autonomy-ask-72", askUserArgsValid()))
+						return agenttest.ToolCallResponse(askUserCall("autonomy-ask-72", askUserArgsValid()))
 					}
-					return finalResponse("initialized-72")
+					return agenttest.FinalResponse("initialized-72")
 				},
 				func(req llm.Request) llm.Response {
 					observationRequest(t, req, []string{"autonomy-payload-72"}, nil)
-					return finalResponse("observed-72")
+					return agenttest.FinalResponse("observed-72")
 				},
 			}}
 			s := newSession(t, withoutGitSnapshot(), withAdapter(a))
@@ -106,12 +106,12 @@ func TestFinalCorrectionNonpersistentApprovalCustody(t *testing.T) {
 			requests.Add(1)
 			res, _ := deniedResult("/etc/hosts")
 			s.escalateOnSandboxDenial(ctx, "write_file", res, noRerun(t))
-			return finalResponse("denied-72")
+			return agenttest.FinalResponse("denied-72")
 		},
 		func(req llm.Request) llm.Response {
 			requests.Add(1)
 			observationRequest(t, req, []string{"approval-payload-72"}, nil)
-			return finalResponse("observed-72")
+			return agenttest.FinalResponse("observed-72")
 		},
 	}
 	done := make(chan error, 1)
@@ -165,10 +165,10 @@ func TestFinalCorrectionSelfWatchWait(t *testing.T) {
 			key := "root"
 			if child {
 				key = "SELF-WAIT-85"
-				a.finiteScript(key, updateReply(toolCallResponse(llm.ToolCallData{ID: "parent-watch-85", Name: "job_watch", Type: "function", Arguments: []byte(`{"operation":"create","source":"parent","events":["assistant.tool"],"event_filter":{"tool_name":"shell"}}`)})))
+				a.finiteScript(key, updateReply(agenttest.ToolCallResponse(llm.ToolCallData{ID: "parent-watch-85", Name: "job_watch", Type: "function", Arguments: []byte(`{"operation":"create","source":"parent","events":["assistant.tool"],"event_filter":{"tool_name":"shell"}}`)})))
 			}
 			target := make(chan string, 1)
-			a.finiteScript(key, updateReply(toolCallResponse(llm.ToolCallData{ID: "self-create-85", Name: "job_watch", Type: "function", Arguments: []byte(`{"operation":"create","source":"self","after_seconds":60}`)})), func(_ context.Context, req llm.Request) (llm.Response, error) {
+			a.finiteScript(key, updateReply(agenttest.ToolCallResponse(llm.ToolCallData{ID: "self-create-85", Name: "job_watch", Type: "function", Arguments: []byte(`{"operation":"create","source":"self","after_seconds":60}`)})), func(_ context.Context, req llm.Request) (llm.Response, error) {
 				id := regexp.MustCompile(`watch_[A-Za-z0-9]{10,}`).FindString(lastToolResultText(req.Messages))
 				if id == "" {
 					t.Error("real watch creation returned no identity")
@@ -188,10 +188,10 @@ func TestFinalCorrectionSelfWatchWait(t *testing.T) {
 				if !found {
 					t.Error("resumed request omitted timer firing")
 				}
-				return finalResponse("useful-self-result-85"), nil
+				return agenttest.FinalResponse("useful-self-result-85"), nil
 			})
 			if child {
-				a.finiteScript("root", updateReply(toolCallResponse(llm.ToolCallData{ID: "self-owner-85", Name: "delegate", Type: "function", Arguments: []byte(`{"prompt":"SELF-WAIT-85","watch_parent":true}`)})), updateReply(finalResponse("root-result-85")))
+				a.finiteScript("root", updateReply(agenttest.ToolCallResponse(llm.ToolCallData{ID: "self-owner-85", Name: "delegate", Type: "function", Arguments: []byte(`{"prompt":"SELF-WAIT-85","watch_parent":true}`)})), updateReply(agenttest.FinalResponse("root-result-85")))
 			}
 			root := newMessagingRoot(t, a, func(cfg *SessionConfig) {
 				cfg.clock = clock
@@ -331,12 +331,12 @@ func TestFinalCorrectionNonpersistentWait(t *testing.T) {
 		t.Run(fmt.Sprintf("shell_%v", shell), func(t *testing.T) {
 			var target string
 			resumed := false
-			s := newSession(t, withoutGitSnapshot(), withSteps(func(llm.Request) llm.Response { return finalResponse("initialized") }, func(llm.Request) llm.Response { return waitResponseFor("ephemeral-wait-85", target) }, func(req llm.Request) llm.Response {
+			s := newSession(t, withoutGitSnapshot(), withSteps(func(llm.Request) llm.Response { return agenttest.FinalResponse("initialized") }, func(llm.Request) llm.Response { return waitResponseFor("ephemeral-wait-85", target) }, func(req llm.Request) llm.Response {
 				resumed = true
 				if shell && !requestContainsText(req, target) {
 					t.Error("resumed provider request omitted owned shell identity")
 				}
-				return finalResponse("useful-after-wait-85")
+				return agenttest.FinalResponse("useful-after-wait-85")
 			}))
 			if _, err := s.ProcessInput(context.Background(), "initialize", nil); err != nil {
 				t.Fatal(err)
@@ -386,7 +386,7 @@ func TestFinalCorrectionNonpersistentWait(t *testing.T) {
 }
 
 func TestFinalCorrectionNonpersistentSourceCustody(t *testing.T) {
-	s := newSession(t, withoutGitSnapshot(), withSteps(func(llm.Request) llm.Response { return finalResponse("initialized") }))
+	s := newSession(t, withoutGitSnapshot(), withSteps(func(llm.Request) llm.Response { return agenttest.FinalResponse("initialized") }))
 	if _, err := s.ProcessInput(context.Background(), "initialize", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -461,7 +461,7 @@ func TestFinalCorrectionNonpersistentSourceCustody(t *testing.T) {
 func TestFinalCorrectionConfiguredCustodyFailure(t *testing.T) {
 	for _, mode := range []string{"missing", "closed", "retained_unsynced"} {
 		t.Run(mode, func(t *testing.T) {
-			s := newSession(t, withoutGitSnapshot(), withClock(agenttest.NewFakeClock()), withConfig(SessionConfig{StateDir: t.TempDir()}), withSteps(func(llm.Request) llm.Response { return finalResponse("initialized-85") }))
+			s := newSession(t, withoutGitSnapshot(), withClock(agenttest.NewFakeClock()), withConfig(SessionConfig{StateDir: t.TempDir()}), withSteps(func(llm.Request) llm.Response { return agenttest.FinalResponse("initialized-85") }))
 			if _, err := s.ProcessInput(context.Background(), "initialize", nil); err != nil {
 				t.Fatal(err)
 			}
@@ -520,7 +520,7 @@ func TestFinalCorrectionConfiguredCustodyFailure(t *testing.T) {
 				}
 			}
 			assertNotificationPending(t, s, []string{id})
-			data, err := readTranscriptFull(transcriptPath(s.stateDir, s.ID()), "")
+			data, err := readTranscriptFull(t.Context(), transcriptPath(s.stateDir, s.ID()), "")
 			if err != nil {
 				t.Fatal(err)
 			}

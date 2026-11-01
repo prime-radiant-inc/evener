@@ -54,8 +54,8 @@ func proveStableWatchRegistrationClear(t *testing.T) {
 	sourceGate, receiverGate := make(chan struct{}), make(chan struct{})
 	releaseSource := sync.OnceFunc(func() { close(sourceGate) })
 	releaseReceiver := sync.OnceFunc(func() { close(receiverGate) })
-	a.finiteScript(marker, updateGate(sourceGate, updateReply(toolCallResponse(communicateCallArgs("terminal-97", map[string]any{"message": payload, "end_turn": true})))))
-	a.finiteScript("root", updateGate(receiverGate, updateReply(finalResponse("response-97"))))
+	a.finiteScript(marker, updateGate(sourceGate, updateReply(agenttest.ToolCallResponse(communicateCallArgs("terminal-97", map[string]any{"message": payload, "end_turn": true})))))
+	a.finiteScript("root", updateGate(receiverGate, updateReply(agenttest.FinalResponse("response-97"))))
 	clk := agenttest.NewFakeClock()
 	root := newMessagingRoot(t, a, func(cfg *SessionConfig) {
 		cfg.clock = clk

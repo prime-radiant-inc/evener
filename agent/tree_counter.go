@@ -199,18 +199,6 @@ func (s *Session) treeCapacityErrorFor() error {
 	return &treeCapacityError{cap: limit, jobs: jobs, drives: drives}
 }
 
-// releasePreparedTreeSlot returns the tree-counter slot a prepared spawn reserved
-// when the prepared run is discarded before its reservation transfers to a
-// delegate runningJob — an error path between prepare and attach, or the legacy
-// in-process spawn that mints no delegate job. Idempotent and nil-safe.
-func releasePreparedTreeSlot(prepared *preparedSubagentRun) {
-	if prepared == nil {
-		return
-	}
-	prepared.treeSlot.release()
-	prepared.treeSlot = nil
-}
-
 // reserveDriveSlot claims a drive-budget slot for a drive-down notification
 // turn, mirroring reserveTreeSlot against the session's driveCounter. A
 // session with no drive counter (never minted) is unbounded and always

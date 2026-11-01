@@ -536,6 +536,24 @@ export function describeMutationOutboxStorage(factory: MutationOutboxStorageFact
       await expect(storage.listTargetRefs()).resolves.toEqual([CONFORMANCE_TARGET, CONFORMANCE_OTHER_TARGET].sort());
     });
 
+    // A pending receipt means accepted but not yet described by authoritative
+    // state. A note carries no optimistic display, yet its kept copy is what
+    // tells the note editor's post-retry lookup the save is pending rather
+    // than settled elsewhere, so every host keeps it.
+    test("a pending receipt for a note keeps an accepted copy", async () => {
+      const note = await storage.enqueueIntent(conformanceNoteIntent("saved note"));
+      await expect(storage.settleReceipt(note.clientMutationId, "pending")).resolves.toBe(true);
+      await expect(storage.getOptimistic(note.clientMutationId)).resolves.toMatchObject({ state: "accepted" });
+      await expect(storage.getOutbox(note.clientMutationId)).resolves.toBeUndefined();
+    });
+
+    test("a pending receipt for a receipt-only control keeps no copy", async () => {
+      const stop = await storage.enqueueIntent(conformanceInterruptIntent());
+      await expect(storage.settleReceipt(stop.clientMutationId, "pending")).resolves.toBe(true);
+      await expect(storage.getOptimistic(stop.clientMutationId)).resolves.toBeUndefined();
+      await expect(storage.getOutbox(stop.clientMutationId)).resolves.toBeUndefined();
+    });
+
     // The shared settlement contract's note supersede: a settled notes/human/set
     // discards the SAME ref's earlier note recovery rows (a later save is the
     // note editor's only retry), while leaving other methods, other targets,

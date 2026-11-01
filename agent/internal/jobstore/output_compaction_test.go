@@ -101,7 +101,7 @@ func TestOutputReadersSeeExactlyTheLastCapBytesBetweenCompactions(t *testing.T) 
 		if len(matches) == 0 || matches[0].ByteOffset < first {
 			t.Fatalf("after %d bytes: Grep's first match at %+v, want none before %d", total, matches, first)
 		}
-		snapshot, err := ReadOutputPageSnapshot(path, nil, 1<<20)
+		snapshot, err := readOutputPageSnapshotAtPath(path, nil, 1<<20)
 		if err != nil || snapshot.Start != first || !bytes.Equal(snapshot.Content, want) {
 			t.Fatalf("after %d bytes: path page = %+v, %v; want %q from %d", total, snapshot, err, want, first)
 		}

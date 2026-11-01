@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/envvars/userdirs"
+	"primeradiant.com/evener/identifier"
 )
 
 // RootGuard decides whether a host-derived path may become a sandbox grant root.
@@ -113,7 +114,7 @@ func (g RootGuard) Permit(root string) string {
 		return "" // "/", "/Users", "/home", "/private", "/var", "/opt", "/Volumes", …
 	}
 	for _, anchor := range g.shared {
-		if pathUnder(anchor, root) { // root is at or above this anchor
+		if identifier.PathUnder(anchor, root) { // root is at or above this anchor
 			return ""
 		}
 	}

@@ -9,7 +9,7 @@ import (
 )
 
 // TestTerminalCatchupWithSendCoversSendPath covers the send branch of
-// runTerminalCatchup (job_watch.go:2682-2695): a terminal output_match-only
+// runTerminalCatchup: a terminal output_match-only
 // watch with a Send field carries the match through the durable watch-send rail
 // as a one-shot detached delivery rather than just enqueuing a notification.
 func TestTerminalCatchupWithSendCoversSendPath(t *testing.T) {
@@ -58,7 +58,7 @@ func TestTerminalCatchupWithSendCoversSendPath(t *testing.T) {
 }
 
 // TestWriteAssistantToolWatchEventErrorField covers the error-branch of
-// writeAssistantToolWatchEvent (job_watch.go:4825-4829) which renders the
+// writeAssistantToolWatchEvent which renders the
 // "error" and "error_truncated" fields when a tool call ends with an error.
 func TestWriteAssistantToolWatchEventErrorField(t *testing.T) {
 	t.Parallel()
@@ -104,93 +104,8 @@ func TestWriteAssistantToolWatchEventErrorTruncation(t *testing.T) {
 	}
 }
 
-// TestWriteWatchFrameEventPointerTypes covers the pointer-receiver branches of
-// writeWatchFrameEvent (job_watch.go:4751-4772) for nil and non-nil pointer data.
-func TestWriteWatchFrameEventPointerTypes(t *testing.T) {
-	t.Parallel()
-	// Non-nil pointer for ToolCallEndData.
-	var b strings.Builder
-	writeWatchFrameEvent(&b, events.SessionEvent{
-		Kind: events.EventToolCallEnd,
-		Data: &events.ToolCallEndData{ToolName: "read_file", Error: "fail"},
-	})
-	if !strings.Contains(b.String(), "tool_name: read_file") {
-		t.Fatalf("pointer ToolCallEndData not rendered: %q", b.String())
-	}
-
-	// Nil pointer should not panic and produce no tool event.
-	b.Reset()
-	writeWatchFrameEvent(&b, events.SessionEvent{
-		Kind: events.EventToolCallEnd,
-		Data: (*events.ToolCallEndData)(nil),
-	})
-	if strings.Contains(b.String(), "tool_name") {
-		t.Fatalf("nil pointer should not render tool event: %q", b.String())
-	}
-
-	// Non-nil pointer for CommunicateData.
-	b.Reset()
-	writeWatchFrameEvent(&b, events.SessionEvent{
-		Kind: events.EventCommunicate,
-		Data: &events.CommunicateData{Message: "hi", EndTurn: true},
-	})
-	if !strings.Contains(b.String(), "kind: communicate") || !strings.Contains(b.String(), "end_turn: true") {
-		t.Fatalf("pointer CommunicateData not rendered: %q", b.String())
-	}
-
-	// Nil pointer for CommunicateData.
-	b.Reset()
-	writeWatchFrameEvent(&b, events.SessionEvent{
-		Kind: events.EventCommunicate,
-		Data: (*events.CommunicateData)(nil),
-	})
-	if strings.Contains(b.String(), "kind: communicate") {
-		t.Fatalf("nil communicate pointer should not render: %q", b.String())
-	}
-
-	// Non-nil pointer for AssistantTextEndData.
-	b.Reset()
-	writeWatchFrameEvent(&b, events.SessionEvent{
-		Kind: events.EventAssistantTextEnd,
-		Data: &events.AssistantTextEndData{Model: "gpt-5", Text: "hello"},
-	})
-	if !strings.Contains(b.String(), "kind: assistant.message") {
-		t.Fatalf("pointer AssistantTextEndData not rendered: %q", b.String())
-	}
-
-	// Nil pointer for AssistantTextEndData.
-	b.Reset()
-	writeWatchFrameEvent(&b, events.SessionEvent{
-		Kind: events.EventAssistantTextEnd,
-		Data: (*events.AssistantTextEndData)(nil),
-	})
-	if strings.Contains(b.String(), "assistant.message") {
-		t.Fatalf("nil assistant pointer should not render: %q", b.String())
-	}
-
-	// Non-nil pointer for JobFinishedData.
-	b.Reset()
-	writeWatchFrameEvent(&b, events.SessionEvent{
-		Kind: events.EventJobFinished,
-		Data: &events.JobFinishedData{JobID: "job_1", Status: "completed"},
-	})
-	if !strings.Contains(b.String(), "kind: job.notification") {
-		t.Fatalf("pointer JobFinishedData not rendered: %q", b.String())
-	}
-
-	// Nil pointer for JobFinishedData.
-	b.Reset()
-	writeWatchFrameEvent(&b, events.SessionEvent{
-		Kind: events.EventJobFinished,
-		Data: (*events.JobFinishedData)(nil),
-	})
-	if strings.Contains(b.String(), "job.notification") {
-		t.Fatalf("nil job pointer should not render: %q", b.String())
-	}
-}
-
 // TestLiveWatchSummariesForReceiver covers liveWatchSummariesForReceiver
-// (job_watch.go:2067-2095) including the empty-arg guard and the
+// including the empty-arg guard and the
 // receiver-matching loop.
 func TestLiveWatchSummariesForReceiver(t *testing.T) {
 	t.Parallel()
@@ -233,7 +148,7 @@ func TestLiveWatchSummariesForReceiver(t *testing.T) {
 }
 
 // TestClearReceiverWatchByIDTerminalFlushLookup covers the terminalFlush
-// lookup branch in clearReceiverWatchByID (job_watch.go:1442-1448) which
+// lookup branch in clearReceiverWatchByID which
 // finds a watch config in the terminalFlush set when it's not in jm.watches.
 func TestClearReceiverWatchByIDTerminalFlushLookup(t *testing.T) {
 	t.Parallel()

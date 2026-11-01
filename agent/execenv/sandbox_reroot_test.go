@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/gittest"
 )
 
 // twoLanes builds a main repo with two linked worktrees and returns their
@@ -15,12 +16,12 @@ func twoLanes(t *testing.T) (laneA, laneB, home string) {
 	t.Helper()
 	base := t.TempDir()
 	main := filepath.Join(base, "main")
-	runGit(t, base, "init", "-q", "main")
-	runGit(t, main, "commit", "-q", "--allow-empty", "-m", "init")
+	gittest.Run(t, base, "init", "-q", "main")
+	gittest.Run(t, main, "commit", "-q", "--allow-empty", "-m", "init")
 	a := filepath.Join(base, "a")
 	b := filepath.Join(base, "b")
-	runGit(t, main, "worktree", "add", "-q", a, "-b", "fa")
-	runGit(t, main, "worktree", "add", "-q", b, "-b", "fb")
+	gittest.Run(t, main, "worktree", "add", "-q", a, "-b", "fa")
+	gittest.Run(t, main, "worktree", "add", "-q", b, "-b", "fb")
 	return evalSym(t, a), evalSym(t, b), t.TempDir()
 }
 
@@ -76,7 +77,7 @@ func TestWithWorkingDirectoryReRootDepthInheritance(t *testing.T) {
 	base := filepath.Dir(laneA)
 	main := filepath.Join(base, "main")
 	laneC := filepath.Join(base, "c")
-	runGit(t, main, "worktree", "add", "-q", laneC, "-b", "fc")
+	gittest.Run(t, main, "worktree", "add", "-q", laneC, "-b", "fc")
 	laneC = evalSym(t, laneC)
 
 	env := NewLocalExecutionEnvironment(laneA)

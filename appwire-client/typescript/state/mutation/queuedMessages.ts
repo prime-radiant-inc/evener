@@ -1,4 +1,5 @@
 import type { InputItem } from "../../types.gen";
+import { COMPOSER_METHODS, PENDING_TURN_METHODS } from "./composerMethods";
 import type { MutationStopBarrier } from "./outbox";
 import type { MutationAttachmentRef, MutationIntent, MutationOutboxRecord, MutationRecoveryRecord } from "./records";
 
@@ -33,14 +34,6 @@ export function matchesQueuedMessageSnapshot(record: MutationOutboxRecord, expec
   );
 }
 
-const REMOVABLE_MESSAGE_METHODS = new Set([
-  "turn/start",
-  "turn/steer",
-  "turn/queue",
-  "turn/drainAsSteer",
-  "turn/promoteQueuedAsSteer",
-]);
-
 function hasContradictoryAttemptEvidence(record: MutationOutboxRecord): boolean {
   return record.attempted === true || (record.unresolvedAttempts !== undefined && record.unresolvedAttempts > 0);
 }
@@ -68,10 +61,15 @@ function hasComposerInput(record: MutationOutboxRecord): boolean {
 
 export function canEditQueuedMessage(record: MutationOutboxRecord): boolean {
   if (!isSafelyWaiting(record)) return false;
-  if (record.method === "turn/start" || record.method === "turn/queue" || record.method === "turn/steer") return true;
-  return record.method === "turn/drainAsSteer" && hasComposerInput(record);
+  if (
+    record.method === COMPOSER_METHODS.send ||
+    record.method === COMPOSER_METHODS.queue ||
+    record.method === COMPOSER_METHODS.steer
+  )
+    return true;
+  return record.method === COMPOSER_METHODS.drain && hasComposerInput(record);
 }
 
 export function canRemoveQueuedMessage(record: MutationOutboxRecord): boolean {
-  return isSafelyWaiting(record) && REMOVABLE_MESSAGE_METHODS.has(record.method);
+  return isSafelyWaiting(record) && PENDING_TURN_METHODS.includes(record.method);
 }

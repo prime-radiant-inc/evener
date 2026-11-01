@@ -3,7 +3,7 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { Pressable, ScrollView, SectionList, View } from "react-native";
 import type { TaskRow } from "@evener/appwire-client";
 import { absoluteTime, createTasksPanelStore, EMPTY_TASKS_PANEL_ENTRY, groupTasks } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 import { isReady } from "./connectionDisplay";
 import { MarkdownResponse } from "./MarkdownResponse";
 import { useRetainedScreenConnection } from "./retainedScreen";

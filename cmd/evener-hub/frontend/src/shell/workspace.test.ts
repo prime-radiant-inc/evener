@@ -2,7 +2,9 @@ import { bindFilePath, parseFileReference } from "@evener/appwire-client/docCont
 import type { DockviewApi } from "dockview-core";
 import { lazy } from "react";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { retainedConversationComposer } from "../panes/session/composer/retainedComposer";
 import { parseZoomParams } from "../panes/zoom/intent";
+import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { currentAttentionEntryToken, openAttentionSession } from "./attentionHistory";
 import {
   captureAttentionPlacement,
@@ -12,6 +14,7 @@ import {
 } from "./attentionPlacement";
 import { conversationPaneLifetime } from "./paneLifetime";
 import { type PaneDescriptor, type PaneProps, type PaneTypeId, registerPaneForTests } from "./paneRegistry";
+import { openNestedSessionWithOwner } from "./sessionPlacement";
 import {
   cancelPaneFocus,
   consumePaneFocus,
@@ -49,6 +52,7 @@ beforeAll(() => {
   registerPaneForTests(fixtureDescriptor("settings", { singleton: true }));
   registerPaneForTests(fixtureDescriptor("doc"));
   registerPaneForTests(fixtureDescriptor("session"));
+  registerPaneForTests(fixtureDescriptor("transcript"));
   registerPaneForTests(fixtureDescriptor("spawn", { singleton: true }));
   // The cascade retype test below retypes a sessionZoom pane, and retypePane
   // resolves its type through paneFor like every open path does.
@@ -118,6 +122,40 @@ test("restoring a departed main reader displaces the host's welcome fallback", (
   expect(restored.mainPane()?.id).toBe(a);
   expect(restored.panes.some((pane) => pane.type === "welcome")).toBe(false);
   expect(restored.focusedPaneId).toBe(a);
+});
+
+test("restoring a parked pane keeps its own seat and closes the replacement", async () => {
+  installLocalStorage(new MemoryStorage());
+  const state = workspaceStore.getState();
+  const a = state.openPane("session", { ref: "local:parked-a" });
+  const original = workspaceStore.getState().panes.find((pane) => pane.id === a);
+  if (!original?.composerSeatId) throw new Error("original pane lacks its seat");
+  const origin = captureAttentionPlacement();
+  if (!origin) throw new Error("missing origin entry");
+
+  // Attention navigation parks the original; a nested reopening creates a
+  // second pane on the same conversation with its own minted seat.
+  const destination = presentAttentionTarget("local:parked-b");
+  if (!destination) throw new Error("missing attention destination");
+  expect(original.slot).toBe("parked");
+  const secondId = state.openPane("session", { ref: "local:parked-a" });
+  const second = workspaceStore.getState().panes.find((pane) => pane.id === secondId);
+  if (!second?.composerSeatId) throw new Error("second pane lacks its seat");
+  expect(second.composerSeatId).not.toBe(original.composerSeatId);
+
+  // Browser Back restores the original pane with its existing seat: the
+  // parked pane keeps the seat it carried, and the replacement closes.
+  expect(restoreAttentionPlacement(origin)).toBe(true);
+  expect(workspaceStore.getState().focusedPaneId).toBe(a);
+  expect(workspaceStore.getState().panes.find((pane) => pane.id === secondId)?.slot).toBe("secondary");
+
+  // The maintained mapping is gone by design: a reload mints a fresh seat,
+  // so restoring the parked pane's work takes one tap, not a silent adopt.
+  resetWorkspaceStoreForTests();
+  const reopenedId = workspaceStore.getState().openPane("session", { ref: "local:parked-a" });
+  const reopened = workspaceStore.getState().panes.find((pane) => pane.id === reopenedId);
+  if (!reopened?.composerSeatId) throw new Error("reopened pane lacks its seat");
+  expect(reopened.composerSeatId).not.toBe(original.composerSeatId);
 });
 
 // A drill keeps the same pane and lifetime but reads a different leaf, so the
@@ -265,6 +303,65 @@ describe("openPane", () => {
   test("focuses the newly-opened pane", () => {
     const id = workspaceStore.getState().openPane("doc", { ref: "a" });
     expect(workspaceStore.getState().focusedPaneId).toBe(id);
+  });
+
+  test("reopening an unchanged existing pane emits no workspace store notification", () => {
+    const state = workspaceStore.getState();
+    const id = state.openPane("doc", { ref: "quiet-a" });
+    state.openPane("doc", { ref: "quiet-b" });
+    state.focusPane(id);
+    expect(workspaceStore.getState().focusedPaneId).toBe(id);
+
+    let notifications = 0;
+    const unsubscribe = workspaceStore.subscribe(() => {
+      notifications += 1;
+    });
+    try {
+      // Same pane, same params, already focused: nothing changed, so the
+      // store must stay silent.
+      expect(state.openPane("doc", { ref: "quiet-a" })).toBe(id);
+      expect(notifications).toBe(0);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  test("reopening an existing pane with changed focus still focuses it", () => {
+    const state = workspaceStore.getState();
+    const first = state.openPane("doc", { ref: "focus-a" });
+    state.openPane("doc", { ref: "focus-b" });
+    expect(workspaceStore.getState().focusedPaneId).not.toBe(first);
+
+    let notifications = 0;
+    const unsubscribe = workspaceStore.subscribe(() => {
+      notifications += 1;
+    });
+    try {
+      expect(state.openPane("doc", { ref: "focus-a" })).toBe(first);
+      expect(workspaceStore.getState().focusedPaneId).toBe(first);
+      expect(notifications).toBe(1);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  test("keepExistingFocus still suppresses focus writes on reopen", () => {
+    const state = workspaceStore.getState();
+    const first = state.openPane("doc", { ref: "keep-a" });
+    const second = state.openPane("doc", { ref: "keep-b" });
+    expect(workspaceStore.getState().focusedPaneId).toBe(second);
+
+    let notifications = 0;
+    const unsubscribe = workspaceStore.subscribe(() => {
+      notifications += 1;
+    });
+    try {
+      expect(state.openPane("doc", { ref: "keep-a" }, { keepExistingFocus: true })).toBe(first);
+      expect(workspaceStore.getState().focusedPaneId).toBe(second);
+      expect(notifications).toBe(0);
+    } finally {
+      unsubscribe();
+    }
   });
 
   test("keepExistingFocus leaves focus alone when the pane is already open", () => {
@@ -673,7 +770,13 @@ describe("replacePrimary", () => {
     const sessionId = workspace.replacePrimary("session", { ref: "local:session-b" });
 
     expect(workspaceStore.getState().panes).toEqual([
-      { id: sessionId, type: "session", params: { ref: "local:session-b" }, slot: "main" },
+      {
+        id: sessionId,
+        type: "session",
+        params: { ref: "local:session-b" },
+        slot: "main",
+        composerSeatId: expect.any(String),
+      },
     ]);
     expect(workspaceStore.getState().focusedPaneId).toBe(sessionId);
   });
@@ -689,7 +792,13 @@ describe("replacePrimary", () => {
 
     expect(repeatedId).toBe(mainId);
     expect(workspaceStore.getState().panes).toEqual([
-      { id: mainId, type: "session", params: { ref: "local:session-a" }, slot: "main" },
+      {
+        id: mainId,
+        type: "session",
+        params: { ref: "local:session-a" },
+        slot: "main",
+        composerSeatId: expect.any(String),
+      },
       { id: secondaryId, type: "doc", params: { ref: "secondary" }, slot: "secondary" },
     ]);
   });
@@ -1417,4 +1526,234 @@ describe("currentSessionRef", () => {
     });
     expect(currentSessionRef(workspaceStore.getState())).toBe("local:a");
   });
+});
+
+// A second pane on the same conversation is a distinct reader with its own
+// selection scope, and a retarget (drill/return) keeps the pane's own seat.
+test("independent panes on one conversation never share a recovery seat", () => {
+  installLocalStorage(new MemoryStorage());
+  const workspace = workspaceStore.getState();
+  const mainId = workspace.replacePrimary("session", { ref: "local:shared" });
+  const otherId = workspace.openPane("doc", { ref: "doc" });
+  const other = workspaceStore.getState().panes.find((pane) => pane.id === otherId);
+  if (!other) throw new Error("missing doc pane");
+  expect(workspace.retypePane(other, "session", { ref: "local:shared" })).toBe(true);
+
+  const sessions = workspaceStore
+    .getState()
+    .panes.filter((pane) => pane.type === "session" && (pane.params as { ref?: unknown }).ref === "local:shared");
+  expect(sessions.map((pane) => pane.id).sort()).toEqual([mainId, otherId].sort());
+  const seats = sessions.map((pane) => pane.composerSeatId);
+  expect(seats.every((seat) => typeof seat === "string" && seat !== "")).toBe(true);
+  expect(new Set(seats).size).toBe(2);
+
+  // Retarget the secondary into a cascade: the pane keeps its own seat, so the
+  // two live panes still hold distinct scopes.
+  const secondary = sessions.find((pane) => pane.id === otherId);
+  if (!secondary) throw new Error("missing secondary session pane");
+  const keptSeat = secondary.composerSeatId;
+  expect(
+    workspace.retypePane(secondary, "sessionZoom", {
+      ref: "local:shared",
+      source: { type: "session", params: { ref: "local:shared" } },
+      edges: [],
+    }),
+  ).toBe(true);
+  expect(workspaceStore.getState().panes.find((pane) => pane.id === otherId)?.composerSeatId).toBe(keptSeat);
+  const liveSeats = workspaceStore
+    .getState()
+    .panes.filter((pane) => pane.type === "session" || pane.type === "sessionZoom")
+    .map((pane) => pane.composerSeatId);
+  expect(new Set(liveSeats).size).toBe(liveSeats.length);
+});
+
+test("a child opened beside a retained cascade gets its own recovery seat", async () => {
+  installLocalStorage(new MemoryStorage());
+  const workspace = workspaceStore.getState();
+  const ownerRef = "local:owner";
+  const childRef = "local:child";
+  const ownerId = workspace.openPane("session", { ref: ownerRef });
+  const owner = workspaceStore.getState().panes.find((pane) => pane.id === ownerId);
+  if (!owner) throw new Error("missing owner pane");
+  expect(
+    workspace.retypePane(owner, "sessionZoom", {
+      ref: childRef,
+      source: { type: "session", params: { ref: ownerRef } },
+      edges: [],
+    }),
+  ).toBe(true);
+  const cascade = workspaceStore.getState().panes.find((pane) => pane.id === ownerId);
+  if (!cascade?.composerSeatId) throw new Error("retained cascade lacks its seat");
+
+  openNestedSessionWithOwner(childRef, ownerRef);
+
+  const child = workspaceStore
+    .getState()
+    .panes.find(
+      (pane) => pane.id !== ownerId && pane.type === "session" && (pane.params as { ref?: unknown }).ref === childRef,
+    );
+  if (!child?.composerSeatId) throw new Error("nested child lacks its seat");
+  expect(child.composerSeatId).not.toBe(cascade.composerSeatId);
+  const liveSeats = workspaceStore
+    .getState()
+    .panes.filter((pane) => pane.type === "session" || pane.type === "sessionZoom")
+    .map((pane) => pane.composerSeatId ?? pane.id);
+  expect(new Set(liveSeats).size).toBe(liveSeats.length);
+});
+// A cold nested-route reconstruction has no mapping to consult: placement
+// mints a fresh seat for each pane, so the child lands on its own seat.
+test("a cold nested-route reconstruction gives the child its own distinct seat", async () => {
+  installLocalStorage(new MemoryStorage());
+  const ownerRef = "local:nested-route-owner";
+  const childRef = "local:nested-route-child";
+  openNestedSessionWithOwner(childRef, ownerRef);
+
+  const parent = workspaceStore
+    .getState()
+    .panes.find((pane) => pane.type === "session" && (pane.params as { ref?: unknown }).ref === ownerRef);
+  if (!parent?.composerSeatId) throw new Error("parent lacks its seat");
+  const child = workspaceStore
+    .getState()
+    .panes.find((pane) => pane.type === "session" && (pane.params as { ref?: unknown }).ref === childRef);
+  if (!child?.composerSeatId) throw new Error("child lacks its seat");
+  expect(child.composerSeatId).not.toBe("seat-s");
+});
+
+// Pane ids restart after a mobile reload. A route reconstructed as B can
+// land on the id A used before. With the maintained mapping deleted, the
+// reconstructed route mints a fresh seat instead of adopting either pane's.
+test("a reconstructed route on a colliding stale pane id mints a fresh seat", async () => {
+  installLocalStorage(new MemoryStorage());
+  const workspace = workspaceStore.getState();
+  const aId = workspace.openPane("session", { ref: "local:route-a" });
+  const a = workspaceStore.getState().panes.find((pane) => pane.id === aId);
+  if (!a?.composerSeatId) throw new Error("route A lacks its seat");
+  const bId = workspace.openPane("session", { ref: "local:route-b" });
+  const b = workspaceStore.getState().panes.find((pane) => pane.id === bId);
+  if (!b?.composerSeatId) throw new Error("route B lacks its seat");
+
+  // Reload: pane ids restart, and route B is reconstructed on A's former id.
+  resetWorkspaceStoreForTests();
+  const reloadedId = workspaceStore.getState().openPane("session", { ref: "local:route-b" });
+  expect(reloadedId).toBe(aId);
+  const reloaded = workspaceStore.getState().panes.find((pane) => pane.id === reloadedId);
+  if (!reloaded?.composerSeatId) throw new Error("reloaded route lacks its seat");
+  // No mapping survives the reload: the reconstructed route mints a fresh
+  // seat, adopting neither A's nor B's rejected work.
+  expect(reloaded.composerSeatId).not.toBe(a.composerSeatId);
+  expect(reloaded.composerSeatId).not.toBe(b.composerSeatId);
+});
+
+// A retarget that retains its seat (resume, then return to the resumed
+// session) keeps the seat on the live lifetime for the whole round trip; a
+// mobile reload reconstructs the resumed ref with a fresh minted seat (the
+// one-tap deviation), adopting no one's rejected work.
+test("a retained seat on a retargeted conversation survives the live round trip", async () => {
+  installLocalStorage(new MemoryStorage());
+  const workspace = workspaceStore.getState();
+  workspace.openPane("session", { ref: "local:owner" });
+  const cascadeId = workspace.openPane(
+    "sessionZoom",
+    { ref: "local:child", source: { type: "session", params: { ref: "local:owner" } }, edges: [] },
+    { slot: "secondary" },
+  );
+  const cascade = workspaceStore.getState().panes.find((pane) => pane.id === cascadeId);
+  if (!cascade?.composerSeatId) throw new Error("cascade lacks its seat");
+  const seat = cascade.composerSeatId;
+
+  // Resume and return retain the cascade's seat while the ref changes.
+  expect(workspace.retypePane(cascade, "session", { ref: "local:resumed" })).toBe(true);
+  const returned = workspaceStore.getState().panes.find((pane) => pane.id === cascadeId);
+  expect(returned?.composerSeatId).toBe(seat);
+
+  // Mobile reload reconstructs the resumed ref under a fresh pane id.
+  resetWorkspaceStoreForTests();
+  const reloadedId = workspaceStore.getState().openPane("session", { ref: "local:resumed" });
+  const reloaded = workspaceStore.getState().panes.find((pane) => pane.id === reloadedId);
+  if (!reloaded?.composerSeatId) throw new Error("reloaded conversation lacks its seat");
+  // The reload mints a fresh seat (the one-tap deviation), but the live
+  // retarget round trip above kept the retained seat throughout.
+  expect(reloaded.composerSeatId).not.toBe(seat);
+});
+
+test("a cascade reload keeps one shared seat and both retained columns", async () => {
+  installLocalStorage(new MemoryStorage());
+  const ownerRef = "local:cascade-column-owner";
+  const childRef = "local:cascade-column-child";
+  const params = {
+    ref: childRef,
+    source: { type: "session" as const, params: { ref: ownerRef } },
+    edges: [{ ownerRef, childRef, delegateId: "delegate-1" }],
+  };
+  const cascadeId = workspaceStore.getState().openPane("sessionZoom", params);
+  const cascade = workspaceStore.getState().panes.find((pane) => pane.id === cascadeId);
+  if (!cascade?.composerSeatId) throw new Error("cascade lacks its seat");
+  const seat = cascade.composerSeatId;
+  const lifetime = conversationPaneLifetime(cascade);
+  const ownerColumn = retainedConversationComposer(lifetime, ownerRef);
+  const childColumn = retainedConversationComposer(lifetime, childRef);
+  if (!ownerColumn || !childColumn) throw new Error("cascade columns lack composers");
+
+  // Reload reconstructs the cascade under a fresh pane id and mints a fresh
+  // seat; both columns are still retained under the new lifetime.
+  resetWorkspaceStoreForTests();
+  const reloadedId = workspaceStore.getState().openPane("sessionZoom", params);
+  const reloaded = workspaceStore.getState().panes.find((pane) => pane.id === reloadedId);
+  if (!reloaded?.composerSeatId) throw new Error("reloaded cascade lacks its seat");
+  expect(reloaded.composerSeatId).not.toBe(seat);
+  const reloadedLifetime = conversationPaneLifetime(reloaded);
+  const reloadedOwner = retainedConversationComposer(reloadedLifetime, ownerRef);
+  const reloadedChild = retainedConversationComposer(reloadedLifetime, childRef);
+  if (!reloadedOwner || !reloadedChild) throw new Error("reloaded columns lack composers");
+});
+
+test("reopening a conversation retyped to a transcript receives a distinct seat", () => {
+  installLocalStorage(new MemoryStorage());
+  const ref = "local:retained-seat-reservation";
+  const firstId = workspaceStore.getState().openPane("session", { ref });
+  const first = workspaceStore.getState().panes.find((pane) => pane.id === firstId);
+  if (!first?.composerSeatId) throw new Error("first pane lacks its seat");
+  const seat = first.composerSeatId;
+
+  // The pane becomes a legacy transcript: the record keeps its seat, so the
+  // returning pane reuses it and a second pane mints its own.
+  expect(workspaceStore.getState().retypePane(first, "transcript", { ref })).toBe(true);
+  const retyped = workspaceStore.getState().panes.find((pane) => pane.id === firstId);
+  if (!retyped) throw new Error("retyped pane missing");
+  expect(retyped.composerSeatId).toBe(seat);
+
+  // A different pane reopening that conversation cannot take the reserved
+  // seat.
+  const secondId = workspaceStore.getState().openPane("session", { ref });
+  const second = workspaceStore.getState().panes.find((pane) => pane.id === secondId);
+  if (!second?.composerSeatId) throw new Error("second pane lacks its seat");
+  expect(second.composerSeatId).not.toBe(seat);
+
+  // Returning the original pane to a conversation restores its own retained
+  // seat; both panes keep independent scopes.
+  expect(workspaceStore.getState().retypePane(retyped, "session", { ref })).toBe(true);
+  const returned = workspaceStore.getState().panes.find((pane) => pane.id === firstId);
+  if (!returned?.composerSeatId) throw new Error("returned pane lacks its seat");
+  expect(returned.composerSeatId).toBe(seat);
+  expect(second.composerSeatId).not.toBe(seat);
+});
+
+test("a legacy transcript round trip keeps the pane's seat", () => {
+  installLocalStorage(new MemoryStorage());
+  const ref = "local:transcript-round-trip";
+  const id = workspaceStore.getState().openPane("session", { ref });
+  const session = workspaceStore.getState().panes.find((pane) => pane.id === id);
+  if (!session?.composerSeatId) throw new Error("session lacks its seat");
+  const seat = session.composerSeatId;
+
+  expect(workspaceStore.getState().retypePane(session, "transcript", { ref })).toBe(true);
+  const transcript = workspaceStore.getState().panes.find((pane) => pane.id === id);
+  if (!transcript) throw new Error("transcript pane missing");
+  // Retyping to the read-only transcript keeps the seat on the pane record.
+  expect(transcript?.composerSeatId).toBe(seat);
+
+  // Returning to the session reuses the record's seat.
+  expect(workspaceStore.getState().retypePane(transcript, "session", { ref })).toBe(true);
+  const returned = workspaceStore.getState().panes.find((pane) => pane.id === id);
+  expect(returned?.composerSeatId).toBe(seat);
 });

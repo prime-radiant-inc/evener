@@ -40,6 +40,7 @@ import {
   type PathValidateResponse,
   PROMPT_COMPOSITE_SPECS,
   PROMPT_DEPENDENT_WIRE_FIELDS,
+  resolvedValue,
   sameJsonValue,
   schemaPathKind,
 } from "@evener/appwire-client";
@@ -103,13 +104,6 @@ interface SaveStatus {
 
 function formatSavedAt(): string {
   return `Saved at ${new Date().toLocaleTimeString()}`;
-}
-
-/** Reads the effective layer's value for a field, or undefined when no layer
- * sets it (or the resolve hasn't landed). */
-function resolvedValue(option: LaunchOption, resolvedDefaults: LaunchConfigLayer | undefined): unknown {
-  if (!resolvedDefaults) return undefined;
-  return (resolvedDefaults as Record<string, unknown>)[option.wireField];
 }
 
 /** sameLayer answers whether two layers carry the same content. A re-read of

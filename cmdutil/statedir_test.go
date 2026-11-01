@@ -1,20 +1,20 @@
 package cmdutil
 
 import (
+	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/envvars/userdirs"
+	"primeradiant.com/evener/gittest"
 	"primeradiant.com/evener/identifier"
 )
 
 // TestStateRootFromLookup pins the canonical state-root chain against a
 // supplied environment lookup: XDG_STATE_HOME (verbatim), then the home
-// directory in os.UserHomeDir's per-OS spellings, then the "."-rooted
-// fallback. The Windows arms are pinned from any host so the hub's launch-env
+// directory in os.UserHomeDir's per-OS spellings, then ErrNoStateHome. The Windows arms are pinned from any host so the hub's launch-env
 // resolution cannot regress off-Windows again (#1012).
 func TestStateRootFromLookup(t *testing.T) {
 	lookup := func(env map[string]string) func(string) (string, bool) {
@@ -28,6 +28,7 @@ func TestStateRootFromLookup(t *testing.T) {
 		goos      string
 		env       map[string]string
 		wantParts []string
+		wantErr   bool
 	}{
 		{
 			name:      "xdg state home wins over home",
@@ -65,29 +66,29 @@ func TestStateRootFromLookup(t *testing.T) {
 		{
 			// os.UserHomeDir has no HOMEDRIVE/HOMEPATH arm; the old hub did,
 			// and that was the drift #1012 removed. Partial and full
-			// combinations alike fall through to the "."-rooted fallback.
-			name:      "windows ignores homedrive and homepath",
-			goos:      "windows",
-			env:       map[string]string{envvars.HomeDrive.Name: "D:", envvars.HomePath.Name: `\Users\u`},
-			wantParts: []string{".local", "state", "evener"},
+			// combinations alike resolve no home.
+			name:    "windows ignores homedrive and homepath",
+			goos:    "windows",
+			env:     map[string]string{"HOMEDRIVE": "D:", "HOMEPATH": `\Users\u`},
+			wantErr: true,
 		},
 		{
-			name:      "windows ignores a lone homedrive",
-			goos:      "windows",
-			env:       map[string]string{envvars.HomeDrive.Name: "D:"},
-			wantParts: []string{".local", "state", "evener"},
+			name:    "windows ignores a lone homedrive",
+			goos:    "windows",
+			env:     map[string]string{"HOMEDRIVE": "D:"},
+			wantErr: true,
 		},
 		{
-			name:      "windows ignores a lone homepath",
-			goos:      "windows",
-			env:       map[string]string{envvars.HomePath.Name: `\Users\u`},
-			wantParts: []string{".local", "state", "evener"},
+			name:    "windows ignores a lone homepath",
+			goos:    "windows",
+			env:     map[string]string{"HOMEPATH": `\Users\u`},
+			wantErr: true,
 		},
 		{
-			name:      "windows ignores a msys home with no profile",
-			goos:      "windows",
-			env:       map[string]string{envvars.Home.Name: `C:\msys\home\u`},
-			wantParts: []string{".local", "state", "evener"},
+			name:    "windows ignores a msys home with no profile",
+			goos:    "windows",
+			env:     map[string]string{envvars.Home.Name: `C:\msys\home\u`},
+			wantErr: true,
 		},
 		{
 			name:      "android uses the sdcard constant",
@@ -102,53 +103,27 @@ func TestStateRootFromLookup(t *testing.T) {
 			wantParts: []string{"/", ".local", "state", "evener"},
 		},
 		{
-			name:      "no home falls back to dot",
-			goos:      "linux",
-			env:       map[string]string{},
-			wantParts: []string{".local", "state", "evener"},
+			name:    "no home is an error",
+			goos:    "linux",
+			env:     map[string]string{},
+			wantErr: true,
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			got, err := StateRootFromLookup(tc.goos, lookup(tc.env))
+			if tc.wantErr {
+				if !errors.Is(err, userdirs.ErrNoStateHome) {
+					t.Fatalf("StateRootFromLookup(%q, %v) error = %v, want ErrNoStateHome", tc.goos, tc.env, err)
+				}
+				return
+			}
 			want := filepath.Join(tc.wantParts...)
-			if got := StateRootFromLookup(tc.goos, lookup(tc.env)); got != want {
-				t.Fatalf("StateRootFromLookup(%q, %v) = %q, want %q", tc.goos, tc.env, got, want)
+			if err != nil || got != want {
+				t.Fatalf("StateRootFromLookup(%q, %v) = %q, %v, want %q", tc.goos, tc.env, got, err, want)
 			}
 		})
 	}
-}
-
-// runGit runs a git command in dir with a fixed identity, failing the test on
-// error.
-func runGit(t *testing.T, dir string, args ...string) string {
-	t.Helper()
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
-		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
-		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t",
-	)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %v: %v\n%s", args, err, out)
-	}
-	return strings.TrimSpace(string(out))
-}
-
-// newLinkedWorktree builds an origin-less main repo with one commit and a
-// linked worktree, returning their absolute paths.
-func newLinkedWorktree(t *testing.T) (main, wt string) {
-	t.Helper()
-	base := t.TempDir()
-	main = filepath.Join(base, "main")
-	runGit(t, base, "init", "-q", "main")
-	runGit(t, main, "commit", "-q", "--allow-empty", "-m", "init")
-	wt = filepath.Join(base, "wt")
-	runGit(t, main, "worktree", "add", "-q", wt, "-b", "feat")
-	return main, wt
 }
 
 // TestDefaultProjectStateDir_LinkedWorktreeSameAsMain proves the fix for the
@@ -159,7 +134,7 @@ func newLinkedWorktree(t *testing.T) (main, wt string) {
 // computed a different project state dir than launching from the main repo
 // root. DefaultProjectStateDir must key both the same.
 func TestDefaultProjectStateDir_LinkedWorktreeSameAsMain(t *testing.T) {
-	main, wt := newLinkedWorktree(t)
+	main, wt := gittest.NewLinkedWorktree(t)
 
 	_, mainDir, err := DefaultProjectStateDir(main)
 	if err != nil {
@@ -178,11 +153,11 @@ func TestDefaultProjectStateDir_LinkedWorktreeSameAsMain(t *testing.T) {
 func TestDefaultProjectStateDir_ClonesWithSameOriginDiffer(t *testing.T) {
 	base := t.TempDir()
 	remote := filepath.Join(base, "remote.git")
-	runGit(t, base, "init", "-q", "--bare", remote)
+	gittest.Run(t, base, "init", "-q", "--bare", remote)
 	first := filepath.Join(base, "first")
 	second := filepath.Join(base, "second")
-	runGit(t, base, "clone", "-q", remote, first)
-	runGit(t, base, "clone", "-q", remote, second)
+	gittest.Run(t, base, "clone", "-q", remote, first)
+	gittest.Run(t, base, "clone", "-q", remote, second)
 
 	_, firstDir, err := DefaultProjectStateDir(first)
 	if err != nil {

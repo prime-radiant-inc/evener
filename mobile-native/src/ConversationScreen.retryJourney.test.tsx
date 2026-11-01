@@ -374,7 +374,6 @@ it.skipIf(!process.env.EVENER_RETRY_JOURNEY)(
 					expect(handle.entry).toBe(entry());
 					expect(handle.entry.store).toBe(entry().store);
 					expect(handle.entry.service).toBe(entry().service);
-					expect(handle.entry.activitySink).toBe(entry().activitySink);
 				}
 				// Only the in-front view may offer the action; both views read the
 				// same store beneath it.

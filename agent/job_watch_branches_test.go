@@ -110,12 +110,12 @@ func TestWatchLostAtRestartSessionMessage(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// watchLostAtRestartStableDelegateMessage
+// watchLostAtRestartDelegateMessage
 // ---------------------------------------------------------------------------
 
-func TestWatchLostAtRestartStableDelegateMessage(t *testing.T) {
+func TestWatchLostAtRestartDelegateMessage(t *testing.T) {
 	t.Parallel()
-	msg := watchLostAtRestartStableDelegateMessage("dlg_abc")
+	msg := watchLostAtRestartDelegateMessage("dlg_abc")
 	if !strings.Contains(msg, "dlg_abc") {
 		t.Fatalf("expected source in message: %q", msg)
 	}
@@ -136,17 +136,6 @@ func TestWatchBudgetClearedMessage(t *testing.T) {
 	}
 	if !strings.Contains(msg, "watch cleared") {
 		t.Fatalf("expected 'watch cleared' in message: %q", msg)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// callbackWatchesCancelledAtRestartMessage constant
-// ---------------------------------------------------------------------------
-
-func TestCallbackWatchesCancelledAtRestartMessage(t *testing.T) {
-	t.Parallel()
-	if !strings.Contains(callbackWatchesCancelledAtRestartMessage, "agent restarted") {
-		t.Fatalf("expected 'agent restarted' in constant")
 	}
 }
 
@@ -218,7 +207,7 @@ func TestNormalizeWatchSource(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if src.Kind != watchSourceStableDelegate {
+		if src.Kind != watchSourceDelegate {
 			t.Fatalf("Kind = %v", src.Kind)
 		}
 	})

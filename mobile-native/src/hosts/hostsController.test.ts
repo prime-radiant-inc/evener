@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type HostRow, WireError } from "@evener/appwire-client";
 import { HOST_GATE_TIMEOUT_MS } from "@evener/appwire-client";
-import { HOST_POLL_MS, HostsController } from "./hostsController";
+import { HOST_POLL_MS } from "@evener/appwire-client";
+import { HostsController } from "./hostsController";
 
 const row = (name: string, over: Partial<HostRow> = {}): HostRow => ({
 	name,

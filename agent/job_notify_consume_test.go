@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/afero"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	tooldefs "primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
@@ -162,12 +163,12 @@ func runOwnerStatusResponse(t *testing.T, s *Session, adapter *fakeAdapter, jobI
 		func(req llm.Request) llm.Response {
 			observationRequest(t, req, []string{fmt.Sprintf(`job_id=%q`, jobID)}, nil)
 			requireCanonicalShellNotification(t, s, jobID, 0)
-			return toolCallResponse(call)
+			return agenttest.ToolCallResponse(call)
 		},
 		func(req llm.Request) llm.Response {
 			requireTerminalStatusResult(t, req, call.ID, jobID)
 			requireCanonicalShellNotification(t, s, jobID, 1)
-			return finalResponse("continued")
+			return agenttest.FinalResponse("continued")
 		},
 	}
 	output, err := s.ProcessInput(context.Background(), "finish after checking the job", nil)
@@ -238,7 +239,7 @@ func TestPersistedTerminalJobStatusPreservesQueuedSelfWatchNotification(t *testi
 	adapter.steps = []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
 		observationRequest(t, req, []string{frame.Frame, fmt.Sprintf(`job_id=%q`, jobID)}, nil)
 		assertNotificationPending(t, s, ids)
-		return finalResponse("both notifications observed")
+		return agenttest.FinalResponse("both notifications observed")
 	}}
 	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 		t.Fatal(err)
@@ -296,7 +297,7 @@ func TestTerminalJobStatusTranscriptFailureLeavesNotificationPending(t *testing.
 	adapter.steps = []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
 		observationRequest(t, req, []string{fmt.Sprintf(`job_id=%q`, jobID)}, nil)
 		requireCanonicalShellNotification(t, s, jobID, 0)
-		return finalResponse("recovered notification observed")
+		return agenttest.FinalResponse("recovered notification observed")
 	}}
 	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 		t.Fatal(err)
@@ -329,10 +330,10 @@ func TestParentTerminalJobStatusReadLeavesChildNotificationPending(t *testing.T)
 	started := make(chan string, 1)
 	var child *Session
 	var jobID string
-	adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("status-child", marker) }, func(llm.Request) llm.Response { return finalResponse("child created") })
+	adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("status-child", marker) }, func(llm.Request) llm.Response { return agenttest.FinalResponse("child created") })
 	adapter.script(marker,
 		func(llm.Request) llm.Response {
-			return toolCallResponse(llm.ToolCallData{ID: "child-shell", Name: "shell", Type: "function", Arguments: json.RawMessage(`{"command":` + mustJSONString("while [ ! -f "+gate+" ]; do sleep 0.02; done; printf 'child done\\n'") + `,"mode":"background"}`)})
+			return agenttest.ToolCallResponse(llm.ToolCallData{ID: "child-shell", Name: "shell", Type: "function", Arguments: json.RawMessage(`{"command":` + mustJSONString("while [ ! -f "+gate+" ]; do sleep 0.02; done; printf 'child done\\n'") + `,"mode":"background"}`)})
 		},
 		func(req llm.Request) llm.Response {
 			var result struct {
@@ -349,12 +350,12 @@ func TestParentTerminalJobStatusReadLeavesChildNotificationPending(t *testing.T)
 			}
 			started <- result.JobID
 			awaitSignal(t, responseGate, "parent status read before child response")
-			return finalResponse("continue after held response")
+			return agenttest.FinalResponse("continue after held response")
 		},
 		func(req llm.Request) llm.Response {
 			observationRequest(t, req, []string{fmt.Sprintf(`job_id=%q`, jobID)}, nil)
 			requireCanonicalShellNotification(t, child, jobID, 0)
-			return finalResponse("child observed own completion")
+			return agenttest.FinalResponse("child observed own completion")
 		},
 	)
 	if _, err := parent.ProcessInput(context.Background(), "create a child status owner", nil); err != nil {
@@ -384,11 +385,11 @@ func TestParentTerminalJobStatusReadLeavesChildNotificationPending(t *testing.T)
 	call := terminalStatusCall(jobID)
 	adapter.script("root", func(llm.Request) llm.Response {
 		requireCanonicalShellNotification(t, child, jobID, 0)
-		return toolCallResponse(call)
+		return agenttest.ToolCallResponse(call)
 	}, func(req llm.Request) llm.Response {
 		requireTerminalStatusResult(t, req, call.ID, jobID)
 		requireCanonicalShellNotification(t, child, jobID, 0)
-		return finalResponse("parent read child status")
+		return agenttest.FinalResponse("parent read child status")
 	})
 	if _, err := parent.ProcessInput(context.Background(), "read the child's terminal status", nil); err != nil {
 		t.Fatal(err)
@@ -534,7 +535,7 @@ func TestUnpersistedKeptForegroundShellIsRenotifiedOnRestore(t *testing.T) {
 	adapter.steps = []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
 		observationRequest(t, req, []string{fmt.Sprintf(`job_id=%q`, jobID)}, nil)
 		requireCanonicalShellNotification(t, restored, jobID, 0)
-		return finalResponse("restored foreground completion observed")
+		return agenttest.FinalResponse("restored foreground completion observed")
 	}}
 	if _, err := restored.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 		t.Fatal(err)
@@ -679,7 +680,7 @@ func TestBackgroundShellReplyWithTerminalStatusLeavesNotificationPending(t *test
 			adapter.steps = []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
 				observationRequest(t, req, []string{fmt.Sprintf(`job_id=%q`, jobID)}, nil)
 				requireCanonicalShellNotification(t, s, jobID, 0)
-				return finalResponse("later completion observed")
+				return agenttest.FinalResponse("later completion observed")
 			}}
 			if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 				t.Fatal(err)

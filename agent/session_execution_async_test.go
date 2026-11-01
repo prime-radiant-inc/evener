@@ -5,6 +5,7 @@ import (
 	"sync"
 	"testing"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
@@ -23,9 +24,9 @@ func TestAsyncAttentionJoinsTheRunningTurnAndNeverACompletedOne(t *testing.T) {
 		<-release
 		// Let the next request observe the mid-call attention before this
 		// execution completes, so it cannot start another execution ahead of late.
-		return communicateResponse(false, "checkpoint"), nil
+		return agenttest.CommunicateResponse(false, "checkpoint"), nil
 	}, func(context.Context) (llm.Response, error) {
-		return communicateResponse(true, "done"), nil
+		return agenttest.CommunicateResponse(true, "done"), nil
 	})
 
 	var lateDone sync.WaitGroup

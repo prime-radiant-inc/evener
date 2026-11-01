@@ -63,10 +63,11 @@
   },
   "devDependencies": {
     "tinykeys": "^4.0.0",
-    "typescript": "~6.0.3",
+    "typescript": "6.0.3",
     "ws": "^8.18.0"
   },
   "dependencies": {
+    "anser": "2.3.5",
     "tweetnacl": "1.0.3"
   }
 }

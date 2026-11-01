@@ -96,7 +96,7 @@ func TestNotificationReplayFailureDoesNotAbortHealthyExecution(t *testing.T) {
 	t.Parallel()
 	clock := agenttest.NewFakeClock()
 	adapter := newMessagingAdapter()
-	adapter.script("root", func(llm.Request) llm.Response { return finalResponse("healthy-result-41") })
+	adapter.script("root", func(llm.Request) llm.Response { return agenttest.FinalResponse("healthy-result-41") })
 	var unavailable atomic.Bool
 	unavailable.Store(true)
 	var injectedFailures atomic.Int64

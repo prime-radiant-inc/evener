@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"strconv"
 	"strings"
 	"sync"
@@ -45,7 +46,7 @@ func TestWatchedJobCompletionWakesTheSessionOnce(t *testing.T) {
 	for _, persistent := range []bool{true, false} {
 		t.Run(fmt.Sprintf("persistent=%t", persistent), func(t *testing.T) {
 			s, adapter := newTerminalFlushSession(t, persistent)
-			adapter.steps = []func(llm.Request) llm.Response{func(llm.Request) llm.Response { return finalResponse("completion-response-429") }}
+			adapter.steps = []func(llm.Request) llm.Response{func(llm.Request) llm.Response { return agenttest.FinalResponse("completion-response-429") }}
 			gate := filepath.Join(t.TempDir(), "release")
 			jobID := startBackgroundShellJob(t, s, "while [ ! -f "+gate+" ]; do sleep 0.02; done; printf 'released\\n'")
 			if _, err := jobWatchTool(s, map[string]any{"operation": "create", "source": jobID, "output_match": "unmatched-completion-517"}, jobToolResultDefaultMaxChar); err != nil {

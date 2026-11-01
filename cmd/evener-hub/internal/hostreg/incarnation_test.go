@@ -498,3 +498,54 @@ func TestSeedHighWaterCarriesALiveEntryUpToItsGenerationMark(t *testing.T) {
 		t.Fatalf("the re-add minted generation %d, want above every retained mark", re.Generation)
 	}
 }
+
+func TestSameRegistrationAndPresence(t *testing.T) {
+	base := Host{Name: "a", SSH: "a.example", Generation: 7, IncarnationID: "inc-a", PresenceEpoch: 3}
+	mutate := func(f func(*Host)) Host { h := base; f(&h); return h }
+	cases := []struct {
+		name  string
+		other Host
+		want  bool
+	}{
+		{"identical", base, true},
+		{"content differs", mutate(func(h *Host) { h.SSH = "b.example" }), false},
+		{"generation differs", mutate(func(h *Host) { h.Generation = 8 }), false},
+		{"incarnation differs", mutate(func(h *Host) { h.IncarnationID = "inc-b" }), false},
+		{"presence epoch differs", mutate(func(h *Host) { h.PresenceEpoch = 4 }), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := SameRegistrationAndPresence(base, tc.other); got != tc.want {
+				t.Fatalf("SameRegistrationAndPresence = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	if !SameRegistration(base, mutate(func(h *Host) { h.PresenceEpoch = 4 })) {
+		t.Fatal("SameRegistration must keep ignoring the presence epoch")
+	}
+}
+
+func TestAddRestoredKeepsThePersistedIdentityAndRefusesALiveName(t *testing.T) {
+	r, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	restored := Host{Name: "back", SSH: "back.example", Generation: 7, IncarnationID: "inc-back", PresenceEpoch: 4}
+	if err := r.AddRestored(restored); err != nil {
+		t.Fatalf("AddRestored: %v", err)
+	}
+	got, ok := r.Get("back")
+	if !ok || got.Generation != 7 || got.IncarnationID != "inc-back" || got.PresenceEpoch != 4 {
+		t.Fatalf("restored entry = %+v/%v, want the persisted identity", got, ok)
+	}
+	next := Host{Name: "later", SSH: "later.example"}
+	if err := r.Add(next); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if later, _ := r.Get("later"); later.Generation <= 7 {
+		t.Fatalf("a later add minted generation %d at or below the restored 7", later.Generation)
+	}
+	if err := r.AddRestored(restored); !errors.Is(err, ErrDuplicateHost) {
+		t.Fatalf("AddRestored of a live name = %v, want ErrDuplicateHost", err)
+	}
+}

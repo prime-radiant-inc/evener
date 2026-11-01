@@ -364,7 +364,7 @@ func TestHubRelayRoutePublicationUnblocksPendingDelivery(t *testing.T) {
 		t.Fatal(err)
 	}
 	replacement.ReplaceAppIdentity(identity.WithBootGeneration("1"), nil)
-	replacement.SetStatus(daemonserver.StatusInfo{SessionID: replacementID, State: "idle"})
+	seedDaemonStatus(replacement, daemonserver.StatusInfo{SessionID: replacementID, State: "idle"})
 	replacement.RecordDescendantAppEvent(replacementID, events.SessionEvent{Kind: events.EventSessionStart, SessionID: childID, Data: events.SessionStartData{}})
 	gateArmed, gateEntered, releaseGate := installRelayProgressGate(f.ctx, replacement)
 	replacementHTTP := httptest.NewServer(http.HandlerFunc(replacement.AppServer().ServeWebSocket))
@@ -545,6 +545,12 @@ func testHubRelayInterruptedRead(t *testing.T, disconnect bool) {
 	// event belong to the initial RPC, not the read we are about to interrupt.
 	awaitActivityRelaySignal(f.ctx, t, initial.entered, "initial finalizer did not enter")
 	initial.join(f.ctx, t)
+	// The hub releases a read's command owner when the response enters the
+	// connection's send queue, which can follow the client receiving it. Wait
+	// for that release so the count below belongs to the interrupted read.
+	awaitActivityRelayCondition(f.ctx, t, func() bool {
+		return f.relays.relayCommandCount(rootRef) == 0
+	}, "initial read did not release its owner")
 	readCtx, cancelRead := context.WithCancel(f.ctx)
 	t.Cleanup(cancelRead)
 	f.gateArmed.Store(true)
@@ -634,7 +640,7 @@ type hubRelayProgressFixture struct {
 	ctx           context.Context
 	daemon        *daemonserver.Server
 	source        *appsource.LocalDaemonSource
-	relays        hubRelayFunctions
+	relays        *hubRelay
 	open          func() *appwire.Client
 	idleDeleted   <-chan string
 	gateArmed     *atomic.Bool
@@ -651,13 +657,13 @@ func newHubRelayProgressFixture(t *testing.T, hooks hubcore.RelayLifecycleHooks)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	t.Cleanup(cancel)
 
-	var relays hubRelayFunctions
+	var relays *hubRelay
 	var pendingWait atomic.Bool
-	previousFunctions, previousWait := observeHubRelayFunctions, observeHubRelayWait
-	observeHubRelayFunctions = func(f hubRelayFunctions) { relays = f }
+	previousFunctions, previousWait := observeHubRelay, observeHubRelayWait
+	observeHubRelay = func(f *hubRelay) { relays = f }
 	observeHubRelayWait = func() { pendingWait.Store(true) }
 	t.Cleanup(func() {
-		observeHubRelayFunctions, observeHubRelayWait = previousFunctions, previousWait
+		observeHubRelay, observeHubRelayWait = previousFunctions, previousWait
 	})
 
 	daemon := daemonserver.NewServer(daemonserver.ServerConfig{})
@@ -667,7 +673,7 @@ func newHubRelayProgressFixture(t *testing.T, hooks hubcore.RelayLifecycleHooks)
 		t.Fatal(err)
 	}
 	daemon.ReplaceAppIdentity(prepared.WithBootGeneration("1"), nil)
-	daemon.SetStatus(daemonserver.StatusInfo{SessionID: rootID, State: "idle"})
+	seedDaemonStatus(daemon, daemonserver.StatusInfo{SessionID: rootID, State: "idle"})
 	daemon.RecordDescendantAppEvent(rootID, events.SessionEvent{
 		Kind: events.EventSessionStart, SessionID: childID, Data: events.SessionStartData{},
 	})

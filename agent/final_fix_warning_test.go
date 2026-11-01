@@ -53,7 +53,7 @@ func standingRequestTokens(t *testing.T, dir string, profile *provider.Profile, 
 	adapter := &fakeAdapter{
 		name: profile.ID(),
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("ok") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
 		},
 	}
 	client := llm.NewClient()
@@ -96,7 +96,7 @@ func TestSessionTokenBudgetOutputReductionEmitsOneWarning(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "budget-warning", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("ok") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
 	}})
 	profile := testOpenAICompatProfile("budget-warning", "warning-model", 0)
 	resolved := profile.Resolved()
@@ -255,9 +255,9 @@ func TestSessionFallbackTokenBudgetReductionEmitsOneWarning(t *testing.T) {
 	fallbackAdapter := &fakeAdapter{name: "warning-fallback", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response {
 			if req.MaxTokens == nil || *req.MaxTokens != 976 {
-				return finalResponse("bad allocation")
+				return agenttest.FinalResponse("bad allocation")
 			}
-			return finalResponse("fallback")
+			return agenttest.FinalResponse("fallback")
 		},
 	}}
 	client.Register(fallbackAdapter)
@@ -645,7 +645,7 @@ func TestSessionFallbackContextWarningNamesTheWindowThatHandledTheRequest(t *tes
 	client.Register(&agenttest.ModelTrackingAdapter{
 		Provider: "ctxwarn-fallback",
 		Respond: func(req llm.Request) (llm.Response, error) {
-			return communicateResponse(true, "fallback"), nil
+			return agenttest.CommunicateResponse(true, "fallback"), nil
 		},
 	})
 

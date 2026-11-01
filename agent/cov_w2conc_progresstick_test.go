@@ -143,7 +143,7 @@ func TestW2Conc_FireProgressTickSendPathSnapshots(t *testing.T) {
 	adapter.steps = []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response {
 			observationRequest(t, req, []string{payload}, nil)
-			return finalResponse("progress-observed-84f0")
+			return agenttest.FinalResponse("progress-observed-84f0")
 		},
 	}
 	clock := &progressSnapshotClock{FakeClock: agenttest.NewFakeClock(), started: make(chan struct{}), stopped: make(chan struct{})}

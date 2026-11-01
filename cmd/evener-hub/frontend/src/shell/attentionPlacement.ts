@@ -7,6 +7,7 @@ import { parseZoomParams } from "../panes/zoom/intent";
 import { conversationPaneLifetime } from "./paneLifetime";
 import { refParam } from "./routing";
 import {
+  cancelCarriedComposerSeat,
   type OpenPaneRecord,
   onPaneRetype,
   type PaneSlot,
@@ -121,6 +122,9 @@ export function presentAttentionTarget(targetRef: string): AttentionPlacementEnt
   const matches = state.panes.filter((pane) => readerIdentity(pane)?.ref === targetRef);
   const presented = matches.find((pane) => pane.slot !== "parked");
   if (presented) {
+    // Focusing the pane that already presents the conversation is the
+    // placement decision: a pending carry dies with it.
+    cancelCarriedComposerSeat(targetRef);
     state.focusPane(presented.id);
     return capture(presented);
   }

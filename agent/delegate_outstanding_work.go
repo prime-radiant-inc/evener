@@ -2,7 +2,6 @@ package agent
 
 import (
 	"errors"
-	"fmt"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -220,10 +219,7 @@ func watchConfigID(cfg *watchConfig) string {
 	if cfg == nil {
 		return ""
 	}
-	if cfg.watchID != "" {
-		return cfg.watchID
-	}
-	return cfg.id
+	return cfg.watchID
 }
 
 func (s *Session) pendingJobNotificationIDs() []string {
@@ -255,9 +251,6 @@ func (s *Session) pendingInputIDs() []string {
 			id = steering.ClientMutationID
 		}
 		ids = append(ids, id)
-	}
-	for i := range s.followups {
-		ids = append(ids, fmt.Sprintf("followup-%d", i))
 	}
 	return ids
 }

@@ -18,7 +18,6 @@ vi.mock("../ConnectionProvider", () => ({ useConnection: () => ({ state: "ready"
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 /** paradise-park's folders, answered only through evener/host/request for
  * that host: the hub's own machine has none of them. */

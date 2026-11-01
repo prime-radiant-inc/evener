@@ -12,7 +12,7 @@ const CLASS = {
 };
 
 // T6: the chords a new person has no other way to discover from this cold
-// pane - CommandPalette.tsx's own HELP_ROWS is the source of truth for all
+// pane - palette/helpRows.tsx's HELP_ROWS is the source of truth for all
 // three (Mod+K/Mod+I/Mod+J); order matches HELP_ROWS' own listing.
 const CHORD_HINTS: ShortcutListItem[] = [
   { keys: ["Mod", "K"], label: "command palette" },

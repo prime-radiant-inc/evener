@@ -12,16 +12,20 @@
 // stores must keep decoding, so its encoding does not change.
 
 import { isPlainObject } from "./plainObject";
-import type {
-  TranscriptDisplayAdvanced as WireAdvanced,
-  TranscriptDisplayConfig as WireConfig,
-  TranscriptDisplayContent as WireContent,
-  TranscriptDisplayDefault as WireDefault,
-  TranscriptDisplayDefaults as WireDefaults,
+import {
+  TRANSCRIPT_HOOK_EXIT_DETAILS,
+  TRANSCRIPT_LEVELS,
+  type TranscriptHookExitDetail,
+  type TranscriptLevel,
+  type TranscriptDisplayAdvanced as WireAdvanced,
+  type TranscriptDisplayConfig as WireConfig,
+  type TranscriptDisplayContent as WireContent,
+  type TranscriptDisplayDefault as WireDefault,
+  type TranscriptDisplayDefaults as WireDefaults,
 } from "./types.gen";
 
-export type ContentLevel = "chat" | "intent" | "tools" | "activity" | "full";
-export type HookExitDetail = "none" | "successful" | "all";
+export type ContentLevel = TranscriptLevel;
+export type HookExitDetail = TranscriptHookExitDetail;
 export type TranscriptViewportClass = "desktop" | "mobile";
 export type ViewportClass = TranscriptViewportClass;
 
@@ -56,8 +60,8 @@ export interface HubTranscriptDisplayDefault {
   readonly config: TranscriptDisplayConfigV1;
 }
 
-export const CONTENT_LEVELS = ["chat", "intent", "tools", "activity", "full"] as const;
-export const HOOK_EXIT_DETAILS = ["none", "successful", "all"] as const;
+export const CONTENT_LEVELS = TRANSCRIPT_LEVELS;
+export const HOOK_EXIT_DETAILS = TRANSCRIPT_HOOK_EXIT_DETAILS;
 
 const CONTENT_VECTORS: Readonly<Record<ContentLevel, ContentVector>> = {
   chat: { toolIntent: true, toolCalls: false, reasoning: false, expandByDefault: false },
@@ -592,33 +596,4 @@ export function legacyConfigFromValues(values: LegacyPreferenceValues): Transcri
       hookExits,
     },
   );
-}
-
-export interface LegacyPreferenceWrites {
-  readonly transcriptRoundTimings: boolean;
-  readonly transcriptTokenCounts: boolean;
-  readonly transcriptHookExitsAll: boolean;
-  readonly transcriptHookExitsNormal: boolean;
-  readonly transcriptPromptLoaded: boolean;
-  readonly showCost: boolean;
-}
-
-export function legacyWritesFromConfig(config: TranscriptDisplayConfigV1): LegacyPreferenceWrites {
-  const normalized = normalizeConfig(config);
-  return {
-    transcriptRoundTimings: normalized.advanced.roundTimings,
-    transcriptTokenCounts: normalized.advanced.tokenCounts,
-    transcriptHookExitsAll: normalized.advanced.hookExits === "all",
-    transcriptHookExitsNormal: normalized.advanced.hookExits === "successful",
-    transcriptPromptLoaded: normalized.advanced.promptEvents,
-    showCost: normalized.advanced.estimatedCost,
-  };
-}
-
-export function dualWriteLegacyPreferences(
-  config: TranscriptDisplayConfigV1,
-  write: (key: LegacyPreferenceKey, value: boolean) => void,
-): void {
-  const values = legacyWritesFromConfig(config);
-  for (const key of LEGACY_PREF_KEYS) write(key, values[key]);
 }

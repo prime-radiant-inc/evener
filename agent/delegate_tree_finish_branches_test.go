@@ -86,7 +86,7 @@ func TestDelegateStoppedTerminalPacket(t *testing.T) {
 // recorded packet is what both the live frame and a replay read.
 func TestStoppedGenerationFinishOverReportedRunReadsStopped(t *testing.T) {
 	t.Parallel()
-	reported := stableDelegateFinishFromRun(delegateTerminalRunInputs{
+	reported := delegateFinishFromRun(delegateTerminalRunInputs{
 		result:       "the settle pass now waits for the drain",
 		communicated: true,
 		descriptor:   notificationWireDescriptor("Fix race in tree settle"),

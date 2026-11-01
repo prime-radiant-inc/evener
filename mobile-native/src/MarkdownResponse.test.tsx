@@ -207,7 +207,6 @@ vi.mock("@react-navigation/native", async () => {
 	};
 });
 vi.mock("expo-web-browser", () => ({ openBrowserAsync: vi.fn(async () => ({ type: "dismiss" })) }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-gesture-handler", async () =>
 	(await import("./renderNative.testkit")).gestureDetectorModuleMock(),
 );
@@ -215,10 +214,6 @@ vi.mock("react-native-gesture-handler/ReanimatedSwipeable", async () =>
 	(await import("./renderNative.testkit")).gestureHandlerModuleMock(),
 );
 
-vi.mock("expo-crypto", () => ({
-	randomUUID: () => "memoization-test-uuid",
-	getRandomValues: (array: Uint8Array) => array,
-}));
 vi.mock("expo-sqlite", async () => {
 	const { openSqliteSyncDouble } = await import("./sqliteSync.testkit");
 	return {

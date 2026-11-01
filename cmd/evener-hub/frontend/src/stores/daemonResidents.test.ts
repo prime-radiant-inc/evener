@@ -7,10 +7,10 @@
 
 import type { DaemonIdentity, DaemonListResponse, DaemonRetireResponse } from "@evener/appwire-client";
 import { friendlyErrorMessage } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, test } from "vitest";
-import { connectedClientPort, connectionStore } from "./connection";
+import { connectReadyFakeClient } from "../testing/connectionTestUtils";
+import { connectedClientPort, resetConnectionStoreForTests } from "./connection";
 import {
   _clearDaemonResidentsInflightForTests,
   daemonResidentsStore,
@@ -18,12 +18,6 @@ import {
   residentRowKey,
   useDaemonResidentsStore,
 } from "./daemonResidents";
-
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  return fake;
-}
 
 const EMPTY_RESPONSE: DaemonListResponse = {
   defaultTimeoutMillis: 3600000,
@@ -38,7 +32,7 @@ const IDENTITY_A: DaemonIdentity = {
 };
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetDaemonResidentsStoreForTests();
 });
 
@@ -54,7 +48,7 @@ describe("initial state", () => {
 
 describe("refresh", () => {
   test("requests evener/daemon/list with empty params and stores the result", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/daemon/list", () => EMPTY_RESPONSE);
 
     await daemonResidentsStore.getState().refresh();
@@ -67,7 +61,7 @@ describe("refresh", () => {
   });
 
   test("sets loading true while the request is in flight", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let resolveRequest: (() => void) | undefined;
     fake.on(
       "evener/daemon/list",
@@ -87,7 +81,7 @@ describe("refresh", () => {
   });
 
   test("concurrent calls before the first resolves share one in-flight request", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let handlerCallCount = 0;
     fake.on("evener/daemon/list", () => {
       handlerCallCount += 1;
@@ -102,7 +96,7 @@ describe("refresh", () => {
   });
 
   test("retire forces a fresh fetch after an already in-flight refresh settles", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let listCalls = 0;
     let resolveFirstList!: (data: DaemonListResponse) => void;
     fake.on("evener/daemon/list", () => {
@@ -135,7 +129,7 @@ describe("refresh", () => {
   });
 
   test("a failed refresh preserves existing data and populates error", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/daemon/list", () => EMPTY_RESPONSE);
     await daemonResidentsStore.getState().refresh(); // first call: succeeds
     expect(daemonResidentsStore.getState().data).toEqual(EMPTY_RESPONSE);
@@ -152,7 +146,7 @@ describe("refresh", () => {
   });
 
   test("newest-client generation wins a late response", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let resolveA!: (data: DaemonListResponse) => void;
 
     fake.on("evener/daemon/list", () => {
@@ -207,7 +201,7 @@ describe("refresh", () => {
 
 describe("retire", () => {
   test("adds and removes the generation-keyed row key from pending, sends correct RPC", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const retireResponse: DaemonRetireResponse = {
       accepted: true,
       lifecycle: { phase: "retiring", timeoutMillis: 3600000, blockers: [] },
@@ -230,7 +224,7 @@ describe("retire", () => {
   });
 
   test("pending key is the generation, not the shared ref or PID", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let capturedPending: Set<string> | null = null;
     // A live sibling row: same ref as IDENTITY_A, different generation. This is
     // the shape listDaemons emits during a replacement or retire-vs-resume overlap.
@@ -258,7 +252,7 @@ describe("retire", () => {
   });
 
   test("a same-ref sibling generation is not marked pending while one generation acts", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const sibling: DaemonIdentity = { ...IDENTITY_A, pid: 1002, generation: "gen-b" };
     const retireResponse: DaemonRetireResponse = {
       accepted: true,
@@ -287,7 +281,7 @@ describe("retire", () => {
   });
 
   test("throws (propagates error) when retire RPC fails", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/daemon/list", () => EMPTY_RESPONSE);
     fake.on("evener/daemon/retire", () => {
       throw new Error("retire rejected");
@@ -301,7 +295,7 @@ describe("retire", () => {
 
 describe("forceStop", () => {
   test("sends evener/thread/forceStop with ref and expectedDaemon set to the identity", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/thread/forceStop", (params) => {
       expect(params.ref).toBe(IDENTITY_A.ref);
       expect(params.expectedDaemon).toEqual(IDENTITY_A);
@@ -319,7 +313,7 @@ describe("forceStop", () => {
   });
 
   test("adds and removes the generation-keyed row key from pending on force-stop", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let capturedPending: Set<string> | null = null;
     fake.on("evener/thread/forceStop", () => {
       capturedPending = new Set(daemonResidentsStore.getState().pending);
@@ -337,7 +331,7 @@ describe("forceStop", () => {
 
 describe("useDaemonResidentsStore hook", () => {
   test("reflects store state and re-renders on change", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/daemon/list", () => EMPTY_RESPONSE);
 
     const { result } = renderHook(() => useDaemonResidentsStore((s) => s.data));

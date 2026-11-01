@@ -38,7 +38,7 @@ func TestFinalizationHandoffOwnedByRunner(t *testing.T) {
 func runFinalizationHandoffOwnedByRunner(t *testing.T) {
 	t.Helper()
 	synctest.Test(t, func(t *testing.T) {
-		fixture := newColdStableDelegateFixture(t, "")
+		fixture := newColdDelegateFixture(t, "")
 		fixture.adapter.steps = repeatFinalResponse(1, "complete")
 		root := restoreSupervisionRoot(t, fixture, nil)
 		c := root.delegateController
@@ -71,7 +71,7 @@ func runFinalizationHandoffOwnedByRunner(t *testing.T) {
 			default:
 			}
 		})
-		sub := warmStableDelegateUnservedRoot(t, root, fixture)
+		sub := warmDelegateUnservedRoot(t, root, fixture)
 		<-entered
 		sub.mu.Lock()
 		done := sub.done
@@ -132,7 +132,7 @@ func runFinalizationHandoffOwnedByRunner(t *testing.T) {
 
 func TestFinalizationHandoffCreateReclamationOuterAdmission(t *testing.T) {
 	t.Parallel()
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	fixture.adapter.steps = repeatFinalResponse(2, "complete")
 	root := restoreSupervisionRoot(t, fixture, nil)
 	rc, err := NewRetirementController(0, clock.Real())
@@ -152,7 +152,7 @@ func TestFinalizationHandoffCreateReclamationOuterAdmission(t *testing.T) {
 			<-release
 		}
 	}
-	warmStableDelegateUnservedRoot(t, root, fixture)
+	warmDelegateUnservedRoot(t, root, fixture)
 	<-entered
 	c.mu.Lock()
 	c.maxRetainedTerminal = 1
@@ -196,7 +196,7 @@ func TestFinalizationHandoffCreateReclamationOuterAdmission(t *testing.T) {
 
 func TestFinalizationHandoffRecursiveWakeOuterAdmission(t *testing.T) {
 	// Not parallel: the empty-fold barrier wraps the package-wide filesystem seam.
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	fixture.adapter.steps = repeatFinalResponse(1, "complete")
 	root := restoreSupervisionRoot(t, fixture, nil)
 	rc, err := NewRetirementController(0, clock.Real())
@@ -354,7 +354,7 @@ func (a *handoffProvider) Complete(ctx context.Context, req llm.Request) (llm.Re
 		if a.fail {
 			return llm.Response{}, &llm.ConfigurationError{Message: "scripted provider refusal"}
 		}
-		return finalResponse("complete"), nil
+		return agenttest.FinalResponse("complete"), nil
 	}
 	return a.fakeAdapter.Complete(ctx, req)
 }
@@ -411,7 +411,7 @@ func TestFinalizationHandoffAcceptedColdRecovery(t *testing.T) {
 	t.Parallel()
 	for _, failed := range []bool{false, true} {
 		t.Run(map[bool]string{false: "successful_response", true: "failed_response"}[failed], func(t *testing.T) {
-			fixture := newColdStableDelegateFixture(t, "")
+			fixture := newColdDelegateFixture(t, "")
 			fixture.adapter.steps = repeatFinalResponse(1, "warm")
 			provider := &handoffProvider{fakeAdapter: fixture.adapter, requests: make(chan llm.Request, 4), fail: failed}
 			fixture.client.Register(provider)
@@ -426,7 +426,7 @@ func TestFinalizationHandoffAcceptedColdRecovery(t *testing.T) {
 					<-release
 				}
 			}
-			sub := warmStableDelegateUnservedRoot(t, root, fixture)
+			sub := warmDelegateUnservedRoot(t, root, fixture)
 			<-entered
 			if err := root.delegateController.enqueueNotification(fixture.childID, handoffNotification()); err != nil {
 				t.Fatal(err)
@@ -454,7 +454,7 @@ func TestFinalizationHandoffAcceptedColdRecovery(t *testing.T) {
 	// The old process retains the real writer and finalization until process
 	// death. No terminal Close/Stop parks the accepted ID before restoration.
 	t.Run("process_death_then_autonomous_cold_restore", func(t *testing.T) {
-		fixture := newColdStableDelegateFixture(t, "")
+		fixture := newColdDelegateFixture(t, "")
 		executable, err := os.Executable()
 		if err != nil {
 			t.Fatal(err)
@@ -567,7 +567,7 @@ func TestFinalizationHandoffAttachmentBoundaries(t *testing.T) {
 		{"post_attachment_failure", delegateRuntimeAttachIdle, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			fixture := newColdStableDelegateFixture(t, "")
+			fixture := newColdDelegateFixture(t, "")
 			root := restoreSupervisionRoot(t, fixture, nil)
 			c := root.delegateController
 			started, _, err := c.idleDelegateRestoreCommit(fixture.delegateID)
@@ -652,7 +652,7 @@ func TestFinalizationHandoffAttachmentBoundaries(t *testing.T) {
 		})
 	}
 	t.Run("existing_runtime_collision", func(t *testing.T) {
-		fixture := newColdStableDelegateFixture(t, "")
+		fixture := newColdDelegateFixture(t, "")
 		root := restoreSupervisionRoot(t, fixture, nil)
 		c := root.delegateController
 		started, _, err := c.idleDelegateRestoreCommit(fixture.delegateID)
@@ -870,7 +870,7 @@ func runFinalizationHandoffRestoreReclamationFailure(t *testing.T) {
 		t.Fatalf("failed restore carrier recheck=%v err=%v", recheck, restoreErr)
 	}
 	var missingMeta *os.PathError
-	wantMeta := filepath.Join(root.stateDir, sessionsSubdir, started.descriptor.ChildSessionID+".meta.json")
+	wantMeta := schema.SessionMetaPath(root.stateDir, started.descriptor.ChildSessionID)
 	if !errors.As(restoreErr, &missingMeta) || missingMeta.Path != wantMeta {
 		t.Fatalf("restore failure did not concern the target metadata %q: %v", wantMeta, restoreErr)
 	}
@@ -969,7 +969,7 @@ func TestFinalizationHandoffDiagnosticsHelper(t *testing.T) {
 		t.Skip("subprocess only")
 	}
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, nil)))
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	fixture.adapter.steps = repeatFinalResponse(1, "warm healthy sibling")
 	root := restoreSupervisionRoot(t, fixture, agenttest.NewFakeClock())
 	c := root.delegateController
@@ -1077,7 +1077,7 @@ func TestFinalizationHandoffLifecycleHelper(t *testing.T) {
 		return
 	}
 	runFinalizationHandoffOwnedByRunner(t)
-	fixture := newColdStableDelegateFixture(t, "") // Includes the empty cold child.
+	fixture := newColdDelegateFixture(t, "") // Includes the empty cold child.
 	root := restoreSupervisionRoot(t, fixture, nil)
 	eventsDrained := make(chan struct{})
 	root.ConsumeEventsLossless(func(events.SessionEvent) {}, func() { close(eventsDrained) })

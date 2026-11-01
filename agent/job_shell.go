@@ -98,7 +98,7 @@ type shellWaitResult struct {
 	err        error
 }
 
-type stableDelegateShellReceipt struct {
+type delegateShellReceipt struct {
 	mu         sync.Mutex
 	controller *delegateTreeController
 	token      delegateWorkToken
@@ -107,7 +107,7 @@ type stableDelegateShellReceipt struct {
 	resolved   bool
 }
 
-func (receipt *stableDelegateShellReceipt) commit(cancel context.CancelFunc) error {
+func (receipt *delegateShellReceipt) commit(cancel context.CancelFunc) error {
 	if receipt == nil {
 		return nil
 	}
@@ -127,7 +127,7 @@ func (receipt *stableDelegateShellReceipt) commit(cancel context.CancelFunc) err
 	return nil
 }
 
-func (receipt *stableDelegateShellReceipt) abort() {
+func (receipt *delegateShellReceipt) abort() {
 	if receipt == nil {
 		return
 	}
@@ -140,7 +140,7 @@ func (receipt *stableDelegateShellReceipt) abort() {
 	receipt.resolved = true
 }
 
-func (receipt *stableDelegateShellReceipt) finish() {
+func (receipt *delegateShellReceipt) finish() {
 	if receipt == nil {
 		return
 	}
@@ -516,7 +516,7 @@ func (jm *jobManager) newDelayedShell(args shellArgs) (*runningJob, error) {
 		return nil, err
 	}
 	parentJobID, parentDelegateID := jm.currentJobParent()
-	receipt, err := jm.beginStableDelegateShellReceipt(jobID)
+	receipt, err := jm.beginDelegateShellReceipt(jobID)
 	if err != nil {
 		_ = output.Close()
 		_ = jobstore.RemoveOutputArtifacts(outputPath)
@@ -561,7 +561,7 @@ func (jm *jobManager) newDelayedShell(args shellArgs) (*runningJob, error) {
 	return run, nil
 }
 
-func (jm *jobManager) beginStableDelegateShellReceipt(jobID string) (*stableDelegateShellReceipt, error) {
+func (jm *jobManager) beginDelegateShellReceipt(jobID string) (*delegateShellReceipt, error) {
 	jm.mu.Lock()
 	controller := jm.delegateController
 	lease := jm.delegateLease
@@ -573,7 +573,7 @@ func (jm *jobManager) beginStableDelegateShellReceipt(jobID string) (*stableDele
 	if err != nil {
 		return nil, err
 	}
-	return &stableDelegateShellReceipt{controller: controller, token: token, jobID: jobID}, nil
+	return &delegateShellReceipt{controller: controller, token: token, jobID: jobID}, nil
 }
 
 func (jm *jobManager) setShellSignal(run *runningJob, signal func()) {
@@ -588,6 +588,30 @@ func (jm *jobManager) setShellSignal(run *runningJob, signal func()) {
 	jm.mu.Unlock()
 	if signalNow != nil {
 		signalNow()
+	}
+}
+
+// jobStartedEvent is the durable EventJobStarted for a freshly created shell
+// job record.
+func jobStartedEvent(rec *jobstore.JobRecord) jobstore.Event {
+	startedAt := rec.StartedAt
+	return jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               startedAt,
+		JobID:            rec.JobID,
+		Type:             rec.Type,
+		Command:          rec.Command,
+		Background:       rec.Background,
+		Intent:           rec.Intent,
+		Description:      rec.Description,
+		OwnerSessionID:   rec.OwnerSessionID,
+		VisibleToSession: rec.VisibleToSession,
+		ParentJobID:      rec.ParentJobID,
+		ParentDelegateID: rec.ParentDelegateID,
+		StartedAt:        &startedAt,
+		OutputPath:       rec.OutputPath,
+		WorkingDir:       rec.WorkingDir,
+		Provenance:       provenance.Clone(rec.Provenance),
 	}
 }
 
@@ -609,27 +633,9 @@ func (jm *jobManager) commitDelayedShell(run *runningJob) error {
 		jm.mu.Unlock()
 		return errJobManagerClosing
 	}
-	rec := cloneJobRecord(run.rec)
+	rec := run.rec.Clone()
 
-	startedAt := rec.StartedAt
-	started := jobstore.Event{
-		Kind:             jobstore.EventJobStarted,
-		TS:               startedAt,
-		JobID:            rec.JobID,
-		Type:             rec.Type,
-		Command:          rec.Command,
-		Background:       rec.Background,
-		Intent:           rec.Intent,
-		Description:      rec.Description,
-		OwnerSessionID:   rec.OwnerSessionID,
-		VisibleToSession: rec.VisibleToSession,
-		ParentJobID:      rec.ParentJobID,
-		ParentDelegateID: rec.ParentDelegateID,
-		StartedAt:        &startedAt,
-		OutputPath:       rec.OutputPath,
-		WorkingDir:       rec.WorkingDir,
-		Provenance:       provenance.Clone(rec.Provenance),
-	}
+	started := jobStartedEvent(rec)
 	if err := jm.appendEvent(started); err != nil {
 		jm.mu.Unlock()
 		return err
@@ -718,18 +724,7 @@ func (jm *jobManager) finalizeKeptSyncUntilDurable(run *runningJob, status jobst
 }
 
 func shellFinalizeBackoff(attempt int) time.Duration {
-	delay := shellFinalizeRetryDelay
-	for range attempt {
-		delay *= 2
-		if delay >= shellFinalizeMaxRetryDelay {
-			return shellFinalizeMaxRetryDelay
-		}
-	}
-	return delay
-}
-
-func (jm *jobManager) shellTerminal(run *runningJob, exitCode int, timedOut bool, waitErr error) (jobstore.Status, string, *int) {
-	return jm.shellTerminalWithSignal(run, exitCode, "", timedOut, waitErr)
+	return backoffDelay(attempt, shellFinalizeRetryDelay, shellFinalizeMaxRetryDelay)
 }
 
 func (jm *jobManager) shellTerminalWithSignal(run *runningJob, exitCode int, signalName string, timedOut bool, waitErr error) (jobstore.Status, string, *int) {

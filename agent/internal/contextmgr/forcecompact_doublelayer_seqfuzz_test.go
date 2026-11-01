@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -21,13 +22,12 @@ import (
 // TestCompactionSeqFuzz. That test (and its MaybeCompact sibling,
 // TestFc1MaybeCompactSeqFuzz) both build their Manager with a nil LLM client,
 // which is never the live shape: NewSession hard-errors before constructing a
-// context manager with a nil client (agent/session_init.go:151-153), so every
+// context manager with a nil client, so every
 // live session's ForceCompact runs BOTH layers back-to-back in one call —
 // Layer 1 (deterministic checkpoint, context_manager.go:442) unconditionally,
-// then Layer 2 (LLM summarization via summarizeWithLLMSteered,
+// then Layer 2 (LLM summarization via summarizeFold,
 // context_manager.go:456) on the already-checkpointed history. Layer 2's
-// prompt construction, its cm.client.Complete call, and its result-splice
-// (context_manager.go:1392,1410) had zero property-test executions before
+// prompt construction, its cm.client.Complete call, and its result-splice had zero property-test executions before
 // this test (issue #168 / kata dk86).
 //
 // This drives the same stateful op-sequence model as TestCompactionSeqFuzz —
@@ -233,7 +233,7 @@ func (m *doubleLayerModel) applyOp(rt *rapid.T, op dlOp, step int) {
 	case dlOpAddCommunicate:
 		tok := m.nextID("AGENT")
 		id := m.nextID("call")
-		cc := communicateCall(id, tok)
+		cc := agenttest.CommunicateCall(id, tok)
 		m.history = append(m.history,
 			schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{
 				Role:    llm.RoleAssistant,

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"strings"
 	"testing"
 
@@ -47,7 +48,7 @@ func retirementPrepareFixture(t *testing.T) (*Session, *RetirementController, *R
 func TestRetirementPreparationCorruptTranscriptStaysResident(t *testing.T) {
 	t.Parallel()
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("repaired transcript processed") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("repaired transcript processed") },
 	}}
 	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir()}), withAdapter(adapter))
 	c, err := NewRetirementController(0, clock.Real())

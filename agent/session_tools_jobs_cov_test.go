@@ -9,7 +9,7 @@ import (
 )
 
 // TestLiveSteerWaitIgnoredReason covers all branches of
-// liveSteerWaitIgnoredReason (session_tools_jobs.go:130-135).
+// liveSteerWaitIgnoredReason.
 func TestLiveSteerWaitIgnoredReason(t *testing.T) {
 	t.Parallel()
 	// Positive timeout, running + steered -> non-empty reason.
@@ -30,8 +30,7 @@ func TestLiveSteerWaitIgnoredReason(t *testing.T) {
 	}
 }
 
-// TestFormatJobWatchInspect covers all branches of formatJobWatchInspect
-// (session_tools_jobs.go:1617-1636).
+// TestFormatJobWatchInspect covers all branches of formatJobWatchInspect.
 func TestFormatJobWatchInspect(t *testing.T) {
 	t.Parallel()
 	// Watching with condition.
@@ -88,8 +87,7 @@ func TestFormatJobWatchInspect(t *testing.T) {
 	}
 }
 
-// TestWatchSendArg covers all branches of watchSendArg
-// (session_tools_jobs.go:1838-1858).
+// TestWatchSendArg covers all branches of watchSendArg.
 func TestWatchSendArg(t *testing.T) {
 	t.Parallel()
 	// No send key.
@@ -126,8 +124,7 @@ func TestWatchSendArg(t *testing.T) {
 	}
 }
 
-// TestMarshalBoundedJSON covers marshalBoundedJSON
-// (session_tools_jobs.go:1979-1988) including the error and bounds-exceeded paths.
+// TestMarshalBoundedJSON covers marshalBoundedJSON including the error and bounds-exceeded paths.
 func TestMarshalBoundedJSON(t *testing.T) {
 	t.Parallel()
 	// Happy path.
@@ -147,8 +144,7 @@ func TestMarshalBoundedJSON(t *testing.T) {
 	}
 }
 
-// TestDefaultJobPhase covers defaultJobPhase
-// (session_tools_jobs.go:2063-2075).
+// TestDefaultJobPhase covers defaultJobPhase.
 func TestDefaultJobPhase(t *testing.T) {
 	t.Parallel()
 	// Nil record.
@@ -173,8 +169,7 @@ func TestDefaultJobPhase(t *testing.T) {
 	}
 }
 
-// TestJobTranscriptRef covers jobTranscriptRef
-// (session_tools_jobs.go:2078-2086).
+// TestJobTranscriptRef covers jobTranscriptRef.
 func TestJobTranscriptRef(t *testing.T) {
 	t.Parallel()
 	// Nil record.
@@ -191,8 +186,7 @@ func TestJobTranscriptRef(t *testing.T) {
 	}
 }
 
-// TestShortTimestamp covers shortTimestamp
-// (session_tools_jobs.go:808-817).
+// TestShortTimestamp covers shortTimestamp.
 func TestShortTimestamp(t *testing.T) {
 	t.Parallel()
 	// Empty string.
@@ -209,8 +203,7 @@ func TestShortTimestamp(t *testing.T) {
 	}
 }
 
-// TestClassifyStopOutcome covers all branches of classifyStopOutcome
-// (session_tools_jobs.go:1255-1266).
+// TestClassifyStopOutcome covers all branches of classifyStopOutcome.
 func TestClassifyStopOutcome(t *testing.T) {
 	t.Parallel()
 	// Previous terminal.
@@ -235,7 +228,7 @@ func TestClassifyStopOutcome(t *testing.T) {
 	}
 }
 
-// TestPublicJobKind covers publicJobKind (session_tools_jobs.go:2054-2057).
+// TestPublicJobKind covers publicJobKind.
 func TestPublicJobKind(t *testing.T) {
 	t.Parallel()
 	if got := publicJobKind(jobstore.JobShell); got != jobKindShell {
@@ -243,8 +236,7 @@ func TestPublicJobKind(t *testing.T) {
 	}
 }
 
-// TestProjectJobStatus covers projectJobStatus
-// (session_tools_jobs.go:2088-2123) for both terminal and non-terminal records.
+// TestProjectJobStatus covers projectJobStatus for both terminal and non-terminal records.
 func TestProjectJobStatus(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 1, 15, 10, 30, 0, 0, time.UTC)

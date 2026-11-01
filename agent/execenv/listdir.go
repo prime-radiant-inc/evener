@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // MaxListDirDepth caps the recursion depth a budgeted list_dir walk honors.
@@ -219,6 +220,33 @@ func listDirReadOS(ctx context.Context, absPath, dir string, budget *GlobBudget)
 // can interpose on the walk — count its listings, or cancel at a chosen one.
 var listDirRead = listDirReadOS
 
+// newDirEntry builds the DirEntry for ent named relName from its type bits
+// alone; setFileInfo adds what a stat reports for a non-directory.
+func newDirEntry(relName string, ent fs.DirEntry) DirEntry {
+	return DirEntry{Name: relName, IsDir: ent.IsDir(), IsSymlink: ent.Type()&os.ModeSymlink != 0}
+}
+
+// setFileInfo records the size, modification time and mode bits a stat
+// reported for the entry.
+func (d *DirEntry) setFileInfo(size int64, mode fs.FileMode, modTime time.Time) {
+	d.Size = size
+	d.ModTime = modTime
+	d.IsRegular = mode.IsRegular()
+	d.IsExec = mode&0o111 != 0
+}
+
+// osDirEntry is newDirEntry for an entry of an os-level directory read, taking
+// a non-directory's stat from the entry itself.
+func osDirEntry(relName string, ent fs.DirEntry) DirEntry {
+	de := newDirEntry(relName, ent)
+	if !ent.IsDir() {
+		if info, err := ent.Info(); err == nil {
+			de.setFileInfo(info.Size(), info.Mode(), info.ModTime())
+		}
+	}
+	return de
+}
+
 // listDirWalk collects DirEntry values beneath absDir, recursing up to depth
 // levels in the legacy walk's order: each directory's entries sorted by name,
 // a subdirectory's descendants following it immediately (preorder DFS). prefix
@@ -263,20 +291,7 @@ func listDirWalk(ctx context.Context, absDir, prefix string, depth int, out *[]D
 			relName = filepath.Join(prefix, name)
 		}
 		if !budget.discard() {
-			de := DirEntry{Name: relName, IsDir: ent.IsDir()}
-			if ent.Type()&os.ModeSymlink != 0 {
-				de.IsSymlink = true
-			}
-			if !ent.IsDir() {
-				if info, ierr := ent.Info(); ierr == nil {
-					de.Size = info.Size()
-					de.ModTime = info.ModTime()
-					de.IsRegular = info.Mode().IsRegular()
-					if info.Mode()&0o111 != 0 {
-						de.IsExec = true
-					}
-				}
-			}
+			de := osDirEntry(relName, ent)
 			*out = append(*out, de)
 			if budget.collect(de) {
 				// The window holds the page plus its lookahead; nothing beyond

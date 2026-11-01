@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
@@ -35,7 +35,7 @@ func TestEverySelectionTakesItsTurnSoNoDelegateMonopolizesTheDrive(t *testing.T)
 
 func testNotificationCompetition(t *testing.T, broken bool, rounds int) {
 	t.Helper()
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	fixture.adapter.steps = repeatFinalResponse(2, "warm competing receiver")
 	root := restoreSupervisionRoot(t, fixture, agenttest.NewFakeClock())
 	first := root.createDelegate(context.Background(), delegateArgs{Task: "first competing receiver"})
@@ -51,7 +51,7 @@ func testNotificationCompetition(t *testing.T, broken bool, rounds int) {
 	children := []string{first.ChildSessionID, fixture.childID, last.ChildSessionID}
 	markers := []string{"fair-receiver-a-39f1", "fair-receiver-b-29d7", "fair-receiver-c-73b8"}
 	if broken {
-		if err := os.Remove(filepath.Join(fixture.stateDir, sessionsSubdir, fixture.childID+".meta.json")); err != nil {
+		if err := os.Remove(schema.SessionMetaPath(fixture.stateDir, fixture.childID)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -120,7 +120,7 @@ func testNotificationCompetition(t *testing.T, broken bool, rounds int) {
 			if actual < 0 {
 				t.Error("provider received no competing receiver payload")
 				reached <- actual
-				return finalResponse("unexpected request")
+				return agenttest.FinalResponse("unexpected request")
 			}
 			// Provider entry follows launch's done reset and precedes release.
 			sub := root.subagents.get(children[actual])
@@ -136,7 +136,7 @@ func testNotificationCompetition(t *testing.T, broken bool, rounds int) {
 			if actual == 0 && counts[actual] == 1 {
 				<-release // Hold the real leased provider, not a fabricated capacity token.
 			}
-			return finalResponse("competing receiver handled")
+			return agenttest.FinalResponse("competing receiver handled")
 		})
 	}
 	fixture.adapter.mu.Unlock()

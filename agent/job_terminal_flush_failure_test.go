@@ -34,7 +34,7 @@ func TestTerminalFlushPartialFailure(t *testing.T) {
 				t.Fatal(err)
 			}
 			for range 3 {
-				a.steps = append(a.steps, func(llm.Request) llm.Response { return finalResponse("partial-observed-927") })
+				a.steps = append(a.steps, func(llm.Request) llm.Response { return agenttest.FinalResponse("partial-observed-927") })
 			}
 			var wakes atomic.Int32
 			s.SetNotifyFunc(func() { wakes.Add(1) })
@@ -196,7 +196,7 @@ func TestTerminalFlushBoundaryFailures(t *testing.T) {
 				t.Fatal(err)
 			}
 			for range 4 {
-				a.steps = append(a.steps, func(llm.Request) llm.Response { return finalResponse("correction-response-621") })
+				a.steps = append(a.steps, func(llm.Request) llm.Response { return agenttest.FinalResponse("correction-response-621") })
 			}
 			var wakes atomic.Int32
 			s.SetNotifyFunc(func() { wakes.Add(1) })
@@ -358,7 +358,7 @@ func TestTerminalFlushKeptSyncPolicy(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				a.steps = append(a.steps, func(llm.Request) llm.Response { return finalResponse("kept-response-734") })
+				a.steps = append(a.steps, func(llm.Request) llm.Response { return agenttest.FinalResponse("kept-response-734") })
 				var wakes atomic.Int32
 				s.SetNotifyFunc(func() { wakes.Add(1) })
 				if direct {
@@ -441,8 +441,8 @@ func TestTerminalFlushHoldNestedAndForeign(t *testing.T) {
 	captureReceiverErrorLogs(t, errors.New("unexpected nested-hold diagnostic"))
 	owner, a := newTerminalFlushSession(t, true)
 	foreign, b := newTerminalFlushSession(t, true)
-	a.steps = []func(llm.Request) llm.Response{func(llm.Request) llm.Response { return finalResponse("owner-receipt-73") }}
-	b.steps = []func(llm.Request) llm.Response{func(llm.Request) llm.Response { return finalResponse("foreign-receipt-73") }}
+	a.steps = []func(llm.Request) llm.Response{func(llm.Request) llm.Response { return agenttest.FinalResponse("owner-receipt-73") }}
+	b.steps = []func(llm.Request) llm.Response{func(llm.Request) llm.Response { return agenttest.FinalResponse("foreign-receipt-73") }}
 	var ownerWakes, foreignWakes atomic.Int32
 	owner.SetNotifyFunc(func() { ownerWakes.Add(1) })
 	foreign.SetNotifyFunc(func() { foreignWakes.Add(1) })
@@ -506,7 +506,7 @@ func TestTerminalFlushHoldRetryAndReleaseFailure(t *testing.T) {
 			}
 			captureReceiverErrorLogs(t, expected)
 			clk := agenttest.NewFakeClock()
-			a := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(llm.Request) llm.Response { return finalResponse("retry-receipt-89") }}}
+			a := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(llm.Request) llm.Response { return agenttest.FinalResponse("retry-receipt-89") }}}
 			s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), clock: clk}), withAdapter(a), withoutGitSnapshot())
 			var wakes atomic.Int32
 			s.SetNotifyFunc(func() { wakes.Add(1) })
@@ -592,7 +592,7 @@ func TestTerminalFlushAttemptDoneBeforeHoldRelease(t *testing.T) {
 			if _, err := jobWatchTool(s, map[string]any{"operation": "create", "source": "self", "events": []any{"job.notification"}}, jobToolResultDefaultMaxChar); err != nil {
 				t.Fatal(err)
 			}
-			a.steps = []func(llm.Request) llm.Response{func(llm.Request) llm.Response { return finalResponse("review-attempt-receipt-431") }}
+			a.steps = []func(llm.Request) llm.Response{func(llm.Request) llm.Response { return agenttest.FinalResponse("review-attempt-receipt-431") }}
 			var wakes atomic.Int32
 			s.SetNotifyFunc(func() { wakes.Add(1) })
 			jm.mu.Lock()

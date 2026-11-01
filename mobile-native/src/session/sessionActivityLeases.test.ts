@@ -1,11 +1,10 @@
 import { expect, test, vi } from "vitest";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireThread } from "@evener/appwire-client/testing/notifications";
-import { createConversationService } from "../../../mobile/src/services/conversation";
+import { createConversationService } from "../conversation/services/conversation";
 import { SessionLink } from "./sessionMessage";
 import { SubagentTree } from "../subagents/subagentTree";
 vi.mock("expo-sqlite", () => ({ openDatabaseSync: vi.fn() }));
-vi.mock("expo-crypto", () => ({ randomUUID: () => "test-uuid", getRandomValues: (array: Uint8Array) => array }));
 const ref = "remote:root";
 const context = {
 	ref,

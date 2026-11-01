@@ -134,7 +134,7 @@ func (s *Session) warnStoreUnhealthyOnce(message string) {
 	if alreadyWarned {
 		return
 	}
-	s.emit(events.EventWarning, events.WarningData{Message: message})
+	s.emit(events.WarningData{Message: message})
 }
 
 func (s *Session) clearStoreUnhealthyWarning() {
@@ -170,22 +170,15 @@ func (s *Session) scheduleRunningTurnNameRetry(ceiling time.Duration) {
 		s.turnNameRetryMu.Unlock()
 		return
 	}
-	delay := s.turnNameRetry.delay
-	if delay <= 0 {
-		delay = jobNotificationRetryInitialDelay
-	}
-	s.turnNameRetry.active = true
-	s.turnNameRetry.generation++
-	generation := s.turnNameRetry.generation
+	delay, generation := s.turnNameRetry.arm()
 	s.turnNameRetryMu.Unlock()
 	s.sclock().AfterFunc(delay, func() {
 		s.turnNameRetryMu.Lock()
-		if s.turnNameRetry.generation != generation {
+		if !s.turnNameRetry.fire(generation) {
 			s.turnNameRetryMu.Unlock()
 			return
 		}
-		s.turnNameRetry.active = false
-		s.turnNameRetry.delay = min(delay*2, ceiling)
+		s.turnNameRetry.settle(true, delay, ceiling)
 		s.mu.Lock()
 		s.notificationSchedule.nameBlocked = false
 		s.notificationSchedule.version++
@@ -200,9 +193,7 @@ func (s *Session) scheduleRunningTurnNameRetry(ceiling time.Duration) {
 // timer firing a wake nothing is waiting for.
 func (s *Session) resetRunningTurnNameRetry() {
 	s.turnNameRetryMu.Lock()
-	s.turnNameRetry.generation++
-	s.turnNameRetry.active = false
-	s.turnNameRetry.delay = jobNotificationRetryInitialDelay
+	s.turnNameRetry.reset()
 	s.mu.Lock()
 	s.notificationSchedule.nameBlocked = false
 	s.notificationSchedule.version++
@@ -327,27 +318,22 @@ func (s *Session) scheduleRunningTurnReleaseRetry(turnID string) {
 		// recovery callback. The exact name remains fenced until a write lands.
 		s.scheduleNotificationRetry()
 		if first {
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf(
+			s.emit(events.WarningData{Message: fmt.Sprintf(
 				"running turn %s could not be released after %d attempts; paced storage recovery continues without a daemon restart",
 				turnID, runningTurnReleaseRetryLimit)})
 		}
 		return
 	}
-	delay := s.runningTurnReleaseRetry.delay
-	if delay <= 0 {
-		delay = jobNotificationRetryInitialDelay
-	}
 	s.runningTurnReleaseRetry.attempts++
-	s.runningTurnReleaseRetry.delay = min(delay*2, jobNotificationRetryMaxDelay)
-	s.runningTurnReleaseRetry.generation++
-	generation := s.runningTurnReleaseRetry.generation
+	delay, generation := s.runningTurnReleaseRetry.arm()
+	s.runningTurnReleaseRetry.settle(true, delay, jobNotificationRetryMaxDelay)
 	s.releaseRetryMu.Unlock()
 
 	s.sclock().AfterFunc(delay, func() {
 		s.releaseRetryMu.Lock()
-		superseded := s.runningTurnReleaseRetry.generation != generation
+		current := s.runningTurnReleaseRetry.fire(generation)
 		s.releaseRetryMu.Unlock()
-		if superseded {
+		if !current {
 			return
 		}
 		if s.releaseRunningTurnID(turnID) != turnNameReleased {

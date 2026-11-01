@@ -1,13 +1,13 @@
 import type { SettingsOverviewResponse, UpdateCheckResponse } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test, vi } from "vitest";
-import { connectionStore } from "../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
 import { resetDaemonResidentsStoreForTests } from "../../../stores/daemonResidents";
 import { APPLY_TIMEOUT_MS, resetHubUpdateStoreForTests } from "../../../stores/hubUpdate";
 import { resetSettingsOverviewStoreForTests, settingsOverviewStore } from "../../../stores/settingsOverview";
+import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
 import { HubSection } from "./hub";
 
 function updateStatus(): HTMLElement {
@@ -16,12 +16,6 @@ function updateStatus(): HTMLElement {
 
 async function updateStateIs(state: string): Promise<void> {
   await waitFor(() => expect(updateStatus().getAttribute("data-state")).toBe(state));
-}
-
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  return fake;
 }
 
 function overview(buildChannel: string): SettingsOverviewResponse {
@@ -71,14 +65,14 @@ const INSTALLED: UpdateCheckResponse = {
 };
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetSettingsOverviewStoreForTests();
   resetHubUpdateStoreForTests({ fetchImpl: vi.fn() as unknown as typeof fetch, reload: vi.fn() });
   resetDaemonResidentsStoreForTests();
 });
 
 test("dev build shows the rebuild note, the on-disk build, and Restart without Install", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/settings/overview", () => overview("dev"));
   fake.on("evener/update/check", () => ({
     ...UP_TO_DATE,
@@ -101,7 +95,7 @@ test("dev build shows the rebuild note, the on-disk build, and Restart without I
 });
 
 test("dev build shows restart progress, timeout, and failure states", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/settings/overview", () => overview("dev"));
   fake.on("evener/update/check", () => ({
     ...UP_TO_DATE,
@@ -129,7 +123,7 @@ test("dev build shows restart progress, timeout, and failure states", async () =
 });
 
 test("dev build retries a failed check when the connection becomes ready", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/settings/overview", () => overview("dev"));
   let attempts = 0;
   fake.on("evener/update/check", () => {
@@ -150,7 +144,7 @@ test("dev build retries a failed check when the connection becomes ready", async
 });
 
 test("re-checks when the connection becomes ready again", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/settings/overview", () => overview("snapshot"));
   let checks = 0;
   fake.on("evener/update/check", () => {
@@ -169,7 +163,7 @@ test("re-checks when the connection becomes ready again", async () => {
 });
 
 test("release build checks on mount and separates Install from Restart", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/settings/overview", () => overview("snapshot"));
   fake.on("evener/update/check", () => UP_TO_DATE);
   fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
@@ -184,7 +178,7 @@ test("release build checks on mount and separates Install from Restart", async (
 });
 
 test("shows dirty build versions and never falls back to the product version", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/settings/overview", () => ({
     hub: { ...overview("snapshot").hub!, version: "0.1.0", commit: "3b1c5f8" },
   }));
@@ -205,7 +199,7 @@ test("shows dirty build versions and never falls back to the product version", a
 });
 
 test("keeps Restart available when only the channel check fails", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/settings/overview", () => overview("snapshot"));
   fake.on("evener/update/check", () => ({
     ...UP_TO_DATE,
@@ -223,7 +217,7 @@ test("keeps Restart available when only the channel check fails", async () => {
 });
 
 test("disables Install when the managed target differs from the running binary", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/settings/overview", () => overview("snapshot"));
   fake.on("evener/update/check", () => ({
     ...UPDATE_AVAILABLE,
@@ -240,7 +234,7 @@ test("disables Install when the managed target differs from the running binary",
 });
 
 test("does not warn about the install target on a build that cannot install", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/settings/overview", () => overview("dev"));
   fake.on("evener/update/check", () => ({
     ...UP_TO_DATE,
@@ -257,7 +251,7 @@ test("does not warn about the install target on a build that cannot install", as
 });
 
 test("does not fall back to the combined action on a current hub with restart disabled", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/settings/overview", () => overview("snapshot"));
   fake.on("evener/update/check", () => ({
     ...UPDATE_AVAILABLE,
@@ -277,7 +271,7 @@ test("does not fall back to the combined action on a current hub with restart di
 });
 
 test("switching channel re-checks with the new channel", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/settings/overview", () => overview("snapshot"));
   fake.on("evener/update/check", (params) => ({
     ...UP_TO_DATE,
@@ -297,7 +291,7 @@ test("switching channel re-checks with the new channel", async () => {
 });
 
 test("Install sends evener/upgrade, re-checks, and shows the installed-but-not-running state", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   let checks = 0;
   fake.on("evener/settings/overview", () => overview("snapshot"));
   fake.on("evener/update/check", () => {
@@ -325,7 +319,7 @@ test("Install sends evener/upgrade, re-checks, and shows the installed-but-not-r
 });
 
 test("Restart confirms the target build and sends evener/hub/restart", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/settings/overview", () => overview("snapshot"));
   fake.on("evener/update/check", () => INSTALLED);
   fake.on("evener/hub/restart", () => new Promise(() => {})); // pending: assert the request and the busy state
@@ -351,7 +345,7 @@ test("Restart confirms the target build and sends evener/hub/restart", async () 
 });
 
 test("an older hub without restart support falls back to the combined update action", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/settings/overview", () => overview("snapshot"));
   fake.on("evener/update/check", () => ({
     ...UPDATE_AVAILABLE,
@@ -380,7 +374,7 @@ test("an older hub without restart support falls back to the combined update act
 });
 
 test("restarting and timed-out states render their messages", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/settings/overview", () => overview("snapshot"));
   fake.on("evener/update/check", () => UP_TO_DATE);
   fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
@@ -396,7 +390,7 @@ test("restarting and timed-out states render their messages", async () => {
 });
 
 test("check failure shows the error and a working Check for updates button", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/settings/overview", () => overview("release"));
   let attempts = 0;
   fake.on("evener/update/check", () => {

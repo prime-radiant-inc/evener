@@ -165,7 +165,7 @@ func TestRemoteRelativeStateRootActualDisposableHub(t *testing.T) {
 				t.Fatalf("real preflight: %v", err)
 			}
 			if mode == "relative-deploy" {
-				_, facts, err = m.DeployForOperation(ctx, host, facts, true, nil)
+				_, facts, err = m.DeployForOperation(ctx, host, facts, true, nil, nil)
 			}
 			if err == nil {
 				_, err = m.RestartForOperation(ctx, host, facts, nil)

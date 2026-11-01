@@ -110,7 +110,7 @@ func (h *standDownHarness) wakeCount() int {
 // hands it back every warning emitted before this call has been counted --
 // which makes the counts exact, not merely eventual.
 func (h *standDownHarness) warningsMatching(substr string) int {
-	h.sess.emit(events.EventPromptLoaded, events.PromptLoadedData{Label: "warningsMatching drain barrier"})
+	h.sess.emit(events.PromptLoadedData{Label: "warningsMatching drain barrier"})
 	<-h.drained
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -185,7 +185,7 @@ func TestNotificationStandDownPreservesCanonicalWork(t *testing.T) {
 			h := newStandDownHarness(t, withSteps(func(req llm.Request) llm.Response {
 				calls.Add(1)
 				observationRequest(t, req, []string{"refused-payload-73a1"}, nil)
-				return finalResponse("repaired-response-19b7")
+				return agenttest.FinalResponse("repaired-response-19b7")
 			}))
 			switch cause {
 			case "store":

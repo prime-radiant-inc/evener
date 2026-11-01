@@ -657,11 +657,11 @@ func (h *delegateLifecycleHarness) opRunEndError(op lifecycleOp) string {
 	// loop's a.err/status projection) pins Cancelled there — the joined error
 	// is kept verbatim and no exhaustion payload exists — while
 	// finishOutcomeFromRun (the packet/outcome projection) still selects
-	// exhausted because stableDelegateFinishFromRun tests the budget
+	// exhausted because delegateFinishFromRun tests the budget
 	// component before the canceled test. That split is the exhaustion-
 	// overwrite boundary, so the harness pins each copy against its own
 	// production counterpart below rather than against each other.
-	finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{
+	finish := delegateFinishFromRun(delegateTerminalRunInputs{
 		runErr:  err,
 		endedAt: h.c.now(),
 	})

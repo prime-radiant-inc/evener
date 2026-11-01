@@ -7,8 +7,7 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// TestLiveGenerationOwesSteering covers liveGenerationOwesSteering
-// (delegate_tree_steer.go:473-480): returns true when any pending steer
+// TestLiveGenerationOwesSteering covers liveGenerationOwesSteering: returns true when any pending steer
 // does not carry across generation.
 func TestLiveGenerationOwesSteering(t *testing.T) {
 	t.Parallel()
@@ -42,8 +41,7 @@ func TestLiveGenerationOwesSteering(t *testing.T) {
 	}
 }
 
-// TestProjectDelegatePendingSteers covers projectDelegatePendingSteers
-// (delegate_tree_steer.go:397-428) for the main cases: pending steers found
+// TestProjectDelegatePendingSteers covers projectDelegatePendingSteers for the main cases: pending steers found
 // in history, pending steers not found, excluded steers skipped.
 func TestProjectDelegatePendingSteers(t *testing.T) {
 	t.Parallel()

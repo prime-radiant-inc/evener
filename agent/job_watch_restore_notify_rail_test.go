@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"reflect"
 	"strings"
 	"testing"
@@ -182,7 +183,7 @@ func TestRestartCancellationRoutesThroughParentSystemNotificationQueue(t *testin
 	}
 	adapter.script("root", func(req llm.Request) llm.Response {
 		observationRequest(t, req, []string{notice, steer}, nil)
-		return finalResponse("restart-route-response-cde0")
+		return agenttest.FinalResponse("restart-route-response-cde0")
 	})
 	if _, err := parent.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 		t.Fatal(err)

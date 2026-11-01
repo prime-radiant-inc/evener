@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -123,7 +122,7 @@ func TestDelegateAttention_ClosedWriterNoOpDoesNotPublishResidentTurn(t *testing
 func newDelegateAttentionTestSession(t *testing.T) *Session {
 	t.Helper()
 	stateDir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(stateDir, sessionsSubdir), 0o755); err != nil {
+	if err := os.MkdirAll(schema.SessionsDir(stateDir), 0o755); err != nil {
 		t.Fatalf("mkdir sessions: %v", err)
 	}
 	const sessionID = "attention-session"

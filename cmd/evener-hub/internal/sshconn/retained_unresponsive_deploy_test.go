@@ -126,7 +126,7 @@ func TestRetainedUnresponsiveDeployment(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, _, err := m.DeployForOperation(t.Context(), host, facts, false, guard); err == nil || writes != 1 {
+			if _, _, err := m.DeployForOperation(t.Context(), host, facts, false, guard, nil); err == nil || writes != 1 {
 				t.Fatalf("initial interruption: err=%v writes=%d", err, writes)
 			}
 			retained := m.pendingRestart(host.Name)
@@ -141,7 +141,7 @@ func TestRetainedUnresponsiveDeployment(t *testing.T) {
 				delete(m.ownerWitnesses, host.Name)
 				m.mu.Unlock()
 			}
-			_, after, err := m.DeployForOperation(t.Context(), host, facts, false, guard)
+			_, after, err := m.DeployForOperation(t.Context(), host, facts, false, guard, nil)
 			if mode == "unavailable" || mode == "health-returns" || mode == "health-disappears" {
 				if err != nil || writes != 2 || after.Version != "newsha" || after.HubEndpointSchema != 1 || m.pendingRestart(host.Name).active() {
 					t.Fatalf("independently revalidated retry: err=%v writes=%d after=%+v pending=%+v", err, writes, after, m.pendingRestart(host.Name))

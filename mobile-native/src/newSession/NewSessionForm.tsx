@@ -22,7 +22,7 @@ import { Group, GroupedPage, GroupFooter, Row, RowValue, Segmented } from "../sh
 import { HeaderButton } from "../sheet/HeaderButton";
 import { SheetStatus } from "../sheet/SheetStatus";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import type { NewSessionService } from "../../../mobile/src/services/newSession";
+import type { NewSessionService } from "../conversation/services/newSession";
 import { effortLabel, knownAccess, projectName } from "./launchSetup";
 import { formFront, showForm } from "./formFront";
 import { type NewSessionRoutes, useNewSession } from "./newSessionContext";

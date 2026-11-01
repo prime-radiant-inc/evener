@@ -24,7 +24,7 @@
 // gets an honest inline "not available" state and no toast. A resolved-
 // but-uninterpretable response (parseTaskListData returning null - e.g. an
 // old daemon with no tasksFn registered, which responds with null data
-// rather than rejecting - server/appwire_runtime.go:713-721) is folded into
+// rather than rejecting - server/appwire_jobs_models.go's handleAppTasksList) is folded into
 // the SAME "not available" state, for the same reason: nothing actually
 // went wrong at the transport level. A thread with no live local daemon
 // behind it (a one-shot CLI session that already exited, or one never

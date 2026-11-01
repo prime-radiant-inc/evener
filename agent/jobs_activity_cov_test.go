@@ -8,8 +8,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 )
 
-// TestSortedStableActivityDelegateIDs covers sortedStableActivityDelegateIDs
-// (jobs_activity.go:425-432).
+// TestSortedStableActivityDelegateIDs covers sortedStableActivityDelegateIDs.
 func TestSortedStableActivityDelegateIDs(t *testing.T) {
 	t.Parallel()
 	records := map[string]delegateSnapshot{
@@ -27,8 +26,7 @@ func TestSortedStableActivityDelegateIDs(t *testing.T) {
 	}
 }
 
-// TestSortedActivityChildIDs covers sortedActivityChildIDs
-// (jobs_activity.go:504-511).
+// TestSortedActivityChildIDs covers sortedActivityChildIDs.
 func TestSortedActivityChildIDs(t *testing.T) {
 	t.Parallel()
 	children := map[string]*activitySessionSnapshot{
@@ -46,8 +44,7 @@ func TestSortedActivityChildIDs(t *testing.T) {
 	}
 }
 
-// TestCloneActivityVisited covers cloneActivityVisited
-// (jobs_activity.go:434-438).
+// TestCloneActivityVisited covers cloneActivityVisited.
 func TestCloneActivityVisited(t *testing.T) {
 	t.Parallel()
 	visited := map[string]bool{"a": true, "b": false, "c": true}
@@ -67,8 +64,7 @@ func TestCloneActivityVisited(t *testing.T) {
 	}
 }
 
-// TestActivityRecordBefore covers activityRecordBefore
-// (jobs_activity.go:600-605).
+// TestActivityRecordBefore covers activityRecordBefore.
 func TestActivityRecordBefore(t *testing.T) {
 	t.Parallel()
 	t1 := time.Unix(1000, 0)
@@ -93,8 +89,7 @@ func TestActivityRecordBefore(t *testing.T) {
 	}
 }
 
-// TestActivityCurrentRootRevision covers activityCurrentRootRevision
-// (jobs_activity.go:184-189) including the nil-clock guard.
+// TestActivityCurrentRootRevision covers activityCurrentRootRevision including the nil-clock guard.
 func TestActivityCurrentRootRevision(t *testing.T) {
 	t.Parallel()
 	// Nil clock.
@@ -103,8 +98,7 @@ func TestActivityCurrentRootRevision(t *testing.T) {
 	}
 }
 
-// TestActivityCurrentRootID covers activityCurrentRootID
-// (jobs_activity.go:191-196).
+// TestActivityCurrentRootID covers activityCurrentRootID.
 func TestActivityCurrentRootID(t *testing.T) {
 	t.Parallel()
 	// Nil clock uses fallback.
@@ -117,8 +111,7 @@ func TestActivityCurrentRootID(t *testing.T) {
 	}
 }
 
-// TestMergeActivityRecords covers mergeActivityRecords
-// (jobs_activity.go:516-568) including overlay and live-only insertion.
+// TestMergeActivityRecords covers mergeActivityRecords including overlay and live-only insertion.
 func TestMergeActivityRecords(t *testing.T) {
 	t.Parallel()
 	t1 := time.Unix(1000, 0)
@@ -173,7 +166,7 @@ func TestMergeActivityRecordsNilEntries(t *testing.T) {
 	}
 }
 
-// TestNewActivityBudget covers newActivityBudget (jobs_activity.go:74-76).
+// TestNewActivityBudget covers newActivityBudget.
 func TestNewActivityBudget(t *testing.T) {
 	t.Parallel()
 	b := newActivityBudget()
@@ -182,8 +175,7 @@ func TestNewActivityBudget(t *testing.T) {
 	}
 }
 
-// TestNewBoundedActivityBudget covers newBoundedActivityBudget
-// (jobs_activity.go:78-87).
+// TestNewBoundedActivityBudget covers newBoundedActivityBudget.
 func TestNewBoundedActivityBudget(t *testing.T) {
 	t.Parallel()
 	now := time.Unix(5000, 0)
@@ -196,8 +188,7 @@ func TestNewBoundedActivityBudget(t *testing.T) {
 	}
 }
 
-// TestLiveActivitySessionLabel covers liveActivitySessionLabel
-// (jobs_activity.go:355-371) including the nil-session guard.
+// TestLiveActivitySessionLabel covers liveActivitySessionLabel including the nil-session guard.
 func TestLiveActivitySessionLabel(t *testing.T) {
 	t.Parallel()
 	// Nil session.
@@ -212,8 +203,7 @@ func TestLiveActivitySessionLabel(t *testing.T) {
 	}
 }
 
-// TestActivitySessionLabel covers activitySessionLabel
-// (jobs_activity.go:400-405).
+// TestActivitySessionLabel covers activitySessionLabel.
 func TestActivitySessionLabelCov(t *testing.T) {
 	t.Parallel()
 	// With display name.

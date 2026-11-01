@@ -21,7 +21,6 @@ vi.mock("react-native", async () => ({
 	AppState: { currentState: "active", addEventListener: () => ({ remove: () => {} }) },
 }));
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("expo-clipboard", () => ({
 	setStringAsync: async (text: string) => {
 		edges.events.push(`copy ${text}`);

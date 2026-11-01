@@ -4,9 +4,8 @@
 import { SymbolView } from "expo-symbols";
 import { Fragment, memo, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
-import { type DelegateDotState, delegateDotState } from "@evener/appwire-client";
+import { compactDuration, delegateDotState, spokenDuration, type DelegateDotState } from "@evener/appwire-client";
 import { type Palette, fonts } from "../design/tokens";
-import { compactDuration, spokenDuration } from "../session/format";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import {
 	type SubagentLastLine,

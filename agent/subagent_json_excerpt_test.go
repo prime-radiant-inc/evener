@@ -3,7 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"path/filepath"
+
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
@@ -89,8 +90,7 @@ func TestSubagentSeesFailingInputExcerpt(t *testing.T) {
 	// TRIPWIRE: parent and child adapters are scripted in-process calls with no
 	// real I/O; this normally completes in well under a second. 30s only fires
 	// on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	res := sess.createDelegate(ctx, delegateArgs{Task: "write the report", DelegationAllowance: new(0)})
 	if res.Err != nil {
 		t.Fatalf("createDelegate: %v (status=%s reason=%s)", res.Err, res.Status, res.Reason)
@@ -141,7 +141,7 @@ func TestSubagentSeesFailingInputExcerpt(t *testing.T) {
 	if failures != 1 {
 		t.Fatalf("provider-bound results for call_truncated = %d, want 1", failures)
 	}
-	packet := loadStableDelegateTerminalPacket(t, sess, res.DelegateID)
+	packet := loadDelegateTerminalPacket(t, sess, res.DelegateID)
 	var output string
 	if err := json.Unmarshal(packet.Message, &output); err != nil {
 		t.Fatalf("decode stable terminal message: %v", err)
@@ -153,10 +153,10 @@ func TestSubagentSeesFailingInputExcerpt(t *testing.T) {
 	// The child's durable transcript must preserve the model's raw argument
 	// bytes verbatim — the post-mortem sees what the child actually sent,
 	// not just the replay-safe empty object.
-	childTranscriptPath := filepath.Join(stateDir, sessionsSubdir, childID+".transcript.jsonl")
+	childTranscriptPath := schema.SessionTranscriptPath(stateDir, childID)
 	childLines := readTranscriptLines(t, childTranscriptPath)
 	requireTranscriptRawArguments(t, childLines, truncatedArgs)
-	_, childEntries, _, err := readTranscript(childTranscriptPath, "")
+	_, childEntries, _, err := readTranscript(context.Background(), childTranscriptPath, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -243,8 +243,7 @@ func TestSubagentUnquotedKeyToolCallRecoversAndExecutes(t *testing.T) {
 	// TRIPWIRE: parent and child adapters are scripted in-process calls with no
 	// real I/O; this normally completes in well under a second. 30s only fires
 	// on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	res := sess.createDelegate(ctx, delegateArgs{Task: "track the child task", DelegationAllowance: new(0)})
 	if res.Err != nil {
 		t.Fatalf("createDelegate: %v (status=%s reason=%s)", res.Err, res.Status, res.Reason)
@@ -296,7 +295,7 @@ func TestSubagentUnquotedKeyToolCallRecoversAndExecutes(t *testing.T) {
 		t.Fatalf("recovery request has no task_list tool result:\n%s", got)
 	}
 
-	packet := loadStableDelegateTerminalPacket(t, sess, res.DelegateID)
+	packet := loadDelegateTerminalPacket(t, sess, res.DelegateID)
 	var output string
 	if err := json.Unmarshal(packet.Message, &output); err != nil {
 		t.Fatalf("decode stable terminal message: %v", err)
@@ -306,10 +305,10 @@ func TestSubagentUnquotedKeyToolCallRecoversAndExecutes(t *testing.T) {
 	}
 
 	// The child's durable transcript preserves the raw unquoted text verbatim.
-	childTranscriptPath := filepath.Join(stateDir, sessionsSubdir, childID+".transcript.jsonl")
+	childTranscriptPath := schema.SessionTranscriptPath(stateDir, childID)
 	childLines := readTranscriptLines(t, childTranscriptPath)
 	requireTranscriptRawArguments(t, childLines, unquotedArgs)
-	_, childEntries, _, err := readTranscript(childTranscriptPath, "")
+	_, childEntries, _, err := readTranscript(context.Background(), childTranscriptPath, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}

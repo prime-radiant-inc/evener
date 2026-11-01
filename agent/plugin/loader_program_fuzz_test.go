@@ -75,32 +75,26 @@ func (r *pluginLoaderProgramReader) token() string {
 }
 
 type pluginLoaderProgramFixture struct {
-	root            string
-	workDir         string
-	alpha           string
-	beta            string
-	gamma           string
-	warn            string
-	duplicate       string
-	badAgent        string
-	badCommand      string
-	broken          string
-	alphaHooks      []byte
-	betaHookPath    string
-	gammaHookPath   string
-	settingsBody    string
-	settingsPlugin  string
-	invalidSettings string
-	token           string
+	root          string
+	alpha         string
+	beta          string
+	gamma         string
+	warn          string
+	duplicate     string
+	badAgent      string
+	badCommand    string
+	broken        string
+	alphaHooks    []byte
+	betaHookPath  string
+	gammaHookPath string
+	token         string
 }
 
 type pluginLoaderProgramTrace struct {
 	Instances       []pluginLoaderProgramInstance
-	LoadAllNames    []string
 	FailSoftNames   []string
 	Skipped         []string
 	ParserHookCount int
-	SettingsBody    string
 }
 
 type pluginLoaderProgramInstance struct {
@@ -160,32 +154,28 @@ func runPluginLoaderProgram(t *testing.T, mode byte, token string) pluginLoaderP
 		}
 	}
 
-	assertLoaderProgramFailure(t, fx.badAgent, "bad agent")
-	assertLoaderProgramFailure(t, fx.badCommand, "bad command")
+	assertLoaderProgramSkips(t, fx.badAgent, "agent")
+	assertLoaderProgramSkips(t, fx.badCommand, "command")
 
-	// Exercise the compatibility wrappers as well as Load's diagnostic form.
-	parsedHooks, err := parsePluginHooks(fx.alphaHooks, alpha.Dir, alpha.Manifest.Name)
-	if err != nil || len(parsedHooks[HookPreToolUse]) != 2 {
-		t.Fatalf("parsePluginHooks(alpha inline): hooks=%#v err=%v", parsedHooks, err)
-	}
+	// Exercise the diagnostic hook parsers directly.
 	parsedDiag, unsupported, unknown, err := parsePluginHooksDiag(fx.alphaHooks, alpha.Dir, alpha.Manifest.Name)
 	if err != nil || len(parsedDiag[HookPreToolUse]) != 2 || !unsupported[HookEvent("WorktreeCreate")] || !unknown["FuturePluginEvent"] {
 		t.Fatalf("parsePluginHooksDiag(alpha inline): hooks=%#v unsupported=%#v unknown=%#v err=%v", parsedDiag, unsupported, unknown, err)
 	}
-	fileHooks, err := discoverPluginHooks(fx.beta, json.RawMessage(`"hooks/custom.json"`), "beta")
+	fileHooks, _, _, err := discoverPluginHooksDiag(fx.beta, json.RawMessage(`"hooks/custom.json"`), "beta")
 	if err != nil || len(fileHooks[HookPostToolUse]) != 1 {
-		t.Fatalf("discoverPluginHooks(file): hooks=%#v err=%v", fileHooks, err)
+		t.Fatalf("discoverPluginHooksDiag(file): hooks=%#v err=%v", fileHooks, err)
 	}
 
 	// Qualified and unique bare lookups have deterministic meaning; an absent
 	// command must not invent a zero-value hit.
-	if command, ok := ResolveCommand(alpha.Commands, "alpha:hello"); !ok || command.Name != "hello" {
-		t.Fatalf("qualified ResolveCommand = %#v, %v", command, ok)
+	if command, err := ResolveCommand(alpha.Commands, "alpha:hello"); err != nil || command.Name != "hello" {
+		t.Fatalf("qualified ResolveCommand = %#v, %v", command, err)
 	}
-	if command, ok := ResolveCommand(alpha.Commands, "review"); !ok || command.Name != "review" {
-		t.Fatalf("unique bare ResolveCommand = %#v, %v", command, ok)
+	if command, err := ResolveCommand(alpha.Commands, "review"); err != nil || command.Name != "review" {
+		t.Fatalf("unique bare ResolveCommand = %#v, %v", command, err)
 	}
-	if _, ok := ResolveCommand(alpha.Commands, "not-present"); ok {
+	if _, err := ResolveCommand(alpha.Commands, "not-present"); err == nil {
 		t.Fatal("missing command resolved unexpectedly")
 	}
 	if got := EventTier(HookPreToolUse); got != "claude-compatible-subset" {
@@ -198,18 +188,6 @@ func runPluginLoaderProgram(t *testing.T, mode byte, token string) pluginLoaderP
 		t.Fatalf("EventTier(unknown) = %q", got)
 	}
 
-	loaded, err := LoadAll([]string{fx.alpha, fx.beta, fx.gamma, fx.warn})
-	if err != nil {
-		t.Fatalf("LoadAll(healthy): %v", err)
-	}
-	loadAllNames := instanceNames(loaded)
-	if want := []string{"alpha", "beta", "gamma", "warn"}; !reflect.DeepEqual(loadAllNames, want) {
-		t.Fatalf("LoadAll ordering = %v, want %v", loadAllNames, want)
-	}
-	if dup, err := LoadAll([]string{fx.alpha, fx.duplicate}); err == nil || dup != nil || !strings.Contains(err.Error(), "duplicate plugin name") {
-		t.Fatalf("LoadAll duplicate = plugins:%#v err:%v, want nil duplicate result and duplicate error", dup, err)
-	}
-
 	failSoft, skipped := LoadAllFailSoft([]string{fx.broken, fx.alpha, fx.duplicate, fx.beta})
 	failSoftNames := instanceNames(failSoft)
 	if want := []string{"alpha", "beta"}; !reflect.DeepEqual(failSoftNames, want) {
@@ -220,17 +198,6 @@ func runPluginLoaderProgram(t *testing.T, mode byte, token string) pluginLoaderP
 		t.Fatalf("LoadAllFailSoft skipped = %#v", skipped)
 	}
 
-	settings, err := LoadSettings(fx.workDir, fx.settingsPlugin)
-	if err != nil || settings == nil || settings.Body != fx.settingsBody || settings.Frontmatter["enabled"] != true {
-		t.Fatalf("LoadSettings(valid) = %#v, %v", settings, err)
-	}
-	missing, err := LoadSettings(fx.workDir, "missing")
-	if err != nil || missing != nil {
-		t.Fatalf("LoadSettings(missing) = %#v, %v", missing, err)
-	}
-	if _, err := LoadSettings(fx.workDir, fx.invalidSettings); err == nil {
-		t.Fatal("LoadSettings(malformed) unexpectedly succeeded")
-	}
 	assertPluginLoaderProgramErrorPaths(t, fx)
 
 	return pluginLoaderProgramTrace{
@@ -240,11 +207,9 @@ func runPluginLoaderProgram(t *testing.T, mode byte, token string) pluginLoaderP
 			summarizePluginLoaderProgramInstance(gamma),
 			summarizePluginLoaderProgramInstance(warn),
 		},
-		LoadAllNames:    loadAllNames,
 		FailSoftNames:   failSoftNames,
 		Skipped:         []string{"broken", "duplicate:alpha"},
-		ParserHookCount: len(parsedHooks[HookPreToolUse]),
-		SettingsBody:    settings.Body,
+		ParserHookCount: len(parsedDiag[HookPreToolUse]),
 	}
 }
 
@@ -255,22 +220,18 @@ func buildPluginLoaderProgramFixture(t *testing.T, mode byte, token string) plug
 		t.Fatalf("EvalSymlinks(temp root): %v", err)
 	}
 	fx := pluginLoaderProgramFixture{
-		root:            root,
-		workDir:         filepath.Join(root, "work"),
-		alpha:           filepath.Join(root, "alpha"),
-		beta:            filepath.Join(root, "beta"),
-		gamma:           filepath.Join(root, "gamma"),
-		warn:            filepath.Join(root, "warn"),
-		duplicate:       filepath.Join(root, "duplicate"),
-		badAgent:        filepath.Join(root, "bad-agent"),
-		badCommand:      filepath.Join(root, "bad-command"),
-		broken:          filepath.Join(root, "broken"),
-		betaHookPath:    filepath.Join(root, "beta", "hooks", "custom.json"),
-		gammaHookPath:   filepath.Join(root, "gamma", "hooks", "hooks.json"),
-		settingsBody:    "project settings " + token + "\n",
-		settingsPlugin:  "alpha",
-		invalidSettings: "invalid",
-		token:           token,
+		root:          root,
+		alpha:         filepath.Join(root, "alpha"),
+		beta:          filepath.Join(root, "beta"),
+		gamma:         filepath.Join(root, "gamma"),
+		warn:          filepath.Join(root, "warn"),
+		duplicate:     filepath.Join(root, "duplicate"),
+		badAgent:      filepath.Join(root, "bad-agent"),
+		badCommand:    filepath.Join(root, "bad-command"),
+		broken:        filepath.Join(root, "broken"),
+		betaHookPath:  filepath.Join(root, "beta", "hooks", "custom.json"),
+		gammaHookPath: filepath.Join(root, "gamma", "hooks", "hooks.json"),
+		token:         token,
 	}
 
 	var agentsOverride any = []string{"extra-agents"}
@@ -353,8 +314,6 @@ func buildPluginLoaderProgramFixture(t *testing.T, mode byte, token string) plug
 	writePluginLoaderProgramManifest(t, fx.badCommand, ".claude-plugin", map[string]any{"name": "bad-command"})
 	writePluginLoaderProgramFile(t, fx.badCommand, filepath.Join("commands", "broken.md"), "---\nnot yaml: [}\n---\n")
 
-	writePluginLoaderProgramFile(t, fx.workDir, filepath.Join(".claude", "alpha.local.md"), "---\nenabled: true\nmode: "+token+"\n---\n"+fx.settingsBody)
-	writePluginLoaderProgramFile(t, fx.workDir, filepath.Join(".claude", "invalid.local.md"), "---\nkey: \"unterminated\n---\n")
 	if err := os.MkdirAll(fx.broken, 0o700); err != nil {
 		t.Fatalf("mkdir broken plugin: %v", err)
 	}
@@ -470,6 +429,20 @@ func assertLoaderProgramFailure(t *testing.T, dir, label string) {
 	}
 }
 
+// assertLoaderProgramSkips loads a plugin whose only component file is
+// malformed: the plugin loads, the file is reported, and nothing is loaded
+// from it.
+func assertLoaderProgramSkips(t *testing.T, dir, kind string) {
+	t.Helper()
+	inst, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load(bad %s) = %v; want the plugin to load with the file skipped", kind, err)
+	}
+	if len(inst.Agents) != 0 || len(inst.Commands) != 0 || len(inst.SkippedComponents) != 1 || inst.SkippedComponents[0].Kind != kind {
+		t.Fatalf("Load(bad %s) = agents:%d commands:%d skipped:%#v; want only the one skipped %s", kind, len(inst.Agents), len(inst.Commands), inst.SkippedComponents, kind)
+	}
+}
+
 func assertPluginLoaderProgramErrorPaths(t *testing.T, fx pluginLoaderProgramFixture) {
 	t.Helper()
 
@@ -506,11 +479,11 @@ func assertPluginLoaderProgramErrorPaths(t *testing.T, fx pluginLoaderProgramFix
 	if err != nil || len(detailed.Tasks) != 1 || detailed.Tasks[0].ReasoningEffort != "high" || detailed.Tasks[0].Insert != "append" {
 		t.Fatalf("detailed agent parse = %#v, %v", detailed, err)
 	}
-	directAgents, err := discoverPluginAgents(fx.alpha, json.RawMessage(`"agents/helper.md"`), "alpha")
+	directAgents, _, err := discoverPluginAgents(fx.alpha, json.RawMessage(`"agents/helper.md"`), "alpha")
 	if err != nil || len(directAgents) == 0 {
 		t.Fatalf("agents direct-file override = %#v, %v", directAgents, err)
 	}
-	directCommands, err := discoverPluginCommands(fx.alpha, json.RawMessage(`"commands/hello.md"`), "alpha")
+	directCommands, _, err := discoverPluginCommands(fx.alpha, json.RawMessage(`"commands/hello.md"`), "alpha")
 	if err != nil || len(directCommands) == 0 {
 		t.Fatalf("commands direct-file override = %#v, %v", directCommands, err)
 	}
@@ -519,8 +492,8 @@ func assertPluginLoaderProgramErrorPaths(t *testing.T, fx pluginLoaderProgramFix
 		name string
 		fn   func() error
 	}{
-		{"agents malformed override", func() error { _, err := discoverPluginAgents(fx.alpha, json.RawMessage(`{`), "alpha"); return err }},
-		{"commands malformed override", func() error { _, err := discoverPluginCommands(fx.alpha, json.RawMessage(`{`), "alpha"); return err }},
+		{"agents malformed override", func() error { _, _, err := discoverPluginAgents(fx.alpha, json.RawMessage(`{`), "alpha"); return err }},
+		{"commands malformed override", func() error { _, _, err := discoverPluginCommands(fx.alpha, json.RawMessage(`{`), "alpha"); return err }},
 		{"missing specified hooks file", func() error {
 			_, _, _, err := discoverPluginHooksDiag(fx.beta, json.RawMessage(`"hooks/missing.json"`), "beta")
 			return err
@@ -530,10 +503,10 @@ func assertPluginLoaderProgramErrorPaths(t *testing.T, fx pluginLoaderProgramFix
 			t.Fatalf("%s unexpectedly succeeded", check.name)
 		}
 	}
-	if agents, err := discoverPluginAgents(fx.alpha, json.RawMessage(`"missing-agents"`), "alpha"); err != nil || len(agents) != 1 {
+	if agents, _, err := discoverPluginAgents(fx.alpha, json.RawMessage(`"missing-agents"`), "alpha"); err != nil || len(agents) != 1 {
 		t.Fatalf("agents missing override = %#v, %v", agents, err)
 	}
-	if commands, err := discoverPluginCommands(fx.alpha, json.RawMessage(`"missing-commands"`), "alpha"); err != nil || len(commands) != 1 {
+	if commands, _, err := discoverPluginCommands(fx.alpha, json.RawMessage(`"missing-commands"`), "alpha"); err != nil || len(commands) != 1 {
 		t.Fatalf("commands missing override = %#v, %v", commands, err)
 	}
 	if _, _, _, err := discoverPluginHooksDiag(fx.alpha, json.RawMessage(`"unterminated`), "alpha"); err == nil {
@@ -572,16 +545,8 @@ func assertPluginLoaderProgramErrorPaths(t *testing.T, fx pluginLoaderProgramFix
 		t.Fatalf("write not-a-plugin-dir: %v", err)
 	}
 	assertLoaderProgramFailure(t, notDir, "file root")
-	if loaded, err := LoadAll([]string{fx.broken}); err == nil || loaded != nil {
-		t.Fatalf("LoadAll(broken) = %#v, %v", loaded, err)
-	}
-
-	settingsDir := filepath.Join(fx.workDir, ".claude", "directory.local.md")
-	if err := os.MkdirAll(settingsDir, 0o700); err != nil {
-		t.Fatalf("mkdir settings path: %v", err)
-	}
-	if _, err := LoadSettings(fx.workDir, "directory"); err == nil {
-		t.Fatal("LoadSettings(directory path) unexpectedly succeeded")
+	if loaded, skipped := LoadAllFailSoft([]string{fx.broken}); len(loaded) != 0 || len(skipped) != 1 {
+		t.Fatalf("LoadAllFailSoft(broken) = %#v, %#v", loaded, skipped)
 	}
 }
 
@@ -603,10 +568,10 @@ func assertPluginLoaderProgramInjectedFailures(t *testing.T, fx pluginLoaderProg
 	if _, err := componentMarkdownFiles([]string{"component"}); err == nil {
 		t.Fatal("component stat fault did not propagate")
 	}
-	if _, err := discoverPluginAgents(fx.alpha, json.RawMessage(`"component"`), "alpha"); err == nil {
+	if _, _, err := discoverPluginAgents(fx.alpha, json.RawMessage(`"component"`), "alpha"); err == nil {
 		t.Fatal("agent component fault did not propagate")
 	}
-	if _, err := discoverPluginCommands(fx.alpha, json.RawMessage(`"component"`), "alpha"); err == nil {
+	if _, _, err := discoverPluginCommands(fx.alpha, json.RawMessage(`"component"`), "alpha"); err == nil {
 		t.Fatal("command component fault did not propagate")
 	}
 	pluginStat = origStat
@@ -629,18 +594,22 @@ func assertPluginLoaderProgramInjectedFailures(t *testing.T, fx pluginLoaderProg
 		}
 		return origReadFile(path)
 	}
-	if _, err := discoverPluginAgents(fx.alpha, json.RawMessage(`"agents/helper.md"`), "alpha"); err == nil {
-		t.Fatal("agent file read fault did not propagate")
+	if _, skipped, err := discoverPluginAgents(fx.alpha, json.RawMessage(`"agents/helper.md"`), "alpha"); err != nil || len(skipped) == 0 {
+		t.Fatalf("agent file read fault = skipped %v, err %v, want the file skipped", skipped, err)
 	}
-	if _, err := discoverPluginCommands(fx.alpha, json.RawMessage(`"commands/hello.md"`), "alpha"); err == nil {
-		t.Fatal("command file read fault did not propagate")
+	if _, skipped, err := discoverPluginCommands(fx.alpha, json.RawMessage(`"commands/hello.md"`), "alpha"); err != nil || len(skipped) == 0 {
+		t.Fatalf("command file read fault = skipped %v, err %v, want the file skipped", skipped, err)
 	}
 	pluginReadFile = origReadFile
 
-	pluginDiscoverAgents = func(string, json.RawMessage, string) (map[string]Agent, error) { return nil, fault }
+	pluginDiscoverAgents = func(string, json.RawMessage, string) (map[string]Agent, []SkippedComponent, error) {
+		return nil, nil, fault
+	}
 	assertLoaderProgramFailure(t, fx.alpha, "agent discovery fault")
 	pluginDiscoverAgents = origAgents
-	pluginDiscoverCommands = func(string, json.RawMessage, string) (map[string]Command, error) { return nil, fault }
+	pluginDiscoverCommands = func(string, json.RawMessage, string) (map[string]Command, []SkippedComponent, error) {
+		return nil, nil, fault
+	}
 	assertLoaderProgramFailure(t, fx.alpha, "command discovery fault")
 	pluginDiscoverCommands = origCommands
 	pluginDiscoverHooks = func(string, json.RawMessage, string) (map[HookEvent][]RegisteredHook, map[HookEvent]bool, map[string]bool, error) {

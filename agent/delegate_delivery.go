@@ -270,24 +270,14 @@ func (c *delegateTreeController) CompleteDelivery(token delegateDeliveryToken, c
 	}
 	if !committed {
 		delete(c.deliveries, token.processID)
-		if c.stop != nil {
-			if _, tracked := c.stop.deliveries[token]; tracked {
-				delete(c.stop.deliveries, token)
-				c.signalStopProgressLocked()
-			}
-		}
+		untrackStopLocked(c, func(s *delegateStopState) map[delegateDeliveryToken]struct{} { return s.deliveries }, token)
 		c.evidenceVersion++
 		return delegateMutationPlans{}, nil
 	}
 	aggregate := c.durable[receipt.delegateID]
 	if aggregate == nil || len(aggregate.PendingDeliveries) == 0 || aggregate.PendingDeliveries[0].DeliveryID != token.deliveryID {
 		delete(c.deliveries, token.processID)
-		if c.stop != nil {
-			if _, tracked := c.stop.deliveries[token]; tracked {
-				delete(c.stop.deliveries, token)
-				c.signalStopProgressLocked()
-			}
-		}
+		untrackStopLocked(c, func(s *delegateStopState) map[delegateDeliveryToken]struct{} { return s.deliveries }, token)
 		c.evidenceVersion++
 		return delegateMutationPlans{}, errDelegateStaleLease
 	}
@@ -320,12 +310,7 @@ func (c *delegateTreeController) CompleteDelivery(token delegateDeliveryToken, c
 		c.noteDelegateAttentionLocked(receipt.ownerID, attentionID)
 	}
 	delete(c.deliveries, token.processID)
-	if c.stop != nil {
-		if _, tracked := c.stop.deliveries[token]; tracked {
-			delete(c.stop.deliveries, token)
-			c.signalStopProgressLocked()
-		}
-	}
+	untrackStopLocked(c, func(s *delegateStopState) map[delegateDeliveryToken]struct{} { return s.deliveries }, token)
 	c.evidenceVersion++
 	plans := delegateMutationPlans{}
 	if ownerChanged {
@@ -1093,32 +1078,23 @@ func (s *Session) scheduleDelegateDeliveryRetryLocked() {
 	if s.delegateDeliveryRetry.active {
 		return
 	}
-	delay := s.delegateDeliveryRetry.delay
-	if delay <= 0 {
-		delay = jobNotificationRetryInitialDelay
-	}
-	s.delegateDeliveryRetry.active = true
-	s.delegateDeliveryRetry.generation++
-	generation := s.delegateDeliveryRetry.generation
+	delay, generation := s.delegateDeliveryRetry.arm()
 	s.sclock().AfterFunc(delay, func() {
 		s.delegateDeliveryMu.Lock()
-		if s.delegateDeliveryRetry.generation != generation {
+		if !s.delegateDeliveryRetry.fire(generation) {
 			s.delegateDeliveryMu.Unlock()
 			return
 		}
-		s.delegateDeliveryRetry.active = false
-		s.delegateDeliveryRetry.delay = min(delay*2, jobNotificationRetryMaxDelay)
+		s.delegateDeliveryRetry.settle(true, delay, jobNotificationRetryMaxDelay)
 		s.delegateDeliveryMu.Unlock()
 		if err := s.replayDelegateDeliveries(); err != nil {
-			s.emit(events.EventWarning, events.WarningData{Message: "delegate delivery retry failed: " + err.Error()})
+			s.emit(events.WarningData{Message: "delegate delivery retry failed: " + err.Error()})
 		}
 	})
 }
 
 func (s *Session) resetDelegateDeliveryRetryLocked() {
-	s.delegateDeliveryRetry.generation++
-	s.delegateDeliveryRetry.active = false
-	s.delegateDeliveryRetry.delay = jobNotificationRetryInitialDelay
+	s.delegateDeliveryRetry.reset()
 }
 
 func (s *Session) hasPendingDelegateDeliveries() bool {
@@ -1181,7 +1157,7 @@ func (s *Session) pendingDrainDelegateReceivers(liveChildren map[string]struct{}
 				if _, live := liveChildren[owner.Descriptor.ChildSessionID]; live {
 					break
 				}
-				if c.stableDelegateOwnedBySessionLocked(s, owner) {
+				if c.delegateOwnedBySessionLocked(s, owner) {
 					receivers = append(receivers, owner.Descriptor.ChildSessionID)
 					break
 				}
@@ -1239,8 +1215,7 @@ func (s *Session) replayDelegateDeliveries() error {
 		return nil
 	}
 	s.delegateDeliveryPumping = true
-	s.delegateDeliveryRetry.generation++
-	s.delegateDeliveryRetry.active = false
+	s.delegateDeliveryRetry.disarm()
 	s.delegateDeliveryMu.Unlock()
 	defer func() {
 		s.delegateDeliveryMu.Lock()

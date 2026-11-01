@@ -165,6 +165,161 @@ function repository(cache: ReturnType<typeof createEntryCacheFixture>["cache"], 
   });
 }
 
+it.each(
+  (["end", "final"] as const).flatMap((source) =>
+    (["accepted", "stale-generation", "wrong-identity", "suppressed", "disposed", "cancelled"] as const)
+      .filter((outcome) => source === "final" || outcome !== "cancelled")
+      .map((outcome) => ({ source, outcome })),
+  ),
+)("history-read recovery callback requires acceptance: $source / $outcome", async ({ source, outcome }) => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const response = deferred<ThreadReadResponse>();
+  const entered = deferred<void>();
+  const accepted = vi.fn();
+  let suppressed = false;
+  let reply = response.promise;
+  let retry: (() => void) | undefined;
+  const owner = new TranscriptRepository(fixture.cache, {
+    ref,
+    threadId,
+    historyKey,
+    identity,
+    clearEpoch: 0,
+    lifetime: 1,
+    suppressed: () => suppressed,
+    onHistoryReadAccepted: accepted,
+    retryScheduler: (_attempt, run) => {
+      retry = run;
+      return () => {
+        retry = undefined;
+      };
+    },
+    readHistory: () => {
+      entered.resolve();
+      return reply;
+    },
+  });
+  const baseline = { ...read("baseline"), requestGeneration: 1 };
+  expect(owner.acceptRead(baseline, { lifetime: 1, readId: "initial", boundary: "initial" })).toBe(true);
+  await owner.settled();
+  const reader = owner.attachReader();
+  await reader.openLocal(20);
+  // Public hydration, cache opening and ordinary publication have their own
+  // owners. None is a newly accepted response from this repository's port.
+  owner.accept(historyUpdate("local-publication", 2), { lifetime: 1 });
+  expect(accepted).not.toHaveBeenCalled();
+  let retirement: ReturnType<TranscriptRepository["retire"]> | undefined;
+  if (source === "final") retirement = owner.retire();
+  else {
+    owner.accept(
+      {
+        method: "overlay/upserted",
+        params: {
+          ref,
+          threadId,
+          item: {
+            key: "ending",
+            kind: "stream",
+            streamId: "ending",
+            roundId: "ending",
+            turnId: "turn_1",
+            item: { id: "ending", type: "agentMessage", text: "ending" },
+          },
+        },
+      },
+      { lifetime: 1 },
+    );
+    owner.accept({ method: "overlay/end", params: { ref, threadId, roundId: "ending" } }, { lifetime: 1 });
+  }
+  await entered.promise;
+  const recovery = { ...read("recovery", 2), requestGeneration: 2 };
+  recovery.thread.evener.resumeRequired = true;
+  recovery.thread.evener.capabilities = { ...CAPABILITIES, send: false };
+  if (outcome === "stale-generation") {
+    expect(
+      owner.acceptRead(
+        { ...read("newer", 3), requestGeneration: 3 },
+        {
+          lifetime: 1,
+          readId: "newer",
+          boundary: "newer",
+          preserveEnded: true,
+        },
+      ),
+    ).toBe(true);
+    const current = owner.getSnapshot();
+    if (source === "end") expect(current?.overlay?.ending).toMatchObject({ roundId: "ending" });
+    expect(
+      owner.acceptRead(recovery, {
+        lifetime: 1,
+        readId: "rejected",
+        boundary: "rejected",
+        preserveEnded: true,
+      }),
+    ).toBe(false);
+    expect(owner.getSnapshot()).toBe(current);
+  }
+  if (outcome === "wrong-identity") recovery.thread.id = "other-thread";
+  if (outcome === "suppressed") suppressed = true;
+  if (outcome === "disposed") owner.dispose();
+  if (outcome === "cancelled") owner.cancelRetirement();
+  response.resolve(recovery);
+  if (retirement) await retirement;
+  // The negative end-read cases deliberately leave recovery outstanding.
+  await owner.settled().catch((error) => {
+    if (outcome === "accepted") throw error;
+  });
+  if (outcome === "accepted") {
+    expect(accepted).toHaveBeenCalledTimes(1);
+    expect(accepted).toHaveBeenCalledWith(recovery, expect.objectContaining({ resumeRequired: true }));
+  } else expect(accepted).not.toHaveBeenCalled();
+  if (source === "end" && outcome === "stale-generation") {
+    expect(owner.getSnapshot()?.history?.appliedGeneration).toBe(3);
+    expect(owner.getSnapshot()?.overlay?.ending).toMatchObject({ roundId: "ending" });
+    expect(retry).toBeTypeOf("function");
+    // A fresh retry can still dispose the same round. This requires its end
+    // claim to have survived rejection, rather than just retaining stale text.
+    reply = Promise.resolve({ ...read("retry", 4), requestGeneration: 4 });
+    retry?.();
+    await owner.settled();
+    expect(accepted).toHaveBeenCalledTimes(1);
+    expect(owner.getSnapshot()?.overlay?.ending).toBeUndefined();
+  }
+  reader.dispose();
+  owner.dispose();
+});
+
+it("cached recovery metadata and local publication never invoke fresh-read recovery", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const cached = read("cached");
+  cached.thread.evener.resumeRequired = true;
+  const writer = repository(fixture.cache);
+  writer.acceptRead(cached, { lifetime: 1, readId: "cached", boundary: "cached" });
+  await writer.settled();
+  writer.dispose();
+  const accepted = vi.fn();
+  const owner = new TranscriptRepository(fixture.cache, {
+    ref,
+    threadId,
+    historyKey,
+    identity,
+    clearEpoch: 0,
+    lifetime: 2,
+    seedModel: hydrateThread(cached, ref, Date.now()),
+    onHistoryReadAccepted: accepted,
+  });
+  const reader = owner.attachReader();
+  await reader.openLocal(20);
+  owner.accept(historyUpdate("notification", 2), { lifetime: 2 });
+  await owner.settled();
+  expect(owner.getSnapshot()?.resumeRequired).toBe(true);
+  expect(accepted).not.toHaveBeenCalled();
+  reader.dispose();
+  owner.dispose();
+});
+
 it("refuses a delayed replacement older than another repository's committed suffix", async () => {
   const fixture = createEntryCacheFixture();
   fixtures.push(fixture);
@@ -3167,4 +3322,53 @@ it("issues no IDB transaction, request, or recorded-history load for overlay-onl
     for (const load of historyLoads) load.mockRestore();
   }
   owner.dispose();
+});
+
+it("keeps a resolved escalation out of every later read, including one issued before the resolve", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const repo = repository(fixture.cache);
+  const reader = repo.attachReader();
+  const withEscalation = (response: ThreadReadResponse): ThreadReadResponse => ({
+    ...response,
+    thread: {
+      ...response.thread,
+      evener: {
+        ...response.thread.evener,
+        pendingEscalations: [
+          {
+            ref,
+            threadId,
+            escalationId: "esc_1",
+            mode: "workspace-write",
+            tool: "shell",
+            kind: "shell",
+            deniedPath: "/etc/hosts",
+          },
+        ],
+      },
+    },
+  });
+  try {
+    repo.acceptRead(withEscalation(read("baseline", 1)), { lifetime: 1, readId: "baseline", boundary: "baseline" });
+    expect(repo.getSnapshot()?.pendingEscalations).toHaveLength(1);
+    expect(
+      repo.accept(
+        {
+          method: "evener/sandbox/escalation/resolved",
+          params: { threadId, ref, escalationId: "esc_1" },
+        } as AnyNotification,
+        { lifetime: 1 },
+      ),
+    ).toBe(true);
+    expect(repo.getSnapshot()?.pendingEscalations).toEqual([]);
+
+    repo.acceptRead(withEscalation(read("later", 2)), { lifetime: 1, readId: "later", boundary: "later" });
+
+    expect(repo.getSnapshot()?.history?.length).toBe(2);
+    expect(repo.getSnapshot()?.pendingEscalations).toEqual([]);
+  } finally {
+    reader.dispose();
+    repo.dispose();
+  }
 });

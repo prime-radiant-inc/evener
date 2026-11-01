@@ -248,7 +248,10 @@ func assertIsolated(t *testing.T, got map[string]string, ambient map[string]stri
 		}
 		return v, true
 	}
-	stateRoot := cmdutil.StateRootFromLookup(runtime.GOOS, lookup)
+	stateRoot, err := cmdutil.StateRootFromLookup(runtime.GOOS, lookup)
+	if err != nil {
+		t.Fatalf("the hub's state root does not resolve from the recipe's environment: %v", err)
+	}
 	if !within(t, stateRoot, tmp) {
 		t.Errorf("the hub's state root %q resolves outside the scratch TMPDIR %q", stateRoot, tmp)
 	}

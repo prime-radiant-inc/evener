@@ -64,7 +64,7 @@ func holdDelegateTail(t *testing.T, at tailHoldPoint) finalizingDelegate {
 	var child *subagent
 	client := llm.NewClient()
 	client.Register(&agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response {
-		return finalResponse("done")
+		return agenttest.FinalResponse("done")
 	}})
 	profile := withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2"))
 	pin := func() {
@@ -104,7 +104,7 @@ func holdDelegateTail(t *testing.T, at tailHoldPoint) finalizingDelegate {
 	t.Cleanup(s.Close)
 	t.Cleanup(release)
 	create := executeDelegateTool(context.Background(), s, "call_create", "delegate", map[string]any{"prompt": "Find the race.", "name": "settle-race"})
-	var receipt stableDelegateCreateResult
+	var receipt delegateCreateResult
 	if err := json.Unmarshal([]byte(create.Output), &receipt); err != nil || receipt.DelegateID == "" {
 		t.Fatalf("delegate receipt %q names no delegate: %v", create.Output, err)
 	}
@@ -633,19 +633,19 @@ func TestDelegateControllerWakesTheAttentionDriveWhenAFinalizationIsReleased(t *
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			fixture := newColdStableDelegateFixture(t, "")
+			fixture := newColdDelegateFixture(t, "")
 			attentionRequested := make(chan struct{})
 			var attentionRequest llm.Request
 			fixture.adapter.steps = []func(llm.Request) llm.Response{
-				func(llm.Request) llm.Response { return finalResponse("warm-result-57") },
+				func(llm.Request) llm.Response { return agenttest.FinalResponse("warm-result-57") },
 				func(req llm.Request) llm.Response {
 					attentionRequest = req
 					close(attentionRequested)
-					return finalResponse("released-result-57")
+					return agenttest.FinalResponse("released-result-57")
 				},
 			}
 			root := restoreSupervisionRoot(t, fixture, nil)
-			sub := warmStableDelegateUnservedRoot(t, root, fixture)
+			sub := warmDelegateUnservedRoot(t, root, fixture)
 			waitForStableSupervisionRun(t, root, fixture.childID)
 			c, runtime := root.delegateController, sub.sess
 			lease := delegateLease{delegateID: fixture.delegateID, generation: delegateAggregateSnapshot(t, c, fixture.delegateID).Generation}
@@ -687,8 +687,7 @@ func TestDelegateControllerWakesTheAttentionDriveWhenAFinalizationIsReleased(t *
 // target_busy with nothing written: the send takes the child's drive guard
 // before it commits its start, so no start is committed that the child then
 // can't take. The hook stands in for a real racer that doesn't check the
-// send's claim, such as startOrSteerSubagentRun setting running or
-// trySetDisposeGate gating the child for disposal.
+// send's claim, such as trySetDisposeGate gating the child for disposal.
 func TestDelegateSendToAChildThatTurnsBusyCommitsNothing(t *testing.T) {
 	t.Parallel()
 	held := holdDelegateReleasedByTheController(t)
@@ -796,9 +795,9 @@ func TestDelegateSendReleasesAResidentReplacedAfterItsCommit(t *testing.T) {
 // not sit out its whole max_wait waiting for an inline delivery the covering
 // stop will never hand it (#3502).
 func TestDelegateSendStartAStopEndedIsReportedStopped(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("warm result") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 	}
 	root := restoreSupervisionRoot(t, fixture, nil)
 	warmStableSupervisionDelegate(t, root, fixture)

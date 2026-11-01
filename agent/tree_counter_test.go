@@ -113,11 +113,11 @@ func TestDriveAtCapacityDoesNotLaunchOrSettle(t *testing.T) {
 	gate := make(chan struct{})
 	release := sync.OnceFunc(func() { close(gate) })
 	defer release()
-	a.finiteScript("CAPACITY-85", updateReply(finalResponse("coordinator-idle-85")), updateGate(gate, func(_ context.Context, req llm.Request) (llm.Response, error) {
+	a.finiteScript("CAPACITY-85", updateReply(agenttest.FinalResponse("coordinator-idle-85")), updateGate(gate, func(_ context.Context, req llm.Request) (llm.Response, error) {
 		if !requestContainsText(req, "capacity-body-85") {
 			t.Error("released execution omitted accepted payload")
 		}
-		return finalResponse("useful-capacity-result-85"), nil
+		return agenttest.FinalResponse("useful-capacity-result-85"), nil
 	}))
 	root := newMessagingRoot(t, a, nil)
 	coord := root.createDelegate(context.Background(), delegateArgs{Task: "CAPACITY-85"})
@@ -137,7 +137,7 @@ func TestDriveAtCapacityDoesNotLaunchOrSettle(t *testing.T) {
 	observationEnqueue(t, receiver, id, "capacity-body-85")
 	// The result means handled, not launched. All admission assertions below
 	// inspect the real generation, executor, provider and receipt owners.
-	root.driveStableDelegateAttention(sub)
+	root.driveDelegateAttention(sub)
 	assertNotificationPending(t, receiver, []string{id})
 	after := delegateAggregateSnapshot(t, c, receiver.owningDelegateID)
 	if after.Generation != before.Generation || after.CurrentRunOpen {
@@ -181,7 +181,7 @@ func TestDriveAtCapacityDoesNotLaunchOrSettle(t *testing.T) {
 	root.sendersWG.Wait() // Joins provider, generation settlement and capacity release.
 	assertNotificationPending(t, receiver, []string{})
 	incidentNotificationFacts(t, root.stateDir, receiver.ID(), id)
-	data, err := readTranscriptFull(transcriptPath(root.stateDir, receiver.ID()), "")
+	data, err := readTranscriptFull(t.Context(), transcriptPath(root.stateDir, receiver.ID()), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -384,11 +384,11 @@ func TestDriveTurnReservesFromDriveCounter(t *testing.T) {
 	release := sync.OnceFunc(func() { close(gate) })
 	defer release()
 	returns := newActivationReturns()
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	fixture.adapter.steps = []func(llm.Request) llm.Response{func(llm.Request) llm.Response {
 		close(entered)
 		<-gate
-		return finalResponse("drive-result-71af")
+		return agenttest.FinalResponse("drive-result-71af")
 	}}
 	root := restoreSupervisionRoot(t, fixture, nil)
 	returns.configure(&root.cfg)
@@ -438,7 +438,7 @@ func (a *firstCompleteThenBlockAdapter) Complete(ctx context.Context, req llm.Re
 	n := a.i
 	a.mu.Unlock()
 	if n == 1 {
-		resp := finalResponse("coordinator idle")
+		resp := agenttest.FinalResponse("coordinator idle")
 		resp.Provider = "openai"
 		resp.Model = req.Model
 		return resp, nil
@@ -462,7 +462,7 @@ func TestDriveTurnTimeoutFreesSlot(t *testing.T) {
 	old := driveTurnTimeout
 	driveTurnTimeout = 100 * time.Millisecond
 	t.Cleanup(func() { driveTurnTimeout = old })
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	adapter := &firstCompleteThenBlockAdapter{entered: make(chan struct{}), returnGate: make(chan struct{})}
 	adapter.result.done = make(chan struct{})
 	release := sync.OnceFunc(func() { close(adapter.returnGate) })

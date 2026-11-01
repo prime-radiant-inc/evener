@@ -82,6 +82,11 @@ factory.
   from the live registry (the override alone when one is applied, else
   every non-twin default entry). Both UIs read this module so no
   hand-maintained copy can go stale.
+  The command palette's shortcut legend (`shell/palette/helpRows.tsx`) reads
+  `displayBindingsFor` too for its app-global rows (palette, sidebar,
+  composer focus, next needs-you, quote), so a rebound chord shows there and
+  an unbound action drops out; its remaining rows are chords owned by the
+  palette, composer and ask dock's own key handling.
 
 The one wiring point that touches React and the app's stores is
 `src/shell/installKeybindings.ts`: an idempotent per-window installer that

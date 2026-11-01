@@ -205,7 +205,7 @@ func TestRootAttentionTransientRetryAfterAPauseReadsWorking(t *testing.T) {
 		func(llm.Request) (llm.Response, error) {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 503, "upstream unavailable", nil, nil)
 		},
-		func(llm.Request) (llm.Response, error) { return finalResponse("delivered"), nil },
+		func(llm.Request) (llm.Response, error) { return agenttest.FinalResponse("delivered"), nil },
 	}}
 	c := llm.NewClient()
 	c.Register(adapter)
@@ -273,10 +273,7 @@ func TestStopParksRootDelegateAttentionUntilReEngagement(t *testing.T) {
 	// Not serveSession: this test keeps the session unserved so its turns
 	// run unnamed and nothing claims the parked queue behind the test's
 	// back; the events channel still needs a consumer, so drain by hand.
-	go func() {
-		for range s.Events() {
-		}
-	}()
+	drainSessionEvents(s)
 
 	// A queued message is what makes an idle-but-pending session report
 	// processing, so the Stop is accepted (the shape pinned by
@@ -411,10 +408,7 @@ func TestRootAttentionAbortedTurnKeepsThePacedRetry(t *testing.T) {
 func TestStopReplayAfterReEngagementDoesNotReparkAttention(t *testing.T) {
 	s, _, notifies, _ := newAttentionLivelockSession(t, llm.ErrorFromHTTPStatus("openai", 503, "upstream unavailable", nil, nil))
 	// Not serveSession, for the same reason as the park test above.
-	go func() {
-		for range s.Events() {
-		}
-	}()
+	drainSessionEvents(s)
 
 	queueOneMutation(t, s, "queue-behind-stop", "please still run me")
 	armOneRootAttention(t, s, "dlg_replay", "delegate:dlg_replay/delivery/1")
@@ -467,10 +461,7 @@ func TestStopReplayAfterReEngagementDoesNotReparkAttention(t *testing.T) {
 // turn/queue whose response was lost wakes nothing.
 func TestReplayedAcceptAfterStopDoesNotWakeTheSession(t *testing.T) {
 	s, _, _, _ := newAttentionLivelockSession(t, llm.ErrorFromHTTPStatus("openai", 503, "upstream unavailable", nil, nil))
-	go func() {
-		for range s.Events() {
-		}
-	}()
+	drainSessionEvents(s)
 
 	queueOneMutation(t, s, "queue-behind-stop", "please still run me")
 	armOneRootAttention(t, s, "dlg_replay_accept", "delegate:dlg_replay_accept/delivery/1")
@@ -535,10 +526,7 @@ func TestReplayedAcceptAfterStopDoesNotWakeTheSession(t *testing.T) {
 // live.
 func TestReplayedStopParksWhileASteeringHoldStands(t *testing.T) {
 	s, _, notifies, _ := newAttentionLivelockSession(t, llm.ErrorFromHTTPStatus("openai", 503, "upstream unavailable", nil, nil))
-	go func() {
-		for range s.Events() {
-		}
-	}()
+	drainSessionEvents(s)
 
 	queueOneMutation(t, s, "queue-behind-stop", "please still run me")
 	armOneRootAttention(t, s, "dlg_steer_hold", "delegate:dlg_steer_hold/delivery/1")
@@ -598,10 +586,7 @@ func TestReplayedStopParksWhileASteeringHoldStands(t *testing.T) {
 // in-turn stand-down catches what the raw-depth carve-out let through.
 func TestStaleWatchTickDoesNotPhantomOpenTheParkedGate(t *testing.T) {
 	s, _, _, adapter := newAttentionLivelockSession(t, llm.ErrorFromHTTPStatus("openai", 503, "upstream unavailable", nil, nil))
-	go func() {
-		for range s.Events() {
-		}
-	}()
+	drainSessionEvents(s)
 
 	queueOneMutation(t, s, "queue-behind-stop", "please still run me")
 	armOneRootAttention(t, s, "dlg_stale_tick", "delegate:dlg_stale_tick/delivery/1")
@@ -654,10 +639,7 @@ func TestParkedRailRunsAJobCarryingWakeAndDeliversItsAttention(t *testing.T) {
 	}))
 	var notifies atomic.Int64
 	s.SetNotifyFunc(func() { notifies.Add(1) })
-	go func() {
-		for range s.Events() {
-		}
-	}()
+	drainSessionEvents(s)
 
 	queueOneMutation(t, s, "queue-behind-stop", "please still run me")
 	armOneRootAttention(t, s, "dlg_job", "delegate:dlg_job/delivery/1")
@@ -710,10 +692,7 @@ func TestParkedRailRunsAJobCarryingWakeAndDeliversItsAttention(t *testing.T) {
 // re-engagement and must not hold the drain open or keep its rung spinning.
 func TestParkedRootAttentionIsNotDrainLive(t *testing.T) {
 	s, _, _, _ := newAttentionLivelockSession(t, llm.ErrorFromHTTPStatus("openai", 503, "upstream unavailable", nil, nil))
-	go func() {
-		for range s.Events() {
-		}
-	}()
+	drainSessionEvents(s)
 
 	queueOneMutation(t, s, "queue-behind-stop", "please still run me")
 	armOneRootAttention(t, s, "dlg_drain_live", "delegate:dlg_drain_live/delivery/1")
@@ -765,10 +744,7 @@ func TestRestartSeedsTheAttentionParkFromTheDurableHolds(t *testing.T) {
 	}))
 	var notifies atomic.Int64
 	s.SetNotifyFunc(func() { notifies.Add(1) })
-	go func() {
-		for range s.Events() {
-		}
-	}()
+	drainSessionEvents(s)
 	id := s.Meta().ID
 
 	queueOneMutation(t, s, "queue-behind-stop", "please still run me")
@@ -805,10 +781,7 @@ func TestRestartSeedsTheAttentionParkFromTheDurableHolds(t *testing.T) {
 	t.Cleanup(func() { restored.Close() })
 	var restoredNotifies atomic.Int64
 	restored.SetNotifyFunc(func() { restoredNotifies.Add(1) })
-	go func() {
-		for range restored.Events() {
-		}
-	}()
+	drainSessionEvents(restored)
 
 	if !restored.notificationStopHeld() {
 		t.Fatal("the restart lost the Stop's park: restore rebuilt the rail unparked, and the pending attention can re-arm the paced retry over a queue the user parked")
@@ -868,10 +841,7 @@ func TestRestartSeedsTheAttentionParkFromTheDurableHolds(t *testing.T) {
 // re-open the livelock over a queue the user parked.
 func TestAttentionRailParkedIsAProjectionOfTheDurableHolds(t *testing.T) {
 	s, _, _, _ := newAttentionLivelockSession(t, llm.ErrorFromHTTPStatus("openai", 503, "upstream unavailable", nil, nil))
-	go func() {
-		for range s.Events() {
-		}
-	}()
+	drainSessionEvents(s)
 
 	if s.notificationStopHeld() {
 		t.Fatal("a session with no holds must read unparked")
@@ -903,10 +873,7 @@ func TestAttentionRailParkedIsAProjectionOfTheDurableHolds(t *testing.T) {
 // pendingQueueDepth — and the busy projection returns with re-engagement.
 func TestParkedRootAttentionIsNotAutonomousWork(t *testing.T) {
 	s, _, _, _ := newAttentionLivelockSession(t, llm.ErrorFromHTTPStatus("openai", 503, "upstream unavailable", nil, nil))
-	go func() {
-		for range s.Events() {
-		}
-	}()
+	drainSessionEvents(s)
 
 	queueOneMutation(t, s, "queue-behind-stop", "please still run me")
 	armOneRootAttention(t, s, "dlg_busy", "delegate:dlg_busy/delivery/1")

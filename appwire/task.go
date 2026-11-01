@@ -16,6 +16,15 @@ const (
 	TaskCancelled TaskStatus = "cancelled"
 )
 
+// AllTaskStatuses is every TaskStatus value, in lifecycle order. The TypeScript
+// generator emits it as TASK_STATUSES.
+var AllTaskStatuses = []string{
+	string(TaskOpen),
+	string(TaskInProgress),
+	string(TaskDone),
+	string(TaskCancelled),
+}
+
 // TaskType classifies what kind of work a task represents.
 type TaskType string
 

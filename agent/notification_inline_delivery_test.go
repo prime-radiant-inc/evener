@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"reflect"
 	"slices"
 	"strconv"
@@ -85,7 +86,7 @@ func (a *notificationDeliveryAdapter) Complete(ctx context.Context, req llm.Requ
 }
 func notificationToolCall(id, name string, args map[string]any) llm.Response {
 	data, _ := json.Marshal(args)
-	return toolCallResponse(llm.ToolCallData{ID: id, Name: name, Arguments: data, Type: "function"})
+	return agenttest.ToolCallResponse(llm.ToolCallData{ID: id, Name: name, Arguments: data, Type: "function"})
 }
 func notificationAwait(t *testing.T, ch <-chan struct{}) {
 	t.Helper()
@@ -182,7 +183,7 @@ func TestNotificationDeliveryDuringToolRound(t *testing.T) {
 		case <-ctx.Done():
 			return llm.Response{}, ctx.Err()
 		}
-		return toolCallResponse(communicateCall("report", report)), nil
+		return agenttest.ToolCallResponse(communicateCall("report", report)), nil
 	}
 	a.rootSteps = []func(context.Context, llm.Request) (llm.Response, error){
 		func(context.Context, llm.Request) (llm.Response, error) {
@@ -209,7 +210,7 @@ func TestNotificationDeliveryDuringToolRound(t *testing.T) {
 			if !whole {
 				t.Error("ordinary asynchronous report above 50,000 characters was not presented whole")
 			}
-			return finalResponse("answer-990d"), nil
+			return agenttest.FinalResponse("answer-990d"), nil
 		},
 	}
 	s := notificationSession(t, a, gate, delivered)
@@ -265,9 +266,9 @@ func TestNotificationInlineDelivery(t *testing.T) {
 					case <-ctx.Done():
 						return llm.Response{}, ctx.Err()
 					}
-					return toolCallResponse(communicateCall("first", "first-payload-688f")), nil
+					return agenttest.ToolCallResponse(communicateCall("first", "first-payload-688f")), nil
 				}
-				return toolCallResponse(communicateCall("report", "inline-payload-5cd1")), nil
+				return agenttest.ToolCallResponse(communicateCall("report", "inline-payload-5cd1")), nil
 			}
 			a.rootSteps = []func(context.Context, llm.Request) (llm.Response, error){
 				func(context.Context, llm.Request) (llm.Response, error) {
@@ -297,7 +298,7 @@ func TestNotificationInlineDelivery(t *testing.T) {
 					if strings.Index(text, "first-payload-688f") >= strings.Index(text, "inline-payload-5cd1") {
 						t.Errorf("earlier packet not before latest packet: %s", text)
 					}
-					return finalResponse("answer-294d"), nil
+					return agenttest.FinalResponse("answer-294d"), nil
 				},
 			}
 			s := notificationSession(t, a, execenv.NewLocalExecutionEnvironment(t.TempDir()), delivered)
@@ -395,18 +396,18 @@ func notificationInlineDifferentTarget(t *testing.T) {
 			case <-ctx.Done():
 				return llm.Response{}, ctx.Err()
 			}
-			return toolCallResponse(communicateCall("report-b", "target-b-result-284c")), nil
+			return agenttest.ToolCallResponse(communicateCall("report-b", "target-b-result-284c")), nil
 		}
 		aCalls++
 		if aCalls == 1 {
-			return toolCallResponse(communicateCall("report-a-first", "target-a-first-c359")), nil
+			return agenttest.ToolCallResponse(communicateCall("report-a-first", "target-a-first-c359")), nil
 		}
 		select {
 		case <-releaseA:
 		case <-ctx.Done():
 			return llm.Response{}, ctx.Err()
 		}
-		return toolCallResponse(communicateCall("report-a-second", "target-a-second-d918")), nil
+		return agenttest.ToolCallResponse(communicateCall("report-a-second", "target-a-second-d918")), nil
 	}
 	a.rootSteps = []func(context.Context, llm.Request) (llm.Response, error){
 		func(context.Context, llm.Request) (llm.Response, error) {
@@ -428,7 +429,7 @@ func notificationInlineDifferentTarget(t *testing.T) {
 					t.Errorf("%s presentations=%d, want 1", sentinel, n)
 				}
 			}
-			return finalResponse("both targets observed"), nil
+			return agenttest.FinalResponse("both targets observed"), nil
 		},
 	}
 	s := notificationSession(t, a, execenv.NewLocalExecutionEnvironment(t.TempDir()), delivered)
@@ -480,14 +481,14 @@ func notificationInlineFallback(t *testing.T, mode string) {
 	a.child = func(ctx context.Context, _ llm.Request) (llm.Response, error) {
 		childCalls++
 		if childCalls == 1 {
-			return toolCallResponse(communicateCall("first", "first-fallback-94de")), nil
+			return agenttest.ToolCallResponse(communicateCall("first", "first-fallback-94de")), nil
 		}
 		select {
 		case <-secondRelease:
 		case <-ctx.Done():
 			return llm.Response{}, ctx.Err()
 		}
-		return toolCallResponse(communicateCall("second", "fallback-payload-649c")), nil
+		return agenttest.ToolCallResponse(communicateCall("second", "fallback-payload-649c")), nil
 	}
 	var delegateID string
 	var s *Session
@@ -524,20 +525,20 @@ func notificationInlineFallback(t *testing.T, mode string) {
 				if !found || !state.TimedOut || !state.RunningInBackground {
 					t.Errorf("send timeout state: found=%t timed_out=%t running_in_background=%t", found, state.TimedOut, state.RunningInBackground)
 				}
-				return finalResponse("timeout turn ended"), nil
+				return agenttest.FinalResponse("timeout turn ended"), nil
 			}
 			notificationValidToolPairs(t, req)
 			if n := notificationRequestCount(req, "fallback-payload-649c"); n != 1 {
 				t.Errorf("fallback presentations=%d, want 1", n)
 			}
-			return finalResponse("ordinary fallback observed"), nil
+			return agenttest.FinalResponse("ordinary fallback observed"), nil
 		},
 		func(_ context.Context, req llm.Request) (llm.Response, error) {
 			notificationValidToolPairs(t, req)
 			if n := notificationRequestCount(req, "fallback-payload-649c"); n != 1 {
 				t.Errorf("ordinary fallback presentations=%d, want 1", n)
 			}
-			return finalResponse("ordinary fallback observed"), nil
+			return agenttest.FinalResponse("ordinary fallback observed"), nil
 		},
 	}
 	s = notificationSession(t, a, execenv.NewLocalExecutionEnvironment(t.TempDir()), firstDone)
@@ -723,7 +724,7 @@ func notificationSameBatchSubscribers(t *testing.T, mode string) {
 				return llm.Response{}, ctx.Err()
 			}
 		}
-		return toolCallResponse(communicateCall(fmt.Sprint("report", childCalls), fmt.Sprint("batch-payload-f31d-", childCalls))), nil
+		return agenttest.ToolCallResponse(communicateCall(fmt.Sprint("report", childCalls), fmt.Sprint("batch-payload-f31d-", childCalls))), nil
 	}
 	var delegateID string
 	a.rootSteps = []func(context.Context, llm.Request) (llm.Response, error){
@@ -747,7 +748,7 @@ func notificationSameBatchSubscribers(t *testing.T, mode string) {
 					t.Errorf("generation %d presentations=%d, want 1", i, n)
 				}
 			}
-			return finalResponse("batch-answer"), nil
+			return agenttest.FinalResponse("batch-answer"), nil
 		},
 	}
 	s := notificationSession(t, a, execenv.NewLocalExecutionEnvironment(t.TempDir()), delivered)
@@ -839,7 +840,7 @@ func notificationHistoricalCarrier(t *testing.T, withState bool) {
 		if n := notificationRequestCount(req, "historical-payload-4b16"); n != 1 {
 			t.Errorf("historical presentations=%d, want 1", n)
 		}
-		return finalResponse("historical response"), nil
+		return agenttest.FinalResponse("historical response"), nil
 	}
 	a.rootSteps = []func(context.Context, llm.Request) (llm.Response, error){step, step}
 	client := llm.NewClient()
@@ -1066,7 +1067,7 @@ func TestNotificationInlineDeliveryTruncatedCarrier(t *testing.T) {
 					if restoreExpired {
 						return llm.Response{}, providerFailure
 					}
-					return finalResponse("shaped response"), nil
+					return agenttest.FinalResponse("shaped response"), nil
 				},
 			}
 			strategy := &notificationReducingStrategy{mode: mode}
@@ -1201,7 +1202,7 @@ func TestNotificationInlineDeliveryTruncatedCarrier(t *testing.T) {
 				}
 				stateDir, sessionID := s.stateDir, s.ID()
 				s.Close()
-				_, readErr := execReadTranscript(newToolDeps(s), map[string]any{"transcript_ref": retainedRef})
+				_, readErr := execReadTranscript(context.Background(), newToolDeps(s), map[string]any{"transcript_ref": retainedRef})
 				if readErr == nil {
 					t.Fatal("root close left its old artifact capability readable")
 				}
@@ -1224,7 +1225,7 @@ func TestNotificationInlineDeliveryTruncatedCarrier(t *testing.T) {
 							}
 						}
 					}
-					return finalResponse("restored canonical recovery")
+					return agenttest.FinalResponse("restored canonical recovery")
 				}}})
 				s, err = RestoreSessionFromMeta(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.4")), execenv.NewLocalExecutionEnvironment(dir), meta, stateDir)
 				if err != nil {
@@ -1345,7 +1346,7 @@ func TestNotificationInlineDeliveryCanceledPreservesNonCarrierResults(t *testing
 					if skippedSend.Content != skippedRead.Content || !skippedSend.IsError || skippedSend.PrevalOnly {
 						t.Errorf("unexecuted send lost cancellation result: send=%+v, read control=%+v", skippedSend, skippedRead)
 					}
-					return finalResponse("resumed non-carrier response"), nil
+					return agenttest.FinalResponse("resumed non-carrier response"), nil
 				},
 			}
 			s := notificationSession(t, a, gate, make(chan struct{}))
@@ -1413,7 +1414,7 @@ func TestNotificationInlineDeliveryCanceledBeforeBindingTake(t *testing.T) {
 				return llm.Response{}, ctx.Err()
 			}
 		}
-		return toolCallResponse(communicateCall(fmt.Sprint("report", childCalls), fmt.Sprint("cancel-payload-b831-", childCalls))), nil
+		return agenttest.ToolCallResponse(communicateCall(fmt.Sprint("report", childCalls), fmt.Sprint("cancel-payload-b831-", childCalls))), nil
 	}
 	var delegateID string
 	a.rootSteps = []func(context.Context, llm.Request) (llm.Response, error){
@@ -1436,7 +1437,7 @@ func TestNotificationInlineDeliveryCanceledBeforeBindingTake(t *testing.T) {
 					t.Errorf("generation %d presentations=%d, want 1", i, n)
 				}
 			}
-			return finalResponse("resumed response"), nil
+			return agenttest.FinalResponse("resumed response"), nil
 		},
 	}
 	s := notificationSession(t, a, gate, delivered)

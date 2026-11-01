@@ -173,7 +173,7 @@ function consumerTree(files) {
 
 test("a consumer that only re-exports the module names no value but does use it", () => {
   const root = consumerTree({
-    "mobile/src/state.ts": `export * as everything from "${ROOT}";\n`,
+    "mobile-native/src/conversation/state.ts": `export * as everything from "${ROOT}";\n`,
   });
   try {
     const usage = consumerPackageUsage(root);
@@ -200,7 +200,7 @@ test("a value a JavaScript consumer imports is collected like a TypeScript one's
 
 test("a consumer whose only use is type-only names no value but does use it", () => {
   const root = consumerTree({
-    "mobile/src/state.ts": `import type { ThreadModel } from "${ROOT}";\nexport type A = ThreadModel;\n`,
+    "mobile-native/src/conversation/state.ts": `import type { ThreadModel } from "${ROOT}";\nexport type A = ThreadModel;\n`,
   });
   try {
     expect(consumerPackageUsage(root).get(ROOT)).toEqual({ values: [], used: true });

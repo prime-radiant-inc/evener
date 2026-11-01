@@ -16,6 +16,8 @@
 // (Cadence already carries live activity via its trace - see
 // widgets/cadence). These are session-level thresholds only.
 
+import { isStuck } from "@evener/appwire-client";
+
 export type LivenessLevel = "none" | "quiet" | "stalled" | "waiting" | "retrying";
 
 export interface LivenessInfo {
@@ -23,9 +25,8 @@ export interface LivenessInfo {
   text: string | null;
 }
 
-// docs/web-ui/parity/parity-m4-transcript.md §16.
+// The short quiet hint. "Stalled" is the shared stuck rule (isStuck).
 export const QUIET_THRESHOLD_MS = 20_000;
-export const STALL_THRESHOLD_MS = 180_000;
 
 const SECOND_MS = 1_000;
 const MINUTE_MS = 60 * SECOND_MS;
@@ -33,15 +34,15 @@ const MINUTE_MS = 60 * SECOND_MS;
 /**
  * Bucketed, quantized "calm quiet" phrasing - never an exact rising
  * per-second counter, matching the legacy renderer's own
- * formatLivenessQuiet breakpoints exactly (parity doc §16): <45s -> "~30s",
- * <90s -> "~1m", >=90s -> "~2m". The top bucket covers the ENTIRE 90s-180s
- * span (not just up to some smaller ceiling), so the quiet line never
- * climbs to "~3m" in the moment before crossing into stalled.
+ * formatLivenessQuiet breakpoints (parity doc §16): <45s -> "~30s",
+ * <90s -> "~1m", <3m -> "~2m", then whole minutes up to stalled, so the quiet
+ * line never understates a long silence.
  */
 export function formatQuietBucket(gapMs: number): string {
   if (gapMs < 45_000) return "~30s";
   if (gapMs < 90_000) return "~1m";
-  return "~2m";
+  if (gapMs < 3 * MINUTE_MS) return "~2m";
+  return `~${Math.floor(gapMs / MINUTE_MS)}m`;
 }
 
 /**
@@ -136,24 +137,9 @@ export function formatSubagentCount(count: number): string {
  * level and its display text.
  *
  * A wait explained by running children is not a stall (design brief principle
- * 6), so running children suppress "quiet" outright.
- *
- * They do NOT suppress the stall report, and that asymmetry is the important
- * part. "A child is running" is a CLAIM this client cannot independently
- * verify: the hub reports a run open until it sees it end, and the fallback
- * rows derive their status from the wire too, where a row that has lost
- * contact with its child reports "running" because that is the honest default
- * when nothing bad is known (subagentModuleStore's classifyJobStatus, and kata
- * g5kf on how a row can hold that claim after the child is gone). If a
- * believed-running child were allowed to suppress the stall report forever,
- * then the single case where a reader most needs the truth — a parent wedged behind a child that died
- * quietly — would be the one case the UI stayed confidently silent about, and
- * the honest-liveness rule would be inverted by its own explanation.
- *
- * So past the stall threshold the line reports both facts at once and asserts
- * neither over the other: children are believed running, AND nothing has
- * arrived for a long time. The reader can act on that; they cannot act on
- * "waiting on 1 subagent" held for nine minutes.
+ * 6), so running children suppress "quiet" outright, and a session is never
+ * stalled while any run (the shared isStuck rule, ten minutes of silence
+ * otherwise).
  *
  * A retry does not wait for the quiet threshold past its FIRST attempt
  * (kata gw2c). The retry is KNOWN information the daemon reported, not an
@@ -180,14 +166,13 @@ export function describeLiveness(
   if (gapMs < QUIET_THRESHOLD_MS && !retryKnownEarly) return { level: "none", text: null };
   if (retry) {
     const retrying = formatRetryWait(retry);
-    if (gapMs < STALL_THRESHOLD_MS) return { level: "retrying", text: retrying };
+    if (!isStuck(gapMs, runningSubagents)) return { level: "retrying", text: retrying };
     return { level: "stalled", text: `${retrying} — no updates for ${formatExactGap(gapMs)}` };
   }
   if (runningSubagents > 0) {
     const waiting = `Waiting on ${formatSubagentCount(runningSubagents)}`;
-    if (gapMs < STALL_THRESHOLD_MS) return { level: "waiting", text: waiting };
-    return { level: "stalled", text: `${waiting} — no updates for ${formatExactGap(gapMs)}` };
+    return { level: "waiting", text: waiting };
   }
-  if (gapMs < STALL_THRESHOLD_MS) return { level: "quiet", text: `Quiet ${formatQuietBucket(gapMs)}` };
+  if (!isStuck(gapMs, runningSubagents)) return { level: "quiet", text: `Quiet ${formatQuietBucket(gapMs)}` };
   return { level: "stalled", text: `May be stalled — no updates for ${formatExactGap(gapMs)}` };
 }

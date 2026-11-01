@@ -99,7 +99,7 @@ func TestMainCheckoutLocal_SubmodulePointer_NonGitDir(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(work, ".git"), []byte("gitdir: "+target+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// validateSubmodulePointer passes (submodule shape), so we reach
+	// ValidateSubmodulePointer passes (submodule shape), so we reach
 	// gitBinaryMainRootLocal. Since "work" is not a git repo, git rev-parse
 	// --git-common-dir fails → line 196-198.
 	_, _, err := mainCheckoutLocal(work)
@@ -131,7 +131,7 @@ func TestMainCheckoutLocal_SubmodulePointer_RealGitRepo(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(submoduleWork, ".git"), []byte("gitdir: "+modulesDir+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// validateSubmodulePointer passes (shape check), then gitBinaryMainRootLocal
+	// ValidateSubmodulePointer passes (shape check), then gitBinaryMainRootLocal
 	// runs git rev-parse --git-common-dir (succeeds, covering line 195) and
 	// --show-toplevel (fails on the bare repo, covering line 204-206).
 	_, _, err := mainCheckoutLocal(submoduleWork)
@@ -168,18 +168,18 @@ func TestMainCheckoutLocal_RealGitRepo(t *testing.T) {
 }
 
 // TestValidateLinkedWorktreePointer_Malformed covers the branch where
-// pointerTarget returns false (malformed pointer content).
+// PointerTarget returns false (malformed pointer content).
 func TestValidateLinkedWorktreePointer_Malformed(t *testing.T) {
-	err := validateLinkedWorktreePointer("not a pointer", "/ancestor", "/root")
+	err := ValidateLinkedWorktreePointer("not a pointer", "/ancestor", "/root")
 	if err == nil {
 		t.Fatal("expected error for malformed worktree pointer")
 	}
 }
 
-// TestValidateSubmodulePointer_Malformed covers the branch where pointerTarget
+// TestValidateSubmodulePointer_Malformed covers the branch where PointerTarget
 // returns false (malformed pointer content).
 func TestValidateSubmodulePointer_Malformed(t *testing.T) {
-	err := validateSubmodulePointer("not a pointer", "/ancestor")
+	err := ValidateSubmodulePointer("not a pointer", "/ancestor")
 	if err == nil {
 		t.Fatal("expected error for malformed submodule pointer")
 	}
@@ -195,5 +195,53 @@ func TestRunGitCmd_Failure(t *testing.T) {
 	_, ok := runGitCmd(context.Background(), t.TempDir(), "rev-parse", "--git-common-dir")
 	if ok {
 		t.Fatal("expected runGitCmd to return ok=false in a non-git directory")
+	}
+}
+
+func TestValidateLinkedWorktreePointer_TargetNotDir(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "file")
+	if err := os.WriteFile(target, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateLinkedWorktreePointer("gitdir: "+target, dir, dir); err == nil {
+		t.Fatal("expected error for a pointer whose target is a file")
+	}
+}
+
+func TestValidateSubmodulePointer_RejectsNonSubmoduleTargets(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "file")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	plainDir := filepath.Join(dir, "gitdir")
+	if err := os.MkdirAll(plainDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, target := range map[string]string{"file": file, "plain directory": plainDir} {
+		if err := ValidateSubmodulePointer("gitdir: "+target, dir); err == nil {
+			t.Fatalf("%s: expected the pointer to be refused", name)
+		}
+	}
+	module := filepath.Join(dir, ".git", "modules", "sub")
+	if err := os.MkdirAll(module, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateSubmodulePointer("gitdir: "+module, dir); err != nil {
+		t.Fatalf("submodule-shaped target refused: %v", err)
+	}
+}
+
+func TestPointerTarget(t *testing.T) {
+	ancestor := t.TempDir()
+	if got, ok := PointerTarget("gitdir: /some/abs/path", ancestor); !ok || got != "/some/abs/path" {
+		t.Fatalf("absolute pointer = %q, %v", got, ok)
+	}
+	if got, ok := PointerTarget("gitdir: relative/path", ancestor); !ok || got != filepath.Join(ancestor, "relative", "path") {
+		t.Fatalf("relative pointer = %q, %v", got, ok)
+	}
+	if _, ok := PointerTarget("not a pointer", ancestor); ok {
+		t.Fatal("expected false for non-pointer content")
 	}
 }

@@ -140,7 +140,7 @@ func (p *hubHostCredentialsPusher) Push(ctx context.Context, params appwire.Host
 	//
 	// ProviderDescriptor.Setup is deliberately not the test: its own doc says it
 	// is "safe discovery metadata for an addressable implicit provider or
-	// existing instance" (appwire/types.go), so it is set for non-implicit
+	// existing instance" (appwire/types_auth_commands.go), so it is set for non-implicit
 	// provider IDs too (an instance addressing that ID), which the Instances
 	// name match already covers. Implicit is the fallback marker; addressability
 	// is the host's answer to resolve separately.

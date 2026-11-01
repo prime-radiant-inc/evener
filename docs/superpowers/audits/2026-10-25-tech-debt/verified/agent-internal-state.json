@@ -1,0 +1,182 @@
+[
+ {
+  "id": "agent-internal-state-1",
+  "title": "Compaction layer pipeline copy-pasted five times",
+  "category": "duplication",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Counts hold: EventContextCompaction appears 5/3/4/5 times across context_manager/obs_mask/session_log/checkpoint_pred. Reset blocks are 10 outside SetProfile, not 11 (context_manager.go:720,776,871,926 plus 6 in strategies; :380 is SetProfile). Drift is real: session_log.go:148 calls summarizeWithLLM (nil checkpointed) vs summarizeFold(..., checkpointed) at context_manager.go:752,904 and checkpoint_pred.go:166; #4181 gap admitted at context_manager.go:1293. But obs_mask and checkpoint_pred (8 of the 17 emit blocks, 4 of 10 resets) vanish if finding 2 lands, so the remaining duplication is context_manager plus session_log only. High is overstated; sequence after finding 2.",
+  "revised_fix_plan": "Do finding 2 first. Then add Manager.resetMeasurement() and one applyLayer helper shared by MaybeCompact/ForceCompact/SessionLogStrategy; keep mechanical, guard with the existing seqfuzz and compaction_kind tests. Decide separately (TDD) whether session-log gets the checkpointed carry."
+ },
+ {
+  "id": "agent-internal-state-2",
+  "title": "Four experimental context strategies unreachable from any documented surface",
+  "category": "dead-code",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Core confirmed: session_init.go:277-284 accepts obs-mask/checkpoint-pred/memory-crystals/recursive-distill; session_config.go:185 and main.go:360 list only compact|session-log|ooda; no hit anywhere in the repo (Go, TS, scripts, toml) outside docs/specs, strategy files and tests (agent/cov_s2_strategy_test.go:16, session_model_test.go:1579-1771 memory-crystals tests, two fuzz tests). Strategy files total 870 lines, tests 1,206 lines for the four (199+437+306+264), not 1,490 (the rest are shared aux/cov tests). Corrections: ObservationMaskThreshold/ThinkingClearThreshold are also read by session_log.go:85-109, so they and maskObservations/clearThinking stay; post-fold callbacks (session_compaction.go:625) are also justified by ooda per the comment at :621, so trimming them is not free; auxFailure is used by recursive_distill but the doc says opt-in memory strategies, check session_log before deleting. docs/product/subsystems.md S09 row names checkpoint-pred explicitly and must be edited. Also session_init.go:268 keeps a 'recall' alias for compact (compat arm). Removes accepted config values: needs Jesse's decision. Severity medium (drag only on invariant changes).",
+  "revised_fix_plan": "Ask Jesse. If approved: delete the four strategy files and their tests, the four selectStrategy cases, the cov_s2/session_model_test/fuzz-list references, aggressiveMaskObservations and predictiveCheckpoint; keep maskObservations/clearThinking, the threshold fields and the post-fold callbacks (ooda and session-log still use them); drop auxFailure only after confirming no remaining user. Edit the S09 row in docs/product/subsystems.md. Consider dropping the 'recall' alias in the same decision."
+ },
+ {
+  "id": "agent-internal-state-3",
+  "title": "context_manager.go is a 2,838-line, 104-function god file",
+  "category": "complexity",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Verified: wc -l 2838, 104 top-level funcs, test file 3487 lines, summarizeFold spans 2536-2711 (176 lines, not 185). Pure file moves in package contextmgr are safe and behavior-neutral. Best done after finding 2 so dead strategy code is not moved.",
+  "revised_fix_plan": "Keep as proposed; land after finding 2; split by concern with formatter-only diffs (no logic edits)."
+ },
+ {
+  "id": "agent-internal-state-4",
+  "title": "Turn-to-text renderers duplicated seven ways; byte-slice truncation can split UTF-8 runes",
+  "category": "duplication",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Verified fork_summarize.go:104 truncate does s[:limit] on bytes; context_manager.go:2560 closure is the same; byte cuts also at context_manager.go:1092 (cmd[:60]), 1434, 2462 (s[len(s)-rem:]), 2614 (text[:5000]), 2660 (content[:200]). runetrim.Cut is already imported in the package (context_manager.go:23,1681,1902; strategy_ooda.go:58). UTF-8 bug is real; renderer consolidation is secondary and partly disappears with finding 2.",
+  "revised_fix_plan": "TDD: multibyte-straddling-cap tests asserting utf8.ValidString, then route truncate and the inline cuts through runetrim.Cut. Consolidate renderers only for what remains after finding 2."
+ },
+ {
+  "id": "agent-internal-state-5",
+  "title": "Four append-only JSONL journals re-solve torn-tail, rollback and latching independently",
+  "category": "duplication",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Overstated. jobstore (store.go:779-806) and delegatestore (store.go:235-262) do share the truncate+seek+sync rollback and unusable latch, with small differences (jobstore seeks EOF and invalidates its cursor; delegatestore seeks to offset). sessionlog does NOT: grep of sessionlog.go finds no rollback, truncate, sync, unusable or closed latch; it only tracks tornTail and writes a separator (lines 179-195). transcript.go has a much richer protocol (ErrRollbackFailed, positionUnknown, append tail, batches) that is not a copy of the others. Torn-tail policies diverge on purpose per file. The proposed generic journal Appender over four stores with durability code is high risk for ~two real copies.",
+  "revised_fix_plan": "Limit scope to jobstore and delegatestore: extract one small rollback-to-offset helper plus latch if Jesse wants it; leave sessionlog and transcript alone. Needs design discussion first; run on CI only."
+ },
+ {
+  "id": "agent-internal-state-6",
+  "title": "jobstore fold cache is four copies of one pattern and three overlapping caching layers",
+  "category": "duplication",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Verified: store.go:862-939 four hit/note pairs identical in shape; cloneFoldJobs (945-966) and cloneFoldOrdered (968-988) copy the same 8-field JobRecord block; foldcache.go package comment 'mirrors' fileCursor; delegatestore loadLocked (store.go:58-76) re-reads and re-folds every call. But a generic cachedFold[T] is awkward because folds.gen is shared across all four and each projection has its own clone, so saving is closer to 40-50 lines, not 90. The clearly worthwhile piece is the duplicated clone block.",
+  "revised_fix_plan": "Extract cloneJobRecord used by both cloners (certain win). Only add generics if the shared gen field stays correct; skip delegatestore.Load changes without measurement. Shorten foldcache's mirroring commentary."
+ },
+ {
+  "id": "agent-internal-state-7",
+  "title": "Parallel path-based and fd-based output snapshot readers",
+  "category": "duplication",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Verified: output_snapshot.go (427) and output_snapshot_fd.go (302); same 'view.total-view.fileStart != retainedBytes' at output_snapshot.go:228 and fd.go:185; Truncated expression repeated at output_snapshot.go:238, fd.go:195 and output.go:483; the Truncated:...retainedBytes-visibleOffset() at :333 and fd:161. A 'KEEP IN SYNC' comment at output_snapshot.go:136 admits the coupling. Error-precedence differences are real, so only the pure middle should be shared.",
+  "revised_fix_plan": "As proposed: extract pure range-to-snapshot helper; pin both flavors with a shared table test first; keep opening/fences per flavor."
+ },
+ {
+  "id": "agent-internal-state-8",
+  "title": "Constructor and wrapper ladders with test-only entry points in production code",
+  "category": "slop",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Verified eight constructors (output.go:125-166) and the writeOutputMetaFile -> Fs -> FsSync -> FsSyncMarshal chain (885-897); writeOutputMetaFile/Fs have no non-test callers (production calls FsSync at 781,845). OpenOutputNoSync has only test callers (34 test refs); CreateOutputNoSync is used by production file jobs.go:660 (newJobManagerNoSync, a test hook). Real but small; ~50 test call sites to edit.",
+  "revised_fix_plan": "Delete writeOutputMetaFile and writeOutputMetaFileFs, collapse to one internal open helper, keep exported OpenOutput/CreateOutput; move NoSync variants into a _test helper or make newJobManagerNoSync test-only."
+ },
+ {
+  "id": "agent-internal-state-9",
+  "title": "Pass-through and test-only methods on contextmgr.Manager",
+  "category": "dead-code",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Verified: Pressure/estimatePressure/EstimatePressure same body (context_manager.go:428-437,555); estimateUsedTokens (538) no production caller; sameEstimatorTarget (406) pure forward; sessionLogCheckpoint (strategy_session_log.go:183) production uses WithMeta only; summarizeWithLLMSteered only via wrapper. But test footprint is large: 36 test refs to summarizeWithLLMSteered, 9 to sessionLogCheckpoint, 5 EstimatePressure, 2 estimateUsedTokens, so '-45' ignores ~50 test edits. ApplyThresholdScale is NOT test-only dead code: session_init.go:649,1536 call it in production code driven by cfg.testOnly.compactionThresholdScale; drop it from the list.",
+  "revised_fix_plan": "Delete EstimatePressure, estimateUsedTokens, sameEstimatorTarget, summarizeWithLLMSteered, sessionLogCheckpoint with mechanical test updates; leave ApplyThresholdScale. Do after finding 2."
+ },
+ {
+  "id": "agent-internal-state-10",
+  "title": "Checkpoint text round-tripped through a hand-written markdown parser with three legacy formats",
+  "category": "compat-legacy",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Verified legacy readers at checkpoint_format.go:299-321 (<conversation> JSON, user_messages/agent_responses) and :669-677 ('Original task:'), plus strategy_session_log.go:243. No producer anywhere writes those formats (grep for Original task / tags finds only readers). Note checkpoint_format.go is 680 lines total, not all parser. Removing needs Jesse's decision about resumed old transcripts; step 2 (structured carry on schema.Turn) is a schema change and speculative.",
+  "revised_fix_plan": "Ask Jesse about the support window; if none, delete the three legacy branches and tests (step 1 only). Treat step 2 as a separate design discussion."
+ },
+ {
+  "id": "agent-internal-state-11",
+  "title": "Heavy history-narrating and issue-archaeology comments",
+  "category": "slop",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Verified: context_manager.go has 788 comment lines of 2838 and 25 #NNNN refs; 'ruled 2026-08-06' at :44; 'A zero window used to' at :490; jobstore/store.go:74,90 'exactly as before'; atif.go:297 'kata 3d56' story; foldcache.go 362/807 comment lines. But raw comment density is not evidence of narration: much is invariant and crash-safety reasoning that should stay. The cleanup is per-comment judgment with no behavior effect.",
+  "revised_fix_plan": "Trim only the identified history/ruling phrases while splitting files in finding 3; keep invariant reasoning and short '#NNNN' pointers where a test pins behavior."
+ },
+ {
+  "id": "agent-internal-state-12",
+  "title": "Tests assert on error-message text; coverage-wave test file names",
+  "category": "test-debt",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Grep for 'Error(), ' in tests: delegatestore 84, jobstore 16, contextmgr 2 (102 total, near the claimed 92). Violations are real (store_covtest_test.go:163 'rollback truncate', 'missing version header'). But many match text the test itself injected (store_test.go:259 'injected append failure', store_covtest_test.go:32 'short write', session_log_test.go:316 'rate limited'), which tests cause propagation rather than product copy; errors.Is on a test-owned sentinel is better but these are less bad. strategy_ooda_test.go:268 does assert on product copy ('session log truncated'). cov_* file names confirmed.",
+  "revised_fix_plan": "Prioritize product-copy asserts (sentinel errors for missing header, unterminated batch, closed, unusable, rollback; ooda truncation notice to behavior); convert injected-fault matches to errors.Is on the injected error. Rename cov_* files separately."
+ },
+ {
+  "id": "agent-internal-state-13",
+  "title": "sessionlog consumers reopen the log and rebuild the path four times; EntriesRange is test-only",
+  "category": "duplication",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Verified path built at session_namer.go:664, session_init.go:2317,2363 and strategy_session_log.go:31 (literal 'sessions'); NewSessionLog called at each of those four sites; 'advisory' literal at sessionlog.go:245 and five writers. EntriesRange has only test callers (sessionlog tests/fuzz). Note aside.go:79 also lists the .log.jsonl suffix.",
+  "revised_fix_plan": "As proposed: PathFor, KindAdvisory const, AppendAdvisory without full load, delete EntriesRange (update its tests)."
+ },
+ {
+  "id": "agent-internal-state-14",
+  "title": "goal persistence uses a 9-value return and an 8-positional-argument Restore",
+  "category": "complexity",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Verified goal.go:165 returns 9 values; Restore at :175 takes 8 primitives; session_state.go:389 and session_init.go:1275 repackage field by field. Callers also include goal_test.go:134, goal_fuzz_test.go:98 and lifecycle_program_fuzz_test.go:40,104.",
+  "revised_fix_plan": "As proposed; update the two fuzz tests as well."
+ },
+ {
+  "id": "agent-internal-state-15",
+  "title": "atif conversion is a 240-line switch with copy-pasted Step literals and a three-name wrapper chain",
+  "category": "complexity",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Verified Convert->ConvertWithOptions->ConvertTranscriptWithOptions forwarders (atif.go:106-115); production calls the last only (agent/atif.go:29); eight 'steps = append(steps, step)' sites; package-level seams atifMarshalIndent/MkdirAll/WriteFile at agent/atif.go:12-16; alias extras at atif.go:342-345 are spec-driven (docs/superpowers/specs/2026-10-23-issue-4562-atif-cache-tokens.md), so removal needs Jesse.",
+  "revised_fix_plan": "As proposed; do not touch the cache aliases without Jesse; keep one exported Convert."
+ },
+ {
+  "id": "agent-internal-state-16",
+  "title": "turnwindow grammar is re-classified by consumers instead of returning a parsed value",
+  "category": "duplication",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Verified apilog_read.go:601-620 and transcript_render.go:830-839 re-test start:/dash forms using exported ParsePositiveInt/ParseDash; only these two production consumers.",
+  "revised_fix_plan": "As proposed."
+ },
+ {
+  "id": "agent-internal-state-17",
+  "title": "bucketref claims to own the ref dialect but only owns constants and helpers; three ref formatters",
+  "category": "doc-drift",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "The doc-drift core is refuted: dialect.go:21-33 itself says 'one canonical grammar with two parsers' and explains the strict agent subset, so doc and behavior agree. The first-vs-last colon difference is behavior-neutral for accepted input, since validIDToken rejects colons in the project and session tokens (transcript_ref.go:36-44). encodeRef is used with projectID '' nearly everywhere and with an already-validated id at transcript_lookup.go:102. What stands: the two one-line refFor wrappers (transcript_lookup.go:381, doctor/locate.go:197) with long history comments, and the long Lstat/Stat branch in EnumerateBuckets (bucketref.go:90-113).",
+  "revised_fix_plan": "Delete the two refFor wrappers (call bucketref.RefFor), simplify EnumerateBuckets, trim the 'now thin wrappers' narration. Do not move parsing; leave the two-parser design."
+ },
+ {
+  "id": "agent-internal-state-18",
+  "title": "delegatestore leftovers: dead decodeLog branch, legacy ObserverCallbackDelivered field",
+  "category": "dead-code",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "decodeLog(raw, true) is test-only (store.go:66,190 pass false; tests at store_covtest_test.go:287,651,676), though the quoted 'dead branches' comment at store.go:283 concerns ctx/maxEvents, not this parameter. ObserverCallbackDelivered is a deliberate documented replay guarantee (event.go:63-71: durable records must fold as written), with three fold arms (fold.go:399,424,784); removal changes durable-data handling and needs Jesse.",
+  "revised_fix_plan": "Remove the decodeLog parameter and its tests. Keep the field and fold arms unless Jesse says old journals are gone. Add doc comments to Store/Open."
+ },
+ {
+  "id": "agent-internal-state-19",
+  "title": "OutputMatcher lives in the journal store package with test-only entry points",
+  "category": "architecture",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Verified watch.go is 484 lines in package jobstore; production uses only NewOutputMatcher and feeds via FeedAtWithProvenance (job_watch.go:1347 and neighbors); Feed (watch.go:146) and FeedAt have only test callers. Low value; moving it is churn for a package-naming nit.",
+  "revised_fix_plan": "Optional move to agent/internal/outputmatch; otherwise convert Feed/FeedAt to test helpers only."
+ },
+ {
+  "id": "agent-internal-state-20",
+  "title": "artifactstore redundant chmods and path-bearing ref map",
+  "category": "slop",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Store.go:34 Chmod after MkdirTemp and :68 Chmod after WriteFile exist, and refs maps ref->path where path is always filepath.Join(dir,id). But the chmods are not strictly redundant: MkdirTemp/WriteFile modes are masked by umask, so a restrictive umask could leave unusable perms; the chmod guarantees 0700/0600. Missing doc comments confirmed. Cosmetic.",
+  "revised_fix_plan": "Add doc comments; optionally make refs a set. Keep the chmods."
+ }
+]

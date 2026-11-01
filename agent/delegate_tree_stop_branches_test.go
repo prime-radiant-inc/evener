@@ -455,3 +455,150 @@ func TestWaitForDelegateStopProgressProgress(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+// Releasing a runtime claim untracks it from an in-flight stop and wakes the
+// stop drain; releasing a claim the stop never tracked leaves the drain parked.
+func TestClaimReleaseUntracksFromStopAndSignals(t *testing.T) {
+	t.Parallel()
+	const token = uint64(7)
+	cases := []struct {
+		name    string
+		seed    func(*delegateTreeController)
+		release func(*delegateTreeController, uint64)
+		tracked func(*delegateStopState) bool
+	}{
+		{
+			name:    "steering",
+			seed:    func(c *delegateTreeController) { c.stop.steeringClaims[token] = struct{}{} },
+			release: (*delegateTreeController).releaseSteeringClaimLocked,
+			tracked: func(s *delegateStopState) bool { _, ok := s.steeringClaims[token]; return ok },
+		},
+		{
+			name:    "model",
+			seed:    func(c *delegateTreeController) { c.stop.modelClaims[token] = struct{}{} },
+			release: (*delegateTreeController).releaseModelClaimLocked,
+			tracked: func(s *delegateStopState) bool { _, ok := s.modelClaims[token]; return ok },
+		},
+		{
+			name:    "settlement",
+			seed:    func(c *delegateTreeController) { c.stop.settlementClaims[token] = struct{}{} },
+			release: (*delegateTreeController).releaseSettlementClaimLocked,
+			tracked: func(s *delegateStopState) bool { _, ok := s.settlementClaims[token]; return ok },
+		},
+	}
+	newController := func() *delegateTreeController {
+		return &delegateTreeController{
+			steeringClaims:   map[uint64]*delegateSteeringClaim{},
+			modelClaims:      map[uint64]*delegateModelRequestClaim{},
+			settlementClaims: map[uint64]*delegateSettlementClaim{},
+			stop: &delegateStopState{
+				steeringClaims:   map[uint64]struct{}{},
+				modelClaims:      map[uint64]struct{}{},
+				settlementClaims: map[uint64]struct{}{},
+				progress:         make(chan struct{}, 1),
+			},
+		}
+	}
+	for _, tc := range cases {
+		t.Run(tc.name+"/tracked", func(t *testing.T) {
+			t.Parallel()
+			c := newController()
+			tc.seed(c)
+			tc.release(c, token)
+			if tc.tracked(c.stop) {
+				t.Fatal("claim still tracked by the stop after release")
+			}
+			select {
+			case <-c.stop.progress:
+			default:
+				t.Fatal("release did not wake the stop drain")
+			}
+		})
+		t.Run(tc.name+"/untracked", func(t *testing.T) {
+			t.Parallel()
+			c := newController()
+			tc.release(c, token)
+			select {
+			case <-c.stop.progress:
+				t.Fatal("release of an untracked claim woke the stop drain")
+			default:
+			}
+		})
+		t.Run(tc.name+"/no stop", func(t *testing.T) {
+			t.Parallel()
+			c := newController()
+			c.stop = nil
+			tc.release(c, token)
+		})
+	}
+}
+
+func TestUntrackStopLockedEachStopMap(t *testing.T) {
+	t.Parallel()
+	lease := delegateLease{delegateID: "dlg_1", generation: 1}
+	work := delegateWorkToken{}
+	delivery := delegateDeliveryToken{}
+	newController := func() *delegateTreeController {
+		return &delegateTreeController{stop: &delegateStopState{
+			active:      map[delegateLease]struct{}{lease: {}},
+			starts:      map[uint64]struct{}{1: {}},
+			work:        map[delegateWorkToken]string{work: "job"},
+			deliveries:  map[delegateDeliveryToken]struct{}{delivery: {}},
+			quietClaims: map[uint64]struct{}{1: {}},
+			progress:    make(chan struct{}, 1),
+		}}
+	}
+	woke := func(c *delegateTreeController) bool {
+		select {
+		case <-c.stop.progress:
+			return true
+		default:
+			return false
+		}
+	}
+	t.Run("active", func(t *testing.T) {
+		c := newController()
+		untrackStopLocked(c, func(s *delegateStopState) map[delegateLease]struct{} { return s.active }, lease)
+		if len(c.stop.active) != 0 || !woke(c) {
+			t.Fatal("active lease not untracked and signalled")
+		}
+	})
+	t.Run("starts", func(t *testing.T) {
+		c := newController()
+		untrackStopLocked(c, func(s *delegateStopState) map[uint64]struct{} { return s.starts }, 1)
+		if len(c.stop.starts) != 0 || !woke(c) {
+			t.Fatal("start not untracked and signalled")
+		}
+	})
+	t.Run("work", func(t *testing.T) {
+		c := newController()
+		untrackStopLocked(c, func(s *delegateStopState) map[delegateWorkToken]string { return s.work }, work)
+		if len(c.stop.work) != 0 || !woke(c) {
+			t.Fatal("work not untracked and signalled")
+		}
+	})
+	t.Run("deliveries", func(t *testing.T) {
+		c := newController()
+		untrackStopLocked(c, func(s *delegateStopState) map[delegateDeliveryToken]struct{} { return s.deliveries }, delivery)
+		if len(c.stop.deliveries) != 0 || !woke(c) {
+			t.Fatal("delivery not untracked and signalled")
+		}
+	})
+	t.Run("quiet claims", func(t *testing.T) {
+		c := newController()
+		untrackStopLocked(c, func(s *delegateStopState) map[uint64]struct{} { return s.quietClaims }, 1)
+		if len(c.stop.quietClaims) != 0 || !woke(c) {
+			t.Fatal("quiet claim not untracked and signalled")
+		}
+	})
+	t.Run("untracked key does not signal", func(t *testing.T) {
+		c := newController()
+		untrackStopLocked(c, func(s *delegateStopState) map[uint64]struct{} { return s.starts }, 99)
+		if len(c.stop.starts) != 1 || woke(c) {
+			t.Fatal("untracked key changed the stop")
+		}
+	})
+	t.Run("no stop in flight", func(t *testing.T) {
+		untrackStopLocked(&delegateTreeController{}, func(s *delegateStopState) map[uint64]struct{} { return s.starts }, 1)
+	})
+}

@@ -1,14 +1,14 @@
 # web-notes-human-interrupts: a human note interrupts the turn, labels the divider, and survives rejoin
 
 **What this covers**: the human whiteboard path end to end on the web
-surface. `notes/human/set` (`appwire/types.go:810-824`,
-`agent/session_notes_rpc.go:SetHumanNote`) stores the note, emits
+surface. `notes/human/set` (`appwire/types_thread.go#NotesHumanSetParams`,
+`agent/session_notes_mutations.go:SetHumanNote`) stores the note, emits
 `evener/notes/updated`, and injects a steer that interrupts the running turn;
 the projector labels the steering divider `Human note`
 (`appwire-client/typescript/steeringLabels.ts:44`, kind `human-note` on the wire); the Notes panel's
 Shared notes section renders it (`NotesPanel.tsx:165-261`); and a fresh
 live read carries the note (the Task 7 I1 gap — fixed by the envelope
-projection in `server/thread_envelope.go` + `server/appwire_runtime.go`,
+projection in `server/thread_envelope.go` + `server/appwire_thread_projection.go`,
 pinned at unit level by
 `server/thread_envelope_notes_test.go:TestThreadEnvelopeSeedUsesStructuredMetaNotes`
 and at e2e level by step 6 below).
@@ -16,7 +16,7 @@ and at e2e level by step 6 below).
 The Go layer covers the store, the steer, and the gate with unit tests
 (`agent/session_notes_test.go:TestSetHumanNoteStoresAndSteers`,
 `TestSetHumanNoteRetryOfOneOuterIDSteersOnce`,
-`cmd/evener-hub/app_rpc_test.go:11332`
+`cmd/evener-hub/app_rpc_test.go:1485`
 `TestHubRPCNotesHumanSetGatedByCapability`); this is the live-stack
 counterpart that proves the interrupt, the label, and the rejoin actually
 work. It exercises four things in one run:
@@ -25,10 +25,10 @@ work. It exercises four things in one run:
   (`cmd/evener-hub/app_session_resume.go:91-102`), which pre-flight gates on
   the `shared-notes` capability and resumes an exited session first, like
   `goal/set`. Same retry-safe-mutation shape as the goal precedent:
-  `clientMutationId` + `expectedInstanceId` (`appwire/types.go:813-818`).
+  `clientMutationId` + `expectedInstanceId` (`appwire/types_thread.go#NotesHumanSetParams`).
 - **The human-note steer interrupts the model loop** — `executeAtomic`
   durably accepts the canonical note, one typed pending steering entry and
-  the receipt together (`agent/session_notes_rpc.go:SetHumanNote`). One
+  the receipt together (`agent/session_notes_mutations.go:SetHumanNote`). One
   `clientMutationId` survives dispatch, retry, receipt reconciliation and
   ordinary pending-steering delivery; a retry cannot enqueue a second entry.
 - **The divider label comes from the wire, not the prose** — the steering
@@ -38,7 +38,7 @@ work. It exercises four things in one run:
   guessing from the note's prose.
 - **Rejoin carries the note** — the live envelope seeds `HumanNote` from
   `SessionMeta()` and the root commit path patches it from
-  `NotesUpdatedParams` (`server/thread_envelope.go`, `server/appwire_runtime.go`),
+  `NotesUpdatedParams` (`server/thread_envelope.go`, `server/appwire_thread_projection.go`),
   so a fresh `thread/read` (what a rejoining client hydrates from) already
   carries the note before any push arrives.
 
@@ -112,7 +112,7 @@ round on. Read the session ref off the resulting `/s/local:<SID>` path.
     "note":"prefer tabs over spaces in every example"}}
    ```
    Param and response shapes are `appwire.NotesHumanSetParams` /
-   `NotesHumanSetResponse` (`appwire/types.go:813-824`); the response's
+   `NotesHumanSetResponse` (`appwire/types_thread.go#NotesHumanSetResponse`); the response's
    `note` is the stored post-clamp value, which is what every downstream
    consumer converges on. **Expected:** no error (an `Unavailable` here means
    the `shared-notes` capability gate refused, or the source is gone). The
@@ -217,7 +217,7 @@ round on. Read the session ref off the resulting `/s/local:<SID>` path.
    **Expected:** `result.thread.evener.humanNote` is the step-4 edited text —
    present on the envelope snapshot itself, before any push arrives. This is
    the live-hydration path the envelope fix (`server/thread_envelope.go`
-   seeding from `SessionMeta()`, `server/appwire_runtime.go` root commit
+   seeding from `SessionMeta()`, `server/appwire_thread_projection.go` root commit
    from `NotesUpdatedParams`) closed: pre-fix, a live session hydrated notes
    as empty until the first push. Falsify: `humanNote` empty here while step
    4 shows it in the panel (the panel read it off a push; the snapshot
@@ -231,7 +231,7 @@ round on. Read the session ref off the resulting `/s/local:<SID>` path.
    (or count `kind == "NOTES_CONTEXT"` turns in the transcript JSONL).
    **Expected:** at most one `NOTES_CONTEXT` turn per model round since the
    note was set — the projection is append-only per call
-   (`agent/session_notes_rpc.go:161-167` `maybeAppendNotesContext`), the same
+   (`agent/session_notes_projection.go` `maybeAppendNotesContext`), the same
    growth shape as the existing per-round steering appends. It must grow at
    most linearly in rounds, and an empty store must append nothing
    (`notesContextBlock` returns `""`, pinned by
@@ -248,7 +248,7 @@ round on. Read the session ref off the resulting `/s/local:<SID>` path.
 - **Step 1 (precondition, exact)**: `status.type` `active`, non-empty
   `activeTurnId`, `capabilities.sharedNotes` `true`. Falsify: `sharedNotes`
   `false` on a live evener session — the capability bit
-  (`server/appwire_runtime.go`, beside `Goal`) regressed.
+  (`server/appwire_thread_projection.go`, beside `Goal`) regressed.
 - **Step 2 (store, exact)**: `notes/human/set` returns the stored post-clamp
   note with no error. A whitespace-only or over-length note returns the
   normalized/clamped form (whitespace collapsed, 1000-rune clamp —

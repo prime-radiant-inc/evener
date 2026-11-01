@@ -138,10 +138,7 @@ func TestSessionActivityTranslatedPageSingleRowOversize(t *testing.T) {
 		return scriptedReply{result: appwire.SessionJobsResponse{Context: appwire.SessionActivityContext{Ref: "local:root"}, Jobs: []appwire.JobActivityJob{{JobID: "only", OwnerRef: "local:root"}}}}
 	})
 	_, err := source.ThreadJobsList(t.Context(), appwire.SessionActivityListParams{Ref: source.ID() + ":root", Limit: 1})
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
-		t.Fatalf("oversized compact response = %v", err)
-	}
+	wire := requireWireError(t, err, appwire.CodeUnavailable)
 	if data, ok := wire.Data.(appwire.ErrorData); !ok || data.EvenerErrorInfo != appwire.ErrorActionUnavailable || data.RetryDisposition != "" {
 		t.Fatalf("unrepresentable response must be permanently unavailable: %+v", wire)
 	}

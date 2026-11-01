@@ -69,9 +69,9 @@ func TestRetirementSafetyDetachedLifetime(t *testing.T) {
 			client := llm.NewClient()
 			adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 				func(llm.Request) llm.Response {
-					return toolCallResponse(llm.ToolCallData{ID: "original-detached-launch", Name: "shell", Type: "function", Arguments: []byte(`{"command":"read -r line < retirement-gate; printf '%s' \"$line\" > retirement-finished","mode":"detached"}`)})
+					return agenttest.ToolCallResponse(llm.ToolCallData{ID: "original-detached-launch", Name: "shell", Type: "function", Arguments: []byte(`{"command":"read -r line < retirement-gate; printf '%s' \"$line\" > retirement-finished","mode":"detached"}`)})
 				},
-				func(llm.Request) llm.Response { return finalResponse("detached launch settled") },
+				func(llm.Request) llm.Response { return agenttest.FinalResponse("detached launch settled") },
 			}}
 			client.Register(adapter)
 			root, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), env, SessionConfig{StateDir: t.TempDir()})
@@ -1577,7 +1577,7 @@ func TestRetirementClaimAfterFirstTurnAwaitsInFlightNamer(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir()}), withSteps(func(llm.Request) llm.Response {
-			return finalResponse("turn settled")
+			return agenttest.FinalResponse("turn settled")
 		}))
 		c := retirementEvidenceController(t, root)
 		held, release := make(chan struct{}), make(chan struct{})
@@ -1667,9 +1667,9 @@ func TestRetirementAutonomousActiveGoal(t *testing.T) {
 	t.Parallel()
 	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir()}), withAdapter(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
-			return toolCallResponse(llm.ToolCallData{ID: "goal-settle", Name: "update_goal", Type: "function", Arguments: []byte(`{"status":"complete","intent":"settling original goal"}`)})
+			return agenttest.ToolCallResponse(llm.ToolCallData{ID: "goal-settle", Name: "update_goal", Type: "function", Arguments: []byte(`{"status":"complete","intent":"settling original goal"}`)})
 		},
-		func(llm.Request) llm.Response { return finalResponse("settled") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("settled") },
 	}}))
 	c := retirementEvidenceController(t, root)
 	if _, err := root.SetGoal(context.Background(), "original-goal"); err != nil {
@@ -1689,9 +1689,9 @@ func TestRetirementQuestionPendingAndReply(t *testing.T) {
 	t.Parallel()
 	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir()}), withAdapter(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
-			return toolCallResponse(askUserCall("original-question", askUserArgsValid()))
+			return agenttest.ToolCallResponse(askUserCall("original-question", askUserArgsValid()))
 		},
-		func(llm.Request) llm.Response { return finalResponse("answered") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("answered") },
 	}}))
 	c := retirementEvidenceController(t, root)
 	if _, err := root.ProcessInput(context.Background(), "ask", nil); err != nil {
@@ -1955,7 +1955,7 @@ func TestRetirementWatchFiredOneShot(t *testing.T) {
 		t.Run(fmt.Sprintf("notification-callback-paused-%t", paused), func(t *testing.T) {
 			clk := agenttest.NewFakeClockAt(time.Unix(1_700_000_000, 0))
 			adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-				func(llm.Request) llm.Response { return finalResponse("timer acknowledged") },
+				func(llm.Request) llm.Response { return agenttest.FinalResponse("timer acknowledged") },
 			}}
 			root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), clock: clk}), withAdapter(adapter))
 			c := retirementEvidenceController(t, root)
@@ -2046,7 +2046,7 @@ func TestRetirementWatchTerminalPendingSend(t *testing.T) {
 	t.Parallel()
 	clk := agenttest.NewFakeClockAt(time.Unix(1_700_000_000, 0))
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("terminal watch acknowledged") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("terminal watch acknowledged") },
 	}}
 	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), clock: clk}), withAdapter(adapter))
 	c := retirementEvidenceController(t, root)
@@ -2322,7 +2322,7 @@ func TestRetirementNotificationRetryStaleAtEntry(t *testing.T) {
 	t.Parallel()
 	clk := agenttest.NewFakeClockAt(time.Unix(1_700_000_000, 0))
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("stale retry source observed") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("stale retry source observed") },
 	}}
 	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), clock: clk}), withAdapter(adapter))
 	c := retirementEvidenceController(t, root)
@@ -2367,7 +2367,7 @@ func TestRetirementNotificationRetrySupersededDuringAdmission(t *testing.T) {
 	t.Parallel()
 	clk := agenttest.NewFakeClockAt(time.Unix(1_700_000_000, 0))
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("racing retry source observed") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("racing retry source observed") },
 	}}
 	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), clock: clk}), withAdapter(adapter))
 	c := retirementEvidenceController(t, root)
@@ -2452,7 +2452,7 @@ func retirementNotificationRetryWake(t *testing.T, attachBefore bool) {
 	t.Helper()
 	clk := agenttest.NewFakeClockAt(time.Unix(1_700_000_000, 0))
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("original notification settled") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("original notification settled") },
 	}}
 	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), clock: clk}), withAdapter(adapter))
 	var c *RetirementController
@@ -2591,11 +2591,11 @@ func TestRetirementAutonomousNotificationRetryEmptySource(t *testing.T) {
 				}
 				retirementNotificationCustody(t, root, id, 0)
 				// Persist a real assistant/tool exchange, never a bare tool result.
-				adapter.steps = append(adapter.steps, func(llm.Request) llm.Response { return toolCallResponse(call) })
+				adapter.steps = append(adapter.steps, func(llm.Request) llm.Response { return agenttest.ToolCallResponse(call) })
 			}
 			adapter.steps = append(adapter.steps,
-				func(llm.Request) llm.Response { return finalResponse("first settled") },
-				func(llm.Request) llm.Response { return finalResponse("second settled") })
+				func(llm.Request) llm.Response { return agenttest.FinalResponse("first settled") },
+				func(llm.Request) llm.Response { return agenttest.FinalResponse("second settled") })
 			if _, err := root.ProcessInputKind(t.Context(), "", nil, EntryNotification); err != nil {
 				t.Fatal(err)
 			}
@@ -2675,8 +2675,8 @@ func TestRetirementAutonomousNotificationRetryOverlap(t *testing.T) {
 	t.Parallel()
 	clk := agenttest.NewFakeClockAt(time.Unix(1_700_000_000, 0))
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("first overlapping source settled") },
-		func(llm.Request) llm.Response { return finalResponse("second overlapping source settled") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("first overlapping source settled") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("second overlapping source settled") },
 	}}
 	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), clock: clk}), withAdapter(adapter))
 	entered := []chan struct{}{make(chan struct{}), make(chan struct{})}
@@ -2778,7 +2778,7 @@ func TestRetirementAutonomousNotificationRetryRefusedRearms(t *testing.T) {
 	t.Parallel()
 	clk := agenttest.NewFakeClockAt(time.Unix(1_700_000_000, 0))
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("refused-retry source settled") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("refused-retry source settled") },
 	}}
 	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), clock: clk}), withAdapter(adapter))
 	c := retirementEvidenceController(t, root)
@@ -3028,7 +3028,7 @@ func TestRetirementSafetyDurableShellNotification(t *testing.T) {
 	// observe its superseded timer without racing eligibility against wall time.
 	clk := agenttest.NewFakeClockAt(time.Unix(1_700_000_000, 0))
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("durable receipt acknowledged") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("durable receipt acknowledged") },
 	}}
 	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), clock: clk}), withAdapter(adapter))
 	c := retirementEvidenceController(t, root)
@@ -3207,7 +3207,7 @@ func TestRetirementSafetyColdGoal(t *testing.T) {
 		func(llm.Request) llm.Response {
 			close(entered)
 			<-resume
-			return toolCallResponse(llm.ToolCallData{ID: "complete-original-cold-goal", Name: "update_goal", Type: "function", Arguments: []byte(`{"status":"complete","intent":"completing original objective"}`)})
+			return agenttest.ToolCallResponse(llm.ToolCallData{ID: "complete-original-cold-goal", Name: "update_goal", Type: "function", Arguments: []byte(`{"status":"complete","intent":"completing original objective"}`)})
 		},
 		func(llm.Request) llm.Response { return communicateWithDefaultOutput("original-cold-goal-result") },
 		func(llm.Request) llm.Response { return communicateWithDefaultOutput("original-cold-goal-delivered") },
@@ -3501,7 +3501,7 @@ func TestRetirementSafetyNotificationPinsDelegateResident(t *testing.T) {
 	}
 	// A TryClaim whose evidence collection races the still-settling durable
 	// attention stream legitimately returns errDelegateTargetBusy — the tree
-	// version moved mid-collection (delegate_tree_retirement.go:193); that is
+	// version moved mid-collection; that is
 	// a retry signal, never an escape. The pin holds when every attempt
 	// refuses and a settled attempt still names the original owner.
 	settledRefusal := func(stage string) RetirementSnapshot {
@@ -3930,8 +3930,8 @@ func TestRetirementWatchFiredRepeating(t *testing.T) {
 	t.Parallel()
 	clk := agenttest.NewFakeClockAt(time.Unix(1_700_000_000, 0))
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("first repeat acknowledged") },
-		func(llm.Request) llm.Response { return finalResponse("second repeat acknowledged") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("first repeat acknowledged") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("second repeat acknowledged") },
 	}}
 	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), clock: clk}), withAdapter(adapter))
 	c := retirementEvidenceController(t, root)

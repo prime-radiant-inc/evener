@@ -1,9 +1,10 @@
 import { canonicalSkillNames } from "../../composerInput";
 import type { ThreadModel } from "../../model";
 import type { InputItem, PendingMutation } from "../../types.gen";
+import { type ComposerVerb, composerVerb } from "./composerMethods";
 import type { MutationOptimisticRecord, MutationOutboxRecord } from "./records";
 
-export type PendingMethod = "send" | "steer" | "queue" | "drain" | "promote";
+export type PendingMethod = ComposerVerb;
 // "canceled" is the durable Stop cancellation state surfaced as-is: the entry
 // stays visible (with its Retry affordance) until the user retries it or the
 // thread goes away.
@@ -38,31 +39,6 @@ export interface PendingTurnEntry {
   // The queue revision a drain steers with, likewise: the queue it takes.
   queueRevision?: number;
 }
-
-// The wire-method → PendingMethod mapping that names the entry method family:
-// promote is its own method so labels and tests stay honest (spec §3), never
-// folded into `steer`.
-function pendingMethod(method: string): PendingMethod | undefined {
-  if (method === "turn/start") return "send";
-  if (method === "turn/steer") return "steer";
-  if (method === "turn/queue") return "queue";
-  if (method === "turn/drainAsSteer") return "drain";
-  if (method === "turn/promoteQueuedAsSteer") return "promote";
-  return undefined;
-}
-
-// The wire methods that name pending composer input - the family whose rows the
-// daemon's pending projection lists, and therefore the only family whose absence
-// from an authoritative projection proves delivery. Exported so a storage
-// adapter pruning by absence reads the family from here rather than restating
-// the method names: adding a pending verb must change this mapping alone.
-export const PENDING_TURN_METHODS: readonly string[] = Object.freeze([
-  "turn/start",
-  "turn/steer",
-  "turn/queue",
-  "turn/drainAsSteer",
-  "turn/promoteQueuedAsSteer",
-]);
 
 // Collapses any whitespace run to a single space and trims both ends.
 export function normalizeText(s: string): string {
@@ -103,9 +79,8 @@ export function skillMarkers(names: readonly string[]): string {
 }
 
 // The one entry-body composition every in-flight surface renders - the
-// chips for sends, the held-steer ghost stack for steer/drain/promote
-// (steering-ghost spec §2): the matching text-plus-markers preview
-// PendingChips used to compose inline, extracted so the ghost is not a
+// chips for sends, the held-steer ghost stack for steer/drain/promote:
+// the matching text-plus-markers preview PendingChips used to compose inline, extracted so the ghost is not a
 // second copy of the chip's composition. Contentless input still composes
 // to "" - the matching-key contract queueEntryPreviewText carries above.
 export function pendingEntryPreview(entry: {
@@ -172,7 +147,7 @@ function ownUnsettledInput(
 const DEFAULT_MAX_DISPLAY_LENGTH = 140;
 
 // The client-side visual cap layered on top of the daemon's own first-line
-// truncation (parity-m5-composer.md §B) - independent of and smaller than
+// truncation - independent of and smaller than
 // most real messages, so this mostly matters for a single very long line.
 export function truncateForDisplay(text: string, max: number = DEFAULT_MAX_DISPLAY_LENGTH): string {
   if (text.length <= max) return text;
@@ -237,7 +212,7 @@ function outboxEntry(
   record: PendingRecord,
   isOwnMutationRecord: (record: { originClientId?: string }) => boolean,
 ): PendingTurnEntry | undefined {
-  const method = pendingMethod(record.method);
+  const method = composerVerb(record.method);
   if (!method) return undefined;
   const preview = inputPreview(outboxInput(record));
   const queueEntryId = method === "promote" ? record.payload.expectedEntryId : undefined;
@@ -267,7 +242,7 @@ function authoritativeEntry(
   submittedHere: ReadonlyMap<string, number>,
   durableCreatedAt: number | undefined,
 ): PendingTurnEntry | undefined {
-  const method = pendingMethod(mutation.method);
+  const method = composerVerb(mutation.method);
   if (!method) return undefined;
   return {
     id: mutation.clientMutationId,
@@ -336,7 +311,7 @@ export function reconcilePendingEntries(
   // daemon sorts pendingMutations lexicographically by id, so their
   // relative order is stable within a snapshot only). The stable sort keeps
   // array order for equal createdAt - a same-millisecond double-submit
-  // keeps submission order in-session, a corner the spec accepts. This is
+  // keeps submission order in-session, an accepted corner. This is
   // the ONE home of the rule: queue rows, chips, and the held-steer ghost
   // stack all render this order.
   return [...entries.values()].sort((left, right) => {

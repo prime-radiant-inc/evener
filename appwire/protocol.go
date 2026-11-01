@@ -299,7 +299,7 @@ var Methods = []MethodSpec{
 	{MethodEvenerHostOperations, HostOperationsParams{}, HostOperationsResponse{}, ScopeHub, "Reads the operation store's deploy/restart records, one bounded page at a time, ascending by the controller-assigned id and resumed by an opaque cursor: host-pinned pages echo the effective (generation, incarnationId) pair, unfiltered cross-host pages carry the authoritative hostBoundaries map (the triple or the literal \"absent\" per host in the query), and limit defaults to 50 and caps at 200. Never dials; a remote origin is refused."},
 	{MethodEvenerHostRunning, HostRunningParams{}, HostRunningResponse{}, ScopeHub, "Serves one hub's own running build revision and authoritative health to the controller probing it over an attached session, presenting the caller's required fencing epoch: process start time is present exactly when the hub knows it, and healthy reflects the local restart-required predicate, the owner-set minimum-free-space knob, and the state-root write probe."},
 	{MethodEvenerHostPushCredentials, HostPushCredentialsParams{}, HostPushCredentialsResponse{}, ScopeHub, "Copies the controller's local provider-instance keys to one named remote host (component 07c): each local store key is joined to the host's own instance by name (the lookup folds case), and the HOST's own spelling of the matched entry is what travels as Provider to evener/auth/status and evener/auth/apiKey/conditionalSet, the host classifies and writes its own store, and each entry reports added/updated/skipped/failed."},
-	{MethodEvenerSessionImage, SessionImageParams{}, SessionImageResponse{}, ScopeHub, "Fetches one image out of the recipient hub's own local session state for the controller's host-qualified image routes (component 05): SHA addresses a replayed transcript image and Path a relative or current-root absolute file inside the session's current working directory; the sha branch enforces the 8 MiB bound while scanning, and the media type is re-derived from the bytes. Never an HTTP route."},
+	{MethodEvenerSessionImage, SessionImageParams{}, SessionImageResponse{}, ScopeHub, "Fetches one image out of the recipient hub's own local session state for the controller's host-qualified image routes (component 05): SHA addresses a replayed transcript image and Path a relative file in the session's current working directory, or an absolute file in that directory or its retained artifacts directory; the sha branch enforces the 8 MiB bound while scanning, and the media type is re-derived from the bytes. Never an HTTP route."},
 	{MethodEvenerSessionDocument, SessionDocumentParams{}, SessionDocumentResponse{}, ScopeHub, "Reads one document out of the recipient hub's own local session state for the controller's host-qualified /doc/file proxy (S7): the path is resolved inside the session's working directory by the local route's rule and refused as pathOutsideSession when it leads out; the answer is the file's first 512 KiB, its true size, the sha256 of the whole file (up to 16 MiB) and its modification time. Never an HTTP route."},
 }
 
@@ -313,6 +313,21 @@ func (e MissingMutationFieldError) Error() string {
 	return e.Field + " is required"
 }
 
+// mutationRequiredFields lists, per mutation method, the identity and
+// precondition fields ValidateMutationParams requires.
+var mutationRequiredFields = map[string][]string{
+	MethodTurnStart:                {"clientMutationId", "expectedInstanceId"},
+	MethodTurnSteer:                {"clientMutationId", "expectedInstanceId"},
+	MethodTurnInterrupt:            {"clientMutationId", "expectedInstanceId"},
+	MethodTurnQueue:                {"clientMutationId", "expectedInstanceId"},
+	MethodTurnDrainAsSteer:         {"clientMutationId", "expectedInstanceId", "expectedQueueRevision"},
+	MethodTurnPromoteQueuedAsSteer: {"clientMutationId", "expectedInstanceId", "expectedEntryId"},
+	MethodTurnCancelQueued:         {"clientMutationId", "expectedInstanceId", "expectedEntryId"},
+	MethodThreadClear:              {"clientMutationId", "expectedInstanceId"},
+	MethodNotesHumanSet:            {"clientMutationId", "expectedInstanceId"},
+	MethodUrlsRemove:               {"clientMutationId", "expectedInstanceId"},
+}
+
 // ValidateMutationParams enforces the flag-day v2 identity and precondition
 // fields before a mutation reaches either Hub or daemon handlers.
 func ValidateMutationParams(method string, raw json.RawMessage) error {
@@ -320,18 +335,7 @@ func ValidateMutationParams(method string, raw json.RawMessage) error {
 	// applies to whatever the session is running. What remains required is the
 	// identity every retry-safe mutation needs, plus the preconditions that name
 	// a real object rather than a moment in time.
-	required := map[string][]string{
-		MethodTurnStart:                {"clientMutationId", "expectedInstanceId"},
-		MethodTurnSteer:                {"clientMutationId", "expectedInstanceId"},
-		MethodTurnInterrupt:            {"clientMutationId", "expectedInstanceId"},
-		MethodTurnQueue:                {"clientMutationId", "expectedInstanceId"},
-		MethodTurnDrainAsSteer:         {"clientMutationId", "expectedInstanceId", "expectedQueueRevision"},
-		MethodTurnPromoteQueuedAsSteer: {"clientMutationId", "expectedInstanceId", "expectedEntryId"},
-		MethodTurnCancelQueued:         {"clientMutationId", "expectedInstanceId", "expectedEntryId"},
-		MethodThreadClear:              {"clientMutationId", "expectedInstanceId"},
-		MethodNotesHumanSet:            {"clientMutationId", "expectedInstanceId"},
-		MethodUrlsRemove:               {"clientMutationId", "expectedInstanceId"},
-	}[method]
+	required := mutationRequiredFields[method]
 	if len(required) == 0 {
 		return nil
 	}

@@ -1,65 +1,61 @@
 import { describe, expect, it } from "vitest";
-import type { AnyNotification, NavigationReadParams } from "@evener/appwire-client";
+import type { NavigationReadParams } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import type { NavigationActionCheckpoint } from "./navigationActionRepository";
 import { NavigationPages } from "./navigationPages";
 import { followPinCatalog, pinSectionAsShown, readPinLocation, refreshPinNavigation } from "./pinNavigation";
 
 function boundary({ locationGeneration = "g", catalogGeneration = "g", catalogRevision = 2, missing = false } = {}) {
 	const calls: NavigationReadParams[] = [];
-	const client = {
-		onNotification: () => () => {},
-		request: async (_method: string, p: NavigationReadParams) => {
-			calls.push(p);
-			if (p.resource === "location") {
-				if (missing)
-					return {
-						status: "gone",
-						generationId: locationGeneration,
-						revision: 4,
-						etag: "gone",
-					};
-				const response = wireSnapshot(
-					p,
-					{
-						ref: p.ref,
-						top_level_ref: p.ref,
-						top_level: true,
-						pin_section_id: "focus",
-						session: {
-							ref: p.ref,
-							host_id: "local",
-							session_id: "s",
-							title: "Session",
-							project: "p",
-							state: "idle",
-							kind: "session",
-							live: true,
-						},
-					},
-					"location",
-					4,
-					locationGeneration,
-				);
-				(response.data as { metadata: Record<string, unknown> }).metadata.pin_section_id = "focus";
-				return response;
-			}
-			const offset = p.offset ?? 0;
-			return wireSnapshot(
+	const client = new FakeClient("ready");
+	client.on("evener/navigation/read", async (p: NavigationReadParams) => {
+		calls.push(p);
+		if (p.resource === "location") {
+			if (missing)
+				return {
+					status: "gone",
+					generationId: locationGeneration,
+					revision: 4,
+					etag: "gone",
+				};
+			const response = wireSnapshot(
 				p,
 				{
-					pin_sections: offset
-						? [{ id: "focus", name: "Focus", count: 1 }]
-						: [{ id: "later", name: "Later", count: 0 }],
-					remaining: offset ? 0 : 1,
+					ref: p.ref,
+					top_level_ref: p.ref,
+					top_level: true,
+					pin_section_id: "focus",
+					session: {
+						ref: p.ref,
+						host_id: "local",
+						session_id: "s",
+						title: "Session",
+						project: "p",
+						state: "idle",
+						kind: "session",
+						live: true,
+					},
 				},
-				`catalog-${offset}`,
-				catalogRevision,
-				catalogGeneration,
+				"location",
+				4,
+				locationGeneration,
 			);
-		},
-	} as unknown as ConversationClientLike;
+			(response.data as { metadata: Record<string, unknown> }).metadata.pin_section_id = "focus";
+			return response;
+		}
+		const offset = p.offset ?? 0;
+		return wireSnapshot(
+			p,
+			{
+				pin_sections: offset ? [{ id: "focus", name: "Focus", count: 1 }] : [{ id: "later", name: "Later", count: 0 }],
+				remaining: offset ? 0 : 1,
+			},
+			`catalog-${offset}`,
+			catalogRevision,
+			catalogGeneration,
+		);
+	});
 	const pages = new NavigationPages<{
 		id: string;
 		name: string;
@@ -83,38 +79,28 @@ const checkpoint: NavigationActionCheckpoint = {
 };
 describe("native pin navigation readback", () => {
 	it.each([false, true])("bounds receipt readback when notification gaps continue: %s", async (repeatGap) => {
-		let notify: (event: AnyNotification) => void = () => {};
-		const calls: string[] = [];
-		const client = {
-			onNotification: (listener: typeof notify) => {
-				notify = listener;
-				return () => {
-					notify = () => {};
-				};
-			},
-			request: async (method: string, params: NavigationReadParams) => {
-				calls.push(method);
-				if (calls.length === 1 || repeatGap)
-					notify({
-						method: "evener/navigation/invalidated",
-						params: {
-							generationId: "g",
-							sequence: calls.length * 3,
-							targets: [{ kind: "pin_catalog", revision: 2 }],
-						},
-					});
-				return wireSnapshot(
-					params,
-					{
-						pin_sections: [{ id: "focus", name: "Renamed", count: 1 }],
-						remaining: 0,
+		const client = new FakeClient("ready");
+		client.on("evener/navigation/read", async (params: NavigationReadParams) => {
+			if (client.calls.length === 1 || repeatGap)
+				client.emitNotification({
+					method: "evener/navigation/invalidated",
+					params: {
+						generationId: "g",
+						sequence: client.calls.length * 3,
+						targets: [{ kind: "pin_catalog", revision: 2 }],
 					},
-					"catalog",
-					2,
-					"g",
-				);
-			},
-		} as unknown as ConversationClientLike;
+				});
+			return wireSnapshot(
+				params,
+				{
+					pin_sections: [{ id: "focus", name: "Renamed", count: 1 }],
+					remaining: 0,
+				},
+				"catalog",
+				2,
+				"g",
+			);
+		});
 		const pages = new NavigationPages<{
 			id: string;
 			name: string;
@@ -147,7 +133,7 @@ describe("native pin navigation readback", () => {
 					error: null,
 				});
 			}
-			expect(calls).toEqual(["evener/navigation/read", "evener/navigation/read"]);
+			expect(client.calls.map((call) => call.method)).toEqual(["evener/navigation/read", "evener/navigation/read"]);
 		} finally {
 			stop();
 		}

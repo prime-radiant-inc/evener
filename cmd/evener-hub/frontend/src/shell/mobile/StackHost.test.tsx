@@ -14,7 +14,7 @@ import "../../panes/transcript";
 import { cascadeClient, cascadeContext } from "../../panes/zoom/cascadeTestUtils";
 import type { SessionZoomParams } from "../../panes/zoom/intent";
 import "../../panes/zoom";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import {
   activityClient,
   activityContext,
@@ -22,6 +22,8 @@ import {
   activityDetailsThread,
   activitySummary,
 } from "../../stores/sessionActivityTestUtils";
+import { initTranscriptDisplay, resetTranscriptDisplayStoreForTests } from "../../stores/transcriptDisplay";
+import { readModuleCss } from "../../styles/cssBlock";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
 import { openAttentionSession } from "../attentionHistory";
 import { captureAttentionPlacement, presentAttentionTarget, restoreAttentionPlacement } from "../attentionPlacement";
@@ -288,7 +290,7 @@ async function warmPane(open: () => void, findLandmark: (timeout: number) => Pro
 beforeEach(() => {
   resetWorkspaceStoreForTests();
   resetActivitySidebarStoreForTests();
-  connectionStore.setState({ client: null, state: "idle" });
+  resetConnectionStoreForTests();
   resetChromeStoreForTests();
   setLastPopstateWasTrustedForTests(false);
 });
@@ -461,7 +463,7 @@ test("at the mobile boundary an ordinary Agents row retains the existing convers
   } finally {
     cleanup();
     restoreViewport();
-    connectionStore.setState({ client: null, state: "idle" });
+    resetConnectionStoreForTests();
   }
 });
 
@@ -486,6 +488,8 @@ test("a restored cascade renders only its selected reader on mobile and restores
           addListener() {},
           removeListener() {},
         })) as typeof window.matchMedia;
+  resetTranscriptDisplayStoreForTests();
+  initTranscriptDisplay();
   const context = (ref: string) =>
     cascadeContext(ref, ref === "grandchild" ? ["root", "child"] : ref === "child" ? ["root"] : []);
   const client = cascadeClient(context);
@@ -561,11 +565,12 @@ test("a restored cascade renders only its selected reader on mobile and restores
     expect(screen.queryByTestId("cascade-column")).toBeNull();
   } finally {
     cleanup();
+    resetTranscriptDisplayStoreForTests();
     if (height) Object.defineProperty(HTMLElement.prototype, "offsetHeight", height);
     else Reflect.deleteProperty(HTMLElement.prototype, "offsetHeight");
     if (original) window.matchMedia = original;
     else Reflect.deleteProperty(window, "matchMedia");
-    connectionStore.setState({ client: null, state: "idle" });
+    resetConnectionStoreForTests();
   }
 });
 
@@ -638,7 +643,13 @@ test("renders the replacement session and drops stale secondary panes from the s
   render(<StackHost />);
 
   expect(workspaceStore.getState().panes).toEqual([
-    { id: replacementId, type: "session", params: { ref: "local:session-a" }, slot: "main" },
+    {
+      id: replacementId,
+      type: "session",
+      params: { ref: "local:session-a" },
+      slot: "main",
+      composerSeatId: expect.any(String),
+    },
   ]);
   expect(await screen.findByRole("heading", { name: "local:session-a" })).toBeTruthy();
   expect(screen.queryByText(/doc pane: secondary/)).toBeNull();
@@ -1034,6 +1045,7 @@ test.each([false, true])(
       type: "session",
       params: { ref: "local:owner" },
       slot: "main",
+      composerSeatId: expect.any(String),
     });
     await user.click(screen.getByRole("button", { name: "Back" }));
     await findStackedEmptyState("welcome");
@@ -1558,8 +1570,7 @@ test("mounting already at the focused pane's own URL does not dispatch a redunda
 // the inset cannot false-positive the match.
 
 test("the host lifts nothing off the bottom edge - docked chrome owns the bottom inset", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "StackHost.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readModuleCss(import.meta.url, "StackHost.module.css");
   expect(css).not.toContain("env(safe-area-inset-bottom)");
   const hostRule = css.match(/\.host \{([^}]*)\}/)?.[1] ?? "";
   expect(hostRule).not.toContain("padding-bottom");

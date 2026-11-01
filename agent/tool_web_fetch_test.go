@@ -108,16 +108,6 @@ func TestExtFromContentType(t *testing.T) {
 	}
 }
 
-func toolCallResponse(calls ...llm.ToolCallData) llm.Response {
-	parts := make([]llm.ContentPart, len(calls))
-	for i, c := range calls {
-		parts[i] = llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &c}
-	}
-	return llm.Response{
-		Message: llm.Message{Role: llm.RoleAssistant, Content: parts},
-	}
-}
-
 func TestWebFetchTool_Integration(t *testing.T) {
 	// Serve HTML via httptest.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -137,7 +127,7 @@ func TestWebFetchTool_Integration(t *testing.T) {
 		steps: []func(req llm.Request) llm.Response{
 			// Step 0: the main agent calls web_fetch.
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(llm.ToolCallData{
+				return agenttest.ToolCallResponse(llm.ToolCallData{
 					ID:        "wf1",
 					Name:      "web_fetch",
 					Arguments: json.RawMessage(fmt.Sprintf(`{"url": %q, "question": "What is this page about?"}`, srv.URL)),
@@ -146,11 +136,11 @@ func TestWebFetchTool_Integration(t *testing.T) {
 			// Step 1: the cheap model Complete() call from web_fetch.
 			func(req llm.Request) llm.Response {
 				capturedReqs = append(capturedReqs, req)
-				return finalResponse("This page is about Go programming.")
+				return agenttest.FinalResponse("This page is about Go programming.")
 			},
 			// Step 2: the main agent receives the web_fetch result and responds.
 			func(req llm.Request) llm.Response {
-				return finalResponse("The page is about Go programming.")
+				return agenttest.FinalResponse("The page is about Go programming.")
 			},
 		},
 	}
@@ -250,17 +240,17 @@ func TestWebFetchTool_ResultContainsFilePaths(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(llm.ToolCallData{
+				return agenttest.ToolCallResponse(llm.ToolCallData{
 					ID:        "wf1",
 					Name:      "web_fetch",
 					Arguments: json.RawMessage(fmt.Sprintf(`{"url": %q, "question": "test"}`, srv.URL)),
 				})
 			},
 			func(req llm.Request) llm.Response {
-				return finalResponse("answer")
+				return agenttest.FinalResponse("answer")
 			},
 			func(req llm.Request) llm.Response {
-				return finalResponse("done")
+				return agenttest.FinalResponse("done")
 			},
 		},
 	}
@@ -317,7 +307,7 @@ func TestWebFetchTool_JSONContent(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(llm.ToolCallData{
+				return agenttest.ToolCallResponse(llm.ToolCallData{
 					ID:        "wf1",
 					Name:      "web_fetch",
 					Arguments: json.RawMessage(fmt.Sprintf(`{"url": %q, "question": "What is the status?"}`, srv.URL)),
@@ -325,10 +315,10 @@ func TestWebFetchTool_JSONContent(t *testing.T) {
 			},
 			// Cheap model call.
 			func(req llm.Request) llm.Response {
-				return finalResponse("The status is ok.")
+				return agenttest.FinalResponse("The status is ok.")
 			},
 			func(req llm.Request) llm.Response {
-				return finalResponse("Status is ok.")
+				return agenttest.FinalResponse("Status is ok.")
 			},
 		},
 	}
@@ -601,7 +591,7 @@ func TestWebFetch_DocWallRetryIsBoundedAndOtherStatusIsNotRetried(t *testing.T) 
 			adapter := &agenttest.ModelTrackingAdapter{
 				Provider: "openai",
 				Respond: func(req llm.Request) (llm.Response, error) {
-					return finalResponse("WFUNEXPECTEDMODEL7F02C5"), nil
+					return agenttest.FinalResponse("WFUNEXPECTEDMODEL7F02C5"), nil
 				},
 			}
 			client := llm.NewClient()
@@ -749,7 +739,7 @@ func TestWebFetch_ModelContentTruncationNeverSplitsRune(t *testing.T) {
 	adapter := &agenttest.ModelTrackingAdapter{Provider: "openai"}
 	adapter.Respond = func(req llm.Request) (llm.Response, error) {
 		captured = append(captured, req)
-		return finalResponse("ok"), nil
+		return agenttest.FinalResponse("ok"), nil
 	}
 	client := llm.NewClient()
 	client.Register(adapter)

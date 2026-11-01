@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 	"primeradiant.com/evener/internal/appserver"
@@ -236,9 +237,7 @@ func assertSkillInputRejection(t *testing.T, err error) {
 func dialSkillInputHub(t *testing.T, hub *httptest.Server) *appwire.Client {
 	t.Helper()
 	client := dialHubRPC(t, hub)
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	mustInitializeHubClient(t, client)
 	return client
 }
 
@@ -464,7 +463,7 @@ func TestSkillInputHubColdStartGatesInitialInputOnTargetCapability(t *testing.T)
 			client := dialSkillInputHub(t, hub)
 			defer client.Close()
 
-			_, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+			_, err := appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
 				Model: "openai/gpt-5",
 				CWD:   "/tmp",
 				Input: skillInputHubSelection(),

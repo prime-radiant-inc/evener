@@ -4,12 +4,14 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/llm"
 )
 
 // collectStallWarnings drains the buffered event channel and returns warning
@@ -178,8 +180,9 @@ func TestDrainStallWatchdogFiresOnGenuineStall(t *testing.T) {
 			clk.Advance(DrainStallTimeout - time.Nanosecond)
 			d.assertParked(t, "the actual resource deadline has not elapsed")
 			// The production resource timer, not a synthetic notification tick,
-			// wakes the expired pass and returns without another producer kick.
+			// wakes the expired pass for its one final source-repair attempt.
 			clk.Advance(time.Nanosecond)
+			d.releaseKick(t)
 
 			select {
 			case <-d.done:
@@ -562,6 +565,8 @@ func TestDrainStallGiveUpRechecksTheWakeEdge(t *testing.T) {
 		t.Fatal("drain neither returned nor re-ran the pass")
 	}
 	d.releaseKickSend(t)
+	// The confirming verdict owns one final repair, even without another hint.
+	d.releaseKick(t)
 
 	// The confirming pass finds the edge clear and the stall persisting: NOW it
 	// gives up, with the one warning. This select names the state if it does not:
@@ -589,5 +594,91 @@ func TestDrainStallGiveUpRechecksTheWakeEdge(t *testing.T) {
 	warnings := collectStallWarnings(sess)
 	if len(warnings) != 1 || !strings.Contains(warnings[0].Data.(events.WarningData).Message, "shell-wedge") {
 		t.Fatalf("want one stall warning naming shell-wedge, got %+v", warnings)
+	}
+}
+
+// The actual stall deadline owns one final recovery attempt, not a periodic
+// retry prefix. Its confirming scan must deliver recovered work or give up once.
+func TestDrainStallDeadlineMakesOneFinalRecoveryAttempt(t *testing.T) {
+	for _, outcome := range []string{"recovered", "still-stalled", "wake-straddle"} {
+		t.Run(outcome, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				clk := agenttest.NewFakeClock()
+				adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+					func(req llm.Request) llm.Response {
+						observationRequest(t, req, []string{"shell-final-repair"}, nil)
+						return agenttest.FinalResponse("recovered-final-answer")
+					},
+				}}
+				sess := newSession(t, withoutGitSnapshot(), withAdapter(adapter), withConfig(SessionConfig{clock: clk, StateDir: t.TempDir()}))
+				seedOwnedDurablePending(t, sess.jobManager, "shell-final-repair", jobstore.JobShell)
+				if stalled, err := sess.drainSubtreeIsStalled(); err != nil || !stalled {
+					t.Fatalf("fixture must be stranded: stalled=%t err=%v", stalled, err)
+				}
+				// Deliberately leave source hints disconnected, reproducing the
+				// lost-edge obligation that the final recovery is meant to repair.
+				wake, hint := newDrainWake()
+				started := clk.Now()
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				var kicks int
+				var result string
+				var err error
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					result, err = sess.drainJobTreeWith(ctx, wake, nil, func(context.Context) error {
+						kicks++
+						if kicks == 2 {
+							if clk.Now().Before(started.Add(DrainStallTimeout)) {
+								t.Error("final repair ran before the stall deadline")
+							}
+							switch outcome {
+							case "recovered":
+								return sess.rematerializeDurablePendings()
+							case "wake-straddle":
+								hint()
+							}
+						}
+						return nil
+					}, sess.ProcessInputKind)
+				}()
+				synctest.Wait()
+				if kicks != 1 {
+					t.Fatalf("entry recovery attempts=%d, want 1", kicks)
+				}
+				clk.Advance(DrainStallTimeout - time.Nanosecond)
+				synctest.Wait()
+				if kicks != 1 {
+					t.Fatalf("pre-deadline recovery attempts=%d, want entry only", kicks)
+				}
+				clk.Advance(time.Nanosecond)
+				synctest.Wait()
+				select {
+				case <-done:
+				default:
+					t.Fatal("expired stall neither recovered nor gave up")
+				}
+				wantKicks := 2
+				if outcome == "wake-straddle" {
+					wantKicks++ // One real producer hint, never a second final repair.
+				}
+				if err != nil || kicks != wantKicks {
+					t.Fatalf("drain err=%v recovery attempts=%d, want %d", err, kicks, wantKicks)
+				}
+				warnings := collectStallWarnings(sess)
+				if outcome == "recovered" {
+					if result != "recovered-final-answer" || len(adapter.Requests()) != 1 || len(warnings) != 0 {
+						t.Fatalf("recovered drain result=%q requests=%d warnings=%v", result, len(adapter.Requests()), warnings)
+					}
+					recs, loadErr := sess.jobManager.store.Load()
+					if loadErr != nil || recs["shell-final-repair"].NotifyState != jobstore.NotifyDelivered {
+						t.Fatalf("final repair did not settle source custody: %+v %v", recs["shell-final-repair"], loadErr)
+					}
+				} else if result != "" || len(adapter.Requests()) != 0 || len(warnings) != 1 || !strings.Contains(warnings[0].Data.(events.WarningData).Message, "shell-final-repair") {
+					t.Fatalf("still-stalled result=%q requests=%d warnings=%v", result, len(adapter.Requests()), warnings)
+				}
+			})
+		})
 	}
 }

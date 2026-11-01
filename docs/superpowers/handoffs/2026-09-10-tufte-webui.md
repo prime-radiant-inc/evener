@@ -39,7 +39,7 @@ Existing folding, keyboard behavior, preferences, workspace persistence and sema
 
 Jesse asked whether the design theory is evergreen, whether colors were considered, and whether line spacing is well tuned. The canonical docs explain the theory and tradeoffs. Warm light/dark anchors include `#FAF9F6` and `#191918`; semantic ink/washes and retained ANSI roles remain deliberate. Prose uses 18px at 1.6 leading (28.8px), 12px paragraph spacing; compact UI/title leading uses 1.4/1.25, with a 4/8/16/24 spacing rhythm. The token contract previously passed 1,585 tests on unchanged token bytes. There was **no comparative leading A/B study, perceptual display/color-vision study, or measured usability uplift**. These are honest limits, not new mandatory design work.
 
-Read [the spec](../specs/2026-09-09-tufte-webui-design.md), [the implementation plan](../plans/2026-09-09-tufte-webui.md), and [the full-app fixture guide](../../web-ui/editorial-preview.md). Source and tests are authoritative over stale project prose.
+Read [the spec](../specs/2026-09-09-tufte-webui-design.md) (the implementation plan is deleted; Git history retains it), and [the full-app fixture guide](../../web-ui/editorial-preview.md). Source and tests are authoritative over stale project prose.
 
 ## Implementation and completed review
 

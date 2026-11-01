@@ -1,12 +1,12 @@
-// The application shell: constructs the one AppwireClient per window,
-// drives its connect() handshake, provides it via context, and hosts the
-// workspace - DockHost (dockview) on desktop; renders NotFound in its
+// The workspace shell uses the shared browser connection lifetime, provides
+// its client via context, and hosts DockHost (dockview) on desktop; renders NotFound in its
 // place for a path urlToPane() can't resolve at all.
 
 import type { AppwireClientLike, NavigationSessionLocation } from "@evener/appwire-client";
-import { ACTIONS, AppwireClient, rpcURLFromLocation } from "@evener/appwire-client";
-import { isNavigationUnavailable, isSettledGone, keyID } from "@evener/appwire-client/state/navigation";
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { ACTIONS } from "@evener/appwire-client";
+import { isNavigationUnavailable, isSettledGone } from "@evener/appwire-client/state/navigation";
+import { useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
+import { comicDocumentCoversConversation } from "../comic/comicPaneCoverage";
 import { keybindingsRegistry } from "../keybindings/appRegistry";
 import { isEditableTarget } from "../keybindings/dispatcher";
 import { MotionProvider } from "../motion";
@@ -17,16 +17,18 @@ import { isKnownSettingsSection, resolveSettingsSection } from "../panes/setting
 import { zoomParamsCoverConversation } from "../panes/zoom/cascadeCoverage";
 import { parseZoomParams, type SessionZoomParams } from "../panes/zoom/intent";
 import { startBackgroundTranscripts } from "../stores/backgroundTranscripts";
-import { connectionStore, useConnectionStore } from "../stores/connection";
+import { useConnectionStore } from "../stores/connection";
+import { cancelConversationHandoff, conversationHandoffGeneration } from "../stores/conversationClaimHandoff";
 import {
   selectLiveRows,
   selectLocation,
   selectNextSectionOffset,
+  selectSectionCanDemand,
   selectSectionRemaining,
 } from "../stores/navigation/selectors";
 import { navigationStore, useNavigationStore } from "../stores/navigation/store";
 import { syncSettingsHostToRoute } from "../stores/settingsHost";
-import { initTranscriptDisplay } from "../stores/transcriptDisplay";
+import { initTranscriptDisplay, transcriptDisplayStore, useTranscriptDisplayStore } from "../stores/transcriptDisplay";
 import { ActivitySidebar } from "./activitybar/ActivitySidebar";
 import { currentAttentionEntryToken, restoreCurrentAttentionEntry } from "./attentionHistory";
 import { ConnectionBanner } from "./ConnectionBanner";
@@ -34,21 +36,22 @@ import { CheatsheetOverlay } from "./cheatsheet/CheatsheetOverlay";
 import { ToastRegion } from "./chrome/ToastRegion";
 import { ClientProvider } from "./clientContext";
 import { DockRegion } from "./DockRegion";
-import { focusedSessionPaneId, focusedSessionRef } from "./focusedSession";
+import { focusedSessionPaneId, focusedSessionRef, modalOpenInFocusedWindows } from "./focusedSession";
 import { HoldHints } from "./holdhints/HoldHints";
 import { installKeybindings } from "./installKeybindings";
+import { createLiveSessionController } from "./liveSessionController";
 import { StackHost } from "./mobile/StackHost";
 import { NeedsYouProvider, useNeedsYou } from "./NeedsYouProvider";
 import { NotFound } from "./NotFound";
 import { CommandPalette } from "./palette/CommandPalette";
 import { openPalette, paletteStore } from "./palette/paletteController";
 import { RailHost } from "./rail";
-import { adjacentLiveSessionRef } from "./rail/liveSessionCycle";
 import { navigate, observeRouteHistory, openSessionRoute, refParam, urlToPane } from "./routing";
 import { cycleSessionPane } from "./sessionCycle";
 import { openNestedSessionWithOwner, openTopLevelSession } from "./sessionPlacement";
 import { isSinglePaneRoute } from "./singlePane";
-import { useIsMobile } from "./useIsMobile";
+import { useBrowserConnection } from "./useBrowserConnection";
+import { isMobileViewport } from "./useIsMobile";
 import { useKeyboardInset } from "./useKeyboardInset";
 import {
   conversationOpenParentRef,
@@ -83,9 +86,8 @@ initTranscriptDisplay();
 // Wires the activity summary store to the activity panel store: the panel
 // requires it before it fetches a continuation page.
 
-// Start the notifications engine once, at module evaluation, beside initPrefs.
-// Idempotent no-op in T1; T4 fills it (title count / favicon badge / OS
-// notification / sound / single-tab election off the pinned all-OFF prefs).
+// Workspace-only notification election and attention chrome start at module
+// evaluation; the comic entry never imports this module.
 initNotifications();
 
 import styles from "./AppShell.module.css";
@@ -98,17 +100,9 @@ import styles from "./AppShell.module.css";
 // in its own chunk that only a desktop session ever fetches.
 
 export interface AppShellProps {
-  // Test seam: production (main.tsx) omits this, and AppShell constructs +
-  // connects the one real AppwireClient itself (below). Tests inject a
-  // FakeClient (whose connect() is a separately-scripted promise, see
-  // protocol/testing/fakeClient.ts) so the rest of AppShell's wiring -
-  // including the shared connection binding's metadata publication - runs
-  // with no real sockets.
-  // AppShell calls .connect() on whatever `client` is, injected or not; the
-  // `owned` half of ClientSlot below exists to gate the ONE thing that
-  // still differs between them - never opening a real socket under a test
-  // runner - and to know which client this component itself is responsible
-  // for closing again on unmount.
+  // Tests inject a FakeClient so the shared connection lifetime's handshake
+  // and navigation publication run without real sockets. Production constructs
+  // and retires the one real client through useBrowserConnection.
   client?: AppwireClientLike;
   // Test seam: production (main.tsx) omits this, so the banner uses its
   // built-in 10s reveal delay. Tests pass 0 to drive the banner synchronously
@@ -120,28 +114,8 @@ export interface AppShellProps {
   bannerCreateClient?: () => AppwireClientLike;
 }
 
-interface ClientSlot {
-  client: AppwireClientLike;
-  owned: AppwireClient | null;
-}
-
-// Constructing an AppwireClient has no side effects on its own (the
-// constructor only stores config; dialing a socket happens inside
-// connect()), so computing this in a useState lazy initializer is safe even
-// under StrictMode's double-invoke - the discarded extra instance (if any)
-// never opened a socket. The actual connect() call lives in the effect
-// below, which IS where a side effect belongs.
-function createClientSlot(injected: AppwireClientLike | undefined): ClientSlot {
-  if (injected) return { client: injected, owned: null };
-  const real = new AppwireClient({ url: rpcURLFromLocation(window.location) });
-  return { client: real, owned: real };
-}
-
-// Adopting a banner-retry client into the provider slot. Same ownership
-// rule as construction: the shell closes real clients it provides on
-// unmount, while injected (test) clients stay their owner's responsibility.
-function adoptClientSlot(fresh: AppwireClientLike): ClientSlot {
-  return { client: fresh, owned: fresh instanceof AppwireClient ? fresh : null };
+function startWorkspaceBackground() {
+  return startBackgroundTranscripts(navigationStore);
 }
 
 // Hand-rolled rather than react-router (see Task 1's report for the
@@ -319,7 +293,9 @@ function routePlacementIsApplied(
     // New/pending routes and generic or stale document bindings still reconcile.
     if (
       typeof sourceSession === "string" &&
-      docParams.session === sourceSession &&
+      typeof docParams.session === "string" &&
+      (docParams.session === sourceSession ||
+        (focusedPane !== undefined && comicDocumentCoversConversation(focusedPane, main, docParams.session))) &&
       docParams.path === documentState.reference.path
     ) {
       return true;
@@ -459,67 +435,11 @@ function reconcileWelcomeRouteWithLocation(location: NavigationSessionLocation |
 }
 
 function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateClient }: AppShellProps) {
-  const [slot, setSlot] = useState(() => createClientSlot(injectedClient));
-  const { client, owned } = slot;
-  // A banner retry wires a fresh client into connectionStore; adopting it
-  // here keeps ClientProvider (shell-owned, fixed at mount otherwise)
-  // pointed at the live client instead of a closed orphan. connect() is
-  // idempotent on an already-connected client, so the mount effect below
-  // safely re-runs for the adopted instance.
-  const handleClientReplaced = useCallback((fresh: AppwireClientLike) => setSlot(adoptClientSlot(fresh)), []);
+  const { client, onClientReplaced } = useBrowserConnection({
+    client: injectedClient,
+    startBackground: startWorkspaceBackground,
+  });
   const { controller } = useNeedsYou();
-
-  useEffect(() => {
-    connectionStore.getState().connect(client);
-    // One background transcript owner per actual client lifetime: it follows
-    // the complete Live roster (across projects and attached remote hosts,
-    // including idle sessions) through the navigation store's own background
-    // page lease, independent of the selected pane, rail expansion, width or
-    // visibility. Navigation initialization is already performed by the app
-    // (notifications/index.ts), so this adds no initialize request.
-    const backgroundTranscripts = startBackgroundTranscripts(navigationStore);
-    // jsdom (unlike a real browser-less environment) implements a global
-    // WebSocket that would otherwise dial the page's own origin for real.
-    // App.test.tsx renders <App/> - and therefore <AppShell/> with its
-    // default, no-prop production wiring - with no injected client, so a
-    // REAL client's connect() must never run under vitest. An injected
-    // client (AppShellProps.client - always a FakeClient in tests) has no
-    // socket to open, so it's fine to exercise its handshake under test by
-    // allowing connect() to run even
-    // under MODE==="test" (mirrors dev/DevHarness.tsx's identical
-    // guard/rationale, narrowed to only the client AppShell itself dialed).
-    if (!(owned && import.meta.env.MODE === "test")) {
-      void client.connect().catch(() => {
-        // State and negotiated metadata are published by the shared binding;
-        // a failure is already reflected through its state listener.
-      });
-    }
-    // Tear down the client we constructed ourselves on unmount (HMR
-    // remount, navigating away, etc.) - the one-client-per-window invariant
-    // means this component must retire what it dialed. An injected client's
-    // lifecycle stays its owner's (the test's) responsibility, so this only
-    // ever acts on `owned`, never the interface-typed `client`.
-    return () => {
-      // Stop and release this owner's claims before the shared client is torn
-      // down; dispose never closes the client itself. Match the repository's
-      // 30-second final-retirement bound even if a disposal stops settling.
-      const disposal = backgroundTranscripts.dispose();
-      if (!owned) {
-        void disposal.catch(() => {});
-        return;
-      }
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const deadline = new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, 30_000);
-      });
-      void Promise.race([disposal, deadline])
-        .catch(() => {})
-        .then(() => {
-          clearTimeout(timer);
-          owned.close();
-        });
-    };
-  }, [client, owned]);
 
   // Global chord wiring (floor §2.1 + the UX-fix chords), now driven by the
   // keybindings dispatcher (src/keybindings/, installed app-wide by
@@ -601,9 +521,24 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
       .lookupLocation(locationRef)
       .catch(() => undefined);
   }, [locationFailed, locationGone, locationRef, locationResource, navigationMode]);
-  const isMobile = useIsMobile();
-  // Route-change epoch for in-flight live demands (roborev PR #1044 round-9
-  // medium 4): leaving the session (to settings, the dashboard, another
+  const [viewportReady, setViewportReady] = useState(false);
+  const viewport = useTranscriptDisplayStore((state) => state.viewport);
+  useLayoutEffect(() => {
+    // Module initialization can precede the shell mount. Publish that initial
+    // drift through preparation too, never select a host from a live snapshot.
+    transcriptDisplayStore.getState().setViewport(isMobileViewport() ? "mobile" : "desktop");
+    setViewportReady(true);
+  }, []);
+  const isMobile = viewport === "mobile";
+  const handoffGeneration = conversationHandoffGeneration(viewport);
+  const hasHost = route !== null;
+  // A route departure can leave the workspace's retained pane record alive.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: pathname fences pending destination work
+  useEffect(() => {
+    if (!hasHost) cancelConversationHandoff(handoffGeneration);
+    return () => cancelConversationHandoff(handoffGeneration);
+  }, [handoffGeneration, hasHost, pathname]);
+  // Route-change epoch for in-flight live demands: leaving the session (to settings, the dashboard, another
   // session) and returning BEFORE a demand resolves can restore an identical
   // focused pane id and session ref, so the press-time pane/ref guards alone
   // cannot tell that round trip apart from "never left" - and the stale
@@ -635,149 +570,46 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
   // (shell/palette/commands.ts); same shared-seam precedent as
   // next-needs-you above.
   useEffect(() => {
-    if (isMobile) return undefined;
+    if (!viewportReady || isMobile) return undefined;
     installKeybindings();
     const registry = keybindingsRegistry.getState();
-    // The live section paginates like needs_you (limit 50 per page). At the
-    // last LOADED live row, next demand-loads the following page and
-    // continues into it rather than wrapping over the loaded subset, which
-    // would skip every live session behind the remaining count (roborev PR
-    // #1044 finding 1; the needs-you handler's openDemandedPage pattern
-    // above). previous wraps within loaded rows: pages only page forward,
-    // so the true last live row is unknowable until every page is in; the
-    // exception is an UNLOADED section, where previous demand-loads through
-    // the remaining pages to the tail (round-4 medium 1).
-    //
-    // Lifecycle rules (PR #1044 rounds 2 and 4): the demanded-page registry
-    // maps page+direction to the press that owns the in-flight load; it
-    // clears on a client generation change and on load failure (the
-    // revalidator resolves with an error state rather than rejecting);
-    // starting a NEW demand or navigating directly bumps the intent counter,
-    // but a press that dedupes against a still-fresh in-flight demand does
-    // NOT - it is the same intent, and bumping would make the demand's own
-    // completion go inert (round-4 medium 2). A press against an owner whose
-    // guards have gone STALE (the user left and returned, the client
-    // reconnected) does not dedupe: it ADOPTS the pending load by rebinding
-    // fresh guards, so its completion navigates when the load lands instead
-    // of riding the dead one into inertia (round-11 medium 1). The dedupe
-    // key is page AND direction: an opposite-direction press against the
-    // same in-flight page is a NEW intent - it must bump and supersede, not
-    // ride the stale continuation (round-6 medium). A completing demand
-    // goes inert when the press that started it no longer owns the intent,
-    // the focused session or pane moved on, or a palette/modal is open.
-    // A completing demand also goes inert when the client generation changed
-    // mid-flight (reconnect): the rows it resolved with belong to the previous
-    // generation, and the handlers' press-time reset only covers new presses.
-    let liveNavMounted = true;
-    let liveNavIntent = 0;
-    let liveNavGeneration = navigationStore.getState().clientGenerationID;
-    interface LiveDemandOwner {
-      intent: number;
-      generation: string;
-      pane: string | null;
-      ref: string | null;
-      routeEpoch: number;
-      beforeRefs: ReadonlySet<string>;
-    }
-    const demandedLivePages = new Map<string, LiveDemandOwner>();
-    // A press-time freshness check for the recorded owner: the guards the
-    // owner captured still match the current world. Palette/modal are not
-    // part of it - the dispatcher does not deliver the chord while either is
-    // open; they stay completion-only checks.
-    const liveDemandOwnerFresh = (owner: LiveDemandOwner): boolean =>
-      navigationStore.getState().clientGenerationID === owner.generation &&
-      liveNavRouteEpochRef.current === owner.routeEpoch &&
-      workspaceStore.getState().focusedPaneId === owner.pane &&
-      focusedSessionRef() === owner.ref;
-    // Opens (or re-focuses) a live session by URL, then guarantees the
-    // session pane holds focus even when the URL already named the target -
-    // navigate() no-ops on an unchanged pathname, so a secondary panel or
-    // another pane holding focus would otherwise survive the press
-    // (roborev PR #1044 round-8 medium 3). openTopLevelSession is the shared
-    // placement seam; it focuses a pane it freshly places but deliberately
-    // never steals focus for one it preserves (a restored layout's saved
+    // Opens (or re-focuses) a live session by URL, then guarantees the session
+    // pane holds focus even when the URL already named the target: navigate()
+    // no-ops on an unchanged pathname, so a secondary panel or another pane
+    // holding focus would otherwise survive the press. openTopLevelSession
+    // never steals focus for a pane it preserves (a restored layout's saved
     // focus must survive a boot placement), so the chord refocuses whatever
     // the placement left in main itself.
     const openLiveSession = (ref: string): void => {
       openSessionRoute(ref);
-      const workspace = workspaceStore.getState();
-      const main = workspace.mainPane();
+      const main = workspaceStore.getState().mainPane();
       if (main === null || main.type !== "session" || refParam(main.params) !== ref) {
         openTopLevelSession(ref);
       }
       const placed = workspaceStore.getState().mainPane();
-      // focusPane already no-ops for a pane that is focused or absent, so
-      // this needs no guard of its own.
+      // focusPane already no-ops for a pane that is focused or absent.
       if (placed !== null) workspaceStore.getState().focusPane(placed.id);
     };
-    const demandLivePage = (direction: "next" | "previous", beforeRefs: ReadonlySet<string>) => {
-      const state = navigationStore.getState();
-      const offset = selectNextSectionOffset("live", state);
-      const pageID = keyID({ kind: "section", section: "live", offset, limit: 50 });
-      const demandKey = `${pageID}:${direction}`;
-      const existing = demandedLivePages.get(demandKey);
-      if (existing && liveDemandOwnerFresh(existing)) return; // same intent, still fresh: waiting on this page
-      liveNavIntent++;
-      const owner: LiveDemandOwner = {
-        intent: liveNavIntent,
-        generation: state.clientGenerationID,
-        pane: workspaceStore.getState().focusedPaneId,
-        ref: focusedSessionRef(),
-        routeEpoch: liveNavRouteEpochRef.current,
-        beforeRefs,
-      };
-      demandedLivePages.set(demandKey, owner);
-      void state
-        .loadSection("live", offset)
-        .then((page) => {
-          // A newer press adopted this load by rebinding the record: only
-          // the current owner's completion acts; the displaced one no-ops.
-          if (demandedLivePages.get(demandKey) !== owner) return;
-          if (page.error !== null || page.data === null) {
-            demandedLivePages.delete(demandKey); // failed load: allow the next press to retry
-            return;
-          }
-          if (
-            !liveNavMounted ||
-            owner.intent !== liveNavIntent ||
-            navigationStore.getState().clientGenerationID !== owner.generation ||
-            liveNavRouteEpochRef.current !== owner.routeEpoch ||
-            workspaceStore.getState().focusedPaneId !== owner.pane ||
-            focusedSessionRef() !== owner.ref ||
-            paletteStore.getState().open ||
-            document.querySelector('[aria-modal="true"]') !== null ||
-            isEditableTarget(document.activeElement)
-          ) {
-            // Went inert: this demand is no longer in flight, so the set
-            // must not retain its key (the set tracks in-flight demands
-            // only - same invariant as the success and error paths).
-            // Roborev PR #1044 round-9 medium 3. The editable re-check is
-            // the press-time suppression's completion half: focus moving
-            // into the composer mid-flight means the keydown was swallowed
-            // then, so the navigation would surprise a typing user
-            // (round-13 low 5).
-            demandedLivePages.delete(demandKey);
-            return;
-          }
-          const rows = selectLiveRows(navigationStore.getState());
-          demandedLivePages.delete(demandKey); // completed: the set tracks in-flight only (round-8 low 1)
-          if (direction === "next") {
-            const newlyLoaded = rows.find((row) => !owner.beforeRefs.has(row.ref));
-            if (newlyLoaded) openLiveSession(newlyLoaded.ref);
-            return;
-          }
-          // previous: the tail sits behind any remaining pages.
-          if (selectSectionRemaining("live", navigationStore.getState()) > 0) {
-            demandLivePage("previous", owner.beforeRefs);
-            return;
-          }
-          const last = rows[rows.length - 1];
-          if (last) openLiveSession(last.ref);
-        })
-        .catch(() => {
-          if (demandedLivePages.get(demandKey) === owner) demandedLivePages.delete(demandKey);
-        });
-    };
+    const liveSessions = createLiveSessionController({
+      generation: () => navigationStore.getState().clientGenerationID,
+      liveRefs: () => selectLiveRows(navigationStore.getState()).map((row) => row.ref),
+      liveRemaining: () => selectSectionRemaining("live", navigationStore.getState()),
+      canDemandUnloaded: () => {
+        const state = navigationStore.getState();
+        return !!state.manifest?.data && selectSectionCanDemand("live", state);
+      },
+      nextOffset: () => selectNextSectionOffset("live", navigationStore.getState()),
+      loadPage: async (offset) => {
+        const page = await navigationStore.getState().loadSection("live", offset);
+        return page.error === null && page.data !== null;
+      },
+      focusedPaneId: () => workspaceStore.getState().focusedPaneId,
+      focusedSessionRef,
+      routeEpoch: () => liveNavRouteEpochRef.current,
+      completionBlocked: () =>
+        paletteStore.getState().open || modalOpenInFocusedWindows() || isEditableTarget(document.activeElement),
+      openLiveSession,
+    });
     const unregister = [
       registry.registerAction(ACTIONS.sessionNext, () => cycleSessionPane("next")),
       registry.registerAction(ACTIONS.sessionPrevious, () => cycleSessionPane("previous")),
@@ -785,63 +617,15 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
       // these open the adjacent session from the rail's live section in
       // server order, wrapping. openNeedsYouSession is the shared
       // session-URL navigation seam (needsYouCycle.ts).
-      registry.registerAction(ACTIONS.sessionLiveNext, () => {
-        const state = navigationStore.getState();
-        if (state.clientGenerationID !== liveNavGeneration) {
-          liveNavGeneration = state.clientGenerationID;
-          demandedLivePages.clear();
-        }
-        const refs = selectLiveRows(state).map((row) => row.ref);
-        const current = focusedSessionRef();
-        const atLastLoaded = current !== null && refs.length > 0 && refs[refs.length - 1] === current;
-        // Empty loaded set: selectSectionRemaining reads only loaded pages,
-        // so it is 0 while the initial read is in flight or failed. The
-        // manifest's live count is the authority there (the needs-you
-        // handler's bootstrap) - the demand dedupes against an in-flight
-        // initial read and retries a failed one.
-        const unloaded = refs.length === 0 && (state.manifest?.data?.sections.live.count ?? 0) > 0;
-        if (unloaded || (atLastLoaded && selectSectionRemaining("live", state) > 0)) {
-          demandLivePage("next", new Set(refs));
-          return;
-        }
-        liveNavIntent++; // a direct navigation supersedes an in-flight demand
-        const next = adjacentLiveSessionRef(refs, current, "next");
-        if (next !== null) openLiveSession(next);
-      }),
-      registry.registerAction(ACTIONS.sessionLivePrevious, () => {
-        const state = navigationStore.getState();
-        if (state.clientGenerationID !== liveNavGeneration) {
-          liveNavGeneration = state.clientGenerationID;
-          demandedLivePages.clear();
-        }
-        const refs = selectLiveRows(state).map((row) => row.ref);
-        const current = focusedSessionRef();
-        if (refs.length === 0) {
-          if ((state.manifest?.data?.sections.live.count ?? 0) > 0) {
-            demandLivePage("previous", new Set(refs));
-          }
-          return;
-        }
-        // A previous wrap targets the tail; with more pages on the server the
-        // tail is not loaded, so demand through to it rather than landing on
-        // the last loaded row (round-5 medium 1). Mid-list steps need nothing
-        // loaded beyond the loaded rows themselves.
-        const index = current === null ? -1 : refs.indexOf(current);
-        if (index <= 0 && selectSectionRemaining("live", state) > 0) {
-          demandLivePage("previous", new Set(refs));
-          return;
-        }
-        liveNavIntent++;
-        const previous = adjacentLiveSessionRef(refs, current, "previous");
-        if (previous !== null) openLiveSession(previous);
-      }),
+      registry.registerAction(ACTIONS.sessionLiveNext, () => liveSessions.next()),
+      registry.registerAction(ACTIONS.sessionLivePrevious, () => liveSessions.previous()),
       registry.registerAction(ACTIONS.settingsOpen, () => navigate("/settings")),
     ];
     return () => {
-      liveNavMounted = false;
+      liveSessions.dispose();
       for (const dispose of unregister) dispose();
     };
-  }, [isMobile]);
+  }, [isMobile, viewportReady]);
   // Keeps --keyboard-inset current for the mobile .shell rule; see
   // useKeyboardInset.ts's header for the why.
   useKeyboardInset();
@@ -1081,7 +865,7 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
             state={connectionState}
             delayMs={bannerDelayMs}
             createClient={bannerCreateClient}
-            onClientReplaced={handleClientReplaced}
+            onClientReplaced={onClientReplaced}
           />
           <ToastRegion />
           <CommandPalette />
@@ -1090,8 +874,8 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
             registered and its trigger chords stay inert - RailHost's
             rail.toggle no-registration pattern - and no hold-hint listener
             is ever installed. */}
-          {!isMobile && <CheatsheetOverlay />}
-          {!isMobile && <HoldHints />}
+          {viewportReady && !isMobile && <CheatsheetOverlay />}
+          {viewportReady && !isMobile && <HoldHints />}
           <div className={styles.content}>
             {/* Desktop: the rail sits as a flex sibling of DockHost and
               collapses itself. Mobile (<900px): StackHost owns the whole
@@ -1099,10 +883,10 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
               (TreeDrawer's children slot, threaded via railSlot), so the
               flex sibling renders only on desktop. Both hosts read the
               same pane registry and workspace store. */}
-            {!isMobile && route !== null && !singlePane && <RailHost />}
+            {viewportReady && !isMobile && route !== null && !singlePane && <RailHost />}
             {route === null ? (
               <NotFound />
-            ) : isMobile ? (
+            ) : !viewportReady ? null : isMobile ? (
               <StackHost railSlot={<RailHost />} routeDeferred={routeDeferred} singlePane={singlePane} />
             ) : (
               // The workspace column carries the dock host's row flex share by
@@ -1118,7 +902,7 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
             {/* Desktop: the activity sidebar is the zoom system's triage surface,
               a right shell region scoped to the session being read. Mobile
               StackHost mounts the same surface as its full-screen overlay. */}
-            {!isMobile && route !== null && <ActivitySidebar />}
+            {viewportReady && !isMobile && route !== null && <ActivitySidebar />}
           </div>
         </div>
       </MotionProvider>

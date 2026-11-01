@@ -1,6 +1,7 @@
 import { expect, test } from "vitest";
 import {
   decodeActivityRead,
+  isStuck,
   MAX_INTENT_CODE_POINTS,
   QUIET_AFTER_MS,
   quietState,
@@ -115,6 +116,12 @@ test("a working session reads Quiet from three minutes and May be stuck from ten
   expect(quietFor(QUIET_AFTER_MS)).toEqual({ state: "quiet", forMs: QUIET_AFTER_MS });
   expect(quietFor(STUCK_AFTER_MS - 1)).toEqual({ state: "quiet", forMs: STUCK_AFTER_MS - 1 });
   expect(quietFor(STUCK_AFTER_MS)).toEqual({ state: "stuck", forMs: STUCK_AFTER_MS });
+});
+
+test("a session is stuck from ten minutes of silence, and never while a subagent runs", () => {
+  expect(isStuck(STUCK_AFTER_MS - 1, 0)).toBe(false);
+  expect(isStuck(STUCK_AFTER_MS, 0)).toBe(true);
+  expect(isStuck(STUCK_AFTER_MS * 10, 1)).toBe(false);
 });
 
 test("the time since the read counts toward the quiet time", () => {

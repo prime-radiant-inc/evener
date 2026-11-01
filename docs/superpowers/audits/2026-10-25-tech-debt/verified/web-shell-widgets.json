@@ -1,0 +1,206 @@
+[
+ {
+  "id": "web-shell-widgets-1",
+  "title": "Rail adapter fork + comparator copies",
+  "category": "duplication",
+  "original_severity": "high",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Core confirmed: Rail.tsx loadedSection (:628-646), projectsFor (:827-846), projectFromSummary (:655-697, mode 'compatibility', compatibilityError cache key) keep a non-normalized path; store.ts:503-534 sets normalized for every decoded snapshot/delta/gone and revalidator.ts:335-340 carries it through, so production resources with data always have normalized. Rail.tsx is 2133 lines, Rail.test.tsx 3617. Overstated: loadedSection returns RailSession via selectRailModel, a richer type than the shared selectors' NavigationSessionSummary rows, so it does not simply 're-derive' selectLiveRows. The ten comparators are not all the same (Rail.tsx:549-556 sorts project pages by tier/offset/limit/keyID; :893 sorts by pin_catalog offset only). adaptNavigationResources (Rail.tsx:948) is not 'exported only for a test': Rail.test.tsx calls it ~10 times (:905,:933,:1017,:1126...) as the adapter seam, so it cannot be dropped independently. Severity medium: dead compat branch plus test-reseeding cost, no live drift evidenced.",
+  "revised_fix_plan": "1) Make Rail.test.tsx resource() seeding build normalized (normalizedResource helper at :168 already exists), then delete the non-normalized branches, projectFromSummary, mode discriminator and compatibilityError. 2) Add a shared pagesInOrder only for the genuinely identical offset/limit sorts (selectors.ts:113,129,166; needsYouActions.ts:51,387; Rail.tsx:621,893); leave the project-page tier sort alone. 3) Keep adaptNavigationResources exported (tests use it) or move the adapter to stores/navigation/railResources.ts together with its tests. 4) Update docs/product/subsystems.md rail row."
+ },
+ {
+  "id": "web-shell-widgets-2",
+  "title": "NavigationRail mega-component",
+  "category": "complexity",
+  "original_severity": "medium",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Rail.tsx:1010 NavigationRail runs to :2130; counts in that range: 9 useRef, 7 useEffect, 8 useCallback. Round citations at :981 ('round eleven's high finding'), :1003 ('Round ten'), :1615 ('Component 06a's round six'), :1618. Plan (extract hooks/dialogs as pure moves) is safe."
+ },
+ {
+  "id": "web-shell-widgets-3",
+  "title": "AppShell live-session demand state machine",
+  "category": "duplication",
+  "original_severity": "high",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "AppShell.tsx:638-844 effect holds the live demand machine; round/PR citations at :605,:644,:649,:651,:658,:662,:665,:696,:754,:758,:763,:827 (AppShell.tsx 1135 lines). Guard divergence verified: AppShell.tsx:748 uses document.querySelector('[aria-modal]') while needsYouActions.ts:236-304 uses a multi-document MutationObserver. Duplication is real but the two flows differ in semantics (live paginates both directions with an unloaded-section previous path), so a shared guard is plausible while a shared controller is not; severity medium since no live bug is shown. The '19 round-numbered tests' count was not reproduced (AppShell.test.tsx has 66 lines mentioning 'round').",
+  "revised_fix_plan": "Extract the live demand logic to shell/liveSessionController.ts with injected reads, port the AppShell.test.tsx cases to controller tests first, and share only the inertness guard (intent/generation/route epoch/pane/palette/modal/editable) with needsYouActions via one createIntentGuard if the two guard sets can be shown equivalent; do not force one controller. Replace round citations with invariants."
+ },
+ {
+  "id": "web-shell-widgets-4",
+  "title": "dockHostChunk private copy",
+  "category": "duplication",
+  "original_severity": "medium",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "dockHostChunk.ts (216 lines) reimplements chunkRetry.ts (256 lines): LinkDescriptor, URL_IN_ERROR, describeLink, setLinkAttributes, createRetryLink, preloadRetryAssets, rememberError, load()/reset/setImporterForTests all line-for-line equivalents (compare dockHostChunk.ts:175-216 with chunkRetry.ts:209-256). Only differences: retryParam 'evener-dock-retry' and chunk names. chunkRetry.ts:13-15 says the dock copy remains 'outside this helper's lane'. railHostChunk.ts (36+ lines) is the proven wrapper shape."
+ },
+ {
+  "id": "web-shell-widgets-5",
+  "title": "CommandPalette HELP_ROWS vs registry cheatsheet",
+  "category": "inconsistency",
+  "original_severity": "medium",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "CommandPalette.tsx:101-135 hand-lists Mod+B/I/J/' and composer/ask-dock rows; rendered at :977 via ShortcutList. CheatsheetOverlay.tsx:1-12 states the registry-derived design. keybindingDefaults.ts has railToggle/composerFocus/nextNeedsYou/selectionQuote actions so the chords are rebindable. search.js no longer exists (cmd/evener-hub/assets holds only icons and manifest). Plan is sound; keep palette-local rows static."
+ },
+ {
+  "id": "web-shell-widgets-6",
+  "title": "Wire-state to family mapping duplicated",
+  "category": "duplication",
+  "original_severity": "medium",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Three web copies are genuinely identical in the awaiting/warning/restartRequired -> needs-you rule: sessionStatus.ts:4-22, attention.ts:6-19, railNodes.ts:371-375 (comment says 'same family as cadenceStateFor'). The other cited sites differ: liveness.ts:36 switches over ThreadStatus.type (systemError/closed, a different vocabulary), CURRENT_SUBAGENT_STATES (railNodes.ts:289-298) is a different set (adds notLoaded, errored), and mobile attention.ts:64-86 maps to Board states (restartNeeded, warning) not the same family. Savings are small.",
+  "revised_fix_plan": "Add stateFamily/isNeedsYouState to railSessionState.ts and use it in sessionStatus.ts, attention.ts and railNodes.ts stateNeedsYou only; leave liveness.ts, CURRENT_SUBAGENT_STATES and mobile alone unless mobile adopts it separately. Exhaustive table test over NormalizeState values."
+ },
+ {
+  "id": "web-shell-widgets-7",
+  "title": "Keyboard stepping / listbox helper copies",
+  "category": "duplication",
+  "original_severity": "medium",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Confirmed: three stepEnabledIndex copies (menu/index.tsx:130 returns from; radiogroup:58 returns from; segmentedcontrol:65-75 returns -1) and byte-identical rowDomId (pathfield:140, modelCatalog:109); ArrowDown/Up/Home/End switch near-identical (pathfield:419-448, modelCatalog:213-250 though one uses setActiveIndex and the other moveHighlight with scroll). Menu's predicate is isActionable(itemAt(...)) so a shared helper needs a predicate. Cycle fns (sessionCycle.ts:27-31, liveSessionCycle.ts:21-25) operate on different domains and are 1 line of modulo each; not worth sharing. The ~120-line saving is overstated.",
+  "revised_fix_plan": "Add widgets/internal/rovingIndex.ts with stepEnabled(count,from,delta,isEnabled) and rowDomId only; migrate menu/radiogroup/segmentedcontrol/pathfield/modelCatalog. Pin the no-match return difference in tests first. Skip the cycle fns and the five-listbox unification."
+ },
+ {
+  "id": "web-shell-widgets-8",
+  "title": "Four unused widgets",
+  "category": "dead-code",
+  "original_severity": "medium",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Non-test, non-widget importers of Table/InsightCard/InspectorCard/RecommendationCard: only widgets/index.ts, dev/gallery-sections/{table,insightcard,inspectorcard,recommendationcard}.tsx, and styles/token-contract.test.ts mentions. Sizes verified: table 160+104+152, insightcard 143+85+100, inspectorcard 70+50+74, recommendationcard 111+76+92. DiffTable duplicates table chrome without importing it (difftable.module.css:1). Doc rows at docs/web-ui/design-system.md:~515-522. Deleting a shipped widget needs Jesse's decision per AGENTS.md. Also update difftable comment (index.tsx:54), token-contract.test.ts ~789 recommendation-card reference, panescaffold.test.tsx:360 comment, widget-adoption catalog.",
+  "revised_fix_plan": "Ask Jesse. If approved: delete the four widget dirs, barrel exports, gallery sections, design-system rows, fix the DiffTable and token-contract/panescaffold comments and any contract-test allowlist entries (dev/copyonly/allowlist.tsv has an insightcard entry); run make test-web."
+ },
+ {
+  "id": "web-shell-widgets-9",
+  "title": "Narrating comments",
+  "category": "doc-drift",
+  "original_severity": "medium",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Counts reproduced in the slice (297 non-test ts/tsx/css files): 87 lines matching roborev/PR #/round N (finding says 54, broader regex), 21 'kata' mentions (finding says 14; kata IDs may be live tracker refs so they are lower priority), 25 lines citing search.js/notifications.js/renderer.js:NNN. Verified examples: search.ts:1-12, commands.ts:2-6, textarea/index.tsx:23-24 (renderer.js:6307), tree/index.tsx:190-195. '1605-line Rail' in railHostChunk.ts:3, rail/index.tsx:6,22 vs Rail.tsx 2133 lines. design-system.md:488 says internal is 'currently just requireClass' while widgets/internal holds 8 files. Comment-only PRs are safe."
+ },
+ {
+  "id": "web-shell-widgets-10",
+  "title": "requireClass boilerplate",
+  "category": "slop",
+  "original_severity": "medium",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Counts reproduced: ~1306 requireClass(styles.*) call sites in 194 non-test files repo-wide (finding's 1,297; slice-only is 497 in 82 files). But the premise 'typing-only' is wrong: requireClass throws at module load in the real build (requireClass.ts:15-21), and styles/requireclass-contract.test.ts (397 lines) exists because vitest leaves CSS Modules unprocessed, so the runtime guard is blind in tests; the contract test statically verifies every referenced class exists in the real stylesheet. Replacing it is a ~1,300-site codemod and a convention documented as 'canonical pattern for every widget'. A real design question for Jesse, low value for the churn.",
+  "revised_fix_plan": "Raise with Jesse only if he wants it; simplest option is a single ambient module typing or one cssClasses(styles, names) per module. Not a debt PR on its own."
+ },
+ {
+  "id": "web-shell-widgets-11",
+  "title": "Design-system bypasses in shell",
+  "category": "inconsistency",
+  "original_severity": "medium",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Raw <button> confirmed at StatusBar.tsx:52, RailRow.tsx:572, CommandPalette.tsx:786,1064 and raw <input> at :791 (with biome-ignore); AgentsTab.tsx:62-66 hand-rolls a fold with Button+toggleDisclosure while JobsTab.tsx:~53 uses Disclosure. But these are already catalogued as decided SWAP/EXTEND items in docs/web-ui/widget-adoption-catalog-2026-10-11.md (AgentsTab at row 52), and some (listbox option rows, treeitem buttons) are bespoke composites where no widget fits. AgentsTab swap carries a risk the catalog notes (ActivityPageBoundary reads the same disclosure store).",
+  "revised_fix_plan": "Work from widget-adoption-catalog-2026-10-11.md rather than a new list; swap AgentsTab to Disclosure (keep the foldOpen store read); do StatusBar chips/palette back pill only if an existing widget prop fits, else document exception. No widget prop changes without Jesse."
+ },
+ {
+  "id": "web-shell-widgets-12",
+  "title": "needsYouActions duplicated next-ref and modal detection",
+  "category": "duplication",
+  "original_severity": "medium",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "needsYouActions.ts:168-170, 407-410, 430-433 repeat nextNeedsYouRef plus the 'remaining>0 && focused===last -> null' rule (verified). needsYouRefs (needsYouCycle.ts:5-11) accepts unknown and a legacy {needs_you} shape though all production callers (needsYouActions.ts:168,407,409,430,431) pass arrays; tests pass null. aria-modal checked via querySelector (AppShell.tsx:748, needsYouActions.ts:145,255), closest (dispatcher.ts:109, rehome.ts:69) and MutationObserver (needsYouActions.ts:236-304). Count is four distinct mechanisms, not five. Keep null tolerance in needsYouRefs when tightening (test at needsYouCycle.test.ts:32)."
+ },
+ {
+  "id": "web-shell-widgets-13",
+  "title": "Dead exports",
+  "category": "dead-code",
+  "original_severity": "low",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Confirmed zero references outside docs/plans: subagentChildrenOf (railNodes.ts:303), clearDisclosureScope (disclosureStore.ts:93; delete the export only, store.clearScope stays), snapshotFromTree (attention.ts:54-62), resetFocusedActivityScopeForTests empty body (focusedSession.ts:55; imported at focusedSession.test.ts:13,48, TasksTab.test.tsx:19,182, SessionChrome.test.tsx:21,171). openNeedsYouSession (needsYouCycle.ts:24) is used only by needsYouCycle.test.ts and named in an AppShell.tsx:786 comment and docs/web-ui/keybindings.md:245, so fix those references too. Exclude adaptNavigationResources: Rail.test.tsx calls it ~10 times (see finding 1).",
+  "revised_fix_plan": "Delete subagentChildrenOf, clearDisclosureScope export, snapshotFromTree, resetFocusedActivityScopeForTests and its 3 test call sites, openNeedsYouSession plus its two tests; update keybindings.md:245 and the AppShell comment. Leave adaptNavigationResources to finding 1."
+ },
+ {
+  "id": "web-shell-widgets-14",
+  "title": "SessionMenu treeNode alias",
+  "category": "compat-legacy",
+  "original_severity": "low",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "SessionMenu.tsx:81-83 documents treeNode as 'Compatibility input for rail rows', resolved at :142 (session ?? treeNode). Only production caller is RailRow.tsx:367 (treeNode={session}); test usage SessionMenu.edge.test.tsx:90."
+ },
+ {
+  "id": "web-shell-widgets-15",
+  "title": "Transcript render context aliases",
+  "category": "slop",
+  "original_severity": "low",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "projectedMetadata (renderContext.tsx:25,39,83,120,125,160,172) is a pure alias of metadata; no other reader (grep repo). useOptionalTranscriptRenderContext used in production by fileOpenBeside.tsx:68 and shellTool.tsx:115 as claimed. But the proposed removal of TranscriptBody's eligibleDisclosureIds prop is WRONG: TranscriptBody.tsx:379-380 builds it as projection.eligibleDisclosureIds plus transcriptRunDisclosureIdsForRows(rows), a superset that the projection alone lacks. Removing it would drop run disclosure ids from the baseline.",
+  "revised_fix_plan": "Drop projectedMetadata only (value, input, DEFAULT_CONTEXT, line 120/172 fallback). Keep eligibleDisclosureIds as the explicit override. Optionally rename useOptionalTranscriptRenderContext; do not make the strict hook throw without a test provider helper."
+ },
+ {
+  "id": "web-shell-widgets-16",
+  "title": "Tests assert on copy",
+  "category": "test-debt",
+  "original_severity": "medium",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Reproduced: 202 expect(...ByText(\"<12+ chars>\")) in shell/widgets tests (finding: 205). DockRegion.test.tsx:122,214 and ConnectionBanner.test.tsx:143,461 assert hardcoded copy via getByText; emptystate.test.tsx:13,71 echo props back. AGENTS.md forbids this. However the repo already has a copy-only audit (cmd/evener-hub/frontend/src/dev/copyonly/ with allowlist.tsv) and EmptyState has data-reason for behavior assertions; many ByText hits are locators for the presence of an element, so the 202 count is an upper bound.",
+  "revised_fix_plan": "Run/extend the existing dev/copyonly audit rather than hand-triage; convert DockRegion/ConnectionBanner to role/state/reason assertions, delete prop-echo tests in emptystate.test.tsx, as files are touched."
+ },
+ {
+  "id": "web-shell-widgets-17",
+  "title": "Activity tabs scaffold",
+  "category": "duplication",
+  "original_severity": "medium",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Early-return ladder, ActivityPageBoundary props and 'X are updating' footer repeat in JobsTab.tsx, WatchesTab.tsx and AgentsTab.tsx (verified), and ActivityPageBoundary import sits above the header comment at line 1 of each. But AgentsTab has real extra logic (fold, show-more paging, anchor layout effect, enabled prop) and JobsTab splits running/completed, so only the ~10-line ladder/footer is shared; saving is ~30 lines, not 70.",
+  "revised_fix_plan": "Fix the import placement; optionally extract a small useActivityCollectionState/ActivityCollectionFooter for the shared ladder and footer. Low value."
+ },
+ {
+  "id": "web-shell-widgets-18",
+  "title": "Legacy layout migration",
+  "category": "compat-legacy",
+  "original_severity": "low",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "workspace.ts:378 migrateLegacyLayout, :457 legacyDuplicatePanels, :365-372 transcript branch confirmed. The 'transcript' pane type is NOT retired (job logs still use it via JOB_REF_PREFIX), and dropping the branch would not hit the 'skip unloadable panel' rule: a session-ref transcript panel would load as a transcript pane with a session ref. Deleting also conflicts with AGENTS.md preservation-of-user-work. Plan 'delete and rely on skip' is unsafe.",
+  "revised_fix_plan": "Do not delete. Ask Jesse whether to record a removal condition in docs/product/subsystems.md; if layouts older than the conversation-view ruling are known gone, then delete migrateLegacyLayout/legacyDuplicatePanels and the session-ref transcript branch with tests."
+ },
+ {
+  "id": "web-shell-widgets-19",
+  "title": "Test-only seams in production modules",
+  "category": "architecture",
+  "original_severity": "low",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "19 *ForTests exports in slice non-test files (finding: 20). Examples confirmed: dockHostChunk.ts:199-210 runtime branch on dockHostImporterForTests, StackHost.tsx:169 setLastPopstateWasTrustedForTests, leader.ts:48-52, notifications/index.ts:191-198 (imports resetNavigationStoreForTests at :19), paneRegistry.ts:73. This is an established repo convention (comments cite resetWorkspaceStoreForTests precedent); the finding itself recommends no sweep, so there is no actionable change beyond finding 4.",
+  "revised_fix_plan": "Drop as a standalone finding; the dockHostChunk instance disappears with finding 4."
+ },
+ {
+  "id": "web-shell-widgets-20",
+  "title": "matchMedia guards",
+  "category": "architecture",
+  "original_severity": "low",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Guards: useIsMobile.ts:27, usePrefersReducedMotion.ts:14,24, prefs.ts:423,433,479 (six, in 3 files; useFloatingLabel.ts:31 not a typeof guard). useIsMobile is a shared-listener singleton state machine (:1-70) that a generic useMediaQuery would not replace. stores importing shell is widespread (stores/hubUpdate.ts:26, settingsHost.ts:20, panelStoreEviction.ts:3, navigation/persistence.ts:7), so transcriptDisplay.ts:20 is not an isolated inversion.",
+  "revised_fix_plan": "At most add a tiny readMediaQuery(query) guard in src/dom and use it in usePrefersReducedMotion and prefs.ts; leave useIsMobile alone."
+ },
+ {
+  "id": "web-shell-widgets-21",
+  "title": "Unused tokens and duplicate folder icon",
+  "category": "dead-code",
+  "original_severity": "low",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "--tooltip-muted (tokens.css:79,285) has no references anywhere in the repo: safe to delete. --space-9 (tokens.css:147) is unreferenced in code but documented as the top of the --space-1..--space-9 scale (docs/web-ui/design-system.md:418); deleting it changes a documented scale. PathField FolderIcon (pathfield/index.tsx:144, viewBox 14x12 sized 12x10 via .icon) vs exported DirectoryIcon (directorypicker/index.tsx:41, 16x16): same glyph, different geometry, so swapping changes pixels.",
+  "revised_fix_plan": "Delete --tooltip-muted only. Leave --space-9 unless the scale doc is changed. Swap PathField to DirectoryIcon only with a visual check."
+ }
+]

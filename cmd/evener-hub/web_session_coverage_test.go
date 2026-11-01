@@ -13,7 +13,7 @@ func TestSessionRefMatchesIDExact(t *testing.T) {
 func TestSessionRefMatchesIDByRef(t *testing.T) {
 	// requested parses as a Ref that equals hubRefFromTreeNodeID(actual)
 	actual := "local:abc123"
-	// hubRefFromTreeNodeID("local:abc123") parses to {HostID:"local", SessionID:"abc123"}
+	// hubRefFromTreeNodeID("local:abc123") parses to {SourceID:"local", ThreadID:"abc123"}
 	// so requesting "local:abc123" should match
 	if !sessionRefMatchesID("local:abc123", actual) {
 		t.Fatal("ref match should return true")

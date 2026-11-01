@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	taskpkg "primeradiant.com/evener/agent/task"
@@ -159,7 +160,7 @@ func TestSession_TaskEffortOverride_AppliesPerRoundOnly(t *testing.T) {
 				return taskEffortToolCall("c4", `{"update":[{"id":2,"status":"done"}]}`)
 			},
 			// req4 (expect max again: no task in progress).
-			func(req llm.Request) llm.Response { return finalResponse("done") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
 		},
 	}
 	c.Register(f)
@@ -260,7 +261,7 @@ func TestSession_RestoreTaskEffortMigration_ReachesProviderSafely(t *testing.T) 
 			}
 
 			adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-				func(llm.Request) llm.Response { return finalResponse("resumed") },
+				func(llm.Request) llm.Response { return agenttest.FinalResponse("resumed") },
 			}}
 			client := llm.NewClient()
 			client.Register(adapter)
@@ -317,7 +318,7 @@ func TestSession_TaskListRejectsInvalidEffortBeforeActivatingTask(t *testing.T) 
 			},
 			func(req llm.Request) llm.Response {
 				requireTaskHandlerError(t, req, "c2")
-				return finalResponse("done")
+				return agenttest.FinalResponse("done")
 			},
 		},
 	}
@@ -367,7 +368,7 @@ func TestSession_TaskListRejectsInvalidEffortBeforeAppendingTask(t *testing.T) {
 			},
 			func(req llm.Request) llm.Response {
 				requireTaskHandlerError(t, req, "c1")
-				return finalResponse("done")
+				return agenttest.FinalResponse("done")
 			},
 		},
 	}
@@ -409,7 +410,7 @@ func TestSession_TaskEffortInherit_KeepsSessionEffort(t *testing.T) {
 				return taskEffortToolCall("c2", `{"update":[{"id":1,"status":"in_progress"}]}`)
 			},
 			// req2: task 1 in progress with effort "inherit" -> session effort.
-			func(req llm.Request) llm.Response { return finalResponse("done") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
 		},
 	}
 	c.Register(f)
@@ -465,9 +466,9 @@ func TestSession_LoopDetectEscalation_WinsOverLowerTaskEffort(t *testing.T) {
 				return taskEffortToolCall("c2", `{"update":[{"id":1,"status":"in_progress"}]}`)
 			},
 			// req2: task low in progress, no escalation yet -> low.
-			func(req llm.Request) llm.Response { return finalResponse("still working") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("still working") },
 			// req3 (second input, after escalation): cfg high beats task low.
-			func(req llm.Request) llm.Response { return finalResponse("done") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
 		},
 	}
 	c.Register(f)
@@ -536,7 +537,7 @@ func TestSession_TaskEffortSurvivesCompaction(t *testing.T) {
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("done") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
 		},
 	}
 	c.Register(f)
@@ -585,8 +586,8 @@ func TestSession_TaskEffortSurvivesResumeWithoutClobberingConfig(t *testing.T) {
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("before resume") },
-			func(req llm.Request) llm.Response { return finalResponse("after resume") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("before resume") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("after resume") },
 		},
 	}
 	c.Register(f)
@@ -654,8 +655,8 @@ func TestSession_LoopDetectEscalationSurvivesResume(t *testing.T) {
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("before escalation") },
-			func(req llm.Request) llm.Response { return finalResponse("after resume") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("before escalation") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("after resume") },
 		},
 	}
 	c.Register(f)
@@ -741,7 +742,7 @@ EFF_AGENT_ROLE`)
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			// req0: template task 1 (low) is auto-started at init.
-			func(req llm.Request) llm.Response { return finalResponse("done") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
 		},
 	}
 	c.Register(f)

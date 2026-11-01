@@ -323,7 +323,7 @@ func TestWatchBudgetRetryDoesNotProduceCondition51(t *testing.T) {
 func TestWatchCallbackBatchPartialNoticeFailure(t *testing.T) {
 	t.Parallel()
 	clock := agenttest.NewFakeClock()
-	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(llm.Request) llm.Response { return finalResponse("partial-batch-response-648") }}}
+	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(llm.Request) llm.Response { return agenttest.FinalResponse("partial-batch-response-648") }}}
 	s := newSession(t, withAdapter(adapter), withConfig(SessionConfig{StateDir: t.TempDir(), clock: clock}))
 	jm := s.jobManager
 	res, err := jm.configureWatch(watchArgs{Target: runtimeMessageAliasCaller, Events: []string{"communicate"}, Note: "partial-batch-729"})
@@ -421,7 +421,7 @@ func TestWatchCallbackBatchPartialNoticeFailure(t *testing.T) {
 func TestWatchCanonicalStandaloneBudgetCustody(t *testing.T) {
 	t.Parallel()
 	s, adapter := newTerminalFlushSession(t, true)
-	adapter.steps = []func(llm.Request) llm.Response{func(llm.Request) llm.Response { return finalResponse("standalone-response-193") }}
+	adapter.steps = []func(llm.Request) llm.Response{func(llm.Request) llm.Response { return agenttest.FinalResponse("standalone-response-193") }}
 	res, err := s.jobManager.configureWatch(watchArgs{Target: runtimeMessageAliasCaller, Events: []string{"communicate"}})
 	if err != nil {
 		t.Fatal(err)

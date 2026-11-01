@@ -141,7 +141,7 @@ func TestToolRegistryRequiresOutputRecoveryUsesRegisteredGenericLimits(t *testin
 
 func TestToolRegistry_ToolStateResult_CarriesStateAsSideChannel(t *testing.T) {
 	r := NewRegistry()
-	if err := r.Register(RegisteredTool{
+	mustRegister(t, r, RegisteredTool{
 		Definition: llm.ToolDefinition{Name: "snap"},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
@@ -155,9 +155,7 @@ func TestToolRegistry_ToolStateResult_CarriesStateAsSideChannel(t *testing.T) {
 				},
 			}, nil
 		},
-	}); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
+	})
 	res := r.ExecuteCall(context.Background(), execenv.NewLocalExecutionEnvironment(t.TempDir()), llm.ToolCallData{
 		ID:        "c1",
 		Name:      "snap",
@@ -187,7 +185,7 @@ func TestToolRegistry_ToolStateResult_CarriesStateAsSideChannel(t *testing.T) {
 func TestToolRegistry_AddsAndStripsUniversalIntent(t *testing.T) {
 	r := NewRegistry()
 	var gotArgs map[string]any
-	if err := r.Register(RegisteredTool{
+	mustRegister(t, r, RegisteredTool{
 		Definition: llm.ToolDefinition{
 			Name:        "echo",
 			Description: "echo args",
@@ -206,9 +204,7 @@ func TestToolRegistry_AddsAndStripsUniversalIntent(t *testing.T) {
 			gotArgs = args
 			return "ok", nil
 		},
-	}); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
+	})
 	defs := r.Definitions()
 	props, _ := defs[0].Parameters["properties"].(map[string]any)
 	if _, ok := props["intent"]; !ok {
@@ -229,7 +225,7 @@ func TestToolRegistry_AddsAndStripsUniversalIntent(t *testing.T) {
 
 func TestToolRegistry_OmitIntentLeavesSchemaStrict(t *testing.T) {
 	r := NewRegistry()
-	if err := r.Register(RegisteredTool{
+	mustRegister(t, r, RegisteredTool{
 		Definition: llm.ToolDefinition{
 			Name:        "result",
 			Description: "report a result",
@@ -249,9 +245,7 @@ func TestToolRegistry_OmitIntentLeavesSchemaStrict(t *testing.T) {
 			_ = args
 			return "ok", nil
 		},
-	}); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
+	})
 	defs := r.Definitions()
 	props, _ := defs[0].Parameters["properties"].(map[string]any)
 	if _, ok := props["intent"]; ok {
@@ -309,7 +303,7 @@ func TestToolRegistry_DefinitionsOrderIsStable(t *testing.T) {
 
 func TestToolRegistry_CloneCopiesToolsWithoutSharingMap(t *testing.T) {
 	r := NewRegistry()
-	if err := r.Register(RegisteredTool{
+	mustRegister(t, r, RegisteredTool{
 		Definition: llm.ToolDefinition{
 			Name:        "echo",
 			Description: "echo args",
@@ -326,9 +320,7 @@ func TestToolRegistry_CloneCopiesToolsWithoutSharingMap(t *testing.T) {
 			_ = env
 			return args["value"], nil
 		},
-	}); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
+	})
 
 	clone := r.Clone()
 	orig := r.Get("echo")
@@ -366,7 +358,7 @@ func TestToolRegistry_UnknownTool_ReturnsErrorResult(t *testing.T) {
 
 func TestToolRegistry_SchemaValidationError_IsReturnedToModel(t *testing.T) {
 	r := NewRegistry()
-	if err := r.Register(RegisteredTool{
+	mustRegister(t, r, RegisteredTool{
 		Definition: llm.ToolDefinition{
 			Name: "t",
 			Parameters: map[string]any{
@@ -382,9 +374,7 @@ func TestToolRegistry_SchemaValidationError_IsReturnedToModel(t *testing.T) {
 			_ = env
 			return "ok", nil
 		},
-	}); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
+	})
 	res := r.ExecuteCall(context.Background(), execenv.NewLocalExecutionEnvironment(t.TempDir()), llm.ToolCallData{
 		ID:        "c1",
 		Name:      "t",
@@ -400,16 +390,14 @@ func TestToolRegistry_SchemaValidationError_IsReturnedToModel(t *testing.T) {
 
 func TestToolRegistry_InvalidArgumentsJSON_IsReturnedToModel(t *testing.T) {
 	r := NewRegistry()
-	if err := r.Register(RegisteredTool{
+	mustRegister(t, r, RegisteredTool{
 		Definition: llm.ToolDefinition{Name: "t"},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			_ = env
 			return "ok", nil
 		},
-	}); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
+	})
 	res := r.ExecuteCall(context.Background(), execenv.NewLocalExecutionEnvironment(t.TempDir()), llm.ToolCallData{
 		ID:        "c1",
 		Name:      "t",
@@ -425,7 +413,7 @@ func TestToolRegistry_InvalidArgumentsJSON_IsReturnedToModel(t *testing.T) {
 
 func TestToolRegistry_OversizedArguments_IsReturnedToModel(t *testing.T) {
 	r := NewRegistry()
-	if err := r.Register(RegisteredTool{
+	mustRegister(t, r, RegisteredTool{
 		Definition: llm.ToolDefinition{Name: "t"},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
@@ -433,9 +421,7 @@ func TestToolRegistry_OversizedArguments_IsReturnedToModel(t *testing.T) {
 			_ = args
 			return "ok", nil
 		},
-	}); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
+	})
 	arguments := json.RawMessage(strings.Repeat("a", MaxToolArgumentBytes+1))
 	res := r.ExecuteCall(context.Background(), execenv.NewLocalExecutionEnvironment(t.TempDir()), llm.ToolCallData{
 		ID:        "c1",
@@ -453,7 +439,7 @@ func TestToolRegistry_OversizedArguments_IsReturnedToModel(t *testing.T) {
 
 func TestToolRegistry_ArgumentsAtSizeCapBoundary_NotRejectedByCap(t *testing.T) {
 	r := NewRegistry()
-	if err := r.Register(RegisteredTool{
+	mustRegister(t, r, RegisteredTool{
 		Definition: llm.ToolDefinition{Name: "t"},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
@@ -461,9 +447,7 @@ func TestToolRegistry_ArgumentsAtSizeCapBoundary_NotRejectedByCap(t *testing.T) 
 			_ = args
 			return "ok", nil
 		},
-	}); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
+	})
 	// Exactly at the cap: must not be rejected by the size gate. It's not
 	// valid JSON either, so it falls through to the existing "invalid tool
 	// arguments JSON" path - this test only confirms the size gate didn't fire.
@@ -486,7 +470,7 @@ func TestToolRegistry_ArgumentsAtSizeCapBoundary_NotRejectedByCap(t *testing.T) 
 
 func TestToolRegistry_ExecError_IsReturnedToModel(t *testing.T) {
 	r := NewRegistry()
-	if err := r.Register(RegisteredTool{
+	mustRegister(t, r, RegisteredTool{
 		Definition: llm.ToolDefinition{Name: "t"},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
@@ -494,9 +478,7 @@ func TestToolRegistry_ExecError_IsReturnedToModel(t *testing.T) {
 			_ = args
 			return "", context.DeadlineExceeded
 		},
-	}); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
+	})
 	res := r.ExecuteCall(context.Background(), execenv.NewLocalExecutionEnvironment(t.TempDir()), llm.ToolCallData{
 		ID:        "c1",
 		Name:      "t",
@@ -514,7 +496,7 @@ func TestToolRegistry_ExecError_IsReturnedToModel(t *testing.T) {
 
 func TestToolRegistry_TruncationMarkers(t *testing.T) {
 	r := NewRegistry()
-	if err := r.Register(RegisteredTool{
+	mustRegister(t, r, RegisteredTool{
 		Definition: llm.ToolDefinition{Name: "t"},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
@@ -522,9 +504,7 @@ func TestToolRegistry_TruncationMarkers(t *testing.T) {
 			return strings.Repeat("x", 2000), nil
 		},
 		Limit: schema.ToolOutputLimit{MaxChars: 200, Strategy: schema.TruncTail},
-	}); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
+	})
 	res := r.ExecuteCall(context.Background(), execenv.NewLocalExecutionEnvironment(t.TempDir()), llm.ToolCallData{
 		ID:        "c1",
 		Name:      "t",
@@ -547,17 +527,24 @@ func TestToolRegistry_TruncationMarkers(t *testing.T) {
 	}
 }
 
+// mustRegister registers the tool or fails the test with the
+// package-standard Register fatal.
+func mustRegister(t *testing.T, r *Registry, tool RegisteredTool) {
+	t.Helper()
+	if err := r.Register(tool); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+}
+
 func registerTextResultTool(t *testing.T, reg *Registry, result TextResult, limit schema.ToolOutputLimit) {
 	t.Helper()
-	if err := reg.Register(RegisteredTool{
+	mustRegister(t, reg, RegisteredTool{
 		Definition: llm.ToolDefinition{Name: "t"},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			return result, nil
 		},
 		Limit: limit,
-	}); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
+	})
 }
 
 func executeTestTool(t *testing.T, reg *Registry) ExecResult {
@@ -767,15 +754,13 @@ func TestToolRegistry_UntruncatedSplitTextResultKeepsModelSource(t *testing.T) {
 
 func TestToolRegistry_TextResultKeepsFullOutput(t *testing.T) {
 	r := NewRegistry()
-	if err := r.Register(RegisteredTool{
+	mustRegister(t, r, RegisteredTool{
 		Definition: llm.ToolDefinition{Name: "t"},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			return TextResult{Output: "short", FullOutput: strings.Repeat("x", 2000)}, nil
 		},
 		Limit: schema.ToolOutputLimit{MaxChars: 10, Strategy: schema.TruncTail},
-	}); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
+	})
 	res := r.ExecuteCall(context.Background(), execenv.NewLocalExecutionEnvironment(t.TempDir()), llm.ToolCallData{
 		ID:        "c1",
 		Name:      "t",
@@ -795,7 +780,7 @@ func TestToolRegistry_TextResultKeepsFullOutput(t *testing.T) {
 func TestToolRegistry_TruncationOrder_CharsFirstThenLines(t *testing.T) {
 	r := NewRegistry()
 	full := strings.Repeat("0123456789\n", 100) // ~1100 chars, many lines
-	if err := r.Register(RegisteredTool{
+	mustRegister(t, r, RegisteredTool{
 		Definition: llm.ToolDefinition{Name: "t"},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
@@ -804,9 +789,7 @@ func TestToolRegistry_TruncationOrder_CharsFirstThenLines(t *testing.T) {
 			return full, nil
 		},
 		Limit: schema.ToolOutputLimit{MaxChars: 200, MaxLines: 2, Strategy: schema.TruncTail},
-	}); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
+	})
 	res := r.ExecuteCall(context.Background(), execenv.NewLocalExecutionEnvironment(t.TempDir()), llm.ToolCallData{
 		ID:        "c1",
 		Name:      "t",
@@ -837,7 +820,7 @@ func TestToolRegistry_TruncationLines_UsesHeadTailAndOmittedMarker(t *testing.T)
 		"l8",
 		"l9",
 	}, "\n")
-	if err := r.Register(RegisteredTool{
+	mustRegister(t, r, RegisteredTool{
 		Definition: llm.ToolDefinition{Name: "t"},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
@@ -846,9 +829,7 @@ func TestToolRegistry_TruncationLines_UsesHeadTailAndOmittedMarker(t *testing.T)
 			return full, nil
 		},
 		Limit: schema.ToolOutputLimit{MaxChars: 10_000, MaxLines: 4, Strategy: schema.TruncHeadTail},
-	}); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
+	})
 	res := r.ExecuteCall(context.Background(), execenv.NewLocalExecutionEnvironment(t.TempDir()), llm.ToolCallData{
 		ID:        "c1",
 		Name:      "t",
@@ -1437,7 +1418,7 @@ func TestToolRegistry_GlobAndGrep_HeadFirstBoundedNoFrontTruncation(t *testing.T
 				lines = append(lines, fmt.Sprintf("/repo/pkg/file-%03d.go", i))
 			}
 			full := strings.Join(lines, "\n")
-			if err := r.Register(RegisteredTool{
+			mustRegister(t, r, RegisteredTool{
 				Definition: llm.ToolDefinition{Name: toolName},
 				Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 					_ = ctx
@@ -1446,9 +1427,7 @@ func TestToolRegistry_GlobAndGrep_HeadFirstBoundedNoFrontTruncation(t *testing.T
 					return full, nil
 				},
 				Limit: defaultToolLimit(toolName),
-			}); err != nil {
-				t.Fatalf("Register: %v", err)
-			}
+			})
 			res := r.ExecuteCall(context.Background(), execenv.NewLocalExecutionEnvironment(t.TempDir()), llm.ToolCallData{
 				ID:        "c1",
 				Name:      toolName,
@@ -1481,7 +1460,7 @@ func TestToolRegistry_GlobAndGrep_HeadFirstBoundedNoFrontTruncation(t *testing.T
 func TestToolRegistry_RequireCompleteOutputFailsOnTruncation(t *testing.T) {
 	r := NewRegistry()
 	body := strings.Repeat("complete-content-line\n", 400)
-	if err := r.Register(RegisteredTool{
+	mustRegister(t, r, RegisteredTool{
 		Definition: llm.ToolDefinition{Name: "big_state"},
 		Limit:      schema.ToolOutputLimit{MaxChars: 128, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
@@ -1490,9 +1469,7 @@ func TestToolRegistry_RequireCompleteOutputFailsOnTruncation(t *testing.T) {
 			_ = args
 			return StateResult{Output: body, RequireCompleteOutput: true, State: map[string]any{"id": 1}}, nil
 		},
-	}); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
+	})
 	res := r.ExecuteCall(context.Background(), execenv.NewLocalExecutionEnvironment(t.TempDir()), llm.ToolCallData{
 		ID: "c1", Name: "big_state", Arguments: json.RawMessage(`{}`),
 	})
@@ -1514,15 +1491,13 @@ func TestToolRegistry_RequireCompleteOutputFailsOnTruncation(t *testing.T) {
 // A complete output under the configured limit passes through untouched.
 func TestToolRegistry_RequireCompleteOutputWithinLimit(t *testing.T) {
 	r := NewRegistry()
-	if err := r.Register(RegisteredTool{
+	mustRegister(t, r, RegisteredTool{
 		Definition: llm.ToolDefinition{Name: "small_state"},
 		Limit:      schema.ToolOutputLimit{MaxChars: 128, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			return StateResult{Output: "complete", RequireCompleteOutput: true}, nil
 		},
-	}); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
+	})
 	res := r.ExecuteCall(context.Background(), execenv.NewLocalExecutionEnvironment(t.TempDir()), llm.ToolCallData{
 		ID: "c1", Name: "small_state", Arguments: json.RawMessage(`{}`),
 	})
@@ -1536,15 +1511,13 @@ func TestToolRegistry_RequireCompleteOutputWithinLimit(t *testing.T) {
 func TestToolRegistry_StateResultWithoutOptInStillTruncates(t *testing.T) {
 	r := NewRegistry()
 	body := strings.Repeat("partial-content-line\n", 400)
-	if err := r.Register(RegisteredTool{
+	mustRegister(t, r, RegisteredTool{
 		Definition: llm.ToolDefinition{Name: "ordinary_state"},
 		Limit:      schema.ToolOutputLimit{MaxChars: 128, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			return StateResult{Output: body}, nil
 		},
-	}); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
+	})
 	res := r.ExecuteCall(context.Background(), execenv.NewLocalExecutionEnvironment(t.TempDir()), llm.ToolCallData{
 		ID: "c1", Name: "ordinary_state", Arguments: json.RawMessage(`{}`),
 	})
@@ -1562,14 +1535,12 @@ func TestToolRegistry_UseSkillHasNoDefaultTailLimit(t *testing.T) {
 	}
 	r := NewRegistry()
 	body := strings.Repeat("skill-body-line\n", 4000)
-	if err := r.Register(RegisteredTool{
+	mustRegister(t, r, RegisteredTool{
 		Definition: llm.ToolDefinition{Name: "use_skill"},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			return StateResult{Output: body, RequireCompleteOutput: true}, nil
 		},
-	}); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
+	})
 	res := r.ExecuteCall(context.Background(), execenv.NewLocalExecutionEnvironment(t.TempDir()), llm.ToolCallData{
 		ID: "c1", Name: "use_skill", Arguments: json.RawMessage(`{"skill_name":"x"}`),
 	})

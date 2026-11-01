@@ -5,9 +5,9 @@
 // `error`) once the drop is old enough to speak. The Session's connection bar
 // and the sheets' status lines read it, on ConnectionProvider's one clock.
 import type { ConnectionState } from "@evener/appwire-client";
+import { compactDuration, DURATION_UNIT_MS, durationParts } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
 import { useConnection } from "../ConnectionProvider";
-import { compactDuration, DURATION_UNIT_MS, durationIn } from "../session/format";
 
 /** How long the connection can be down before the status says so: a blip
  * shorter than this reconnects without a word. */
@@ -73,7 +73,7 @@ export function nextStatusChange(
 	if (lastLiveAt === null) return null;
 	// The age reads as offlineAge renders it, in its one largest whole unit:
 	// it next changes when that count goes up by one.
-	const { count, unit } = durationIn(Math.max(MINUTE, now - lastLiveAt));
+	const { count, unit } = durationParts(Math.max(MINUTE, now - lastLiveAt));
 	return lastLiveAt + (count + 1) * DURATION_UNIT_MS[unit];
 }
 

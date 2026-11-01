@@ -30,7 +30,7 @@ import (
 )
 
 func waitResponseFor(id, target string) llm.Response {
-	return toolCallResponse(communicateCallArgs(id, map[string]any{"message": "wait-payload-71a9", "end_turn": true, "end_reason": "waiting_on_work", "waiting_on": target}))
+	return agenttest.ToolCallResponse(communicateCallArgs(id, map[string]any{"message": "wait-payload-71a9", "end_turn": true, "end_reason": "waiting_on_work", "waiting_on": target}))
 }
 
 // Hold a real provider boundary until the test has captured its activation.
@@ -153,7 +153,7 @@ func TestFreshRootInputSupersedesFailedWaitCheckpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(reopened.Close)
-	before, err := readTranscriptFull(path, "")
+	before, err := readTranscriptFull(t.Context(), path, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,7 @@ func TestFreshRootInputSupersedesFailedWaitCheckpoint(t *testing.T) {
 		if seen != 1 {
 			t.Errorf("fresh input presentations=%d, want 1", seen)
 		}
-		return finalResponse("reply-new-84")
+		return agenttest.FinalResponse("reply-new-84")
 	})
 	reopened.SetClientMutationStartWakeFunc(func() {})
 	accepted, err := reopened.AcceptClientMutationStart(appwire.TurnStartParams{
@@ -189,7 +189,7 @@ func TestFreshRootInputSupersedesFailedWaitCheckpoint(t *testing.T) {
 	if got := len(adapter.requestsFor("root")); got != 2 {
 		t.Fatalf("scripted requests=%d, want old wait and fresh input", got)
 	}
-	data, err := readTranscriptFull(path, "")
+	data, err := readTranscriptFull(t.Context(), path, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -314,18 +314,18 @@ func TestNotificationResumesYieldedWait(t *testing.T) {
 			defer release()
 			var target string
 			resumed := make(chan llm.Request, 1)
-			adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("owner", "WAIT-OWNER-71") }, func(llm.Request) llm.Response { return finalResponse("root-71") })
+			adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("owner", "WAIT-OWNER-71") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("root-71") })
 			if producer == "child" {
 				adapter.script("WAIT-OWNER-71", func(llm.Request) llm.Response { return delegateToolResponse("worker", "WAIT-WORKER-71") })
 				adapter.script("WAIT-WORKER-71", func(llm.Request) llm.Response {
 					awaitSignal(t, gate, "worker release")
-					return finalResponse("worker-payload-71")
+					return agenttest.FinalResponse("worker-payload-71")
 				})
 			} else {
 				fifo, releaseShell := waitProducerFIFO(t)
 				adapter.script("WAIT-OWNER-71", func(llm.Request) llm.Response {
 					args, _ := json.Marshal(map[string]any{"command": fmt.Sprintf("read value < %q", fifo), "mode": "background"})
-					return toolCallResponse(llm.ToolCallData{ID: "shell-71", Name: "shell", Arguments: args, Type: "function"})
+					return agenttest.ToolCallResponse(llm.ToolCallData{ID: "shell-71", Name: "shell", Arguments: args, Type: "function"})
 				})
 				bridgeDone := make(chan struct{})
 				go func() {
@@ -349,7 +349,7 @@ func TestNotificationResumesYieldedWait(t *testing.T) {
 			}, func(req llm.Request) llm.Response {
 				resumed <- req
 				terminalBoundary.hold(t)
-				return finalResponse("resumed-result-71")
+				return agenttest.FinalResponse("resumed-result-71")
 			})
 			root := newMessagingRoot(t, adapter, returns.configure)
 			t.Cleanup(func() { returns.close(t, root) })
@@ -403,7 +403,7 @@ func TestNotificationResumesYieldedWait(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			data, err := readTranscriptFull(transcriptPath(root.stateDir, root.ID()), "")
+			data, err := readTranscriptFull(t.Context(), transcriptPath(root.stateDir, root.ID()), "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -578,10 +578,10 @@ func TestParentSteeringResumesYieldedWait(t *testing.T) {
 			resumed, modelGate := make(chan llm.Request, 1), make(chan struct{})
 			releaseModel := sync.OnceFunc(func() { close(modelGate) })
 			defer releaseModel()
-			adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("steer-owner-93", "STEER-WAIT-93") }, func(llm.Request) llm.Response { return finalResponse("root-93") })
+			adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("steer-owner-93", "STEER-WAIT-93") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("root-93") })
 			adapter.script("STEER-WAIT-93", func(llm.Request) llm.Response {
 				args, _ := json.Marshal(map[string]any{"command": fmt.Sprintf("read value < %q", fifo), "mode": "background"})
-				return toolCallResponse(llm.ToolCallData{ID: "steer-shell-93", Name: "shell", Type: "function", Arguments: args})
+				return agenttest.ToolCallResponse(llm.ToolCallData{ID: "steer-shell-93", Name: "shell", Type: "function", Arguments: args})
 			}, func(req llm.Request) llm.Response {
 				initialBoundary.hold(t)
 				return waitResponseFor("steer-wait-93", regexp.MustCompile(`job_[A-Za-z0-9_]{10,}`).FindString(lastToolResultText(req.Messages)))
@@ -589,7 +589,7 @@ func TestParentSteeringResumesYieldedWait(t *testing.T) {
 				resumed <- req
 				close(resumeEntered)
 				<-modelGate
-				return finalResponse("steering-answered-93")
+				return agenttest.FinalResponse("steering-answered-93")
 			})
 			root := newMessagingRoot(t, adapter, returns.configure)
 			t.Cleanup(func() { returns.close(t, root) })
@@ -653,7 +653,7 @@ func TestParentSteeringResumesYieldedWait(t *testing.T) {
 				if result.Action != "steered" || result.DelegateID != owner.owningDelegateID {
 					t.Errorf("real delegate_send result=%+v, want steered", result)
 				}
-				return finalResponse("sent-93")
+				return agenttest.FinalResponse("sent-93")
 			})
 			if _, err := receiver.ProcessInput(context.Background(), "steer-93", nil); err != nil {
 				t.Fatal(err)
@@ -682,7 +682,7 @@ func TestParentSteeringResumesYieldedWait(t *testing.T) {
 			if run.Generation != 1 || !run.CurrentRunOpen || run.LatestOutcome != nil || c.generationOwesSteering(owner.owningDelegateID) {
 				t.Fatalf("steering not consumed in original open generation: %+v", run)
 			}
-			data, err := readTranscriptFull(transcriptPath(receiver.stateDir, owner.ID()), "")
+			data, err := readTranscriptFull(t.Context(), transcriptPath(receiver.stateDir, owner.ID()), "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -730,9 +730,9 @@ func TestAlreadyObservedTargetCannotStrandWait(t *testing.T) {
 			if producer == "child" {
 				adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("worker-19", "STALE-WORKER-19") }, func(req llm.Request) llm.Response {
 					target = deferredHeadDelegateID.FindString(lastToolResultText(req.Messages))
-					return finalResponse("initial-19")
+					return agenttest.FinalResponse("initial-19")
 				})
-				adapter.script("STALE-WORKER-19", func(llm.Request) llm.Response { <-gate; return finalResponse("terminal-payload-19") })
+				adapter.script("STALE-WORKER-19", func(llm.Request) llm.Response { <-gate; return agenttest.FinalResponse("terminal-payload-19") })
 			} else {
 				fifo, releaseShell := waitProducerFIFO(t)
 				bridgeDone := make(chan struct{})
@@ -740,10 +740,10 @@ func TestAlreadyObservedTargetCannotStrandWait(t *testing.T) {
 				defer func() { release(); waitForTestSignal(t, bridgeDone, "stale-target shell release bridge") }()
 				adapter.script("root", func(llm.Request) llm.Response {
 					args, _ := json.Marshal(map[string]any{"command": fmt.Sprintf("read value < %q", fifo), "mode": "background"})
-					return toolCallResponse(llm.ToolCallData{ID: "shell-19", Name: "shell", Arguments: args, Type: "function"})
+					return agenttest.ToolCallResponse(llm.ToolCallData{ID: "shell-19", Name: "shell", Arguments: args, Type: "function"})
 				}, func(req llm.Request) llm.Response {
 					target = regexp.MustCompile(`job_[A-Za-z0-9_]{10,}`).FindString(lastToolResultText(req.Messages))
-					return finalResponse("initial-19")
+					return agenttest.FinalResponse("initial-19")
 				})
 			}
 			root := newMessagingRoot(t, adapter, returns.configure)
@@ -767,7 +767,7 @@ func TestAlreadyObservedTargetCannotStrandWait(t *testing.T) {
 			if ids, err := root.pendingNotificationIDs(); err != nil || len(ids) != 1 {
 				t.Fatalf("real producer custody=%v err=%v", ids, err)
 			}
-			adapter.script("root", func(llm.Request) llm.Response { return finalResponse("observed-19") })
+			adapter.script("root", func(llm.Request) llm.Response { return agenttest.FinalResponse("observed-19") })
 			if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 				t.Fatal(err)
 			}
@@ -814,7 +814,7 @@ func TestAlreadyObservedTargetCannotStrandWait(t *testing.T) {
 						}
 					}
 				}
-				return finalResponse("refused-19")
+				return agenttest.FinalResponse("refused-19")
 			})
 			if _, err := root.ProcessInput(context.Background(), "try-wait-19", nil); err != nil {
 				t.Fatal(err)
@@ -824,7 +824,7 @@ func TestAlreadyObservedTargetCannotStrandWait(t *testing.T) {
 				t.Fatalf("stale wait checkpoint=%+v err=%v", checkpoint, err)
 			}
 			assertNotificationPending(t, root, []string{})
-			data, err := readTranscriptFull(transcriptPath(root.stateDir, root.ID()), "")
+			data, err := readTranscriptFull(t.Context(), transcriptPath(root.stateDir, root.ID()), "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -847,11 +847,14 @@ func testWaitTargetCompletesBeforeCheckpoint(t *testing.T) {
 	unblock := sync.OnceFunc(func() { close(checkpointGate) })
 	defer release()
 	defer unblock()
-	adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("race-owner", "RACE-WAIT-26") }, func(llm.Request) llm.Response { return finalResponse("root-26") })
+	adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("race-owner", "RACE-WAIT-26") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("root-26") })
 	adapter.script("RACE-WAIT-26", func(llm.Request) llm.Response { return delegateToolResponse("race-child", "RACE-CHILD-26") }, func(req llm.Request) llm.Response {
 		return waitResponseFor("race-wait-26", deferredHeadDelegateID.FindString(lastToolResultText(req.Messages)))
-	}, func(llm.Request) llm.Response { terminalBoundary.hold(t); return finalResponse("race-result-26") })
-	adapter.script("RACE-CHILD-26", func(llm.Request) llm.Response { <-gate; return finalResponse("race-child-result-26") })
+	}, func(llm.Request) llm.Response {
+		terminalBoundary.hold(t)
+		return agenttest.FinalResponse("race-result-26")
+	})
+	adapter.script("RACE-CHILD-26", func(llm.Request) llm.Response { <-gate; return agenttest.FinalResponse("race-child-result-26") })
 	root := newMessagingRoot(t, adapter, returns.configure)
 	t.Cleanup(func() { returns.close(t, root) })
 	root.SetDescendantRecordedFunc(func(_ string, rec transcript.Record) {
@@ -1000,7 +1003,7 @@ func TestWaitCheckpointBeforeCompletionMarkerReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 	restored := restoreWaitingCopy(t, root, copyDir)
-	data, err := readTranscriptFull(path, "")
+	data, err := readTranscriptFull(t.Context(), path, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1016,7 +1019,11 @@ func TestWaitCheckpointBeforeCompletionMarkerReopen(t *testing.T) {
 	entered, release := make(chan struct{}), make(chan struct{})
 	unblock := sync.OnceFunc(func() { close(release) })
 	defer unblock()
-	adapter.script("root", func(llm.Request) llm.Response { close(entered); <-release; return finalResponse("resumed-88") })
+	adapter.script("root", func(llm.Request) llm.Response {
+		close(entered)
+		<-release
+		return agenttest.FinalResponse("resumed-88")
+	})
 	done := make(chan error, 1)
 	go func() { _, err := restored.ProcessInput(context.Background(), "resume-88", nil); done <- err }()
 	awaitSignal(t, entered, "resumed model request")
@@ -1030,7 +1037,7 @@ func TestWaitCheckpointBeforeCompletionMarkerReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = restoreWaitingCopy(t, root, interruptedCopy)
-	data, err = readTranscriptFull(transcriptPath(interruptedCopy, root.ID()), "")
+	data, err = readTranscriptFull(t.Context(), transcriptPath(interruptedCopy, root.ID()), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1052,12 +1059,12 @@ func TestMissingWaitProducerNotifiesOnce(t *testing.T) {
 	defer initialBoundary.release()
 	fifo, releaseShell := waitProducerFIFO(t)
 	defer releaseShell()
-	adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("cold-owner", "COLD-WAIT-37") }, func(llm.Request) llm.Response { return finalResponse("root-37") })
+	adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("cold-owner", "COLD-WAIT-37") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("root-37") })
 	adapter.script("COLD-WAIT-37", func(llm.Request) llm.Response {
-		return toolCallResponse(llm.ToolCallData{ID: "unfinished-37", Name: "task_list", Type: "function", Arguments: json.RawMessage(`{"add":[{"type":"implement","description":"unfinished task","prompt":"leave this incomplete"}]}`)})
+		return agenttest.ToolCallResponse(llm.ToolCallData{ID: "unfinished-37", Name: "task_list", Type: "function", Arguments: json.RawMessage(`{"add":[{"type":"implement","description":"unfinished task","prompt":"leave this incomplete"}]}`)})
 	}, func(llm.Request) llm.Response {
 		args, _ := json.Marshal(map[string]any{"command": fmt.Sprintf("read value < %q", fifo), "mode": "background"})
-		return toolCallResponse(llm.ToolCallData{ID: "shell-37", Name: "shell", Type: "function", Arguments: args})
+		return agenttest.ToolCallResponse(llm.ToolCallData{ID: "shell-37", Name: "shell", Type: "function", Arguments: args})
 	}, func(req llm.Request) llm.Response {
 		initialBoundary.hold(t)
 		return waitResponseFor("cold-wait-37", regexp.MustCompile(`job_[A-Za-z0-9_]{10,}`).FindString(lastToolResultText(req.Messages)))
@@ -1093,7 +1100,7 @@ func TestMissingWaitProducerNotifiesOnce(t *testing.T) {
 		entered <- req
 		close(responseEntered)
 		<-gate
-		return finalResponse("cold-result-37")
+		return agenttest.FinalResponse("cold-result-37")
 	})
 	root.Close()
 	restoredReturns := newActivationReturns()
@@ -1137,7 +1144,7 @@ func TestMissingWaitProducerNotifiesOnce(t *testing.T) {
 			t.Fatal("cold resume replaced generation")
 		}
 	}
-	data, err := readTranscriptFull(transcriptPath(copyDir, owner.ID()), "")
+	data, err := readTranscriptFull(t.Context(), transcriptPath(copyDir, owner.ID()), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1167,7 +1174,7 @@ func TestNotificationBatchCapacityRelease(t *testing.T) {
 	gate := make(chan struct{})
 	releaseBusy := sync.OnceFunc(func() { close(gate) })
 	defer releaseBusy()
-	a.script("root", func(llm.Request) llm.Response { return delegateToolResponse("real-cap-owner-11", "REAL-CAP-WAIT-11") }, func(llm.Request) llm.Response { return finalResponse("real-cap-root-11") })
+	a.script("root", func(llm.Request) llm.Response { return delegateToolResponse("real-cap-owner-11", "REAL-CAP-WAIT-11") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("real-cap-root-11") })
 	var jobID string
 	resumed := make(chan struct{}, 1)
 	a.script("REAL-CAP-WAIT-11", func(llm.Request) llm.Response { return incidentShellResponse("real-cap-shell-11", fifo) }, func(req llm.Request) llm.Response {
@@ -1180,9 +1187,9 @@ func TestNotificationBatchCapacityRelease(t *testing.T) {
 		}
 		resumed <- struct{}{}
 		awaitSignal(t, terminalGate, "capacity terminal activation capture")
-		return finalResponse("real-cap-observed-11")
+		return agenttest.FinalResponse("real-cap-observed-11")
 	})
-	a.script("REAL-CAP-BUSY-11", func(llm.Request) llm.Response { <-gate; return finalResponse("real-cap-busy-result-11") })
+	a.script("REAL-CAP-BUSY-11", func(llm.Request) llm.Response { <-gate; return agenttest.FinalResponse("real-cap-busy-result-11") })
 	root := newMessagingRoot(t, a, func(cfg *SessionConfig) {
 		returns.configure(cfg)
 		cfg.MaxConcurrentDelegateTurns = 1
@@ -1197,7 +1204,7 @@ func TestNotificationBatchCapacityRelease(t *testing.T) {
 	initial := returns.take(t, owner.ID())
 	releaseYield()
 	incidentYielded(t, root, owner.ID(), initial)
-	a.script("root", func(llm.Request) llm.Response { return delegateToolResponse("real-cap-busy-11", "REAL-CAP-BUSY-11") }, func(llm.Request) llm.Response { return finalResponse("real-cap-busy-root-11") })
+	a.script("root", func(llm.Request) llm.Response { return delegateToolResponse("real-cap-busy-11", "REAL-CAP-BUSY-11") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("real-cap-busy-root-11") })
 	if _, err := root.ProcessInput(context.Background(), "real-cap-busy-start-11", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -1243,12 +1250,12 @@ func TestYieldedWaitCapacityReleaseAndStop(t *testing.T) {
 	busyGate := make(chan struct{})
 	releaseBusy := sync.OnceFunc(func() { close(busyGate) })
 	defer releaseBusy()
-	adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("cap-owner", "CAP-WAIT-52") }, func(llm.Request) llm.Response { return finalResponse("root-52") })
+	adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("cap-owner", "CAP-WAIT-52") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("root-52") })
 	var target string
 	resumed := make(chan struct{}, 1)
 	adapter.script("CAP-WAIT-52", func(llm.Request) llm.Response {
 		args, _ := json.Marshal(map[string]any{"command": fmt.Sprintf("read value < %q", fifo), "mode": "background"})
-		return toolCallResponse(llm.ToolCallData{ID: "shell-52", Name: "shell", Type: "function", Arguments: args})
+		return agenttest.ToolCallResponse(llm.ToolCallData{ID: "shell-52", Name: "shell", Type: "function", Arguments: args})
 	}, func(req llm.Request) llm.Response {
 		target = regexp.MustCompile(`job_[A-Za-z0-9_]{10,}`).FindString(lastToolResultText(req.Messages))
 		initialBoundary.hold(t)
@@ -1258,7 +1265,7 @@ func TestYieldedWaitCapacityReleaseAndStop(t *testing.T) {
 		againBoundary.hold(t)
 		return waitResponseFor("cap-wait-again-52", target)
 	})
-	adapter.script("CAP-BUSY-52", func(llm.Request) llm.Response { <-busyGate; return finalResponse("busy-result-52") })
+	adapter.script("CAP-BUSY-52", func(llm.Request) llm.Response { <-busyGate; return agenttest.FinalResponse("busy-result-52") })
 	root := newMessagingRoot(t, adapter, func(cfg *SessionConfig) {
 		returns.configure(cfg)
 		cfg.MaxConcurrentDelegateTurns = 1
@@ -1272,7 +1279,7 @@ func TestYieldedWaitCapacityReleaseAndStop(t *testing.T) {
 	initial := initialBoundary.take(t, returns, owner.ID())
 	initialBoundary.release()
 	waitYielded(t, root, initial, "cap-wait-52", target)
-	adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("cap-busy", "CAP-BUSY-52") }, func(llm.Request) llm.Response { return finalResponse("root-busy-52") })
+	adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("cap-busy", "CAP-BUSY-52") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("root-busy-52") })
 	if _, err := root.ProcessInput(context.Background(), "busy-52", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -1342,19 +1349,25 @@ func TestAttentionWaitPreservesSiblingDriveCapacity(t *testing.T) {
 	busyGate := make(chan struct{})
 	releaseBusy := sync.OnceFunc(func() { close(busyGate) })
 	defer releaseBusy()
-	adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("drive-owner", "DRIVE-WAIT-72") }, func(llm.Request) llm.Response { return finalResponse("root-72") })
-	adapter.script("DRIVE-WAIT-72", func(llm.Request) llm.Response { ownerInitialBoundary.hold(t); return finalResponse("initial-owner-72") }, func(llm.Request) llm.Response {
+	adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("drive-owner", "DRIVE-WAIT-72") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("root-72") })
+	adapter.script("DRIVE-WAIT-72", func(llm.Request) llm.Response {
+		ownerInitialBoundary.hold(t)
+		return agenttest.FinalResponse("initial-owner-72")
+	}, func(llm.Request) llm.Response {
 		args, _ := json.Marshal(map[string]any{"command": fmt.Sprintf("read value < %q", fifo), "mode": "background"})
-		return toolCallResponse(llm.ToolCallData{ID: "shell-72", Name: "shell", Type: "function", Arguments: args})
+		return agenttest.ToolCallResponse(llm.ToolCallData{ID: "shell-72", Name: "shell", Type: "function", Arguments: args})
 	}, func(req llm.Request) llm.Response {
 		attentionBoundary.hold(t)
 		return waitResponseFor("drive-wait-72", regexp.MustCompile(`job_[A-Za-z0-9_]{10,}`).FindString(lastToolResultText(req.Messages)))
 	}, func(req llm.Request) llm.Response {
 		shellResult <- req
 		shellResultBoundary.hold(t)
-		return finalResponse("stopped-shell-observed-72")
+		return agenttest.FinalResponse("stopped-shell-observed-72")
 	})
-	adapter.script("DRIVE-BUSY-72", func(llm.Request) llm.Response { busyInitialBoundary.hold(t); return finalResponse("initial-busy-72") }, func(llm.Request) llm.Response { <-busyGate; return finalResponse("busy-drive-72") })
+	adapter.script("DRIVE-BUSY-72", func(llm.Request) llm.Response {
+		busyInitialBoundary.hold(t)
+		return agenttest.FinalResponse("initial-busy-72")
+	}, func(llm.Request) llm.Response { <-busyGate; return agenttest.FinalResponse("busy-drive-72") })
 	root := newMessagingRoot(t, adapter, returns.configure)
 	t.Cleanup(func() { returns.close(t, root) })
 	if _, err := root.ProcessInput(context.Background(), "start-72", nil); err != nil {
@@ -1364,7 +1377,7 @@ func TestAttentionWaitPreservesSiblingDriveCapacity(t *testing.T) {
 	ownerInitial := ownerInitialBoundary.take(t, returns, owner.ID())
 	ownerInitialBoundary.release()
 	incidentSettled(t, root, owner.ID(), ownerInitial)
-	adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("drive-busy", "DRIVE-BUSY-72") }, func(llm.Request) llm.Response { return finalResponse("root-busy-72") })
+	adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("drive-busy", "DRIVE-BUSY-72") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("root-busy-72") })
 	if _, err := root.ProcessInput(context.Background(), "busy-72", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -1472,10 +1485,10 @@ func TestDirectUserStopResumeHandoff(t *testing.T) {
 			defer initialBoundary.release()
 			fifo, releaseShell := waitProducerFIFO(t)
 			defer releaseShell()
-			adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("handoff-owner", "HANDOFF-WAIT-94") }, func(llm.Request) llm.Response { return finalResponse("root-94") })
+			adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("handoff-owner", "HANDOFF-WAIT-94") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("root-94") })
 			adapter.script("HANDOFF-WAIT-94", func(llm.Request) llm.Response {
 				args, _ := json.Marshal(map[string]any{"command": fmt.Sprintf("read value < %q", fifo), "mode": "background"})
-				return toolCallResponse(llm.ToolCallData{ID: "handoff-shell-94", Name: "shell", Type: "function", Arguments: args})
+				return agenttest.ToolCallResponse(llm.ToolCallData{ID: "handoff-shell-94", Name: "shell", Type: "function", Arguments: args})
 			}, func(req llm.Request) llm.Response {
 				initialBoundary.hold(t)
 				return waitResponseFor("handoff-wait-94", regexp.MustCompile(`job_[A-Za-z0-9_]{10,}`).FindString(lastToolResultText(req.Messages)))
@@ -1649,13 +1662,13 @@ func TestDirectUserStopYieldedWait(t *testing.T) {
 	gate := make(chan struct{})
 	release := sync.OnceFunc(func() { close(gate) })
 	defer release()
-	adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("user-owner", "USER-WAIT-63") }, func(llm.Request) llm.Response { return finalResponse("root-63") })
+	adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("user-owner", "USER-WAIT-63") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("root-63") })
 	adapter.script("USER-WAIT-63", func(llm.Request) llm.Response { return delegateToolResponse("user-child", "USER-CHILD-63") }, func(req llm.Request) llm.Response {
 		initialBoundary.hold(t)
 		return waitResponseFor("user-wait-63", deferredHeadDelegateID.FindString(lastToolResultText(req.Messages)))
 	})
-	adapter.script("USER-WAIT-63", func(llm.Request) llm.Response { successorBoundary.hold(t); return finalResponse("done") })
-	adapter.script("USER-CHILD-63", func(llm.Request) llm.Response { <-gate; return finalResponse("child-result-63") })
+	adapter.script("USER-WAIT-63", func(llm.Request) llm.Response { successorBoundary.hold(t); return agenttest.FinalResponse("done") })
+	adapter.script("USER-CHILD-63", func(llm.Request) llm.Response { <-gate; return agenttest.FinalResponse("child-result-63") })
 	root := newMessagingRoot(t, adapter, returns.configure)
 	t.Cleanup(func() { returns.close(t, root) })
 	if _, err := root.ProcessInput(context.Background(), "start-63", nil); err != nil {
@@ -1764,8 +1777,8 @@ func TestColdDirectUserStopYieldedWait(t *testing.T) {
 			busyGate := make(chan struct{})
 			releaseBusy := sync.OnceFunc(func() { close(busyGate) })
 			defer releaseBusy()
-			adapter.script("COLD-BUSY-84", func(llm.Request) llm.Response { <-busyGate; return finalResponse("cold-busy-result-84") })
-			adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("cold-stop", "COLD-STOP-84") }, func(llm.Request) llm.Response { return finalResponse("root-84") })
+			adapter.script("COLD-BUSY-84", func(llm.Request) llm.Response { <-busyGate; return agenttest.FinalResponse("cold-busy-result-84") })
+			adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("cold-stop", "COLD-STOP-84") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("root-84") })
 			adapter.script("COLD-STOP-84", func(llm.Request) llm.Response { return delegateToolResponse("cold-child", "COLD-CHILD-84") }, func(req llm.Request) llm.Response {
 				initialBoundary.hold(t)
 				return waitResponseFor("cold-stop-wait-84", deferredHeadDelegateID.FindString(lastToolResultText(req.Messages)))
@@ -1783,7 +1796,7 @@ func TestColdDirectUserStopYieldedWait(t *testing.T) {
 				successor <- req
 				successorBoundary.hold(t)
 				if !test.pending {
-					return finalResponse("cold-stop-retained-child-result-84")
+					return agenttest.FinalResponse("cold-stop-retained-child-result-84")
 				}
 				var childID string
 				for _, msg := range req.Messages {
@@ -1794,18 +1807,18 @@ func TestColdDirectUserStopYieldedWait(t *testing.T) {
 				return waitResponseFor("cold-stop-successor-wait-84", childID)
 			}, func(llm.Request) llm.Response {
 				terminalBoundary.hold(t)
-				return finalResponse("cold-stop-retained-child-result-84")
+				return agenttest.FinalResponse("cold-stop-retained-child-result-84")
 			})
 			adapter.script("COLD-CHILD-84", func(llm.Request) llm.Response {
 				args, _ := json.Marshal(map[string]any{"command": fmt.Sprintf("read value < %q", fifo), "mode": "background"})
-				return toolCallResponse(llm.ToolCallData{ID: "cold-shell-84", Name: "shell", Type: "function", Arguments: args})
+				return agenttest.ToolCallResponse(llm.ToolCallData{ID: "cold-shell-84", Name: "shell", Type: "function", Arguments: args})
 			}, func(req llm.Request) llm.Response {
 				childBoundary.hold(t)
 				return waitResponseFor("cold-child-wait-84", regexp.MustCompile(`job_[A-Za-z0-9_]{10,}`).FindString(lastToolResultText(req.Messages)))
 			}, func(req llm.Request) llm.Response {
 				childRecovery <- req
 				<-childGate
-				return finalResponse("cold-stop-retained-child-payload-84")
+				return agenttest.FinalResponse("cold-stop-retained-child-payload-84")
 			})
 			root := newMessagingRoot(t, adapter, returns.configure)
 			t.Cleanup(func() { returns.close(t, root) })
@@ -1951,7 +1964,7 @@ func TestColdDirectUserStopYieldedWait(t *testing.T) {
 			var busyID string
 			var busyReceipt *activationReturn
 			if test.activeSibling {
-				adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("cold-busy", "COLD-BUSY-84") }, func(llm.Request) llm.Response { return finalResponse("root-busy-84") })
+				adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("cold-busy", "COLD-BUSY-84") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("root-busy-84") })
 				if _, err := restored.ProcessInput(context.Background(), "busy-84", nil); err != nil {
 					t.Fatal(err)
 				}
@@ -2029,7 +2042,7 @@ func TestColdDirectUserStopYieldedWait(t *testing.T) {
 			if got := len(adapter.requestsFor("COLD-STOP-84")); got != wantCalls {
 				t.Fatalf("cold Stop model requests=%d want%d", got, wantCalls)
 			}
-			data, err := readTranscriptFull(transcriptPath(copyDir, owner.ID()), "")
+			data, err := readTranscriptFull(t.Context(), transcriptPath(copyDir, owner.ID()), "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -2097,7 +2110,7 @@ func TestColdDirectUserStopYieldedWait(t *testing.T) {
 				if err := incidentJobPayload(request, shellID, "stopped", "runtime_lost"); err != nil {
 					t.Fatal(err)
 				}
-				recovered, err := readTranscriptFull(transcriptPath(copyDir, child.ID()), "")
+				recovered, err := readTranscriptFull(t.Context(), transcriptPath(copyDir, child.ID()), "")
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -2179,8 +2192,8 @@ func TestColdDirectUserStopIdle(t *testing.T) {
 	returns := newActivationReturns()
 	terminalBoundary := newWaitBoundary()
 	defer terminalBoundary.release()
-	adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("cold-idle", "COLD-IDLE-85") }, func(llm.Request) llm.Response { return finalResponse("root-85") })
-	adapter.script("COLD-IDLE-85", func(llm.Request) llm.Response { terminalBoundary.hold(t); return finalResponse("idle-85") })
+	adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("cold-idle", "COLD-IDLE-85") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("root-85") })
+	adapter.script("COLD-IDLE-85", func(llm.Request) llm.Response { terminalBoundary.hold(t); return agenttest.FinalResponse("idle-85") })
 	root := newMessagingRoot(t, adapter, returns.configure)
 	t.Cleanup(func() { returns.close(t, root) })
 	if _, err := root.ProcessInput(context.Background(), "start-85", nil); err != nil {
@@ -2227,7 +2240,7 @@ func TestWaitResumeClaimSerializesStop(t *testing.T) {
 			fifo, releaseShell := waitProducerFIFO(t)
 			defer releaseShell()
 			reply := updateReply
-			adapter.finiteScript("root", reply(delegateToolResponse("fence-owner", "FENCE-WAIT-81")), reply(finalResponse("root-81")))
+			adapter.finiteScript("root", reply(delegateToolResponse("fence-owner", "FENCE-WAIT-81")), reply(agenttest.FinalResponse("root-81")))
 			modelGate := make(chan struct{})
 			releaseModel := sync.OnceFunc(func() { close(modelGate) })
 			defer releaseModel()
@@ -2239,18 +2252,18 @@ func TestWaitResumeClaimSerializesStop(t *testing.T) {
 				switch lease.generation {
 				case 1:
 					<-modelGate
-					return finalResponse("fence-result-81"), nil
+					return agenttest.FinalResponse("fence-result-81"), nil
 				case 2:
 					successorRequests <- req
 					successorBoundary.hold(t)
-					return finalResponse("fence-successor-result-81"), nil
+					return agenttest.FinalResponse("fence-successor-result-81"), nil
 				default:
 					return llm.Response{}, fmt.Errorf("unexpected fence provider generation %d", lease.generation)
 				}
 			}
 			adapter.finiteScript("FENCE-WAIT-81", []updateStep{func(context.Context, llm.Request) (llm.Response, error) {
 				args, _ := json.Marshal(map[string]any{"command": fmt.Sprintf("read value < %q", fifo), "mode": "background"})
-				return toolCallResponse(llm.ToolCallData{ID: "shell-81", Name: "shell", Type: "function", Arguments: args}), nil
+				return agenttest.ToolCallResponse(llm.ToolCallData{ID: "shell-81", Name: "shell", Type: "function", Arguments: args}), nil
 			}, func(_ context.Context, req llm.Request) (llm.Response, error) {
 				initialBoundary.hold(t)
 				return waitResponseFor("fence-wait-81", regexp.MustCompile(`job_[A-Za-z0-9_]{10,}`).FindString(lastToolResultText(req.Messages))), nil
@@ -2321,7 +2334,7 @@ func TestWaitResumeClaimSerializesStop(t *testing.T) {
 			stopped := returns.take(t, owner.ID())
 			assertWaitResume(t, initial, stopped)
 			incidentSettled(t, root, owner.ID(), stopped)
-			data, err := readTranscriptFull(transcriptPath(root.stateDir, owner.ID()), "")
+			data, err := readTranscriptFull(t.Context(), transcriptPath(root.stateDir, owner.ID()), "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -2400,10 +2413,10 @@ func TestUnrelatedNotificationResumesWait(t *testing.T) {
 	defer releaseChild()
 	resumed := make(chan struct{}, 1)
 	var jobID string
-	adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("other-owner", "OTHER-WAIT-94") }, func(llm.Request) llm.Response { return finalResponse("root-94") })
+	adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("other-owner", "OTHER-WAIT-94") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("root-94") })
 	adapter.script("OTHER-WAIT-94", func(llm.Request) llm.Response {
 		args, _ := json.Marshal(map[string]any{"command": fmt.Sprintf("read value < %q", fifo), "mode": "background"})
-		return toolCallResponse(llm.ToolCallData{ID: "shell-94", Name: "shell", Type: "function", Arguments: args})
+		return agenttest.ToolCallResponse(llm.ToolCallData{ID: "shell-94", Name: "shell", Type: "function", Arguments: args})
 	}, func(req llm.Request) llm.Response {
 		jobID = regexp.MustCompile(`job_[A-Za-z0-9_]{10,}`).FindString(lastToolResultText(req.Messages))
 		return delegateToolResponse("other-child", "OTHER-CHILD-94")
@@ -2418,7 +2431,7 @@ func TestUnrelatedNotificationResumesWait(t *testing.T) {
 	adapter.script("OTHER-CHILD-94", func(llm.Request) llm.Response {
 		<-updateGate
 		return updateResponse("other-update-94", "other-child-payload-94")
-	}, func(llm.Request) llm.Response { <-finishGate; return finalResponse("other-child-result-94") })
+	}, func(llm.Request) llm.Response { <-finishGate; return agenttest.FinalResponse("other-child-result-94") })
 	root := newMessagingRoot(t, adapter, returns.configure)
 	t.Cleanup(func() { returns.close(t, root) })
 	if _, err := root.ProcessInput(context.Background(), "start-94", nil); err != nil {
@@ -2445,7 +2458,7 @@ func TestUnrelatedNotificationResumesWait(t *testing.T) {
 	if run := delegateAggregateSnapshot(t, root.delegateController, owner.owningDelegateID); run.Generation != 1 || !run.CurrentRunOpen {
 		t.Fatalf("unrelated notification changed generation: %+v", run)
 	}
-	data, err := readTranscriptFull(transcriptPath(root.stateDir, owner.ID()), "")
+	data, err := readTranscriptFull(t.Context(), transcriptPath(root.stateDir, owner.ID()), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2476,7 +2489,7 @@ func TestColdWaitingAncestorRestoresOnlyAddressedDescendant(t *testing.T) {
 	releaseChild := sync.OnceFunc(func() { close(childGate) })
 	defer releaseChild()
 	var childID string
-	adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("tree-owner", "TREE-WAIT-45") }, func(llm.Request) llm.Response { return finalResponse("root-45") })
+	adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("tree-owner", "TREE-WAIT-45") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("root-45") })
 	adapter.script("TREE-WAIT-45", func(llm.Request) llm.Response { return delegateToolResponse("tree-child", "TREE-CHILD-45") }, func(req llm.Request) llm.Response {
 		childID = deferredHeadDelegateID.FindString(lastToolResultText(req.Messages))
 		initialBoundary.hold(t)
@@ -2488,7 +2501,7 @@ func TestColdWaitingAncestorRestoresOnlyAddressedDescendant(t *testing.T) {
 	adapter.script("TREE-CHILD-45", func(llm.Request) llm.Response {
 		<-childGate
 		args, _ := json.Marshal(map[string]any{"command": fmt.Sprintf("read value < %q", fifo), "mode": "background"})
-		return toolCallResponse(llm.ToolCallData{ID: "shell-45", Name: "shell", Type: "function", Arguments: args})
+		return agenttest.ToolCallResponse(llm.ToolCallData{ID: "shell-45", Name: "shell", Type: "function", Arguments: args})
 	}, func(req llm.Request) llm.Response {
 		childBoundary.hold(t)
 		return waitResponseFor("tree-child-wait-45", regexp.MustCompile(`job_[A-Za-z0-9_]{10,}`).FindString(lastToolResultText(req.Messages)))
@@ -2524,11 +2537,11 @@ func TestColdWaitingAncestorRestoresOnlyAddressedDescendant(t *testing.T) {
 	adapter.script("TREE-CHILD-45", func(llm.Request) llm.Response {
 		close(entered)
 		<-finish
-		return finalResponse("restored-child-result-45")
+		return agenttest.FinalResponse("restored-child-result-45")
 	})
 	adapter.script("TREE-WAIT-45", func(llm.Request) llm.Response {
 		terminalBoundary.hold(t)
-		return finalResponse("restored-ancestor-result-45")
+		return agenttest.FinalResponse("restored-ancestor-result-45")
 	})
 	restoredReturns := newActivationReturns()
 	restored := restoreWaitingJoinCopy(t, root, copyDir, restoredReturns)

@@ -24,7 +24,7 @@ import (
 func drainingDelegateWithUpdate(t *testing.T, configure func(*SessionConfig)) (*Session, *messagingAdapter, string) {
 	t.Helper()
 	adapter := newMessagingAdapter()
-	adapter.script("root", func(llm.Request) llm.Response { return finalResponse("RECEIPT_913") })
+	adapter.script("root", func(llm.Request) llm.Response { return agenttest.FinalResponse("RECEIPT_913") })
 	sess := newMessagingRoot(t, adapter, configure)
 	id := delegateAttentionID(delegatestore.UpdateDeliveryID("dlg_worker", 1))
 	if _, err := sess.appendDelegateNotificationDurably(id, "UPDATE_PAYLOAD_913"); err != nil {
@@ -147,12 +147,12 @@ func recoverReceiptThroughDrain(t *testing.T, sess *Session, id string, faults *
 
 // The same repair must work with a real owned stable delegate's journal and
 // transport, not just a receiver-local append or a fabricated owningDelegateID.
-func TestDelegateReceiptRepairReleasesDrainForOwnedStableDelegate(t *testing.T) {
+func TestDelegateReceiptRepairReleasesDrainForOwnedDelegate(t *testing.T) {
 	t.Parallel()
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("OWNED_SOURCE_913") },
-		func(llm.Request) llm.Response { return finalResponse("OWNED_RECEIPT_913") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("OWNED_SOURCE_913") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("OWNED_RECEIPT_913") },
 	}
 	faults := &receiptRecoveryFaults{}
 	root, err := RestoreSessionFromMetaWithConfig(
@@ -176,7 +176,7 @@ func TestDelegateReceiptRepairReleasesDrainForOwnedStableDelegate(t *testing.T) 
 		t.Fatal(err)
 	}
 	t.Cleanup(root.Close)
-	warmStableDelegateUnservedRoot(t, root, fixture)
+	warmDelegateUnservedRoot(t, root, fixture)
 	pending := waitForRootAttention(t, root, 1)
 	fold := rootAttentionFold(t, root)
 	if !strings.Contains(fold.content[pending[0]].Text(), fixture.delegateID) || !strings.Contains(fold.content[pending[0]].Text(), "OWNED_SOURCE_913") {

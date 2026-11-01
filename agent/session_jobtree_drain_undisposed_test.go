@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -74,8 +75,8 @@ type drainResult struct {
 func TestOneShotDrainEscalatesAndExitsOnAnUndisposedBackgroundJob(t *testing.T) {
 	t.Parallel()
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("I hear you, doing nothing") },
-		func(llm.Request) llm.Response { return finalResponse("still doing nothing") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("I hear you, doing nothing") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("still doing nothing") },
 	}}
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
 		TurnEndsProcess: true,
@@ -86,8 +87,7 @@ func TestOneShotDrainEscalatesAndExitsOnAnUndisposedBackgroundJob(t *testing.T) 
 	// model turn, parks for a fed recheck, or returns), so the drain finishes
 	// in milliseconds; 30s only fires on a genuine hang — which is the #297
 	// regression this suite exists to catch.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	done := make(chan drainResult, 1)
 	go func() {
 		res, err := sess.drainJobTreeWith(ctx, drainWakeForTest(sess), feedRechecks(ctx), sess.kickDriveTree, sess.ProcessInputKind)
@@ -142,7 +142,7 @@ func TestOneShotDrainAnnouncementStopResolves(t *testing.T) {
 	var finalWarningSeen atomic.Bool
 	adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
-			return toolCallResponse(llm.ToolCallData{
+			return agenttest.ToolCallResponse(llm.ToolCallData{
 				ID: "stop-it", Name: "job_stop", Type: "function",
 				Arguments: json.RawMessage(`{"target":"` + jobID + `"}`),
 			})
@@ -154,15 +154,15 @@ func TestOneShotDrainAnnouncementStopResolves(t *testing.T) {
 			close(stopRequested)
 			<-allowStopTurn
 			close(stopTurnReturned)
-			return finalResponse("stopped the scratch job")
+			return agenttest.FinalResponse("stopped the scratch job")
 		},
 		func(req llm.Request) llm.Response {
 			if strings.Contains(req.Messages[len(req.Messages)-1].Text(), "Final notice:") {
 				finalWarningSeen.Store(true)
 			}
-			return finalResponse("all wrapped up")
+			return agenttest.FinalResponse("all wrapped up")
 		},
-		func(llm.Request) llm.Response { return finalResponse("all wrapped up") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("all wrapped up") },
 	}
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
 		TurnEndsProcess: true,
@@ -430,7 +430,7 @@ func TestClearedWatchStartsAFreshAnnouncementEpisode(t *testing.T) {
 	adapter := &fakeAdapter{name: "openai"}
 	adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
-			return toolCallResponse(llm.ToolCallData{
+			return agenttest.ToolCallResponse(llm.ToolCallData{
 				ID: "watch-it", Name: "job_watch", Type: "function",
 				Arguments: json.RawMessage(`{"operation":"create","source":"` + jobID + `","output_match":"READY"}`),
 			})
@@ -438,11 +438,11 @@ func TestClearedWatchStartsAFreshAnnouncementEpisode(t *testing.T) {
 		func(llm.Request) llm.Response {
 			close(watchArmed)
 			<-budgetCrossed
-			return finalResponse("watching; it will finish")
+			return agenttest.FinalResponse("watching; it will finish")
 		},
-		func(llm.Request) llm.Response { return finalResponse("the watch was cleared; reconsidering") },
-		func(llm.Request) llm.Response { return finalResponse("still waiting for the job") },
-		func(llm.Request) llm.Response { return finalResponse("exiting") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("the watch was cleared; reconsidering") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("still waiting for the job") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("exiting") },
 	}
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
 		TurnEndsProcess: true,
@@ -671,7 +671,7 @@ func TestOneShotDrainKeepsAnswerWhenCompletionRidesAnnouncement(t *testing.T) {
 			}
 			const answer = "FINAL-ANSWER: the build passed"
 			adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-				func(llm.Request) llm.Response { return finalResponse(answer) },
+				func(llm.Request) llm.Response { return agenttest.FinalResponse(answer) },
 			}}
 			sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
 				TurnEndsProcess: true,
@@ -680,8 +680,7 @@ func TestOneShotDrainKeepsAnswerWhenCompletionRidesAnnouncement(t *testing.T) {
 			jobID, releaseShell := startControlledBackgroundShell(t, sess, "controlled build")
 
 			// TRIPWIRE: every step is scripted or fed; 30s only fires on a hang.
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
+			ctx := tripwireCtx(t)
 			var completedOnAnnounce sync.Once
 			process := func(ctx context.Context, input string, images []ImageAttachment, kind EntryKind) (string, error) {
 				// The drain has queued the announcement and not yet opened the turn.
@@ -744,7 +743,7 @@ func TestOneShotDrainDeliversInsteadOfAnnouncingAFinalizingJob(t *testing.T) {
 	t.Parallel()
 	const answer = "FINAL-ANSWER: the build passed"
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse(answer) },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse(answer) },
 	}}
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
 		TurnEndsProcess: true,
@@ -752,8 +751,7 @@ func TestOneShotDrainDeliversInsteadOfAnnouncingAFinalizingJob(t *testing.T) {
 	jobID, releaseShell := startControlledBackgroundShell(t, sess, "controlled build")
 
 	// TRIPWIRE: every step is scripted or fed; 30s only fires on a hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	recheck := make(chan time.Time)
 	sess.jobManager.testOnlyAfterNotifyPendingAppend = func(string) {
 		// The terminal record and NotifyPending are durable; the running entry

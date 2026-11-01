@@ -1,5 +1,5 @@
 import { Platform, Text, useColorScheme } from "react-native";
-import type { AnsiLine } from "../../cmd/evener-hub/frontend/src/widgets/codeblock/ansi";
+import type { AnsiLine } from "@evener/appwire-client";
 import { ansiRunTextStyle } from "./ansiOutputStyles";
 import { useColors } from "./ui";
 

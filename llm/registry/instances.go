@@ -710,7 +710,21 @@ func (r *Registry) AuthFingerprint(instance string) (string, bool) {
 // own prefix. A named model the child would refuse — one the config
 // disabled, or one that does not resolve — is the gate's own refusal,
 // before the spawn. The credential value is never materialized.
+//
+// A Codex id the bundled roster rejects is not this gate's refusal: the child
+// applies the instance's live roster before resolving the model, so the
+// judgment replays the model's matching rows and globs at transport depth with
+// the candidate allowed (a matching glob's auth override is honored, still
+// executing no credential command) and leaves the model verdict to the child.
 func (r *Registry) ResolveGateCredential(instance, model string) (Resolved, error) {
+	res, err := r.resolveGateCredential(instance, model, false)
+	if err != nil && model != "" && errors.Is(err, ErrCodexModelNotListed) {
+		return r.resolveGateCredential(instance, model, true)
+	}
+	return res, err
+}
+
+func (r *Registry) resolveGateCredential(instance, model string, allowCodexCandidate bool) (Resolved, error) {
 	name := strings.ToLower(strings.TrimSpace(instance))
 	rec, ok := r.recordFor(name)
 	if !ok {
@@ -729,7 +743,7 @@ func (r *Registry) ResolveGateCredential(instance, model string) (Resolved, erro
 		// would pass a launch that always fails after spawning — and,
 		// judged at this shallower depth, the disabled verdict is the
 		// gate's own to read off the resolved row.
-		res, err := r.resolveLayersMode(rec, Ref{Model: model}, nil, resolveTransport)
+		res, err := r.resolveLayersModeLive(rec, Ref{Model: model}, nil, resolveTransport, true, allowCodexCandidate)
 		if err != nil {
 			return Resolved{}, err
 		}
@@ -740,36 +754,6 @@ func (r *Registry) ResolveGateCredential(instance, model string) (Resolved, erro
 	}
 	cred, warnings := r.credential(rec, t)
 	return Resolved{Instance: rec.name, Transport: t, Credential: cred, Warnings: warnings}, nil
-}
-
-// ResolveGateCredentialCandidate is ResolveGateCredential for an id the Codex
-// gate would reject as synthesized: it replays the model's matching rows and
-// globs at transport depth with the candidate allowed, so a matching glob's
-// auth override is honored, while still executing no credential command. It
-// is the spawn gate's fallback for a live-listed model the bundled roster
-// lacks.
-func (r *Registry) ResolveGateCredentialCandidate(instance, model string) (Resolved, error) {
-	name := strings.ToLower(strings.TrimSpace(instance))
-	rec, ok := r.recordFor(name)
-	if !ok {
-		return Resolved{}, fmt.Errorf("%w %q", ErrUnknownInstance, name)
-	}
-	if ref := ParseRef(strings.TrimSpace(model)); strings.EqualFold(ref.Instance, name) {
-		model = ref.Model
-	}
-	transport := r.listingTransport(rec)
-	if model != "" {
-		res, err := r.resolveLayersModeLive(rec, Ref{Model: model}, nil, resolveTransport, true, true)
-		if err != nil {
-			return Resolved{}, err
-		}
-		if BoolValue(res.Model.Disabled) {
-			return Resolved{}, fmt.Errorf("%s/%s: %w", rec.name, model, ErrModelDisabled)
-		}
-		transport = res.Transport
-	}
-	cred, warnings := r.credential(rec, transport)
-	return Resolved{Instance: rec.name, Transport: transport, Credential: cred, Warnings: warnings}, nil
 }
 
 // authHeaderName is the header the auth scheme of the transport a launch
@@ -972,11 +956,11 @@ func (r *Registry) credentialWithAuth(rec *record, auth authExpansion, t Transpo
 		if optional {
 			return Credential{Source: "none"}, nil
 		}
-		return Credential{Source: "none"}, []string{reason}
+		return Credential{Source: "none", MissingReason: reason}, []string{reason}
 	}
 	switch t.Auth {
 	case AuthOAuthOpenAICodex:
-		if fileExists(oauthRecordPath(r.stateRoot, rec.name)) {
+		if r.stateRoot != "" && fileExists(oauthRecordPath(r.stateRoot, rec.name)) {
 			return Credential{Source: "oauth"}, nil
 		}
 		return none(fmt.Sprintf("no credential (run `evener openai login --instance %s`)", rec.name))
@@ -1030,7 +1014,10 @@ func (r *Registry) credentialWithAuth(rec *record, auth authExpansion, t Transpo
 		}
 		noneAuth := none
 		if suppressAuthReason {
-			noneAuth = func(string) (Credential, []string) { return Credential{Source: "none"}, nil }
+			noneAuth = func(reason string) (Credential, []string) {
+				cred, _ := none(reason)
+				return cred, nil
+			}
 		}
 		if len(auth.unresolved) > 0 {
 			cred, warns := noneAuth(fmt.Sprintf("no credential (%s)", missingReason(auth.unresolved)))
@@ -1276,13 +1263,17 @@ func (r *Registry) HasInstance(name string) bool {
 
 // StateRoot is the state root the registry was loaded with: OAuth records
 // and the catalog cache live under it, and the Codex authenticator must
-// read the same directory (spec §9.5).
+// read the same directory (spec §9.5). It is empty for a registry loaded
+// without any, which has neither.
 func (r *Registry) StateRoot() string { return r.stateRoot }
 
 // StrayOAuthRecords lists auth/<name>.json records under the state root
 // whose <name> is not an instance on the Codex transport (spec §9.5, §14.1).
 // Nothing reads such a record, so each notice says how to remove it.
 func (r *Registry) StrayOAuthRecords() []string {
+	if r.stateRoot == "" {
+		return nil
+	}
 	dir := filepath.Join(r.stateRoot, "auth")
 	entries, err := os.ReadDir(dir)
 	if err != nil {

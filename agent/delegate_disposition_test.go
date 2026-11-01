@@ -24,7 +24,7 @@ func delegateDispositionRegistry(t *testing.T, delegate, offersEndReason bool) (
 		return nil
 	}
 	deps := &toolDeps{
-		emit:               func(events.EventKind, events.EventData) {},
+		emit:               func(events.EventData) {},
 		deliverCommunicate: record,
 		abort:              func(context.Context) error { return nil },
 		drainSteering:      func() []steeringMessage { return nil },

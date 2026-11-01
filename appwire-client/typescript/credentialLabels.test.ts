@@ -4,6 +4,7 @@ import { describe, expect, test } from "vitest";
 import {
   activeSourceLabel,
   credentialLayers,
+  filterModels,
   fromEnvironment,
   groupByProvider,
   keylessByDesign,
@@ -614,5 +615,17 @@ describe("safeCredentialTestResult", () => {
     const raw = { provider: "raw-provider", status: label, message: "raw provider message" };
     expect(safeCredentialTestResult("work", raw)).toEqual({ provider: "work", status, message });
     expect(safeCredentialTestMessage(label)).toBe(message);
+  });
+});
+
+describe("filterModels", () => {
+  const models = [{ id: "gpt-5" }, { id: "Claude-Opus" }, { id: "claude-haiku" }];
+
+  test("matches the id as a case-insensitive substring and ignores surrounding space", () => {
+    expect(filterModels(models, "  CLAUDE ").map((model) => model.id)).toEqual(["Claude-Opus", "claude-haiku"]);
+  });
+
+  test("a blank search keeps every model", () => {
+    expect(filterModels(models, "   ")).toEqual(models);
   });
 });

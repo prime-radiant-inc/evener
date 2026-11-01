@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"reflect"
 	"sync"
 	"testing"
@@ -349,7 +350,7 @@ func TestNotificationObservation(t *testing.T) {
 			}
 			observationRequest(t, req, nil, []string{"body-b-56e2"})
 			observationEnqueue(t, s, "obs-b", "body-b-56e2")
-			return finalResponse("answer-822d"), nil
+			return agenttest.FinalResponse("answer-822d"), nil
 		}}
 		if _, _, err := s.processOneInput(context.Background(), "input-3fe1", nil, EntryUserInput, nil); err != nil {
 			t.Fatal(err)
@@ -380,7 +381,7 @@ func TestNotificationObservation(t *testing.T) {
 				t.Errorf("mode=%q, want full_history_fallback", req.HistoryMode)
 			}
 			observationRequest(t, req, []string{"input-3fe1"}, []string{"body-b-56e2"})
-			return finalResponse("answer-822d"), nil
+			return agenttest.FinalResponse("answer-822d"), nil
 		}}
 		if _, _, err := s.processOneInput(context.Background(), "input-3fe1", nil, EntryUserInput, nil); err != nil {
 			t.Fatal(err)

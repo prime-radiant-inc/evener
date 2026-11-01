@@ -1,8 +1,10 @@
 import { openDatabaseSync } from "expo-sqlite";
 import * as Crypto from "expo-crypto";
-import type { AppwireClientLike, MutationReceipt, ThreadReadResponse } from "@evener/appwire-client";
+import type { AppwireClientLike, ThreadReadResponse } from "@evener/appwire-client";
 import { collectAuthoritativeMutationIds } from "@evener/appwire-client";
 import {
+	COMPOSER_METHODS,
+	DIRECT_FALLBACK_METHODS,
 	createClientIdentity,
 	createSecureUUID,
 	canEditQueuedMessage,
@@ -21,13 +23,14 @@ import {
 	type QueuedMessageStorage,
 	type SecureRandomSource,
 } from "@evener/appwire-client/state/mutation";
-import { READ_ITEM_LIMIT } from "../../mobile/src/services/conversation";
+import { READ_ITEM_LIMIT } from "./conversation/services/conversation";
 import {
+	type ConversationMutationAdmission,
 	type ConversationMutationKind,
 	type ConversationMutationRequest,
 	type ConversationMutationSubmitter,
 	MutationNotSentError,
-} from "../../mobile/src/state/conversationMutation";
+} from "./conversation/state/conversationMutation";
 import { MutationOutboxSQLite, type RecoveryResendCommit } from "./mutationOutboxStorage";
 import { isSqliteStorageFailure, type SqliteSync } from "./sqliteSync";
 
@@ -90,22 +93,12 @@ function nativeRandomSource(): SecureRandomSource {
 }
 
 function methodFor(kind: ConversationMutationKind, expectedQueueRevision: number | undefined): string {
-	if (kind === "send") return "turn/start";
-	if (kind === "queue") return "turn/queue";
+	if (kind === "send") return COMPOSER_METHODS.send;
+	if (kind === "queue") return COMPOSER_METHODS.queue;
 	if (kind === "interrupt") return "turn/interrupt";
-	if (kind === "promote") return "turn/promoteQueuedAsSteer";
-	return expectedQueueRevision === undefined ? "turn/steer" : "turn/drainAsSteer";
+	if (kind === "promote") return COMPOSER_METHODS.promote;
+	return expectedQueueRevision === undefined ? COMPOSER_METHODS.steer : COMPOSER_METHODS.drain;
 }
-
-// The composer's four send verbs: the only mutations that go out as a plain
-// request when storage refuses their durable write. Stop and promote keep
-// their durable contract and fail instead.
-const DIRECT_FALLBACK_METHODS: ReadonlySet<string> = new Set([
-	"turn/start",
-	"turn/queue",
-	"turn/steer",
-	"turn/drainAsSteer",
-]);
 
 function intentFor(request: NativeMutationRequest): MutationIntent {
 	const method = methodFor(request.kind, request.expectedQueueRevision);
@@ -114,7 +107,7 @@ function intentFor(request: NativeMutationRequest): MutationIntent {
 		expectedInstanceId: request.instanceId,
 	};
 	if (request.kind !== "interrupt" && request.kind !== "promote") payload.input = request.input;
-	if (method === "turn/drainAsSteer") payload.expectedQueueRevision = request.expectedQueueRevision;
+	if (method === COMPOSER_METHODS.drain) payload.expectedQueueRevision = request.expectedQueueRevision;
 	if (request.kind === "promote") {
 		payload.index = request.queueEntry.index;
 		payload.expectedEntryId = request.queueEntry.id;
@@ -792,7 +785,11 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		await this.#outbox.connectionReady();
 	}
 
-	async submit(request: NativeMutationRequest): Promise<MutationReceipt | undefined> {
+	/** Every admitted path returns the durable row it committed. The production
+	 * path is acknowledged at the enqueue boundary, before the daemon answers,
+	 * so an admission carries no wire receipt; the service-only caller adds
+	 * one when it has it. */
+	async submit(request: NativeMutationRequest): Promise<ConversationMutationAdmission> {
 		const intent = intentFor(request);
 		if (!this.#targetIdentities.has(intent.targetRef)) {
 			this.#targetIdentities.set(intent.targetRef, {
@@ -810,7 +807,7 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 			await this.start();
 			const record = await this.#outbox.enqueueInterruptAndCancel(intent);
 			this.#notifyStorageChange([record.targetRef]);
-			return undefined;
+			return { clientMutationId: record.clientMutationId };
 		}
 		if (request.recoverySourceIds?.length) {
 			// Capture before startup, not when the all-source transaction begins.
@@ -826,7 +823,7 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 			this.#rememberSubmitted(record.targetRef, record.clientMutationId, record.createdAt);
 			this.#notifyStorageChange([record.targetRef]);
 			void this.#dispatcher.dispatchTargets([record.targetRef]).catch(() => undefined);
-			return undefined;
+			return { clientMutationId: record.clientMutationId };
 		}
 		try {
 			// The click-time half of the stop barrier, captured before the
@@ -845,7 +842,7 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 			const record = await this.#outbox.enqueueIntent(intent, undefined, barrier);
 			this.#rememberSubmitted(record.targetRef, record.clientMutationId, record.createdAt);
 			this.#notifyStorageChange([record.targetRef]);
-			return undefined;
+			return { clientMutationId: record.clientMutationId };
 		} catch (error) {
 			if (!DIRECT_FALLBACK_METHODS.has(intent.method) || !isSqliteStorageFailure(error)) throw error;
 			return this.#sendDirectly(request, intent, error);
@@ -865,7 +862,7 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		request: NativeMutationRequest,
 		intent: MutationIntent,
 		storageError: unknown,
-	): Promise<undefined> {
+	): Promise<ConversationMutationAdmission> {
 		// Storage failed after the first check; the local facts may have moved on
 		// while it did. Recheck before the plain request, which has no durable row
 		// to own a later refusal.
@@ -878,8 +875,8 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		// The send is this phone's, so a read that lists it as pending must
 		// not classify it as another client's.
 		this.#rememberSubmitted(intent.targetRef, clientMutationId, this.#now());
-		if (intent.method === "turn/drainAsSteer") await this.#settleConsumedByDrain(result);
-		return undefined;
+		if (intent.method === COMPOSER_METHODS.drain) await this.#settleConsumedByDrain(result);
+		return { clientMutationId };
 	}
 
 	// The queued messages a direct drain consumed settle as the dispatcher

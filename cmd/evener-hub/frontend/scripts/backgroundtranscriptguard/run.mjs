@@ -416,6 +416,17 @@ function renderedSentinelRowsExpr(ref) {
   })()`;
 }
 
+// renderedSentinelRowsOnceExpr is renderedSentinelRowsExpr held to a non-empty
+// answer, so a wait on it returns the rows it saw. Pane text proves a marker is
+// somewhere in the pane; the journey asserts the anchored rows, so it waits on
+// those rather than on the text.
+function renderedSentinelRowsOnceExpr(ref) {
+  return `(() => {
+    const rows = ${renderedSentinelRowsExpr(ref)};
+    return rows.length > 0 ? rows : null;
+  })()`;
+}
+
 // A fresh browser document joins the real hub while the provider is gated
 // mid-turn. Both panes must load that turn and receive its remaining output.
 async function runLiveTwoTabs(driver, harnessUrl) {
@@ -438,7 +449,12 @@ async function runLiveTwoTabs(driver, harnessUrl) {
       await pane.send("Page.bringToFront");
       await waitForPaneText(pane, SESSION_B, BEFORE, 30000, `initial live output in tab ${index}`);
       await waitForTargetRunning(pane, SESSION_B);
-      beforeRows.push(await evaluate(pane.send, renderedSentinelRowsExpr(SESSION_B)));
+      beforeRows.push(
+        await pane.waitPage(renderedSentinelRowsOnceExpr(SESSION_B), {
+          timeoutMs: 30000,
+          label: `initial live output rendered as a transcript row in tab ${index}`,
+        }),
+      );
     }
     driver.phase("after-eviction");
     for (const pane of [driver, sibling]) {
@@ -678,9 +694,6 @@ function reconnectValidator(before, evidence, applied = {}) {
   }));
   const newConnectionReads = reads.filter((r) => !beforeConnections.has(r.connection));
   const newReads = (evidence?.readResponses ?? 0) - (before?.readResponses ?? 0);
-  const latest = newConnectionReads.length > 0 ? newConnectionReads[newConnectionReads.length - 1] : null;
-  const responseCursor = latest?.olderCursor ?? "";
-  const responseWindow = latest?.window ?? null;
   const appliedCursor = applied?.cursor ?? "";
   const appliedWindow = applied?.domain ? normalizeWindowFromModel(applied.domain) : null;
   const reconnected = newConnectionReads.length > 0;
@@ -693,27 +706,35 @@ function reconnectValidator(before, evidence, applied = {}) {
   // turn, tolerating the extra systemMessage notices; the cursor must still
   // match. This keeps the observation's meaning (the reconnect read was applied)
   // without the legacy whole-window exact-identity premise.
+  //
+  // The new connection may read the thread again after the reconnect read (a
+  // follow-up refresh). The model keeps the older edge it already holds, so its
+  // cursor and window stay the reconnect read's: the applied model matches the
+  // new connection's read that carries them, not necessarily the last one.
   const recordedItems = (items) => (items ?? []).filter((item) => item.type !== "systemMessage");
-  const windowExact =
-    Array.isArray(responseWindow) &&
-    responseWindow.length > 0 &&
+  const appliedBy = (read) =>
+    read.olderCursor === appliedCursor &&
+    Array.isArray(read.window) &&
+    read.window.length > 0 &&
     Array.isArray(appliedWindow) &&
-    responseWindow.every((responseTurn) => {
+    read.window.every((responseTurn) => {
       const appliedTurn = appliedWindow.find((turn) => turn.turnId === responseTurn.turnId);
       return (
         appliedTurn !== undefined &&
         orderedHistoryEqual(recordedItems(responseTurn.items), recordedItems(appliedTurn.items))
       );
     });
+  const appliedRead = newConnectionReads.find(appliedBy);
+  const reported = appliedRead ?? newConnectionReads[newConnectionReads.length - 1];
   return {
     reconnected,
     newReads,
     newConnectionReads: newConnectionReads.length,
-    responseCursor,
-    responseWindow,
+    responseCursor: reported?.olderCursor ?? "",
+    responseWindow: reported?.window ?? null,
     appliedWindow,
     appliedCursor,
-    appliedMatches: reconnected && appliedCursor === responseCursor && windowExact,
+    appliedMatches: appliedRead !== undefined,
   };
 }
 
@@ -1988,6 +2009,17 @@ async function waitForRestoredDomain(driver, ref, sentinel, timeoutMs = 30000) {
   return last;
 }
 
+// A hidden page gets no rendering opportunities, so a viewport change made
+// while the page is hidden never reaches the responsive host (the media-query
+// change event does not fire). Callers that hide the page must bring it back
+// to the front before waiting here.
+async function waitForResponsiveHost(driver) {
+  await driver.waitPage(`(() => {
+    const mobile = matchMedia("(max-width: 899px)").matches;
+    return mobile === Boolean(document.querySelector("[data-stacked-pane-type]"));
+  })()`, { label: "the responsive host has committed" });
+}
+
 // openSessionInCurrentShell activates a session through whichever shell the
 // current viewport hosts. At or below the mobile breakpoint
 // (useIsMobile.ts MOBILE_QUERY "(max-width: 899px)") the desktop RailHost is
@@ -1995,10 +2027,7 @@ async function waitForRestoredDomain(driver, ref, sentinel, timeoutMs = 30000) {
 // through the tree-drawer trigger. The guarantee - a real rail-row activation
 // that re-focuses the session - is identical.
 async function openSessionInCurrentShell(driver, ref) {
-  await driver.waitPage(`(() => {
-    const mobile = matchMedia("(max-width: 899px)").matches;
-    return mobile === Boolean(document.querySelector("[data-stacked-pane-type]"));
-  })()`, { label: "the responsive host has committed" });
+  await waitForResponsiveHost(driver);
   const rowSelector = `[data-session-ref='${ref}']`;
   const rowVisible = async () =>
     evaluate(
@@ -2056,10 +2085,19 @@ async function runJourney(driver, entryProduction = false, harnessUrl) {
 // runTwoTabFencing drives the entry route's Clear and delete fences across two
 // REAL tabs sharing one native BroadcastChannel and one IndexedDB. The first tab
 // is the journey's own page; the second is a real second document on the same
-// guard harness. Only the fence entry points are invoked (threads.clearCachedSessions
-// and markCacheSessionsDeleted, the same effect set a real Clear/delete owes the
-// cache); the propagation and the durable removal are the browser's own.
+// guard harness. The real stopped-project delete action removes the source as
+// well as its cache, and Clear uses threads.clearCachedSessions. Propagation and
+// durable removal are the browser's own.
 async function runTwoTabFencing(driver, endpoint, harnessUrl) {
+  const call = (send, method, ...args) =>
+    evaluate(send, `window.backgroundTranscriptGuard.${method}(${args.map((arg) => JSON.stringify(arg)).join(",")})`);
+  // Preserve B's producer transcript for the Go owner's independent history
+  // assertions. Stop A before the sibling boots, so it cannot acquire a live
+  // background lease while this phase is preparing a fresh deleted-ref open.
+  const ref = SESSION_A;
+  const stopped = await fetch(new URL("/background-guard/stop-sustained", HUB_URL), { method: "POST" });
+  if (!stopped.ok) throw new Error(`two-tab stop: ${await stopped.text()}`);
+  const project = await stopped.json();
   const opened = await openPage(endpoint, "about:blank");
   const tab = await connectPage(endpoint, opened.id);
   try {
@@ -2083,7 +2121,8 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
            const deadline = Date.now() + 30000;
            while (Date.now() < deadline) {
              if (typeof window.backgroundTranscriptEvidence !== "undefined" &&
-                 typeof window.backgroundTranscriptGuard !== "undefined") return true;
+                 typeof window.backgroundTranscriptGuard !== "undefined" &&
+                 window.backgroundTranscriptEvidence.connectionState() === "ready") return true;
              await new Promise((resolve) => setTimeout(resolve, 100));
            }
            return { booted: typeof window.backgroundTranscriptBooted, evidence: typeof window.backgroundTranscriptEvidence,
@@ -2099,13 +2138,15 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
         `${error instanceof Error ? error.message : String(error)}\ntab errors:\n${tabErrors.join("\n") || "(none captured)"}`,
       );
     }
-    const call = (send, method, ...args) =>
-      evaluate(send, `window.backgroundTranscriptGuard.${method}(${args.map((arg) => JSON.stringify(arg)).join(",")})`);
+    // Opening the second tab hid the driver's page; restore it so a viewport
+    // change still pending from the journey reaches the desktop rail before the
+    // rail row is pressed.
+    await driver.send("Page.bringToFront");
+    await waitForResponsiveHost(driver);
     const fence = (send, ref) => call(send, "fenceState", ref);
     const durable = (send, ref) => evaluate(send, nativeEntryEvidenceExpression(ref));
 
     // ---- delete fence: one tab deletes, the sibling observes over the channel ----
-    const ref = SESSION_B;
     const seeded = await durable(tab.send, ref);
     if (!seeded || seeded.rows.length === 0) {
       throw new Error(`two-tab delete: the target has no durable entry rows to fence: ${JSON.stringify(seeded)}`);
@@ -2115,7 +2156,10 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
     if (aBefore.deletedRefs.includes(ref) || bBefore.deletedRefs.includes(ref)) {
       throw new Error(`two-tab delete: the ref was already fenced: ${JSON.stringify({ aBefore, bBefore })}`);
     }
-    await call(driver.send, "delete", ref);
+    const deletion = await call(driver.send, "delete", project.key, project.workingDir);
+    if (!deletion.deleted.some((id) => id === ref || `local:${id}` === ref) || deletion.skipped.length !== 0) {
+      throw new Error(`two-tab delete: the source session was not deleted: ${JSON.stringify(deletion)}`);
+    }
     const suppressDeadline = Date.now() + 15000;
     let bAfter = await fence(tab.send, ref);
     while (bAfter.lifetime?.suppressed !== true && Date.now() < suppressDeadline) {
@@ -2151,6 +2195,11 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
     if (!(removed === null || removed.rows.length === 0)) {
       throw new Error("two-tab delete: the durable record still exists in the shared IndexedDB");
     }
+    const sourceReadOutcome = await call(tab.send, "sourceReadOutcome", ref);
+    driver.milestone("two-tab-delete-source", { ref, sourceReadOutcome });
+    if (sourceReadOutcome !== "rejected") {
+      throw new Error("two-tab delete: the target remains readable on the source after deletion");
+    }
     // The sibling's fresh acquisition must not resurrect the deleted session:
     // the deletion fence refuses the hydration and no route or durable row
     // appears. Poll the real condition (the ref acquired no route) rather than
@@ -2179,12 +2228,12 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
     }
 
     // ---- clear fence: a held old-epoch lease is suppressed, not rebound ----
-    await driver.openSession(SESSION_A);
+    await driver.openSession(SESSION_B);
     const armDeadline = Date.now() + 15000;
-    let aClearBefore = await fence(driver.send, SESSION_A);
+    let aClearBefore = await fence(driver.send, SESSION_B);
     while (aClearBefore.lifetime?.leaseEpoch === undefined && Date.now() < armDeadline) {
       await delay(100);
-      aClearBefore = await fence(driver.send, SESSION_A);
+      aClearBefore = await fence(driver.send, SESSION_B);
     }
     if (aClearBefore.lifetime?.leaseEpoch === undefined) {
       throw new Error(`two-tab clear: the holding tab never captured a cache lease: ${JSON.stringify(aClearBefore)}`);
@@ -2194,13 +2243,13 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
       throw new Error(`two-tab clear: the sibling clear did not commit: ${JSON.stringify(cleared)}`);
     }
     const clearDeadline = Date.now() + 15000;
-    let aClearAfter = await fence(driver.send, SESSION_A);
+    let aClearAfter = await fence(driver.send, SESSION_B);
     while (aClearAfter.lifetime?.suppressed !== true && Date.now() < clearDeadline) {
       await delay(100);
-      aClearAfter = await fence(driver.send, SESSION_A);
+      aClearAfter = await fence(driver.send, SESSION_B);
     }
     driver.milestone("two-tab-clear-fence", {
-      ref: SESSION_A,
+      ref: SESSION_B,
       epochBefore: aClearBefore.lifetime?.leaseEpoch ?? null,
       epochAfter: aClearAfter.lifetime?.leaseEpoch ?? null,
       suppressed: aClearAfter.lifetime?.suppressed === true,

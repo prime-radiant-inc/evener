@@ -12,6 +12,7 @@ import type {
 } from "react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useOptionalNeedsYou } from "../../shell/NeedsYouProvider";
+import type { NeedsYouChoice } from "../../shell/needsYouActions";
 import { Button, IconButton, ListRow, Popover } from "../../widgets";
 import { LONG_PRESS_MS, POINTER_CLICK_WINDOW_MS } from "../../widgets/hovercard";
 import { requireClass } from "../../widgets/internal/requireClass";
@@ -45,6 +46,13 @@ function attentionReasonLabel(reason: string | undefined): string | undefined {
   if (reason === "approval") return "Approval pending";
   if (reason === "question") return "Question pending";
   if (reason === "failure") return "Failed";
+  return undefined;
+}
+
+function rowMeta(choice: NeedsYouChoice, reason: string | undefined): string | undefined {
+  if (choice.selectable) return attentionReasonLabel(reason);
+  if (choice.refreshState === "failed") return "Couldn't refresh";
+  if (choice.refreshState === "refreshing") return "Refreshing";
   return undefined;
 }
 
@@ -307,7 +315,7 @@ function OwnedNextNeedsYou({
     if (!listOpen) return;
     const list = listRef.current;
     if (!list) return;
-    const first = list.querySelector<HTMLElement>("button:not([disabled])");
+    const first = list.querySelector<HTMLElement>('button:not([disabled]):not([aria-disabled="true"])');
     (first ?? list).focus();
   }, [listOpen]);
 
@@ -437,7 +445,9 @@ function OwnedNextNeedsYou({
                 data-reason={reason}
                 variant="plain"
                 label={choice.summary.title || choice.summary.ref}
-                meta={attentionReasonLabel(reason)}
+                meta={rowMeta(choice, reason)}
+                data-refresh-state={choice.refreshState ?? undefined}
+                aria-disabled={choice.selectable ? undefined : "true"}
                 onSelect={() => {
                   closeList(false);
                   controller.select(choice.summary.ref);

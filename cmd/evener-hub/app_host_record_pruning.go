@@ -11,6 +11,7 @@ package hub
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 	"sort"
 	"strings"
@@ -99,83 +100,50 @@ func nonNilRecords(records hostTOMLRecords) hostTOMLRecords {
 	return records
 }
 
-// hostRecordPolicyFor resolves the retention knobs a zero WebConfig leaves
-// unset to the hub package's documented defaults, so tests and embedders get
-// the spec's numbers without restating them.
+// defaultHostRecordPolicy is the one retention policy the host-record
+// derivation runs under: the bounds registry spec 08 §6/§11/§15 names. Only the
+// tombstone retention is operator-tunable (host_tombstone_retention).
+func defaultHostRecordPolicy() hostRecordPolicy {
+	const week = 7 * 24 * time.Hour
+	return hostRecordPolicy{
+		tombstoneRetention:   DefaultHostTombstoneRetention,
+		tombstoneMaxRows:     500,
+		tombstoneMaxRowBytes: 1 << 20,
+		tombstoneMaxCount:    64,
+		tombstoneMaxBytes:    16 << 20,
+		// The superseded-receipt, pruned-marker, and cleared/recovery-remnant
+		// windows match the tombstone retention: a replay past it refuses through
+		// the retained pruned marker instead.
+		supersededMaxCount: 8,
+		supersededTTL:      week,
+		prunedMaxCount:     64,
+		prunedTTL:          week,
+		// The keyless-add audit trail outlives the tombstone window: its purpose
+		// is post-hoc forensics rather than outcome recovery.
+		auditMaxCount:    64,
+		auditTTL:         30 * 24 * time.Hour,
+		clearedMaxCount:  64,
+		clearedTTL:       week,
+		recoveryMaxCount: 64,
+		recoveryTTL:      week,
+		attemptMaxCount:  8,
+		// A local teardown drains well inside two minutes; a stuck remote then
+		// surfaces its terminal outcome with a live retry handle instead of
+		// holding the host gate.
+		teardownTimeout: 2 * time.Minute,
+		// An hour lets a transient teardown failure resolve through one retry and
+		// still tells the operator about a remnant that is not going away.
+		escalationAge: time.Hour,
+	}
+}
+
+// hostRecordPolicyFor resolves the policy for one WebConfig: the defaults, with
+// the operator's tombstone retention when it is positive. A zero WebConfig
+// (tests, embedders) gets the shipped numbers.
 func hostRecordPolicyFor(cfg hubcore.WebConfig) hostRecordPolicy {
-	policy := hostRecordPolicy{
-		tombstoneRetention:   cfg.HostTombstoneRetention,
-		tombstoneMaxRows:     cfg.HostTombstoneMaxRows,
-		tombstoneMaxRowBytes: cfg.HostTombstoneMaxRowBytes,
-		tombstoneMaxCount:    cfg.HostTombstoneMaxCount,
-		tombstoneMaxBytes:    cfg.HostTombstoneMaxBytes,
-		supersededMaxCount:   cfg.HostSupersededReceiptMaxCount,
-		supersededTTL:        cfg.HostSupersededReceiptTTL,
-		prunedMaxCount:       cfg.HostPrunedReceiptMaxCount,
-		prunedTTL:            cfg.HostPrunedReceiptTTL,
-		auditMaxCount:        cfg.HostKeylessAuditMaxCount,
-		auditTTL:             cfg.HostKeylessAuditTTL,
-		clearedMaxCount:      cfg.HostRemnantClearedMaxCount,
-		clearedTTL:           cfg.HostRemnantClearedTTL,
-		recoveryMaxCount:     cfg.HostRemnantRecoveryMaxCount,
-		recoveryTTL:          cfg.HostRemnantRecoveryTTL,
-		attemptMaxCount:      cfg.HostRemnantAttemptMaxCount,
-		teardownTimeout:      cfg.HostRemnantTeardownTimeout,
-		escalationAge:        cfg.HostRemnantEscalationAge,
-	}
-	if policy.tombstoneRetention <= 0 {
-		policy.tombstoneRetention = DefaultHostTombstoneRetention
-	}
-	if policy.tombstoneMaxRows <= 0 {
-		policy.tombstoneMaxRows = DefaultHostTombstoneMaxRows
-	}
-	if policy.tombstoneMaxRowBytes <= 0 {
-		policy.tombstoneMaxRowBytes = DefaultHostTombstoneMaxRowBytes
-	}
-	if policy.tombstoneMaxCount <= 0 {
-		policy.tombstoneMaxCount = DefaultHostTombstoneMaxCount
-	}
-	if policy.tombstoneMaxBytes <= 0 {
-		policy.tombstoneMaxBytes = DefaultHostTombstoneMaxBytes
-	}
-	if policy.supersededMaxCount <= 0 {
-		policy.supersededMaxCount = DefaultHostSupersededReceiptMaxCount
-	}
-	if policy.supersededTTL <= 0 {
-		policy.supersededTTL = DefaultHostSupersededReceiptTTL
-	}
-	if policy.prunedMaxCount <= 0 {
-		policy.prunedMaxCount = DefaultHostPrunedReceiptMaxCount
-	}
-	if policy.prunedTTL <= 0 {
-		policy.prunedTTL = DefaultHostPrunedReceiptTTL
-	}
-	if policy.auditMaxCount <= 0 {
-		policy.auditMaxCount = DefaultHostKeylessAuditMaxCount
-	}
-	if policy.auditTTL <= 0 {
-		policy.auditTTL = DefaultHostKeylessAuditTTL
-	}
-	if policy.clearedMaxCount <= 0 {
-		policy.clearedMaxCount = DefaultHostRemnantClearedMaxCount
-	}
-	if policy.clearedTTL <= 0 {
-		policy.clearedTTL = DefaultHostRemnantClearedTTL
-	}
-	if policy.recoveryMaxCount <= 0 {
-		policy.recoveryMaxCount = DefaultHostRemnantRecoveryMaxCount
-	}
-	if policy.recoveryTTL <= 0 {
-		policy.recoveryTTL = DefaultHostRemnantRecoveryTTL
-	}
-	if policy.attemptMaxCount <= 0 {
-		policy.attemptMaxCount = DefaultHostRemnantAttemptMaxCount
-	}
-	if policy.teardownTimeout <= 0 {
-		policy.teardownTimeout = DefaultHostRemnantTeardownTimeout
-	}
-	if policy.escalationAge <= 0 {
-		policy.escalationAge = DefaultHostRemnantEscalationAge
+	policy := defaultHostRecordPolicy()
+	if cfg.HostTombstoneRetention > 0 {
+		policy.tombstoneRetention = cfg.HostTombstoneRetention
 	}
 	return policy
 }
@@ -192,21 +160,9 @@ func (m *hubHostManager) nowTime() time.Time {
 // spec 08 §6's retention and §15's capacity rules skip: an open remnant pins
 // its name's tombstone until the remnant resolves, so such a tombstone is
 // never an expiry or eviction candidate.
-//
-// BOUNDARY (S12): remnants are S12's records; no remnant store exists yet.
-// The gate is parameterized over a "remnant-gated names" source that is empty
-// today: cfg.remnantFence answers when a build wires one, and the test-only
-// testOnlyRemnantGated override lets the exemption and the tombstone-capacity
-// refusal be falsified now (the S10 testOnlyParkPostCommit precedent). S12
-// replaces the override by wiring cfg.remnantFence to the real remnant
-// records; nothing else in this slice needs to change.
 func (m *hubHostManager) remnantGated(name string) bool {
-	if m.cfg.remnantFence != nil {
-		if _, open := m.cfg.remnantFence(name); open {
-			return true
-		}
-	}
-	return m.testOnlyRemnantGated != nil && m.testOnlyRemnantGated(name)
+	_, open := m.openRemnantID(name)
+	return open
 }
 
 // hostNameSet returns the names in a host slice.
@@ -310,6 +266,9 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 	if records.droppedAttempts == nil {
 		records.droppedAttempts = map[string]struct{}{}
 	}
+	prunedBefore := maps.Clone(records.prunedReceipts)
+	receiptsBefore := maps.Clone(records.receipts)
+	attemptsBefore := maps.Clone(records.attempts)
 	for key, receipt := range change.carryReceipts {
 		if _, carried := records.receipts[key]; !carried {
 			records.receipts[key] = receipt
@@ -323,6 +282,57 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 		delete(records.stagedReceipts, change.dropMarker)
 		records.droppedStaged[change.dropMarker] = struct{}{}
 	}
+	if change.dropTombstone != "" {
+		delete(records.tombstones, change.dropTombstone)
+		records.droppedTombstones[change.dropTombstone] = struct{}{}
+		delete(records.highWater, change.dropTombstone)
+	}
+	if restore := change.restore; restore != nil {
+		name := restore.Tombstone.Name
+		records.tombstones[name] = restore.Tombstone
+		records.highWater[name] = HostGeneration{
+			Generation:    max(restore.Tombstone.Generation, change.restoreSpent.Generation),
+			IncarnationID: restore.Tombstone.IncarnationID,
+			PresenceEpoch: max(restore.Tombstone.PresenceEpoch, change.restoreSpent.PresenceEpoch),
+		}
+		for key, receipt := range restore.Receipts {
+			if _, held := records.receipts[key]; !held {
+				records.receipts[key] = receipt
+			}
+			// The marker the purge left for a receipt is not needed once the
+			// receipt is back.
+			if _, marked := records.prunedReceipts[key]; marked {
+				delete(records.prunedReceipts, key)
+				records.droppedMarkers[key] = struct{}{}
+			}
+		}
+		for id, attempt := range restore.Attempts {
+			if _, held := records.attempts[id]; !held {
+				records.attempts[id] = attempt
+				delete(records.droppedAttempts, id)
+			}
+		}
+		for key, marker := range restore.Pruned {
+			if _, held := records.prunedReceipts[key]; !held {
+				records.prunedReceipts[key] = marker
+				delete(records.droppedMarkers, key)
+			}
+		}
+		for id, remnant := range restore.Remnants {
+			if _, held := records.remnants[id]; !held {
+				records.remnants[id] = remnant
+			}
+		}
+	}
+	if change.restore == nil && change.restoreName != "" {
+		// A rolled-back add with no tombstone to give back still spent its
+		// counters: an existing mark rises to them.
+		if mark, ok := records.highWater[change.restoreName]; ok {
+			mark.Generation = max(mark.Generation, change.restoreSpent.Generation)
+			mark.PresenceEpoch = max(mark.PresenceEpoch, change.restoreSpent.PresenceEpoch)
+			records.highWater[change.restoreName] = mark
+		}
+	}
 	if change.dropStoreSync != "" {
 		// The follow-up write that clears a converged intent, and the
 		// compensation that drops the intent with its hub.toml restore: the
@@ -332,19 +342,12 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 		delete(records.storeSync, change.dropStoreSync)
 		records.droppedStoreSync[change.dropStoreSync] = struct{}{}
 	}
-	if change.storeSync != nil {
-		records.storeSync[change.storeSync.Name] = change.storeSync.Intent
-	}
 	// The boot mirror pass's raises land after the tombstone stage: a raise is
-	// the file's new mark, and a tombstoned name's tombstone twin must carry the
-	// same generation (validateHostTombstones ties the pair).
+	// the file's new mark, and the tombstone keeps the identity of the removal
+	// its operation records are marked by.
 	for name, raised := range change.highWaterRaises {
 		records.highWater[name] = raised
 		records.raisedHighWater[name] = struct{}{}
-		if tombstone, ok := records.tombstones[name]; ok {
-			tombstone.Generation = raised.Generation
-			records.tombstones[name] = tombstone
-		}
 	}
 	if change.marker != nil {
 		records.stagedReceipts[change.marker.Name] = change.marker.Marker
@@ -398,9 +401,11 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 	// superseded receipts go with it except the retained same-key remove
 	// receipts (§6).
 	for name := range records.tombstones {
-		if _, ok := live[name]; !ok {
+		if _, ok := live[name]; !ok || change.leaveReturningNames {
 			continue
 		}
+		consumed := &HostConsumedRecords{Tombstone: records.tombstones[name]}
+		beforeReceipts, beforeRemnants := maps.Clone(records.receipts), maps.Clone(records.remnants)
 		delete(records.tombstones, name)
 		records.droppedTombstones[name] = struct{}{}
 		delete(records.highWater, name)
@@ -412,6 +417,15 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 		// practice only resolved records are here; an open one is kept either
 		// way, because dropping it would strand a live teardown handle.
 		m.purgeNameTeardownRecords(records, name, protectedMarker)
+		if marker, staging := records.stagedReceipts[name]; staging && name == protectedMarker {
+			// The write also stages this re-add: the marker keeps what the purge
+			// took, so a re-add that never reaches hub.toml can be rolled back
+			// without losing the removed incarnation's history.
+			consumed.Receipts = removedEntries(beforeReceipts, records.receipts)
+			consumed.Remnants = removedEntries(beforeRemnants, records.remnants)
+			marker.Consumed = consumed
+			records.stagedReceipts[name] = marker
+		}
 	}
 
 	// Expiry prune: past the retention period the tombstone is dropped in this
@@ -422,6 +436,10 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 		if m.remnantGated(name) {
 			continue
 		}
+		if _, unsettled := records.stagedReceipts[name]; unsettled {
+			// Recovery reads this tombstone to classify the staged commit.
+			continue
+		}
 		if !tombstoneExpired(tombstone, now, policy.tombstoneRetention) {
 			continue
 		}
@@ -429,10 +447,13 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 		if err != nil {
 			return records, err
 		}
+		// The mark may already sit above the tombstone (a rolled-back re-add's
+		// spent counters); expiry never lowers it.
+		retained := records.highWater[name]
 		records.highWater[name] = HostGeneration{
-			Generation:    tombstone.Generation,
+			Generation:    max(tombstone.Generation, retained.Generation),
 			IncarnationID: tombstone.IncarnationID,
-			PresenceEpoch: advanced,
+			PresenceEpoch: max(advanced, retained.PresenceEpoch),
 		}
 		delete(records.tombstones, name)
 		records.droppedTombstones[name] = struct{}{}
@@ -477,7 +498,45 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 	// their bounds in this same atomic write (§6: every `hub.toml` mutation and
 	// every boot compacts past either bound in the same atomic write).
 	m.compactTeardownRecords(records, now)
+	if marker, staging := records.stagedReceipts[protectedMarker]; staging && marker.Consumed != nil {
+		// The re-add this write stages consumed receipts, remnants and their
+		// attempts, compacts the name's receipts after the purge, and may have
+		// pushed replay guards out of a full marker set doing it; rolling it back gives them all back. What an earlier write of
+		// this staging already saved stays saved, and the marker's record is
+		// copied before it changes.
+		consumed := *marker.Consumed
+		consumed.Receipts = mergeEvicted(consumed.Receipts, receiptsOfName(removedEntries(receiptsBefore, records.receipts), protectedMarker))
+		consumed.Pruned = mergeEvicted(consumed.Pruned, removedEntries(prunedBefore, records.prunedReceipts))
+		consumed.Attempts = mergeEvicted(consumed.Attempts, removedEntries(attemptsBefore, records.attempts))
+		marker.Consumed = &consumed
+		records.stagedReceipts[protectedMarker] = marker
+	}
 	return records, nil
+}
+
+// receiptsOfName keeps the receipts whose scoped key names the host.
+func receiptsOfName(receipts map[string]HostMutationReceipt, name string) map[string]HostMutationReceipt {
+	kept := map[string]HostMutationReceipt{}
+	for key, receipt := range receipts {
+		if scope, ok := parseHostReceiptScopedKey(key); ok && scope.Name == name {
+			kept[key] = receipt
+		}
+	}
+	return kept
+}
+
+// mergeEvicted returns saved plus evicted as a map of its own, nil when both are
+// empty.
+func mergeEvicted[V any](saved, evicted map[string]V) map[string]V {
+	if len(saved) == 0 && len(evicted) == 0 {
+		return nil
+	}
+	merged := maps.Clone(saved)
+	if merged == nil {
+		merged = map[string]V{}
+	}
+	maps.Copy(merged, evicted)
+	return merged
 }
 
 // purgeNameTeardownRecords drops one name's resolved remnants and every staged
@@ -741,7 +800,7 @@ func (m *hubHostManager) purgeNameReceipts(records hostTOMLRecords, name string,
 		}
 		delete(records.receipts, key)
 		records.droppedReceipts[key] = struct{}{}
-		records.prunedReceipts[key] = PrunedReceiptMarker{PrunedAt: now.UTC().Format(time.RFC3339)}
+		records.prunedReceipts[key] = PrunedReceiptMarker{PrunedAt: hostInstant(now)}
 	}
 }
 
@@ -792,7 +851,7 @@ func (m *hubHostManager) compactNameReceipts(records hostTOMLRecords, name strin
 		if candidate.audit {
 			return
 		}
-		records.prunedReceipts[candidate.key] = PrunedReceiptMarker{PrunedAt: now.UTC().Format(time.RFC3339)}
+		records.prunedReceipts[candidate.key] = PrunedReceiptMarker{PrunedAt: hostInstant(now)}
 	}
 	var superseded []candidate
 	var audits []candidate
@@ -996,4 +1055,18 @@ func tombstoneCapacityRefusal(err error) error {
 	return appwire.TombstoneCapacity(capacity.bound, capacity.blockingNames,
 		fmt.Sprintf("hub.toml's tombstones would exceed the global %s bound; resolve the open teardown remnants of %s first, then retry",
 			capacity.bound, strings.Join(capacity.blockingNames, ", ")))
+}
+
+// removedEntries returns the entries of before that after no longer holds.
+func removedEntries[V any](before, after map[string]V) map[string]V {
+	removed := map[string]V{}
+	for key, value := range before {
+		if _, kept := after[key]; !kept {
+			removed[key] = value
+		}
+	}
+	if len(removed) == 0 {
+		return nil
+	}
+	return removed
 }

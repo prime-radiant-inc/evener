@@ -195,11 +195,7 @@ func TestHostPlanMintsThroughTheRealServer(t *testing.T) {
 	if web.hostManage == nil {
 		t.Fatal("the real server construction did not install the host-management surface")
 	}
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 
 	var result appwire.HostPlanResult
 	if err := client.Request(context.Background(), appwire.MethodEvenerHostPlan, appwire.HostPlanParams{Name: "m4"}, &result); err != nil {
@@ -594,7 +590,7 @@ func TestHostRemoveRevokesOutstandingTokens(t *testing.T) {
 	if !ok {
 		t.Fatal("the configured host vanished from the registry")
 	}
-	minted, err := store.MintToken(hostops.MintRequest{
+	minted, err := store.MintTokenIfQuiescent(hostops.MintRequest{
 		Host:               live.Name,
 		Generation:         live.Generation,
 		IncarnationID:      live.IncarnationID,
@@ -606,9 +602,9 @@ func TestHostRemoveRevokesOutstandingTokens(t *testing.T) {
 		ControllerRevision: buildinfo.Version(),
 		RunningVersion:     "v0.9.0",
 		RunningHealthy:     true,
-	})
+	}, store.Sequence())
 	if err != nil {
-		t.Fatalf("MintToken: %v", err)
+		t.Fatalf("MintTokenIfQuiescent: %v", err)
 	}
 	if _, ok := store.OutstandingToken("m4"); !ok {
 		t.Fatal("the mint stored no token")

@@ -103,7 +103,7 @@ func TestInstallerRefusalsKeepTheLibraryRemedy(t *testing.T) {
 // message clause: the terminal refusal a moved channel produces names the
 // path that does carry a provable identity, through the same Options.DeployHelp
 // seam. The refusal's type and terminality are pinned by
-// TestRound8InstallerVersionMismatchIsTerminal; this adds the remedy clause,
+// TestInstallerVersionMismatchIsTerminal; this adds the remedy clause,
 // which is the half an operator acts on.
 func TestInstallerMovedChannelRefusalNamesThePushPath(t *testing.T) {
 	origSHA, origDirty, origChannel := buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel
@@ -170,8 +170,8 @@ func unstampedRefusal(t *testing.T, opts Options) error {
 	testRestartRecorder(t, m)
 
 	_, err := m.Ensure(context.Background(), "alpha")
-	if !errors.Is(err, errDeployUnstamped) {
-		t.Fatalf("Ensure err = %v, want errDeployUnstamped", err)
+	if !errors.Is(err, ErrDeployUnstamped) {
+		t.Fatalf("Ensure err = %v, want ErrDeployUnstamped", err)
 	}
 	return err
 }

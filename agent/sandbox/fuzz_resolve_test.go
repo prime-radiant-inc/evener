@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+
+	"primeradiant.com/evener/identifier"
 )
 
 func TestFuzzResolveFixtureStaysUnderTempRoot(t *testing.T) {
@@ -38,7 +40,7 @@ type fuzzResolveFixture struct {
 // them as a host path, because ClassifyWorkspace walks parent directories.
 func newFuzzResolveFixture(t TestingT, cwdHint string) fuzzResolveFixture {
 	t.Helper()
-	root := resolveCleanPath(t.TempDir())
+	root := identifier.ResolveClean(t.TempDir())
 	fixture := fuzzResolveFixture{
 		root:       root,
 		workspace:  filepath.Join(root, "workspace"),
@@ -128,7 +130,7 @@ func FuzzResolve(f *testing.F) {
 			}
 			return
 		}
-		if rp.Enforced() && !pathUnder(rp.Git.WorktreeRoot, fixture.root) {
+		if rp.Enforced() && !identifier.PathUnder(rp.Git.WorktreeRoot, fixture.root) {
 			t.Fatalf("resolved worktree %q escapes fuzz fixture %q", rp.Git.WorktreeRoot, fixture.root)
 		}
 

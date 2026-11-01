@@ -69,7 +69,7 @@ func (s *Session) beginExecution(name string) error {
 		if started != nil {
 			started(turnID)
 		}
-		s.emit(events.EventExecutionStarted, events.ExecutionStartedData{TurnID: turnID})
+		s.emit(events.ExecutionStartedData{TurnID: turnID})
 		// A new execution clears the reported line, the root meter's own
 		// boundary: a row names this turn's work, not the words of a turn
 		// that already finished.
@@ -120,7 +120,7 @@ func (s *Session) completeExecution(status schema.TurnCompletionStatus) {
 		}
 	}
 	if execution.announced {
-		s.emit(events.EventExecutionEnded, events.ExecutionEndedData{TurnID: execution.turnID, Status: string(ended)})
+		s.emit(events.ExecutionEndedData{TurnID: execution.turnID, Status: string(ended)})
 	}
 }
 
@@ -188,6 +188,7 @@ func (s *Session) recordedUserInputTurn(fallback int) int {
 // it: a closed round has ended only once the next one opens, because its
 // tools and hooks run between the two.
 func (s *Session) roundIDForModelCall() string {
+	author := s.transcriptAuthor()
 	s.mu.Lock()
 	if s.roundID != "" {
 		defer s.mu.Unlock()
@@ -198,13 +199,14 @@ func (s *Session) roundIDForModelCall() string {
 		previous = ""
 	}
 	s.roundID = identifier.MustNewRoundID()
+	s.roundAuthorship = &schema.TranscriptAuthorship{Author: author}
 	s.lastRoundID, s.lastRoundEnded = s.roundID, false
 	roundID := s.roundID
 	s.mu.Unlock()
 	if previous != "" {
-		s.emit(events.EventRoundEnded, events.RoundEndedData{RoundID: previous})
+		s.emit(events.RoundEndedData{RoundID: previous})
 	}
-	s.emit(events.EventRoundStarted, events.RoundStartedData{RoundID: roundID})
+	s.emit(events.RoundStartedData{RoundID: roundID, Authorship: s.roundTranscriptAuthorship()})
 	return roundID
 }
 
@@ -217,7 +219,7 @@ func (s *Session) endLastRound() {
 	s.lastRoundEnded = true
 	s.mu.Unlock()
 	if roundID != "" && !ended {
-		s.emit(events.EventRoundEnded, events.RoundEndedData{RoundID: roundID})
+		s.emit(events.RoundEndedData{RoundID: roundID})
 	}
 }
 
@@ -459,7 +461,7 @@ func (s *Session) recordTranscriptOnlyThrough(turn schema.Turn, door transcript.
 		return s.recordTranscriptLocked(turn, door, place)
 	}()
 	if err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
 	s.surfaceTranscriptWarnings()
 	return rec, err
@@ -472,7 +474,7 @@ func (s *Session) recordTranscriptOnlyThrough(turn schema.Turn, door transcript.
 // drop the mismatch silently.
 func (s *Session) recordNotice(notice schema.NoticeInfo) {
 	if err := notice.Validate(); err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("invalid notice not recorded: %v", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("invalid notice not recorded: %v", err)})
 		return
 	}
 	_ = s.recordTranscriptOnlyAt(schema.Turn{Kind: schema.TurnNotice, Notice: &notice}, transcript.PlaceSession)
@@ -493,7 +495,7 @@ func (s *Session) deliverCommunicate(data events.CommunicateData) error {
 		s.announceFailClosed()
 		return refusal
 	}
-	rec, err := s.recordTranscriptOnlyThrough(schema.Turn{Kind: schema.TurnCommunicate, Communicate: &schema.CommunicateInfo{CallID: data.CallID, EndTurn: data.EndTurn, Message: data.Message, EndReason: data.EndReason, Blocker: data.Blocker, WaitingOn: data.WaitingOn}}, transcript.DoorSynced, transcript.PlaceSession)
+	rec, err := s.recordTranscriptOnlyThrough(schema.Turn{Kind: schema.TurnCommunicate, Authorship: s.roundTranscriptAuthorship(), Communicate: &schema.CommunicateInfo{CallID: data.CallID, EndTurn: data.EndTurn, Message: data.Message, EndReason: data.EndReason, Blocker: data.Blocker, WaitingOn: data.WaitingOn}}, transcript.DoorSynced, transcript.PlaceSession)
 	if !rec.Recorded && s.servedByDaemon() {
 		switch writer := s.attachedTranscript(); {
 		case writer != nil && writer.Closed():
@@ -525,7 +527,7 @@ func (s *Session) deliverCommunicate(data events.CommunicateData) error {
 		s.execution.waitCallID = data.CallID
 	}
 	s.mu.Unlock()
-	s.emit(events.EventCommunicate, data)
+	s.emit(data)
 	return nil
 }
 

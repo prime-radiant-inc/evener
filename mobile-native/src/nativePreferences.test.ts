@@ -7,7 +7,7 @@ import type {
 	TranscriptDraftCheckpoint,
 } from "@evener/appwire-client";
 import { toWireConfig, WireError } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 import { NativePreferences } from "./nativePreferences";
 
 const features = { keybindingsSettings: true, transcriptDisplaySettings: true };

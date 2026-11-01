@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"slices"
 	"strings"
 	"sync"
@@ -46,10 +47,14 @@ func TestNotificationPublication(t *testing.T) {
 			entered, gate := make(chan struct{}), make(chan struct{})
 			release := sync.OnceFunc(func() { close(gate) })
 			defer release()
-			adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("spawn", "PUB-WORKER") }, func(llm.Request) llm.Response { return finalResponse("root-finished") })
+			adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("spawn", "PUB-WORKER") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("root-finished") })
 			output := publicationOutput("update-763d")
 			call := publicationCall("publication-call", map[string]any{"message": "update-763d", "end_turn": false, "readiness": readiness, "output": output})
-			adapter.script("PUB-WORKER", func(llm.Request) llm.Response { return toolCallResponse(call) }, func(llm.Request) llm.Response { close(entered); <-gate; return finalResponse("worker-finished") })
+			adapter.script("PUB-WORKER", func(llm.Request) llm.Response { return agenttest.ToolCallResponse(call) }, func(llm.Request) llm.Response {
+				close(entered)
+				<-gate
+				return agenttest.FinalResponse("worker-finished")
+			})
 			root := newMessagingRoot(t, adapter, nil)
 			if _, err := root.ProcessInput(context.Background(), "start", nil); err != nil {
 				t.Fatal(err)
@@ -97,20 +102,20 @@ func TestNotificationPublication(t *testing.T) {
 		publicationGate := make(chan struct{})
 		releasePublication := sync.OnceFunc(func() { close(publicationGate) })
 		defer releasePublication()
-		adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("spawn", "WAIT-WORKER") }, func(llm.Request) llm.Response { return finalResponse("root-finished") })
+		adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("spawn", "WAIT-WORKER") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("root-finished") })
 		gate := make(chan struct{})
 		release := sync.OnceFunc(func() { close(gate) })
 		defer release()
 		adapter.script("WAIT-TARGET", func(req llm.Request) llm.Response {
 			targetRequest <- req
 			<-gate
-			return finalResponse("target-finished")
+			return agenttest.FinalResponse("target-finished")
 		})
 		adapter.script("WAIT-WORKER", func(llm.Request) llm.Response { return delegateToolResponse("target", "WAIT-TARGET") }, func(req llm.Request) llm.Response {
 			workerRequest <- req
 			<-publicationGate
 			id := deferredHeadDelegateID.FindString(lastToolResultText(req.Messages))
-			return toolCallResponse(publicationCall("wait-publication", map[string]any{"message": "wait-43ac", "end_turn": true, "end_reason": "waiting_on_work", "waiting_on": id, "output": publicationOutput("wait-43ac")}))
+			return agenttest.ToolCallResponse(publicationCall("wait-publication", map[string]any{"message": "wait-43ac", "end_turn": true, "end_reason": "waiting_on_work", "waiting_on": id, "output": publicationOutput("wait-43ac")}))
 		})
 		root := newMessagingRoot(t, adapter, returns.configure)
 		t.Cleanup(func() {
@@ -152,9 +157,9 @@ func TestNotificationPublication(t *testing.T) {
 	})
 	t.Run("two calls capture independent tuples", func(t *testing.T) {
 		adapter := newMessagingAdapter("TUPLE-WORKER")
-		adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("spawn", "TUPLE-WORKER") }, func(llm.Request) llm.Response { return finalResponse("root-finished") })
+		adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("spawn", "TUPLE-WORKER") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("root-finished") })
 		adapter.script("TUPLE-WORKER", func(llm.Request) llm.Response {
-			return toolCallResponse(
+			return agenttest.ToolCallResponse(
 				publicationCall("tuple-update", map[string]any{"message": "first-update", "end_turn": false, "blocker": "old-blocker", "output": publicationOutput("first")}),
 				publicationCall("tuple-terminal", map[string]any{"message": "second-terminal", "end_turn": true, "end_reason": "blocked", "blocker": "current-blocker", "output": publicationOutput("second")}),
 			)
@@ -206,7 +211,11 @@ func TestNotificationPublication(t *testing.T) {
 		releaseNext := sync.OnceFunc(func() { close(gate) })
 		defer releaseNext()
 		root, child, lease, release := publicationRunningChild(t, func(adapter *messagingAdapter) {
-			adapter.script("BATCH-WORKER", func(llm.Request) llm.Response { close(entered); <-gate; return finalResponse("generation two") })
+			adapter.script("BATCH-WORKER", func(llm.Request) llm.Response {
+				close(entered)
+				<-gate
+				return agenttest.FinalResponse("generation two")
+			})
 		})
 		ctx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, lease)
 		out := publicationExecute(ctx, child, publicationCall("first-generation-done", map[string]any{"message": "generation one", "end_turn": true, "output": publicationOutput("one")}))
@@ -267,8 +276,12 @@ func publicationRunningChild(t *testing.T, configure ...func(*messagingAdapter))
 	adapter := newMessagingAdapter("BATCH-WORKER")
 	entered, gate := make(chan struct{}), make(chan struct{})
 	release := sync.OnceFunc(func() { close(gate) })
-	adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("spawn", "BATCH-WORKER") }, func(llm.Request) llm.Response { return finalResponse("root-finished") })
-	adapter.script("BATCH-WORKER", func(llm.Request) llm.Response { close(entered); <-gate; return finalResponse("worker-finished") })
+	adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("spawn", "BATCH-WORKER") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("root-finished") })
+	adapter.script("BATCH-WORKER", func(llm.Request) llm.Response {
+		close(entered)
+		<-gate
+		return agenttest.FinalResponse("worker-finished")
+	})
 	for _, f := range configure {
 		f(adapter)
 	}
@@ -435,16 +448,16 @@ func TestCompletionWithLiveChild(t *testing.T) {
 			release := sync.OnceFunc(func() { close(childGate) })
 			defer release()
 			inspected := make(chan llm.Request, 1)
-			adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("coordinator", "COORD-PUB") }, func(llm.Request) llm.Response { return finalResponse("root-finished") })
+			adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("coordinator", "COORD-PUB") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("root-finished") })
 			create := delegateToolResponse("child", "LIVE-PUB").ToolCalls()[0]
 			done := publicationCall("premature-done", map[string]any{"message": "done-b83f", "end_turn": true, "output": publicationOutput("done-b83f")})
 			switch order {
 			case "existing child":
-				adapter.script("COORD-PUB", first(toolCallResponse(create)), func(llm.Request) llm.Response { return toolCallResponse(done) })
+				adapter.script("COORD-PUB", first(agenttest.ToolCallResponse(create)), func(llm.Request) llm.Response { return agenttest.ToolCallResponse(done) })
 			case "child then done":
-				adapter.script("COORD-PUB", first(toolCallResponse(create, done)))
+				adapter.script("COORD-PUB", first(agenttest.ToolCallResponse(create, done)))
 			default:
-				adapter.script("COORD-PUB", first(toolCallResponse(done, create)))
+				adapter.script("COORD-PUB", first(agenttest.ToolCallResponse(done, create)))
 			}
 			adapter.script("COORD-PUB", func(req llm.Request) llm.Response {
 				inspected <- req
@@ -457,12 +470,12 @@ func TestCompletionWithLiveChild(t *testing.T) {
 						}
 					}
 				}
-				return toolCallResponse(publicationCall("valid-wait", map[string]any{"message": "wait-8cc1", "end_turn": true, "end_reason": "waiting_on_work", "waiting_on": target}))
+				return agenttest.ToolCallResponse(publicationCall("valid-wait", map[string]any{"message": "wait-8cc1", "end_turn": true, "end_reason": "waiting_on_work", "waiting_on": target}))
 			})
 			adapter.script("LIVE-PUB", func(req llm.Request) llm.Response {
 				childRequest <- req
 				<-childGate
-				return finalResponse("child-finished")
+				return agenttest.FinalResponse("child-finished")
 			})
 			root := newMessagingRoot(t, adapter, returns.configure)
 			t.Cleanup(func() {
@@ -579,22 +592,22 @@ func TestCompletionAdmissionRetiresOnSameGenerationInput(t *testing.T) {
 	done := publicationCall("continuation-done", map[string]any{"message": "done-before-steer", "end_turn": true, "output": publicationOutput("done-before-steer")})
 	create := delegateToolResponse("continuation-create", "CONTINUATION-CHILD").ToolCalls()[0]
 	continuation, inspected := make(chan llm.Request, 1), make(chan llm.Request, 1)
-	adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("coordinator", "CONTINUATION-COORD") }, func(llm.Request) llm.Response { return finalResponse("root-finished") })
+	adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("coordinator", "CONTINUATION-COORD") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("root-finished") })
 	adapter.script("CONTINUATION-COORD", func(llm.Request) llm.Response {
 		close(providerEntered)
 		<-providerGate
-		return toolCallResponse(done)
+		return agenttest.ToolCallResponse(done)
 	}, func(req llm.Request) llm.Response {
 		continuation <- req
 		<-continuationGate
-		return toolCallResponse(create)
+		return agenttest.ToolCallResponse(create)
 	}, func(req llm.Request) llm.Response {
 		inspected <- req
 		<-inspectGate
 		target := deferredHeadDelegateID.FindString(lastToolResultText(req.Messages))
-		return toolCallResponse(publicationCall("continuation-wait", map[string]any{"message": "waiting for follow-up child", "end_turn": true, "end_reason": "waiting_on_work", "waiting_on": target}))
+		return agenttest.ToolCallResponse(publicationCall("continuation-wait", map[string]any{"message": "waiting for follow-up child", "end_turn": true, "end_reason": "waiting_on_work", "waiting_on": target}))
 	})
-	adapter.script("CONTINUATION-CHILD", func(llm.Request) llm.Response { <-childGate; return finalResponse("follow-up finished") })
+	adapter.script("CONTINUATION-CHILD", func(llm.Request) llm.Response { <-childGate; return agenttest.FinalResponse("follow-up finished") })
 	root := newMessagingRoot(t, adapter, returns.configure)
 	t.Cleanup(func() {
 		releaseProvider()
@@ -690,7 +703,7 @@ func TestCompletionAdmissionRetiresOnSameGenerationInput(t *testing.T) {
 
 func publicationToolResult(t *testing.T, s *Session, callID string) llm.ToolResultData {
 	t.Helper()
-	_, entries, _, err := readTranscript(transcriptPath(s.stateDir, s.ID()), "")
+	_, entries, _, err := readTranscript(t.Context(), transcriptPath(s.stateDir, s.ID()), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -762,16 +775,16 @@ func TestTerminalNotificationFollowsSettlement(t *testing.T) {
 			release := sync.OnceFunc(func() { close(gate) })
 			defer release()
 			adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("spawn", "TERMINAL-PUB") },
-				func(llm.Request) llm.Response { return finalResponse("root-finished") },
+				func(llm.Request) llm.Response { return agenttest.FinalResponse("root-finished") },
 				// The notification response earns the receipt asserted below, not an unscripted adapter answer.
-				func(llm.Request) llm.Response { return finalResponse("done") })
+				func(llm.Request) llm.Response { return agenttest.FinalResponse("done") })
 			output := publicationOutput("terminal-993f")
 			adapter.script("TERMINAL-PUB", func(llm.Request) llm.Response {
 				reason := disposition
 				if reason == "later error" {
 					reason = "done"
 				}
-				return toolCallResponse(publicationCall("accepted-terminal", map[string]any{"message": "terminal-993f", "end_turn": true, "end_reason": reason, "blocker": "blocker-9f7b", "output": output}))
+				return agenttest.ToolCallResponse(publicationCall("accepted-terminal", map[string]any{"message": "terminal-993f", "end_turn": true, "end_reason": reason, "blocker": "blocker-9f7b", "output": output}))
 			})
 			root := newMessagingRoot(t, adapter, func(cfg *SessionConfig) {
 				cfg.testOnly.subagentAfterFinalStatePublish = func(a *subagent) { held <- a; <-gate }
@@ -819,7 +832,7 @@ func TestTerminalNotificationFollowsSettlement(t *testing.T) {
 			}
 			// Exercise the real packet constructor after an accepted call, with a later
 			// failure rather than a fabricated communicated/report inventory.
-			failed := sub.stableDelegateFinish("diagnostic-1fc2", errors.New("fault-d381"))
+			failed := sub.buildDelegateFinish("diagnostic-1fc2", errors.New("fault-d381"))
 			var message string
 			_ = json.Unmarshal(failed.packet.Message, &message)
 			want, _ := json.Marshal(output)

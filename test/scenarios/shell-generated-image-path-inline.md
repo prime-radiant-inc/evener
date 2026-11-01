@@ -79,7 +79,7 @@ with the vanilla frontend (`660376f78`).
 - **Step 4 (bytes)**: 200 with an image `Content-Type` — `/doc/image` re-reads
   the file inside the cwd boundary (`doc_serve.go:84-127`). This route works
   for a *live* session with no past index, off the roster's working dir
-  (`localSessionCWD`, `doc_serve.go#localSessionCWD`;
+  (`sessionCWD`, `doc_serve.go#sessionCWD`;
   `TestDocImageServesLiveDescriptorURLWithoutPast`, `doc_serve_test.go#TestDocImageServesLiveDescriptorURLWithoutPast`).
 - **Step 5 (browser)**: the expanded row shows both the original shell output
   text and one thumbnail whose `src` is exactly the `url` from step 3 — the

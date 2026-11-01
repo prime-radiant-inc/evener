@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/llm"
 )
 
@@ -151,7 +152,7 @@ func (a *messagingAdapter) Complete(ctx context.Context, req llm.Request) (llm.R
 		a.mu.Unlock()
 		return response, nil
 	}
-	response := finalResponse("done")
+	response := agenttest.FinalResponse("done")
 	if step != nil {
 		response = step(req)
 	}
@@ -194,7 +195,7 @@ func delegateToolResponseWithResultSchema(id, prompt string, resultSchema map[st
 
 func delegateToolCall(id string, arguments map[string]any) llm.Response {
 	args, _ := json.Marshal(arguments)
-	return toolCallResponse(llm.ToolCallData{ID: id, Name: "delegate", Arguments: args, Type: "function"})
+	return agenttest.ToolCallResponse(llm.ToolCallData{ID: id, Name: "delegate", Arguments: args, Type: "function"})
 }
 
 // writeToolDescriptions renders each tool's description and its parameters'
@@ -234,20 +235,20 @@ func rootAttentionFold(t *testing.T, root *Session) delegateAttentionFold {
 // updateResponse is a delegate's model turn that sends message to its parent
 // as an update: communicate(end_turn=false).
 func updateResponse(id, message string) llm.Response {
-	return toolCallResponse(communicateCallArgs(id, map[string]any{"message": message, "end_turn": false}))
+	return agenttest.ToolCallResponse(communicateCallArgs(id, map[string]any{"message": message, "end_turn": false}))
 }
 
 // delegateSendResponse is a model turn that sends message to delegateID and
 // waits up to maxWaitMS for the generation it starts.
 func delegateSendResponse(id, delegateID, message string, maxWaitMS int) llm.Response {
 	args, _ := json.Marshal(map[string]any{"to": delegateID, "message": message, "max_wait_ms": maxWaitMS})
-	return toolCallResponse(llm.ToolCallData{ID: id, Name: "delegate_send", Arguments: args, Type: "function"})
+	return agenttest.ToolCallResponse(llm.ToolCallData{ID: id, Name: "delegate_send", Arguments: args, Type: "function"})
 }
 
 // jobListResponse is a model turn that calls job_list: a tool round that
 // changes nothing, so the request after it is the turn's next model boundary.
 func jobListResponse(id string) llm.Response {
-	return toolCallResponse(llm.ToolCallData{ID: id, Name: "job_list", Arguments: json.RawMessage(`{}`), Type: "function"})
+	return agenttest.ToolCallResponse(llm.ToolCallData{ID: id, Name: "job_list", Arguments: json.RawMessage(`{}`), Type: "function"})
 }
 
 // waitForSoleChildIdle waits until root has exactly one child session and it
@@ -411,7 +412,7 @@ func notificationReportWakesParent(t *testing.T, _ bool) {
 	waitResponse := func() llm.Response {
 		// Done with live children is now refused at admission. The old
 		// ordinary-drain route therefore converges on the same valid wait.
-		return toolCallResponse(communicateCallArgs("wait", map[string]any{
+		return agenttest.ToolCallResponse(communicateCallArgs("wait", map[string]any{
 			"message": "waiting", "end_turn": true,
 			"end_reason": "waiting_on_work", "waiting_on": siblingID,
 		}))
@@ -420,7 +421,7 @@ func notificationReportWakesParent(t *testing.T, _ bool) {
 		func(llm.Request) llm.Response {
 			return delegateToolResponse("coord", "COORD-BRIEF: coordinate two workers.")
 		},
-		func(llm.Request) llm.Response { return finalResponse("waiting") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("waiting") },
 	)
 	adapter.script("COORD-BRIEF",
 		func(llm.Request) llm.Response { return delegateToolResponse("a", "WORKER-A: report.") },
@@ -442,16 +443,16 @@ func notificationReportWakesParent(t *testing.T, _ bool) {
 		func(llm.Request) llm.Response {
 			close(terminalEntered)
 			awaitSignal(t, terminalGate, "terminal coordinator activation capture")
-			return finalResponse("coordinator finished")
+			return agenttest.FinalResponse("coordinator finished")
 		},
 	)
 	adapter.script("WORKER-A", func(llm.Request) llm.Response {
 		awaitSignal(t, reportGate, "the coordinator to wait")
-		return finalResponse(payload)
+		return agenttest.FinalResponse(payload)
 	})
 	adapter.script("WORKER-B", func(llm.Request) llm.Response {
 		awaitSignal(t, siblingGate, "A's report to be observed")
-		return finalResponse("sibling finished")
+		return agenttest.FinalResponse("sibling finished")
 	})
 	root := newMessagingRoot(t, adapter, returns.configure)
 	t.Cleanup(func() { returns.close(t, root) })
@@ -505,7 +506,7 @@ func notificationReportWakesParent(t *testing.T, _ bool) {
 	if got := len(adapter.requestsFor("COORD-BRIEF")); got != 4 {
 		t.Fatalf("coordinator requests = %d, want 4 without a duplicate observation", got)
 	}
-	coordRows := stableDelegateRowsForSession(root, false)
+	coordRows := delegateRowsForSession(root, false)
 	if len(coordRows) != 1 || !coordRows[0].snapshot.currentRunOpen {
 		t.Fatalf("coordinator settled while B remained live: %#v", coordRows)
 	}

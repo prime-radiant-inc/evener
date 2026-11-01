@@ -90,12 +90,11 @@ var (
 	LLMModel    = Var{Name: "LLM_MODEL", Summary: "Model for llmcall when --model is unset; checked before EVENER_MODEL.", Visibility: Public}
 	LLMProvider = Var{Name: "LLM_PROVIDER", Summary: "Provider for llmcall when --provider is unset; checked before EVENER_PROVIDER.", Visibility: Public}
 
-	OpenAIAPIKey          = Var{Name: "OPENAI_API_KEY", Summary: "OpenAI API key.", Secret: true, Visibility: Public}
-	OpenAIBaseURL         = Var{Name: "OPENAI_BASE_URL", Summary: "OpenAI API-key backend base URL.", Visibility: Public}
-	OpenAICodexBaseURL    = Var{Name: "OPENAI_CODEX_BASE_URL", Summary: "OpenAI OAuth Codex backend base URL.", Visibility: Public}
-	OpenAIChatGPTClientID = Var{Name: "OPENAI_CHATGPT_CLIENT_ID", Summary: "OpenAI OAuth client id override for tests and development.", Visibility: Tooling}
-	OpenAIOrgID           = Var{Name: "OPENAI_ORG_ID", Summary: "OpenAI organization header for API-key requests.", Visibility: Public}
-	OpenAIProjectID       = Var{Name: "OPENAI_PROJECT_ID", Summary: "OpenAI project header for API-key requests.", Visibility: Public}
+	OpenAIAPIKey       = Var{Name: "OPENAI_API_KEY", Summary: "OpenAI API key.", Secret: true, Visibility: Public}
+	OpenAIBaseURL      = Var{Name: "OPENAI_BASE_URL", Summary: "OpenAI API-key backend base URL.", Visibility: Public}
+	OpenAICodexBaseURL = Var{Name: "OPENAI_CODEX_BASE_URL", Summary: "OpenAI OAuth Codex backend base URL.", Visibility: Public}
+	OpenAIOrgID        = Var{Name: "OPENAI_ORG_ID", Summary: "OpenAI organization header for API-key requests.", Visibility: Public}
+	OpenAIProjectID    = Var{Name: "OPENAI_PROJECT_ID", Summary: "OpenAI project header for API-key requests.", Visibility: Public}
 
 	AnthropicAPIKey  = Var{Name: "ANTHROPIC_API_KEY", Summary: "Anthropic API key.", Secret: true, Visibility: Public}
 	AnthropicBaseURL = Var{Name: "ANTHROPIC_BASE_URL", Summary: "Anthropic API base URL override.", Visibility: Public}
@@ -155,7 +154,7 @@ var (
 
 	XDGCacheHome   = Var{Name: "XDG_CACHE_HOME", Summary: "Base for Evener cache data.", Visibility: Inherited}
 	XDGConfigHome  = Var{Name: "XDG_CONFIG_HOME", Summary: "Base for Evener config, skills, plugins, and MCP config discovery.", Visibility: Inherited}
-	XDGStateHome   = Var{Name: "XDG_STATE_HOME", Summary: "Base for the Evener state root ($XDG_STATE_HOME/evener); also the fallback in the per-invocation state-dir override chain when EVENER_STATE_DIR is unset.", Visibility: Inherited}
+	XDGStateHome   = Var{Name: "XDG_STATE_HOME", Summary: "Base for the Evener state root ($XDG_STATE_HOME/evener, else $HOME/.local/state/evener); also the fallback in the per-invocation state-dir override chain when EVENER_STATE_DIR is unset. With neither XDG_STATE_HOME nor a home directory there is no state root and state-writing commands fail instead of using a temporary or relative directory.", Visibility: Inherited}
 	CargoHome      = Var{Name: "CARGO_HOME", Summary: "Inherited by core-only command environments.", Visibility: Inherited}
 	Display        = Var{Name: "DISPLAY", Summary: "Used to auto-detect graphical sessions for OpenAI login.", Visibility: Inherited}
 	GoCache        = Var{Name: "GOCACHE", Summary: "Inherited by core-only command environments; the sandbox overlays or redirects it with the other Go caches.", Visibility: Inherited}
@@ -163,8 +162,6 @@ var (
 	GoModCache     = Var{Name: "GOMODCACHE", Summary: "Inherited by core-only command environments.", Visibility: Inherited}
 	GoPath         = Var{Name: "GOPATH", Summary: "Inherited by core-only command environments.", Visibility: Inherited}
 	Home           = Var{Name: "HOME", Summary: "Home directory fallback for state/config paths and path expansion.", Visibility: Inherited}
-	HomeDrive      = Var{Name: "HOMEDRIVE", Summary: "Windows home drive fallback.", Visibility: Inherited}
-	HomePath       = Var{Name: "HOMEPATH", Summary: "Windows home path fallback.", Visibility: Inherited}
 	Lang           = Var{Name: "LANG", Summary: "Inherited by core-only command environments.", Visibility: Inherited}
 	NVMDir         = Var{Name: "NVM_DIR", Summary: "Inherited by core-only command environments.", Visibility: Inherited}
 	Path           = Var{Name: "PATH", Summary: "Executable search path for local commands and child processes; a session/daemon env overrides it with the resolved login-shell PATH when available, else the inherited process PATH.", Visibility: Inherited}
@@ -234,7 +231,6 @@ var allVars = []Var{
 	OpenAIAPIKey,
 	OpenAIBaseURL,
 	OpenAICodexBaseURL,
-	OpenAIChatGPTClientID,
 	OpenAIOrgID,
 	OpenAIProjectID,
 	AnthropicAPIKey,
@@ -299,8 +295,6 @@ var allVars = []Var{
 	GoModCache,
 	GoPath,
 	Home,
-	HomeDrive,
-	HomePath,
 	Lang,
 	NVMDir,
 	Path,

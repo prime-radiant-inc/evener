@@ -900,7 +900,7 @@ func TestNotificationProgressReentryPreservesFreshWork(t *testing.T) {
 	t.Parallel()
 	clock := agenttest.NewFakeClock()
 	a := newMessagingAdapter()
-	a.script("root", func(llm.Request) llm.Response { return finalResponse("NEW_TOKEN_RESPONSE") })
+	a.script("root", func(llm.Request) llm.Response { return agenttest.FinalResponse("NEW_TOKEN_RESPONSE") })
 	s := newMessagingRoot(t, a, func(c *SessionConfig) { c.clock = clock })
 	progressAttachController(t, s, clock)
 	var wakes atomic.Int32

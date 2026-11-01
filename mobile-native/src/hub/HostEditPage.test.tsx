@@ -39,7 +39,6 @@ vi.mock("@react-navigation/native", async () => {
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 // Each mount's controllers, disposed after the test's trees unmount, so a
 // failing assertion can't leak them into the next test.
@@ -252,7 +251,7 @@ it("stays where it is when a save lands", async () => {
 
 it("holds Save only while it saves: the hub is the one validator", async () => {
 	const fleet = scriptedFleet([attic]);
-	const answer = fleet.client.request;
+	const answer = fleet.client.request.bind(fleet.client);
 	let release = () => {};
 	fleet.client.request = (async (method: string, params: unknown) => {
 		if (method === "evener/host/update") await new Promise<void>((resolve) => (release = resolve));
@@ -304,7 +303,7 @@ it("goes back when its host leaves the hub's list while it is open", async () =>
 
 it("goes back once when the host is removed elsewhere while its edit saves", async () => {
 	const fleet = scriptedFleet([attic]);
-	const answer = fleet.client.request;
+	const answer = fleet.client.request.bind(fleet.client);
 	fleet.client.request = (async (method: string, params: unknown) => {
 		const result = await answer(method as never, params as never);
 		// Another client removes the host as this edit lands.
@@ -318,7 +317,7 @@ it("goes back once when the host is removed elsewhere while its edit saves", asy
 
 it("leaves the stack alone when a save lands after the page was swiped away", async () => {
 	const fleet = scriptedFleet([attic]);
-	const answer = fleet.client.request;
+	const answer = fleet.client.request.bind(fleet.client);
 	let release = () => {};
 	fleet.client.request = (async (method: string, params: unknown) => {
 		if (method === "evener/host/update") await new Promise<void>((resolve) => (release = resolve));

@@ -621,7 +621,7 @@ func TestDelegateControllerModelRequestStopCancellation(t *testing.T) {
 					t.Fatal("Stop admitted a model claim")
 				}
 			}
-			if !errors.Is(err, context.Canceled) || stableDelegateFatalRun(err) {
+			if !errors.Is(err, context.Canceled) || delegateFatalRun(err) {
 				t.Errorf("Stop model admission error=%v, want nonfatal cancellation before context cancel", err)
 			}
 			if ctx.Err() != nil {
@@ -718,7 +718,7 @@ func TestDelegateControllerModelRequestRefusalPrecedence(t *testing.T) {
 							} else {
 								_, err = c.BeginModelRequest(lease)
 							}
-							if !errors.Is(err, want) || errors.Is(err, context.Canceled) || !stableDelegateFatalRun(err) {
+							if !errors.Is(err, want) || errors.Is(err, context.Canceled) || !delegateFatalRun(err) {
 								t.Fatalf("independent refusal=%v, want fatal %v without cancellation", err, want)
 							}
 							if complete {

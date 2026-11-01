@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"sync"
 	"testing"
 	"time"
@@ -333,7 +334,7 @@ func TestDelegateAttention_DeliveryCommitsPreserveExactToolCallPairsAndStayProvi
 			t.Fatalf("live/persisted identity pair %d: live=%#v persisted=%#v", i, live.DelegateDeliveryCommits[i], binding)
 		}
 	}
-	assistant := schema.NewTurn(schema.TurnAssistant, toolCallResponse(calls...).Message)
+	assistant := schema.NewTurn(schema.TurnAssistant, agenttest.ToolCallResponse(calls...).Message)
 	providerMessages := expandHistory([]schema.Turn{assistant, live}, replayScope{})
 	notificationValidToolPairs(t, llm.Request{Messages: providerMessages})
 	providerJSON, err := json.Marshal(providerMessages)
@@ -468,7 +469,7 @@ func TestSteeringArrivingDuringToolResultAppendWaitsForTheRoundToFinish(t *testi
 		t.Fatal("tool-result append never reached the fsync barrier")
 	}
 
-	if err := root.SteerKind("arrived during tool round", events.SteeringKindAgentMessage); err != nil {
+	if err := root.SteerKind("arrived during tool round", events.SteeringKindNoteHandoff); err != nil {
 		t.Fatalf("steer: %v", err)
 	}
 	queue := root.SteeringQueueSnapshot()

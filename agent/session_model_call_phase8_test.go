@@ -250,10 +250,7 @@ func TestSession_PersistsImageToolResultFromExecResult(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	const toolName = "image_fixture"
 	imageBytes := validPNGFixture(t)

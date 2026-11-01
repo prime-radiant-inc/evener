@@ -470,7 +470,7 @@ func stubHubBuildDirty(t *testing.T, dirty bool) {
 // TestDirtyDefaultedSourceRefusalNamesNoDeployFlag pins the remedy for a dirty
 // controller whose defaulted source cannot serve a cross-target host: the clean
 // text leads with -deploy-binary and -build-source, and a dirty controller
-// refuses both terminally (errControllerDirty), so naming them would recommend
+// refuses both terminally (ErrControllerDirty), so naming them would recommend
 // the two things guaranteed to fail. The dirty remedy must name no deploy flag
 // and point at the actions that can succeed instead.
 func TestDirtyDefaultedSourceRefusalNamesNoDeployFlag(t *testing.T) {

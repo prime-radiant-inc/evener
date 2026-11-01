@@ -8,8 +8,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"syscall"
 	"time"
+
+	"primeradiant.com/evener/execsupport/fsatomic"
 )
 
 const recordName = "hub-endpoint.json"
@@ -138,33 +139,12 @@ func Publish(stateRoot string, record Record) (func() error, error) {
 		return nil, errors.New("endpoint record exceeds size limit")
 	}
 	path := filepath.Join(stateRoot, recordName)
-	parent := filepath.Dir(path)
-	temp, err := os.CreateTemp(parent, ".hub-endpoint-*")
-	if err != nil {
-		return nil, err
-	}
-	tmpName := temp.Name()
-	defer func() { _ = os.Remove(tmpName) }()
-	if err := temp.Chmod(0600); err != nil {
-		_ = temp.Close()
-		return nil, err
-	}
-	if _, err := temp.Write(data); err != nil {
-		_ = temp.Close()
-		return nil, err
-	}
-	if err := temp.Sync(); err != nil {
-		_ = temp.Close()
-		return nil, err
-	}
-	if err := temp.Close(); err != nil {
-		return nil, err
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		return nil, err
-	}
-	if err := syncDir(parent); err != nil {
-		_ = os.Remove(path)
+	if err := fsatomic.Write(path, data, 0o600); err != nil {
+		if errors.Is(err, fsatomic.ErrPublished) {
+			// Withdraw a record whose publication was not confirmed durable
+			// rather than leave an endpoint a crash could take back.
+			_ = os.Remove(path)
+		}
 		return nil, err
 	}
 	published, err := os.Lstat(path)
@@ -192,18 +172,6 @@ func Publish(stateRoot string, record Record) (func() error, error) {
 		}
 		return os.Remove(path)
 	}, nil
-}
-func syncDir(root string) error {
-	d, err := os.Open(root)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = d.Close() }()
-	err = d.Sync()
-	if errors.Is(err, syscall.ENOSYS) || errors.Is(err, syscall.ENOTSUP) || errors.Is(err, syscall.EINVAL) {
-		return nil
-	}
-	return err
 }
 func jsonBytes(r Record) ([]byte, error) {
 	var b bytes.Buffer

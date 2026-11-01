@@ -5,6 +5,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"slices"
 	"testing"
 	"time"
@@ -94,7 +95,7 @@ func seed100JobtreeDrainMore(t *testing.T) {
 		if !requestContainsText(req, "dlg_seed100_stop_gate") {
 			t.Error("root request omitted its owed Stop result")
 		}
-		return finalResponse("stop-result-observed-59")
+		return agenttest.FinalResponse("stop-result-observed-59")
 	}))
 	if err := kickRoot.kickDriveTreeWith(context.Background(), func(*Session, context.Context) error { return want }); !errors.Is(err, want) {
 		t.Fatalf("root kick fault = %v", err)

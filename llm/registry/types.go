@@ -196,6 +196,11 @@ type Credential struct {
 	// writers are its callers, and they skip the name rather than describing a
 	// stored key that is dead.
 	AuthoredLayer string `json:"-"`
+	// MissingReason is the human diagnosis of why a scheme that needs a
+	// credential resolved to none, and is empty otherwise. It is display
+	// text: callers decide whether a credential is missing from Value and
+	// Source, and carry this string only to say why.
+	MissingReason string `json:"-"`
 }
 
 // Resolved is the fully materialized record adapters consume (spec §4.4).

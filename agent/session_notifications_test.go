@@ -38,11 +38,11 @@ func TestNotificationColdAcceptanceDuringEmptyWakeClearFailure(t *testing.T) {
 
 func testNotificationColdAcceptanceDuringEmptyWakePass(t *testing.T, clearFails bool) {
 	t.Helper()
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response {
 			observationRequest(t, req, []string{"cold-empty-payload-83"}, nil)
-			return finalResponse("cold-empty-response-83")
+			return agenttest.FinalResponse("cold-empty-response-83")
 		},
 	}
 	var clock *agenttest.FakeClock
@@ -183,7 +183,7 @@ func TestNotificationColdRetryHandoff(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var scheduledErr, oldRetryErr error
 			captureReceiverErrorLogs(t, os.ErrNotExist, func() error { return scheduledErr }, func() error { return oldRetryErr })
-			fixture := newColdStableDelegateFixture(t, "")
+			fixture := newColdDelegateFixture(t, "")
 			const id, payload = "retry-handoff-id-91", "retry-handoff-payload-91"
 			n := notification{ID: id, Message: llm.User(payload)}
 			fixture.adapter.steps = []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
@@ -191,7 +191,7 @@ func TestNotificationColdRetryHandoff(t *testing.T) {
 					t.Errorf("request receiver=%q, want %q", req.SessionID, fixture.childID)
 				}
 				observationRequest(t, req, []string{payload}, nil)
-				return finalResponse("retry-handoff-response-91")
+				return agenttest.FinalResponse("retry-handoff-response-91")
 			}}
 			clock := agenttest.NewFakeClock()
 			root := restoreSupervisionRoot(t, fixture, clock)
@@ -421,7 +421,7 @@ func TestNotificationColdRetryHandoff(t *testing.T) {
 
 func TestNotificationColdEmptyWakeDoesNotRecurse(t *testing.T) {
 	t.Parallel()
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	clock := agenttest.NewFakeClock()
 	root := restoreSupervisionRoot(t, fixture, clock)
 	c := root.delegateController
@@ -843,7 +843,7 @@ func TestNotificationCausalActivationAfterColdReopen(t *testing.T) {
 			t.Fatalf("second request omitted accepted history: %+v", req.Messages)
 		}
 		return jobListResponse("late-call")
-	}, func(llm.Request) llm.Response { return finalResponse("causal-done") })
+	}, func(llm.Request) llm.Response { return agenttest.FinalResponse("causal-done") })
 	var toolEvents []events.SessionEvent
 	drained := make(chan struct{})
 	reopened.ConsumeEventsLossless(func(ev events.SessionEvent) {
@@ -906,7 +906,7 @@ func TestNotificationAcceptance(t *testing.T) {
 			if !requestContainsText(req, "payload-7c41") {
 				t.Error("current continuation omitted the running arrival")
 			}
-			return finalResponse("payload-end")
+			return agenttest.FinalResponse("payload-end")
 		})
 		s := newMessagingRoot(t, adapter, nil)
 		done := make(chan error, 1)
@@ -939,7 +939,7 @@ func TestNotificationAcceptance(t *testing.T) {
 		}
 	})
 	t.Run("cold receiver", func(t *testing.T) {
-		fixture := newColdStableDelegateFixture(t, "")
+		fixture := newColdDelegateFixture(t, "")
 		sessionID := fixture.childID
 		path := transcriptPath(fixture.stateDir, sessionID)
 		fixture.adapter.steps = []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
@@ -947,7 +947,7 @@ func TestNotificationAcceptance(t *testing.T) {
 				t.Errorf("notification did not reach the exact cold receiver: session=%s", req.SessionID)
 			}
 			assertNotificationRecords(t, path, n.ID, n.Message, 1)
-			return finalResponse("cold-receiver-done")
+			return agenttest.FinalResponse("cold-receiver-done")
 		}}
 		// No root input loop or provider turn drives this child's restoration.
 		root := restoreSupervisionRoot(t, fixture, nil)

@@ -17,7 +17,7 @@ import (
 // beside it.
 func TestStatusChangeCarriesAskPendingWhileAQuestionWaits(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetStatus(StatusInfo{SessionID: "s1", State: "awaiting"})
+	seedStatus(srv, StatusInfo{SessionID: "s1", State: "awaiting"})
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.askPending = true })
 
 	stamped, ok := srv.stampAskPendingOnStatusChange(appwire.NotifyThreadStatusChanged,
@@ -35,11 +35,11 @@ func TestStatusChangeCarriesAskPendingWhileAQuestionWaits(t *testing.T) {
 // says so, so no client has to reread to stop saying "question waiting".
 func TestStatusChangeCarriesAskPendingClearedByTheAnswer(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetStatus(StatusInfo{SessionID: "s1", State: "awaiting"})
+	seedStatus(srv, StatusInfo{SessionID: "s1", State: "awaiting"})
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.askPending = true })
 	// The answer: the pending set empties and the turn resumes.
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.askPending = false })
-	srv.SetStatus(StatusInfo{SessionID: "s1", State: "working"})
+	seedStatus(srv, StatusInfo{SessionID: "s1", State: "working"})
 
 	stamped, ok := srv.stampAskPendingOnStatusChange(appwire.NotifyThreadStatusChanged,
 		appwire.ThreadStatusChangedParams{ThreadID: "th_1"}).(appwire.ThreadStatusChangedParams)
@@ -68,7 +68,7 @@ func TestStampAskPendingLeavesEverythingElseAlone(t *testing.T) {
 }
 
 // The stamper above is only reached if both notification egress loops call it
-// (appwire_runtime.go:565, :634), so this drives a real session event through
+// (appwire_record_events.go), so this drives a real session event through
 // the server and reads the frame it recorded — the shape
 // appwire_failure_push_test.go and appwire_capabilities_push_test.go use for the
 // two fields that ride this frame beside askPending. Dropping the call from

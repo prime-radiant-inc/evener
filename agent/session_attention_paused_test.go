@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"strings"
 	"testing"
 	"time"
@@ -99,7 +100,7 @@ func TestAttentionPauseWarnsAgainAfterADelivery(t *testing.T) {
 	// message, say) and resolves.
 	adapter.mu.Lock()
 	adapter.streamErr = llm.ErrStreamUnsupported
-	adapter.completeResult = finalResponse("recovered")
+	adapter.completeResult = agenttest.FinalResponse("recovered")
 	adapter.mu.Unlock()
 	if _, err := s.ProcessInput(context.Background(), "resume", nil); err != nil {
 		t.Fatalf("recover through a successful user response: %v", err)
@@ -289,10 +290,7 @@ func TestModelSwitchDoesNotReopenAStopParkedRail(t *testing.T) {
 	s, _, _, _ := newAttentionLivelockSession(t, llm.ErrorFromHTTPStatus("openai", 401, "unauthorized", nil, nil))
 	// Unserved, as TestStopParksRootDelegateAttentionUntilReEngagement keeps
 	// it, so nothing claims the parked queue behind the test's back.
-	go func() {
-		for range s.Events() {
-		}
-	}()
+	drainSessionEvents(s)
 	queueOneMutation(t, s, "queue-behind-stop", "please still run me")
 	armOneRootAttention(t, s, "dlg_stop", "delegate:dlg_stop/delivery/1")
 	_, _ = s.ProcessInputKind(context.Background(), "", nil, EntryNotification)

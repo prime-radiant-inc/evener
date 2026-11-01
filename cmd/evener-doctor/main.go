@@ -194,7 +194,10 @@ func cmdLocate(args []string, stdout, stderr io.Writer) int {
 	if code != 0 {
 		return code
 	}
-	base := doctor.ResolveStateBase(*stateDir)
+	base, err := doctor.ResolveStateBase(*stateDir)
+	if err != nil {
+		return fail(stderr, "state", err)
+	}
 	paths, err := doctorLocate(base, sel)
 	if err != nil {
 		return fail(stderr, "locate", err)
@@ -222,7 +225,10 @@ func cmdTranscript(args []string, stdout, stderr io.Writer) int {
 	if code != 0 {
 		return code
 	}
-	base := doctor.ResolveStateBase(*stateDir)
+	base, err := doctor.ResolveStateBase(*stateDir)
+	if err != nil {
+		return fail(stderr, "state", err)
+	}
 
 	if *count != "" {
 		res, err := doctor.Count(base, sel, *count)
@@ -283,7 +289,10 @@ func cmdAPILog(args []string, stdout, stderr io.Writer) int {
 	if code != 0 {
 		return code
 	}
-	base := doctor.ResolveStateBase(*stateDir)
+	base, err := doctor.ResolveStateBase(*stateDir)
+	if err != nil {
+		return fail(stderr, "state", err)
+	}
 
 	if *validate {
 		res, err := doctor.ValidateAPILog(base, sel)
@@ -340,7 +349,10 @@ func cmdJobs(args []string, stdout, stderr io.Writer) int {
 	if code != 0 {
 		return code
 	}
-	base := doctor.ResolveStateBase(*stateDir)
+	base, err := doctor.ResolveStateBase(*stateDir)
+	if err != nil {
+		return fail(stderr, "state", err)
+	}
 	res, err := doctor.Jobs(base, sel, doctor.JobOpts{JobID: *jobID})
 	if err != nil {
 		return fail(stderr, "jobs", err)
@@ -360,7 +372,10 @@ func cmdMutations(args []string, stdout, stderr io.Writer) int {
 	if code != 0 {
 		return code
 	}
-	base := doctor.ResolveStateBase(*stateDir)
+	base, err := doctor.ResolveStateBase(*stateDir)
+	if err != nil {
+		return fail(stderr, "state", err)
+	}
 	res, err := doctor.Mutations(base, sel)
 	if err != nil {
 		return fail(stderr, "mutations", err)
@@ -379,7 +394,10 @@ func cmdWatches(args []string, stdout, stderr io.Writer) int {
 	if code != 0 {
 		return code
 	}
-	base := doctor.ResolveStateBase(*stateDir)
+	base, err := doctor.ResolveStateBase(*stateDir)
+	if err != nil {
+		return fail(stderr, "state", err)
+	}
 	res, err := doctor.Watches(base, sel, doctor.WatchOpts{WatchID: *watchID, SelfLoopsOnly: *selfLoops})
 	if err != nil {
 		return fail(stderr, "watches", err)
@@ -398,7 +416,10 @@ func cmdTree(args []string, stdout, stderr io.Writer) int {
 	if code != 0 {
 		return code
 	}
-	base := doctor.ResolveStateBase(*stateDir)
+	base, err := doctor.ResolveStateBase(*stateDir)
+	if err != nil {
+		return fail(stderr, "state", err)
+	}
 	res, err := doctor.Tree(base, sel, doctor.TreeOpts{Depth: *depth, Observers: *observers})
 	if err != nil {
 		return fail(stderr, "tree", err)
@@ -427,7 +448,10 @@ func cmdTurnIDs(args []string, stdout, stderr io.Writer) int {
 		}
 		return 2
 	}
-	base := doctor.ResolveStateBase(*stateDir)
+	base, err := doctor.ResolveStateBase(*stateDir)
+	if err != nil {
+		return fail(stderr, "state", err)
+	}
 	scan, err := doctor.ScanTurnIDs(base)
 	if err != nil {
 		return fail(stderr, "turnids", err)
@@ -467,7 +491,10 @@ func cmdSessions(args []string, stdout, stderr io.Writer) int {
 		}
 		sinceDur = d
 	}
-	base := doctor.ResolveStateBase(*stateDir)
+	base, err := doctor.ResolveStateBase(*stateDir)
+	if err != nil {
+		return fail(stderr, "state", err)
+	}
 	res, err := doctor.ListSessions(base, doctor.SessionsOpts{Since: sinceDur, Bucket: *bucketFlag})
 	if err != nil {
 		return fail(stderr, "sessions", err)
@@ -532,7 +559,10 @@ func cmdAudit(args []string, stdout, stderr io.Writer) int {
 		opts.Since = d
 	}
 
-	base := doctor.ResolveStateBase(*stateDir)
+	base, err := doctor.ResolveStateBase(*stateDir)
+	if err != nil {
+		return fail(stderr, "state", err)
+	}
 	res, err := doctor.RunAudit(base, runbook, opts)
 	if err != nil {
 		return fail(stderr, "audit", err)

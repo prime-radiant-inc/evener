@@ -20,9 +20,10 @@ import { navigate, paneToURL, refParam } from "../../shell/routing";
 import { ForceStopDialog } from "../../shell/sessionMenu/ForceStopDialog";
 import { StatusBar } from "../../shell/statusbar/StatusBar";
 import { useIsMobile } from "../../shell/useIsMobile";
-import { workspaceStore } from "../../shell/workspace";
+import { carryComposerSeatForPlacement, workspaceStore } from "../../shell/workspace";
 import { useNavigationStore } from "../../stores/navigation/store";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
+import { useTranscriptDisplayStore } from "../../stores/transcriptDisplay";
 import { Button, EmptyState, InlineNotice, Loader, PaneScaffold } from "../../widgets";
 import { ConversationBody, type ConversationSeat } from "./ConversationBody";
 import { RepoLocation } from "./composer/RepoLocation";
@@ -67,6 +68,7 @@ function SessionForceStopRecovery({ sessionRef }: { sessionRef: string }) {
 export default function Session({ params, paneId, focused: paneFocused }: PaneProps<SessionPaneParams>) {
   const { ref } = params;
   const isMobile = useIsMobile();
+  const presentation = useTranscriptDisplayStore((state) => state.presentation[state.viewport]);
   const pane = useStore(workspaceStore, (state) =>
     state.panes.find((record) => record.id === paneId && record.type === "session" && refParam(record.params) === ref),
   );
@@ -132,6 +134,17 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
       onResumedIdentity: (resumedRef) => {
         const url = paneToURL("session", { ref: resumedRef });
         if (url === null) return false;
+        // Seat-carry: the retargeted rows keep this pane's seat as their
+        // composition owner, so the resumed pane's placement takes it. The
+        // superseded pane closes in the same transition - a main pane is
+        // removed by its own replacement - so the carried seat is never held
+        // live by two panes, and this pane's retained state closing early is
+        // the approved cost of the shape.
+        const pane = workspaceStore.getState().panes.find((record) => record.id === paneId);
+        if (pane) {
+          carryComposerSeatForPlacement(resumedRef, pane.composerSeatId ?? pane.id);
+          if (pane.slot !== "main") workspaceStore.getState().closePane(paneId);
+        }
         navigate(url, { replace: true });
         return true;
       },
@@ -156,6 +169,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
               focused={paneFocused}
               scaffoldMarker={`session:${ref}`}
               title={title}
+              footer={footer}
               edgeFooter={edgeFooter}
             >
               <EmptyState
@@ -178,6 +192,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
               focused={paneFocused}
               scaffoldMarker={`session:${ref}`}
               title={title}
+              footer={footer}
               edgeFooter={edgeFooter}
             >
               <div className={styles.loading}>
@@ -198,9 +213,10 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
           <PaneScaffold
             paneId={paneId}
             focused={paneFocused}
-            focusSelector='[data-composer] [role="textbox"]'
+            focusSelector='[data-composer] [role="textbox"], [data-comic-composer] [role="textbox"]'
             scaffoldMarker={`session:${ref}`}
             title={title}
+            bodyScroll={presentation !== "comic"}
             cadence={cadence}
             footer={footer}
             edgeFooter={edgeFooter}

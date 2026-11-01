@@ -120,7 +120,7 @@ func TestBuildIncludesJobActivityTypes(t *testing.T) {
 	}
 }
 
-func TestBuildIncludesStableDelegateInfo(t *testing.T) {
+func TestBuildIncludesDelegateInfo(t *testing.T) {
 	d := build()
 	for _, tv := range d.Types {
 		if tv.Name != "EvenerDelegateInfo" {
@@ -364,6 +364,30 @@ func TestBuildIncludesSessionActivityResources(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestBuildIncludesActivityReadSessionActivity pins the pulse meter's element
+// type. SessionActivity is not one of the evener/thread/* activity resources
+// above: ActivityReadResponse.Sessions is its only catalog reference, and a
+// consumer of evener/activity/read needs its field table.
+func TestBuildIncludesActivityReadSessionActivity(t *testing.T) {
+	want := []string{"ref", "minutes", "runningSubagents", "quietForMs", "latestIntent", "lastMovedAt"}
+	for _, resource := range build().Types {
+		if resource.Name != "SessionActivity" {
+			continue
+		}
+		present := make(map[string]bool, len(resource.Fields))
+		for _, field := range resource.Fields {
+			present[field.JSON] = true
+		}
+		for _, field := range want {
+			if !present[field] {
+				t.Errorf("SessionActivity missing wire field %s", field)
+			}
+		}
+		return
+	}
+	t.Fatal("build() missing SessionActivity")
 }
 
 func TestBuildIncludesJobOutputPage(t *testing.T) {

@@ -36,11 +36,6 @@ vi.mock("react-native", async () => (await import("./renderNative.testkit")).nat
 // the tests never acquire a real runtime (they inject `acquire`), so inert
 // mocks are enough to make the module load.
 vi.mock("expo-sqlite", () => ({ openDatabaseSync: vi.fn() }));
-vi.mock("expo-crypto", () => ({
-	randomUUID: () => "test-uuid",
-	getRandomValues: (array: Uint8Array) => array,
-}));
-
 it("recovers an actual SQLite read failure through offline Retry", async () => {
 	const opened = openSqliteSyncDouble();
 	let failReads = true;

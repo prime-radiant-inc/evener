@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -79,7 +80,7 @@ func TestDrainEntryRecoversOwnedShellPending(t *testing.T) {
 	adapter.steps = []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response {
 			observationRequest(t, req, []string{"job_owned_entry_731a"}, nil)
-			return finalResponse("owned-entry-observed-731a")
+			return agenttest.FinalResponse("owned-entry-observed-731a")
 		},
 	}
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{StateDir: t.TempDir(), TurnEndsProcess: true}), withoutGitSnapshot())

@@ -1,5 +1,5 @@
 import type { MCPServerSpec } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 
 export async function addLaunchMcp(client: ConversationClientLike, items: MCPServerSpec[], raw: string) {
 	const [name, command, ...args] = raw.trim().split(/\s+/).filter(Boolean);

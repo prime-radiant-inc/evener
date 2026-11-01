@@ -1,7 +1,11 @@
 // @vitest-environment node
 
 import { expect, test } from "vitest";
+import delegateAttentionDriveGo from "../../agent/delegate_attention_drive.go?raw";
+import delegateCreateGo from "../../agent/delegate_create.go?raw";
+import delegateOwedBootstrapGo from "../../agent/delegate_owed_bootstrap.go?raw";
 import delegateRuntimeGo from "../../agent/delegate_runtime.go?raw";
+import delegateSendGo from "../../agent/delegate_send.go?raw";
 import delegateTreeFinishGo from "../../agent/delegate_tree_finish.go?raw";
 import delegateTreeIntentsGo from "../../agent/delegate_tree_intents.go?raw";
 import delegateTreeRestoreGo from "../../agent/delegate_tree_restore.go?raw";
@@ -375,7 +379,11 @@ test("says only the first line of a cause, bounded", () => {
 // …_report, …_parent); cancelled and failed are plain words.
 test("has words for every delegate reason code the daemon writes", () => {
   const sources = [
+    delegateAttentionDriveGo,
+    delegateCreateGo,
+    delegateOwedBootstrapGo,
     delegateRuntimeGo,
+    delegateSendGo,
     delegateTreeFinishGo,
     delegateTreeIntentsGo,
     delegateTreeRestoreGo,

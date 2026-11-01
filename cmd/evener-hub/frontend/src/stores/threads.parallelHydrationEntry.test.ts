@@ -1,12 +1,4 @@
-import type {
-  ConnectionState,
-  MethodName,
-  MethodTypes,
-  QueueState,
-  Thread,
-  ThreadCapabilities,
-  ThreadReadResponse,
-} from "@evener/appwire-client";
+import type { MethodName, MethodTypes, ThreadReadResponse } from "@evener/appwire-client";
 import { acquireThreadSubscription, RequestTimeoutError, type ThreadSubscriptionLease } from "@evener/appwire-client";
 import { FakeClient, type RequestHandler } from "@evener/appwire-client/testing/fakeClient";
 import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
@@ -14,15 +6,12 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { resetPendingTurnsStoreForTests } from "../panes/session/composer/queue/pendingTurnsStore";
 import { resetWorkspaceStoreForTests } from "../shell/workspace";
-import { connectionStore } from "./connection";
+import { connectReadyFakeClient } from "../testing/connectionTestUtils";
+import { type TestThreadOverrides, testThread } from "../threadTestUtils";
+import { connectionStore, resetConnectionStoreForTests } from "./connection";
+import { productionEntryTranscriptForTests, setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { SessionEntryCache } from "./sessionEntryCache";
-import {
-  installHydrationRetrySchedulerForTests,
-  productionEntryTranscriptForTests,
-  resetThreadsStoreForTests,
-  setProductionEntryCacheForTests,
-  threadsStore,
-} from "./threads";
+import { installHydrationRetrySchedulerForTests, resetThreadsStoreForTests, threadsStore } from "./threads";
 
 const establishedMemberships: ThreadSubscriptionLease[] = [];
 async function establishMembership(fake: FakeClient, ref = "ref_a"): Promise<void> {
@@ -54,61 +43,8 @@ function nextHandledRequest<M extends MethodName>(
 
 const settleCallerContinuations = nextMacrotask;
 
-const CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
-
-type TestThreadOverrides = Omit<Partial<Thread>, "evener"> & {
-  evener?: Omit<Thread["evener"], "queue"> & { queue: Partial<QueueState> };
-};
-
-function testThread(ref: string, overrides: TestThreadOverrides = {}): Thread {
-  const { evener, ...threadOverrides } = overrides;
-  const threadID = threadOverrides.id ?? `thr_${ref}`;
-  return {
-    id: threadID,
-    sessionId: `sess_${ref}`,
-    preview: "test",
-    ephemeral: false,
-    modelProvider: "anthropic/claude-sonnet-4-5",
-    createdAt: 1000,
-    updatedAt: 1000,
-    status: { type: "idle" },
-    cwd: "/tmp/project",
-    cliVersion: "1.0.0",
-    source: "evener",
-    evener: {
-      ref,
-      instanceId: threadID,
-      mutationStateAuthoritative: true,
-      capabilities: CAPABILITIES,
-      ...evener,
-      queue: { revision: 0, ...evener?.queue },
-    },
-    ...threadOverrides,
-  };
-}
-
 function readResponse(ref: string, overrides: TestThreadOverrides = {}): ThreadReadResponse {
   return { thread: testThread(ref, overrides) };
-}
-
-function connectFakeClient(state: ConnectionState = "ready"): FakeClient {
-  const fake = new FakeClient(state);
-  connectionStore.getState().connect(fake);
-  return fake;
 }
 
 interface ScheduledHydrationRetry {
@@ -132,7 +68,7 @@ function runScheduledHydrationRetry(index = 0): void {
 
 let cache: SessionEntryCache;
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetPendingTurnsStoreForTests();
   resetWorkspaceStoreForTests();
@@ -165,7 +101,7 @@ afterEach(() => {
 
 describe("useThreadsStore.ensureThread", () => {
   test("hydrates via thread/read and routes a subsequent matching notification through the reducer", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("thread/read", (params) => {
       expect(params).toEqual({
         ref: "ref_a",
@@ -192,7 +128,7 @@ describe("useThreadsStore.ensureThread", () => {
   });
 
   test("a second ensureThread(ref) does not re-read", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("thread/read", () => readResponse("ref_a"));
 
     await threadsStore.getState().ensureThread("ref_a");
@@ -202,7 +138,7 @@ describe("useThreadsStore.ensureThread", () => {
   });
 
   test("concurrent ensureThread(ref) calls share one thread/read", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("thread/read", () => readResponse("ref_a"));
 
     const p1 = threadsStore.getState().ensureThread("ref_a");
@@ -214,7 +150,7 @@ describe("useThreadsStore.ensureThread", () => {
   });
 
   test("restarts a pending initial hydrate on a client swap and waits for the new client's model", async () => {
-    const a = connectFakeClient();
+    const a = connectReadyFakeClient();
     const aRead: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
     a.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => (aRead.resolve = resolve)));
 
@@ -268,7 +204,7 @@ describe("useThreadsStore.ensureThread", () => {
   });
 
   test("late A rejection cannot remove or reject B's newer pending initial hydrate", async () => {
-    const a = connectFakeClient();
+    const a = connectReadyFakeClient();
     const aRead: { reject: ((error: Error) => void) | null } = { reject: null };
     a.on("thread/read", () => new Promise<ThreadReadResponse>((_, reject) => (aRead.reject = reject)));
 
@@ -300,7 +236,7 @@ describe("useThreadsStore.ensureThread", () => {
   });
 
   test("a repeatedly failing read keeps the ref untracked and re-arms one retry per attempt", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let readAttempts = 0;
     fake.on("thread/read", () => {
       readAttempts += 1;
@@ -328,7 +264,7 @@ describe("useThreadsStore.ensureThread", () => {
   });
 
   test("a failed read never doubles the pane's claim: retry-success + a single release fully untracks the ref", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let readCount = 0;
     fake.on("thread/read", () => {
       readCount += 1;
@@ -388,7 +324,7 @@ describe("useThreadsStore.ensureThread", () => {
   });
 
   test("an owner joining a shared read mid-flight shares its one retry and keeps its own claim", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let readCount = 0;
     const box: { rejectRead: ((error: Error) => void) | null } = { rejectRead: null };
     fake.on("thread/read", () => {
@@ -427,7 +363,7 @@ describe("useThreadsStore.ensureThread", () => {
   });
 
   test("a ref released before its in-flight hydrate resolves is not resurrected", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     // A plain `let` reassigned only inside the executor closure below gets
     // narrowed to `never` at the use site by TS's control-flow analysis
     // (a variable mutated solely inside a nested function isn't tracked as
@@ -450,7 +386,7 @@ describe("useThreadsStore.ensureThread", () => {
   test.each([true, false])(
     "a released read cannot resume on a replacement connection (release first: %s)",
     async (releaseFirst) => {
-      const original = connectFakeClient();
+      const original = connectReadyFakeClient();
       let rejectRead: ((error: Error) => void) | undefined;
       const started = nextHandledRequest(
         original,
@@ -481,7 +417,7 @@ describe("useThreadsStore.ensureThread", () => {
   );
 
   test("a released retry owner cannot resume after replacement readiness", async () => {
-    const original = connectFakeClient();
+    const original = connectReadyFakeClient();
     const started = nextHandledRequest(original, "thread/read", () => {
       throw new RequestTimeoutError("initial read failed");
     });
@@ -502,7 +438,7 @@ describe("useThreadsStore.ensureThread", () => {
   });
 
   test("last release retires a pending hydrate before an immediate re-ensure starts a new lifecycle", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await establishMembership(fake);
     const reads: Array<(response: ThreadReadResponse) => void> = [];
     fake.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => reads.push(resolve)));
@@ -545,7 +481,7 @@ describe("useThreadsStore.ensureThread", () => {
   });
 
   test("a retired ensure rejection does not consume a replacement lifecycle claim", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await establishMembership(fake);
     const reads: Array<{
       resolve: (response: ThreadReadResponse) => void;

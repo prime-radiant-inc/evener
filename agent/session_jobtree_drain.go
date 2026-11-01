@@ -647,7 +647,7 @@ func (s *Session) markDrainAbandonedDelegates(now, drainStartedAt time.Time) {
 		return
 	}
 	rows := make(map[string]delegateSnapshot)
-	for _, visible := range stableDelegateRowsForSession(s, false) {
+	for _, visible := range delegateRowsForSession(s, false) {
 		if childID := visible.snapshot.descriptor.ChildSessionID; childID != "" {
 			rows[childID] = visible.snapshot
 		}
@@ -722,7 +722,7 @@ func (s *Session) childDrainGracePending(childSessionID string) bool {
 	if s == nil || childSessionID == "" {
 		return false
 	}
-	row, ok := s.directStableDelegateForChildSession(childSessionID)
+	row, ok := s.directDelegateForChildSession(childSessionID)
 	if !ok || !row.currentRunOpen {
 		return false
 	}
@@ -806,7 +806,7 @@ func (s *Session) recordDrainAbandonedChild(childSessionID, delegateID string, g
 	if already && previous.delegateID == delegateID && previous.generation == generation {
 		return
 	}
-	s.emit(events.EventWarning, events.WarningData{
+	s.emit(events.WarningData{
 		Message:    fmt.Sprintf("no longer waiting on delegate %s after two drain grace windows with its run still open", delegateID),
 		Source:     "drain",
 		Code:       events.WarningCodeDelegateAbandonedByDrain,
@@ -823,7 +823,7 @@ func (s *Session) childDrainAbandoned(childSessionID string) bool {
 	if s == nil || childSessionID == "" {
 		return false
 	}
-	row, ok := s.directStableDelegateForChildSession(childSessionID)
+	row, ok := s.directDelegateForChildSession(childSessionID)
 	if !ok {
 		return false
 	}
@@ -994,6 +994,7 @@ func (s *Session) drainJobTreeWith(ctx context.Context, wake <-chan struct{}, re
 	defer s.clearDrainGraceTree()
 	lastResult := ""
 	var stallStart time.Time
+	var stallRecoveryAttempted bool
 	s.repairNotificationReceipts()
 	// drainStartedAt is the instant the root declared the work over: in a
 	// one-shot run this loop starts the moment the coordinator's terminal
@@ -1017,7 +1018,7 @@ func (s *Session) drainJobTreeWith(ctx context.Context, wake <-chan struct{}, re
 	bgArmed := ""
 	watchSuppressed := ""
 	watchHistorySeen := s.jobManager.watchHistoryIDs()
-	// Only entry and real producer hints fan out source repair.
+	// Entry, real producer hints, and one final expired-stall attempt repair sources.
 	wakePending := true
 	for {
 		var dispositionDeadline time.Time
@@ -1232,7 +1233,7 @@ func (s *Session) drainJobTreeWith(ctx context.Context, wake <-chan struct{}, re
 					}
 					res, perr := process(ctx, "", nil, EntryNotification)
 					if perr != nil {
-						s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf(
+						s.emit(events.WarningData{Message: fmt.Sprintf(
 							"undisposed-background-job announcement turn failed: %v", perr)})
 					} else if res != "" {
 						newlyObserved, err := s.drainHasNewObservation(observedBefore)
@@ -1257,7 +1258,7 @@ func (s *Session) drainJobTreeWith(ctx context.Context, wake <-chan struct{}, re
 						wakePending = true
 						continue
 					}
-					s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf(
+					s.emit(events.WarningData{Message: fmt.Sprintf(
 						"exiting with %d undisposed background job(s) after two declined announcements; they die with the process: %s",
 						len(undisposed), s.jobManager.describeUndisposedJobs(undisposed))})
 					return lastResult, nil
@@ -1283,6 +1284,7 @@ func (s *Session) drainJobTreeWith(ctx context.Context, wake <-chan struct{}, re
 			now := s.sclock().Now()
 			if stallStart.IsZero() {
 				stallStart = now
+				stallRecoveryAttempted = false
 			} else if now.Sub(stallStart) >= DrainStallTimeout {
 				// The stall verdict was assembled across sequential reads, not a
 				// snapshot. A wake raised since this pass took its edge means the
@@ -1294,12 +1296,23 @@ func (s *Session) drainJobTreeWith(ctx context.Context, wake <-chan struct{}, re
 					wakePending = true
 					continue
 				}
+				// A lost producer hint must not strand repairable source debt at
+				// shutdown. Try once at the actual deadline, then re-evaluate every
+				// delivery, resource and wake predicate before deciding to give up.
+				// This never arms a periodic notification pump or retry prefix.
+				if !stallRecoveryAttempted {
+					stallRecoveryAttempted = true
+					if err := kick(ctx); err != nil {
+						return lastResult, err
+					}
+					continue
+				}
 				// The drain is wedged on undelivered work the machinery is not
 				// converting. Warn (naming the stuck managed job(s) and any delegate
 				// abandoned as undisposable) and return the last result with nil error
 				// so cmd/evener/run.go prints the coordinator's last answer and
 				// proceeds to Close(), rather than aborting the run.
-				s.emit(events.EventWarning, events.WarningData{Message: drainStallGiveUpMessage(
+				s.emit(events.WarningData{Message: drainStallGiveUpMessage(
 					s.subtreeOutstandingDrainJobIDs(), s.subtreeUndisposableStoppedDelegates())})
 				return lastResult, nil
 			}
@@ -1445,7 +1458,7 @@ func (s *Session) nextDrainResourceDeadline(start time.Time) time.Time {
 		}
 	}
 	rows := make(map[string]delegateSnapshot)
-	for _, visible := range stableDelegateRowsForSession(s, false) {
+	for _, visible := range delegateRowsForSession(s, false) {
 		if childID := visible.snapshot.descriptor.ChildSessionID; childID != "" {
 			rows[childID] = visible.snapshot
 		}
@@ -1542,6 +1555,6 @@ func (s *Session) kickDriveTreeWith(ctx context.Context, drain func(*Session, co
 // assistant responses already own observation and never require another call.
 func (s *Session) repairNotificationReceipts() {
 	if err := s.finishAttentionTurn(nil, nil); err != nil {
-		s.emit(events.EventWarning, warningDataFromError("delegate notification receipt index repair failed", err))
+		s.emit(warningDataFromError("delegate notification receipt index repair failed", err))
 	}
 }

@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
-	"path/filepath"
+
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -27,7 +27,7 @@ const compactedAttentionText = `<delegate-notification delegate_id="dlg_worker" 
 func newCompactableSession(t *testing.T, configure ...func(*SessionConfig)) (*Session, *fakeAdapter) {
 	t.Helper()
 	main := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("answered the update") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("answered the update") },
 	}}
 	client := llm.NewClient()
 	client.Register(main)
@@ -241,7 +241,7 @@ func TestRootDelegateAttentionKeepsDeliveryOrderAcrossCompactionRestart(t *testi
 	t.Parallel()
 	stateDir := t.TempDir()
 	rootID := identifier.MustNewSessionID()
-	if err := os.MkdirAll(filepath.Join(stateDir, sessionsSubdir), 0o755); err != nil {
+	if err := os.MkdirAll(schema.SessionsDir(stateDir), 0o755); err != nil {
 		t.Fatalf("mkdir sessions: %v", err)
 	}
 	writer, err := transcript.NewWriter(transcriptPath(stateDir, rootID), transcript.Header{SessionID: rootID, ProfileID: "openai", Model: "gpt-5.2"})
@@ -309,7 +309,7 @@ func TestAcceptedDelegateAttentionTriggerFoldsAwayOncePresented(t *testing.T) {
 	main.steps = []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
 		observationRequest(t, req, []string{"TRIGGER_ITEM"}, []string{"LATER_ITEM"})
 		appendAcceptedTriggerLater(t, sess)
-		return finalResponse("trigger response")
+		return agenttest.FinalResponse("trigger response")
 	}}
 	if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
 		t.Fatalf("trigger request: %v", err)

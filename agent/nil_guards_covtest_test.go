@@ -38,7 +38,7 @@ func TestCovArmDelegateAttention_EmptyID(t *testing.T) {
 }
 
 // TestCovIsRootDelegateAttentionReceiver_NilSession covers
-// isRootDelegateAttentionReceiver nil guard (session_attention.go lines 552-559).
+// isRootDelegateAttentionReceiver nil guard.
 func TestCovIsRootDelegateAttentionReceiver_NilSession(t *testing.T) {
 	t.Parallel()
 	var s *Session
@@ -47,8 +47,7 @@ func TestCovIsRootDelegateAttentionReceiver_NilSession(t *testing.T) {
 	}
 }
 
-// TestCovAcceptDelegateAttention_NilSession covers acceptDelegateAttention nil guard
-// (session_attention.go lines 527-529).
+// TestCovAcceptDelegateAttention_NilSession covers acceptDelegateAttention nil guard.
 func TestCovAcceptDelegateAttention_NilSession(t *testing.T) {
 	t.Parallel()
 	var s *Session
@@ -60,8 +59,7 @@ func TestCovAcceptDelegateAttention_NilSession(t *testing.T) {
 
 // ---- session_queue.go ----
 
-// TestCovDrainSteering_Empty covers drainSteering on empty queue
-// (session_queue.go lines 791-802).
+// TestCovDrainSteering_Empty covers drainSteering on empty queue.
 func TestCovDrainSteering_Empty(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
@@ -71,8 +69,7 @@ func TestCovDrainSteering_Empty(t *testing.T) {
 	}
 }
 
-// TestCovPopSteeringHead_Empty covers popSteeringHead on empty queue
-// (session_queue.go lines 810-816).
+// TestCovPopSteeringHead_Empty covers popSteeringHead on empty queue.
 func TestCovPopSteeringHead_Empty(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
@@ -125,7 +122,7 @@ func TestCovQueueTexts_Empty(t *testing.T) {
 // ---- delegate_runtime.go nil guards ----
 
 // TestCovRunDelegateQuietWatchdogTick_NilSession covers
-// runDelegateQuietWatchdogTick nil guard (delegate_runtime.go lines 118-121).
+// runDelegateQuietWatchdogTick nil guard.
 func TestCovRunDelegateQuietWatchdogTick_NilSession(t *testing.T) {
 	t.Parallel()
 	var s *Session
@@ -147,7 +144,7 @@ func TestCovRunDelegateQuietWatchdogTick_NoController(t *testing.T) {
 }
 
 // TestCovStartDelegateQuietWatchdog_NilCtx covers startDelegateQuietWatchdog
-// with nil context (delegate_runtime.go lines 137-140).
+// with nil context.
 func TestCovStartDelegateQuietWatchdog_NilCtx(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
@@ -159,8 +156,7 @@ func TestCovStartDelegateQuietWatchdog_NilCtx(t *testing.T) {
 	cancel()
 }
 
-// TestCovReportActivity_NilController covers ReportActivity nil guard
-// (delegate_runtime.go lines 84-87).
+// TestCovReportActivity_NilController covers ReportActivity nil guard.
 func TestCovReportActivity_NilController(t *testing.T) {
 	t.Parallel()
 	var c *delegateTreeController
@@ -170,8 +166,7 @@ func TestCovReportActivity_NilController(t *testing.T) {
 	}
 }
 
-// TestCovBeginQuietAttention_NilController covers BeginQuietAttention nil guard
-// (delegate_runtime.go lines 176-178).
+// TestCovBeginQuietAttention_NilController covers BeginQuietAttention nil guard.
 func TestCovBeginQuietAttention_NilController(t *testing.T) {
 	t.Parallel()
 	var c *delegateTreeController
@@ -191,8 +186,7 @@ func TestCovBeginQuietAttention_NilReceiver(t *testing.T) {
 	}
 }
 
-// TestCovCompleteQuietAttention_NilController covers CompleteQuietAttention nil guard
-// (delegate_runtime.go lines 230-232).
+// TestCovCompleteQuietAttention_NilController covers CompleteQuietAttention nil guard.
 func TestCovCompleteQuietAttention_NilController(t *testing.T) {
 	t.Parallel()
 	var c *delegateTreeController
@@ -214,8 +208,7 @@ func TestCovCompleteQuietAttention_NilClaim(t *testing.T) {
 
 // ---- session_tools_worktree.go ----
 
-// TestCovProjectIsGitCheckout_NoPath covers projectIsGitCheckout with empty path
-// (session_tools_worktree.go lines 701-707).
+// TestCovProjectIsGitCheckout_NoPath covers projectIsGitCheckout with empty path.
 func TestCovProjectIsGitCheckout_NoPath(t *testing.T) {
 	t.Parallel()
 	if projectIsGitCheckout(identifier.Project{}) {
@@ -224,7 +217,7 @@ func TestCovProjectIsGitCheckout_NoPath(t *testing.T) {
 }
 
 // TestCovWorktreeRootForProject_EmptyProject covers worktreeRootForProject
-// with empty project (session_tools_worktree.go lines 683-691).
+// with empty project.
 func TestCovWorktreeRootForProject_EmptyProject(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
@@ -236,8 +229,7 @@ func TestCovWorktreeRootForProject_EmptyProject(t *testing.T) {
 
 // ---- jobs_nested.go ----
 
-// TestCovStopNestedOrLocal_NilSession covers stopNestedOrLocal nil guard
-// (jobs_nested.go lines 346-349).
+// TestCovStopNestedOrLocal_NilSession covers stopNestedOrLocal nil guard.
 func TestCovStopNestedOrLocal_NilSession(t *testing.T) {
 	t.Parallel()
 	var s *Session
@@ -249,8 +241,7 @@ func TestCovStopNestedOrLocal_NilSession(t *testing.T) {
 
 // ---- session_tools_jobs.go ----
 
-// TestCovJobStatusTool_EmptyTarget covers jobStatusTool with empty target
-// (session_tools_jobs.go lines 385-387).
+// TestCovJobStatusTool_EmptyTarget covers jobStatusTool with empty target.
 func TestCovJobStatusTool_EmptyTarget(t *testing.T) {
 	t.Parallel()
 	s := &Session{}

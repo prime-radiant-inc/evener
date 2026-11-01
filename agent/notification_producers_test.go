@@ -219,11 +219,11 @@ func TestNotificationProducers(t *testing.T) {
 			if !s.enqueueSystemNotification("terminal-notice-5") {
 				t.Error("system notice rejected")
 			}
-			return toolCallResponse(communicateCallArgs("terminal", map[string]any{"message": "done", "end_turn": true}))
+			return agenttest.ToolCallResponse(communicateCallArgs("terminal", map[string]any{"message": "done", "end_turn": true}))
 		}, func(llm.Request) llm.Response {
 			close(entered)
 			<-gate
-			return toolCallResponse(communicateCallArgs("observed", map[string]any{"message": "observed", "end_turn": true}))
+			return agenttest.ToolCallResponse(communicateCallArgs("observed", map[string]any{"message": "observed", "end_turn": true}))
 		})
 		done := make(chan error, 1)
 		go func() { _, err := s.ProcessInput(context.Background(), "start", nil); done <- err }()
@@ -263,10 +263,10 @@ func TestNotificationProducers(t *testing.T) {
 		adapter.script("OBSERVER-5", func(llm.Request) llm.Response {
 			return updateResponse("update", "payload-update")
 		}, func(llm.Request) llm.Response {
-			return toolCallResponse(communicateCallArgs("ready", map[string]any{"message": "payload-ready", "end_turn": false, "readiness": "ready"}))
+			return agenttest.ToolCallResponse(communicateCallArgs("ready", map[string]any{"message": "payload-ready", "end_turn": false, "readiness": "ready"}))
 		}, func(llm.Request) llm.Response {
 			close(reportEntered)
-			return toolCallResponse(communicateCallArgs("report", map[string]any{"message": "payload-report", "end_turn": true}))
+			return agenttest.ToolCallResponse(communicateCallArgs("report", map[string]any{"message": "payload-report", "end_turn": true}))
 		})
 		s := newMessagingRoot(t, adapter, nil)
 		done := make(chan error, 1)
@@ -342,7 +342,7 @@ func TestNotificationProducers(t *testing.T) {
 		t.Log("during provider request receiver=1, pending=1; after safe next request provider requests=2, pending=0")
 	})
 	t.Run("cold receiver without resident runtime", func(t *testing.T) {
-		fixture := newColdStableDelegateFixture(t, "")
+		fixture := newColdDelegateFixture(t, "")
 		entered, gate := make(chan struct{}), make(chan struct{})
 		release := sync.OnceFunc(func() { close(gate) })
 		defer release()
@@ -350,7 +350,7 @@ func TestNotificationProducers(t *testing.T) {
 			observationRequest(t, req, []string{"cold-payload-5"}, nil)
 			close(entered)
 			<-gate
-			return finalResponse("cold-response-5")
+			return agenttest.FinalResponse("cold-response-5")
 		}}
 		s := restoreSupervisionRoot(t, fixture, agenttest.NewFakeClock())
 		c := s.delegateController
@@ -478,7 +478,7 @@ func TestNotificationProducers(t *testing.T) {
 					t.Fatal(err)
 				}
 				eventWatchID = result.WatchID
-				s.emit(events.EventCommunicate, events.CommunicateData{Message: "payload-f1c3"})
+				s.emit(events.CommunicateData{Message: "payload-f1c3"})
 			case "output match", "shell exit":
 				rec, err := jm.createShell(createShellOpts{Command: "payload-42d9"})
 				if err != nil {
@@ -552,13 +552,13 @@ func testProducerCustodyThenClosed(t *testing.T) {
 	observed := make(chan struct{})
 	adapter.script("root", func(llm.Request) llm.Response {
 		return delegateToolResponse("custody-child", "CUSTODY-CLOSE-731a")
-	}, func(llm.Request) llm.Response { return finalResponse("root launched child") })
+	}, func(llm.Request) llm.Response { return agenttest.FinalResponse("root launched child") })
 	adapter.script("CUSTODY-CLOSE-731a", func(llm.Request) llm.Response {
-		return finalResponse("initial child report")
+		return agenttest.FinalResponse("initial child report")
 	}, func(req llm.Request) llm.Response {
 		observationRequest(t, req, []string{"closure-boundary-731a"}, nil)
 		close(observed)
-		return finalResponse("child observed closure frame")
+		return agenttest.FinalResponse("child observed closure frame")
 	})
 	if _, err := root.ProcessInput(context.Background(), "create a real custody receiver", nil); err != nil {
 		t.Fatal(err)
@@ -736,7 +736,7 @@ func TestWatchProductionSurvivesRestart(t *testing.T) {
 				t.Fatal(err)
 			}
 			if kind == "session event" {
-				s.emit(events.EventCommunicate, events.CommunicateData{Message: "payload-f1c3"})
+				s.emit(events.CommunicateData{Message: "payload-f1c3"})
 			} else {
 				jm.feedJobOutput(jobID, []byte("payload-7b1e"), 12)
 			}
@@ -890,9 +890,9 @@ func testNotificationWatchRestartCut(t *testing.T, cut string) {
 	a := newMessagingAdapter()
 	clock := &notificationTickerClock{FakeClock: agenttest.NewFakeClock(), started: make(chan *notificationTicker, 1)}
 	a.script("root", func(llm.Request) llm.Response {
-		return toolCallResponse(llm.ToolCallData{ID: "restart-timer-11", Name: "job_watch", Type: "function",
+		return agenttest.ToolCallResponse(llm.ToolCallData{ID: "restart-timer-11", Name: "job_watch", Type: "function",
 			Arguments: json.RawMessage(`{"operation":"create","source":"self","after_seconds":60,"note":"timer-c03a71b9"}`)})
-	}, func(llm.Request) llm.Response { return finalResponse("timer-installed-11") })
+	}, func(llm.Request) llm.Response { return agenttest.FinalResponse("timer-installed-11") })
 	root := newMessagingRoot(t, a, func(cfg *SessionConfig) { cfg.clock = clock })
 	var ticker *notificationTicker
 	defer func() {
@@ -938,7 +938,7 @@ func testNotificationWatchRestartCut(t *testing.T, cut string) {
 		if !found {
 			t.Error("designated restored request omitted actual one-shot timer firing")
 		}
-		return finalResponse("timer-observed-11")
+		return agenttest.FinalResponse("timer-observed-11")
 	})
 	before := len(a.requestsFor("root"))
 	restored := restoreWaitingCopy(t, root, copied)
@@ -1203,7 +1203,7 @@ func TestRestoredWatchDispatchVisitsUnavailableRecipientsOnce(t *testing.T) {
 }
 
 func TestCommittedSourceAckRetryDoesNotHoldColdRestore(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	clock := agenttest.NewFakeClock()
 	entered, release := make(chan llm.Request, 1), make(chan struct{})
 	ready := make(chan struct{})
@@ -1212,13 +1212,13 @@ func TestCommittedSourceAckRetryDoesNotHoldColdRestore(t *testing.T) {
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response {
 			observationRequest(t, req, []string{"independent-root-payload-72"}, nil)
-			return finalResponse("independent-root-response-72")
+			return agenttest.FinalResponse("independent-root-response-72")
 		},
 		func(req llm.Request) llm.Response {
 			entered <- req
 			close(ready)
 			<-release
-			return finalResponse("source-ack-recovery-72")
+			return agenttest.FinalResponse("source-ack-recovery-72")
 		},
 	}
 	s := restoreSupervisionRoot(t, fixture, clock)
@@ -1585,11 +1585,11 @@ func TestWatchSourceFailureRetainsAllMatchedFirings(t *testing.T) {
 	for _, kind := range []string{"event send", "output send", "budget boundary", "two callbacks"} {
 		t.Run(kind, func(t *testing.T) {
 			var s *Session
-			var cold coldStableDelegateFixture
+			var cold coldDelegateFixture
 			if kind == "two callbacks" {
-				cold = newColdStableDelegateFixture(t, "")
+				cold = newColdDelegateFixture(t, "")
 				cold.adapter.steps = []func(llm.Request) llm.Response{func(llm.Request) llm.Response {
-					return finalResponse("recovered second callback")
+					return agenttest.FinalResponse("recovered second callback")
 				}}
 				s = restoreSupervisionRoot(t, cold, agenttest.NewFakeClock())
 			} else {
@@ -1633,7 +1633,7 @@ func TestWatchSourceFailureRetainsAllMatchedFirings(t *testing.T) {
 				if jobID != "" {
 					jm.feedJobOutput(jobID, []byte("MATCH"), 5)
 				} else {
-					s.emit(events.EventCommunicate, events.CommunicateData{Message: "one actual source event"})
+					s.emit(events.CommunicateData{Message: "one actual source event"})
 				}
 			}
 			before := 0
@@ -2183,7 +2183,7 @@ func TestChildLocalCallbackReplayAfterRootRestart(t *testing.T) {
 	t.Parallel()
 	for _, historical := range []bool{false, true} {
 		t.Run(fmt.Sprintf("historical=%t", historical), func(t *testing.T) {
-			fixture := newColdStableDelegateFixture(t, "")
+			fixture := newColdDelegateFixture(t, "")
 			jm, err := newJobManager(fixture.stateDir, fixture.childID, nil)
 			if err != nil {
 				t.Fatal(err)
@@ -2293,7 +2293,7 @@ func TestChildLocalCallbackReplayAfterRootRestart(t *testing.T) {
 func TestColdDescendantCallbackReplayAfterRootRestart(t *testing.T) {
 	for _, historical := range []bool{false, true} {
 		t.Run(fmt.Sprintf("historical=%t", historical), func(t *testing.T) {
-			fixture := newColdStableDelegateFixture(t, "")
+			fixture := newColdDelegateFixture(t, "")
 			store, err := delegatestore.Open(delegateResourceStorePath(fixture.stateDir, fixture.meta.ID))
 			if err != nil {
 				t.Fatal(err)
@@ -2479,7 +2479,7 @@ func TestColdDescendantCallbackReplayAfterRootRestart(t *testing.T) {
 						t.Errorf("notification-only request omitted callback %s", stableWatchAttentionID(*p.WatchSend))
 					}
 				}
-				return communicateResponse(true, "callback observed")
+				return agenttest.CommunicateResponse(true, "callback observed")
 			}}
 			wakes := make(chan struct{}, 1)
 			root.SetNotifyFunc(func() {

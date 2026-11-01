@@ -117,7 +117,7 @@ func TestTerminalDrainKeepsFinalizingDelegateLive(t *testing.T) {
 func TestPostTerminalNotificationTurnEmptyResponseFinishesIdle(t *testing.T) {
 	t.Parallel()
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("the answer") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("the answer") },
 		// The post-terminal notification turn: truly empty (no text, no tool
 		// calls, no phase metadata) — the model glitch shape the retry budget
 		// exists for, which after a terminal communicate must finish idle.
@@ -132,8 +132,7 @@ func TestPostTerminalNotificationTurnEmptyResponseFinishesIdle(t *testing.T) {
 
 	// TRIPWIRE: scripted in-process adapter, no real I/O; 30s only fires on a
 	// genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "do the task", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -306,9 +305,9 @@ func TestOneShotDrainDeliversCompletionThatLandsDuringTheFinalAnswer(t *testing.
 			// The final-answer request is built; finish the job before the reply
 			// so the completion lands inside the answer's generation window.
 			finalizeShell(t, sess.jobManager, jobID, releaseShell)
-			return finalResponse(firstAnswer)
+			return agenttest.FinalResponse(firstAnswer)
 		},
-		func(llm.Request) llm.Response { return finalResponse(finalAnswer) },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse(finalAnswer) },
 	}}
 	sess = newSession(t, withAdapter(adapter), withConfig(SessionConfig{
 		StateDir:        t.TempDir(),
@@ -318,8 +317,7 @@ func TestOneShotDrainDeliversCompletionThatLandsDuringTheFinalAnswer(t *testing.
 
 	// TRIPWIRE: scripted adapter and a controlled in-process shell; 30s only
 	// fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	res, err := sess.ProcessInput(ctx, "build it and report", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
@@ -388,10 +386,10 @@ func testTerminalFollowUpCompletion(t *testing.T, early bool) {
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
 			finalizeShell(t, sess.jobManager, firstJobID, releaseShell)
-			return finalResponse(firstAnswer)
+			return agenttest.FinalResponse(firstAnswer)
 		},
 		func(llm.Request) llm.Response {
-			return toolCallResponse(llm.ToolCallData{
+			return agenttest.ToolCallResponse(llm.ToolCallData{
 				ID: "second-job", Name: "shell", Type: "function",
 				Arguments: json.RawMessage(`{"command":"printf second-job-output","mode":"background"}`),
 			})
@@ -399,7 +397,7 @@ func testTerminalFollowUpCompletion(t *testing.T, early bool) {
 		func(req llm.Request) llm.Response {
 			if early {
 				requireTerminalShellCompletionInRequest(t, req, secondJobID, "completed", "exit_zero", "0")
-				return finalResponse(finalAnswer)
+				return agenttest.FinalResponse(finalAnswer)
 			}
 			if requestsContain([]llm.Request{req}, `job_id="`+secondJobID+`"`) {
 				t.Error("late follow-up completion was already present in the tool-result request")
@@ -407,9 +405,9 @@ func testTerminalFollowUpCompletion(t *testing.T, early bool) {
 			// Request3 is built without the completion. Release it only now, so
 			// the drain must present its outcome in a separate fourth request.
 			finalizeShell(t, sess.jobManager, secondJobID, releaseSecond)
-			return finalResponse("started a follow-up job; waiting")
+			return agenttest.FinalResponse("started a follow-up job; waiting")
 		},
-		func(llm.Request) llm.Response { return finalResponse(finalAnswer) },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse(finalAnswer) },
 	}}
 	sess = newSession(t, withAdapter(adapter), withConfig(SessionConfig{
 		StateDir:        t.TempDir(),
@@ -454,8 +452,7 @@ func testTerminalFollowUpCompletion(t *testing.T, early bool) {
 
 	// TRIPWIRE: scripted adapter and controlled shell executors; 30s
 	// only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	res, err := sess.ProcessInput(ctx, "build it and report", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
@@ -529,7 +526,7 @@ func TestOneShotDrainReturnsAfterAFinalAnswerThatSawEveryCompletion(t *testing.T
 	t.Parallel()
 	const answer = "FINAL-ANSWER: the build passed"
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse(answer) },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse(answer) },
 	}}
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
 		StateDir:        t.TempDir(),
@@ -542,8 +539,7 @@ func TestOneShotDrainReturnsAfterAFinalAnswerThatSawEveryCompletion(t *testing.T
 
 	// TRIPWIRE: scripted adapter and a controlled in-process shell; 30s only
 	// fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	res, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification)
 	if err != nil {
 		t.Fatalf("notification turn: %v", err)
@@ -599,15 +595,15 @@ func TestDrainColdYieldedDelegateDoesNotArmUnownedGraceDeadline(t *testing.T) {
 	defer releaseOriginal()
 	adapter.script("root",
 		func(llm.Request) llm.Response { return delegateToolResponse("cold-drain-child", prompt) },
-		func(llm.Request) llm.Response { return finalResponse("root-created-cold-child") },
-		func(llm.Request) llm.Response { return finalResponse("root-observed-yield-update") })
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("root-created-cold-child") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("root-observed-yield-update") })
 	adapter.script(prompt, func(llm.Request) llm.Response {
 		args, _ := json.Marshal(map[string]any{"command": fmt.Sprintf("read value < %q", fifo), "mode": "background"})
-		return toolCallResponse(llm.ToolCallData{ID: "cold-drain-shell", Name: "shell", Type: "function", Arguments: args})
+		return agenttest.ToolCallResponse(llm.ToolCallData{ID: "cold-drain-shell", Name: "shell", Type: "function", Arguments: args})
 	}, func(req llm.Request) llm.Response {
 		awaitSignal(t, yieldGate, "cold source yield release")
 		return waitResponseFor("cold-drain-wait", regexp.MustCompile(`job_[A-Za-z0-9_]{10,}`).FindString(lastToolResultText(req.Messages)))
-	}, func(llm.Request) llm.Response { return finalResponse("original-runtime-only") })
+	}, func(llm.Request) llm.Response { return agenttest.FinalResponse("original-runtime-only") })
 	original := newMessagingRoot(t, adapter, func(cfg *SessionConfig) {
 		cfg.TurnEndsProcess = true
 		returns.configure(cfg)
@@ -690,7 +686,7 @@ func TestDrainColdYieldedDelegateDoesNotArmUnownedGraceDeadline(t *testing.T) {
 		}
 		adapter.script("root", func(req llm.Request) llm.Response {
 			requireTerminalShellCompletionInRequest(t, req, jobID, "command_exited_nonzero", "exit_nonzero", "143")
-			return finalResponse("independent-shell-observed")
+			return agenttest.FinalResponse("independent-shell-observed")
 		})
 		rootRequests := len(adapter.requestsFor("root"))
 		done := make(chan struct{})
@@ -744,8 +740,8 @@ func TestDrainColdYieldedDelegateDoesNotArmUnownedGraceDeadline(t *testing.T) {
 func TestEphemeralNotificationDrainShell(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-			func(llm.Request) llm.Response { return finalResponse("ephemeral-initial-731a") },
-			func(llm.Request) llm.Response { return finalResponse("ephemeral-observed-731a") },
+			func(llm.Request) llm.Response { return agenttest.FinalResponse("ephemeral-initial-731a") },
+			func(llm.Request) llm.Response { return agenttest.FinalResponse("ephemeral-observed-731a") },
 		}}
 		// Intentionally no StateDir. This supported mode must not create one.
 		s := newSession(t, withAdapter(adapter), withConfig(SessionConfig{TurnEndsProcess: true}), withoutGitSnapshot())
@@ -869,12 +865,12 @@ func requireEphemeralNotificationFailureRecovery(t *testing.T, afterCapture func
 		afterCapture()
 	}
 	base := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("initial") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("initial") },
 		func(req llm.Request) llm.Response {
 			if !requestContainsText(req, "ephemeral-pending-731a") {
 				t.Error("successful retry lost pending content during compaction")
 			}
-			return finalResponse("observed")
+			return agenttest.FinalResponse("observed")
 		},
 	}}
 	adapter := &failingRequestAdapter{fakeAdapter: base, failAt: 1, err: llm.ErrorFromHTTPStatus("openai", 401, "fixture failure", nil, nil)}
@@ -964,8 +960,8 @@ func requireEphemeralNotificationFailureRecovery(t *testing.T, afterCapture func
 
 func TestConfiguredNotificationWriterMissingRemainsRetryable(t *testing.T) {
 	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir()}), withoutGitSnapshot(), withSteps(
-		func(llm.Request) llm.Response { return finalResponse("initial") },
-		func(llm.Request) llm.Response { return finalResponse("observed after writer repair") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("initial") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("observed after writer repair") },
 	))
 	if _, err := s.ProcessInput(context.Background(), "initialize", nil); err != nil {
 		t.Fatal(err)
@@ -1058,9 +1054,9 @@ func TestOneShotDrainPreservesWatchFramesQueuedBeforeTheFinalAnswer(t *testing.T
 			if ids, err := sess.pendingNotificationIDs(); err != nil || len(ids) == 0 {
 				t.Errorf("produced watch lacks canonical custody: ids=%v err=%v", ids, err)
 			}
-			return finalResponse(firstAnswer)
+			return agenttest.FinalResponse(firstAnswer)
 		},
-		func(llm.Request) llm.Response { return finalResponse(finalAnswer) },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse(finalAnswer) },
 	}}
 	sess = newSession(t, withAdapter(adapter), withConfig(SessionConfig{
 		StateDir:        t.TempDir(),
@@ -1077,8 +1073,7 @@ func TestOneShotDrainPreservesWatchFramesQueuedBeforeTheFinalAnswer(t *testing.T
 
 	// TRIPWIRE: scripted adapter and a controlled in-process shell; 30s only
 	// fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	res, err := sess.ProcessInput(ctx, "build it and report", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)

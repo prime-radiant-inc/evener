@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/execsupport/shellquote"
+	"primeradiant.com/evener/gittest"
 	"primeradiant.com/evener/internal/remoteinstall"
 )
 
@@ -61,13 +62,12 @@ func TestDeployBuildsPushesAtomicallyAndCleansStaging(t *testing.T) {
 
 	fr := &fakeRunner{
 		runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
-			joined := strings.Join(argv, " ")
-			switch {
-			case strings.Contains(joined, "test -d /opt/evener/bin"):
+			switch classifyRemote(argv) {
+			case opInstallDirProbe:
 				return nil, nil
-			case strings.Contains(joined, "evener_resolve /opt/evener/bin/evener"):
-				return []byte("/opt/evener/bin/evener\n"), nil
-			case strings.Contains(joined, "cat >"):
+			case opResolveExec:
+				return resolveAnswers(argv, map[string]string{"/opt/evener/bin/evener": "/opt/evener/bin/evener"})
+			case opBinaryInstall:
 				pushArgv = append([]string(nil), argv...)
 				if stdin != nil {
 					pushedBytes, _ = io.ReadAll(stdin)
@@ -85,7 +85,7 @@ func TestDeployBuildsPushesAtomicallyAndCleansStaging(t *testing.T) {
 		},
 	})
 
-	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil); err != nil {
+	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil, nil); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
 	if builtOS != "linux" || builtArch != "amd64" {
@@ -114,7 +114,7 @@ func TestDeployTargetDirectoryMissingFailsClearly(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/nope/bin/evener"}
 	buildCalled := false
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-		if strings.Contains(strings.Join(argv, " "), "test -d /nope/bin") {
+		if classifyRemote(argv) == opInstallDirProbe {
 			return []byte("test: /nope/bin: No such file or directory\n"), errors.New("exit status 1")
 		}
 		return nil, fmt.Errorf("unexpected remote command: %v", argv)
@@ -123,7 +123,7 @@ func TestDeployTargetDirectoryMissingFailsClearly(t *testing.T) {
 		BuildBinary: func(context.Context, string, string, string) error { buildCalled = true; return nil },
 	})
 
-	_, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil)
+	_, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil, nil)
 	if !errors.Is(err, ErrDeploy) {
 		t.Fatalf("err = %v, want ErrDeploy", err)
 	}
@@ -147,14 +147,14 @@ func refusingRunner(t *testing.T) *fakeRunner {
 }
 
 // assertRunTargetRefusal pins the typed refusal, its terminality, and its
-// message: errRunTargetUnservable, the terminal type the neighbouring refusal
-// (errControllerDirty) uses, naming what the operator must fix. It is not
+// message: ErrRunTargetUnservable, the terminal type the neighbouring refusal
+// (ErrControllerDirty) uses, naming what the operator must fix. It is not
 // ErrDeploy: a supervisor that retried that retryable sentinel would re-refuse
 // the same misconfigured path forever (round thirteen's loop).
 func assertRunTargetRefusal(t *testing.T, err error, wants ...string) {
 	t.Helper()
-	if !errors.Is(err, errRunTargetUnservable) {
-		t.Fatalf("err = %v, want errRunTargetUnservable", err)
+	if !errors.Is(err, ErrRunTargetUnservable) {
+		t.Fatalf("err = %v, want ErrRunTargetUnservable", err)
 	}
 	if !isTerminal(err) {
 		t.Fatalf("err = %v, want a terminal refusal (a retryable one re-refuses forever)", err)
@@ -202,12 +202,12 @@ func TestDeployRefusesARunTargetThatCannotServeAHub(t *testing.T) {
 					},
 				})
 
-				_, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil)
+				_, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil, nil)
 				assertRunTargetRefusal(t, err, wants[target]...)
 				// The ordering is the requirement. The first refusal is already
 				// the whole answer, so a supervisor's retry re-runs it with no
 				// install, push, or write to repeat.
-				if _, again := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil); !errors.Is(again, errRunTargetUnservable) {
+				if _, again := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil, nil); !errors.Is(again, ErrRunTargetUnservable) {
 					t.Fatalf("retry err = %v, want the same terminal run-target refusal", again)
 				}
 				if runs := fr.recordedRuns(); len(runs) != 0 {
@@ -228,7 +228,7 @@ func TestDeployRefusesARunTargetThatCannotServeAHub(t *testing.T) {
 
 				fr := refusingRunner(t)
 				m := newTestManager(t, testRegistry(t, host), fr, Options{})
-				_, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil)
+				_, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil, nil)
 				assertRunTargetRefusal(t, err, wants[target]...)
 				if runs := fr.recordedRuns(); len(runs) != 0 {
 					t.Fatalf("the refused install reached the runner: %v", runs)
@@ -246,11 +246,10 @@ func TestDeployTargetAcceptsEvenerRunTargets(t *testing.T) {
 		const exe = "/opt/evener/current/evener"
 		host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: exe}
 		fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-			joined := strings.Join(argv, " ")
-			switch {
-			case strings.Contains(joined, "test -d /opt/evener/current"):
+			switch classifyRemote(argv) {
+			case opInstallDirProbe:
 				return nil, nil
-			case strings.Contains(joined, "evener_resolve "+exe):
+			case opResolveExec:
 				return []byte(exe + "\n"), nil
 			default:
 				return nil, fmt.Errorf("unexpected remote command: %v", argv)
@@ -271,13 +270,12 @@ func TestDeployTargetAcceptsEvenerRunTargets(t *testing.T) {
 		const exe = "/home/dev/.local/bin/evener"
 		host := hostreg.Host{Name: "beta", SSH: "beta.example"}
 		fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-			joined := strings.Join(argv, " ")
-			switch {
-			case strings.Contains(joined, "lsof -ti :9180"):
+			switch classifyRemote(argv) {
+			case opListenerProbe:
 				return []byte(noListenerMarker + "\n"), nil
-			case strings.Contains(joined, "command -v evener"):
+			case opCommandLookup:
 				return []byte(exe + "\n"), nil
-			case strings.Contains(joined, "evener_resolve "+exe):
+			case opResolveExec:
 				return []byte(exe + "\n"), nil
 			default:
 				return nil, fmt.Errorf("unexpected remote command: %v", argv)
@@ -350,15 +348,15 @@ func TestInstallerDirsInstallToTheRunTarget(t *testing.T) {
 	// (component-04 criterion 17). The refusal is the terminal run-target
 	// sentinel the installer shares with the push path (checkRunTarget), so no
 	// retry of the install can change it.
-	if bindir, share, target, err := installerDirs(hostreg.Host{Name: "alpha", EvenerPath: "/opt/evener/bin/evener-dev"}, Preflight{Home: "/home/dev"}); !errors.Is(err, errRunTargetUnservable) || !isTerminal(err) {
-		t.Fatalf("installerDirs(evener-dev) err = %v, want a terminal errRunTargetUnservable", err)
+	if bindir, share, target, err := installerDirs(hostreg.Host{Name: "alpha", EvenerPath: "/opt/evener/bin/evener-dev"}, Preflight{Home: "/home/dev"}); !errors.Is(err, ErrRunTargetUnservable) || !isTerminal(err) {
+		t.Fatalf("installerDirs(evener-dev) err = %v, want a terminal ErrRunTargetUnservable", err)
 	} else if bindir != "" || share != "" || target != "" {
 		t.Fatalf("installerDirs(evener-dev) = (%q,%q,%q), want all empty", bindir, share, target)
 	}
 
 	bindir, share, target, err = installerDirs(hostreg.Host{Name: "alpha", EvenerPath: "/opt/evener/bin/evener-hub"}, Preflight{Home: "/home/dev"})
-	if !errors.Is(err, errRunTargetUnservable) || !isTerminal(err) {
-		t.Fatalf("installerDirs(unshipped basename) err = %v, want a terminal errRunTargetUnservable", err)
+	if !errors.Is(err, ErrRunTargetUnservable) || !isTerminal(err) {
+		t.Fatalf("installerDirs(unshipped basename) err = %v, want a terminal ErrRunTargetUnservable", err)
 	}
 	if bindir != "" || share != "" || target != "" {
 		t.Fatalf("installerDirs(unshipped basename) = (%q,%q,%q), want all empty", bindir, share, target)
@@ -431,29 +429,28 @@ func TestEnsureInstallerFallbackDeploysPinnedRelease(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	launchCalls := 0
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.HasSuffix(joined, "uname -s"):
+		switch classifyRemote(argv) {
+		case opUnameKernel:
 			return []byte("Linux\n"), nil
-		case strings.HasSuffix(joined, "uname -m"):
+		case opUnameArch:
 			return []byte("x86_64\n"), nil
-		case strings.HasSuffix(joined, "id -u"):
+		case opUserID:
 			return []byte("1000\n"), nil
-		case argv[len(argv)-1] == envProbeScript:
+		case opEnvironment:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
-		case strings.Contains(joined, "launch-check"):
+		case opLaunchCheck:
 			launchCalls++
 			if launchCalls == 1 {
 				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`), nil
 			}
 			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
-		case strings.Contains(joined, "evener-install.XXXXXX"):
+		case opBinaryInstall:
 			return nil, nil
-		case strings.Contains(joined, "api/health"):
+		case opHealth:
 			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
-		case strings.Contains(joined, "list-units"):
+		case opSystemdUnits:
 			return []byte("evener-hub.service loaded active running Evener Hub\n"), nil
-		case strings.Contains(joined, "systemctl restart"):
+		case opSystemdRestart:
 			return nil, nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
@@ -461,9 +458,7 @@ func TestEnsureInstallerFallbackDeploysPinnedRelease(t *testing.T) {
 	}, startFn: goodStartFn(t)}
 	requireProtocolUpgrade(t, fr)
 	modelLegacySelectedProcess(t, fr, host)
-	m := newTestManager(t, testRegistry(t, host), fr, Options{
-		sleep: func(context.Context, time.Duration) error { return nil },
-	})
+	m := newSleeplessTestManager(t, host, fr)
 	testDeployRecorder(t, m)
 	testRestartRecorder(t, m)
 
@@ -508,32 +503,31 @@ func TestInstallerFallbackRecordsDefaultRunTarget(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	launchCalls := 0
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.HasSuffix(joined, "uname -s"):
+		switch classifyRemote(argv) {
+		case opUnameKernel:
 			return []byte("Linux\n"), nil
-		case strings.HasSuffix(joined, "uname -m"):
+		case opUnameArch:
 			return []byte("x86_64\n"), nil
-		case strings.HasSuffix(joined, "id -u"):
+		case opUserID:
 			return []byte("1000\n"), nil
-		case argv[len(argv)-1] == envProbeScript:
+		case opEnvironment:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
-		case strings.Contains(joined, "launch-check"):
+		case opLaunchCheck:
 			launchCalls++
 			if launchCalls == 1 {
 				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`), nil
 			}
 			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
-		case strings.Contains(joined, "evener-install.XXXXXX"):
+		case opBinaryInstall:
 			return nil, nil
-		case strings.Contains(joined, "api/health"):
+		case opHealth:
 			// This controller is on the snapshot channel (buildinfo.Channel above), so
 			// the post-restart probe requires backend_git_sha to match buildinfo.GitSHA
 			// (waitHealthy); the real hub reports the field (cmd/evener-hub/web_api.go).
 			return []byte(`{"version":"newsha","backend_git_sha":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
-		case strings.Contains(joined, "list-units"):
+		case opSystemdUnits:
 			return []byte("evener-hub.service loaded active running Evener Hub\n"), nil
-		case strings.Contains(joined, "systemctl restart"):
+		case opSystemdRestart:
 			return nil, nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
@@ -543,9 +537,7 @@ func TestInstallerFallbackRecordsDefaultRunTarget(t *testing.T) {
 	fixture := modelSelectedProcess(t, fr, "/home/dev/.local/bin/evener", "oldsha", "newsha")
 	fixture.sha = "newsha"
 	fixture.endpointAlias = "evener hub endpoint --json"
-	m := newTestManager(t, testRegistry(t, host), fr, Options{
-		sleep: func(context.Context, time.Duration) error { return nil },
-	})
+	m := newSleeplessTestManager(t, host, fr)
 	testDeployRecorder(t, m)
 	testRestartRecorder(t, m)
 
@@ -590,14 +582,13 @@ func TestDeployTargetEmptyResolvesRemotePATH(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	var pushJoined string
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.Contains(joined, "command -v evener"):
+		switch classifyRemote(argv) {
+		case opCommandLookup:
 			return []byte("/home/dev/.local/bin/evener\n"), nil
-		case strings.Contains(joined, "evener_resolve"):
+		case opResolveExec:
 			return []byte("/home/dev/.local/bin/evener\n"), nil
-		case strings.Contains(joined, "cat >"):
-			pushJoined = joined
+		case opBinaryInstall:
+			pushJoined = strings.Join(argv, " ")
 			if stdin != nil {
 				_, _ = io.ReadAll(stdin)
 			}
@@ -612,7 +603,7 @@ func TestDeployTargetEmptyResolvesRemotePATH(t *testing.T) {
 		},
 	})
 
-	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil); err != nil {
+	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil, nil); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
 	want := pushBinaryRemote("/home/dev/.local/bin/evener", 1)
@@ -633,15 +624,14 @@ func TestDeployQuotesRemotePaths(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: target}
 	var testDirRemote, pushRemote string
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.Contains(joined, "test -d"):
-			testDirRemote = joined
+		switch classifyRemote(argv) {
+		case opInstallDirProbe:
+			testDirRemote = strings.Join(argv, " ")
 			return nil, nil
-		case strings.Contains(joined, "evener_resolve"):
+		case opResolveExec:
 			return []byte(target + "\n"), nil
-		case strings.Contains(joined, "cat >"):
-			pushRemote = joined
+		case opBinaryInstall:
+			pushRemote = strings.Join(argv, " ")
 			if stdin != nil {
 				_, _ = io.ReadAll(stdin)
 			}
@@ -656,7 +646,7 @@ func TestDeployQuotesRemotePaths(t *testing.T) {
 		},
 	})
 
-	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil); err != nil {
+	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil, nil); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
 	if dir := path.Dir(target); !strings.Contains(testDirRemote, "test -d "+shellquote.RemoteWord(dir)) {
@@ -678,14 +668,13 @@ func TestDeployResolvesSymlinkTarget(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: link}
 	var pushRemote string
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.Contains(joined, "test -d /usr/local/bin"):
+		switch classifyRemote(argv) {
+		case opInstallDirProbe:
 			return nil, nil
-		case strings.Contains(joined, "evener_resolve "+link):
+		case opResolveExec:
 			return []byte(realPath + "\n"), nil
-		case strings.Contains(joined, "cat >"):
-			pushRemote = joined
+		case opBinaryInstall:
+			pushRemote = strings.Join(argv, " ")
 			if stdin != nil {
 				_, _ = io.ReadAll(stdin)
 			}
@@ -700,7 +689,7 @@ func TestDeployResolvesSymlinkTarget(t *testing.T) {
 		},
 	})
 
-	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil); err != nil {
+	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil, nil); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
 	if !strings.Contains(pushRemote, pushBinaryRemote(realPath, 1)) {
@@ -942,13 +931,12 @@ func TestDeployBuildsFromTheConfiguredSource(t *testing.T) {
 
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.Contains(joined, "test -d /opt/evener/bin"):
+		switch classifyRemote(argv) {
+		case opInstallDirProbe:
 			return nil, nil
-		case strings.Contains(joined, "evener_resolve /opt/evener/bin/evener"):
-			return []byte("/opt/evener/bin/evener\n"), nil
-		case strings.Contains(joined, "cat >"):
+		case opResolveExec:
+			return resolveAnswers(argv, map[string]string{"/opt/evener/bin/evener": "/opt/evener/bin/evener"})
+		case opBinaryInstall:
 			if stdin != nil {
 				_, _ = io.ReadAll(stdin)
 			}
@@ -959,7 +947,7 @@ func TestDeployBuildsFromTheConfiguredSource(t *testing.T) {
 	}}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{BuildSource: source})
 
-	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil); err != nil {
+	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil, nil); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
 	got, err := os.ReadFile(marker)
@@ -1050,13 +1038,12 @@ func TestDeployDoesNotBuildFromAnUnconfiguredWorkingDirectory(t *testing.T) {
 
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.Contains(joined, "test -d /opt/evener/bin"):
+		switch classifyRemote(argv) {
+		case opInstallDirProbe:
 			return nil, nil
-		case strings.Contains(joined, "evener_resolve /opt/evener/bin/evener"):
-			return []byte("/opt/evener/bin/evener\n"), nil
-		case strings.Contains(joined, "cat >"):
+		case opResolveExec:
+			return resolveAnswers(argv, map[string]string{"/opt/evener/bin/evener": "/opt/evener/bin/evener"})
+		case opBinaryInstall:
 			return nil, nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
@@ -1068,7 +1055,7 @@ func TestDeployDoesNotBuildFromAnUnconfiguredWorkingDirectory(t *testing.T) {
 	// The push path specifically: with no build source configured it must not
 	// build from the working-directory checkout. (deploy would take the installer
 	// fallback here.)
-	_, err := m.deployPush(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil)
+	_, err := m.deployPush(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil, nil)
 	if err == nil {
 		t.Fatal("deploy succeeded with no configured build source")
 	}
@@ -1141,10 +1128,10 @@ func TestVerifyBuildSourceRevisionMustMatchController(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "cmd", "evener"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	gitIn(t, root, "init", "-q")
-	gitIn(t, root, "add", ".")
-	gitIn(t, root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "-m", "first")
-	short := gitIn(t, root, "rev-parse", "HEAD")[:7]
+	gittest.Run(t, root, "init", "-q")
+	gittest.Run(t, root, "add", ".")
+	gittest.Run(t, root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "-m", "first")
+	short := gittest.Run(t, root, "rev-parse", "HEAD")[:7]
 
 	orig := buildinfo.GitSHA
 	t.Cleanup(func() { buildinfo.GitSHA = orig })
@@ -1157,8 +1144,8 @@ func TestVerifyBuildSourceRevisionMustMatchController(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("second\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	gitIn(t, root, "add", ".")
-	gitIn(t, root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "-m", "second")
+	gittest.Run(t, root, "add", ".")
+	gittest.Run(t, root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "-m", "second")
 	_, err := verifyBuildSource(root)
 	if err == nil {
 		t.Fatal("verifyBuildSource accepted a checkout at a revision other than the controller's build")
@@ -1188,10 +1175,10 @@ func TestVerifyBuildRevisionRefusesDirtyController(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "cmd", "evener"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	gitIn(t, root, "init", "-q")
-	gitIn(t, root, "add", ".")
-	gitIn(t, root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "-m", "first")
-	short := gitIn(t, root, "rev-parse", "HEAD")[:7]
+	gittest.Run(t, root, "init", "-q")
+	gittest.Run(t, root, "add", ".")
+	gittest.Run(t, root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "-m", "first")
+	short := gittest.Run(t, root, "rev-parse", "HEAD")[:7]
 
 	origSHA, origDirty := buildinfo.GitSHA, buildinfo.GitDirty
 	t.Cleanup(func() { buildinfo.GitSHA, buildinfo.GitDirty = origSHA, origDirty })
@@ -1219,12 +1206,11 @@ func TestDeployTargetRefusesMultilineCommandV(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	var resolverJoined string
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.Contains(joined, "command -v evener"):
+		switch classifyRemote(argv) {
+		case opCommandLookup:
 			return []byte("/usr/local/bin/evener\nnote: wrapper\n"), nil
-		case strings.HasSuffix(joined, "evener_resolve /usr/local/bin/evener"):
-			resolverJoined = joined
+		case opResolveExec:
+			resolverJoined = strings.Join(argv, " ")
 			return []byte("/usr/local/bin/evener\n"), nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
@@ -1236,19 +1222,6 @@ func TestDeployTargetRefusesMultilineCommandV(t *testing.T) {
 	if !errors.Is(err, ErrDeploy) || got != "" || resolverJoined != "" {
 		t.Fatalf("ambiguous path reached resolver: target=%q err=%v resolver=%q", got, err, resolverJoined)
 	}
-}
-
-// gitIn runs a git command in dir for the build-source tests, failing on error.
-// The env overrides keep it independent of the developer's global git config.
-func gitIn(t *testing.T, dir string, args ...string) string {
-	t.Helper()
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %v: %v: %s", args, err, out)
-	}
-	return strings.TrimSpace(string(out))
 }
 
 // clearBuildSHA makes the build-source revision check a no-op for tests that
@@ -1279,10 +1252,10 @@ func TestVerifyBuildRevisionRefusesDirtySource(t *testing.T) {
 	if err := os.WriteFile(tracked, []byte("one\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	gitIn(t, root, "init", "-q")
-	gitIn(t, root, "add", ".")
-	gitIn(t, root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "-m", "first")
-	short := gitIn(t, root, "rev-parse", "HEAD")[:7]
+	gittest.Run(t, root, "init", "-q")
+	gittest.Run(t, root, "add", ".")
+	gittest.Run(t, root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "-m", "first")
+	short := gittest.Run(t, root, "rev-parse", "HEAD")[:7]
 
 	orig := buildinfo.GitSHA
 	t.Cleanup(func() { buildinfo.GitSHA = orig })
@@ -1306,7 +1279,7 @@ func TestVerifyBuildRevisionRefusesDirtySource(t *testing.T) {
 	}
 
 	// An untracked file is part of what `go build` compiles, so it counts too.
-	gitIn(t, root, "checkout", "--", "tracked.txt")
+	gittest.Run(t, root, "checkout", "--", "tracked.txt")
 	if err := os.WriteFile(filepath.Join(root, "untracked.go"), []byte("package extra\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1339,45 +1312,45 @@ func TestEnsureMissingEvenerReachesTheInstallerFallback(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	installerRan, launched := false, false
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.HasPrefix(argv[len(argv)-1], `if [ -n "${HOME-}" ]`):
+		switch classifyRemote(argv) {
+		case opDefaultInstall:
 			return nil, nil // no installer-default binary
-		case strings.HasSuffix(joined, "uname -s"):
+		case opUnameKernel:
 			return []byte("Linux\n"), nil
-		case strings.HasSuffix(joined, "uname -m"):
+		case opUnameArch:
 			return []byte("x86_64\n"), nil
-		case strings.HasSuffix(joined, "id -u"):
+		case opUserID:
 			return []byte("1000\n"), nil
-		case argv[len(argv)-1] == envProbeScript:
+		case opEnvironment:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
-		case strings.Contains(joined, "launch-check"):
-			if strings.Contains(joined, " evener launch-check") || !installerRan {
+		case opLaunchCheck:
+			if strings.Contains(strings.Join(argv, " "), " evener launch-check") || !installerRan {
 				// No evener on the host's non-interactive PATH.
 				return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
 			}
 			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
-		case strings.Contains(joined, executableProbeRemote("evener")):
-			// The dedicated executable probe: absent.
-			return nil, exitStatus(t, 1)
-		case strings.Contains(joined, executableProbeRemote("/home/dev/.local/bin/evener")):
+		case opPresenceProbe:
+			if strings.Contains(strings.Join(argv, " "), executableProbeRemote("evener")) {
+				// The dedicated executable probe: absent.
+				return nil, exitStatus(t, 1)
+			}
 			if !installerRan {
 				return nil, exitStatus(t, 1)
 			}
 			return nil, nil
-		case strings.Contains(joined, "list-units"):
+		case opSystemdUnits:
 			return nil, nil
-		case strings.Contains(joined, "lsof -ti :9180"):
+		case opListenerProbe:
 			return []byte(noListenerMarker + "\n"), nil
-		case strings.Contains(joined, "evener-install.XXXXXX"):
+		case opBinaryInstall:
 			installerRan = true
 			return nil, nil
-		case strings.Contains(joined, "evener_resolve"):
+		case opResolveExec:
 			return []byte("/home/dev/.local/bin/evener\n"), nil
-		case strings.Contains(joined, "nohup"):
+		case opRelaunch:
 			launched = true
 			return nil, nil
-		case strings.Contains(joined, "api/health"):
+		case opHealth:
 			if !launched {
 				return nil, errors.New("curl: (7) Failed to connect")
 			}
@@ -1422,21 +1395,20 @@ func TestDeployInstallerPreservesExistingHubTarget(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"} // no evener_path
 	var installerJoined string
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.Contains(joined, "lsof -ti :9180"):
+		switch classifyRemote(argv) {
+		case opListenerProbe:
 			return []byte("4242\n"), nil
-		case strings.Contains(joined, "-ww -o "):
+		case opProcessArgv:
 			// The running hub lives at /usr/local/bin, not the installer default.
 			return []byte("/usr/local/bin/evener hub -addr 127.0.0.1:9180\n"), nil
-		case strings.Contains(joined, "evener_resolve /usr/local/bin/evener"):
+		case opResolveExec:
+			return resolveAnswers(argv, map[string]string{"/usr/local/bin/evener": "/usr/local/bin/evener"})
+		case opCommandLookup:
 			return []byte("/usr/local/bin/evener\n"), nil
-		case strings.Contains(joined, "command -v evener"):
-			return []byte("/usr/local/bin/evener\n"), nil
-		case strings.Contains(joined, "launch-check"):
+		case opLaunchCheck:
 			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
-		case strings.Contains(joined, "evener-install.XXXXXX"):
-			installerJoined = joined
+		case opBinaryInstall:
+			installerJoined = strings.Join(argv, " ")
 			return nil, nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
@@ -1464,17 +1436,16 @@ func TestDeployPushCreatesMissingEvenerPathTarget(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	var pushJoined string
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.Contains(joined, "test -d /opt/evener/bin"):
+		switch classifyRemote(argv) {
+		case opInstallDirProbe:
 			return nil, nil
-		case strings.Contains(joined, "evener_resolve /opt/evener/bin/evener"):
+		case opResolveExec:
 			// The file is not installed yet.
 			return nil, exitStatus(t, 1)
-		case strings.Contains(joined, "if [ -e "):
+		case opCreateTarget:
 			return []byte("/opt/evener/bin/evener\n"), nil
-		case strings.Contains(joined, "cat >"):
-			pushJoined = joined
+		case opBinaryInstall:
+			pushJoined = strings.Join(argv, " ")
 			if stdin != nil {
 				_, _ = io.ReadAll(stdin)
 			}
@@ -1489,7 +1460,7 @@ func TestDeployPushCreatesMissingEvenerPathTarget(t *testing.T) {
 		},
 	})
 
-	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil); err != nil {
+	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil, nil); err != nil {
 		t.Fatalf("deploy: %v (a not-yet-installed evener_path must be creatable)", err)
 	}
 	if !strings.Contains(pushJoined, pushBinaryRemote("/opt/evener/bin/evener", 1)) {
@@ -1505,18 +1476,17 @@ func TestDeployPushFallsBackToDefaultTargetOnFreshHost(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	var pushJoined string
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.Contains(joined, "command -v evener"):
+		switch classifyRemote(argv) {
+		case opCommandLookup:
 			return []byte(evenerPathMissingMarker + "\n"), nil
-		case strings.Contains(joined, "mkdir -p /home/dev/.local/bin"):
+		case opMakeDir:
 			return nil, nil
-		case strings.Contains(joined, "evener_resolve"):
+		case opResolveExec:
 			return nil, exitStatus(t, 1)
-		case strings.Contains(joined, "if [ -e "):
+		case opCreateTarget:
 			return []byte("/home/dev/.local/bin/evener\n"), nil
-		case strings.Contains(joined, "cat >"):
-			pushJoined = joined
+		case opBinaryInstall:
+			pushJoined = strings.Join(argv, " ")
 			if stdin != nil {
 				_, _ = io.ReadAll(stdin)
 			}
@@ -1527,7 +1497,7 @@ func TestDeployPushFallsBackToDefaultTargetOnFreshHost(t *testing.T) {
 	}}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{BuildBinary: writeStageBinary})
 
-	target, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil)
+	target, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil, nil)
 	if err != nil {
 		t.Fatalf("deploy: %v (a fresh host with no evener must be provisionable)", err)
 	}
@@ -1551,13 +1521,12 @@ func TestDeployPrefersTheOperatorArtifactOverTheBuildSource(t *testing.T) {
 	var pushArgv []string
 	var pushed []byte
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.Contains(joined, "test -d /opt/evener/bin"):
+		switch classifyRemote(argv) {
+		case opInstallDirProbe:
 			return nil, nil
-		case strings.Contains(joined, "evener_resolve /opt/evener/bin/evener"):
-			return []byte("/opt/evener/bin/evener\n"), nil
-		case strings.Contains(joined, "cat >"):
+		case opResolveExec:
+			return resolveAnswers(argv, map[string]string{"/opt/evener/bin/evener": "/opt/evener/bin/evener"})
+		case opBinaryInstall:
 			pushArgv = append([]string(nil), argv...)
 			if stdin != nil {
 				pushed, _ = io.ReadAll(stdin)
@@ -1574,7 +1543,7 @@ func TestDeployPrefersTheOperatorArtifactOverTheBuildSource(t *testing.T) {
 		BuildSource: t.TempDir(),
 	})
 
-	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil); err != nil {
+	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil, nil); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
 	if string(pushed) != "artifact-bytes" {
@@ -1597,11 +1566,11 @@ func TestDeployPrefersTheOperatorArtifactOverTheBuildSource(t *testing.T) {
 func TestDevControllerWithoutADeployPathAttaches(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	fr := &fakeRunner{
-		runFn: cannedRun(map[string][]byte{
-			"launch-check": []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`),
+		runFn: cannedRun(map[remoteOp][]byte{
+			opLaunchCheck: []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`),
 			// A running hub matching the on-disk build, so nothing is deployed,
 			// restarted, or bootstrapped: this is the attach path.
-			"api/health": []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`),
+			opHealth: []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`),
 		}),
 		startFn: goodStartFn(t),
 	}
@@ -1637,13 +1606,12 @@ func TestDevControllerPreservesCompatibleBuildButExplicitDeployWorks(t *testing.
 	builds := 0
 	var pushed []byte
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.Contains(joined, "test -d /opt/evener/bin"):
+		switch classifyRemote(argv) {
+		case opInstallDirProbe:
 			return nil, nil
-		case strings.Contains(joined, "evener_resolve /opt/evener/bin/evener"):
-			return []byte("/opt/evener/bin/evener\n"), nil
-		case strings.Contains(joined, "cat >"):
+		case opResolveExec:
+			return resolveAnswers(argv, map[string]string{"/opt/evener/bin/evener": "/opt/evener/bin/evener"})
+		case opBinaryInstall:
 			if stdin != nil {
 				pushed, _ = io.ReadAll(stdin)
 			}
@@ -1662,7 +1630,7 @@ func TestDevControllerPreservesCompatibleBuildButExplicitDeployWorks(t *testing.
 	if m.deployRequired(facts) {
 		t.Fatal("a compatible startup contract required deployment")
 	}
-	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil); err != nil {
+	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil, nil); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
 	if builds != 1 {
@@ -1681,7 +1649,7 @@ func TestDevControllerPreservesCompatibleBuildButExplicitDeployWorks(t *testing.
 // through Options.DeployHelp. The controller's own executable is the case that
 // does not refuse (TestDirtyControllerDeploysItsOwnExecutable). The refusal's
 // type and terminality are pinned by
-// TestRound13DirtyControllerDeployRefusalIsTerminal; this adds the remedy
+// TestDirtyControllerDeployRefusalIsTerminal; this adds the remedy
 // clauses, which is the half the criterion names.
 func TestDirtyControllerRefusalsNameTheRemedy(t *testing.T) {
 	const dirty = "abc1234-dirty"
@@ -1696,9 +1664,9 @@ func TestDirtyControllerRefusalsNameTheRemedy(t *testing.T) {
 				return nil
 			},
 		})
-		_, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil)
-		if !errors.Is(err, errControllerDirty) {
-			t.Fatalf("err = %v, want errControllerDirty", err)
+		_, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil, nil)
+		if !errors.Is(err, ErrControllerDirty) {
+			t.Fatalf("err = %v, want ErrControllerDirty", err)
 		}
 		if !strings.Contains(err.Error(), "rebuild the controller from a clean checkout") {
 			t.Fatalf("push-path refusal does not name the remedy: %v", err)
@@ -1735,39 +1703,38 @@ func postDeployBuildRunner(t *testing.T, postDeploy string) *fakeRunner {
 	t.Helper()
 	launchCalls, launches := 0, 0
 	return &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.HasSuffix(joined, "uname -s"):
+		switch classifyRemote(argv) {
+		case opUnameKernel:
 			return []byte("Linux\n"), nil
-		case strings.HasSuffix(joined, "uname -m"):
+		case opUnameArch:
 			return []byte("x86_64\n"), nil
-		case strings.HasSuffix(joined, "id -u"):
+		case opUserID:
 			return []byte("1000\n"), nil
-		case argv[len(argv)-1] == envProbeScript:
+		case opEnvironment:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
-		case strings.Contains(joined, "launch-check"):
+		case opLaunchCheck:
 			launchCalls++
 			if launchCalls == 1 {
 				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":[]}`), nil
 			}
 			return []byte(fmt.Sprintf(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":%q,"launch_flags":["api-log"]}`, postDeploy)), nil
-		case strings.Contains(joined, "test -d /opt/evener/bin"):
+		case opInstallDirProbe:
 			return nil, nil
-		case strings.Contains(joined, "list-units"):
+		case opSystemdUnits:
 			return nil, nil // no supervisor: an ad hoc host
-		case strings.Contains(joined, "lsof -ti :9180"):
+		case opListenerProbe:
 			return []byte(noListenerMarker + "\n"), nil // nothing is listening
-		case strings.Contains(joined, "evener_resolve"):
+		case opResolveExec:
 			return []byte("/opt/evener/bin/evener\n"), nil
-		case strings.Contains(joined, "cat >"):
+		case opBinaryInstall:
 			if stdin != nil {
 				_, _ = io.ReadAll(stdin)
 			}
 			return nil, nil
-		case strings.Contains(joined, "nohup"):
+		case opRelaunch:
 			launches++
 			return nil, nil
-		case strings.Contains(joined, "api/health"):
+		case opHealth:
 			if launches == 0 {
 				return nil, errors.New("curl: (7) Failed to connect")
 			}
@@ -1810,7 +1777,7 @@ func TestEnsurePostDeployBuildMismatchRefusesTerminally(t *testing.T) {
 		requireUnstampedRefusal(t, err)
 		requireNoAttach(t, fr)
 		for _, argv := range fr.recordedRuns() {
-			if strings.Contains(strings.Join(argv, " "), "nohup") {
+			if classifyRemote(argv) == opRelaunch {
 				t.Fatalf("a hub was started on the mismatched build: %v", argv)
 			}
 		}
@@ -1876,7 +1843,7 @@ func TestEnsurePostDeployBuildMismatchRefusesTerminally(t *testing.T) {
 
 // TestDeployArtifactUnusableIsTerminal pins the operator-artifact sibling of the
 // run-target refusal: a -deploy-binary built for another platform (the hub's
-// copyDeployBinary wraps errDeployArtifactUnusable for exactly that) is a
+// copyDeployBinary wraps ErrDeployArtifactUnusable for exactly that) is a
 // permanent operator mistake — every retry re-reads the same file — so the
 // refusal must be terminal and must not ride the retryable ErrDeploy class. The
 // build seam fails before anything is staged or pushed, so the runner must see
@@ -1900,15 +1867,15 @@ func TestDeployArtifactUnusableIsTerminal(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 		BuildBinary: func(context.Context, string, string, string) error {
 			return fmt.Errorf("%w: -deploy-binary %q targets linux/arm64, but the host needs linux/amd64; supply an evener built for linux/amd64",
-				errDeployArtifactUnusable, "/tmp/evener")
+				ErrDeployArtifactUnusable, "/tmp/evener")
 		},
 	})
 	testDeployRecorder(t, m)
 	testRestartRecorder(t, m)
 
 	_, err := m.Ensure(context.Background(), "alpha")
-	if !errors.Is(err, errDeployArtifactUnusable) {
-		t.Fatalf("Ensure err = %v, want errDeployArtifactUnusable", err)
+	if !errors.Is(err, ErrDeployArtifactUnusable) {
+		t.Fatalf("Ensure err = %v, want ErrDeployArtifactUnusable", err)
 	}
 	if !isTerminal(err) {
 		t.Fatalf("Ensure err = %v, want a terminal refusal (retrying re-reads the same artifact)", err)
@@ -1919,15 +1886,8 @@ func TestDeployArtifactUnusableIsTerminal(t *testing.T) {
 	if !strings.Contains(err.Error(), "-deploy-binary") || !strings.Contains(err.Error(), "linux/amd64") {
 		t.Fatalf("refusal does not name the flag and the host target: %v", err)
 	}
-	for _, argv := range fr.recordedRuns() {
-		joined := strings.Join(argv, " ")
-		if strings.Contains(joined, "cat >") {
-			t.Fatalf("the unusable artifact was pushed: %v", argv)
-		}
-		if strings.Contains(joined, "systemctl restart") || strings.Contains(joined, "nohup") {
-			t.Fatalf("the refused artifact restarted or started a hub: %v", argv)
-		}
-	}
+	requireNoRemoteOps(t, fr, "the unusable artifact was pushed", opBinaryInstall)
+	requireNoRemoteOps(t, fr, "the refused artifact restarted or started a hub", opSystemdRestart, opRelaunch)
 	hostGate := m.hostLock(host.Name)
 	defer m.releaseHostLock(host.Name)
 	beforeReconnectRuns := len(fr.recordedRuns())
@@ -1982,11 +1942,10 @@ func TestEnsureWrongArtifactAgainstRunningHubRefusesBeforeRestart(t *testing.T) 
 	// restart is where ErrRestart used to surface and drive the loop).
 	pushes, restarts := 0, 0
 	for _, argv := range fr.recordedRuns() {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.Contains(joined, "cat >"):
+		switch classifyRemote(argv) {
+		case opBinaryInstall:
 			pushes++
-		case strings.Contains(joined, "systemctl restart"):
+		case opSystemdRestart:
 			restarts++
 		}
 	}
@@ -2012,7 +1971,7 @@ func TestEnsureWrongArtifactAgainstRunningHubRefusesBeforeRestart(t *testing.T) 
 		t.Fatal("eligible reconnect did not reach the external runner")
 	}
 	for _, argv := range fr.recordedRuns() {
-		if strings.Contains(strings.Join(argv, " "), "systemctl restart") {
+		if classifyRemote(argv) == opSystemdRestart {
 			t.Fatalf("the terminal refusal still restarted the hub onto the wrong artifact: %v", argv)
 		}
 	}
@@ -2023,8 +1982,8 @@ func TestEnsureWrongArtifactAgainstRunningHubRefusesBeforeRestart(t *testing.T) 
 // message naming both the build the host reports and the one it should carry.
 func requireUnstampedRefusal(t *testing.T, err error) {
 	t.Helper()
-	if !errors.Is(err, errDeployUnstamped) {
-		t.Fatalf("Ensure err = %v, want errDeployUnstamped (a deploy that did not pin the controller's build must not attach)", err)
+	if !errors.Is(err, ErrDeployUnstamped) {
+		t.Fatalf("Ensure err = %v, want ErrDeployUnstamped (a deploy that did not pin the controller's build must not attach)", err)
 	}
 	if !isTerminal(err) {
 		t.Fatalf("Ensure err = %v, want a terminal refusal (retrying re-pushes the same artifact)", err)
@@ -2092,14 +2051,11 @@ func TestEnsureRestartOnlyMismatchAttachesTheServingBuild(t *testing.T) {
 	}
 	restarted := false
 	for _, argv := range fr.recordedRuns() {
-		joined := strings.Join(argv, " ")
-		if strings.Contains(joined, "systemctl restart") {
+		if classifyRemote(argv) == opSystemdRestart {
 			restarted = true
 		}
-		if strings.Contains(joined, "cat >") {
-			t.Fatalf("a restart-only attempt pushed a binary: %v", argv)
-		}
 	}
+	requireNoRemoteOps(t, fr, "a restart-only attempt pushed a binary", opBinaryInstall)
 	if !restarted {
 		t.Fatal("no restart ran, so the pass under test was not the restart-only one")
 	}

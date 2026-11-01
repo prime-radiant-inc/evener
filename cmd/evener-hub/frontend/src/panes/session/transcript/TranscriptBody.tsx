@@ -23,7 +23,7 @@ import { exchangeClosersFor } from "./exchangeClosers";
 import { exchangeOpenersFor } from "./exchangeOpeners";
 import { FlowOverlay } from "./flow/FlowOverlay";
 import type { CapturedTranscriptView } from "./flow/transcriptViewRegistry";
-import { useTranscriptViewRegistration } from "./flow/useTranscriptScroll";
+import { useTranscriptViewRegistration } from "./flow/useTranscriptViewRegistration";
 import { ProjectedIntentGroup, TurnBlock } from "./TurnBlock";
 import { foldTurnEntries } from "./toolRuns";
 import type { TranscriptReadView } from "./transcriptReadView";

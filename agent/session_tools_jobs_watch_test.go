@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"strings"
 	"testing"
 
@@ -824,7 +825,7 @@ func TestJobWatchListAndInspectReturnWatchIDs(t *testing.T) {
 func TestJobWatchCanImmediatelyWatchReturnedBackgroundShellJob(t *testing.T) {
 	t.Parallel()
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("watch output observed") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("watch output observed") },
 	}}
 	s := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
 		MaxSubagentDepth: 1,

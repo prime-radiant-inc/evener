@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -75,7 +76,7 @@ func TestTerminalFlushHandoff(t *testing.T) {
 						if err == nil && records[jobID] != nil {
 							beforeSource = append(beforeSource, string(records[jobID].NotifyState))
 						}
-						return finalResponse("terminal-response-327")
+						return agenttest.FinalResponse("terminal-response-327")
 					})
 				}
 				wake := make(chan struct{}, 1)

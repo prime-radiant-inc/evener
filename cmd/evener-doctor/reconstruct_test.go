@@ -688,7 +688,7 @@ func TestReconstructPreservesFailureMutationIdentityOnRestore(t *testing.T) {
 		t.Fatal(err)
 	}
 	meta.EnvInfo.WorkingDir = output
-	restored, err := agent.RestoreSessionFromMeta(llm.NewClient(), provider.NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(output), meta, output)
+	restored, err := agent.RestoreSessionFromMetaWithConfig(llm.NewClient(), provider.NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(output), meta, agent.RestoreSessionConfig{StateDir: output})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -860,7 +860,7 @@ func TestReconstructPreservesAttentionEvidenceWithoutInventingDeliveryState(t *t
 	requests := make(chan llm.Request, 16)
 	client := llm.NewClient()
 	client.Register(reconstructionRequestCapture{requests: requests})
-	restored, err := agent.RestoreSessionFromMeta(client, provider.NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(output), metadata, output)
+	restored, err := agent.RestoreSessionFromMetaWithConfig(client, provider.NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(output), metadata, agent.RestoreSessionConfig{StateDir: output})
 	if err != nil {
 		t.Fatalf("reconstructed transcript cannot resume: %v", err)
 	}

@@ -5,12 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
+
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
@@ -41,7 +42,7 @@ func TestUnrestorableDelegateAttentionIsHandedToTheRoot(t *testing.T) {
 	fenced := newFencedGrandchildAttention(t)
 	root, fixture := fenced.root, fenced.fixture
 	root.cfg.testOnly.delegateAttentionGiveUpAfter = 3
-	if err := os.Remove(filepath.Join(fixture.stateDir, sessionsSubdir, fenced.grandchildSessionID+".meta.json")); err != nil {
+	if err := os.Remove(schema.SessionMetaPath(fixture.stateDir, fenced.grandchildSessionID)); err != nil {
 		t.Fatalf("remove grandchild session meta: %v", err)
 	}
 
@@ -70,7 +71,7 @@ func TestDelegateAttentionIsNotHandedOverBeforeTheGiveUpLimit(t *testing.T) {
 	fenced := newFencedGrandchildAttention(t)
 	root, fixture := fenced.root, fenced.fixture
 	root.cfg.testOnly.delegateAttentionGiveUpAfter = 3
-	if err := os.Remove(filepath.Join(fixture.stateDir, sessionsSubdir, fenced.grandchildSessionID+".meta.json")); err != nil {
+	if err := os.Remove(schema.SessionMetaPath(fixture.stateDir, fenced.grandchildSessionID)); err != nil {
 		t.Fatalf("remove grandchild session meta: %v", err)
 	}
 
@@ -94,7 +95,7 @@ func TestUndeliverableDelegateAttentionParksUntilNewAttention(t *testing.T) {
 	fenced := newFencedGrandchildAttention(t)
 	root, fixture := fenced.root, fenced.fixture
 	root.cfg.testOnly.delegateAttentionGiveUpAfter = 2
-	if err := os.Remove(filepath.Join(fixture.stateDir, sessionsSubdir, fenced.grandchildSessionID+".meta.json")); err != nil {
+	if err := os.Remove(schema.SessionMetaPath(fixture.stateDir, fenced.grandchildSessionID)); err != nil {
 		t.Fatalf("remove grandchild session meta: %v", err)
 	}
 	path := transcriptPath(fixture.stateDir, fenced.grandchildSessionID)
@@ -230,7 +231,7 @@ func TestGivingUpOnAMissingTranscriptParksInsteadOfDropping(t *testing.T) {
 	root, fixture := fenced.root, fenced.fixture
 	root.cfg.testOnly.delegateAttentionGiveUpAfter = 2
 	for _, path := range []string{
-		filepath.Join(fixture.stateDir, sessionsSubdir, fenced.grandchildSessionID+".meta.json"),
+		schema.SessionMetaPath(fixture.stateDir, fenced.grandchildSessionID),
 		transcriptPath(fixture.stateDir, fenced.grandchildSessionID),
 	} {
 		if err := os.Remove(path); err != nil {
@@ -536,8 +537,8 @@ func TestABackoffResetHoldsAcrossAnArmedRetry(t *testing.T) {
 	t.Parallel()
 	clk := agenttest.NewFakeClock()
 	root := newSession(t, withoutGitSnapshot(), withClock(clk), withConfig(SessionConfig{StateDir: t.TempDir()}), withSteps(
-		func(llm.Request) llm.Response { return finalResponse("initialized-85") },
-		func(llm.Request) llm.Response { return finalResponse("recovered-85") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("initialized-85") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("recovered-85") },
 	))
 	if _, err := root.ProcessInput(context.Background(), "initialize", nil); err != nil {
 		t.Fatal(err)

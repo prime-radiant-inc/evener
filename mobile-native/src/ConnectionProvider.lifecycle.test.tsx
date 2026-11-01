@@ -5,7 +5,7 @@
 // storage) are stand-ins.
 import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 import { ConnectionProvider, useConnection } from "./ConnectionProvider";
 import type { DraftStorage } from "./newSession";
 import { bindCreation, creationStore } from "./newSession/creations";
@@ -25,7 +25,6 @@ vi.mock("expo-secure-store", () => ({
 	setItemAsync: async (key: string, value: string) => void harness.secure.set(key, value),
 	deleteItemAsync: async (key: string) => void harness.secure.delete(key),
 }));
-vi.mock("expo-crypto", () => ({ randomUUID: () => `hub-${++harness.ids}` }));
 vi.mock("./hubConnection", () => ({
 	useHubConnection: () => ({ client: harness.client, state: harness.client ? "ready" : "closed", fatal: false }),
 }));

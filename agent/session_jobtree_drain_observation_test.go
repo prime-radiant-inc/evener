@@ -195,7 +195,7 @@ func TestDrainAnnouncementDoesNotPromoteHousekeeping(t *testing.T) {
 				})
 				adapter := newMessagingAdapter()
 				answer := func(context.Context, llm.Request) (llm.Response, error) {
-					return finalResponse("housekeeping-is-not-the-answer-731a"), nil
+					return agenttest.FinalResponse("housekeeping-is-not-the-answer-731a"), nil
 				}
 				steps := []func(context.Context, llm.Request) (llm.Response, error){answer, answer}
 				if mode == "prior_observed" {

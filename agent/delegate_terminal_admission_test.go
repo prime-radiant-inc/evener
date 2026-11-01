@@ -27,7 +27,7 @@ func newAdmissionSession(t *testing.T) (*Session, *jobManager) {
 func TestTerminalAdmissionInventoryIsReadOnly(t *testing.T) {
 	s, jm := newAdmissionSession(t)
 	jm.mu.Lock()
-	jm.running = map[string]*runningJob{"job-1": {delegateShell: &stableDelegateShellReceipt{jobID: "job-1"}}}
+	jm.running = map[string]*runningJob{"job-1": {delegateShell: &delegateShellReceipt{jobID: "job-1"}}}
 	jm.mu.Unlock()
 	work, err := s.outstandingDelegateWork()
 	if err != nil || !slices.Contains(work.Jobs, "job-1") {

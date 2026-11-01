@@ -110,8 +110,7 @@ func TestHasClient(t *testing.T) {
 	}
 }
 
-// TestElicitNote_RequiresClient covers the no-client guard in ElicitNote
-// (context_manager.go:1069).
+// TestElicitNote_RequiresClient covers the no-client guard in ElicitNote.
 func TestElicitNote_RequiresClient(t *testing.T) {
 	cm := NewManager(testProfile("openai", "gpt-5.2", 1_000), nil, cheapmodel.New(nil))
 	if _, err := cm.ElicitNote(context.Background(), nil, nil); err == nil {
@@ -147,8 +146,7 @@ func TestElicitNote_Success(t *testing.T) {
 	}
 }
 
-// TestElicitNote_FallsBackAcrossModels covers the model-fallback loop
-// (context_manager.go:1080-1092): a configured cheap route that returns a
+// TestElicitNote_FallsBackAcrossModels covers the model-fallback loop: a configured cheap route that returns a
 // fallback-eligible error (HTTP 400) is retried on the active route.
 func TestElicitNote_FallsBackAcrossModels(t *testing.T) {
 	cheapCalled, activeCalled := false, false
@@ -271,7 +269,7 @@ func TestBuildSummarizePrompt_RendersUserAndSteering(t *testing.T) {
 	}
 }
 
-// TestTruncate covers both branches of truncate (fork_summarize.go:100).
+// TestTruncate covers both branches of truncate.
 func TestTruncate(t *testing.T) {
 	if got := truncate("short", 10); got != "short" {
 		t.Errorf("truncate under limit = %q, want unchanged", got)
@@ -281,8 +279,7 @@ func TestTruncate(t *testing.T) {
 	}
 }
 
-// TestStripCodeFence covers stripCodeFence including the fenced branch
-// (fork_summarize.go:111-120).
+// TestStripCodeFence covers stripCodeFence including the fenced branch.
 func TestStripCodeFence(t *testing.T) {
 	if got := stripCodeFence("{\"a\":1}"); got != `{"a":1}` {
 		t.Errorf("unfenced input = %q, want unchanged", got)

@@ -11,7 +11,7 @@ package agent
 //
 // This test is the corpus that closes that gap. Every case builds its frame
 // with the real producer (delegateNotificationContent over the packet
-// stableDelegateFinishFromRun settles, delegateQuietAttentionContent,
+// delegateFinishFromRun settles, delegateQuietAttentionContent,
 // formatJobNotificationBlock), wraps it in a steering turn the way the
 // producers append it, and projects that turn through apptranscript the way
 // history reaches the wire. The AppWire package's steeringNotifications tests
@@ -26,6 +26,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"reflect"
 	"regexp"
 	"slices"
@@ -66,11 +67,11 @@ func TestNotificationReportProjection(t *testing.T) {
 				yieldGate := make(chan struct{})
 				releaseYield := sync.OnceFunc(func() { close(yieldGate) })
 				defer releaseYield()
-				adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("spawn", "WAIT-WORKER") }, func(llm.Request) llm.Response { return finalResponse("root-finished") })
+				adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("spawn", "WAIT-WORKER") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("root-finished") })
 				gate := make(chan struct{})
 				release := sync.OnceFunc(func() { close(gate) })
 				defer release()
-				adapter.script("WAIT-TARGET", func(llm.Request) llm.Response { <-gate; return finalResponse("target-finished") })
+				adapter.script("WAIT-TARGET", func(llm.Request) llm.Response { <-gate; return agenttest.FinalResponse("target-finished") })
 				adapter.script("WAIT-WORKER", func(llm.Request) llm.Response { return delegateToolResponse("target", "WAIT-TARGET") }, func(req llm.Request) llm.Response {
 					id := deferredHeadDelegateID.FindString(lastToolResultText(req.Messages))
 					output := publicationOutput("result-9c2f")
@@ -78,7 +79,7 @@ func TestNotificationReportProjection(t *testing.T) {
 						output = map[string]any{"message": "", "data": map[string]any{}, "artifacts": []string{}}
 					}
 					awaitSignal(t, yieldGate, "waiting projection activation capture")
-					return toolCallResponse(publicationCall("projection-"+kind, map[string]any{"message": message, "end_turn": true, "end_reason": "waiting_on_work", "waiting_on": id, "output": output}))
+					return agenttest.ToolCallResponse(publicationCall("projection-"+kind, map[string]any{"message": message, "end_turn": true, "end_reason": "waiting_on_work", "waiting_on": id, "output": output}))
 				})
 				root := newMessagingRoot(t, adapter, returns.configure)
 				t.Cleanup(func() { returns.close(t, root) })
@@ -133,7 +134,11 @@ func TestNotificationReportProjection(t *testing.T) {
 			nextEntered, nextGate := make(chan struct{}), make(chan struct{})
 			root, child, lease, release := publicationRunningChild(t, func(adapter *messagingAdapter) {
 				if kind == "done" {
-					adapter.script("BATCH-WORKER", func(llm.Request) llm.Response { close(nextEntered); <-nextGate; return finalResponse("next-finished") })
+					adapter.script("BATCH-WORKER", func(llm.Request) llm.Response {
+						close(nextEntered)
+						<-nextGate
+						return agenttest.FinalResponse("next-finished")
+					})
 				}
 			})
 			t.Cleanup(func() { close(nextGate) })
@@ -250,7 +255,7 @@ func TestNotificationReportProjection(t *testing.T) {
 					t.Fatalf("%s: %+v", name, out)
 				}
 			}
-			if _, err := root.JobActivityTree(appwire.JobsListParams{}); err != nil {
+			if _, err := root.JobActivityTree(t.Context(), appwire.JobsListParams{}); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := root.ListActivityDelegates(t.Context(), appwire.SessionActivityListParams{Ref: encodeRef("", root.ID()), Scope: appwire.SessionActivityScopeSubtree}); err != nil {
@@ -347,7 +352,7 @@ func (f notificationWireFixture) MarshalJSON() ([]byte, error) {
 
 func notificationWireDelegateFrame(t *testing.T, delegateID, name string, inputs delegateTerminalRunInputs) string {
 	t.Helper()
-	return notificationWireBarePacketFrame(t, delegateID, name, *stableDelegateFinishFromRun(inputs).packet)
+	return notificationWireBarePacketFrame(t, delegateID, name, *delegateFinishFromRun(inputs).packet)
 }
 
 func notificationWireBarePacketFrame(t *testing.T, delegateID, name string, packet delegatestore.TerminalPacket) string {
@@ -515,7 +520,7 @@ func TestSteeringNotificationWireFixtures(t *testing.T) {
 		{
 			name: "delegate-stopped-by-parent-mid-run",
 			note: "A parent's stop that cancelled a run which left its own packet: the run loop's packet is carried, metadata outcome cancelled.",
-			turn: notificationWireAttention(notificationWireReport("dlg_6"), notificationWireStopFrame(t, "dlg_6", "Index the docs", stableDelegateFinishFromRun(delegateTerminalRunInputs{
+			turn: notificationWireAttention(notificationWireReport("dlg_6"), notificationWireStopFrame(t, "dlg_6", "Index the docs", delegateFinishFromRun(delegateTerminalRunInputs{
 				runErr:     context.Canceled,
 				descriptor: notificationWireDescriptor("Index the docs"),
 				startedAt:  stoppedStart,

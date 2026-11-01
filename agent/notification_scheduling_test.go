@@ -142,12 +142,12 @@ func TestNotificationScheduling(t *testing.T) {
 				}
 			})
 			t.Run("delegate/"+name, func(t *testing.T) {
-				fixture := newColdStableDelegateFixture(t, "")
+				fixture := newColdDelegateFixture(t, "")
 				delivered := make(chan llm.Request, 2)
 				var root *Session
 				var active atomic.Int32
 				if resident {
-					fixture.adapter.steps = append(fixture.adapter.steps, func(llm.Request) llm.Response { return finalResponse("warm-791a") })
+					fixture.adapter.steps = append(fixture.adapter.steps, func(llm.Request) llm.Response { return agenttest.FinalResponse("warm-791a") })
 				}
 				fixture.adapter.steps = append(fixture.adapter.steps, func(req llm.Request) llm.Response {
 					if active.Add(1) != 1 {
@@ -163,7 +163,7 @@ func TestNotificationScheduling(t *testing.T) {
 							t.Error(err)
 						}
 					}
-					return finalResponse("result-731d")
+					return agenttest.FinalResponse("result-731d")
 				})
 				if running {
 					fixture.adapter.steps = append(fixture.adapter.steps, func(req llm.Request) llm.Response {
@@ -172,7 +172,7 @@ func TestNotificationScheduling(t *testing.T) {
 						}
 						defer active.Add(-1)
 						delivered <- req
-						return finalResponse("successor-817f")
+						return agenttest.FinalResponse("successor-817f")
 					})
 				}
 				root = restoreSupervisionRoot(t, fixture, nil)
@@ -217,7 +217,7 @@ func TestNotificationScheduling(t *testing.T) {
 		testNotificationCompetition(t, true, 1)
 	})
 	t.Run("capacity recheck preserves unadmitted fairness", func(t *testing.T) {
-		fixture := newColdStableDelegateFixture(t, "")
+		fixture := newColdDelegateFixture(t, "")
 		root := restoreSupervisionRoot(t, fixture, nil)
 		c := root.delegateController
 		c.mu.Lock()
@@ -241,11 +241,11 @@ func TestNotificationScheduling(t *testing.T) {
 			requests.Add(1)
 			res, _ := deniedResult("/etc/hosts")
 			s.escalateOnSandboxDenial(context.Background(), "write_file", res, noRerun(t))
-			return finalResponse("approval-denied-71ac")
+			return agenttest.FinalResponse("approval-denied-71ac")
 		}, func(req llm.Request) llm.Response {
 			requests.Add(1)
 			observationRequest(t, req, []string{"approval-body-91af"}, nil)
-			return finalResponse("approval-successor-68ab")
+			return agenttest.FinalResponse("approval-successor-68ab")
 		}}
 		done := make(chan error, 1)
 		go func() { _, err := s.ProcessInput(context.Background(), "start approval-73af", nil); done <- err }()
@@ -485,7 +485,7 @@ func TestNotificationReleaseStorageRecovery(t *testing.T) {
 	defer releaseB()
 	a.script("root", func(llm.Request) llm.Response { return incidentShellResponse("release-shell-a", fifoA) },
 		func(llm.Request) llm.Response { return incidentShellResponse("release-shell-b", fifoB) },
-		func(llm.Request) llm.Response { return finalResponse("release-initial-11") })
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("release-initial-11") })
 	root := newMessagingRoot(t, a, func(cfg *SessionConfig) { cfg.clock = clock })
 	root.ConsumeEventsLossless(func(events.SessionEvent) {}, func() {})
 	wake, hint := newDrainWake()
@@ -568,21 +568,21 @@ func TestNotificationReleaseStorageRecovery(t *testing.T) {
 		}
 		if err := os.Rename(path, backup); err != nil {
 			t.Error(err)
-			return finalResponse("filesystem-fixture-failed")
+			return agenttest.FinalResponse("filesystem-fixture-failed")
 		}
 		blocked = true
 		if err := os.Mkdir(path, 0o700); err != nil {
 			t.Error(err)
-			return finalResponse("filesystem-fixture-failed")
+			return agenttest.FinalResponse("filesystem-fixture-failed")
 		}
-		return finalResponse("release-first-observed-11")
+		return agenttest.FinalResponse("release-first-observed-11")
 	}, func(req llm.Request) llm.Response {
 		for _, source := range started {
 			if err := incidentJobPayload(req, source.JobID, "completed", "exit_zero"); err != nil {
 				t.Error(err)
 			}
 		}
-		return finalResponse("release-second-observed-11")
+		return agenttest.FinalResponse("release-second-observed-11")
 	})
 	baseline := clock.BlockedCount()
 	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {

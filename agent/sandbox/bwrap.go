@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"primeradiant.com/evener/identifier"
 )
 
 var (
@@ -111,10 +113,10 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 	}
 	reboundRO := make(map[string]bool)
 	for _, r := range candidates {
-		if r == "" || r == "/tmp" || (r != "/dev/shm" && !pathUnder(r, "/tmp") && !pathUnder(r, "/dev/shm")) {
+		if r == "" || r == "/tmp" || (r != "/dev/shm" && !identifier.PathUnder(r, "/tmp") && !identifier.PathUnder(r, "/dev/shm")) {
 			continue
 		}
-		if r == sessionTmp || (sessionTmp != "" && pathUnder(r, sessionTmp)) {
+		if r == sessionTmp || (sessionTmp != "" && identifier.PathUnder(r, sessionTmp)) {
 			continue
 		}
 		if reboundRO[r] || !pathExists(r) {
@@ -129,7 +131,7 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 	// session tmp again on top.
 	if sessionTmp != "" {
 		for r := range reboundRO {
-			if pathUnder(sessionTmp, r) {
+			if identifier.PathUnder(sessionTmp, r) {
 				add("--bind", sessionTmp, sessionTmp)
 				break
 			}
@@ -271,9 +273,9 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 		// minimal /dev (which hides /dev/shm) in the read-anywhere modes.
 		// A spelling already exposed by an earlier bind (a read root, or a
 		// cwd or scratch tree re-bound under /tmp) needs no link.
-		hidden := sp.Read != ReadAnywhere || pathUnder(r, "/tmp") || pathUnder(r, "/dev")
+		hidden := sp.Read != ReadAnywhere || identifier.PathUnder(r, "/tmp") || identifier.PathUnder(r, "/dev")
 		exposed := isUnderAnyRoot(r, sp.ReadRoots) || isUnderAnyRoot(r, slices.Collect(maps.Keys(reboundRO))) ||
-			(sessionTmp != "" && pathUnder(r, sessionTmp))
+			(sessionTmp != "" && identifier.PathUnder(r, sessionTmp))
 		if ok && r != resolved && hidden && !exposed {
 			add("--symlink", resolved, r)
 		}
@@ -370,7 +372,7 @@ func commonDirWriteGrant(rp ResolvedPolicy) string {
 		return "" // already writable through a parent root (main checkout)
 	}
 	for _, w := range rp.Spawned.WriteRoots {
-		if pathUnder(w, cd) {
+		if identifier.PathUnder(w, cd) {
 			return cd
 		}
 	}
@@ -404,7 +406,7 @@ func bwrapWriteRoots(rp ResolvedPolicy) []string {
 // isUnderAnyRoot reports whether path is at or beneath any of roots.
 func isUnderAnyRoot(path string, roots []string) bool {
 	for _, r := range roots {
-		if r != "" && (path == r || pathUnder(path, r)) {
+		if r != "" && (path == r || identifier.PathUnder(path, r)) {
 			return true
 		}
 	}
@@ -419,7 +421,7 @@ func isUnderAnyRoot(path string, roots []string) bool {
 // root under it is re-bound after --dev, so a secret there is visible again and
 // needs its explicit mask.
 func maskHandledByNamespace(path string) bool {
-	if path == "/dev/shm" || pathUnder(path, "/dev/shm") {
+	if path == "/dev/shm" || identifier.PathUnder(path, "/dev/shm") {
 		return false
 	}
 	return path == "/proc" || path == "/dev" || strings.HasPrefix(path, "/dev/")
@@ -468,7 +470,7 @@ func gitDirsUnder(root string, budget int) ([]string, bool) {
 				switch {
 				case isGitName(e.Name()) && e.Type()&os.ModeSymlink != 0:
 					target, terr := bwrapEvalSymlinks(p)
-					if terr != nil || !pathUnder(target, root) {
+					if terr != nil || !identifier.PathUnder(target, root) {
 						_ = f.Close()
 						return found, false
 					}

@@ -1,8 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const storage = new Map<string, string>();
-let uuid = 0;
-vi.mock("expo-crypto", () => ({ randomUUID: () => `uuid-${++uuid}` }));
 vi.mock("expo-sqlite/kv-store", () => ({
 	Storage: {
 		getItemSync: (key: string) => storage.get(key) ?? null,
@@ -22,7 +20,6 @@ import {
 
 beforeEach(() => {
 	storage.clear();
-	uuid = 0;
 });
 const operation = {
 	kind: "assignPin" as const,

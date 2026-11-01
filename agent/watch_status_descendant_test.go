@@ -18,7 +18,7 @@ func TestAggregateWatchStatusesReachesDescendantManager(t *testing.T) {
 
 	child.mu.Lock()
 	child.watches[watchKey{Target: "job_child", ReceiverSessionID: testOwnerSessionID}] = &watchConfig{
-		id: "watch-child", watchID: "watch-child", sourcePublic: "self", target: "job_child",
+		watchID: "watch-child", sourcePublic: "self", target: "job_child",
 		receiverSessionID: testOwnerSessionID, createdAt: frozenTestTime,
 	}
 	child.mu.Unlock()
@@ -45,7 +45,7 @@ func TestAggregateWatchStatusesDoesNotLeakKeylessDescendantWatch(t *testing.T) {
 	}
 	child.mu.Lock()
 	child.watches[watchKey{Target: "job_child"}] = &watchConfig{
-		id: "watch-keyless", watchID: "watch-keyless", sourcePublic: "self", target: "job_child",
+		watchID: "watch-keyless", sourcePublic: "self", target: "job_child",
 		createdAt: frozenTestTime,
 	}
 	child.mu.Unlock()

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -452,7 +453,7 @@ func TestHubForceStopUnconfirmedRootReadAndExplicitResume(t *testing.T) {
 	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.ThreadResume(t.Context(), appwire.ThreadResumeParams{Ref: ref}); err != nil {
+	if _, err := appwiretest.ThreadResume(t.Context(), client, appwire.ThreadResumeParams{Ref: ref}); err != nil {
 		t.Fatal(err)
 	}
 	if *resumes != 1 {
@@ -609,7 +610,7 @@ func TestHubForceStopInterruptsStalledRPCOnSameConnection(t *testing.T) {
 				t.Fatal(err)
 			}
 			ref := "local:" + sessionID
-			if _, err := client.ThreadResume(t.Context(), appwire.ThreadResumeParams{Ref: ref}); err != nil {
+			if _, err := appwiretest.ThreadResume(t.Context(), client, appwire.ThreadResumeParams{Ref: ref}); err != nil {
 				t.Fatal(err)
 			}
 			shutdown := make(chan error, 1)
@@ -722,7 +723,7 @@ func TestHubForceStopInterruptsStalledSpawnedResumeRead(t *testing.T) {
 	ref := "local:" + sessionID
 	resume := make(chan error, 1)
 	go func() {
-		_, err := client.ThreadResume(t.Context(), appwire.ThreadResumeParams{Ref: ref})
+		_, err := appwiretest.ThreadResume(t.Context(), client, appwire.ThreadResumeParams{Ref: ref})
 		resume <- err
 	}()
 	select {
@@ -814,7 +815,7 @@ func TestHubForceStopCancelsStartupWithoutReplayingInput(t *testing.T) {
 			ref := "local:" + sessionID
 			startResult := make(chan error, 1)
 			go func() {
-				_, err := client.ThreadStart(t.Context(), appwire.ThreadStartParams{Model: "openai/gpt-5", CWD: past.Meta.EnvInfo.WorkingDir, Input: []appwire.InputItem{{Type: "text", Text: "must not reach stopped daemon"}}})
+				_, err := appwiretest.ThreadStart(t.Context(), client, appwire.ThreadStartParams{Model: "openai/gpt-5", CWD: past.Meta.EnvInfo.WorkingDir, Input: []appwire.InputItem{{Type: "text", Text: "must not reach stopped daemon"}}})
 				startResult <- err
 			}()
 			select {
@@ -900,7 +901,7 @@ func TestHubForceStopRejectsWaitingMutationUntilExplicitResume(t *testing.T) {
 				t.Fatal(err)
 			}
 			ref := "local:" + sessionID
-			if _, err := client.ThreadResume(t.Context(), appwire.ThreadResumeParams{Ref: ref}); err != nil {
+			if _, err := appwiretest.ThreadResume(t.Context(), client, appwire.ThreadResumeParams{Ref: ref}); err != nil {
 				t.Fatal(err)
 			}
 			stop := make(chan error, 1)
@@ -969,7 +970,7 @@ func TestHubForceStopRejectsWaitingMutationUntilExplicitResume(t *testing.T) {
 			if _, err := client.Initialize(t.Context(), appwire.InitializeParams{}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := client.ThreadResume(t.Context(), appwire.ThreadResumeParams{Ref: ref}); err != nil {
+			if _, err := appwiretest.ThreadResume(t.Context(), client, appwire.ThreadResumeParams{Ref: ref}); err != nil {
 				t.Fatalf("explicit resume: %v", err)
 			}
 			staleRead, err := oldClient.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: ref})
@@ -1073,10 +1074,7 @@ func TestTurnStartDoesNotRetryRecoveryRejectionAfterExplicitResume(t *testing.T)
 func TestHubForceStopRejectsRequestsQueuedBeforeRecovery(t *testing.T) {
 	stateDir, runDir := filepath.Join(t.TempDir(), "queued-recovery-0000000000"), t.TempDir()
 	sessionID := buildRPCParentSession(t, stateDir)
-	past := hubcore.NewPastIndex(stateDir)
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, stateDir)
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: exitedPID(t), SessionID: sessionID, ThreadID: sessionID, StateDir: stateDir, StartedAt: time.Now()})
 	var events []string
 	var resumes atomic.Int32
@@ -1720,10 +1718,7 @@ func TestForceStopExpectedDaemonStaleClearAlias(t *testing.T) {
 		return &forceStopProcess{events: &events}, nil
 	})}
 	err := forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:post-clear", ExpectedDaemon: &expected}, nil)
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
-		t.Fatalf("stale clear alias err=%v, want conflict", err)
-	}
+	requireWireError(t, err, appwire.CodeConflict)
 	if len(events) != 0 {
 		t.Fatalf("stale clear alias reached the process: %v", events)
 	}
@@ -1752,10 +1747,7 @@ func TestForceStopExpectedDaemonRejectsPIDReuse(t *testing.T) {
 		return &forceStopProcess{events: &events}, nil
 	})}
 	err := forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:reused", ExpectedDaemon: &expected}, nil)
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
-		t.Fatalf("PID reuse err=%v, want conflict", err)
-	}
+	requireWireError(t, err, appwire.CodeConflict)
 	if len(events) != 0 {
 		t.Fatalf("PID reuse identity signaled the restarted process: %v", events)
 	}
@@ -1784,10 +1776,7 @@ func TestForceStopExpectedDaemonRejectsProtocolChange(t *testing.T) {
 		return &forceStopProcess{events: &events}, nil
 	})}
 	err := forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:proto", ExpectedDaemon: &expected}, nil)
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
-		t.Fatalf("protocol change err=%v, want conflict", err)
-	}
+	requireWireError(t, err, appwire.CodeConflict)
 	if len(events) != 0 {
 		t.Fatalf("protocol-change identity signaled the replacement: %v", events)
 	}
@@ -1858,10 +1847,7 @@ func TestForceStopExpectedDaemonMaliciousArbitraryInput(t *testing.T) {
 		return &forceStopProcess{events: &events}, nil
 	})}
 	err := forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:victim", ExpectedDaemon: &malicious}, nil)
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
-		t.Fatalf("malicious identity err=%v, want conflict", err)
-	}
+	requireWireError(t, err, appwire.CodeConflict)
 	if len(events) != 0 {
 		t.Fatalf("malicious identity opened the victim process: %v", events)
 	}

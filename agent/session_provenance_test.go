@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"strings"
 	"testing"
 	"time"
@@ -24,7 +25,7 @@ func TestEmitAttachesActiveProvenance(t *testing.T) {
 	s := &Session{id: "session_1", events: make(chan events.SessionEvent, 1)}
 	s.replaceActiveProvenance(testProvenance("watch_A", "wg_1"))
 
-	s.emit(events.EventCommunicate, events.CommunicateData{Message: "ack", EndTurn: false})
+	s.emit(events.CommunicateData{Message: "ack", EndTurn: false})
 
 	ev := <-s.events
 	if !provenance.ContainsWatch(ev.Provenance, "watch_A", "wg_1") {
@@ -164,9 +165,7 @@ func TestAcceptSteeringCarrierInputClearsCompletedProvenance(t *testing.T) {
 	if !ok {
 		t.Fatalf("claimSteeringCarrierTurn refused a queued steer")
 	}
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if err := sess.acceptSteeringCarrierInput(ctx, queuedClientMutationIdentity{ClientMutationID: "carrier-prov-1", StableTurnID: turnID, SteeringCarrier: true}); err != nil {
 		t.Fatalf("acceptSteeringCarrierInput: %v", err)
 	}
@@ -260,7 +259,7 @@ func TestAcceptNotificationInputAdoptsNotificationProvenance(t *testing.T) {
 				t.Error("acceptance granted observation before a response")
 			}
 		}
-		return toolCallResponse(communicateCallArgs("causal-output", map[string]any{"message": "provenance-output-5", "end_turn": true})), nil
+		return agenttest.ToolCallResponse(communicateCallArgs("causal-output", map[string]any{"message": "provenance-output-5", "end_turn": true})), nil
 	}}
 	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 		t.Fatal(err)
@@ -308,7 +307,7 @@ func TestAcceptNotificationInputAdoptsCallerWatchSendStateProvenance(t *testing.
 	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 		t.Fatal(err)
 	}
-	s.emit(events.EventCommunicate, events.CommunicateData{Message: "watch-send acknowledgement", EndTurn: false})
+	s.emit(events.CommunicateData{Message: "watch-send acknowledgement", EndTurn: false})
 	if cfg.nextUpdateSeq != beforeSeq+1 {
 		t.Fatalf("echo sequence = %d, want %d", cfg.nextUpdateSeq, beforeSeq+1)
 	}

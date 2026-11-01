@@ -69,7 +69,6 @@ func wrcNewJM(t *testing.T) *jobManager {
 
 func wrcConfig(id, source, target, sendTo, receiverSessionID, receiverDelegateID string) *watchConfig {
 	cfg := &watchConfig{
-		id:                 id,
 		watchID:            id,
 		configHash:         "hash-" + id,
 		sourcePublic:       source,

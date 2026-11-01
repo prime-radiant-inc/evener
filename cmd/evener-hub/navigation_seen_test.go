@@ -109,7 +109,7 @@ func TestNavigationRowsCarryTurnEndedAtAndUnseen(t *testing.T) {
 func TestNavigationCaptureReadsTheSeenMarkers(t *testing.T) {
 	store := hubcore.NewSessionSeenStore(filepath.Join(t.TempDir(), "index.db"))
 	through := time.Date(2026, 9, 26, 11, 58, 0, 123_000_000, time.UTC)
-	if _, err := store.MarkSeen("", "01A", through); err != nil {
+	if _, err := markSeenForTest(store, "", "01A", through); err != nil {
 		t.Fatal(err)
 	}
 	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), SessionSeen: store})

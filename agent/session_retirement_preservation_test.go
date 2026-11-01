@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -528,7 +529,7 @@ func (a *nestedDelegateAdapter) Complete(ctx context.Context, req llm.Request) (
 			if err != nil {
 				return llm.Response{}, err
 			}
-			return toolCallResponse(llm.ToolCallData{ID: "nested-create-" + a.nestedTask, Name: "delegate", Arguments: raw}), nil
+			return agenttest.ToolCallResponse(llm.ToolCallData{ID: "nested-create-" + a.nestedTask, Name: "delegate", Arguments: raw}), nil
 		}
 		a.creator.delegateController.mu.Lock()
 		var childSessionID string
@@ -824,7 +825,7 @@ func (a *nestedSendAdapter) Complete(_ context.Context, req llm.Request) (llm.Re
 			if err != nil {
 				return llm.Response{}, err
 			}
-			return toolCallResponse(llm.ToolCallData{ID: "nested-send", Name: "delegate_send", Arguments: raw}), nil
+			return agenttest.ToolCallResponse(llm.ToolCallData{ID: "nested-send", Name: "delegate_send", Arguments: raw}), nil
 		}
 	}
 	response := communicateWithDefaultOutput("nested-send-result")

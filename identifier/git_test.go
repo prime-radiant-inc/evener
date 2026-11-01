@@ -297,8 +297,8 @@ func TestSubmoduleGitDirShape(t *testing.T) {
 		"/repo/.git/modules/sub",
 		"/repo/.git/modules/sub/modules/nested",
 	} {
-		if !isSubmoduleGitDirShape(path) {
-			t.Fatalf("isSubmoduleGitDirShape(%q) = false", path)
+		if !IsSubmoduleGitDirShape(path) {
+			t.Fatalf("IsSubmoduleGitDirShape(%q) = false", path)
 		}
 	}
 	for _, path := range []string{
@@ -306,8 +306,8 @@ func TestSubmoduleGitDirShape(t *testing.T) {
 		"/repo/.git/worktrees/wt",
 		"/repo/other/modules/sub",
 	} {
-		if isSubmoduleGitDirShape(path) {
-			t.Fatalf("isSubmoduleGitDirShape(%q) = true", path)
+		if IsSubmoduleGitDirShape(path) {
+			t.Fatalf("IsSubmoduleGitDirShape(%q) = true", path)
 		}
 	}
 }

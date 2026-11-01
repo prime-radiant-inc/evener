@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/llm"
 )
@@ -32,9 +33,9 @@ const stableSupervisionRefusalHeldWindow = 100 * time.Millisecond
 // has a child session and controller to render.
 func stableSupervisionReportFixture(t *testing.T) (*Session, *subagent) {
 	t.Helper()
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("warm result") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 	}
 	root := restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
@@ -145,7 +146,7 @@ func TestStableSupervisionStatePrintsTheFullStateWhenIdle(t *testing.T) {
 		_, got = stableSupervisionStateSnapshot(root, sub)
 		return len(supervisionSnapshotBusyLockNames(got)) == 0
 	})
-	retry, ok := got["root_retry"].(notificationRetry)
+	retry, ok := got["root_retry"].(backoffTimer)
 	if !ok || retry.active || retry.delay != 250*time.Millisecond {
 		t.Fatalf("inactive receiver retry = %#v, want initial 250ms delay", got["root_retry"])
 	}

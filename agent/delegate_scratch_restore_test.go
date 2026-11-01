@@ -70,8 +70,7 @@ func TestDelegateIdleRelease_ColdRestoreReopensItsScratch(t *testing.T) {
 	// TRIPWIRE: scripted adapters plus an in-process sandboxed child; the runs
 	// and releases normally settle in well under a second each. 30s per stage
 	// only bounds a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	res := s.createDelegate(ctx, delegateArgs{Task: "own scratch", Sandbox: "workspace-write", DelegationAllowance: new(0)})
 	if res.Err != nil {
 		t.Fatalf("createDelegate: %v (status=%s reason=%s)", res.Err, res.Status, res.Reason)

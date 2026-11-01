@@ -32,7 +32,6 @@ vi.mock("react-native-gesture-handler", async () =>
 	(await import("./renderNative.testkit")).gestureDetectorModuleMock(),
 );
 vi.mock("expo-clipboard", () => ({ setStringAsync: native.setStringAsync }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 // Attachments are not under test here, and the image leaf drags in the
 // connection stack (expo-secure-store and the rest).
 vi.mock("./TranscriptImages", () => ({ TranscriptImages: () => null }));
@@ -910,7 +909,8 @@ describe("a subagent", () => {
 		);
 		expect(renderedText(tree)).toContain("running · 1m");
 		tree.root.findAll((node) => node.props.accessibilityRole === "button")[0].props.onPress();
-		expect(openSubagent).toHaveBeenCalledWith("local:child-1", "Audit the store");
+		// The row hands its run start through, even when the fixture has none.
+		expect(openSubagent).toHaveBeenCalledWith("local:child-1", "Audit the store", undefined);
 	});
 });
 

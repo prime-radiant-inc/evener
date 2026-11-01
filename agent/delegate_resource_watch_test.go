@@ -19,9 +19,9 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-const expectedStableDelegateWatchSourceKind watchSourceKind = 3
+const expectedDelegateWatchSourceKind watchSourceKind = 3
 
-func TestStableDelegateWatch_TypedSessionShellAndDelegateSources(t *testing.T) {
+func TestDelegateWatch_TypedSessionShellAndDelegateSources(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		source string
@@ -29,7 +29,7 @@ func TestStableDelegateWatch_TypedSessionShellAndDelegateSources(t *testing.T) {
 	}{
 		{source: "self", kind: watchSourceSelfSession},
 		{source: "job_shell", kind: watchSourceConcreteJob},
-		{source: "dlg_source", kind: expectedStableDelegateWatchSourceKind},
+		{source: "dlg_source", kind: expectedDelegateWatchSourceKind},
 	}
 	for _, test := range tests {
 		t.Run(test.source, func(t *testing.T) {
@@ -52,8 +52,8 @@ func TestStableDelegateWatch_TypedSessionShellAndDelegateSources(t *testing.T) {
 	}
 }
 
-func TestStableDelegateWatch_DelegateReceiverIsImplicit(t *testing.T) {
-	a := requireStableDelegateWatchArgs(t)
+func TestDelegateWatch_DelegateReceiverIsImplicit(t *testing.T) {
+	a := requireDelegateWatchArgs(t)
 	if a.ReceiverSessionID != "" || a.ReceiverDelegateID != "" || a.Send != nil {
 		t.Fatalf("public stable watch decoded receiver routing: %#v", a)
 	}
@@ -81,7 +81,7 @@ func TestStableDelegateWatch_DelegateReceiverIsImplicit(t *testing.T) {
 	}
 }
 
-func TestStableDelegateWatch_ParentRequiresLeaseEdgeAndPersistedGrant(t *testing.T) {
+func TestDelegateWatch_ParentRequiresLeaseEdgeAndPersistedGrant(t *testing.T) {
 	t.Parallel()
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 	runtime := delegateRuntime{owner: root}
@@ -90,7 +90,7 @@ func TestStableDelegateWatch_ParentRequiresLeaseEdgeAndPersistedGrant(t *testing
 	if err != nil {
 		t.Fatalf("select model: %v", err)
 	}
-	toolNameCeiling := root.stableDelegateEffectiveToolNameCeiling(selection, args, "")
+	toolNameCeiling := root.delegateEffectiveToolNameCeiling(selection, args, "")
 	descriptor, _, err := runtime.describe(context.Background(), args, args.Task, "", nil, selection, toolNameCeiling)
 	if err != nil {
 		t.Fatalf("describe: %v", err)
@@ -123,7 +123,7 @@ func TestStableDelegateWatch_ParentRequiresLeaseEdgeAndPersistedGrant(t *testing
 	}
 }
 
-func TestStableDelegateWatch_ParentGrantIsNonTransitive(t *testing.T) {
+func TestDelegateWatch_ParentGrantIsNonTransitive(t *testing.T) {
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 	runtime := delegateRuntime{owner: root}
 	describe := func(watchParent bool) map[string]any {
@@ -133,7 +133,7 @@ func TestStableDelegateWatch_ParentGrantIsNonTransitive(t *testing.T) {
 		if err != nil {
 			t.Fatalf("select model: %v", err)
 		}
-		toolNameCeiling := root.stableDelegateEffectiveToolNameCeiling(selection, args, "")
+		toolNameCeiling := root.delegateEffectiveToolNameCeiling(selection, args, "")
 		descriptor, _, err := runtime.describe(context.Background(), args, args.Task, "", nil, selection, toolNameCeiling)
 		if err != nil {
 			t.Fatalf("describe: %v", err)
@@ -177,7 +177,7 @@ func TestStableDelegateWatch_ParentGrantIsNonTransitive(t *testing.T) {
 	}
 }
 
-func TestStableDelegateWatch_PreservesFiltersEveryCoalescingAndBudget(t *testing.T) {
+func TestDelegateWatch_PreservesFiltersEveryCoalescingAndBudget(t *testing.T) {
 	t.Parallel()
 	fs := &notificationFaultFS{Fs: afero.NewOsFs()}
 	fixture := newStableWatchRuntimeBase(t, fs)
@@ -232,8 +232,8 @@ func TestStableDelegateWatch_PreservesFiltersEveryCoalescingAndBudget(t *testing
 	}
 }
 
-func TestStableDelegateWatch_PreservesListInspectAndClear(t *testing.T) {
-	_ = requireStableDelegateWatchArgs(t)
+func TestDelegateWatch_PreservesListInspectAndClear(t *testing.T) {
+	_ = requireDelegateWatchArgs(t)
 	jm := newStableWatchTestJobManager(t)
 	result, err := jm.configureWatch(watchArgs{
 		Source:            "dlg_source",
@@ -290,7 +290,7 @@ func TestStableDelegateWatch_PreservesListInspectAndClear(t *testing.T) {
 	}
 }
 
-func TestStableDelegateWatch_EnqueueFsyncPrecedesCursorAdvance(t *testing.T) {
+func TestDelegateWatch_EnqueueFsyncPrecedesCursorAdvance(t *testing.T) {
 	fixture := newStableWatchRuntimeFixture(t, nil)
 	entered := make(chan struct{})
 	release := make(chan struct{})
@@ -348,7 +348,7 @@ func TestStableDelegateWatch_EnqueueFsyncPrecedesCursorAdvance(t *testing.T) {
 	}
 }
 
-func TestStableDelegateWatch_ControllerReceiptRunsAfterJobManagerUnlock(t *testing.T) {
+func TestDelegateWatch_ControllerReceiptRunsAfterJobManagerUnlock(t *testing.T) {
 	fixture := newStableWatchRuntimeFixture(t, nil)
 	boundaries := 0
 	fixture.sourceJM.watchReceiptBoundary = func() {
@@ -380,7 +380,7 @@ func TestStableDelegateWatch_ControllerReceiptRunsAfterJobManagerUnlock(t *testi
 	}
 }
 
-func TestStableDelegateWatch_ReceiverFsyncPrecedesDeliveredAck(t *testing.T) {
+func TestDelegateWatch_ReceiverFsyncPrecedesDeliveredAck(t *testing.T) {
 	fs := newAttentionSyncBarrierFS()
 	fixture := newStableWatchRuntimeFixture(t, fs)
 	fixture.persistFrameBeforeTransport(t, "receiver barrier")
@@ -421,7 +421,7 @@ func TestStableDelegateWatch_ReceiverFsyncPrecedesDeliveredAck(t *testing.T) {
 	}
 }
 
-func TestStableDelegateWatch_SourceAcknowledgementWaitsForRootWakeArm(t *testing.T) {
+func TestDelegateWatch_SourceAcknowledgementWaitsForRootWakeArm(t *testing.T) {
 	fixture := newStableWatchRuntimeFixture(t, nil)
 	fixture.persistFrameBeforeTransport(t, "ordered receiver wake")
 	ackEntered := make(chan struct{}, 1)
@@ -474,7 +474,7 @@ func TestStableDelegateWatch_SourceAcknowledgementWaitsForRootWakeArm(t *testing
 	}
 }
 
-func TestStableDelegateWatch_LaterCoalescedUpdateSurvivesEarlierAck(t *testing.T) {
+func TestDelegateWatch_LaterCoalescedUpdateSurvivesEarlierAck(t *testing.T) {
 	t.Parallel()
 	key := jobstore.WatchSendKey{
 		VisibleSessionID:        "source-session",
@@ -495,7 +495,7 @@ func TestStableDelegateWatch_LaterCoalescedUpdateSurvivesEarlierAck(t *testing.T
 	}
 }
 
-func TestStableDelegateWatch_CoalescingRetainsInflightReceiverReceipt(t *testing.T) {
+func TestDelegateWatch_CoalescingRetainsInflightReceiverReceipt(t *testing.T) {
 	fs := newAttentionSyncBarrierFS()
 	fixture := newStableWatchRuntimeFixture(t, fs)
 	fixture.persistFrameBeforeTransport(t, "old frame")
@@ -574,7 +574,7 @@ func TestStableDelegateWatch_CoalescingRetainsInflightReceiverReceipt(t *testing
 	}
 }
 
-func TestStableDelegateWatch_SupersededAckFailureRetainsArmedAttentionBeforeCurrentCursor(t *testing.T) {
+func TestDelegateWatch_SupersededAckFailureRetainsArmedAttentionBeforeCurrentCursor(t *testing.T) {
 	fs := newAttentionSyncBarrierFS()
 	fixture := newStableWatchRuntimeFixture(t, fs)
 	wakes := make(chan struct{}, 2)
@@ -661,7 +661,7 @@ func TestStableDelegateWatch_SupersededAckFailureRetainsArmedAttentionBeforeCurr
 	}
 }
 
-func TestStableDelegateWatch_ConcurrentRedrainsClaimSupersededAckOnce(t *testing.T) {
+func TestDelegateWatch_ConcurrentRedrainsClaimSupersededAckOnce(t *testing.T) {
 	fs := newAttentionSyncBarrierFS()
 	fixture := newStableWatchRuntimeFixture(t, fs)
 	old, newer, originalAppend := seedSupersededStableWatchAckFailure(t, fixture, fs)
@@ -740,7 +740,7 @@ func TestStableDelegateWatch_ConcurrentRedrainsClaimSupersededAckOnce(t *testing
 	}
 }
 
-func TestStableDelegateWatch_RetryAddedDuringClaimSettlesBeforeCurrentCursor(t *testing.T) {
+func TestDelegateWatch_RetryAddedDuringClaimSettlesBeforeCurrentCursor(t *testing.T) {
 	fixture := newStableWatchRuntimeFixture(t, nil)
 	jm := fixture.sourceJM
 	originalAppend := jm.appendEvent
@@ -859,7 +859,7 @@ func TestStableDelegateWatch_RetryAddedDuringClaimSettlesBeforeCurrentCursor(t *
 	}
 }
 
-func TestStableDelegateWatch_RestartRepairsReceiverDurableSourceUnacked(t *testing.T) {
+func TestDelegateWatch_RestartRepairsReceiverDurableSourceUnacked(t *testing.T) {
 	fixture := newStableWatchRuntimeFixture(t, nil)
 	fixture.persistFrameBeforeTransport(t, "crash repair")
 	pending := fixture.requireOnePending(t)
@@ -1006,7 +1006,7 @@ func TestStableDelegateWatch_RestartRepairsReceiverDurableSourceUnacked(t *testi
 	})
 }
 
-func TestStableDelegateWatch_RestartRepairsSupersededReceiverDurableSourceUnacked(t *testing.T) {
+func TestDelegateWatch_RestartRepairsSupersededReceiverDurableSourceUnacked(t *testing.T) {
 	fs := newAttentionSyncBarrierFS()
 	fixture := newStableWatchRuntimeFixture(t, fs)
 	old, newer, _ := seedSupersededStableWatchAckFailure(t, fixture, fs)
@@ -1064,7 +1064,7 @@ func TestStableDelegateWatch_RestartRepairsSupersededReceiverDurableSourceUnacke
 	}
 }
 
-func TestStableDelegateWatch_StopFencesAndDrainsBothReceiptClasses(t *testing.T) {
+func TestDelegateWatch_StopFencesAndDrainsBothReceiptClasses(t *testing.T) {
 	t.Run("live receipts", func(t *testing.T) {
 		c, _ := newDelegateControllerTestHarness(t, 1, 1)
 		seedDelegateControllerRunning(t, c, "dlg_source", "")
@@ -1212,13 +1212,13 @@ func TestStableDelegateWatch_StopFencesAndDrainsBothReceiptClasses(t *testing.T)
 	})
 }
 
-func TestStableDelegateWatch_TerminalFrameSurvivesRegistrationClear(t *testing.T) {
+func TestDelegateWatch_TerminalFrameSurvivesRegistrationClear(t *testing.T) {
 	t.Parallel()
 	proveStableWatchRegistrationClear(t)
 }
 
 // Job-manager restore/end-policy component proof, not a full runtime restart.
-func TestStableDelegateWatch_RestartCancellationEmitsEndNotice(t *testing.T) {
+func TestDelegateWatch_RestartCancellationEmitsEndNotice(t *testing.T) {
 	t.Parallel()
 	fixture := newStableWatchRuntimeFixture(t, nil)
 	watchID, generation := soleStableWatchRegistration(t, fixture.sourceJM, fixture.root, fixture.source)
@@ -1253,7 +1253,7 @@ func TestStableDelegateWatch_RestartCancellationEmitsEndNotice(t *testing.T) {
 	t.Logf("component manager restore: watch=%s generation=%s end_notice=true delivery=%s acceptance=1 acknowledgement=1, repeated notice/drain unchanged", watchID, generation, state.DeliveryID)
 }
 
-func TestStableDelegateWatch_RestartOmitsEndNoticeAfterTerminalFrame(t *testing.T) {
+func TestDelegateWatch_RestartOmitsEndNoticeAfterTerminalFrame(t *testing.T) {
 	t.Parallel()
 	fixture := newStableWatchRuntimeFixture(t, nil)
 	watchID, generation := soleStableWatchRegistration(t, fixture.sourceJM, fixture.root, fixture.source)
@@ -1291,7 +1291,7 @@ func TestStableDelegateWatch_RestartOmitsEndNoticeAfterTerminalFrame(t *testing.
 	t.Logf("component manager restore: watch=%s generation=%s end_notices=0 original_delivery=%s acceptance=1 acknowledgement=1 unchanged", watchID, generation, state.DeliveryID)
 }
 
-func TestStableDelegateWatch_LegacyDelegateJobRowFailsClosed(t *testing.T) {
+func TestDelegateWatch_LegacyDelegateJobRowFailsClosed(t *testing.T) {
 	t.Parallel()
 	events := []jobstore.Event{
 		{Kind: jobstore.EventJobStarted, JobID: "job_legacy", Type: jobstore.JobType(delegateResourceType)},
@@ -1304,7 +1304,7 @@ func TestStableDelegateWatch_LegacyDelegateJobRowFailsClosed(t *testing.T) {
 	}
 }
 
-func requireStableDelegateWatchArgs(t *testing.T) watchArgs {
+func requireDelegateWatchArgs(t *testing.T) watchArgs {
 	t.Helper()
 	a, err := watchArgsFromToolArgs(map[string]any{
 		"operation": "create",

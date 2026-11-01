@@ -14,11 +14,21 @@ import (
 
 // serveSession marks the session as one a daemon is actually draining, which
 // is what makes its turns addressable by a client. ConsumeEventsLossless is
-// deliberately the only writer of authoritativeConsumer (session.go:109-123),
+// deliberately the only writer of authoritativeConsumer,
 // so tests register a real drain rather than setting the flag.
 func serveSession(t *testing.T, s *Session) {
 	t.Helper()
 	s.ConsumeEventsLossless(func(events.SessionEvent) {}, func() {})
+}
+
+// serveSessionWithMutationStore marks the session served and ensures its
+// client-mutation store, the shared preamble of the client-mutation tests.
+func serveSessionWithMutationStore(t *testing.T, s *Session) {
+	t.Helper()
+	serveSession(t, s)
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
 }
 
 // TestGoalContinuationTurnCarriesItsNameOnTheOpeningEvent is the wiring test:
@@ -156,10 +166,7 @@ func TestReleaseRunningTurnIDLeavesAnotherOwnersTurnAlone(t *testing.T) {
 func TestMintRunningTurnIDRefusesWhenATurnIsAlreadyNamed(t *testing.T) {
 	t.Parallel()
 	s := newTestSessionForEnvctx(t)
-	serveSession(t, s)
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
+	serveSessionWithMutationStore(t, s)
 	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
 		snapshot.NextTurnSequence++
 		snapshot.ActiveTurnID = appwire.ClientMutationTurnID(snapshot.NextTurnSequence)
@@ -191,10 +198,7 @@ func TestMintRunningTurnIDRefusesWhenATurnIsAlreadyNamed(t *testing.T) {
 func TestMintRunningTurnIDRefusesUnderAnInterruptFence(t *testing.T) {
 	t.Parallel()
 	s := newTestSessionForEnvctx(t)
-	serveSession(t, s)
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
+	serveSessionWithMutationStore(t, s)
 	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
 		snapshot.InterruptFence = &clientMutationInterruptFence{
 			ClientMutationID: "cm-1", ExpectedTurnID: "turn_m1",
@@ -218,8 +222,7 @@ func TestMintRunningTurnIDRefusesUnderAnInterruptFence(t *testing.T) {
 // TestLoadClearsARunningTurnNoPendingExecutionOwns is the crash guard: an
 // ungraceful exit mid-turn must not brick every future turn/start. Without
 // it a record-less ActiveTurnID survives restart with nothing left that can
-// clear it, and AcceptClientMutationStart's "turn is already active" guard
-// (session_client_mutation.go:206) rejects every later turn forever.
+// clear it, and AcceptClientMutationStart's "turn is already active" guard rejects every later turn forever.
 func TestLoadClearsARunningTurnNoPendingExecutionOwns(t *testing.T) {
 	t.Parallel()
 	const sessionID = "sess-crash"

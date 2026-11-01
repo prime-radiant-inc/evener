@@ -280,6 +280,24 @@ export async function attentionJourney(ctx) {
     })()`, label);
   }
 
+  // The attention list dismisses on any outer scroll or resize (NextNeedsYou
+  // closes it from capture-phase window listeners). A transcript still catching
+  // up with its virtualized measurements keeps scrolling, so a scroll position
+  // read twice with the same value does not prove it has stopped. Require a
+  // quiet window of both events before a press that must leave the list open.
+  async function awaitNoOuterScrollOrResize(label) {
+    await read(`(() => {
+      window.__outerEventAt = performance.now();
+      window.__outerEventWatch ??= (() => {
+        const mark = () => { window.__outerEventAt = performance.now(); };
+        window.addEventListener("scroll", mark, true);
+        window.addEventListener("resize", mark);
+        return true;
+      })();
+    })()`);
+    await wait(`performance.now() - window.__outerEventAt > 400`, label);
+  }
+
   async function controlVisible(scope = null, options = {}) {
     const where = scope ?? "";
     return wait(`(() => {
@@ -745,20 +763,10 @@ export async function attentionJourney(ctx) {
   // 320 px: the tightest scene the control must survive.
   await driver.send("Emulation.setDeviceMetricsOverride", { width: 320, height: 700, deviceScaleFactor: 1, mobile: false });
   await controlVisible(null);
-  // The list dismisses on any outer scroll or resize, and this leg is the first
-  // thing after the geometry matrix's own scrolling and viewport changes. A
-  // stray event landing after the hold opens the list closes it again, which
-  // reads as "the hold never opened". Settle both before pressing.
-  await read(`(() => {
-    window.__holdSettleAt = performance.now();
-    window.__holdSettleWatch ??= (() => {
-      const mark = () => { window.__holdSettleAt = performance.now(); };
-      window.addEventListener("scroll", mark, true);
-      window.addEventListener("resize", mark);
-      return true;
-    })();
-  })()`);
-  await wait(`performance.now() - window.__holdSettleAt > 400`, "no scroll or resize is in flight before the hold");
+  // This leg is the first thing after the geometry matrix's own scrolling and
+  // viewport changes; a stray event landing after the hold opens the list
+  // closes it again, which reads as "the hold never opened".
+  await awaitNoOuterScrollOrResize("no scroll or resize is in flight before the hold");
   const holdStart = await read("location.pathname");
   const holdPoint = await nativePressNext();
   await new Promise((resolve) => setTimeout(resolve, 620));
@@ -942,27 +950,9 @@ export async function attentionJourney(ctx) {
   // ---- a later-page target beyond the 50-row boundary ------------------
 
   await controlVisible(null);
-  // The list dismisses on an outer scroll; let the reader's scroll settle
-  // first, or the panel closes between opening and reading its rows.
-  await wait(`(() => {
-    const port = ${sourcePortExpr};
-    if (!port) return null;
-    const stamp = String(port.scrollTop);
-    const previous = window.__attentionListSettle;
-    window.__attentionListSettle = stamp;
-    return previous === stamp ? true : null;
-  })()`, "the reader's scroll is settled before the attention list opens");
-  // The panel also dismisses on any outer resize, and the host swap just
-  // changed the emulated metrics: a resize delivered after the panel opened
-  // closes it before it can carry rows. Require a quiet window first.
-  await read(`(() => {
-    window.__attentionResizeAt = performance.now();
-    window.__attentionResizeWatch ??= (() => {
-      window.addEventListener("resize", () => { window.__attentionResizeAt = performance.now(); }, true);
-      return true;
-    })();
-  })()`);
-  await wait(`performance.now() - window.__attentionResizeAt > 400`, "the host swap's resize has settled before the attention list opens");
+  // The host swap just changed the emulated metrics and the reader is still
+  // restoring its position; both dismiss the list.
+  await awaitNoOuterScrollOrResize("the host swap's resize and the reader's scroll have settled before the attention list opens");
   await activate(MORE, "the More trigger opens the attention list for the later-page target");
   await wait(`document.querySelector(${q(LIST)}) !== null`, "the attention list opens for the later-page target");
   const listBounds = await read(`(() => {
@@ -1186,15 +1176,7 @@ export async function attentionJourney(ctx) {
   // A transport-boundary failure on the later page: the app's own request for
   // the second page reaches the socket and the write fails, so that page errors
   // without a reconnect. The user then presses Load more again deliberately.
-  const focusedPortExpr = `${driver.paneScopeExpr(heldRef)}?.querySelector('[data-testid="transcript-virtual-list"] > div')`;
-  await wait(`(() => {
-    const port = ${focusedPortExpr};
-    if (!port) return null;
-    const stamp = String(port.scrollTop);
-    const previous = window.__attentionListSettle;
-    window.__attentionListSettle = stamp;
-    return previous === stamp ? true : null;
-  })()`, "the held reader's scroll is settled before the attention list opens");
+  await awaitNoOuterScrollOrResize("the held reader's scroll has settled before the attention list opens");
   const transportInstalled = await read(`(() => {
     const socket = (window.__cascadeSockets ?? []).find((candidate) => candidate.readyState === WebSocket.OPEN && new URL(candidate.url).pathname === '/rpc');
     if (!socket) return { ok: false };

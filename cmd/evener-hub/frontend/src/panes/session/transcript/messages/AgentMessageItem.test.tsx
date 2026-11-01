@@ -5,6 +5,7 @@ import type { ItemModel, TurnModel } from "@evener/appwire-client";
 import { render, screen, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { expect, test } from "vitest";
+import { readModuleCss } from "../../../../styles/cssBlock";
 import { SessionNowContext } from "../../liveness";
 import { ignoringTurn, itemRendererFor } from "../types";
 import { AgentMessageItem } from "./AgentMessageItem";
@@ -307,15 +308,13 @@ test("a live closer carries no terminal class - the wash is settled-only", () =>
 // a message from visibly resizing the instant it settles.
 
 test("sets --prose-font-size once, on the .bubble the live and settled prose share", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "agentmessageitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readModuleCss(import.meta.url, "agentmessageitem.module.css");
   expect(css.match(/--prose-font-size/g)).toHaveLength(1);
   expect(css).toMatch(/\.bubble\s*\{[^}]*--prose-font-size:\s*var\(--font-size-prose\);/);
 });
 
 test("the agent message keeps .message a bare layout row - the bubble treatment lives on .bubble, not the row", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "agentmessageitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readModuleCss(import.meta.url, "agentmessageitem.module.css");
   expect(css).toMatch(/\.message\s*\{[\s\S]*padding:\s*var\(--rhythm-line\)\s+0;/);
   expect(css).not.toMatch(/\.message\s*\{[^}]*background\s*:/);
   expect(css).not.toMatch(/\.message\s*\{[^}]*border\s*:/);
@@ -323,8 +322,7 @@ test("the agent message keeps .message a bare layout row - the bubble treatment 
 });
 
 test("the speaker avatar starts at the top of the agent message row", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "agentmessageitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readModuleCss(import.meta.url, "agentmessageitem.module.css");
   expect(css).toMatch(/\.opener\s*\{[\s\S]*align-items:\s*flex-start;/);
 });
 
@@ -336,8 +334,7 @@ test("the speaker avatar starts at the top of the agent message row", () => {
 // custom property from there (kata T9; Session.test.tsx's own "declared
 // exactly once" test covers the source side of this contract).
 test("the opener's gap resolves the tokens.css --speaker-gap", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "agentmessageitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readModuleCss(import.meta.url, "agentmessageitem.module.css");
   expect(css).toMatch(/\.opener\s*\{[\s\S]*gap:\s*var\(--speaker-gap\);/);
 });
 
@@ -376,8 +373,7 @@ test("agent prose is a document: the bubble wrapper has no fill, no radius, and 
   // typography-spacing-critique-2026-09-06 R9: with the column bounded, the
   // neutral wash behind every agent paragraph stopped doing any work. The
   // user's words keep their accent wash (usermessageitem.module.css).
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "agentmessageitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readModuleCss(import.meta.url, "agentmessageitem.module.css");
   const bubble = /\.bubble\s*\{([^}]*)\}/.exec(css);
   expect(bubble).not.toBeNull();
   expect(bubble![1]).not.toMatch(/background\s*:/);
@@ -391,8 +387,7 @@ test("the terminal closer carries the neutral wash: token-only fill, no hardcode
   // Option B: the exchange-concluding fragment only. Fill is the
   // chat-bubbles value (color-mix over --ink-mid), not a surface token
   // (invisible against the pane in the light theme) and never a literal.
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "agentmessageitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readModuleCss(import.meta.url, "agentmessageitem.module.css");
   const terminal = /\.terminal\s*\{([^}]*)\}/.exec(css);
   expect(terminal).not.toBeNull();
   expect(terminal![1]).toMatch(/background:\s*color-mix\(in oklab,\s*var\(--ink-mid\)\s*6%,\s*transparent\)/);
@@ -409,8 +404,7 @@ test("the terminal closer carries the neutral wash: token-only fill, no hardcode
 // same technique StreamingText.test.tsx uses for its own caret.
 
 test("the live stream keeps the blinking caret, as an inline bar at the end of the last markdown block (declaration-level)", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "agentmessageitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readModuleCss(import.meta.url, "agentmessageitem.module.css");
   const caret = /\.stream\s*>\s*div\s*>\s*:last-child::after\s*\{([^}]*)\}/.exec(css);
   expect(caret).not.toBeNull();
   expect(caret![1]).toContain("display: inline-block");
@@ -419,8 +413,7 @@ test("the live stream keeps the blinking caret, as an inline bar at the end of t
 });
 
 test("the stream caret's blink sits behind the reduced-motion gate, keeping the static bar (declaration-level)", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "agentmessageitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readModuleCss(import.meta.url, "agentmessageitem.module.css");
   const gate = /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{([\s\S]*?)\n\}/.exec(css);
   expect(gate).not.toBeNull();
   expect(gate![1]).toMatch(/\.stream\s*>\s*div\s*>\s*:last-child::after\s*\{[^}]*animation:\s*none/);
@@ -484,7 +477,7 @@ test("an exchange opener keeps its time inline in the speaker header - no stamp 
 // its containing block.
 test("the stamp is in-flow by default and leaves the flow only when the transcript list has room (declaration-level)", () => {
   const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "agentmessageitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readModuleCss(import.meta.url, "agentmessageitem.module.css");
   expect(css).toMatch(/\.message\s*\{[^}]*position:\s*relative/);
   const base = /\.stamp\s*\{([^}]*)\}/.exec(css);
   if (!base) throw new Error("no base .stamp rule outside the container queries");

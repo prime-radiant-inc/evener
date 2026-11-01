@@ -127,7 +127,7 @@ func TestEnsureStoppedProtocolOldRecoversUnlandedWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.interruptWrite = true
-	_, _, err = m.DeployForOperation(t.Context(), host, facts, false, nil)
+	_, _, err = m.DeployForOperation(t.Context(), host, facts, false, nil, nil)
 	if err == nil || s.deploys != 1 || s.starts != 0 || s.protocol != stoppedOldProtocol || !m.pendingRestart("alpha").deployment {
 		t.Fatalf("interrupted write: err=%v writes=%d starts=%d protocol=%q pending=%+v", err, s.deploys, s.starts, s.protocol, m.pendingRestart("alpha"))
 	}

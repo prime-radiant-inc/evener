@@ -52,7 +52,7 @@ func TestDelegateReportMessageSurvivesDeliveryRecovery(t *testing.T) {
 			sess := newCompetingCommunicateSession(t, nil)
 			execCommunicateCall(t, sess, "report", communicateArgsFor(nil, report, output))
 			reply, _ := sess.communicatedReply()
-			finish := stableDelegateFinish(sess, reply, nil)
+			finish := buildDelegateFinish(sess, reply, nil)
 			plans, err := c.FinishGeneration(lease, finish)
 			if err != nil {
 				t.Fatal(err)
@@ -89,7 +89,7 @@ func TestDelegateReportMessageSurvivesDeliveryRecovery(t *testing.T) {
 				}
 				assertDelegateReportMessage(t, delegateFinish{packet: resolution.packet}, report, output)
 				var result sendMessageResult
-				completeStableDelegateSendResult(&result, *resolution.packet)
+				completeDelegateSendResult(&result, *resolution.packet)
 				if result.Output != report || result.Action != "completed" {
 					t.Fatalf("inline result = %#v", result)
 				}
@@ -170,9 +170,9 @@ func TestDelegateReportMessagePreservesAcceptedCommunicate(t *testing.T) {
 			}
 			var finish delegateFinish
 			if method {
-				finish = (&subagent{sess: sess}).stableDelegateFinish(reply, nil)
+				finish = (&subagent{sess: sess}).buildDelegateFinish(reply, nil)
 			} else {
-				finish = stableDelegateFinish(sess, reply, nil)
+				finish = buildDelegateFinish(sess, reply, nil)
 			}
 			assertDelegateReportMessage(t, finish, report, output)
 			if finish.outcome != delegatestore.OutcomeCompleted {
@@ -209,7 +209,7 @@ func TestDelegateReportMessageShapes(t *testing.T) {
 				descriptor.ResultSchema = mustMarshalJSON(t, tc.schema)
 			}
 			reply, _ := sess.communicatedReply()
-			finish := (&subagent{sess: sess, stableDescriptor: &descriptor}).stableDelegateFinish(reply, nil)
+			finish := (&subagent{sess: sess, stableDescriptor: &descriptor}).buildDelegateFinish(reply, nil)
 			var expected any
 			if tc.present {
 				expected = tc.output
@@ -253,7 +253,7 @@ func TestDelegateReportMessageNonReportOutcomes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			sess := newCompetingCommunicateSession(t, nil)
 			execCommunicateCall(t, sess, "report", communicateArgsFor(nil, "Earlier human report", communicateDefaultEnvelope("Earlier summary", nil)))
-			for _, finish := range []delegateFinish{stableDelegateFinish(sess, "Run diagnostic", tc.err), (&subagent{sess: sess}).stableDelegateFinish("Run diagnostic", tc.err)} {
+			for _, finish := range []delegateFinish{buildDelegateFinish(sess, "Run diagnostic", tc.err), (&subagent{sess: sess}).buildDelegateFinish("Run diagnostic", tc.err)} {
 				assertDelegateReportMessage(t, finish, "Earlier human report", communicateDefaultEnvelope("Earlier summary", nil))
 				if finish.outcome != tc.outcome {
 					t.Fatalf("outcome = %s, want %s", finish.outcome, tc.outcome)
@@ -261,7 +261,7 @@ func TestDelegateReportMessageNonReportOutcomes(t *testing.T) {
 			}
 		})
 	}
-	assertDelegateReportMessage(t, stableDelegateFinish(nil, "No session diagnostic", nil), "No session diagnostic", nil)
+	assertDelegateReportMessage(t, buildDelegateFinish(nil, "No session diagnostic", nil), "No session diagnostic", nil)
 	inputs := delegateTerminalRunInputs{result: "Existing evidence", communicated: true, structuredResult: "value", structuredResultPresent: true}
 	before := inputs
 	inputs.captureCommunicateReport(nil)
@@ -271,7 +271,7 @@ func TestDelegateReportMessageNonReportOutcomes(t *testing.T) {
 }
 
 func TestDelegateReportMessageReusedRuntime(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	output := communicateDefaultEnvelope("First summary", map[string]any{"generation": 1})
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return communicateWithStructured("First human report", output) },
@@ -290,7 +290,7 @@ func TestDelegateReportMessageReusedRuntime(t *testing.T) {
 	waitForStableSupervisionRun(t, root, fixture.childID)
 	runtime := sub.sess
 	reply, _ := runtime.communicatedReply()
-	assertDelegateReportMessage(t, sub.stableDelegateFinish(reply, nil), "First human report", output)
+	assertDelegateReportMessage(t, sub.buildDelegateFinish(reply, nil), "First human report", output)
 	for index, input := range []string{"Next generation without report", "Next generation with provider error"} {
 		sendAndAcknowledge(t, root, fixture.delegateID, input)
 		waitForStableSupervisionRun(t, root, fixture.childID)
@@ -311,7 +311,7 @@ func TestDelegateReportMessageReusedRuntime(t *testing.T) {
 		if !errors.Is(runErr, wantErr) {
 			t.Fatalf("generation %d error = %v, want %v", index+2, runErr, wantErr)
 		}
-		finish := current.stableDelegateFinish(result, runErr)
+		finish := current.buildDelegateFinish(result, runErr)
 		if finish.outcome != delegatestore.OutcomeFailed {
 			t.Fatalf("outcome = %s, want failed", finish.outcome)
 		}

@@ -33,7 +33,7 @@ import {
 import type { AnyNotification, ConnectionState, InstanceListResponse } from "@evener/appwire-client";
 import { setTimeout as wait } from "node:timers/promises";
 import { expect, onTestFinished, vi } from "vitest";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 import { ComposerFocus } from "./session/composerFocus";
 import { shrinkingScroller } from "./session/dockCard";
 import { isStep } from "./session/transcriptRows";

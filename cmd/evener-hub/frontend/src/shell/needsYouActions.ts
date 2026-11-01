@@ -2,23 +2,27 @@ import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { keyID, NAVIGATION_SECTION_LIMIT, type ResourceKey } from "@evener/appwire-client/state/navigation";
 import { parseZoomParams } from "../panes/zoom/intent";
 import {
-  selectNeedsYouCount,
   selectNeedsYouRows,
   selectNextSectionOffset,
+  selectSectionCanDemand,
   selectSectionRemaining,
 } from "../stores/navigation/selectors";
 import { navigationStore } from "../stores/navigation/store";
 import { threadsStore } from "../stores/threads";
 import { openAttentionSession } from "./attentionHistory";
 import { chromeStore } from "./chromeStore";
-import { focusedSessionPaneId, focusedSessionRef } from "./focusedSession";
+import { focusedPaneDocument, focusedSessionPaneId, focusedSessionRef } from "./focusedSession";
 import { paletteStore } from "./palette/paletteController";
 import { existingConversationPaneLifetime } from "./paneLifetime";
 import { needsYouRefs, nextNeedsYouRef } from "./rail/needsYouCycle";
 import { observeRouteHistory } from "./routing";
 import { workspaceStore } from "./workspace";
 
-export type NeedsYouChoice = { summary: NavigationSessionSummary; selectable: boolean };
+export type NeedsYouChoice = {
+  summary: NavigationSessionSummary;
+  selectable: boolean;
+  refreshState: "refreshing" | "failed" | null;
+};
 export type NeedsYouSnapshot = {
   choices: readonly NeedsYouChoice[];
   nextRef: string | null;
@@ -97,6 +101,37 @@ export type NeedsYouControllerOptions = {
   observeOnSubscribe?: boolean;
 };
 
+/**
+ * Whether the needs-you section may ask for another page.
+ *
+ * Both the snapshot's `canLoadMore` and `runNext`'s one demand ask this, so a
+ * settled queue cannot keep offering an action that spends a read. The settled
+ * page, remaining count, failed boundary and manifest fallback are the shared
+ * navigation selector's rule; the populated retry is needs-you's own.
+ */
+function needsYouPages(state: ReturnType<typeof navigationStore.getState>) {
+  return [...state.resources.values()].filter(
+    (resource) => resource.key.kind === "section" && resource.key.section === "needs_you",
+  );
+}
+
+function needsYouCanDemand(state: ReturnType<typeof navigationStore.getState>): boolean {
+  const retryingPopulatedPage = needsYouPages(state).some(
+    (page) => page.loading && ((page.data as { sessions?: unknown[] } | null)?.sessions?.length ?? 0) > 0,
+  );
+  return retryingPopulatedPage || selectSectionCanDemand("needs_you", state);
+}
+
+// The next needs-you session after the focused one. While more of the queue is
+// unloaded, the last loaded row has no known successor: wrapping to the first
+// row would skip rows not yet read, so the answer is null until they load.
+function resolveNextRef(state: ReturnType<typeof navigationStore.getState>): string | null {
+  const refs = [...new Set(needsYouRefs(selectNeedsYouRows(state)))];
+  const focused = focusedSessionRef();
+  if (selectSectionRemaining("needs_you", state) > 0 && focused === refs.at(-1)) return null;
+  return nextNeedsYouRef(refs, focused);
+}
+
 export function createNeedsYouController(options: NeedsYouControllerOptions = {}): NeedsYouController {
   let actionSerial = 0;
   let disposed = false;
@@ -111,35 +146,23 @@ export function createNeedsYouController(options: NeedsYouControllerOptions = {}
     const state = navigationStore.getState();
     const rows = selectNeedsYouRows(state);
     const uniqueRows = [...new Map(rows.map((row) => [row.ref, row])).values()];
-    const choices = uniqueRows.map((summary) => {
+    const choices = uniqueRows.map((summary): NeedsYouChoice => {
       const pageKey = rowPageKey(summary.ref, state);
       const page = pageKey ? state.resources.get(pageKey) : undefined;
-      return { summary, selectable: !!page && !page.error && !page.stale };
+      let refreshState: NeedsYouChoice["refreshState"] = null;
+      if (page?.error) refreshState = "failed";
+      else if (page?.stale) refreshState = "refreshing";
+      return {
+        summary,
+        selectable: !!page && refreshState === null,
+        refreshState,
+      };
     });
-    const remaining = selectSectionRemaining("needs_you", state);
-    const hasManifest = !!state.manifest?.data;
-    const count = selectNeedsYouCount(state);
-    const refs = needsYouRefs(uniqueRows);
-    let nextRef = nextNeedsYouRef(refs, focusedSessionRef());
-    if (remaining > 0 && focusedSessionRef() === refs.at(-1)) nextRef = null;
-    const failed = [...state.resources.values()].some(
-      (resource) => resource.key.kind === "section" && resource.key.section === "needs_you" && !!resource.error,
-    );
-    const loading = [...state.resources.values()].some(
-      (resource) => resource.key.kind === "section" && resource.key.section === "needs_you" && resource.loading,
-    );
-    // A retry of a populated page keeps its rows while it is in flight and has
-    // cleared the error. If demand vanished then, the control would unmount and
-    // its visibility effect would cancel the very navigation that started the
-    // retry.
-    const retryingPopulatedPage = [...state.resources.values()].some(
-      (resource) =>
-        resource.key.kind === "section" &&
-        resource.key.section === "needs_you" &&
-        resource.loading &&
-        ((resource.data as { sessions?: unknown[] } | null)?.sessions?.length ?? 0) > 0,
-    );
-    const canLoadMore = retryingPopulatedPage || !hasManifest || failed || remaining > 0 || count > uniqueRows.length;
+    const nextRef = resolveNextRef(state);
+    const pages = needsYouPages(state);
+    const failed = pages.some((page) => !!page.error);
+    const loading = pages.some((page) => page.loading);
+    const canLoadMore = needsYouCanDemand(state);
     const canLoadInitialPage = !hasReadManifest && state.mode === "v3" && state.manifest?.loading === true;
     return Object.freeze({
       choices: Object.freeze(choices.map((choice) => Object.freeze(choice))),
@@ -161,7 +184,11 @@ export function createNeedsYouController(options: NeedsYouControllerOptions = {}
       next.choices.length === snapshot.choices.length &&
       next.choices.every((choice, index) => {
         const prior = snapshot.choices[index];
-        return prior?.summary === choice.summary && prior.selectable === choice.selectable;
+        return (
+          prior?.summary === choice.summary &&
+          prior.selectable === choice.selectable &&
+          prior.refreshState === choice.refreshState
+        );
       }) &&
       next.nextRef === snapshot.nextRef &&
       next.canLoadMore === snapshot.canLoadMore &&
@@ -253,10 +280,6 @@ export function createNeedsYouController(options: NeedsYouControllerOptions = {}
   // build the controller while it renders and still release every resource the
   // moment observation has begun. A controller built by a render React discards
   // never observes anything and has nothing to release.
-  const focusedPaneDocument = (): Document | null => {
-    const focused = workspaceStore.getState().focusedPaneId;
-    return focused ? (chromeStore.getState().paneDocuments.get(focused) ?? null) : null;
-  };
   const observeModalDocument = (doc: Document | null): void => {
     if (!doc || observedDocuments.has(doc) || !doc.documentElement) return;
     observedDocuments.add(doc);
@@ -368,10 +391,7 @@ export function createNeedsYouController(options: NeedsYouControllerOptions = {}
     const routeAtStart = routeSerial;
     let state = navigationStore.getState();
     const rows = selectNeedsYouRows(state);
-    let nextRef = nextNeedsYouRef(needsYouRefs(rows), focusedSessionRef());
-    const remaining = selectSectionRemaining("needs_you", state);
-    const uniqueRefs = needsYouRefs(rows);
-    if (remaining > 0 && focusedSessionRef() === uniqueRefs.at(-1)) nextRef = null;
+    let nextRef = resolveNextRef(state);
     if (
       !nextRef ||
       !rows.some((row) => {
@@ -381,24 +401,13 @@ export function createNeedsYouController(options: NeedsYouControllerOptions = {}
         return !!page && !page.error && !page.stale;
       })
     ) {
-      if (
-        state.mode === "unknown" ||
-        state.mode === "error" ||
-        remaining > 0 ||
-        selectNeedsYouCount(state) > rows.length ||
-        !state.manifest?.data ||
-        [...state.resources.values()].some((r) => r.key.kind === "section" && r.key.section === "needs_you" && r.error)
-      ) {
+      if (state.mode === "unknown" || state.mode === "error" || needsYouCanDemand(state)) {
         await demand(serial);
         state = navigationStore.getState();
         if (disposed || serial !== actionSerial) return;
         if (sourceIdentity() !== sourceAtStart || routeSerial !== routeAtStart || snapshot.blocked) return;
-        const freshRows = selectNeedsYouRows(state);
-        nextRef = nextNeedsYouRef(needsYouRefs(freshRows), focusedSessionRef());
-        const freshRefs = needsYouRefs(freshRows);
-        const freshRemaining = selectSectionRemaining("needs_you", state);
-        if (freshRemaining > 0 && focusedSessionRef() === freshRefs.at(-1)) nextRef = null;
-        if (!nextRef && freshRemaining > 0) return;
+        nextRef = resolveNextRef(state);
+        if (!nextRef && selectSectionRemaining("needs_you", state) > 0) return;
       }
     }
     if (!nextRef || sourceIdentity() !== sourceAtStart || routeSerial !== routeAtStart || snapshot.blocked) return;
@@ -409,7 +418,9 @@ export function createNeedsYouController(options: NeedsYouControllerOptions = {}
     openAttentionSession(nextRef);
   };
   const loadMore = async () => {
-    if (disposed || snapshot.blocked) return;
+    // The action's own availability decides: a complete queue must not spend a
+    // page read just because a stale control was pressed.
+    if (disposed || snapshot.blocked || !snapshot.canLoadMore) return;
     cancel();
     const serial = actionSerial;
     await demand(serial);

@@ -218,7 +218,7 @@ func TestEndpointAttachmentDoesNotOverrideListener(t *testing.T) {
 
 func TestEndpointInstalledUnsupportedStopsEnsureBeforeMutation(t *testing.T) {
 	host := hostreg.Host{Name: "selected", SSH: "remote"}
-	fr := &fakeRunner{runFn: cannedRun(map[string][]byte{"launch-check": []byte(`{"protocol":"older-protocol","version":"old","launch_flags":["api-log"]}`)}), startFn: goodStartFn(t)}
+	fr := &fakeRunner{runFn: cannedRun(map[remoteOp][]byte{opLaunchCheck: []byte(`{"protocol":"older-protocol","version":"old","launch_flags":["api-log"]}`)}), startFn: goodStartFn(t)}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{BuildBinary: writeStageBinary})
 	if ch, err := m.Ensure(t.Context(), host.Name); err != nil || ch == nil {
 		t.Fatalf("read-only attach: channel=%v err=%v", ch, err)

@@ -1,7 +1,8 @@
+import { deferred } from "@evener/appwire-client/testing/deferred";
 // @vitest-environment jsdom
 
 import type { ThreadModel } from "@evener/appwire-client";
-import { keyID } from "@evener/appwire-client/state/navigation";
+import { keyID, type ResourceState } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { capability, manifest, wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { afterEach, expect, test, vi } from "vitest";
@@ -15,6 +16,7 @@ import { activityDelegate } from "../stores/sessionActivityTestUtils";
 import { chromeStore, resetChromeStoreForTests } from "./chromeStore";
 import { focusedSessionRef } from "./focusedSession";
 import { createNeedsYouController, type NeedsYouController } from "./needsYouActions";
+import { installNeedsYouPage, needsYouRow, updateNeedsYouPage } from "./needsYouTestUtils";
 import { closePalette, openPalette, paletteStore } from "./palette/paletteController";
 import { conversationPaneLifetime } from "./paneLifetime";
 import * as routing from "./routing";
@@ -32,11 +34,12 @@ function whenNavigation(predicate: (state: ReturnType<typeof navigationStore.get
   });
 }
 
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => (resolve = done));
-  return { promise, resolve };
-}
+const seedSectionPage = (offset: number, refs: string[], patch: Partial<ResourceState<unknown>> = {}) =>
+  installNeedsYouPage(
+    offset,
+    refs.map((ref) => needsYouRow(ref)),
+    patch,
+  );
 
 async function heldNeedsYouPage() {
   const client = new FakeClient("ready");
@@ -357,7 +360,9 @@ test("next and select navigate the exact server-ordered reader while More leaves
     historyLength: window.history.length,
   };
   await controller.loadMore();
-  expect(pageReads).toEqual([0, 3]);
+  // The settled page reports nothing remaining and the manifest count matches
+  // its rows: the queue is complete, so More spends no read (#4912).
+  expect(pageReads).toEqual([0]);
   expect({
     pathname: window.location.pathname,
     focusedPaneId: workspaceStore.getState().focusedPaneId,
@@ -622,6 +627,9 @@ test("a stale resource blocks selection until its actual refreshed response rest
   await refreshStarted;
   expect(key).toBeDefined();
   expect(controller.getSnapshot().choices.find((choice) => choice.summary.ref === "local:b")?.selectable).toBe(false);
+  expect(controller.getSnapshot().choices.find((choice) => choice.summary.ref === "local:b")?.refreshState).toBe(
+    "refreshing",
+  );
   controller.select("local:b");
   expect(window.location.pathname).toBe(initialURL);
   expect(
@@ -637,6 +645,7 @@ test("a stale resource blocks selection until its actual refreshed response rest
       ),
   );
   expect(controller.getSnapshot().choices.find((choice) => choice.summary.ref === "local:b")?.selectable).toBe(true);
+  expect(controller.getSnapshot().choices.find((choice) => choice.summary.ref === "local:b")?.refreshState).toBeNull();
   const before = window.history.length;
   controller.select("local:b");
   expect(window.location.pathname).toBe("/s/local%3Ab");
@@ -645,6 +654,24 @@ test("a stale resource blocks selection until its actual refreshed response rest
     .panes.find((pane) => (pane.params as { ref?: string } | undefined)?.ref === "local:b");
   expect(workspaceStore.getState().focusedPaneId).toBe(b?.id);
   expect(window.history.length).toBe(before + 1);
+  controller.dispose();
+});
+
+test("a refresh-state change alone reaches the controller's subscribers", () => {
+  seedSectionPage(0, ["local:a"]);
+  seedSectionPage(50, ["local:failed"], { stale: true, error: new Error("held failure") });
+  seedSectionPage(100, ["local:loading"], { stale: true, loading: true });
+  seedSectionPage(150, ["local:flip"], { stale: true, loading: true });
+  const controller = createNeedsYouController();
+  let calls = 0;
+  controller.subscribe(() => calls++);
+
+  updateNeedsYouPage(150, { stale: true, loading: false, error: new Error("refresh failed") });
+
+  expect(calls).toBe(1);
+  expect(controller.getSnapshot().choices.find((choice) => choice.summary.ref === "local:flip")?.refreshState).toBe(
+    "failed",
+  );
   controller.dispose();
 });
 
@@ -1755,6 +1782,122 @@ test("a populated page's retry keeps demand available while it is in flight", as
   const controller = createNeedsYouController();
   expect(controller.getSnapshot().canLoadMore).toBe(true);
   controller.dispose();
+});
+
+// A settled page owns completion. The manifest refreshes on its own schedule,
+// so its count can lag behind a queue that has drained; letting it keep demand
+// alive offers Next and Load more over a finished queue, and pressing them
+// finds nothing.
+test("a settled needs-you page completes the queue despite a larger manifest count", async () => {
+  const client = new FakeClient("ready");
+  const sectionOffsets: number[] = [];
+  client.on("evener/navigation/read", (params) => {
+    if (params.resource === "manifest") {
+      return wireSnapshot(
+        params,
+        manifest({
+          generation_id: "settled-completion",
+          sections: { live: { count: 0 }, needs_you: { count: 3 }, pin_sections: { count: 0 } },
+        }),
+        '"manifest"',
+        1,
+        "settled-completion",
+      );
+    }
+    if (params.resource === "section") {
+      sectionOffsets.push(params.offset ?? -1);
+      return wireSnapshot(
+        params,
+        {
+          sessions: ["local:a", "local:b"].map((ref) => ({ ref })),
+          remaining: 0,
+        },
+        '"settled-page"',
+        1,
+        "settled-completion",
+      );
+    }
+    throw new Error(`unexpected resource ${params.resource}`);
+  });
+  navigationStore.init(client, capability("settled-completion"));
+  await whenNavigation(
+    (state) =>
+      !!state.manifest?.data &&
+      [...state.resources.values()].some(
+        (resource) => resource.key.kind === "section" && !resource.loading && !!resource.data,
+      ),
+  );
+
+  const controller = createNeedsYouController();
+  try {
+    expect(controller.getSnapshot().canLoadMore).toBe(false);
+    const readsAfterSettle = sectionOffsets.length;
+    await controller.loadMore();
+    expect(sectionOffsets).toHaveLength(readsAfterSettle);
+
+    // The settled rows still navigate: completion ends demand, not the queue.
+    await controller.next();
+    expect(window.location.pathname).toBe("/s/local%3Aa");
+  } finally {
+    controller.dispose();
+  }
+});
+
+// Next has its own demand path. A settled one-row queue with focus on that row
+// leaves Next no target, and the lagging manifest count must not send it
+// looking past the section's own end.
+test("next at the end of a settled one-row queue spends no page read", async () => {
+  const client = new FakeClient("ready");
+  const sectionOffsets: number[] = [];
+  client.on("evener/navigation/read", (params) => {
+    if (params.resource === "manifest") {
+      return wireSnapshot(
+        params,
+        manifest({
+          generation_id: "settled-one-row",
+          sections: { live: { count: 0 }, needs_you: { count: 3 }, pin_sections: { count: 0 } },
+        }),
+        '"manifest"',
+        1,
+        "settled-one-row",
+      );
+    }
+    if (params.resource === "section") {
+      sectionOffsets.push(params.offset ?? -1);
+      return wireSnapshot(
+        params,
+        {
+          sessions: [{ ref: "local:only" }],
+          remaining: 0,
+        },
+        '"settled-one-row-page"',
+        1,
+        "settled-one-row",
+      );
+    }
+    throw new Error(`unexpected resource ${params.resource}`);
+  });
+  navigationStore.init(client, capability("settled-one-row"));
+  await whenNavigation(
+    (state) =>
+      !!state.manifest?.data &&
+      [...state.resources.values()].some(
+        (resource) => resource.key.kind === "section" && !resource.loading && !!resource.data,
+      ),
+  );
+  const only = workspaceStore.getState().openPane("session", { ref: "local:only" });
+  workspaceStore.getState().focusPane(only);
+
+  const controller = createNeedsYouController();
+  try {
+    expect(controller.getSnapshot().nextRef).toBeNull();
+    const readsBefore = sectionOffsets.length;
+    await controller.next();
+    expect(sectionOffsets).toHaveLength(readsBefore);
+    expect(window.location.pathname).not.toContain("local%3Aonly");
+  } finally {
+    controller.dispose();
+  }
 });
 
 // Mod+J works before the first connection arrives. Navigation has no client

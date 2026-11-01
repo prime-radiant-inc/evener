@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -341,4 +342,21 @@ func TestCloseFileCloseError(t *testing.T) {
 func TestStampEndpointURLNilResponse(t *testing.T) {
 	StampEndpointURL(nil, "https://example.invalid/api", APILogCredentialMaterial{})
 	// No panic.
+}
+
+// NewAPILogger must refuse a target whose directory cannot exist because a
+// regular file occupies a path component: the error is the directory check's
+// own path error, and no logger comes back.
+func TestNewAPILoggerRejectsAnUnusableDirectory(t *testing.T) {
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, []byte("a file, not a directory"), 0o600); err != nil {
+		t.Fatalf("write blocker: %v", err)
+	}
+	logger, err := NewAPILogger(filepath.Join(blocker, "sub", "api.jsonl"))
+	if err == nil || logger != nil {
+		t.Fatalf("NewAPILogger under a file path = (%v, %v), want an error and no logger", logger, err)
+	}
+	if _, ok := errors.AsType[*fs.PathError](err); !ok {
+		t.Fatalf("err = %v, want the directory check's path error", err)
+	}
 }

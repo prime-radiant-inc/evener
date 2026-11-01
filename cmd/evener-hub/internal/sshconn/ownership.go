@@ -27,7 +27,7 @@ var errOwnerRootMismatch = fmt.Errorf("%w: same config selects a different state
 
 // selectedOwner is a read-only live-owner snapshot, not a restart command or
 // durable operation record. It grants no authority after any field changes.
-// Call revalidateOwnedEndpoint immediately before consuming it for mutation.
+// Call revalidateOwnedEndpointUsing immediately before consuming it for mutation.
 // Stopped pending replacements require a separate retained launch/service intent.
 type selectedOwner struct {
 	host        hostreg.Host
@@ -199,17 +199,9 @@ func (m *Manager) checkOwnerExecutable(ctx context.Context, host hostreg.Host, e
 	return m.hubExecutableMatches(ctx, host, executable)
 }
 
-// revalidateOwnedEndpoint redoes ownership and original-image capability rather
-// than inheriting authority from a PID or a newly replaced on-disk executable.
-// Listener TOML edits are not frozen, but a root, registration, owner, launch or
-// generation change invalidates this live snapshot.
-func (m *Manager) revalidateOwnedEndpoint(ctx context.Context, host hostreg.Host, facts Preflight, prior selectedOwner) (selectedOwner, error) {
-	return m.revalidateOwnedEndpointUsing(ctx, host, facts, prior, m.resolveHostEndpoint)
-}
-
 func (m *Manager) revalidateOwnedEndpointUsing(ctx context.Context, host hostreg.Host, facts Preflight, prior selectedOwner, read func(context.Context, hostreg.Host, Preflight) (hubendpoint.Report, error)) (selectedOwner, error) {
 	m.applyResolvedTarget(&host)
-	if !host.Equal(prior.host) || host.Generation != prior.host.Generation || host.IncarnationID != prior.host.IncarnationID || host.PresenceEpoch != prior.host.PresenceEpoch {
+	if !hostreg.SameRegistrationAndPresence(host, prior.host) {
 		return selectedOwner{}, fmt.Errorf("%w: host registration changed", errOwnerEvidence)
 	}
 	now, err := m.resolveOwnedEndpointUsing(ctx, host, facts, read)
@@ -223,7 +215,7 @@ func (m *Manager) revalidateOwnedEndpointUsing(ctx context.Context, host hostreg
 }
 
 func sameOwner(now, prior selectedOwner) bool {
-	return now.host.Equal(prior.host) && now.host.Generation == prior.host.Generation && now.host.IncarnationID == prior.host.IncarnationID && now.host.PresenceEpoch == prior.host.PresenceEpoch && sameProcess(now, prior) && sameLaunch(now, prior)
+	return hostreg.SameRegistrationAndPresence(now.host, prior.host) && sameProcess(now, prior) && sameLaunch(now, prior)
 }
 
 func sameProcess(now, prior selectedOwner) bool {

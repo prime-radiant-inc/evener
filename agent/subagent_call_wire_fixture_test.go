@@ -94,9 +94,9 @@ func subagentWireSession(t *testing.T, inspectParent ...func(llm.Request)) (*Ses
 		// The request carries the whole history, so only the generation the
 		// question started sees it.
 		if requestContainsText(req, subagentWireQuestion) {
-			return finalResponse(subagentWireReply)
+			return agenttest.FinalResponse(subagentWireReply)
 		}
-		return finalResponse(subagentWireFirstReply)
+		return agenttest.FinalResponse(subagentWireFirstReply)
 	}})
 	profile := withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2"))
 	workspace := realTempDirForTest(t)
@@ -158,7 +158,7 @@ func TestSubagentCallWireFixtures(t *testing.T) {
 			"intent": "Fix race in tree settle",
 		},
 	}.run(t, s)
-	var receipt stableDelegateCreateResult
+	var receipt delegateCreateResult
 	if err := json.Unmarshal([]byte(delegate.output), &receipt); err != nil || receipt.DelegateID == "" {
 		t.Fatalf("delegate receipt %q names no delegate: %v", delegate.output, err)
 	}
@@ -248,7 +248,7 @@ func TestSubagentCallWireEarlierResultsRequireParentObservation(t *testing.T) {
 				observationRequest(t, req, []string{subagentWireFirstReply}, []string{subagentWireReply})
 			})
 			created := subagentWireCall{id: "create", tool: "delegate", args: map[string]any{"prompt": "first-report-37a1"}}.run(t, s)
-			var receipt stableDelegateCreateResult
+			var receipt delegateCreateResult
 			if err := json.Unmarshal([]byte(created.output), &receipt); err != nil {
 				t.Fatal(err)
 			}
@@ -289,7 +289,7 @@ func TestSubagentCallWireEarlierResultsRequireParentObservation(t *testing.T) {
 // joinSubagentWireFirstReport captures generation one while its provider is
 // held. No sibling exists and neither caller admits generation two until this
 // returns, so the root WG joins exactly this executor and its cancellation tail.
-func joinSubagentWireFirstReport(t *testing.T, s *Session, receipt stableDelegateCreateResult, childRunning <-chan struct{}, answer func()) {
+func joinSubagentWireFirstReport(t *testing.T, s *Session, receipt delegateCreateResult, childRunning <-chan struct{}, answer func()) {
 	t.Helper()
 	waitForTestSignal(t, childRunning, "first wire child provider entry")
 	sub := s.getSub(receipt.ChildSessionID)

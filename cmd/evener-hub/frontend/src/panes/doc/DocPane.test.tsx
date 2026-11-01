@@ -20,7 +20,7 @@ import {
   useWorkspaceStore,
   workspaceStore,
 } from "../../shell/workspace";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { readModuleCss } from "../../styles/cssBlock";
 import DocPane from "./DocPane";
@@ -93,7 +93,7 @@ afterAll(
   }),
 );
 beforeEach(async () => {
-  connectionStore.setState({ state: "idle", client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
   cwd = "/work/a";
@@ -127,7 +127,7 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   cleanup();
-  connectionStore.setState({ state: "idle", client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   vi.useRealTimers();
   vi.restoreAllMocks();
@@ -166,7 +166,7 @@ async function publishCWD(next: string) {
 }
 
 test("the doc pane's markdown body text reads at the prose step, pinned on the pane's own host element", () => {
-  const css = readModuleCss(import.meta.url, "docpane.module.css").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readModuleCss(import.meta.url, "docpane.module.css");
   expect(css.match(/--prose-font-size/g)).toHaveLength(1);
   expect(css).toMatch(/\.markdown\s*\{[^}]*--prose-font-size:\s*var\(--font-size-prose\);/);
 });

@@ -1,0 +1,10 @@
+{
+  "description": "Real Comic pane reader gestures, host containment, safe-area clearance and keyboard recovery",
+  "cssFiles": ["styles/global.css"],
+  "viewport": { "width": 320, "height": 620, "mobile": true, "touch": true },
+  "mutation": {
+    "declaration": "Original pane allocation with 60px View row, full-size scene controls and separate mobile Session actions footer row",
+    "verified": "2026-10-27 against integrated 6b6cbf772df6b5bbec5bf629b4907c9db971d690 before the compact mobile repair",
+    "expect": "At both 320/390px widths and a 440px keyboard viewport, the 416px allocated pane has a zero-height reader while the footer consumes 215.78125px idle or 234.96875px running. Positive-reader assertions fail. The standalone picker no longer exists, and its prior mutations are not claimed by this pane fixture."
+  }
+}

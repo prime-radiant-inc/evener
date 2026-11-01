@@ -1,0 +1,133 @@
+import type { ComposerMention, InputAttachment, InputItem, MutationReceipt } from "@evener/appwire-client";
+import type { MutationAttachmentRef, MutationPersistenceSnapshot } from "@evener/appwire-client/state/mutation";
+
+export interface ConversationComposerSnapshot {
+	readonly text: string;
+	readonly attachments: readonly InputAttachment[];
+	readonly skillNames?: readonly string[];
+	readonly commandNames?: readonly string[];
+	readonly mentions?: readonly ComposerMention[];
+}
+
+export interface ConversationMutationContext {
+	readonly composer?: ConversationComposerSnapshot;
+	readonly recoverySourceIds?: readonly string[];
+	/** Local correlation for an unconfirmed draft capture; never sent to the daemon. */
+	readonly draftCaptureToken?: string;
+}
+
+interface ConversationMutationTarget extends ConversationMutationContext {
+	readonly hubId: string;
+	readonly targetRef: string;
+	readonly threadId: string;
+	readonly instanceId: string;
+	readonly input: InputItem[];
+	readonly expectedQueueRevision?: number;
+	// What the message's ghost shows when the input doesn't say: the queued
+	// messages a promote or drain steers with, which the hub already holds.
+	readonly display?: InputItem[];
+	/** A local, non-wire recheck run immediately before the durable enqueue and
+	 * again before a direct fallback request. A Retry passes one so a
+	 * retirement or a newer canonical outcome refuses before anything is
+	 * written or sent. Ordinary Send/Queue omit it. */
+	readonly precondition?: () => boolean;
+}
+
+// A promote steers with one queued message, which it must name; the hub
+// refuses one that doesn't, so the type catches it first.
+export type ConversationMutationRequest = ConversationMutationTarget &
+	(
+		| { readonly kind: "send" | "steer" | "queue" | "interrupt" }
+		| { readonly kind: "promote"; readonly queueEntry: { readonly index: number; readonly id: string } }
+	);
+
+export type ConversationMutationKind = ConversationMutationRequest["kind"];
+
+/** A mutation a local precondition proved was not sent: no durable row and no
+ * wire request were made. Distinct from an ordinary refusal or an uncertain
+ * wire outcome, so the draft can clear only this operation's own marker. */
+export class MutationNotSentError extends Error {
+	constructor(message = "This message was not sent.") {
+		super(message);
+		this.name = "MutationNotSentError";
+	}
+}
+
+/** The local result of a durable admission: the clientMutationId of the row
+ * the outbox committed at the enqueue boundary. The production runtime
+ * settles before the daemon answers, so the receipt is absent there and
+ * present only on the direct service path, which still returns one. */
+export interface ConversationMutationAdmission {
+	readonly clientMutationId: string;
+	readonly receipt?: MutationReceipt;
+}
+
+export interface ConversationMutationSubmitter {
+	submit(request: ConversationMutationRequest): Promise<ConversationMutationAdmission | undefined>;
+}
+
+// The durable pending-row seam a host wires for one conversation: the scoped
+// read of this target's outbox/optimistic records, the storage-change
+// subscription that follows them, and the client-ownership rule the shared
+// reconciliation asks for. The host owns the durable target key (native scopes
+// records by hub + conversation), so `targetRef` is the key the records carry -
+// not the wire ref the model names. The store never constructs one; it follows
+// whichever seam its host binds.
+export interface ConversationMutationPendingPort {
+	readonly targetRef: string;
+	// The pending projection reads only the two record families it projects;
+	// the recovery family belongs to the recovery surface, so the seam stays
+	// the caller's view of the same read rather than the whole snapshot.
+	read(): Promise<Pick<MutationPersistenceSnapshot<MutationAttachmentRef>, "outbox" | "optimistic">>;
+	subscribe(listener: () => void): () => void;
+	isOwnMutationRecord(record: { originClientId?: string }): boolean;
+	// Retires the durable records a live frame proves the daemon has moved past
+	// (notificationMutationIdentities: a recorded item, or a queue transition).
+	// A host that cannot settle from live frames omits this, and the store
+	// falls back to the authoritative-read settlement its host already owns.
+	settleIdentities?(clientMutationIds: readonly string[]): Promise<void>;
+}
+
+// The runtime surface the production pending-row seam adapts: the scoped
+// durable read (the runtime's `NativeMutationPersistenceRead.read`) and the
+// storage-change subscription it publishes. `NativeMutationRuntime` satisfies
+// this structurally, so the factory needs no native import and the landed
+// runtime is untouched.
+export interface ConversationMutationPendingRuntime {
+	read(targetRef: string): Promise<MutationPersistenceSnapshot<MutationAttachmentRef>>;
+	subscribeStorage(listener: (targetRefs: readonly string[]) => void): () => void;
+	settleIdentities?(clientMutationIds: readonly string[]): Promise<void>;
+}
+
+// Binds one conversation's durable outbox/optimistic records as the store's
+// pending rows, under the operator's client-owned ruling: the native outbox is
+// this app instance's own durable store (one process, one database, no
+// cross-tab sharing), so every record the scoped read returns for `targetRef`
+// is this client's own submission - a record a prior process stamped with an
+// earlier originClientId is still ours. That is exactly why the ruling
+// resolves cross-restart ownership without exposing the runtime's private
+// ClientIdentity: ownership is a fact about whose outbox the row sits in, not
+// about matching an identity token. `targetRef` is the composite storage key
+// (hub + conversation), never the wire ref, so the storage namespace stays
+// isolated from hub/ref identities.
+export function createConversationMutationPendingPort(
+	runtime: ConversationMutationPendingRuntime,
+	targetRef: string,
+): ConversationMutationPendingPort {
+	return {
+		targetRef,
+		read: async () => {
+			const snapshot = await runtime.read(targetRef);
+			return { outbox: snapshot.outbox, optimistic: snapshot.optimistic };
+		},
+		subscribe: (listener) =>
+			runtime.subscribeStorage((targetRefs) => {
+				if (targetRefs.includes(targetRef)) listener();
+			}),
+		// Client-owned: the durable outbox holds only this client's records.
+		isOwnMutationRecord: () => true,
+		...(runtime.settleIdentities === undefined
+			? {}
+			: { settleIdentities: (clientMutationIds: readonly string[]) => runtime.settleIdentities!(clientMutationIds) }),
+	};
+}

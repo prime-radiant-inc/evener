@@ -12,6 +12,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { memo, type ReactNode } from "react";
 import { afterEach, expect, test } from "vitest";
 import { accessibleName } from "../../../accessibleNameTestUtils";
+import { readModuleCss } from "../../../styles/cssBlock";
 import { TranscriptRenderProvider } from "../../../transcriptDisplay/renderContext";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { isItemLive, TurnBlock } from "./TurnBlock";
@@ -161,8 +162,7 @@ test("redacts a critical reasoning row on a terminal turn", () => {
 });
 
 test("the turn root remains a centered, shrinkable reading column", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "turnblock.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readModuleCss(import.meta.url, "turnblock.module.css");
   expect(css).toMatch(
     /\.turn\s*\{[\s\S]*width:\s*100%;[\s\S]*max-width:\s*var\(--session-measure\);[\s\S]*margin-inline:\s*auto;/,
   );
@@ -817,8 +817,7 @@ test("transcript chrome stays outside any wrapper: TurnSeparator and SeenDivider
 });
 
 test("the gutter indent is one media query at exactly 700px with padding-left: var(--speaker-gutter)", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "turnblock.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readModuleCss(import.meta.url, "turnblock.module.css");
   expect(css).toMatch(
     /@media\s*\(min-width:\s*700px\)\s*\{\s*\.runContent\s*\{\s*padding-left:\s*var\(--speaker-gutter\);\s*\}\s*\}/,
   );
@@ -834,8 +833,7 @@ test("an intent group's rule spans the turn column while its members take the gu
 });
 
 test("the speaker geometry is declared once on .turn: 34px gutter = 24px avatar + 10px gap", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "turnblock.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readModuleCss(import.meta.url, "turnblock.module.css");
   expect(css).toMatch(
     // Speaker geometry hoisted to tokens.css - .turn must NOT redeclare it.
     /\.turn\s*\{(?![\s\S]*--speaker-gap:)/,
@@ -847,8 +845,7 @@ test("the speaker geometry is declared once on .turn: 34px gutter = 24px avatar 
 // long child (a wide diff, an unwrapped token) from pinning the column wider
 // than the item that contains it.
 test("the turn column can shrink below its content's natural width", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "turnblock.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readModuleCss(import.meta.url, "turnblock.module.css");
   const turn = css.match(/\.turn \{([^}]*)\}/);
   expect(turn).not.toBeNull();
   expect(turn![1]).toContain("min-width: 0");

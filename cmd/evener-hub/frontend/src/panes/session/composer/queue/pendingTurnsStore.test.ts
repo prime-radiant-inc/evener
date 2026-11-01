@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
 
 import type { Thread, ThreadReadResponse } from "@evener/appwire-client";
+import { ownPendingTurnInput } from "@evener/appwire-client/state/mutation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { connectionStore } from "../../../../stores/connection";
+import { appliedReceipt } from "../../../../mutationReceiptTestUtils";
+import { connectionStore, resetConnectionStoreForTests } from "../../../../stores/connection";
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import type { MutationOutboxRecord } from "../../../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexedDB";
@@ -20,7 +22,6 @@ import { useColdStartSkeleton } from "../../coldStart";
 import { readComposerDraft, writeComposerDraft } from "../draft";
 import {
   discardRecoveryPendingTurn,
-  ownPendingTurnInputFor,
   pendingTurnEntries,
   refreshPendingTurnsProjection,
   resendRecoveryPendingTurn,
@@ -97,7 +98,7 @@ beforeEach(() => {
   globalThis.indexedDB = new IDBFactory();
   setMutationClientIdentityForTests(undefined);
   localStorage.clear();
-  connectionStore.setState({ state: "idle", client: null, serverInfo: undefined });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetPendingTurnsStoreForTests();
 });
@@ -1089,12 +1090,7 @@ test("an applied pending receipt settles transport without dropping optimistic s
   fake.on("turn/start", async (params) => {
     await receiptGate;
     return {
-      receipt: {
-        clientMutationId: params.clientMutationId,
-        disposition: "applied",
-        threadId: "thread_a",
-        projectionState: "pending",
-      },
+      receipt: appliedReceipt(params.clientMutationId, "thread_a", { projectionState: "pending" }),
       turn: { id: "turn_1", status: "inProgress", itemsView: "full" },
     };
   });
@@ -1326,10 +1322,9 @@ test("an authoritative assistant frame retires first-frame state by model identi
 
 // --- The activation-time view of the outbox owner ---------------------------
 //
-// `ownPendingTurnInputFor` is what continueTurn rechecks synchronously at
-// activation: the same projected entries a render holds, read from the stores
-// as they are now. The render's disabled state is a projection; this is the
-// live answer.
+// continueTurn rechecks synchronously at activation through the shared Retry
+// gate: the same projected entries a render holds, read from the stores as they
+// are now. The render's disabled state is a projection; this is the live answer.
 
 // Allocates a REAL durable outbox row through the same storage adapter the
 // runtime uses: the `clientMutationId` comes from the adapter, never a
@@ -1363,7 +1358,7 @@ test("the activation-time pending read follows rows published after the last ren
   await connect();
   const pending = renderHook(() => usePendingTurnEntries("ref_a"));
   await flushPendingTurnsProjectionForTests();
-  expect(ownPendingTurnInputFor("ref_a")).toBe(false);
+  expect(ownPendingTurnInput(pendingTurnEntries("ref_a"))).toBe(false);
   const captured = pending.result.current;
 
   let row!: MutationOutboxRecord;
@@ -1373,7 +1368,7 @@ test("the activation-time pending read follows rows published after the last ren
   // The render snapshot the action was drawn from is unchanged, while the
   // activation read sees the durable row and its identity.
   expect(captured).toEqual([]);
-  expect(ownPendingTurnInputFor("ref_a")).toBe(true);
+  expect(ownPendingTurnInput(pendingTurnEntries("ref_a"))).toBe(true);
   expect(pending.result.current.map((entry) => entry.id)).toContain(row.clientMutationId);
 });
 
@@ -1392,7 +1387,7 @@ test.each([
     row = await allocatePendingRow(storage, opts);
   });
   expect(pendingTurnEntries("ref_a").map((entry) => entry.id)).toContain(row.clientMutationId);
-  expect(ownPendingTurnInputFor("ref_a")).toBe(expected);
+  expect(ownPendingTurnInput(pendingTurnEntries("ref_a"))).toBe(expected);
 });
 
 test("the activation-time pending read clears once the durable row settles", async () => {
@@ -1407,11 +1402,11 @@ test("the activation-time pending read clears once the durable row settles", asy
     optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "pending" }] },
   });
   await refreshPendingTurnsProjection("ref_a");
-  expect(ownPendingTurnInputFor("ref_a")).toBe(true);
+  expect(ownPendingTurnInput(pendingTurnEntries("ref_a"))).toBe(true);
 
   await storage.settleApplied(record.clientMutationId);
   await refreshPendingTurnsProjection("ref_a");
-  expect(ownPendingTurnInputFor("ref_a")).toBe(false);
+  expect(ownPendingTurnInput(pendingTurnEntries("ref_a"))).toBe(false);
 });
 
 test("useRetryPendingState stays unloaded until the ref's durable read resolves", async () => {

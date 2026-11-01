@@ -19,6 +19,7 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"golang.org/x/sys/unix"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
 	"primeradiant.com/evener/test/e2e/fakellm"
 )
@@ -170,7 +171,7 @@ func pagingAwaitFile(ctx context.Context, watcher *fsnotify.Watcher, name string
 
 func runJobOutputPagingJourney(ctx context.Context, t *testing.T, stack *hubStack, provider *fakellm.Server) {
 	t.Helper()
-	artifacts, err := os.MkdirTemp(backgroundJobsArtifactRoot, "joboutputpagingguard-")
+	artifacts, err := os.MkdirTemp(backgroundJobsEvidenceRoot(), "joboutputpagingguard-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +200,7 @@ func runJobOutputPagingJourney(ctx context.Context, t *testing.T, stack *hubStac
 	}
 	client := stack.dialRPC(ctx, t)
 	rounds := 20
-	started, err := client.ThreadStart(ctx, appwire.ThreadStartParams{
+	started, err := appwiretest.ThreadStart(ctx, client, appwire.ThreadStartParams{
 		Harness: "evener", CWD: stack.workDir, Model: stack.model,
 		Input:           []appwire.InputItem{{Type: "text", Text: "JOB_OUTPUT_PAGING_PRODUCER"}},
 		LaunchOverrides: &appwire.LaunchConfigLayer{Sandbox: "off", MaxRounds: &rounds},

@@ -1,0 +1,98 @@
+{
+ "verdicts": [
+  {
+   "id": "native-tests-legacy-mobile-1",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "note": "mobile/ has only src/{services,state}, no package.json; 145 mobile-native files reference mobile/src, 121 import services/conversation; mobile/src/services/conversation.ts:40-41 imports mobile-native/src/projectedRows (10 back-imports), so the cycle is real. mobile-native package.json lint/format/test:shared, tsconfig.check.json include, metro.config.js:25, source-files.env:10, hooks_test.go, packageimportpaths_audit_test.go, make/*.mk, pre-commit and docs all name it. Real but config/naming overhead, not a bug source. Sequence after or with finding 2 so code that will be deleted is not moved."
+  },
+  {
+   "id": "native-tests-legacy-mobile-2",
+   "verdict": "confirmed",
+   "severity": "high",
+   "note": "No ActivitySheet component exists (only comments at activity.ts:2 and its test). Non-test code in mobile-native/src imports state/activity only at nativeConversationSessions.ts:14 and never reads .view. activity.ts:196 validateHierarchy throws ActivityProjectionError; services/conversation.ts:678 runs projectActivity inside readProjection; conversation.test.ts:1951 documents the throw failing all operations. generationForTest at state/activity.ts:79,446. Prod 422+450=872 lines, tests 1224+1590. createActivityStore appears in 12 files (not ~30), so migration is smaller. NotificationOutcome rereads are live behavior and need characterization first. Needs Jesse approval to delete."
+  },
+  {
+   "id": "native-tests-legacy-mobile-3",
+   "verdict": "confirmed",
+   "severity": "high",
+   "note": "createConversationStore spans 596-3660 (~3065 lines); rehydrate 2206-2612 (406), loadOlder 2612, applyNotification 3399; 40 inner functions and 26 let bindings inside the closure. createDrainScheduler is module-level. Pure row transforms (seatTransientWarnings 1160, reanchorTransientWarnings 1253, reconcileCrossTurnReissues 821, splitClusterAtAnchors 1125, capAndTruncate 1043) live in the closure. Move-only plan is sound."
+  },
+  {
+   "id": "native-tests-legacy-mobile-4",
+   "verdict": "partial",
+   "severity": "medium",
+   "note": "send (3092) and queue (3197) are near-identical: ~27 differing diff lines out of ~100 after normalizing the words. interrupt (3285) differs materially (null draftSnapshot, no draft clear), so a three-way runMutation is a weaker fit than claimed.",
+   "revised_fix_plan": "Extract a shared runMutation for send and queue only. Leave interrupt separate unless extraction falls out naturally. Guard with the existing parameterized tests at conversation.test.ts:1048."
+  },
+  {
+   "id": "native-tests-legacy-mobile-5",
+   "verdict": "confirmed",
+   "severity": "high",
+   "note": "conversation.test.ts is 20,457 lines with 426 it() calls (finding said 406) and 91 describes; 31 describes start with tracker labels; 'I1' appears four times (11865, 13030, 14334, 18910) and 'C1' three times (14285, 18327, 18881); 171 lines match round/Fix round/Residual/D18/D23; fixtures like outbox() are declared mid-file."
+  },
+  {
+   "id": "native-tests-legacy-mobile-6",
+   "verdict": "confirmed",
+   "severity": "low",
+   "note": "friction.md:148 links conversation.ts#L2017, which is inside openProjected (rehydrate starts at 2206). Tracker-prefix comments (F4:, C1:, I1:) are pervasive. Unused-export list not individually re-verified."
+  },
+  {
+   "id": "native-tests-legacy-mobile-7",
+   "verdict": "confirmed",
+   "severity": "low",
+   "note": "conversation.test.ts:12565 'Residual 4: no test-only mutable API' asserts flushScheduler undefined (12569, 12577); services/conversation.test.ts:1951 spies createActivityService to throw. The services spy disappears with finding 2."
+  },
+  {
+   "id": "native-tests-legacy-mobile-8",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "note": "vitestSetup.ts:56 mocks expo-symbols as { SymbolView: 'SymbolView' }; 97 identical per-file copies plus one that differs (SymbolView: () => null) which must not be blindly deleted. expo-crypto mocked in 53 files, vi.mock('react-native') 160 occurrences. Crypto mocks may exist to assert specific ids; diff before deleting."
+  },
+  {
+   "id": "native-tests-legacy-mobile-9",
+   "verdict": "partial",
+   "severity": "medium",
+   "note": "68 files use new FakeClient( (confirmed), but files with request: async/vi.fn and no FakeClient number 44, not ~62, and some may not be wire clients. as never/as unknown as occurs 1210 times. fakeClient.ts header documents the evener/dirs/complete rename rationale. hubModels.test.ts:5-7 and launchMcp.test.ts:28-33 are genuine bypass examples. Core point holds at smaller scale.",
+   "revised_fix_plan": "Migrate the named wire-method suites (hubModels, launchMcp, sessionDeletion, pinNavigation, hubUpdates, hosts, plugin count) to FakeClient; add a deferred-request mode only if two or more migrations need it. Re-measure before the sessionActivityHandlers helper."
+  },
+  {
+   "id": "native-tests-legacy-mobile-10",
+   "verdict": "partial",
+   "severity": "medium",
+   "note": "Confirmed examples: Composer.test.tsx:85 placeholder toBe('Tell the agent something\u2026'), useSheet.test.ts:45 ask?.title toBe('Discard this comment?'), tasksRead.test.ts:28 sentence toContain, BoardScreen.test.tsx:1033-1034 confirm title/message. SessionMenu.test.tsx:127-128 are menu-label presence checks that identify controls, a weaker violation. 144 accessibilityLabel toBe/toContain lines matched, many likely control lookup, so headline counts overstate violations.",
+   "revised_fix_plan": "Fix the confirmed phrase assertions (Composer, useSheet, tasksRead, BoardScreen confirm) first; triage the rest case by case."
+  },
+  {
+   "id": "native-tests-legacy-mobile-11",
+   "verdict": "partial",
+   "severity": "low",
+   "note": "tick duplicates in singleFlight.test.ts:4 and navigationPages.test.ts:117; navigationHubTestUtils.ts:71 exports one used elsewhere; settle() at renderNative.testkit.tsx:729 likely wraps act so is not byte-equivalent. Local mount defined in 59 files (not 75). Two naming conventions confirmed (*.testkit vs *TestUtils, 20 files)."
+  },
+  {
+   "id": "native-tests-legacy-mobile-12",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "note": "ConversationScreen.send.test.tsx 7195 lines/253 its, BoardScreen.test.tsx 5871/185, PluginsPage.test.tsx 3743/89; siblings .memoization/.recovery/.retryJourney/.sheets exist."
+  },
+  {
+   "id": "native-tests-legacy-mobile-13",
+   "verdict": "confirmed",
+   "severity": "low",
+   "note": "Line counts check: prod ~5,466, tests ~4,633. No package.json script or make target references demo-hub. Product decision for Jesse; no deletion without approval."
+  },
+  {
+   "id": "native-tests-legacy-mobile-14",
+   "verdict": "partial",
+   "severity": "low",
+   "note": "ConversationClientLike (services/conversation.ts:72) is a deliberately narrower structural type than AppwireClientLike (7 required members); tests build {request} as ConversationClientLike. Replacing it with AppwireClientLike would force larger fakes, the opposite of the stated impact. Importers: 108 mobile-native files, 6 non-test in mobile/src. The newSession.ts:113 re-export is a genuine pass-through.",
+   "revised_fix_plan": "Delete only the newSession.ts re-export and update its ~5 importers. Optionally move ConversationClientLike beside AppwireClientLike in appwire-client as a Pick-based alias; do not replace it with the full interface."
+  },
+  {
+   "id": "native-tests-legacy-mobile-15",
+   "verdict": "confirmed",
+   "severity": "low",
+   "note": "Nine appwire paths repeated in tsconfig.json:14-23 and tsconfig.check.json:9-33; sync tests are 56 and 80 lines. tsconfig.json comment says 'three entries' while nine are listed (stale)."
+  }
+ ]
+}

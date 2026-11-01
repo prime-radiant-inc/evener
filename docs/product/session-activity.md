@@ -19,6 +19,18 @@ with it open) marks it seen through the later of an unseen turn end and motion
 after that mark. The web reads that session's activity once per open for this,
 and a read whose connection was replaced is read again through the new one.
 
+The phone Board's pulse meter and quiet presentation, and the `lastMovedAt`
+behind the web's seen mark, come from a different, hub-level read:
+`evener/activity/read` — see the [session pulse meter](pulse-meter.md). It is
+not one of the `evener/thread/*` activity reads below and carries no delegate,
+job or watch rows.
+
+A working session is stuck after ten minutes without transcript motion, and
+never while one of its subagents runs. The web session pane, the phone tray and
+the phone Board all read that one rule from `@evener/appwire-client`
+(`isStuck`). The web's short quiet hint at twenty seconds is a separate, softer
+state that is not called stuck.
+
 Transcript delegate cards and status indicators use the same
 owner-qualified delegate entity projection as Activity. Retained transcripts do
 not require a live diagnostics roster to display authoritative delegate state.
@@ -73,6 +85,15 @@ its existing BoardController/NavigationPages delivery and shared decoding.
 Both reuse the [shared live tally selector](../../appwire-client/typescript/state/navigation/selectors.ts).
 Status does not reconstruct counts from loaded child rows or acquire activity
 collection demand. Hub aggregation and domain activity authority stay independent.
+
+The attention class itself comes from one precedence order, `attentionState` in
+the [shared client](../../appwire-client/typescript/sessionAttention.ts): offline
+or ended, failed, restart needed, a blocking warning, a question, an approval,
+awaiting, working, a nonblocking warning, then idle. The phone Board marks and
+state line, Board search marks, the browser's Cadence family and the
+notification level all read it. A pending approval never masks a failure, a
+restart need, an ended or not-loaded session; the hub states the same rule in
+`hubapi.AttentionState`, and both run the cases in `testdata/attention`.
 
 ## APIs and ownership
 
@@ -292,7 +313,7 @@ root as its owner. `evener/delegate/updated` reaches the root's thread and the
 thread of each live ancestor subagent, so an open subagent conversation keeps its
 rows current. A released ancestor gets no live updates; its next thread read
 lists the rows afresh. The [status roster](../../agent/status.go) and the
-[update routing](../../agent/delegate_runtime.go) define this boundary.
+[update routing](../../agent/delegate_activity_report.go) define this boundary.
 
 The [delegate projection](../../agent/session_activity_delegates.go),
 [recorded producer outcomes](../../agent/testdata/subagentwire/outcomes.json)
@@ -342,6 +363,27 @@ dispatched read may finish its bounded work. It does not disconnect other
 subscriptions or claim to cancel remote execution.
 
 ## Shared client responsibilities
+
+Comic Chat's `useComicActivity` observes `session` scope and the `delegates`
+collection only. Its root reader and each explicitly expanded child share this
+binding with other consumers. `buildEntityView` chooses the authoritative
+generation; the comic projection uses canonical transcript events only to place
+the matching owned strip. Missing causal history keeps the strip in a separate
+group, and ambiguous ownership never becomes an actionable child link.
+Child lifetime components live above virtual rows and release only their demand
+on collapse. The explicit full-page route remains available without an inline
+composer or approval submission. Activity headings use proven context
+`delegateName` fields, not ancestor titles or task descriptions. Transcript
+authorship comes separately from shared `ItemModel.authorship`: original authors
+survive inherited context, and missing authors stay neutral rather than borrowing
+the current child or parent. Neither path acquires a parent activity lease. Human questions
+and sandbox approvals remain interactive-root-only; model-facing delegate
+attention is not a human request. See [Comic Chat](comic-chat.md#inline-child-readers).
+
+The Comic full-page root uses the shared composer actions, AskDock and sandbox
+approval rail. Activity strips do not submit answers, grant approval or start a
+daemon. Route changes and late action settlement stay with their captured root
+ref; activity status does not transfer that ownership to a newly selected child.
 
 [`SessionActivityStore`](../../appwire-client/typescript/sessionActivityStore.ts)
 owns summary and collection demand, request coalescing, cursor recovery,
@@ -467,7 +509,7 @@ with incomplete relationship evidence. Rendering keys qualify resource IDs with
 their authoritative refs. Actions keep the raw logical ID: job output uses the
 returned job owner ref, delegate stopping addresses its controller root, and a
 child conversation opens the returned child ref. A rendering key never becomes an
-action argument. The [delegate stop handler](../../server/appwire_runtime.go)
+action argument. The [delegate stop handler](../../server/appwire_turn_handlers.go)
 checks that root mutation boundary. Optional usage fields stay absent when unknown.
 Job output panes keep the logical job ID as their title when descriptive
 metadata is unavailable, while independently readable output remains usable.
@@ -966,7 +1008,7 @@ object later returns; accepted model evidence remains useful during disconnect.
 [Stop-request display records](../../mobile-native/src/subagents/stopRequests.ts)
 use the authoritative child ref and raw delegate ID, so another source's equal
 ID cannot acquire that request's label or suppress its stop control.
-[Conversation reads](../../mobile/src/services/conversation.ts) and
+[Conversation reads](../../mobile-native/src/conversation/services/conversation.ts) and
 [session links](../../mobile-native/src/session/sessionMessage.ts) use the same
 additive thread lease as activity, preserving another holder when a screen closes.
 

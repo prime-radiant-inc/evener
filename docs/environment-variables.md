@@ -123,7 +123,7 @@ These are host conventions, not a second Evener configuration file:
 | --- | --- |
 | `HOME` | Fallback for user directories |
 | `XDG_CONFIG_HOME` | Config base, default `$HOME/.config`; Evener appends `/evener` |
-| `XDG_STATE_HOME` | State base, default `$HOME/.local/state`; Evener appends `/evener` |
+| `XDG_STATE_HOME` | State base, default `$HOME/.local/state`; Evener appends `/evener`. With neither set there is no state root and Evener reports it instead of using a temporary or relative directory |
 | `XDG_CACHE_HOME` | Cache base |
 | `PATH`, `SHELL` | Executable lookup and shell; session command environments can use the resolved login-shell PATH |
 | `GOCACHE`, `GOMODCACHE`, `GOPATH`, `GOENV` | Go tooling and sandbox cache resolution |

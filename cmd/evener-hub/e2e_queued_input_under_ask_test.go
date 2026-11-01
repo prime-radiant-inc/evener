@@ -7,10 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/evener/internal/e2ecap"
-
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/test/e2e/fakellm"
 )
 
 // TestE2E_QueuedInputRunsWhileAQuestionIsPending is the whole delivery path for
@@ -27,19 +24,7 @@ import (
 // The assertion is at the model boundary. A receipt says the daemon accepted
 // the message; the next model request is what proves it ran.
 func TestE2E_QueuedInputRunsWhileAQuestionIsPending(t *testing.T) {
-	e2ecap.RequireLoopbackBind(t)
-	e2ecap.RequireProcessInspect(t)
-	if testing.Short() {
-		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
-	}
-
-	provider, err := fakellm.New()
-	if err != nil {
-		t.Fatalf("start fake provider: %v", err)
-	}
-	t.Cleanup(provider.Close)
-
-	stack := startHubStack(t, provider)
+	stack, provider := startE2EHubStack(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()

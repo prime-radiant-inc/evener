@@ -220,12 +220,6 @@ func fuzzRegistryEdges(t *testing.T) {
 	if err := SaveRegistry(filepath.Join(root, "marshal.json"), Registry{}); err == nil {
 		t.Fatal("marshal fault succeeded")
 	}
-
-	var warnings bytes.Buffer
-	m := &Manager{Root: block, Stderr: &warnings}
-	if got := listOrWarn(context.Background(), m); got != nil || warnings.Len() == 0 {
-		t.Fatalf("listOrWarn = %#v, %q", got, warnings.String())
-	}
 }
 
 func fuzzGCDoctorEdges(t *testing.T) {

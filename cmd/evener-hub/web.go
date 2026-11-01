@@ -78,11 +78,7 @@ type WebServer struct {
 	// shutdown cancels it instead of leaving the child to outlive the hub.
 	// runMain overrides the Background default; a WebServer built elsewhere
 	// (tests) keeps it.
-	lifetime context.Context
-	// treeCache memoizes the shared tree projection used by the remaining
-	// mutation handlers. NavigationService owns AppWire navigation generations
-	// and captures its source directly rather than using this cache.
-	treeCache  *hubcore.TreeCache
+	lifetime   context.Context
 	manifestFS fs.FS
 
 	frontendHash              string
@@ -192,7 +188,6 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 		liveModels:                &modelsCache{},
 		launchModels:              &launchModelsCache{entries: map[string]*launchModelsEntry{}, refreshing: map[string]bool{}},
 		lifetime:                  context.Background(),
-		treeCache:                 &hubcore.TreeCache{},
 		manifestFS:                assetsRoot(),
 		frontendHash:              fHash,
 		deletionStoreErr:          deletionStoreErr,
@@ -247,7 +242,6 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 	// constructor: this is the one place that both built cfg.PluginManager
 	// and now has a broadcaster to give it.
 	wirePluginStoreBroadcast(web.cfg.PluginManager, server)
-	registerArchiveHandler(web.appRPC, web.cfg, web.sources, func() *NavigationService { return web.navigation })
 	registerProjectDeleteHandler(web.appRPC, web)
 	registerSessionDeleteHandler(web.appRPC, web.sessionDelete)
 	if deletionStoreErr == nil && recoveryStoreErr == nil {
@@ -411,7 +405,7 @@ func (s *WebServer) handleManifest(w http.ResponseWriter, r *http.Request) {
 }
 
 func localAppRef(threadID string) string {
-	return appwire.Ref{SourceID: "local", ThreadID: threadID}.String()
+	return appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: threadID}.String()
 }
 
 func appRefFromRouteID(id string) string {
@@ -426,12 +420,12 @@ func isLocalRouteID(id string) bool {
 	if err != nil {
 		return identifier.ValidateSessionID(id) == nil
 	}
-	return ref.SourceID == "local" && identifier.ValidateSessionID(ref.ThreadID) == nil
+	return ref.SourceID == appwire.LocalSourceID && identifier.ValidateSessionID(ref.ThreadID) == nil
 }
 
 func canonicalRouteID(id string) string {
 	ref, err := appwire.ParseRef(id)
-	if err != nil || ref.SourceID != "local" {
+	if err != nil || ref.SourceID != appwire.LocalSourceID {
 		return id
 	}
 	return ref.ThreadID

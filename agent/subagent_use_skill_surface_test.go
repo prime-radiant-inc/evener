@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"context"
 	"slices"
 	"testing"
 
@@ -33,6 +32,7 @@ func TestSubagentRegistryHasUseSkill(t *testing.T) {
 	for _, agentType := range []string{"", "subagent", "explorer"} {
 		s := newSession(t, withConfig(SessionConfig{
 			MaxSubagentDepth: 3,
+			StateDir:         t.TempDir(),
 			testOnly: testConfig{
 				skipGitSnapshot:     true,
 				minimalSystemPrompt: true,
@@ -41,14 +41,10 @@ func TestSubagentRegistryHasUseSkill(t *testing.T) {
 			},
 		}))
 		s.delegationAllowance = 1
-		prepared, err := s.prepareSubagentRun(context.Background(), "task", "", "", 0, agentType, "", nil, nil)
-		if err != nil {
-			t.Fatalf("prepareSubagentRun(agent_type=%q): %v", agentType, err)
-		}
+		prepared := prepareStableChild(t, s, delegateArgs{Task: "task", AgentType: agentType})
 		if prepared.sub.sess.reg.Get("use_skill") == nil {
 			t.Errorf("agent_type=%q: child registry has no use_skill", agentType)
 		}
-		releasePreparedTreeSlot(prepared)
 		prepared.sub.sess.Close()
 	}
 }

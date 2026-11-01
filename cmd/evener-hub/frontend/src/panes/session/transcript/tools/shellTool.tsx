@@ -20,12 +20,19 @@
 // (mapped by reducer.ts's wireItemToModel); it drives the generic failed-row
 // treatment in ToolCallItem, a distinct signal from a nonzero exit.
 
-import { parseArgs, shellCommand, shellOutput, shellSummary, stripRedundantCd } from "@evener/appwire-client";
+import {
+  AnsiTailBuffer,
+  parseArgs,
+  shellCommand,
+  shellOutput,
+  shellSummary,
+  stripRedundantCd,
+  tailFoldNote,
+} from "@evener/appwire-client";
 import { useRef } from "react";
 import { useThreadsStore } from "../../../../stores/threads";
 import { useOptionalTranscriptRenderContext } from "../../../../transcriptDisplay/renderContext";
 import { CodeBlock, ShellCommandBlock } from "../../../../widgets";
-import { AnsiTailBuffer } from "../../../../widgets/codeblock/ansi";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 import { TOOL_BODY_MAX_CHARS } from "./bodies";
@@ -87,11 +94,7 @@ function ShellBodyContent({ item, live, cwd, sessionRef }: ToolRenderProps) {
       {command !== "" && <ShellCommandBlock command={command} copyText={rawCommand} />}
       {renderedOutput !== undefined && (
         <CodeBlock
-          text={
-            live || !tail.truncated
-              ? renderedOutput
-              : `earlier output not retained — showing the last ${TOOL_BODY_MAX_CHARS.toLocaleString("en-US")} chars\n${renderedOutput}`
-          }
+          text={live || !tail.truncated ? renderedOutput : `${tailFoldNote(TOOL_BODY_MAX_CHARS)}\n${renderedOutput}`}
           copyText={tail.copyText}
           copyLabel="Copy output"
           ansi

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"regexp"
 	"slices"
 	"strings"
@@ -28,7 +29,7 @@ func TestNotificationIncidentReplay(t *testing.T) {
 
 func incidentShellResponse(id, fifo string) llm.Response {
 	args, _ := json.Marshal(map[string]any{"command": fmt.Sprintf("read value < %q", fifo), "mode": "background"})
-	return toolCallResponse(llm.ToolCallData{ID: id, Name: "shell", Type: "function", Arguments: args})
+	return agenttest.ToolCallResponse(llm.ToolCallData{ID: id, Name: "shell", Type: "function", Arguments: args})
 }
 
 func incidentRequestHas(req llm.Request, payload string) bool {
@@ -151,7 +152,7 @@ func incidentWatchFields(req llm.Request, watchID string) map[string]string {
 // each occur exactly once for this immutable source identity.
 func incidentNotificationFacts(t *testing.T, stateDir, sessionID, id string) {
 	t.Helper()
-	data, err := readTranscriptFull(transcriptPath(stateDir, sessionID), "")
+	data, err := readTranscriptFull(t.Context(), transcriptPath(stateDir, sessionID), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -432,14 +433,14 @@ func testNotificationIncidentReopen(t *testing.T) {
 	defer close(coordRelease)
 	fifo, releaseShell := waitProducerFIFO(t)
 	defer releaseShell()
-	a.script("root", func(llm.Request) llm.Response { return delegateToolResponse("incident-coordinator", coordKey) }, func(llm.Request) llm.Response { return finalResponse("initial-root-11") })
+	a.script("root", func(llm.Request) llm.Response { return delegateToolResponse("incident-coordinator", coordKey) }, func(llm.Request) llm.Response { return agenttest.FinalResponse("initial-root-11") })
 	var workerTarget string
 	var waitStep func(llm.Request) llm.Response
 	coordReport := make(chan llm.Request, 1)
 	waitStep = func(req llm.Request) llm.Response {
 		if incidentRequestHas(req, report) {
 			coordReport <- req
-			return finalResponse(result)
+			return agenttest.FinalResponse(result)
 		}
 		if workerTarget == "" {
 			workerTarget = deferredHeadDelegateID.FindString(lastToolResultText(req.Messages))
@@ -478,7 +479,7 @@ func testNotificationIncidentReopen(t *testing.T) {
 	coordRelease <- struct{}{}
 	incidentYielded(t, root, coord.ID(), observingCoord)
 	// Observe only real already-produced coordinator messages before the cut.
-	a.script("root", func(llm.Request) llm.Response { return finalResponse("initial-notices-11") })
+	a.script("root", func(llm.Request) llm.Response { return agenttest.FinalResponse("initial-notices-11") })
 	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 		t.Fatal(err)
 	}
@@ -501,7 +502,7 @@ func testNotificationIncidentReopen(t *testing.T) {
 	root.Close()
 	releaseShell()
 	workerRequest, rootRequest := make(chan llm.Request, 1), make(chan llm.Request, 1)
-	a.script(workerKey, func(req llm.Request) llm.Response { workerRequest <- req; return finalResponse(report) })
+	a.script(workerKey, func(req llm.Request) llm.Response { workerRequest <- req; return agenttest.FinalResponse(report) })
 	var rootStep func(llm.Request) llm.Response
 	rootStep = func(req llm.Request) llm.Response {
 		if incidentRequestHas(req, result) {
@@ -509,7 +510,7 @@ func testNotificationIncidentReopen(t *testing.T) {
 		} else {
 			a.script("root", rootStep)
 		}
-		return finalResponse("observed-root-11")
+		return agenttest.FinalResponse("observed-root-11")
 	}
 	a.script("root", rootStep)
 	restored := restoreWaitingCopy(t, root, copied)

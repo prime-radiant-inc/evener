@@ -12,7 +12,7 @@ import {
 } from "@evener/appwire-client";
 import type { LaunchConfigLayer, ModelDescriptor, Thread } from "@evener/appwire-client";
 import { LOCAL_HOST } from "@evener/appwire-client";
-import type { NewSessionService } from "../../mobile/src/services/newSession";
+import type { NewSessionService } from "./conversation/services/newSession";
 import { type CreationDraft, type CreationDraftRepository, creationDraftMetadata } from "./creationDraftRepository";
 import { type DraftImageData, imageInput } from "./draftImages";
 import { type LaunchSetup, modelFromId, moveToHost, setupOf, withOwnedOverrides } from "./newSession/launchSetup";

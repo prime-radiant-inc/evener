@@ -1,5 +1,5 @@
 // vitest.config.mts pins the bare dependencies the shared headless sources
-// import to this app's own install. mobile-native's suites load mobile/src and
+// import to this app's own install. mobile-native's suites load
 // cmd/evener-hub/frontend/src, and a checkout that also has the frontend's
 // node_modules would otherwise resolve a frontend source's `react` to the
 // frontend's copy while the suite holds this app's, putting two React copies in

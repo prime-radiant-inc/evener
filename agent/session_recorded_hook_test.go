@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
@@ -65,7 +66,7 @@ func TestRecordedHookSeesEveryEntryAcrossAttentionRecovery(t *testing.T) {
 	first := len(transcriptEntries(t, s))
 	s.SetTranscriptRecordedFunc(log.record)
 	args, _ := json.Marshal(map[string]any{"file_path": "missing.txt"})
-	adapter.script(respond(toolCallResponse(llm.ToolCallData{ID: "read-1", Name: "read_file", Arguments: args, Type: "function"})))
+	adapter.script(respond(agenttest.ToolCallResponse(llm.ToolCallData{ID: "read-1", Name: "read_file", Arguments: args, Type: "function"})))
 	if _, err := s.ProcessInput(context.Background(), "a tool round", nil); err != nil {
 		t.Fatal(err)
 	}

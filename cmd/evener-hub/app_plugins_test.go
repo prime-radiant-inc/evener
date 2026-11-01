@@ -477,10 +477,7 @@ func TestPlugins_Marketplace_EditRefusalsAreWireErrors(t *testing.T) {
 	}
 
 	_, err := ctl.EditMarketplace(context.Background(), appwire.MarketplaceEditParams{Name: "acme", NewName: "beta"})
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
-		t.Fatalf("rename onto a taken name = %v, want a Conflict wire error", err)
-	}
+	wire := requireWireError(t, err, appwire.CodeConflict)
 	_, err = ctl.EditMarketplace(context.Background(), appwire.MarketplaceEditParams{Name: "nope", NewName: "x"})
 	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
 		t.Fatalf("unknown marketplace = %v, want an InvalidParams wire error", err)

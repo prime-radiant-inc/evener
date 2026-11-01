@@ -94,17 +94,6 @@ function parseOffsetMinutes(zone: string): number | undefined {
   return sign * (hours * 60 + minutes);
 }
 
-export function formatThoughtDuration(durationMs: number): string {
-  if (durationMs === 0) return "0ms";
-  const rounded = Math.max(1, Math.round(durationMs));
-  if (durationMs < 1_000) return `${rounded}ms`;
-  if (durationMs < 10_000) {
-    const seconds = (rounded / 1_000).toFixed(1);
-    return `${seconds === "10.0" ? seconds : seconds.replace(/\.0$/, "")}s`;
-  }
-  return `${Math.round(rounded / 1_000)}s`;
-}
-
 function plainTextFromToken(token: Token): string {
   switch (token.type) {
     case "image":

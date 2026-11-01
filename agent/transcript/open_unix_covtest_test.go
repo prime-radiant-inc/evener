@@ -6,8 +6,7 @@ import (
 	"testing"
 )
 
-// TestOpenTranscriptAppendFile_NonRegular covers the non-regular-file branch
-// (open_unix.go:27-30): opening a device special file (which succeeds with
+// TestOpenTranscriptAppendFile_NonRegular covers the non-regular-file branch: opening a device special file (which succeeds with
 // O_RDWR|O_NOFOLLOW) and then detecting it is not a regular file.
 func TestOpenTranscriptAppendFile_NonRegular(t *testing.T) {
 	// /dev/null is a character device — open succeeds, but Stat().IsRegular()
@@ -21,8 +20,7 @@ func TestOpenTranscriptAppendFile_NonRegular(t *testing.T) {
 	}
 }
 
-// TestOpenTranscriptAppendFile_NotExist covers the open-error branch
-// (open_unix.go:14-15): a missing path returns an error.
+// TestOpenTranscriptAppendFile_NotExist covers the open-error branch: a missing path returns an error.
 func TestOpenTranscriptAppendFile_NotExist(t *testing.T) {
 	dir := t.TempDir()
 	missing := filepath.Join(dir, "nope.jsonl")

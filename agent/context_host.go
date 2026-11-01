@@ -19,7 +19,7 @@ type ctxHost struct{ s *Session }
 var _ contextmgr.Host = (*ctxHost)(nil)
 
 // Emit forwards an event to the session's emitter.
-func (h *ctxHost) Emit(kind events.EventKind, data events.EventData) { h.s.emit(kind, data) }
+func (h *ctxHost) Emit(_ events.EventKind, data events.EventData) { h.s.emit(data) }
 
 // WithResponseSideEffects runs fn under the session's response side-effect lock.
 func (h *ctxHost) WithResponseSideEffects(ctx context.Context, fn func()) error {

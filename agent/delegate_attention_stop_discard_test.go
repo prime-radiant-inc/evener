@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"reflect"
 	"sync"
 	"testing"
@@ -111,7 +112,7 @@ func testStopPermanentAncestorReachesRoot(t *testing.T) {
 		if found != 1 {
 			t.Errorf("root request carried original message %d times, want once", found)
 		}
-		return finalResponse("permanent-handoff-result-42")
+		return agenttest.FinalResponse("permanent-handoff-result-42")
 	}}
 	fixture.adapter.mu.Unlock()
 	result, cancelPlan, _, err := root.delegateController.StopSubtree(rootDelegateActor(root.ID()), fixture.delegateID)
@@ -155,16 +156,16 @@ func testSubtreeStopCustodyObservedAfterRelease(t *testing.T) {
 	defer releaseModel()
 	adapter.script("root", func(llm.Request) llm.Response {
 		return delegateToolResponse("stop-owner", "STOP-CUSTODY-731a")
-	}, func(llm.Request) llm.Response { return finalResponse("root-before-stop-731a") })
+	}, func(llm.Request) llm.Response { return agenttest.FinalResponse("root-before-stop-731a") })
 	adapter.script("STOP-CUSTODY-731a", func(llm.Request) llm.Response {
 		args, _ := json.Marshal(map[string]any{"command": fmt.Sprintf("read value < %q", fifo), "mode": "background"})
-		return toolCallResponse(llm.ToolCallData{ID: "stop-owned-shell", Name: "shell", Arguments: args, Type: "function"})
+		return agenttest.ToolCallResponse(llm.ToolCallData{ID: "stop-owned-shell", Name: "shell", Arguments: args, Type: "function"})
 	}, func(llm.Request) llm.Response {
-		return toolCallResponse(llm.ToolCallData{ID: "stop-watch", Name: "job_watch", Arguments: json.RawMessage(`{"operation":"create","source":"self","events":["assistant.tool"],"event_filter":{"tool_name":"read_file"},"note":"stop-produced-frame-731a"}`), Type: "function"})
+		return agenttest.ToolCallResponse(llm.ToolCallData{ID: "stop-watch", Name: "job_watch", Arguments: json.RawMessage(`{"operation":"create","source":"self","events":["assistant.tool"],"event_filter":{"tool_name":"read_file"},"note":"stop-produced-frame-731a"}`), Type: "function"})
 	}, func(llm.Request) llm.Response {
 		close(entered)
 		<-modelGate
-		return finalResponse("canceled-before-observation-731a")
+		return agenttest.FinalResponse("canceled-before-observation-731a")
 	}, func(req llm.Request) llm.Response {
 		observationRequest(t, req, []string{"stop-produced-frame-731a"}, nil)
 		contentMu.Lock()
@@ -184,7 +185,7 @@ func testSubtreeStopCustodyObservedAfterRelease(t *testing.T) {
 			}
 		}
 		observed <- struct{}{}
-		return finalResponse("observed-after-stop-release-731a")
+		return agenttest.FinalResponse("observed-after-stop-release-731a")
 	})
 	root := newMessagingRoot(t, adapter, nil)
 	ctx, cancel := context.WithCancel(t.Context())

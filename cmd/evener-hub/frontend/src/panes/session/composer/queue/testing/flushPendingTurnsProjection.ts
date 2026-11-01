@@ -48,7 +48,7 @@ export async function flushPendingTurnsProjectionForTests(): Promise<void> {
 // Gives a flush every chance to finish early: more macrotask hops than one of
 // its rounds takes to return when it sees no work. So a flush still pending
 // afterwards is waiting on work registered with the projection work tracker.
-async function outlastEmptyFlushRoundForTests(): Promise<void> {
+export async function outlastEmptyFlushRoundForTests(): Promise<void> {
   for (let hop = 0; hop < 5; hop += 1) {
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
   }

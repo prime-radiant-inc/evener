@@ -15,6 +15,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -104,8 +105,8 @@ func readFileTurn(t *testing.T, outside string) []func(llm.Request) llm.Response
 		Type:      "function",
 	}
 	return []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return toolCallResponse(call) },
-		func(llm.Request) llm.Response { return finalResponse("done") },
+		func(llm.Request) llm.Response { return agenttest.ToolCallResponse(call) },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("done") },
 	}
 }
 

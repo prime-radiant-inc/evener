@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
@@ -146,7 +147,7 @@ func TestDelegateStartupCarriesTheCurrentPromptOnce(t *testing.T) {
 // queue still holds the spawn-time plan. Re-announcing would duplicate it.
 func TestRestoreDoesNotRepeatPersistedPlanSteering(t *testing.T) {
 	t.Parallel()
-	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+	fixture := newColdDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
 		descriptor.TaskTemplates = []taskpkg.TaskTemplate{{
 			Title:  "Restored committed workflow",
 			Prompt: "Resume the committed workflow.",
@@ -209,7 +210,7 @@ func TestRestoreDoesNotRepeatPersistedPlanSteering(t *testing.T) {
 // announce the plan rather than treating the tasks as proof.
 func TestRestoreAnnouncesAPlanThatWasNeverDelivered(t *testing.T) {
 	t.Parallel()
-	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+	fixture := newColdDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
 		descriptor.TaskTemplates = []taskpkg.TaskTemplate{{
 			Title:  "Crash-window workflow",
 			Prompt: "CRASH_WINDOW_PROMPT",
@@ -259,7 +260,7 @@ func TestRestoreAnnouncesAPlanThatWasNeverDelivered(t *testing.T) {
 // the transcript. Restore must find it there and stay silent.
 func TestRestoreSeesADeliveredPlanInTheTranscript(t *testing.T) {
 	t.Parallel()
-	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+	fixture := newColdDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
 		descriptor.TaskTemplates = []taskpkg.TaskTemplate{{
 			Title:  "Delivered workflow",
 			Prompt: "DELIVERED_PROMPT",
@@ -421,7 +422,7 @@ func newDelegateStartupFixture(t *testing.T) (*Session, *fakeAdapter) {
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(llm.Request) llm.Response{
-			func(llm.Request) llm.Response { return finalResponse("child done") },
+			func(llm.Request) llm.Response { return agenttest.FinalResponse("child done") },
 		},
 	}
 	client := llm.NewClient()

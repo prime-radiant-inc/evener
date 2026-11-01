@@ -5,7 +5,7 @@
 // a place's last answer stays while it is asked again.
 import type { AnyNotification } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
-import type { ConversationClientLike, NewSessionService } from "../../../mobile/src/services/newSession";
+import type { ConversationClientLike, NewSessionService } from "../conversation/services/newSession";
 import { creationService } from "./creations";
 
 /** `read` must be a stable function (declared at module level), or the page

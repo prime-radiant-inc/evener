@@ -1,14 +1,7 @@
+import { ALL_CAPABILITIES as CAPABILITIES, type TestThreadOverrides, testThread } from "../threadTestUtils";
 import "fake-indexeddb/auto";
-import type {
-  AnyNotification,
-  ConnectionState,
-  QueueState,
-  Thread,
-  ThreadCapabilities,
-  ThreadReadResponse,
-  ThreadSubscriptionLease,
-} from "@evener/appwire-client";
-import { acquireThreadSubscription, RequestTimeoutError } from "@evener/appwire-client";
+import type { AnyNotification, ThreadReadResponse, ThreadSubscriptionLease } from "@evener/appwire-client";
+import { acquireThreadSubscription, RequestTimeoutError, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { act, cleanup, renderHook } from "@testing-library/react";
@@ -22,14 +15,15 @@ import {
   useSubagentRow,
 } from "../panes/session/transcript/tools/subagentModuleStore";
 import { resetWorkspaceStoreForTests } from "../shell/workspace";
-import { connectionStore } from "./connection";
+import { connectReadyFakeClient } from "../testing/connectionTestUtils";
+import { connectionStore, resetConnectionStoreForTests } from "./connection";
+import { setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { SessionEntryCache } from "./sessionEntryCache";
 import {
   installHydrationRetrySchedulerForTests,
   resetThreadsStoreForTests,
   setMutationStorageForTests,
-  setProductionEntryCacheForTests,
   threadsStore,
 } from "./threads";
 
@@ -51,53 +45,6 @@ async function flushUntil(done: () => boolean, maxTurns = 20): Promise<void> {
 }
 
 const settleCallerContinuations = nextMacrotask;
-
-const CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
-
-type TestThreadOverrides = Omit<Partial<Thread>, "evener"> & {
-  evener?: Omit<Thread["evener"], "queue"> & { queue: Partial<QueueState> };
-};
-
-function testThread(ref: string, overrides: TestThreadOverrides = {}): Thread {
-  const { evener, ...threadOverrides } = overrides;
-  const threadID = threadOverrides.id ?? `thr_${ref}`;
-  return {
-    id: threadID,
-    sessionId: `sess_${ref}`,
-    preview: "test",
-    ephemeral: false,
-    modelProvider: "anthropic/claude-sonnet-4-5",
-    createdAt: 1000,
-    updatedAt: 1000,
-    status: { type: "idle" },
-    cwd: "/tmp/project",
-    cliVersion: "1.0.0",
-    source: "evener",
-    evener: {
-      ref,
-      instanceId: threadID,
-      mutationStateAuthoritative: true,
-      capabilities: CAPABILITIES,
-      ...evener,
-      queue: { revision: 0, ...evener?.queue },
-    },
-    ...threadOverrides,
-  };
-}
 
 function readResponse(ref: string, overrides: TestThreadOverrides = {}): ThreadReadResponse {
   return { thread: testThread(ref, overrides) };
@@ -196,12 +143,6 @@ function sameEpochReconnectFixture() {
 // connectFakeClient wires a fresh FakeClient through useConnectionStore's
 // locked connect(client) entry point — the same path threads.ts's
 // requireClient() rides to reach the client (see connection.ts).
-function connectFakeClient(state: ConnectionState = "ready"): FakeClient {
-  const fake = new FakeClient(state);
-  connectionStore.getState().connect(fake);
-  return fake;
-}
-
 interface ScheduledHydrationRetry {
   attempt: number;
   retry: () => void;
@@ -224,7 +165,7 @@ function runScheduledHydrationRetry(index = 0): void {
 let cache: SessionEntryCache;
 let mutations: MutationOutboxIndexedDB;
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetPendingTurnsStoreForTests();
   resetWorkspaceStoreForTests();
@@ -256,7 +197,7 @@ afterEach(() => {
 
 describe("useThreadsStore.watchThread", () => {
   test("an initial watched snapshot supersedes notifications buffered before its response", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let resolveRead: ((response: ThreadReadResponse) => void) | null = null;
     fake.on(
       "thread/read",
@@ -283,8 +224,29 @@ describe("useThreadsStore.watchThread", () => {
     expect(threadsStore.getState().watchedThreads.get("ref_a")?.status).toEqual({ type: "active" });
   });
 
+  test("a watched refresh answered history-failed marks the watched model failed and arms no retry", async () => {
+    const a = connectReadyFakeClient();
+    a.on("thread/read", () => readResponse("ref_a", { name: "Held" }));
+    await threadsStore.getState().watchThread("ref_a", { includeTurns: true });
+
+    const b = new FakeClient("ready");
+    b.on("thread/read", () => {
+      throw new WireError("thread history failed at entry 3", -32000, { evenerErrorInfo: "transcriptHistoryFailed" });
+    });
+    connectionStore.getState().connect(b);
+    await flushUntil(() => threadsStore.getState().watchedThreads.get("ref_a")?.history?.failed !== undefined);
+
+    // The failure rides the watched model, keeps the content already held, and
+    // is not a transport hiccup: no retry is armed and no pane model appears.
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.history?.failed).toBeDefined();
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.name).toBe("Held");
+    expect(scheduledHydrationRetries).toHaveLength(0);
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+    threadsStore.getState().releaseWatchedThread("ref_a");
+  });
+
   test("a watched refresh preserves a live active turn omitted by the snapshot cut", async () => {
-    const a = connectFakeClient();
+    const a = connectReadyFakeClient();
     a.on("thread/read", () =>
       versionedReadResponse("ref_a", {
         turns: [{ id: "turn_m5", status: "completed", itemsView: "full", items: [] }],
@@ -392,7 +354,7 @@ describe("useThreadsStore.watchThread", () => {
   });
 
   test("a watched refresh does not preserve a same-numbered turn from a replaced instance", async () => {
-    const a = connectFakeClient();
+    const a = connectReadyFakeClient();
     a.on("thread/read", () =>
       versionedReadResponse("ref_a", {
         turns: [{ id: "turn_m5", status: "completed", itemsView: "full", items: [] }],
@@ -436,7 +398,7 @@ describe("useThreadsStore.watchThread", () => {
   });
 
   test("restarts a pending initial watched hydrate on a client swap and waits for the new client's model", async () => {
-    const a = connectFakeClient();
+    const a = connectReadyFakeClient();
     const aRead: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
     a.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => (aRead.resolve = resolve)));
 
@@ -494,7 +456,7 @@ describe("useThreadsStore.watchThread", () => {
   });
 
   test("re-hydrates a watched same-client epoch from its authoritative response cut", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const reads: Array<(response: ThreadReadResponse) => void> = [];
     fake.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => reads.push(resolve)));
     const { authoritativeSnapshot, completion, turnCompleted } = sameEpochReconnectFixture();
@@ -528,7 +490,7 @@ describe("useThreadsStore.watchThread", () => {
   });
 
   test("hydrates via thread/read with includeTurns:false and routes a subsequent matching notification", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("thread/read", (params) => {
       expect(params).toEqual({
         ref: "ref_a",
@@ -555,7 +517,7 @@ describe("useThreadsStore.watchThread", () => {
   });
 
   test("a second watchThread(ref) does not re-read", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("thread/read", () => readResponse("ref_a"));
 
     await threadsStore.getState().watchThread("ref_a");
@@ -575,7 +537,7 @@ describe("useThreadsStore.watchThread", () => {
   // fence therefore pass, and the epoch is the only thing left that says this
   // snapshot was cut on a connection nobody is subscribed to any more.
   test("a watched read resolving after a client swap publishes nothing until the live client answers", async () => {
-    const a = connectFakeClient();
+    const a = connectReadyFakeClient();
     const staleRead: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
     a.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => (staleRead.resolve = resolve)));
 
@@ -607,7 +569,7 @@ describe("useThreadsStore.watchThread", () => {
   });
 
   test("a failed watched read keeps the watcher claim and leaves the ref untracked until release", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let readAttempts = 0;
     fake.on("thread/read", () => {
       readAttempts += 1;
@@ -627,7 +589,7 @@ describe("useThreadsStore.watchThread", () => {
   });
 
   test("same-ready watched read failure retries while watcher ownership remains", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let readAttempts = 0;
     fake.on("thread/read", () => {
       readAttempts += 1;
@@ -661,7 +623,7 @@ describe("useThreadsStore.watchThread", () => {
   });
 
   test("watchThread and ensureThread are refcounted independently - releasing one never affects the other's tracking", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("thread/read", () => readResponse("ref_a"));
 
     await threadsStore.getState().ensureThread("ref_a");
@@ -686,7 +648,7 @@ describe("useThreadsStore.watchThread", () => {
   });
 
   test("a notification is delivered to both a real pane and a watch on the same ref", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("thread/read", () => readResponse("ref_a"));
     await threadsStore.getState().ensureThread("ref_a");
     await threadsStore.getState().watchThread("ref_a");
@@ -703,7 +665,7 @@ describe("useThreadsStore.watchThread", () => {
   });
 
   test("releaseWatchedThread refcounts watchers; stops tracking only when the last watcher releases", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("thread/read", () => readResponse("ref_a"));
     await threadsStore.getState().watchThread("ref_a");
     await threadsStore.getState().watchThread("ref_a");
@@ -720,7 +682,7 @@ describe("useThreadsStore.watchThread", () => {
   });
 
   test("a watched ref is not re-subscribed on reconnect once released, same as a real pane", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("thread/read", (params) => readResponse((params as { ref: string }).ref));
     await threadsStore.getState().watchThread("ref_a");
     threadsStore.getState().releaseWatchedThread("ref_a");
@@ -737,7 +699,7 @@ describe("useThreadsStore.watchThread", () => {
   });
 
   test("onReady re-subscribes every tracked watch additively, replacing its model wholesale, independent of ensureThread's own refs", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let readCount = 0;
     fake.on("thread/read", (params) => {
       readCount += 1;
@@ -766,7 +728,7 @@ describe("useThreadsStore.watchThread", () => {
   });
 
   test("a thread resync preserves a watched ref's rich authoritative replacement", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const replacementRead: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
     let readCount = 0;
     fake.on("thread/read", () => {
@@ -818,7 +780,7 @@ describe("useThreadsStore.watchThread", () => {
   });
 
   test("repeated thread resyncs keep rich watched hydration newest-wins in one epoch", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await establishMembership(fake);
     const reads: Array<{
       includeTurns: boolean;
@@ -873,7 +835,7 @@ describe("useThreadsStore.watchThread", () => {
   });
 
   test("a rich watched hydration rejection follows its same-epoch resync replacement", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await establishMembership(fake);
     const reads: Array<{
       includeTurns: boolean;
@@ -921,7 +883,7 @@ describe("useThreadsStore.watchThread", () => {
   });
 
   test("a rich watched lifecycle follows a newest resync after its failed predecessor cleared ownership", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await establishMembership(fake);
     const reads: Array<{
       includeTurns: boolean;
@@ -977,7 +939,7 @@ describe("useThreadsStore.watchThread", () => {
   });
 
   test("a published newest rich watched resync survives later superseded rejections", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await establishMembership(fake);
     const reads: Array<{
       includeTurns: boolean;
@@ -1028,7 +990,7 @@ describe("useThreadsStore.watchThread", () => {
   });
 
   test("a watch released before its in-flight hydrate resolves is not resurrected", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const box: { resolveRead: ((resp: ThreadReadResponse) => void) | null } = { resolveRead: null };
     fake.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => (box.resolveRead = resolve)));
 
@@ -1055,7 +1017,7 @@ describe("useThreadsStore.watchThread", () => {
   }
 
   test("watchThread(ref, { includeTurns: true }) hydrates with turns populated", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     turnsAwareRead(fake);
 
     await threadsStore.getState().watchThread("ref_a", { includeTurns: true });
@@ -1066,7 +1028,7 @@ describe("useThreadsStore.watchThread", () => {
   });
 
   test("a lean watch followed by a { includeTurns: true } call upgrades: turns become populated despite the .has(ref) short-circuit", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     turnsAwareRead(fake);
 
     await threadsStore.getState().watchThread("ref_a"); // lean first: no turns
@@ -1080,7 +1042,7 @@ describe("useThreadsStore.watchThread", () => {
   });
 
   test("a concurrent rich watch does not share an in-flight lean hydrate or lose its turns", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await establishMembership(fake);
     const pending: Array<{
       includeTurns: boolean;
@@ -1115,7 +1077,7 @@ describe("useThreadsStore.watchThread", () => {
   });
 
   test("a rejected shared hydrate keeps the mounted watcher claim and retries for it", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const pending: Array<{
       resolve: (response: ThreadReadResponse) => void;
       reject: (error: Error) => void;
@@ -1155,7 +1117,7 @@ describe("useThreadsStore.watchThread", () => {
   });
 
   test("a rich upgrade wins over a slower lean reconnect hydrate", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let readCount = 0;
     const pending: Array<{
       includeTurns: boolean;
@@ -1197,7 +1159,7 @@ describe("useThreadsStore.watchThread", () => {
   });
 
   test("a new watcher starts a fresh hydrate after the previous lifecycle is released", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await establishMembership(fake);
     const pending: Array<(response: ThreadReadResponse) => void> = [];
     fake.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => pending.push(resolve)));
@@ -1227,7 +1189,7 @@ describe("useThreadsStore.watchThread", () => {
   });
 
   test("monotonic: once turns are loaded, a later lean watch does not downgrade them away", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     turnsAwareRead(fake);
 
     await threadsStore.getState().watchThread("ref_a", { includeTurns: true });
@@ -1239,7 +1201,7 @@ describe("useThreadsStore.watchThread", () => {
   });
 
   test("releasing the last watcher clears the per-ref includeTurns flag so a fresh watch starts lean again", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     turnsAwareRead(fake);
 
     await threadsStore.getState().watchThread("ref_a", { includeTurns: true });

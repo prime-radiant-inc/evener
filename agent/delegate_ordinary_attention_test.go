@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"slices"
 	"sync"
 	"testing"
@@ -14,7 +15,7 @@ import (
 
 // Ordinary missing-report errors still clean up owned work, but only attention
 // not presented before that generation ended needs a successor generation.
-func TestStableDelegateUpdate_OrdinaryEndAttention(t *testing.T) {
+func TestDelegateUpdate_OrdinaryEndAttention(t *testing.T) {
 	t.Parallel()
 	for _, ending := range []struct {
 		name     string
@@ -77,7 +78,7 @@ func TestStableDelegateUpdate_OrdinaryEndAttention(t *testing.T) {
 				root.SetDescendantEventFunc(recorder.record)
 
 				adapter.finiteScript(childMarker, func(context.Context, llm.Request) (llm.Response, error) {
-					return finalResponse(childReport), nil
+					return agenttest.FinalResponse(childReport), nil
 				})
 				adapter.finiteScript(middleMarker,
 					func(context.Context, llm.Request) (llm.Response, error) {
@@ -108,7 +109,7 @@ func TestStableDelegateUpdate_OrdinaryEndAttention(t *testing.T) {
 						if !requestContainsText(req, childReport) {
 							t.Error("successor request omitted the actual grandchild packet")
 						}
-						return finalResponse("grandchild result handled"), nil
+						return agenttest.FinalResponse("grandchild result handled"), nil
 					})
 				}
 
@@ -255,7 +256,7 @@ func requireOrdinaryChildCustody(t *testing.T, tree realDelegateTree) string {
 // receipts, and require exactly one custody turn and one consumed resolution.
 func requireOrdinaryAttentionReceipts(t *testing.T, middle *Session, adapter *messagingAdapter, key, attentionID string) {
 	t.Helper()
-	data, err := readTranscriptFull(middle.TranscriptPath(), "")
+	data, err := readTranscriptFull(t.Context(), middle.TranscriptPath(), "")
 	if err != nil {
 		t.Fatal(err)
 	}

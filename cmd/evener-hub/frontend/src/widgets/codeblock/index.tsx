@@ -1,8 +1,8 @@
+import { parseAnsiLines } from "@evener/appwire-client";
 import { Fragment, type ReactNode, useMemo, useState } from "react";
 import { Button } from "../button";
 import { CopyButton } from "../copybutton";
 import { requireClass } from "../internal/requireClass";
-import { parseAnsiLines } from "./ansi";
 import { AnsiLineContent } from "./ansiLine";
 import styles from "./codeblock.module.css";
 

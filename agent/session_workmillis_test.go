@@ -24,14 +24,13 @@ func TestWorkMillis_CompletedTurnCounts(t *testing.T) {
 	sess := newSession(t, withConfig(SessionConfig{clock: clk}), withSteps(
 		func(req llm.Request) llm.Response {
 			clk.Advance(delta)
-			return finalResponse("ok")
+			return agenttest.FinalResponse("ok")
 		},
 	))
 
 	// TRIPWIRE: scripted in-process adapter with a fake clock, no real I/O;
 	// only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -108,8 +107,7 @@ func TestWorkMillis_FailedTurnCounts(t *testing.T) {
 
 	// TRIPWIRE: scripted in-process adapter with a fake clock, no real I/O;
 	// only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err == nil {
 		t.Fatal("ProcessInput: want error, got nil")
 	}
@@ -123,7 +121,7 @@ func TestWorkMillis_FailedTurnCounts(t *testing.T) {
 }
 
 // TestWorkMillis_MultiTurnDrainEachCounts drives a user input followed by a
-// queued FollowUp (two processOneInput calls in the same ProcessInput drain
+// queued message (two processOneInput calls in the same ProcessInput drain
 // loop) and asserts each drained turn's elapsed contributes — not just the
 // last one.
 func TestWorkMillis_MultiTurnDrainEachCounts(t *testing.T) {
@@ -134,21 +132,20 @@ func TestWorkMillis_MultiTurnDrainEachCounts(t *testing.T) {
 	sess := newSession(t, withConfig(SessionConfig{clock: clk}), withSteps(
 		func(req llm.Request) llm.Response {
 			clk.Advance(delta1)
-			return finalResponse("first reply")
+			return agenttest.FinalResponse("first reply")
 		},
 		func(req llm.Request) llm.Response {
 			clk.Advance(delta2)
-			return finalResponse("second reply")
+			return agenttest.FinalResponse("second reply")
 		},
 	))
-	if err := sess.FollowUp("do second"); err != nil {
+	if err := sess.Enqueue(context.Background(), "do second"); err != nil {
 		t.Fatal(err)
 	}
 
 	// TRIPWIRE: scripted in-process adapter with a fake clock, no real I/O;
 	// only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "do first", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -308,7 +305,7 @@ func TestRestoreThenTurnAutosaveKeepsPriorTotals(t *testing.T) {
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
 				clk.Advance(delta)
-				resp := finalResponse("ok")
+				resp := agenttest.FinalResponse("ok")
 				resp.Usage = turnUsage
 				return resp
 			},
@@ -347,8 +344,7 @@ func TestRestoreThenTurnAutosaveKeepsPriorTotals(t *testing.T) {
 
 	// TRIPWIRE: scripted in-process adapter with a fake clock, no real I/O;
 	// only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}

@@ -250,7 +250,7 @@ func TestRetirementAdmissionDirectEffects(t *testing.T) {
 func TestRetirementAdmissionNotificationStaysPending(t *testing.T) {
 	t.Parallel()
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("retried notification observed") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("retried notification observed") },
 	}}
 	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir()}), withAdapter(adapter))
 	c := retirementEvidenceController(t, root)
@@ -347,7 +347,7 @@ func TestRetirementAdmissionWatchSourcePreserved(t *testing.T) {
 	t.Parallel()
 	clk := agenttest.NewFakeClockAt(time.Unix(1_700_000_000, 0))
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("retained watch source observed") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("retained watch source observed") },
 	}}
 	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), clock: clk}), withAdapter(adapter))
 	c := retirementEvidenceController(t, root)
@@ -581,7 +581,7 @@ func TestRetirementAdmissionLateCustodySurvivesRestore(t *testing.T) {
 		t.Fatalf("normal callback registration did not wake retained custody: %d", wakes.Load())
 	}
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("restored notice observed") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("restored notice observed") },
 	}}
 	restored.client.Register(adapter)
 	if _, err := restored.ProcessInputKind(t.Context(), "", nil, EntryNotification); err != nil {
@@ -777,7 +777,11 @@ func TestRetirementStartReplayExecutesOnce(t *testing.T) {
 	var once sync.Once
 	unblock := func() { once.Do(func() { close(resume) }) }
 	defer unblock()
-	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(llm.Request) llm.Response { close(entered); <-resume; return finalResponse("opaque-result") }}}
+	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(llm.Request) llm.Response {
+		close(entered)
+		<-resume
+		return agenttest.FinalResponse("opaque-result")
+	}}}
 	root.client.Register(adapter)
 	root.profile = withTestSessionNamer(root.client, root.profile)
 	c, err := NewRetirementController(0, clock.Real())
@@ -933,27 +937,22 @@ func drainRetirementTestEvents(root *Session) []events.EventKind {
 	}
 }
 
-func TestRetirementAdmissionFollowUp(t *testing.T) {
+func TestRetirementAdmissionEnqueue(t *testing.T) {
 	t.Parallel()
 	root, _ := retirementRefusalRoot(t)
-	enqueue, ok := any(root).(interface{ FollowUp(string) error })
-	if !ok {
-		t.Fatal("FollowUp cannot report retirement refusal")
+	if err := root.Enqueue(t.Context(), "opaque-queued"); !errors.Is(err, ErrRetirementUnavailable) {
+		t.Fatalf("Enqueue error: %v", err)
 	}
-	before := append([]string(nil), root.followups...)
-	if err := enqueue.FollowUp("opaque-followup"); !errors.Is(err, ErrRetirementUnavailable) {
-		t.Fatalf("FollowUp error: %v", err)
-	}
-	if !reflect.DeepEqual(before, root.followups) {
-		t.Fatal("refused followup changed queue")
+	if got := root.QueueDepth(); got != 0 {
+		t.Fatalf("refused enqueue changed queue depth to %d", got)
 	}
 }
 
-func TestRetirementAcceptedFollowUpBlocks(t *testing.T) {
+func TestRetirementAcceptedQueuedInputBlocks(t *testing.T) {
 	t.Parallel()
 	root := newQueuePersistTestSession(t, t.TempDir())
 	defer root.Close()
-	if err := root.FollowUp("opaque-followup"); err != nil {
+	if err := root.Enqueue(t.Context(), "opaque-queued"); err != nil {
 		t.Fatal(err)
 	}
 	c, err := NewRetirementController(0, clock.Real())
@@ -965,7 +964,7 @@ func TestRetirementAcceptedFollowUpBlocks(t *testing.T) {
 	}
 	claim, snapshot, err := c.TryClaim(true)
 	if err != nil || claim != nil || !slices.ContainsFunc(snapshot.Blockers, func(b RetirementBlocker) bool { return b.Category == "input" && b.SessionID == root.ID() }) {
-		t.Fatalf("accepted followup lost blocker: %v %+v", err, snapshot)
+		t.Fatalf("accepted queued input lost blocker: %v %+v", err, snapshot)
 	}
 }
 

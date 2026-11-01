@@ -82,7 +82,7 @@ type conn struct {
 	reconnecting bool
 
 	// now, when set, overrides time.Now() for backoff-window comparisons —
-	// a test seam only (see NewManagerWithClock). Production conns never set
+	// a test seam only (see newManagerWithClock in the tests). Production conns never set
 	// it; clock() falls back to time.Now() so every existing conn literal
 	// (including test fixtures that construct conn{} directly) keeps working
 	// unchanged.
@@ -124,7 +124,7 @@ func failedConn(cfg mcpconfig.ServerConfig, dial func(context.Context) (mcpsdk.T
 // reported in the returned []ServerOutcome with Stage "connect". The manager
 // is nil only when configs is empty. dials is optional: when nil, or when
 // dials[i] is absent, config i dials its transport via the production
-// closure (transportForConfig). When provided (for testing, or a hermetic
+// closure (transportForConfigWithEnv). When provided (for testing, or a hermetic
 // in-memory fake), dials[i] corresponds to configs[i]. Every conn stores the
 // dial closure it used — including a conn whose initial connect failed — so
 // a later reconnect (Task 8) can call it again.
@@ -172,24 +172,6 @@ func NewManager(ctx context.Context, configs []mcpconfig.ServerConfig, dials []f
 		}
 	}
 
-	return mgr, outcomes
-}
-
-// NewManagerWithClock is NewManager's test seam: it builds the manager
-// exactly as NewManager does, then overrides every conn's clock with now,
-// so a test can make reconnect's backoff-window comparison deterministic
-// under a fake, non-advancing clock instead of racing real wall-clock time
-// (see TestReconnect_FailedReconnect_BackoffSuppressesImmediateRetry).
-// Production code always calls NewManager, whose conns keep the nil now →
-// time.Now() default.
-func NewManagerWithClock(ctx context.Context, configs []mcpconfig.ServerConfig, dials []func(context.Context) (mcpsdk.Transport, error), now func() time.Time, opts ...Option) (*Manager, []ServerOutcome) {
-	mgr, outcomes := NewManager(ctx, configs, dials, opts...)
-	if mgr == nil {
-		return nil, outcomes
-	}
-	for i := range mgr.conns {
-		mgr.conns[i].now = now
-	}
 	return mgr, outcomes
 }
 
@@ -261,9 +243,9 @@ func WithSandboxWrapper(w *sandbox.Wrapper) Option {
 }
 
 // productionDial returns the default dial factory for cfg: build a fresh
-// transport via transportForConfig on every call. NewManager uses this
+// transport via transportForConfigWithEnv on every call. NewManager uses this
 // whenever the caller doesn't supply an explicit dials[i] — i.e., real,
-// non-test use, and also real reconnects (Task 8), since transportForConfig
+// non-test use, and also real reconnects (Task 8), since transportForConfigWithEnv
 // builds a brand-new transport each time it runs. When wrapper is non-nil, a
 // stdio server's command is kernel-confined to the session sandbox before the
 // transport hands it to the SDK.
@@ -780,15 +762,9 @@ func mcpResultToString(result *mcpsdk.CallToolResult) string {
 // avoid paying ~5s per server on cleanup.
 var commandTerminateDuration time.Duration
 
-// transportForConfig creates the appropriate MCP transport for a config using
-// the process environment, matching production's established behavior.
-func transportForConfig(cfg mcpconfig.ServerConfig) (mcpsdk.Transport, error) {
-	return transportForConfigWithEnv(cfg, os.Environ)
-}
-
-// transportForConfigWithEnv is transportForConfig's deterministic construction
-// seam. Production passes os.Environ; callers that need hermetic transport
-// assembly can supply a fixed base environment.
+// transportForConfigWithEnv creates the appropriate MCP transport for a config.
+// Production passes os.Environ; callers that need hermetic transport assembly
+// can supply a fixed base environment.
 func transportForConfigWithEnv(cfg mcpconfig.ServerConfig, environ func() []string) (mcpsdk.Transport, error) {
 	switch cfg.Type {
 	case "stdio", "":
@@ -813,12 +789,6 @@ func transportForConfigWithEnv(cfg mcpconfig.ServerConfig, environ func() []stri
 	default:
 		return nil, fmt.Errorf("unknown MCP transport type %q", cfg.Type)
 	}
-}
-
-// mergeEnv creates a combined environment from os.Environ() with extra vars
-// merged in. Existing keys are replaced rather than duplicated.
-func mergeEnv(extra map[string]string) []string {
-	return mergeEnvInto(os.Environ(), extra)
 }
 
 // mergeEnvInto layers extra over the base env slice: base entries whose key is

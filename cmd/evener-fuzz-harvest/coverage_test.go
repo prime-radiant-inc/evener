@@ -385,19 +385,34 @@ func scenarioRemainingFilesystemAndGateBranches(t *testing.T) {
 	oldRoot, oldBase, oldDir := harvestDefaultStateRoot, harvestResolveStateBase, harvestIsDir
 	t.Cleanup(func() { harvestDefaultStateRoot, harvestResolveStateBase, harvestIsDir = oldRoot, oldBase, oldDir })
 	harvestAbs = oldAbs
-	harvestDefaultStateRoot = func() string { return "/same" }
-	harvestResolveStateBase = func(string) string { return "/same" }
+	harvestDefaultStateRoot = func() (string, error) { return "/same", nil }
+	harvestResolveStateBase = func(string) (string, error) { return "/same", nil }
 	harvestIsDir = func(string) bool { return false }
-	if got := defaultStateDirs(); len(got) != 1 {
-		t.Fatalf("dedupe=%v", got)
+	if got, err := defaultStateDirs(); err != nil || len(got) != 1 {
+		t.Fatalf("dedupe=%v err=%v", got, err)
 	}
 	harvestIsDir = func(string) bool { return true }
-	if got := defaultStateDirs(); len(got) != 2 {
-		t.Fatalf("subdir=%v", got)
+	if got, err := defaultStateDirs(); err != nil || len(got) != 2 {
+		t.Fatalf("subdir=%v err=%v", got, err)
 	}
 	harvestAbs = func(string) (string, error) { return "x", boom }
-	if got := defaultStateDirs(); len(got) == 0 {
-		t.Fatal("abs fallback")
+	if got, err := defaultStateDirs(); err != nil || len(got) == 0 {
+		t.Fatalf("abs fallback=%v err=%v", got, err)
+	}
+	harvestDefaultStateRoot = func() (string, error) { return "", boom }
+	harvestResolveStateBase = func(string) (string, error) { return "/override", nil }
+	harvestIsDir = func(string) bool { return false }
+	if got, err := defaultStateDirs(); err != nil || len(got) != 1 || got[0] != "/override" {
+		t.Fatalf("an unresolved global root must not hide the session base: %v err=%v", got, err)
+	}
+	harvestDefaultStateRoot = func() (string, error) { return "/same", nil }
+	harvestResolveStateBase = func(string) (string, error) { return "", boom }
+	if got, err := defaultStateDirs(); err != nil || len(got) != 1 {
+		t.Fatalf("an unresolved session base must not hide the global root: %v err=%v", got, err)
+	}
+	harvestDefaultStateRoot = func() (string, error) { return "", boom }
+	if _, err := defaultStateDirs(); !errors.Is(err, boom) {
+		t.Fatalf("nothing resolves: error=%v, want boom", err)
 	}
 	harvestAbs = oldAbs
 	oldDetect := gateDetectSecret

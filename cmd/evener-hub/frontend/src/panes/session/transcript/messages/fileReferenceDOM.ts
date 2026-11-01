@@ -34,6 +34,7 @@ export function enhanceFileReferences(
   const epoch = {};
   epochs.set(root, epoch);
   const cleanups: Array<() => void> = [];
+  const ownerDocument = root.ownerDocument;
   const owns = (node: Node) => epochs.get(root) === epoch && root.contains(node);
   const qualifiedRef = context.sessionRef.includes(":") ? context.sessionRef : `local:${context.sessionRef}`;
   if (!isValidTranscriptRef(qualifiedRef) || !context.cwd || !context.sourcePaneId) return () => {};
@@ -69,11 +70,11 @@ export function enhanceFileReferences(
   // Restoration touches only this epoch's still-owned DOM, not a newer render.
   function wrap(node: Text, spans: ReturnType<typeof findFileReferences>) {
     const original = node.data;
-    const fragment = document.createDocumentFragment();
+    const fragment = ownerDocument.createDocumentFragment();
     let cursor = 0;
     for (const span of spans) {
       fragment.append(original.slice(cursor, span.start));
-      const link = document.createElement("a");
+      const link = ownerDocument.createElement("a");
       link.textContent = original.slice(span.start, span.end);
       fragment.append(link);
       activate(link, { session: context.sessionRef, reference: span.reference, sourcePaneId: context.sourcePaneId });
@@ -123,8 +124,8 @@ export function enhanceFileReferences(
         const before = text.slice(tokenStarts[code.start], code.start);
         const after = text.slice(code.end, tokenEnds[code.end]);
         if (!/^[([{<]*$/u.test(before) || !/^[)\]}>.,;:!?…]*$/u.test(after)) continue;
-        const child = code.element.firstChild;
-        if (!(child instanceof Text) || code.element.childNodes.length !== 1) continue;
+        if (code.element.firstChild?.nodeType !== Node.TEXT_NODE || code.element.childNodes.length !== 1) continue;
+        const child = code.element.firstChild as Text;
         wrap(child, [{ start: 0, end: child.data.length, reference }]);
       }
     }
@@ -134,25 +135,29 @@ export function enhanceFileReferences(
   }
 
   function walk(node: Node) {
-    if (node instanceof Text) {
-      offsets.push({ node, start: text.length, end: text.length + node.data.length });
-      text += node.data;
+    // Adopted DOM can mix constructors from the opener and popout windows.
+    if (node.nodeType === Node.TEXT_NODE) {
+      const textNode = node as Text;
+      offsets.push({ node: textNode, start: text.length, end: text.length + textNode.data.length });
+      text += textNode.data;
       return;
     }
-    if (!(node instanceof HTMLElement)) return;
-    if (node.matches(EXCLUDED)) {
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const element = node as HTMLElement;
+    if (element.namespaceURI !== "http://www.w3.org/1999/xhtml") return;
+    if (element.matches(EXCLUDED)) {
       text += "\0"; // Not whitespace: a barrier must not authorize an adjacent suffix.
       return;
     }
-    if (node.tagName === "CODE") {
+    if (element.tagName === "CODE") {
       const start = text.length;
-      text += node.textContent;
-      codeElements.push({ element: node, start, end: text.length });
+      text += element.textContent;
+      codeElements.push({ element, start, end: text.length });
       return;
     }
-    const block = node.matches(BLOCKS);
+    const block = element.matches(BLOCKS);
     if (block) flush();
-    for (const child of [...node.childNodes]) walk(child);
+    for (const child of [...element.childNodes]) walk(child);
     if (block) flush();
   }
   for (const child of [...root.childNodes]) walk(child);

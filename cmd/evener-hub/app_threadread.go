@@ -147,7 +147,7 @@ func unavailableThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, s
 	if _, required, err := restartRequiredDaemon(ctx, cfg, params.Ref, params.ThreadID); err != nil || !required {
 		return appwire.ThreadReadResponse{}, false, err
 	}
-	source, ok := sources.Source("local")
+	source, ok := sources.Source(appwire.LocalSourceID)
 	if !ok {
 		return appwire.ThreadReadResponse{}, false, nil
 	}
@@ -314,7 +314,7 @@ func pastItemPageFromWindow(entry hubcore.PastEntry, window transcriptindex.Wind
 // incarnation they were read from, so a cursor from before a rebuild is stale.
 func pastCursorIdentity(entry hubcore.PastEntry, incarnation string) appitempaging.CursorIdentity {
 	return appitempaging.CursorIdentity{
-		ThreadRef:         appwire.Ref{SourceID: "local", ThreadID: entry.Meta.ID}.String(),
+		ThreadRef:         appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: entry.Meta.ID}.String(),
 		Incarnation:       incarnation,
 		ProjectionVersion: appitempaging.TranscriptItemProjectionVersion,
 	}
@@ -543,7 +543,7 @@ func localPastThreadID(params appwire.ThreadReadParams) (string, bool) {
 		if err != nil {
 			return "", false
 		}
-		if ref.SourceID != "local" {
+		if ref.SourceID != appwire.LocalSourceID {
 			return "", false
 		}
 		return ref.ThreadID, true
@@ -558,7 +558,7 @@ func localPastThreadID(params appwire.ThreadReadParams) (string, bool) {
 func liveThreadCanMergeLocalPast(live appwire.Thread) bool {
 	if live.Evener.Ref != "" {
 		ref, err := appwire.ParseRef(live.Evener.Ref)
-		return err == nil && ref.SourceID == "local"
+		return err == nil && ref.SourceID == appwire.LocalSourceID
 	}
 	if live.Source != "" {
 		return live.Source == "local"
@@ -581,9 +581,9 @@ func mergePastThreadForRead(ctx context.Context, cfg hubcore.WebConfig, params a
 		case live.Evener.Ref != "":
 			params.Ref = live.Evener.Ref
 		case live.ID != "":
-			params.Ref = appwire.Ref{SourceID: "local", ThreadID: live.ID}.String()
+			params.Ref = appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: live.ID}.String()
 		case live.SessionID != "":
-			params.Ref = appwire.Ref{SourceID: "local", ThreadID: live.SessionID}.String()
+			params.Ref = appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: live.SessionID}.String()
 		}
 	}
 	entry, ok := pastEntryForRead(cfg, params)
@@ -756,7 +756,7 @@ func attachPastThreadSkillCatalog(entry hubcore.PastEntry, thread appwire.Thread
 // stable-ref client is advertised a fork the RPC refuses.
 func hubCanForkThread(cfg hubcore.WebConfig, thread appwire.Thread) bool {
 	ref, err := appwire.ParseRef(thread.Evener.Ref)
-	if err != nil || ref.SourceID != "local" {
+	if err != nil || ref.SourceID != appwire.LocalSourceID {
 		return false
 	}
 	return !hubForkLiveDelegateFenced(cfg, ref.ThreadID)
@@ -779,7 +779,7 @@ func hubForkLiveDelegateFenced(cfg hubcore.WebConfig, threadID string) bool {
 // session's own daemon is holding it behind recovery.
 //
 // NOTHING IN THE TREE EMITS IT. The daemon's status egress builds
-// appwire.ThreadStatus with a Type and no flags (server/appwire_runtime.go's
+// appwire.ThreadStatus with a Type and no flags (server/appwire_thread_projection.go's
 // appCapabilities path, internal/appprojector's threadStatus), and appwire
 // defines no constant for it, so this spelling has one side. It is named here
 // rather than left as a literal so the hub's own uses cannot be spelled apart,
@@ -807,7 +807,7 @@ func hubForkRecoveryFencedNow(cfg hubcore.WebConfig, thread appwire.Thread, owne
 		return true
 	}
 	ref, err := appwire.ParseRef(thread.Evener.Ref)
-	if err != nil || ref.SourceID != "local" {
+	if err != nil || ref.SourceID != appwire.LocalSourceID {
 		return false
 	}
 	return hubForkIdentityFenced(cfg, ref.ThreadID, owner)
@@ -871,7 +871,7 @@ func hubArtifactsDir(cfg hubcore.WebConfig, ref string) string {
 // (the same signal fork is fenced on).
 func hubPagesBefore(cfg hubcore.WebConfig, ref string) bool {
 	parsed, err := appwire.ParseRef(ref)
-	return err == nil && parsed.SourceID == "local" && !hubForkLiveDelegateFenced(cfg, parsed.ThreadID)
+	return err == nil && parsed.SourceID == appwire.LocalSourceID && !hubForkLiveDelegateFenced(cfg, parsed.ThreadID)
 }
 
 // applyHubForkCapability projects the hub's fork authority after the common
@@ -915,7 +915,7 @@ func hubPagesBefore(cfg hubcore.WebConfig, ref string) bool {
 // could not verify.
 func applyHubForkCapability(cfg hubcore.WebConfig, thread appwire.Thread) appwire.Thread {
 	ref, err := appwire.ParseRef(thread.Evener.Ref)
-	if err != nil || ref.SourceID != "local" {
+	if err != nil || ref.SourceID != appwire.LocalSourceID {
 		if err != nil {
 			// An invalid ref cannot establish hub ownership. Never preserve a
 			// source-provided action for an identity the hub cannot parse.
@@ -1095,10 +1095,10 @@ func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hu
 		name = hubcore.ShortID(strings.TrimSpace(entry.Meta.ID))
 	}
 	cwd := entry.Meta.EnvInfo.WorkingDir
-	ref := appwire.Ref{SourceID: "local", ThreadID: entry.Meta.ID}.String()
+	ref := appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: entry.Meta.ID}.String()
 	parentRef := ""
 	if entry.Meta.ParentSessionID != "" {
-		parentRef = appwire.Ref{SourceID: "local", ThreadID: entry.Meta.ParentSessionID}.String()
+		parentRef = appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: entry.Meta.ParentSessionID}.String()
 	}
 	kind := "session"
 	if entry.Meta.IsSubagent {
@@ -1226,7 +1226,7 @@ func projectPastEntryThread(ctx context.Context, cfg hubcore.WebConfig, entry hu
 				thread.Evener.Diagnostics = &appwire.EvenerDiagnostics{}
 			}
 			for _, delegate := range delegates {
-				projected := appwire.SlimDelegateForRoster(appwireDelegateFromAgentStatus(delegate))
+				projected := appwire.SlimDelegateForRoster(delegate.AppwireInfo())
 				projected.Diagnostics = append(projected.Diagnostics, delegateDiagnostics...)
 				thread.Evener.Diagnostics.Delegates = append(thread.Evener.Diagnostics.Delegates, projected)
 			}
@@ -1273,53 +1273,6 @@ func pastEntryDelegateStatus(ctx context.Context, entry hubcore.PastEntry) ([]ag
 		return nil, nil, err
 	}
 	return agent.LoadSessionDelegateStatus(ctx, entry.StateDir, sessionID)
-}
-
-func appwireDelegateFromAgentStatus(delegate agent.DelegateStatusInfo) appwire.EvenerDelegateInfo {
-	out := appwire.EvenerDelegateInfo{
-		DelegateID: delegate.DelegateID, RunGeneration: delegate.RunGeneration, OwnerSessionID: delegate.OwnerSessionID, RootSessionID: delegate.RootSessionID,
-		ChildSessionID: delegate.ChildSessionID, TranscriptRef: delegate.TranscriptRef, ParentDelegateID: delegate.ParentDelegateID,
-		Type: delegate.Type, Lifecycle: delegate.Lifecycle, Phase: delegate.Phase, Status: delegate.Status,
-		Outcome: delegate.Outcome, Reason: delegate.Reason, Error: delegate.Error, Terminal: delegate.Terminal, Resumable: delegate.Resumable, NeedsAttention: delegate.NeedsAttention,
-		NotResumableReason: delegate.NotResumableReason, ProjectionRevision: delegate.ProjectionRevision,
-		Task: delegate.Task, Description: delegate.Description, AgentType: delegate.AgentType, RequestedModel: delegate.RequestedModel,
-		ResolvedProfileID: delegate.ResolvedProfileID, ResolvedModel: delegate.ResolvedModel, Model: delegate.Model,
-		ReasoningEffort: delegate.ReasoningEffort, OriginTurnID: delegate.OriginTurnID, OriginToolCallID: delegate.OriginToolCallID,
-		OriginItemID: delegate.OriginItemID, RunStartedAt: delegate.RunStartedAt, RunEndedAt: delegate.RunEndedAt,
-		LatestActivityAt: delegate.LatestActivityAt, RunningForMS: cloneHubInt64(delegate.RunningForMS),
-		QuietForMS: cloneHubInt64(delegate.QuietForMS), DurationMS: cloneHubInt64(delegate.DurationMS), PacketKind: delegate.PacketKind,
-		Message: append(json.RawMessage(nil), delegate.Message...), StructuredResult: append(json.RawMessage(nil), delegate.StructuredResult...),
-		StructuredValid: cloneHubBool(delegate.StructuredValid), StructuredReason: delegate.StructuredReason,
-		Warnings: append([]string(nil), delegate.Warnings...), Diagnostics: append([]string(nil), delegate.Diagnostics...),
-		ExhaustionBudget: delegate.ExhaustionBudget, ExhaustionLimit: delegate.ExhaustionLimit,
-		ExhaustionResumable: cloneHubBool(delegate.ExhaustionResumable), DelegationAllowance: delegate.DelegationAllowance,
-		ParentWatchGranted: delegate.ParentWatchGranted,
-	}
-	if delegate.Usage != nil {
-		usage := *delegate.Usage
-		out.Usage = &usage
-	}
-	if delegate.Worktree != nil {
-		worktree := *delegate.Worktree
-		out.Worktree = &worktree
-	}
-	return out
-}
-
-func cloneHubBool(value *bool) *bool {
-	if value == nil {
-		return nil
-	}
-	clone := *value
-	return &clone
-}
-
-func cloneHubInt64(value *int64) *int64 {
-	if value == nil {
-		return nil
-	}
-	clone := *value
-	return &clone
 }
 
 // persistedTaskAggregate returns a task count only when the session has a
@@ -1436,7 +1389,7 @@ func stampDerivedTotals(cfg hubcore.WebConfig, entry hubcore.PastEntry, thread a
 // index, or an index that cannot answer the totals. A package variable so a test
 // can prove a read against a current sidecar does not scan at all.
 var pastDerivedTotalsScan = func(path string, fromEntryOrdinal int) (*appwire.EvenerUsage, int, error) {
-	return pastTranscriptCache.DerivedTotalsFromFile(path, transcriptJSONLMaxLineBytes, fromEntryOrdinal)
+	return pastTranscriptCache.DerivedTotalsFromFile(path, transcript.DefaultMaxLineBytes, fromEntryOrdinal)
 }
 
 // stampDerivedTotalsWith stamps a past thread's token total and failed-tool-call
@@ -1478,7 +1431,7 @@ func stampTotals(cfg hubcore.WebConfig, entry hubcore.PastEntry, thread appwire.
 // derived server-side, the divergence cut, error-means-absent — is stamped above
 // stampDerivedTotals.
 func stampDerivedFailureCount(entry hubcore.PastEntry, thread appwire.Thread) appwire.Thread {
-	count, err := pastTranscriptCache.FailedToolCallsFromFile(pastTranscriptPath(entry), transcriptJSONLMaxLineBytes, entry.Meta.DivergenceTurn)
+	count, err := pastTranscriptCache.FailedToolCallsFromFile(pastTranscriptPath(entry), transcript.DefaultMaxLineBytes, entry.Meta.DivergenceTurn)
 	if err != nil {
 		return thread
 	}
@@ -1488,7 +1441,7 @@ func stampDerivedFailureCount(entry hubcore.PastEntry, thread appwire.Thread) ap
 
 // pastTranscriptPath is where a saved session's transcript lives.
 func pastTranscriptPath(entry hubcore.PastEntry) string {
-	return filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
+	return schema.SessionTranscriptPath(entry.StateDir, entry.Meta.ID)
 }
 
 // computePastEntryTurns projects a saved session's whole transcript into full
@@ -1496,7 +1449,7 @@ func pastTranscriptPath(entry hubcore.PastEntry) string {
 func computePastEntryTurns(cfg hubcore.WebConfig, entry hubcore.PastEntry) ([]appwire.Turn, error) {
 	transcriptPath := pastTranscriptPath(entry)
 	reg := apptranscript.NewToolCallRegistry()
-	turns, err := pastTranscriptCache.ItemTurnsFromFile(transcriptPath, transcriptJSONLMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+	turns, err := pastTranscriptCache.ItemTurnsFromFile(transcriptPath, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
 		return appItemsFromReplayTurn(turnID, entryIndex, turn, reg)
 	})
 	if err != nil {
@@ -1630,79 +1583,6 @@ func outputImageDescriptorKey(img appwire.OutputImage) string {
 		return "path:" + img.Path
 	}
 	return ""
-}
-
-func reconcileDelegateThreadItemForTest(item appwire.ThreadItem, rec agent.HistoricalJobRecord) appwire.ThreadItem {
-	return reconcileDelegateThreadItem(item, rec)
-}
-
-func reconcileDelegateThreadItems(thread appwire.Thread, jobsByID map[string]agent.HistoricalJobRecord) appwire.Thread {
-	if len(jobsByID) == 0 || len(thread.Turns) == 0 {
-		return thread
-	}
-	var turns []appwire.Turn
-	clonedItems := map[int]bool{}
-	for ti := range thread.Turns {
-		for ii := range thread.Turns[ti].Items {
-			item := thread.Turns[ti].Items[ii]
-			if item.Type != "commandExecution" || item.ToolName != "delegate" {
-				continue
-			}
-			jobID := delegateJobIDFromRaw(item.Raw)
-			if jobID == "" {
-				continue
-			}
-			rec, ok := jobsByID[jobID]
-			if !ok {
-				continue
-			}
-			reconciled := reconcileDelegateThreadItem(item, rec)
-			if turns == nil {
-				turns = append([]appwire.Turn(nil), thread.Turns...)
-			}
-			if !clonedItems[ti] {
-				turns[ti].Items = append([]appwire.ThreadItem(nil), thread.Turns[ti].Items...)
-				clonedItems[ti] = true
-			}
-			turns[ti].Items[ii] = reconciled
-		}
-	}
-	if turns != nil {
-		thread.Turns = turns
-	}
-	return thread
-}
-
-func reconcileDelegateThreadItem(item appwire.ThreadItem, rec agent.HistoricalJobRecord) appwire.ThreadItem {
-	_ = rec
-	return item
-}
-
-func delegateJobIDFromRaw(raw json.RawMessage) string {
-	var payload struct {
-		JobID        string `json:"job_id"`
-		StartedJobID string `json:"started_job_id"`
-		CurrentJobID string `json:"current_job_id"`
-		LatestJobID  string `json:"latest_job_id"`
-	}
-	if len(raw) == 0 || json.Unmarshal(raw, &payload) != nil {
-		return ""
-	}
-	for _, value := range []string{payload.JobID, payload.StartedJobID, payload.CurrentJobID, payload.LatestJobID} {
-		if trimmed := strings.TrimSpace(value); trimmed != "" {
-			return trimmed
-		}
-	}
-	return ""
-}
-
-func isTerminalHistoricalJobStatus(status string) bool {
-	switch status {
-	case "completed", "failed", "cancelled", "stopped", "exhausted", "command_exited_nonzero", "command_killed":
-		return true
-	default:
-		return false
-	}
 }
 
 // applyThreadResumeRequirement projects the hub-owned action fence on both

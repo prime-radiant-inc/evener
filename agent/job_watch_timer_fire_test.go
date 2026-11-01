@@ -711,7 +711,7 @@ func TestConditionFireBudget_TeardownLeavesAConcurrentClearsConfigAlone(t *testi
 	adapter := finiteUpdateAdapter(t)
 	gate := make(chan struct{})
 	release := sync.OnceFunc(func() { close(gate) })
-	adapter.finiteScript("root", updateGate(gate, updateReply(finalResponse("clear-receipt-83"))))
+	adapter.finiteScript("root", updateGate(gate, updateReply(agenttest.FinalResponse("clear-receipt-83"))))
 	clock := agenttest.NewFakeClock()
 	s := newMessagingRoot(t, adapter, func(cfg *SessionConfig) {
 		cfg.clock = clock

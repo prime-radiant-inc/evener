@@ -179,7 +179,7 @@ func testWatchCallbackBatchOwnsBudgetDuringSourcePump(t *testing.T, persistent b
 	adapter.steps = []func(llm.Request) llm.Response{func(request llm.Request) llm.Response {
 		requireCallbackBatchRequest(t, s, request, want)
 		requireCallbackBatchReceipts(t, s, want, 0)
-		return finalResponse("callback-pump-response-918")
+		return agenttest.FinalResponse("callback-pump-response-918")
 	}}
 	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 		t.Fatal(err)
@@ -354,7 +354,7 @@ func TestWatchCallbackBatchEarlierProducerCannotTakeBudget(t *testing.T) {
 				adapter.steps = []func(llm.Request) llm.Response{func(request llm.Request) llm.Response {
 					requireCallbackBatchSourceRequest(t, request, older, final, nested)
 					requireCallbackBatchReceipts(t, s, want, 0)
-					return finalResponse("nested-source-response-716")
+					return agenttest.FinalResponse("nested-source-response-716")
 				}}
 				if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 					t.Fatal(err)
@@ -459,7 +459,7 @@ func TestWatchCallbackBatchOwnerFailureUnwind(t *testing.T) {
 				adapter.steps = []func(llm.Request) llm.Response{func(request llm.Request) llm.Response {
 					requireCallbackBatchRequest(t, s, request, ids)
 					requireCallbackBatchReceipts(t, s, ids, 0)
-					return finalResponse("source-failure-response-246")
+					return agenttest.FinalResponse("source-failure-response-246")
 				}}
 				if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 					t.Fatal(err)
@@ -630,7 +630,7 @@ func testCompletionDeliveryOwnership(t *testing.T, persistent bool) {
 	adapter.steps = []func(llm.Request) llm.Response{func(request llm.Request) llm.Response {
 		requireCallbackBatchRequest(t, s, request, want)
 		requireCallbackBatchReceipts(t, s, want, 0)
-		return finalResponse("completion-owner-response-921")
+		return agenttest.FinalResponse("completion-owner-response-921")
 	}}
 	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 		t.Fatal(err)
@@ -795,7 +795,7 @@ func TestCompletionTerminalDeliveryReservation(t *testing.T) {
 				requireCompletionClaimsReleased(t, jm)
 				adapter.steps = []func(llm.Request) llm.Response{func(request llm.Request) llm.Response {
 					requireCallbackBatchRequest(t, s, request, want)
-					return finalResponse("terminal-reservation-response-963")
+					return agenttest.FinalResponse("terminal-reservation-response-963")
 				}}
 				if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 					t.Fatal(err)
@@ -1204,7 +1204,7 @@ func TestCompletionDeliveryFailureRecovery(t *testing.T) {
 				}
 				adapter.steps = []func(llm.Request) llm.Response{func(request llm.Request) llm.Response {
 					requireCallbackBatchRequest(t, s, request, ids)
-					return finalResponse("completion-failure-response-964")
+					return agenttest.FinalResponse("completion-failure-response-964")
 				}}
 				if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 					t.Fatal(err)
@@ -1593,7 +1593,7 @@ func TestWatchCallbackBatchOwnsBudgetThroughLaterSibling(t *testing.T) {
 			adapter.steps = []func(llm.Request) llm.Response{func(request llm.Request) llm.Response {
 				requireCallbackBatchRequest(t, s, request, want)
 				requireCallbackBatchReceipts(t, s, want, 0)
-				return finalResponse("sibling-owner-receipt-483")
+				return agenttest.FinalResponse("sibling-owner-receipt-483")
 			}}
 			if _, err := s.ProcessInputKind(t.Context(), "", nil, EntryNotification); err != nil {
 				t.Fatal(err)

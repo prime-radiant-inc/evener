@@ -163,7 +163,7 @@ func (c *delegateTreeController) ReserveCreate(actor delegateActor, descriptor d
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	c.nextToken++
-	transcriptPath := filepath.Join(c.stateDir, sessionsSubdir, childSessionID+".transcript.jsonl")
+	transcriptPath := schema.SessionTranscriptPath(c.stateDir, childSessionID)
 	storedDescriptor := cloneDelegateStartDescriptor(descriptor)
 	reservation := &delegateStartReservation{
 		delegateID:     delegateID,
@@ -352,7 +352,7 @@ func (c *delegateTreeController) reserveAttentionStartLocked(aggregate *delegate
 	}
 	delegateID := aggregate.DelegateID
 	descriptor := cloneDelegateStartDescriptor(aggregate.Descriptor)
-	transcriptPath := filepath.Join(c.stateDir, sessionsSubdir, descriptor.ChildSessionID+".transcript.jsonl")
+	transcriptPath := schema.SessionTranscriptPath(c.stateDir, descriptor.ChildSessionID)
 	worktreePath := ""
 	if descriptor.Isolation == "worktree" {
 		worktreePath = descriptor.WorkingDir
@@ -659,7 +659,7 @@ func (c *delegateTreeController) ReserveStart(actor delegateActor, delegateID st
 	ctx, cancel := context.WithCancel(context.Background())
 	c.nextToken++
 	descriptor := cloneDelegateStartDescriptor(aggregate.Descriptor)
-	transcriptPath := filepath.Join(c.stateDir, sessionsSubdir, descriptor.ChildSessionID+".transcript.jsonl")
+	transcriptPath := schema.SessionTranscriptPath(c.stateDir, descriptor.ChildSessionID)
 	worktreePath := ""
 	if descriptor.Isolation == "worktree" {
 		worktreePath = descriptor.WorkingDir
@@ -730,12 +730,7 @@ func (c *delegateTreeController) releaseReservationLocked(record *delegateStartR
 		close(record.done)
 		record.done = nil
 	}
-	if c.stop != nil {
-		if _, tracked := c.stop.starts[record.token]; tracked {
-			delete(c.stop.starts, record.token)
-			c.signalStopProgressLocked()
-		}
-	}
+	untrackStopLocked(c, func(s *delegateStopState) map[uint64]struct{} { return s.starts }, record.token)
 	c.releaseCapacityLocked(record.capacityKind)
 	c.evidenceVersion++
 	return record.cancel
@@ -839,12 +834,7 @@ func (c *delegateTreeController) commitStart(reservation *delegateStartReservati
 		close(record.done)
 		record.done = nil
 	}
-	if c.stop != nil {
-		if _, tracked := c.stop.starts[record.token]; tracked {
-			delete(c.stop.starts, record.token)
-			c.signalStopProgressLocked()
-		}
-	}
+	untrackStopLocked(c, func(s *delegateStopState) map[uint64]struct{} { return s.starts }, record.token)
 	live := c.live[record.delegateID]
 	if live == nil {
 		live = &delegateLiveState{}
@@ -943,19 +933,6 @@ func (c *delegateTreeController) beginRuntimeBoundary(lease delegateLease) error
 	defer c.mu.Unlock()
 	_, _, err := c.admitLeaseLocked(lease, delegatestore.PhaseRunning)
 	return err
-}
-
-func (c *delegateTreeController) inputPersistFailureBatch(lease delegateLease, inputErr error) (delegatestore.Event, delegatestore.Event) {
-	message := "input persistence failed"
-	if inputErr != nil {
-		message += ": " + inputErr.Error()
-	}
-	if len(message) > 512 {
-		message = message[:512]
-	}
-	raw, _ := json.Marshal(message)
-	packet := delegatestore.TerminalPacket{Kind: delegatestore.PacketTerminalError, Message: raw}
-	return terminalFinishBatch(lease, delegatestore.OutcomeFailed, "input_persist_failed", c.now(), packet)
 }
 
 func (c *delegateTreeController) startInputFailureBatch(lease delegateLease, failure delegateFinish) (delegatestore.Event, delegatestore.Event) {

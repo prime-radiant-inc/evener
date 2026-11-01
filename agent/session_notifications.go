@@ -19,7 +19,7 @@ type notificationSchedule struct {
 	running          bool // outer-input suppression, not admission authority
 	paused           bool
 	pauseWarned      bool // survives fresh wake eligibility until successful recovery
-	retry            notificationRetry
+	retry            backoffTimer
 	admissionBlocked bool
 	nameBlocked      bool
 	releaseTurnID    string

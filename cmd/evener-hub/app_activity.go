@@ -10,7 +10,6 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
-	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/internal/appserver"
 )
 
@@ -35,12 +34,12 @@ func hubActivityRead(ctx context.Context, cfg hubcore.WebConfig, sources *appsou
 	wanted := make(map[string]struct{}, len(params.Refs))
 	refsByHost := make(map[string][]string)
 	for _, raw := range params.Refs {
-		ref, err := hubapi.ParseRef(raw)
+		ref, err := appwire.ParseRef(raw)
 		if err != nil {
 			return appwire.ActivityReadResponse{}, appwire.InvalidParams("refs must be session refs: " + err.Error())
 		}
 		wanted[ref.String()] = struct{}{}
-		refsByHost[ref.HostID] = append(refsByHost[ref.HostID], ref.String())
+		refsByHost[ref.SourceID] = append(refsByHost[ref.SourceID], ref.String())
 	}
 	keep := func(ref string) bool {
 		_, ok := wanted[ref]

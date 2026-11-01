@@ -71,6 +71,11 @@ type systemCommandRuntime struct {
 	outputDone       chan error
 	terminationGrace time.Duration
 	signalName       string
+	// ownsProcessGroup reports whether Configure placed the command in a
+	// process group this runtime owns (Setpgid): that group is the runtime's to
+	// tear down when the command ends. A caller-supplied SysProcAttr
+	// (DetachCommand's Setsid) places the command outside that contract.
+	ownsProcessGroup bool
 
 	// Buffered mode owns its stdout/stderr pipes the same way streaming owns the
 	// combined pipe: os/exec installs no copier of its own, a holder surviving
@@ -136,8 +141,10 @@ func (c *systemCommandRuntime) Configure(config commandRuntimeConfig) {
 	c.cmd.Stdin = config.Stdin
 	if config.SysProcAttr != nil {
 		c.cmd.SysProcAttr = config.SysProcAttr
+		c.ownsProcessGroup = false
 	} else {
 		c.cmd.SysProcAttr = procgroup.SysProcAttr()
+		c.ownsProcessGroup = true
 	}
 	c.cmd.Env = config.Env
 	if config.ExecutablePath != "" {
@@ -333,6 +340,9 @@ func (c *systemCommandRuntime) collectBufferedOutput() error {
 func (c *systemCommandRuntime) Wait() error {
 	processErr := c.cmd.Wait()
 	c.signalName = processSignalName(c.cmd.ProcessState)
+	// The leader is reaped: any process still in its group is a descendant
+	// teardown owes, whether or not it holds an inherited output pipe.
+	defer c.reapProcessGroup()
 	if c.outputDone != nil {
 		return c.waitCombined(processErr)
 	}
@@ -480,6 +490,23 @@ func cmdSignalName(cmd commandRuntime) string {
 func (c *systemCommandRuntime) Terminate() { procgroup.Terminate(c.PID()) }
 
 func (c *systemCommandRuntime) Kill() { procgroup.Kill(c.PID()) }
+
+// reapProcessGroup finishes teardown once the leader is reaped. Descendants
+// are owned by Evener until the command ends, and Wait's drain arms have only
+// one trigger for signaling the group: an inherited output pipe still held
+// open. A descendant that redirects its own output (go run server >log 2>&1
+// &, #5468) closes every inherited write end, so no drain arm signals it and
+// it survives the command — reparented to pid 1, still holding its port or
+// other resources. Killing the group after the reap reaches exactly the
+// members teardown owes. A pipe writer outside the group is not a member and
+// stays untouched (the force-close paths own it), and a detached command runs
+// in its own session, outside this group.
+func (c *systemCommandRuntime) reapProcessGroup() {
+	if !c.ownsProcessGroup {
+		return
+	}
+	procgroup.KillGroupAfterReap(c.PID())
+}
 
 func wrapCommandForSandbox(cmd *exec.Cmd, wrapper *sandbox.Wrapper, dir string) {
 	cmd.ExtraFiles = nil

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -111,7 +112,7 @@ func TestCommunicateDeliversItsEndReason(t *testing.T) {
 				return nil
 			}
 			deps := &toolDeps{
-				emit:               func(events.EventKind, events.EventData) {},
+				emit:               func(events.EventData) {},
 				deliverCommunicate: record,
 				abort:              func(context.Context) error { return nil },
 				drainSteering:      func() []steeringMessage { return nil },
@@ -148,7 +149,7 @@ func TestCommunicateDeliversItsEndReason(t *testing.T) {
 // The transcript keeps the end reason with the message it ended the turn on.
 func TestCommunicateRecordsItsEndReason(t *testing.T) {
 	s, adapter := newExecutionSession(t)
-	adapter.script(respond(toolCallResponse(communicateCallArgs("comm-1", map[string]any{"message": "pick one", "end_reason": "needs_response"}))))
+	adapter.script(respond(agenttest.ToolCallResponse(communicateCallArgs("comm-1", map[string]any{"message": "pick one", "end_reason": "needs_response"}))))
 	if _, err := s.ProcessInput(context.Background(), "talk", nil); err != nil {
 		t.Fatal(err)
 	}

@@ -1,6 +1,6 @@
 import { useFocusEffect } from "@react-navigation/native";
 import { useCallback } from "react";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 import { useConnection } from "../ConnectionProvider";
 import { liveClientFor } from "../liveClient";
 import type { SubagentTree, SubagentTreeSnapshot } from "./subagentTree";

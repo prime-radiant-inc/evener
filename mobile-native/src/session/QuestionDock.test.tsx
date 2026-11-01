@@ -25,7 +25,6 @@ import { QuestionDock } from "./QuestionDock";
 import { useQuestionDraft } from "./useQuestionDraft";
 
 vi.mock("react-native", async () => (await import("../renderNative.testkit")).nativeModuleMock());
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 // The device's question drafts, in memory: the same four calls
 // draftRepository.ts makes against SQLite.

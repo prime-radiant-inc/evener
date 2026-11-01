@@ -1,4 +1,4 @@
-// Package frontmatter parses YAML frontmatter from Markdown documents.
+// Package frontmatter parses and edits YAML frontmatter in Markdown documents.
 package frontmatter
 
 import (

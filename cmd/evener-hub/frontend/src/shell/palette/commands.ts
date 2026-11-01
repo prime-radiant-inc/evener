@@ -474,7 +474,7 @@ export function buildCommands(): Command[] {
         // No client-side turn-in-flight guard: only the daemon knows, and it
         // answers. It resumes a cold session behind the call and retries
         // (app_model.go's setThreadModelWithResume), and refuses a genuine
-        // mid-turn switch with a Conflict (server/appwire_runtime.go's
+        // mid-turn switch with a Conflict (server/appwire_thread_settings.go's
         // handleAppThreadModelSet), which surfaces below as the error toast
         // plus the palette's own error strip. Guessing here refused switches
         // the hub would have accepted - the same mistake ModelSwitch.tsx made.

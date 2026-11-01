@@ -812,7 +812,7 @@ func TestWatchSeqFuzz_RetirementRetainsPendingSource(t *testing.T) {
 				var request llm.Request
 				owner := newSession(t, withDir(t.TempDir()), withConfig(SessionConfig{StateDir: stateDir}), withClock(h.clk), withSteps(func(req llm.Request) llm.Response {
 					request = req
-					return finalResponse("watch observed")
+					return agenttest.FinalResponse("watch observed")
 				}))
 				if err := owner.transcript.Close(); err != nil {
 					t.Fatal(err)

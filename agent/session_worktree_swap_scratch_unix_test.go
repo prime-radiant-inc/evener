@@ -896,12 +896,7 @@ func TestWorktreeSwap_CloseDuringASharedChildExitKeepsTheParentScratchLease(t *t
 	parentScratch := heldParentScratch(t, shared)
 	sibling := r.addSiblingWorktree(t, "child-lane", "child-branch")
 
-	ctx := context.WithValue(context.Background(), ctxDelegationAllowance, 2)
-	prepared, err := parent.prepareSubagentRun(ctx, "child task", "", "", 0, "", "", nil, nil)
-	if err != nil {
-		t.Fatalf("prepareSubagentRun: %v", err)
-	}
-	t.Cleanup(func() { releasePreparedTreeSlot(prepared) })
+	prepared := prepareStableChild(t, parent, delegateArgs{Task: "child task", DelegationAllowance: new(2)})
 	child := prepared.sub.sess
 	if child.currentEnv() != parent.currentEnv() {
 		t.Fatal("the spawned child did not land on the parent's environment; this test would prove nothing")
@@ -987,12 +982,7 @@ func TestWorktreeSwap_CloseDuringASharedChildEnterDropsTheRefreshScratch(t *test
 	parent := r.s
 	sibling := r.addSiblingWorktree(t, "child-lane", "child-branch")
 
-	ctx := context.WithValue(context.Background(), ctxDelegationAllowance, 2)
-	prepared, err := parent.prepareSubagentRun(ctx, "child task", "", "", 0, "", "", nil, nil)
-	if err != nil {
-		t.Fatalf("prepareSubagentRun: %v", err)
-	}
-	t.Cleanup(func() { releasePreparedTreeSlot(prepared) })
+	prepared := prepareStableChild(t, parent, delegateArgs{Task: "child task", DelegationAllowance: new(2)})
 	child := prepared.sub.sess
 	if child.currentEnv() != parent.currentEnv() {
 		t.Fatal("the spawned child did not land on the parent's environment; this test would prove nothing")
@@ -1008,10 +998,7 @@ func TestWorktreeSwap_CloseDuringASharedChildEnterDropsTheRefreshScratch(t *test
 	// The control: the same enter with no close under it. The refresh alone
 	// mints the entered clone's scratch — nothing runs a command on that clone
 	// — which is the directory the racing arm below has to dispose.
-	controlPrepared, err := parent.prepareSubagentRun(ctx, "control task", "", "", 0, "", "", nil, nil)
-	if err != nil {
-		t.Fatalf("prepareSubagentRun for the control: %v", err)
-	}
+	controlPrepared := prepareStableChild(t, parent, delegateArgs{Task: "control task", DelegationAllowance: new(2)})
 	control := controlPrepared.sub.sess
 	control.mu.Lock()
 	control.worktreeGitVersionOK = true
@@ -1032,7 +1019,6 @@ func TestWorktreeSwap_CloseDuringASharedChildEnterDropsTheRefreshScratch(t *test
 		t.Fatal("the scratch the enter's refresh minted holds no lease, so the racing arm below would prove nothing")
 	}
 	teardownChildSession(context.Background(), control)
-	releasePreparedTreeSlot(controlPrepared)
 
 	before := sandboxScratchDirs(t, isolated)
 

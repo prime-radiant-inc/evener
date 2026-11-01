@@ -1000,11 +1000,7 @@ func TestHostPushCredentials_ServedOverHubRPC(t *testing.T) {
 	defer srv.Close()
 	web.sources.Add(source)
 
-	rpc := dialHubRPC(t, srv)
-	defer rpc.Close()
-	if _, err := rpc.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	rpc := dialHubRPCInitialized(t, srv)
 
 	var resp appwire.HostPushCredentialsResponse
 	if err := rpc.Request(context.Background(), appwire.MethodEvenerHostPushCredentials, appwire.HostPushCredentialsParams{Host: "m4"}, &resp); err != nil {
@@ -1079,11 +1075,7 @@ func TestHostPushCredentials_ResolvesTheAuthControllersOwnStore(t *testing.T) {
 	defer srv.Close()
 	web.sources.Add(source)
 
-	rpc := dialHubRPC(t, srv)
-	defer rpc.Close()
-	if _, err := rpc.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	rpc := dialHubRPCInitialized(t, srv)
 
 	// The key enters through the auth surface, so the row the push reports
 	// exists only because both surfaces resolved the same store.
@@ -1244,11 +1236,7 @@ func TestAuthApiKeyConditionalSetBroadcastsOnlyOnALandedWrite(t *testing.T) {
 		CredsStore:          store,
 	})
 	defer hub.Close()
-	rpc := dialHubRPC(t, hub)
-	defer rpc.Close()
-	if _, err := rpc.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	rpc := dialHubRPCInitialized(t, hub)
 
 	// A landed write broadcasts evener/auth/updated naming the instance and the
 	// source it now resolves from.

@@ -405,7 +405,7 @@ func (s *Session) stopNestedOrLocal(jobID string) (*jobstore.JobRecord, error) {
 	}
 	if forwarded != nil && (forwarded.ParentJobID != "" || forwarded.ParentDelegateID != "") && forwarded.OwnerSessionID != s.id {
 		if forwarded.Status.IsTerminal() {
-			return cloneJobRecord(forwarded), nil
+			return forwarded.Clone(), nil
 		}
 		if guidance := s.notControllableDescendantError(jobID); guidance != nil {
 			return nil, guidance

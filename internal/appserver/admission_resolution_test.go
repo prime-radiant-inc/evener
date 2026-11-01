@@ -10,7 +10,7 @@ import (
 )
 
 func TestSubscriptionAdmissionResolverPanicIsContained(t *testing.T) {
-	s := NewServer(ServerConfig{SubscriptionAdmissionResolver: func(appwire.Message) (string, bool) {
+	s := NewServer(ServerConfig{SubscriptionAdmissionResolver: func(appwire.Message) SubscriptionAdmissionResolution {
 		panic("resolver boom")
 	}})
 	c := s.NewConnection("panic")
@@ -32,8 +32,8 @@ func TestSubscriptionAdmissionResolverPanicIsContained(t *testing.T) {
 }
 
 func TestUnresolvedSubscribingReadFailsClosed(t *testing.T) {
-	s := NewServer(ServerConfig{SubscriptionAdmissionResolver: func(appwire.Message) (string, bool) {
-		return "", false
+	s := NewServer(ServerConfig{SubscriptionAdmissionResolver: func(appwire.Message) SubscriptionAdmissionResolution {
+		return SubscriptionAdmissionResolution{Intent: SubscriptionAdmissionUnresolved}
 	}})
 	c := s.NewConnection("unresolved")
 	c.setInitialized()
@@ -53,8 +53,8 @@ func TestUnresolvedSubscribingReadFailsClosed(t *testing.T) {
 }
 
 func TestInvalidSubscribingReadPreservesInvalidParams(t *testing.T) {
-	s := NewServer(ServerConfig{SubscriptionAdmissionResolver: func(appwire.Message) (string, bool) {
-		return "", false
+	s := NewServer(ServerConfig{SubscriptionAdmissionResolver: func(appwire.Message) SubscriptionAdmissionResolution {
+		return SubscriptionAdmissionResolution{Intent: SubscriptionAdmissionUnresolved}
 	}})
 	c := s.NewConnection("invalid")
 	c.setInitialized()
@@ -70,7 +70,9 @@ func TestInvalidSubscribingReadPreservesInvalidParams(t *testing.T) {
 }
 
 func TestUnresolvedSubscriptionUsesSessionUnavailableMetadata(t *testing.T) {
-	s := NewServer(ServerConfig{SubscriptionAdmissionResolver: func(appwire.Message) (string, bool) { return "", false }})
+	s := NewServer(ServerConfig{SubscriptionAdmissionResolver: func(appwire.Message) SubscriptionAdmissionResolution {
+		return SubscriptionAdmissionResolution{Intent: SubscriptionAdmissionUnresolved}
+	}})
 	c := s.NewConnection("metadata")
 	c.setInitialized()
 	msg := appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodThreadRead, json.RawMessage(`{"subscribe":true}`))
@@ -82,7 +84,7 @@ func TestUnresolvedSubscriptionUsesSessionUnavailableMetadata(t *testing.T) {
 }
 
 func TestUnresolvedUnsubscribeCancelsCanonicalAndDeliveryAdmissions(t *testing.T) {
-	s := NewServer(ServerConfig{SubscriptionAdmissionResolverV2: func(appwire.Message) SubscriptionAdmissionResolution {
+	s := NewServer(ServerConfig{SubscriptionAdmissionResolver: func(appwire.Message) SubscriptionAdmissionResolution {
 		return SubscriptionAdmissionResolution{Key: "local:delivery", SecondaryKey: "local:lifecycle", Intent: SubscriptionAdmissionUnresolved}
 	}})
 	c := s.NewConnection("dual")

@@ -8,8 +8,6 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/internal/e2ecap"
-	"primeradiant.com/evener/test/e2e/fakellm"
 )
 
 // TestE2E_SendPromptToARetiredSession reproduces the reported defect: with the
@@ -29,19 +27,7 @@ import (
 // timing, so on a slow machine they could miss the state they named -- while
 // these two are the deterministic ends of it.
 func TestE2E_SendPromptToARetiredSession(t *testing.T) {
-	e2ecap.RequireLoopbackBind(t)
-	e2ecap.RequireProcessInspect(t)
-	if testing.Short() {
-		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
-	}
-
-	provider, err := fakellm.New()
-	if err != nil {
-		t.Fatalf("start fake provider: %v", err)
-	}
-	t.Cleanup(provider.Close)
-
-	stack := startHubStack(t, provider)
+	stack, provider := startE2EHubStack(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()

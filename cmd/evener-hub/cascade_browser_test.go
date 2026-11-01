@@ -28,6 +28,7 @@ import (
 	"primeradiant.com/evener/agent/sandbox/sandboxtest"
 	"primeradiant.com/evener/agent/skill"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
 	"primeradiant.com/evener/test/e2e/fakellm"
 )
@@ -351,7 +352,7 @@ func TestAgentCascadeBrowser(t *testing.T) {
 		}
 	}()
 	depth := 6
-	started, err := client.ThreadStart(ctx, appwire.ThreadStartParams{
+	started, err := appwiretest.ThreadStart(ctx, client, appwire.ThreadStartParams{
 		Harness: "evener", CWD: stack.workDir, Model: stack.model,
 		Input:           []appwire.InputItem{{Type: "text", Text: cascadeRoleToken(0)}},
 		LaunchOverrides: &appwire.LaunchConfigLayer{Sandbox: "off", MaxSubagentDepth: &depth},
@@ -377,7 +378,7 @@ func TestAgentCascadeBrowser(t *testing.T) {
 	var branch appwire.SessionDelegate
 	for level := range 6 {
 		owner := refs[level]
-		page, err := client.ThreadDelegatesList(ctx, appwire.SessionActivityListParams{Ref: owner, Scope: appwire.SessionActivityScopeSession, Limit: 200})
+		page, err := cascadeOwnerDelegates(ctx, client, owner)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -603,7 +604,7 @@ func TestAgentCascadeBrowser(t *testing.T) {
 	attentionRows := map[string]string{}
 	for offset, want := range map[uint32]int{0: 50, 50: 2} {
 		start, limit := offset, uint32(50)
-		read, err := client.NavigationRead(ctx, appwire.NavigationReadParams{
+		read, err := appwiretest.NavigationRead(ctx, client, appwire.NavigationReadParams{
 			RepresentationVersion: 3, Resource: "section", Section: "needs_you", Offset: &start, Limit: &limit,
 		})
 		if err != nil {
@@ -678,6 +679,30 @@ func TestAgentCascadeBrowser(t *testing.T) {
 	case err := <-scriptErr:
 		t.Fatal(err)
 	default:
+	}
+}
+
+// cascadeOwnerDelegates reads every direct delegate of owner. A page can be
+// empty and incomplete while the bounded scan advances through a long
+// transcript, so the walk follows the cursor to the end.
+func cascadeOwnerDelegates(ctx context.Context, client *appwire.Client, owner string) (appwire.SessionDelegatesResponse, error) {
+	var all appwire.SessionDelegatesResponse
+	cursor := ""
+	for {
+		page, err := client.ThreadDelegatesList(ctx, appwire.SessionActivityListParams{Ref: owner, Scope: appwire.SessionActivityScopeSession, Cursor: cursor, Limit: 200})
+		if err != nil {
+			return all, err
+		}
+		all.Context = page.Context
+		all.Delegates = append(all.Delegates, page.Delegates...)
+		all.Page = page.Page
+		if page.Page.Complete {
+			return all, nil
+		}
+		if page.Page.NextCursor == "" {
+			return all, fmt.Errorf("incomplete delegate page for %s has no continuation", owner)
+		}
+		cursor = page.Page.NextCursor
 	}
 }
 
@@ -1223,7 +1248,7 @@ func cascadeCreateAttentionSessions(ctx context.Context, t *testing.T, client *a
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
-			started, err := client.ThreadStart(ctx, appwire.ThreadStartParams{
+			started, err := appwiretest.ThreadStart(ctx, client, appwire.ThreadStartParams{
 				Harness: "evener", CWD: stack.workDir, Model: stack.model,
 				Input:           []appwire.InputItem{{Type: "text", Text: fmt.Sprintf("CASCADE_ATTENTION_INPUT_%d", index)}},
 				LaunchOverrides: &appwire.LaunchConfigLayer{Sandbox: "off"},
@@ -1281,7 +1306,7 @@ func cascadeHeldAttentionSession(ctx context.Context, watcher *fsnotify.Watcher,
 	if ctx.Err() != nil {
 		return nil
 	}
-	started, err := client.ThreadStart(ctx, appwire.ThreadStartParams{
+	started, err := appwiretest.ThreadStart(ctx, client, appwire.ThreadStartParams{
 		Harness: "evener", CWD: stack.workDir, Model: stack.model,
 		Input:           []appwire.InputItem{{Type: "text", Text: "CASCADE_ATTENTION_HELD_INPUT"}},
 		LaunchOverrides: &appwire.LaunchConfigLayer{Sandbox: "off"},
@@ -1351,7 +1376,7 @@ func cascadeNeedsYouRefs(ctx context.Context, client *appwire.Client) ([]string,
 	var refs []string
 	for _, offset := range []uint32{0, 50} {
 		start, limit := offset, uint32(50)
-		read, err := client.NavigationRead(ctx, appwire.NavigationReadParams{
+		read, err := appwiretest.NavigationRead(ctx, client, appwire.NavigationReadParams{
 			RepresentationVersion: 3, Resource: "section", Section: "needs_you", Offset: &start, Limit: &limit,
 		})
 		if err != nil {

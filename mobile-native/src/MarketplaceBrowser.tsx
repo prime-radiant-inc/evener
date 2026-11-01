@@ -9,7 +9,7 @@ import {
 	type PluginsStore,
 	runGatedMutation,
 } from "@evener/appwire-client/state/extensions";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 import { whenReady, type LiveReadiness } from "./connectionDisplay";
 import { scaledType, space, uiType } from "./design/tokens";
 import { HubPathField } from "./HubPathField";

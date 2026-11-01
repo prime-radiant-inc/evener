@@ -1,19 +1,14 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef } from "react";
 import { expect, test, vi } from "vitest";
+import { readModuleCss } from "../../styles/cssBlock";
 import { ListRow, type ListRowProps } from "./index";
 
 function css(): string {
   // jsdom applies no stylesheet, so the declarations are the checkable truth
   // - comments stripped first so a doc comment cannot satisfy a match.
-  return readFileSync(join(dirname(fileURLToPath(import.meta.url)), "listrow.module.css"), "utf8").replace(
-    /\/\*[\s\S]*?\*\//g,
-    "",
-  );
+  return readModuleCss(import.meta.url, "listrow.module.css");
 }
 
 function rule(selector: string): string {
@@ -167,7 +162,7 @@ test("an aria-disabled interactive row refuses activation but keeps focus", asyn
 });
 
 test("an aria-disabled interactive row is styled like a disabled one", () => {
-  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "listrow.module.css"), "utf8");
+  const css = readModuleCss(import.meta.url, "listrow.module.css");
   const disabledRules = [...css.matchAll(/([^{}]*:disabled[^{}]*)\{/g)].map((m) => m[1] ?? "");
   expect(disabledRules.length).toBeGreaterThan(0);
   for (const selector of disabledRules) expect(selector).toContain('[aria-disabled="true"]');

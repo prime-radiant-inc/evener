@@ -61,14 +61,14 @@ func testNotificationShutdownChild(t *testing.T, oneShot bool) {
 		// here, then wait for actual durable receiver custody before returning.
 		release()
 		awaitSignal(t, accepted, "child completion receiver custody")
-		return finalResponse("parent-final-before-child-observation-731a")
+		return agenttest.FinalResponse("parent-final-before-child-observation-731a")
 	}, func(req llm.Request) llm.Response {
 		observationRequest(t, req, []string{"child-report-during-final-731a"}, nil)
-		return finalResponse("parent-observed-child-731a")
+		return agenttest.FinalResponse("parent-observed-child-731a")
 	})
 	adapter.script("SHUTDOWN-CHILD-731a", func(llm.Request) llm.Response {
 		awaitSignal(t, childGate, "parent final request")
-		return finalResponse("child-report-during-final-731a")
+		return agenttest.FinalResponse("child-report-during-final-731a")
 	})
 	ctx := context.Background()
 	if _, err := root.ProcessInput(ctx, "launch child and settle", nil); err != nil {
@@ -102,15 +102,15 @@ func testNotificationShutdownHold(t *testing.T, oneShot, question bool) {
 	adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
 			if question {
-				return toolCallResponse(askUserCall("shutdown-question", askUserArgsValid()))
+				return agenttest.ToolCallResponse(askUserCall("shutdown-question", askUserArgsValid()))
 			}
 			close(entered)
 			<-release
-			return finalResponse("before-explicit-stop-731a")
+			return agenttest.FinalResponse("before-explicit-stop-731a")
 		},
 		func(req llm.Request) llm.Response {
 			observationRequest(t, req, []string{"held-shutdown-body-731a"}, nil)
-			return finalResponse("held-shutdown-observed-731a")
+			return agenttest.FinalResponse("held-shutdown-observed-731a")
 		},
 	}
 	ctx := context.Background()
@@ -189,10 +189,10 @@ func testNotificationShutdownLifetimeCallback(t *testing.T) {
 	wakes, hint := newDrainWake()
 	s.SetNotifyFunc(hint)
 	adapter.steps = []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("shutdown-initial-731a") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("shutdown-initial-731a") },
 		func(req llm.Request) llm.Response {
 			observationRequest(t, req, []string{"shutdown-body-71af"}, nil)
-			return finalResponse("shutdown-observed-71af")
+			return agenttest.FinalResponse("shutdown-observed-71af")
 		},
 	}
 	ctx, cancel := context.WithCancel(t.Context())
@@ -218,23 +218,23 @@ func testNotificationShutdownEnteredWatch(t *testing.T) {
 		wake, hint := newDrainWake()
 		s.SetNotifyFunc(hint)
 		watch := func(id string) llm.Response {
-			return toolCallResponse(llm.ToolCallData{ID: id, Name: "job_watch", Arguments: json.RawMessage(`{"operation":"create","source":"self","events":["assistant.tool"],"event_filter":{"tool_name":"read_file"},"note":"entered-source-731a"}`), Type: "function"})
+			return agenttest.ToolCallResponse(llm.ToolCallData{ID: id, Name: "job_watch", Arguments: json.RawMessage(`{"operation":"create","source":"self","events":["assistant.tool"],"event_filter":{"tool_name":"read_file"},"note":"entered-source-731a"}`), Type: "function"})
 		}
 		observed := 0
 		adapter.steps = []func(llm.Request) llm.Response{
 			func(llm.Request) llm.Response { return watch("first-watch") },
-			func(llm.Request) llm.Response { return finalResponse("initial-entered-731a") },
+			func(llm.Request) llm.Response { return agenttest.FinalResponse("initial-entered-731a") },
 			func(req llm.Request) llm.Response {
 				observationRequest(t, req, []string{"entered-source-731a"}, nil)
 				observed++
-				return finalResponse("observed-entered-731a")
+				return agenttest.FinalResponse("observed-entered-731a")
 			},
 			func(llm.Request) llm.Response { return watch("reopened-watch") },
-			func(llm.Request) llm.Response { return finalResponse("reopened-entered-731a") },
+			func(llm.Request) llm.Response { return agenttest.FinalResponse("reopened-entered-731a") },
 			func(req llm.Request) llm.Response {
 				observationRequest(t, req, []string{"entered-source-731a"}, nil)
 				observed++
-				return finalResponse("observed-reopened-731a")
+				return agenttest.FinalResponse("observed-reopened-731a")
 			},
 		}
 		ctx := context.Background()
@@ -339,15 +339,15 @@ func TestNotificationShutdownPreservesDetachedJob(t *testing.T) {
 	shellArgs, _ := json.Marshal(map[string]any{"command": command, "mode": "detached"})
 	adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
-			return toolCallResponse(llm.ToolCallData{ID: "detached-731a", Name: "shell", Arguments: shellArgs, Type: "function"})
+			return agenttest.ToolCallResponse(llm.ToolCallData{ID: "detached-731a", Name: "shell", Arguments: shellArgs, Type: "function"})
 		},
 		func(llm.Request) llm.Response {
-			return toolCallResponse(llm.ToolCallData{ID: "future-731a", Name: "job_watch", Arguments: json.RawMessage(`{"operation":"create","source":"self","repeat_seconds":60,"note":"future-detached-731a"}`), Type: "function"})
+			return agenttest.ToolCallResponse(llm.ToolCallData{ID: "future-731a", Name: "job_watch", Arguments: json.RawMessage(`{"operation":"create","source":"self","repeat_seconds":60,"note":"future-detached-731a"}`), Type: "function"})
 		},
-		func(llm.Request) llm.Response { return finalResponse("detached-final-731a") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("detached-final-731a") },
 		func(req llm.Request) llm.Response {
 			observationRequest(t, req, []string{"future-detached-731a", callbackWatchesCancelledAtRestartMessage}, nil)
-			return finalResponse("detached-frame-observed-731a")
+			return agenttest.FinalResponse("detached-frame-observed-731a")
 		},
 	}
 	ctx, cancel := context.WithCancel(t.Context())
@@ -439,13 +439,13 @@ func testNotificationShutdownDaemon(t *testing.T) {
 	observe := func(req llm.Request) llm.Response {
 		observationRequest(t, req, []string{"daemon-watch-731a"}, nil)
 		observed++
-		return finalResponse("daemon-observed-731a")
+		return agenttest.FinalResponse("daemon-observed-731a")
 	}
 	adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
-			return toolCallResponse(llm.ToolCallData{ID: "daemon-watch", Name: "job_watch", Arguments: json.RawMessage(`{"operation":"create","source":"self","events":["assistant.tool"],"event_filter":{"tool_name":"read_file"},"note":"daemon-watch-731a"}`), Type: "function"})
+			return agenttest.ToolCallResponse(llm.ToolCallData{ID: "daemon-watch", Name: "job_watch", Arguments: json.RawMessage(`{"operation":"create","source":"self","events":["assistant.tool"],"event_filter":{"tool_name":"read_file"},"note":"daemon-watch-731a"}`), Type: "function"})
 		},
-		func(llm.Request) llm.Response { return finalResponse("daemon-initial-731a") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("daemon-initial-731a") },
 		observe, observe,
 	}
 	ctx := context.Background()

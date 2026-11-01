@@ -220,6 +220,22 @@ describe("the model chip (spec 8.5)", () => {
 			),
 		).toBe("DS Flash · XHigh");
 	});
+	it("names the model when the session's provider key differs from the catalog's (#2988)", () => {
+		// A gateway and its upstream can name the same model under different
+		// provider-instance keys. The display name belongs to the model, so
+		// the bare id still finds it rather than falling back to the id.
+		expect(
+			modelChipLabel(
+				{
+					modelProvider: "deepseek/deepseek-4.1-flash",
+					reasoningEffort: "xhigh",
+					reasoningEffortLevels: ["high", "xhigh"],
+					supportsReasoning: true,
+				},
+				[{ provider: "lunaroute", model: "deepseek-4.1-flash", displayName: "DeepSeek 4.1 Flash" }],
+			),
+		).toBe("DeepSeek 4.1 Flash · XHigh");
+	});
 	it("falls back to the model id before the catalog loads, and drops effort a model lacks", () => {
 		expect(
 			modelChipLabel(

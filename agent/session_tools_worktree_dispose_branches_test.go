@@ -315,7 +315,7 @@ func TestWorktreeDisposeWhitespaceID(t *testing.T) {
 func TestWorktreeDisposeValidDelegateID(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
-	// A valid delegate id passes the id check but fails at disposeStableDelegateLane
+	// A valid delegate id passes the id check but fails at disposeDelegateLane
 	// since delegateController is nil
 	_, err := s.worktreeDispose(context.TODO(), "dlg_abc123", false, false)
 	if err == nil {
