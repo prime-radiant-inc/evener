@@ -223,10 +223,8 @@ func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rende
 func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
 	ctx, trace := withThreadLifecycleLog(ctx, "resume", req.SessionID, nil)
 	prepareDone := trace.stage(ctx, "launch_preparation")
-	// A resume restores the session's durable state before the daemon can
-	// listen and register, so the rendezvous wait must cover the whole
-	// restore, not just process startup: the largest sessions restore in
-	// minutes, and the fresh-spawn budget killed them mid-restore.
+	// The rendezvous wait must cover the daemon's whole state restore, not
+	// just process startup; resumeRendezvousTimeout carries the rationale.
 	timeout := resumeRendezvousTimeout
 	if req.StateDir == "" {
 		var err error
