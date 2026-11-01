@@ -8,12 +8,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"primeradiant.com/evener/agent/internal/agenttest"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/agent/internal/agenttest"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	toolpkg "primeradiant.com/evener/agent/internal/tool"

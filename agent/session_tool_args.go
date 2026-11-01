@@ -4,9 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"primeradiant.com/evener/agent/internal/tool"
 	"strings"
 	"time"
+
+	"primeradiant.com/evener/agent/internal/tool"
 )
 
 // Decoders for model-supplied tool arguments, shared by every session tool.

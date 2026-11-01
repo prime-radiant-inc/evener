@@ -6,10 +6,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"primeradiant.com/evener/agent/internal/agenttest"
 	"sync"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/agent/internal/agenttest"
 
 	"github.com/spf13/afero"
 

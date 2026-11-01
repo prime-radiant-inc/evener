@@ -7,9 +7,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"primeradiant.com/evener/agent/internal/agenttest"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/agent/internal/agenttest"
 
 	"github.com/spf13/afero"
 

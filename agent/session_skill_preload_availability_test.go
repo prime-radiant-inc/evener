@@ -225,10 +225,16 @@ func TestRestoredDelegateDropsUnfollowablePreloadRecord(t *testing.T) {
 		t.Fatal("cold idle delegate was reported retained")
 	}
 	defer sub.sess.discardRestoredCandidate()
+	released, err := root.delegateController.AttachRuntime(started.lease, sub.sess)
+	recheck = recheck || released
+	if err != nil {
+		t.Fatalf("AttachRuntime: %v", err)
+	}
 	if sub.sess.skillAvailableToSession(gardeningMemorySkillName) {
 		t.Fatal("restored delegate unexpectedly can save memory")
 	}
-	if _, err := sub.sess.ProcessInput(context.Background(), "restored task", nil); err != nil {
+	runCtx := context.WithValue(started.ctx, delegateRunLeaseContextKey{}, started.lease)
+	if _, err := sub.sess.ProcessInput(runCtx, "restored task", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 	requests := fixture.adapter.Requests()

@@ -271,8 +271,15 @@ var eventKindSpecs = []eventKindSpec{
 	{
 		kind:    EventDelegateUpdatePosted,
 		present: func(event *Event) bool { return event.UpdatePosted != nil },
-		clone:   func(dst, src *Event) { clonePointee(&dst.UpdatePosted, &src.UpdatePosted) },
-		apply:   applyUpdatePosted,
+		clone: func(dst, src *Event) {
+			if src.UpdatePosted != nil {
+				payload := *src.UpdatePosted
+				clonePointee(&payload.Communicate, &src.UpdatePosted.Communicate)
+				payload.Packet = cloneTerminalPacket(src.UpdatePosted.Packet)
+				dst.UpdatePosted = &payload
+			}
+		},
+		apply: applyUpdatePosted,
 	},
 	{
 		kind:    EventDelegateIntentStated,

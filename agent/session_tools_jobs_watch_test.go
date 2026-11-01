@@ -5,9 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
-	"primeradiant.com/evener/agent/internal/agenttest"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/agent/internal/agenttest"
 
 	"primeradiant.com/evener/agent/internal/jobstore"
 	tooldefs "primeradiant.com/evener/agent/internal/tool"

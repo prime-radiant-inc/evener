@@ -5,10 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"primeradiant.com/evener/agent/internal/agenttest"
 	"slices"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/agent/internal/agenttest"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/jobstore"

@@ -241,6 +241,7 @@ type namedParentAuthorshipProvider struct {
 	middleFinalStarted                chan struct{}
 	requests                          []string
 	unexpected                        func(string)
+	diagnoseMiddle                    func(llm.Request) string
 }
 
 func authorshipGate(ctx context.Context, gate <-chan struct{}) error {
@@ -274,7 +275,14 @@ func (p *namedParentAuthorshipProvider) Complete(ctx context.Context, req llm.Re
 	}
 	request := fmt.Sprintf("role=%s call=%d messages=%d last-role=%s", role, call, len(req.Messages), req.Messages[len(req.Messages)-1].Role)
 	p.requests = append(p.requests, request)
+	diagnose := p.diagnoseMiddle
 	p.scriptMu.Unlock()
+	if role == "middle" && call == 5 && diagnose != nil {
+		diagnostic := diagnose(req)
+		p.scriptMu.Lock()
+		p.requests = append(p.requests, "middle diagnostic="+diagnostic)
+		p.scriptMu.Unlock()
+	}
 	switch role {
 	case "root":
 		if call == 1 {
@@ -355,6 +363,115 @@ func authorshipNotificationAfter(req llm.Request, callID string) bool {
 	return false
 }
 
+// Log only fixture outcome fields and causal coordinates, never request bodies.
+// Request indices show which accepted notification carriers this request held;
+// observed IDs distinguish those carriers from a durable response receipt.
+func namedParentMiddleDiagnostic(req llm.Request, turns []schema.Turn) string {
+	outcomes := []map[string]any{}
+	for index, message := range req.Messages {
+		for _, part := range message.Content {
+			result := part.ToolResult
+			if result == nil || result.ToolCallID != "middle-final" || len(outcomes) >= 4 {
+				continue
+			}
+			outcome := map[string]any{"request_index": index, "is_error": result.IsError}
+			// The response fields live in Content. ToolState separately carries
+			// the accepted end reason and must not hide the response outcome.
+			var raw []byte
+			if text, ok := result.Content.(string); ok {
+				raw = []byte(text)
+			} else {
+				raw, _ = json.Marshal(result.Content)
+			}
+			var fields map[string]any
+			outcome["structured"] = json.Unmarshal(raw, &fields) == nil
+			for _, key := range []string{"accepted", "end_turn"} {
+				if value, ok := fields[key].(bool); ok {
+					outcome[key] = value
+				}
+			}
+			for _, key := range []string{"reason", "delivery"} {
+				if value, ok := fields[key].(string); ok {
+					outcome[key] = value[:min(len(value), 128)]
+				}
+			}
+			outcomes = append(outcomes, outcome)
+		}
+	}
+	carriers, receipts := []map[string]any{}, []map[string]any{}
+	for index, turn := range turns {
+		if turn.AttentionID != "" && len(carriers) < 32 {
+			coverage := []int{}
+			if text := turn.Message.Text(); text != "" {
+				for requestIndex, message := range req.Messages {
+					if strings.Contains(message.Text(), text) && len(coverage) < 16 {
+						coverage = append(coverage, requestIndex)
+					}
+				}
+			}
+			carriers = append(carriers, map[string]any{
+				"entry": index + 1, "id": turn.AttentionID, "request_indices": coverage,
+			})
+		}
+		if len(turn.ObservedNotificationIDs) != 0 && len(receipts) < 32 {
+			receipts = append(receipts, map[string]any{
+				"entry": index + 1, "ids": turn.ObservedNotificationIDs[:min(len(turn.ObservedNotificationIDs), 16)],
+			})
+		}
+	}
+	raw, _ := json.Marshal(map[string]any{"middle_final": outcomes, "carriers": carriers, "receipts": receipts})
+	return string(raw)
+}
+
+func TestNamedParentMiddleDiagnosticResponseContent(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content any
+		state   json.RawMessage
+		isError bool
+		want    map[string]any
+	}{
+		{
+			name:    "accepted_with_end_state",
+			content: `{"accepted":true,"end_turn":true,"delivery":"delivered"}`,
+			state:   json.RawMessage(`{"communicate_end_reason":"done"}`),
+			want: map[string]any{
+				"request_index": float64(0), "is_error": false, "structured": true,
+				"accepted": true, "end_turn": true, "delivery": "delivered",
+			},
+		},
+		{
+			name:    "refused",
+			content: map[string]any{"accepted": false, "end_turn": false, "reason": "stale_wait_target"},
+			want: map[string]any{
+				"request_index": float64(0), "is_error": false, "structured": true,
+				"accepted": false, "end_turn": false, "reason": "stale_wait_target",
+			},
+		},
+		{
+			name:    "error",
+			content: "opaque-error",
+			isError: true,
+			want:    map[string]any{"request_index": float64(0), "is_error": true, "structured": false},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			message := llm.ToolResult("middle-final", tc.content, tc.isError)
+			message.Content[0].ToolResult.ToolState = tc.state
+			raw := namedParentMiddleDiagnostic(llm.Request{Messages: []llm.Message{message}}, nil)
+			var got struct {
+				MiddleFinal []map[string]any `json:"middle_final"`
+			}
+			if err := json.Unmarshal([]byte(raw), &got); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got.MiddleFinal, []map[string]any{tc.want}) {
+				t.Fatalf("middle-final outcome=%v want=%v", got.MiddleFinal, tc.want)
+			}
+		})
+	}
+}
+
 func (p *namedParentAuthorshipProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
 	if !requestHasTool(req, "communicate") || !slices.Contains(userTexts(req), "leaf-create") {
 		return nil, llm.ErrStreamUnsupported
@@ -420,6 +537,11 @@ func TestTranscriptAuthorshipNamedParentPublication(t *testing.T) {
 		return ev.Data.(events.DelegateUpdatedData)
 	}
 	middle, leaf := created("create-middle"), created("create-leaf")
+	p.scriptMu.Lock()
+	p.diagnoseMiddle = func(req llm.Request) string {
+		return namedParentMiddleDiagnostic(req, transcriptTurns(t, path(middle.ChildSessionID)))
+	}
+	p.scriptMu.Unlock()
 	ps.await(t, events.EventRoundStarted, func(ev events.SessionEvent) bool { return ev.SessionID == leaf.ChildSessionID })
 	if middle.OwnerSessionID != sess.ID() || leaf.OwnerSessionID != sess.ID() || leaf.ParentDelegateID != middle.DelegateID || middle.ChildSessionID == sess.ID() {
 		t.Fatalf("physical/logical tree mismatch: middle=%+v leaf=%+v", middle, leaf)

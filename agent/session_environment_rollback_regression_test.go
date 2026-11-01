@@ -829,8 +829,12 @@ func TestPoisonedWriterRefusesTheTurnBehindAPoisoningTurn(t *testing.T) {
 	sendOneUserInput(t, sess, "first")
 
 	fs := attachEnvironmentFailureFS(t, sess)
+	const notificationID = "test:behind-poisoning-turn"
 	steps[1] = func(llm.Request) llm.Response {
 		requests.Add(1)
+		if err := sess.enqueueNotification(notification{ID: notificationID, Message: llm.UserMachinery("behind-poisoning-payload")}); err != nil {
+			t.Fatalf("enqueue canonical notification after request formation: %v", err)
+		}
 		// The assistant record this response produces is durable and would abort
 		// the turn, and the COMMUNICATE record goes through the synced door,
 		// which rolls a torn line back; aim past both at the buffered
@@ -840,7 +844,6 @@ func TestPoisonedWriterRefusesTheTurnBehindAPoisoningTurn(t *testing.T) {
 		armEnvironmentPartialWriteAfter(fs, 2)
 		return agenttest.FinalResponse("ok")
 	}
-	sess.enqueueJobNotification(watchNotification("job_behind_poisoning", "output_match: done"))
 	drainPendingEvents(sess)
 
 	_, err := sess.ProcessInput(t.Context(), "poisons mid-turn", nil)
@@ -850,8 +853,9 @@ func TestPoisonedWriterRefusesTheTurnBehindAPoisoningTurn(t *testing.T) {
 	if got := requests.Load(); got != 2 {
 		t.Fatalf("model requests = %d, want the notification turn never to have run", got)
 	}
-	if got := sess.peekNotifications(); got != 1 {
-		t.Fatalf("pending notifications after the refusal = %d, want the one still waiting", got)
+	pending, pendingErr := sess.pendingNotificationIDs()
+	if pendingErr != nil || len(pending) != 1 || pending[0] != notificationID {
+		t.Fatalf("canonical unobserved custody after refusal = %v, err=%v, want only %s", pending, pendingErr, notificationID)
 	}
 	// The notification the refusal kept is work still pending, so the session is
 	// not idle and the emission must not claim it is.

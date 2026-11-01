@@ -3,10 +3,11 @@ package agent
 import (
 	"context"
 	"errors"
-	"primeradiant.com/evener/agent/internal/agenttest"
 	"regexp"
 	"sync"
 	"testing"
+
+	"primeradiant.com/evener/agent/internal/agenttest"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/llm"

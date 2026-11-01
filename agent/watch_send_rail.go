@@ -3,11 +3,12 @@ package agent
 import (
 	"context"
 	"errors"
-	"primeradiant.com/evener/llm"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"primeradiant.com/evener/llm"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
@@ -618,7 +619,7 @@ func (jm *jobManager) planWatchSendPending(state jobstore.WatchSendState, d watc
 		return watchSendPendingRecord{}
 	}
 	cfg := d.cfg
-	if cfg.budgetTripped && (strings.HasPrefix(state.TriggerReason, "event: ") || strings.HasPrefix(state.TriggerReason, "output_match: ")) {
+	if (cfg.budgetTripped || cfg.conditionFires >= watchDeliveryBudget) && (strings.HasPrefix(state.TriggerReason, "event: ") || strings.HasPrefix(state.TriggerReason, "output_match: ")) {
 		return watchSendPendingRecord{}
 	}
 	if settled, ok := cfg.settledUpdateSeq[state.Key]; ok && state.UpdateSeq <= settled {

@@ -2,10 +2,11 @@ package agent
 
 import (
 	"context"
-	"primeradiant.com/evener/agent/internal/agenttest"
 	"reflect"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/agent/internal/agenttest"
 
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"

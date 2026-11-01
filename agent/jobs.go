@@ -2039,6 +2039,9 @@ func (jm *jobManager) forwardDisabled(run *runningJob) bool {
 // enqueued; appendEvent reports whether a fresh pending event must first be
 // persisted (only for a not-yet-armed record). appendEvent implies rearm.
 func rearmTerminalNotificationDecision(rec *jobstore.JobRecord, sessionID string) (rearm, appendEvent bool) {
+	if string(rec.Type) == delegateResourceType {
+		return false, false
+	}
 	if rec.OwnerSessionID != "" && rec.OwnerSessionID != sessionID {
 		return false, false
 	}

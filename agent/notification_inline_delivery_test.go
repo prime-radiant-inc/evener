@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"primeradiant.com/evener/agent/internal/agenttest"
 	"reflect"
 	"slices"
 	"strconv"
@@ -16,6 +15,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/agent/internal/agenttest"
 
 	"github.com/spf13/afero"
 	"primeradiant.com/evener/agent/events"

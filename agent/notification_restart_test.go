@@ -7,11 +7,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"primeradiant.com/evener/agent/internal/agenttest"
 	"regexp"
 	"slices"
 	"sync"
 	"testing"
+
+	"primeradiant.com/evener/agent/internal/agenttest"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"

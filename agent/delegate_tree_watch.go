@@ -414,11 +414,17 @@ func repairStableWatchStoreForBootstrap(snapshot stableWatchBootstrapSnapshot, s
 	if err != nil {
 		return err
 	}
+	retired := make(map[string]struct{})
+	for id, record := range jobstore.Fold(eventsLog) {
+		if record != nil && string(record.Type) == delegateResourceType {
+			retired[id] = struct{}{}
+		}
+	}
 	folded := jobstore.FoldWatchSends(eventsLog)
 	pending := make([]jobstore.WatchSendState, 0, len(folded.Pending))
 	current := make(map[stableWatchDeliveryIdentity]struct{}, len(folded.Pending))
 	for _, state := range folded.Pending {
-		if state != nil && (state.StableReceiver || state.CallbackFrame) {
+		if state != nil && !addressedThroughRetiredDelegate(state.Key, retired) && (state.StableReceiver || state.CallbackFrame) {
 			pending = append(pending, *state)
 			current[stableWatchDeliveryIdentity{deliveryID: state.DeliveryID, updateSeq: state.UpdateSeq}] = struct{}{}
 		}
@@ -430,6 +436,9 @@ func repairStableWatchStoreForBootstrap(snapshot stableWatchBootstrapSnapshot, s
 		return pending[i].UpdateSeq < pending[j].UpdateSeq
 	})
 	for _, state := range exactUnacknowledgedStableWatchSends(eventsLog) {
+		if addressedThroughRetiredDelegate(state.Key, retired) {
+			continue
+		}
 		identity := stableWatchDeliveryIdentity{deliveryID: state.DeliveryID, updateSeq: state.UpdateSeq}
 		if _, isCurrent := current[identity]; isCurrent {
 			continue

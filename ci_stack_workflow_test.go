@@ -22,7 +22,8 @@ func TestCIIncludesNotificationRepairStack(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]map[string][]string{
-		"push": {"branches": {"main"}},
+		"push":        {"branches": {"main"}},
+		"merge_group": {"types": {"checks_requested"}},
 		"pull_request": {"branches": {
 			"main", "unified-session-notifications", "notification-repair-execution",
 			"notification-repair-receiver", "notification-repair-stop",

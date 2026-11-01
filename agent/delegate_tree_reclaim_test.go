@@ -8,8 +8,6 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
-	"primeradiant.com/evener/agent/schema"
-
 	"reflect"
 	"runtime/pprof"
 	"sort"
@@ -23,6 +21,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 

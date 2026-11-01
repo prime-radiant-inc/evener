@@ -27,7 +27,7 @@ import {
 import { chromeStore, resetChromeStoreForTests } from "../shell/chromeStore";
 import { documentPaneState, resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
 import { connectionStore, resetConnectionStoreForTests } from "../stores/connection";
-import { olderTranscriptPageKey } from "../stores/entryTranscriptRoutes";
+import { existingEntryRoute, olderTranscriptPageKey } from "../stores/entryTranscriptRoutes";
 import { resetThreadsStoreForTests, settleEntryTranscriptForTests, threadsStore } from "../stores/threads";
 import { useThreadModel } from "../stores/useThreadModel";
 import { TranscriptRenderProvider } from "../transcriptDisplay/renderContext";
@@ -1757,6 +1757,7 @@ test.each([
   { intent: "continue", recorded: true, opening: "none", delivery: "retained idle" },
   { intent: "continue", recorded: true, opening: "none", delivery: "resident replacement" },
   { intent: "continue", recorded: true, opening: "none", delivery: "partial replacement" },
+  { intent: "continue", recorded: true, opening: "none", delivery: "cursorless partial replacement" },
 ])(
   "saved child restoration owns the next accepted page only while active: $intent, recorded=$recorded, opening=$opening, delivery=$delivery",
   async ({ intent, recorded, opening, delivery }) => {
@@ -1793,7 +1794,8 @@ test.each([
       ? { bootGeneration: "1", snapshot: { incarnation: "child-incarnation", length: 140 } }
       : {};
     const replaceResident = delivery === "resident replacement";
-    const replacePartial = delivery === "partial replacement";
+    const cursorlessPartial = delivery === "cursorless partial replacement";
+    const replacePartial = delivery === "partial replacement" || cursorlessPartial;
     const replaceCache = replaceResident || replacePartial;
     let reopening = false;
     let acceptReplacement!: () => void;
@@ -1823,7 +1825,7 @@ test.each([
         return {
           ...response,
           thread: wireThread(p.ref, { turns: [cached] }),
-          olderCursor: replacePartial ? "56" : undefined,
+          olderCursor: replacePartial && !cursorlessPartial ? "56" : undefined,
         };
       }
       // Hold real hydration while the cached window reaches the reader.
@@ -1895,7 +1897,29 @@ test.each([
       ? await mountGestureReader(false, { node: <Root />, position, initialEntryId: replacePartial ? "m" : undefined })
       : undefined;
     const mounted = geometry?.mounted ?? render(<Root />);
-    if (replacePartial) {
+    if (cursorlessPartial) {
+      await waitFor(() => {
+        expect(acceptReplacement).toBeDefined();
+        expect(threadsStore.getState().localOpenings.has(strip.childRef)).toBe(false);
+        expect(childState.readers.get(childKey)?.entries.some((value) => value.id === "middle")).toBe(true);
+      });
+      const child = childState.readers.get(childKey)!;
+      // The disk window is readable, not authoritative exhaustion. No cursor
+      // or pending page can protect this source until the real read answers.
+      expect(existingEntryRoute(strip.childRef)?.cachedUnverified).toBe(true);
+      expect(child.history.hasOlder).toBe(false);
+      expect(child.history.loadingOlder).toBe(false);
+      expect(child.history.olderPageKey).toBeNull();
+      expect(child.entries.some((value) => value.id === position.entryId)).toBe(false);
+      expect(requests).toEqual([]);
+      expect(readComicPosition("local:test")).toEqual(position);
+      geometry?.publish();
+      expect(readComicPosition("local:test")).toEqual(position);
+      await act(async () => acceptReplacement());
+      await waitFor(() => expect(threadsStore.getState().threads.get(strip.childRef)?.olderCursor).toBe("96"));
+      expect(existingEntryRoute(strip.childRef)?.cachedUnverified).toBe(false);
+      expect(readComicPosition("local:test")).toEqual(position);
+    } else if (replacePartial) {
       await waitFor(() =>
         expect(pagingByRef.get(strip.childRef)?.paging.getSnapshot()).toMatchObject({
           loading: false,

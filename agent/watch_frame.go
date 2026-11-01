@@ -2,10 +2,11 @@ package agent
 
 import (
 	"errors"
-	"primeradiant.com/evener/agent/internal/jobstore"
 	"slices"
 	"strconv"
 	"strings"
+
+	"primeradiant.com/evener/agent/internal/jobstore"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/lineend"

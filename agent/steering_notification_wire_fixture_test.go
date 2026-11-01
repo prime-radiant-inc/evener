@@ -26,7 +26,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"primeradiant.com/evener/agent/internal/agenttest"
 	"reflect"
 	"regexp"
 	"slices"
@@ -34,6 +33,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/agent/internal/agenttest"
 
 	"primeradiant.com/evener/agent/doctor"
 	"primeradiant.com/evener/agent/events"

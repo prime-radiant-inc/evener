@@ -16,11 +16,12 @@ import (
 func TestRestingStateLiveMatchesRestore(t *testing.T) {
 	t.Parallel()
 	type move struct {
-		name string
-		step func(llm.Request) llm.Response
+		name          string
+		step          func(llm.Request) llm.Response
+		waitingOnWork bool
 	}
 	communicate := func(reason string) move {
-		return move{name: "communicate " + reason, step: func(llm.Request) llm.Response { return endReasonResponse("answer", reason) }}
+		return move{name: "communicate " + reason, step: func(llm.Request) llm.Response { return endReasonResponse("answer", reason) }, waitingOnWork: reason == "waiting_on_work"}
 	}
 	finals := []move{
 		{name: "plain reply", step: func(llm.Request) llm.Response { return agenttest.FinalResponse("answer") }},
@@ -54,7 +55,10 @@ func TestRestingStateLiveMatchesRestore(t *testing.T) {
 					if prelude.step != nil {
 						inputs = []string{"prelude input", "final input"}
 					}
-					for _, in := range inputs {
+					for i, in := range inputs {
+						if i == len(inputs)-1 && final.waitingOnWork {
+							seedWaitWatch(t, sess)
+						}
 						if _, err := sess.ProcessInput(ctx, in, nil); err != nil {
 							t.Fatal(err)
 						}

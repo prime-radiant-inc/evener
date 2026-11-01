@@ -248,7 +248,10 @@ its parent and healthy siblings stay usable.
 Saved positions contain the complete target session and expansion path, source
 entry and character offset, never transcript bodies. Restoration demands only the
 saved branch through the existing activity and history pagers. In-flight history
-loads preserve the saved source and child path until loading finishes. A newly
+loads preserve the saved source and child path until loading finishes. An
+unverified disk-only window cannot establish exhaustion, even if its local open
+has finished and it carries no older cursor. The existing route and cache
+lifetime keep restoration pending until authoritative hydration publishes. A newly
 loaded source waits for composed layout before any missing-source fallback. User
 movement cancels pending restoration. A collapsed branch keeps its small anchor
 for reopening; a parent end target does not follow later child panels.

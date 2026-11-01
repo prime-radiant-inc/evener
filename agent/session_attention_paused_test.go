@@ -5,10 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
-	"primeradiant.com/evener/agent/internal/agenttest"
 	"strings"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/agent/internal/agenttest"
 
 	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/agent/events"

@@ -8,10 +8,11 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"primeradiant.com/evener/agent/internal/agenttest"
 	"reflect"
 	"sync"
 	"testing"
+
+	"primeradiant.com/evener/agent/internal/agenttest"
 
 	"github.com/spf13/afero"
 	"primeradiant.com/evener/agent/diagnostic"

@@ -726,7 +726,7 @@ func TestUnservedSessionAnnouncesBoundary(t *testing.T) {
 
 	s.SteerKind("look at this", events.SteeringKindNotification)
 
-	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+	if _, err := s.ProcessInputKind(prepared.runCtx, "", nil, EntryNotification); err != nil {
 		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
 	}
 

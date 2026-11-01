@@ -197,7 +197,6 @@ func testColdDelegateSourceSelection(t *testing.T, retryBusyControl bool) {
 	const healthyID = "dlg_selection_healthy"
 	healthy := delegateControllerCreatedEvent(healthyID, "")
 	healthy.Created.Descriptor.OwnerSessionID = restored.ID()
-	healthy.Created.Descriptor.Resumable = false
 	c.mu.Lock()
 	_, err = c.appendLocked(healthy)
 	c.mu.Unlock()
