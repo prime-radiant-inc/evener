@@ -1026,7 +1026,7 @@ describe("native file URL links", () => {
 	const reportURL = `file://${artifactsDir}/docs-quality-repairs.md`;
 
 	it("binds a file URL inside the session artifacts to the retained file", () => {
-		const result = renderMarkdownFileReferences(`[Full report](${reportURL})`, cwd, artifactsDir);
+		const result = renderMarkdownFileReferences(`[Full report](${reportURL})`, cwd, { artifactsDir });
 		const reference = [...result.references.values()][0];
 		expect(reference).toMatchObject({
 			path: "docs-quality-repairs.md",
@@ -1041,7 +1041,7 @@ describe("native file URL links", () => {
 	// URL is both the destination and the visible text. An agent may use it for
 	// the same report it would otherwise link explicitly.
 	it("binds an angle-bracketed file URL autolink to the retained file", () => {
-		const result = renderMarkdownFileReferences(`Report: <${reportURL}>`, cwd, artifactsDir);
+		const result = renderMarkdownFileReferences(`Report: <${reportURL}>`, cwd, { artifactsDir });
 		const reference = [...result.references.values()][0];
 		expect(reference).toMatchObject({
 			path: "docs-quality-repairs.md",
@@ -1061,7 +1061,7 @@ describe("native file URL links", () => {
 	it("binds a code-span scratch path to the session-local file", () => {
 		const scratchDir = "/tmp/evener-scratch-s1/s1";
 		const shot = `${scratchDir}/shot-6-message-link-fixed.png`;
-		const result = renderMarkdownFileReferences(`- \`${shot}\` — the fix`, cwd, undefined, scratchDir);
+		const result = renderMarkdownFileReferences(`- \`${shot}\` — the fix`, cwd, { scratchDir });
 		const reference = [...result.references.values()][0];
 		expect(reference).toMatchObject({
 			path: "shot-6-message-link-fixed.png",
@@ -1074,7 +1074,7 @@ describe("native file URL links", () => {
 	it("binds a file URL inside the session scratch", () => {
 		const scratchDir = "/tmp/evener-scratch-s1/s1";
 		const shot = `${scratchDir}/shot-6-message-link-fixed.png`;
-		const result = renderMarkdownFileReferences(`[the fix](file://${shot})`, cwd, undefined, scratchDir);
+		const result = renderMarkdownFileReferences(`[the fix](file://${shot})`, cwd, { scratchDir });
 		const reference = [...result.references.values()][0];
 		expect(reference).toMatchObject({
 			path: "shot-6-message-link-fixed.png",
@@ -1127,14 +1127,14 @@ describe("native file URL links", () => {
 	it.each(["file:///etc/passwd", "file:///state/other/artifacts/r.md"])(
 		"leaves %s, outside both roots, an ordinary link",
 		(target) => {
-			const result = renderMarkdownFileReferences(`[report](${target})`, cwd, artifactsDir);
+			const result = renderMarkdownFileReferences(`[report](${target})`, cwd, { artifactsDir });
 			expect(result.references.size).toBe(0);
 			expect(result.markdown).toContain(target);
 		},
 	);
 
 	it("mentions the file reference the same way for chips and prose", () => {
-		const references = markdownFileReferences(`[Full report](${reportURL})`, cwd, artifactsDir);
+		const references = markdownFileReferences(`[Full report](${reportURL})`, cwd, { artifactsDir });
 		expect(references.map(({ reference }) => reference.readTarget)).toEqual([
 			`${artifactsDir}/docs-quality-repairs.md`,
 		]);

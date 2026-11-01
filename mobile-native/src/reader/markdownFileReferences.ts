@@ -3,6 +3,7 @@ import {
 	parseFileReference,
 	type FileReference,
 	resolveFileLink,
+	type ServedRoots,
 } from "@evener/appwire-client/docContent";
 import { Marked, type Token, type Tokens } from "marked";
 
@@ -474,50 +475,42 @@ function candidates(markdown: string): readonly Candidate[] {
 	return found;
 }
 
-function boundCandidates(markdown: string, cwd: string, artifactsDir?: string, scratchDir?: string) {
+function boundCandidates(markdown: string, cwd: string, served?: ServedRoots) {
 	return candidates(markdown).flatMap((candidate) => {
 		// A link destination may be a file URL, which the path parser refuses,
 		// so links bind through the shared resolver the web transcript uses.
 		const reference =
 			candidate.surface === "link"
-				? resolveFileLink(candidate.value, cwd, artifactsDir, scratchDir)
-				: parseFileReference(candidate.value, candidate.surface, cwd, { artifactsDir, scratchDir });
+				? resolveFileLink(candidate.value, cwd, served)
+				: parseFileReference(candidate.value, candidate.surface, cwd, served);
 		return reference ? [{ candidate, reference }] : [];
 	});
 }
 export function markdownFileReferences(
 	markdown: string,
 	cwd: string,
-	artifactsDir?: string,
-	scratchDir?: string,
+	served?: ServedRoots,
 ): Array<{ reference: FileReference; surface: "prose" | "code" | "link" }> {
-	return boundCandidates(markdown, cwd, artifactsDir, scratchDir).map(({ candidate, reference }) => ({
+	return boundCandidates(markdown, cwd, served).map(({ candidate, reference }) => ({
 		reference,
 		surface: candidate.surface,
 	}));
 }
 let renderGeneration = 0;
-export function renderMarkdownFileReferences(
-	markdown: string,
-	cwd: string,
-	artifactsDir?: string,
-	scratchDir?: string,
-): MarkdownFileRender {
+export function renderMarkdownFileReferences(markdown: string, cwd: string, served?: ServedRoots): MarkdownFileRender {
 	const generation = ++renderGeneration;
 	const references = new Map<string, FileReference>();
-	const replacements = boundCandidates(markdown, cwd, artifactsDir, scratchDir).map(
-		({ candidate, reference }, index) => {
-			const id = `evener-file:${generation}-${index}`;
-			references.set(id, reference);
-			let replacement: string;
-			if (candidate.referenceSuffix) replacement = `(${id})`;
-			else if (candidate.display !== undefined) replacement = `[${proseLabel(candidate.display)}](${id})`;
-			else if (candidate.label === undefined) replacement = id;
-			else
-				replacement = `[${candidate.surface === "prose" ? candidate.label : markdown.slice(candidate.start, candidate.end)}](${id})`;
-			return { ...candidate, replacement };
-		},
-	);
+	const replacements = boundCandidates(markdown, cwd, served).map(({ candidate, reference }, index) => {
+		const id = `evener-file:${generation}-${index}`;
+		references.set(id, reference);
+		let replacement: string;
+		if (candidate.referenceSuffix) replacement = `(${id})`;
+		else if (candidate.display !== undefined) replacement = `[${proseLabel(candidate.display)}](${id})`;
+		else if (candidate.label === undefined) replacement = id;
+		else
+			replacement = `[${candidate.surface === "prose" ? candidate.label : markdown.slice(candidate.start, candidate.end)}](${id})`;
+		return { ...candidate, replacement };
+	});
 	let rendered = markdown;
 	for (const range of replacements.reverse())
 		rendered = rendered.slice(0, range.start) + range.replacement + rendered.slice(range.end);

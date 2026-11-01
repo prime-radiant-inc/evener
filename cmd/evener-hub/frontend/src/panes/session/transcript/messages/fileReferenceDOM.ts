@@ -38,8 +38,6 @@ export function enhanceFileReferences(
   const owns = (node: Node) => epochs.get(root) === epoch && root.contains(node);
   const qualifiedRef = context.sessionRef.includes(":") ? context.sessionRef : `local:${context.sessionRef}`;
   if (!isValidTranscriptRef(qualifiedRef) || !context.cwd || !context.sourcePaneId) return () => {};
-  // The served roots an absolute path can bind beyond the working directory,
-  // as the thread snapshot advertises them.
   const served: ServedRoots = { artifactsDir: context.artifactsDir, scratchDir: context.scratchDir };
 
   function activate(link: HTMLAnchorElement, request: DocumentOpenRequest) {
@@ -64,12 +62,7 @@ export function enhanceFileReferences(
 
   for (const link of root.querySelectorAll<HTMLAnchorElement>("a[href]")) {
     if (link.closest(`pre, [data-entity-host], [${MERMAID_DIAGRAM_ATTR}]`)) continue;
-    const reference = resolveAnchorReference(
-      link.getAttribute("href") ?? "",
-      context.cwd,
-      context.artifactsDir,
-      context.scratchDir,
-    );
+    const reference = resolveAnchorReference(link.getAttribute("href") ?? "", context.cwd, served);
     if (reference === undefined) continue;
     activate(link, { session: context.sessionRef, reference, sourcePaneId: context.sourcePaneId });
   }

@@ -105,12 +105,10 @@ export const MarkdownResponse = memo(function MarkdownResponse({
 					: {
 							...segment,
 							fileRender: fileContext
-								? renderMarkdownFileReferences(
-										segment.source,
-										fileContext.cwd,
-										fileContext.artifactsDir,
-										fileContext.scratchDir,
-									)
+								? renderMarkdownFileReferences(segment.source, fileContext.cwd, {
+										artifactsDir: fileContext.artifactsDir,
+										scratchDir: fileContext.scratchDir,
+									})
 								: undefined,
 						},
 			),

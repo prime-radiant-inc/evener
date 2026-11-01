@@ -39,12 +39,10 @@ export function AgentMarkdown({ source, live = false }: { source: string; live?:
       // destinations before the DOM adapter rewrites hrefs or generates links.
       for (const link of element.querySelectorAll<HTMLAnchorElement>("a[href]")) {
         if (link.closest(`pre, [data-entity-host], [${MERMAID_DIAGRAM_ATTR}]`)) continue;
-        const reference = resolveAnchorReference(
-          link.getAttribute("href") ?? "",
-          context.cwd,
-          context.artifactsDir,
-          context.scratchDir,
-        );
+        const reference = resolveAnchorReference(link.getAttribute("href") ?? "", context.cwd, {
+          artifactsDir: context.artifactsDir,
+          scratchDir: context.scratchDir,
+        });
         if (!reference) continue;
         const request = { session: context.sessionRef, reference, sourcePaneId: context.sourcePaneId };
         const slot = document.createElement("span");

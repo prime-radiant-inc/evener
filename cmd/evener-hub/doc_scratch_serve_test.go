@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	agentsandbox "primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
@@ -53,10 +54,10 @@ func docScratchTestServer(t *testing.T) (*WebServer, string, string, string) {
 	return web, cwd, sessionID, scratch
 }
 
-// scratchTreePath composes a session's scratch directory the way the sandbox
-// allocator names it, for fixtures: <base>/evener-scratch-<rootID>/<sessionID>.
+// scratchTreePath names a session's scratch directory through the allocator's
+// own composer, so the fixture cannot drift from the layout it pins.
 func scratchTreePath(base, rootID, sessionID string) string {
-	return filepath.Join(base, "evener-scratch-"+rootID, sessionID)
+	return agentsandbox.SessionScratchDirPath(base, rootID, sessionID)
 }
 
 func TestDocFile_Raw_ServesSessionScratch(t *testing.T) {
@@ -287,7 +288,7 @@ func TestThreadReadAnnouncesTheScratchDirTheDocRouteServes(t *testing.T) {
 	if err := os.WriteFile(target, []byte("png"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	root, abs, ok := web.resolveScratchDocTarget(t.Context(), session, target)
+	root, abs, _, ok := scratchDocTarget(t.Context(), web.cfg, session, target)
 	if !ok || root != scratch || abs != target {
 		t.Fatalf("doc route resolved (%q, %q, %v), want (%q, %q, true)", root, abs, ok, scratch, target)
 	}

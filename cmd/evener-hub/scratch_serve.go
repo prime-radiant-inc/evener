@@ -2,24 +2,17 @@ package hub
 
 import (
 	"context"
-	"errors"
 	"os"
-	"path/filepath"
-	"strings"
 
 	agentsandbox "primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
-	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
 // The scratch root is the third boundary the doc routes serve beside the
-// working directory and the retained artifacts directory. A session's tools
-// write screenshots and other session-local output into its named scratch
-// directory and name those files by absolute path in messages and tool
-// results, so the routes have to serve them — never anything beyond the
-// session's own directory, which the resolver below finds from the session's
-// recorded meta the same way the archiving removal path finds its tree.
+// working directory and the retained artifacts directory, found from the
+// session's recorded meta the same way the archiving removal path finds its
+// tree; see resolveSessionFile for the shared serving rule.
 
 // sessionScratchRoot is the local session's named scratch directory, or ""
 // when this hub serves none for it. The argument may be a session id or the
@@ -30,6 +23,18 @@ func sessionScratchRoot(ctx context.Context, cfg hubcore.WebConfig, ref string) 
 	stateDir, session, ok := docSessionScope(ctx, cfg, ref)
 	if !ok {
 		return ""
+	}
+	// A session the roster is not running has its meta in the past index's
+	// cache already; reading that copy keeps a list of finished sessions
+	// from re-reading and re-decoding one meta file per thread. A roster-live
+	// session keeps the fresh disk read — a resume under a restarted daemon
+	// may have rewritten the recorded scratch temp base — and the worst a
+	// stale cached copy can do is name a base that holds no directory, which
+	// answers no root rather than a wrong one.
+	if !rosterOwnsLiveSession(cfg.Roster, session) && cfg.Past != nil {
+		if entry, found := cfg.Past.FindIndexed(session); found {
+			return scratchDirFromMeta(entry.Meta)
+		}
 	}
 	meta, err := schema.LoadSessionMeta(stateDir, session)
 	if err != nil {
@@ -63,43 +68,9 @@ func scratchDirFromMeta(meta schema.SessionMeta) string {
 }
 
 // scratchDocTarget resolves an absolute request path against the session's
-// scratch directory for the doc routes, answering the containment question
-// artifactsDocTarget answers for the artifacts root: the root, the resolved
-// path, whether a refused path was still contained by the root (a miss the
-// caller reports as not-found rather than forbidden), and whether the path
-// names a readable file there. A session fenced for deletion serves nothing
-// from its scratch, under both identities a stable ref can name, exactly as
-// the artifacts root is fenced.
+// scratch directory for the doc routes: retainedDocTarget's shared rule over
+// the fence, containment and miss classification, with sessionScratchRoot as
+// the root this hub serves.
 func scratchDocTarget(ctx context.Context, cfg hubcore.WebConfig, session, rel string) (root, abs string, contained, ok bool) {
-	if !filepath.IsAbs(strings.TrimSpace(rel)) {
-		return "", "", false, false
-	}
-	_, resolvedSession, resolved := docSessionScope(ctx, cfg, session)
-	fenced := []string{canonicalRouteID(session)}
-	if resolved && resolvedSession != "" && resolvedSession != fenced[0] {
-		fenced = append(fenced, resolvedSession)
-	}
-	for _, identity := range fenced {
-		if err := deletionFenceError(cfg, appRefFromRouteID(identity), identity, ""); err != nil {
-			return "", "", false, false
-		}
-	}
-	root = sessionScratchRoot(ctx, cfg, session)
-	if root == "" {
-		return "", "", false, false
-	}
-	abs, err := fspaths.ResolveInRoot(root, rel)
-	if err != nil {
-		return root, "", !errors.Is(err, fspaths.ErrPathEscapesRoot), false
-	}
-	return root, abs, true, true
-}
-
-// resolveScratchDocTarget is resolveSessionFile's scratch branch for the
-// local doc routes: it answers the request itself when it cannot, so every
-// local doc route refuses an unknown session, an escape attempt and a missing
-// path identically to the cwd and artifacts branches.
-func (s *WebServer) resolveScratchDocTarget(ctx context.Context, session, rel string) (string, string, bool) {
-	root, abs, _, ok := scratchDocTarget(ctx, s.cfg, session, rel)
-	return root, abs, ok
+	return retainedDocTarget(ctx, cfg, session, rel, sessionScratchRoot)
 }

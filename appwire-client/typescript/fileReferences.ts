@@ -119,42 +119,37 @@ export function bindFilePath(path: string, cwd: string): FileReference | undefin
   };
 }
 
+/** bindRetainedPath binds a path to one of a session's retained root
+ * directories, exactly as bindFilePath does for the working directory, and
+ * marks the reference so a consumer holding the roots rebinds against the
+ * right one. A relative path never reaches a second root. */
+function bindRetainedPath(path: string, dir: string, root: "artifacts" | "scratch"): FileReference | undefined {
+  if (dir === "") return undefined;
+  const bound = bindFilePath(path, dir);
+  return bound === undefined ? undefined : { ...bound, root };
+}
+
 /** bindArtifactPath binds a path to a session's retained artifacts directory,
- * the second root the hub's document routes serve. It accepts a path relative
- * to that directory or an absolute path inside it, exactly as bindFilePath
- * does for the working directory, and marks the reference so a consumer
- * holding both roots rebinds against the right one. */
+ * the second root the hub's document routes serve. */
 export function bindArtifactPath(path: string, artifactsDir: string): FileReference | undefined {
-  if (artifactsDir === "") return undefined;
-  const bound = bindFilePath(path, artifactsDir);
-  return bound === undefined ? undefined : { ...bound, root: "artifacts" };
+  return bindRetainedPath(path, artifactsDir, "artifacts");
 }
 
 /** bindScratchPath binds a path to a session's named scratch directory, the
- * third root the hub's document routes serve. It accepts an absolute path
- * inside that directory, exactly as bindArtifactPath does for the artifacts
- * directory, and marks the reference so a consumer holding the roots rebinds
- * against the right one. A relative path never reaches a second root. */
+ * third root the hub's document routes serve. */
 export function bindScratchPath(path: string, scratchDir: string): FileReference | undefined {
-  if (scratchDir === "") return undefined;
-  const bound = bindFilePath(path, scratchDir);
-  return bound === undefined ? undefined : { ...bound, root: "scratch" };
+  return bindRetainedPath(path, scratchDir, "scratch");
 }
 
 /** bindServedPath binds a destination to whichever of the session's served
  * roots contains it: the working directory first, then the retained artifacts
  * directory, then the scratch directory, each when the snapshot advertises
  * it. A destination outside every root names no document the hub can serve. */
-export function bindServedPath(
-  path: string,
-  cwd: string,
-  artifactsDir?: string,
-  scratchDir?: string,
-): FileReference | undefined {
+export function bindServedPath(path: string, cwd: string, served?: ServedRoots): FileReference | undefined {
   return (
     bindFilePath(path, cwd) ??
-    (artifactsDir === undefined ? undefined : bindArtifactPath(path, artifactsDir)) ??
-    (scratchDir === undefined ? undefined : bindScratchPath(path, scratchDir))
+    bindArtifactPath(path, served?.artifactsDir ?? "") ??
+    bindScratchPath(path, served?.scratchDir ?? "")
   );
 }
 
@@ -202,16 +197,11 @@ function parseLiteral(
     return undefined;
   }
 
-  // An absolute path the working directory refuses may still name a document
-  // inside a served root (a screenshot in scratch, a report in artifacts); a
-  // relative path keeps meaning the working directory only, so a served root
-  // can never be reached by a bare name.
-  const absolute = surface.path.startsWith("/");
-  const reference =
-    bindFilePath(surface.path, cwd) ??
-    (absolute && served !== undefined
-      ? bindServedPath(surface.path, cwd, served.artifactsDir, served.scratchDir)
-      : undefined);
+  // bindFilePath returns any relative path bound to the working directory, so
+  // only an absolute path the working directory refuses reaches a served root
+  // (a screenshot in scratch, a report in artifacts): a bare name can never
+  // reach a second root.
+  const reference = bindServedPath(surface.path, cwd, served);
   if (!reference) return undefined;
 
   if (kind === "prose") {
@@ -238,15 +228,9 @@ function parseLink(value: string, cwd: string, served?: ServedRoots): FileRefere
   if (surface.path === "" || /%(?:2f|5c)/iu.test(surface.path)) return undefined;
 
   try {
-    const path = decodeURIComponent(surface.path);
-    // Same rule as a literal: a served root accepts an absolute destination
-    // the working directory does not contain.
-    return (
-      bindFilePath(path, cwd) ??
-      (path.startsWith("/") && served !== undefined
-        ? bindServedPath(path, cwd, served.artifactsDir, served.scratchDir)
-        : undefined)
-    );
+    // Same rule as a literal: only an absolute destination the working
+    // directory refuses can reach a served root.
+    return bindServedPath(decodeURIComponent(surface.path), cwd, served);
   } catch {
     return undefined;
   }

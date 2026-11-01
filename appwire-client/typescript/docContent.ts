@@ -21,7 +21,7 @@
 export * from "./documentReadDemand";
 export * from "./fileReferences";
 
-import { bindServedPath, type FileReference, parseFileReference } from "./fileReferences";
+import { bindServedPath, type FileReference, parseFileReference, type ServedRoots } from "./fileReferences";
 
 export interface DocFileContent {
   text: string;
@@ -244,16 +244,11 @@ export function fileURLToPath(fileURL: string): string {
 // the hub can open, so a client leaves it an ordinary link rather than
 // promising a document. The web transcript and the phone's Reader both bind
 // through this, so the same link opens the same document on either client.
-export function resolveFileLink(
-  href: string,
-  cwd: string,
-  artifactsDir: string | undefined,
-  scratchDir: string | undefined,
-): FileReference | undefined {
+export function resolveFileLink(href: string, cwd: string, served: ServedRoots | undefined): FileReference | undefined {
   const reference = parseFileReference(href, "link", cwd);
   if (reference !== undefined) return reference;
   const filePath = fileURLToPath(href);
-  return filePath === "" ? undefined : bindServedPath(filePath, cwd, artifactsDir, scratchDir);
+  return filePath === "" ? undefined : bindServedPath(filePath, cwd, served);
 }
 
 // cwdRelative expresses a file path relative to the session's folder, or
