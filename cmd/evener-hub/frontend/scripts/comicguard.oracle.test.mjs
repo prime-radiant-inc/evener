@@ -131,36 +131,75 @@ function relocationValue(relocation) {
   };
 }
 
-function relocationDOM(placed, mutate = () => {}) {
+const launchOrigin = { beforeId: "input", afterId: "continuation" };
+
+function relocationDOM(shape, mutate = () => {}) {
   const dom = new JSDOM("<main><div data-comic-scroll><div></div></div></main>", { runScripts: "outside-only" });
   const { window } = dom;
   window.__comicRoot = () => window.document.querySelector("main");
   const port = window.document.querySelector("[data-comic-scroll]").firstElementChild;
   const row = (content) => `<div data-index>${content}</div>`;
-  const before = row(
-    '<section data-comic-row="before" data-comic-session="parent" data-comic-path="[]"><div data-comic-entry="input" data-comic-session="parent" data-comic-path="[]">COMIC_SUBCHAT_CHILD</div></section>',
-  );
-  const strip = row(
-    '<div data-comic-flow="strip" data-comic-session="parent" data-comic-path="[]"><div data-comic-entry="child" data-comic-session="parent" data-comic-path="[]"><div data-comic-delegate="child" data-comic-child-ref="grandchild"><button aria-expanded="true"></button></div></div></div>',
-  );
-  const after = row(
-    '<section data-comic-row="after" data-comic-session="parent" data-comic-path="[]"><div data-comic-entry="continuation" data-comic-session="parent" data-comic-path="[]">COMIC_CHILD_SOURCE_00</div></section>',
-  );
+  const entry = (id, text) =>
+    row(
+      `<section data-comic-row="${id}" data-comic-session="parent" data-comic-path="[]"><div data-comic-entry="${id}" data-comic-session="parent" data-comic-path="[]">${text}</div></section>`,
+    );
+  const history = row('<div data-comic-flow="history" data-comic-session="parent" data-comic-path="[]"></div>');
   const marker = row('<div data-comic-flow="unplaced-group" data-comic-session="parent" data-comic-path="[]"></div>');
-  port.innerHTML = placed ? before + strip + after : marker + strip + before + after;
+  // The production strip folds its counted mid-work updates into the header:
+  // ComicSubchatHeader renders span[data-comic-updates=N] only for N > 0.
+  const strip = (updates) =>
+    row(
+      `<div data-comic-flow="strip" data-comic-session="parent" data-comic-path="[]"><div data-comic-entry="child" data-comic-session="parent" data-comic-path="[]"><div data-comic-delegate="child" data-comic-child-ref="grandchild">${
+        updates > 0 ? `<span data-comic-updates="${updates}">${updates} update${updates === 1 ? "" : "s"} folded into this strip</span>` : ""
+      }<button aria-expanded="true"></button></div></div></div>`,
+    );
+  const shapes = {
+    launch: entry("input", "COMIC_SUBCHAT_CHILD") + strip(1) + entry("continuation", "COMIC_CHILD_SOURCE_00"),
+    anchored:
+      history + entry("thought", "COMIC_THOUGHT_CHILD") + strip(1) + entry("report", "BACKGROUND_TURN_DONE"),
+    absent: history + entry("thought", "COMIC_THOUGHT_CHILD") + entry("report", "BACKGROUND_TURN_DONE"),
+  };
+  const shaped = shapes[shape];
+  if (!shaped) throw Error(`unknown relocation fixture shape: ${shape}`);
+  port.innerHTML = shaped;
   mutate(port);
   const observation = window.eval(
-    `(${guard.observeDelegateRelocation.toString()})('parent','grandchild',{beforeId:'input',afterId:'continuation'})`,
+    `(${guard.observeDelegateRelocation.toString()})('parent','grandchild',${JSON.stringify(launchOrigin)})`,
   );
   dom.window.close();
   return JSON.parse(JSON.stringify(observation));
 }
 
-test("relocation observer rejects a pending strip after its sibling unplaced marker", () => {
-  const observation = relocationDOM(false);
-  assert.throws(() => guard.verifyDelegateRelocation(relocationValue(observation)), Error);
-  assert.equal(observation.unplaced, true);
+test("relocation observer reports an update-anchored strip between its folded update neighbors", () => {
+  const observation = relocationDOM("anchored");
+  assert.equal(observation.found, true);
+  assert.equal(observation.updates, 1);
+  assert.equal(observation.unplacedRows, 0);
   assert.equal(observation.atLaunch, false);
+  assert.equal(observation.beforeId, "thought");
+  assert.equal(observation.afterId, "report");
+});
+
+test("relocation observer reports no rendered row while launch and folded updates are both outside the loaded window", () => {
+  const observation = relocationDOM("absent");
+  assert.equal(observation.found, false);
+  assert.equal(observation.updates, 0);
+  assert.equal(observation.unplacedRows, 0);
+});
+
+test("relocation verifier rejects a stray unplaced-group row even at the recorded launch neighbors", () => {
+  // The deleted bottom group must not come back under any shape: a leftover
+  // marker row ahead of the launch neighbors still fails the applied sample.
+  const observation = relocationDOM("launch", (port) => {
+    port.firstElementChild.insertAdjacentHTML(
+      "beforebegin",
+      '<div data-index><div data-comic-flow="unplaced-group" data-comic-session="parent" data-comic-path="[]"></div></div>',
+    );
+  });
+  assert.throws(() => guard.verifyDelegateRelocation(relocationValue(observation)), Error);
+  assert.equal(observation.found, true);
+  assert.equal(observation.atLaunch, true);
+  assert.equal(observation.unplacedRows, 1);
 });
 
 for (const [name, mutate] of [
@@ -177,7 +216,7 @@ for (const [name, mutate] of [
     },
   ],
   [
-    "strip before launch input without group marker",
+    "strip before the launch input",
     (port) => {
       port.prepend(port.children[1]);
     },
@@ -202,11 +241,18 @@ for (const [name, mutate] of [
   ],
 ])
   test(`relocation observer rejects ${name}`, () => {
-    assert.throws(() => guard.verifyDelegateRelocation(relocationValue(relocationDOM(true, mutate))), Error);
+    assert.throws(() => guard.verifyDelegateRelocation(relocationValue(relocationDOM("launch", mutate))), Error);
   });
 
+test("relocation verifier rejects a relocated strip that lost its folded updates", () => {
+  const observation = relocationDOM("launch");
+  const value = relocationValue({ ...observation, updates: 0 });
+  assert.throws(() => guard.verifyDelegateRelocation(value), Error);
+  assert.doesNotThrow(() => guard.verifyDelegateRelocation(relocationValue(observation)));
+});
+
 test("relocation observer ignores nested-reader rows between launch neighbors", () => {
-  const observation = relocationDOM(true, (port) => {
+  const observation = relocationDOM("launch", (port) => {
     const nested = port.ownerDocument.createElement("div");
     nested.innerHTML =
       '<section data-comic-row="nested" data-comic-session="grandchild" data-comic-path="[&quot;child&quot;]"><div data-comic-entry="nested-source" data-comic-session="grandchild" data-comic-path="[&quot;child&quot;]">nested source</div></section>';
@@ -289,7 +335,7 @@ for (const [name, mutate] of [
   });
 
 test("relocation rejects shifted glyph with unchanged identity and lifetime", () => {
-  const value = relocationValue(relocationDOM(true));
+  const value = relocationValue(relocationDOM("launch"));
   assert.doesNotThrow(() => guard.verifyDelegateRelocation(value));
   value.after.point.y = 224;
   assert.throws(() => guard.verifyDelegateRelocation(value), Error);

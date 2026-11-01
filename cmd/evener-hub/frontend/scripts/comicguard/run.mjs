@@ -2842,22 +2842,24 @@ export function observeDelegateRelocation(parentRef, childRef, origin) {
   // Group labels and strips are sibling virtual rows, never ancestors. Ignore
   // nested readers while following the owning reader's most recent group/row.
   const rows = [...port.querySelectorAll("[data-comic-flow], [data-comic-row]")].filter(owned);
-  let unplaced = false;
-  for (const row of rows) {
-    if (row === strip) break;
-    if (row.dataset.comicFlow === "unplaced-group") unplaced = true;
-    else if (row.dataset.comicFlow !== "strip") unplaced = false;
-  }
+  // The trailing unplaced group is deleted from the product: any surviving
+  // [data-comic-flow="unplaced-group"] row is a legacy regression, so the
+  // applied sample counts them instead of locating the strip inside one.
+  const unplacedRows = rows.filter((row) => row.dataset.comicFlow === "unplaced-group").length;
   const entries = [...port.querySelectorAll("[data-comic-entry]")].filter(owned);
   const index = entries.findIndex((node) => node.contains(heading));
   const beforeId = entries[index - 1]?.dataset.comicEntry;
   const afterId = entries[index + 1]?.dataset.comicEntry;
+  const updates = +(heading?.querySelector("[data-comic-updates]")?.dataset.comicUpdates ?? 0);
   return {
     found: !!heading,
-    unplaced,
+    updates,
+    unplacedRows,
     beforeId,
     afterId,
-    atLaunch: !!strip && !unplaced && beforeId === origin.beforeId && afterId === origin.afterId,
+    // origin is null while the launch page is still outside the loaded window:
+    // the pending sample anchors at its folded updates instead.
+    atLaunch: !!strip && !!origin && beforeId === origin.beforeId && afterId === origin.afterId,
     entries: entries.map((node) => ({ id: node.dataset.comicEntry, text: node.textContent })),
   };
 }
@@ -2893,8 +2895,10 @@ export function verifyDelegateRelocation(value) {
   if (value.relocated.key !== value.grandchild.key || value.relocated.expanded !== "true")
     throw Error("causal placement replaced expanded nested identity");
   if (value.lifetime.length) throw Error("late creation relocation replaced the existing child reader");
-  if (!value.relocation.found || value.relocation.unplaced || !value.relocation.atLaunch)
+  if (!value.relocation.found || !value.relocation.atLaunch)
     throw Error("late launch not between its recorded source neighbors");
+  if (value.relocation.unplacedRows) throw Error("late launch rendered the deleted unplaced group");
+  if (!(value.relocation.updates > 0)) throw Error("late launch dropped the strip's folded updates");
   if (!savedSourcePlaced(value.before, value.expected) || !savedSourcePlaced(value.after, value.expected))
     throw Error("late launch changed the pinned source glyph or viewport offset");
 }
