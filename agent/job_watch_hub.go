@@ -456,10 +456,27 @@ func (s *Session) configureHubWatchRuntime(ctx context.Context, args map[string]
 		cancel()
 		return nil, err
 	}
+	// Stop the setup-context bridge before installing the subscription. This
+	// resolves the handoff: cancellation that already won must clear the durable
+	// registration, while cancellation after this point no longer owns the
+	// established watch.
+	stopSetupCancellation()
+	if err := ctx.Err(); err != nil {
+		cancel()
+		if endErr := jm.endHubWatch(result.WatchID, "setup canceled after registration", nil); endErr != nil {
+			return nil, errors.Join(err, endErr)
+		}
+		return nil, err
+	}
+	if err := watchCtx.Err(); err != nil {
+		if endErr := jm.endHubWatch(result.WatchID, "setup canceled after registration", nil); endErr != nil {
+			return nil, errors.Join(err, endErr)
+		}
+		return nil, err
+	}
 	if s.installHubWatchSubscription(jm, result.WatchID, cancel) {
 		go s.consumeHubWatch(watchCtx, result.WatchID, request, state.Ref, state.InstanceID, updates, first)
 	}
-	stopSetupCancellation()
 	return marshalWatchResult(result, jobToolResultDefaultMaxChar)
 }
 

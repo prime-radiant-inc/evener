@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/appwire"
 )
 
@@ -141,6 +142,74 @@ func TestManagerWatchSetupCancellationAfterSnapshotPreventsRegistration(t *testi
 	defer root.mu.Unlock()
 	if len(root.hubWatchCancels) != 0 {
 		t.Fatalf("cancelled setup retained %d transport subscriptions", len(root.hubWatchCancels))
+	}
+}
+
+func TestManagerWatchSetupCancellationAfterRegistrationDurablyEndsWatch(t *testing.T) {
+	t.Parallel()
+	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
+	jm := root.jobManager
+	if jm == nil {
+		t.Fatal("session has no job manager")
+	}
+	updates := make(chan appwire.SessionWatchUpdate, 1)
+	updates <- appwire.SessionWatchUpdate{Snapshot: &appwire.ThreadReadResponse{BootGeneration: "7@worker", Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: "local:worker", InstanceID: "worker-instance"}}}, Metadata: appwire.SessionObservationMetadata{Ref: "local:worker", InstanceID: "worker-instance", GenerationID: "7@worker"}}
+	client := &managerSetupCancelClient{view: appwire.ManagerView{Ref: "local:manager", InstanceID: "manager-instance", Manager: true}, watchCtx: make(chan context.Context, 1), updates: updates}
+	root.SetHubClient(client)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	watchCtxDone := make(chan struct{})
+	appendEvents := jm.appendEvents
+	var canceled bool
+	jm.appendEvents = func(events []jobstore.Event) error {
+		if err := appendEvents(events); err != nil {
+			return err
+		}
+		if !canceled {
+			canceled = true
+			cancel()
+			// Hold configureHubWatchContext inside the journal append boundary until
+			// AfterFunc has canceled its watch context.
+			<-watchCtxDone
+		}
+		return nil
+	}
+	defer func() { jm.appendEvents = appendEvents }()
+	result := make(chan error, 1)
+	go func() {
+		_, err := root.configureHubWatchRuntime(ctx, map[string]any{"operation": "create", "hub": map[string]any{"ref": "local:worker", "events": []string{"status"}}})
+		result <- err
+	}()
+	var watchCtx context.Context
+	awaitWithin(t, 10*time.Second, "client.Watch setup beginning", func() { watchCtx = <-client.watchCtx })
+	go func() { <-watchCtx.Done(); close(watchCtxDone) }()
+	awaitWithin(t, 10*time.Second, "canceled setup returning", func() {
+		err := <-result
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("setup error = %v, want context.Canceled", err)
+		}
+	})
+	jm.mu.Lock()
+	for _, cfg := range jm.watches {
+		if cfg.hubRef == "local:worker" {
+			jm.mu.Unlock()
+			t.Fatal("canceled setup left an active Manager hub watch")
+		}
+	}
+	jm.mu.Unlock()
+	var cleared bool
+	for _, event := range loadJobStoreEvents(t, jm) {
+		if event.Kind == jobstore.EventWatchCleared {
+			cleared = true
+		}
+	}
+	if !cleared {
+		t.Fatal("canceled setup did not durably append WatchCleared")
+	}
+	root.mu.Lock()
+	defer root.mu.Unlock()
+	if len(root.hubWatchCancels) != 0 {
+		t.Fatalf("canceled setup installed %d transport subscriptions", len(root.hubWatchCancels))
 	}
 }
 
