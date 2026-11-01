@@ -264,7 +264,11 @@ its parent and healthy siblings stay usable.
 
 Saved positions contain the complete target session and expansion path, source
 entry and character offset, never transcript bodies. Restoration demands only the
-saved branch through the existing activity and history pagers. In-flight history
+saved branch through the existing activity and history pagers. A parent whose loaded
+window holds neither the strip's launch nor one of its updates pages its own older
+history until the strip can compose a row to expand through; an exhausted parent
+keeps the saved branch pending, and a launch that arrives later relocates the strip
+and restores the saved position into view. In-flight history
 loads preserve the saved source and child path until loading finishes. A newly
 loaded source waits for composed layout before any missing-source fallback. User
 movement cancels pending restoration. A collapsed branch keeps its small anchor

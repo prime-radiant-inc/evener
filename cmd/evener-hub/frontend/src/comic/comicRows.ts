@@ -56,32 +56,52 @@ export function composeComicFlow(
     // captions, so a strip whose launch is outside the loaded window still
     // anchors inline at the earliest update it kept.
     const strips = reader.activity.strips;
-    const folded = new Map<string, { first: number; entryIds: string[] }>();
+    // Anchors compare by source index, then by projected order: a delegate_send's
+    // earlier updates and its final reply can share one source index.
+    const folded = new Map<string, { first: number; order: number; entryIds: string[] }>();
     const items: ComicEntry[] = [];
-    for (const entry of reader.entries) {
+    const itemOrders: number[] = [];
+    for (const [order, entry] of reader.entries.entries()) {
       if (entry.sourceIndex === undefined) continue;
       const strip = entry.delegateUpdate ? comicStripForUpdate(strips, entry.delegateUpdate) : undefined;
       if (strip) {
-        const record = folded.get(strip.key) ?? { first: entry.sourceIndex, entryIds: [] };
+        const record = folded.get(strip.key) ?? { first: entry.sourceIndex, order, entryIds: [] };
         record.entryIds.push(entry.id);
-        if (record.first > entry.sourceIndex) record.first = entry.sourceIndex;
+        if (record.first > entry.sourceIndex) {
+          record.first = entry.sourceIndex;
+          record.order = order;
+        }
         folded.set(strip.key, record);
         continue;
       }
       items.push(entry);
+      itemOrders.push(order);
     }
     let cursor = 0;
     for (const { strip, updateCount, anchor, entryIds } of strips
       .flatMap((strip) => {
         const record = folded.get(strip.key);
-        const anchor = strip.source?.sourceIndex ?? record?.first;
+        // A loaded launch keeps the legacy placement: same-index items stay before it.
+        const anchor = strip.source
+          ? { index: strip.source.sourceIndex, order: Infinity }
+          : record
+            ? { index: record.first, order: record.order }
+            : undefined;
         return anchor === undefined
           ? []
-          : [{ strip, updateCount: record?.entryIds.length ?? 0, anchor, entryIds: record?.entryIds ?? [] }];
+          : {
+              strip,
+              updateCount: record?.entryIds.length ?? 0,
+              anchor,
+              entryIds: record?.entryIds ?? [],
+            };
       })
-      .sort((a, b) => a.anchor - b.anchor)) {
+      .sort((a, b) => a.anchor.index - b.anchor.index || a.anchor.order - b.anchor.order)) {
       const start = cursor;
-      while (cursor < items.length && (items[cursor]?.sourceIndex ?? Infinity) <= anchor) cursor += 1;
+      const itemPrecedesAnchor = (index: number) =>
+        (items[index]?.sourceIndex ?? Infinity) < anchor.index ||
+        ((items[index]?.sourceIndex ?? Infinity) === anchor.index && (itemOrders[index] ?? -1) < anchor.order);
+      while (cursor < items.length && itemPrecedesAnchor(cursor)) cursor += 1;
       panels(items.slice(start, cursor));
       stripRow(strip, updateCount, entryIds);
     }
@@ -95,6 +115,16 @@ export function composeComicFlow(
   };
   append(root, [root.ref]);
   return rows;
+}
+
+/** True when the strip's launch or one of its folded updates is in the reader's loaded window. */
+export function comicStripAnchored(reader: ComicReaderSnapshot, strip: ComicDelegateStrip): boolean {
+  if (strip.source) return true;
+  return reader.entries.some(
+    (entry) =>
+      entry.delegateUpdate !== undefined &&
+      comicStripForUpdate(reader.activity.strips, entry.delegateUpdate)?.key === strip.key,
+  );
 }
 export function findComicFlowAnchorRow(
   rows: readonly ComicFlowRow[],

@@ -31,7 +31,7 @@ import { ComicPlainTranscript } from "./ComicPlainTranscript";
 import { ComicSubchatHeader } from "./ComicSubchatHeader";
 import styles from "./comic.module.css";
 import { publishComicPaneCoverage } from "./comicPaneCoverage";
-import { type ComicFlowRow, composeComicFlow, findComicFlowAnchorRow } from "./comicRows";
+import { type ComicFlowRow, comicStripAnchored, composeComicFlow, findComicFlowAnchorRow } from "./comicRows";
 import { createComicMeasurer, loadComicFonts } from "./measure";
 import type { ComicReadingPosition } from "./readerPosition";
 import type { useComicReader } from "./useComicReader";
@@ -382,6 +382,10 @@ export function ComicTranscript({
         return;
       }
       const flow = current.rows[rowIndex];
+      // A folded update renders no node of its own: its saved position restores
+      // onto the strip that absorbed it, keeping the saved viewport offset.
+      const foldedIntoStrip =
+        flow?.kind === "strip" && flow.foldedEntryIds.includes(position.entryId) ? flow : undefined;
       const slice =
         flow?.kind === "panels"
           ? flow.row.panels
@@ -390,7 +394,7 @@ export function ComicTranscript({
           : undefined;
       const source = [...port.querySelectorAll<HTMLElement>("[data-comic-entry]")].find(
         (node) =>
-          node.dataset.comicEntry === position.entryId &&
+          node.dataset.comicEntry === (foldedIntoStrip ? foldedIntoStrip.strip.key : position.entryId) &&
           node.dataset.comicSession === position.sessionRef &&
           node.dataset.comicPath === comicPathKey(position.path) &&
           (flow?.kind === "strip" || Number(node.dataset.comicStart) === slice?.start),
@@ -401,7 +405,7 @@ export function ComicTranscript({
         commanded.current = port.scrollTop;
         return;
       }
-      const point = textPoint(source, position.offset);
+      const point = foldedIntoStrip ? source.getBoundingClientRect() : textPoint(source, position.offset);
       if (!point) return;
       const delta = point.top - port.getBoundingClientRect().top - position.viewportOffset;
       const shortage = port.scrollTop + delta - (port.scrollHeight - port.clientHeight);
@@ -601,6 +605,22 @@ export function ComicTranscript({
         save({ mode: "end", sessionRef: target.ref, path: target.path });
         restoring.current = false;
         return;
+      }
+      // The strip's rows only compose once this reader's loaded window holds its
+      // launch or one of its folded updates. While a page can supply that
+      // anchor, page instead of expanding into rows that cannot compose; once
+      // history is exhausted, descend as before and wait for a live launch,
+      // which relocates the strip and restores the saved position into view.
+      if (!comicStripAnchored(target, strip)) {
+        if (target.history.hasOlder) {
+          if (target.history.loadingOlder) lastPage.current = undefined;
+          const page = target.history.olderPageKey ?? target.entries.map((entry) => entry.id).join("\n");
+          if (!target.history.loadingOlder && !target.history.olderError && lastPage.current !== page) {
+            lastPage.current = page;
+            target.history.loadOlderReportingError();
+          }
+          return;
+        }
       }
       if (!subchats.expandedPaths.some((p) => comicPathKey(p) === comicPathKey(path))) {
         subchats.expand(target.path, strip);

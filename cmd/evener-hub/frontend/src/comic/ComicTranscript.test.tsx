@@ -505,6 +505,85 @@ test("plain view keeps one grid cell per panel when a stack packs beside another
   mounted.unmount();
 });
 
+test("restores a position saved on a folded update onto its strip with the saved offset", async () => {
+  const model = hydrateThread({ thread: wireThread("local:root", { sessionId: "root" }) }, "local:root", 0);
+  const entities = buildEntityView({
+    sessionRef: model.ref,
+    tree: parseActivityTree(subagentOutcomesResponse().data) ?? undefined,
+    turns: [],
+    stale: false,
+    ended: false,
+  });
+  const strip = { ...projectComicDelegates(model, entities)[0]!, ownerRef: "local:test" };
+  const foldedUpdate = {
+    ...entry,
+    id: "mid-update",
+    sourceItemId: "source-mid-update",
+    sourceIndex: 2,
+    kind: "caption" as const,
+    speaker: "source" as const,
+    delegateUpdate: { childRef: strip.childRef },
+  };
+  const { port, place, mounted } = await mountGestureReader(false, {
+    node: (
+      <Reader
+        entries={[entry, foldedUpdate, { ...entry, id: "after", sourceItemId: "source-after", sourceIndex: 4 }]}
+        strips={[strip]}
+        older={history()}
+      />
+    ),
+    position: {
+      mode: "away",
+      sessionRef: "local:test",
+      path: [],
+      entryId: "mid-update",
+      offset: 0,
+      viewportOffset: 24,
+    },
+    initialEntryId: "m",
+  });
+  // The strip that absorbed the update takes the saved viewport placement; the
+  // row-top fallback alone would lose the saved offset.
+  expect(port.scrollTop).toBe(96);
+  expect(place).toHaveBeenCalled();
+  mounted.unmount();
+});
+
+test("pages a parent whose loaded window holds no anchor for the saved child's strip", async () => {
+  const model = hydrateThread({ thread: wireThread("local:root", { sessionId: "root" }) }, "local:root", 0);
+  const entities = buildEntityView({
+    sessionRef: model.ref,
+    tree: parseActivityTree(subagentOutcomesResponse().data) ?? undefined,
+    turns: [],
+    stale: false,
+    ended: false,
+  });
+  const strip = { ...projectComicDelegates(model, entities)[0]!, ownerRef: "local:test" };
+  const position: ComicReadingPosition = {
+    mode: "away",
+    sessionRef: strip.childRef,
+    path: [strip.key],
+    entryId: "child-entry",
+    offset: 12,
+    viewportOffset: 24,
+  };
+  writeComicPosition("local:test", position);
+  const older = { ...history(), hasOlder: true, olderPageKey: "older-page" };
+  const subchats = {
+    readers: new Map(),
+    expandedPaths: [],
+    expand: vi.fn(),
+    collapse: vi.fn(),
+  };
+  const mounted = render(<Reader older={older} strips={[strip]} subchats={subchats} />);
+  await waitFor(() => expect(mounted.container.querySelector("[data-comic-entry]")).not.toBeNull());
+  // The strip has neither a loaded launch nor a folded update: expanding first
+  // would mount a child whose rows cannot compose, so the parent must page.
+  await waitFor(() => expect(older.loadOlderReportingError).toHaveBeenCalled());
+  expect(subchats.expand).not.toHaveBeenCalled();
+  mounted.unmount();
+});
+
 test("keeps an item-backed point fixed with itemless errors across prepend, resize and views", async ({
   onTestFinished,
 }) => {
@@ -1610,7 +1689,7 @@ test("does not attach parent end to trailing child output", async () => {
   mounted.unmount();
 });
 
-test("restores only the saved child path and pages its absent source, not the parent", async () => {
+test("pages the parent until the saved child's strip anchors, then pages only the child", async () => {
   const model = hydrateThread({ thread: wireThread("local:root", { sessionId: "root" }) }, "local:root", 0);
   const entities = buildEntityView({
     sessionRef: model.ref,
@@ -1635,8 +1714,14 @@ test("restores only the saved child path and pages its absent source, not the pa
   const expand = vi.fn();
   const subchats: ComicSubchatState = { readers: new Map(), expandedPaths: [], expand, collapse: vi.fn() };
   const mounted = render(<Reader older={parentHistory} strips={strips} subchats={subchats} />);
-  await waitFor(() => expect(expand).toHaveBeenCalledWith([], target));
-  expect(expand.mock.calls.every(([, strip]) => strip.key === target.key)).toBe(true);
+  // The unanchored strip composes no row, so the walk pages the parent first
+  // instead of expanding into content that renders nowhere.
+  await waitFor(() => expect(parentHistory.loadOlderReportingError).toHaveBeenCalledTimes(1));
+  expect(expand).not.toHaveBeenCalled();
+  expect(childHistory.loadOlderReportingError).not.toHaveBeenCalled();
+  const anchored = strips.map((strip) => ({ ...strip, source: { itemId: entry.sourceItemId!, sourceIndex: 0 } }));
+  mounted.rerender(<Reader older={parentHistory} strips={anchored} subchats={subchats} />);
+  await waitFor(() => expect(expand).toHaveBeenCalledWith([], anchored[0]!));
   const child = {
     ref: target.childRef,
     path: [target.key],
@@ -1647,17 +1732,18 @@ test("restores only the saved child path and pages its absent source, not the pa
   mounted.rerender(
     <Reader
       older={parentHistory}
-      strips={strips}
+      strips={anchored}
       subchats={{ ...subchats, expandedPaths: [child.path], readers: new Map([[JSON.stringify(child.path), child]]) }}
     />,
   );
   await waitFor(() => expect(childHistory.loadOlderReportingError).toHaveBeenCalledTimes(1));
-  expect(parentHistory.loadOlderReportingError).not.toHaveBeenCalled();
+  // The parent's demand stays retired once its page delivered the anchor.
+  expect(parentHistory.loadOlderReportingError).toHaveBeenCalledTimes(1);
   const loaded = { ...child, entries: [entry], history: { ...childHistory, hasOlder: false } };
   mounted.rerender(
     <Reader
       older={parentHistory}
-      strips={strips}
+      strips={anchored}
       subchats={{ ...subchats, expandedPaths: [child.path], readers: new Map([[JSON.stringify(child.path), loaded]]) }}
     />,
   );
@@ -2116,6 +2202,7 @@ test.each(["failure", "success"] as const)(
       ...strip,
       ownerRef: "local:test",
       childRef: `${strip.childRef}-${settlement}`,
+      source: { itemId: "child-launch", sourceIndex: 0 },
     }));
     const strip = strips[0]!;
     const client = new FakeClient("ready");

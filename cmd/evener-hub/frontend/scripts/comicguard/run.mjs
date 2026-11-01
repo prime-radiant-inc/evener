@@ -3687,7 +3687,7 @@ async function remoteJourney(page, fixture, { incoming, wireTrace, screenshot })
   const source = async () =>
     evaluateHere(`(() => {
     const panel=[...window.__comicRoot()?.querySelectorAll('[data-comic-entry]')].find(panel=>panel.dataset.comicSession===${JSON.stringify(header.ref)} && panel.textContent.includes('COMIC_ROSTER_LEAF literal answer'));
-    if(panel) return {ref:panel.dataset.comicSession,identity:panel.querySelector('[data-comic-identity]').textContent};
+    if(panel) return {ref:panel.dataset.comicSession,identity:panel.closest('article')?.querySelector('[data-comic-identity]')?.textContent};
     const port=window.__comicRoot()?.querySelector('[data-comic-scroll]')?.firstElementChild;if(port){port.dispatchEvent(new WheelEvent('wheel',{bubbles:true,deltaY:300}));port.scrollTop+=300;}return null;
   })()`);
   const inline = await until("real remote child source", source);
@@ -3972,7 +3972,7 @@ async function rosterJourney(page, fixture, { command, complete, incoming, outgo
   }
   const readNamedIdentity = () =>
     evaluateHere(
-      `(() => {const panel=[...(window.__comicRoot()?.querySelectorAll('[data-comic-entry]')??[])].find(node=>node.dataset.comicSession===${JSON.stringify(directChild.ref)}&&node.textContent.includes('COMIC_ROSTER_LEAF literal answer'));return panel?.querySelector('[data-comic-identity]')?.textContent;})()`,
+      `(() => {const panel=[...(window.__comicRoot()?.querySelectorAll('[data-comic-entry]')??[])].find(node=>node.dataset.comicSession===${JSON.stringify(directChild.ref)}&&node.textContent.includes('COMIC_ROSTER_LEAF literal answer'));return panel?.closest('article')?.querySelector('[data-comic-identity]')?.textContent;})()`,
     );
   const directIdentity = await until(
     "named direct child identity",
@@ -4586,7 +4586,7 @@ async function childJourney(page, fixture, { command, incoming, outgoing, screen
     () =>
       evaluateHere(`(() => {
     const panel=[...window.__comicRoot()?.querySelectorAll('[data-comic-entry]')].find(node=>node.dataset.comicSession===${JSON.stringify(grandchild.ref)}&&node.textContent.includes('COMIC_PARENT_INSTRUCTION literal parent steering'));
-    if(panel)return panel.querySelector('[data-comic-identity]')?.textContent;
+    if(panel)return panel.closest('article')?.querySelector('[data-comic-identity]')?.textContent;
     const port=window.__comicRoot()?.querySelector('[data-comic-scroll]')?.firstElementChild;if(port){port.dispatchEvent(new WheelEvent('wheel',{bubbles:true,deltaY:-300}));port.scrollTop-=300;}return null;
   })()`),
     (value) => value === `comic-named-parent · ${JSON.parse(header.key)[1]} · ${JSON.parse(header.key)[0]}`,
@@ -4880,7 +4880,7 @@ async function authorshipJourney(page, fixture, { incoming, outgoing, screenshot
   await until("six original non-inherited author baselines", async () => {
     const result = await evaluateHere(`(() => {
       const port=window.__comicRoot()?.querySelector('[data-comic-scroll]')?.firstElementChild;if(!port)return null;
-      const entries=[...port.querySelectorAll('[data-comic-entry]')].map(node=>({ref:node.dataset.comicSession,text:node.querySelector('[data-comic-text]')?.textContent,identity:node.querySelector('[data-comic-identity]')?.textContent,kind:node.querySelector('[data-comic-balloon]')?.dataset.comicBalloon,speaker:node.querySelector('article')?.dataset.comicSpeaker}));
+      const entries=[...port.querySelectorAll('[data-comic-entry]')].map(node=>({ref:node.dataset.comicSession,text:node.querySelector('[data-comic-text]')?.textContent,identity:node.closest('article')?.querySelector('[data-comic-identity]')?.textContent,kind:node.querySelector('[data-comic-balloon]')?.dataset.comicBalloon,speaker:node.closest('article')?.dataset.comicSpeaker}));
       const controls=[port.parentElement.previousElementSibling,...port.querySelectorAll('[data-comic-flow="history"]')];
       for(const control of controls){const older=[...(control?.querySelectorAll('button')??[])].find(node=>node.textContent==='Older messages');if(older&&!older.disabled)older.click();}
       port.dispatchEvent(new WheelEvent('wheel',{bubbles:true,deltaY:${baselineDirection}*500}));port.scrollTop+=${baselineDirection}*500;
@@ -4914,7 +4914,7 @@ async function authorshipJourney(page, fixture, { incoming, outgoing, screenshot
     await until(name, async () => {
       const result = await evaluateHere(`(() => {
         const port=window.__comicRoot()?.querySelector('[data-comic-scroll]')?.firstElementChild;if(!port)return null;
-        const entries=[...port.querySelectorAll('[data-comic-entry]')].filter(node=>node.dataset.comicSession===${JSON.stringify(leaf.ref)}).map(node=>({id:node.dataset.comicEntry,path:JSON.parse(node.dataset.comicPath),start:+node.dataset.comicStart,end:+node.dataset.comicEnd,text:node.querySelector('[data-comic-text]')?.textContent,identity:node.querySelector('[data-comic-identity]')?.textContent,kind:node.querySelector('[data-comic-balloon]')?.dataset.comicBalloon,speaker:node.querySelector('article')?.dataset.comicSpeaker}));
+        const entries=[...port.querySelectorAll('[data-comic-entry]')].filter(node=>node.dataset.comicSession===${JSON.stringify(leaf.ref)}).map(node=>({id:node.dataset.comicEntry,path:JSON.parse(node.dataset.comicPath),start:+node.dataset.comicStart,end:+node.dataset.comicEnd,text:node.querySelector('[data-comic-text]')?.textContent,identity:node.closest('article')?.querySelector('[data-comic-identity]')?.textContent,kind:node.querySelector('[data-comic-balloon]')?.dataset.comicBalloon,speaker:node.closest('article')?.dataset.comicSpeaker}));
         const history=window.__comicRoot()?.dataset.sessionRef===${JSON.stringify(leaf.ref)}
           ? port.parentElement.previousElementSibling
           : [...port.querySelectorAll('[data-comic-flow="history"]')].find(node=>node.dataset.comicSession===${JSON.stringify(leaf.ref)});

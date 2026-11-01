@@ -232,6 +232,19 @@ test("a saved position anchored on a folded update resolves to its strip row", (
   };
   expect(findComicFlowAnchorRow(rows, position)).toBe(stripRow);
 });
+test("a folded-update anchor keeps a same-index reply after the strip", () => {
+  const rows = composeComicFlow(
+    {
+      ...root,
+      entries: [entry("before", 0), update("mid-update", 2, { childRef: strip.childRef }), entry("reply", 2)],
+      activity: { ...activity, strips: [strip] },
+    },
+    collapsed,
+    390,
+    () => true,
+  );
+  expect(stripSequence(rows)).toEqual(["before", strip.key, "reply"]);
+});
 test("flow rows carry the packed column count from the width formula", () => {
   const packed: ComicReaderSnapshot = {
     ...root,
